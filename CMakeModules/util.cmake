@@ -27,13 +27,3 @@ function(print_dir_value)
     message(STATUS "Current script file ${CMAKE_CURRENT_LIST_FILE}")
     message(STATUS "Current script dir ${CMAKE_CURRENT_LIST_DIR}")
 endfunction()
-
-function(incrament var)
-    math(EXPR new_val "${${var}}+1")
-    set(${var} new_val  PARENT_SCOPE)
-endfunction()
-
-function(sum out a b)
-    math(EXPR ret "${a}+${b}")
-    set(${out } ret PARENT_SCOPE)
-endfunction()
