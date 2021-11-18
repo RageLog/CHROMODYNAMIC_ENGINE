@@ -18,3 +18,4 @@
 *.out
 *.app
 build
+/Tests/tests_output
