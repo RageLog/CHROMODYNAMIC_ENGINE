@@ -55,7 +55,7 @@ file(COPY ${MY_PUBLIC_HEADERS} DESTINATION ${OUTPUT_DIR}/include)
 
 #Add Subfolders
 add_subdirectory(Dependencies)
-
+add_subdirectory(Engine)
 
 #Testing
 if(ENABLE_TESTING)
