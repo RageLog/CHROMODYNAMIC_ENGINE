@@ -1,0 +1,39 @@
+{
+    "cmake.configureArgs": [
+        "-GNinja"
+    ],
+    "cmake.configureSettings": {
+
+        //"CMAKE_TOOLCHAIN_FILE" : "D:/repositories/VS/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        //"VCPKG_BUILD": "ON",
+    },
+    "C_Cpp.errorSquiggles": "Enabled",
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            {
+                "scope": "googletest.failed",
+                "settings": {
+                    "foreground": "#f00"
+                }
+            },
+            {
+                "scope": "googletest.passed",
+                "settings": {
+                    "foreground": "#0f0"
+                }
+            },
+            {
+                "scope": "googletest.run",
+                "settings": {
+                    "foreground": "#0f0"
+                }
+            }
+        ]
+    },
+    "testMate.cpp.test.advancedExecutables": [
+        {
+            "pattern": "Tests/tests_output/*/*.exe"
+        }
+    ],
+    //"C_Cpp.intelliSenseEngine": "Tag Parser"
+}
