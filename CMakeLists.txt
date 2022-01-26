@@ -10,7 +10,6 @@ Set(ENGINE_NAME "CHROMODYNAMIC")
 Set(COMPANY_NAME "CRFLT")
 Set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/output/")
 
-
 #options
 option(USE_VCPKG "Use VCPKG" OFF)
 option(PASS_VERSION "Pass the version from cmake file to source code" ON)
@@ -56,6 +55,7 @@ file(COPY ${MY_PUBLIC_HEADERS} DESTINATION ${OUTPUT_DIR}/include)
 #Add Subfolders
 add_subdirectory(Dependencies)
 add_subdirectory(Engine)
+add_subdirectory(Project)
 
 #Testing
 if(ENABLE_TESTING)
