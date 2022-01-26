@@ -8,6 +8,7 @@ Set(ENGINE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Engine")
 Set(vcpkgRoot "D:/repositories/VS/vcpkg")
 Set(ENGINE_NAME "CHROMODYNAMIC")
 Set(COMPANY_NAME "CRFLT")
+Set(PROJECT_NAME "YOUR_PROJECT_NAME")
 Set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/output/")
 
 #options
