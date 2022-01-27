@@ -7,6 +7,5 @@
 
 int main()
 {
-    Application app;
-    std::cout <<"deneme \n";
+    Application::getInstance()->run();
 }

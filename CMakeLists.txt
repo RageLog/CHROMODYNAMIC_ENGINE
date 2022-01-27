@@ -14,11 +14,11 @@ Set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/output/")
 #options
 option(USE_VCPKG "Use VCPKG" OFF)
 option(PASS_VERSION "Pass the version from cmake file to source code" ON)
-option(ENABLE_TESTING "Enable testing" ON)
+option(ENABLE_TESTING "Enable testing" off)
 option(ENABLE_clangformat "Activate ClangFormat.cmake module" ON)
 option(ENGINE_GENERATE_DLL "If this is set to ON, DLL files will generated" ON)
-
-
+option(BUILD_SHARED_LIBS "Rebuild using shared libraries" ON)
+option(EXPORT_DLL_BUILD "Export:ON , Import OFF" ON)
 
 
 #Modules (include .cmake)
@@ -29,10 +29,12 @@ if(ENABLE_clangformat)
     include(ClangFormat)
 endif()
 if(ENGINE_GENERATE_DLL)
-        #TODO:IMPLAMET Build time macro for dll export
-        add_compile_definitions(EXPORT_DLL)
-        #add_definitions()
+    add_compile_definitions(EXPORT_DLL)
 endif()
+if(EXPORT_DLL_BUILD)
+    add_compile_definitions(EXPORT_DLL_BUILD)
+endif()
+
 
 # Project NAME
 version_from_git()

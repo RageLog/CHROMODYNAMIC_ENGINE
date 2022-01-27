@@ -6,4 +6,6 @@ add_subdirectory(Application)
 set(APP_NAME ${APPLICATION_NAME})
 add_executable(${APP_NAME} main.cpp)
 
-#TODO: Include dır
+#Include dır
+target_link_libraries(${APP_NAME} PRIVATE Application)
+target_include_directories(${APP_NAME} PRIVATE ${ENGINE_SRC_DIR}/Runtime/Application)

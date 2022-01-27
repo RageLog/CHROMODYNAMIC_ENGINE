@@ -1,4 +1,4 @@
-#include "define.hpp"
+#include "Define.hpp"
 
 class CDAPI for_now
 {
@@ -7,4 +7,7 @@ private:
 public:
     for_now(/* args */) = default;
     ~for_now()  = default;
+    void den();
 };
+
+

@@ -9,19 +9,34 @@ project(${LIBRARY_Name} LANGUAGES CXX)
 set(THIS_SOURCE "${ENGINE_INCLUDE_DIR}/${LIBRARY_Name}")
 file(GLOB "src_${CMAKE_CURRENT_SOURCE_DIR}" "${THIS_SOURCE}/*.h*"  "*.cpp")
 
-#TODO:(Cemal) static or shared implemantation
-if(NOT ENGINE_GENERATE_DLL)
-    add_library(${LIBRARY_Name} STATIC "${src_${CMAKE_CURRENT_SOURCE_DIR}}")
-else()
-    add_library(${LIBRARY_Name} SHARED "${src_${CMAKE_CURRENT_SOURCE_DIR}}")
-endif()
+add_library(${LIBRARY_Name} STATIC "${src_${CMAKE_CURRENT_SOURCE_DIR}}")
+
 
 
 SET_TARGET_PROPERTIES(${LIBRARY_Name} PROPERTIES PREFIX " ")
+SET_TARGET_PROPERTIES(${LIBRARY_Name} PROPERTIES POSITION_INDEPENDENT_CODE ${BUILD_SHARED_LIBS})
 
 #where is your include file
 target_include_directories(${LIBRARY_Name} PUBLIC "${ENGINE_INCLUDE_DIR}/*")
 target_include_directories(${LIBRARY_Name} PRIVATE ${ENGINE_SRC_DIR}/Source/)
+
+#Linking
+SUBDIRLIST(SUBDIRS ${ENGINE_INCLUDE_DIR})
+FOREACH(subdir ${SUBDIRS})
+   string(REPLACE " " "_" subdir ${subdir})
+   if(EXISTS  "${ENGINE_SRC_DIR}/Source/${subdir}")
+        target_link_libraries(${LIBRARY_Name} PUBLIC ${subdir})
+        target_include_directories(${LIBRARY_Name} PRIVATE ${ENGINE_SRC_DIR}/Source/${subdir})
+   endif()
+ENDFOREACH()
+SUBDIRLIST(SUBDIRS "${ENGINE_SRC_DIR}/Source/")
+FOREACH(subdir ${SUBDIRS})
+   string(REPLACE " " "_" subdir ${subdir})
+   if(NOT EXISTS  "${ENGINE_INCLUDE_DIR}/${subdir}" AND  (NOT ${subdir}  STREQUAL "misc"))
+        target_link_libraries(${LIBRARY_Name} PUBLIC ${subdir})
+        target_include_directories(${LIBRARY_Name} PRIVATE  ${ENGINE_SRC_DIR}/Source/${subdir})
+   endif()
+ENDFOREACH()
 
 #GIVE to ID for each
 set(LIB_IDENTIFIER "YOUR_IDENTIFIER")

@@ -9,7 +9,6 @@ project(${LIBRARY_Name} LANGUAGES CXX)
 set(THIS_SOURCE "${ENGINE_INCLUDE_DIR}/${LIBRARY_Name}")
 file(GLOB "src_${CMAKE_CURRENT_SOURCE_DIR}" "${THIS_SOURCE}/*.h*"  "*.cpp")
 
-#TODO:(Cemal) static or shared implemantation
 if(NOT ENGINE_GENERATE_DLL)
     add_library(${LIBRARY_Name} STATIC "${src_${CMAKE_CURRENT_SOURCE_DIR}}")
 else()
@@ -18,6 +17,7 @@ endif()
 
 
 SET_TARGET_PROPERTIES(${LIBRARY_Name} PROPERTIES PREFIX " ")
+SET_TARGET_PROPERTIES(${LIBRARY_Name} PROPERTIES POSITION_INDEPENDENT_CODE ${BUILD_SHARED_LIBS})
 
 #where is your include file
 target_include_directories(${LIBRARY_Name} PUBLIC "${ENGINE_INCLUDE_DIR}/")
