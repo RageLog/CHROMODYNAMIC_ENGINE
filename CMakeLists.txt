@@ -8,14 +8,15 @@ Set(ENGINE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Engine")
 Set(vcpkgRoot "D:/repositories/VS/vcpkg")
 Set(ENGINE_NAME "CHROMODYNAMIC")
 Set(COMPANY_NAME "CRFLT")
-Set(PROJECT_NAME "YOUR_PROJECT_NAME")
+Set(APPLICATION_NAME "YOUR_PROJECT_NAME")
 Set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/output/")
 
 #options
 option(USE_VCPKG "Use VCPKG" OFF)
 option(PASS_VERSION "Pass the version from cmake file to source code" ON)
-option(ENABLE_TESTING "Enable testing" On)
+option(ENABLE_TESTING "Enable testing" ON)
 option(ENABLE_clangformat "Activate ClangFormat.cmake module" ON)
+option(ENGINE_GENERATE_DLL "If this is set to ON, DLL files will generated" ON)
 
 
 
@@ -27,9 +28,11 @@ include(VersionFromGit)
 if(ENABLE_clangformat)
     include(ClangFormat)
 endif()
-#if(NOT BUILD_STATIC)
-#        include(GenerateExportHeader)
-#endif()
+if(ENGINE_GENERATE_DLL)
+        #TODO:IMPLAMET Build time macro for dll export
+        add_compile_definitions(EXPORT_DLL)
+        #add_definitions()
+endif()
 
 # Project NAME
 version_from_git()
