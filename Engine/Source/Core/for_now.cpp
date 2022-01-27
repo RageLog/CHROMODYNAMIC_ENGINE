@@ -1,6 +1,8 @@
 #include "./Core/for_now.hpp"
+
 #include <iostream>
-void for_now::den() 
+void for_now::den()
 {
-    std::cout<< "denemenin içinden" << "\n";
+  std::cout << "denemenin içinden"
+            << "\n";
 }

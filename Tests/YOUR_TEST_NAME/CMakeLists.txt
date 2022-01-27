@@ -15,8 +15,7 @@ FOREACH(subdir ${SUBDIRS})
    endif()
    ENDFOREACH()
 target_link_libraries(${testerName} PUBLIC gtest_main)
-#TODO:(Cemal) Implament warning interfaces
-#target_link_libraries(${testerName} PRIVATE project_options project_warnings)
+target_link_libraries(${testerName} PRIVATE project_options project_warnings)
 
 set_target_properties (${testerName} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${UNIT_TEST_BIN_OUTPUT_DIR}/${testerName})
 

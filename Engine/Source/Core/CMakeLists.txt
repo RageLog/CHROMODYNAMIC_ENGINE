@@ -26,5 +26,8 @@ target_include_directories(${LIBRARY_Name} PRIVATE ${ENGINE_SRC_DIR}/Source/)
 #GIVE to ID for each
 set(LIB_IDENTIFIER "YOUR_IDENTIFIER")
 target_compile_definitions(${LIBRARY_Name} PUBLIC ${LIBRARY_Name}_ID="${LIB_IDENTIFIER}")
-#TODO:Options and warnings
-#target_link_libraries(${LIBRARY_Name} PRIVATE project_options project_warnings)
+target_link_libraries(${LIBRARY_Name} PRIVATE project_options project_warnings)
+
+if(ENABLE_clangformat)
+    target_clangformat_setup(${LIBRARY_Name})
+endif()

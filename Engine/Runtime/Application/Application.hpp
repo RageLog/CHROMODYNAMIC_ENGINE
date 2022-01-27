@@ -8,7 +8,7 @@
 #include "Define.hpp"
 #include "Core/for_now.hpp"
 
-class CDAPI Application
+class Application
 {
 private:
   Application() = default;

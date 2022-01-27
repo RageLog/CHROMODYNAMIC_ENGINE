@@ -7,4 +7,5 @@ BreakBeforeBraces: Allman
 ColumnLimit: 100
 KeepEmptyLinesAtTheStartOfBlocks: true
 SpaceAfterCStyleCast: true
-Standard: Cpp20
+Language: Cpp
+Standard: 20

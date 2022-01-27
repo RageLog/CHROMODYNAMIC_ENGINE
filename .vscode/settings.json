@@ -32,7 +32,7 @@
     },
     "testMate.cpp.test.advancedExecutables": [
         {
-            "pattern": "Tests/tests_output/*/*.exe"
+            "pattern": "/../Tests/tests_output/*/*.exe"
         }
     ],
     "files.associations": {
@@ -98,7 +98,20 @@
         "xlocmes": "cpp",
         "xlocmon": "cpp",
         "xloctime": "cpp",
-        "xtree": "cpp"
+        "xtree": "cpp",
+        "ranges": "cpp",
+        "any": "cpp",
+        "array": "cpp",
+        "deque": "cpp",
+        "fstream": "cpp",
+        "functional": "cpp",
+        "list": "cpp",
+        "set": "cpp",
+        "span": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "variant": "cpp",
+        "xhash": "cpp"
     },
     //"C_Cpp.intelliSenseEngine": "Tag Parser"
 }

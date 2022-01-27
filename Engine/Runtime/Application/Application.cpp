@@ -1,14 +1,25 @@
-#include <iostream>
 #include "Application.hpp"
+
+#include <iostream>
+#include <numeric>
+#include <ranges>
+#include <vector>
 
 std::atomic<Application*> Application::m_instance;
 std::mutex Application::m_mutex;
 
-void Application::run(void)
+template <typename T>
+requires std::integral<T> || std::floating_point<T>
+constexpr double Average(std::vector<T> const& vec)
 {
-     std::cout<< "hello chromo" << '\n';
+  const double sum = std::accumulate(vec.begin(), vec.end(), 0.0);
+  return sum / static_cast<double>(vec.size());
 }
 
+void Application::run(void)
+{
+  std::cout << "hello chromo " << Average<double>({1.0, 1.0, 1.1}) << '\n';
+}
 
 Application* Application::getInstance()
 {
@@ -25,6 +36,3 @@ Application* Application::getInstance()
   }
   return instance;
 }
-
-
-

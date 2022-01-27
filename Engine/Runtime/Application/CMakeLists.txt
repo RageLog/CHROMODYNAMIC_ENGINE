@@ -12,7 +12,6 @@ file(GLOB "src_${CMAKE_CURRENT_SOURCE_DIR}" "${THIS_SOURCE}/*.h*"  "*.cpp")
 add_library(${LIBRARY_Name} STATIC "${src_${CMAKE_CURRENT_SOURCE_DIR}}")
 
 
-
 SET_TARGET_PROPERTIES(${LIBRARY_Name} PROPERTIES PREFIX " ")
 SET_TARGET_PROPERTIES(${LIBRARY_Name} PROPERTIES POSITION_INDEPENDENT_CODE ${BUILD_SHARED_LIBS})
 
@@ -41,5 +40,9 @@ ENDFOREACH()
 #GIVE to ID for each
 set(LIB_IDENTIFIER "YOUR_IDENTIFIER")
 target_compile_definitions(${LIBRARY_Name} PUBLIC ${LIBRARY_Name}_ID="${LIB_IDENTIFIER}")
-#TODO:Options and warnings
-#target_link_libraries(${LIBRARY_Name} PRIVATE project_options project_warnings)
+target_link_libraries(${LIBRARY_Name} PRIVATE project_options project_warnings)
+
+
+if(ENABLE_clangformat)
+    target_clangformat_setup(${LIBRARY_Name})
+endif()
