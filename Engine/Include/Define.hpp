@@ -74,8 +74,12 @@ namespace CD
     #define CD_NOINLINE
 #endif
 
-
-
+/** @brief Static Assertion */
+#if defined(__clang__) || defined(__gcc__)
+    #define STATIC_ASSERT _Static_assert
+#else
+    #define STATIC_ASSERT static_assert
+#endif
 
 
 #endif // __DEFINE_H__
