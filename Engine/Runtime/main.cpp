@@ -2,5 +2,5 @@
 
 int main()
 {
-    Application::getInstance()->run();
+    CD::Application::getInstance()->run();
 }

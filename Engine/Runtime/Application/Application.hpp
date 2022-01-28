@@ -8,20 +8,23 @@
 #include "Define.hpp"
 #include "Core/for_now.hpp"
 
-class Application
+namespace CD
 {
-private:
-  Application() = default;
-  ~Application() = default;
-  Application(const Application&) = delete;
-  Application& operator=(const Application&) = delete;
+  class Application
+  {
+  private:
+    Application() = default;
+    ~Application() = default;
+    Application(const Application&) = delete;
+    Application& operator=(const Application&) = delete;
 
-  static std::atomic<Application*> m_instance;
-  static std::mutex m_mutex;
-public:
-    static Application* getInstance();
-    void run(void);
-};
+    static std::atomic<Application*> m_instance;
+    static std::mutex m_mutex;
+  public:
+      static Application* getInstance();
+      void run(void);
+  };
+}
 
 
 

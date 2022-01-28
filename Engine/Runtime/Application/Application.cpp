@@ -5,6 +5,8 @@
 #include <ranges>
 #include <vector>
 
+using namespace CD;
+
 std::atomic<Application*> Application::m_instance;
 std::mutex Application::m_mutex;
 
