@@ -11,9 +11,12 @@ namespace CD
   std::mutex Application::m_mutex;
 
 
-  void Application::run(void)
+  CD::Errors Application::run(void)
   {
     std::cout << ENGINE_VERSION << "\n";
+
+
+    return CD::Errors::Seccess;
   }
 
   

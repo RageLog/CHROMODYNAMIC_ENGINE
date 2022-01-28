@@ -6,6 +6,7 @@
 #include<memory>
 
 #include "Define.hpp"
+#include "Core/Errors.hpp"
 #include "Core/for_now.hpp"
 
 namespace CD
@@ -22,7 +23,7 @@ namespace CD
     static std::mutex m_mutex;
   public:
       static Application* getInstance();
-      void run(void);
+      CD::Errors run(void);
   };
 }
 

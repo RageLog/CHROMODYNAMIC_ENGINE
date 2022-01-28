@@ -2,5 +2,5 @@
 
 int main()
 {
-    CD::Application::getInstance()->run();
+    return static_cast<int>(CD::Application::getInstance()->run());
 }
