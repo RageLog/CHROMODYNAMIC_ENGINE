@@ -1,7 +1,7 @@
 #ifndef __DEFINE_H__
 #define __DEFINE_H__
 
-
+constexpr auto EngineVersion = ENGINE_VERSION;
 // Import export routines
 #ifndef CDAPI
 # if defined(EXPORT_DLL)

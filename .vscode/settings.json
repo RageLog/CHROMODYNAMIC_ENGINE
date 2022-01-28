@@ -111,7 +111,9 @@
         "unordered_map": "cpp",
         "unordered_set": "cpp",
         "variant": "cpp",
-        "xhash": "cpp"
+        "xhash": "cpp",
+        "numeric": "cpp",
+        "*.in": "cpp"
     },
     //"C_Cpp.intelliSenseEngine": "Tag Parser"
 }

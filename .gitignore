@@ -20,3 +20,4 @@
 build
 /Tests/tests_output
 /output
+/Engine/Include/Version.hpp

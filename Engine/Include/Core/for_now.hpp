@@ -1,3 +1,5 @@
+#ifndef __FOR_NOW_H__
+#define __FOR_NOW_H__
 #include "Define.hpp"
 
 class CDAPI for_now
@@ -9,3 +11,6 @@ class CDAPI for_now
   ~for_now() = default;
   void den();
 };
+
+
+#endif // __FOR_NOW_H__

@@ -3,7 +3,7 @@ project(Engine_Libraries)
 
 SUBDIRLIST(SUBDIRS ${CMAKE_CURRENT_SOURCE_DIR})
 FOREACH(subdir ${SUBDIRS})
-    if(NOT ${subdir}  STREQUAL "misc")
+    if(NOT ${subdir}  STREQUAL "Misc")
         ADD_SUBDIRECTORY(${subdir})
         if(USE_VCPKG)
             set_target_properties(${subdir} PROPERTIES VS_GLOBAL_VcpkgEnabled true)
