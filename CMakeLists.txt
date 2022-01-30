@@ -13,7 +13,7 @@ Set(OUTPUT_DIR "${CMAKE_SOURCE_DIR}/output/")
 
 #options
 option(USE_VCPKG "Use VCPKG" OFF)#TODO: VCPKG Implemantation -> If posible, auto dependency download
-option(ENABLE_TESTING "Enable testing" ON)
+option(ENABLE_TESTING "Enable testing" OFF)
 option(ENABLE_clangformat "Activate ClangFormat.cmake module" ON)
 option(ENGINE_GENERATE_DLL "If this is set to ON, DLL files will generated" ON)
 option(BUILD_SHARED_LIBS "Rebuild using shared libraries" ON)
@@ -40,6 +40,7 @@ endif()
 version_from_git()
 project(${ENGINE_NAME} VERSION ${VERSION} LANGUAGES CXX) 
 add_compile_definitions(ENGINE_VERSION="${CMAKE_PROJECT_VERSION}")
+add_compile_definitions(APPLICATION_NAME="${APPLICATION_NAME}")
 
 # C++ Standart Definition
 set(CMAKE_CXX_STANDARD 23)

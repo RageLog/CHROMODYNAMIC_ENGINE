@@ -1,9 +1,11 @@
-#include "Application.hpp" 
-
 #include <iostream>
 #include <numeric>
 #include <ranges>
 #include <vector>
+
+#include "Application.hpp"
+#include "Platform/Window/WindowWindows.hpp"
+
 
 namespace CD
 {
@@ -14,9 +16,30 @@ namespace CD
   CD::Errors Application::run(void)
   {
     std::cout << ENGINE_VERSION << "\n";
+    _status = ApplicationStatus::Running;
+    WindowInfo info;
+    CD::Window* w = new CD::WindowWindows(std::move(info));
 
+    w->Create();
+    for(;_status == ApplicationStatus::Running;)
+    {
+      if (w->CallMessageLoop() != CD::Errors::Success)
+      {
+        _status = ApplicationStatus::Stoped;
+      }
+      int a = 0;
+      if (a != 0)
+      {
+        _status = ApplicationStatus::Stoped;
+      }
+      std::cin >> a;
 
-    return CD::Errors::Seccess;
+        
+        
+      
+    }
+    
+    return CD::Errors::Success;
   }
 
   

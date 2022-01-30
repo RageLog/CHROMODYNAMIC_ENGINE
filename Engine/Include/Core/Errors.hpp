@@ -8,7 +8,7 @@ namespace CD
 {
     enum class Errors : CD::byte
     {
-        Seccess = 0x00,
+        Success = 0x00,
         Failture = 0x01
     };
 }

@@ -1,11 +1,15 @@
 #ifndef __DEFINE_H__
 #define __DEFINE_H__
 
+#include <utility>
+
 namespace CD
 {
     constexpr auto EngineVersion = ENGINE_VERSION;
     using byte = unsigned char;
 }
+
+
 
 /** @brief Platform dedecttion */ 
 #if defined(__linux__) || defined(__gnu_linux__) //? Linux
@@ -74,8 +78,12 @@ namespace CD
     #define CD_NOINLINE
 #endif
 
-
-
+#ifdef PLATFORM_WINDOWS
+    //#pragma warning(push)
+    #pragma warning(disable:4251)
+    //your declarations that cause 4251
+    //#pragma warning(pop)
+#endif
 
 
 #endif // __DEFINE_H__
