@@ -7,7 +7,7 @@ string(REPLACE " " "_" LIBRARY_Name ${LIBRARY_Name})
 project(${LIBRARY_Name} LANGUAGES CXX) 
 
 set(THIS_SOURCE "${ENGINE_INCLUDE_DIR}/${LIBRARY_Name}")
-file(GLOB "src_${CMAKE_CURRENT_SOURCE_DIR}" "${THIS_SOURCE}/*.h*"  "*.cpp")
+file(GLOB "src_${CMAKE_CURRENT_SOURCE_DIR}" "${THIS_SOURCE}/*.h*"  "*.cpp"  "*/*.cpp")
 
 if(NOT ENGINE_GENERATE_DLL)
     add_library(${LIBRARY_Name} STATIC "${src_${CMAKE_CURRENT_SOURCE_DIR}}")

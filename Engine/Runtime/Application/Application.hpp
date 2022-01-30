@@ -11,6 +11,12 @@
 
 namespace CD
 {
+  enum class ApplicationStatus: CD::byte
+  {
+    Running = 0x00,
+    Suspended = 0x01,
+    Stoped = 0x02
+  };
   class Application
   {
   private:
@@ -18,7 +24,7 @@ namespace CD
     ~Application() = default;
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
-
+    ApplicationStatus _status = ApplicationStatus::Stoped;
     static std::atomic<Application*> m_instance;
     static std::mutex m_mutex;
   public:
