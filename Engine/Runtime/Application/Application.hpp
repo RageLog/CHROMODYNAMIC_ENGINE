@@ -7,7 +7,13 @@
 
 #include "Define.hpp"
 #include "Core/Errors.hpp"
-#include "Core/for_now.hpp"
+
+#include "Core/Event/EventManager.hpp"
+#include "Core/Event/ApplicationEvent.hpp"
+
+
+
+
 
 namespace CD
 {
@@ -20,13 +26,14 @@ namespace CD
   class Application
   {
   private:
-    Application() = default;
+    explicit Application() noexcept;
     ~Application() = default;
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;
     ApplicationStatus _status = ApplicationStatus::Stoped;
     static std::atomic<Application*> m_instance;
     static std::mutex m_mutex;
+  private:
   public:
       static Application* getInstance();
       CD::Errors run(void);

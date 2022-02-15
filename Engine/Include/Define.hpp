@@ -7,6 +7,8 @@ namespace CD
 {
     constexpr auto EngineVersion = ENGINE_VERSION;
     using byte = unsigned char;
+    template <class T>
+    constexpr void ignore_unused(T&) {} 
 }
 
 
@@ -92,5 +94,7 @@ namespace CD
     //#pragma warning(pop)
 #endif
 
+
+#define CD_IGNORE_UNUSED(x) CD::ignore_unused(x);
 
 #endif // __DEFINE_H__
