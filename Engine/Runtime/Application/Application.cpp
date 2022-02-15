@@ -14,16 +14,18 @@ std::mutex Application::m_mutex;
 
 Application::Application() noexcept
 {
-  EventManager::getInstance()->registerEvent(CD::ApplicationWindowResizeEvent::getStaticType(),[&](Event* e){
+  resizeEventListener.onEvent([&](Event* e){
     auto event = static_cast<CD::ApplicationWindowResizeEvent*>(e);
     std::cout << event->getSize().first << " " << event->getSize().second  << '\n';
-    //CD_IGNORE_UNUSED(e)
-  });
-  EventManager::getInstance()->registerEvent(CD::ApplicationWindowCloseEvent::getStaticType(),[&](Event* e){
-    //static_cast<CD::ApplicationWindowCloseEvent*>(e)->getName();
+  }); 
+  EventManager::getInstance()->registerEvent(resizeEventListener);
+  closeEventListener.onEvent([&](Event* e){
     CD_IGNORE_UNUSED(e)
     _status = ApplicationStatus::Stoped;
   });
+  EventManager::getInstance()->registerEvent(closeEventListener);
+  
+
 
 }
 CD::Errors Application::run(void)

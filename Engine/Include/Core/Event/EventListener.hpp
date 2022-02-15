@@ -10,10 +10,9 @@
 
 namespace CD
 {
-    class EventListenerBase
+    struct EventListenerBase
     {
-    private:
-        EventCallback callback;
+        size_t listenerId = 0;
     };
     
 
@@ -22,21 +21,21 @@ namespace CD
     class EventListener: public EventListenerBase
     {
     private:
-        T _mEvent();
+        EventCallback callback;
     public:
-        explicit EventListener() noexcept = default;
-        EventListener(const EventListener&) noexcept = default;
-        EventListener& operator= (const EventListener&) noexcept = default;
-        EventListener(EventListener&& ) noexcept = default;
-        ~EventListener() noexcept = default;
-        CD_INLINE void onEvent(EventCallback& eCallback)
+        explicit EventListener()
         {
-            EventListenerBase::callback = eCallback;
+            static size_t id = 0;
+            EventListenerBase::listenerId = id;
+            ++id;
+        }
+        CD_INLINE void onEvent(const EventCallback& eCallback)
+        {
+            callback = eCallback;
         }
         CD_INLINE void Update(T&& e) const
         {
-            _mEvent = std::move(e) 
-            EventListenerBase::callback(&e);
+            callback(&e);
         }
     };
         

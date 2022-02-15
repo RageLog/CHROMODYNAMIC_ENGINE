@@ -2,7 +2,7 @@
 #define __EVENTMANAGER_H__
 
 #include <unordered_map>
-#include <vector>
+#include <unordered_set>
 #include <mutex>
 #include <atomic>
 
@@ -18,7 +18,7 @@ namespace CD
     class CDAPI EventManager
     {
     private:
-        std::unordered_map<CD::EventType,std::vector<EventCallback>> eventList;
+        std::unordered_map<CD::EventType,std::unordered_set<EventListenerBase*>> eventListenerList;
         explicit EventManager() noexcept;
         ~EventManager() = default;
         EventManager(const EventManager&) = delete;
@@ -30,26 +30,30 @@ namespace CD
         //template<Event_t E>
         auto registerEvent(CD::EventType e,const EventCallback& callback) -> void; //TODO: this will Refactor
         template<Event_t E>
-        auto unregisterEvent(E&& e) -> void; //TODO: this will Refactor 
+        auto registerEvent(EventListener<E>& listene) -> void; //TODO: this will Refactor
+        template<Event_t E>
+        auto unregisterEvent(EventListener<E>& listener) -> void; //TODO: this will Refactor 
         template<Event_t E>
         auto eventOccur(E&& e) -> void; //TODO: this will Refactor 
     };
-    //template<Event_t E>
-    CD_INLINE auto EventManager::registerEvent(CD::EventType e,const EventCallback& callback) -> void
+    template<Event_t E>
+    CD_INLINE auto EventManager::registerEvent(EventListener<E>& listener) -> void
     {
-        EventManager::eventList[e].push_back(callback);
+        auto type = E::getStaticType();
+        EventManager::eventListenerList[type].insert(static_cast<EventListenerBase*>(&listener));
     }
     template<Event_t E>
-    CD_INLINE auto EventManager::unregisterEvent(E&& e) -> void
+    CD_INLINE auto EventManager::unregisterEvent(EventListener<E>& listener) -> void
     {
-
-    } 
+        auto type = E::getStaticType();
+        eventListenerList[type].erase(remove(eventListenerList[type].begin(), eventListenerList[type].end(), &listener), eventListenerList[type].end());
+    }
     template<Event_t E>
     CD_INLINE auto EventManager::eventOccur(E&& e) -> void
     {
-        for (auto&& callback : EventManager::eventList[e.getType()])
+        for (auto&& listener : EventManager::eventListenerList[e.getType()])
         {
-            callback(&e);
+            static_cast<EventListener<E>*>(listener)->Update(std::move(e));
         }
     }
 

@@ -34,6 +34,8 @@ namespace CD
     static std::atomic<Application*> m_instance;
     static std::mutex m_mutex;
   private:
+    CD::EventListener<CD::ApplicationWindowCloseEvent> closeEventListener;
+    CD::EventListener<CD::ApplicationWindowResizeEvent> resizeEventListener;
   public:
       static Application* getInstance();
       CD::Errors run(void);
