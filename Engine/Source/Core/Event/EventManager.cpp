@@ -3,7 +3,6 @@
 #include "Core/Event/EventManager.hpp"
 namespace CD
 {
-    EventManager::EventManager() noexcept {};
     std::atomic<EventManager*> EventManager::m_instance;
     std::mutex EventManager::m_mutex;
     EventManager* EventManager::getInstance()

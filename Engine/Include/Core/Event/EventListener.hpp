@@ -10,30 +10,18 @@
 
 namespace CD
 {
-    struct EventListenerBase
-    {
-        size_t listenerId = 0;
-    };
-    
-
-    
+    struct EventListenerBase{};
     template <Event_t T>
     class EventListener: public EventListenerBase
     {
     private:
         EventCallback callback;
     public:
-        explicit EventListener()
-        {
-            static size_t id = 0;
-            EventListenerBase::listenerId = id;
-            ++id;
-        }
-        CD_INLINE void onEvent(const EventCallback& eCallback)
+        CD_INLINE void constexpr onEvent(const EventCallback& eCallback)
         {
             callback = eCallback;
         }
-        CD_INLINE void Update(T&& e) const
+        CD_INLINE void constexpr Update(T&& e) const
         {
             callback(&e);
         }
