@@ -16,9 +16,10 @@ Application::Application() noexcept
 {
   resizeEventListener.onEvent([&](Event* e){
     auto event = static_cast<CD::ApplicationWindowResizeEvent*>(e);
-    std::cout << event->getSize().first << " " << event->getSize().second  << '\n';
+    std::cout << event->getSize().first << " " << event->getSize().second << '\n';
   }); 
   EventManager::getInstance()->registerEvent(resizeEventListener);
+  //EventManager::getInstance()->unregisterEvent(resizeEventListener);
   closeEventListener.onEvent([&](Event* e){
     CD_IGNORE_UNUSED(e)
     _status = ApplicationStatus::Stoped;

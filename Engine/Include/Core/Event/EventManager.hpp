@@ -14,12 +14,11 @@
 
 namespace CD
 {
-   //TODO: implemantation with eventlistener(have to implament with interface);
     class CDAPI EventManager
     {
     private:
         std::unordered_map<CD::EventType,std::unordered_set<EventListenerBase*>> eventListenerList;
-        explicit EventManager() noexcept;
+        explicit EventManager() noexcept = default;
         ~EventManager() = default;
         EventManager(const EventManager&) = delete;
         EventManager& operator=(const EventManager&) = delete;
@@ -27,14 +26,12 @@ namespace CD
         static std::mutex m_mutex;
     public:
         static EventManager* getInstance();
-        //template<Event_t E>
-        auto registerEvent(CD::EventType e,const EventCallback& callback) -> void; //TODO: this will Refactor
         template<Event_t E>
-        auto registerEvent(EventListener<E>& listene) -> void; //TODO: this will Refactor
+        auto registerEvent(EventListener<E>& listene) -> void;
         template<Event_t E>
-        auto unregisterEvent(EventListener<E>& listener) -> void; //TODO: this will Refactor 
+        auto unregisterEvent(EventListener<E>& listener) -> void;
         template<Event_t E>
-        auto eventOccur(E&& e) -> void; //TODO: this will Refactor 
+        auto eventOccur(E&& e) -> void;
     };
     template<Event_t E>
     CD_INLINE auto EventManager::registerEvent(EventListener<E>& listener) -> void
@@ -46,7 +43,7 @@ namespace CD
     CD_INLINE auto EventManager::unregisterEvent(EventListener<E>& listener) -> void
     {
         auto type = E::getStaticType();
-        eventListenerList[type].erase(remove(eventListenerList[type].begin(), eventListenerList[type].end(), &listener), eventListenerList[type].end());
+        eventListenerList[type].erase(&listener);
     }
     template<Event_t E>
     CD_INLINE auto EventManager::eventOccur(E&& e) -> void
