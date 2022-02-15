@@ -28,6 +28,7 @@ target_include_directories(${LIBRARY_Name} PRIVATE ${ENGINE_SRC_DIR}/Source/)
 set(LIB_IDENTIFIER "YOUR_IDENTIFIER")
 target_compile_definitions(${LIBRARY_Name} PUBLIC ${LIBRARY_Name}_ID="${LIB_IDENTIFIER}")
 target_link_libraries(${LIBRARY_Name} PRIVATE project_options project_warnings)
+target_link_libraries(${LIBRARY_Name} PRIVATE "Core")
 
 if(ENABLE_clangformat)
     target_clangformat_setup(${LIBRARY_Name})

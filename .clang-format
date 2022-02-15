@@ -8,4 +8,3 @@ ColumnLimit: 100
 KeepEmptyLinesAtTheStartOfBlocks: true
 SpaceAfterCStyleCast: true
 Language: Cpp
-Standard: 20

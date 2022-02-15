@@ -9,16 +9,14 @@
 #include "Define.hpp"
 #include "Core/Errors.hpp"
 
+
 namespace CD{
     
     struct CDAPI WindowInfo
     {
         unsigned short Width = 800 ,Height = 600;
         unsigned short positionX = 10,positionY = 10;
-        //char* WindowTitle = _strdup();
-        
         std::string WindowTitle = APPLICATION_NAME ;
-        
     };
     
     class CDAPI Window

@@ -7,7 +7,7 @@
         //"CMAKE_TOOLCHAIN_FILE" : "D:/repositories/VS/vcpkg/scripts/buildsystems/vcpkg.cmake",
         //"VCPKG_BUILD": "ON",
     },
-    "C_Cpp.errorSquiggles": "Enabled",
+    "C_Cpp.errorSquiggles": "Disabled",
     "editor.tokenColorCustomizations": {
         "textMateRules": [
             {
@@ -113,7 +113,8 @@
         "variant": "cpp",
         "xhash": "cpp",
         "numeric": "cpp",
-        "*.in": "cpp"
+        "*.in": "cpp",
+        "*.rh": "cpp"
     },
     //"C_Cpp.intelliSenseEngine": "Tag Parser"
 }
