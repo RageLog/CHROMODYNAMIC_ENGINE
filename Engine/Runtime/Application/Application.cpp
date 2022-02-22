@@ -4,6 +4,7 @@
 #include <numeric>
 #include <ranges>
 #include <vector>
+#include <memory>
 
 #include "Platform/Window/WindowWindows.hpp"
 
@@ -16,10 +17,9 @@ Application::Application() noexcept
 {
   resizeEventListener.onEvent([&](Event* e){
     auto event = static_cast<CD::ApplicationWindowResizeEvent*>(e);
-    std::cout << event->getSize().first << " " << event->getSize().second << '\n';
+    CD_IGNORE_UNUSED(event)
   }); 
   EventManager::getInstance()->registerEvent(resizeEventListener);
-  //EventManager::getInstance()->unregisterEvent(resizeEventListener);
   closeEventListener.onEvent([&](Event* e){
     CD_IGNORE_UNUSED(e)
     _status = ApplicationStatus::Stoped;
@@ -34,7 +34,7 @@ CD::Errors Application::run(void)
   std::cout << ENGINE_VERSION << "\n";
   _status = ApplicationStatus::Running;
   WindowInfo info;
-  CD::Window* w = new CD::WindowWindows(std::move(info));
+  auto w = std::make_unique<WindowWindows>(std::move(info));
 
   w->Create();
   for (; _status == ApplicationStatus::Running;)
