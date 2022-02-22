@@ -31,7 +31,7 @@ namespace CD{
         virtual CD::Errors Create() = 0;
         virtual CD::Errors CallMessageLoop() = 0;
     };
-    Window::~Window() noexcept = default;
+    CD_INLINE Window::~Window() noexcept = default;
 }
 
 
