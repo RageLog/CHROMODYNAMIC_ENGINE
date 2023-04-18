@@ -21,16 +21,16 @@ namespace CD
         LPCSTR CLASS_NAME = "cdEngineWindowClassName";
         HWND _hwnd;
         WNDCLASSEX _wndClass = {};
-        HINSTANCE _instance = static_cast<HINSTANCE>(GetModuleHandle(0));
+        HINSTANCE _instance = static_cast<HINSTANCE>(GetModuleHandle(nullptr));
         HICON _icon = LoadIcon(_instance, IDI_APPLICATION);
-        static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
-        static WindowWindows* s_window; 
-        LRESULT _mProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept;
+        static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+        static inline WindowWindows* s_window = nullptr; 
+        LRESULT _mProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     public:
-        explicit WindowWindows(const WindowInfo&& info) noexcept;
-        virtual CD::Errors Create() override final;
-        virtual CD::Errors CallMessageLoop() override final;
-        ~WindowWindows() = default;
+        explicit WindowWindows(const WindowInfo&& info);
+         CD::Errors Create()  final;
+         CD::Errors CallMessageLoop()  final;
+        ~WindowWindows() override = default;
     };
   
     

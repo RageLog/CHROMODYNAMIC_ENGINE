@@ -26,19 +26,19 @@ namespace CD
   class Application
   {
   private:
-    explicit Application() noexcept;
+    explicit Application();
     ~Application() = default;
-    Application(const Application&) = delete;
-    Application& operator=(const Application&) = delete;
+
     ApplicationStatus _status = ApplicationStatus::Stoped;
-    static std::atomic<Application*> m_instance;
-    static std::mutex m_mutex;
-  private:
+    static inline std::atomic<Application*> m_instance;
+    static inline std::mutex m_mutex;
     CD::EventListener<CD::ApplicationWindowCloseEvent> closeEventListener;
     CD::EventListener<CD::ApplicationWindowResizeEvent> resizeEventListener;
   public:
+      Application(const Application&) = delete;
+      Application& operator=(const Application&) = delete;
       static Application* getInstance();
-      CD::Errors run(void);
+      CD::Errors run();
   };
 }
 

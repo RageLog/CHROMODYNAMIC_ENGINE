@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <mutex>
 #include <atomic>
+#include <utility>
 
 #include "Define.hpp"
 #include "Core/Event/Event.hpp"
@@ -20,11 +21,12 @@ namespace CD
         std::unordered_map<CD::EventType,std::unordered_set<EventListenerBase*>> eventListenerList;
         explicit EventManager() noexcept = default;
         ~EventManager() = default;
+        static inline std::atomic<EventManager*> m_instance;
+        static inline std::mutex m_mutex;
+    public:
         EventManager(const EventManager&) = delete;
         EventManager& operator=(const EventManager&) = delete;
-        static std::atomic<EventManager*> m_instance;
-        static std::mutex m_mutex;
-    public:
+    
         static EventManager* getInstance();
         template<Event_t E>
         auto registerEvent(EventListener<E>& listene) -> void;
@@ -50,7 +52,7 @@ namespace CD
     {
         for (auto&& listener : EventManager::eventListenerList[e.getType()])
         {
-            static_cast<EventListener<E>*>(listener)->Update(std::move(e));
+            static_cast<EventListener<E>*>(listener)->Update(std::forward<E>(e));
         }
     }
 

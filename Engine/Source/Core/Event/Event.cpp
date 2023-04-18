@@ -1,7 +1,6 @@
 #include "./Core/Event/Event.hpp"
 
-namespace CD
-{
+namespace CD {
 Event::~Event() noexcept = default;
 constexpr bool Event::isHasCategory(const EventCategory& category) const
 {

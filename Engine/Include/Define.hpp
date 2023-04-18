@@ -8,7 +8,7 @@ namespace CD
     constexpr auto EngineVersion = ENGINE_VERSION;
     using byte = unsigned char;
     template <class T>
-    constexpr void ignore_unused(T&) {} 
+    constexpr void ignore_unused(T& /*unused*/) {} 
 }
 
 

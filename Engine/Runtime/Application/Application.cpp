@@ -8,42 +8,35 @@
 
 #include "Platform/Window/WindowWindows.hpp"
 
-namespace CD
-{
-std::atomic<Application*> Application::m_instance;
-std::mutex Application::m_mutex;
+namespace CD {
 
-Application::Application() noexcept
+Application::Application()
 {
-  resizeEventListener.onEvent([&](Event* e){
-    auto event = static_cast<CD::ApplicationWindowResizeEvent*>(e);
+  resizeEventListener.onEvent([&](Event* e) {
+    auto* event = static_cast<CD::ApplicationWindowResizeEvent*>(e);
     CD_IGNORE_UNUSED(event)
-  }); 
+  });
   EventManager::getInstance()->registerEvent(resizeEventListener);
-  closeEventListener.onEvent([&](Event* e){
+  closeEventListener.onEvent([&](Event* e) {
     CD_IGNORE_UNUSED(e)
     _status = ApplicationStatus::Stoped;
   });
   EventManager::getInstance()->registerEvent(closeEventListener);
-  
-
-
 }
-CD::Errors Application::run(void)
+CD::Errors Application::run()
 {
   std::cout << ENGINE_VERSION << "\n";
   _status = ApplicationStatus::Running;
   WindowInfo info;
-  auto w = std::make_unique<WindowWindows>(std::move(info));
+  auto       w = std::make_unique<WindowWindows>(std::move(info));
 
   w->Create();
-  for (; _status == ApplicationStatus::Running;)
+  for(; _status == ApplicationStatus::Running;)
   {
-    if (w->CallMessageLoop() != CD::Errors::Success)
+    if(w->CallMessageLoop() != CD::Errors::Success)
     {
       _status = ApplicationStatus::Stoped;
     }
-    
   }
 
   return CD::Errors::Success;
@@ -52,11 +45,11 @@ CD::Errors Application::run(void)
 Application* Application::getInstance()
 {
   Application* instance = m_instance.load(std::memory_order_acquire);
-  if (!instance)
+  if(!instance)
   {
     std::lock_guard<std::mutex> m_Lock(m_mutex);
     instance = m_instance.load(std::memory_order_relaxed);
-    if (!instance)
+    if(!instance)
     {
       instance = new Application();
       m_instance.store(instance, std::memory_order_release);

@@ -16,7 +16,7 @@ namespace CD
         ApplicationWindowCloseEvent& operator=(const ApplicationWindowCloseEvent&) = delete;
         ApplicationWindowCloseEvent(ApplicationWindowCloseEvent&&) = default;
         //ApplicationWindowCloseEvent&& operator=(ApplicationWindowCloseEvent&&) = default;
-        ~ApplicationWindowCloseEvent() = default;
+        ~ApplicationWindowCloseEvent() override = default;
 
         EVENT_TYPE(EventType::Application_Exit)
         EVENT_CATEGORY(CD::EventCategory::App)
@@ -34,7 +34,7 @@ namespace CD
         ApplicationWindowResizeEvent(ApplicationWindowResizeEvent&&) = default;
         ApplicationWindowResizeEvent& operator=(const ApplicationWindowResizeEvent&) = delete;
         //ApplicationWindowResizeEvent&& operator=(ApplicationWindowResizeEvent&&) = default;
-        ~ApplicationWindowResizeEvent() = default;
+        ~ApplicationWindowResizeEvent() override = default;
                 
         EVENT_TYPE(EventType::Application_WindowResize)
         EVENT_CATEGORY(CD::EventCategory::App)
@@ -55,7 +55,7 @@ namespace CD
         ApplicationTickEvent(ApplicationTickEvent&&) = default;
         ApplicationTickEvent& operator=(const ApplicationTickEvent&) = delete;
         //ApplicationTickEvent&& operator=(ApplicationTickEvent&&) = default;
-        ~ApplicationTickEvent() = default;
+        ~ApplicationTickEvent() override = default;
         EVENT_TYPE(EventType::Application_Tick)
         EVENT_CATEGORY(CD::EventCategory::App)
         EVENT_PRIORTY(EventPriorty::High)
@@ -70,7 +70,7 @@ namespace CD
             ApplicationUpdateEvent(ApplicationUpdateEvent&&) = default;
             ApplicationUpdateEvent& operator=(const ApplicationUpdateEvent&) = delete;
             //ApplicationUpdateEvent&& operator=(ApplicationUpdateEvent&&) = default;
-            ~ApplicationUpdateEvent() = default;
+            ~ApplicationUpdateEvent() override = default;
             EVENT_TYPE(EventType::Application_Update)
             EVENT_CATEGORY(CD::EventCategory::App)
             EVENT_PRIORTY(EventPriorty::High)
