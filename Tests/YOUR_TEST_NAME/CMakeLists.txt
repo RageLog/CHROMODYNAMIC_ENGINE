@@ -23,9 +23,18 @@ add_custom_command(TARGET ${testerName} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:gtest_main>
         $<TARGET_FILE_DIR:${testerName}>)
-        add_custom_command(TARGET ${testerName} POST_BUILD
+add_custom_command(TARGET ${testerName} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:gtest>
+        $<TARGET_FILE_DIR:${testerName}>)
+
+add_custom_command(TARGET ${testerName} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:gmock_main>
+        $<TARGET_FILE_DIR:${testerName}>)
+add_custom_command(TARGET ${testerName} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:gmock>
         $<TARGET_FILE_DIR:${testerName}>)
 add_test(NAME "${testerName}_tester" COMMAND ${testerName} WORKING_DIRECTORY ${UNIT_TEST_BIN_OUTPUT_DIR}/${testerName})
 
