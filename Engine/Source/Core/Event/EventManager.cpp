@@ -2,7 +2,7 @@
 
 #include "Core/Event/EventManager.hpp"
 namespace CD {
-EventManager*              EventManager::getInstance()
+EventManager* EventManager::getInstance()
 {
   EventManager* instance = m_instance.load(std::memory_order_acquire);
   if(!instance)

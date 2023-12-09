@@ -13,7 +13,7 @@ FOREACH(subdir ${SUBDIRS})
    if(EXISTS  "${CMAKE_SOURCE_DIR}/src/${subdir}")
        target_link_libraries(${testerName} PUBLIC ${subdir})
    endif()
-   ENDFOREACH()
+ENDFOREACH()
 target_link_libraries(${testerName} PUBLIC gtest_main)
 target_link_libraries(${testerName} PRIVATE project_options project_warnings)
 

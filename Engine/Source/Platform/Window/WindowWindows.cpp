@@ -1,7 +1,7 @@
 #include "Platform/Window/WindowWindows.hpp"
 
 namespace CD {
-WindowWindows::WindowWindows(const WindowInfo&& info)
+WindowWindows::WindowWindows(WindowInfo&& info)
     : Window(std::move(info))
 {
   s_window = this;
@@ -54,7 +54,11 @@ LRESULT WindowWindows::_mProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_RBUTTONDOWN:
         case WM_RBUTTONUP:
           break;
+      default:
+          break;
       }
+      break;
+    default:
       break;
   };
   return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -101,5 +105,6 @@ CD::Errors WindowWindows::CallMessageLoop()
   }
   return CD::Errors::Success;
 }
+
 
 }  // namespace CD
