@@ -10,33 +10,20 @@
 
 namespace CD
 {
-    class EventListenerBase
-    {
-    private:
-        EventCallback callback;
-    };
-    
-
-    
+    struct EventListenerBase{};
     template <Event_t T>
     class EventListener: public EventListenerBase
     {
     private:
-        T _mEvent();
+        EventCallback callback;
     public:
-        explicit EventListener() noexcept = default;
-        EventListener(const EventListener&) noexcept = default;
-        EventListener& operator= (const EventListener&) noexcept = default;
-        EventListener(EventListener&& ) noexcept = default;
-        ~EventListener() noexcept = default;
-        CD_INLINE void onEvent(EventCallback& eCallback)
+        CD_INLINE void constexpr onEvent(const EventCallback& eCallback)
         {
-            EventListenerBase::callback = eCallback;
+            callback = eCallback;
         }
-        CD_INLINE void Update(T&& e) const
+        CD_INLINE void constexpr Update(T&& e) const
         {
-            _mEvent = std::move(e) 
-            EventListenerBase::callback(&e);
+            callback(&e);
         }
     };
         

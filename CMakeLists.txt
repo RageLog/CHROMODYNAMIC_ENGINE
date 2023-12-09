@@ -18,8 +18,8 @@ option(ENABLE_clangformat "Activate ClangFormat.cmake module" ON)
 option(ENGINE_GENERATE_DLL "If this is set to ON, DLL files will generated" ON)
 option(BUILD_SHARED_LIBS "Rebuild using shared libraries" ON)
 option(EXPORT_DLL_BUILD "Export:ON , Import OFF" ON)
-option(ENABLE_clangformat "Activate ClangFormat.cmake module" ON)
 
+set(CMAKE_CXX_CLANG_TIDY clang-tidy)
 
 #Modules (include .cmake)
 list(APPEND CMAKE_MODULE_PATH "${MAIN_PROJECT_DIR}/CMakeModules")

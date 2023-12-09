@@ -2,9 +2,10 @@
 #define __EVENTMANAGER_H__
 
 #include <unordered_map>
-#include <vector>
+#include <unordered_set>
 #include <mutex>
 #include <atomic>
+#include <utility>
 
 #include "Define.hpp"
 #include "Core/Event/Event.hpp"
@@ -14,42 +15,44 @@
 
 namespace CD
 {
-   //TODO: implemantation with eventlistener(have to implament with interface);
     class CDAPI EventManager
     {
     private:
-        std::unordered_map<CD::EventType,std::vector<EventCallback>> eventList;
-        explicit EventManager() noexcept;
+        std::unordered_map<CD::EventType,std::unordered_set<EventListenerBase*>> eventListenerList;
+        explicit EventManager() noexcept = default;
         ~EventManager() = default;
+        static inline std::atomic<EventManager*> m_instance;
+        static inline std::mutex m_mutex;
+    public:
         EventManager(const EventManager&) = delete;
         EventManager& operator=(const EventManager&) = delete;
-        static std::atomic<EventManager*> m_instance;
-        static std::mutex m_mutex;
-    public:
+    
         static EventManager* getInstance();
-        //template<Event_t E>
-        auto registerEvent(CD::EventType e,const EventCallback& callback) -> void; //TODO: this will Refactor
         template<Event_t E>
-        auto unregisterEvent(E&& e) -> void; //TODO: this will Refactor 
+        auto registerEvent(EventListener<E>& listene) -> void;
         template<Event_t E>
-        auto eventOccur(E&& e) -> void; //TODO: this will Refactor 
+        auto unregisterEvent(EventListener<E>& listener) -> void;
+        template<Event_t E>
+        auto eventOccur(E&& e) -> void;
     };
-    //template<Event_t E>
-    CD_INLINE auto EventManager::registerEvent(CD::EventType e,const EventCallback& callback) -> void
+    template<Event_t E>
+    CD_INLINE auto EventManager::registerEvent(EventListener<E>& listener) -> void
     {
-        EventManager::eventList[e].push_back(callback);
+        auto type = E::getStaticType();
+        EventManager::eventListenerList[type].insert(static_cast<EventListenerBase*>(&listener));
     }
     template<Event_t E>
-    CD_INLINE auto EventManager::unregisterEvent(E&& e) -> void
+    CD_INLINE auto EventManager::unregisterEvent(EventListener<E>& listener) -> void
     {
-
-    } 
+        auto type = E::getStaticType();
+        eventListenerList[type].erase(&listener);
+    }
     template<Event_t E>
     CD_INLINE auto EventManager::eventOccur(E&& e) -> void
     {
-        for (auto&& callback : EventManager::eventList[e.getType()])
+        for (auto&& listener : EventManager::eventListenerList[e.getType()])
         {
-            callback(&e);
+            static_cast<EventListener<E>*>(listener)->Update(std::forward<E>(e));
         }
     }
 

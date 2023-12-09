@@ -8,7 +8,7 @@ namespace CD
     constexpr auto EngineVersion = ENGINE_VERSION;
     using byte = unsigned char;
     template <class T>
-    constexpr void ignore_unused(T&) {} 
+    constexpr void ignore_unused(T& /*unused*/) {} 
 }
 
 
@@ -69,7 +69,7 @@ namespace CD
 
 
 /** @brief Inline */
-#if defined(__clang__) || defined(__gcc__)
+#if defined(__clang__) || defined(__GNUG__)
     #define CD_INLINE __attribute__((always_inline)) inline
     #define CD_NOINLINE __attribute__((noinline))
 #elif defined(_MSC_VER)

@@ -18,6 +18,9 @@
 *.out
 *.app
 build
+cmake-build-debug
+.cache
+.idea
 /Tests/tests_output
 /output
 /Engine/Include/Version.hpp
