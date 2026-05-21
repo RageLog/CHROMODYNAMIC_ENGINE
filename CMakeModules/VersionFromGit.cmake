@@ -32,7 +32,10 @@
 #
 #=============================================================================
 
-cmake_minimum_required( VERSION 3.0.0 )
+# Upstream shipped 3.0.0 here, which is fatal under CMake 4.x
+# ("Compatibility with CMake < 3.5 has been removed"). Bumped to the
+# project-wide minimum so this module configures cleanly.
+cmake_minimum_required(VERSION 3.28)
 
 include( CMakeParseArguments )
 

@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, dev]
+  pull_request:
+    branches: [master, main, dev]
+  workflow_dispatch:
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint: clang-format on diff
+  # ---------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install clang tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy
+      - name: Check clang-format
+        run: |
+          find engine samples cmake -type f \( -name '*.cpp' -o -name '*.hpp' \) \
+            -not -path '*/_legacy/*' -print0 | \
+            xargs -0 -r clang-format --dry-run --Werror
+
+  # ---------------------------------------------------------------------------
+  # Windows build matrix — uses CI preset names from CMakePresets.json
+  # CI preset taxonomy: ci-vs2026, ci-vs2022, ci-msvc, ci-clangcl-win, ci-llvm-win
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows / ${{ matrix.preset.display }} / ${{ matrix.config }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+        preset:
+          - { id: ci-vs2026,      display: VS2026 }
+          - { id: ci-msvc,        display: MSVC-Ninja }
+          - { id: ci-clangcl-win, display: Clang-CL }
+          - { id: ci-llvm-win,    display: LLVM-Clang }
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_BUCKET: chromodynamic-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export GHA cache env
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: Install Ninja + sccache
+        run: choco install ninja sccache -y
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake --preset ${{ matrix.preset.id }} `
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache `
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset ${{ matrix.preset.id }}-${{ matrix.config == 'Debug' && 'debug' || 'release' }}
+      - name: Test
+        if: matrix.config == 'Debug'
+        shell: pwsh
+        run: ctest --preset ${{ matrix.preset.id }}-debug
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  # ---------------------------------------------------------------------------
+  # Linux build matrix
+  # ---------------------------------------------------------------------------
+  linux:
+    name: Linux / ${{ matrix.preset.display }} / ${{ matrix.config }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+        preset:
+          - { id: ci-gcc,   display: GCC }
+          - { id: ci-clang, display: Clang }
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_BUCKET: chromodynamic-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export GHA cache env
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+          curl -L https://github.com/mozilla/sccache/releases/download/v0.9.0/sccache-v0.9.0-x86_64-unknown-linux-musl.tar.gz | tar xz
+          sudo mv sccache-v0.9.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      - name: Configure
+        run: |
+          cmake --preset ${{ matrix.preset.id }} \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset.id }}-${{ matrix.config == 'Debug' && 'debug' || 'release' }}
+      - name: Test
+        if: matrix.config == 'Debug'
+        run: ctest --preset ${{ matrix.preset.id }}-debug
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  # ---------------------------------------------------------------------------
+  # macOS (AppleClang) — uses ci-appleclang preset
+  # ---------------------------------------------------------------------------
+  macos:
+    name: macOS / AppleClang / ${{ matrix.config }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      - name: Configure
+        run: cmake --preset ci-appleclang
+      - name: Build
+        run: cmake --build --preset ci-appleclang-${{ matrix.config == 'Debug' && 'debug' || 'release' }}
+      - name: Test
+        if: matrix.config == 'Debug'
+        run: ctest --preset ci-appleclang-debug
+
+  # ---------------------------------------------------------------------------
+  # Sanitizer matrix (TSan + ASan separate, Clang-only)
+  # ---------------------------------------------------------------------------
+  sanitizers:
+    name: Sanitizer / ${{ matrix.preset }}
+    runs-on: ubuntu-24.04
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [ninja-base-asan, ninja-base-tsan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      - name: Configure + Build + Test
+        run: |
+          cmake --preset ${{ matrix.preset }} \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          cmake --build --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }}
+          ctest --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }}

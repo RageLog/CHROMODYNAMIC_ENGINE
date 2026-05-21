@@ -1,10 +1,164 @@
-BasedOnStyle: Google
+# =============================================================================
+# DtForHil - Clang-Format Configuration
+# Style: Allman (BSD) with Modern C++ Adaptations
+# =============================================================================
 
-AllowShortFunctionsOnASingleLine: None
-AllowShortIfStatementsOnASingleLine: false
-AllowShortLoopsOnASingleLine: false
-BreakBeforeBraces: Allman
-ColumnLimit: 100
-KeepEmptyLinesAtTheStartOfBlocks: true
-SpaceAfterCStyleCast: true
+---
 Language: Cpp
+Standard: Auto
+BasedOnStyle: LLVM
+
+# =============================================================================
+# INDENTATION
+# =============================================================================
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentPPDirectives: BeforeHash
+AccessModifierOffset: -4
+NamespaceIndentation: None
+LambdaBodyIndentation: Signature
+
+# =============================================================================
+# COLUMN LIMIT
+# =============================================================================
+ColumnLimit: 120
+
+# =============================================================================
+# BRACES - ALLMAN STYLE
+# =============================================================================
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: true
+  AfterClass: true
+  AfterControlStatement: Always
+  AfterEnum: true
+  AfterExternBlock: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeLambdaBody: true
+  BeforeWhile: true
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+# =============================================================================
+# SHORT STATEMENTS
+# =============================================================================
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+
+# =============================================================================
+# INITIALIZER LIST - ALT ALTA
+# =============================================================================
+Cpp11BracedListStyle: false
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+PackConstructorInitializers: Never
+ConstructorInitializerIndentWidth: 4
+
+# BinPack kapalı = her parametre/argüman ayrı satırda
+BinPackArguments: false
+BinPackParameters: false
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+# =============================================================================
+# ALIGNMENT
+# =============================================================================
+AlignAfterOpenBracket: BlockIndent
+AlignArrayOfStructures: Left
+AlignConsecutiveAssignments: None
+AlignConsecutiveBitFields: Consecutive
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: Consecutive
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 1
+
+# =============================================================================
+# SPACES
+# =============================================================================
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeCpp11BracedList: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: Never
+SpacesInContainerLiterals: false
+SpacesInParens: Never
+SpacesInSquareBrackets: false
+
+# =============================================================================
+# POINTER & REFERENCE
+# =============================================================================
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# =============================================================================
+# INCLUDES
+# =============================================================================
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^".*"'
+    Priority: 1
+  - Regex: '^<[a-z_]+>$'
+    Priority: 3
+  - Regex: '^<c[a-z]+>$'
+    Priority: 4
+  - Regex: '^<.*>$'
+    Priority: 2
+
+# =============================================================================
+# LINE BREAKS
+# =============================================================================
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+BreakStringLiterals: true
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: true
+AlwaysBreakTemplateDeclarations: Yes
+
+# =============================================================================
+# EMPTY LINES
+# =============================================================================
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: LogicalBlock
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Always
+
+# =============================================================================
+# OTHER
+# =============================================================================
+FixNamespaceComments: true
+ReflowComments: true
+SortUsingDeclarations: LexicographicNumeric
+InsertNewlineAtEOF: true
+
+...

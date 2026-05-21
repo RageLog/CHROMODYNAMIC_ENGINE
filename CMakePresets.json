@@ -1,0 +1,428 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "installDir": "${sourceDir}/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "CD_ENABLE_TESTING": "ON",
+        "CD_ENABLE_SAMPLES": "ON",
+        "CD_ENABLE_WARNINGS": "ON",
+        "CD_WARNINGS_AS_ERRORS": "ON",
+        "CD_SANITIZER": "none"
+      }
+    },
+    {
+      "name": "ci-base",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CD_ENABLE_CLANG_TIDY": "OFF",
+        "CD_ENABLE_CLANG_FORMAT": "OFF",
+        "CD_ENABLE_DOXYGEN": "OFF"
+      }
+    },
+
+    {
+      "name": "ninja-base",
+      "displayName": "Ninja Multi-Config",
+      "description": "Cross-platform default preset (VS Code, CLion). Build Debug + Release from one configure.",
+      "inherits": "base",
+      "generator": "Ninja Multi-Config"
+    },
+    {
+      "name": "ninja-base-asan",
+      "displayName": "Ninja Multi-Config + ASan/UBSan",
+      "description": "Address + UndefinedBehavior sanitizer aktif",
+      "inherits": "ninja-base",
+      "cacheVariables": {
+        "CD_SANITIZER": "asan"
+      }
+    },
+    {
+      "name": "ninja-base-tsan",
+      "displayName": "Ninja Multi-Config + TSan",
+      "description": "ThreadSanitizer (mutex/race) preset, GCC/Clang only",
+      "inherits": "ninja-base",
+      "cacheVariables": {
+        "CD_SANITIZER": "tsan"
+      }
+    },
+    {
+      "name": "ninja-base-msan",
+      "displayName": "Ninja Multi-Config + MSan",
+      "description": "MemorySanitizer (Clang only)",
+      "inherits": "ninja-base",
+      "cacheVariables": {
+        "CD_SANITIZER": "msan",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "ide-base",
+      "displayName": "IDE IntelliSense (Ninja single-config)",
+      "description": "Single-config Ninja preset for accurate compile_commands.json + IntelliSense",
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CD_ENABLE_UNITY_BUILD": "OFF",
+        "CD_ENABLE_CLANG_TIDY": "OFF",
+        "CD_ENABLE_CLANG_FORMAT": "OFF",
+        "CD_ENABLE_DOXYGEN": "OFF"
+      }
+    },
+
+    {
+      "name": "msvc-base",
+      "displayName": "MSVC (Ninja Multi-Config)",
+      "description": "Windows MSVC toolchain via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
+      "name": "msvc-ide",
+      "displayName": "MSVC IDE IntelliSense",
+      "description": "Windows MSVC single-config Ninja for IntelliSense",
+      "inherits": "ide-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+
+    {
+      "name": "clangcl-win-base",
+      "displayName": "Clang-CL (Ninja Multi-Config)",
+      "description": "Windows LLVM clang-cl toolchain via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
+    },
+    {
+      "name": "clangcl-win-ide",
+      "displayName": "Clang-CL IDE IntelliSense",
+      "description": "Windows clang-cl single-config Ninja for IntelliSense",
+      "inherits": "ide-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "clang-cl"
+      }
+    },
+
+    {
+      "name": "llvm-win-base",
+      "displayName": "LLVM Clang (Ninja Multi-Config)",
+      "description": "Windows native LLVM clang/clang++ via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "llvm-win-ide",
+      "displayName": "LLVM Clang IDE IntelliSense",
+      "description": "Windows LLVM clang single-config Ninja for IntelliSense",
+      "inherits": "ide-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+
+    {
+      "name": "gcc-ucrt64-base",
+      "displayName": "GCC UCRT64 (Ninja Multi-Config)",
+      "description": "Windows MSYS2 UCRT64 GCC via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
+      },
+      "environment": {
+        "PATH": "C:/msys64/ucrt64/bin;$penv{PATH}"
+      }
+    },
+    {
+      "name": "gcc-ucrt64-ide",
+      "displayName": "GCC UCRT64 IDE IntelliSense",
+      "description": "Windows MSYS2 UCRT64 GCC single-config Ninja for IntelliSense",
+      "inherits": "ide-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "C:/msys64/ucrt64/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/msys64/ucrt64/bin/g++.exe"
+      },
+      "environment": {
+        "PATH": "C:/msys64/ucrt64/bin;$penv{PATH}"
+      }
+    },
+
+    {
+      "name": "vs2022-base",
+      "displayName": "Visual Studio 2022",
+      "description": "Windows Visual Studio 2022 IDE generator (multi-config)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64"
+    },
+    {
+      "name": "vs2026-base",
+      "displayName": "Visual Studio 2026",
+      "description": "Windows Visual Studio 2026 IDE generator (multi-config)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64"
+    },
+
+    {
+      "name": "gcc-base",
+      "displayName": "GCC (Ninja Multi-Config)",
+      "description": "Linux GCC via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "clang-base",
+      "displayName": "Clang (Ninja Multi-Config)",
+      "description": "Linux Clang via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+
+    {
+      "name": "appleclang-base",
+      "displayName": "AppleClang (Ninja Multi-Config)",
+      "description": "macOS AppleClang via Ninja Multi-Config",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "xcode-base",
+      "displayName": "Xcode",
+      "description": "macOS Xcode IDE generator (multi-config)",
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "generator": "Xcode"
+    },
+
+    {
+      "name": "ci-vs2026",
+      "displayName": "CI Visual Studio 2026",
+      "description": "Official Windows verification preset using Visual Studio 2026",
+      "inherits": ["vs2026-base", "ci-base"]
+    },
+    {
+      "name": "ci-vs2022",
+      "displayName": "CI Visual Studio 2022",
+      "description": "Official Windows verification preset using Visual Studio 2022",
+      "inherits": ["vs2022-base", "ci-base"]
+    },
+    {
+      "name": "ci-msvc",
+      "displayName": "CI MSVC (Ninja MC)",
+      "inherits": ["msvc-base", "ci-base"]
+    },
+    {
+      "name": "ci-clangcl-win",
+      "displayName": "CI Clang-CL Windows",
+      "inherits": ["clangcl-win-base", "ci-base"]
+    },
+    {
+      "name": "ci-llvm-win",
+      "displayName": "CI LLVM Clang Windows",
+      "inherits": ["llvm-win-base", "ci-base"]
+    },
+    {
+      "name": "ci-gcc",
+      "displayName": "CI GCC (Linux)",
+      "inherits": ["gcc-base", "ci-base"]
+    },
+    {
+      "name": "ci-clang",
+      "displayName": "CI Clang (Linux)",
+      "inherits": ["clang-base", "ci-base"]
+    },
+    {
+      "name": "ci-appleclang",
+      "displayName": "CI AppleClang (macOS)",
+      "inherits": ["appleclang-base", "ci-base"]
+    },
+    {
+      "name": "ci-docs",
+      "displayName": "CI Doxygen docs",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CD_ENABLE_DOXYGEN": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "ninja-debug",            "configurePreset": "ninja-base",       "configuration": "Debug",          "displayName": "Ninja Debug" },
+    { "name": "ninja-release",          "configurePreset": "ninja-base",       "configuration": "Release",        "displayName": "Ninja Release" },
+    { "name": "ninja-relwithdebinfo",   "configurePreset": "ninja-base",       "configuration": "RelWithDebInfo", "displayName": "Ninja RelWithDebInfo" },
+
+    { "name": "ninja-debug-asan",       "configurePreset": "ninja-base-asan",  "configuration": "Debug",          "displayName": "Ninja Debug + ASan/UBSan" },
+    { "name": "ninja-release-asan",     "configurePreset": "ninja-base-asan",  "configuration": "Release",        "displayName": "Ninja Release + ASan/UBSan" },
+    { "name": "ninja-debug-tsan",       "configurePreset": "ninja-base-tsan",  "configuration": "Debug",          "displayName": "Ninja Debug + TSan" },
+    { "name": "ninja-debug-msan",       "configurePreset": "ninja-base-msan",  "configuration": "Debug",          "displayName": "Ninja Debug + MSan" },
+
+    { "name": "ide-debug",              "configurePreset": "ide-base",                                            "displayName": "IDE Debug" },
+
+    { "name": "msvc-debug",             "configurePreset": "msvc-base",        "configuration": "Debug",          "displayName": "MSVC Debug" },
+    { "name": "msvc-release",           "configurePreset": "msvc-base",        "configuration": "Release",        "displayName": "MSVC Release" },
+    { "name": "msvc-relwithdebinfo",    "configurePreset": "msvc-base",        "configuration": "RelWithDebInfo", "displayName": "MSVC RelWithDebInfo" },
+    { "name": "msvc-ide-debug",         "configurePreset": "msvc-ide",                                            "displayName": "MSVC IDE Debug" },
+
+    { "name": "clangcl-win-debug",      "configurePreset": "clangcl-win-base", "configuration": "Debug",          "displayName": "Clang-CL Debug" },
+    { "name": "clangcl-win-release",    "configurePreset": "clangcl-win-base", "configuration": "Release",        "displayName": "Clang-CL Release" },
+    { "name": "clangcl-win-ide-debug",  "configurePreset": "clangcl-win-ide",                                     "displayName": "Clang-CL IDE Debug" },
+
+    { "name": "llvm-win-debug",         "configurePreset": "llvm-win-base",    "configuration": "Debug",          "displayName": "LLVM Clang Debug" },
+    { "name": "llvm-win-release",       "configurePreset": "llvm-win-base",    "configuration": "Release",        "displayName": "LLVM Clang Release" },
+    { "name": "llvm-win-ide-debug",     "configurePreset": "llvm-win-ide",                                        "displayName": "LLVM Clang IDE Debug" },
+
+    { "name": "gcc-ucrt64-debug",       "configurePreset": "gcc-ucrt64-base",  "configuration": "Debug",          "displayName": "GCC UCRT64 Debug" },
+    { "name": "gcc-ucrt64-release",     "configurePreset": "gcc-ucrt64-base",  "configuration": "Release",        "displayName": "GCC UCRT64 Release" },
+    { "name": "gcc-ucrt64-ide-debug",   "configurePreset": "gcc-ucrt64-ide",                                      "displayName": "GCC UCRT64 IDE Debug" },
+
+    { "name": "vs2022-debug",           "configurePreset": "vs2022-base",      "configuration": "Debug",          "displayName": "VS2022 Debug" },
+    { "name": "vs2022-release",         "configurePreset": "vs2022-base",      "configuration": "Release",        "displayName": "VS2022 Release" },
+    { "name": "vs2022-relwithdebinfo",  "configurePreset": "vs2022-base",      "configuration": "RelWithDebInfo", "displayName": "VS2022 RelWithDebInfo" },
+
+    { "name": "vs2026-debug",           "configurePreset": "vs2026-base",      "configuration": "Debug",          "displayName": "VS2026 Debug" },
+    { "name": "vs2026-release",         "configurePreset": "vs2026-base",      "configuration": "Release",        "displayName": "VS2026 Release" },
+    { "name": "vs2026-relwithdebinfo",  "configurePreset": "vs2026-base",      "configuration": "RelWithDebInfo", "displayName": "VS2026 RelWithDebInfo" },
+
+    { "name": "gcc-debug",              "configurePreset": "gcc-base",         "configuration": "Debug",          "displayName": "GCC Debug" },
+    { "name": "gcc-release",            "configurePreset": "gcc-base",         "configuration": "Release",        "displayName": "GCC Release" },
+    { "name": "clang-debug",            "configurePreset": "clang-base",       "configuration": "Debug",          "displayName": "Clang Debug" },
+    { "name": "clang-release",          "configurePreset": "clang-base",       "configuration": "Release",        "displayName": "Clang Release" },
+
+    { "name": "appleclang-debug",       "configurePreset": "appleclang-base",  "configuration": "Debug",          "displayName": "AppleClang Debug" },
+    { "name": "appleclang-release",     "configurePreset": "appleclang-base",  "configuration": "Release",        "displayName": "AppleClang Release" },
+
+    { "name": "xcode-debug",            "configurePreset": "xcode-base",       "configuration": "Debug",          "displayName": "Xcode Debug" },
+    { "name": "xcode-release",          "configurePreset": "xcode-base",       "configuration": "Release",        "displayName": "Xcode Release" },
+
+    { "name": "ci-vs2026-debug",        "configurePreset": "ci-vs2026",        "configuration": "Debug" },
+    { "name": "ci-vs2026-release",      "configurePreset": "ci-vs2026",        "configuration": "Release" },
+    { "name": "ci-vs2022-debug",        "configurePreset": "ci-vs2022",        "configuration": "Debug" },
+    { "name": "ci-vs2022-release",      "configurePreset": "ci-vs2022",        "configuration": "Release" },
+    { "name": "ci-msvc-debug",          "configurePreset": "ci-msvc",          "configuration": "Debug" },
+    { "name": "ci-msvc-release",        "configurePreset": "ci-msvc",          "configuration": "Release" },
+    { "name": "ci-clangcl-win-debug",   "configurePreset": "ci-clangcl-win",   "configuration": "Debug" },
+    { "name": "ci-clangcl-win-release", "configurePreset": "ci-clangcl-win",   "configuration": "Release" },
+    { "name": "ci-llvm-win-debug",      "configurePreset": "ci-llvm-win",      "configuration": "Debug" },
+    { "name": "ci-llvm-win-release",    "configurePreset": "ci-llvm-win",      "configuration": "Release" },
+    { "name": "ci-gcc-debug",           "configurePreset": "ci-gcc",           "configuration": "Debug" },
+    { "name": "ci-gcc-release",         "configurePreset": "ci-gcc",           "configuration": "Release" },
+    { "name": "ci-clang-debug",         "configurePreset": "ci-clang",         "configuration": "Debug" },
+    { "name": "ci-clang-release",       "configurePreset": "ci-clang",         "configuration": "Release" },
+    { "name": "ci-appleclang-debug",    "configurePreset": "ci-appleclang",    "configuration": "Debug" },
+    { "name": "ci-appleclang-release",  "configurePreset": "ci-appleclang",   "configuration": "Release" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true, "verbosity": "default" },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+
+    { "name": "ninja-debug",            "inherits": "test-base", "configurePreset": "ninja-base",       "configuration": "Debug" },
+    { "name": "ninja-release",          "inherits": "test-base", "configurePreset": "ninja-base",       "configuration": "Release" },
+    { "name": "ninja-debug-asan",       "inherits": "test-base", "configurePreset": "ninja-base-asan",  "configuration": "Debug" },
+    { "name": "ninja-debug-tsan",       "inherits": "test-base", "configurePreset": "ninja-base-tsan",  "configuration": "Debug" },
+    { "name": "ninja-debug-msan",       "inherits": "test-base", "configurePreset": "ninja-base-msan",  "configuration": "Debug" },
+
+    { "name": "ide-debug",              "inherits": "test-base", "configurePreset": "ide-base" },
+
+    { "name": "msvc-debug",             "inherits": "test-base", "configurePreset": "msvc-base",        "configuration": "Debug" },
+    { "name": "msvc-release",           "inherits": "test-base", "configurePreset": "msvc-base",        "configuration": "Release" },
+    { "name": "msvc-ide-debug",         "inherits": "test-base", "configurePreset": "msvc-ide" },
+
+    { "name": "clangcl-win-debug",      "inherits": "test-base", "configurePreset": "clangcl-win-base", "configuration": "Debug" },
+    { "name": "clangcl-win-release",    "inherits": "test-base", "configurePreset": "clangcl-win-base", "configuration": "Release" },
+    { "name": "clangcl-win-ide-debug",  "inherits": "test-base", "configurePreset": "clangcl-win-ide" },
+
+    { "name": "llvm-win-debug",         "inherits": "test-base", "configurePreset": "llvm-win-base",    "configuration": "Debug" },
+    { "name": "llvm-win-release",       "inherits": "test-base", "configurePreset": "llvm-win-base",    "configuration": "Release" },
+    { "name": "llvm-win-ide-debug",     "inherits": "test-base", "configurePreset": "llvm-win-ide" },
+
+    { "name": "gcc-ucrt64-debug",       "inherits": "test-base", "configurePreset": "gcc-ucrt64-base",  "configuration": "Debug" },
+    { "name": "gcc-ucrt64-release",     "inherits": "test-base", "configurePreset": "gcc-ucrt64-base",  "configuration": "Release" },
+    { "name": "gcc-ucrt64-ide-debug",   "inherits": "test-base", "configurePreset": "gcc-ucrt64-ide" },
+
+    { "name": "vs2022-debug",           "inherits": "test-base", "configurePreset": "vs2022-base",      "configuration": "Debug" },
+    { "name": "vs2022-release",         "inherits": "test-base", "configurePreset": "vs2022-base",      "configuration": "Release" },
+
+    { "name": "vs2026-debug",           "inherits": "test-base", "configurePreset": "vs2026-base",      "configuration": "Debug" },
+    { "name": "vs2026-release",         "inherits": "test-base", "configurePreset": "vs2026-base",      "configuration": "Release" },
+
+    { "name": "gcc-debug",              "inherits": "test-base", "configurePreset": "gcc-base",         "configuration": "Debug" },
+    { "name": "gcc-release",            "inherits": "test-base", "configurePreset": "gcc-base",         "configuration": "Release" },
+    { "name": "clang-debug",            "inherits": "test-base", "configurePreset": "clang-base",       "configuration": "Debug" },
+    { "name": "clang-release",          "inherits": "test-base", "configurePreset": "clang-base",       "configuration": "Release" },
+
+    { "name": "appleclang-debug",       "inherits": "test-base", "configurePreset": "appleclang-base",  "configuration": "Debug" },
+    { "name": "appleclang-release",     "inherits": "test-base", "configurePreset": "appleclang-base",  "configuration": "Release" },
+
+    { "name": "xcode-debug",            "inherits": "test-base", "configurePreset": "xcode-base",       "configuration": "Debug" },
+    { "name": "xcode-release",          "inherits": "test-base", "configurePreset": "xcode-base",       "configuration": "Release" },
+
+    { "name": "ci-vs2026-debug",        "inherits": "test-base", "configurePreset": "ci-vs2026",        "configuration": "Debug" },
+    { "name": "ci-vs2026-release",      "inherits": "test-base", "configurePreset": "ci-vs2026",        "configuration": "Release" },
+    { "name": "ci-vs2022-debug",        "inherits": "test-base", "configurePreset": "ci-vs2022",        "configuration": "Debug" },
+    { "name": "ci-vs2022-release",      "inherits": "test-base", "configurePreset": "ci-vs2022",        "configuration": "Release" },
+    { "name": "ci-msvc-debug",          "inherits": "test-base", "configurePreset": "ci-msvc",          "configuration": "Debug" },
+    { "name": "ci-msvc-release",        "inherits": "test-base", "configurePreset": "ci-msvc",          "configuration": "Release" },
+    { "name": "ci-clangcl-win-debug",   "inherits": "test-base", "configurePreset": "ci-clangcl-win",   "configuration": "Debug" },
+    { "name": "ci-llvm-win-debug",      "inherits": "test-base", "configurePreset": "ci-llvm-win",      "configuration": "Debug" },
+    { "name": "ci-gcc-debug",           "inherits": "test-base", "configurePreset": "ci-gcc",           "configuration": "Debug" },
+    { "name": "ci-gcc-release",         "inherits": "test-base", "configurePreset": "ci-gcc",           "configuration": "Release" },
+    { "name": "ci-clang-debug",         "inherits": "test-base", "configurePreset": "ci-clang",         "configuration": "Debug" },
+    { "name": "ci-clang-release",       "inherits": "test-base", "configurePreset": "ci-clang",         "configuration": "Release" },
+    { "name": "ci-appleclang-debug",    "inherits": "test-base", "configurePreset": "ci-appleclang",    "configuration": "Debug" },
+    { "name": "ci-appleclang-release",  "inherits": "test-base", "configurePreset": "ci-appleclang",    "configuration": "Release" }
+  ]
+}

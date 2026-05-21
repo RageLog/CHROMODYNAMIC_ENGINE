@@ -1,0 +1,55 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cmake-configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--preset", "ninja-base"],
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "cmake-build-debug",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "--preset", "ninja-debug"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"],
+      "dependsOn": ["cmake-configure"]
+    },
+    {
+      "label": "cmake-build-release",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "--preset", "ninja-release"],
+      "group": "build",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "ctest-debug",
+      "type": "shell",
+      "command": "ctest",
+      "args": ["--preset", "ninja-debug"],
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "clean-build",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "--preset", "ninja-debug", "--target", "clean"],
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "regenerate-compile-commands",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--preset", "ninja-base"],
+      "group": "build",
+      "problemMatcher": [],
+      "detail": "Reruns configure so CompileDatabase.cmake syncs compile_commands.json to source root for clangd."
+    }
+  ]
+}

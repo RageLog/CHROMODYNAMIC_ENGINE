@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug hello_core (Ninja Debug)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/ninja-base/bin/Debug/hello_core.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "cmake-build-debug",
+      "windows": {
+        "type": "cppvsdbg"
+      },
+      "linux": {
+        "type": "lldb"
+      },
+      "osx": {
+        "type": "lldb"
+      }
+    },
+    {
+      "name": "Debug cd_test_core (Ninja Debug)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/ninja-base/bin/Debug/cd_test_core.exe",
+      "args": ["--gtest_brief=0"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "cmake-build-debug",
+      "windows": {
+        "type": "cppvsdbg"
+      }
+    },
+    {
+      "name": "Debug current target (CMake Tools)",
+      "type": "lldb",
+      "request": "launch",
+      "program": "${command:cmake.launchTargetPath}",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "windows": {
+        "type": "cppvsdbg"
+      }
+    }
+  ]
+}
