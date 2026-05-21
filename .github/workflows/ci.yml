@@ -59,14 +59,15 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
       - name: Install Ninja + sccache
         run: choco install ninja sccache -y
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      # vcpkg is intentionally NOT set up: every dependency that previously
+      # might have come from vcpkg (vulkan-headers, volk, vma, glslang,
+      # googletest, tinygltf) is fetched in-tree via CMake FetchContent.
+      # CD_DISABLE_VCPKG=ON in the configure step skips the toolchain probe.
       - name: Configure
         shell: pwsh
         run: |
           cmake --preset ${{ matrix.preset.id }} `
+            -DCD_DISABLE_VCPKG=ON `
             -DCMAKE_C_COMPILER_LAUNCHER=sccache `
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
       - name: Build
@@ -111,13 +112,14 @@ jobs:
           sudo apt-get install -y ninja-build clang
           curl -L https://github.com/mozilla/sccache/releases/download/v0.9.0/sccache-v0.9.0-x86_64-unknown-linux-musl.tar.gz | tar xz
           sudo mv sccache-v0.9.0-x86_64-unknown-linux-musl/sccache /usr/local/bin/
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      # vcpkg is intentionally NOT set up: every dependency that previously
+      # might have come from vcpkg (vulkan-headers, volk, vma, glslang,
+      # googletest, tinygltf) is fetched in-tree via CMake FetchContent.
+      # CD_DISABLE_VCPKG=ON in the configure step skips the toolchain probe.
       - name: Configure
         run: |
           cmake --preset ${{ matrix.preset.id }} \
+            -DCD_DISABLE_VCPKG=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
       - name: Build
@@ -143,12 +145,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Ninja
         run: brew install ninja
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      # vcpkg is intentionally NOT set up: every dependency that previously
+      # might have come from vcpkg (vulkan-headers, volk, vma, glslang,
+      # googletest, tinygltf) is fetched in-tree via CMake FetchContent.
+      # CD_DISABLE_VCPKG=ON in the configure step skips the toolchain probe.
       - name: Configure
-        run: cmake --preset ci-appleclang
+        run: cmake --preset ci-appleclang -DCD_DISABLE_VCPKG=ON
       - name: Build
         run: cmake --build --preset ci-appleclang-${{ matrix.config == 'Debug' && 'debug' || 'release' }}
       - name: Test
@@ -172,13 +174,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build clang
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: "0000000000000000000000000000000000000000"
+      # vcpkg is intentionally NOT set up: every dependency that previously
+      # might have come from vcpkg (vulkan-headers, volk, vma, glslang,
+      # googletest, tinygltf) is fetched in-tree via CMake FetchContent.
+      # CD_DISABLE_VCPKG=ON in the configure step skips the toolchain probe.
       - name: Configure + Build + Test
         run: |
           cmake --preset ${{ matrix.preset }} \
+            -DCD_DISABLE_VCPKG=ON \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           cmake --build --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }}
           ctest --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }}

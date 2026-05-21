@@ -8,6 +8,7 @@ add_subdirectory(hello_core)
 add_subdirectory(hello_handle)
 add_subdirectory(hello_foundation)
 add_subdirectory(hello_runtime)
+add_subdirectory(hello_ecs)
 
 # hello_triangle requires the Vulkan backend; gate so the rest of the
 # engine still builds when CD_ENABLE_VULKAN=OFF.
@@ -17,4 +18,6 @@ if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_cube)
   add_subdirectory(hello_texture)
   add_subdirectory(hello_gltf)
+  add_subdirectory(hello_scene_graph)
+  add_subdirectory(hello_framegraph)
 endif()

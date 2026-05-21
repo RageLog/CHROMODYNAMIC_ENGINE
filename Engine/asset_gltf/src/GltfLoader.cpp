@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/asset_gltf/GltfLoader.cpp
 // =============================================================================
 #include <cd/asset_gltf/GltfLoader.hpp>
+#include <cd/math/Transform.hpp>  // Transformf, to_mat4 — used for glTF TRS node decode.
 
 // tinygltf brings its own copies of stb_image / stb_image_write / nlohmann_json.
 // Define the impl macros in exactly one TU (here) and keep the rest of the
@@ -276,15 +277,8 @@ cd::core::Result<GltfScene> load_gltf(std::string_view path)
     for (const auto& tex : model.textures)
         scene.textures.push_back(decode_texture(model, tex));
 
-    // Meshes — flatten primitives, accumulate scene bbox.
-    cd::math::Vec3f bb_min { std::numeric_limits<float>::infinity(),
-                             std::numeric_limits<float>::infinity(),
-                             std::numeric_limits<float>::infinity() };
-    cd::math::Vec3f bb_max { -std::numeric_limits<float>::infinity(),
-                             -std::numeric_limits<float>::infinity(),
-                             -std::numeric_limits<float>::infinity() };
-    bool any_vertex = false;
-
+    // Meshes — flatten primitives (do NOT compute bbox here; that comes
+    // from per-instance world-space accumulation below).
     scene.meshes.reserve(model.meshes.size());
     for (const auto& src : model.meshes)
     {
@@ -293,20 +287,163 @@ cd::core::Result<GltfScene> load_gltf(std::string_view path)
         mesh.primitives.reserve(src.primitives.size());
         for (const auto& prim : src.primitives)
         {
-            GltfPrimitive decoded = decode_primitive(model, prim);
-            for (const auto& v : decoded.vertices)
-            {
-                bb_min[0] = std::min(bb_min[0], v.position[0]);
-                bb_min[1] = std::min(bb_min[1], v.position[1]);
-                bb_min[2] = std::min(bb_min[2], v.position[2]);
-                bb_max[0] = std::max(bb_max[0], v.position[0]);
-                bb_max[1] = std::max(bb_max[1], v.position[1]);
-                bb_max[2] = std::max(bb_max[2], v.position[2]);
-                any_vertex = true;
-            }
-            mesh.primitives.push_back(std::move(decoded));
+            mesh.primitives.push_back(decode_primitive(model, prim));
         }
         scene.meshes.push_back(std::move(mesh));
+    }
+
+    // ---- Node hierarchy ----------------------------------------------------
+    // glTF nodes either carry an explicit 4x4 matrix or T/R/S components.
+    // We resolve to a single Mat4f per node and stash mesh refs + child IDs.
+    scene.nodes.reserve(model.nodes.size());
+    for (const auto& src : model.nodes)
+    {
+        GltfNode n;
+        n.name = src.name;
+        n.mesh_index = src.mesh;  // -1 if no mesh attached.
+
+        if (src.matrix.size() == 16)
+        {
+            // glTF stores matrices in column-major order — same as cd::math::Mat4f.
+            cd::math::Mat4f m {};
+            for (std::size_t c = 0; c < 4; ++c)
+            {
+                for (std::size_t r = 0; r < 4; ++r)
+                {
+                    m[c][r] = static_cast<float>(src.matrix[c * 4 + r]);
+                }
+            }
+            n.local_matrix = m;
+        }
+        else
+        {
+            // Compose T·R·S — same convention as cd::math::Transform.
+            cd::math::Transformf xf;
+            if (src.translation.size() == 3)
+            {
+                xf.position = { static_cast<float>(src.translation[0]),
+                                static_cast<float>(src.translation[1]),
+                                static_cast<float>(src.translation[2]) };
+            }
+            if (src.rotation.size() == 4)
+            {
+                // glTF rotation is (x, y, z, w) — matches cd::math::Quat order.
+                xf.rotation = { static_cast<float>(src.rotation[0]),
+                                static_cast<float>(src.rotation[1]),
+                                static_cast<float>(src.rotation[2]),
+                                static_cast<float>(src.rotation[3]) };
+            }
+            if (src.scale.size() == 3)
+            {
+                xf.scale = { static_cast<float>(src.scale[0]),
+                             static_cast<float>(src.scale[1]),
+                             static_cast<float>(src.scale[2]) };
+            }
+            n.local_matrix = cd::math::to_mat4(xf);
+        }
+
+        for (int child : src.children)
+            n.children.push_back(child);
+        scene.nodes.push_back(std::move(n));
+    }
+
+    // Patch parent pointers (glTF only stores children → parents derived).
+    for (std::size_t i = 0; i < scene.nodes.size(); ++i)
+    {
+        for (int child : scene.nodes[i].children)
+        {
+            if (child >= 0 && static_cast<std::size_t>(child) < scene.nodes.size())
+                scene.nodes[static_cast<std::size_t>(child)].parent = static_cast<int>(i);
+        }
+    }
+
+    // Roots = nodes that no other node lists as a child. If the file has an
+    // explicit default scene, use its root list; otherwise fall back to the
+    // parent-pointer derivation so files without a `scene` block still work.
+    if (model.defaultScene >= 0 && static_cast<std::size_t>(model.defaultScene) < model.scenes.size())
+    {
+        for (int n : model.scenes[static_cast<std::size_t>(model.defaultScene)].nodes)
+            scene.roots.push_back(n);
+    }
+    else
+    {
+        for (std::size_t i = 0; i < scene.nodes.size(); ++i)
+        {
+            if (scene.nodes[i].parent < 0)
+                scene.roots.push_back(static_cast<int>(i));
+        }
+    }
+
+    // ---- Bake flat instance list + world-space bbox -----------------------
+    // Recursive walk from each root. The closure captures `scene` by ref so
+    // we can append to .instances and update bb_min/bb_max as we go.
+    cd::math::Vec3f bb_min { std::numeric_limits<float>::infinity(),
+                             std::numeric_limits<float>::infinity(),
+                             std::numeric_limits<float>::infinity() };
+    cd::math::Vec3f bb_max { -std::numeric_limits<float>::infinity(),
+                             -std::numeric_limits<float>::infinity(),
+                             -std::numeric_limits<float>::infinity() };
+    bool any_vertex = false;
+
+    auto visit = [&](auto& self, int node_idx, const cd::math::Mat4f& parent_world) -> void
+    {
+        if (node_idx < 0 || static_cast<std::size_t>(node_idx) >= scene.nodes.size())
+            return;
+        const auto& node = scene.nodes[static_cast<std::size_t>(node_idx)];
+        const cd::math::Mat4f world = parent_world * node.local_matrix;
+
+        if (node.mesh_index >= 0 && static_cast<std::size_t>(node.mesh_index) < scene.meshes.size())
+        {
+            scene.instances.push_back(GltfInstance { node.mesh_index, node_idx, world });
+            // Accumulate world-space AABB from each vertex of the referenced mesh.
+            const auto& mesh = scene.meshes[static_cast<std::size_t>(node.mesh_index)];
+            for (const auto& prim : mesh.primitives)
+            {
+                for (const auto& v : prim.vertices)
+                {
+                    const cd::math::Vec4f local { v.position[0], v.position[1], v.position[2], 1.0F };
+                    const cd::math::Vec4f w = world * local;
+                    bb_min[0] = std::min(bb_min[0], w[0]);
+                    bb_min[1] = std::min(bb_min[1], w[1]);
+                    bb_min[2] = std::min(bb_min[2], w[2]);
+                    bb_max[0] = std::max(bb_max[0], w[0]);
+                    bb_max[1] = std::max(bb_max[1], w[1]);
+                    bb_max[2] = std::max(bb_max[2], w[2]);
+                    any_vertex = true;
+                }
+            }
+        }
+
+        for (int child : node.children)
+            self(self, child, world);
+    };
+
+    const auto identity = cd::math::Mat4f::identity();
+    for (int root : scene.roots)
+        visit(visit, root, identity);
+
+    // Edge case: file has no node hierarchy at all (just bare meshes). The
+    // legacy fallback wraps every mesh in an implicit identity instance so
+    // the renderer still sees something.
+    if (scene.instances.empty() && !scene.meshes.empty())
+    {
+        for (std::size_t i = 0; i < scene.meshes.size(); ++i)
+        {
+            scene.instances.push_back(GltfInstance { static_cast<int>(i), -1, identity });
+            for (const auto& prim : scene.meshes[i].primitives)
+            {
+                for (const auto& v : prim.vertices)
+                {
+                    bb_min[0] = std::min(bb_min[0], v.position[0]);
+                    bb_min[1] = std::min(bb_min[1], v.position[1]);
+                    bb_min[2] = std::min(bb_min[2], v.position[2]);
+                    bb_max[0] = std::max(bb_max[0], v.position[0]);
+                    bb_max[1] = std::max(bb_max[1], v.position[1]);
+                    bb_max[2] = std::max(bb_max[2], v.position[2]);
+                    any_vertex = true;
+                }
+            }
+        }
     }
 
     if (any_vertex)

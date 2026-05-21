@@ -14,5 +14,6 @@ if(CD_ENABLE_VULKAN)
 endif()
 
 add_subdirectory(material)
+add_subdirectory(camera)
 add_subdirectory(framegraph)
 add_subdirectory(render)

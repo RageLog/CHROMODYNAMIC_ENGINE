@@ -1,20 +1,23 @@
 // =============================================================================
 // CHROMODYNAMIC — samples/hello_gltf/main.cpp
 //
-// Loads a glTF / glb file via cd::asset_gltf and renders the first mesh with
-// per-vertex shading (NdotL against a fixed light + base-color factor from
-// the first material). Exercises:
-//   * cd::asset_gltf::load_gltf end-to-end (POSITION + NORMAL + indices)
-//   * Auto-framing camera derived from the scene bbox
-//   * Material with depth + push constants (reuses hello_cube wiring)
-//   * Geometry uploaded once per scene primitive
+// Loads a glTF / glb file via cd::asset_gltf and renders every mesh with a
+// textured Lambertian shader. Exercises:
+//   * cd::asset_gltf::load_gltf end-to-end (POSITION + NORMAL + TEXCOORD_0)
+//   * GPU upload of each glTF image via staging buffer + copy_buffer_to_image
+//   * Material with combined-image-sampler descriptor at set 0 / binding 0
+//   * Per-primitive MaterialInstance bound to the matching material's texture
+//   * Auto-framing orbit camera derived from the scene AABB
 //
 // Usage:
 //   hello_gltf <path/to/file.gltf|.glb>
-// If no path is given the sample falls back to a hard-coded triangle so the
-// pipeline still demonstrates "asset → GPU" end-to-end.
+// With no path argument, the demo falls back to a built-in 2-triangle quad
+// shaded by a 1×1 white default texture so the pipeline still proves end-
+// to-end without an external asset.
 // =============================================================================
 #include <cd/asset_gltf/GltfLoader.hpp>
+#include <cd/camera/Camera.hpp>
+#include <cd/camera/OrbitController.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Quaternion.hpp>
@@ -39,65 +42,142 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace
 {
 
-/// Vertex layout the GLSL pipeline expects. Matches the layout used by
-/// cd::asset_gltf::GltfVertex byte-for-byte (position, normal, uv) so we can
-/// memcpy a primitive's vertex span straight into a GPU buffer.
+// Vertex layout matches cd::asset_gltf::GltfVertex byte-for-byte so we can
+// memcpy each primitive's vertex span straight into a GPU buffer.
 struct Vertex
 {
     float pos[3];
     float normal[3];
     float uv[2];
 };
+
 static_assert(sizeof(Vertex) == sizeof(cd::asset_gltf::GltfVertex), "vertex layout mismatch with GltfVertex");
 static_assert(offsetof(Vertex, pos) == offsetof(cd::asset_gltf::GltfVertex, position), "pos offset");
 static_assert(offsetof(Vertex, normal) == offsetof(cd::asset_gltf::GltfVertex, normal), "normal offset");
 static_assert(offsetof(Vertex, uv) == offsetof(cd::asset_gltf::GltfVertex, texcoord0), "uv offset");
 
-/// MVP + per-material base color, packed into one push-constant block.
-/// std140 alignment: mat4 (16 floats) followed by vec4 (4 floats) = 80 bytes.
+/// Push-constant block — MVP + per-material PBR factors + camera position.
+/// Layout matches std140 alignment so the GLSL `push_constant` block below
+/// reads it back verbatim. Total 112 bytes — well under the Vulkan minimum
+/// guarantee of 128 bytes that every conformant implementation provides.
+///   offset  field
+///   0       mat4 mvp                (64 B)
+///   64      vec4 base_color         (16 B)
+///   80      vec4 mr_pad (metallic, roughness, ambient, _)
+///   96      vec4 camera_pos (xyz + pad)
 struct PushBlock
 {
     cd::math::Mat4f mvp;
     std::array<float, 4> base_color;
+    std::array<float, 4> mr_pad;
+    std::array<float, 4> camera_pos;
 };
+
+static_assert(sizeof(PushBlock) == 112, "PushBlock size must match GLSL block layout");
 
 constexpr const char* kVS = R"glsl(
 #version 450
 layout(push_constant) uniform PC {
   mat4 mvp;
   vec4 base_color;
+  vec4 mr_pad;       // x=metallic y=roughness z=ambient w=_
+  vec4 camera_pos;   // xyz=world camera position
 } pc;
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
-layout(location = 0) out vec3 v_normal;
-layout(location = 1) out vec4 v_color;
+layout(location = 0) out vec3 v_world_pos;
+layout(location = 1) out vec3 v_normal;
+layout(location = 2) out vec2 v_uv;
 void main() {
+  // Model matrix is identity for now — world_pos == object-space pos.
+  // Once cd::scene lands we'll split MVP into model+vp here.
+  v_world_pos = in_pos;
+  v_normal = in_normal;
+  v_uv = in_uv;
   vec4 clip = pc.mvp * vec4(in_pos, 1.0);
   clip.y = -clip.y;  // Vulkan NDC Y is down; our math is Y-up.
   gl_Position = clip;
-  v_normal = in_normal;
-  v_color = pc.base_color;
 }
 )glsl";
 
 constexpr const char* kFS = R"glsl(
 #version 450
-layout(location = 0) in  vec3 v_normal;
-layout(location = 1) in  vec4 v_color;
+layout(set = 0, binding = 0) uniform sampler2D u_base_color;
+layout(push_constant) uniform PC {
+  mat4 mvp;
+  vec4 base_color;
+  vec4 mr_pad;       // x=metallic y=roughness z=ambient w=_
+  vec4 camera_pos;
+} pc;
+layout(location = 0) in  vec3 v_world_pos;
+layout(location = 1) in  vec3 v_normal;
+layout(location = 2) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
+
+// Minimal Cook-Torrance: GGX-NDF + Schlick-Fresnel + Smith geometry +
+// Lambertian diffuse weighted by (1 - metallic). No image-based lighting
+// yet — single directional light + flat ambient.
+const float PI = 3.14159265358979;
+
+float D_GGX(float NoH, float a) {
+  float a2 = a * a;
+  float d  = (NoH * NoH) * (a2 - 1.0) + 1.0;
+  return a2 / (PI * d * d + 1e-7);
+}
+
+float G_SchlickGGX(float NoV, float k) {
+  return NoV / (NoV * (1.0 - k) + k + 1e-7);
+}
+
+float G_Smith(float NoV, float NoL, float roughness) {
+  // Schlick-GGX with the (r+1)^2/8 remapping commonly used in real-time PBR.
+  float r = roughness + 1.0;
+  float k = (r * r) / 8.0;
+  return G_SchlickGGX(NoV, k) * G_SchlickGGX(NoL, k);
+}
+
+vec3 F_Schlick(float HoV, vec3 F0) {
+  return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
+}
+
 void main() {
-  // Cheap Lambertian with a fixed light direction so geometry reads as 3D.
-  vec3 n = normalize(v_normal);
-  vec3 l = normalize(vec3(0.6, 0.8, 0.3));
-  float ndotl = max(dot(n, l), 0.0);
-  vec3 lit = v_color.rgb * (0.25 + 0.75 * ndotl);
-  out_color = vec4(lit, v_color.a);
+  vec4 tex = texture(u_base_color, v_uv);
+  vec3 albedo = tex.rgb * pc.base_color.rgb;
+  float metallic = clamp(pc.mr_pad.x, 0.0, 1.0);
+  float roughness = clamp(pc.mr_pad.y, 0.04, 1.0);  // floor to avoid singular NDF.
+  float ambient   = pc.mr_pad.z;
+
+  vec3 N = normalize(v_normal);
+  vec3 V = normalize(pc.camera_pos.xyz - v_world_pos);
+  vec3 L = normalize(vec3(0.6, 0.8, 0.3));
+  vec3 H = normalize(L + V);
+
+  float NoL = max(dot(N, L), 0.0);
+  float NoV = max(dot(N, V), 0.0);
+  float NoH = max(dot(N, H), 0.0);
+  float HoV = max(dot(H, V), 0.0);
+
+  // F0: 0.04 for dielectrics, lerp toward albedo for metals.
+  vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+  float D = D_GGX(NoH, roughness * roughness);
+  float G = G_Smith(NoV, NoL, roughness);
+  vec3  F = F_Schlick(HoV, F0);
+  vec3 specular = (D * G * F) / max(4.0 * NoV * NoL, 1e-4);
+
+  vec3 kS = F;
+  vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+  vec3 direct = (kD * albedo / PI + specular) * NoL;
+
+  vec3 amb = albedo * ambient;
+  out_color = vec4(direct + amb, tex.a * pc.base_color.a);
 }
 )glsl";
 
@@ -119,8 +199,135 @@ make_upload_buffer(cd::rhi::IDevice& dev, std::span<const std::byte> bytes, cd::
     return *r;
 }
 
-/// Per-frame depth resource, same shape as hello_cube — owned by the sample,
-/// not the renderer.
+/// One-shot command-buffer helper: barrier (UNDEFINED → TRANSFER_DST), copy
+/// staging → image, barrier (TRANSFER_DST → SHADER_RESOURCE). Caller owns
+/// both the staging buffer and the destination image.
+[[nodiscard]] bool upload_texture_2d(
+    cd::rhi::IDevice& dev,
+    cd::rhi::TextureHandle image,
+    cd::rhi::BufferHandle staging,
+    std::uint32_t w,
+    std::uint32_t h
+)
+{
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr)
+        return false;
+    cmd->begin();
+
+    std::array<cd::rhi::TextureBarrier, 1> to_dst {
+        cd::rhi::TextureBarrier {
+                                 .texture = image,
+                                 .from = cd::rhi::ResourceState::kUndefined,
+                                 .to = cd::rhi::ResourceState::kTransferDst,
+                                 .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 },
+                                 }
+    };
+    cmd->barrier({}, to_dst);
+
+    std::array<cd::rhi::BufferImageCopyRegion, 1> regions {
+        cd::rhi::BufferImageCopyRegion {
+                                        .buffer_offset = 0,
+                                        .mip_level = 0,
+                                        .base_layer = 0,
+                                        .layer_count = 1,
+                                        .image_offset = { 0, 0, 0 },
+                                        .image_extent = { w, h, 1 },
+                                        }
+    };
+    cmd->copy_buffer_to_image(staging, image, regions);
+
+    std::array<cd::rhi::TextureBarrier, 1> to_read {
+        cd::rhi::TextureBarrier {
+                                 .texture = image,
+                                 .from = cd::rhi::ResourceState::kTransferDst,
+                                 .to = cd::rhi::ResourceState::kShaderResource,
+                                 .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 },
+                                 }
+    };
+    cmd->barrier({}, to_read);
+
+    cmd->end();
+    dev.submit(*cmd);
+    dev.wait_idle();
+    return true;
+}
+
+/// GPU-side companion to one glTF texture. Owns the image, view, and the
+/// (transient) staging buffer until the upload completes.
+struct GpuTexture
+{
+    cd::rhi::TextureHandle image {};
+    cd::rhi::TextureViewHandle view {};
+
+    void destroy(cd::rhi::IDevice& dev)
+    {
+        if (view.is_valid())
+            dev.destroy_texture_view(view);
+        if (image.is_valid())
+            dev.destroy_texture(image);
+        image = {};
+        view = {};
+    }
+};
+
+[[nodiscard]] bool create_and_upload_texture(
+    cd::rhi::IDevice& dev,
+    std::span<const std::uint8_t> rgba,
+    std::uint32_t w,
+    std::uint32_t h,
+    GpuTexture& out
+)
+{
+    out.destroy(dev);
+
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::k2D;
+    td.format = cd::rhi::Format::kRGBA8Unorm;
+    td.extent = { w, h, 1 };
+    td.mip_levels = 1;
+    td.array_layers = 1;
+    td.usage = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto tex = dev.create_texture(td);
+    if (!tex.has_value())
+        return false;
+    out.image = *tex;
+
+    cd::rhi::TextureViewDesc tvd {};
+    tvd.texture = out.image;
+    tvd.type = cd::rhi::TextureType::k2D;
+    tvd.format = cd::rhi::Format::kRGBA8Unorm;
+    tvd.base_mip = 0;
+    tvd.mip_count = 1;
+    tvd.base_layer = 0;
+    tvd.layer_count = 1;
+    auto view = dev.create_texture_view(tvd);
+    if (!view.has_value())
+    {
+        out.destroy(dev);
+        return false;
+    }
+    out.view = *view;
+
+    const std::span<const std::byte> px_bytes { reinterpret_cast<const std::byte*>(rgba.data()), rgba.size() };
+    const auto staging = make_upload_buffer(dev, px_bytes, cd::rhi::BufferUsage::kTransferSrc);
+    if (!staging.is_valid())
+    {
+        out.destroy(dev);
+        return false;
+    }
+    const bool ok = upload_texture_2d(dev, out.image, staging, w, h);
+    dev.destroy_buffer(staging);
+    if (!ok)
+    {
+        out.destroy(dev);
+        return false;
+    }
+    return true;
+}
+
+/// Per-frame depth resource — owned by the sample, not the renderer.
 struct DepthTarget
 {
     cd::rhi::TextureHandle image {};
@@ -172,17 +379,25 @@ create_depth_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size, cd::rhi::Form
     return true;
 }
 
-/// One GPU-resident primitive ready to draw — owned by `Drawable` so the
-/// destructor can release the underlying buffers without manual bookkeeping.
+/// One GPU-resident primitive ready to draw + the descriptor set that
+/// references its material's texture. MaterialInstance owns the descriptor
+/// set; we keep it alive as long as the Drawable.
 struct Drawable
 {
     cd::rhi::BufferHandle vb {};
     cd::rhi::BufferHandle ib {};
     std::uint32_t index_count { 0 };
+    int mesh_index { -1 };  // Source glTF mesh, lets us join Drawables with GltfInstance.
     std::array<float, 4> base_color { 1.0F, 1.0F, 1.0F, 1.0F };
+    float metallic { 0.0F };   // glTF default: 0 = pure dielectric.
+    float roughness { 1.0F };  // glTF default: 1 = fully rough.
+    cd::material::MaterialInstance instance {};
 
     void destroy(cd::rhi::IDevice& dev)
     {
+        // MaterialInstance is RAII; releasing it before the buffers is fine
+        // because the descriptor set is independent of the vertex/index data.
+        instance = {};
         if (ib.is_valid())
             dev.destroy_buffer(ib);
         if (vb.is_valid())
@@ -192,30 +407,38 @@ struct Drawable
     }
 };
 
-/// Hard-coded triangle as a fallback when no glTF path is supplied. Lets the
-/// demo prove the pipeline end-to-end without shipping a binary asset.
-[[nodiscard]] cd::asset_gltf::GltfScene make_fallback_triangle()
+/// Fallback scene when no glTF path is supplied: a single quad with a 1×1
+/// white texture, just enough to confirm the textured pipeline cold-starts.
+[[nodiscard]] cd::asset_gltf::GltfScene make_fallback_scene()
 {
     cd::asset_gltf::GltfScene scene;
     cd::asset_gltf::GltfMesh mesh;
-    mesh.name = "fallback_triangle";
+    mesh.name = "fallback_quad";
     cd::asset_gltf::GltfPrimitive prim;
     prim.vertices = {
-        cd::asset_gltf::GltfVertex {
-                                    .position = { 0.0F, 0.5F, 0.0F },
-                                    .normal = { 0.0F, 0.0F, 1.0F },
-                                    .texcoord0 = { 0.5F, 0.0F } },
         cd::asset_gltf::GltfVertex { .position = { -0.5F, -0.5F, 0.0F },
                                     .normal = { 0.0F, 0.0F, 1.0F },
-                                    .texcoord0 = { 0.0F, 1.0F } },
+                                    .texcoord0 = { 0.0F, 0.0F } },
         cd::asset_gltf::GltfVertex { .position = { 0.5F, -0.5F, 0.0F },
                                     .normal = { 0.0F, 0.0F, 1.0F },
+                                    .texcoord0 = { 1.0F, 0.0F } },
+        cd::asset_gltf::GltfVertex { .position = { 0.5F, 0.5F, 0.0F },
+                                    .normal = { 0.0F, 0.0F, 1.0F },
                                     .texcoord0 = { 1.0F, 1.0F } },
+        cd::asset_gltf::GltfVertex { .position = { -0.5F, 0.5F, 0.0F },
+                                    .normal = { 0.0F, 0.0F, 1.0F },
+                                    .texcoord0 = { 0.0F, 1.0F } },
     };
-    prim.indices = { 0, 1, 2 };
+    prim.indices = { 0, 1, 2, 0, 2, 3 };
     prim.material_index = -1;
     mesh.primitives.push_back(std::move(prim));
     scene.meshes.push_back(std::move(mesh));
+    // Bake the single mesh into a single identity-matrix instance so the
+    // render loop (which iterates scene.instances) sees something to draw.
+    // Without this the fallback path renders a black window.
+    scene.instances.push_back(cd::asset_gltf::GltfInstance { /*mesh_index=*/0,
+                                                             /*node_index=*/-1,
+                                                             cd::math::Mat4f::identity() });
     scene.bbox_min = { -0.5F, -0.5F, 0.0F };
     scene.bbox_max = { 0.5F, 0.5F, 0.0F };
     return scene;
@@ -242,16 +465,18 @@ int main(int argc, char** argv)
         }
         scene = std::move(*loaded);
         std::printf(
-            "hello_gltf: loaded %s — %zu mesh(es), %zu material(s)\n",
+            "hello_gltf: loaded %s\n"
+            "            meshes=%zu materials=%zu textures=%zu\n",
             argv[1],
             scene.meshes.size(),
-            scene.materials.size()
+            scene.materials.size(),
+            scene.textures.size()
         );
     }
     else
     {
-        scene = make_fallback_triangle();
-        std::printf("hello_gltf: no path argument — using built-in fallback triangle.\n");
+        scene = make_fallback_scene();
+        std::printf("hello_gltf: no path argument — using built-in fallback quad.\n");
         std::printf("            usage: hello_gltf <path/to/file.gltf|.glb>\n");
     }
     std::fflush(stdout);
@@ -318,81 +543,99 @@ int main(int argc, char** argv)
     }
     bool depth_initialized_on_gpu = false;
 
-    // ---- Upload every primitive ------------------------------------------
-    std::vector<Drawable> drawables;
-    drawables.reserve(16);
-    for (const auto& mesh : scene.meshes)
+    // ---- 1×1 white default texture ----------------------------------------
+    // Primitives whose material has no base-color texture (or no material at
+    // all) bind this so the shader's `texture()` call always returns a
+    // multiplicative identity. The alternative — branching in the shader on
+    // a "has-texture" flag — would split the pipeline.
+    constexpr std::array<std::uint8_t, 4> kWhitePixel { 0xFF, 0xFF, 0xFF, 0xFF };
+    GpuTexture white_tex {};
+    if (!create_and_upload_texture(device, kWhitePixel, 1, 1, white_tex))
     {
-        for (const auto& prim : mesh.primitives)
-        {
-            if (prim.vertices.empty() || prim.indices.empty())
-                continue;
-            Drawable d {};
-            const std::span<const std::byte> vb_bytes { reinterpret_cast<const std::byte*>(prim.vertices.data()),
-                                                        prim.vertices.size() * sizeof(cd::asset_gltf::GltfVertex) };
-            const std::span<const std::byte> ib_bytes { reinterpret_cast<const std::byte*>(prim.indices.data()),
-                                                        prim.indices.size() * sizeof(std::uint32_t) };
-            d.vb = make_upload_buffer(device, vb_bytes, cd::rhi::BufferUsage::kVertex);
-            d.ib = make_upload_buffer(device, ib_bytes, cd::rhi::BufferUsage::kIndex);
-            d.index_count = static_cast<std::uint32_t>(prim.indices.size());
-            if (prim.material_index >= 0 &&
-                static_cast<std::size_t>(prim.material_index) < scene.materials.size())
-            {
-                d.base_color = scene.materials[static_cast<std::size_t>(prim.material_index)].base_color_factor;
-            }
-            if (!d.vb.is_valid() || !d.ib.is_valid())
-            {
-                std::fprintf(stderr, "buffer upload failed for primitive\n");
-                d.destroy(device);
-                continue;
-            }
-            drawables.push_back(d);
-        }
-    }
-    if (drawables.empty())
-    {
-        std::fprintf(stderr, "no drawable primitives — bailing out\n");
+        std::fprintf(stderr, "default white texture upload failed\n");
         return 6;
     }
-    std::printf("hello_gltf: uploaded %zu primitive(s).\n", drawables.size());
-    std::fflush(stdout);
 
-    // ---- Material ---------------------------------------------------------
+    // ---- Upload every glTF texture ----------------------------------------
+    std::vector<GpuTexture> gpu_textures;
+    gpu_textures.resize(scene.textures.size());
+    for (std::size_t i = 0; i < scene.textures.size(); ++i)
+    {
+        const auto& src = scene.textures[i];
+        if (src.rgba.empty() || src.width == 0 || src.height == 0)
+            continue;  // leave entry default-constructed → falls back to white below.
+        if (!create_and_upload_texture(device, src.rgba, src.width, src.height, gpu_textures[i]))
+        {
+            std::fprintf(stderr, "warning: texture %zu upload failed — using white fallback\n", i);
+        }
+    }
+    std::printf("hello_gltf: uploaded %zu texture(s).\n", scene.textures.size());
+
+    // ---- Shared sampler ---------------------------------------------------
+    cd::rhi::SamplerDesc sdesc {};
+    sdesc.mag_filter = cd::rhi::SamplerFilter::kLinear;
+    sdesc.min_filter = cd::rhi::SamplerFilter::kLinear;
+    sdesc.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
+    sdesc.address_u = cd::rhi::SamplerAddressMode::kRepeat;
+    sdesc.address_v = cd::rhi::SamplerAddressMode::kRepeat;
+    sdesc.address_w = cd::rhi::SamplerAddressMode::kRepeat;
+    auto samp_r = device.create_sampler(sdesc);
+    if (!samp_r.has_value())
+    {
+        std::fprintf(
+            stderr,
+            "sampler: %.*s\n",
+            static_cast<int>(samp_r.error().message.size()),
+            samp_r.error().message.data()
+        );
+        return 7;
+    }
+    const auto sampler = *samp_r;
+
+    // ---- Material with descriptor binding ---------------------------------
     auto compiler = cd::shader::make_glslang_compiler();
     if (compiler == nullptr)
     {
         std::fprintf(stderr, "no glslang\n");
-        return 7;
+        return 8;
     }
 
     constexpr std::array<cd::rhi::VertexBinding, 1> kBindings {
         cd::rhi::VertexBinding { 0, sizeof(Vertex), false }
     };
     constexpr std::array<cd::rhi::VertexAttribute, 3> kAttrs {
-        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos) },
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos)    },
         cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, normal) },
-        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float, offsetof(Vertex, uv) },
+        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(Vertex, uv)     },
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
-    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush { cd::rhi::PushConstantRange {
-        .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-        .offset = 0,
-        .size = static_cast<std::uint32_t>(sizeof(PushBlock)) } };
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kDescBindings {
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
+                                             .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                             .count = 1,
+                                             .stages = cd::rhi::ShaderStage::kFragment }
+    };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                    .offset = 0,
+                                    .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
+    };
 
     cd::material::MaterialDesc md {};
     md.vertex_glsl = kVS;
     md.fragment_glsl = kFS;
     md.vertex_bindings = kBindings;
     md.vertex_attributes = kAttrs;
+    md.descriptor_bindings = kDescBindings;
     md.color_attachment_formats = kColorFormats;
     md.depth_attachment_format = kDepthFormat;
     md.push_constants = kPush;
     md.topology = cd::rhi::PrimitiveTopology::kTriangleList;
-    md.raster.cull = cd::rhi::CullMode::kNone;  // glTF winding varies — disable culling.
+    md.raster.cull = cd::rhi::CullMode::kNone;
     md.depth_stencil.depth_test = true;
     md.depth_stencil.depth_write = true;
     md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
-    md.name = "gltf";
+    md.name = "gltf_textured";
     auto material_r = cd::material::Material::create(device, compiler.get(), md);
     if (!material_r.has_value())
     {
@@ -402,25 +645,111 @@ int main(int argc, char** argv)
             static_cast<int>(material_r.error().message.size()),
             material_r.error().message.data()
         );
-        return 8;
+        return 9;
     }
     auto& material = *material_r;
 
-    // ---- Camera framing from scene bbox -----------------------------------
-    const cd::math::Vec3f center {
-        (scene.bbox_min[0] + scene.bbox_max[0]) * 0.5F,
-        (scene.bbox_min[1] + scene.bbox_max[1]) * 0.5F,
-        (scene.bbox_min[2] + scene.bbox_max[2]) * 0.5F,
-    };
-    const cd::math::Vec3f extent {
-        scene.bbox_max[0] - scene.bbox_min[0],
-        scene.bbox_max[1] - scene.bbox_min[1],
-        scene.bbox_max[2] - scene.bbox_min[2],
-    };
-    const float radius = 0.5F * std::sqrt(extent[0] * extent[0] + extent[1] * extent[1] + extent[2] * extent[2]);
-    const float camera_distance = std::max(radius * 2.5F, 1.5F);
-    const float near_z = std::max(camera_distance * 0.02F, 0.05F);
-    const float far_z = std::max(camera_distance * 10.0F, 50.0F);
+    // ---- Upload every primitive + allocate its descriptor set -------------
+    // One Drawable per (mesh, primitive). We tag with `mesh_index` so the
+    // render loop can join each scene instance's world matrix to the right
+    // GPU buffers.
+    std::vector<Drawable> drawables;
+    drawables.reserve(16);
+    for (std::size_t m = 0; m < scene.meshes.size(); ++m)
+    {
+        const auto& mesh = scene.meshes[m];
+        for (const auto& prim : mesh.primitives)
+        {
+            if (prim.vertices.empty() || prim.indices.empty())
+                continue;
+
+            Drawable d {};
+            d.mesh_index = static_cast<int>(m);
+            const std::span<const std::byte> vb_bytes { reinterpret_cast<const std::byte*>(prim.vertices.data()),
+                                                        prim.vertices.size() * sizeof(cd::asset_gltf::GltfVertex) };
+            const std::span<const std::byte> ib_bytes { reinterpret_cast<const std::byte*>(prim.indices.data()),
+                                                        prim.indices.size() * sizeof(std::uint32_t) };
+            d.vb = make_upload_buffer(device, vb_bytes, cd::rhi::BufferUsage::kVertex);
+            d.ib = make_upload_buffer(device, ib_bytes, cd::rhi::BufferUsage::kIndex);
+            d.index_count = static_cast<std::uint32_t>(prim.indices.size());
+
+            // Resolve material → base_color factor and (optional) texture.
+            cd::rhi::TextureViewHandle bound_view = white_tex.view;
+            if (prim.material_index >= 0 && static_cast<std::size_t>(prim.material_index) < scene.materials.size())
+            {
+                const auto& mat = scene.materials[static_cast<std::size_t>(prim.material_index)];
+                d.base_color = mat.base_color_factor;
+                d.metallic = mat.metallic_factor;
+                d.roughness = mat.roughness_factor;
+                if (mat.base_color_texture >= 0 &&
+                    static_cast<std::size_t>(mat.base_color_texture) < gpu_textures.size() &&
+                    gpu_textures[static_cast<std::size_t>(mat.base_color_texture)].view.is_valid())
+                {
+                    bound_view = gpu_textures[static_cast<std::size_t>(mat.base_color_texture)].view;
+                }
+            }
+
+            if (!d.vb.is_valid() || !d.ib.is_valid())
+            {
+                std::fprintf(stderr, "buffer upload failed for primitive\n");
+                d.destroy(device);
+                continue;
+            }
+
+            auto inst_r = cd::material::MaterialInstance::create(device, material);
+            if (!inst_r.has_value())
+            {
+                std::fprintf(
+                    stderr,
+                    "instance: %.*s\n",
+                    static_cast<int>(inst_r.error().message.size()),
+                    inst_r.error().message.data()
+                );
+                d.destroy(device);
+                continue;
+            }
+            d.instance = std::move(*inst_r);
+
+            std::array<cd::rhi::DescriptorWrite, 1> writes {
+                cd::rhi::DescriptorWrite { .binding = 0,
+                                          .array_element = 0,
+                                          .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                          .buffer = {},
+                                          .buffer_offset = 0,
+                                          .buffer_range = 0,
+                                          .view = bound_view,
+                                          .sampler = sampler }
+            };
+            if (auto wr = d.instance.update(writes); !wr.has_value())
+            {
+                std::fprintf(
+                    stderr,
+                    "desc update: %.*s\n",
+                    static_cast<int>(wr.error().message.size()),
+                    wr.error().message.data()
+                );
+                d.destroy(device);
+                continue;
+            }
+            drawables.push_back(std::move(d));
+        }
+    }
+    if (drawables.empty())
+    {
+        std::fprintf(stderr, "no drawable primitives — bailing out\n");
+        return 10;
+    }
+    std::printf("hello_gltf: uploaded %zu primitive(s).\n", drawables.size());
+    std::fflush(stdout);
+
+    // ---- Camera + orbit controller (auto-framed to scene AABB) ------------
+    // Local var named `cam` (not `camera`) so it does NOT shadow the
+    // `cd::camera` namespace when we reference helpers like
+    // `cd::camera::view_projection(cam, aspect)` below.
+    cd::camera::Camera cam = cd::camera::auto_frame_aabb(scene.bbox_min, scene.bbox_max);
+    cd::camera::OrbitController orbit {};
+    orbit.sync_from_camera(cam);  // pick up the auto-frame radius/angles
+    orbit.auto_spin_rate = 0.6F;  // matches the previous hand-rolled angle = elapsed*0.6F
 
     std::printf("hello_gltf: ready. ESC or close to exit.\n");
     std::fflush(stdout);
@@ -442,7 +771,7 @@ int main(int argc, char** argv)
         return true;
     };
 
-    const auto t_start = std::chrono::steady_clock::now();
+    auto t_prev = std::chrono::steady_clock::now();
     while (true)
     {
         events.clear();
@@ -473,7 +802,7 @@ int main(int argc, char** argv)
                 static_cast<int>(frame_r.error().message.size()),
                 frame_r.error().message.data()
             );
-            return 9;
+            return 11;
         }
         auto& frame = *frame_r;
         auto& cmd = *frame.command_buffer;
@@ -528,36 +857,48 @@ int main(int argc, char** argv)
         }
         );
 
-        // Orbit camera around the centroid.
-        const float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - t_start).count();
-        const float angle = elapsed * 0.6F;
-        const cd::math::Vec3f eye {
-            center[0] + std::cos(angle) * camera_distance,
-            center[1] + camera_distance * 0.45F,
-            center[2] + std::sin(angle) * camera_distance,
-        };
-        const cd::math::Mat4f view = cd::math::look_at(eye, center, cd::math::Vec3f { 0.0F, 1.0F, 0.0F });
+        // Drive the orbit controller from real elapsed time so the spin
+        // speed stays the same regardless of frame rate / pauses.
+        const auto t_now = std::chrono::steady_clock::now();
+        const float dt = std::chrono::duration<float>(t_now - t_prev).count();
+        t_prev = t_now;
+        orbit.update_auto(cam, dt);
+
         const float aspect = static_cast<float>(frame.extent.width) / static_cast<float>(frame.extent.height);
-        const cd::math::Mat4f proj =
-            cd::math::perspective(/*fov_y_rad=*/1.0F, aspect, near_z, far_z);
-        const cd::math::Mat4f view_proj = proj * view;
+        const cd::math::Mat4f view_proj = cd::camera::view_projection(cam, aspect);
+        const cd::math::Vec3f eye = cd::camera::world_position(cam);
 
         material.apply(cmd);
-        for (const auto& d : drawables)
+        // Iterate the baked instance list — each entry pairs a mesh_index
+        // with the node's world matrix. We draw EVERY drawable whose
+        // mesh_index matches, so a mesh referenced by N nodes renders N
+        // times with N different transforms (classic glTF instancing).
+        for (const auto& inst : scene.instances)
         {
-            PushBlock pb {};
-            pb.mvp = view_proj;  // model is identity for now
-            pb.base_color = d.base_color;
-            cmd.push_constants(
-                material.pipeline_layout(),
-                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                /*offset=*/0,
-                static_cast<std::uint32_t>(sizeof(pb)),
-                &pb
-            );
-            cmd.bind_vertex_buffer(0, d.vb, 0);
-            cmd.bind_index_buffer(d.ib, 0, cd::rhi::IndexType::kUInt32);
-            cmd.draw_indexed(d.index_count, /*instance_count=*/1, 0, 0, 0);
+            for (const auto& d : drawables)
+            {
+                if (d.mesh_index != inst.mesh_index)
+                    continue;
+                PushBlock pb {};
+                pb.mvp = view_proj * inst.world_matrix;
+                pb.base_color = d.base_color;
+                // (metallic, roughness, ambient, _) packed into one vec4 to fit
+                // std140 alignment without padding gymnastics. Ambient is a flat
+                // term so dark sides of unlit objects still read.
+                pb.mr_pad = { d.metallic, d.roughness, 0.08F, 0.0F };
+                pb.camera_pos = { eye[0], eye[1], eye[2], 1.0F };
+                cmd.push_constants(
+                    material.pipeline_layout(),
+                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                    /*offset=*/0,
+                    static_cast<std::uint32_t>(sizeof(pb)),
+                    &pb
+                );
+                d.instance.bind(cmd, /*set_index=*/0);
+                cmd.bind_vertex_buffer(0, d.vb, 0);
+                cmd.bind_index_buffer(d.ib, 0, cd::rhi::IndexType::kUInt32);
+                cmd.draw_indexed(d.index_count, /*instance_count=*/1, 0, 0, 0);
+            }
         }
         cmd.end_render_pass();
 
@@ -575,13 +916,17 @@ int main(int argc, char** argv)
                 static_cast<int>(end_r.error().message.size()),
                 end_r.error().message.data()
             );
-            return 10;
+            return 12;
         }
     }
 
     renderer.wait_idle();
     for (auto& d : drawables)
         d.destroy(device);
+    for (auto& t : gpu_textures)
+        t.destroy(device);
+    white_tex.destroy(device);
+    device.destroy_sampler(sampler);
     depth.destroy(device);
     std::printf("hello_gltf: clean exit.\n");
     return 0;

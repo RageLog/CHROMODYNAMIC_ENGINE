@@ -23,6 +23,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
+#include <cd/math/Matrix.hpp>
 #include <cd/math/Vector.hpp>
 
 #include <array>
@@ -106,14 +107,47 @@ struct GltfMaterial
     bool double_sided { false };
 };
 
+/// One node of the glTF scene tree. Nodes carry a local transform and an
+/// optional mesh reference. The full hierarchy is held in `GltfScene::nodes`
+/// with parent indices forming a forest (roots have parent = -1).
+struct GltfNode
+{
+    std::string name;
+    int parent { -1 };               ///< Index into `GltfScene::nodes`, or -1 for roots.
+    std::vector<int> children;       ///< Indices into `GltfScene::nodes`.
+    int mesh_index { -1 };           ///< Index into `GltfScene::meshes`, or -1 if pure transform.
+    cd::math::Mat4f local_matrix { cd::math::Mat4f::identity() };
+};
+
+/// Flat draw instance — produced by walking the node forest after load.
+/// Renderers iterate `GltfScene::instances` and draw mesh[mesh_index] with
+/// `world_matrix` baked in; no node-tree traversal at render time.
+struct GltfInstance
+{
+    int mesh_index { -1 };
+    int node_index { -1 };           ///< Source node, in case the caller wants the name / hierarchy back.
+    cd::math::Mat4f world_matrix { cd::math::Mat4f::identity() };
+};
+
 struct GltfScene
 {
     std::vector<GltfMesh> meshes;
     std::vector<GltfMaterial> materials;
     std::vector<GltfTexture> textures;
 
-    /// Axis-aligned bounding box over every primitive in every mesh. Useful
-    /// for auto-framing the camera in viewers/samples.
+    /// Full node hierarchy. `roots` indexes into this list; each non-root
+    /// node's `parent` field also points back here.
+    std::vector<GltfNode> nodes;
+    std::vector<int> roots;
+
+    /// Pre-baked flat instance list. One entry per (node, mesh) pair, with
+    /// the node's accumulated world matrix already computed. Renderers may
+    /// ignore the node tree entirely and just iterate this.
+    std::vector<GltfInstance> instances;
+
+    /// Axis-aligned bounding box over every primitive in every mesh,
+    /// computed in WORLD SPACE (i.e. after applying instance world matrices)
+    /// so auto-framing works correctly for off-origin scenes.
     cd::math::Vec3f bbox_min { 0.0F, 0.0F, 0.0F };
     cd::math::Vec3f bbox_max { 0.0F, 0.0F, 0.0F };
 };
