@@ -12,8 +12,16 @@ function(cd_apply_warnings target)
 
   if(MSVC)
     # Common flags accepted by both real MSVC and clang-cl.
+    # /EHsc is mandatory: the MSVC STL (<vector>, <chrono>, <istream>, ...)
+    # contains try/catch internally. Without /EHsc, every C++ TU that
+    # includes one of those headers emits C4530 ("C++ exception handler used,
+    # but unwind semantics are not enabled") and our /WX promotion turns it
+    # into a hard error. CMake adds /EHsc automatically for VS generators
+    # but NOT for Ninja-driven cl.exe invocations, which is what our msvc-*
+    # presets use — so we add it explicitly here.
     target_compile_options(${target} PRIVATE
       /W4
+      /EHsc
       /permissive-
       /Zc:__cplusplus
       /Zc:inline

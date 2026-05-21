@@ -89,23 +89,4 @@ research/papers/*.zip
 .asset_cache/
 .shader_cache/
 
-# --- ADR + plan / notes klasörleri ---
-# Plan / tasarım dökümanları ve mimari karar kayıtları (ADR) repo'yu
-# gereksiz kalabalık ediyor — yerel olarak saklanır, paylaşılan kopya
-# istendiğinde wiki/discussion gibi dış sistemlere taşınır.
-docs/ADR/
-docs/plan/
-docs/Plan/
-docs/plans/
-docs/Plans/
-docs/notes/
-docs/Notes/
-research/notes/
-research/plans/
-research/reports/
-PLAN.md
-plan.md
-ROADMAP.md
-roadmap.md
-TODO.md
-todo.md
+

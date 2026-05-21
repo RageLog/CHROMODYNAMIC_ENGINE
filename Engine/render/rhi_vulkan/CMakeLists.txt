@@ -35,8 +35,23 @@ FetchContent_Declare(
   GIT_SHALLOW    TRUE
 )
 
+# Vulkan-Headers ships a C++20 module target (vulkan.cppm → Vulkan-Module
+# library). MSVC's cl.exe can scan it; clang-cl + Ninja cannot ("the compiler
+# does not provide a way to discover the import graph dependencies"). We do
+# not consume the module — we use the classic <vulkan/vulkan.h> headers via
+# volk — so we opt out of building it. This keeps the configure portable
+# across MSVC / clang-cl / GCC without a per-compiler conditional.
+set(VULKAN_HEADERS_ENABLE_MODULE OFF CACHE BOOL "" FORCE)
+set(VULKAN_HEADERS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+
 # Make available; volk's CMake links against Vulkan::Headers.
 FetchContent_MakeAvailable(vulkan_headers volk vma)
+
+# Belt-and-suspenders: if the upstream cache var name changes, kill any
+# Vulkan-Module target that did get created — we never link it.
+if(TARGET Vulkan-Module)
+  set_target_properties(Vulkan-Module PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
 
 # Platform options declared early so the volk block below can reference them.
 option(CD_RHI_PREFER_X11 "Force VK_KHR_xlib_surface even when Wayland is available" OFF)

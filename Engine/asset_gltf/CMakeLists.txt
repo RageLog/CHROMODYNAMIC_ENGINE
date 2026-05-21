@@ -65,6 +65,10 @@ target_include_directories(cd_asset_gltf SYSTEM PRIVATE
 # Belt-and-suspenders compile-option suppressions for the wrapper TU. Even
 # with SYSTEM headers, code expanded from macros inside our own .cpp can
 # still trip -Werror; these knock the remaining offenders out.
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()
+
 if(MSVC)
   target_compile_options(cd_asset_gltf PRIVATE
     /wd4100 /wd4189 /wd4244 /wd4267 /wd4456 /wd4458 /wd4505 /wd4702 /wd4996
