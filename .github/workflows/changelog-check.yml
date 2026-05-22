@@ -1,0 +1,60 @@
+name: changelog-check
+
+# Smoke-checks the cd_changelog_gen tool on every PR. Builds the tool,
+# pipes the PR's commits through it, fails if the tool segfaults or
+# refuses to parse a commit subject. The output is NOT compared against
+# CHANGELOG.md — that's a separate manual release step. This workflow's
+# job is just "the tool still works on Linux."
+
+on:
+  push:
+    branches: [master, main, dev]
+  pull_request:
+    branches: [master, main, dev]
+  workflow_dispatch:
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  changelog-gen-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so v0.* tags resolve
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-19
+
+      - name: Configure (ci-gcc, vcpkg disabled)
+        run: |
+          cmake --preset ci-gcc -DCD_DISABLE_VCPKG=ON
+
+      - name: Build cd_changelog_gen
+        run: |
+          cmake --build --preset ci-gcc-debug --target cd_changelog_gen
+
+      - name: "Smoke: pipe a tag range through the tool"
+        run: |
+          # If at least one v0.* tag exists, generate the diff from
+          # the latest tag to HEAD. Otherwise emit the whole history
+          # (still useful as a regression smoke).
+          LATEST=$(git tag -l 'v0.*' --sort=-v:refname | head -n1 || true)
+          if [ -n "$LATEST" ]; then
+            RANGE="$LATEST..HEAD"
+          else
+            RANGE=""
+          fi
+          echo "Range: ${RANGE:-(full history)}"
+          git log --format='%h %s' ${RANGE} \
+            | build/ci-gcc/bin/cd_changelog_gen | tee changelog-fragment.md
+
+      - name: Upload generated fragment as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog-fragment
+          path: changelog-fragment.md
+          if-no-files-found: ignore
