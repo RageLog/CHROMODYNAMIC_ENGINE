@@ -3,3 +3,4 @@
 add_subdirectory(cook_mesh)
 add_subdirectory(cook_texture)
 add_subdirectory(bench_compare)
+add_subdirectory(render_thread_soak)
