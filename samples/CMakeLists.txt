@@ -25,6 +25,7 @@ add_subdirectory(hello_scene_save)
 add_subdirectory(hello_audio_synth)
 add_subdirectory(hello_asset_registry)
 add_subdirectory(hello_audio_play)
+add_subdirectory(hello_audio_wasapi)
 
 # hello_triangle requires the Vulkan backend; gate so the rest of the
 # engine still builds when CD_ENABLE_VULKAN=OFF.
