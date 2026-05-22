@@ -1,18 +1,34 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::log tests (Sprint S2.2 + S2.4)
 // =============================================================================
+// JsonLogger takes a FILE*. We use std::fopen + std::filesystem::remove
+// for the tmp files in the JsonLogger tests; MSVC CRT marks fopen as
+// deprecated in favour of fopen_s but the test is the only consumer and
+// the codepath is clearly bracketed.
+#if defined(_MSC_VER)
+#    define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
 #include <cd/log/AuditTrail.hpp>
 #include <cd/log/ConsoleLogger.hpp>
 #include <cd/log/Format.hpp>
 #include <cd/log/ILogger.hpp>
+#include <cd/log/JsonLogger.hpp>
 #include <cd/log/LogLevel.hpp>
 #include <cd/log/LogRecord.hpp>
 #include <cd/log/Service.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <source_location>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace
@@ -172,6 +188,108 @@ TEST(AuditTrail, ObserverHookRespectsLevelFilter)
     auto snap = trail.snapshot();
     EXPECT_EQ(snap[0].level, cd::log::LogLevel::Warning);
     EXPECT_EQ(snap[1].level, cd::log::LogLevel::Error);
+}
+
+// --- JsonLogger ------------------------------------------------------------- Wave 55
+
+TEST(JsonLogger, EmitsOneJsonObjectPerCall)
+{
+    // tmpfile() returns a stream that's auto-deleted on close; we rewind and
+    // read back to inspect the JSON output.
+    // tmpfile() is deprecated on MSVC CRT; use a regular fopen on a
+    // path under the system temp dir. We delete it ourselves. Per-call
+    // salt = current steady-clock nanoseconds so concurrent tests
+    // don't collide.
+    static std::atomic<std::uint64_t> s_salt { 1 };
+    const auto temp_path = (std::filesystem::temp_directory_path()
+                            / ("cd_jsonlog_"
+                               + std::to_string(s_salt.fetch_add(1)) + ".jsonl"))
+                             .string();
+    std::FILE* tmp = std::fopen(temp_path.c_str(), "w+b");
+    ASSERT_NE(tmp, nullptr);
+    {
+        cd::log::JsonLogger logger { tmp, cd::log::LogLevel::Info };
+        logger.info(std::source_location::current(), "first");
+        logger.warn(std::source_location::current(), "second");
+        logger.flush();
+    }
+    std::rewind(tmp);
+    std::string contents;
+    int c = 0;
+    while ((c = std::fgetc(tmp)) != EOF)
+        contents.push_back(static_cast<char>(c));
+    std::fclose(tmp);
+    std::error_code ec;
+    std::filesystem::remove(temp_path, ec);
+
+    // Two JSONL lines.
+    EXPECT_NE(contents.find("\"level\":\"info\""), std::string::npos);
+    EXPECT_NE(contents.find("\"level\":\"warn\""), std::string::npos);
+    EXPECT_NE(contents.find("\"message\":\"first\""), std::string::npos);
+    EXPECT_NE(contents.find("\"message\":\"second\""), std::string::npos);
+    // Each line ends with a newline.
+    EXPECT_EQ(std::count(contents.begin(), contents.end(), '\n'), 2);
+}
+
+TEST(JsonLogger, EscapesQuotesAndBackslashes)
+{
+    // tmpfile() is deprecated on MSVC CRT; use a regular fopen on a
+    // path under the system temp dir. We delete it ourselves. Per-call
+    // salt = current steady-clock nanoseconds so concurrent tests
+    // don't collide.
+    static std::atomic<std::uint64_t> s_salt { 1 };
+    const auto temp_path = (std::filesystem::temp_directory_path()
+                            / ("cd_jsonlog_"
+                               + std::to_string(s_salt.fetch_add(1)) + ".jsonl"))
+                             .string();
+    std::FILE* tmp = std::fopen(temp_path.c_str(), "w+b");
+    ASSERT_NE(tmp, nullptr);
+    {
+        cd::log::JsonLogger logger { tmp, cd::log::LogLevel::Info };
+        logger.info(std::source_location::current(), "a \"quoted\" and \\backslash");
+    }
+    std::rewind(tmp);
+    std::string contents;
+    int c = 0;
+    while ((c = std::fgetc(tmp)) != EOF)
+        contents.push_back(static_cast<char>(c));
+    std::fclose(tmp);
+    std::error_code ec;
+    std::filesystem::remove(temp_path, ec);
+
+    EXPECT_NE(contents.find("\\\""), std::string::npos);   // escaped quote
+    EXPECT_NE(contents.find("\\\\"), std::string::npos);   // escaped backslash
+}
+
+TEST(JsonLogger, RespectsLevelFilter)
+{
+    // tmpfile() is deprecated on MSVC CRT; use a regular fopen on a
+    // path under the system temp dir. We delete it ourselves. Per-call
+    // salt = current steady-clock nanoseconds so concurrent tests
+    // don't collide.
+    static std::atomic<std::uint64_t> s_salt { 1 };
+    const auto temp_path = (std::filesystem::temp_directory_path()
+                            / ("cd_jsonlog_"
+                               + std::to_string(s_salt.fetch_add(1)) + ".jsonl"))
+                             .string();
+    std::FILE* tmp = std::fopen(temp_path.c_str(), "w+b");
+    ASSERT_NE(tmp, nullptr);
+    {
+        cd::log::JsonLogger logger { tmp, cd::log::LogLevel::Error };
+        logger.info(std::source_location::current(), "should drop");
+        logger.error(std::source_location::current(), "kept");
+    }
+    std::rewind(tmp);
+    std::string contents;
+    int c = 0;
+    while ((c = std::fgetc(tmp)) != EOF)
+        contents.push_back(static_cast<char>(c));
+    std::fclose(tmp);
+    std::error_code ec;
+    std::filesystem::remove(temp_path, ec);
+
+    EXPECT_EQ(contents.find("should drop"), std::string::npos);
+    EXPECT_NE(contents.find("kept"), std::string::npos);
 }
 
 }  // namespace
