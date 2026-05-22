@@ -131,3 +131,97 @@ TEST(AnimationPlayer, PingPongReflects)
 }
 
 }  // namespace
+
+// =============================================================================
+// Skeleton + SkinnedClip — Phase 5 / S4.2.b
+// =============================================================================
+
+#include <cd/anim/Skeleton.hpp>
+
+namespace
+{
+
+cd::anim::Skeleton make_two_joint_chain()
+{
+    // Root at origin, child translated +1 along X. Both bind transforms
+    // identity rotation/scale.
+    cd::anim::Joint root;
+    root.name = "root";
+    root.parent = -1;
+    root.local_bind = cd::math::Transformf {};
+
+    cd::anim::Joint child;
+    child.name = "child";
+    child.parent = 0;
+    child.local_bind.position = { 1.0F, 0.0F, 0.0F };
+
+    return cd::anim::Skeleton { { root, child } };
+}
+
+}  // namespace
+
+TEST(Skeleton, BuildAndLookup)
+{
+    auto s = make_two_joint_chain();
+    EXPECT_EQ(s.joint_count(), 2u);
+    EXPECT_EQ(s.find("root"), 0);
+    EXPECT_EQ(s.find("child"), 1);
+    EXPECT_EQ(s.find("missing"), -1);
+}
+
+TEST(Skeleton, InverseBindMatricesAreInverseOfWorldBind)
+{
+    auto s = make_two_joint_chain();
+    // Child world bind = parent_world(=I) * local_translation(+X)
+    // → inverse_bind should translate by -X.
+    const auto& child_ib = s.joint(1).inverse_bind_matrix;
+    // Multiply inv_bind by [1,0,0,1]: should give origin (close to zero
+    // since world bind translates the joint to (+1,0,0)).
+    const cd::math::Vec4f probe { 1.0F, 0.0F, 0.0F, 1.0F };
+    const cd::math::Vec4f r = child_ib * probe;
+    EXPECT_NEAR(r.x, 0.0F, 1e-5F);
+    EXPECT_NEAR(r.y, 0.0F, 1e-5F);
+    EXPECT_NEAR(r.z, 0.0F, 1e-5F);
+    EXPECT_NEAR(r.w, 1.0F, 1e-5F);
+}
+
+TEST(SkinnedClip, SampleAdvancesTrackedJointOnly)
+{
+    auto s = make_two_joint_chain();
+    cd::anim::SkinnedClip clip { 2 };
+    // Track only the child joint: move from (1,0,0) at t=0 to (1,2,0) at t=1.
+    std::vector<cd::anim::Keyframe> child_track;
+    cd::math::Transformf a {};
+    a.position = { 1.0F, 0.0F, 0.0F };
+    cd::math::Transformf b {};
+    b.position = { 1.0F, 2.0F, 0.0F };
+    child_track.push_back({ 0.0F, a });
+    child_track.push_back({ 1.0F, b });
+    clip.set_track(1, std::move(child_track));
+
+    auto pose = cd::anim::Pose::bind_pose(s);
+    clip.sample(0.5F, pose);
+    // Root untouched (bind = identity).
+    EXPECT_NEAR(pose.joint_locals[0].position.x, 0.0F, 1e-5F);
+    // Child interpolated halfway.
+    EXPECT_NEAR(pose.joint_locals[1].position.x, 1.0F, 1e-5F);
+    EXPECT_NEAR(pose.joint_locals[1].position.y, 1.0F, 1e-5F);
+}
+
+TEST(Skeleton, ComputeSkinningMatricesAtBindGivesIdentity)
+{
+    // At the bind pose, world(i) == world_bind(i), so
+    // world(i) · inverse_bind(i) = I for every joint.
+    auto s = make_two_joint_chain();
+    auto pose = cd::anim::Pose::bind_pose(s);
+    std::vector<cd::math::Mat4f> mats;
+    cd::anim::compute_skinning_matrices(s, pose, mats);
+    ASSERT_EQ(mats.size(), 2u);
+    const auto id = cd::math::Mat4f::identity();
+    for (const auto& m : mats)
+    {
+        for (std::size_t c = 0; c < 4; ++c)
+            for (std::size_t r = 0; r < 4; ++r)
+                EXPECT_NEAR(m[c][r], id[c][r], 1e-5F);
+    }
+}

@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/anim/Animation.cpp
 // =============================================================================
 #include <cd/anim/Animation.hpp>
+#include <cd/anim/Skeleton.hpp>
 #include <cd/math/Functions.hpp>
 #include <cd/math/Transform.hpp>
 
@@ -101,6 +102,60 @@ cd::math::Transformf AnimationPlayer::update(float dt) noexcept
     const float relative = time_ - 0.0F;
     const float wrapped = wrap_(relative, clip_->duration()) + t0;
     return clip_->sample(wrapped);
+}
+
+}  // namespace cd::anim
+
+// =============================================================================
+// SkinnedClip — same lerp/slerp logic as AnimationClip but applied
+// per-joint. Implemented out-of-line so the header stays light.
+// =============================================================================
+
+namespace cd::anim
+{
+
+namespace
+{
+
+cd::math::Vec3f vec_lerp_local(cd::math::Vec3f a, cd::math::Vec3f b, float t) noexcept
+{
+    return cd::math::Vec3f { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
+}
+
+cd::math::Transformf interpolate_local(
+    const cd::math::Transformf& a, const cd::math::Transformf& b, float t) noexcept
+{
+    cd::math::Transformf out;
+    out.position = vec_lerp_local(a.position, b.position, t);
+    out.rotation = cd::math::slerp(a.rotation, b.rotation, t);
+    out.scale = vec_lerp_local(a.scale, b.scale, t);
+    return out;
+}
+
+}  // namespace
+
+cd::math::Transformf SkinnedClip::sample_track_(const std::vector<Keyframe>& frames, float t) noexcept
+{
+    if (frames.empty())
+        return cd::math::Transformf {};
+    if (frames.size() == 1)
+        return frames.front().value;
+    if (t <= frames.front().time)
+        return frames.front().value;
+    if (t >= frames.back().time)
+        return frames.back().value;
+
+    auto it = std::upper_bound(
+        frames.begin(),
+        frames.end(),
+        t,
+        [](float v, const Keyframe& k) { return v < k.time; }
+    );
+    const auto& b = *it;
+    const auto& a = *(it - 1);
+    const float span = b.time - a.time;
+    const float alpha = span > 0.0F ? (t - a.time) / span : 0.0F;
+    return interpolate_local(a.value, b.value, alpha);
 }
 
 }  // namespace cd::anim
