@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/net/ChannelMux.hpp>
 #include <cd/net/IConnection.hpp>
+#include <cd/net/Retransmit.hpp>
 #include <cd/net/UdpConnection.hpp>
 #include <gtest/gtest.h>
 
@@ -329,6 +330,158 @@ TEST(UdpConnection, CloseTransitionsToDisconnected)
     ASSERT_FALSE(send.has_value());
     EXPECT_EQ(send.error().code,
               static_cast<std::uint32_t>(cd::net::net_errors::Code::kDisconnected));
+}
+
+// -----------------------------------------------------------------------------
+// ReliableChannel — Wave 41
+// Uses an injected `now` time point so tests can fast-forward time
+// past the RTO without sleeping. Drop simulation is done by directly
+// draining the IConnection queue (bypassing the mux) — that's the
+// receiver's wire equivalent of "the datagram never arrived".
+// -----------------------------------------------------------------------------
+
+TEST(ReliableChannel, NoDropDeliversWithoutRetransmit)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender { ma, /*user=*/0, /*ack=*/1 };
+    cd::net::ReliableChannel receiver { mb, /*user=*/0, /*ack=*/1 };
+
+    const auto p = bytes_of("hello");
+    auto seq = sender.send({ p.data(), p.size() });
+    ASSERT_TRUE(seq.has_value());
+    EXPECT_EQ(*seq, 0U);
+    EXPECT_EQ(sender.pending_send_count(), 1U);
+
+    // Receiver drains the user frame and emits an ACK.
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);
+    auto got = receiver.receive();
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->size(), 5U);
+
+    // Sender drains the ACK and discharges the pending entry.
+    sender.tick(t0);
+    EXPECT_EQ(sender.pending_send_count(), 0U);
+    EXPECT_EQ(sender.retransmit_count(), 0U);
+}
+
+TEST(ReliableChannel, DroppedUserFrameTriggersRetransmit)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 50 }, /*max_retries=*/3
+    };
+    cd::net::ReliableChannel receiver {
+        mb, 0, 1, std::chrono::milliseconds { 50 }
+    };
+
+    const auto p = bytes_of("retrans");
+    auto seq = sender.send({ p.data(), p.size() });
+    ASSERT_TRUE(seq.has_value());
+
+    // Simulate frame drop: drain b's loopback queue directly so the
+    // receiver's mux never sees the user frame.
+    auto dropped = b->receive();
+    ASSERT_TRUE(dropped.has_value());
+
+    // Time before RTO → no retransmit.
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    sender.tick(t0);
+    EXPECT_EQ(sender.retransmit_count(), 0U);
+
+    // Past RTO → exactly one retransmit fires.
+    sender.tick(t0 + std::chrono::milliseconds { 60 });
+    EXPECT_EQ(sender.retransmit_count(), 1U);
+    EXPECT_EQ(sender.pending_send_count(), 1U);  // still unacked
+
+    // Receiver now actually processes the retransmitted frame.
+    receiver.tick(t0 + std::chrono::milliseconds { 65 });
+    auto got = receiver.receive();
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->size(), 7U);
+
+    // Sender drains the ACK and discharges.
+    sender.tick(t0 + std::chrono::milliseconds { 70 });
+    EXPECT_EQ(sender.pending_send_count(), 0U);
+}
+
+TEST(ReliableChannel, DuplicateRetransmitDoesNotDeliverTwice)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 50 }
+    };
+    cd::net::ReliableChannel receiver {
+        mb, 0, 1, std::chrono::milliseconds { 50 }
+    };
+
+    // Drop the ACK so the sender thinks the frame was lost and
+    // retransmits. The receiver must dedup on the second arrival.
+    const auto p = bytes_of("once");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);  // receives + builds ACK frame on wire
+
+    // Drop the ACK before the sender can see it.
+    auto ack_drop = a->receive();
+    ASSERT_TRUE(ack_drop.has_value());
+
+    auto first = receiver.receive();
+    ASSERT_TRUE(first.has_value());
+
+    // Past RTO, sender retransmits the same frame.
+    sender.tick(t0 + std::chrono::milliseconds { 60 });
+    EXPECT_EQ(sender.retransmit_count(), 1U);
+
+    // Receiver processes the duplicate but does NOT deliver again.
+    receiver.tick(t0 + std::chrono::milliseconds { 65 });
+    EXPECT_EQ(receiver.duplicate_drop_count(), 1U);
+    auto second = receiver.receive();
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().code,
+              static_cast<std::uint32_t>(cd::net::net_errors::Code::kWouldBlock));
+}
+
+TEST(ReliableChannel, MaxRetriesCapsRetransmitCount)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 10 }, /*max_retries=*/2
+    };
+
+    const auto p = bytes_of("lost");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+
+    // Drop every wire frame the sender produces, then drive ticks past
+    // multiple RTO windows. The retransmit count must NOT exceed
+    // max_retries even when no ACK ever arrives.
+    auto drain_a = [&] {
+        while (true)
+        {
+            auto r = b->receive();
+            if (!r.has_value())
+                return;
+        }
+    };
+
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    drain_a();
+    for (int i = 0; i < 10; ++i)
+    {
+        sender.tick(t0 + std::chrono::milliseconds { 20 + i * 20 });
+        drain_a();
+    }
+    EXPECT_EQ(sender.retransmit_count(), 2U);  // max_retries cap
+    EXPECT_EQ(sender.pending_send_count(), 1U);
 }
 
 TEST(ChannelMux, ReliableOutOfOrderBuffersUntilGapFills)
