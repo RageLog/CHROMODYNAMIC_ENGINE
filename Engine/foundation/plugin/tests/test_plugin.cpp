@@ -5,13 +5,19 @@
 // in Sprint S2.4+. v1 here exercises the error paths and the IPlugin interface
 // surface that callers will implement.
 // =============================================================================
+#include <cd/plugin/FileWatcher.hpp>
 #include <cd/plugin/HotReload.hpp>
 #include <cd/plugin/IPlugin.hpp>
 #include <cd/plugin/Loader.hpp>
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 
 namespace
@@ -207,6 +213,123 @@ TEST(HotReload, PollBeforeMountReturnsError)
 TEST(HotReload, DefaultPluginVersionReturnsZeroForMissingFile)
 {
     EXPECT_EQ(cd::plugin::default_plugin_version("this_path_does_not_exist_zxyq.dll"), 0U);
+}
+
+// -----------------------------------------------------------------------------
+// FileWatcher — Wave 38
+// Uses the polling impl with interval=0 so we can drive ticks
+// deterministically via poll_once() and never block the test on a real
+// sleep. A small RAII fixture writes a temp file we can rewrite to
+// simulate a change.
+// -----------------------------------------------------------------------------
+
+class TempFile
+{
+public:
+    TempFile()
+    {
+        path_ = std::filesystem::temp_directory_path()
+              / ("cd_watcher_" + std::to_string(reinterpret_cast<std::uintptr_t>(this))
+                 + ".bin");
+        write("v0");
+    }
+    ~TempFile()
+    {
+        std::error_code ec;
+        std::filesystem::remove(path_, ec);
+    }
+    TempFile(const TempFile&) = delete;
+    TempFile& operator=(const TempFile&) = delete;
+
+    void write(std::string_view contents)
+    {
+        std::ofstream out { path_, std::ios::binary | std::ios::trunc };
+        out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        out.close();
+        // Bump mtime explicitly — some filesystems coarse-grain mtime to
+        // ~1 s, which would defeat back-to-back rewrites in a single test.
+        std::error_code ec;
+        std::filesystem::last_write_time(
+            path_, std::filesystem::file_time_type::clock::now() + std::chrono::seconds { 1 },
+            ec);
+    }
+
+    [[nodiscard]] std::string path_str() const { return path_.string(); }
+
+private:
+    std::filesystem::path path_;
+};
+
+TEST(FileWatcher, PollOnceFiresOnMtimeChange)
+{
+    TempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    std::atomic<int> fires { 0 };
+    ASSERT_TRUE(w->watch(f.path_str(), [&] { ++fires; }).has_value());
+    EXPECT_TRUE(w->is_watching());
+    EXPECT_EQ(w->change_count(), 0U);
+
+    // First poll: nothing changed since watch(), no fire.
+    w->poll_once();
+    EXPECT_EQ(fires.load(), 0);
+
+    // Rewrite the file → mtime advances → next poll fires once.
+    f.write("v1");
+    w->poll_once();
+    EXPECT_EQ(fires.load(), 1);
+    EXPECT_EQ(w->change_count(), 1U);
+
+    // Idempotent: another poll without change does not fire.
+    w->poll_once();
+    EXPECT_EQ(fires.load(), 1);
+    w->stop();
+    EXPECT_FALSE(w->is_watching());
+}
+
+TEST(FileWatcher, WatchMissingFileReturnsError)
+{
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    auto r = w->watch("definitely-not-here-zxyq.txt", [] {});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::plugin::watcher_errors::Code::kFileNotFound));
+}
+
+TEST(FileWatcher, AlreadyWatchingReturnsError)
+{
+    TempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 0 });
+    ASSERT_TRUE(w->watch(f.path_str(), [] {}).has_value());
+    auto second = w->watch(f.path_str(), [] {});
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().code,
+              static_cast<std::uint32_t>(cd::plugin::watcher_errors::Code::kAlreadyWatching));
+}
+
+TEST(FileWatcher, NativeFactoryReturnsNonNull)
+{
+    auto w = cd::plugin::make_native_file_watcher();
+    ASSERT_NE(w, nullptr);
+    EXPECT_FALSE(w->is_watching());
+}
+
+TEST(FileWatcher, BackgroundThreadFiresWithinTimeout)
+{
+    TempFile f;
+    auto w = cd::plugin::make_polling_file_watcher(std::chrono::milliseconds { 25 });
+    std::atomic<int> fires { 0 };
+    ASSERT_TRUE(w->watch(f.path_str(), [&] { ++fires; }).has_value());
+
+    // Bump the file; the background poll should pick it up.
+    std::this_thread::sleep_for(std::chrono::milliseconds { 30 });
+    f.write("v1");
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::milliseconds { 1000 };
+    while (fires.load() == 0 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds { 10 });
+    EXPECT_GE(fires.load(), 1);
+    w->stop();
+    EXPECT_FALSE(w->is_watching());
 }
 
 }  // namespace

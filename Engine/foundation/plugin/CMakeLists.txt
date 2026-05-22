@@ -5,6 +5,7 @@ cd_add_library(plugin
   SOURCES
     src/Loader.cpp
     src/HotReload.cpp
+    src/FileWatcher.cpp
   PUBLIC_DEPS cd::core
 )
 
