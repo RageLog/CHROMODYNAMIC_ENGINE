@@ -313,6 +313,62 @@ TEST(GaussianBlur, ImprovesSsimOnNoisyBaseline)
     EXPECT_GT(s->mean_ssim, 0.5);
 }
 
+// -----------------------------------------------------------------------------
+// SSIM Gaussian-weighted (FLIP-lite) — Wave 61
+// -----------------------------------------------------------------------------
+
+TEST(SsimGaussian, IdenticalImagesScoreOne)
+{
+    const auto img = solid(32, 32, 90, 140, 210, 255);
+    const cd::imgdiff::ImageView v { img.data(), 32, 32 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 8);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(r->mean_ssim, 1.0, 1e-9);
+    EXPECT_GE(r->windows, 1U);
+}
+
+TEST(SsimGaussian, BigDifferenceDropsScoreBelowOne)
+{
+    auto a = solid(32, 32, 128, 128, 128, 255);
+    auto b = a;
+    for (std::size_t y = 0; y < 16; ++y)
+        for (std::size_t x = 0; x < 32; ++x)
+        {
+            const std::size_t i = (y * 32 + x) * 4;
+            b[i + 0] = 0;
+            b[i + 1] = 0;
+            b[i + 2] = 0;
+        }
+    const cd::imgdiff::ImageView va { a.data(), 32, 32 };
+    const cd::imgdiff::ImageView vb { b.data(), 32, 32 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(va, vb, 1.5, 4);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_LT(r->mean_ssim, 0.99);
+}
+
+TEST(SsimGaussian, StrideAffectsWindowCount)
+{
+    const auto img = solid(32, 32, 100, 100, 100, 255);
+    const cd::imgdiff::ImageView v { img.data(), 32, 32 };
+    auto fine = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 1);
+    auto coarse = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 8);
+    ASSERT_TRUE(fine.has_value());
+    ASSERT_TRUE(coarse.has_value());
+    EXPECT_GT(fine->windows, coarse->windows);
+    EXPECT_NEAR(fine->mean_ssim, 1.0, 1e-9);
+    EXPECT_NEAR(coarse->mean_ssim, 1.0, 1e-9);
+}
+
+TEST(SsimGaussian, DimensionMismatchReturnsError)
+{
+    const auto a = solid(16, 16, 0, 0, 0, 255);
+    const auto b = solid(32, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { b.data(), 32, 16 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(va, vb);
+    ASSERT_FALSE(r.has_value());
+}
+
 TEST(SsimLite, DimensionMismatchReturnsError)
 {
     const auto a = solid(8, 8, 0, 0, 0, 255);

@@ -157,4 +157,123 @@ compute_ssim_lite(ImageView a, ImageView b, std::uint32_t window_size = 8)
     return report.mean_ssim >= threshold;
 }
 
+// ---- Gaussian-weighted SSIM (FLIP-lite — Wave 61) ---------------------------
+
+namespace ssim_detail
+{
+
+[[nodiscard]] inline std::vector<double> build_gauss_2d(double sigma)
+{
+    if (sigma <= 0.0)
+        return { 1.0 };
+    const auto r = static_cast<int>(std::ceil(3.0 * sigma));
+    const int width = 2 * r + 1;
+    std::vector<double> k(static_cast<std::size_t>(width) * static_cast<std::size_t>(width));
+    const double inv_2s2 = 1.0 / (2.0 * sigma * sigma);
+    double sum = 0.0;
+    for (int j = -r; j <= r; ++j)
+        for (int i = -r; i <= r; ++i)
+        {
+            const double v = std::exp(-static_cast<double>(i * i + j * j) * inv_2s2);
+            k[static_cast<std::size_t>((j + r) * width + (i + r))] = v;
+            sum += v;
+        }
+    for (auto& v : k)
+        v /= sum;
+    return k;
+}
+
+}  // namespace ssim_detail
+
+/// Gaussian-weighted SSIM (Wang 2004 §III-B reference setup). Slides a
+/// 2D Gaussian window (sigma default 1.5, kernel size 2·ceil(3σ)+1 →
+/// 11×11 by default) across the image. `stride` controls how often
+/// the window is sampled — stride=1 = per-pixel sliding (most
+/// accurate, ~window² × per-window cost); stride=window_size/2 is
+/// the common "lite" trade-off. Uses BT.601 luminance, same as
+/// `compute_ssim_lite`.
+///
+/// This is the FLIP perceptual-diff foundation; CSF + spatial
+/// filtering chain layers on top of this score.
+[[nodiscard]] inline cd::core::Result<SsimReport>
+compute_ssim_gaussian(ImageView a, ImageView b, double sigma = 1.5,
+                      std::uint32_t stride = 1)
+{
+    if (a.rgba == nullptr || b.rgba == nullptr)
+        return std::unexpected(imgdiff_errors::make(imgdiff_errors::Code::kNullPointer));
+    if (a.width != b.width || a.height != b.height)
+        return std::unexpected(imgdiff_errors::make(imgdiff_errors::Code::kDimensionMismatch));
+    if (a.width == 0 || a.height == 0)
+        return std::unexpected(imgdiff_errors::make(imgdiff_errors::Code::kEmptyImage));
+    if (stride == 0)
+        stride = 1;
+
+    constexpr double kL = 255.0;
+    constexpr double kK1 = 0.01;
+    constexpr double kK2 = 0.03;
+    constexpr double kC1 = (kK1 * kL) * (kK1 * kL);
+    constexpr double kC2 = (kK2 * kL) * (kK2 * kL);
+
+    const auto kernel = ssim_detail::build_gauss_2d(sigma);
+    const int kw = static_cast<int>(std::sqrt(static_cast<double>(kernel.size())));
+    const int r = (kw - 1) / 2;
+    const int W = static_cast<int>(a.width);
+    const int H = static_cast<int>(a.height);
+
+    SsimReport rep;
+    rep.min_ssim = 1.0;
+    double sum_ssim = 0.0;
+
+    for (int cy = r; cy + r < H; cy += static_cast<int>(stride))
+    {
+        for (int cx = r; cx + r < W; cx += static_cast<int>(stride))
+        {
+            double mean_a = 0.0;
+            double mean_b = 0.0;
+            for (int dy = -r; dy <= r; ++dy)
+                for (int dx = -r; dx <= r; ++dx)
+                {
+                    const auto i = (static_cast<std::size_t>(cy + dy) * static_cast<std::size_t>(W)
+                                    + static_cast<std::size_t>(cx + dx)) * 4U;
+                    const double w = kernel[static_cast<std::size_t>((dy + r) * kw + (dx + r))];
+                    mean_a += w * ssim_detail::luminance_at(a.rgba, i);
+                    mean_b += w * ssim_detail::luminance_at(b.rgba, i);
+                }
+
+            double var_a = 0.0;
+            double var_b = 0.0;
+            double cov_ab = 0.0;
+            for (int dy = -r; dy <= r; ++dy)
+                for (int dx = -r; dx <= r; ++dx)
+                {
+                    const auto i = (static_cast<std::size_t>(cy + dy) * static_cast<std::size_t>(W)
+                                    + static_cast<std::size_t>(cx + dx)) * 4U;
+                    const double w = kernel[static_cast<std::size_t>((dy + r) * kw + (dx + r))];
+                    const double la = ssim_detail::luminance_at(a.rgba, i) - mean_a;
+                    const double lb = ssim_detail::luminance_at(b.rgba, i) - mean_b;
+                    var_a += w * la * la;
+                    var_b += w * lb * lb;
+                    cov_ab += w * la * lb;
+                }
+
+            const double num = (2.0 * mean_a * mean_b + kC1) * (2.0 * cov_ab + kC2);
+            const double den = (mean_a * mean_a + mean_b * mean_b + kC1)
+                             * (var_a + var_b + kC2);
+            const double ssim = den > 0.0 ? num / den : 1.0;
+            sum_ssim += ssim;
+            rep.min_ssim = std::min(rep.min_ssim, ssim);
+            ++rep.windows;
+        }
+    }
+
+    if (rep.windows == 0)
+    {
+        rep.mean_ssim = 1.0;
+        rep.min_ssim = 1.0;
+        return rep;
+    }
+    rep.mean_ssim = sum_ssim / static_cast<double>(rep.windows);
+    return rep;
+}
+
 }  // namespace cd::imgdiff
