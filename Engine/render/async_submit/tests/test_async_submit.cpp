@@ -122,3 +122,79 @@ TEST(AsyncSubmit, EmptyJobIsNoop)
     async.wait_idle();
     EXPECT_EQ(async.completion_count(), 1u);  // counted as completed.
 }
+
+// =============================================================================
+// AsyncSubmitN (Wave 30) — N-deep ring queue pipelining
+// =============================================================================
+
+#include <cd/render/AsyncSubmitN.hpp>
+
+TEST(AsyncSubmitN, ProducerStaysAheadByCapacity)
+{
+    cd::render::AsyncSubmitN q { 3 };
+    std::atomic<int> done { 0 };
+    auto slow_job = [&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds { 5 });
+        done.fetch_add(1, std::memory_order_release);
+    };
+    // 3 enqueues should not block (capacity = 3, worker just starting).
+    auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i)
+        q.enqueue(slow_job);
+    auto t1 = std::chrono::steady_clock::now();
+    EXPECT_LT(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(), 10);
+    q.wait_idle();
+    EXPECT_EQ(done.load(), 3);
+    EXPECT_EQ(q.completion_count(), 3u);
+}
+
+TEST(AsyncSubmitN, EnqueueBlocksWhenFull)
+{
+    cd::render::AsyncSubmitN q { 2 };
+    std::atomic<bool> release { false };
+    // Worker stuck on the first job.
+    q.enqueue([&] {
+        while (!release.load(std::memory_order_acquire))
+            std::this_thread::sleep_for(std::chrono::microseconds { 100 });
+    });
+    q.enqueue([] {});  // capacity-1 slot
+    // Third enqueue must block until worker releases first job.
+    std::thread t([&] { q.enqueue([] {}); });
+    std::this_thread::sleep_for(std::chrono::milliseconds { 20 });
+    EXPECT_EQ(q.completion_count(), 0u);  // first job still spinning
+    release.store(true, std::memory_order_release);
+    t.join();
+    q.wait_idle();
+    EXPECT_EQ(q.completion_count(), 3u);
+}
+
+TEST(AsyncSubmitN, OneThousandFrameStress)
+{
+    cd::render::AsyncSubmitN q { 3 };
+    std::atomic<std::uint64_t> frames { 0 };
+    for (int i = 0; i < 1000; ++i)
+    {
+        q.enqueue([&] {
+            volatile std::uint64_t s = 0;
+            for (std::uint64_t k = 0; k < 64; ++k)
+                s += k * k;
+            (void)s;
+            frames.fetch_add(1, std::memory_order_release);
+        });
+    }
+    q.wait_idle();
+    EXPECT_EQ(frames.load(), 1000u);
+    EXPECT_EQ(q.completion_count(), 1000u);
+}
+
+TEST(AsyncSubmitN, DestructorDrainsAndJoins)
+{
+    for (int i = 0; i < 5; ++i)
+    {
+        cd::render::AsyncSubmitN q { 4 };
+        for (int k = 0; k < 4; ++k)
+            q.enqueue([] { std::this_thread::sleep_for(std::chrono::milliseconds { 1 }); });
+        // Let destructor handle drain + stop + join.
+    }
+    SUCCEED();
+}
