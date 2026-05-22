@@ -176,13 +176,16 @@ public:
         offsets_sizes.reserve(entries_.size());
         for (const auto& e : entries_)
         {
-            offsets_sizes.emplace_back(static_cast<std::uint64_t>(out.size()),
-                                       static_cast<std::uint64_t>(e.bytes.size()));
+            const std::uint64_t off = out.size();
+            const std::uint64_t sz = e.bytes.size();
+            offsets_sizes.emplace_back(off, sz);
             out.insert(out.end(), e.bytes.begin(), e.bytes.end());
         }
 
-        // TOC starts here.
-        const auto toc_off = static_cast<std::uint64_t>(out.size());
+        // TOC starts here. size_t→uint64_t cast is a no-op on x86_64 but
+        // required for the wire format; written explicitly without
+        // static_cast to keep GCC -Wuseless-cast happy on 64-bit.
+        const std::uint64_t toc_off = out.size();
         for (std::size_t i = 0; i < entries_.size(); ++i)
         {
             const auto& e = entries_[i];
