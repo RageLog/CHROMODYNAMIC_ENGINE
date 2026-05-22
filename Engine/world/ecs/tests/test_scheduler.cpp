@@ -6,8 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -111,4 +113,97 @@ TEST(Scheduler, BodyActuallyMutatesWorld)
     auto* p = w.get<Pos>(e);
     ASSERT_NE(p, nullptr);
     EXPECT_EQ(p->x, 7);
+}
+
+// =============================================================================
+// Wave 17 (S4.3) — tick_parallel + preview_stages
+// =============================================================================
+
+TEST(Scheduler, PreviewStagesMatchesParallelLayout)
+{
+    cd::ecs::World w;
+    cd::ecs::Scheduler s;
+    // Three systems: A writes Pos, B reads Pos, C writes Vel.
+    // Conflicts: A→B (write→read on Pos). C is independent.
+    // Stage 0: {A, C}.  Stage 1: {B}.
+    s.add(cd::ecs::SystemDesc { "A" }
+              .writes<Pos>()
+              .fn([](cd::ecs::World&) {}));
+    s.add(cd::ecs::SystemDesc { "B" }
+              .reads<Pos>()
+              .fn([](cd::ecs::World&) {}));
+    s.add(cd::ecs::SystemDesc { "C" }
+              .writes<Vel>()
+              .fn([](cd::ecs::World&) {}));
+
+    auto stages_r = s.preview_stages();
+    ASSERT_TRUE(stages_r.has_value());
+    ASSERT_EQ(stages_r->size(), 2u);
+    EXPECT_EQ((*stages_r)[0].size(), 2u);  // A + C
+    EXPECT_EQ((*stages_r)[1].size(), 1u);  // B
+}
+
+TEST(Scheduler, ParallelTickProducesSameResultAsSequential)
+{
+    auto run = [](bool parallel) {
+        cd::ecs::World w;
+        auto e1 = w.create();
+        auto e2 = w.create();
+        w.emplace<Pos>(e1, Pos { 0 });
+        w.emplace<Pos>(e2, Pos { 0 });
+        w.emplace<Vel>(e1, Vel { 3 });
+        w.emplace<Vel>(e2, Vel { -1 });
+
+        cd::ecs::Scheduler s;
+        s.add(cd::ecs::SystemDesc { "move" }
+                  .reads<Vel>()
+                  .writes<Pos>()
+                  .fn([](cd::ecs::World& wr)
+                      { wr.each<Pos, Vel>([](cd::ecs::Entity, Pos& p, Vel& v)
+                                          { p.x += v.dx; }); }));
+        s.add(cd::ecs::SystemDesc { "audit" }
+                  .reads<Pos>()
+                  .fn([](cd::ecs::World&) {}));  // body irrelevant.
+
+        for (int i = 0; i < 5; ++i)
+        {
+            if (parallel)
+                EXPECT_TRUE(s.tick_parallel(w).has_value());
+            else
+                EXPECT_TRUE(s.tick(w).has_value());
+        }
+        return std::make_pair(*w.get<Pos>(e1), *w.get<Pos>(e2));
+    };
+
+    const auto seq = run(false);
+    const auto par = run(true);
+    EXPECT_EQ(seq.first.x, par.first.x);
+    EXPECT_EQ(seq.second.x, par.second.x);
+}
+
+TEST(Scheduler, ParallelTickHandlesIndependentSystemsConcurrently)
+{
+    cd::ecs::World w;
+    cd::ecs::Scheduler s;
+    // 4 independent systems (no shared components) — all in stage 0.
+    std::atomic<int> hits { 0 };
+    auto add_indep = [&](const char* name) {
+        s.add(cd::ecs::SystemDesc { name }
+                  .fn([&](cd::ecs::World&) {
+                      // Touch atomic to prove all four bodies actually ran.
+                      hits.fetch_add(1, std::memory_order_relaxed);
+                  }));
+    };
+    add_indep("a");
+    add_indep("b");
+    add_indep("c");
+    add_indep("d");
+
+    auto stages_r = s.preview_stages();
+    ASSERT_TRUE(stages_r.has_value());
+    ASSERT_EQ(stages_r->size(), 1u);
+    EXPECT_EQ((*stages_r)[0].size(), 4u);
+
+    EXPECT_TRUE(s.tick_parallel(w).has_value());
+    EXPECT_EQ(hits.load(), 4);
 }

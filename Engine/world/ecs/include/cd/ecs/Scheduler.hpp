@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <string>
 #include <string_view>
 #include <typeindex>
@@ -128,9 +129,19 @@ private:
     Fn body_;
 };
 
-/// Sequential scheduler. v2 will swap the inner `tick_` loop for a
-/// parallel dispatcher; the user-facing API is identical so calling code
-/// gets the upgrade for free.
+/// Scheduler with two dispatch modes:
+///   * tick(World&)         — sequential (registration-order-stable
+///                            within each parallel-safe set).
+///   * tick_parallel(World&)— per-stage parallel: a "stage" is the set
+///                            of systems with no remaining dependencies
+///                            (Kahn level). Stages run in order, systems
+///                            within a stage run concurrently via
+///                            `std::async(std::launch::async)`.
+///
+/// Both modes produce identical output assuming system bodies don't
+/// touch global state outside their declared reads/writes — which is
+/// the only safe pattern anyway. Parallel mode is opt-in; calling code
+/// gets the speedup only when it asks.
 class Scheduler
 {
 public:
@@ -187,6 +198,73 @@ public:
         return out;
     }
 
+    /// Run every system once on `world`, dispatching parallel-safe sets
+    /// concurrently. Within each stage, systems run via std::async; each
+    /// stage waits for all its jobs before the next stage starts.
+    /// Single-system stages run inline (no thread overhead). Identical
+    /// observable result to `tick()` for systems that respect their
+    /// declared reads/writes.
+    [[nodiscard]] cd::core::Result<void> tick_parallel(World& world)
+    {
+        if (!sorted_)
+        {
+            auto r = build_order_();
+            if (!r.has_value())
+                return std::unexpected(r.error());
+        }
+        for (const auto& stage : stages_)
+        {
+            if (stage.size() <= 1)
+            {
+                for (auto idx : stage)
+                {
+                    const auto& s = systems_[idx];
+                    if (s.body())
+                        s.body()(world);
+                }
+                continue;
+            }
+            std::vector<std::future<void>> futures;
+            futures.reserve(stage.size());
+            for (auto idx : stage)
+            {
+                const auto& s = systems_[idx];
+                if (!s.body())
+                    continue;
+                futures.push_back(std::async(std::launch::async,
+                                             [&s, &world]() { s.body()(world); }));
+            }
+            for (auto& f : futures)
+                f.get();  // .get() rethrows exceptions (asserts in test).
+        }
+        return {};
+    }
+
+    /// Read-only preview of the parallel stage layout. stages[i] holds
+    /// the names of every system in the i-th concurrently-dispatchable
+    /// batch.
+    [[nodiscard]] cd::core::Result<std::vector<std::vector<std::string>>>
+    preview_stages()
+    {
+        if (!sorted_)
+        {
+            auto r = build_order_();
+            if (!r.has_value())
+                return std::unexpected(r.error());
+        }
+        std::vector<std::vector<std::string>> out;
+        out.reserve(stages_.size());
+        for (const auto& st : stages_)
+        {
+            std::vector<std::string> names;
+            names.reserve(st.size());
+            for (auto idx : st)
+                names.push_back(systems_[idx].name());
+            out.push_back(std::move(names));
+        }
+        return out;
+    }
+
 private:
     [[nodiscard]] static bool conflicts_(const SystemDesc& a, const SystemDesc& b) noexcept
     {
@@ -226,40 +304,50 @@ private:
         }
 
         // Kahn-style topological sort, picking the smallest available index
-        // each step to preserve stability.
+        // each step to preserve stability. We ALSO record the level at
+        // which each system becomes ready — that's the parallel-stage
+        // assignment used by `tick_parallel`.
         order_.clear();
         order_.reserve(n);
-        std::vector<std::size_t> ready;
-        for (std::size_t i = 0; i < n; ++i)
-            if (in_deg[i] == 0)
-                ready.push_back(i);
+        stages_.clear();
+        std::vector<int> remaining_in_deg = in_deg;
+        std::vector<bool> processed(n, false);
+        std::size_t total_processed = 0;
 
-        while (!ready.empty())
+        while (total_processed < n)
         {
-            // Stable pick: smallest registration index.
-            std::sort(ready.begin(), ready.end());
-            const auto u = ready.front();
-            ready.erase(ready.begin());
-            order_.push_back(u);
-            for (auto v : succ[u])
+            std::vector<std::size_t> stage;
+            for (std::size_t i = 0; i < n; ++i)
             {
-                if (--in_deg[v] == 0)
-                    ready.push_back(v);
+                if (!processed[i] && remaining_in_deg[i] == 0)
+                    stage.push_back(i);
             }
+            if (stage.empty())
+            {
+                return std::unexpected(scheduler_errors::make(
+                    scheduler_errors::Code::kCycleDetected, "scheduler: dependency cycle"));
+            }
+            std::sort(stage.begin(), stage.end());  // registration-order stable.
+            for (auto u : stage)
+            {
+                processed[u] = true;
+                ++total_processed;
+                order_.push_back(u);
+                for (auto v : succ[u])
+                    --remaining_in_deg[v];
+            }
+            stages_.push_back(std::move(stage));
         }
 
-        if (order_.size() != n)
-        {
-            return std::unexpected(
-                scheduler_errors::make(scheduler_errors::Code::kCycleDetected, "scheduler: dependency cycle")
-            );
-        }
         sorted_ = true;
         return {};
     }
 
     std::vector<SystemDesc> systems_;
     std::vector<std::size_t> order_;
+    /// Kahn-level groups (parallel-safe sets). stages_[k] holds the
+    /// system indices that become runnable at level k.
+    std::vector<std::vector<std::size_t>> stages_;
     bool sorted_ { false };
 };
 
