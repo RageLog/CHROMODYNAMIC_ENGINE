@@ -356,3 +356,82 @@ TEST(SceneSerializer, BadVersionRejected)
 }
 
 }  // namespace
+
+// =============================================================================
+// BinarySerializer (.cdscene) — Phase 5 / S4.7.b
+// =============================================================================
+
+#include <cd/scene/BinarySerializer.hpp>
+
+TEST(SceneBinarySerializer, EmptySceneRoundTrip)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    const auto bytes = cd::scene::serialize_scene_binary(s);
+    EXPECT_GE(bytes.size(), cd::scene::kBinaryHeaderSize);
+
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->size(), 0u);
+}
+
+TEST(SceneBinarySerializer, FlatSceneRoundTripPreservesTransforms)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto a = s.create_node();
+    s.local(a)->value.position = cd::math::Vec3f { 3.5F, -1.0F, 2.0F };
+    s.local(a)->value.scale = cd::math::Vec3f { 1.5F, 0.5F, 2.0F };
+    auto b = s.create_node();
+    s.local(b)->value.position = cd::math::Vec3f { -4.0F, 0.0F, 7.0F };
+
+    const auto bytes = cd::scene::serialize_scene_binary(s);
+
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_EQ(r->size(), 2u);
+
+    int seen = 0;
+    w2.for_each<cd::scene::LocalTransform>([&](cd::ecs::Entity, cd::scene::LocalTransform& lt) {
+        if (approx_eq(lt.value.position.x, 3.5F) && approx_eq(lt.value.scale.x, 1.5F))
+            ++seen;
+        else if (approx_eq(lt.value.position.x, -4.0F))
+            ++seen;
+    });
+    EXPECT_EQ(seen, 2);
+}
+
+TEST(SceneBinarySerializer, ParentLinksAreRebuilt)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto parent = s.create_node();
+    auto child = s.create_node();
+    s.attach(child, parent);
+
+    const auto bytes = cd::scene::serialize_scene_binary(s);
+
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value());
+    const auto p2 = r->at(parent.id);
+    const auto c2 = r->at(child.id);
+    EXPECT_EQ(s2.parent_of(c2), p2);
+    EXPECT_FALSE(s2.parent_of(p2).is_valid());
+}
+
+TEST(SceneBinarySerializer, BadMagicRejected)
+{
+    std::vector<std::byte> tiny(20, std::byte { 0 });
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto r = cd::scene::deserialize_scene_binary(s, tiny.data(), tiny.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kMagicMismatch));
+}
