@@ -7,6 +7,7 @@ cd_add_library(scene
     cd::ecs
     cd::math
     cd::core
+    cd::asset_json  # for cd/scene/Serializer.hpp (header-only)
 )
 
 if(CD_ENABLE_TESTING)

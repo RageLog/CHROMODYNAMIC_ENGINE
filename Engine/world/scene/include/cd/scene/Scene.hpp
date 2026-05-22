@@ -131,9 +131,68 @@ public:
         return *world_;
     }
 
+    /// Visit every scene node — i.e. every entity that carries a
+    /// LocalTransform component. Order is the ECS for_each order
+    /// (stable across a frame, not necessarily stable across runs).
+    template <class Fn>
+    void for_each_node(Fn&& fn) const
+    {
+        world_->for_each<LocalTransform>(
+            [&](cd::ecs::Entity e, LocalTransform& lt) { fn(e, lt); }
+        );
+    }
+
+    /// Visit every root node (no `Parent` component).
+    template <class Fn>
+    void for_each_root(Fn&& fn) const
+    {
+        world_->for_each<LocalTransform>(
+            [&](cd::ecs::Entity e, LocalTransform& lt)
+            {
+                if (world_->get<Parent>(e) == nullptr)
+                    fn(e, lt);
+            }
+        );
+    }
+
+    /// Depth-first walk of `root` and all its descendants. `fn(entity,
+    /// depth)` is called for `root` (depth=0) then for each child
+    /// recursively. Cycles are not possible by construction (attach()
+    /// rejects them) — we still cap recursion at 256 levels as a safety
+    /// fallback against malformed data.
+    template <class Fn>
+    void for_each_descendant(cd::ecs::Entity root, Fn&& fn) const
+    {
+        // descend_ takes `Fn&`; binding the named parameter (which is an
+        // lvalue here) to that reference works whether the caller passed
+        // an rvalue lambda or an lvalue callable.
+        descend_(root, 0u, fn);
+    }
+
+    /// Direct children of `e` in attach() order. Returns nullptr if `e`
+    /// has no children (no Children component installed yet).
+    [[nodiscard]] const Children* children_of(cd::ecs::Entity e) const
+    {
+        return world_->get<Children>(e);
+    }
+
 private:
     void destroy_subtree_(cd::ecs::Entity node);
     void propagate_(cd::ecs::Entity node, const cd::math::Mat4f& parent_world);
+
+    template <class Fn>
+    void descend_(cd::ecs::Entity node, std::uint32_t depth, Fn& fn) const
+    {
+        constexpr std::uint32_t kMaxDepth = 256;
+        if (depth > kMaxDepth)
+            return;
+        fn(node, depth);
+        const auto* ch = world_->get<Children>(node);
+        if (ch == nullptr)
+            return;
+        for (const auto& c : ch->entities)
+            descend_(c, depth + 1, fn);
+    }
 
     cd::ecs::World* world_ { nullptr };
 };

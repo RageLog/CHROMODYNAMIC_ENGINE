@@ -196,6 +196,79 @@ public:
         );
     }
 
+    // ---- Cached queries -------------------------------------------------
+    //
+    // `each<T, Rest...>` re-resolves every component pool through a
+    // std::type_index hash lookup per call. For systems that run every
+    // frame the lookup cost dominates short bodies (Move, ApplyDrag, …).
+    // A `Query` object snapshots the resolved pointers ONCE and reuses
+    // them across calls. Storage pointers are stable for the lifetime
+    // of a World (unique_ptr owns the SparseSet, the unordered_map only
+    // owns the unique_ptr; rehashing the map cannot move the inner
+    // object) so this caching is safe.
+    //
+    // Caveat: a Query built BEFORE its component type was first
+    // emplace()d resolves to nullptr and skips iteration. Re-build the
+    // query, or call `Query::refresh(world)`, after the type appears.
+
+    template <class T, class... Rest>
+    class Query
+    {
+    public:
+        explicit Query(const World& w) noexcept
+        {
+            refresh(w);
+        }
+
+        /// Re-snapshot pointers. Call after a component type is first
+        /// emplaced if the Query was built before that emplace.
+        void refresh(const World& w) noexcept
+        {
+            driver_ = w.try_storage_<T>();
+            rest_present_ = (... && (w.try_storage_<Rest>() != nullptr));
+        }
+
+        /// True when every component pool referenced by the Query exists.
+        [[nodiscard]] bool ready() const noexcept
+        {
+            return driver_ != nullptr && rest_present_;
+        }
+
+        /// Iterate over every entity that has T and all of Rest. The
+        /// callable signature is `void(Entity, T&, Rest&...)`. Iteration
+        /// is silently skipped when any required pool is missing.
+        template <class Fn>
+        void each(World& w, Fn&& fn)
+        {
+            if (driver_ == nullptr || !rest_present_)
+                return;
+            driver_->for_each(
+                [&](Entity e, T& primary)
+                {
+                    // `[[maybe_unused]]` silences GCC's spurious "set but not
+                    // used" warning — the fold expressions below DO read the
+                    // tuple but GCC's analyser misses them through the pack
+                    // expansion.
+                    [[maybe_unused]] auto rest_ptrs = std::make_tuple(w.template get<Rest>(e)...);
+                    if (((std::get<Rest*>(rest_ptrs) == nullptr) || ...))
+                        return;
+                    fn(e, primary, *std::get<Rest*>(rest_ptrs)...);
+                }
+            );
+        }
+
+    private:
+        SparseSet<T>* driver_ { nullptr };
+        bool rest_present_ { false };
+    };
+
+    /// Factory that constructs a cached Query bound to this world.
+    template <class T, class... Rest>
+    [[nodiscard]] Query<T, Rest...> query() const
+    {
+        return Query<T, Rest...> { *this };
+    }
+
     // ---- Introspection (for tests) -------------------------------------
 
     [[nodiscard]] std::size_t storage_type_count() const noexcept
