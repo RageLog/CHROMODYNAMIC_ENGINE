@@ -4,6 +4,7 @@
 cd_add_library(plugin
   SOURCES
     src/Loader.cpp
+    src/HotReload.cpp
   PUBLIC_DEPS cd::core
 )
 

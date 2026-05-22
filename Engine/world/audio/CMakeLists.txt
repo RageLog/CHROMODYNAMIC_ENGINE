@@ -4,6 +4,9 @@ cd_add_library(audio
     src/NullAudioBackend.cpp
     src/FileSinkAudioBackend.cpp
     src/WasapiAudioBackend.cpp
+    src/CoreAudioBackend.cpp
+    src/AlsaBackend.cpp
+    src/NativeBackend.cpp
   PUBLIC_DEPS cd::core
 )
 

@@ -1,7 +1,10 @@
 // =============================================================================
-// CHROMODYNAMIC — cd::audio tests (null backend)
+// CHROMODYNAMIC — cd::audio tests (null backend + native dispatcher)
 // =============================================================================
+#include <cd/audio/AlsaBackend.hpp>
+#include <cd/audio/CoreAudioBackend.hpp>
 #include <cd/audio/IAudioBackend.hpp>
+#include <cd/audio/NativeBackend.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -97,6 +100,53 @@ TEST(Audio, MasterVolumeClampedToUnit)
     EXPECT_FLOAT_EQ(b->master_volume(), 1.0F);
     b->set_master_volume(-1.0F);
     EXPECT_FLOAT_EQ(b->master_volume(), 0.0F);
+}
+
+// -----------------------------------------------------------------------------
+// Native dispatcher — Wave 34. The factory must always return a usable
+// backend (real native on Windows / future macOS / future Linux, or the
+// null backend as a guaranteed fallback). Stubs for CoreAudio and ALSA
+// always return nullptr right now, so the test only checks that the
+// dispatcher honours the fallback contract.
+// -----------------------------------------------------------------------------
+
+TEST(NativeBackend, AlwaysReturnsUsableBackend)
+{
+    auto result = cd::audio::make_native_audio_backend();
+    ASSERT_NE(result.backend, nullptr);
+    // Sanity: the backend must service the same API regardless of kind.
+    EXPECT_EQ(result.backend->clip_count(), 0U);
+    EXPECT_EQ(result.backend->voice_count(), 0U);
+}
+
+TEST(NativeBackend, CoreAudioStubReturnsNullEverywhere)
+{
+    // The CoreAudio backend is a documented stub — the symbol must
+    // exist and return nullptr until the AudioUnit implementation lands.
+    auto core = cd::audio::make_coreaudio_backend();
+    EXPECT_EQ(core, nullptr);
+}
+
+TEST(NativeBackend, AlsaStubReturnsNullEverywhere)
+{
+    auto alsa = cd::audio::make_alsa_backend();
+    EXPECT_EQ(alsa, nullptr);
+}
+
+TEST(NativeBackend, KindMatchesHostPlatform)
+{
+    // The dispatcher should pick the WASAPI path on Windows. On every
+    // other host (or when WASAPI itself fails to initialise — e.g. a
+    // headless build agent with no audio service running) we fall back
+    // to the null backend. CoreAudio/ALSA always fall through to the
+    // null backend right now because those backends are stubs.
+    auto result = cd::audio::make_native_audio_backend();
+#if defined(_WIN32)
+    EXPECT_TRUE(result.kind == cd::audio::NativeBackendKind::kWasapi
+                || result.kind == cd::audio::NativeBackendKind::kNullFallback);
+#else
+    EXPECT_EQ(result.kind, cd::audio::NativeBackendKind::kNullFallback);
+#endif
 }
 
 }  // namespace
