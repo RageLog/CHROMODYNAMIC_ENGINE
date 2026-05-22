@@ -509,6 +509,28 @@ TEST(ReliableChannel, KarnSkipsRttSampleOnRetransmit)
     EXPECT_EQ(sender.srtt().count(), 0);
 }
 
+TEST(ReliableChannel, CumulativeAckDischargesAllPriorPendings)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender { ma, 0, 1 };
+    cd::net::ReliableChannel receiver { mb, 0, 1 };
+
+    // Send four frames back to back.
+    const auto p = bytes_of("c");
+    for (int i = 0; i < 4; ++i)
+        ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    EXPECT_EQ(sender.pending_send_count(), 4U);
+
+    // Receiver processes them all in one tick → emits ONE cum-ack for
+    // seq=3 (high water = 4 - 1). Sender's tick discharges all four.
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);
+    sender.tick(t0);
+    EXPECT_EQ(sender.pending_send_count(), 0U);
+}
+
 TEST(ReliableChannel, MaxRetriesCapsRetransmitCount)
 {
     auto [a, b] = cd::net::make_loopback_pair();

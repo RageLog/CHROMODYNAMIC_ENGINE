@@ -37,8 +37,20 @@
 //   * Clamped to [rto_min_, rto_max_] — defaults 25 ms / 5 s, configurable
 //     via the constructor.
 //
+// Cumulative ACK (Wave 46):
+//   The ACK frame carries the receiver's `next_recv_seq_ - 1` — i.e.
+//   "every seq up to and including N has been delivered." On the sender
+//   side an ACK(N) discharges ALL pending entries with seq ≤ N. This
+//   reduces ACK traffic by up to the in-flight window size with no
+//   change to the wire format (still 4 bytes, still little-endian u32).
+//   The receiver re-emits the same cum-ACK on duplicate user-frame
+//   arrivals so a lost ACK gets a free re-try whenever the sender
+//   retransmits a frame whose ACK never landed.
+//
 // What this layer does NOT do (Phase 6 follow-ups):
-//   * Cumulative / SACK style ACK — every frame gets its own ACK packet.
+//   * SACK (selective ACK ranges) — receiver holds out-of-order frames
+//     in `inbound_` but does NOT signal gaps to the sender. The sender
+//     learns about gaps only by RTO-driven retransmit.
 //   * Congestion control / window — the API does not back-pressure send().
 //
 // Clock injection: `tick()` takes a `now` time point so unit tests can
@@ -57,6 +69,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <unordered_map>
@@ -141,6 +154,10 @@ public:
         }
         retransmit_(now);
         flush_ready_();
+        // Emit one cumulative ACK per tick if the contiguous high water
+        // has advanced (or if a duplicate prodded us to resend the
+        // last-known ACK for safety).
+        maybe_emit_cum_ack_();
     }
 
     [[nodiscard]] std::size_t pending_send_count() const noexcept { return pending_.size(); }
@@ -190,11 +207,14 @@ private:
         if (bytes.size() < 4)
             return;
         const auto seq = read_u32_(bytes.data());
-        send_ack_(seq);
 
         if (seq < next_recv_seq_ || seen_.contains(seq))
         {
             ++duplicate_drops_;
+            // The sender retried because the ACK never arrived. Mark
+            // the cum-ack dirty so the next tick re-emits the last
+            // known high water.
+            ack_dirty_ = true;
             return;
         }
         seen_.insert(seq);
@@ -207,14 +227,20 @@ private:
     {
         if (payload.size() < 4)
             return;
-        const auto seq = read_u32_(payload.data());
-        auto it = pending_.find(seq);
-        if (it == pending_.end())
-            return;
-        // Karn's algorithm: only sample RTT for non-retransmitted frames.
-        if (it->second.retries == 0)
-            update_rtt_(Clock::now() - it->second.send_time);
-        pending_.erase(it);
+        const auto cum = read_u32_(payload.data());
+        // Discharge every pending with seq <= cum.
+        for (auto it = pending_.begin(); it != pending_.end();)
+        {
+            if (it->second.seq <= cum)
+            {
+                // Karn's algorithm: only sample RTT for non-retransmits.
+                if (it->second.retries == 0)
+                    update_rtt_(Clock::now() - it->second.send_time);
+                it = pending_.erase(it);
+            }
+            else
+                ++it;
+        }
     }
 
     void retransmit_(Clock::time_point now)
@@ -294,6 +320,21 @@ private:
                          { buf.data(), buf.size() });
     }
 
+    void maybe_emit_cum_ack_()
+    {
+        // No frame ever received → nothing to ACK.
+        if (next_recv_seq_ == 0)
+            return;
+        const std::uint32_t high_water = next_recv_seq_ - 1;
+        const bool advanced = !last_cum_ack_.has_value()
+                            || high_water > *last_cum_ack_;
+        if (!advanced && !ack_dirty_)
+            return;
+        send_ack_(high_water);
+        last_cum_ack_ = high_water;
+        ack_dirty_ = false;
+    }
+
     ChannelMux* mux_;
     std::uint8_t user_channel_;
     std::uint8_t ack_channel_;
@@ -311,6 +352,8 @@ private:
     std::vector<std::vector<std::byte>> ready_;
     std::uint32_t retransmit_count_ { 0 };
     std::uint32_t duplicate_drops_ { 0 };
+    std::optional<std::uint32_t> last_cum_ack_ {};
+    bool ack_dirty_ { false };
 };
 
 }  // namespace cd::net
