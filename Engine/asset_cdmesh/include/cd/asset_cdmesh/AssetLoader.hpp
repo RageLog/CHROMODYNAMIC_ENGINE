@@ -21,9 +21,21 @@ namespace cd::asset_cdmesh
 class CdMeshAsset final : public cd::asset::IAsset
 {
 public:
-    explicit CdMeshAsset(CdMesh m) noexcept : mesh_ { std::move(m) } {}
-    [[nodiscard]] std::string_view tag() const noexcept override { return "cdmesh"; }
-    [[nodiscard]] const CdMesh& mesh() const noexcept { return mesh_; }
+    explicit CdMeshAsset(CdMesh m) noexcept
+        : mesh_ { std::move(m) }
+    {
+    }
+
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "cdmesh";
+    }
+
+    [[nodiscard]] const CdMesh& mesh() const noexcept
+    {
+        return mesh_;
+    }
+
 private:
     CdMesh mesh_;
 };
@@ -31,7 +43,10 @@ private:
 class CdMeshAssetLoader final : public cd::asset::IAssetLoader
 {
 public:
-    [[nodiscard]] std::string_view tag() const noexcept override { return "cdmesh"; }
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "cdmesh";
+    }
 
     [[nodiscard]] cd::core::Result<std::unique_ptr<cd::asset::IAsset>>
     decode(std::span<const std::byte> bytes, std::string_view /*path_hint*/) override
@@ -40,9 +55,7 @@ public:
         auto r = cd::asset_cdmesh::decode(u8, bytes.size());
         if (!r.has_value())
             return std::unexpected(r.error());
-        return std::unique_ptr<cd::asset::IAsset> {
-            std::make_unique<CdMeshAsset>(std::move(*r))
-        };
+        return std::unique_ptr<cd::asset::IAsset> { std::make_unique<CdMeshAsset>(std::move(*r)) };
     }
 };
 

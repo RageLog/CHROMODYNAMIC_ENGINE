@@ -376,7 +376,7 @@ int main(int argc, char** argv)
     };
     constexpr std::array<cd::rhi::VertexAttribute, 2> kAttrs {
         cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRG32Float, offsetof(Vertex, pos) },
-        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRG32Float, offsetof(Vertex, uv) },
+        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRG32Float, offsetof(Vertex, uv)  },
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
     constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kDescBindings {
@@ -464,8 +464,7 @@ int main(int argc, char** argv)
         auto& cmd = *frame.command_buffer;
 
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo {
-                                          .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.05F, 0.07F, 0.10F, 1.0F } } }

@@ -8,13 +8,12 @@
 // query helpers in VulkanDevice.cpp that this TU calls — keeps the
 // dynamic_cast cost localised to the place that knows the concrete type.
 // =============================================================================
-#include <cd/rhi_vulkan/NativeHandles.hpp>
-
 #include "VulkanCommandBuffer.hpp"
 #include "VulkanInternal.hpp"  // dynamic_cast helpers
 
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
+#include <cd/rhi_vulkan/NativeHandles.hpp>
 
 namespace cd::rhi_vulkan
 {
@@ -22,8 +21,14 @@ namespace cd::rhi_vulkan
 std::optional<NativeHandles> get_native(cd::rhi::IDevice& dev) noexcept
 {
     NativeHandles out {};
-    if (!try_fill_native_handles(dev, &out.instance, &out.physical_device, &out.device, &out.graphics_queue,
-                                  &out.graphics_family))
+    if (!try_fill_native_handles(
+            dev,
+            &out.instance,
+            &out.physical_device,
+            &out.device,
+            &out.graphics_queue,
+            &out.graphics_family
+        ))
     {
         return std::nullopt;
     }

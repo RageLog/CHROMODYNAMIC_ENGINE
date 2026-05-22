@@ -3,7 +3,8 @@
 // =============================================================================
 #include <cd/asset_image/Bc7.hpp>
 
-extern "C" {
+extern "C"
+{
 #include <bc7enc.h>
 }
 
@@ -27,7 +28,13 @@ constexpr std::uint32_t kBytesPerBlock = 16;
 void ensure_bc7_init()
 {
     static std::once_flag flag;
-    std::call_once(flag, [] { ::bc7enc_compress_block_init(); });
+    std::call_once(
+        flag,
+        []
+        {
+            ::bc7enc_compress_block_init();
+        }
+    );
 }
 
 [[nodiscard]] bc7enc_compress_block_params make_params(Bc7Quality q) noexcept
@@ -56,18 +63,12 @@ void ensure_bc7_init()
 
 }  // namespace
 
-cd::core::Result<Bc7Block> compress_bc7(
-    std::span<const std::uint8_t> rgba,
-    std::uint32_t width,
-    std::uint32_t height,
-    Bc7Quality quality
-)
+cd::core::Result<Bc7Block>
+compress_bc7(std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height, Bc7Quality quality)
 {
     if (width == 0 || height == 0)
     {
-        return std::unexpected(
-            bc7_errors::make(bc7_errors::Code::kUnsupportedDimensions, "width/height must be > 0")
-        );
+        return std::unexpected(bc7_errors::make(bc7_errors::Code::kUnsupportedDimensions, "width/height must be > 0"));
     }
     const std::size_t expected_bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
     if (rgba.size() < expected_bytes)
@@ -112,8 +113,8 @@ cd::core::Result<Bc7Block> compress_bc7(
                     const std::uint32_t sx = bx * kBlockSize + px;
                     if (sx >= width)
                         break;
-                    const std::size_t src_off = static_cast<std::size_t>(sy) * src_pitch +
-                                                static_cast<std::size_t>(sx) * 4U;
+                    const std::size_t src_off =
+                        static_cast<std::size_t>(sy) * src_pitch + static_cast<std::size_t>(sx) * 4U;
                     const std::size_t dst_off = (static_cast<std::size_t>(py) * kBlockSize + px) * 4U;
                     std::memcpy(&block_pixels[dst_off], &rgba[src_off], 4U);
                 }

@@ -9,32 +9,32 @@
 #define STB_IMAGE_IMPLEMENTATION
 
 #if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4100 4244 4267 4456 4505 4996)
+    #pragma warning(push)
+    #pragma warning(disable : 4100 4244 4267 4456 4505 4996)
 #elif defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wold-style-cast"
-#pragma clang diagnostic ignored "-Wsign-conversion"
-#pragma clang diagnostic ignored "-Wconversion"
-#pragma clang diagnostic ignored "-Wunused-parameter"
-#pragma clang diagnostic ignored "-Wunused-function"
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wold-style-cast"
+    #pragma clang diagnostic ignored "-Wsign-conversion"
+    #pragma clang diagnostic ignored "-Wconversion"
+    #pragma clang diagnostic ignored "-Wunused-parameter"
+    #pragma clang diagnostic ignored "-Wunused-function"
 #elif defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
-#pragma GCC diagnostic ignored "-Wsign-conversion"
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#pragma GCC diagnostic ignored "-Wunused-function"
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wold-style-cast"
+    #pragma GCC diagnostic ignored "-Wsign-conversion"
+    #pragma GCC diagnostic ignored "-Wconversion"
+    #pragma GCC diagnostic ignored "-Wunused-parameter"
+    #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
 #include <stb_image.h>
 
 #if defined(_MSC_VER)
-#pragma warning(pop)
+    #pragma warning(pop)
 #elif defined(__clang__)
-#pragma clang diagnostic pop
+    #pragma clang diagnostic pop
 #elif defined(__GNUC__)
-#pragma GCC diagnostic pop
+    #pragma GCC diagnostic pop
 #endif
 
 #include <cstring>
@@ -54,15 +54,18 @@ namespace
 struct StbiFlipScope
 {
     int previous;
+
     explicit StbiFlipScope(bool flip) noexcept
         : previous { stbi__vertically_flip_on_load_global }
     {
         stbi_set_flip_vertically_on_load(flip ? 1 : 0);
     }
+
     ~StbiFlipScope()
     {
         stbi_set_flip_vertically_on_load(previous);
     }
+
     StbiFlipScope(const StbiFlipScope&) = delete;
     StbiFlipScope& operator=(const StbiFlipScope&) = delete;
     StbiFlipScope(StbiFlipScope&&) = delete;

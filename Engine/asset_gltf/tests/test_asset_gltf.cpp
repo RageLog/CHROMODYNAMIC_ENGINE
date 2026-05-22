@@ -9,7 +9,6 @@
 //   * Negative tests: missing file, malformed JSON, missing POSITION.
 // =============================================================================
 #include <cd/asset_gltf/GltfLoader.hpp>
-
 #include <gtest/gtest.h>
 
 #include <array>
@@ -108,7 +107,8 @@ namespace fs = std::filesystem;
     j += R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},)";
     j += R"({"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],)";
     j += R"("meshes":[{"name":"tri","primitives":[{"attributes":{"POSITION":0},"indices":1,"material":0}]}],)";
-    j += R"("materials":[{"name":"red","pbrMetallicRoughness":{"baseColorFactor":[1.0,0.25,0.125,1.0],"metallicFactor":0.5,"roughnessFactor":0.75},"doubleSided":true}],)";
+    j +=
+        R"("materials":[{"name":"red","pbrMetallicRoughness":{"baseColorFactor":[1.0,0.25,0.125,1.0],"metallicFactor":0.5,"roughnessFactor":0.75},"doubleSided":true}],)";
     j += R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
     return j;
 }
@@ -128,21 +128,23 @@ namespace fs = std::filesystem;
 struct TempFile
 {
     fs::path path;
+
     explicit TempFile(std::string_view suffix)
     {
-        const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::steady_clock::now().time_since_epoch()
-        )
-                               .count();
-        const auto name = std::string { "cd_gltf_test_" } + std::to_string(static_cast<std::uint64_t>(stamp)) +
-                          "_" + std::to_string(next_unique_id()) + std::string { suffix };
+        const auto stamp =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count();
+        const auto name = std::string { "cd_gltf_test_" } + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+                          std::to_string(next_unique_id()) + std::string { suffix };
         path = fs::temp_directory_path() / name;
     }
+
     ~TempFile()
     {
         std::error_code ec;
         fs::remove(path, ec);
     }
+
     TempFile(const TempFile&) = delete;
     TempFile& operator=(const TempFile&) = delete;
     TempFile(TempFile&&) = delete;
@@ -174,22 +176,21 @@ void write_file(const fs::path& p, std::span<const std::uint8_t> bytes)
     while ((bin.size() % 4) != 0)
         bin.push_back(0);  // BIN chunk must be 4-byte aligned.
 
-    std::string j =
-        R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":42}],)"
-        R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36,"target":34962},)"
-        R"({"buffer":0,"byteOffset":36,"byteLength":6,"target":34963}],)"
-        R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},)"
-        R"({"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],)"
-        R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],)"
-        R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    std::string j = R"({"asset":{"version":"2.0"},"buffers":[{"byteLength":42}],)"
+                    R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36,"target":34962},)"
+                    R"({"buffer":0,"byteOffset":36,"byteLength":6,"target":34963}],)"
+                    R"("accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},)"
+                    R"({"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],)"
+                    R"("meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],)"
+                    R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
     while ((j.size() % 4) != 0)
         j.push_back(' ');  // JSON chunk must be 4-byte aligned (space-padded).
 
     const std::uint32_t json_chunk_len = static_cast<std::uint32_t>(j.size());
     const std::uint32_t bin_chunk_len = static_cast<std::uint32_t>(bin.size());
-    const std::uint32_t total = 12U                       // header
-                              + 8U + json_chunk_len       // JSON chunk header + payload
-                              + 8U + bin_chunk_len;       // BIN  chunk header + payload
+    const std::uint32_t total = 12U                    // header
+                                + 8U + json_chunk_len  // JSON chunk header + payload
+                                + 8U + bin_chunk_len;  // BIN  chunk header + payload
 
     std::vector<std::uint8_t> glb;
     glb.reserve(total);
@@ -351,15 +352,15 @@ TEST(GltfLoader, PrimitiveWithoutPositionYieldsEmptyVertices)
 // ----- AssetLoader adapter -----
 
 #include <cd/asset_gltf/AssetLoader.hpp>
+
 #include <cstring>
 #include <span>
 
 TEST(GltfAssetLoader, AdapterDecodesMinimalAsciiGltf)
 {
-    constexpr std::string_view text =
-        R"({"asset":{"version":"2.0"},)"
-        R"("meshes":[{"primitives":[{"attributes":{}}]}],)"
-        R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    constexpr std::string_view text = R"({"asset":{"version":"2.0"},)"
+                                      R"("meshes":[{"primitives":[{"attributes":{}}]}],)"
+                                      R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
     std::vector<std::byte> bytes(text.size());
     std::memcpy(bytes.data(), text.data(), text.size());
     cd::asset_gltf::GltfAssetLoader loader;

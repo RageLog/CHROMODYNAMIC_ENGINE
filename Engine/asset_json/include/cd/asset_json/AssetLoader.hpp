@@ -57,15 +57,11 @@ public:
     decode(std::span<const std::byte> bytes, std::string_view /*path_hint*/) override
     {
         // JSON is text; the cd::asset_json parser takes a string_view.
-        const std::string_view text {
-            reinterpret_cast<const char*>(bytes.data()), bytes.size()
-        };
+        const std::string_view text { reinterpret_cast<const char*>(bytes.data()), bytes.size() };
         auto r = parse(text);
         if (!r.has_value())
             return std::unexpected(r.error());
-        return std::unique_ptr<cd::asset::IAsset> {
-            std::make_unique<JsonAsset>(std::move(*r))
-        };
+        return std::unique_ptr<cd::asset::IAsset> { std::make_unique<JsonAsset>(std::move(*r)) };
     }
 };
 

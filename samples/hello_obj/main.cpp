@@ -47,6 +47,7 @@ struct Vertex
     float normal[3];
     float uv[2];
 };
+
 static_assert(sizeof(Vertex) == sizeof(cd::asset_obj::ObjVertex), "vertex layout mismatch with ObjVertex");
 
 struct PushBlock
@@ -202,9 +203,8 @@ int main(int argc, char** argv)
         break;
     }
 
-    cd::core::Result<cd::asset_obj::ObjMesh> loaded = std::unexpected(
-        cd::asset_obj::obj_errors::make(cd::asset_obj::obj_errors::Code::kOk)
-    );
+    cd::core::Result<cd::asset_obj::ObjMesh> loaded =
+        std::unexpected(cd::asset_obj::obj_errors::make(cd::asset_obj::obj_errors::Code::kOk));
     if (obj_path != nullptr)
     {
         loaded = cd::asset_obj::load_obj(obj_path);
@@ -218,10 +218,12 @@ int main(int argc, char** argv)
             );
             return 1;
         }
-        std::printf("hello_obj: loaded %s — %zu verts, %zu idx\n",
-                    obj_path,
-                    loaded->vertices.size(),
-                    loaded->indices.size());
+        std::printf(
+            "hello_obj: loaded %s — %zu verts, %zu idx\n",
+            obj_path,
+            loaded->vertices.size(),
+            loaded->indices.size()
+        );
     }
     else
     {
@@ -285,17 +287,20 @@ int main(int argc, char** argv)
     if (compiler == nullptr)
         return 7;
 
-    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings { cd::rhi::VertexBinding { 0, sizeof(Vertex), false } };
+    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings {
+        cd::rhi::VertexBinding { 0, sizeof(Vertex), false }
+    };
     constexpr std::array<cd::rhi::VertexAttribute, 3> kAttrs {
-        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos) },
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos)    },
         cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, normal) },
-        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float, offsetof(Vertex, uv) },
+        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(Vertex, uv)     },
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
-    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush { cd::rhi::PushConstantRange {
-        .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-        .offset = 0,
-        .size = static_cast<std::uint32_t>(sizeof(PushBlock)) } };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                    .offset = 0,
+                                    .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
+    };
 
     cd::material::MaterialDesc md {};
     md.vertex_glsl = kVS;
@@ -394,8 +399,7 @@ int main(int argc, char** argv)
         }
 
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo {
-                                          .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.06F, 0.07F, 0.10F, 1.0F } } }

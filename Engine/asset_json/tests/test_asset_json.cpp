@@ -4,7 +4,6 @@
 #include <cd/asset_json/CVarBridge.hpp>
 #include <cd/asset_json/Json.hpp>
 #include <cd/core/CVar.hpp>
-
 #include <gtest/gtest.h>
 
 #include <string>
@@ -12,9 +11,9 @@
 
 using cd::asset_json::Array;
 using cd::asset_json::Object;
-using cd::asset_json::Value;
 using cd::asset_json::parse;
 using cd::asset_json::serialize;
+using cd::asset_json::Value;
 
 TEST(AssetJsonTest, ParseNullTrueFalse)
 {
@@ -85,16 +84,14 @@ TEST(AssetJsonTest, RejectsUnterminatedString)
 {
     auto v = parse("\"abc");
     ASSERT_FALSE(v.has_value());
-    EXPECT_EQ(v.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kUnterminatedString));
+    EXPECT_EQ(v.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kUnterminatedString));
 }
 
 TEST(AssetJsonTest, RejectsBadEscape)
 {
     auto v = parse(R"json("\x")json");
     ASSERT_FALSE(v.has_value());
-    EXPECT_EQ(v.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kBadEscape));
+    EXPECT_EQ(v.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kBadEscape));
 }
 
 TEST(AssetJsonTest, RejectsTrailingGarbage)
@@ -112,13 +109,14 @@ TEST(AssetJsonTest, DepthLimitTriggers)
 {
     // 200 nested '[' should bust a max_depth of 32.
     std::string deep;
-    for (int i = 0; i < 200; ++i) deep += '[';
+    for (int i = 0; i < 200; ++i)
+        deep += '[';
     deep += "null";
-    for (int i = 0; i < 200; ++i) deep += ']';
+    for (int i = 0; i < 200; ++i)
+        deep += ']';
     auto v = parse(deep, 32);
     ASSERT_FALSE(v.has_value());
-    EXPECT_EQ(v.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kDepthLimit));
+    EXPECT_EQ(v.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kDepthLimit));
 }
 
 TEST(AssetJsonTest, RoundTripCompact)
@@ -126,7 +124,9 @@ TEST(AssetJsonTest, RoundTripCompact)
     Value v;
     Object o;
     o["a"] = Value { 1 };
-    o["b"] = Value { Array { Value { "x" }, Value { false } } };
+    o["b"] = Value {
+        Array { Value { "x" }, Value { false } }
+    };
     o["c"] = Value {};  // null
     v = Value { std::move(o) };
 
@@ -141,7 +141,9 @@ TEST(AssetJsonTest, RoundTripPretty)
     Value v;
     Object o;
     o["greet"] = Value { "hello world" };
-    o["items"] = Value { Array { Value { 1 }, Value { 2 }, Value { 3 } } };
+    o["items"] = Value {
+        Array { Value { 1 }, Value { 2 }, Value { 3 } }
+    };
     v = Value { std::move(o) };
 
     const auto txt = serialize(v, true);
@@ -168,17 +170,16 @@ TEST(AssetJsonTest, ObjectKeyLookupFailsCleanly)
     ASSERT_TRUE(v.has_value());
     auto m = v->at("missing");
     ASSERT_FALSE(m.has_value());
-    EXPECT_EQ(m.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kKeyNotFound));
+    EXPECT_EQ(m.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kKeyNotFound));
 }
 
 TEST(CVarBridgeTest, CVarsRoundTripThroughJson)
 {
     cd::core::CVarRegistry reg;
-    reg.set("render.vsync",  cd::core::CVarValue { true });
-    reg.set("render.msaa",   cd::core::CVarValue { std::int64_t { 4 } });
-    reg.set("audio.gain",    cd::core::CVarValue { 0.85 });
-    reg.set("user.locale",   cd::core::CVarValue { std::string { "en-US" } });
+    reg.set("render.vsync", cd::core::CVarValue { true });
+    reg.set("render.msaa", cd::core::CVarValue { std::int64_t { 4 } });
+    reg.set("audio.gain", cd::core::CVarValue { 0.85 });
+    reg.set("user.locale", cd::core::CVarValue { std::string { "en-US" } });
 
     auto j = cd::asset_json::to_json(reg);
     ASSERT_TRUE(j.is_object());
@@ -187,17 +188,17 @@ TEST(CVarBridgeTest, CVarsRoundTripThroughJson)
     cd::core::CVarRegistry reg2;
     // Seed reg2 with same types so the bridge can coerce numbers back to i64.
     reg2.set("render.vsync", cd::core::CVarValue { false });
-    reg2.set("render.msaa",  cd::core::CVarValue { std::int64_t { 1 } });
-    reg2.set("audio.gain",   cd::core::CVarValue { 0.0 });
-    reg2.set("user.locale",  cd::core::CVarValue { std::string {} });
+    reg2.set("render.msaa", cd::core::CVarValue { std::int64_t { 1 } });
+    reg2.set("audio.gain", cd::core::CVarValue { 0.0 });
+    reg2.set("user.locale", cd::core::CVarValue { std::string {} });
 
     auto r = cd::asset_json::from_json(j, reg2);
     ASSERT_TRUE(r.has_value()) << r.error().message;
 
     auto vsync = reg2.get("render.vsync");
-    auto msaa  = reg2.get("render.msaa");
-    auto gain  = reg2.get("audio.gain");
-    auto loc   = reg2.get("user.locale");
+    auto msaa = reg2.get("render.msaa");
+    auto gain = reg2.get("audio.gain");
+    auto loc = reg2.get("user.locale");
     ASSERT_TRUE(vsync && msaa && gain && loc);
     EXPECT_TRUE(std::get<bool>(*vsync));
     EXPECT_EQ(std::get<std::int64_t>(*msaa), 4);
@@ -212,8 +213,7 @@ TEST(CVarBridgeTest, FromJsonRejectsNonObjectRoot)
     cd::core::CVarRegistry reg;
     auto r = cd::asset_json::from_json(*v, reg);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kTypeMismatch));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kTypeMismatch));
 }
 
 TEST(CVarBridgeTest, FromJsonRejectsNonScalarValues)
@@ -223,15 +223,14 @@ TEST(CVarBridgeTest, FromJsonRejectsNonScalarValues)
     cd::core::CVarRegistry reg;
     auto r = cd::asset_json::from_json(*v, reg);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kTypeMismatch));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kTypeMismatch));
 }
 
 TEST(CVarBridgeTest, FileRoundTripPreservesState)
 {
     cd::core::CVarRegistry reg;
     reg.set("debug.draw", cd::core::CVarValue { true });
-    reg.set("net.port",   cd::core::CVarValue { std::int64_t { 27015 } });
+    reg.set("net.port", cd::core::CVarValue { std::int64_t { 27015 } });
     reg.set("audio.gain", cd::core::CVarValue { 0.42 });
 
     const auto path = std::string { ::testing::TempDir() } + "/cd_cvar_roundtrip.json";
@@ -241,7 +240,7 @@ TEST(CVarBridgeTest, FileRoundTripPreservesState)
     cd::core::CVarRegistry reg2;
     // Seed with same types so int64 stays int64 after coerce.
     reg2.set("debug.draw", cd::core::CVarValue { false });
-    reg2.set("net.port",   cd::core::CVarValue { std::int64_t { 0 } });
+    reg2.set("net.port", cd::core::CVarValue { std::int64_t { 0 } });
     reg2.set("audio.gain", cd::core::CVarValue { 0.0 });
 
     auto ld = cd::asset_json::load_into(path, reg2);
@@ -256,8 +255,7 @@ TEST(CVarBridgeTest, LoadIntoMissingFileFails)
     cd::core::CVarRegistry reg;
     auto r = cd::asset_json::load_into("nonexistent_zfile_qq.json", reg);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kFileNotFound));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_json::json_errors::Code::kFileNotFound));
 }
 
 #include <cd/asset_json/AssetLoader.hpp>

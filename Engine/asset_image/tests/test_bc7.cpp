@@ -2,7 +2,6 @@
 // CHROMODYNAMIC — cd::asset_image::compress_bc7 tests
 // =============================================================================
 #include <cd/asset_image/Bc7.hpp>
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -13,8 +12,8 @@ namespace
 
 constexpr std::uint32_t kBytesPerBlock = 16;
 
-[[nodiscard]] std::vector<std::uint8_t> make_solid_rgba(std::uint32_t w, std::uint32_t h, std::uint8_t r,
-                                                       std::uint8_t g, std::uint8_t b, std::uint8_t a)
+[[nodiscard]] std::vector<std::uint8_t>
+make_solid_rgba(std::uint32_t w, std::uint32_t h, std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t a)
 {
     std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4U);
     for (std::size_t i = 0; i < out.size(); i += 4)
@@ -98,8 +97,7 @@ TEST(Bc7, ZeroDimensionRejected)
 {
     auto r = cd::asset_image::compress_bc7({}, 0, 4);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_image::bc7_errors::Code::kUnsupportedDimensions));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::bc7_errors::Code::kUnsupportedDimensions));
 }
 
 TEST(Bc7, ShortInputBufferRejected)
@@ -107,6 +105,5 @@ TEST(Bc7, ShortInputBufferRejected)
     std::vector<std::uint8_t> tiny(4);  // claims 4×4 but provides 4 bytes
     auto r = cd::asset_image::compress_bc7(tiny, 4, 4);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_image::bc7_errors::Code::kInvalidArgument));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::bc7_errors::Code::kInvalidArgument));
 }

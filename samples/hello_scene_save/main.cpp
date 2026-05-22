@@ -39,7 +39,7 @@ int main()
 
     auto b = s_src.create_node();
     s_src.local(b)->value.position = cd::math::Vec3f { 0.0F, 2.0F, 0.0F };
-    s_src.local(b)->value.scale    = cd::math::Vec3f { 0.5F, 0.5F, 0.5F };
+    s_src.local(b)->value.scale = cd::math::Vec3f { 0.5F, 0.5F, 0.5F };
     s_src.attach(b, root);
 
     auto c = s_src.create_node();
@@ -66,17 +66,19 @@ int main()
     auto restored = cd::scene::deserialize_scene(s_dst, *reparsed);
     if (!restored)
     {
-        std::printf("deserialize failed: %.*s\n",
+        std::printf(
+            "deserialize failed: %.*s\n",
             static_cast<int>(restored.error().message.size()),
-            restored.error().message.data());
+            restored.error().message.data()
+        );
         return 2;
     }
 
     // 4. Verify topology + transforms.
     auto root2 = restored->at(root.id);
-    auto a2    = restored->at(a.id);
-    auto b2    = restored->at(b.id);
-    auto c2    = restored->at(c.id);
+    auto a2 = restored->at(a.id);
+    auto b2 = restored->at(b.id);
+    auto c2 = restored->at(c.id);
 
     if (s_dst.parent_of(root2).is_valid())
     {

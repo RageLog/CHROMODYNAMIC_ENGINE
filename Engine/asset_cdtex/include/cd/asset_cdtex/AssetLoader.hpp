@@ -21,9 +21,21 @@ namespace cd::asset_cdtex
 class CdTexAsset final : public cd::asset::IAsset
 {
 public:
-    explicit CdTexAsset(CdTex c) noexcept : tex_ { std::move(c) } {}
-    [[nodiscard]] std::string_view tag() const noexcept override { return "cdtex"; }
-    [[nodiscard]] const CdTex& tex() const noexcept { return tex_; }
+    explicit CdTexAsset(CdTex c) noexcept
+        : tex_ { std::move(c) }
+    {
+    }
+
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "cdtex";
+    }
+
+    [[nodiscard]] const CdTex& tex() const noexcept
+    {
+        return tex_;
+    }
+
 private:
     CdTex tex_;
 };
@@ -31,7 +43,10 @@ private:
 class CdTexAssetLoader final : public cd::asset::IAssetLoader
 {
 public:
-    [[nodiscard]] std::string_view tag() const noexcept override { return "cdtex"; }
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "cdtex";
+    }
 
     [[nodiscard]] cd::core::Result<std::unique_ptr<cd::asset::IAsset>>
     decode(std::span<const std::byte> bytes, std::string_view /*path_hint*/) override
@@ -40,9 +55,7 @@ public:
         auto r = cd::asset_cdtex::decode(u8, bytes.size());
         if (!r.has_value())
             return std::unexpected(r.error());
-        return std::unique_ptr<cd::asset::IAsset> {
-            std::make_unique<CdTexAsset>(std::move(*r))
-        };
+        return std::unique_ptr<cd::asset::IAsset> { std::make_unique<CdTexAsset>(std::move(*r)) };
     }
 };
 

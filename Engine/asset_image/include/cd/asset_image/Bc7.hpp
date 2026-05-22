@@ -61,9 +61,9 @@ enum class Code : std::uint32_t
 /// Encoder quality preset. Maps onto bc7enc's internal "uber_level" knob.
 enum class Bc7Quality : std::uint8_t
 {
-    kFast = 0,     ///< ~5 ms / megapixel, lower visual quality. Dev builds.
-    kBalanced = 1, ///< ~25 ms / mp, default. Production cooker.
-    kHigh = 2,     ///< ~50 ms / mp, best PSNR. Shipping builds.
+    kFast = 0,      ///< ~5 ms / megapixel, lower visual quality. Dev builds.
+    kBalanced = 1,  ///< ~25 ms / mp, default. Production cooker.
+    kHigh = 2,      ///< ~50 ms / mp, best PSNR. Shipping builds.
 };
 
 /// BC7-compressed payload. `data.size() == ceil(w/4) * ceil(h/4) * 16`.

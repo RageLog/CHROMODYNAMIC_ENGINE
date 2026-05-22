@@ -49,41 +49,57 @@ int main()
     desc.channels = 1;
     desc.sample_rate = kSampleRate;
 
-    const auto a4  = synth_sine(440.00F, frames);
+    const auto a4 = synth_sine(440.00F, frames);
     desc.samples = std::span<const float> { a4.data(), a4.size() };
     auto a4_h = backend->create_clip(desc);
-    if (!a4_h) { std::printf("create_clip(A4) failed\n"); return 1; }
+    if (!a4_h)
+    {
+        std::printf("create_clip(A4) failed\n");
+        return 1;
+    }
 
     const auto cs5 = synth_sine(554.37F, frames);
     desc.samples = std::span<const float> { cs5.data(), cs5.size() };
     auto cs5_h = backend->create_clip(desc);
-    if (!cs5_h) { std::printf("create_clip(C#5) failed\n"); return 2; }
+    if (!cs5_h)
+    {
+        std::printf("create_clip(C#5) failed\n");
+        return 2;
+    }
 
-    const auto e5  = synth_sine(659.26F, frames);
+    const auto e5 = synth_sine(659.26F, frames);
     desc.samples = std::span<const float> { e5.data(), e5.size() };
     auto e5_h = backend->create_clip(desc);
-    if (!e5_h) { std::printf("create_clip(E5) failed\n"); return 3; }
+    if (!e5_h)
+    {
+        std::printf("create_clip(E5) failed\n");
+        return 3;
+    }
 
     // Play with stacked volumes — root loudest.
-    if (!backend->play(*a4_h,  0.6F, /*looping=*/false)) return 4;
-    if (!backend->play(*cs5_h, 0.4F, /*looping=*/false)) return 5;
-    if (!backend->play(*e5_h,  0.3F, /*looping=*/false)) return 6;
+    if (!backend->play(*a4_h, 0.6F, /*looping=*/false))
+        return 4;
+    if (!backend->play(*cs5_h, 0.4F, /*looping=*/false))
+        return 5;
+    if (!backend->play(*e5_h, 0.3F, /*looping=*/false))
+        return 6;
     std::printf("voices=%zu, clips=%zu\n", backend->voice_count(), backend->clip_count());
 
     // Render the chord.
     backend->render(frames);
-    std::printf("rendered %u frames @ %u Hz = %.2fs\n",
-                backend->rendered_frames(),
-                kSampleRate,
-                static_cast<double>(backend->rendered_frames()) / static_cast<double>(kSampleRate));
+    std::printf(
+        "rendered %u frames @ %u Hz = %.2fs\n",
+        backend->rendered_frames(),
+        kSampleRate,
+        static_cast<double>(backend->rendered_frames()) / static_cast<double>(kSampleRate)
+    );
 
     // Write the mixed WAV to disk.
     constexpr const char* kOut = "hello_audio_play_out.wav";
     auto wr = backend->write_wav(kOut);
     if (!wr)
     {
-        std::printf("write_wav failed: %.*s\n",
-                    static_cast<int>(wr.error().message.size()), wr.error().message.data());
+        std::printf("write_wav failed: %.*s\n", static_cast<int>(wr.error().message.size()), wr.error().message.data());
         return 7;
     }
     std::printf("wrote -> %s\n", kOut);

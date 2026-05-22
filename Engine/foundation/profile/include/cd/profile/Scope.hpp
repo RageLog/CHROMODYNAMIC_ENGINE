@@ -42,10 +42,10 @@ namespace cd::profile
 /// thought about lifetime.
 struct Sample
 {
-    std::string_view name;          ///< Compile-time literal — sink may NOT free it.
-    std::uint64_t start_ns { 0 };   ///< steady_clock-based, monotonic.
+    std::string_view name;            ///< Compile-time literal — sink may NOT free it.
+    std::uint64_t start_ns { 0 };     ///< steady_clock-based, monotonic.
     std::uint64_t duration_ns { 0 };
-    std::uint64_t thread_hash { 0 };///< Cheap thread id hash so multi-thread views can group.
+    std::uint64_t thread_hash { 0 };  ///< Cheap thread id hash so multi-thread views can group.
 };
 
 /// Sink interface — concrete sinks live in their own TUs (StdoutSink,
@@ -127,16 +127,20 @@ private:
 // is itself a macro.
 
 #define CD_PROFILE_CAT_(a, b) a##b
-#define CD_PROFILE_CAT(a, b) CD_PROFILE_CAT_(a, b)
+#define CD_PROFILE_CAT(a, b)  CD_PROFILE_CAT_(a, b)
 
 #if !defined(CD_ENABLE_PROFILE)
-#define CD_ENABLE_PROFILE 1
+    #define CD_ENABLE_PROFILE 1
 #endif
 
 #if CD_ENABLE_PROFILE
-/// Drop this at the top of any scope to time it. `name` should be a string
-/// literal — sinks store the pointer, not the contents.
-#define CD_PROFILE_SCOPE(name) ::cd::profile::Scope CD_PROFILE_CAT(_cd_prof_scope_, __LINE__) { name }
+    /// Drop this at the top of any scope to time it. `name` should be a string
+    /// literal — sinks store the pointer, not the contents.
+    #define CD_PROFILE_SCOPE(name)                                     \
+        ::cd::profile::Scope CD_PROFILE_CAT(_cd_prof_scope_, __LINE__) \
+        {                                                              \
+            name                                                       \
+        }
 #else
-#define CD_PROFILE_SCOPE(name) static_cast<void>(0)
+    #define CD_PROFILE_SCOPE(name) static_cast<void>(0)
 #endif

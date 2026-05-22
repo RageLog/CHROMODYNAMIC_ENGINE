@@ -51,12 +51,16 @@ namespace cd::asset_json
     std::sort(
         entries.begin(),
         entries.end(),
-        [](const auto& a, const auto& b) { return a.first < b.first; }
+        [](const auto& a, const auto& b)
+        {
+            return a.first < b.first;
+        }
     );
     for (const auto& [key, value] : entries)
     {
         std::visit(
-            [&](const auto& v) {
+            [&](const auto& v)
+            {
                 using V = std::decay_t<decltype(v)>;
                 if constexpr (std::is_same_v<V, bool>)
                 {
@@ -85,13 +89,11 @@ namespace cd::asset_json
 /// creates) a CVar. If the registry already has the key with a typed
 /// CVar, the JSON value is coerced into that type. Returns kTypeMismatch
 /// if the root Value is not an object.
-[[nodiscard]] inline cd::core::Result<void>
-from_json(const Value& json_root, cd::core::CVarRegistry& registry)
+[[nodiscard]] inline cd::core::Result<void> from_json(const Value& json_root, cd::core::CVarRegistry& registry)
 {
     if (!json_root.is_object())
     {
-        return std::unexpected(json_errors::make(
-            json_errors::Code::kTypeMismatch, "from_json: root is not an object"));
+        return std::unexpected(json_errors::make(json_errors::Code::kTypeMismatch, "from_json: root is not an object"));
     }
     for (const auto& [key, val] : json_root.as_object())
     {
@@ -105,11 +107,9 @@ from_json(const Value& json_root, cd::core::CVarRegistry& registry)
         else if (val.is_number())
         {
             const double d = val.as_number();
-            if (existing.has_value()
-                && std::holds_alternative<std::int64_t>(*existing))
+            if (existing.has_value() && std::holds_alternative<std::int64_t>(*existing))
             {
-                registry.set(key, cd::core::CVarValue {
-                    static_cast<std::int64_t>(d) });
+                registry.set(key, cd::core::CVarValue { static_cast<std::int64_t>(d) });
             }
             else
             {
@@ -128,10 +128,12 @@ from_json(const Value& json_root, cd::core::CVarRegistry& registry)
         else
         {
             // Arrays / nested objects are not CVar-shaped; bail.
-            return std::unexpected(json_errors::make(
-                json_errors::Code::kTypeMismatch,
-                std::string { "from_json: value at '" } + key
-                    + "' is not a scalar (bool/number/string/null)"));
+            return std::unexpected(
+                json_errors::make(
+                    json_errors::Code::kTypeMismatch,
+                    std::string { "from_json: value at '" } + key + "' is not a scalar (bool/number/string/null)"
+                )
+            );
         }
     }
     return {};
@@ -141,8 +143,7 @@ from_json(const Value& json_root, cd::core::CVarRegistry& registry)
 /// Equivalent to `from_json(parse(file_text), registry)` but propagates
 /// the read / parse error categories cleanly.
 [[nodiscard]] inline cd::core::Result<void>
-load_into(std::string_view path, cd::core::CVarRegistry& registry,
-          std::uint32_t max_depth = 64)
+load_into(std::string_view path, cd::core::CVarRegistry& registry, std::uint32_t max_depth = 64)
 {
     auto v = load(path, max_depth);
     if (!v.has_value())
@@ -152,20 +153,21 @@ load_into(std::string_view path, cd::core::CVarRegistry& registry,
 
 /// Convenience: serialize `registry` to a JSON file on disk.
 [[nodiscard]] inline cd::core::Result<void>
-save_to(std::string_view path, const cd::core::CVarRegistry& registry,
-        bool pretty = true)
+save_to(std::string_view path, const cd::core::CVarRegistry& registry, bool pretty = true)
 {
     const auto v = to_json(registry);
     const auto text = serialize(v, pretty);
     const std::string path_s { path };
     std::ofstream f { path_s, std::ios::binary | std::ios::trunc };
     if (!f)
-        return std::unexpected(json_errors::make(
-            json_errors::Code::kIoError, std::string { "save_to: cannot open " } + path_s));
+        return std::unexpected(
+            json_errors::make(json_errors::Code::kIoError, std::string { "save_to: cannot open " } + path_s)
+        );
     f.write(text.data(), static_cast<std::streamsize>(text.size()));
     if (!f)
-        return std::unexpected(json_errors::make(
-            json_errors::Code::kIoError, std::string { "save_to: write failed for " } + path_s));
+        return std::unexpected(
+            json_errors::make(json_errors::Code::kIoError, std::string { "save_to: write failed for " } + path_s)
+        );
     return {};
 }
 

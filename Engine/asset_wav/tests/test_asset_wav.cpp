@@ -4,7 +4,6 @@
 // suite needs no on-disk fixture.
 // =============================================================================
 #include <cd/asset_wav/Wav.hpp>
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -19,6 +18,7 @@ void push_u16_le(std::vector<std::byte>& v, std::uint16_t x)
     v.push_back(std::byte { static_cast<unsigned char>(x & 0xFFu) });
     v.push_back(std::byte { static_cast<unsigned char>((x >> 8u) & 0xFFu) });
 }
+
 void push_u32_le(std::vector<std::byte>& v, std::uint32_t x)
 {
     v.push_back(std::byte { static_cast<unsigned char>(x & 0xFFu) });
@@ -26,6 +26,7 @@ void push_u32_le(std::vector<std::byte>& v, std::uint32_t x)
     v.push_back(std::byte { static_cast<unsigned char>((x >> 16u) & 0xFFu) });
     v.push_back(std::byte { static_cast<unsigned char>((x >> 24u) & 0xFFu) });
 }
+
 void push_tag(std::vector<std::byte>& v, const char (&tag)[5])
 {
     for (int i = 0; i < 4; ++i)
@@ -33,11 +34,11 @@ void push_tag(std::vector<std::byte>& v, const char (&tag)[5])
 }
 
 /// Build a minimal valid mono s16 PCM WAV with `frames` frames of zeros.
-std::vector<std::byte> make_minimal_wav(
-    std::uint16_t channels, std::uint32_t sample_rate, std::uint16_t bits, std::uint32_t frames)
+std::vector<std::byte>
+make_minimal_wav(std::uint16_t channels, std::uint32_t sample_rate, std::uint16_t bits, std::uint32_t frames)
 {
     const std::uint32_t data_size = frames * channels * (bits / 8u);
-    const std::uint32_t fmt_size  = 16;
+    const std::uint32_t fmt_size = 16;
     const std::uint32_t riff_size = 4 /*WAVE*/ + 8 /*fmt hdr*/ + fmt_size + 8 /*data hdr*/ + data_size;
 
     std::vector<std::byte> v;
@@ -51,7 +52,7 @@ std::vector<std::byte> make_minimal_wav(
     push_u16_le(v, 1 /* PCM */);
     push_u16_le(v, channels);
     push_u32_le(v, sample_rate);
-    push_u32_le(v, sample_rate * channels * (bits / 8u));  // byte rate
+    push_u32_le(v, sample_rate * channels * (bits / 8u));                // byte rate
     push_u16_le(v, static_cast<std::uint16_t>(channels * (bits / 8u)));  // block align
     push_u16_le(v, bits);
 
@@ -99,8 +100,7 @@ TEST(AssetWavTest, BadMagicReturnsMagicMismatch)
     bytes[0] = std::byte { 'X' };  // corrupt RIFF
     auto r = cd::asset_wav::decode(bytes.data(), bytes.size());
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kMagicMismatch));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kMagicMismatch));
 }
 
 TEST(AssetWavTest, TooSmallReturnsCorrupt)
@@ -108,8 +108,7 @@ TEST(AssetWavTest, TooSmallReturnsCorrupt)
     std::vector<std::byte> tiny(20, std::byte { 0 });
     auto r = cd::asset_wav::decode(tiny.data(), tiny.size());
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kCorrupt));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kCorrupt));
 }
 
 TEST(AssetWavTest, UnsupportedFormatCodeRejected)
@@ -120,8 +119,7 @@ TEST(AssetWavTest, UnsupportedFormatCodeRejected)
     bytes[21] = std::byte { 0xFF };
     auto r = cd::asset_wav::decode(bytes.data(), bytes.size());
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kUnsupportedFormat));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kUnsupportedFormat));
 }
 
 TEST(AssetWavTest, SkipsUnknownChunks)
@@ -167,8 +165,7 @@ TEST(AssetWavTest, MissingFileReturnsFileNotFound)
 {
     auto r = cd::asset_wav::load("nonexistent_does_not_exist_123.wav");
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kFileNotFound));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kFileNotFound));
 }
 
 #include <cd/asset_wav/AssetLoader.hpp>
@@ -194,6 +191,5 @@ TEST(WavAssetLoader, AdapterPropagatesDecodeErrors)
     cd::asset_wav::WavAssetLoader loader;
     auto r = loader.decode(std::span<const std::byte> { tiny.data(), tiny.size() }, "bad.wav");
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kCorrupt));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_wav::wav_errors::Code::kCorrupt));
 }

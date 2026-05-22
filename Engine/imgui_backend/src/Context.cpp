@@ -1,26 +1,24 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/imgui/Context.cpp
 // =============================================================================
+#include <backends/imgui_impl_vulkan.h>
 #include <cd/imgui/Context.hpp>
-
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/NativeHandles.hpp>
-
 #include <imgui.h>
-#include <backends/imgui_impl_vulkan.h>
 
 #if defined(_WIN32)
-// imgui_impl_win32 expects raw Win32 messages. We only own the HWND right
-// now and translate OSEvent to ImGuiIO updates directly — no native message
-// pump hook. This loses things like IME composition (acceptable for a v1).
-// `NOMINMAX` is project-wide on MSYS2 GCC's toolchain (via CDStandardSettings),
-// so guard the define to avoid -Werror=macro-redefined.
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <backends/imgui_impl_win32.h>
+    // imgui_impl_win32 expects raw Win32 messages. We only own the HWND right
+    // now and translate OSEvent to ImGuiIO updates directly — no native message
+    // pump hook. This loses things like IME composition (acceptable for a v1).
+    // `NOMINMAX` is project-wide on MSYS2 GCC's toolchain (via CDStandardSettings),
+    // so guard the define to avoid -Werror=macro-redefined.
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <backends/imgui_impl_win32.h>
+    #include <windows.h>
 #endif
 
 #include <cstring>
@@ -38,11 +36,16 @@ namespace
 {
     switch (f)
     {
-        case cd::rhi::Format::kBGRA8Unorm: return VK_FORMAT_B8G8R8A8_UNORM;
-        case cd::rhi::Format::kBGRA8Srgb: return VK_FORMAT_B8G8R8A8_SRGB;
-        case cd::rhi::Format::kRGBA8Unorm: return VK_FORMAT_R8G8B8A8_UNORM;
-        case cd::rhi::Format::kRGBA8Srgb: return VK_FORMAT_R8G8B8A8_SRGB;
-        default: return VK_FORMAT_B8G8R8A8_UNORM;
+        case cd::rhi::Format::kBGRA8Unorm:
+            return VK_FORMAT_B8G8R8A8_UNORM;
+        case cd::rhi::Format::kBGRA8Srgb:
+            return VK_FORMAT_B8G8R8A8_SRGB;
+        case cd::rhi::Format::kRGBA8Unorm:
+            return VK_FORMAT_R8G8B8A8_UNORM;
+        case cd::rhi::Format::kRGBA8Srgb:
+            return VK_FORMAT_R8G8B8A8_SRGB;
+        default:
+            return VK_FORMAT_B8G8R8A8_UNORM;
     }
 }
 
@@ -51,16 +54,26 @@ namespace
     using K = cd::platform::KeyCode;
     switch (k)
     {
-        case K::kEscape: return ImGuiKey_Escape;
-        case K::kEnter: return ImGuiKey_Enter;
-        case K::kSpace: return ImGuiKey_Space;
-        case K::kTab: return ImGuiKey_Tab;
-        case K::kBackspace: return ImGuiKey_Backspace;
-        case K::kLeft: return ImGuiKey_LeftArrow;
-        case K::kRight: return ImGuiKey_RightArrow;
-        case K::kUp: return ImGuiKey_UpArrow;
-        case K::kDown: return ImGuiKey_DownArrow;
-        default: return ImGuiKey_None;
+        case K::kEscape:
+            return ImGuiKey_Escape;
+        case K::kEnter:
+            return ImGuiKey_Enter;
+        case K::kSpace:
+            return ImGuiKey_Space;
+        case K::kTab:
+            return ImGuiKey_Tab;
+        case K::kBackspace:
+            return ImGuiKey_Backspace;
+        case K::kLeft:
+            return ImGuiKey_LeftArrow;
+        case K::kRight:
+            return ImGuiKey_RightArrow;
+        case K::kUp:
+            return ImGuiKey_UpArrow;
+        case K::kDown:
+            return ImGuiKey_DownArrow;
+        default:
+            return ImGuiKey_None;
     }
 }
 
@@ -69,10 +82,14 @@ namespace
     using M = cd::platform::MouseButton;
     switch (b)
     {
-        case M::kLeft: return 0;
-        case M::kRight: return 1;
-        case M::kMiddle: return 2;
-        default: return 0;
+        case M::kLeft:
+            return 0;
+        case M::kRight:
+            return 1;
+        case M::kMiddle:
+            return 2;
+        default:
+            return 0;
     }
 }
 
@@ -122,10 +139,10 @@ cd::core::Result<std::unique_ptr<Context>> Context::create(const InitDesc& desc)
     // the canonical "big enough" defaults from imgui_impl_vulkan example.
     constexpr VkDescriptorPoolSize kPoolSizes[] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1000 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1000 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1000 },
     };
     VkDescriptorPoolCreateInfo pool_ci {};
     pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -278,8 +295,8 @@ void Context::new_frame()
     if (impl_->window != nullptr)
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.DisplaySize = ImVec2 { static_cast<float>(impl_->window->width()),
-                                  static_cast<float>(impl_->window->height()) };
+        io.DisplaySize =
+            ImVec2 { static_cast<float>(impl_->window->width()), static_cast<float>(impl_->window->height()) };
         // ImGui needs a non-zero DeltaTime; use a fixed 60 fps tick when
         // the host has no clock yet. Callers wanting precise CPU/GPU
         // graphs can extend Context to accept dt as an argument.

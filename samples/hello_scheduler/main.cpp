@@ -63,42 +63,57 @@ int main()
 
     cd::ecs::Scheduler sched;
     // sense: read Pos, write Health (clamp HP if entity wanders off-grid)
-    sched.add(cd::ecs::SystemDesc { "sense" }.reads<Pos>().writes<Health>().fn(
-        [](cd::ecs::World& w)
-        {
-            CD_PROFILE_SCOPE("sense");
-            w.each<Pos, Health>(
-                [](cd::ecs::Entity, Pos& p, Health& h)
-                {
-                    if (p.x > 1000.0F || p.x < -1000.0F)
-                        h.hp = 0;
-                }
-            );
-        }));
+    sched.add(
+        cd::ecs::SystemDesc { "sense" }.reads<Pos>().writes<Health>().fn(
+            [](cd::ecs::World& w)
+            {
+                CD_PROFILE_SCOPE("sense");
+                w.each<Pos, Health>(
+                    [](cd::ecs::Entity, Pos& p, Health& h)
+                    {
+                        if (p.x > 1000.0F || p.x < -1000.0F)
+                            h.hp = 0;
+                    }
+                );
+            }
+        )
+    );
 
     // move: read Vel, write Pos (Pos integration)
-    sched.add(cd::ecs::SystemDesc { "move" }.reads<Vel>().writes<Pos>().fn(
-        [](cd::ecs::World& w)
-        {
-            CD_PROFILE_SCOPE("move");
-            w.each<Pos, Vel>(
-                [](cd::ecs::Entity, Pos& p, Vel& v)
-                {
-                    p.x += v.dx * kDt;
-                    p.y += v.dy * kDt;
-                }
-            );
-        }));
+    sched.add(
+        cd::ecs::SystemDesc { "move" }.reads<Vel>().writes<Pos>().fn(
+            [](cd::ecs::World& w)
+            {
+                CD_PROFILE_SCOPE("move");
+                w.each<Pos, Vel>(
+                    [](cd::ecs::Entity, Pos& p, Vel& v)
+                    {
+                        p.x += v.dx * kDt;
+                        p.y += v.dy * kDt;
+                    }
+                );
+            }
+        )
+    );
 
     // audit: read everything, write nothing (debug counter)
-    sched.add(cd::ecs::SystemDesc { "audit" }.reads<Pos>().reads<Vel>().reads<Health>().fn(
-        [](cd::ecs::World& w)
-        {
-            CD_PROFILE_SCOPE("audit");
-            std::uint32_t alive = 0;
-            w.for_each<Health>([&](cd::ecs::Entity, Health& h) { if (h.hp > 0) ++alive; });
-            (void)alive;
-        }));
+    sched.add(
+        cd::ecs::SystemDesc { "audit" }.reads<Pos>().reads<Vel>().reads<Health>().fn(
+            [](cd::ecs::World& w)
+            {
+                CD_PROFILE_SCOPE("audit");
+                std::uint32_t alive = 0;
+                w.for_each<Health>(
+                    [&](cd::ecs::Entity, Health& h)
+                    {
+                        if (h.hp > 0)
+                            ++alive;
+                    }
+                );
+                (void)alive;
+            }
+        )
+    );
 
     // Print resolved order BEFORE ticking so the user sees it once.
     auto order = sched.preview_order();
@@ -123,8 +138,13 @@ int main()
     }
     const auto t1 = std::chrono::steady_clock::now();
     const auto ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    std::printf("hello_scheduler: %u frames * %zu entities * 3 systems in %.2f ms (%.3f ms/frame)\n",
-                kFrames, kEntities, ms, ms / kFrames);
+    std::printf(
+        "hello_scheduler: %u frames * %zu entities * 3 systems in %.2f ms (%.3f ms/frame)\n",
+        kFrames,
+        kEntities,
+        ms,
+        ms / kFrames
+    );
 
     cd::profile::set_sink(prev);
 
@@ -135,11 +155,13 @@ int main()
     std::printf("hello_scheduler: per-scope rollup (sorted by total time):\n");
     for (const auto& r : rows)
     {
-        std::printf("  %-12s  count=%5llu  avg=%.3f us  total=%.3f ms\n",
-                    r.name.c_str(),
-                    static_cast<unsigned long long>(r.count),
-                    r.avg_ns() / 1000.0,
-                    static_cast<double>(r.total_ns) / 1e6);
+        std::printf(
+            "  %-12s  count=%5llu  avg=%.3f us  total=%.3f ms\n",
+            r.name.c_str(),
+            static_cast<unsigned long long>(r.count),
+            r.avg_ns() / 1000.0,
+            static_cast<double>(r.total_ns) / 1e6
+        );
     }
     return 0;
 }

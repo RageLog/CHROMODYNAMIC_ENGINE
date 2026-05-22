@@ -48,14 +48,14 @@ struct Vertex
 constexpr std::array<Vertex, 8> kVerts {
     {
      { { -0.4F, -0.4F, -0.4F }, { 0.20F, 0.40F, 1.00F } },
-        { { 0.4F, -0.4F, -0.4F }, { 1.00F, 0.40F, 0.20F } },
-        { { 0.4F, 0.4F, -0.4F }, { 0.95F, 0.85F, 0.10F } },
-        { { -0.4F, 0.4F, -0.4F }, { 0.20F, 0.85F, 0.30F } },
-        { { -0.4F, -0.4F, 0.4F }, { 0.40F, 0.20F, 0.85F } },
-        { { 0.4F, -0.4F, 0.4F }, { 0.85F, 0.20F, 0.50F } },
-        { { 0.4F, 0.4F, 0.4F }, { 0.90F, 0.90F, 0.90F } },
-        { { -0.4F, 0.4F, 0.4F }, { 0.10F, 0.95F, 0.85F } },
-    }
+     { { 0.4F, -0.4F, -0.4F }, { 1.00F, 0.40F, 0.20F } },
+     { { 0.4F, 0.4F, -0.4F }, { 0.95F, 0.85F, 0.10F } },
+     { { -0.4F, 0.4F, -0.4F }, { 0.20F, 0.85F, 0.30F } },
+     { { -0.4F, -0.4F, 0.4F }, { 0.40F, 0.20F, 0.85F } },
+     { { 0.4F, -0.4F, 0.4F }, { 0.85F, 0.20F, 0.50F } },
+     { { 0.4F, 0.4F, 0.4F }, { 0.90F, 0.90F, 0.90F } },
+     { { -0.4F, 0.4F, 0.4F }, { 0.10F, 0.95F, 0.85F } },
+     }
 };
 
 constexpr std::array<std::uint16_t, 36> kIndices {
@@ -160,13 +160,15 @@ create_depth_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size, cd::rhi::Form
 [[nodiscard]] cd::anim::AnimationClip make_square_clip()
 {
     constexpr float kPi = 3.14159265358979F;
-    auto quat_y = [](float deg) {
+    auto quat_y = [](float deg)
+    {
         const float half = deg * kPi / 180.0F * 0.5F;
         return cd::math::Quatf { 0.0F, std::sin(half), 0.0F, std::cos(half) };
     };
     std::vector<cd::anim::Keyframe> frames;
     frames.reserve(5);
-    auto push = [&](float t, cd::math::Vec3f pos, float scale_uniform, float deg) {
+    auto push = [&](float t, cd::math::Vec3f pos, float scale_uniform, float deg)
+    {
         cd::anim::Keyframe k;
         k.time = t;
         k.value.position = pos;
@@ -346,8 +348,7 @@ int main(int argc, char** argv)
         }
 
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo {
-                                          .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.10F, 0.10F, 0.12F, 1.0F } } }
@@ -390,11 +391,13 @@ int main(int argc, char** argv)
         const cd::math::Mat4f mvp = cd::camera::view_projection(cam, aspect) * model;
 
         material.apply(cmd);
-        cmd.push_constants(material.pipeline_layout(),
-                           cd::rhi::ShaderStage::kVertex,
-                           /*offset=*/0,
-                           static_cast<std::uint32_t>(sizeof(mvp)),
-                           &mvp);
+        cmd.push_constants(
+            material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex,
+            /*offset=*/0,
+            static_cast<std::uint32_t>(sizeof(mvp)),
+            &mvp
+        );
         cmd.bind_vertex_buffer(0, vb, 0);
         cmd.bind_index_buffer(ib, 0, cd::rhi::IndexType::kUInt16);
         cmd.draw_indexed(static_cast<std::uint32_t>(kIndices.size()), 1, 0, 0, 0);
@@ -404,8 +407,7 @@ int main(int argc, char** argv)
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
-            if (end_r.error().code ==
-                static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
+            if (end_r.error().code == static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
             {
                 needs_rebuild = true;
                 continue;
@@ -419,7 +421,6 @@ int main(int argc, char** argv)
     depth.destroy(device);
     device.destroy_buffer(vb);
     device.destroy_buffer(ib);
-    std::printf("hello_anim: clean exit (%u frames, t=%.2fs).\n", frame_idx,
-                static_cast<double>(player.time()));
+    std::printf("hello_anim: clean exit (%u frames, t=%.2fs).\n", frame_idx, static_cast<double>(player.time()));
     return 0;
 }

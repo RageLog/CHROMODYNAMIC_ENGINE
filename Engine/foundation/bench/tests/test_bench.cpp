@@ -3,7 +3,6 @@
 // Unit tests for cd::bench::run/Report semantics.
 // =============================================================================
 #include <cd/bench/Benchmark.hpp>
-
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -17,6 +16,7 @@ namespace
 // A body that does measurable but small work. Volatile prevents the
 // compiler from constant-folding the loop down to nothing under -O3.
 volatile std::uint64_t g_sink = 0;
+
 void cheap_body()
 {
     std::uint64_t acc = 0;
@@ -111,7 +111,8 @@ TEST(BenchTest, MeasurableWorkScalesWithIterationCount)
     // on MinGW UCRT64 can be ~30 ns (sleep returns immediately), making
     // the assertion flaky. Using a deterministic busy-loop is portable
     // across MSVC / Clang / GCC / MinGW.
-    auto busy = [] {
+    auto busy = []
+    {
         volatile std::uint64_t acc = 1;
         for (std::uint64_t i = 1; i <= 32'000; ++i)
             acc = acc * 1103515245u + 12345u + i;

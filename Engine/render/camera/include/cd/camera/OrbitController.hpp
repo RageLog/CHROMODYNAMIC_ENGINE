@@ -42,9 +42,7 @@ public:
     /// camera + before the first update().
     void sync_from_camera(const Camera& c) noexcept
     {
-        const cd::math::Vec3f d { c.eye[0] - c.target[0],
-                                  c.eye[1] - c.target[1],
-                                  c.eye[2] - c.target[2] };
+        const cd::math::Vec3f d { c.eye[0] - c.target[0], c.eye[1] - c.target[1], c.eye[2] - c.target[2] };
         radius_ = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
         if (radius_ < 1e-4F)
             radius_ = 1e-4F;
@@ -82,9 +80,9 @@ public:
     }
 
     // ------ Tunables (public; treat as plain config) ------------------------
-    float auto_spin_rate { 0.6F };     ///< rad/s for `update_auto`
+    float auto_spin_rate { 0.6F };  ///< rad/s for `update_auto`
     float radians_per_pixel { 0.005F };
-    float zoom_step { 0.1F };          ///< multiplicative; `e^(-delta*step)`
+    float zoom_step { 0.1F };       ///< multiplicative; `e^(-delta*step)`
     float radius_min { 0.1F };
     float radius_max { 1000.0F };
 

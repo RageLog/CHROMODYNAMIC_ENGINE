@@ -49,7 +49,7 @@ enum class Code : std::uint32_t
     kIoError = 2,
     kMagicMismatch = 3,
     kCorrupt = 4,
-    kUnsupportedFormat = 5,        ///< KTX2 itself is OK but the vkFormat isn't on our short-list.
+    kUnsupportedFormat = 5,            ///< KTX2 itself is OK but the vkFormat isn't on our short-list.
     kUnsupportedSupercompression = 6,  ///< Basis / Zstd not implemented in v1.
     kInvalidArgument = 7,
 };

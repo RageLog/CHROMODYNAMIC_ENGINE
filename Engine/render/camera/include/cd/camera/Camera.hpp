@@ -93,9 +93,7 @@ auto_frame_aabb(const cd::math::Vec3f& bbox_min, const cd::math::Vec3f& bbox_max
     const cd::math::Vec3f centre { (bbox_min[0] + bbox_max[0]) * 0.5F,
                                    (bbox_min[1] + bbox_max[1]) * 0.5F,
                                    (bbox_min[2] + bbox_max[2]) * 0.5F };
-    const cd::math::Vec3f size { bbox_max[0] - bbox_min[0],
-                                 bbox_max[1] - bbox_min[1],
-                                 bbox_max[2] - bbox_min[2] };
+    const cd::math::Vec3f size { bbox_max[0] - bbox_min[0], bbox_max[1] - bbox_min[1], bbox_max[2] - bbox_min[2] };
     const float radius = 0.5F * std::sqrt(size[0] * size[0] + size[1] * size[1] + size[2] * size[2]);
     const float dist = std::max(radius * distance_scale, 1.5F);
 

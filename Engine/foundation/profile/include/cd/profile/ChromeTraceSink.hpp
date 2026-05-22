@@ -84,9 +84,7 @@ public:
             const double dur_us = static_cast<double>(s.duration_ns) / 1000.0;
             // Single-line JSON object per sample keeps the file diff-friendly
             // and reduces parse time on perfetto.dev for huge traces.
-            out_ << R"({"name":")" << s.name
-                 << R"(","cat":"cpu","ph":"X","ts":)" << ts_us
-                 << R"(,"dur":)" << dur_us
+            out_ << R"({"name":")" << s.name << R"(","cat":"cpu","ph":"X","ts":)" << ts_us << R"(,"dur":)" << dur_us
                  << R"(,"pid":1,"tid":)" << s.thread_hash << '}';
         }
         catch (...)

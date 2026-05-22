@@ -7,7 +7,6 @@
 // — the cache logic is what we're verifying.
 // =============================================================================
 #include <cd/shader/CachedCompiler.hpp>
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -26,8 +25,7 @@ namespace fs = std::filesystem;
 class CountingCompiler final : public cd::shader::ICompiler
 {
 public:
-    [[nodiscard]] cd::core::Result<cd::shader::CompileResult>
-    compile(const cd::shader::CompileDesc& desc) override
+    [[nodiscard]] cd::core::Result<cd::shader::CompileResult> compile(const cd::shader::CompileDesc& desc) override
     {
         ++calls;
         cd::shader::CompileResult r;
@@ -47,23 +45,25 @@ public:
 {
     static std::atomic<std::uint64_t> seq { 0 };
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    return fs::temp_directory_path() /
-           ("cd_shader_cache_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
-            std::to_string(seq.fetch_add(1)));
+    return fs::temp_directory_path() / ("cd_shader_cache_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+                                        std::to_string(seq.fetch_add(1)));
 }
 
 struct CacheDirGuard
 {
     fs::path path;
+
     explicit CacheDirGuard(fs::path p)
         : path { std::move(p) }
     {
     }
+
     ~CacheDirGuard()
     {
         std::error_code ec;
         fs::remove_all(path, ec);
     }
+
     CacheDirGuard(const CacheDirGuard&) = delete;
     CacheDirGuard& operator=(const CacheDirGuard&) = delete;
     CacheDirGuard(CacheDirGuard&&) = delete;

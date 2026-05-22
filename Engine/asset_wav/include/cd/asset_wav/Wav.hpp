@@ -57,8 +57,8 @@ enum class Code : std::uint32_t
 
 enum class SampleFormat : std::uint16_t
 {
-    kPcmInt = 1,    ///< Linear integer PCM. Bit depth in `bits_per_sample`.
-    kIeeeFloat = 3, ///< IEEE 754 float; `bits_per_sample` is always 32 for f32 or 64 for f64.
+    kPcmInt = 1,     ///< Linear integer PCM. Bit depth in `bits_per_sample`.
+    kIeeeFloat = 3,  ///< IEEE 754 float; `bits_per_sample` is always 32 for f32 or 64 for f64.
 };
 
 struct Wav
@@ -79,8 +79,7 @@ struct Wav
     /// samples). Computed from `samples.size()` and the metadata.
     [[nodiscard]] std::size_t frame_count() const noexcept
     {
-        const auto bytes_per_frame
-            = static_cast<std::size_t>(channels) * (bits_per_sample / 8u);
+        const auto bytes_per_frame = static_cast<std::size_t>(channels) * (bits_per_sample / 8u);
         if (bytes_per_frame == 0)
             return 0;
         return samples.size() / bytes_per_frame;

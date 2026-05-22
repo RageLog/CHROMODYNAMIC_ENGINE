@@ -41,7 +41,9 @@ namespace
 //   then DFD, KVD, SGD blobs, then the actual mip data referenced by the
 //   level index entries.
 
-constexpr std::array<std::uint8_t, 12> kMagic { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+constexpr std::array<std::uint8_t, 12> kMagic {
+    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A
+};
 constexpr std::size_t kHeaderSize = 12 + 4 * 13 + 8 * 2;  // 12 magic + 13 u32 + 2 u64 = 80
 constexpr std::size_t kLevelEntrySize = 24;
 
@@ -55,8 +57,7 @@ static_assert(kHeaderSize == 80, "KTX2 header size sanity");
 
 [[nodiscard]] std::uint64_t read_u64_le(const std::uint8_t* p) noexcept
 {
-    return static_cast<std::uint64_t>(read_u32_le(p)) |
-           (static_cast<std::uint64_t>(read_u32_le(p + 4)) << 32);
+    return static_cast<std::uint64_t>(read_u32_le(p)) | (static_cast<std::uint64_t>(read_u32_le(p + 4)) << 32);
 }
 
 [[nodiscard]] bool is_supported_format(std::uint32_t v) noexcept
@@ -106,8 +107,10 @@ static_assert(kHeaderSize == 80, "KTX2 header size sanity");
     if (supercompression != 0)
     {
         return std::unexpected(
-            ktx2_errors::make(ktx2_errors::Code::kUnsupportedSupercompression,
-                              "v1 reader does not implement Basis / Zstd")
+            ktx2_errors::make(
+                ktx2_errors::Code::kUnsupportedSupercompression,
+                "v1 reader does not implement Basis / Zstd"
+            )
         );
     }
     if (pixel_w == 0 || pixel_h == 0)
@@ -132,8 +135,9 @@ static_assert(kHeaderSize == 80, "KTX2 header size sanity");
     }
     if (!is_supported_format(vk_format))
     {
-        return std::unexpected(ktx2_errors::make(ktx2_errors::Code::kUnsupportedFormat,
-                                                 "vkFormat not on supported short-list"));
+        return std::unexpected(
+            ktx2_errors::make(ktx2_errors::Code::kUnsupportedFormat, "vkFormat not on supported short-list")
+        );
     }
 
     // Level index table immediately follows the 80-byte header.
@@ -159,8 +163,7 @@ static_assert(kHeaderSize == 80, "KTX2 header size sanity");
         const std::uint64_t byte_offset = read_u64_le(entry + 0);
         const std::uint64_t byte_length = read_u64_le(entry + 8);
         // uncompressedByteLength at +16 (u64); we don't enforce.
-        if (byte_offset > bytes.size() || byte_length > bytes.size() ||
-            byte_offset + byte_length > bytes.size())
+        if (byte_offset > bytes.size() || byte_length > bytes.size() || byte_offset + byte_length > bytes.size())
         {
             return std::unexpected(ktx2_errors::make(ktx2_errors::Code::kCorrupt, "level extends past file"));
         }

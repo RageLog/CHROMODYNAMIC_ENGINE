@@ -113,9 +113,9 @@ struct GltfMaterial
 struct GltfNode
 {
     std::string name;
-    int parent { -1 };               ///< Index into `GltfScene::nodes`, or -1 for roots.
-    std::vector<int> children;       ///< Indices into `GltfScene::nodes`.
-    int mesh_index { -1 };           ///< Index into `GltfScene::meshes`, or -1 if pure transform.
+    int parent { -1 };          ///< Index into `GltfScene::nodes`, or -1 for roots.
+    std::vector<int> children;  ///< Indices into `GltfScene::nodes`.
+    int mesh_index { -1 };      ///< Index into `GltfScene::meshes`, or -1 if pure transform.
     cd::math::Mat4f local_matrix { cd::math::Mat4f::identity() };
 };
 
@@ -125,7 +125,7 @@ struct GltfNode
 struct GltfInstance
 {
     int mesh_index { -1 };
-    int node_index { -1 };           ///< Source node, in case the caller wants the name / hierarchy back.
+    int node_index { -1 };  ///< Source node, in case the caller wants the name / hierarchy back.
     cd::math::Mat4f world_matrix { cd::math::Mat4f::identity() };
 };
 
@@ -165,7 +165,6 @@ struct GltfScene
 /// `base_dir` is the resource-resolution root for external URIs
 /// (textures, `.bin`); pass an empty string to disallow external lookups.
 [[nodiscard]] cd::core::Result<GltfScene>
-load_gltf_from_memory(const std::uint8_t* bytes, std::size_t size,
-                      std::string_view base_dir = {});
+load_gltf_from_memory(const std::uint8_t* bytes, std::size_t size, std::string_view base_dir = {});
 
 }  // namespace cd::asset_gltf

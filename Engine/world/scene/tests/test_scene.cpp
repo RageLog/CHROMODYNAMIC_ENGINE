@@ -180,12 +180,18 @@ TEST(Scene, ForEachNodeVisitsEveryCreatedEntity)
     auto c = s.create_node();
     std::size_t seen = 0;
     bool got_a = false, got_b = false, got_c = false;
-    s.for_each_node([&](cd::ecs::Entity e, cd::scene::LocalTransform&) {
-        ++seen;
-        if (e == a) got_a = true;
-        if (e == b) got_b = true;
-        if (e == c) got_c = true;
-    });
+    s.for_each_node(
+        [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
+        {
+            ++seen;
+            if (e == a)
+                got_a = true;
+            if (e == b)
+                got_b = true;
+            if (e == c)
+                got_c = true;
+        }
+    );
     EXPECT_EQ(seen, 3u);
     EXPECT_TRUE(got_a && got_b && got_c);
 }
@@ -200,9 +206,12 @@ TEST(Scene, ForEachRootSkipsChildren)
     s.attach(a, p);
     s.attach(b, p);
     std::vector<cd::ecs::Entity> roots;
-    s.for_each_root([&](cd::ecs::Entity e, cd::scene::LocalTransform&) {
-        roots.push_back(e);
-    });
+    s.for_each_root(
+        [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
+        {
+            roots.push_back(e);
+        }
+    );
     ASSERT_EQ(roots.size(), 1u);
     EXPECT_EQ(roots[0], p);
 }
@@ -211,7 +220,7 @@ TEST(Scene, ForEachDescendantWalksDepthFirst)
 {
     cd::ecs::World w;
     cd::scene::Scene s { w };
-    auto r  = s.create_node();
+    auto r = s.create_node();
     auto c1 = s.create_node();
     auto c2 = s.create_node();
     auto g1 = s.create_node();
@@ -220,9 +229,13 @@ TEST(Scene, ForEachDescendantWalksDepthFirst)
     s.attach(g1, c1);
 
     std::vector<std::pair<cd::ecs::Entity, std::uint32_t>> walk;
-    s.for_each_descendant(r, [&](cd::ecs::Entity e, std::uint32_t d) {
-        walk.emplace_back(e, d);
-    });
+    s.for_each_descendant(
+        r,
+        [&](cd::ecs::Entity e, std::uint32_t d)
+        {
+            walk.emplace_back(e, d);
+        }
+    );
     ASSERT_EQ(walk.size(), 4u);
     EXPECT_EQ(walk[0].first, r);
     EXPECT_EQ(walk[0].second, 0u);
@@ -260,7 +273,7 @@ TEST(SceneSerializer, RoundTripFlatScenePreservesTransforms)
 
     auto a = s.create_node();
     s.local(a)->value.position = cd::math::Vec3f { 1.0F, 2.0F, 3.0F };
-    s.local(a)->value.scale    = cd::math::Vec3f { 2.0F, 1.0F, 0.5F };
+    s.local(a)->value.scale = cd::math::Vec3f { 2.0F, 1.0F, 0.5F };
 
     auto b = s.create_node();
     s.local(b)->value.position = cd::math::Vec3f { -4.0F, 0.0F, 7.0F };
@@ -301,7 +314,7 @@ TEST(SceneSerializer, ParentLinksAreRebuilt)
     cd::ecs::World w;
     cd::scene::Scene s { w };
     auto parent = s.create_node();
-    auto child  = s.create_node();
+    auto child = s.create_node();
     s.attach(child, parent);
 
     const auto json = cd::scene::serialize_scene(s);
@@ -326,8 +339,7 @@ TEST(SceneSerializer, BadShapeRejected)
     cd::asset_json::Value scalar { 42 };
     auto r = cd::scene::deserialize_scene(s, scalar);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
 }
 
 TEST(SceneSerializer, BadVersionRejected)
@@ -336,12 +348,11 @@ TEST(SceneSerializer, BadVersionRejected)
     cd::scene::Scene s { w };
     cd::asset_json::Object o;
     o["version"] = cd::asset_json::Value { 99 };
-    o["nodes"]   = cd::asset_json::Value { cd::asset_json::Array {} };
+    o["nodes"] = cd::asset_json::Value { cd::asset_json::Array {} };
     cd::asset_json::Value root { std::move(o) };
     auto r = cd::scene::deserialize_scene(s, root);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadVersion));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadVersion));
 }
 
 }  // namespace

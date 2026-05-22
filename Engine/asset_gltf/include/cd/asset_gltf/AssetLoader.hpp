@@ -27,9 +27,21 @@ namespace cd::asset_gltf
 class GltfAsset final : public cd::asset::IAsset
 {
 public:
-    explicit GltfAsset(GltfScene s) noexcept : scene_ { std::move(s) } {}
-    [[nodiscard]] std::string_view tag() const noexcept override { return "gltf"; }
-    [[nodiscard]] const GltfScene& scene() const noexcept { return scene_; }
+    explicit GltfAsset(GltfScene s) noexcept
+        : scene_ { std::move(s) }
+    {
+    }
+
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "gltf";
+    }
+
+    [[nodiscard]] const GltfScene& scene() const noexcept
+    {
+        return scene_;
+    }
+
 private:
     GltfScene scene_;
 };
@@ -37,7 +49,10 @@ private:
 class GltfAssetLoader final : public cd::asset::IAssetLoader
 {
 public:
-    [[nodiscard]] std::string_view tag() const noexcept override { return "gltf"; }
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "gltf";
+    }
 
     [[nodiscard]] cd::core::Result<std::unique_ptr<cd::asset::IAsset>>
     decode(std::span<const std::byte> bytes, std::string_view /*path_hint*/) override
@@ -46,9 +61,7 @@ public:
         auto r = cd::asset_gltf::load_gltf_from_memory(u8, bytes.size());
         if (!r.has_value())
             return std::unexpected(r.error());
-        return std::unique_ptr<cd::asset::IAsset> {
-            std::make_unique<GltfAsset>(std::move(*r))
-        };
+        return std::unique_ptr<cd::asset::IAsset> { std::make_unique<GltfAsset>(std::move(*r)) };
     }
 };
 

@@ -29,8 +29,8 @@ namespace
 [[nodiscard]] std::uint32_t read_u32_le(const std::byte* p) noexcept
 {
     const auto* b = reinterpret_cast<const unsigned char*>(p);
-    return static_cast<std::uint32_t>(b[0]) | (static_cast<std::uint32_t>(b[1]) << 8)
-         | (static_cast<std::uint32_t>(b[2]) << 16) | (static_cast<std::uint32_t>(b[3]) << 24);
+    return static_cast<std::uint32_t>(b[0]) | (static_cast<std::uint32_t>(b[1]) << 8) |
+           (static_cast<std::uint32_t>(b[2]) << 16) | (static_cast<std::uint32_t>(b[3]) << 24);
 }
 
 [[nodiscard]] bool fourcc_eq(const std::byte* p, const char (&tag)[5]) noexcept
@@ -44,31 +44,27 @@ cd::core::Result<Wav> decode(const std::byte* data, std::size_t size)
 {
     if (data == nullptr || size < 44u)
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kCorrupt,
-            "wav: input too small for RIFF/fmt/data minimum (44 bytes)"
-        ));
+        return std::unexpected(
+            wav_errors::make(wav_errors::Code::kCorrupt, "wav: input too small for RIFF/fmt/data minimum (44 bytes)")
+        );
     }
 
     // RIFF header
     if (!fourcc_eq(data, "RIFF"))
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kMagicMismatch, "wav: 'RIFF' fourcc missing"));
+        return std::unexpected(wav_errors::make(wav_errors::Code::kMagicMismatch, "wav: 'RIFF' fourcc missing"));
     }
     const auto riff_size = read_u32_le(data + 4);
     if (!fourcc_eq(data + 8, "WAVE"))
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kMagicMismatch, "wav: 'WAVE' fourcc missing"));
+        return std::unexpected(wav_errors::make(wav_errors::Code::kMagicMismatch, "wav: 'WAVE' fourcc missing"));
     }
     // riff_size counts everything after the size field itself (i.e. payload
     // including "WAVE" fourcc onwards). Total file should be 8 + riff_size.
     // Tolerate slight mismatches (some tools omit the trailing pad byte).
     if (riff_size > size)
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kCorrupt, "wav: RIFF size exceeds buffer"));
+        return std::unexpected(wav_errors::make(wav_errors::Code::kCorrupt, "wav: RIFF size exceeds buffer"));
     }
 
     Wav out;
@@ -84,21 +80,21 @@ cd::core::Result<Wav> decode(const std::byte* data, std::size_t size)
         const std::size_t payload_off = cursor + 8;
         if (payload_off + chunk_size > size)
         {
-            return std::unexpected(wav_errors::make(
-                wav_errors::Code::kCorrupt, "wav: chunk extends past buffer"));
+            return std::unexpected(wav_errors::make(wav_errors::Code::kCorrupt, "wav: chunk extends past buffer"));
         }
 
         if (fourcc_eq(tag, "fmt "))
         {
             if (chunk_size < 16)
             {
-                return std::unexpected(wav_errors::make(
-                    wav_errors::Code::kCorrupt, "wav: fmt chunk smaller than 16 bytes"));
+                return std::unexpected(
+                    wav_errors::make(wav_errors::Code::kCorrupt, "wav: fmt chunk smaller than 16 bytes")
+                );
             }
             const auto* fmt = data + payload_off;
             const auto fmt_code = read_u16_le(fmt + 0);
-            out.channels        = read_u16_le(fmt + 2);
-            out.sample_rate     = read_u32_le(fmt + 4);
+            out.channels = read_u16_le(fmt + 2);
+            out.sample_rate = read_u32_le(fmt + 4);
             // bytes 8-11: byte_rate (channels * sample_rate * bits/8)
             // bytes 12-13: block_align (channels * bits/8)
             out.bits_per_sample = read_u16_le(fmt + 14);
@@ -112,16 +108,17 @@ cd::core::Result<Wav> decode(const std::byte* data, std::size_t size)
                 // WAVE_FORMAT_EXTENSIBLE (0xFFFE) and codec-specific codes
                 // (μ-law, A-law, ADPCM, MP3-in-WAV) all land here. v1
                 // refuses; caller can transcode or pick a different format.
-                return std::unexpected(wav_errors::make(
-                    wav_errors::Code::kUnsupportedFormat,
-                    "wav: only PCM (1) and IEEE float (3) supported"
-                ));
+                return std::unexpected(
+                    wav_errors::make(
+                        wav_errors::Code::kUnsupportedFormat,
+                        "wav: only PCM (1) and IEEE float (3) supported"
+                    )
+                );
             }
-            if (out.channels == 0 || out.sample_rate == 0 || out.bits_per_sample == 0
-                || (out.bits_per_sample % 8u) != 0u)
+            if (out.channels == 0 || out.sample_rate == 0 || out.bits_per_sample == 0 ||
+                (out.bits_per_sample % 8u) != 0u)
             {
-                return std::unexpected(wav_errors::make(
-                    wav_errors::Code::kCorrupt, "wav: malformed fmt fields"));
+                return std::unexpected(wav_errors::make(wav_errors::Code::kCorrupt, "wav: malformed fmt fields"));
             }
             have_fmt = true;
         }
@@ -129,8 +126,9 @@ cd::core::Result<Wav> decode(const std::byte* data, std::size_t size)
         {
             if (!have_fmt)
             {
-                return std::unexpected(wav_errors::make(
-                    wav_errors::Code::kCorrupt, "wav: data chunk before fmt chunk"));
+                return std::unexpected(
+                    wav_errors::make(wav_errors::Code::kCorrupt, "wav: data chunk before fmt chunk")
+                );
             }
             out.samples.resize(chunk_size);
             std::memcpy(out.samples.data(), data + payload_off, chunk_size);
@@ -144,13 +142,11 @@ cd::core::Result<Wav> decode(const std::byte* data, std::size_t size)
 
     if (!have_fmt)
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kCorrupt, "wav: no fmt chunk found"));
+        return std::unexpected(wav_errors::make(wav_errors::Code::kCorrupt, "wav: no fmt chunk found"));
     }
     if (!have_data)
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kCorrupt, "wav: no data chunk found"));
+        return std::unexpected(wav_errors::make(wav_errors::Code::kCorrupt, "wav: no data chunk found"));
     }
     return out;
 }
@@ -161,9 +157,9 @@ cd::core::Result<Wav> load(std::string_view path)
     std::ifstream f { path_s, std::ios::binary | std::ios::ate };
     if (!f)
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kFileNotFound, std::string { "wav: cannot open " } + path_s
-        ));
+        return std::unexpected(
+            wav_errors::make(wav_errors::Code::kFileNotFound, std::string { "wav: cannot open " } + path_s)
+        );
     }
     const auto size = static_cast<std::size_t>(f.tellg());
     f.seekg(0, std::ios::beg);
@@ -172,9 +168,9 @@ cd::core::Result<Wav> load(std::string_view path)
     buf.resize(size);
     if (!f.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size)))
     {
-        return std::unexpected(wav_errors::make(
-            wav_errors::Code::kIoError, std::string { "wav: read failed for " } + path_s
-        ));
+        return std::unexpected(
+            wav_errors::make(wav_errors::Code::kIoError, std::string { "wav: read failed for " } + path_s)
+        );
     }
     return decode(buf.data(), buf.size());
 }

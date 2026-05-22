@@ -63,7 +63,9 @@ cd::core::Result<void> save(std::string_view path, const SaveDesc& desc)
     if (desc.vertex_stride == 0)
         return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kInvalidArgument, "vertex_stride == 0"));
     if (desc.index_stride != 2 && desc.index_stride != 4)
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kInvalidArgument, "index_stride must be 2 or 4"));
+        return std::unexpected(
+            cdmesh_errors::make(cdmesh_errors::Code::kInvalidArgument, "index_stride must be 2 or 4")
+        );
     if (desc.vertices.size() < static_cast<std::size_t>(desc.vertex_count) * desc.vertex_stride)
         return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kInvalidArgument, "vertices span too small"));
     if (desc.indices.size() < static_cast<std::size_t>(desc.index_count) * desc.index_stride)

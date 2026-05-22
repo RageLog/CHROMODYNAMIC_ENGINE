@@ -168,8 +168,7 @@ int main(int argc, char** argv)
 
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
     constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
-        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex
-                                                | cd::rhi::ShaderStage::kFragment,
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                     .offset = 0,
                                     .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
     };
@@ -235,8 +234,7 @@ int main(int argc, char** argv)
         auto& cmd = *frame.command_buffer;
 
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo {
-                                          .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
@@ -303,11 +301,13 @@ int main(int argc, char** argv)
         pb.cam_fwd = { forward.x, forward.y, forward.z, 0.0F };
         pb.sun_dir = { -0.4F, -0.7F, -0.6F, 3.5F };
 
-        cmd.push_constants(material.pipeline_layout(),
-                           cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                           /*offset=*/0,
-                           static_cast<std::uint32_t>(sizeof(pb)),
-                           &pb);
+        cmd.push_constants(
+            material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            /*offset=*/0,
+            static_cast<std::uint32_t>(sizeof(pb)),
+            &pb
+        );
         // Fullscreen triangle: 3 vertices, no vertex buffer.
         cmd.draw(3, 1, 0, 0);
 
@@ -316,8 +316,7 @@ int main(int argc, char** argv)
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
-            if (end_r.error().code ==
-                static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
+            if (end_r.error().code == static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
             {
                 needs_rebuild = true;
                 continue;

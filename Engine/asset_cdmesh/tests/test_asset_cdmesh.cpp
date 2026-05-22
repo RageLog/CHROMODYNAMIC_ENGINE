@@ -2,7 +2,6 @@
 // CHROMODYNAMIC — cd::asset_cdmesh tests
 // =============================================================================
 #include <cd/asset_cdmesh/CdMesh.hpp>
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -28,15 +27,18 @@ namespace fs = std::filesystem;
 struct PathGuard
 {
     fs::path path;
+
     explicit PathGuard(fs::path p)
         : path { std::move(p) }
     {
     }
+
     ~PathGuard()
     {
         std::error_code ec;
         fs::remove(path, ec);
     }
+
     PathGuard(const PathGuard&) = delete;
     PathGuard& operator=(const PathGuard&) = delete;
     PathGuard(PathGuard&&) = delete;
@@ -50,17 +52,17 @@ TEST(CdMesh, SaveLoadRoundtripStdVertex)
     PathGuard g { tmp_path() };
 
     std::vector<cd::asset_cdmesh::CdVertexStd> verts = {
-        { { 0.0F, 0.5F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.5F, 0.0F } },
+        { { 0.0F, 0.5F, 0.0F },   { 0.0F, 0.0F, 1.0F }, { 0.5F, 0.0F } },
         { { -0.5F, -0.5F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 0.0F, 1.0F } },
-        { { 0.5F, -0.5F, 0.0F }, { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F } },
+        { { 0.5F, -0.5F, 0.0F },  { 0.0F, 0.0F, 1.0F }, { 1.0F, 1.0F } },
     };
     std::vector<std::uint32_t> idx = { 0, 1, 2 };
 
     cd::asset_cdmesh::SaveDesc d {};
     d.vertices = std::span<const std::uint8_t> { reinterpret_cast<const std::uint8_t*>(verts.data()),
-                                                  verts.size() * sizeof(cd::asset_cdmesh::CdVertexStd) };
+                                                 verts.size() * sizeof(cd::asset_cdmesh::CdVertexStd) };
     d.indices = std::span<const std::uint8_t> { reinterpret_cast<const std::uint8_t*>(idx.data()),
-                                                 idx.size() * sizeof(std::uint32_t) };
+                                                idx.size() * sizeof(std::uint32_t) };
     d.vertex_count = static_cast<std::uint32_t>(verts.size());
     d.index_count = static_cast<std::uint32_t>(idx.size());
     d.vertex_stride = sizeof(cd::asset_cdmesh::CdVertexStd);
@@ -100,9 +102,9 @@ TEST(CdMesh, RoundtripU16Indices)
 
     cd::asset_cdmesh::SaveDesc d {};
     d.vertices = std::span<const std::uint8_t> { reinterpret_cast<const std::uint8_t*>(verts.data()),
-                                                  verts.size() * sizeof(cd::asset_cdmesh::CdVertexStd) };
+                                                 verts.size() * sizeof(cd::asset_cdmesh::CdVertexStd) };
     d.indices = std::span<const std::uint8_t> { reinterpret_cast<const std::uint8_t*>(idx.data()),
-                                                 idx.size() * sizeof(std::uint16_t) };
+                                                idx.size() * sizeof(std::uint16_t) };
     d.vertex_count = 4;
     d.index_count = static_cast<std::uint32_t>(idx.size());
     d.vertex_stride = sizeof(cd::asset_cdmesh::CdVertexStd);
@@ -155,11 +157,11 @@ TEST(CdMesh, TruncatedPayloadReturnsCorrupt)
             f.write(reinterpret_cast<const char*>(b), 4);
         };
         w32(cd::asset_cdmesh::kFormatVersion);
-        w32(0);     // flags
-        w32(1000);  // vertex_count
-        w32(0);     // index_count
-        w32(32);    // vertex_stride
-        w32(4);     // index_stride
+        w32(0);      // flags
+        w32(1000);   // vertex_count
+        w32(0);      // index_count
+        w32(32);     // vertex_stride
+        w32(4);      // index_stride
         for (int i = 0; i < 6; ++i)
             w32(0);  // bbox floats as zeros (interpreted as 0.0f)
     }
@@ -184,7 +186,7 @@ TEST(CdMesh, RejectsBadIndexStride)
     std::vector<std::uint8_t> i(1);
     cd::asset_cdmesh::SaveDesc d {};
     d.vertices = std::span<const std::uint8_t> { reinterpret_cast<const std::uint8_t*>(v.data()),
-                                                  v.size() * sizeof(cd::asset_cdmesh::CdVertexStd) };
+                                                 v.size() * sizeof(cd::asset_cdmesh::CdVertexStd) };
     d.indices = std::span<const std::uint8_t> { i.data(), i.size() };
     d.vertex_count = 1;
     d.index_count = 1;
@@ -198,6 +200,7 @@ TEST(CdMesh, RejectsBadIndexStride)
 // ----- AssetLoader adapter -----
 
 #include <cd/asset_cdmesh/AssetLoader.hpp>
+
 #include <cstring>
 #include <span>
 
@@ -222,7 +225,8 @@ std::vector<std::byte> build_minimal_cdmesh_bytes()
     d.index_stride = 2;
     const auto p = std::filesystem::temp_directory_path() / "cd_adapter_tmp.cdmesh";
     auto save_r = cd::asset_cdmesh::save(p.string(), d);
-    if (!save_r) return {};
+    if (!save_r)
+        return {};
     std::vector<std::byte> out;
     {
         // Scope the ifstream so it is closed before remove() runs — on

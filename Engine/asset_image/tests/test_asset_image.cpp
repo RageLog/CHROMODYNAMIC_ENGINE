@@ -7,7 +7,6 @@
 // libraries — BMP is fully self-contained.
 // =============================================================================
 #include <cd/asset_image/Image.hpp>
-
 #include <gtest/gtest.h>
 
 #include <array>
@@ -33,18 +32,20 @@ namespace fs = std::filesystem;
 struct TempFile
 {
     fs::path path;
+
     explicit TempFile(std::string_view suffix)
     {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        path = fs::temp_directory_path() /
-               ("cd_img_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" + std::to_string(next_id()) +
-                std::string { suffix });
+        path = fs::temp_directory_path() / ("cd_img_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+                                            std::to_string(next_id()) + std::string { suffix });
     }
+
     ~TempFile()
     {
         std::error_code ec;
         fs::remove(path, ec);
     }
+
     TempFile(const TempFile&) = delete;
     TempFile& operator=(const TempFile&) = delete;
     TempFile(TempFile&&) = delete;
@@ -85,7 +86,7 @@ struct TempFile
     buf[0] = 'B';
     buf[1] = 'M';
     write32(2, total_size);
-    write32(6, 0);  // reserved
+    write32(6, 0);             // reserved
     write32(10, header_size);  // pixel data offset
 
     // DIB header (BITMAPINFOHEADER, 40 bytes)
@@ -276,8 +277,7 @@ TEST(AssetImage, GenerateMipsZeroDimensionRejected)
     src.height = 16;
     auto r = cd::asset_image::generate_mips(src);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kInvalidArgument));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kInvalidArgument));
 }
 
 // ----- AssetLoader adapter -----

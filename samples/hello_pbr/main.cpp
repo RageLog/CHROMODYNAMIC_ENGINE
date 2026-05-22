@@ -353,8 +353,7 @@ int main(int argc, char** argv)
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
     constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
-        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex
-                                                | cd::rhi::ShaderStage::kFragment,
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                     .offset = 0,
                                     .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
     };
@@ -379,7 +378,7 @@ int main(int argc, char** argv)
     // ---- Camera (cd::camera) ---------------------------------------------
     constexpr int kGrid = 5;
     constexpr float kSpacing = 2.4F;  // sphere ø=2 + breathing room.
-    float orbit_angle = 0.0F;  // animated when !no_spin
+    float orbit_angle = 0.0F;         // animated when !no_spin
     constexpr float kOrbitDistance = 14.0F;
 
     std::printf("hello_pbr: ready. 25 spheres (metallic 0..1 × roughness 0.05..1). ESC to exit.\n");
@@ -449,8 +448,7 @@ int main(int argc, char** argv)
         }
 
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo {
-                                          .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.05F, 0.05F, 0.07F, 1.0F } } }
@@ -502,7 +500,8 @@ int main(int argc, char** argv)
             for (int col = 0; col < kGrid; ++col)
             {
                 const float metallic = static_cast<float>(col) / static_cast<float>(kGrid - 1);
-                const float roughness = 0.05F + (1.0F - 0.05F) * (static_cast<float>(row) / static_cast<float>(kGrid - 1));
+                const float roughness =
+                    0.05F + (1.0F - 0.05F) * (static_cast<float>(row) / static_cast<float>(kGrid - 1));
                 const float x = (static_cast<float>(col) - static_cast<float>(kGrid - 1) * 0.5F) * kSpacing;
                 const float y = (static_cast<float>(row) - static_cast<float>(kGrid - 1) * 0.5F) * kSpacing;
 
@@ -535,8 +534,7 @@ int main(int argc, char** argv)
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
-            if (end_r.error().code ==
-                static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
+            if (end_r.error().code == static_cast<std::uint32_t>(cd::render::render_errors::Code::kSwapchainOutOfDate))
             {
                 needs_rebuild = true;
                 continue;

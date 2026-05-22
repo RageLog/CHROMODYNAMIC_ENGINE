@@ -24,15 +24,17 @@ namespace
 {
 
 constexpr std::uint32_t kSampleRate = 44100;
-constexpr float        kFreqHz      = 440.0F;
-constexpr float        kDurationSec = 0.25F;
+constexpr float kFreqHz = 440.0F;
+constexpr float kDurationSec = 0.25F;
 
 /// Append a little-endian integer of N bytes to `bytes`.
 template <class T>
 void push_le(std::vector<std::byte>& bytes, T value, std::size_t n)
 {
     for (std::size_t i = 0; i < n; ++i)
-        bytes.push_back(std::byte { static_cast<unsigned char>((static_cast<std::uint64_t>(value) >> (i * 8u)) & 0xFFu) });
+        bytes.push_back(
+            std::byte { static_cast<unsigned char>((static_cast<std::uint64_t>(value) >> (i * 8u)) & 0xFFu) }
+        );
 }
 
 void push_tag(std::vector<std::byte>& bytes, const char (&tag)[5])
@@ -46,7 +48,7 @@ void push_tag(std::vector<std::byte>& bytes, const char (&tag)[5])
 std::vector<std::byte> encode_wav_mono_s16(const std::vector<std::int16_t>& samples)
 {
     const std::uint32_t data_size = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
-    const std::uint32_t fmt_size  = 16;
+    const std::uint32_t fmt_size = 16;
     const std::uint32_t riff_size = 4 + 8 + fmt_size + 8 + data_size;
 
     std::vector<std::byte> bytes;
@@ -57,18 +59,20 @@ std::vector<std::byte> encode_wav_mono_s16(const std::vector<std::int16_t>& samp
 
     push_tag(bytes, "fmt ");
     push_le(bytes, fmt_size, 4);
-    push_le(bytes, 1u, 2);                  // PCM
-    push_le(bytes, 1u, 2);                  // mono
-    push_le(bytes, kSampleRate, 4);         // sample rate
-    push_le(bytes, kSampleRate * 1u * 2u, 4); // byte rate
-    push_le(bytes, 2u, 2);                  // block align
-    push_le(bytes, 16u, 2);                 // bits per sample
+    push_le(bytes, 1u, 2);                     // PCM
+    push_le(bytes, 1u, 2);                     // mono
+    push_le(bytes, kSampleRate, 4);            // sample rate
+    push_le(bytes, kSampleRate * 1u * 2u, 4);  // byte rate
+    push_le(bytes, 2u, 2);                     // block align
+    push_le(bytes, 16u, 2);                    // bits per sample
 
     push_tag(bytes, "data");
     push_le(bytes, data_size, 4);
-    bytes.insert(bytes.end(),
-                 reinterpret_cast<const std::byte*>(samples.data()),
-                 reinterpret_cast<const std::byte*>(samples.data() + samples.size()));
+    bytes.insert(
+        bytes.end(),
+        reinterpret_cast<const std::byte*>(samples.data()),
+        reinterpret_cast<const std::byte*>(samples.data() + samples.size())
+    );
     return bytes;
 }
 
@@ -99,8 +103,7 @@ int main()
             std::printf("error: cannot open %s for writing\n", path.c_str());
             return 1;
         }
-        f.write(reinterpret_cast<const char*>(bytes.data()),
-                static_cast<std::streamsize>(bytes.size()));
+        f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     }
     std::printf("wrote %zu bytes -> %s\n", bytes.size(), path.c_str());
 
@@ -108,18 +111,30 @@ int main()
     auto r = cd::asset_wav::load(path);
     if (!r)
     {
-        std::printf("load failed: %.*s\n",
-            static_cast<int>(r.error().message.size()), r.error().message.data());
+        std::printf("load failed: %.*s\n", static_cast<int>(r.error().message.size()), r.error().message.data());
         return 2;
     }
     const auto& w_out = *r;
 
     // 4. Assert round-trip.
     bool ok = true;
-    if (w_out.channels != 1u)        { std::printf("channels mismatch (%u)\n", w_out.channels); ok = false; }
-    if (w_out.sample_rate != kSampleRate) { std::printf("sample_rate mismatch\n"); ok = false; }
-    if (w_out.bits_per_sample != 16u) { std::printf("bits mismatch\n"); ok = false; }
-    if (w_out.frame_count() != frame_count) {
+    if (w_out.channels != 1u)
+    {
+        std::printf("channels mismatch (%u)\n", w_out.channels);
+        ok = false;
+    }
+    if (w_out.sample_rate != kSampleRate)
+    {
+        std::printf("sample_rate mismatch\n");
+        ok = false;
+    }
+    if (w_out.bits_per_sample != 16u)
+    {
+        std::printf("bits mismatch\n");
+        ok = false;
+    }
+    if (w_out.frame_count() != frame_count)
+    {
         std::printf("frame_count mismatch (%zu vs %zu)\n", w_out.frame_count(), frame_count);
         ok = false;
     }

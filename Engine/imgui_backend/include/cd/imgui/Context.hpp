@@ -39,7 +39,7 @@ namespace cd::rhi
 {
 class IDevice;
 class ICommandBuffer;
-}
+}  // namespace cd::rhi
 
 namespace cd::imgui
 {

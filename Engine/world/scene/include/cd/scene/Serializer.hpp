@@ -137,15 +137,16 @@ inline constexpr std::uint32_t kSceneJsonVersion = 1;
     cd::asset_json::Array nodes;
     auto& w = const_cast<cd::ecs::World&>(scene.world());  // for_each<T> exposes both const & mut
     w.for_each<LocalTransform>(
-        [&](cd::ecs::Entity e, LocalTransform& lt) {
+        [&](cd::ecs::Entity e, LocalTransform& lt)
+        {
             cd::asset_json::Object obj;
-            obj["id"]          = cd::asset_json::Value { static_cast<std::int64_t>(e.id) };
+            obj["id"] = cd::asset_json::Value { static_cast<std::int64_t>(e.id) };
             obj["translation"] = vec3_to_json(lt.value.position);
-            obj["rotation"]    = quat_to_json(lt.value.rotation);
-            obj["scale"]       = vec3_to_json(lt.value.scale);
+            obj["rotation"] = quat_to_json(lt.value.rotation);
+            obj["scale"] = vec3_to_json(lt.value.scale);
             const auto parent = scene.parent_of(e);
             if (parent.is_valid())
-                obj["parent"]  = cd::asset_json::Value { static_cast<std::int64_t>(parent.id) };
+                obj["parent"] = cd::asset_json::Value { static_cast<std::int64_t>(parent.id) };
             nodes.push_back(cd::asset_json::Value { std::move(obj) });
         }
     );
@@ -161,11 +162,12 @@ using IdMap = std::unordered_map<std::uint64_t, cd::ecs::Entity>;
 /// Recreate scene nodes from `json`. Adds new entities to `scene` (does
 /// not destroy existing ones). Returns the IdMap so the caller can
 /// resolve `json["id"]` back to the new Entity.
-[[nodiscard]] inline cd::core::Result<IdMap>
-deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
+[[nodiscard]] inline cd::core::Result<IdMap> deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
 {
     if (!json.is_object())
-        return std::unexpected(serializer_errors::make(serializer_errors::Code::kBadShape, "scene JSON must be an object"));
+        return std::unexpected(
+            serializer_errors::make(serializer_errors::Code::kBadShape, "scene JSON must be an object")
+        );
 
     const auto& obj = json.as_object();
     auto ver_it = obj.find("version");
@@ -173,7 +175,9 @@ deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
         return std::unexpected(serializer_errors::make(serializer_errors::Code::kBadShape, "missing version field"));
     const auto ver = static_cast<std::uint32_t>(ver_it->second.as_number());
     if (ver != kSceneJsonVersion)
-        return std::unexpected(serializer_errors::make(serializer_errors::Code::kBadVersion, "unsupported scene JSON version"));
+        return std::unexpected(
+            serializer_errors::make(serializer_errors::Code::kBadVersion, "unsupported scene JSON version")
+        );
 
     auto nodes_it = obj.find("nodes");
     if (nodes_it == obj.end() || !nodes_it->second.is_array())
@@ -184,6 +188,7 @@ deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
     // that hasn't been visited yet.
     IdMap id_map;
     id_map.reserve(nodes_it->second.as_array().size());
+
     struct PendingNode
     {
         cd::ecs::Entity entity;
@@ -192,6 +197,7 @@ deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
         bool has_parent { false };  ///< parent.id==0 is a valid root child, so we
                                     ///< can't use "json_parent==0" as a sentinel.
     };
+
     std::vector<PendingNode> pending;
     pending.reserve(nodes_it->second.as_array().size());
 
@@ -234,11 +240,11 @@ deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
 
         PendingNode pn;
         pn.entity = ent;
-        pn.local  = xf;
+        pn.local = xf;
         if (auto p = node.find("parent"); p != node.end() && p->second.is_number())
         {
             pn.json_parent = static_cast<std::uint64_t>(p->second.as_number());
-            pn.has_parent  = true;
+            pn.has_parent = true;
         }
         pending.push_back(pn);
     }

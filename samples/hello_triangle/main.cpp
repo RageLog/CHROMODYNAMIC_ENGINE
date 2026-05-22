@@ -8,12 +8,12 @@
 // Run with: build/<preset>/bin/Debug/hello_triangle
 // Close with the window's X button or by pressing Esc.
 // =============================================================================
+#include "SampleRuntime.hpp"
+
 #include <cd/material/Material.hpp>
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
-#include "SampleRuntime.hpp"
-
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
 #include <cd/shader/Compiler.hpp>

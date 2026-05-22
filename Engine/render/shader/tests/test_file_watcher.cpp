@@ -2,7 +2,6 @@
 // CHROMODYNAMIC — cd::shader::FileWatcher tests
 // =============================================================================
 #include <cd/shader/FileWatcher.hpp>
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -20,9 +19,8 @@ namespace fs = std::filesystem;
 {
     static std::atomic<std::uint64_t> seq { 0 };
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    return fs::temp_directory_path() /
-           ("cd_fw_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" + std::to_string(seq.fetch_add(1)) +
-            std::string { suffix });
+    return fs::temp_directory_path() / ("cd_fw_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+                                        std::to_string(seq.fetch_add(1)) + std::string { suffix });
 }
 
 void write_text(const fs::path& p, std::string_view text)

@@ -109,14 +109,17 @@ public:
     {
         return name_;
     }
+
     [[nodiscard]] const std::unordered_set<std::type_index>& read_set() const noexcept
     {
         return reads_;
     }
+
     [[nodiscard]] const std::unordered_set<std::type_index>& write_set() const noexcept
     {
         return writes_;
     }
+
     [[nodiscard]] const Fn& body() const noexcept
     {
         return body_;
@@ -231,8 +234,15 @@ public:
                 const auto& s = systems_[idx];
                 if (!s.body())
                     continue;
-                futures.push_back(std::async(std::launch::async,
-                                             [&s, &world]() { s.body()(world); }));
+                futures.push_back(
+                    std::async(
+                        std::launch::async,
+                        [&s, &world]()
+                        {
+                            s.body()(world);
+                        }
+                    )
+                );
             }
             for (auto& f : futures)
                 f.get();  // .get() rethrows exceptions (asserts in test).
@@ -243,8 +253,7 @@ public:
     /// Read-only preview of the parallel stage layout. stages[i] holds
     /// the names of every system in the i-th concurrently-dispatchable
     /// batch.
-    [[nodiscard]] cd::core::Result<std::vector<std::vector<std::string>>>
-    preview_stages()
+    [[nodiscard]] cd::core::Result<std::vector<std::vector<std::string>>> preview_stages()
     {
         if (!sorted_)
         {
@@ -324,8 +333,9 @@ private:
             }
             if (stage.empty())
             {
-                return std::unexpected(scheduler_errors::make(
-                    scheduler_errors::Code::kCycleDetected, "scheduler: dependency cycle"));
+                return std::unexpected(
+                    scheduler_errors::make(scheduler_errors::Code::kCycleDetected, "scheduler: dependency cycle")
+                );
             }
             std::sort(stage.begin(), stage.end());  // registration-order stable.
             for (auto u : stage)

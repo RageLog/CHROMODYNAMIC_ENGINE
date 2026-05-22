@@ -2,7 +2,6 @@
 // CHROMODYNAMIC — cd::asset_obj tests
 // =============================================================================
 #include <cd/asset_obj/ObjLoader.hpp>
-
 #include <gtest/gtest.h>
 
 #include <string_view>

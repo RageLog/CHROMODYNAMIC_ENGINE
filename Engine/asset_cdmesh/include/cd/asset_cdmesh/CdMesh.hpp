@@ -88,6 +88,7 @@ struct CdVertexStd
     cd::math::Vec3f normal { 0.0F, 1.0F, 0.0F };
     cd::math::Vec2f texcoord0 { 0.0F, 0.0F };
 };
+
 static_assert(sizeof(CdVertexStd) == 32, "CdVertexStd default stride is 32 bytes");
 
 /// On-load representation: header values + owning byte blobs the renderer

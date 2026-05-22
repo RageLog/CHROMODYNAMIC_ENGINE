@@ -74,12 +74,15 @@ enum class Code : std::uint32_t
 }  // namespace json_errors
 
 class Value;
-using Array  = std::vector<Value>;
+using Array = std::vector<Value>;
 using Object = std::map<std::string, Value>;  ///< ordered by key (deterministic output)
 
 struct Null
 {
-    [[nodiscard]] constexpr bool operator==(const Null&) const noexcept { return true; }
+    [[nodiscard]] constexpr bool operator==(const Null&) const noexcept
+    {
+        return true;
+    }
 };
 
 class Value
@@ -88,31 +91,115 @@ public:
     using Storage = std::variant<Null, bool, double, std::string, Array, Object>;
 
     Value() noexcept = default;  // null
-    Value(Null) noexcept {}
-    Value(bool b) noexcept : storage_ { b } {}
-    Value(double d) noexcept : storage_ { d } {}
-    Value(int i) noexcept : storage_ { static_cast<double>(i) } {}
-    Value(std::int64_t i) noexcept : storage_ { static_cast<double>(i) } {}
-    Value(const char* s) : storage_ { std::string { s } } {}
-    Value(std::string s) noexcept : storage_ { std::move(s) } {}
-    Value(Array a) noexcept : storage_ { std::move(a) } {}
-    Value(Object o) noexcept : storage_ { std::move(o) } {}
 
-    [[nodiscard]] bool is_null()   const noexcept { return std::holds_alternative<Null>(storage_); }
-    [[nodiscard]] bool is_bool()   const noexcept { return std::holds_alternative<bool>(storage_); }
-    [[nodiscard]] bool is_number() const noexcept { return std::holds_alternative<double>(storage_); }
-    [[nodiscard]] bool is_string() const noexcept { return std::holds_alternative<std::string>(storage_); }
-    [[nodiscard]] bool is_array()  const noexcept { return std::holds_alternative<Array>(storage_); }
-    [[nodiscard]] bool is_object() const noexcept { return std::holds_alternative<Object>(storage_); }
+    Value(Null) noexcept
+    {
+    }
 
-    [[nodiscard]] bool                 as_bool()   const { return std::get<bool>(storage_); }
-    [[nodiscard]] double               as_number() const { return std::get<double>(storage_); }
-    [[nodiscard]] const std::string&   as_string() const { return std::get<std::string>(storage_); }
-    [[nodiscard]] const Array&         as_array()  const { return std::get<Array>(storage_); }
-    [[nodiscard]] const Object&        as_object() const { return std::get<Object>(storage_); }
+    Value(bool b) noexcept
+        : storage_ { b }
+    {
+    }
 
-    [[nodiscard]] Array&  as_array_mut()  { return std::get<Array>(storage_); }
-    [[nodiscard]] Object& as_object_mut() { return std::get<Object>(storage_); }
+    Value(double d) noexcept
+        : storage_ { d }
+    {
+    }
+
+    Value(int i) noexcept
+        : storage_ { static_cast<double>(i) }
+    {
+    }
+
+    Value(std::int64_t i) noexcept
+        : storage_ { static_cast<double>(i) }
+    {
+    }
+
+    Value(const char* s)
+        : storage_ { std::string { s } }
+    {
+    }
+
+    Value(std::string s) noexcept
+        : storage_ { std::move(s) }
+    {
+    }
+
+    Value(Array a) noexcept
+        : storage_ { std::move(a) }
+    {
+    }
+
+    Value(Object o) noexcept
+        : storage_ { std::move(o) }
+    {
+    }
+
+    [[nodiscard]] bool is_null() const noexcept
+    {
+        return std::holds_alternative<Null>(storage_);
+    }
+
+    [[nodiscard]] bool is_bool() const noexcept
+    {
+        return std::holds_alternative<bool>(storage_);
+    }
+
+    [[nodiscard]] bool is_number() const noexcept
+    {
+        return std::holds_alternative<double>(storage_);
+    }
+
+    [[nodiscard]] bool is_string() const noexcept
+    {
+        return std::holds_alternative<std::string>(storage_);
+    }
+
+    [[nodiscard]] bool is_array() const noexcept
+    {
+        return std::holds_alternative<Array>(storage_);
+    }
+
+    [[nodiscard]] bool is_object() const noexcept
+    {
+        return std::holds_alternative<Object>(storage_);
+    }
+
+    [[nodiscard]] bool as_bool() const
+    {
+        return std::get<bool>(storage_);
+    }
+
+    [[nodiscard]] double as_number() const
+    {
+        return std::get<double>(storage_);
+    }
+
+    [[nodiscard]] const std::string& as_string() const
+    {
+        return std::get<std::string>(storage_);
+    }
+
+    [[nodiscard]] const Array& as_array() const
+    {
+        return std::get<Array>(storage_);
+    }
+
+    [[nodiscard]] const Object& as_object() const
+    {
+        return std::get<Object>(storage_);
+    }
+
+    [[nodiscard]] Array& as_array_mut()
+    {
+        return std::get<Array>(storage_);
+    }
+
+    [[nodiscard]] Object& as_object_mut()
+    {
+        return std::get<Object>(storage_);
+    }
 
     /// Lookup in an object. Returns kKeyNotFound if missing or kTypeMismatch
     /// if `*this` is not an object.
@@ -125,7 +212,10 @@ public:
     /// Equality is structural (variant default).
     [[nodiscard]] bool operator==(const Value&) const = default;
 
-    [[nodiscard]] const Storage& storage() const noexcept { return storage_; }
+    [[nodiscard]] const Storage& storage() const noexcept
+    {
+        return storage_;
+    }
 
 private:
     Storage storage_;

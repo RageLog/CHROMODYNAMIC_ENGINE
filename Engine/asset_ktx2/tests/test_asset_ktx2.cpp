@@ -7,7 +7,6 @@
 // self-contained.
 // =============================================================================
 #include <cd/asset_ktx2/Ktx2.hpp>
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -99,12 +98,8 @@ void write_bytes(const fs::path& p, const std::vector<std::uint8_t>& bytes)
 TEST(Ktx2, BC7Minimal4x4Roundtrips)
 {
     std::vector<std::uint8_t> payload(16, 0xAB);  // one 4x4 BC7 block
-    const auto bytes = build_minimal_ktx2(
-        static_cast<std::uint32_t>(cd::asset_ktx2::Ktx2VkFormat::kBC7_Unorm),
-        4,
-        4,
-        payload
-    );
+    const auto bytes =
+        build_minimal_ktx2(static_cast<std::uint32_t>(cd::asset_ktx2::Ktx2VkFormat::kBC7_Unorm), 4, 4, payload);
     auto r = cd::asset_ktx2::load_from_memory(bytes);
     ASSERT_TRUE(r.has_value()) << r.error().message;
     EXPECT_EQ(r->format, cd::asset_ktx2::Ktx2VkFormat::kBC7_Unorm);
@@ -118,12 +113,8 @@ TEST(Ktx2, BC7Minimal4x4Roundtrips)
 TEST(Ktx2, RGBA8RoundtripsFromMemory)
 {
     std::vector<std::uint8_t> payload(8 * 8 * 4, 0x77);
-    const auto bytes = build_minimal_ktx2(
-        static_cast<std::uint32_t>(cd::asset_ktx2::Ktx2VkFormat::kR8G8B8A8_Unorm),
-        8,
-        8,
-        payload
-    );
+    const auto bytes =
+        build_minimal_ktx2(static_cast<std::uint32_t>(cd::asset_ktx2::Ktx2VkFormat::kR8G8B8A8_Unorm), 8, 8, payload);
     auto r = cd::asset_ktx2::load_from_memory(bytes);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->format, cd::asset_ktx2::Ktx2VkFormat::kR8G8B8A8_Unorm);
@@ -134,12 +125,8 @@ TEST(Ktx2, RGBA8RoundtripsFromMemory)
 TEST(Ktx2, DiskRoundtripMatchesMemory)
 {
     std::vector<std::uint8_t> payload(64, 0x42);
-    const auto bytes = build_minimal_ktx2(
-        static_cast<std::uint32_t>(cd::asset_ktx2::Ktx2VkFormat::kBC7_Srgb),
-        4,
-        4,
-        payload
-    );
+    const auto bytes =
+        build_minimal_ktx2(static_cast<std::uint32_t>(cd::asset_ktx2::Ktx2VkFormat::kBC7_Srgb), 4, 4, payload);
     const auto p = tmp_path();
     write_bytes(p, bytes);
     auto disk = cd::asset_ktx2::load(p.string());
@@ -197,8 +184,10 @@ TEST(Ktx2, SupercompressionRejectedAsUnsupported)
     bytes[off + 3] = 0;
     auto r = cd::asset_ktx2::load_from_memory(bytes);
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_ktx2::ktx2_errors::Code::kUnsupportedSupercompression));
+    EXPECT_EQ(
+        r.error().code,
+        static_cast<std::uint32_t>(cd::asset_ktx2::ktx2_errors::Code::kUnsupportedSupercompression)
+    );
 }
 
 TEST(Ktx2, CubemapRejectedAsUnsupportedFormat)

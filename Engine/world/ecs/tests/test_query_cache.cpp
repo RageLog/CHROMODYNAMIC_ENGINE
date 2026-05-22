@@ -9,7 +9,6 @@
 //   * Iterates correctly across many frames without re-resolving
 // =============================================================================
 #include <cd/ecs/World.hpp>
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -89,7 +88,13 @@ TEST(EcsQueryCache, AbsentRestTypeYieldsNotReadyAndSkipsIteration)
     EXPECT_FALSE(q.ready());
 
     std::uint32_t calls = 0;
-    q.each(w, [&](cd::ecs::Entity, Pos&, Vel&) { ++calls; });
+    q.each(
+        w,
+        [&](cd::ecs::Entity, Pos&, Vel&)
+        {
+            ++calls;
+        }
+    );
     EXPECT_EQ(calls, 0U);
 }
 
@@ -135,7 +140,13 @@ TEST(EcsQueryCache, ReusedAcrossManyTicks)
     // Simulate 60 frames — every Pos.x should advance by 30.0 (0.5 × 60).
     for (int frame = 0; frame < 60; ++frame)
     {
-        q.each(w, [](cd::ecs::Entity, Pos& p, Vel& v) { p.x += v.dx; });
+        q.each(
+            w,
+            [](cd::ecs::Entity, Pos& p, Vel& v)
+            {
+                p.x += v.dx;
+            }
+        );
     }
 
     std::uint32_t verified = 0;
@@ -162,6 +173,12 @@ TEST(EcsQueryCache, SingleComponentQueryWorks)
     ASSERT_TRUE(q.ready());
 
     std::uint32_t n = 0;
-    q.each(w, [&](cd::ecs::Entity, Pos&) { ++n; });
+    q.each(
+        w,
+        [&](cd::ecs::Entity, Pos&)
+        {
+            ++n;
+        }
+    );
     EXPECT_EQ(n, 5U);
 }

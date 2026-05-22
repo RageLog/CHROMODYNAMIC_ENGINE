@@ -70,9 +70,7 @@ public:
         auto r = cd::asset_wav::decode(bytes.data(), bytes.size());
         if (!r.has_value())
             return std::unexpected(r.error());
-        return std::unique_ptr<cd::asset::IAsset> {
-            std::make_unique<WavAsset>(std::move(*r))
-        };
+        return std::unique_ptr<cd::asset::IAsset> { std::make_unique<WavAsset>(std::move(*r)) };
     }
 };
 

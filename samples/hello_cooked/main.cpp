@@ -315,19 +315,23 @@ int main(int argc, char** argv)
         float normal[3];
         float uv[2];
     };
+
     static_assert(sizeof(Vtx) == 32);
 
-    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings { cd::rhi::VertexBinding { 0, sizeof(Vtx), false } };
+    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings {
+        cd::rhi::VertexBinding { 0, sizeof(Vtx), false }
+    };
     constexpr std::array<cd::rhi::VertexAttribute, 3> kAttrs {
-        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vtx, pos) },
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vtx, pos)    },
         cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(Vtx, normal) },
-        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float, offsetof(Vtx, uv) },
+        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(Vtx, uv)     },
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
-    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush { cd::rhi::PushConstantRange {
-        .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-        .offset = 0,
-        .size = static_cast<std::uint32_t>(sizeof(PushBlock)) } };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                    .offset = 0,
+                                    .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
+    };
 
     cd::material::MaterialDesc md {};
     md.vertex_glsl = kVS;
@@ -425,8 +429,7 @@ int main(int argc, char** argv)
         }
 
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo {
-                                          .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.05F, 0.07F, 0.10F, 1.0F } } }

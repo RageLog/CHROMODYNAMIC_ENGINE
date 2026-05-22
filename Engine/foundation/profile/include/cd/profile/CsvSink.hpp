@@ -72,8 +72,7 @@ public:
             // Quote the name field — sample names are compile-time
             // literals and unlikely to contain quotes, but defending
             // against future use of dynamic strings is cheap.
-            out_ << s.thread_hash << ',' << s.start_ns << ',' << s.duration_ns << ",\""
-                 << s.name << "\"\n";
+            out_ << s.thread_hash << ',' << s.start_ns << ',' << s.duration_ns << ",\"" << s.name << "\"\n";
         }
         catch (...)
         {

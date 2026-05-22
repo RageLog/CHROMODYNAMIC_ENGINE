@@ -180,16 +180,15 @@ int main(int argc, char** argv)
         // framegraph contributes the render-pass orchestration only.
         cd::framegraph::FrameGraph fg { device };
         const auto sc_handle = fg.import_texture(
-            cd::framegraph::ImportedTextureDesc {
-                                                 .texture = frame.swapchain_image,
-                                                 .initial_state = cd::rhi::ResourceState::kColorAttachment,
-                                                 .final_state = cd::rhi::ResourceState::kColorAttachment },
+            cd::framegraph::ImportedTextureDesc { .texture = frame.swapchain_image,
+                                                  .initial_state = cd::rhi::ResourceState::kColorAttachment,
+                                                  .final_state = cd::rhi::ResourceState::kColorAttachment },
             "swapchain"
         );
 
-        std::array<cd::framegraph::PassResource, 1> writes { cd::framegraph::PassResource {
-            sc_handle,
-            cd::rhi::ResourceState::kColorAttachment } };
+        std::array<cd::framegraph::PassResource, 1> writes {
+            cd::framegraph::PassResource { sc_handle, cd::rhi::ResourceState::kColorAttachment }
+        };
 
         cd::framegraph::PassDesc pass {};
         pass.name = "draw_triangle";
@@ -201,8 +200,7 @@ int main(int argc, char** argv)
         pass.execute = [&material, view, extent](cd::rhi::ICommandBuffer& c)
         {
             std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-                cd::rhi::ColorAttachmentInfo {
-                                              .view = view,
+                cd::rhi::ColorAttachmentInfo { .view = view,
                                               .load_op = cd::rhi::LoadOp::kClear,
                                               .store_op = cd::rhi::StoreOp::kStore,
                                               .clear_color = { .f32 = { 0.05F, 0.08F, 0.12F, 1.0F } } }

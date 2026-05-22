@@ -138,7 +138,10 @@ public:
     void for_each_node(Fn&& fn) const
     {
         world_->for_each<LocalTransform>(
-            [&](cd::ecs::Entity e, LocalTransform& lt) { fn(e, lt); }
+            [&](cd::ecs::Entity e, LocalTransform& lt)
+            {
+                fn(e, lt);
+            }
         );
     }
 

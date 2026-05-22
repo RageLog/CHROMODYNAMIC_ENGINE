@@ -331,9 +331,8 @@ cd::core::Result<ObjMesh> parse_obj(std::string_view text)
         }
         for (auto& v : out.vertices)
         {
-            const float len = std::sqrt(
-                v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2]
-            );
+            const float len =
+                std::sqrt(v.normal[0] * v.normal[0] + v.normal[1] * v.normal[1] + v.normal[2] * v.normal[2]);
             if (len > 1e-6F)
             {
                 v.normal[0] /= len;

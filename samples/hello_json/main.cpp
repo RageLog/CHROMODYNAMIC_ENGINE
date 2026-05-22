@@ -31,8 +31,11 @@ int main()
     auto parsed = cd::asset_json::parse(kInput);
     if (!parsed)
     {
-        std::printf("parse failed: %.*s\n",
-            static_cast<int>(parsed.error().message.size()), parsed.error().message.data());
+        std::printf(
+            "parse failed: %.*s\n",
+            static_cast<int>(parsed.error().message.size()),
+            parsed.error().message.data()
+        );
         return 1;
     }
     auto& root = *parsed;
@@ -49,8 +52,8 @@ int main()
     if (ents && (*ents)->is_array())
     {
         cd::asset_json::Object extra;
-        extra["id"]    = cd::asset_json::Value { 4 };
-        extra["type"]  = cd::asset_json::Value { std::string { "sound" } };
+        extra["id"] = cd::asset_json::Value { 4 };
+        extra["type"] = cd::asset_json::Value { std::string { "sound" } };
         extra["asset"] = cd::asset_json::Value { std::string { "kick.wav" } };
         // Casting through const_cast is acceptable here because at() returns
         // const Value*; the const-ness lets the lookup not perturb the
@@ -60,7 +63,7 @@ int main()
     }
 
     // 4. Serialize pretty + compact.
-    const auto pretty  = cd::asset_json::serialize(root, true);
+    const auto pretty = cd::asset_json::serialize(root, true);
     const auto compact = cd::asset_json::serialize(root, false);
     std::printf("\n--- pretty ---\n%s\n", pretty.c_str());
     std::printf("\n--- compact (%zu chars) ---\n%s\n", compact.size(), compact.c_str());

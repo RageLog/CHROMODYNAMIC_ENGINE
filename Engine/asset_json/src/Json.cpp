@@ -58,8 +58,9 @@ public:
             return std::unexpected(v.error());
         skip_ws();
         if (pos_ != text_.size())
-            return std::unexpected(json_errors::make(
-                json_errors::Code::kUnexpectedToken, "trailing characters after JSON value"));
+            return std::unexpected(
+                json_errors::make(json_errors::Code::kUnexpectedToken, "trailing characters after JSON value")
+            );
         return v;
     }
 
@@ -90,8 +91,9 @@ private:
         // number: -, digit, .
         if (c == '-' || (c >= '0' && c <= '9'))
             return parse_number();
-        return std::unexpected(json_errors::make(json_errors::Code::kUnexpectedToken,
-            std::string { "unexpected character: '" } + c + "'"));
+        return std::unexpected(
+            json_errors::make(json_errors::Code::kUnexpectedToken, std::string { "unexpected character: '" } + c + "'")
+        );
     }
 
     cd::core::Result<Value> parse_object(std::uint32_t depth)
@@ -112,7 +114,9 @@ private:
                 return std::unexpected(key.error());
             skip_ws();
             if (pos_ >= text_.size() || text_[pos_] != ':')
-                return std::unexpected(json_errors::make(json_errors::Code::kUnexpectedToken, "expected ':' in object"));
+                return std::unexpected(
+                    json_errors::make(json_errors::Code::kUnexpectedToken, "expected ':' in object")
+                );
             ++pos_;
             auto val = parse_value(depth + 1);
             if (!val.has_value())
@@ -131,7 +135,9 @@ private:
                 ++pos_;
                 return Value { std::move(obj) };
             }
-            return std::unexpected(json_errors::make(json_errors::Code::kUnexpectedToken, "expected ',' or '}' in object"));
+            return std::unexpected(
+                json_errors::make(json_errors::Code::kUnexpectedToken, "expected ',' or '}' in object")
+            );
         }
     }
 
@@ -164,7 +170,9 @@ private:
                 ++pos_;
                 return Value { std::move(arr) };
             }
-            return std::unexpected(json_errors::make(json_errors::Code::kUnexpectedToken, "expected ',' or ']' in array"));
+            return std::unexpected(
+                json_errors::make(json_errors::Code::kUnexpectedToken, "expected ',' or ']' in array")
+            );
         }
     }
 
@@ -190,14 +198,30 @@ private:
                 const char e = text_[pos_++];
                 switch (e)
                 {
-                    case '"': out += '"'; break;
-                    case '\\': out += '\\'; break;
-                    case '/': out += '/'; break;
-                    case 'b': out += '\b'; break;
-                    case 'f': out += '\f'; break;
-                    case 'n': out += '\n'; break;
-                    case 'r': out += '\r'; break;
-                    case 't': out += '\t'; break;
+                    case '"':
+                        out += '"';
+                        break;
+                    case '\\':
+                        out += '\\';
+                        break;
+                    case '/':
+                        out += '/';
+                        break;
+                    case 'b':
+                        out += '\b';
+                        break;
+                    case 'f':
+                        out += '\f';
+                        break;
+                    case 'n':
+                        out += '\n';
+                        break;
+                    case 'r':
+                        out += '\r';
+                        break;
+                    case 't':
+                        out += '\t';
+                        break;
                     case 'u':
                     {
                         if (pos_ + 4 > text_.size())
@@ -238,15 +262,17 @@ private:
                         break;
                     }
                     default:
-                        return std::unexpected(json_errors::make(json_errors::Code::kBadEscape,
-                            std::string { "unknown escape \\" } + e));
+                        return std::unexpected(
+                            json_errors::make(json_errors::Code::kBadEscape, std::string { "unknown escape \\" } + e)
+                        );
                 }
                 continue;
             }
             // Reject raw control chars per RFC 8259 §7.
             if (static_cast<unsigned char>(c) < 0x20u)
-                return std::unexpected(json_errors::make(json_errors::Code::kUnterminatedString,
-                    "raw control character in string"));
+                return std::unexpected(
+                    json_errors::make(json_errors::Code::kUnterminatedString, "raw control character in string")
+                );
             out += c;
             ++pos_;
         }
@@ -329,13 +355,27 @@ void emit_string(std::string& out, const std::string& s)
     {
         switch (c)
         {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
             default:
                 if (static_cast<unsigned char>(c) < 0x20u)
                 {

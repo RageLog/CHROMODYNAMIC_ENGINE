@@ -252,14 +252,15 @@ int main(int argc, char** argv)
         cd::rhi::VertexBinding { 0, sizeof(Vertex), false }
     };
     constexpr std::array<cd::rhi::VertexAttribute, 2> kAttrs {
-        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos) },
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos)   },
         cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, color) },
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
-    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush { cd::rhi::PushConstantRange {
-        .stages = cd::rhi::ShaderStage::kVertex,
-        .offset = 0,
-        .size = static_cast<std::uint32_t>(sizeof(PushBlock)) } };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
+                                    .offset = 0,
+                                    .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
+    };
 
     cd::material::MaterialDesc md {};
     md.vertex_glsl = kVS;
@@ -285,19 +286,34 @@ int main(int argc, char** argv)
     cd::scene::Scene scene { world };
 
     const auto sun = scene.create_node();
-    world.emplace<Renderable>(sun, Renderable { { 1.0F, 0.9F, 0.4F, 1.0F } });
+    world.emplace<Renderable>(
+        sun,
+        Renderable {
+            { 1.0F, 0.9F, 0.4F, 1.0F }
+    }
+    );
     // Sun's LocalTransform stays at the origin; its `scale` makes it big.
     if (auto* lt = scene.local(sun))
         lt->value.scale = { 0.8F, 0.8F, 0.8F };
 
     const auto planet = scene.create_node();
-    world.emplace<Renderable>(planet, Renderable { { 0.3F, 0.5F, 1.0F, 1.0F } });
+    world.emplace<Renderable>(
+        planet,
+        Renderable {
+            { 0.3F, 0.5F, 1.0F, 1.0F }
+    }
+    );
     if (auto* lt = scene.local(planet))
         lt->value.scale = { 0.45F, 0.45F, 0.45F };
     scene.attach(planet, sun);
 
     const auto moon = scene.create_node();
-    world.emplace<Renderable>(moon, Renderable { { 0.85F, 0.85F, 0.9F, 1.0F } });
+    world.emplace<Renderable>(
+        moon,
+        Renderable {
+            { 0.85F, 0.85F, 0.9F, 1.0F }
+    }
+    );
     if (auto* lt = scene.local(moon))
         lt->value.scale = { 0.2F, 0.2F, 0.2F };
     scene.attach(moon, planet);

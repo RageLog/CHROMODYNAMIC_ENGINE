@@ -6,7 +6,6 @@
 #include <cd/profile/CsvSink.hpp>
 #include <cd/profile/Scope.hpp>
 #include <cd/profile/StatsAggregator.hpp>
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -102,7 +101,7 @@ TEST(StatsAggregator, RollupComputesMinAvgMax)
         { "frame", 0, 100, 0 },
         { "frame", 0, 200, 0 },
         { "frame", 0, 300, 0 },
-        { "post", 0, 50, 0 },
+        { "post",  0, 50,  0 },
     };
     agg.apply(samples);
 
@@ -124,8 +123,17 @@ TEST(StatsAggregator, RollupComputesMinAvgMax)
 TEST(StatsAggregator, MultipleApplyCallsAccumulate)
 {
     cd::profile::StatsAggregator agg;
-    agg.apply({ { "x", 0, 10, 0 } });
-    agg.apply({ { "x", 0, 30, 0 }, { "y", 0, 5, 0 } });
+    agg.apply(
+        {
+            { "x", 0, 10, 0 }
+    }
+    );
+    agg.apply(
+        {
+            { "x", 0, 30, 0 },
+            { "y", 0, 5,  0 }
+    }
+    );
 
     const auto rows = agg.snapshot();
     ASSERT_EQ(rows.size(), 2U);
@@ -139,7 +147,11 @@ TEST(StatsAggregator, MultipleApplyCallsAccumulate)
 TEST(StatsAggregator, ResetClears)
 {
     cd::profile::StatsAggregator agg;
-    agg.apply({ { "x", 0, 1, 0 } });
+    agg.apply(
+        {
+            { "x", 0, 1, 0 }
+    }
+    );
     EXPECT_EQ(agg.row_count(), 1U);
     agg.reset();
     EXPECT_EQ(agg.row_count(), 0U);
@@ -153,9 +165,8 @@ namespace fs = std::filesystem;
 {
     static std::atomic<std::uint64_t> seq { 0 };
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    return fs::temp_directory_path() /
-           ("cd_sink_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" + std::to_string(seq.fetch_add(1)) +
-            std::string { suffix });
+    return fs::temp_directory_path() / ("cd_sink_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+                                        std::to_string(seq.fetch_add(1)) + std::string { suffix });
 }
 
 [[nodiscard]] std::string slurp(const fs::path& p)

@@ -7,7 +7,6 @@
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/Frustum.hpp>
 #include <cd/camera/OrbitController.hpp>
-
 #include <gtest/gtest.h>
 
 #include <cmath>

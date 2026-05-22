@@ -443,9 +443,11 @@ struct Drawable
     // Bake the single mesh into a single identity-matrix instance so the
     // render loop (which iterates scene.instances) sees something to draw.
     // Without this the fallback path renders a black window.
-    scene.instances.push_back(cd::asset_gltf::GltfInstance { /*mesh_index=*/0,
-                                                             /*node_index=*/-1,
-                                                             cd::math::Mat4f::identity() });
+    scene.instances.push_back(
+        cd::asset_gltf::GltfInstance { /*mesh_index=*/0,
+                                       /*node_index=*/-1,
+                                       cd::math::Mat4f::identity() }
+    );
     scene.bbox_min = { -0.5F, -0.5F, 0.0F };
     scene.bbox_max = { 0.5F, 0.5F, 0.0F };
     return scene;
@@ -1012,8 +1014,7 @@ int main(int argc, char** argv)
                 draws_culled,
                 (draws_emitted + draws_culled) == 0
                     ? 0.0
-                    : 100.0 * static_cast<double>(draws_culled) /
-                          static_cast<double>(draws_emitted + draws_culled)
+                    : 100.0 * static_cast<double>(draws_culled) / static_cast<double>(draws_emitted + draws_culled)
             );
         }
 

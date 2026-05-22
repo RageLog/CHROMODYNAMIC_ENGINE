@@ -126,14 +126,20 @@ int main(int argc, char** argv)
     for (std::size_t i = 0; i < entity_count; ++i)
     {
         const auto e = world.create();
-        world.emplace<Position>(e,
-            Position { cd::math::Vec3f { rng.next_signed() * 50.0F,
-                                         rng.next_signed() * 50.0F + 50.0F,
-                                         rng.next_signed() * 50.0F } });
-        world.emplace<Velocity>(e,
-            Velocity { cd::math::Vec3f { rng.next_signed() * 5.0F,
-                                         rng.next_signed() * 5.0F,
-                                         rng.next_signed() * 5.0F } });
+        world.emplace<Position>(
+            e,
+            Position {
+                cd::math::Vec3f { rng.next_signed() * 50.0F,
+                                 rng.next_signed() * 50.0F + 50.0F,
+                                 rng.next_signed() * 50.0F }
+        }
+        );
+        world.emplace<Velocity>(
+            e,
+            Velocity {
+                cd::math::Vec3f { rng.next_signed() * 5.0F, rng.next_signed() * 5.0F, rng.next_signed() * 5.0F }
+        }
+        );
         world.emplace<Mass>(e, Mass { 0.5F + rng.next_signed() * 0.4F + 0.5F });
         // Every other entity gets drag so we can measure the intersection
         // query path (with-Drag vs without-Drag) separately.
@@ -144,9 +150,11 @@ int main(int argc, char** argv)
     }
     const auto t_spawn1 = std::chrono::steady_clock::now();
     const double spawn_ms = std::chrono::duration<double, std::milli>(t_spawn1 - t_spawn0).count();
-    std::printf("hello_ecs: spawn done in %.2f ms (%.0f entities/s)\n",
-                static_cast<double>(spawn_ms),
-                static_cast<double>(entity_count) / (static_cast<double>(spawn_ms) / 1000.0));
+    std::printf(
+        "hello_ecs: spawn done in %.2f ms (%.0f entities/s)\n",
+        static_cast<double>(spawn_ms),
+        static_cast<double>(entity_count) / (static_cast<double>(spawn_ms) / 1000.0)
+    );
 
     // ---- Simulate --------------------------------------------------------
     const auto t_sim0 = std::chrono::steady_clock::now();
@@ -204,17 +212,24 @@ int main(int argc, char** argv)
         }
     );
 
-    const double total_updates = static_cast<double>(entity_count) * static_cast<double>(kFrames) *
-                                 3.0;  // 3 systems per frame
+    const double total_updates =
+        static_cast<double>(entity_count) * static_cast<double>(kFrames) * 3.0;  // 3 systems per frame
     const double updates_per_sec = total_updates / (static_cast<double>(sim_ms) / 1000.0);
 
-    std::printf("hello_ecs: %zu frames simulated in %.2f ms (%.3f ms/frame avg)\n",
-                kFrames,
-                static_cast<double>(sim_ms),
-                static_cast<double>(sim_ms) / static_cast<double>(kFrames));
+    std::printf(
+        "hello_ecs: %zu frames simulated in %.2f ms (%.3f ms/frame avg)\n",
+        kFrames,
+        static_cast<double>(sim_ms),
+        static_cast<double>(sim_ms) / static_cast<double>(kFrames)
+    );
     std::printf("hello_ecs: throughput = %.2f M entity-updates/s\n", updates_per_sec / 1.0e6);
-    std::printf("hello_ecs: final positions  sum_x=%.6f  sum_y=%.6f  sum_z=%.6f  N=%zu\n",
-                sum_x, sum_y, sum_z, counted);
+    std::printf(
+        "hello_ecs: final positions  sum_x=%.6f  sum_y=%.6f  sum_z=%.6f  N=%zu\n",
+        sum_x,
+        sum_y,
+        sum_z,
+        counted
+    );
 
     // Sanity invariant: storage must report the same entity count as the
     // spawn. This catches accidental destroy / swap-and-pop bugs.

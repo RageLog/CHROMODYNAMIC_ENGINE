@@ -53,9 +53,12 @@ public:
     {
         if (desc.channels == 0 || desc.sample_rate == 0)
         {
-            return std::unexpected(audio_errors::make(
-                audio_errors::Code::kInvalidArgument,
-                "create_clip: channels and sample_rate must be > 0"));
+            return std::unexpected(
+                audio_errors::make(
+                    audio_errors::Code::kInvalidArgument,
+                    "create_clip: channels and sample_rate must be > 0"
+                )
+            );
         }
         ClipRec rec {};
         rec.channels = desc.channels;
@@ -78,17 +81,18 @@ public:
         }
     }
 
-    [[nodiscard]] std::size_t clip_count() const noexcept override { return clips_.size(); }
+    [[nodiscard]] std::size_t clip_count() const noexcept override
+    {
+        return clips_.size();
+    }
 
     // ---- Playback ------------------------------------------------------
 
-    [[nodiscard]] cd::core::Result<VoiceHandle>
-    play(ClipHandle clip, float volume, bool looping) override
+    [[nodiscard]] cd::core::Result<VoiceHandle> play(ClipHandle clip, float volume, bool looping) override
     {
         if (clips_.find(clip.index()) == clips_.end())
         {
-            return std::unexpected(audio_errors::make(
-                audio_errors::Code::kUnknownClip, "play: clip not found"));
+            return std::unexpected(audio_errors::make(audio_errors::Code::kUnknownClip, "play: clip not found"));
         }
         VoiceRec v {};
         v.clip = clip;
@@ -99,7 +103,10 @@ public:
         return VoiceHandle { static_cast<std::uint32_t>(id), 1u };
     }
 
-    void stop(VoiceHandle voice) override { voices_.erase(voice.index()); }
+    void stop(VoiceHandle voice) override
+    {
+        voices_.erase(voice.index());
+    }
 
     void set_volume(VoiceHandle voice, float volume) override
     {
@@ -114,10 +121,20 @@ public:
         return it != voices_.end() && it->second.playing;
     }
 
-    [[nodiscard]] std::size_t voice_count() const noexcept override { return voices_.size(); }
+    [[nodiscard]] std::size_t voice_count() const noexcept override
+    {
+        return voices_.size();
+    }
 
-    void set_master_volume(float v) noexcept override { master_ = v; }
-    [[nodiscard]] float master_volume() const noexcept override { return master_; }
+    void set_master_volume(float v) noexcept override
+    {
+        master_ = v;
+    }
+
+    [[nodiscard]] float master_volume() const noexcept override
+    {
+        return master_;
+    }
 
     // ---- IFileSinkBackend ---------------------------------------------
 
@@ -147,13 +164,11 @@ public:
                     // sample index for every output channel. No SRC: clip
                     // sample_rate is assumed to match the device — quality
                     // resampling is a follow-up sprint.
-                    const std::uint64_t total_frames =
-                        static_cast<std::uint64_t>(c.samples.size()) / c.channels;
+                    const std::uint64_t total_frames = static_cast<std::uint64_t>(c.samples.size()) / c.channels;
                     if (total_frames == 0 || v.cursor >= total_frames)
                         continue;
                     const std::uint32_t use_ch = ch < c.channels ? ch : 0u;
-                    const std::size_t idx =
-                        static_cast<std::size_t>(v.cursor) * c.channels + use_ch;
+                    const std::size_t idx = static_cast<std::size_t>(v.cursor) * c.channels + use_ch;
                     acc += c.samples[idx] * v.volume;
                 }
                 rendered_.push_back(std::clamp(acc * master_, -1.0F, 1.0F));
@@ -167,8 +182,7 @@ public:
                 if (cit == clips_.end())
                     continue;
                 const auto& c = cit->second;
-                const std::uint64_t total_frames =
-                    static_cast<std::uint64_t>(c.samples.size()) / c.channels;
+                const std::uint64_t total_frames = static_cast<std::uint64_t>(c.samples.size()) / c.channels;
                 ++v.cursor;
                 if (v.cursor >= total_frames)
                 {
@@ -188,18 +202,21 @@ public:
         std::ofstream f { path_s, std::ios::binary | std::ios::trunc };
         if (!f)
         {
-            return std::unexpected(audio_errors::make(
-                audio_errors::Code::kBackendError,
-                std::string { "write_wav: cannot open " } + path_s));
+            return std::unexpected(
+                audio_errors::make(
+                    audio_errors::Code::kBackendError,
+                    std::string { "write_wav: cannot open " } + path_s
+                )
+            );
         }
 
         // 16-bit interleaved PCM WAV. Convert float [-1,1] → int16 [-32768,32767].
-        const std::uint32_t data_size =
-            static_cast<std::uint32_t>(rendered_.size() * sizeof(std::int16_t));
+        const std::uint32_t data_size = static_cast<std::uint32_t>(rendered_.size() * sizeof(std::int16_t));
         const std::uint32_t fmt_size = 16;
         const std::uint32_t riff_size = 4 + 8 + fmt_size + 8 + data_size;
 
-        auto put32 = [&](std::uint32_t x) {
+        auto put32 = [&](std::uint32_t x)
+        {
             char b[4];
             b[0] = static_cast<char>(x & 0xFFu);
             b[1] = static_cast<char>((x >> 8u) & 0xFFu);
@@ -207,7 +224,8 @@ public:
             b[3] = static_cast<char>((x >> 24u) & 0xFFu);
             f.write(b, 4);
         };
-        auto put16 = [&](std::uint16_t x) {
+        auto put16 = [&](std::uint16_t x)
+        {
             char b[2];
             b[0] = static_cast<char>(x & 0xFFu);
             b[1] = static_cast<char>((x >> 8u) & 0xFFu);
@@ -222,9 +240,9 @@ public:
         put16(1);  // PCM
         put16(static_cast<std::uint16_t>(channels_));
         put32(sample_rate_);
-        put32(sample_rate_ * channels_ * 2u);  // byte rate
+        put32(sample_rate_ * channels_ * 2u);               // byte rate
         put16(static_cast<std::uint16_t>(channels_ * 2u));  // block align
-        put16(16);  // bits per sample
+        put16(16);                                          // bits per sample
         f.write("data", 4);
         put32(data_size);
         for (float sample : rendered_)
@@ -235,8 +253,7 @@ public:
         }
         if (!f)
         {
-            return std::unexpected(audio_errors::make(
-                audio_errors::Code::kBackendError, "write_wav: write failed"));
+            return std::unexpected(audio_errors::make(audio_errors::Code::kBackendError, "write_wav: write failed"));
         }
         return {};
     }
@@ -260,8 +277,7 @@ private:
 
 }  // namespace
 
-std::unique_ptr<IFileSinkBackend>
-make_file_sink_audio_backend(std::uint32_t sample_rate, std::uint32_t channels)
+std::unique_ptr<IFileSinkBackend> make_file_sink_audio_backend(std::uint32_t sample_rate, std::uint32_t channels)
 {
     return std::make_unique<FileSinkBackend>(sample_rate, channels);
 }

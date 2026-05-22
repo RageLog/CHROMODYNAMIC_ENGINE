@@ -11,8 +11,8 @@
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/Serializer.hpp>
 
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -53,6 +53,7 @@ struct PoolBenchState
 {
     cd::mem::PoolAllocator pool { sizeof(std::uint64_t), 1024 };
 };
+
 PoolBenchState g_pool_state;
 
 void bench_pool_alloc_free()
@@ -66,8 +67,7 @@ void bench_pool_alloc_free()
 // 5+6. cd::asset_json parse + serialize on a small object — the kind of
 // payload a config or scene-sidecar file would have. Volatile string sink
 // keeps the optimizer honest on the parse result.
-constexpr std::string_view kJsonInput
-    = R"({"name":"clip","gain":0.85,"loop":true,"chunks":[0,1,2,3,4,5,6,7]})";
+constexpr std::string_view kJsonInput = R"({"name":"clip","gain":0.85,"loop":true,"chunks":[0,1,2,3,4,5,6,7]})";
 
 void bench_json_parse()
 {
@@ -90,6 +90,7 @@ struct SceneBenchState
 {
     cd::ecs::World world;
     cd::scene::Scene scene { world };
+
     SceneBenchState()
     {
         auto root = scene.create_node();
@@ -97,12 +98,12 @@ struct SceneBenchState
         for (int i = 0; i < 15; ++i)
         {
             auto c = scene.create_node();
-            scene.local(c)->value.position = cd::math::Vec3f {
-                static_cast<float>(i), 0.0F, 0.0F };
+            scene.local(c)->value.position = cd::math::Vec3f { static_cast<float>(i), 0.0F, 0.0F };
             scene.attach(c, root);
         }
     }
 };
+
 SceneBenchState* g_scene_state = nullptr;
 
 void bench_scene_serialize()
@@ -121,20 +122,20 @@ int main()
     cfg.min_samples = 64;
     cfg.min_time_ms = 30;
 
-    cd::bench::run("integer_loop_64",         bench_integer_loop,    cfg).print(std::cout);
-    cd::bench::run("Result<int>_success",     bench_result_success,  cfg).print(std::cout);
-    cd::bench::run("vector<int>_reserve64",   bench_vector_push,     cfg).print(std::cout);
-    cd::bench::run("PoolAllocator_alloc+free",bench_pool_alloc_free, cfg).print(std::cout);
+    cd::bench::run("integer_loop_64", bench_integer_loop, cfg).print(std::cout);
+    cd::bench::run("Result<int>_success", bench_result_success, cfg).print(std::cout);
+    cd::bench::run("vector<int>_reserve64", bench_vector_push, cfg).print(std::cout);
+    cd::bench::run("PoolAllocator_alloc+free", bench_pool_alloc_free, cfg).print(std::cout);
 
     // Prime the serializer benchmark by parsing once.
     if (auto r = cd::asset_json::parse(kJsonInput); r)
         g_serialize_root = std::move(*r);
-    cd::bench::run("asset_json_parse_S",      bench_json_parse,      cfg).print(std::cout);
-    cd::bench::run("asset_json_serialize_S",  bench_json_serialize,  cfg).print(std::cout);
+    cd::bench::run("asset_json_parse_S", bench_json_parse, cfg).print(std::cout);
+    cd::bench::run("asset_json_serialize_S", bench_json_serialize, cfg).print(std::cout);
 
     SceneBenchState scene_state;
     g_scene_state = &scene_state;
-    cd::bench::run("scene_serialize_16",      bench_scene_serialize, cfg).print(std::cout);
+    cd::bench::run("scene_serialize_16", bench_scene_serialize, cfg).print(std::cout);
 
     std::printf("[hello_bench] done\n");
     return 0;

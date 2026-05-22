@@ -21,9 +21,21 @@ namespace cd::asset_obj
 class ObjAsset final : public cd::asset::IAsset
 {
 public:
-    explicit ObjAsset(ObjMesh m) noexcept : mesh_ { std::move(m) } {}
-    [[nodiscard]] std::string_view tag() const noexcept override { return "obj"; }
-    [[nodiscard]] const ObjMesh& mesh() const noexcept { return mesh_; }
+    explicit ObjAsset(ObjMesh m) noexcept
+        : mesh_ { std::move(m) }
+    {
+    }
+
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "obj";
+    }
+
+    [[nodiscard]] const ObjMesh& mesh() const noexcept
+    {
+        return mesh_;
+    }
+
 private:
     ObjMesh mesh_;
 };
@@ -31,20 +43,19 @@ private:
 class ObjAssetLoader final : public cd::asset::IAssetLoader
 {
 public:
-    [[nodiscard]] std::string_view tag() const noexcept override { return "obj"; }
+    [[nodiscard]] std::string_view tag() const noexcept override
+    {
+        return "obj";
+    }
 
     [[nodiscard]] cd::core::Result<std::unique_ptr<cd::asset::IAsset>>
     decode(std::span<const std::byte> bytes, std::string_view /*path_hint*/) override
     {
-        const std::string_view text {
-            reinterpret_cast<const char*>(bytes.data()), bytes.size()
-        };
+        const std::string_view text { reinterpret_cast<const char*>(bytes.data()), bytes.size() };
         auto r = cd::asset_obj::parse_obj(text);
         if (!r.has_value())
             return std::unexpected(r.error());
-        return std::unique_ptr<cd::asset::IAsset> {
-            std::make_unique<ObjAsset>(std::move(*r))
-        };
+        return std::unique_ptr<cd::asset::IAsset> { std::make_unique<ObjAsset>(std::move(*r)) };
     }
 };
 

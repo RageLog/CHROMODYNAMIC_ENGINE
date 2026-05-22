@@ -33,8 +33,7 @@ public:
 
     /// Write everything rendered so far to `path` as a 16-bit interleaved
     /// PCM WAV file. Returns kBackendError on I/O failure.
-    [[nodiscard]] virtual cd::core::Result<void>
-    write_wav(std::string_view path) const = 0;
+    [[nodiscard]] virtual cd::core::Result<void> write_wav(std::string_view path) const = 0;
 
     /// Total rendered samples (per channel) since construction.
     [[nodiscard]] virtual std::uint32_t rendered_frames() const noexcept = 0;
@@ -43,7 +42,6 @@ public:
 /// Build an offline file-sink backend. `sample_rate` (default 48000) and
 /// `channels` (default 2) determine the rendered WAV format.
 [[nodiscard]] std::unique_ptr<IFileSinkBackend>
-make_file_sink_audio_backend(std::uint32_t sample_rate = 48000,
-                             std::uint32_t channels = 2);
+make_file_sink_audio_backend(std::uint32_t sample_rate = 48000, std::uint32_t channels = 2);
 
 }  // namespace cd::audio

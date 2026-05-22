@@ -7,7 +7,6 @@
 // framing.
 // =============================================================================
 #include <cd/asset_cdtex/CdTex.hpp>
-
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -34,15 +33,18 @@ namespace fs = std::filesystem;
 struct PathGuard
 {
     fs::path path;
+
     explicit PathGuard(fs::path p)
         : path { std::move(p) }
     {
     }
+
     ~PathGuard()
     {
         std::error_code ec;
         fs::remove(path, ec);
     }
+
     PathGuard(const PathGuard&) = delete;
     PathGuard& operator=(const PathGuard&) = delete;
     PathGuard(PathGuard&&) = delete;
@@ -167,10 +169,10 @@ TEST(CdTex, TruncatedPayloadReturnsCorrupt)
         f.write("CDBC7", 5);
         const std::uint8_t ver = 1;
         f.write(reinterpret_cast<const char*>(&ver), 1);
-        write_u32(f, 4000U);   // width
-        write_u32(f, 4000U);   // height
-        write_u16(f, 1000U);   // block_w
-        write_u16(f, 1000U);   // block_h
+        write_u32(f, 4000U);  // width
+        write_u32(f, 4000U);  // height
+        write_u16(f, 1000U);  // block_w
+        write_u16(f, 1000U);  // block_h
         // ZERO payload bytes — loader must reject.
     }
     auto r = cd::asset_cdtex::load(g.path.string());
@@ -186,10 +188,10 @@ TEST(CdTex, V2MipChainRoundtrips)
         f.write("CDBC7", 5);
         const std::uint8_t ver = 2;
         f.write(reinterpret_cast<const char*>(&ver), 1);
-        write_u32(f, 8U);  // width
-        write_u32(f, 8U);  // height
-        write_u16(f, 2U);  // block_w (mip 0)
-        write_u16(f, 2U);  // block_h (mip 0)
+        write_u32(f, 8U);                  // width
+        write_u32(f, 8U);                  // height
+        write_u16(f, 2U);                  // block_w (mip 0)
+        write_u16(f, 2U);                  // block_h (mip 0)
         const std::uint8_t mip_count = 4;  // 8 → 4 → 2 → 1
         f.write(reinterpret_cast<const char*>(&mip_count), 1);
         // Mip 0: 2x2 blocks = 64 bytes, fill 0x01
@@ -236,6 +238,7 @@ TEST(CdTex, V1FileStillLoadsAsSingleMipChain)
 // ----- AssetLoader adapter -----
 
 #include <cd/asset_cdtex/AssetLoader.hpp>
+
 #include <cstring>
 #include <span>
 
@@ -247,7 +250,8 @@ std::vector<std::byte> build_minimal_cdtex_bytes(std::uint32_t w, std::uint32_t 
     const std::uint16_t bw = static_cast<std::uint16_t>((w + 3) / 4);
     const std::uint16_t bh = static_cast<std::uint16_t>((h + 3) / 4);
     std::vector<std::byte> bytes;
-    auto put = [&](const void* p, std::size_t n) {
+    auto put = [&](const void* p, std::size_t n)
+    {
         const auto* b = static_cast<const std::byte*>(p);
         bytes.insert(bytes.end(), b, b + n);
     };
@@ -288,6 +292,5 @@ TEST(CdTexAssetLoader, AdapterRejectsBadMagic)
     cd::asset_cdtex::CdTexAssetLoader loader;
     auto r = loader.decode(std::span<const std::byte> { bytes.data(), bytes.size() }, "x.cdtex");
     ASSERT_FALSE(r.has_value());
-    EXPECT_EQ(r.error().code,
-              static_cast<std::uint32_t>(cd::asset_cdtex::cdtex_errors::Code::kMagicMismatch));
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_cdtex::cdtex_errors::Code::kMagicMismatch));
 }

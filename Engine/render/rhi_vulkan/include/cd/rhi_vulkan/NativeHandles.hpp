@@ -25,7 +25,6 @@
 #pragma once
 
 #include <cd/core/Defines.hpp>
-
 #include <volk.h>
 
 #include <cstdint>
@@ -35,7 +34,7 @@ namespace cd::rhi
 {
 class IDevice;
 class ICommandBuffer;
-}
+}  // namespace cd::rhi
 
 namespace cd::rhi_vulkan
 {

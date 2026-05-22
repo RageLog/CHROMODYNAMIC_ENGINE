@@ -6,14 +6,14 @@
 // from explicit per-vertex {position, color} data — the gateway demo for
 // any non-trivial geometry pipeline (mesh, glTF, scene graph).
 // =============================================================================
+#include "SampleRuntime.hpp"
+
 #include <cd/material/Material.hpp>
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
-#include "SampleRuntime.hpp"
-
 #include <cd/shader/Compiler.hpp>
 
 #include <array>
