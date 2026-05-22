@@ -26,6 +26,8 @@
 #    include <sys/eventfd.h>
 #    include <sys/inotify.h>
 #    include <unistd.h>
+#elif defined(__APPLE__)
+#    include <CoreServices/CoreServices.h>
 #endif
 
 namespace cd::plugin
@@ -441,6 +443,156 @@ private:
 };
 #endif  // __linux__
 
+#if defined(__APPLE__)
+// macOS native watcher: FSEvents on the parent directory with
+// kFSEventStreamCreateFlagFileEvents so the callback receives
+// per-file paths (not just the parent directory). The watcher owns
+// a dedicated thread that runs a CFRunLoop; stop() asks the loop to
+// exit from the outside via CFRunLoopStop().
+class FSEventsNativeWatcher final : public IFileWatcher
+{
+public:
+    FSEventsNativeWatcher() noexcept = default;
+    ~FSEventsNativeWatcher() override { stop(); }
+
+    [[nodiscard]] cd::core::Result<void> watch(std::string_view path, Callback cb) override
+    {
+        if (running_.load(std::memory_order_acquire))
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kAlreadyWatching));
+        const std::filesystem::path fs_path { std::string { path } };
+        if (!std::filesystem::exists(fs_path))
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kFileNotFound));
+        filename_ = fs_path.filename().string();
+        watched_path_ = fs_path.string();
+        const auto dir = fs_path.parent_path().string();
+
+        callback_ = std::move(cb);
+        change_count_.store(0, std::memory_order_release);
+        // Hand the directory string to the worker thread; it owns the
+        // CFRunLoop + stream lifetime entirely so we don't have to
+        // marshal Core Foundation objects across threads.
+        dir_path_ = dir;
+        ready_ = false;
+        thread_ = std::thread { [this] { run_(); } };
+        // Wait briefly for the worker to install its run loop so a
+        // very fast stop() right after watch() finds something to
+        // tear down.
+        {
+            std::unique_lock guard { ready_mu_ };
+            ready_cv_.wait_for(guard, std::chrono::milliseconds { 500 },
+                                [this] { return ready_; });
+        }
+        running_.store(true, std::memory_order_release);
+        return {};
+    }
+
+    void stop() override
+    {
+        bool was_running = true;
+        if (!running_.compare_exchange_strong(was_running, false))
+            return;
+        if (run_loop_ != nullptr)
+            ::CFRunLoopStop(run_loop_);
+        if (thread_.joinable())
+            thread_.join();
+        callback_ = nullptr;
+    }
+
+    [[nodiscard]] bool is_watching() const noexcept override
+    {
+        return running_.load(std::memory_order_acquire);
+    }
+
+    void poll_once() override
+    {
+        // No-op on the native impl — FSEvents callback arrives on the
+        // worker's CFRunLoop.
+    }
+
+    [[nodiscard]] std::uint64_t change_count() const noexcept override
+    {
+        return change_count_.load(std::memory_order_acquire);
+    }
+
+private:
+    static void event_cb_(ConstFSEventStreamRef /*stream*/, void* info,
+                          std::size_t num_events, void* event_paths,
+                          const FSEventStreamEventFlags* /*flags*/,
+                          const FSEventStreamEventId* /*ids*/)
+    {
+        auto* self = static_cast<FSEventsNativeWatcher*>(info);
+        const auto** paths = const_cast<const char**>(static_cast<char**>(event_paths));
+        for (std::size_t i = 0; i < num_events; ++i)
+        {
+            const std::string_view p { paths[i] };
+            if (p.find(self->filename_) != std::string_view::npos)
+            {
+                self->change_count_.fetch_add(1, std::memory_order_release);
+                if (self->callback_)
+                    self->callback_();
+                break;  // one fire per batch
+            }
+        }
+    }
+
+    void run_()
+    {
+        run_loop_ = ::CFRunLoopGetCurrent();
+        CFStringRef path_cf = ::CFStringCreateWithCString(
+            kCFAllocatorDefault, dir_path_.c_str(), kCFStringEncodingUTF8);
+        const void* paths_array[] = { path_cf };
+        CFArrayRef paths = ::CFArrayCreate(kCFAllocatorDefault, paths_array, 1, &kCFTypeArrayCallBacks);
+
+        FSEventStreamContext ctx {};
+        ctx.info = this;
+        stream_ = ::FSEventStreamCreate(
+            kCFAllocatorDefault, &event_cb_, &ctx, paths,
+            kFSEventStreamEventIdSinceNow, /*latency=*/0.1,
+            kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer);
+        ::CFRelease(paths);
+        ::CFRelease(path_cf);
+
+        if (stream_ != nullptr)
+        {
+            ::FSEventStreamScheduleWithRunLoop(stream_, run_loop_, kCFRunLoopDefaultMode);
+            ::FSEventStreamStart(stream_);
+        }
+
+        {
+            std::lock_guard guard { ready_mu_ };
+            ready_ = true;
+        }
+        ready_cv_.notify_all();
+
+        ::CFRunLoopRun();
+
+        if (stream_ != nullptr)
+        {
+            ::FSEventStreamStop(stream_);
+            ::FSEventStreamInvalidate(stream_);
+            ::FSEventStreamRelease(stream_);
+            stream_ = nullptr;
+        }
+        run_loop_ = nullptr;
+    }
+
+    std::string filename_ {};
+    std::string watched_path_ {};
+    std::string dir_path_ {};
+    FSEventStreamRef stream_ { nullptr };
+    CFRunLoopRef run_loop_ { nullptr };
+    Callback callback_ {};
+    std::atomic<bool> running_ { false };
+    std::atomic<std::uint64_t> change_count_ { 0 };
+    std::mutex ready_mu_;
+    std::condition_variable ready_cv_;
+    bool ready_ { false };
+    std::thread thread_;
+};
+#endif  // __APPLE__
+
 }  // namespace
 
 std::unique_ptr<IFileWatcher>
@@ -455,10 +607,10 @@ std::unique_ptr<IFileWatcher> make_native_file_watcher()
     return std::make_unique<Win32NativeWatcher>();
 #elif defined(__linux__)
     return std::make_unique<InotifyNativeWatcher>();
+#elif defined(__APPLE__)
+    return std::make_unique<FSEventsNativeWatcher>();
 #else
-    // macOS (FSEvents) implementation lands in Wave 51. Until then,
-    // the polling impl is the canonical fallback so the factory
-    // contract ("always non-null") stays intact.
+    // Unknown platform: polling fallback.
     return make_polling_file_watcher();
 #endif
 }
