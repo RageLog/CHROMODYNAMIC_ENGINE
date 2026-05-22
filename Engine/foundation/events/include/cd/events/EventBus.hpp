@@ -8,8 +8,15 @@
 //   - Thread-safe (shared_mutex for subscriber registry)
 //   - No std::any, no ConfigValue payload, no IPlugin coupling
 //
+// v2 surface (Wave 56 — Phase 6 Sprint 3):
+//   - Deferred publish: queue_publish<EventT>(event) is producer-thread
+//     safe; drain() runs every queued handler on the calling thread.
+//   - Drain integrates with the engine's main loop: worker threads
+//     enqueue, the main tick drains, no shared-state races inside the
+//     handler bodies.
+//
 // Async delivery / priority / oneShot / maxConcurrency / weak-token aliveness
-// from the DfH original return in Sprint S2.3 once the ThreadPool / coroutine
+// from the DfH original return in Sprint S2.3+ once the ThreadPool / coroutine
 // scheduler land.
 // =============================================================================
 #pragma once
@@ -90,6 +97,49 @@ public:
         return invoked;
     }
 
+    /// Queue an event for deferred delivery. Thread-safe — safe to
+    /// call from worker threads. The event payload is COPIED into a
+    /// type-erased deferred slot; the originals can go out of scope
+    /// before `drain()` runs.
+    template <class EventT>
+    void queue_publish(EventT event)
+    {
+        // We capture by value into a callable; drain() invokes them.
+        // Wrapping in std::function lets us erase the EventT type at
+        // the queue level while still routing through publish<EventT>
+        // for the actual subscriber dispatch.
+        auto fn = [this, ev = std::move(event)]() mutable {
+            (void)publish<EventT>(ev);
+        };
+        std::lock_guard guard { queue_mutex_ };
+        queue_.push_back(std::move(fn));
+    }
+
+    /// Deliver every queued event on the calling thread. Returns the
+    /// number of QUEUE ENTRIES processed (NOT the number of handlers
+    /// invoked — for that, sum the per-call publish() return values
+    /// via a custom handler if you need it). Safe to call concurrently
+    /// with queue_publish — drained entries are removed atomically.
+    std::size_t drain()
+    {
+        std::vector<std::function<void()>> local;
+        {
+            std::lock_guard guard { queue_mutex_ };
+            std::swap(local, queue_);
+        }
+        for (auto& f : local)
+            f();
+        return local.size();
+    }
+
+    /// Snapshot of the queue depth. Diagnostic only — concurrent
+    /// queue_publish calls can change this between read and use.
+    [[nodiscard]] std::size_t queued_count() const noexcept
+    {
+        std::lock_guard guard { queue_mutex_ };
+        return queue_.size();
+    }
+
     /// Number of active subscribers across every type. Diagnostic only.
     [[nodiscard]] std::size_t subscriber_count() const noexcept
     {
@@ -153,6 +203,8 @@ private:
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::type_index, std::vector<std::shared_ptr<EntryBase>>> subscribers_;
     std::atomic<ScopedConnection::IdType> next_id_ { 0 };
+    mutable std::mutex queue_mutex_;
+    std::vector<std::function<void()>> queue_;
 };
 
 }  // namespace cd::events

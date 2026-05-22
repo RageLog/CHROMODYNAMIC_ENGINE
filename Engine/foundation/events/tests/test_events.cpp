@@ -210,4 +210,62 @@ TEST(EventRecorder, Clear)
     EXPECT_EQ(rec.size(), 0u);
 }
 
+// --- Deferred publish (Wave 56) ---------------------------------------------
+
+struct TickedEvent
+{
+    int seq { 0 };
+};
+
+TEST(EventBus, QueueAndDrainDeliversOnCallerThread)
+{
+    cd::events::EventBus bus;
+    int hits = 0;
+    auto sub = bus.subscribe<TickedEvent>([&](const TickedEvent& e) {
+        ++hits;
+        EXPECT_GE(e.seq, 0);
+    });
+    bus.queue_publish<TickedEvent>(TickedEvent { 1 });
+    bus.queue_publish<TickedEvent>(TickedEvent { 2 });
+    bus.queue_publish<TickedEvent>(TickedEvent { 3 });
+    EXPECT_EQ(bus.queued_count(), 3U);
+    EXPECT_EQ(hits, 0);  // not delivered yet
+
+    const auto n = bus.drain();
+    EXPECT_EQ(n, 3U);
+    EXPECT_EQ(hits, 3);
+    EXPECT_EQ(bus.queued_count(), 0U);
+}
+
+TEST(EventBus, DrainEmptyQueueIsZero)
+{
+    cd::events::EventBus bus;
+    EXPECT_EQ(bus.drain(), 0U);
+}
+
+TEST(EventBus, QueueIsThreadSafe)
+{
+    cd::events::EventBus bus;
+    std::atomic<int> hits { 0 };
+    auto sub = bus.subscribe<TickedEvent>([&](const TickedEvent&) { ++hits; });
+
+    constexpr int kProducers = 4;
+    constexpr int kPerProducer = 250;
+    std::vector<std::thread> threads;
+    threads.reserve(kProducers);
+    for (int t = 0; t < kProducers; ++t)
+    {
+        threads.emplace_back([&] {
+            for (int i = 0; i < kPerProducer; ++i)
+                bus.queue_publish<TickedEvent>(TickedEvent { i });
+        });
+    }
+    for (auto& th : threads)
+        th.join();
+    EXPECT_EQ(bus.queued_count(), static_cast<std::size_t>(kProducers * kPerProducer));
+    const auto drained = bus.drain();
+    EXPECT_EQ(drained, static_cast<std::size_t>(kProducers * kPerProducer));
+    EXPECT_EQ(hits.load(), kProducers * kPerProducer);
+}
+
 }  // namespace
