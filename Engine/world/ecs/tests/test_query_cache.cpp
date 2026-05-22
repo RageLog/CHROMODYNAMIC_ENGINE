@@ -182,3 +182,61 @@ TEST(EcsQueryCache, SingleComponentQueryWorks)
     );
     EXPECT_EQ(n, 5U);
 }
+
+// -----------------------------------------------------------------------------
+// Structural-version tracking — Wave 42
+// -----------------------------------------------------------------------------
+
+TEST(EcsQueryCache, StructuralVersionBumpsWhenNewComponentTypeAppears)
+{
+    cd::ecs::World w;
+    const auto v0 = w.structural_version();
+    auto e = w.create();
+    EXPECT_EQ(w.structural_version(), v0);  // entity create doesn't change pool set
+
+    w.emplace<Pos>(e, Pos {});
+    const auto v1 = w.structural_version();
+    EXPECT_GT(v1, v0);  // new type registered → version up
+
+    w.emplace<Pos>(e, Pos {});  // existing type → no version bump
+    EXPECT_EQ(w.structural_version(), v1);
+
+    w.emplace<Vel>(e, Vel { 1.0F, 0.0F });
+    EXPECT_GT(w.structural_version(), v1);  // another new type
+}
+
+TEST(EcsQueryCache, IsStaleDetectsLateComponentRegistration)
+{
+    cd::ecs::World w;
+    auto e = w.create();
+    w.emplace<Pos>(e, Pos {});
+
+    auto q = w.query<Pos, Vel>();
+    EXPECT_FALSE(q.ready());
+    EXPECT_FALSE(q.is_stale(w));  // built against the current version
+
+    w.emplace<Vel>(e, Vel { 2.0F, 3.0F });
+    EXPECT_TRUE(q.is_stale(w));   // a new type appeared after Query construction
+
+    q.auto_refresh(w);
+    EXPECT_FALSE(q.is_stale(w));  // refreshed → versions match
+    EXPECT_TRUE(q.ready());
+
+    std::uint32_t hits = 0;
+    q.each(w, [&](cd::ecs::Entity, Pos&, Vel&) { ++hits; });
+    EXPECT_EQ(hits, 1U);
+}
+
+TEST(EcsQueryCache, AutoRefreshIsNoOpWhenVersionUnchanged)
+{
+    cd::ecs::World w;
+    auto e = w.create();
+    w.emplace<Pos>(e, Pos {});
+    w.emplace<Vel>(e, Vel { 1.0F, 0.0F });
+
+    auto q = w.query<Pos, Vel>();
+    const auto v0 = q.version();
+    q.auto_refresh(w);
+    EXPECT_EQ(q.version(), v0);  // refresh skipped — nothing changed
+    EXPECT_TRUE(q.ready());
+}

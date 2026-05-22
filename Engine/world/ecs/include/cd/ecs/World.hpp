@@ -28,6 +28,7 @@
 #include <cd/ecs/Entity.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <type_traits>
 #include <typeindex>
@@ -226,12 +227,31 @@ public:
         {
             driver_ = w.try_storage_<T>();
             rest_present_ = (... && (w.try_storage_<Rest>() != nullptr));
+            last_version_ = w.structural_version();
         }
 
         /// True when every component pool referenced by the Query exists.
         [[nodiscard]] bool ready() const noexcept
         {
             return driver_ != nullptr && rest_present_;
+        }
+
+        /// True when the World has registered new component-type storages
+        /// since this Query last refreshed. Pair with `auto_refresh()` to
+        /// keep the cached pointers correct without paying for a refresh
+        /// on every call.
+        [[nodiscard]] bool is_stale(const World& w) const noexcept
+        {
+            return last_version_ != w.structural_version();
+        }
+
+        /// Refresh only if the structural version has advanced. Cheap
+        /// (one u64 compare) on the no-change happy path; rebuilds the
+        /// pointer snapshot otherwise.
+        void auto_refresh(const World& w) noexcept
+        {
+            if (is_stale(w))
+                refresh(w);
         }
 
         /// Iterate over every entity that has T and all of Rest. The
@@ -257,9 +277,12 @@ public:
             );
         }
 
+        [[nodiscard]] std::uint64_t version() const noexcept { return last_version_; }
+
     private:
         SparseSet<T>* driver_ { nullptr };
         bool rest_present_ { false };
+        std::uint64_t last_version_ { 0 };
     };
 
     /// Factory that constructs a cached Query bound to this world.
@@ -276,6 +299,18 @@ public:
         return storages_.size();
     }
 
+    /// Monotonically-increasing counter that bumps every time the set of
+    /// registered component-type storages changes (i.e. the first
+    /// `emplace<T>()` for a new T). Stable storage pointers held by a
+    /// `Query` remain valid as long as the version they snapshotted is
+    /// still current; if the version has advanced, the query MUST be
+    /// refreshed before iterating again — otherwise a pool that didn't
+    /// exist at construction time will be silently skipped.
+    [[nodiscard]] std::uint64_t structural_version() const noexcept
+    {
+        return structural_version_;
+    }
+
 private:
     template <class T>
     SparseSet<T>& storage_()
@@ -287,6 +322,7 @@ private:
             auto store = std::make_unique<SparseSet<T>>();
             auto* raw = store.get();
             storages_.emplace(key, std::move(store));
+            ++structural_version_;
             return *raw;
         }
         return *static_cast<SparseSet<T>*>(it->second.get());
@@ -304,6 +340,7 @@ private:
 
     EntityManager entities_ {};
     std::unordered_map<std::type_index, std::unique_ptr<IComponentStorage>> storages_ {};
+    std::uint64_t structural_version_ { 0 };
 };
 
 }  // namespace cd::ecs
