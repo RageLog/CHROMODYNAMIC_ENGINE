@@ -122,20 +122,34 @@ int main()
     cfg.min_samples = 64;
     cfg.min_time_ms = 30;
 
-    cd::bench::run("integer_loop_64", bench_integer_loop, cfg).print(std::cout);
-    cd::bench::run("Result<int>_success", bench_result_success, cfg).print(std::cout);
-    cd::bench::run("vector<int>_reserve64", bench_vector_push, cfg).print(std::cout);
-    cd::bench::run("PoolAllocator_alloc+free", bench_pool_alloc_free, cfg).print(std::cout);
+    std::vector<cd::bench::Report> reports;
+    auto add = [&](std::string_view name, auto fn) {
+        auto r = cd::bench::run(name, fn, cfg);
+        r.print(std::cout);
+        reports.push_back(std::move(r));
+    };
+
+    add("integer_loop_64", bench_integer_loop);
+    add("Result<int>_success", bench_result_success);
+    add("vector<int>_reserve64", bench_vector_push);
+    add("PoolAllocator_alloc+free", bench_pool_alloc_free);
 
     // Prime the serializer benchmark by parsing once.
     if (auto r = cd::asset_json::parse(kJsonInput); r)
         g_serialize_root = std::move(*r);
-    cd::bench::run("asset_json_parse_S", bench_json_parse, cfg).print(std::cout);
-    cd::bench::run("asset_json_serialize_S", bench_json_serialize, cfg).print(std::cout);
+    add("asset_json_parse_S", bench_json_parse);
+    add("asset_json_serialize_S", bench_json_serialize);
 
     SceneBenchState scene_state;
     g_scene_state = &scene_state;
-    cd::bench::run("scene_serialize_16", bench_scene_serialize, cfg).print(std::cout);
+    add("scene_serialize_16", bench_scene_serialize);
+
+    // Markdown summary table — drop straight into a CI artifact /
+    // PR description for cross-build performance tracking.
+    std::printf("\n=== Markdown summary ===\n");
+    std::printf("%s\n", std::string { cd::bench::markdown_header() }.c_str());
+    for (const auto& r : reports)
+        std::printf("%s\n", r.to_markdown_row().c_str());
 
     std::printf("[hello_bench] done\n");
     return 0;
