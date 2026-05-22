@@ -58,8 +58,17 @@
 //   to directly. Fast-retransmit happens at most once per pending entry
 //   so a noisy SACK stream can't trigger a retransmit storm.
 //
+// Window-based flow control (Wave 62):
+//   `send_window_size` caps the in-flight pending count. send() returns
+//   kWouldBlock when the window is full so the producer can back off
+//   (or buffer in app-side queue). 0 = uncapped (backwards-compatible
+//   with the original Wave 41 contract). Combined with cum-ACK + SACK,
+//   this gives TCP-style "stop until peer drains" behaviour without a
+//   full congestion-control state machine.
+//
 // What this layer does NOT do (Phase 6 follow-ups):
-//   * Congestion control / window — the API does not back-pressure send().
+//   * Congestion control (cwnd / slow-start / AIMD) — the window is a
+//     fixed user-supplied cap, not a learned bandwidth-delay product.
 //
 // Clock injection: `tick()` takes a `now` time point so unit tests can
 // fast-forward time without sleeping. Real callers pass
@@ -104,7 +113,8 @@ public:
                     std::chrono::milliseconds initial_rto = std::chrono::milliseconds { 200 },
                     std::uint32_t max_retries = 5,
                     std::chrono::milliseconds rto_min = std::chrono::milliseconds { 25 },
-                    std::chrono::milliseconds rto_max = std::chrono::milliseconds { 5000 }) noexcept
+                    std::chrono::milliseconds rto_max = std::chrono::milliseconds { 5000 },
+                    std::size_t send_window_size = 0) noexcept
         : mux_ { &mux }
         , user_channel_ { user_channel }
         , ack_channel_ { ack_channel }
@@ -112,15 +122,28 @@ public:
         , rto_min_ { rto_min }
         , rto_max_ { rto_max }
         , max_retries_ { max_retries }
+        , send_window_size_ { send_window_size }
     {
     }
+
+    /// Reconfigure the back-pressure window at runtime. 0 = uncapped.
+    void set_send_window_size(std::size_t n) noexcept { send_window_size_ = n; }
+    [[nodiscard]] std::size_t send_window_size() const noexcept { return send_window_size_; }
 
     /// Send `payload` on the user channel. Returns the application-
     /// visible sequence number, which is also embedded as a 4-byte
     /// prefix on the wire so the receiver can dedup retransmits.
+    ///
+    /// Back-pressure: when `send_window_size > 0` and the in-flight
+    /// pending count is already at the cap, returns kWouldBlock —
+    /// the caller should retry later (typically after the next
+    /// `tick()` drains ACKs from the wire).
     [[nodiscard]] cd::core::Result<std::uint32_t>
     send(std::span<const std::byte> payload)
     {
+        if (send_window_size_ > 0 && pending_.size() >= send_window_size_)
+            return std::unexpected(net_errors::make(net_errors::Code::kWouldBlock,
+                                                    "send window full"));
         const auto seq = next_send_seq_++;
         Pending p;
         p.framed = build_user_frame_(seq, payload);
@@ -466,6 +489,7 @@ private:
     std::chrono::nanoseconds srtt_ { 0 };
     std::chrono::nanoseconds rttvar_ { 0 };
     std::uint32_t max_retries_;
+    std::size_t send_window_size_ { 0 };
     std::uint32_t next_send_seq_ { 0 };
     std::uint32_t next_recv_seq_ { 0 };
     std::unordered_map<std::uint32_t, Pending> pending_;

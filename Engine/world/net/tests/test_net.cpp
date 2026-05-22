@@ -531,6 +531,42 @@ TEST(ReliableChannel, CumulativeAckDischargesAllPriorPendings)
     EXPECT_EQ(sender.pending_send_count(), 0U);
 }
 
+TEST(ReliableChannel, SendWindowBackPressuresWhenFull)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    // Window of 3 — fourth send must return kWouldBlock until the
+    // receiver drains the first frame and the sender consumes the ACK.
+    cd::net::ReliableChannel sender {
+        ma, 0, 1,
+        std::chrono::milliseconds { 500 }, 5,
+        std::chrono::milliseconds { 25 },
+        std::chrono::milliseconds { 5000 },
+        /*send_window_size=*/3
+    };
+    cd::net::ReliableChannel receiver { mb, 0, 1 };
+
+    const auto p = bytes_of("w");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    EXPECT_EQ(sender.pending_send_count(), 3U);
+
+    // Fourth call must back-pressure.
+    auto blocked = sender.send({ p.data(), p.size() });
+    ASSERT_FALSE(blocked.has_value());
+    EXPECT_EQ(blocked.error().code,
+              static_cast<std::uint32_t>(cd::net::net_errors::Code::kWouldBlock));
+
+    // Drain via receiver tick + sender tick → window empties → next send OK.
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);
+    sender.tick(t0);
+    EXPECT_EQ(sender.pending_send_count(), 0U);
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+}
+
 TEST(ReliableChannel, SackTriggersFastRetransmitForGap)
 {
     auto [a, b] = cd::net::make_loopback_pair();
