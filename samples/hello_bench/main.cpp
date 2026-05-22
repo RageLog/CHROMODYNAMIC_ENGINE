@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -114,8 +115,17 @@ void bench_scene_serialize()
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    std::string json_out_path;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string_view a = argv[i];
+        constexpr std::string_view kPrefix = "--json=";
+        if (a.starts_with(kPrefix))
+            json_out_path = std::string { a.substr(kPrefix.size()) };
+    }
+
     std::printf("=== hello_bench — cd::bench microbench demo ===\n");
 
     cd::bench::Config cfg;
@@ -150,6 +160,21 @@ int main()
     std::printf("%s\n", std::string { cd::bench::markdown_header() }.c_str());
     for (const auto& r : reports)
         std::printf("%s\n", r.to_markdown_row().c_str());
+
+    // Optional JSON artifact for cd_bench_compare consumption.
+    if (!json_out_path.empty())
+    {
+        std::ofstream out { json_out_path, std::ios::binary | std::ios::trunc };
+        if (out)
+        {
+            out << cd::bench::reports_to_json_array(reports);
+            std::printf("[hello_bench] wrote JSON artifact → %s\n", json_out_path.c_str());
+        }
+        else
+        {
+            std::printf("[hello_bench] failed to open JSON path %s\n", json_out_path.c_str());
+        }
+    }
 
     std::printf("[hello_bench] done\n");
     return 0;
