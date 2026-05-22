@@ -449,6 +449,66 @@ TEST(ReliableChannel, DuplicateRetransmitDoesNotDeliverTwice)
               static_cast<std::uint32_t>(cd::net::net_errors::Code::kWouldBlock));
 }
 
+TEST(ReliableChannel, SrttRtvarPopulatedFromFirstAck)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1,
+        std::chrono::milliseconds { 200 },
+        /*max_retries=*/5,
+        /*rto_min=*/std::chrono::milliseconds { 25 },
+        /*rto_max=*/std::chrono::milliseconds { 5000 }
+    };
+    cd::net::ReliableChannel receiver { mb, 0, 1 };
+
+    EXPECT_EQ(sender.srtt().count(), 0);
+    EXPECT_EQ(sender.current_rto(), std::chrono::milliseconds { 200 });
+
+    const auto p = bytes_of("rtt");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);  // builds + emits ACK
+    sender.tick(t0);    // consumes ACK → first RTT sample
+
+    // After the first sample SRTT must be set (non-zero) and RTO must
+    // be adjusted to SRTT + 4*RTTVAR, clamped to [rto_min, rto_max].
+    EXPECT_GT(sender.srtt().count(), 0);
+    EXPECT_GE(sender.current_rto(), std::chrono::milliseconds { 25 });
+    EXPECT_LE(sender.current_rto(), std::chrono::milliseconds { 5000 });
+}
+
+TEST(ReliableChannel, KarnSkipsRttSampleOnRetransmit)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 30 }, 3
+    };
+    cd::net::ReliableChannel receiver { mb, 0, 1 };
+
+    const auto p = bytes_of("karn");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+
+    // Drop the original on the wire so retransmit fires.
+    auto dropped = b->receive();
+    ASSERT_TRUE(dropped.has_value());
+
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    sender.tick(t0 + std::chrono::milliseconds { 50 });  // retransmits
+    EXPECT_EQ(sender.retransmit_count(), 1U);
+
+    // Now the receiver processes the retransmit and ACKs.
+    receiver.tick(t0 + std::chrono::milliseconds { 55 });
+    sender.tick(t0 + std::chrono::milliseconds { 60 });
+
+    // SRTT must remain 0 because the only ACK arrived for a
+    // retransmitted frame (Karn's algorithm skips that sample).
+    EXPECT_EQ(sender.srtt().count(), 0);
+}
+
 TEST(ReliableChannel, MaxRetriesCapsRetransmitCount)
 {
     auto [a, b] = cd::net::make_loopback_pair();

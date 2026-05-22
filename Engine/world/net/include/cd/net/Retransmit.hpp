@@ -22,11 +22,24 @@
 //
 // Wire format on the ACK channel: a single u32 little-endian sequence.
 //
+// RFC 6298 adaptive RTO (Wave 45):
+//   * First RTT sample R0  : SRTT = R0, RTTVAR = R0/2,
+//                            RTO = SRTT + max(G, K*RTTVAR), K=4.
+//   * Subsequent samples R : RTTVAR = (1-β)*RTTVAR + β*|SRTT - R|
+//                            SRTT   = (1-α)*SRTT   + α*R
+//                            RTO    = SRTT + max(G, K*RTTVAR)
+//                            α = 1/8, β = 1/4, K = 4.
+//   * Karn's algorithm     : RTT samples taken from retransmitted frames
+//                            are SKIPPED (we can't tell which transmission
+//                            the ACK corresponds to).
+//   * RTO doubling         : each retransmit doubles the per-frame RTO
+//                            until current_rto() observes a fresh ACK.
+//   * Clamped to [rto_min_, rto_max_] — defaults 25 ms / 5 s, configurable
+//     via the constructor.
+//
 // What this layer does NOT do (Phase 6 follow-ups):
 //   * Cumulative / SACK style ACK — every frame gets its own ACK packet.
-//   * Congestion control / RTT estimation — RTO is a fixed user-supplied
-//     value. RFC 6298 SRTT/RTTVAR estimation lands in a future wave.
-//   * Window-based flow control — the API does not back-pressure send().
+//   * Congestion control / window — the API does not back-pressure send().
 //
 // Clock injection: `tick()` takes a `now` time point so unit tests can
 // fast-forward time without sleeping. Real callers pass
@@ -62,12 +75,16 @@ public:
     ReliableChannel(ChannelMux& mux,
                     std::uint8_t user_channel,
                     std::uint8_t ack_channel,
-                    std::chrono::milliseconds rto = std::chrono::milliseconds { 200 },
-                    std::uint32_t max_retries = 5) noexcept
+                    std::chrono::milliseconds initial_rto = std::chrono::milliseconds { 200 },
+                    std::uint32_t max_retries = 5,
+                    std::chrono::milliseconds rto_min = std::chrono::milliseconds { 25 },
+                    std::chrono::milliseconds rto_max = std::chrono::milliseconds { 5000 }) noexcept
         : mux_ { &mux }
         , user_channel_ { user_channel }
         , ack_channel_ { ack_channel }
-        , rto_ { rto }
+        , rto_ { initial_rto }
+        , rto_min_ { rto_min }
+        , rto_max_ { rto_max }
         , max_retries_ { max_retries }
     {
     }
@@ -131,6 +148,14 @@ public:
     [[nodiscard]] std::size_t ready_count() const noexcept { return ready_.size(); }
     [[nodiscard]] std::uint32_t duplicate_drop_count() const noexcept { return duplicate_drops_; }
 
+    /// Current smoothed RTO estimate (RFC 6298). Stays at the initial
+    /// value until the first non-retransmitted ACK delivers a sample.
+    [[nodiscard]] std::chrono::milliseconds current_rto() const noexcept { return rto_; }
+    /// Current smoothed RTT (zero until the first RTT sample arrives).
+    [[nodiscard]] std::chrono::nanoseconds srtt() const noexcept { return srtt_; }
+    /// Current RTT variance estimate (zero until the first sample).
+    [[nodiscard]] std::chrono::nanoseconds rttvar() const noexcept { return rttvar_; }
+
 private:
     struct Pending
     {
@@ -138,6 +163,7 @@ private:
         std::uint32_t seq { 0 };
         Clock::time_point send_time {};
         std::uint32_t retries { 0 };
+        std::chrono::milliseconds effective_rto { 0 };  ///< 0 → use channel rto_.
     };
 
     [[nodiscard]] static std::vector<std::byte>
@@ -182,14 +208,23 @@ private:
         if (payload.size() < 4)
             return;
         const auto seq = read_u32_(payload.data());
-        pending_.erase(seq);
+        auto it = pending_.find(seq);
+        if (it == pending_.end())
+            return;
+        // Karn's algorithm: only sample RTT for non-retransmitted frames.
+        if (it->second.retries == 0)
+            update_rtt_(Clock::now() - it->second.send_time);
+        pending_.erase(it);
     }
 
     void retransmit_(Clock::time_point now)
     {
         for (auto& [seq, p] : pending_)
         {
-            if (now - p.send_time < rto_)
+            // Each pending entry has its own RTO: starts at the channel
+            // RTO, doubles with each retransmit (RFC 6298 §5 step 5.5).
+            const auto effective = p.effective_rto.count() == 0 ? rto_ : p.effective_rto;
+            if (now - p.send_time < effective)
                 continue;
             if (p.retries >= max_retries_)
                 continue;
@@ -197,8 +232,42 @@ private:
                              { p.framed.data(), p.framed.size() });
             p.send_time = now;
             ++p.retries;
+            // Double the per-frame RTO; clamp to channel max.
+            auto next = (effective.count() == 0 ? rto_ : effective) * 2;
+            if (next > rto_max_)
+                next = rto_max_;
+            p.effective_rto = next;
             ++retransmit_count_;
         }
+    }
+
+    void update_rtt_(std::chrono::nanoseconds r)
+    {
+        if (srtt_.count() == 0)
+        {
+            // First sample (RFC 6298 §2.2): SRTT = R, RTTVAR = R/2.
+            srtt_ = r;
+            rttvar_ = r / 2;
+        }
+        else
+        {
+            // RTTVAR = (1 - β) * RTTVAR + β * |SRTT - R|   (β = 1/4)
+            // SRTT   = (1 - α) * SRTT   + α * R            (α = 1/8)
+            const auto diff = (srtt_ > r) ? (srtt_ - r) : (r - srtt_);
+            rttvar_ = (rttvar_ * 3 + diff) / 4;
+            srtt_ = (srtt_ * 7 + r) / 8;
+        }
+        // RTO = SRTT + max(G, K * RTTVAR), K = 4. Clamp to [min, max].
+        // G (clock granularity) is conservatively treated as 0 — steady_clock
+        // gives at worst ms-class granularity on Windows, and the rttvar
+        // term dominates anyway.
+        auto rto_ns = srtt_ + rttvar_ * 4;
+        auto rto_ms = std::chrono::duration_cast<std::chrono::milliseconds>(rto_ns);
+        if (rto_ms < rto_min_)
+            rto_ms = rto_min_;
+        if (rto_ms > rto_max_)
+            rto_ms = rto_max_;
+        rto_ = rto_ms;
     }
 
     void flush_ready_()
@@ -229,6 +298,10 @@ private:
     std::uint8_t user_channel_;
     std::uint8_t ack_channel_;
     std::chrono::milliseconds rto_;
+    std::chrono::milliseconds rto_min_;
+    std::chrono::milliseconds rto_max_;
+    std::chrono::nanoseconds srtt_ { 0 };
+    std::chrono::nanoseconds rttvar_ { 0 };
     std::uint32_t max_retries_;
     std::uint32_t next_send_seq_ { 0 };
     std::uint32_t next_recv_seq_ { 0 };
