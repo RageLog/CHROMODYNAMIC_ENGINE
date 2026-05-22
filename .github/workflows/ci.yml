@@ -154,10 +154,14 @@ jobs:
       # might have come from vcpkg (vulkan-headers, volk, vma, glslang,
       # googletest, tinygltf) is fetched in-tree via CMake FetchContent.
       # CD_DISABLE_VCPKG=ON in the configure step skips the toolchain probe.
+      # CD_ENABLE_VULKAN=OFF on Linux: no GPU on GHA runners, no point
+      # building rhi_vulkan/imgui_backend/GPU samples. Headless tests +
+      # non-GPU samples still exercise the foundation and asset tiers.
       - name: Configure
         run: |
           cmake --preset ${{ matrix.preset.id }} \
             -DCD_DISABLE_VCPKG=ON \
+            -DCD_ENABLE_VULKAN=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
       - name: Build
