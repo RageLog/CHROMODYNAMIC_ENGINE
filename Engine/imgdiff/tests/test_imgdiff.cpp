@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd::imgdiff tests
 // =============================================================================
 #include <cd/imgdiff/ImageDiff.hpp>
+#include <cd/imgdiff/Ssim.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -143,4 +144,92 @@ TEST(ImageDiff, PsnrIncreasesAsImagesConverge)
     ASSERT_TRUE(small_diff.has_value());
     ASSERT_TRUE(big_diff.has_value());
     EXPECT_GT(small_diff->psnr_db, big_diff->psnr_db);  // less error = higher PSNR
+}
+
+// -----------------------------------------------------------------------------
+// SSIM-lite — Wave 39
+// -----------------------------------------------------------------------------
+
+TEST(SsimLite, IdenticalImagesScoreOne)
+{
+    const auto img = solid(16, 16, 100, 150, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_ssim_lite(v, v, 8);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->windows, 4U);  // 2x2 windows of 8x8 in a 16x16 image
+    EXPECT_NEAR(r->mean_ssim, 1.0, 1e-9);
+    EXPECT_NEAR(r->min_ssim, 1.0, 1e-9);
+    EXPECT_TRUE(cd::imgdiff::ssim_passes(*r));
+}
+
+TEST(SsimLite, BigDifferenceDropsScore)
+{
+    // Half-image swap: top half black, bottom half white in B; A is
+    // mid-grey everywhere. Luminance differs strongly.
+    std::vector<std::uint8_t> a(16 * 16 * 4U, 128);
+    for (std::size_t i = 3; i < a.size(); i += 4)
+        a[i] = 255;  // alpha
+    std::vector<std::uint8_t> b = a;
+    for (std::uint32_t y = 0; y < 8; ++y)
+        for (std::uint32_t x = 0; x < 16; ++x)
+        {
+            const std::size_t i = (y * 16 + x) * 4;
+            b[i + 0] = 0;
+            b[i + 1] = 0;
+            b[i + 2] = 0;
+        }
+    for (std::uint32_t y = 8; y < 16; ++y)
+        for (std::uint32_t x = 0; x < 16; ++x)
+        {
+            const std::size_t i = (y * 16 + x) * 4;
+            b[i + 0] = 255;
+            b[i + 1] = 255;
+            b[i + 2] = 255;
+        }
+
+    const cd::imgdiff::ImageView va { a.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { b.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_ssim_lite(va, vb, 8);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_LT(r->mean_ssim, 0.9);  // very degraded → low score
+    EXPECT_FALSE(cd::imgdiff::ssim_passes(*r));
+}
+
+TEST(SsimLite, MeanGreaterOrEqualMin)
+{
+    // Aggregate invariant: mean across windows >= worst window.
+    std::vector<std::uint8_t> a(8 * 8 * 4U, 100);
+    for (std::size_t i = 3; i < a.size(); i += 4)
+        a[i] = 255;
+    auto b = a;
+    b[0] = 200;  // perturb one pixel
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { b.data(), 8, 8 };
+    auto r = cd::imgdiff::compute_ssim_lite(va, vb, 4);  // 4x4 windows → 2x2 grid
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GE(r->mean_ssim, r->min_ssim);
+    EXPECT_LT(r->mean_ssim, 1.0);
+}
+
+TEST(SsimLite, ImageSmallerThanWindowReturnsIdentity)
+{
+    const auto img = solid(4, 4, 1, 2, 3, 255);
+    const cd::imgdiff::ImageView v { img.data(), 4, 4 };
+    auto r = cd::imgdiff::compute_ssim_lite(v, v, 8);  // window > image
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->windows, 0U);
+    EXPECT_DOUBLE_EQ(r->mean_ssim, 1.0);
+    EXPECT_DOUBLE_EQ(r->min_ssim, 1.0);
+}
+
+TEST(SsimLite, DimensionMismatchReturnsError)
+{
+    const auto a = solid(8, 8, 0, 0, 0, 255);
+    const auto b = solid(16, 8, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { b.data(), 16, 8 };
+    auto r = cd::imgdiff::compute_ssim_lite(va, vb);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kDimensionMismatch));
 }
