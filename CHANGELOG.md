@@ -10,6 +10,31 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.10.0 — 2026-05-23 — Phase 6 final closure
+
+### Features
+
+- **[net]** AIMD adaptive congestion window on ReliableChannel (`894f8d3`)
+
+### CI
+
+- **[bench]** per-PR microbench regression gate (`a52cfe7`)
+
+## v0.9.0 — 2026-05-23 — Phase 6 Sprint 4 closure
+
+### Features
+
+- **[net]** window-based flow control on ReliableChannel (`6a421fd`)
+- **[imgdiff]** compute_ssim_gaussian — FLIP-lite Gaussian-weighted SSIM (`5a58744`)
+
+### Documentation
+
+- **[changelog]** seed CHANGELOG.md + add changelog-check workflow (`eb03ae2`)
+
+### Chores
+
+- **[release]** bump 0.8.0 → 0.9.0 + Phase 6 Sprint 4 closure ADR (`1db10ac`)
+
 ## v0.8.0 — 2026-05-23 — Phase 6 Sprint 3 closure
 
 ### Features
