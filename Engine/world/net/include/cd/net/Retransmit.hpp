@@ -40,17 +40,25 @@
 // Cumulative ACK (Wave 46):
 //   The ACK frame carries the receiver's `next_recv_seq_ - 1` — i.e.
 //   "every seq up to and including N has been delivered." On the sender
-//   side an ACK(N) discharges ALL pending entries with seq ≤ N. This
-//   reduces ACK traffic by up to the in-flight window size with no
-//   change to the wire format (still 4 bytes, still little-endian u32).
-//   The receiver re-emits the same cum-ACK on duplicate user-frame
-//   arrivals so a lost ACK gets a free re-try whenever the sender
-//   retransmits a frame whose ACK never landed.
+//   side an ACK(N) discharges ALL pending entries with seq ≤ N. The
+//   receiver re-emits the same cum-ACK on duplicate user-frame arrivals
+//   so a lost ACK gets a free re-try whenever the sender retransmits a
+//   frame whose ACK never landed.
+//
+// Selective ACK / SACK (Wave 53):
+//   The ACK frame ALSO carries up to `kSackRangeCap` inclusive seq
+//   ranges (start_a..end_a, start_b..end_b, …) from the receiver's
+//   out-of-order buffer. Wire format:
+//     u32 cum_high_water         (4 bytes — same as before)
+//     u8  sack_range_count       (1 byte, 0 → cum-only)
+//     count × (u32 start, u32 end)  (8 bytes per range, inclusive)
+//   Sender discharges all pending in any SACK range AND fast-
+//   retransmits any pending in (cum_high_water, max_sack_end] that is
+//   NOT covered by a SACK range — i.e. the holes the receiver pointed
+//   to directly. Fast-retransmit happens at most once per pending entry
+//   so a noisy SACK stream can't trigger a retransmit storm.
 //
 // What this layer does NOT do (Phase 6 follow-ups):
-//   * SACK (selective ACK ranges) — receiver holds out-of-order frames
-//     in `inbound_` but does NOT signal gaps to the sender. The sender
-//     learns about gaps only by RTO-driven retransmit.
 //   * Congestion control / window — the API does not back-pressure send().
 //
 // Clock injection: `tick()` takes a `now` time point so unit tests can
@@ -66,6 +74,7 @@
 #include <cd/core/Result.hpp>
 #include <cd/net/ChannelMux.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -79,6 +88,10 @@
 
 namespace cd::net
 {
+
+/// Maximum number of SACK ranges per ACK frame. 16 × 8 bytes + 5 byte
+/// header = 133 bytes — well below any reasonable UDP MTU.
+inline constexpr std::size_t kSackRangeCap = 16;
 
 class ReliableChannel
 {
@@ -162,6 +175,7 @@ public:
 
     [[nodiscard]] std::size_t pending_send_count() const noexcept { return pending_.size(); }
     [[nodiscard]] std::uint32_t retransmit_count() const noexcept { return retransmit_count_; }
+    [[nodiscard]] std::uint32_t fast_retransmit_count() const noexcept { return fast_retransmit_count_; }
     [[nodiscard]] std::size_t ready_count() const noexcept { return ready_.size(); }
     [[nodiscard]] std::uint32_t duplicate_drop_count() const noexcept { return duplicate_drops_; }
 
@@ -181,6 +195,7 @@ private:
         Clock::time_point send_time {};
         std::uint32_t retries { 0 };
         std::chrono::milliseconds effective_rto { 0 };  ///< 0 → use channel rto_.
+        bool fast_retransmitted { false };
     };
 
     [[nodiscard]] static std::vector<std::byte>
@@ -228,18 +243,79 @@ private:
         if (payload.size() < 4)
             return;
         const auto cum = read_u32_(payload.data());
-        // Discharge every pending with seq <= cum.
+
+        // Parse optional SACK ranges (Wave 53). Old senders / receivers
+        // running pre-Wave-53 builds simply omit the count byte; we
+        // tolerate a 4-byte payload as "no SACK info".
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
+        std::uint32_t max_sack_end = cum;
+        if (payload.size() >= 5)
+        {
+            const auto count = static_cast<std::size_t>(
+                static_cast<std::uint8_t>(payload[4]));
+            const std::size_t needed = 5 + count * 8;
+            if (payload.size() >= needed && count <= kSackRangeCap)
+            {
+                ranges.reserve(count);
+                for (std::size_t i = 0; i < count; ++i)
+                {
+                    const auto* p = payload.data() + 5 + i * 8;
+                    const auto a = read_u32_(p);
+                    const auto b = read_u32_(p + 4);
+                    ranges.emplace_back(a, b);
+                    if (b > max_sack_end)
+                        max_sack_end = b;
+                }
+            }
+        }
+
+        // Discharge every pending with seq < cum OR inside any SACK range.
+        // (cum = next-expected-seq, so "delivered" is strict <.)
         for (auto it = pending_.begin(); it != pending_.end();)
         {
-            if (it->second.seq <= cum)
+            const auto s = it->second.seq;
+            bool acked = (s < cum);
+            if (!acked)
             {
-                // Karn's algorithm: only sample RTT for non-retransmits.
+                for (const auto& [a, b] : ranges)
+                {
+                    if (s >= a && s <= b)
+                    {
+                        acked = true;
+                        break;
+                    }
+                }
+            }
+            if (acked)
+            {
                 if (it->second.retries == 0)
                     update_rtt_(Clock::now() - it->second.send_time);
                 it = pending_.erase(it);
             }
             else
                 ++it;
+        }
+
+        // Fast retransmit: any pending in [cum, max_sack_end] that
+        // survived the discharge sweep is a documented hole — re-send
+        // it once now (don't wait for RTO). `fast_retransmitted` per-
+        // entry flag prevents the same hole from being re-sent on
+        // every ACK.
+        if (!ranges.empty())
+        {
+            for (auto& [seq, p] : pending_)
+            {
+                if (p.seq >= cum && p.seq <= max_sack_end && !p.fast_retransmitted)
+                {
+                    (void)mux_->send(user_channel_, ChannelType::kUnreliableUnordered,
+                                     { p.framed.data(), p.framed.size() });
+                    p.send_time = Clock::now();
+                    p.fast_retransmitted = true;
+                    ++p.retries;
+                    ++retransmit_count_;
+                    ++fast_retransmit_count_;
+                }
+            }
         }
     }
 
@@ -310,28 +386,74 @@ private:
         }
     }
 
-    void send_ack_(std::uint32_t seq)
+    static void write_u32_(std::vector<std::byte>& out, std::uint32_t v)
     {
-        std::array<std::byte, 4> buf {};
         for (int i = 0; i < 4; ++i)
-            buf[static_cast<std::size_t>(i)] =
-                std::byte { static_cast<std::uint8_t>((seq >> (i * 8)) & 0xFFu) };
+            out.push_back(std::byte { static_cast<std::uint8_t>((v >> (i * 8)) & 0xFFu) });
+    }
+
+    void send_ack_(std::uint32_t cum, std::span<const std::pair<std::uint32_t, std::uint32_t>> ranges = {})
+    {
+        std::vector<std::byte> buf;
+        buf.reserve(5 + ranges.size() * 8);
+        write_u32_(buf, cum);
+        const auto count = std::min<std::size_t>(ranges.size(), kSackRangeCap);
+        buf.push_back(std::byte { static_cast<std::uint8_t>(count) });
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            write_u32_(buf, ranges[i].first);
+            write_u32_(buf, ranges[i].second);
+        }
         (void)mux_->send(ack_channel_, ChannelType::kUnreliableUnordered,
                          { buf.data(), buf.size() });
     }
 
+    /// Build SACK ranges from `inbound_`: contiguous runs of out-of-
+    /// order delivered-but-not-flushed seqs. Capped at `kSackRangeCap`.
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
+    build_sack_ranges_() const
+    {
+        std::vector<std::uint32_t> seqs;
+        seqs.reserve(inbound_.size());
+        for (const auto& [k, _] : inbound_)
+            seqs.push_back(k);
+        std::sort(seqs.begin(), seqs.end());
+
+        std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
+        ranges.reserve(seqs.size());
+        for (std::size_t i = 0; i < seqs.size();)
+        {
+            std::uint32_t a = seqs[i];
+            std::uint32_t b = a;
+            std::size_t j = i + 1;
+            while (j < seqs.size() && seqs[j] == b + 1)
+            {
+                b = seqs[j];
+                ++j;
+            }
+            ranges.emplace_back(a, b);
+            i = j;
+            if (ranges.size() >= kSackRangeCap)
+                break;
+        }
+        return ranges;
+    }
+
     void maybe_emit_cum_ack_()
     {
-        // No frame ever received → nothing to ACK.
-        if (next_recv_seq_ == 0)
-            return;
-        const std::uint32_t high_water = next_recv_seq_ - 1;
+        // Cumulative semantic = "next expected seq" (everything BELOW
+        // this is delivered). 0 = nothing received yet, valid but
+        // discharge-empty. Lets SACK-only ACKs ride along on tick 0
+        // before any contiguous delivery has happened.
+        const std::uint32_t cum = next_recv_seq_;
         const bool advanced = !last_cum_ack_.has_value()
-                            || high_water > *last_cum_ack_;
-        if (!advanced && !ack_dirty_)
+                            || cum > *last_cum_ack_;
+        const auto ranges = build_sack_ranges_();
+        const bool have_sack_to_share = !ranges.empty();
+        if (!advanced && !ack_dirty_ && !have_sack_to_share)
             return;
-        send_ack_(high_water);
-        last_cum_ack_ = high_water;
+        send_ack_(cum, { ranges.data(), ranges.size() });
+        last_cum_ack_ = cum;
         ack_dirty_ = false;
     }
 
@@ -351,6 +473,7 @@ private:
     std::unordered_set<std::uint32_t> seen_;
     std::vector<std::vector<std::byte>> ready_;
     std::uint32_t retransmit_count_ { 0 };
+    std::uint32_t fast_retransmit_count_ { 0 };
     std::uint32_t duplicate_drops_ { 0 };
     std::optional<std::uint32_t> last_cum_ack_ {};
     bool ack_dirty_ { false };

@@ -531,6 +531,51 @@ TEST(ReliableChannel, CumulativeAckDischargesAllPriorPendings)
     EXPECT_EQ(sender.pending_send_count(), 0U);
 }
 
+TEST(ReliableChannel, SackTriggersFastRetransmitForGap)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 500 }, 5
+    };
+    cd::net::ReliableChannel receiver {
+        mb, 0, 1, std::chrono::milliseconds { 500 }
+    };
+
+    // Send three frames. Drop the FIRST on the wire (b->receive consumes
+    // it before mb.tick) so the receiver gets seq=1 and seq=2 but not
+    // seq=0. The receiver's SACK then points at the gap directly.
+    const auto p = bytes_of("z");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());  // seq=0
+    // Drain seq=0 from the wire to simulate loss.
+    auto dropped = b->receive();
+    ASSERT_TRUE(dropped.has_value());
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());  // seq=1
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());  // seq=2
+
+    // Receiver ticks: gets seq=1 + seq=2 → cum_high_water stuck at -1
+    // (uint underflow ⇒ no ACK yet because next_recv_seq_ is 0), but
+    // inbound_ has {1, 2} → SACK range [1,2].
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);
+
+    // Sender ticks: sees cum=last_known (still 0 from constructor? actually
+    // no — no ACK yet, but the receiver should have emitted one for
+    // SACK). Without SACK the sender would wait for RTO (500 ms). With
+    // SACK it fast-retransmits seq=0 immediately.
+    sender.tick(t0);
+    EXPECT_GE(sender.fast_retransmit_count(), 1U);
+
+    // Now the receiver gets the fast-retransmitted seq=0 and can flush
+    // the buffered seq=1 and seq=2.
+    receiver.tick(t0);
+    EXPECT_EQ(receiver.ready_count(), 3U);
+    // Sender's final cum-ACK discharges everything.
+    sender.tick(t0);
+    EXPECT_EQ(sender.pending_send_count(), 0U);
+}
+
 TEST(ReliableChannel, MaxRetriesCapsRetransmitCount)
 {
     auto [a, b] = cd::net::make_loopback_pair();
