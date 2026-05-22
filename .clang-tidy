@@ -1,41 +1,135 @@
-Checks:  >
+# =============================================================================
+# CHROMODYNAMIC — .clang-tidy
+#
+# Engine-wide static-analysis configuration. Goals:
+#   1. Catch obvious defects (memory leaks, undefined-behavior patterns,
+#      bugprone use of strings, swappable params) early in the dev loop.
+#   2. Enforce modernization to C++23 idioms (override, nullptr, =default,
+#      ranges, span) without nagging on areas where we deliberately diverge
+#      (trailing-return-type, magic numbers in shaders).
+#   3. Stay zero-noise on third-party code — only files inside engine/ and
+#      samples/ are analysed via the CI `clang-tidy` job (HeaderFilterRegex
+#      below). FetchContent_'d sources never trigger.
+#
+# Local usage:
+#   clang-tidy -p build/ninja-base engine/<lib>/src/Foo.cpp
+# CI usage:
+#   The `clang-tidy` job in .github/workflows/ci.yml runs over every TU in
+#   compile_commands.json and gates the merge on a clean report.
+# =============================================================================
+---
+Checks: >
   -*,
-  readability-*,
-  -readability-uppercase-literal-suffix,
-  -readability-magic-numbers,
-  -readability-isolate-declaration,
-  -readability-convert-member-functions-to-static,
-  -readability-implicit-bool-conversion,
-  -readability-avoid-const-params-in-decls,
-  -readability-simplify-boolean-expr,
-  -readability-make-member-function-const,
-  -readability-suspicious-call-argument,
-  -readability-redundant-member-init,
-  -readability-misleading-indentation,
-  -readability-use-anyofallof,
-  -readability-identifier-length,
-  -readability-function-cognitive-complexity,
   bugprone-*,
-  -bugprone-narrowing-conversions,
-  -bugprone-unhandled-self-assignment,
-  -bugprone-branch-clone,
-  -bugprone-macro-parentheses,
-  -bugprone-reserved-identifier,
   -bugprone-easily-swappable-parameters,
-  -bugprone-implicit-widening-of-multiplication-result,
-  -bugprone-sizeof-expression,
-  -bugprone-integer-division,
-  -bugprone-redundant-branch-condition,
-  -bugprone-suspicious-include,
+  -bugprone-branch-clone,
+  -bugprone-unused-return-value,
+  -bugprone-macro-parentheses,
+  -bugprone-narrowing-conversions,
+  -bugprone-exception-escape,
+  cert-*,
+  -cert-err58-cpp,
+  -cert-msc51-cpp,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-init-variables,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-special-member-functions,
+  -cppcoreguidelines-rvalue-reference-param-not-moved,
+  -cppcoreguidelines-missing-std-forward,
+  -cppcoreguidelines-narrowing-conversions,
+  hicpp-*,
+  -hicpp-avoid-c-arrays,
+  -hicpp-no-array-decay,
+  -hicpp-signed-bitwise,
+  -hicpp-special-member-functions,
+  -hicpp-named-parameter,
+  -hicpp-vararg,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-use-anonymous-namespace,
+  -misc-const-correctness,
   modernize-*,
-  -modernize-use-auto,
   -modernize-use-trailing-return-type,
-  -modernize-avoid-c-arrays,
   -modernize-use-nodiscard,
-  -modernize-loop-convert,
+  -modernize-avoid-c-arrays,
   -modernize-pass-by-value,
-  -modernize-raw-string-literal,
-  -modernize-return-braced-init-list
+  -modernize-use-designated-initializers,
+  performance-*,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
+  -performance-unnecessary-value-param,
+  -performance-avoid-endl,
+  portability-*,
+  readability-*,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-function-size,
+  -readability-identifier-length,
+  -readability-named-parameter,
+  -readability-redundant-access-specifiers,
+  -readability-uppercase-literal-suffix,
+  -readability-implicit-bool-conversion,
+  -readability-else-after-return,
+  -readability-convert-member-functions-to-static,
+  -readability-static-accessed-through-instance,
+  -readability-make-member-function-const,
+  -readability-qualified-auto,
+  -readability-redundant-inline-specifier
+
+# Warnings stay warnings locally. CI promotes to errors via -warnings-as-errors.
+WarningsAsErrors: ''
+
+# Analyse only OUR code. Engine + samples; never third-party headers via
+# FetchContent (those live under build/*/_deps/) and never legacy code
+# under _legacy/.
+HeaderFilterRegex: '.*[\\/](engine|samples)[\\/].*\.(hpp|h)$'
+
+# clang-tidy's identifier-style check is opinionated and noisy; we configure
+# only the project-wide conventions and leave the rest to clang-format.
 CheckOptions:
-  - key: modernize-use-default-member-init.UseAssignment
-    value: 1
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantPrefix
+    value: k
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionPrefix
+    value: CD_
+  - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: true
+  - key: cppcoreguidelines-special-member-functions.AllowMissingMoveFunctions
+    value: true
+...

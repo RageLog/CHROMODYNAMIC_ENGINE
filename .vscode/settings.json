@@ -1,119 +1,105 @@
 {
-    "cmake.configureArgs": [
-        "-GNinja"
-    ],
-    "cmake.configureSettings": {
-        //"CMAKE_TOOLCHAIN_FILE" : "D:/repositories/VS/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        //"VCPKG_BUILD": "ON",
-    },
-    "C_Cpp.errorSquiggles": "disabled",
-    "editor.tokenColorCustomizations": {
-        "textMateRules": [
-            {
-                "scope": "googletest.failed",
-                "settings": {
-                    "foreground": "#f00"
-                }
-            },
-            {
-                "scope": "googletest.passed",
-                "settings": {
-                    "foreground": "#0f0"
-                }
-            },
-            {
-                "scope": "googletest.run",
-                "settings": {
-                    "foreground": "#0f0"
-                }
-            }
-        ]
-    },
-    "testMate.cpp.test.advancedExecutables": [
-        {
-            "pattern": "/../Tests/tests_output/*/*.exe"
-        }
-    ],
-    "files.associations": {
-        "iostream": "cpp",
-        "atomic": "cpp",
-        "bit": "cpp",
-        "cctype": "cpp",
-        "clocale": "cpp",
-        "cmath": "cpp",
-        "compare": "cpp",
-        "concepts": "cpp",
-        "cstddef": "cpp",
-        "cstdint": "cpp",
-        "cstdio": "cpp",
-        "cstdlib": "cpp",
-        "cstring": "cpp",
-        "ctime": "cpp",
-        "cwchar": "cpp",
-        "exception": "cpp",
-        "initializer_list": "cpp",
-        "ios": "cpp",
-        "iosfwd": "cpp",
-        "istream": "cpp",
-        "iterator": "cpp",
-        "limits": "cpp",
-        "memory": "cpp",
-        "new": "cpp",
-        "ostream": "cpp",
-        "stdexcept": "cpp",
-        "streambuf": "cpp",
-        "system_error": "cpp",
-        "tuple": "cpp",
-        "type_traits": "cpp",
-        "typeinfo": "cpp",
-        "utility": "cpp",
-        "xfacet": "cpp",
-        "xiosbase": "cpp",
-        "xlocale": "cpp",
-        "xlocinfo": "cpp",
-        "xlocnum": "cpp",
-        "xmemory": "cpp",
-        "xstddef": "cpp",
-        "xstring": "cpp",
-        "xtr1common": "cpp",
-        "xutility": "cpp",
-        "algorithm": "cpp",
-        "charconv": "cpp",
-        "chrono": "cpp",
-        "format": "cpp",
-        "forward_list": "cpp",
-        "iomanip": "cpp",
-        "locale": "cpp",
-        "map": "cpp",
-        "mutex": "cpp",
-        "optional": "cpp",
-        "ratio": "cpp",
-        "sstream": "cpp",
-        "stop_token": "cpp",
-        "string": "cpp",
-        "thread": "cpp",
-        "vector": "cpp",
-        "xlocbuf": "cpp",
-        "xlocmes": "cpp",
-        "xlocmon": "cpp",
-        "xloctime": "cpp",
-        "xtree": "cpp",
-        "ranges": "cpp",
-        "any": "cpp",
-        "array": "cpp",
-        "deque": "cpp",
-        "fstream": "cpp",
-        "functional": "cpp",
-        "list": "cpp",
-        "set": "cpp",
-        "span": "cpp",
-        "unordered_map": "cpp",
-        "unordered_set": "cpp",
-        "variant": "cpp",
-        "xhash": "cpp",
-        "numeric": "cpp",
-        "*.in": "cpp",
-        "*.rh": "cpp"
-    }
-    //"C_Cpp.intelliSenseEngine": "Tag Parser"
+  "// --- CMake Tools integration ---": "",
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": true,
+  "cmake.copyCompileCommands": "${workspaceFolder}/compile_commands.json",
+  "cmake.preferredGenerators": ["Ninja Multi-Config"],
+  "cmake.parallelJobs": 0,
+  "cmake.exportCompileCommandsFile": true,
+  "cmake.configureSettings": {
+    "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+  },
+
+  "// --- clangd as primary C/C++ language server ---": "",
+  "clangd.path": "clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--header-insertion=iwyu",
+    "--completion-style=detailed",
+    "--function-arg-placeholders=false",
+    "--pch-storage=memory",
+    "--all-scopes-completion",
+    "--cross-file-rename",
+    "--log=info",
+    "--query-driver=**/clang*,**/cl.exe,**/g++*,**/gcc*"
+  ],
+  "clangd.checkUpdates": false,
+  "clangd.onConfigChanged": "restart",
+  "clangd.fallbackFlags": [
+    "-std=c++23",
+    "-xc++",
+    "-Iengine/foundation/core/include"
+  ],
+
+  "// --- Disable Microsoft C/C++ extension's IntelliSense to avoid conflict ---": "",
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.autocomplete": "disabled",
+  "C_Cpp.errorSquiggles": "disabled",
+  "C_Cpp.formatting": "disabled",
+
+  "// --- Editor + format ---": "",
+  "editor.formatOnSave": true,
+  "editor.formatOnType": false,
+  "editor.detectIndentation": false,
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.rulers": [100, 120],
+
+  "// --- File associations ---": "",
+  "files.associations": {
+    "*.hpp": "cpp",
+    "*.inl": "cpp",
+    "*.tpp": "cpp",
+    "*.cdmesh": "yaml",
+    "*.cdmat": "yaml",
+    "*.cdscene": "yaml",
+    "*.cdui": "xml",
+    "*.in": "cpp",
+    "*.rh": "cpp"
+  },
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "files.exclude": {
+    "**/.git": true,
+    "**/build": true,
+    "**/install": true,
+    "**/_deps": true,
+    "**/vcpkg_installed": true,
+    "**/.cache": true,
+    "**/_legacy": true,
+    "**/.vs": true
+  },
+  "search.exclude": {
+    "**/build": true,
+    "**/install": true,
+    "**/_deps": true,
+    "**/_legacy": true,
+    "**/vcpkg_installed": true,
+    "**/compile_commands.json": false
+  },
+
+  "// --- CMake file formatting ---": "",
+  "[cmake]": {
+    "editor.defaultFormatter": "twxs.cmake"
+  },
+  "[c]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+
+  "// --- googletest token coloring (legacy preserve) ---": "",
+  "editor.tokenColorCustomizations": {
+    "textMateRules": [
+      { "scope": "googletest.failed", "settings": { "foreground": "#f00" } },
+      { "scope": "googletest.passed", "settings": { "foreground": "#0f0" } },
+      { "scope": "googletest.run",    "settings": { "foreground": "#0f0" } }
+    ]
+  },
+
+  "// --- Terminal default to Git Bash on Windows (per CLAUDE.md §9) ---": "",
+  "terminal.integrated.defaultProfile.windows": "Git Bash"
 }

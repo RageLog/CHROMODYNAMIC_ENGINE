@@ -1,5 +1,7 @@
-# cmake version to be used
-cmake_minimum_required(VERSION 3.18)
+# Pinned to the same project-wide minimum declared by the root CMakeLists.
+# Bumping here without bumping there (or vice versa) is the source of
+# "Compatibility with CMake < X.Y" errors under CMake 4.x.
+cmake_minimum_required(VERSION 3.28)
 
 MACRO(SUBDIRLIST result curdir)
     FILE(GLOB children RELATIVE ${curdir} ${curdir}/*)

@@ -1,26 +1,99 @@
+# --- Build artifacts ---
+build/
+build-*/
+out/
+output/
+install/
+/Tests/tests_output
+
+# --- Runtime artifacts ---
+imgui.ini
+hello_audio_synth_out.wav
+*.cdtex
+*.cdmesh
+.claude/scheduled_tasks.lock
+
+# --- Compiler / linker outputs ---
 *.d
-*.slo
-*.lo
 *.o
 *.obj
-*.gch
-*.pch
 *.so
 *.dylib
 *.dll
-*.mod
-*.smod
-*.lai
-*.la
 *.a
 *.lib
 *.exe
 *.out
 *.app
-build
-cmake-build-debug
-.cache
-.idea
-/Tests/tests_output
-/output
+*.gch
+*.pch
+*.idb
+*.ilk
+*.pdb
+*.exp
+*.tlog
+
+# --- CMake generated ---
+/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+/Testing/
+compile_commands.json
+install_manifest.txt
+
+# --- Ninja / MSBuild / Make ---
+*.ninja
+.ninja_deps
+.ninja_log
+*.vcxproj*
+*.sln
+*.filters
+*.user
+
+# --- vcpkg (manifest mode only — vendored toolchain ignored) ---
+vcpkg_installed/
+.vcpkg-root
+
+# --- Engine generated headers (versioning) ---
 /Engine/Include/Version.hpp
+
+# --- Logs and reports ---
+*.log
+*.tidy.log
+
+# --- IDE / editor ---
+/.vs/
+/.idea/
+/.cache/
+*.swp
+*~
+
+# --- Auto-generated clangd config (see .clangd.in for the tracked template) ---
+/.clangd
+
+# --- OS junk ---
+Thumbs.db
+.DS_Store
+
+# --- Python (scripts/) ---
+__pycache__/
+*.pyc
+.python-version
+
+# --- Research artifacts (heavy / copyrighted, manuel veya tool indirir) ---
+# Akademik PDF kütüphanesi: gitignored, MANIFEST.csv aracılığıyla referans verilir
+research/library/pdf/
+# Mimari KİTAP koleksiyonu: telifli — repo dışı tutulur
+research/papers/*.pdf
+research/papers/*.epub
+research/papers/*.djvu
+research/papers/*.zip
+
+# --- Asset cache (build sırasında üretilir, repoya commit edilmez) ---
+.asset_cache/
+.shader_cache/
+
+
