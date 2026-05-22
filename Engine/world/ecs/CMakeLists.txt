@@ -11,6 +11,7 @@ cd_add_library(ecs
     src/Entity.cpp
   PUBLIC_DEPS
     cd::core
+    cd::concurrency  # Scheduler::tick_parallel(World&, ThreadPool&) overload
 )
 
 if(CD_ENABLE_TESTING)

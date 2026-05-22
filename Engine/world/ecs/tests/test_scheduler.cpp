@@ -317,3 +317,55 @@ TEST(Scheduler, ParallelTickHandlesIndependentSystemsConcurrently)
     EXPECT_TRUE(s.tick_parallel(w).has_value());
     EXPECT_EQ(hits.load(), 4);
 }
+
+// =============================================================================
+// Wave 26 — tick_parallel(World&, ThreadPool&) overload
+// =============================================================================
+
+#include <cd/concurrency/ThreadPool.hpp>
+
+TEST(Scheduler, ThreadPoolBackedTickMatchesStdAsyncTick)
+{
+    cd::concurrency::ThreadPool pool { 4 };
+    auto run = [&](bool with_pool)
+    {
+        cd::ecs::World w;
+        auto e = w.create();
+        w.emplace<Pos>(e, Pos { 0 });
+        w.emplace<Vel>(e, Vel { 7 });
+
+        cd::ecs::Scheduler s;
+        s.add(cd::ecs::SystemDesc { "move" }
+                  .reads<Vel>()
+                  .writes<Pos>()
+                  .fn([](cd::ecs::World& wr) {
+                      wr.each<Pos, Vel>([](cd::ecs::Entity, Pos& p, Vel& v) { p.x += v.dx; });
+                  }));
+        s.add(cd::ecs::SystemDesc { "audit" }.reads<Pos>().fn([](cd::ecs::World&) {}));
+        for (int i = 0; i < 8; ++i)
+        {
+            if (with_pool)
+                EXPECT_TRUE(s.tick_parallel(w, pool).has_value());
+            else
+                EXPECT_TRUE(s.tick_parallel(w).has_value());
+        }
+        return w.get<Pos>(e)->x;
+    };
+    EXPECT_EQ(run(false), run(true));
+}
+
+TEST(Scheduler, ThreadPoolBackedTickRunsAllSystemsInParallelStage)
+{
+    cd::concurrency::ThreadPool pool { 4 };
+    cd::ecs::World w;
+    cd::ecs::Scheduler s;
+    std::atomic<int> hits { 0 };
+    for (const char* name : { "a", "b", "c", "d", "e", "f" })
+    {
+        s.add(cd::ecs::SystemDesc { name }.fn([&](cd::ecs::World&) {
+            hits.fetch_add(1, std::memory_order_relaxed);
+        }));
+    }
+    EXPECT_TRUE(s.tick_parallel(w, pool).has_value());
+    EXPECT_EQ(hits.load(), 6);
+}

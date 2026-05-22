@@ -32,6 +32,7 @@
 // =============================================================================
 #pragma once
 
+#include <cd/concurrency/ThreadPool.hpp>
 #include <cd/core/Defines.hpp>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
@@ -246,6 +247,50 @@ public:
             }
             for (auto& f : futures)
                 f.get();  // .get() rethrows exceptions (asserts in test).
+        }
+        return {};
+    }
+
+    /// Same observable behaviour as `tick_parallel(World&)` but dispatches
+    /// each stage's jobs onto a shared `cd::concurrency::ThreadPool`
+    /// instead of spawning a fresh thread per system via std::async.
+    /// Significantly cheaper for engines that tick the scheduler many
+    /// times per second — the thread-pool worker reuse eliminates
+    /// per-tick thread creation cost.
+    [[nodiscard]] cd::core::Result<void>
+    tick_parallel(World& world, cd::concurrency::ThreadPool& pool)
+    {
+        if (!sorted_)
+        {
+            auto r = build_order_();
+            if (!r.has_value())
+                return std::unexpected(r.error());
+        }
+        for (const auto& stage : stages_)
+        {
+            if (stage.size() <= 1)
+            {
+                for (auto idx : stage)
+                {
+                    const auto& s = systems_[idx];
+                    if (s.body())
+                        s.body()(world);
+                }
+                continue;
+            }
+            std::vector<std::future<void>> futures;
+            futures.reserve(stage.size());
+            for (auto idx : stage)
+            {
+                const auto& s = systems_[idx];
+                if (!s.body())
+                    continue;
+                futures.push_back(
+                    pool.submit([&s, &world]() { s.body()(world); })
+                );
+            }
+            for (auto& f : futures)
+                f.get();  // rethrows exceptions to surface in test harness.
         }
         return {};
     }
