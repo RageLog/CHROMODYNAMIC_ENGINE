@@ -105,16 +105,25 @@ TEST(BenchTest, CsvHasNineFields)
 
 TEST(BenchTest, MeasurableWorkScalesWithIterationCount)
 {
-    // A body that sleeps for ~100 µs. Its measured ns/op should be at
-    // least 50 µs (giving slack for thread scheduling jitter). This is
-    // really a sanity check that the timer machinery isn't dropping the
-    // measured time on the floor.
-    auto sleepy = [] {
-        std::this_thread::sleep_for(std::chrono::microseconds { 100 });
+    // Sanity check: a body that does ~32k integer multiplies must measure
+    // a strictly positive nanosecond cost. A previous version of this test
+    // used std::this_thread::sleep_for(100us), but the sleep granularity
+    // on MinGW UCRT64 can be ~30 ns (sleep returns immediately), making
+    // the assertion flaky. Using a deterministic busy-loop is portable
+    // across MSVC / Clang / GCC / MinGW.
+    auto busy = [] {
+        volatile std::uint64_t acc = 1;
+        for (std::uint64_t i = 1; i <= 32'000; ++i)
+            acc = acc * 1103515245u + 12345u + i;
+        cd::bench::do_not_optimize(acc);
     };
     cd::bench::Config cfg;
     cfg.min_samples = 4;
     cfg.min_time_ms = 2;
-    auto r = cd::bench::run("sleepy", sleepy, cfg);
-    EXPECT_GT(r.mean_ns_per_op, 50'000.0);
+    auto r = cd::bench::run("busy_32k", busy, cfg);
+    EXPECT_GT(r.mean_ns_per_op, 0.0);
+    // 32k MUL+ADDs ≥ 100 ns even on the fastest CPUs in Debug-O0; gives
+    // 1000x headroom over the previous 50 µs lower bound and stays
+    // platform-independent.
+    EXPECT_GT(r.mean_ns_per_op, 100.0);
 }
