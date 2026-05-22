@@ -140,7 +140,49 @@ struct Report
         );
         return buf;
     }
+
+    /// JSON object suitable for CI artifact storage. Hand-rolled
+    /// formatting so cd::bench doesn't have to pull cd::asset_json
+    /// into its dependency tree; downstream tools (bench_compare) use
+    /// the real parser. Field order matches Report definition order;
+    /// strings inside `name`/`label` are NOT escape-encoded (caller
+    /// is expected to use ASCII identifiers — quotes inside the name
+    /// would corrupt the JSON output, by design).
+    [[nodiscard]] std::string to_json() const
+    {
+        char buf[768];
+        std::snprintf(
+            buf, sizeof(buf),
+            R"({"name":"%s","label":"%s","samples":%llu,"inner_calls":%u,)"
+            R"("mean_ns":%.3f,"median_ns":%.3f,"min_ns":%.3f,"max_ns":%.3f,)"
+            R"("stddev_ns":%.3f,"p90_ns":%.3f,"p95_ns":%.3f,"p99_ns":%.3f,)"
+            R"("total_seconds":%.6f})",
+            name.c_str(), label.c_str(),
+            static_cast<unsigned long long>(samples), inner_calls,
+            mean_ns_per_op, median_ns_per_op, min_ns_per_op, max_ns_per_op,
+            stddev_ns_per_op, p90_ns_per_op, p95_ns_per_op, p99_ns_per_op,
+            total_seconds);
+        return buf;
+    }
 };
+
+/// Wrap a sequence of reports as one JSON array (one element per Report).
+/// Suitable for `hello_bench --json > artifact.json` style emission.
+template <class Iterable>
+[[nodiscard]] std::string reports_to_json_array(const Iterable& reports)
+{
+    std::string out = "[";
+    bool first = true;
+    for (const auto& r : reports)
+    {
+        if (!first)
+            out += ",";
+        out += r.to_json();
+        first = false;
+    }
+    out += "]";
+    return out;
+}
 
 /// Two-line Markdown table header. Concatenate with `Report::to_markdown_row()`
 /// snippets for a complete table:

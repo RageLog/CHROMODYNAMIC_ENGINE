@@ -132,6 +132,39 @@ TEST(BenchTest, MarkdownRowAndHeaderHaveExpectedSubstrings)
     EXPECT_NE(hdr.find("stddev"), std::string_view::npos);
 }
 
+TEST(BenchTest, JsonContainsAllReportFields)
+{
+    cd::bench::Config cfg;
+    cfg.min_samples = 8;
+    cfg.min_time_ms = 2;
+    auto r = cd::bench::run("jsonbench", cheap_body, cfg);
+    const auto js = r.to_json();
+    EXPECT_NE(js.find("\"name\":\"jsonbench\""), std::string::npos);
+    EXPECT_NE(js.find("\"mean_ns\""), std::string::npos);
+    EXPECT_NE(js.find("\"p99_ns\""), std::string::npos);
+    EXPECT_NE(js.find("\"stddev_ns\""), std::string::npos);
+    EXPECT_NE(js.find("\"max_ns\""), std::string::npos);
+    EXPECT_NE(js.find("\"samples\""), std::string::npos);
+    EXPECT_EQ(js.front(), '{');
+    EXPECT_EQ(js.back(), '}');
+}
+
+TEST(BenchTest, JsonArrayConcatenatesEntries)
+{
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 1;
+    std::vector<cd::bench::Report> reports;
+    reports.push_back(cd::bench::run("a", cheap_body, cfg));
+    reports.push_back(cd::bench::run("b", cheap_body, cfg));
+    const auto arr = cd::bench::reports_to_json_array(reports);
+    EXPECT_EQ(arr.front(), '[');
+    EXPECT_EQ(arr.back(), ']');
+    EXPECT_NE(arr.find("\"name\":\"a\""), std::string::npos);
+    EXPECT_NE(arr.find("\"name\":\"b\""), std::string::npos);
+    EXPECT_NE(arr.find("},{"), std::string::npos);  // two objects joined
+}
+
 TEST(BenchTest, MeasurableWorkScalesWithIterationCount)
 {
     // Sanity check: a body that does ~32k integer multiplies must measure
