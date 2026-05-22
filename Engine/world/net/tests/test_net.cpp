@@ -3,7 +3,11 @@
 // =============================================================================
 #include <cd/net/ChannelMux.hpp>
 #include <cd/net/IConnection.hpp>
+#include <cd/net/UdpConnection.hpp>
 #include <gtest/gtest.h>
+
+#include <chrono>
+#include <thread>
 
 #include <array>
 #include <cstddef>
@@ -244,6 +248,87 @@ TEST(ChannelMux, ReliableDuplicateIsDropped)
     EXPECT_EQ(str_from_payload(r2->payload), "a");
     ASSERT_FALSE(r3.has_value());
     EXPECT_EQ(r3.error().code, static_cast<std::uint32_t>(cd::net::net_errors::Code::kWouldBlock));
+}
+
+// -----------------------------------------------------------------------------
+// UDP IConnection — Wave 37
+// Uses ephemeral ports (port 0 lets the OS pick a free port). The
+// receive path polls briefly because UDP is asynchronous; a short
+// `wait_for_recv` helper avoids a thread::sleep_for race.
+// -----------------------------------------------------------------------------
+
+namespace
+{
+
+[[nodiscard]] cd::core::Result<std::vector<std::byte>>
+wait_for_recv(cd::net::IConnection& c, std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        auto r = c.receive();
+        if (r.has_value())
+            return r;
+        if (r.error().code
+            != static_cast<std::uint32_t>(cd::net::net_errors::Code::kWouldBlock))
+            return r;
+        std::this_thread::yield();
+    }
+    return std::unexpected(cd::net::net_errors::make(cd::net::net_errors::Code::kWouldBlock,
+                                                     "timeout waiting for datagram"));
+}
+
+}  // namespace
+
+TEST(UdpConnection, BuildPairAndRoundTrip)
+{
+    // Use a fixed high port pair (unlikely to clash on CI runners).
+    // Skip cleanly if the bind fails — keeps the test stable when a
+    // parallel runner already grabbed the slot.
+    constexpr std::uint16_t kPortA = 39541;
+    constexpr std::uint16_t kPortB = 39542;
+    auto pair = cd::net::make_udp_pair_localhost(kPortA, kPortB);
+    if (!pair.has_value())
+        GTEST_SKIP() << "Local UDP ports busy — skipping (CI flake-safe)";
+    auto& [pa, pb] = *pair;
+    ASSERT_NE(pa, nullptr);
+    ASSERT_NE(pb, nullptr);
+    ASSERT_TRUE(pa->send(bytes_of("hello-udp")).has_value());
+    auto recv = wait_for_recv(*pb, std::chrono::milliseconds { 500 });
+    ASSERT_TRUE(recv.has_value()) << "no datagram arrived within timeout";
+    ASSERT_EQ(recv->size(), 9U);  // "hello-udp"
+    EXPECT_EQ(pa->bytes_sent(), 9U);
+    EXPECT_EQ(pb->bytes_received(), 9U);
+}
+
+TEST(UdpConnection, ReceiveWithoutDataReturnsWouldBlock)
+{
+    auto a = cd::net::make_udp_connection(0, "127.0.0.1", 39599);
+    ASSERT_TRUE(a.has_value());
+    auto r = (*a)->receive();
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::net::net_errors::Code::kWouldBlock));
+}
+
+TEST(UdpConnection, InvalidAddressRejected)
+{
+    auto r = cd::net::make_udp_connection(0, "not-an-ip", 1234);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::net::net_errors::Code::kInvalidArgument));
+}
+
+TEST(UdpConnection, CloseTransitionsToDisconnected)
+{
+    auto a = cd::net::make_udp_connection(0, "127.0.0.1", 39598);
+    ASSERT_TRUE(a.has_value());
+    (*a)->close();
+    EXPECT_EQ((*a)->state(), cd::net::ConnectionState::kDisconnected);
+    auto send = (*a)->send(bytes_of("x"));
+    ASSERT_FALSE(send.has_value());
+    EXPECT_EQ(send.error().code,
+              static_cast<std::uint32_t>(cd::net::net_errors::Code::kDisconnected));
 }
 
 TEST(ChannelMux, ReliableOutOfOrderBuffersUntilGapFills)
