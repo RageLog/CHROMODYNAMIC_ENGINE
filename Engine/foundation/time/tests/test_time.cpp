@@ -4,6 +4,7 @@
 #include <cd/time/FramePacer.hpp>
 #include <cd/time/HiResClock.hpp>
 #include <cd/time/IClock.hpp>
+#include <cd/time/RateLimiter.hpp>
 #include <cd/time/SimClock.hpp>
 #include <cd/time/SteadyClock.hpp>
 #include <cd/time/TimerQueue.hpp>
@@ -249,6 +250,74 @@ TEST(TimerQueue, StopCancelsPendingCallbacks)
     }
     tq.stop();
     EXPECT_EQ(cancelled.load(), 5);
+}
+
+// --- RateLimiter / IntervalTicker — Wave 57 --------------------------------
+
+TEST(RateLimiter, UncappedIsNoOp)
+{
+    cd::time::RateLimiter rl { 0 };
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10; ++i)
+        rl.await_next_frame();
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    EXPECT_LT(elapsed, std::chrono::milliseconds { 50 });
+}
+
+TEST(RateLimiter, PeriodMatchesTargetHz)
+{
+    cd::time::RateLimiter rl { 60 };
+    EXPECT_EQ(rl.target_hz(), 60U);
+    EXPECT_GT(rl.period().count(), 0);
+    // Period should be ~16.67 ms for 60 Hz.
+    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(rl.period()).count();
+    EXPECT_NEAR(static_cast<double>(ms), 16'667.0, 50.0);
+}
+
+TEST(RateLimiter, AwaitsTargetPeriodOnAverage)
+{
+    // 100 Hz target → 10 ms per frame. Verify the average over 5
+    // frames is at least the target floor (no busy-spin runaway).
+    // Upper bound is generous (3× target) because parallel test
+    // execution can starve the spin tail on noisy CI hosts.
+    cd::time::RateLimiter rl { 100 };
+    const auto t0 = std::chrono::steady_clock::now();
+    constexpr int kFrames = 5;
+    for (int i = 0; i < kFrames; ++i)
+        rl.await_next_frame();
+    const auto elapsed = std::chrono::steady_clock::now() - t0;
+    const auto expected = std::chrono::milliseconds { 10 } * kFrames;
+    EXPECT_GE(elapsed, expected - std::chrono::milliseconds { 5 });
+    EXPECT_LT(elapsed, expected * 3);
+}
+
+TEST(IntervalTicker, FiresAtFixedCadenceWithSimClock)
+{
+    cd::time::SimClock sim;
+    cd::time::IntervalTicker tick { std::chrono::milliseconds { 100 }, &sim };
+
+    // First call primes the deadline → false.
+    EXPECT_FALSE(tick.tick());
+    sim.tick(std::chrono::milliseconds { 50 });
+    EXPECT_FALSE(tick.tick());  // still before deadline
+    sim.tick(std::chrono::milliseconds { 60 });  // total 110 ms
+    EXPECT_TRUE(tick.tick());   // fires
+    EXPECT_EQ(tick.fire_count(), 1U);
+    sim.tick(std::chrono::milliseconds { 100 });
+    EXPECT_TRUE(tick.tick());   // second interval
+    EXPECT_EQ(tick.fire_count(), 2U);
+}
+
+TEST(IntervalTicker, ResetClearsCounter)
+{
+    cd::time::SimClock sim;
+    cd::time::IntervalTicker tick { std::chrono::milliseconds { 10 }, &sim };
+    EXPECT_FALSE(tick.tick());
+    sim.tick(std::chrono::milliseconds { 20 });
+    EXPECT_TRUE(tick.tick());
+    EXPECT_EQ(tick.fire_count(), 1U);
+    tick.reset();
+    EXPECT_EQ(tick.fire_count(), 0U);
 }
 
 }  // namespace
