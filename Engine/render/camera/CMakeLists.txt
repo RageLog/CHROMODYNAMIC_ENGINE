@@ -8,3 +8,7 @@ cd_add_library(camera
   TYPE INTERFACE
   PUBLIC_DEPS cd::math
 )
+
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()

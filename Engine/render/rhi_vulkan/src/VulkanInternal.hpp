@@ -39,4 +39,18 @@ struct VulkanInstance
     const std::vector<std::string>& extra_extensions
 );
 
+/// Bridge for `cd::rhi_vulkan::get_native(IDevice&)`. Lives in
+/// VulkanDevice.cpp because that's where the concrete VulkanDevice class
+/// is defined; NativeHandles.cpp would otherwise need its full layout.
+/// Returns false when the IDevice is not Vulkan-backed (out parameters
+/// untouched).
+[[nodiscard]] bool try_fill_native_handles(
+    cd::rhi::IDevice& dev,
+    VkInstance* out_instance,
+    VkPhysicalDevice* out_physical,
+    VkDevice* out_device,
+    VkQueue* out_graphics_queue,
+    std::uint32_t* out_graphics_family
+) noexcept;
+
 }  // namespace cd::rhi_vulkan

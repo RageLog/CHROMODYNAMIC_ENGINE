@@ -30,6 +30,8 @@
 
 #include <array>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -605,6 +607,93 @@ public:
         , adapter_name_ { std::move(name) }
     {
         populate_limits();
+        init_pipeline_cache_();
+    }
+
+    /// Create the VkPipelineCache, seeded from `.shader_cache/pipeline_cache.bin`
+    /// if it exists. Best-effort: if the seed file is corrupt or comes from a
+    /// different driver/GPU, Vulkan rejects it silently and we fall back to
+    /// an empty cache. Either way we end up with a valid VkPipelineCache so
+    /// the rest of the device init can pass it to vkCreate*Pipelines.
+    void init_pipeline_cache_()
+    {
+        std::vector<std::uint8_t> seed;
+        std::error_code ec;
+        const auto path = pipeline_cache_path_();
+        if (std::filesystem::exists(path, ec) && !ec)
+        {
+            std::ifstream in(path, std::ios::binary | std::ios::ate);
+            if (in.is_open())
+            {
+                const auto sz = in.tellg();
+                if (sz > 0)
+                {
+                    seed.resize(static_cast<std::size_t>(sz));
+                    in.seekg(0);
+                    in.read(reinterpret_cast<char*>(seed.data()), static_cast<std::streamsize>(sz));
+                    if (!in.good() && !in.eof())
+                        seed.clear();
+                }
+            }
+        }
+
+        VkPipelineCacheCreateInfo ci {};
+        ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        ci.initialDataSize = seed.size();
+        ci.pInitialData = seed.empty() ? nullptr : seed.data();
+        // vkCreatePipelineCache may fail with VK_INCOMPATIBLE_DRIVER_VERSION on
+        // a stale seed; try once more with an empty cache before giving up.
+        if (vkCreatePipelineCache(device_, &ci, nullptr, &pipeline_cache_) != VK_SUCCESS)
+        {
+            ci.initialDataSize = 0;
+            ci.pInitialData = nullptr;
+            vkCreatePipelineCache(device_, &ci, nullptr, &pipeline_cache_);
+        }
+    }
+
+    /// Write the current pipeline-cache contents to disk so the next
+    /// process invocation can seed from it. Failure (no-write directory,
+    /// disk full) is silent — a missing cache is correct behaviour.
+    void save_pipeline_cache_()
+    {
+        if (pipeline_cache_ == VK_NULL_HANDLE)
+            return;
+        std::size_t sz = 0;
+        if (vkGetPipelineCacheData(device_, pipeline_cache_, &sz, nullptr) != VK_SUCCESS || sz == 0)
+            return;
+        std::vector<std::uint8_t> data(sz);
+        if (vkGetPipelineCacheData(device_, pipeline_cache_, &sz, data.data()) != VK_SUCCESS)
+            return;
+
+        const auto path = pipeline_cache_path_();
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        // Write to a tmp file and rename so a concurrent reader never sees a
+        // half-written cache (driver would reject it on next load).
+        const auto tmp = path;
+        const auto tmp_path = std::filesystem::path { path.string() + ".tmp" };
+        {
+            std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+            if (!out.is_open())
+                return;
+            out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+            if (!out.good())
+            {
+                out.close();
+                std::filesystem::remove(tmp_path, ec);
+                return;
+            }
+        }
+        std::filesystem::rename(tmp_path, tmp, ec);
+        if (ec)
+            std::filesystem::remove(tmp_path, ec);
+    }
+
+    [[nodiscard]] static std::filesystem::path pipeline_cache_path_()
+    {
+        // Co-located with the engine's other on-disk caches; the
+        // .shader_cache/ directory is already in .gitignore.
+        return std::filesystem::path { ".shader_cache" } / "pipeline_cache.bin";
     }
 
     [[nodiscard]] std::uint32_t graphics_family() const noexcept
@@ -615,6 +704,26 @@ public:
     [[nodiscard]] VkQueue graphics_queue() const noexcept
     {
         return graphics_queue_;
+    }
+
+    // Public read-only accessors used by `try_fill_native_handles()` so
+    // NativeHandles.cpp can hand raw Vulkan handles to opt-in callers
+    // (ImGui backend, RenderDoc capture script, etc.) without making the
+    // bridge a `friend`. The IDevice abstract interface still does NOT
+    // leak these — they're rhi_vulkan-only.
+    [[nodiscard]] VkInstance native_instance() const noexcept
+    {
+        return inst_ != nullptr ? inst_->instance : VK_NULL_HANDLE;
+    }
+
+    [[nodiscard]] VkPhysicalDevice native_physical_device() const noexcept
+    {
+        return physical_;
+    }
+
+    [[nodiscard]] VkDevice native_device() const noexcept
+    {
+        return device_;
     }
 
     ~VulkanDevice() override
@@ -679,6 +788,16 @@ public:
             // cleanup needed.
             vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
             descriptor_pool_ = VK_NULL_HANDLE;
+        }
+        // Persist the pipeline cache BEFORE destroying any pipelines — the
+        // cache lookup is keyed on full pipeline state hashes and saving
+        // after pipelines are destroyed is still valid, but doing it here
+        // keeps the order simple.
+        save_pipeline_cache_();
+        if (pipeline_cache_ != VK_NULL_HANDLE)
+        {
+            vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
+            pipeline_cache_ = VK_NULL_HANDLE;
         }
         for (auto& [_, p] : compute_pipelines_)
         {
@@ -1452,7 +1571,7 @@ public:
         };
 
         VkPipeline pipeline {};
-        if (vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &pci, nullptr, &pipeline) != VK_SUCCESS)
+        if (vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pci, nullptr, &pipeline) != VK_SUCCESS)
         {
             return std::unexpected(
                 make_err(cd::rhi::rhi_errors::Code::kResourceCreationFailed, "vkCreateGraphicsPipelines failed")
@@ -1517,7 +1636,7 @@ public:
             .basePipelineIndex = -1,
         };
         VkPipeline pipeline {};
-        if (vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
+        if (vkCreateComputePipelines(device_, pipeline_cache_, 1, &ci, nullptr, &pipeline) != VK_SUCCESS)
         {
             return std::unexpected(
                 make_err(cd::rhi::rhi_errors::Code::kResourceCreationFailed, "vkCreateComputePipelines failed")
@@ -2695,6 +2814,13 @@ private:
     // misuse (binary↔timeline are not interchangeable at the API level).
     std::unordered_map<std::uint32_t, VkSemaphore> timeline_semaphores_;
     std::unordered_map<std::uint32_t, VkFence> fences_;
+
+    /// VkPipelineCache used by vkCreate{Graphics,Compute}Pipelines.
+    /// Loaded from disk on first create_*_pipeline call (lazy because the
+    /// device ctor runs before we know the cache path is writable), saved
+    /// to disk in the dtor. Empty cache is a valid state — Vulkan just
+    /// builds pipelines from scratch as if VK_NULL_HANDLE were passed.
+    VkPipelineCache pipeline_cache_ { VK_NULL_HANDLE };
 };
 
 // ---------------------------------------------------------------------------
@@ -2896,6 +3022,37 @@ namespace
     return std::unique_ptr<cd::rhi::IDevice> {
         std::make_unique<VulkanDevice>(std::move(inst), pd, dev, qf, q, allocator, props.deviceName)
     };
+}
+
+// ---------------------------------------------------------------------------
+// Bridge for cd::rhi_vulkan::get_native(IDevice&) — defined here because
+// `VulkanDevice` is a private class of this TU. NativeHandles.cpp calls
+// through this trampoline so it doesn't need the full class layout.
+// ---------------------------------------------------------------------------
+
+bool try_fill_native_handles(
+    cd::rhi::IDevice& dev,
+    VkInstance* out_instance,
+    VkPhysicalDevice* out_physical,
+    VkDevice* out_device,
+    VkQueue* out_graphics_queue,
+    std::uint32_t* out_graphics_family
+) noexcept
+{
+    auto* concrete = dynamic_cast<VulkanDevice*>(&dev);
+    if (concrete == nullptr)
+        return false;
+    if (out_instance != nullptr)
+        *out_instance = concrete->native_instance();
+    if (out_physical != nullptr)
+        *out_physical = concrete->native_physical_device();
+    if (out_device != nullptr)
+        *out_device = concrete->native_device();
+    if (out_graphics_queue != nullptr)
+        *out_graphics_queue = concrete->graphics_queue();
+    if (out_graphics_family != nullptr)
+        *out_graphics_family = concrete->graphics_family();
+    return true;
 }
 
 }  // namespace cd::rhi_vulkan

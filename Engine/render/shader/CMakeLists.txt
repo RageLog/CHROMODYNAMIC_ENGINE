@@ -61,6 +61,7 @@ cd_add_library(shader
   TYPE STATIC
   SOURCES
     src/SpirvFile.cpp
+    src/CachedCompiler.cpp
     $<$<BOOL:${CD_ENABLE_GLSLANG}>:${CMAKE_CURRENT_SOURCE_DIR}/src/GlslangCompiler.cpp>
     $<$<NOT:$<BOOL:${CD_ENABLE_GLSLANG}>>:${CMAKE_CURRENT_SOURCE_DIR}/src/GlslangCompilerStub.cpp>
     # Slang backend: stub TU until a focused integration session lands the

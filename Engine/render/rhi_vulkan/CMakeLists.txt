@@ -91,6 +91,7 @@ cd_add_library(rhi_vulkan
     src/VulkanDeviceFactory.cpp
     src/VulkanCommandBuffer.cpp
     src/VulkanVma.cpp
+    src/NativeHandles.cpp
   PUBLIC_DEPS  cd::rhi
 )
 
