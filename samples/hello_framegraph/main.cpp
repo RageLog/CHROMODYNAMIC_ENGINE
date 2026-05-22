@@ -12,6 +12,8 @@
 // + post effect) are a natural follow-up sample once we add a fullscreen-
 // quad material helper to cd::material.
 // =============================================================================
+#include "SampleRuntime.hpp"
+
 #include <cd/framegraph/FrameGraph.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/platform/Window.hpp>
@@ -61,8 +63,10 @@ void main() { out_color = vec4(v_color, 1.0); }
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
+
     cd::platform::WindowDesc wd {};
     wd.title = "CHROMODYNAMIC — hello_framegraph";
     wd.width = 800;
@@ -129,8 +133,11 @@ int main()
     events.reserve(64);
     bool needs_rebuild = false;
 
+    std::uint32_t frame_idx = 0;
     while (true)
     {
+        if (!runtime.should_continue(frame_idx))
+            window.request_close();
         events.clear();
         if (!window.pump_events(events))
             break;
@@ -248,6 +255,7 @@ int main()
             }
             return 9;
         }
+        ++frame_idx;
     }
 
     renderer.wait_idle();

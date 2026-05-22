@@ -15,8 +15,11 @@
 // shaded by a 1×1 white default texture so the pipeline still proves end-
 // to-end without an external asset.
 // =============================================================================
+#include "SampleRuntime.hpp"
+
 #include <cd/asset_gltf/GltfLoader.hpp>
 #include <cd/camera/Camera.hpp>
+#include <cd/camera/Frustum.hpp>
 #include <cd/camera/OrbitController.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
@@ -388,6 +391,10 @@ struct Drawable
     cd::rhi::BufferHandle ib {};
     std::uint32_t index_count { 0 };
     int mesh_index { -1 };  // Source glTF mesh, lets us join Drawables with GltfInstance.
+    // Local-space AABB of this primitive — pre-computed once at upload
+    // so the frustum cull doesn't have to walk the vertex buffer per frame.
+    cd::math::Vec3f local_bbox_min { 0.0F, 0.0F, 0.0F };
+    cd::math::Vec3f local_bbox_max { 0.0F, 0.0F, 0.0F };
     std::array<float, 4> base_color { 1.0F, 1.0F, 1.0F, 1.0F };
     float metallic { 0.0F };   // glTF default: 0 = pure dielectric.
     float roughness { 1.0F };  // glTF default: 1 = fully rough.
@@ -448,11 +455,39 @@ struct Drawable
 
 int main(int argc, char** argv)
 {
+    const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
+
     // ---- Load scene (file or fallback) ------------------------------------
-    cd::asset_gltf::GltfScene scene;
-    if (argc >= 2)
+    // Find the first non-flag argument as the glTF path so `--headless` /
+    // `--no-spin` from SampleRuntime are not mis-parsed as filenames.
+    const char* gltf_path = nullptr;
+    for (int i = 1; i < argc; ++i)
     {
-        auto loaded = cd::asset_gltf::load_gltf(argv[1]);
+        const std::string_view a { argv[i] };
+        if (a.size() >= 2 && a[0] == '-' && a[1] == '-')
+        {
+            // SampleRuntime's `--headless` optionally takes an integer
+            // count as the very next argv slot; skip it too so its number
+            // isn't picked up as a path either.
+            if (a == "--headless" && i + 1 < argc)
+            {
+                const char* next = argv[i + 1];
+                bool numeric = (next[0] != '\0');
+                for (std::size_t k = 0; next[k] != '\0' && numeric; ++k)
+                    numeric = (next[k] >= '0' && next[k] <= '9');
+                if (numeric)
+                    ++i;
+            }
+            continue;
+        }
+        gltf_path = argv[i];
+        break;
+    }
+
+    cd::asset_gltf::GltfScene scene;
+    if (gltf_path != nullptr)
+    {
+        auto loaded = cd::asset_gltf::load_gltf(gltf_path);
         if (!loaded.has_value())
         {
             std::fprintf(
@@ -673,6 +708,23 @@ int main(int argc, char** argv)
             d.ib = make_upload_buffer(device, ib_bytes, cd::rhi::BufferUsage::kIndex);
             d.index_count = static_cast<std::uint32_t>(prim.indices.size());
 
+            // Pre-compute local-space AABB so the per-frame frustum cull is
+            // an O(8) corner-transform instead of an O(vertex_count) scan.
+            constexpr float kInf = std::numeric_limits<float>::infinity();
+            cd::math::Vec3f mn { kInf, kInf, kInf };
+            cd::math::Vec3f mx { -kInf, -kInf, -kInf };
+            for (const auto& v : prim.vertices)
+            {
+                mn[0] = std::min(mn[0], v.position[0]);
+                mn[1] = std::min(mn[1], v.position[1]);
+                mn[2] = std::min(mn[2], v.position[2]);
+                mx[0] = std::max(mx[0], v.position[0]);
+                mx[1] = std::max(mx[1], v.position[1]);
+                mx[2] = std::max(mx[2], v.position[2]);
+            }
+            d.local_bbox_min = mn;
+            d.local_bbox_max = mx;
+
             // Resolve material → base_color factor and (optional) texture.
             cd::rhi::TextureViewHandle bound_view = white_tex.view;
             if (prim.material_index >= 0 && static_cast<std::size_t>(prim.material_index) < scene.materials.size())
@@ -772,8 +824,12 @@ int main(int argc, char** argv)
     };
 
     auto t_prev = std::chrono::steady_clock::now();
+    std::uint32_t frame_idx = 0;
     while (true)
     {
+        if (!runtime.should_continue(frame_idx))
+            window.request_close();
+
         events.clear();
         if (!window.pump_events(events))
             break;
@@ -868,6 +924,13 @@ int main(int argc, char** argv)
         const cd::math::Mat4f view_proj = cd::camera::view_projection(cam, aspect);
         const cd::math::Vec3f eye = cd::camera::world_position(cam);
 
+        // Build the frustum from this frame's view-projection and use it
+        // to cull instances whose AABB is fully outside. Per-frame stats
+        // are printed every 60 frames so the cull is visibly working.
+        const auto frustum = cd::camera::extract_frustum(view_proj);
+        std::uint32_t draws_emitted = 0;
+        std::uint32_t draws_culled = 0;
+
         material.apply(cmd);
         // Iterate the baked instance list — each entry pairs a mesh_index
         // with the node's world matrix. We draw EVERY drawable whose
@@ -879,6 +942,42 @@ int main(int argc, char** argv)
             {
                 if (d.mesh_index != inst.mesh_index)
                     continue;
+
+                // Transform the local-space AABB by the instance world
+                // matrix, then frustum-test the resulting world-space
+                // AABB. 8-corner expand is the canonical method — exact
+                // for rigid + uniform-scale matrices.
+                std::array<cd::math::Vec3f, 8> corners {
+                    cd::math::Vec3f { d.local_bbox_min[0], d.local_bbox_min[1], d.local_bbox_min[2] },
+                    cd::math::Vec3f { d.local_bbox_max[0], d.local_bbox_min[1], d.local_bbox_min[2] },
+                    cd::math::Vec3f { d.local_bbox_min[0], d.local_bbox_max[1], d.local_bbox_min[2] },
+                    cd::math::Vec3f { d.local_bbox_max[0], d.local_bbox_max[1], d.local_bbox_min[2] },
+                    cd::math::Vec3f { d.local_bbox_min[0], d.local_bbox_min[1], d.local_bbox_max[2] },
+                    cd::math::Vec3f { d.local_bbox_max[0], d.local_bbox_min[1], d.local_bbox_max[2] },
+                    cd::math::Vec3f { d.local_bbox_min[0], d.local_bbox_max[1], d.local_bbox_max[2] },
+                    cd::math::Vec3f { d.local_bbox_max[0], d.local_bbox_max[1], d.local_bbox_max[2] },
+                };
+                constexpr float kInf = std::numeric_limits<float>::infinity();
+                cd::math::Vec3f wmn { kInf, kInf, kInf };
+                cd::math::Vec3f wmx { -kInf, -kInf, -kInf };
+                for (const auto& c : corners)
+                {
+                    const cd::math::Vec4f homo { c[0], c[1], c[2], 1.0F };
+                    const auto w4 = inst.world_matrix * homo;
+                    wmn[0] = std::min(wmn[0], w4[0]);
+                    wmn[1] = std::min(wmn[1], w4[1]);
+                    wmn[2] = std::min(wmn[2], w4[2]);
+                    wmx[0] = std::max(wmx[0], w4[0]);
+                    wmx[1] = std::max(wmx[1], w4[1]);
+                    wmx[2] = std::max(wmx[2], w4[2]);
+                }
+                if (cd::camera::test_aabb(frustum, wmn, wmx) == cd::camera::CullResult::kOutside)
+                {
+                    ++draws_culled;
+                    continue;
+                }
+                ++draws_emitted;
+
                 PushBlock pb {};
                 pb.mvp = view_proj * inst.world_matrix;
                 pb.base_color = d.base_color;
@@ -902,6 +1001,22 @@ int main(int argc, char** argv)
         }
         cmd.end_render_pass();
 
+        // Periodic cull stat — every 60 frames so the console stays readable
+        // while still proving the cull is firing as the orbit camera spins.
+        if ((frame_idx % 60U) == 0U)
+        {
+            std::printf(
+                "[cull] frame=%u  drawn=%u  culled=%u (%.0f%%)\n",
+                frame_idx,
+                draws_emitted,
+                draws_culled,
+                (draws_emitted + draws_culled) == 0
+                    ? 0.0
+                    : 100.0 * static_cast<double>(draws_culled) /
+                          static_cast<double>(draws_emitted + draws_culled)
+            );
+        }
+
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
@@ -918,6 +1033,7 @@ int main(int argc, char** argv)
             );
             return 12;
         }
+        ++frame_idx;
     }
 
     renderer.wait_idle();

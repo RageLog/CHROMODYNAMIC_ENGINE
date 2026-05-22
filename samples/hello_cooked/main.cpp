@@ -1,21 +1,28 @@
 // =============================================================================
-// CHROMODYNAMIC — samples/hello_cube/main.cpp
+// CHROMODYNAMIC — samples/hello_cooked/main.cpp
 //
-// First real 3D demo: spinning RGB cube on a dark background. Exercises
-//   * depth attachment (proves the depth-attach gate fix end-to-end)
-//   * push constants (MVP matrix per frame)
-//   * cd::math::perspective + look_at + Quat rotation
-//   * Time-driven animation
-//   * Resize-safe depth-texture recreation
+// End-to-end runtime test of the cook → load → render pipeline:
+//   1. (Build step) `cd_cook_mesh -i model.obj -o model.cdmesh`
+//   2. (Runtime) hello_cooked .cdmesh path → cd::asset_cdmesh::load →
+//      memcpy the byte blobs straight into GPU vertex/index buffers.
+//
+// The sample writes its own .cdmesh in a temp dir at startup (from an
+// inline cube .obj parsed through cd::asset_obj + saved through
+// cd::asset_cdmesh) so it always has something to draw without needing a
+// pre-built asset.
+//
+// Usage:
+//   hello_cooked [<path.cdmesh>]
+//   hello_cooked --headless 3
 // =============================================================================
 #include "SampleRuntime.hpp"
 
+#include <cd/asset_cdmesh/CdMesh.hpp>
+#include <cd/asset_obj/ObjLoader.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/OrbitController.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
-#include <cd/math/Quaternion.hpp>
-#include <cd/math/Transform.hpp>
 #include <cd/math/Vector.hpp>
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
@@ -26,107 +33,100 @@
 #include <cd/shader/Compiler.hpp>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace
 {
 
-struct Vertex
+struct PushBlock
 {
-    float pos[3];
-    float color[3];
-};
-
-// 8-corner cube with per-vertex colors derived from position so adjacent
-// faces blend smoothly across shared edges.
-constexpr std::array<Vertex, 8> kVerts {
-    {
-     { { -0.5F, -0.5F, -0.5F }, { 0.0F, 0.0F, 0.0F } },  // 0
-        { { 0.5F, -0.5F, -0.5F }, { 1.0F, 0.0F, 0.0F } },   // 1
-        { { 0.5F, 0.5F, -0.5F }, { 1.0F, 1.0F, 0.0F } },    // 2
-        { { -0.5F, 0.5F, -0.5F }, { 0.0F, 1.0F, 0.0F } },   // 3
-        { { -0.5F, -0.5F, 0.5F }, { 0.0F, 0.0F, 1.0F } },   // 4
-        { { 0.5F, -0.5F, 0.5F }, { 1.0F, 0.0F, 1.0F } },    // 5
-        { { 0.5F, 0.5F, 0.5F }, { 1.0F, 1.0F, 1.0F } },     // 6
-        { { -0.5F, 0.5F, 0.5F }, { 0.0F, 1.0F, 1.0F } },    // 7
-    }
-};
-
-// 12 triangles × 3 indices. Wind order CCW from outside the cube; we
-// disable culling anyway so it doesn't matter for the demo.
-constexpr std::array<std::uint16_t, 36> kIndices {
-    // back  (-Z)
-    0,
-    1,
-    2,
-    0,
-    2,
-    3,
-    // front (+Z)
-    4,
-    6,
-    5,
-    4,
-    7,
-    6,
-    // left  (-X)
-    0,
-    3,
-    7,
-    0,
-    7,
-    4,
-    // right (+X)
-    1,
-    5,
-    6,
-    1,
-    6,
-    2,
-    // bottom(-Y)
-    0,
-    4,
-    5,
-    0,
-    5,
-    1,
-    // top   (+Y)
-    3,
-    2,
-    6,
-    3,
-    6,
-    7,
+    cd::math::Mat4f mvp;
+    std::array<float, 4> base_color;
 };
 
 constexpr const char* kVS = R"glsl(
 #version 450
-layout(push_constant) uniform PC { mat4 mvp; } pc;
+layout(push_constant) uniform PC { mat4 mvp; vec4 tint; } pc;
 layout(location = 0) in vec3 in_pos;
-layout(location = 1) in vec3 in_color;
-layout(location = 0) out vec3 v_color;
+layout(location = 1) in vec3 in_normal;
+layout(location = 2) in vec2 in_uv;
+layout(location = 0) out vec3 v_normal;
 void main() {
   vec4 clip = pc.mvp * vec4(in_pos, 1.0);
-  // Vulkan NDC Y is down. Our math matrix is built for Y-up — flip here
-  // so positive Y in world maps to "up" on screen.
   clip.y = -clip.y;
   gl_Position = clip;
-  v_color = in_color;
+  v_normal = in_normal;
 }
 )glsl";
 
 constexpr const char* kFS = R"glsl(
 #version 450
-layout(location = 0) in  vec3 v_color;
+layout(push_constant) uniform PC { mat4 mvp; vec4 tint; } pc;
+layout(location = 0) in  vec3 v_normal;
 layout(location = 0) out vec4 out_color;
-void main() { out_color = vec4(v_color, 1.0); }
+void main() {
+  vec3 n = normalize(v_normal);
+  vec3 l = normalize(vec3(0.6, 0.8, 0.3));
+  float ndotl = max(dot(n, l), 0.0);
+  out_color = vec4(pc.tint.rgb * (0.25 + 0.75 * ndotl), 1.0);
+}
 )glsl";
+
+constexpr std::string_view kInlineCubeObj = R"obj(
+v -1 -1 -1
+v  1 -1 -1
+v  1  1 -1
+v -1  1 -1
+v -1 -1  1
+v  1 -1  1
+v  1  1  1
+v -1  1  1
+f 1 2 3 4
+f 5 6 7 8
+f 1 5 6 2
+f 2 6 7 3
+f 3 7 8 4
+f 4 8 5 1
+)obj";
+
+[[nodiscard]] std::string make_self_cooked_cube()
+{
+    // 1. Parse inline cube obj.
+    auto obj = cd::asset_obj::parse_obj(kInlineCubeObj);
+    if (!obj.has_value())
+        return {};
+    // 2. Pick a unique temp path so repeated runs don't collide.
+    static std::atomic<std::uint64_t> seq { 0 };
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path() /
+                      ("cd_cooked_cube_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+                       std::to_string(seq.fetch_add(1)) + ".cdmesh");
+    // 3. Cook.
+    cd::asset_cdmesh::SaveDesc d {};
+    d.vertices = { reinterpret_cast<const std::uint8_t*>(obj->vertices.data()),
+                   obj->vertices.size() * sizeof(cd::asset_obj::ObjVertex) };
+    d.indices = { reinterpret_cast<const std::uint8_t*>(obj->indices.data()),
+                  obj->indices.size() * sizeof(std::uint32_t) };
+    d.vertex_count = static_cast<std::uint32_t>(obj->vertices.size());
+    d.index_count = static_cast<std::uint32_t>(obj->indices.size());
+    d.vertex_stride = sizeof(cd::asset_obj::ObjVertex);
+    d.index_stride = 4;
+    d.bbox_min = obj->bbox_min;
+    d.bbox_max = obj->bbox_max;
+    if (!cd::asset_cdmesh::save(path.string(), d).has_value())
+        return {};
+    return path.string();
+}
 
 [[nodiscard]] cd::rhi::BufferHandle
 make_upload_buffer(cd::rhi::IDevice& dev, std::span<const std::byte> bytes, cd::rhi::BufferUsage usage)
@@ -146,13 +146,10 @@ make_upload_buffer(cd::rhi::IDevice& dev, std::span<const std::byte> bytes, cd::
     return *r;
 }
 
-/// Per-frame depth resource. Lives outside the Renderer because the
-/// Renderer owns only the color swapchain — depth is application policy.
 struct DepthTarget
 {
     cd::rhi::TextureHandle image {};
     cd::rhi::TextureViewHandle view {};
-    cd::rhi::Extent2D extent {};
 
     void destroy(cd::rhi::IDevice& dev)
     {
@@ -162,7 +159,6 @@ struct DepthTarget
             dev.destroy_texture(image);
         image = {};
         view = {};
-        extent = {};
     }
 };
 
@@ -181,7 +177,6 @@ create_depth_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size, cd::rhi::Form
     auto img = dev.create_texture(td);
     if (!img.has_value())
         return false;
-
     cd::rhi::TextureViewDesc vd {};
     vd.texture = *img;
     vd.type = cd::rhi::TextureType::k2D;
@@ -198,7 +193,6 @@ create_depth_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size, cd::rhi::Form
     }
     out.image = *img;
     out.view = *view;
-    out.extent = size;
     return true;
 }
 
@@ -208,36 +202,77 @@ int main(int argc, char** argv)
 {
     const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
 
+    // ---- Pick path: explicit argv > self-cooked fallback -------------------
+    std::string path;
+    bool self_cooked = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string_view a { argv[i] };
+        if (a.size() >= 2 && a[0] == '-' && a[1] == '-')
+        {
+            if (a == "--headless" && i + 1 < argc)
+            {
+                const char* next = argv[i + 1];
+                bool numeric = (next[0] != '\0');
+                for (std::size_t k = 0; next[k] != '\0' && numeric; ++k)
+                    numeric = (next[k] >= '0' && next[k] <= '9');
+                if (numeric)
+                    ++i;
+            }
+            continue;
+        }
+        path = argv[i];
+        break;
+    }
+    if (path.empty())
+    {
+        path = make_self_cooked_cube();
+        if (path.empty())
+        {
+            std::fprintf(stderr, "hello_cooked: failed to self-cook fallback cube\n");
+            return 1;
+        }
+        self_cooked = true;
+        std::printf("hello_cooked: self-cooked %s\n", path.c_str());
+    }
+
+    // ---- Load .cdmesh -----------------------------------------------------
+    auto cooked = cd::asset_cdmesh::load(path);
+    if (!cooked.has_value())
+    {
+        std::fprintf(
+            stderr,
+            "hello_cooked: load failed: %.*s\n",
+            static_cast<int>(cooked.error().message.size()),
+            cooked.error().message.data()
+        );
+        return 2;
+    }
+    const auto& mesh = *cooked;
+    std::printf(
+        "hello_cooked: loaded %s (verts=%u stride=%u idx=%u stride=%u)\n",
+        path.c_str(),
+        mesh.vertex_count,
+        mesh.vertex_stride,
+        mesh.index_count,
+        mesh.index_stride
+    );
+    std::fflush(stdout);
+
     // ---- Window + device + renderer ---------------------------------------
     cd::platform::WindowDesc wd {};
-    wd.title = "CHROMODYNAMIC — hello_cube (3D + depth + push constants)";
+    wd.title = "CHROMODYNAMIC — hello_cooked (cdmesh roundtrip)";
     wd.width = 1024;
     wd.height = 768;
     auto window_r = cd::platform::create_window(wd);
     if (!window_r.has_value())
-    {
-        std::fprintf(
-            stderr,
-            "window: %.*s\n",
-            static_cast<int>(window_r.error().message.size()),
-            window_r.error().message.data()
-        );
-        return 1;
-    }
+        return 3;
     auto& window = **window_r;
 
     cd::rhi_vulkan::VulkanCreateInfo vci {};
     auto device_r = cd::rhi_vulkan::create_vulkan_device(vci);
     if (!device_r.has_value())
-    {
-        std::fprintf(
-            stderr,
-            "device: %.*s\n",
-            static_cast<int>(device_r.error().message.size()),
-            device_r.error().message.data()
-        );
-        return 2;
-    }
+        return 4;
     auto& device = **device_r;
 
     cd::render::RendererDesc rd {};
@@ -249,61 +284,50 @@ int main(int argc, char** argv)
     rd.frames_in_flight = 2;
     auto renderer_r = cd::render::Renderer::create(rd);
     if (!renderer_r.has_value())
-    {
-        std::fprintf(
-            stderr,
-            "renderer: %.*s\n",
-            static_cast<int>(renderer_r.error().message.size()),
-            renderer_r.error().message.data()
-        );
-        return 3;
-    }
+        return 5;
     auto& renderer = *renderer_r;
 
-    // ---- Depth target -----------------------------------------------------
     constexpr auto kDepthFormat = cd::rhi::Format::kD32Float;
     DepthTarget depth {};
     if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth))
-    {
-        std::fprintf(stderr, "depth create failed\n");
-        return 4;
-    }
-    bool depth_initialized_on_gpu = false;  // first-time UNDEFINED→DEPTH transition flag
+        return 6;
+    bool depth_initialized_on_gpu = false;
 
-    // ---- Geometry ---------------------------------------------------------
-    const std::span<const std::byte> vb_bytes { reinterpret_cast<const std::byte*>(kVerts.data()),
-                                                kVerts.size() * sizeof(Vertex) };
-    const std::span<const std::byte> ib_bytes { reinterpret_cast<const std::byte*>(kIndices.data()),
-                                                kIndices.size() * sizeof(std::uint16_t) };
-    auto vb = make_upload_buffer(device, vb_bytes, cd::rhi::BufferUsage::kVertex);
-    auto ib = make_upload_buffer(device, ib_bytes, cd::rhi::BufferUsage::kIndex);
+    // ---- Upload geometry STRAIGHT from cdmesh blobs -----------------------
+    const std::span<const std::byte> vb_bytes { reinterpret_cast<const std::byte*>(mesh.vertex_blob.data()),
+                                                mesh.vertex_blob.size() };
+    const std::span<const std::byte> ib_bytes { reinterpret_cast<const std::byte*>(mesh.index_blob.data()),
+                                                mesh.index_blob.size() };
+    const auto vb = make_upload_buffer(device, vb_bytes, cd::rhi::BufferUsage::kVertex);
+    const auto ib = make_upload_buffer(device, ib_bytes, cd::rhi::BufferUsage::kIndex);
     if (!vb.is_valid() || !ib.is_valid())
-    {
-        std::fprintf(stderr, "buffers\n");
-        return 5;
-    }
+        return 7;
 
-    // ---- Material with push constants + depth attachment declared ---------
     auto compiler = cd::shader::make_glslang_compiler();
     if (compiler == nullptr)
-    {
-        std::fprintf(stderr, "no glslang\n");
-        return 6;
-    }
+        return 8;
 
-    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings {
-        cd::rhi::VertexBinding { 0, sizeof(Vertex), false }
+    // Vertex format matches cd::asset_cdmesh::CdVertexStd / ObjVertex /
+    // GltfVertex byte-for-byte (32B: vec3 pos + vec3 normal + vec2 uv).
+    struct Vtx
+    {
+        float pos[3];
+        float normal[3];
+        float uv[2];
     };
-    constexpr std::array<cd::rhi::VertexAttribute, 2> kAttrs {
-        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, pos)   },
-        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(Vertex, color) }
+    static_assert(sizeof(Vtx) == 32);
+
+    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings { cd::rhi::VertexBinding { 0, sizeof(Vtx), false } };
+    constexpr std::array<cd::rhi::VertexAttribute, 3> kAttrs {
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(Vtx, pos) },
+        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(Vtx, normal) },
+        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float, offsetof(Vtx, uv) },
     };
     constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
-    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
-        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
-                                    .offset = 0,
-                                    .size = static_cast<std::uint32_t>(sizeof(cd::math::Mat4f)) }
-    };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush { cd::rhi::PushConstantRange {
+        .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+        .offset = 0,
+        .size = static_cast<std::uint32_t>(sizeof(PushBlock)) } };
 
     cd::material::MaterialDesc md {};
     md.vertex_glsl = kVS;
@@ -318,24 +342,20 @@ int main(int argc, char** argv)
     md.depth_stencil.depth_test = true;
     md.depth_stencil.depth_write = true;
     md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
-    md.name = "cube";
+    md.name = "cooked";
     auto material_r = cd::material::Material::create(device, compiler.get(), md);
     if (!material_r.has_value())
-    {
-        std::fprintf(
-            stderr,
-            "material: %.*s\n",
-            static_cast<int>(material_r.error().message.size()),
-            material_r.error().message.data()
-        );
-        return 7;
-    }
+        return 9;
     auto& material = *material_r;
 
-    std::printf("hello_cube: ready. ESC or close to exit.\n");
+    cd::camera::Camera cam = cd::camera::auto_frame_aabb(mesh.bbox_min, mesh.bbox_max);
+    cd::camera::OrbitController orbit {};
+    orbit.sync_from_camera(cam);
+    orbit.auto_spin_rate = 0.6F;
+
+    std::printf("hello_cooked: ready. ESC to exit.\n");
     std::fflush(stdout);
 
-    // ---- Main loop --------------------------------------------------------
     std::vector<cd::platform::OSEvent> events;
     events.reserve(64);
     bool needs_rebuild = false;
@@ -352,31 +372,29 @@ int main(int argc, char** argv)
         return true;
     };
 
-    const auto t_start = std::chrono::steady_clock::now();
+    auto t_prev = std::chrono::steady_clock::now();
     std::uint32_t frame_idx = 0;
     while (true)
     {
-        // Headless mode: trigger window close after N frames so CI exits.
-        // Done at the top so the close request is honoured by pump_events.
         if (!runtime.should_continue(frame_idx))
             window.request_close();
-
         events.clear();
         if (!window.pump_events(events))
             break;
         for (const auto& e : events)
         {
             if (e.kind == cd::platform::OSEventKind::kKeyDown && e.key == cd::platform::KeyCode::kEscape)
-            {
                 window.request_close();
-            }
             else if (e.kind == cd::platform::OSEventKind::kResize)
-            {
                 needs_rebuild = true;
-            }
         }
         if (needs_rebuild && !rebuild())
             continue;
+
+        const auto t_now = std::chrono::steady_clock::now();
+        const float dt = std::chrono::duration<float>(t_now - t_prev).count();
+        t_prev = t_now;
+        orbit.update_auto(cam, dt);
 
         auto frame_r = renderer.begin_frame();
         if (!frame_r.has_value())
@@ -387,20 +405,11 @@ int main(int argc, char** argv)
                 needs_rebuild = true;
                 continue;
             }
-            std::fprintf(
-                stderr,
-                "begin_frame: %.*s\n",
-                static_cast<int>(frame_r.error().message.size()),
-                frame_r.error().message.data()
-            );
-            return 8;
+            return 10;
         }
         auto& frame = *frame_r;
         auto& cmd = *frame.command_buffer;
 
-        // First-time depth transition: UNDEFINED → DEPTH_WRITE. After that
-        // begin_render_pass / end_render_pass keep the image in the right
-        // layout (DEPTH_ATTACHMENT_OPTIMAL).
         if (!depth_initialized_on_gpu)
         {
             std::array<cd::rhi::TextureBarrier, 1> dbar {
@@ -415,14 +424,12 @@ int main(int argc, char** argv)
             depth_initialized_on_gpu = true;
         }
 
-        // Render pass with color + depth.
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
             cd::rhi::ColorAttachmentInfo {
                                           .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.06F, 0.07F, 0.10F, 1.0F } },
-                                          }
+                                          .clear_color = { .f32 = { 0.05F, 0.07F, 0.10F, 1.0F } } }
         };
         cd::rhi::DepthStencilAttachmentInfo depth_attach {};
         depth_attach.view = depth.view;
@@ -452,44 +459,23 @@ int main(int argc, char** argv)
         }
         );
 
-        // MVP — spin around the Y axis, slight tilt for depth illusion.
-        const float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - t_start).count();
-        const float angle = elapsed * 1.2F;                                   // rad/s
-        cd::math::Transformf model_xf;
-        model_xf.rotation = cd::math::Quatf { std::sin(angle * 0.5F) * 0.0F,  // x
-                                              std::sin(angle * 0.5F),         // y
-                                              std::sin(angle * 0.5F) * 0.0F,  // z
-                                              std::cos(angle * 0.5F) };       // w
-        const cd::math::Mat4f model = cd::math::to_mat4(model_xf);
-        // Fixed framing — the cube spins, the camera does not. Re-derived
-        // every frame (cheap) so any future per-frame Camera mutation just
-        // works without restructuring.
-        cd::camera::Camera cam {};
-        cam.eye = { 2.5F, 1.6F, 2.5F };
-        cam.target = { 0.0F, 0.0F, 0.0F };
-        cam.fov_y = 1.0F;
-        cam.near_z = 0.1F;
-        cam.far_z = 100.0F;
         const float aspect = static_cast<float>(frame.extent.width) / static_cast<float>(frame.extent.height);
-        const cd::math::Mat4f mvp = cd::camera::view_projection(cam, aspect) * model;
+        const cd::math::Mat4f view_proj = cd::camera::view_projection(cam, aspect);
 
         material.apply(cmd);
+        PushBlock pb {};
+        pb.mvp = view_proj;
+        pb.base_color = { 0.35F, 0.85F, 0.55F, 1.0F };
         cmd.push_constants(
             material.pipeline_layout(),
-            cd::rhi::ShaderStage::kVertex,
-            /*offset=*/0,
-            static_cast<std::uint32_t>(sizeof(mvp)),
-            &mvp
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            static_cast<std::uint32_t>(sizeof(pb)),
+            &pb
         );
         cmd.bind_vertex_buffer(0, vb, 0);
-        cmd.bind_index_buffer(ib, 0, cd::rhi::IndexType::kUInt16);
-        cmd.draw_indexed(
-            static_cast<std::uint32_t>(kIndices.size()),
-            /*instance_count=*/1,
-            0,
-            0,
-            0
-        );
+        cmd.bind_index_buffer(ib, 0, cd::rhi::IndexType::kUInt32);
+        cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
         cmd.end_render_pass();
 
         auto end_r = renderer.end_frame();
@@ -500,21 +486,23 @@ int main(int argc, char** argv)
                 needs_rebuild = true;
                 continue;
             }
-            std::fprintf(
-                stderr,
-                "end_frame: %.*s\n",
-                static_cast<int>(end_r.error().message.size()),
-                end_r.error().message.data()
-            );
-            return 9;
+            return 11;
         }
         ++frame_idx;
     }
 
     renderer.wait_idle();
-    depth.destroy(device);
     device.destroy_buffer(ib);
     device.destroy_buffer(vb);
-    std::printf("hello_cube: clean exit.\n");
+    depth.destroy(device);
+
+    // Clean up self-cooked tmp file so we don't pile them up.
+    if (self_cooked)
+    {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    std::printf("hello_cooked: clean exit.\n");
     return 0;
 }

@@ -12,6 +12,8 @@
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
+#include "SampleRuntime.hpp"
+
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
 #include <cd/shader/Compiler.hpp>
@@ -44,8 +46,10 @@ void main() { out_color = vec4(v_color, 1.0); }
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
+
     // ---- Platform window ---------------------------------------------------
     cd::platform::WindowDesc wd {};
     wd.title = "CHROMODYNAMIC — hello_triangle";
@@ -166,8 +170,11 @@ int main()
         return true;
     };
 
+    std::uint32_t frame_idx = 0;
     while (true)
     {
+        if (!runtime.should_continue(frame_idx))
+            window.request_close();
         events.clear();
         if (!window.pump_events(events))
             break;
@@ -275,6 +282,7 @@ int main()
             );
             return 7;
         }
+        ++frame_idx;
     }
 
     renderer.wait_idle();

@@ -12,6 +12,8 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include "SampleRuntime.hpp"
+
 #include <cd/shader/Compiler.hpp>
 
 #include <array>
@@ -86,8 +88,10 @@ make_upload_buffer(cd::rhi::IDevice& dev, std::span<const std::byte> bytes, cd::
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
+
     cd::platform::WindowDesc wd {};
     wd.title = "CHROMODYNAMIC — hello_mesh (quad from vertex+index buffers)";
     wd.width = 800;
@@ -214,8 +218,11 @@ int main()
         return true;
     };
 
+    std::uint32_t frame_idx = 0;
     while (true)
     {
+        if (!runtime.should_continue(frame_idx))
+            window.request_close();
         events.clear();
         if (!window.pump_events(events))
             break;
@@ -311,6 +318,7 @@ int main()
             );
             return 8;
         }
+        ++frame_idx;
     }
 
     renderer.wait_idle();

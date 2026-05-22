@@ -13,6 +13,8 @@
 // stack (already covered by 9 unit tests in engine/world/scene/tests) hangs
 // together with the render pipeline and cd::camera helpers.
 // =============================================================================
+#include "SampleRuntime.hpp"
+
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/OrbitController.hpp>
 #include <cd/ecs/World.hpp>
@@ -184,8 +186,10 @@ create_depth_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size, cd::rhi::Form
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
+
     // ---- Window + device + renderer ---------------------------------------
     cd::platform::WindowDesc wd {};
     wd.title = "CHROMODYNAMIC — hello_scene_graph (nested transforms)";
@@ -340,8 +344,12 @@ int main()
 
     auto t_prev = std::chrono::steady_clock::now();
     float t_total = 0.0F;
+    std::uint32_t frame_idx = 0;
     while (true)
     {
+        if (!runtime.should_continue(frame_idx))
+            window.request_close();
+
         events.clear();
         if (!window.pump_events(events))
             break;
@@ -490,6 +498,7 @@ int main()
             }
             return 9;
         }
+        ++frame_idx;
     }
 
     renderer.wait_idle();
