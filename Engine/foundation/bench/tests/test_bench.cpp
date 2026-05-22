@@ -103,6 +103,35 @@ TEST(BenchTest, CsvHasNineFields)
     EXPECT_NE(csv.find("tier1,"), std::string::npos);
 }
 
+TEST(BenchTest, ExtendedStatsAreOrderedAndFinite)
+{
+    cd::bench::Config cfg;
+    cfg.min_samples = 64;
+    cfg.min_time_ms = 10;
+    auto r = cd::bench::run("extended", cheap_body, cfg);
+    EXPECT_GT(r.max_ns_per_op, 0.0);
+    EXPECT_GE(r.max_ns_per_op, r.p99_ns_per_op);
+    EXPECT_GE(r.p99_ns_per_op, r.p95_ns_per_op);
+    EXPECT_GE(r.p95_ns_per_op, r.p90_ns_per_op);
+    EXPECT_GE(r.p90_ns_per_op, r.median_ns_per_op);
+    EXPECT_GE(r.stddev_ns_per_op, 0.0);
+}
+
+TEST(BenchTest, MarkdownRowAndHeaderHaveExpectedSubstrings)
+{
+    cd::bench::Config cfg;
+    cfg.min_samples = 8;
+    cfg.min_time_ms = 2;
+    auto r = cd::bench::run("mdrow", cheap_body, cfg);
+    const auto row = r.to_markdown_row();
+    EXPECT_NE(row.find("mdrow"), std::string::npos);
+    EXPECT_NE(row.find("|"), std::string::npos);
+    const auto hdr = cd::bench::markdown_header();
+    EXPECT_NE(hdr.find("Bench"), std::string_view::npos);
+    EXPECT_NE(hdr.find("p99"), std::string_view::npos);
+    EXPECT_NE(hdr.find("stddev"), std::string_view::npos);
+}
+
 TEST(BenchTest, MeasurableWorkScalesWithIterationCount)
 {
     // Sanity check: a body that does ~32k integer multiplies must measure

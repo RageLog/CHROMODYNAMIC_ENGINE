@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -69,6 +70,13 @@ struct Report
     double mean_ns_per_op { 0.0 };
     double median_ns_per_op { 0.0 };
     double min_ns_per_op { 0.0 };
+    double max_ns_per_op { 0.0 };
+    /// Sample-population standard deviation in ns/op. Useful as a
+    /// "noise floor" indicator — a benchmark with stddev > 0.5*mean is
+    /// not telling you much yet.
+    double stddev_ns_per_op { 0.0 };
+    double p90_ns_per_op { 0.0 };
+    double p95_ns_per_op { 0.0 };
     double p99_ns_per_op { 0.0 };
     double total_seconds { 0.0 };
 
@@ -111,7 +119,40 @@ struct Report
         );
         return buf;
     }
+
+    /// One Markdown table row matching `markdown_header()`. Pair them
+    /// when emitting a report from a multi-bench harness.
+    [[nodiscard]] std::string to_markdown_row() const
+    {
+        char buf[512];
+        std::snprintf(
+            buf,
+            sizeof(buf),
+            "| %s | %llu | %.1f | %.1f | %.1f | %.1f | %.1f | %.1f |",
+            name.c_str(),
+            static_cast<unsigned long long>(samples),
+            min_ns_per_op,
+            mean_ns_per_op,
+            median_ns_per_op,
+            p90_ns_per_op,
+            p99_ns_per_op,
+            stddev_ns_per_op
+        );
+        return buf;
+    }
 };
+
+/// Two-line Markdown table header. Concatenate with `Report::to_markdown_row()`
+/// snippets for a complete table:
+///
+///   std::ostringstream o;
+///   o << cd::bench::markdown_header() << '\n';
+///   for (auto& r : reports) o << r.to_markdown_row() << '\n';
+[[nodiscard]] inline std::string_view markdown_header() noexcept
+{
+    return "| Bench | n | min (ns/op) | mean | median | p90 | p99 | stddev |\n"
+           "|---|---:|---:|---:|---:|---:|---:|---:|";
+}
 
 /// Optimization barrier — see google/benchmark::DoNotOptimize. Tells the
 /// compiler that `value`'s address has been "taken" by inline asm so it
@@ -192,22 +233,32 @@ template <class Body>
         std::vector<double> sorted = per_call_ns;
         std::sort(sorted.begin(), sorted.end());
         rep.min_ns_per_op = sorted.front();
+        rep.max_ns_per_op = sorted.back();
         // Median: middle element for odd, mean of middle two for even.
         const auto n = sorted.size();
         if ((n & 1u) != 0u)
             rep.median_ns_per_op = sorted[n / 2];
         else
             rep.median_ns_per_op = (sorted[n / 2 - 1] + sorted[n / 2]) * 0.5;
-        // p99: floor index, clamped.
-        auto p99_idx = static_cast<std::size_t>(static_cast<double>(n) * 0.99);
-        if (p99_idx >= n)
-            p99_idx = n - 1;
-        rep.p99_ns_per_op = sorted[p99_idx];
+        const auto pick = [&](double q) {
+            auto idx = static_cast<std::size_t>(static_cast<double>(n) * q);
+            if (idx >= n)
+                idx = n - 1;
+            return sorted[idx];
+        };
+        rep.p90_ns_per_op = pick(0.90);
+        rep.p95_ns_per_op = pick(0.95);
+        rep.p99_ns_per_op = pick(0.99);
         // Mean over the unsorted list (identical sum either way).
         double sum = 0.0;
         for (double v : per_call_ns)
             sum += v;
         rep.mean_ns_per_op = sum / static_cast<double>(n);
+        // Sample-population standard deviation.
+        double sq = 0.0;
+        for (double v : per_call_ns)
+            sq += (v - rep.mean_ns_per_op) * (v - rep.mean_ns_per_op);
+        rep.stddev_ns_per_op = std::sqrt(sq / static_cast<double>(n));
     }
 
     return rep;
