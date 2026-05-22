@@ -70,6 +70,15 @@ struct GltfVertex
     cd::math::Vec2f texcoord0 { 0.0F, 0.0F };
 };
 
+/// Per-vertex skin influences. JOINTS_0 + WEIGHTS_0 from the glTF spec.
+/// Up to 4 bones per vertex (the spec's first set of attributes). Vertex
+/// is unaffected by skinning when the skin index is -1 in the primitive.
+struct GltfSkinVertex
+{
+    std::array<std::uint16_t, 4> joints { 0, 0, 0, 0 };
+    std::array<float, 4> weights { 0.0F, 0.0F, 0.0F, 0.0F };
+};
+
 /// One drawable primitive (a single VkDraw call equivalent). Always indexed —
 /// non-indexed primitives are converted to a trivial 0..N-1 index buffer at
 /// load time so the renderer has one code path.
@@ -78,6 +87,21 @@ struct GltfPrimitive
     std::vector<GltfVertex> vertices;
     std::vector<std::uint32_t> indices;
     int material_index { -1 };  ///< Index into `GltfScene::materials`, or -1.
+    /// Per-vertex skin influences, parallel to `vertices`. Empty when
+    /// the primitive has no JOINTS_0 / WEIGHTS_0 attribute.
+    std::vector<GltfSkinVertex> skin_vertices;
+};
+
+/// A glTF skin: an ordered list of joint node indices + the per-joint
+/// inverse-bind matrices (so the skinning pipeline doesn't have to
+/// re-derive them from the node hierarchy). Maps directly onto
+/// `cd::anim::Skeleton`.
+struct GltfSkin
+{
+    std::string name;
+    std::vector<int> joints;                      ///< Indices into `GltfScene::nodes`.
+    std::vector<cd::math::Mat4f> inverse_bind_matrices;
+    int skeleton_root { -1 };                     ///< Optional explicit root node, or -1.
 };
 
 struct GltfMesh
@@ -116,6 +140,7 @@ struct GltfNode
     int parent { -1 };          ///< Index into `GltfScene::nodes`, or -1 for roots.
     std::vector<int> children;  ///< Indices into `GltfScene::nodes`.
     int mesh_index { -1 };      ///< Index into `GltfScene::meshes`, or -1 if pure transform.
+    int skin_index { -1 };      ///< Index into `GltfScene::skins`, or -1 if static mesh.
     cd::math::Mat4f local_matrix { cd::math::Mat4f::identity() };
 };
 
@@ -134,6 +159,7 @@ struct GltfScene
     std::vector<GltfMesh> meshes;
     std::vector<GltfMaterial> materials;
     std::vector<GltfTexture> textures;
+    std::vector<GltfSkin> skins;  ///< Optional skinning data; empty for non-skinned scenes.
 
     /// Full node hierarchy. `roots` indexes into this list; each non-root
     /// node's `parent` field also points back here.

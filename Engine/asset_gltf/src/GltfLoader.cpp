@@ -137,12 +137,21 @@ struct AccessorView
 
     AccessorView normal_view {};
     AccessorView uv_view {};
+    AccessorView joints_view {};
+    AccessorView weights_view {};
     if (auto it = prim.attributes.find("NORMAL"); it != prim.attributes.end())
         normal_view = access(model, it->second);
     if (auto it = prim.attributes.find("TEXCOORD_0"); it != prim.attributes.end())
         uv_view = access(model, it->second);
+    if (auto it = prim.attributes.find("JOINTS_0"); it != prim.attributes.end())
+        joints_view = access(model, it->second);
+    if (auto it = prim.attributes.find("WEIGHTS_0"); it != prim.attributes.end())
+        weights_view = access(model, it->second);
 
     out.vertices.resize(pos_view.count);
+    const bool has_skin = (joints_view.data != nullptr) && (weights_view.data != nullptr);
+    if (has_skin)
+        out.skin_vertices.resize(pos_view.count);
     for (std::size_t i = 0; i < pos_view.count; ++i)
     {
         auto& v = out.vertices[i];
@@ -151,6 +160,31 @@ struct AccessorView
             v.normal = read_vec3(normal_view, i);
         if (uv_view.data != nullptr && i < uv_view.count)
             v.texcoord0 = read_vec2(uv_view, i);
+
+        // JOINTS_0 is a vec4 of UNSIGNED_BYTE or UNSIGNED_SHORT.
+        // WEIGHTS_0 is a vec4 of float (per glTF spec; we trust tinygltf
+        // to normalize byte/short variants into float). Sparse-skin
+        // primitives leave the slots at zero.
+        if (has_skin && i < joints_view.count && i < weights_view.count)
+        {
+            auto& sv = out.skin_vertices[i];
+            // Component type can be 5121 (u8) or 5123 (u16); both are
+            // 4-element vectors. We promote to u16 in our cache.
+            const auto* jb = joints_view.data + i * joints_view.stride;
+            if (joints_view.component_type == 5121)  // u8
+            {
+                const auto* p = reinterpret_cast<const std::uint8_t*>(jb);
+                sv.joints = { p[0], p[1], p[2], p[3] };
+            }
+            else  // u16 (5123) or default
+            {
+                const auto* p = reinterpret_cast<const std::uint16_t*>(jb);
+                sv.joints = { p[0], p[1], p[2], p[3] };
+            }
+            const auto* wb = weights_view.data + i * weights_view.stride;
+            const auto* wp = reinterpret_cast<const float*>(wb);
+            sv.weights = { wp[0], wp[1], wp[2], wp[3] };
+        }
     }
 
     // Indices: spec allows indices to be absent (non-indexed draw). We always
@@ -271,6 +305,43 @@ struct AccessorView
         scene.meshes.push_back(std::move(mesh));
     }
 
+    // ---- Skins (per glTF spec §3.7.3) -------------------------------------
+    // Each skin has: joints[] (node indices), optional inverseBindMatrices
+    // accessor, optional explicit skeleton root node. We decode the matrix
+    // array eagerly so the runtime never touches tinygltf again.
+    scene.skins.reserve(model.skins.size());
+    for (const auto& src : model.skins)
+    {
+        GltfSkin sk;
+        sk.name = src.name;
+        sk.skeleton_root = src.skeleton;
+        sk.joints.reserve(src.joints.size());
+        for (int j : src.joints)
+            sk.joints.push_back(j);
+
+        if (src.inverseBindMatrices >= 0)
+        {
+            const AccessorView ibm_view = access(model, src.inverseBindMatrices);
+            sk.inverse_bind_matrices.resize(ibm_view.count);
+            for (std::size_t i = 0; i < ibm_view.count; ++i)
+            {
+                const auto* p = reinterpret_cast<const float*>(ibm_view.data + i * ibm_view.stride);
+                cd::math::Mat4f m {};
+                for (std::size_t c = 0; c < 4; ++c)
+                    for (std::size_t r = 0; r < 4; ++r)
+                        m[c][r] = p[c * 4 + r];
+                sk.inverse_bind_matrices[i] = m;
+            }
+        }
+        else
+        {
+            // Spec: when omitted, each joint's inverse-bind defaults to the
+            // identity. Caller can recompute from the node hierarchy if needed.
+            sk.inverse_bind_matrices.assign(sk.joints.size(), cd::math::Mat4f::identity());
+        }
+        scene.skins.push_back(std::move(sk));
+    }
+
     // ---- Node hierarchy ----------------------------------------------------
     // glTF nodes either carry an explicit 4x4 matrix or T/R/S components.
     // We resolve to a single Mat4f per node and stash mesh refs + child IDs.
@@ -280,6 +351,7 @@ struct AccessorView
         GltfNode n;
         n.name = src.name;
         n.mesh_index = src.mesh;  // -1 if no mesh attached.
+        n.skin_index = src.skin;  // -1 if not a skinned mesh node.
 
         if (src.matrix.size() == 16)
         {

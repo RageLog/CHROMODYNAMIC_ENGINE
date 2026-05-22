@@ -380,3 +380,22 @@ TEST(GltfAssetLoader, AdapterTooSmallBufferRejected)
     auto r = loader.decode(std::span<const std::byte> { tiny.data(), tiny.size() }, "x.gltf");
     ASSERT_FALSE(r.has_value());
 }
+
+// =============================================================================
+// Wave 29 — glTF skin extraction (JOINTS_0 / WEIGHTS_0 / skin index / IBMs)
+// =============================================================================
+
+TEST(GltfLoader, NoSkinSceneLeavesSkinsEmpty)
+{
+    constexpr std::string_view minimal =
+        R"({"asset":{"version":"2.0"},)"
+        R"("meshes":[{"primitives":[{"attributes":{}}]}],)"
+        R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    auto r = cd::asset_gltf::load_gltf_from_memory(
+        reinterpret_cast<const std::uint8_t*>(minimal.data()), minimal.size());
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_TRUE(r->skins.empty());
+    EXPECT_EQ(r->nodes.front().skin_index, -1);
+    if (!r->meshes.front().primitives.empty())
+        EXPECT_TRUE(r->meshes.front().primitives.front().skin_vertices.empty());
+}
