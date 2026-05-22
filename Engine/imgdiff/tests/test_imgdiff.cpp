@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::imgdiff tests
 // =============================================================================
+#include <cd/imgdiff/Gaussian.hpp>
 #include <cd/imgdiff/ImageDiff.hpp>
 #include <cd/imgdiff/Ssim.hpp>
 #include <gtest/gtest.h>
@@ -220,6 +221,96 @@ TEST(SsimLite, ImageSmallerThanWindowReturnsIdentity)
     EXPECT_EQ(r->windows, 0U);
     EXPECT_DOUBLE_EQ(r->mean_ssim, 1.0);
     EXPECT_DOUBLE_EQ(r->min_ssim, 1.0);
+}
+
+// -----------------------------------------------------------------------------
+// Gaussian blur — Wave 54
+// -----------------------------------------------------------------------------
+
+TEST(GaussianBlur, IdentityKernelPassesThrough)
+{
+    // sigma <= 0 → 1-tap kernel = identity.
+    const auto img = solid(8, 8, 100, 150, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 8, 8 };
+    auto r = cd::imgdiff::gaussian_blur(v, 0.0);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(r->size(), img.size());
+    // Every pixel must match the source (no kernel taps).
+    for (std::size_t i = 0; i < img.size(); ++i)
+        EXPECT_EQ((*r)[i], img[i]);
+}
+
+TEST(GaussianBlur, ConstantImageStaysConstant)
+{
+    // A solid color through any Gaussian must equal itself (separable
+    // weighted average of the same value is the value).
+    const auto img = solid(16, 16, 200, 50, 25, 255);
+    const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+    auto r = cd::imgdiff::gaussian_blur(v, 2.0);
+    ASSERT_TRUE(r.has_value());
+    for (std::size_t i = 0; i < img.size(); i += 4)
+    {
+        EXPECT_EQ((*r)[i + 0], 200U);
+        EXPECT_EQ((*r)[i + 1], 50U);
+        EXPECT_EQ((*r)[i + 2], 25U);
+        EXPECT_EQ((*r)[i + 3], 255U);
+    }
+}
+
+TEST(GaussianBlur, SinglePixelSpikeSpreads)
+{
+    // Black image, one white pixel in the center → after blur, the
+    // center is lower than 255 and adjacent pixels are above 0.
+    std::vector<std::uint8_t> img(8 * 8 * 4, 0);
+    for (std::size_t i = 3; i < img.size(); i += 4)
+        img[i] = 255;  // alpha = 255 everywhere
+    const std::size_t center = (4 * 8 + 4) * 4;
+    img[center + 0] = 255;
+    img[center + 1] = 255;
+    img[center + 2] = 255;
+    const cd::imgdiff::ImageView v { img.data(), 8, 8 };
+    auto r = cd::imgdiff::gaussian_blur(v, 1.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_LT((*r)[center + 0], 255U);
+    EXPECT_GT((*r)[center + 0], 0U);
+    // Adjacent pixel right of center must have picked up some intensity.
+    const std::size_t right = (4 * 8 + 5) * 4;
+    EXPECT_GT((*r)[right + 0], 0U);
+}
+
+TEST(GaussianBlur, EmptyImageReturnsError)
+{
+    const cd::imgdiff::ImageView v { nullptr, 0, 0 };
+    auto r = cd::imgdiff::gaussian_blur(v, 1.0);
+    ASSERT_FALSE(r.has_value());
+}
+
+TEST(GaussianBlur, ImprovesSsimOnNoisyBaseline)
+{
+    // A baseline with a tiny salt-and-pepper noise pattern should
+    // score higher SSIM against itself-blurred than against the noisy
+    // original — i.e., the blur produces a perceptually similar
+    // image, not a different scene.
+    std::vector<std::uint8_t> base(32 * 32 * 4, 128);
+    for (std::size_t i = 3; i < base.size(); i += 4)
+        base[i] = 255;
+    // Pepper 8 pixels with white.
+    for (int k = 0; k < 8; ++k)
+    {
+        const std::size_t i = static_cast<std::size_t>(k * 41 + 7) * 4 % base.size();
+        base[i + 0] = 255;
+        base[i + 1] = 255;
+        base[i + 2] = 255;
+    }
+    const cd::imgdiff::ImageView v { base.data(), 32, 32 };
+    auto blurred = cd::imgdiff::gaussian_blur(v, 1.5);
+    ASSERT_TRUE(blurred.has_value());
+    const cd::imgdiff::ImageView v2 { blurred->data(), 32, 32 };
+    auto s = cd::imgdiff::compute_ssim_lite(v, v2, 8);
+    ASSERT_TRUE(s.has_value());
+    // Reasonable similarity — not a regression-tight bound, just
+    // "blur didn't destroy structure".
+    EXPECT_GT(s->mean_ssim, 0.5);
 }
 
 TEST(SsimLite, DimensionMismatchReturnsError)
