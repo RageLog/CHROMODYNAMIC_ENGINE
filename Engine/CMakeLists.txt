@@ -9,6 +9,7 @@
 
 add_subdirectory(foundation)
 add_subdirectory(asset)
+add_subdirectory(asset_image)
 add_subdirectory(asset_gltf)
 add_subdirectory(render)
 add_subdirectory(world)

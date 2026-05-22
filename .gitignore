@@ -6,6 +6,13 @@ output/
 install/
 /Tests/tests_output
 
+# --- Runtime artifacts ---
+imgui.ini
+hello_audio_synth_out.wav
+*.cdtex
+*.cdmesh
+.claude/scheduled_tasks.lock
+
 # --- Compiler / linker outputs ---
 *.d
 *.o

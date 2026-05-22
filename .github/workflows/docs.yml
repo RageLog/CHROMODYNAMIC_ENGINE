@@ -1,0 +1,86 @@
+name: Docs
+
+# Generates Doxygen HTML and publishes to GitHub Pages.
+# Runs on master pushes and via manual dispatch. PRs only build (no deploy)
+# so reviewers can download the artifact to spot-check rendering.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      doxygen-version: ${{ steps.deps.outputs.doxygen-version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+
+      - name: Install Doxygen + Graphviz
+        id: deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz cmake ninja-build
+          v=$(doxygen --version)
+          echo "Doxygen version: $v"
+          echo "doxygen-version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Configure (docs-only, no compile)
+        run: |
+          cmake -S . -B build/docs -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCD_ENABLE_DOXYGEN=ON \
+            -DCD_ENABLE_TESTING=OFF \
+            -DCD_ENABLE_SAMPLES=OFF \
+            -DCD_ENABLE_TOOLS=OFF \
+            -DCD_DISABLE_VCPKG=ON
+
+      - name: Build Doxygen HTML
+        run: cmake --build build/docs --target cd_docs
+
+      - name: Inspect warnings (non-fatal)
+        if: always()
+        run: |
+          if [ -f build/docs/docs/doxygen/warnings.log ]; then
+            wc -l build/docs/docs/doxygen/warnings.log
+            head -40 build/docs/docs/doxygen/warnings.log || true
+          fi
+
+      - name: Upload artifact (PR review)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: doxygen-html
+          path: build/docs/docs/doxygen/html
+          retention-days: 7
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/docs/docs/doxygen/html
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

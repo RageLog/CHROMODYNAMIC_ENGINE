@@ -30,6 +30,44 @@ jobs:
             xargs -0 -r clang-format --dry-run --Werror
 
   # ---------------------------------------------------------------------------
+  # Static analysis: clang-tidy over the diff. Cheap: only the files
+  # changed in the PR get analysed (full-tree tidy runs nightly in a
+  # separate workflow, not gating PRs).
+  # ---------------------------------------------------------------------------
+  tidy:
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install toolchain + Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang clang-tidy
+      - name: Configure (generates compile_commands.json)
+        run: |
+          cmake --preset ci-clang \
+            -DCD_DISABLE_VCPKG=ON \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+      - name: Run clang-tidy on changed files
+        run: |
+          set -e
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then BASE="HEAD~1"; fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD -- \
+            'engine/**/*.cpp' 'engine/**/*.hpp' 'samples/**/*.cpp' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No engine/sample changes; skipping tidy."
+            exit 0
+          fi
+          echo "$CHANGED" | while read -r f; do
+            [ -f "$f" ] || continue
+            echo "::group::clang-tidy $f"
+            clang-tidy -p build/ci-clang --warnings-as-errors='*' "$f" || exit 1
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
   # Windows build matrix — uses CI preset names from CMakePresets.json
   # CI preset taxonomy: ci-vs2026, ci-vs2022, ci-msvc, ci-clangcl-win, ci-llvm-win
   # ---------------------------------------------------------------------------
@@ -156,6 +194,42 @@ jobs:
       - name: Test
         if: matrix.config == 'Debug'
         run: ctest --preset ci-appleclang-debug
+
+  # ---------------------------------------------------------------------------
+  # Coverage: gcc + gcovr on Ubuntu. Linux-only to keep the CI matrix lean;
+  # the project's tested behaviour is platform-independent enough that one
+  # OS's coverage report is representative.
+  # ---------------------------------------------------------------------------
+  coverage:
+    runs-on: ubuntu-24.04
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain + gcovr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build gcc g++ gcovr
+      - name: Configure with coverage
+        run: |
+          cmake --preset ci-gcc \
+            -DCD_DISABLE_VCPKG=ON \
+            -DCD_ENABLE_COVERAGE=ON
+      - name: Build
+        run: cmake --build --preset ci-gcc-debug
+      - name: Run tests (drives .gcda generation)
+        run: ctest --preset ci-gcc-debug
+      - name: Generate coverage report
+        run: cmake --build --preset ci-gcc-debug --target coverage-report
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: build/ci-gcc/coverage*.html
+      - name: Upload Cobertura XML
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: build/ci-gcc/coverage.xml
 
   # ---------------------------------------------------------------------------
   # Sanitizer matrix (TSan + ASan separate, Clang-only)

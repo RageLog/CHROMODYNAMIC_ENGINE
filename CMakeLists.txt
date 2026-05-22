@@ -122,8 +122,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 include(CDProject)             # cd_add_library, cd_add_test, cd_add_sample
 include(CDWarnings)            # cd_apply_warnings
 include(CDSanitizers)          # cd_apply_sanitizers + CD_SANITIZER var
+include(CDCoverage)            # cd_apply_coverage + CD_ENABLE_COVERAGE
 include(CDCompilerDetection)   # CD_HAS_CXX26_* probes
 include(CDVendor)              # cd_mark_target_system_includes
+include(CDDoxygen)             # cd_setup_doxygen → `cd_docs` custom target
+include(CDSmoke)               # cd_setup_smoke   → `smoke` custom target
 
 # --- Threads (required by concurrency) ---
 find_package(Threads REQUIRED)
@@ -223,9 +226,24 @@ if(CD_ENABLE_SAMPLES)
   add_subdirectory(samples)
 endif()
 
+# --- Offline tools (cookers, packagers) ---
+option(CD_ENABLE_TOOLS "Build the offline command-line tools (cd_cook_mesh, …)" ON)
+if(CD_ENABLE_TOOLS)
+  add_subdirectory(tools)
+endif()
+
 # --- IDE compile database (sync compile_commands.json → source root for clangd) ---
 # Works for Ninja / Ninja Multi-Config (sync) and VS generators (sub-configure).
 include(CompileDatabase)
+
+# --- Coverage aggregation targets (no-op when CD_ENABLE_COVERAGE=OFF) ---
+cd_install_coverage_targets()
+
+# --- Doxygen API docs (no-op when CD_ENABLE_DOXYGEN=OFF) ---
+cd_setup_doxygen()
+
+# --- Smoke test driver target ---
+cd_setup_smoke()
 
 # --- .clangd regeneration (per-preset driver / std-flag / build-dir) ---
 # Renders .clangd from .clangd.in so clangd parses with the same toolchain

@@ -6,6 +6,23 @@
 #   "asan"   — AddressSanitizer + UBSan (recommended Debug)
 #   "tsan"   — ThreadSanitizer (separate preset; mutually exclusive with asan)
 #   "msan"   — MemorySanitizer (Clang only)
+#
+# Platform notes:
+#   * Linux/clang and Linux/gcc: works as expected with per-target flags.
+#     The CI `sanitizers` job exercises this path (ninja-base-asan +
+#     ninja-base-tsan presets on ubuntu-24.04).
+#   * Windows/clang (clang.exe targeting MSVC ABI) — lld-link refuses to
+#     mix ASAN-instrumented engine TUs with un-instrumented vendored TUs
+#     (tinygltf, glslang, volk, vma). Symptom:
+#       lld-link: error: /failifmismatch: mismatch detected for 'annotate_string'
+#     Workarounds (NONE currently applied):
+#       a) Force ASAN at the directory level so vendored code also gets
+#          instrumented — risks breaking vendored builds.
+#       b) Build the vendored deps separately without ASAN, link them via
+#          import libraries — increases build matrix complexity.
+#     Decision: run sanitizer regression on Linux only (CI handles it).
+#     The Windows-Clang preset still configures, but the link step for
+#     samples/tests will fail by design.
 
 include_guard(GLOBAL)
 

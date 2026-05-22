@@ -95,6 +95,7 @@ function(cd_add_library short_name)
 
     cd_apply_warnings(${target_name})
     cd_apply_sanitizers(${target_name})
+    cd_apply_coverage(${target_name})
 
     target_compile_features(${target_name} PUBLIC cxx_std_23)
   endif()
@@ -138,6 +139,7 @@ function(cd_add_test short_name)
 
   cd_apply_warnings(${target_name})
   cd_apply_sanitizers(${target_name})
+  cd_apply_coverage(${target_name})
 
   add_test(NAME ${target_name} COMMAND ${target_name})
 
@@ -169,11 +171,17 @@ function(cd_add_sample short_name)
 
   cd_apply_warnings(${target_name})
   cd_apply_sanitizers(${target_name})
+  cd_apply_coverage(${target_name})
 
   set_target_properties(${target_name} PROPERTIES
     FOLDER "samples"
     OUTPUT_NAME "${short_name}"
   )
+
+  # Register the sample with a global property so cd_setup_smoke() can
+  # add it as a dependency of the `smoke` target — that way
+  # `cmake --build --target smoke` always tests fresh binaries.
+  set_property(GLOBAL APPEND PROPERTY CD_ALL_SAMPLES "${target_name}")
 
   if(NOT CD_QUIET)
     message(STATUS "[cd] sample ${target_name}")
