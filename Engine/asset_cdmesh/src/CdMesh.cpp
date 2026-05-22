@@ -100,6 +100,53 @@ cd::core::Result<void> save(std::string_view path, const SaveDesc& desc)
     return {};
 }
 
+cd::core::Result<CdMesh> decode(const std::uint8_t* bytes, std::size_t size)
+{
+    if (bytes == nullptr)
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kInvalidArgument, "null buffer"));
+    if (size < kHeaderSize)
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "header too small"));
+
+    if (bytes[0] != static_cast<std::uint8_t>(kMagic[0]) || bytes[1] != static_cast<std::uint8_t>(kMagic[1]) ||
+        bytes[2] != static_cast<std::uint8_t>(kMagic[2]) || bytes[3] != static_cast<std::uint8_t>(kMagic[3]))
+    {
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kMagicMismatch, "bad magic"));
+    }
+    const std::uint32_t version = read_u32(bytes + 4);
+    if (version != kFormatVersion)
+    {
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kVersionMismatch, "unsupported version"));
+    }
+
+    CdMesh out;
+    // flags at +8 reserved; skip
+    out.vertex_count = read_u32(bytes + 12);
+    out.index_count = read_u32(bytes + 16);
+    out.vertex_stride = read_u32(bytes + 20);
+    out.index_stride = read_u32(bytes + 24);
+    out.bbox_min[0] = read_f32(bytes + 28);
+    out.bbox_min[1] = read_f32(bytes + 32);
+    out.bbox_min[2] = read_f32(bytes + 36);
+    out.bbox_max[0] = read_f32(bytes + 40);
+    out.bbox_max[1] = read_f32(bytes + 44);
+    out.bbox_max[2] = read_f32(bytes + 48);
+
+    if (out.index_stride != 2 && out.index_stride != 4)
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "bad index_stride"));
+    if (out.vertex_stride == 0)
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "vertex_stride == 0"));
+
+    const std::size_t vb_bytes = static_cast<std::size_t>(out.vertex_count) * out.vertex_stride;
+    const std::size_t ib_bytes = static_cast<std::size_t>(out.index_count) * out.index_stride;
+    const std::size_t expected = kHeaderSize + vb_bytes + ib_bytes;
+    if (size < expected)
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "truncated payload"));
+
+    out.vertex_blob.assign(bytes + kHeaderSize, bytes + kHeaderSize + vb_bytes);
+    out.index_blob.assign(bytes + kHeaderSize + vb_bytes, bytes + kHeaderSize + vb_bytes + ib_bytes);
+    return out;
+}
+
 cd::core::Result<CdMesh> load(std::string_view path)
 {
     if (path.empty())
@@ -113,66 +160,11 @@ cd::core::Result<CdMesh> load(std::string_view path)
         return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kIoError, p));
 
     const auto file_size = in.tellg();
-    if (file_size < static_cast<std::streamoff>(kHeaderSize))
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "header too small"));
     in.seekg(0);
-
-    // Read full header into a scratch buffer; cheap and avoids many small reads.
-    std::array<std::uint8_t, kHeaderSize> hdr {};
-    in.read(reinterpret_cast<char*>(hdr.data()), static_cast<std::streamsize>(kHeaderSize));
-    if (!in.good())
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kIoError, "header read failed"));
-
-    if (hdr[0] != static_cast<std::uint8_t>(kMagic[0]) || hdr[1] != static_cast<std::uint8_t>(kMagic[1]) ||
-        hdr[2] != static_cast<std::uint8_t>(kMagic[2]) || hdr[3] != static_cast<std::uint8_t>(kMagic[3]))
-    {
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kMagicMismatch, "bad magic"));
-    }
-    const std::uint32_t version = read_u32(hdr.data() + 4);
-    if (version != kFormatVersion)
-    {
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kVersionMismatch, "unsupported version"));
-    }
-
-    CdMesh out;
-    // flags at +8 reserved; skip
-    out.vertex_count = read_u32(hdr.data() + 12);
-    out.index_count = read_u32(hdr.data() + 16);
-    out.vertex_stride = read_u32(hdr.data() + 20);
-    out.index_stride = read_u32(hdr.data() + 24);
-    out.bbox_min[0] = read_f32(hdr.data() + 28);
-    out.bbox_min[1] = read_f32(hdr.data() + 32);
-    out.bbox_min[2] = read_f32(hdr.data() + 36);
-    out.bbox_max[0] = read_f32(hdr.data() + 40);
-    out.bbox_max[1] = read_f32(hdr.data() + 44);
-    out.bbox_max[2] = read_f32(hdr.data() + 48);
-
-    if (out.index_stride != 2 && out.index_stride != 4)
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "bad index_stride"));
-    if (out.vertex_stride == 0)
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "vertex_stride == 0"));
-
-    const std::size_t vb_bytes = static_cast<std::size_t>(out.vertex_count) * out.vertex_stride;
-    const std::size_t ib_bytes = static_cast<std::size_t>(out.index_count) * out.index_stride;
-    const std::size_t expected = kHeaderSize + vb_bytes + ib_bytes;
-    if (static_cast<std::size_t>(file_size) < expected)
-        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kCorrupt, "truncated payload"));
-
-    out.vertex_blob.resize(vb_bytes);
-    out.index_blob.resize(ib_bytes);
-    if (vb_bytes > 0)
-    {
-        in.read(reinterpret_cast<char*>(out.vertex_blob.data()), static_cast<std::streamsize>(vb_bytes));
-        if (!in.good())
-            return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kIoError, "vertex blob read"));
-    }
-    if (ib_bytes > 0)
-    {
-        in.read(reinterpret_cast<char*>(out.index_blob.data()), static_cast<std::streamsize>(ib_bytes));
-        if (!in.good())
-            return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kIoError, "index blob read"));
-    }
-    return out;
+    std::vector<std::uint8_t> buf(static_cast<std::size_t>(file_size));
+    if (file_size > 0 && !in.read(reinterpret_cast<char*>(buf.data()), file_size))
+        return std::unexpected(cdmesh_errors::make(cdmesh_errors::Code::kIoError, "read failed"));
+    return decode(buf.data(), buf.size());
 }
 
 }  // namespace cd::asset_cdmesh

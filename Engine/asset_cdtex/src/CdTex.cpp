@@ -10,6 +10,7 @@
 #include <fstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace cd::asset_cdtex
 {
@@ -34,6 +35,95 @@ constexpr std::size_t kBytesPerBlock = 16;
 
 }  // namespace
 
+cd::core::Result<CdTex> decode(const std::uint8_t* bytes, std::size_t size)
+{
+    if (bytes == nullptr)
+    {
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kInvalidArgument, "null buffer"));
+    }
+    if (size < kHeaderSize)
+    {
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "header too small"));
+    }
+
+    if (bytes[0] != 'C' || bytes[1] != 'D' || bytes[2] != 'B' || bytes[3] != 'C' || bytes[4] != '7')
+    {
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kMagicMismatch, "bad magic"));
+    }
+    const std::uint8_t version = bytes[5];
+    if (version != 1U && version != 2U)
+    {
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kVersionMismatch, "unsupported version"));
+    }
+
+    CdTex out;
+    out.width = read_u32_le(bytes + 6);
+    out.height = read_u32_le(bytes + 10);
+    out.block_w = read_u16_le(bytes + 14);
+    out.block_h = read_u16_le(bytes + 16);
+
+    if (out.block_w == 0 || out.block_h == 0)
+    {
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "zero block grid"));
+    }
+
+    // v1 = single mip with the 18-byte header. v2 = mip-chain with an
+    // additional byte right after for the mip count.
+    std::uint8_t mip_count = 1;
+    std::size_t cursor = kHeaderSize;
+    if (version == 2U)
+    {
+        if (size < kHeaderSize + 1)
+        {
+            return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "mip_count truncated"));
+        }
+        mip_count = bytes[kHeaderSize];
+        if (mip_count == 0)
+        {
+            return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "mip_count == 0"));
+        }
+        ++cursor;
+    }
+
+    // Pre-flight: total payload bytes must fit in the buffer. This keeps
+    // the canonical kCorrupt semantics for truncated files (rather than
+    // a mid-decode kIoError when the bytes were on disk).
+    std::size_t total_payload = 0;
+    for (std::uint8_t lvl = 0; lvl < mip_count; ++lvl)
+    {
+        const std::uint32_t mw = std::max(out.width >> lvl, 1U);
+        const std::uint32_t mh = std::max(out.height >> lvl, 1U);
+        const std::size_t bw = (mw + 3U) / 4U;
+        const std::size_t bh = (mh + 3U) / 4U;
+        total_payload += bw * bh * kBytesPerBlock;
+    }
+    if (size < cursor + total_payload)
+    {
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "truncated payload"));
+    }
+
+    out.mips.reserve(mip_count);
+    for (std::uint8_t lvl = 0; lvl < mip_count; ++lvl)
+    {
+        CdTexMip m;
+        m.width = std::max(out.width >> lvl, 1U);
+        m.height = std::max(out.height >> lvl, 1U);
+        m.block_w = static_cast<std::uint16_t>((m.width + 3U) / 4U);
+        m.block_h = static_cast<std::uint16_t>((m.height + 3U) / 4U);
+        const std::size_t payload =
+            static_cast<std::size_t>(m.block_w) * static_cast<std::size_t>(m.block_h) * kBytesPerBlock;
+        m.blocks.resize(payload);
+        std::memcpy(m.blocks.data(), bytes + cursor, payload);
+        cursor += payload;
+        out.mips.push_back(std::move(m));
+    }
+
+    // Legacy `blocks` mirror — first mip. Lets v1-era consumers keep working
+    // unchanged when they upgrade to v2 cooker output.
+    out.blocks = out.mips[0].blocks;
+    return out;
+}
+
 cd::core::Result<CdTex> load(std::string_view path)
 {
     if (path.empty())
@@ -52,102 +142,14 @@ cd::core::Result<CdTex> load(std::string_view path)
         return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kIoError, p));
     }
     const auto file_size = in.tellg();
-    if (file_size < static_cast<std::streamoff>(kHeaderSize))
-    {
-        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "header too small"));
-    }
     in.seekg(0);
 
-    std::array<std::uint8_t, kHeaderSize> hdr {};
-    in.read(reinterpret_cast<char*>(hdr.data()), static_cast<std::streamsize>(kHeaderSize));
-    if (!in.good())
+    std::vector<std::uint8_t> buf(static_cast<std::size_t>(file_size));
+    if (file_size > 0 && !in.read(reinterpret_cast<char*>(buf.data()), file_size))
     {
-        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kIoError, "header read"));
+        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kIoError, "read failed"));
     }
-
-    if (hdr[0] != 'C' || hdr[1] != 'D' || hdr[2] != 'B' || hdr[3] != 'C' || hdr[4] != '7')
-    {
-        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kMagicMismatch, "bad magic"));
-    }
-    const std::uint8_t version = hdr[5];
-    if (version != 1U && version != 2U)
-    {
-        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kVersionMismatch, "unsupported version"));
-    }
-
-    CdTex out;
-    out.width = read_u32_le(hdr.data() + 6);
-    out.height = read_u32_le(hdr.data() + 10);
-    out.block_w = read_u16_le(hdr.data() + 14);
-    out.block_h = read_u16_le(hdr.data() + 16);
-
-    if (out.block_w == 0 || out.block_h == 0)
-    {
-        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "zero block grid"));
-    }
-
-    // v1 = single mip with the 18-byte header. v2 = mip-chain with an
-    // additional byte right after for the mip count.
-    std::uint8_t mip_count = 1;
-    if (version == 2U)
-    {
-        char b = 0;
-        in.read(&b, 1);
-        if (!in.good())
-        {
-            return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kIoError, "mip_count read"));
-        }
-        mip_count = static_cast<std::uint8_t>(b);
-        if (mip_count == 0)
-        {
-            return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "mip_count == 0"));
-        }
-    }
-
-    // Compute total payload bytes first so we can reject a truncated file
-    // up-front with the canonical kCorrupt code (vs. silently failing
-    // mid-read as kIoError). This also lets v1 files keep their old
-    // behaviour where a too-small file → kCorrupt, not kIoError.
-    std::size_t total_payload = 0;
-    for (std::uint8_t lvl = 0; lvl < mip_count; ++lvl)
-    {
-        const std::uint32_t mw = std::max(out.width >> lvl, 1U);
-        const std::uint32_t mh = std::max(out.height >> lvl, 1U);
-        const std::size_t bw = (mw + 3U) / 4U;
-        const std::size_t bh = (mh + 3U) / 4U;
-        total_payload += bw * bh * kBytesPerBlock;
-    }
-    const std::size_t header_used = kHeaderSize + (version == 2U ? 1U : 0U);
-    if (static_cast<std::size_t>(file_size) < header_used + total_payload)
-    {
-        return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kCorrupt, "truncated payload"));
-    }
-
-    out.mips.reserve(mip_count);
-    for (std::uint8_t lvl = 0; lvl < mip_count; ++lvl)
-    {
-        CdTexMip m;
-        // Each subsequent mip halves dimensions; clamp to 1 (Vulkan
-        // mipmap convention — mip K of WxH is max(1, W>>K) x max(1, H>>K)).
-        m.width = std::max(out.width >> lvl, 1U);
-        m.height = std::max(out.height >> lvl, 1U);
-        m.block_w = static_cast<std::uint16_t>((m.width + 3U) / 4U);
-        m.block_h = static_cast<std::uint16_t>((m.height + 3U) / 4U);
-        const std::size_t payload =
-            static_cast<std::size_t>(m.block_w) * static_cast<std::size_t>(m.block_h) * kBytesPerBlock;
-        m.blocks.resize(payload);
-        in.read(reinterpret_cast<char*>(m.blocks.data()), static_cast<std::streamsize>(payload));
-        if (!in.good())
-        {
-            return std::unexpected(cdtex_errors::make(cdtex_errors::Code::kIoError, "mip payload read"));
-        }
-        out.mips.push_back(std::move(m));
-    }
-
-    // Legacy `blocks` mirror — first mip. Lets v1-era consumers keep working
-    // unchanged when they upgrade to v2 cooker output.
-    out.blocks = out.mips[0].blocks;
-    return out;
+    return decode(buf.data(), buf.size());
 }
 
 }  // namespace cd::asset_cdtex

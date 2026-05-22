@@ -194,3 +194,61 @@ TEST(CdMesh, RejectsBadIndexStride)
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_cdmesh::cdmesh_errors::Code::kInvalidArgument));
 }
+
+// ----- AssetLoader adapter -----
+
+#include <cd/asset_cdmesh/AssetLoader.hpp>
+#include <cstring>
+#include <span>
+
+namespace
+{
+
+std::vector<std::byte> build_minimal_cdmesh_bytes()
+{
+    // Round-trip via save() into an in-memory ostringstream-like buffer
+    // is complex; instead, save() writes a real file and we then re-read
+    // it as bytes. Use a temp file. Keep this helper local to the test.
+    cd::asset_cdmesh::SaveDesc d;
+    cd::asset_cdmesh::CdVertexStd v {};
+    std::vector<std::uint8_t> vb(sizeof(v), 0);
+    std::memcpy(vb.data(), &v, sizeof(v));
+    std::vector<std::uint8_t> ib(sizeof(std::uint16_t), 0);
+    d.vertices = std::span<const std::uint8_t> { vb.data(), vb.size() };
+    d.indices = std::span<const std::uint8_t> { ib.data(), ib.size() };
+    d.vertex_count = 1;
+    d.index_count = 1;
+    d.vertex_stride = sizeof(cd::asset_cdmesh::CdVertexStd);
+    d.index_stride = 2;
+    const auto p = std::filesystem::temp_directory_path() / "cd_adapter_tmp.cdmesh";
+    auto save_r = cd::asset_cdmesh::save(p.string(), d);
+    if (!save_r) return {};
+    std::vector<std::byte> out;
+    {
+        // Scope the ifstream so it is closed before remove() runs — on
+        // Windows the file is exclusively held until destruction.
+        std::ifstream f { p, std::ios::binary | std::ios::ate };
+        out.resize(static_cast<std::size_t>(f.tellg()));
+        f.seekg(0);
+        f.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    }
+    std::error_code ec;
+    std::filesystem::remove(p, ec);  // best-effort; leak a few KB if Windows fights us.
+    return out;
+}
+
+}  // namespace
+
+TEST(CdMeshAssetLoader, AdapterDecodesValid)
+{
+    auto bytes = build_minimal_cdmesh_bytes();
+    ASSERT_FALSE(bytes.empty());
+    cd::asset_cdmesh::CdMeshAssetLoader loader;
+    EXPECT_EQ(loader.tag(), "cdmesh");
+    auto r = loader.decode(std::span<const std::byte> { bytes.data(), bytes.size() }, "t.cdmesh");
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    auto* m = dynamic_cast<cd::asset_cdmesh::CdMeshAsset*>(r->get());
+    ASSERT_NE(m, nullptr);
+    EXPECT_EQ(m->mesh().vertex_count, 1u);
+    EXPECT_EQ(m->mesh().index_count, 1u);
+}

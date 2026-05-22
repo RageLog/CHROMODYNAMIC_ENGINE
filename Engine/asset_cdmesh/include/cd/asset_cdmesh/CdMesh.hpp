@@ -150,4 +150,8 @@ struct SaveDesc
 /// no allocation, never crash.
 [[nodiscard]] cd::core::Result<CdMesh> load(std::string_view path);
 
+/// Decode an in-memory .cdmesh byte buffer (VFS / asset-bundle path).
+/// Same wire format and error semantics as `load()`.
+[[nodiscard]] cd::core::Result<CdMesh> decode(const std::uint8_t* bytes, std::size_t size);
+
 }  // namespace cd::asset_cdmesh

@@ -237,35 +237,10 @@ struct AccessorView
     return out;
 }
 
-}  // namespace
-
-cd::core::Result<GltfScene> load_gltf(std::string_view path)
+// Post-parse: convert a tinygltf::Model into our public GltfScene shape.
+// Shared between load_gltf (file path) and load_gltf_from_memory (byte buffer).
+[[nodiscard]] GltfScene model_to_scene(const tinygltf::Model& model)
 {
-    if (path.empty())
-    {
-        return std::unexpected(gltf_errors::make(gltf_errors::Code::kInvalidArgument, "load_gltf: empty path"));
-    }
-    const std::string p { path };
-    if (!std::filesystem::exists(p))
-    {
-        return std::unexpected(gltf_errors::make(gltf_errors::Code::kFileNotFound, p));
-    }
-
-    tinygltf::TinyGLTF loader;
-    tinygltf::Model model;
-    std::string err;
-    std::string warn;
-
-    const bool is_binary = (p.size() >= 4) && (p.substr(p.size() - 4) == ".glb" || p.substr(p.size() - 4) == ".GLB");
-    const bool ok = is_binary ? loader.LoadBinaryFromFile(&model, &err, &warn, p)
-                              : loader.LoadASCIIFromFile(&model, &err, &warn, p);
-    if (!ok)
-    {
-        std::string msg = "tinygltf: ";
-        msg += err.empty() ? warn : err;
-        return std::unexpected(gltf_errors::make(gltf_errors::Code::kParseFailed, msg));
-    }
-
     GltfScene scene;
 
     // Materials first so primitives can reference them by index.
@@ -452,6 +427,81 @@ cd::core::Result<GltfScene> load_gltf(std::string_view path)
         scene.bbox_max = bb_max;
     }
     return scene;
+}
+
+}  // namespace (anonymous)
+
+cd::core::Result<GltfScene> load_gltf(std::string_view path)
+{
+    if (path.empty())
+    {
+        return std::unexpected(gltf_errors::make(gltf_errors::Code::kInvalidArgument, "load_gltf: empty path"));
+    }
+    const std::string p { path };
+    if (!std::filesystem::exists(p))
+    {
+        return std::unexpected(gltf_errors::make(gltf_errors::Code::kFileNotFound, p));
+    }
+
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model model;
+    std::string err;
+    std::string warn;
+
+    const bool is_binary = (p.size() >= 4) && (p.substr(p.size() - 4) == ".glb" || p.substr(p.size() - 4) == ".GLB");
+    const bool ok = is_binary ? loader.LoadBinaryFromFile(&model, &err, &warn, p)
+                              : loader.LoadASCIIFromFile(&model, &err, &warn, p);
+    if (!ok)
+    {
+        std::string msg = "tinygltf: ";
+        msg += err.empty() ? warn : err;
+        return std::unexpected(gltf_errors::make(gltf_errors::Code::kParseFailed, msg));
+    }
+
+    return model_to_scene(model);
+}
+
+cd::core::Result<GltfScene>
+load_gltf_from_memory(const std::uint8_t* bytes, std::size_t size, std::string_view base_dir)
+{
+    if (bytes == nullptr)
+    {
+        return std::unexpected(gltf_errors::make(gltf_errors::Code::kInvalidArgument, "null buffer"));
+    }
+    if (size < 4)
+    {
+        return std::unexpected(gltf_errors::make(gltf_errors::Code::kParseFailed, "buffer too small"));
+    }
+
+    // glTF (text) starts with '{'; glb (binary) starts with magic "glTF".
+    const bool is_binary = bytes[0] == 'g' && bytes[1] == 'l' && bytes[2] == 'T' && bytes[3] == 'F';
+
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model model;
+    std::string err;
+    std::string warn;
+    const std::string base { base_dir };
+
+    bool ok = false;
+    if (is_binary)
+    {
+        ok = loader.LoadBinaryFromMemory(&model, &err, &warn, bytes,
+                                         static_cast<unsigned int>(size), base);
+    }
+    else
+    {
+        ok = loader.LoadASCIIFromString(&model, &err, &warn,
+                                        reinterpret_cast<const char*>(bytes),
+                                        static_cast<unsigned int>(size), base);
+    }
+    if (!ok)
+    {
+        std::string msg = "tinygltf: ";
+        msg += err.empty() ? warn : err;
+        return std::unexpected(gltf_errors::make(gltf_errors::Code::kParseFailed, msg));
+    }
+
+    return model_to_scene(model);
 }
 
 }  // namespace cd::asset_gltf

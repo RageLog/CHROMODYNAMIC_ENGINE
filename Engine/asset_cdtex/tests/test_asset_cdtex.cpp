@@ -232,3 +232,62 @@ TEST(CdTex, V1FileStillLoadsAsSingleMipChain)
     EXPECT_EQ(r->mips[0].width, 16U);
     EXPECT_EQ(r->mips[0].blocks[0], 0x77);
 }
+
+// ----- AssetLoader adapter -----
+
+#include <cd/asset_cdtex/AssetLoader.hpp>
+#include <cstring>
+#include <span>
+
+namespace
+{
+
+std::vector<std::byte> build_minimal_cdtex_bytes(std::uint32_t w, std::uint32_t h, std::uint8_t fill = 0xAA)
+{
+    const std::uint16_t bw = static_cast<std::uint16_t>((w + 3) / 4);
+    const std::uint16_t bh = static_cast<std::uint16_t>((h + 3) / 4);
+    std::vector<std::byte> bytes;
+    auto put = [&](const void* p, std::size_t n) {
+        const auto* b = static_cast<const std::byte*>(p);
+        bytes.insert(bytes.end(), b, b + n);
+    };
+    put("CDBC7", 5);
+    const std::uint8_t version = 1;
+    put(&version, 1);
+    put(&w, 4);
+    put(&h, 4);
+    put(&bw, 2);
+    put(&bh, 2);
+    const std::size_t payload = static_cast<std::size_t>(bw) * bh * 16U;
+    std::vector<std::uint8_t> blocks(payload, fill);
+    put(blocks.data(), payload);
+    return bytes;
+}
+
+}  // namespace
+
+TEST(CdTexAssetLoader, AdapterDecodesValid)
+{
+    const auto bytes = build_minimal_cdtex_bytes(8, 8, 0x42);
+    cd::asset_cdtex::CdTexAssetLoader loader;
+    EXPECT_EQ(loader.tag(), "cdtex");
+    auto r = loader.decode(std::span<const std::byte> { bytes.data(), bytes.size() }, "t.cdtex");
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    auto* a = dynamic_cast<cd::asset_cdtex::CdTexAsset*>(r->get());
+    ASSERT_NE(a, nullptr);
+    EXPECT_EQ(a->tex().width, 8u);
+    EXPECT_EQ(a->tex().height, 8u);
+    EXPECT_EQ(a->tex().mips.size(), 1u);
+    EXPECT_EQ(a->tex().mips[0].blocks[0], 0x42);
+}
+
+TEST(CdTexAssetLoader, AdapterRejectsBadMagic)
+{
+    auto bytes = build_minimal_cdtex_bytes(4, 4);
+    bytes[0] = std::byte { 'X' };
+    cd::asset_cdtex::CdTexAssetLoader loader;
+    auto r = loader.decode(std::span<const std::byte> { bytes.data(), bytes.size() }, "x.cdtex");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::asset_cdtex::cdtex_errors::Code::kMagicMismatch));
+}

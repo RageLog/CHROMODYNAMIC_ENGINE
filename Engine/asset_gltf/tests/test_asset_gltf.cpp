@@ -347,3 +347,35 @@ TEST(GltfLoader, PrimitiveWithoutPositionYieldsEmptyVertices)
     EXPECT_TRUE(prim.vertices.empty());
     EXPECT_TRUE(prim.indices.empty());  // load_gltf skips index decode when POSITION absent
 }
+
+// ----- AssetLoader adapter -----
+
+#include <cd/asset_gltf/AssetLoader.hpp>
+#include <cstring>
+#include <span>
+
+TEST(GltfAssetLoader, AdapterDecodesMinimalAsciiGltf)
+{
+    constexpr std::string_view text =
+        R"({"asset":{"version":"2.0"},)"
+        R"("meshes":[{"primitives":[{"attributes":{}}]}],)"
+        R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    std::vector<std::byte> bytes(text.size());
+    std::memcpy(bytes.data(), text.data(), text.size());
+    cd::asset_gltf::GltfAssetLoader loader;
+    EXPECT_EQ(loader.tag(), "gltf");
+    auto r = loader.decode(std::span<const std::byte> { bytes.data(), bytes.size() }, "t.gltf");
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    auto* g = dynamic_cast<cd::asset_gltf::GltfAsset*>(r->get());
+    ASSERT_NE(g, nullptr);
+    EXPECT_EQ(g->scene().meshes.size(), 1u);
+    EXPECT_EQ(g->scene().nodes.size(), 1u);
+}
+
+TEST(GltfAssetLoader, AdapterTooSmallBufferRejected)
+{
+    std::vector<std::byte> tiny(2, std::byte { 0 });
+    cd::asset_gltf::GltfAssetLoader loader;
+    auto r = loader.decode(std::span<const std::byte> { tiny.data(), tiny.size() }, "x.gltf");
+    ASSERT_FALSE(r.has_value());
+}

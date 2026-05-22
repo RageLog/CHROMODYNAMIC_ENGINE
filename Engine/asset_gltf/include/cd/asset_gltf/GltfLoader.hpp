@@ -160,4 +160,12 @@ struct GltfScene
 /// human-readable message.
 [[nodiscard]] cd::core::Result<GltfScene> load_gltf(std::string_view path);
 
+/// Decode an in-memory glTF blob — `.gltf` (JSON text) or `.glb` (binary).
+/// Auto-detects the variant by checking the magic "glTF" 4-byte header.
+/// `base_dir` is the resource-resolution root for external URIs
+/// (textures, `.bin`); pass an empty string to disallow external lookups.
+[[nodiscard]] cd::core::Result<GltfScene>
+load_gltf_from_memory(const std::uint8_t* bytes, std::size_t size,
+                      std::string_view base_dir = {});
+
 }  // namespace cd::asset_gltf

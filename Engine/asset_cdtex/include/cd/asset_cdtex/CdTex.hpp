@@ -107,6 +107,17 @@ struct CdTex
     std::vector<std::uint8_t> blocks;
 };
 
+/// Load a .cdtex file from disk. Reads the entire file into RAM and
+/// dispatches to `decode()` below — kept as a thin convenience around
+/// `decode()` so memory-mapped / VFS-backed flows (asset registry) use
+/// the same parser.
+[[nodiscard]] cd::core::Result<CdTex> load(std::string_view path);
+
+/// Decode a .cdtex byte buffer already in memory. Identical wire-format
+/// semantics as load() — same kCorrupt / kMagicMismatch / kVersionMismatch
+/// error codes.
+[[nodiscard]] cd::core::Result<CdTex> decode(const std::uint8_t* bytes, std::size_t size);
+
 [[nodiscard]] cd::core::Result<CdTex> load(std::string_view path);
 
 }  // namespace cd::asset_cdtex
