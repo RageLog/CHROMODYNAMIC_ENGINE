@@ -66,9 +66,21 @@
 //   this gives TCP-style "stop until peer drains" behaviour without a
 //   full congestion-control state machine.
 //
-// What this layer does NOT do (Phase 6 follow-ups):
-//   * Congestion control (cwnd / slow-start / AIMD) — the window is a
-//     fixed user-supplied cap, not a learned bandwidth-delay product.
+// AIMD adaptive congestion window (Wave 66):
+//   When `enable_aimd` is true, the channel also maintains a learned
+//   congestion window `cwnd_` that grows additively on every successful
+//   non-retransmit ACK (Additive Increase) and halves multiplicatively
+//   on loss — RTO retransmit OR SACK-driven fast retransmit
+//   (Multiplicative Decrease). The effective send cap is then
+//   min(send_window_size, cwnd) — the fixed window stays as an upper
+//   bound, cwnd learns the link's actual throughput within that bound.
+//   cwnd is clamped to [cwnd_min, cwnd_max].
+//
+// What this layer does NOT do (Phase 7+ follow-ups):
+//   * Slow-start / fast recovery / NewReno — AIMD here is the textbook
+//     "linear up, halve on loss" form; production stacks add slow-start
+//     ramp, duplicate-ACK detection, and recovery states. The
+//     primitives are in place for those to layer on top.
 //
 // Clock injection: `tick()` takes a `now` time point so unit tests can
 // fast-forward time without sleeping. Real callers pass
@@ -130,6 +142,23 @@ public:
     void set_send_window_size(std::size_t n) noexcept { send_window_size_ = n; }
     [[nodiscard]] std::size_t send_window_size() const noexcept { return send_window_size_; }
 
+    /// Enable AIMD adaptive cwnd. After this call, the effective send
+    /// cap is `min(send_window_size, cwnd)` (treating 0 as "no cap").
+    /// `cwnd_min` and `cwnd_max` clamp the learned window so a
+    /// pathological link can't trap it at 1 or run away to ∞.
+    void enable_aimd(std::size_t cwnd_initial = 4,
+                     std::size_t cwnd_min = 1,
+                     std::size_t cwnd_max = 256) noexcept
+    {
+        aimd_enabled_ = true;
+        cwnd_min_ = cwnd_min == 0 ? 1 : cwnd_min;
+        cwnd_max_ = cwnd_max < cwnd_min_ ? cwnd_min_ : cwnd_max;
+        cwnd_ = std::clamp(cwnd_initial, cwnd_min_, cwnd_max_);
+    }
+    void disable_aimd() noexcept { aimd_enabled_ = false; }
+    [[nodiscard]] bool aimd_enabled() const noexcept { return aimd_enabled_; }
+    [[nodiscard]] std::size_t cwnd() const noexcept { return cwnd_; }
+
     /// Send `payload` on the user channel. Returns the application-
     /// visible sequence number, which is also embedded as a 4-byte
     /// prefix on the wire so the receiver can dedup retransmits.
@@ -141,7 +170,8 @@ public:
     [[nodiscard]] cd::core::Result<std::uint32_t>
     send(std::span<const std::byte> payload)
     {
-        if (send_window_size_ > 0 && pending_.size() >= send_window_size_)
+        const std::size_t effective_cap = effective_window_cap_();
+        if (effective_cap > 0 && pending_.size() >= effective_cap)
             return std::unexpected(net_errors::make(net_errors::Code::kWouldBlock,
                                                     "send window full"));
         const auto seq = next_send_seq_++;
@@ -232,6 +262,17 @@ private:
         return framed;
     }
 
+    [[nodiscard]] std::size_t effective_window_cap_() const noexcept
+    {
+        if (!aimd_enabled_)
+            return send_window_size_;  // 0 = uncapped
+        // AIMD enabled: cwnd always caps. The fixed window, if set,
+        // is an additional upper bound (caller's hard limit).
+        if (send_window_size_ == 0)
+            return cwnd_;
+        return std::min(send_window_size_, cwnd_);
+    }
+
     [[nodiscard]] static std::uint32_t read_u32_(const std::byte* p) noexcept
     {
         std::uint32_t v = 0;
@@ -312,7 +353,13 @@ private:
             if (acked)
             {
                 if (it->second.retries == 0)
+                {
                     update_rtt_(Clock::now() - it->second.send_time);
+                    // AIMD: Additive Increase on every successful
+                    // non-retransmit ACK. Bump cwnd by 1, clamped.
+                    if (aimd_enabled_ && cwnd_ < cwnd_max_)
+                        ++cwnd_;
+                }
                 it = pending_.erase(it);
             }
             else
@@ -326,6 +373,7 @@ private:
         // every ACK.
         if (!ranges.empty())
         {
+            bool any_fast = false;
             for (auto& [seq, p] : pending_)
             {
                 if (p.seq >= cum && p.seq <= max_sack_end && !p.fast_retransmitted)
@@ -337,13 +385,18 @@ private:
                     ++p.retries;
                     ++retransmit_count_;
                     ++fast_retransmit_count_;
+                    any_fast = true;
                 }
             }
+            // AIMD: fast retransmit is also a loss signal → halve cwnd.
+            if (any_fast && aimd_enabled_)
+                cwnd_ = std::max(cwnd_min_, cwnd_ / 2);
         }
     }
 
     void retransmit_(Clock::time_point now)
     {
+        bool any_fired = false;
         for (auto& [seq, p] : pending_)
         {
             // Each pending entry has its own RTO: starts at the channel
@@ -357,13 +410,16 @@ private:
                              { p.framed.data(), p.framed.size() });
             p.send_time = now;
             ++p.retries;
-            // Double the per-frame RTO; clamp to channel max.
             auto next = (effective.count() == 0 ? rto_ : effective) * 2;
             if (next > rto_max_)
                 next = rto_max_;
             p.effective_rto = next;
             ++retransmit_count_;
+            any_fired = true;
         }
+        // AIMD: Multiplicative Decrease on any RTO retransmit this tick.
+        if (any_fired && aimd_enabled_)
+            cwnd_ = std::max(cwnd_min_, cwnd_ / 2);
     }
 
     void update_rtt_(std::chrono::nanoseconds r)
@@ -490,6 +546,10 @@ private:
     std::chrono::nanoseconds rttvar_ { 0 };
     std::uint32_t max_retries_;
     std::size_t send_window_size_ { 0 };
+    bool aimd_enabled_ { false };
+    std::size_t cwnd_ { 4 };
+    std::size_t cwnd_min_ { 1 };
+    std::size_t cwnd_max_ { 256 };
     std::uint32_t next_send_seq_ { 0 };
     std::uint32_t next_recv_seq_ { 0 };
     std::unordered_map<std::uint32_t, Pending> pending_;

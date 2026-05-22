@@ -531,6 +531,80 @@ TEST(ReliableChannel, CumulativeAckDischargesAllPriorPendings)
     EXPECT_EQ(sender.pending_send_count(), 0U);
 }
 
+TEST(ReliableChannel, AimdAdditiveIncreaseOnAck)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender { ma, 0, 1 };
+    cd::net::ReliableChannel receiver { mb, 0, 1 };
+    sender.enable_aimd(/*initial=*/4, /*min=*/1, /*max=*/16);
+    EXPECT_EQ(sender.cwnd(), 4U);
+
+    const auto p = bytes_of("a");
+    // Send 3 frames within the cwnd=4 budget.
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+
+    // Receiver drains + ACKs. Sender's tick processes ACKs → cwnd bumps
+    // by 1 per successful non-retransmit discharge.
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    receiver.tick(t0);
+    sender.tick(t0);
+    EXPECT_EQ(sender.pending_send_count(), 0U);
+    EXPECT_EQ(sender.cwnd(), 7U);  // 4 + 3 successful ACKs
+}
+
+TEST(ReliableChannel, AimdMultiplicativeDecreaseOnRtoLoss)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 25 }, 5
+    };
+    sender.enable_aimd(/*initial=*/8, /*min=*/1, /*max=*/256);
+    EXPECT_EQ(sender.cwnd(), 8U);
+
+    const auto p = bytes_of("loss");
+    ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+
+    // Drop the frame so the sender will RTO-retransmit.
+    auto dropped = b->receive();
+    ASSERT_TRUE(dropped.has_value());
+
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    sender.tick(t0 + std::chrono::milliseconds { 30 });  // past RTO → retransmit
+    EXPECT_EQ(sender.retransmit_count(), 1U);
+    EXPECT_EQ(sender.cwnd(), 4U);  // halved by AIMD MD
+}
+
+TEST(ReliableChannel, AimdCapHonoursMinAndMax)
+{
+    auto [a, b] = cd::net::make_loopback_pair();
+    cd::net::ChannelMux ma { *a };
+    cd::net::ChannelMux mb { *b };
+    cd::net::ReliableChannel sender {
+        ma, 0, 1, std::chrono::milliseconds { 10 }, 10
+    };
+    sender.enable_aimd(/*initial=*/2, /*min=*/1, /*max=*/2);
+    EXPECT_EQ(sender.cwnd(), 2U);  // initial clamped to max=2
+
+    // The max cap holds: after many successful ACKs cwnd stays at 2.
+    cd::net::ReliableChannel receiver { mb, 0, 1 };
+    const auto p = bytes_of("c");
+    const auto t0 = cd::net::ReliableChannel::Clock::now();
+    for (int i = 0; i < 5; ++i)
+    {
+        ASSERT_TRUE(sender.send({ p.data(), p.size() }).has_value());
+        receiver.tick(t0);
+        sender.tick(t0);
+    }
+    EXPECT_LE(sender.cwnd(), 2U);
+    EXPECT_GE(sender.cwnd(), 1U);  // min cap
+}
+
 TEST(ReliableChannel, SendWindowBackPressuresWhenFull)
 {
     auto [a, b] = cd::net::make_loopback_pair();
