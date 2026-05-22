@@ -1,0 +1,92 @@
+name: bench-regression
+
+# Per-PR microbench regression gate. Builds hello_bench against the PR
+# HEAD and against the base branch, runs both, and pipes the two
+# artifacts through cd_bench_compare with a 10 % threshold. Fails the
+# job (and the PR) if ANY tracked bench regressed by >= threshold.
+#
+# Notes:
+#   * Threshold default 10 %. Debug builds + shared GitHub runners
+#     are noisy; tighter thresholds will flake. Production-grade
+#     thresholds need Release builds + dedicated benchmarks runners.
+#   * Manual override: set the workflow_dispatch input `threshold` to
+#     a custom percent.
+#   * One workflow per matrix entry → keeps job logs focused.
+
+on:
+  pull_request:
+    branches: [master, main, dev]
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "Regression threshold percent"
+        required: false
+        default: "10"
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  bench-regression-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout PR HEAD
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang-19
+
+      - name: Configure PR HEAD
+        run: |
+          cmake --preset ci-gcc -DCD_DISABLE_VCPKG=ON
+
+      - name: Build hello_bench + cd_bench_compare on PR HEAD
+        run: |
+          cmake --build --preset ci-gcc-debug \
+            --target cd_sample_hello_bench cd_bench_compare
+
+      - name: Run hello_bench on PR HEAD → current.json
+        run: |
+          build/ci-gcc/bin/hello_bench --json=current.json
+          ls -la current.json
+
+      - name: Checkout base branch into a sibling dir
+        run: |
+          BASE_REF=${{ github.event.pull_request.base.ref }}
+          if [ -z "${BASE_REF}" ]; then BASE_REF="dev"; fi
+          git worktree add ../base-tree "origin/${BASE_REF}" || true
+          ls ../base-tree
+
+      - name: Build hello_bench on base branch
+        run: |
+          cd ../base-tree
+          cmake --preset ci-gcc -DCD_DISABLE_VCPKG=ON
+          cmake --build --preset ci-gcc-debug --target cd_sample_hello_bench
+
+      - name: Run hello_bench on base → baseline.json
+        run: |
+          ../base-tree/build/ci-gcc/bin/hello_bench --json=baseline.json
+          ls -la baseline.json
+
+      - name: Compare (cd_bench_compare with threshold gate)
+        run: |
+          THRESHOLD="${{ github.event.inputs.threshold }}"
+          if [ -z "${THRESHOLD}" ]; then THRESHOLD="10"; fi
+          echo "Threshold: ${THRESHOLD}%"
+          build/ci-gcc/bin/cd_bench_compare baseline.json current.json \
+            --threshold=${THRESHOLD} | tee bench-diff.md
+
+      - name: Upload comparison report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-diff
+          path: |
+            baseline.json
+            current.json
+            bench-diff.md
+          if-no-files-found: ignore
