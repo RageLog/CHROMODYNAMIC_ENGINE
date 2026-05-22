@@ -152,6 +152,82 @@ cd::core::Result<Image> load_image_from_memory(std::span<const std::uint8_t> byt
     return out;
 }
 
+cd::core::Result<std::vector<Image>> generate_mips(const Image& src, std::uint32_t levels)
+{
+    if (src.width == 0 || src.height == 0)
+    {
+        return std::unexpected(image_errors::make(image_errors::Code::kInvalidArgument, "zero source dimensions"));
+    }
+    if (src.rgba.size() < static_cast<std::size_t>(src.width) * src.height * 4U)
+    {
+        return std::unexpected(image_errors::make(image_errors::Code::kInvalidArgument, "src.rgba too small"));
+    }
+
+    std::vector<Image> chain;
+    chain.push_back(src);  // mip 0 = source
+
+    // Compute total possible mip count when levels == 0: log2 of the
+    // larger dim plus 1, so a 256-wide image gets 9 mips (256, 128, ...,
+    // 1). When levels > 0 it caps the chain at that number.
+    std::uint32_t cap = levels;
+    if (cap == 0)
+    {
+        std::uint32_t dim = std::max(src.width, src.height);
+        cap = 1;
+        while (dim > 1)
+        {
+            dim >>= 1U;
+            ++cap;
+        }
+    }
+
+    for (std::uint32_t lvl = 1; lvl < cap; ++lvl)
+    {
+        const auto& prev = chain.back();
+        const std::uint32_t w = std::max(prev.width >> 1U, 1U);
+        const std::uint32_t h = std::max(prev.height >> 1U, 1U);
+        Image next;
+        next.width = w;
+        next.height = h;
+        next.has_alpha = prev.has_alpha;
+        next.rgba.resize(static_cast<std::size_t>(w) * h * 4U);
+
+        for (std::uint32_t y = 0; y < h; ++y)
+        {
+            const std::uint32_t sy0 = y * 2U;
+            const std::uint32_t sy1 = std::min(sy0 + 1U, prev.height - 1U);
+            for (std::uint32_t x = 0; x < w; ++x)
+            {
+                const std::uint32_t sx0 = x * 2U;
+                const std::uint32_t sx1 = std::min(sx0 + 1U, prev.width - 1U);
+
+                auto px = [&](std::uint32_t sx, std::uint32_t sy) noexcept -> const std::uint8_t*
+                {
+                    return prev.rgba.data() + (static_cast<std::size_t>(sy) * prev.width + sx) * 4U;
+                };
+                const auto* p00 = px(sx0, sy0);
+                const auto* p10 = px(sx1, sy0);
+                const auto* p01 = px(sx0, sy1);
+                const auto* p11 = px(sx1, sy1);
+
+                auto* dst = next.rgba.data() + (static_cast<std::size_t>(y) * w + x) * 4U;
+                for (std::size_t c = 0; c < 4; ++c)
+                {
+                    // +2 rounding bias avoids 0.5-truncation darkening.
+                    const std::uint32_t sum = static_cast<std::uint32_t>(p00[c]) + p10[c] + p01[c] + p11[c] + 2U;
+                    dst[c] = static_cast<std::uint8_t>(sum / 4U);
+                }
+            }
+        }
+
+        chain.push_back(std::move(next));
+        if (w == 1 && h == 1)
+            break;  // reached 1x1 — no more mips possible
+    }
+
+    return chain;
+}
+
 cd::core::Result<ImageHdr> load_image_hdr(std::string_view path, const LoadOptions& options)
 {
     if (path.empty())

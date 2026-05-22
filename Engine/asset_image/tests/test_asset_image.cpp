@@ -219,3 +219,82 @@ TEST(AssetImage, GarbageBufferReturnsDecodeFailed)
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kDecodeFailed));
 }
+
+TEST(AssetImage, GenerateMipsFullChainOn256Square)
+{
+    cd::asset_image::Image src;
+    src.width = 256;
+    src.height = 256;
+    src.has_alpha = true;
+    src.rgba.assign(256U * 256U * 4U, 128U);  // solid gray
+    auto r = cd::asset_image::generate_mips(src);
+    ASSERT_TRUE(r.has_value());
+    // 256 → 128 → 64 → 32 → 16 → 8 → 4 → 2 → 1 = 9 levels.
+    ASSERT_EQ(r->size(), 9U);
+    EXPECT_EQ((*r)[0].width, 256U);
+    EXPECT_EQ((*r)[0].height, 256U);
+    EXPECT_EQ(r->back().width, 1U);
+    EXPECT_EQ(r->back().height, 1U);
+    // Box filter of solid gray should still be gray (modulo rounding).
+    EXPECT_NEAR(static_cast<int>(r->back().rgba[0]), 128, 1);
+}
+
+TEST(AssetImage, GenerateMipsCappedLevels)
+{
+    cd::asset_image::Image src;
+    src.width = 32;
+    src.height = 32;
+    src.rgba.assign(32U * 32U * 4U, 200U);
+    auto r = cd::asset_image::generate_mips(src, 3);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->size(), 3U);
+    EXPECT_EQ((*r)[0].width, 32U);
+    EXPECT_EQ((*r)[1].width, 16U);
+    EXPECT_EQ((*r)[2].width, 8U);
+}
+
+TEST(AssetImage, GenerateMipsNonSquareWidthOrHeightOf1)
+{
+    // 4x1 → 2x1 → 1x1 (3 mips).
+    cd::asset_image::Image src;
+    src.width = 4;
+    src.height = 1;
+    src.rgba.assign(4U * 1U * 4U, 99U);
+    auto r = cd::asset_image::generate_mips(src);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->size(), 3U);
+    EXPECT_EQ((*r)[1].width, 2U);
+    EXPECT_EQ((*r)[1].height, 1U);
+    EXPECT_EQ((*r)[2].width, 1U);
+    EXPECT_EQ((*r)[2].height, 1U);
+}
+
+TEST(AssetImage, GenerateMipsZeroDimensionRejected)
+{
+    cd::asset_image::Image src;
+    src.width = 0;
+    src.height = 16;
+    auto r = cd::asset_image::generate_mips(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kInvalidArgument));
+}
+
+// ----- AssetLoader adapter -----
+
+#include <cd/asset_image/AssetLoader.hpp>
+
+TEST(ImageAssetLoader, AdapterDecodesBmp)
+{
+    const auto u8 = make_2x2_bmp();
+    std::vector<std::byte> bytes(u8.size());
+    std::memcpy(bytes.data(), u8.data(), u8.size());
+    cd::asset_image::ImageAssetLoader loader;
+    EXPECT_EQ(loader.tag(), "image");
+    auto r = loader.decode(std::span<const std::byte> { bytes.data(), bytes.size() }, "t.bmp");
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    auto* ia = dynamic_cast<cd::asset_image::ImageAsset*>(r->get());
+    ASSERT_NE(ia, nullptr);
+    EXPECT_EQ(ia->image().width, 2u);
+    EXPECT_EQ(ia->image().height, 2u);
+}

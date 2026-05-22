@@ -98,4 +98,19 @@ load_image_from_memory(std::span<const std::uint8_t> bytes, const LoadOptions& o
 /// to 8-bit then promoted to float (lossy); prefer load_image for those.
 [[nodiscard]] cd::core::Result<ImageHdr> load_image_hdr(std::string_view path, const LoadOptions& options = {});
 
+/// 2x2 box-filter mipmap chain generator. Returns a vector of Images,
+/// element 0 being the input copied unchanged and element N being a
+/// 1x1 (or 1xK / Kx1 for non-square inputs) final mip.
+///
+/// Algorithm: each subsequent mip averages a 2x2 block of the previous
+/// mip into one pixel (per-channel, with rounding via +1 in the sum).
+/// Non-multiple-of-2 source dimensions are handled by clamping the
+/// last row/col — the boundary samples appear twice. This is the
+/// simplest correct box filter; the cooker can opt up to Kaiser or
+/// Lanczos later when image quality matters.
+///
+/// `levels` caps the count — pass 0 to generate the full chain down to
+/// 1x1. The first level is always the source mip itself.
+[[nodiscard]] cd::core::Result<std::vector<Image>> generate_mips(const Image& src, std::uint32_t levels = 0);
+
 }  // namespace cd::asset_image
