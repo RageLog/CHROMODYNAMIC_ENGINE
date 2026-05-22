@@ -20,6 +20,12 @@
 #    define NOMINMAX
 #    define WIN32_LEAN_AND_MEAN
 #    include <windows.h>
+#elif defined(__linux__)
+#    include <fcntl.h>
+#    include <poll.h>
+#    include <sys/eventfd.h>
+#    include <sys/inotify.h>
+#    include <unistd.h>
 #endif
 
 namespace cd::plugin
@@ -284,6 +290,157 @@ private:
 };
 #endif  // _WIN32
 
+#if defined(__linux__)
+// Linux native watcher: inotify on the parent directory, filtered to
+// IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE for the
+// watched filename. An eventfd wakes the poll loop on stop() for
+// deterministic teardown.
+class InotifyNativeWatcher final : public IFileWatcher
+{
+public:
+    InotifyNativeWatcher() noexcept = default;
+    ~InotifyNativeWatcher() override { stop(); }
+
+    [[nodiscard]] cd::core::Result<void> watch(std::string_view path, Callback cb) override
+    {
+        if (running_.load(std::memory_order_acquire))
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kAlreadyWatching));
+        const std::filesystem::path fs_path { std::string { path } };
+        if (!std::filesystem::exists(fs_path))
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kFileNotFound));
+        filename_ = fs_path.filename().string();
+        const auto dir = fs_path.parent_path().string();
+
+        inotify_fd_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+        if (inotify_fd_ < 0)
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kBackendError,
+                                     "inotify_init1 failed"));
+        watch_id_ = ::inotify_add_watch(
+            inotify_fd_, dir.c_str(),
+            IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE);
+        if (watch_id_ < 0)
+        {
+            ::close(inotify_fd_);
+            inotify_fd_ = -1;
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kBackendError,
+                                     "inotify_add_watch failed"));
+        }
+        stop_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (stop_fd_ < 0)
+        {
+            ::inotify_rm_watch(inotify_fd_, watch_id_);
+            ::close(inotify_fd_);
+            inotify_fd_ = -1;
+            return std::unexpected(
+                watcher_errors::make(watcher_errors::Code::kBackendError,
+                                     "eventfd failed"));
+        }
+        callback_ = std::move(cb);
+        change_count_.store(0, std::memory_order_release);
+        running_.store(true, std::memory_order_release);
+        thread_ = std::thread { [this] { run_(); } };
+        return {};
+    }
+
+    void stop() override
+    {
+        bool was_running = true;
+        if (!running_.compare_exchange_strong(was_running, false))
+            return;
+        if (stop_fd_ >= 0)
+        {
+            const std::uint64_t v = 1;
+            (void)::write(stop_fd_, &v, sizeof(v));
+        }
+        if (thread_.joinable())
+            thread_.join();
+        if (watch_id_ >= 0 && inotify_fd_ >= 0)
+            ::inotify_rm_watch(inotify_fd_, watch_id_);
+        if (inotify_fd_ >= 0)
+            ::close(inotify_fd_);
+        if (stop_fd_ >= 0)
+            ::close(stop_fd_);
+        inotify_fd_ = -1;
+        watch_id_ = -1;
+        stop_fd_ = -1;
+        callback_ = nullptr;
+    }
+
+    [[nodiscard]] bool is_watching() const noexcept override
+    {
+        return running_.load(std::memory_order_acquire);
+    }
+
+    void poll_once() override
+    {
+        // No-op on the native impl — the inotify event arrives via the
+        // background thread.
+    }
+
+    [[nodiscard]] std::uint64_t change_count() const noexcept override
+    {
+        return change_count_.load(std::memory_order_acquire);
+    }
+
+private:
+    void run_()
+    {
+        // inotify_event has a trailing variable-length name; the read
+        // buffer must accommodate at least sizeof(inotify_event) +
+        // NAME_MAX + 1. 4 KiB covers a busy directory comfortably.
+        constexpr std::size_t kBufBytes = 4096;
+        auto buf = std::make_unique<char[]>(kBufBytes);
+        struct pollfd fds[2] {};
+        fds[0].fd = inotify_fd_;
+        fds[0].events = POLLIN;
+        fds[1].fd = stop_fd_;
+        fds[1].events = POLLIN;
+        while (running_.load(std::memory_order_acquire))
+        {
+            const int rc = ::poll(fds, 2, -1);
+            if (rc < 0)
+                break;
+            if ((fds[1].revents & POLLIN) != 0)
+                return;
+            if ((fds[0].revents & POLLIN) == 0)
+                continue;
+
+            const ssize_t n = ::read(inotify_fd_, buf.get(), kBufBytes);
+            if (n <= 0)
+                continue;
+            ssize_t cursor = 0;
+            while (cursor < n)
+            {
+                const auto* evt =
+                    reinterpret_cast<const struct inotify_event*>(buf.get() + cursor);
+                if (evt->len > 0 && filename_ == evt->name)
+                {
+                    change_count_.fetch_add(1, std::memory_order_release);
+                    if (callback_)
+                        callback_();
+                    // One fire per batch is plenty.
+                    break;
+                }
+                cursor += static_cast<ssize_t>(sizeof(struct inotify_event)) + evt->len;
+            }
+        }
+    }
+
+    std::string filename_ {};
+    int inotify_fd_ { -1 };
+    int watch_id_ { -1 };
+    int stop_fd_ { -1 };
+    Callback callback_ {};
+    std::atomic<bool> running_ { false };
+    std::atomic<std::uint64_t> change_count_ { 0 };
+    std::thread thread_;
+};
+#endif  // __linux__
+
 }  // namespace
 
 std::unique_ptr<IFileWatcher>
@@ -296,10 +453,12 @@ std::unique_ptr<IFileWatcher> make_native_file_watcher()
 {
 #if defined(_WIN32)
     return std::make_unique<Win32NativeWatcher>();
+#elif defined(__linux__)
+    return std::make_unique<InotifyNativeWatcher>();
 #else
-    // Linux / macOS native implementations land in follow-up waves.
-    // Until then, the polling impl is the canonical fallback so the
-    // factory contract ("always non-null") stays intact.
+    // macOS (FSEvents) implementation lands in Wave 51. Until then,
+    // the polling impl is the canonical fallback so the factory
+    // contract ("always non-null") stays intact.
     return make_polling_file_watcher();
 #endif
 }
