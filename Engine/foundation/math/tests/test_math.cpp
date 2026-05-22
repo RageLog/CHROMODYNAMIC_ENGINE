@@ -445,3 +445,39 @@ TEST(MathSlerp, TakesShorterArc)
 }
 
 }  // namespace
+
+// --- Mat4 inverse (backlog: Phase 3 wart, requested by hello_skybox) -------
+
+TEST(Matrix, IdentityInverseEqualsIdentity)
+{
+    const auto id = cd::math::Mat4f::identity();
+    const auto inv = cd::math::inverse(id);
+    for (std::size_t c = 0; c < 4; ++c)
+        for (std::size_t r = 0; r < 4; ++r)
+            EXPECT_NEAR(inv[c][r], id[c][r], 1e-6f);
+}
+
+TEST(Matrix, InverseTimesOriginalEqualsIdentity)
+{
+    cd::math::Transformf xf;
+    xf.position = { 2.5f, -1.0f, 4.0f };
+    xf.scale = { 2.0f, 0.5f, 1.5f };
+    xf.rotation = cd::math::Quatf::from_axis_angle({ 0.0f, 1.0f, 0.0f }, 0.7f);
+    const auto m = cd::math::to_mat4(xf);
+    const auto inv = cd::math::inverse(m);
+    const auto product = m * inv;
+    const auto id = cd::math::Mat4f::identity();
+    for (std::size_t c = 0; c < 4; ++c)
+        for (std::size_t r = 0; r < 4; ++r)
+            EXPECT_NEAR(product[c][r], id[c][r], 1e-5f);
+}
+
+TEST(Matrix, SingularMatrixInverseFallsBackToIdentity)
+{
+    cd::math::Mat4f zero {};
+    const auto inv = cd::math::inverse(zero);
+    const auto id = cd::math::Mat4f::identity();
+    for (std::size_t c = 0; c < 4; ++c)
+        for (std::size_t r = 0; r < 4; ++r)
+            EXPECT_NEAR(inv[c][r], id[c][r], 1e-6f);
+}

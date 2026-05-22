@@ -180,3 +180,22 @@ TEST(SchemaRegistry, UnknownSchemaRejected)
 }
 
 }  // namespace
+
+// --- AssetRegistry::tag_from_extension (backlog) ---------------------------
+
+TEST(AssetRegistry, TagFromExtensionRecognisesKnownFormats)
+{
+    using cd::asset::AssetRegistry;
+    EXPECT_EQ(AssetRegistry::tag_from_extension("data/scene.json"), "json");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("textures/wall.PNG"), "image");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("env.hdr"), "image");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("model.GLB"), "gltf");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("rocks.gltf"), "gltf");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("cube.obj"), "obj");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("tex.ktx2"), "ktx2");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("mesh.cdmesh"), "cdmesh");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("tex.cdtex"), "cdtex");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("sfx/clip.wav"), "wav");
+    EXPECT_EQ(AssetRegistry::tag_from_extension("README"), std::string_view {});
+    EXPECT_EQ(AssetRegistry::tag_from_extension("blob.unknown"), std::string_view {});
+}

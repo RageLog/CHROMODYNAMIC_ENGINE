@@ -56,6 +56,58 @@ public:
         return it == cache_.end() ? nullptr : it->second.get();
     }
 
+    /// Map a path's file extension to a registered loader tag.
+    /// Returns empty string when no extension matches a known loader.
+    /// Extensions checked (case-insensitive): .png/.jpg/.jpeg/.bmp/.tga/.hdr → "image",
+    /// .obj → "obj", .ktx2 → "ktx2", .gltf/.glb → "gltf", .cdmesh → "cdmesh",
+    /// .cdtex → "cdtex", .wav → "wav", .json → "json".
+    [[nodiscard]] static std::string_view tag_from_extension(std::string_view path) noexcept
+    {
+        auto dot = path.rfind('.');
+        if (dot == std::string_view::npos)
+            return {};
+        // Lowercased extension into a small buffer.
+        std::string ext;
+        ext.reserve(path.size() - dot);
+        for (auto c : path.substr(dot + 1))
+        {
+            ext.push_back(static_cast<char>((c >= 'A' && c <= 'Z') ? c + 32 : c));
+        }
+        if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "bmp" || ext == "tga" || ext == "hdr")
+            return "image";
+        if (ext == "obj")
+            return "obj";
+        if (ext == "ktx2")
+            return "ktx2";
+        if (ext == "gltf" || ext == "glb")
+            return "gltf";
+        if (ext == "cdmesh")
+            return "cdmesh";
+        if (ext == "cdtex")
+            return "cdtex";
+        if (ext == "wav")
+            return "wav";
+        if (ext == "json")
+            return "json";
+        return {};
+    }
+
+    /// Auto-dispatch: derive the loader tag from the path extension and
+    /// forward to `load(tag, path)`. Returns kNoLoaderForTag if the
+    /// extension does not match any built-in mapping (caller can still
+    /// use the explicit-tag overload for custom extensions).
+    [[nodiscard]] cd::core::Result<AssetId> load_auto(std::string_view path)
+    {
+        const auto tag = tag_from_extension(path);
+        if (tag.empty())
+        {
+            return std::unexpected(asset_errors::make(
+                asset_errors::Code::kNoLoaderForTag,
+                "load_auto: unknown extension"));
+        }
+        return load(tag, path);
+    }
+
     /// Synchronous load: VFS read → loader.decode → cache. Idempotent.
     [[nodiscard]] cd::core::Result<AssetId> load(std::string_view tag, std::string_view path)
     {
