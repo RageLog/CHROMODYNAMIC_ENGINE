@@ -19,6 +19,7 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
+#include <cd/asset_json/Json.hpp>
 #include <cd/ecs/World.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/math/Transform.hpp>
@@ -29,6 +30,9 @@
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
+#include <cd/scene/Serializer.hpp>
+
+#include <fstream>
 
 #include <imgui.h>
 
@@ -221,6 +225,54 @@ int main(int argc, char** argv)
 
         // ---- ImGui frame ---------------------------------------------------
         ctx.new_frame();
+
+        // ----- Save/Load panel -----
+        ImGui::Begin("Scene I/O");
+        static char path_buf[256] = "hello_inspector_scene.json";
+        ImGui::TextUnformatted("File path:");
+        ImGui::InputText("##path", path_buf, sizeof(path_buf));
+        if (ImGui::Button("Save scene"))
+        {
+            auto j = cd::scene::serialize_scene(scene);
+            const auto text = cd::asset_json::serialize(j, /*pretty=*/true);
+            std::ofstream out { path_buf, std::ios::binary | std::ios::trunc };
+            if (out)
+                out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load scene"))
+        {
+            std::ifstream in { path_buf, std::ios::binary | std::ios::ate };
+            if (in)
+            {
+                const auto size = static_cast<std::size_t>(in.tellg());
+                in.seekg(0);
+                std::string text(size, '\0');
+                in.read(text.data(), static_cast<std::streamsize>(size));
+                if (auto parsed = cd::asset_json::parse(text); parsed)
+                {
+                    // Wipe current scene first.
+                    cd::ecs::World fresh_world;
+                    cd::scene::Scene fresh { fresh_world };
+                    if (auto map = cd::scene::deserialize_scene(fresh, *parsed); map)
+                    {
+                        // Replace the active scene by swapping the captured
+                        // World+Scene. Labels for restored nodes use the
+                        // JSON id as a placeholder — real editor would
+                        // serialize names alongside.
+                        ecs_world = std::move(fresh_world);
+                        scene = cd::scene::Scene { ecs_world };
+                        labels.clear();
+                        scene.for_each_node([&](cd::ecs::Entity e, cd::scene::LocalTransform&) {
+                            labels[static_cast<std::uint64_t>(e.id)] =
+                                std::string { "node_" } + std::to_string(e.id);
+                        });
+                        g_selected = {};
+                    }
+                }
+            }
+        }
+        ImGui::End();
 
         // ----- Scene tree window -----
         ImGui::Begin("Scene tree");
