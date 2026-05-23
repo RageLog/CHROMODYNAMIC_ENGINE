@@ -29,7 +29,13 @@ param(
     [int]$Tolerance = 8,
     [int]$TimeoutSec = 15,
     [string]$GoldenDir = 'tests/golden',
-    [string]$DiffDir = ''
+    [string]$DiffDir = '',
+    # Per-vendor sub-directory under $GoldenDir. Phase 11 Track B keeps a
+    # separate reference set per backend because rendered output is not
+    # bit-equal across drivers. Common values: nvidia, intel, amd, apple,
+    # lavapipe, swiftshader. Defaults to "nvidia" because that's where
+    # the project owner's marathon ran; lavapipe CI passes "lavapipe".
+    [string]$Vendor = 'nvidia'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,12 +65,13 @@ if (Test-Path $multiConfigBin) {
     exit 1
 }
 
-if (-not (Test-Path $GoldenDir)) {
+$VendorDir = Join-Path $GoldenDir $Vendor
+if (-not (Test-Path $VendorDir)) {
     if ($Mode -eq 'compare') {
-        Write-Error "Golden reference directory missing: $GoldenDir. Run --Mode capture first."
+        Write-Error "Golden reference directory missing: $VendorDir. Run -Mode capture -Vendor $Vendor first."
         exit 1
     }
-    New-Item -ItemType Directory -Path $GoldenDir | Out-Null
+    New-Item -ItemType Directory -Path $VendorDir | Out-Null
 }
 
 if ($DiffDir -ne '' -and -not (Test-Path $DiffDir)) {
@@ -83,7 +90,7 @@ foreach ($name in $samples) {
         exit 1
     }
     $total++
-    $golden = Join-Path $GoldenDir "$name.png"
+    $golden = Join-Path $VendorDir "$name.png"
 
     # Build the argv. capture: --golden-capture <path>; compare: --golden-compare <path>.
     if ($Mode -eq 'capture') {
@@ -157,7 +164,8 @@ foreach ($name in $samples) {
 Write-Host ''
 Write-Host ('=== golden {0} summary ============================================' -f $Mode)
 Write-Host ('  build dir   : {0}' -f (Resolve-Path $BuildDir))
-Write-Host ('  golden dir  : {0}' -f (Resolve-Path $GoldenDir))
+Write-Host ('  vendor      : {0}' -f $Vendor)
+Write-Host ('  golden dir  : {0}' -f (Resolve-Path $VendorDir))
 Write-Host ('  tolerance   : {0} / 255 per channel' -f $Tolerance)
 $summaryColor = 'Red'
 if ($fail -eq 0) { $summaryColor = 'Green' }

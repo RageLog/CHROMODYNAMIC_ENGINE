@@ -29,6 +29,8 @@
 #include <cd/rhi/IDevice.hpp>
 
 #include <array>
+#include <cstdio>   // env-driven device selection diagnostic
+#include <cstdlib>  // std::getenv / std::atoi for CD_VULKAN_DEVICE_INDEX
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -2866,6 +2868,39 @@ namespace
     }
     std::vector<VkPhysicalDevice> devs(count);
     vkEnumeratePhysicalDevices(instance, &count, devs.data());
+
+    // Optional explicit selection via env variable, useful for
+    // cross-vendor validation (Phase 11 Track B): when the loader sees
+    // multiple physical devices, the test harness can pin a specific
+    // index without modifying any sample. Value out of range falls
+    // back to the default policy below.
+    // MSVC marks std::getenv deprecated in favour of _dupenv_s; we accept
+    // the read-only env lookup as safe (single thread at device-create
+    // time, no buffer manipulation) and silence the deprecation locally.
+#if defined(_MSC_VER) || defined(__clang__)
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    const char* env_index = std::getenv("CD_VULKAN_DEVICE_INDEX");
+#if defined(_MSC_VER) || defined(__clang__)
+    #pragma clang diagnostic pop
+#endif
+    if (env_index != nullptr)
+    {
+        const int idx = std::atoi(env_index);
+        if (idx >= 0 && static_cast<std::uint32_t>(idx) < devs.size())
+        {
+            VkPhysicalDeviceProperties p {};
+            vkGetPhysicalDeviceProperties(devs[static_cast<std::size_t>(idx)], &p);
+            std::fprintf(stderr,
+                         "[cd-rhi-vulkan] CD_VULKAN_DEVICE_INDEX=%d -> %s (vendor=0x%04x)\n",
+                         idx, p.deviceName, p.vendorID);
+            return devs[static_cast<std::size_t>(idx)];
+        }
+        std::fprintf(stderr,
+                     "[cd-rhi-vulkan] CD_VULKAN_DEVICE_INDEX=%d out of range [0,%u); falling back to default policy\n",
+                     idx, count);
+    }
 
     VkPhysicalDevice chosen = devs.front();
     if (prefer_discrete)

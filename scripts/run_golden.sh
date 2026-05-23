@@ -28,6 +28,10 @@ TOLERANCE="8"
 TIMEOUT_SEC="15"
 GOLDEN_DIR="tests/golden"
 DIFF_DIR=""
+# Per-vendor sub-directory under $GOLDEN_DIR. Phase 11 Track B keeps a
+# separate reference set per backend because rendered output is not
+# bit-equal across drivers. Common: nvidia, intel, amd, apple, lavapipe.
+VENDOR="nvidia"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -38,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --timeout) TIMEOUT_SEC="$2"; shift 2 ;;
         --golden-dir) GOLDEN_DIR="$2"; shift 2 ;;
         --diff-dir) DIFF_DIR="$2"; shift 2 ;;
+        --vendor) VENDOR="$2"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
     esac
 done
@@ -69,12 +74,13 @@ else
     exit 1
 fi
 
-if [[ ! -d "$GOLDEN_DIR" ]]; then
+VENDOR_DIR="$GOLDEN_DIR/$VENDOR"
+if [[ ! -d "$VENDOR_DIR" ]]; then
     if [[ "$MODE" == "compare" ]]; then
-        echo "Golden reference directory missing: $GOLDEN_DIR. Run --mode capture first." >&2
+        echo "Golden reference directory missing: $VENDOR_DIR. Run --mode capture --vendor $VENDOR first." >&2
         exit 1
     fi
-    mkdir -p "$GOLDEN_DIR"
+    mkdir -p "$VENDOR_DIR"
 fi
 if [[ -n "$DIFF_DIR" && ! -d "$DIFF_DIR" ]]; then
     mkdir -p "$DIFF_DIR"
@@ -96,7 +102,7 @@ for name in "${SAMPLES[@]}"; do
         exit 1
     fi
     TOTAL=$((TOTAL+1))
-    golden="$GOLDEN_DIR/$name.png"
+    golden="$VENDOR_DIR/$name.png"
 
     args=("--golden-tolerance" "$TOLERANCE")
     if [[ "$MODE" == "capture" ]]; then
@@ -138,7 +144,8 @@ done
 echo ""
 echo "=== golden $MODE summary ============================================"
 echo "  build dir   : $BUILD_DIR"
-echo "  golden dir  : $GOLDEN_DIR"
+echo "  vendor      : $VENDOR"
+echo "  golden dir  : $VENDOR_DIR"
 echo "  tolerance   : $TOLERANCE / 255 per channel"
 echo "  result      : $PASS/$TOTAL passed, $FAIL failed"
 echo "===================================================================="

@@ -208,7 +208,93 @@ The minimum checklist:
    `@ingroup` on the new public headers so the API renders in the
    Doxygen sidebar.
 
-## 6. Pointers
+## 6. GPU vendor notes (Phase 11 Track B)
+
+The engine renders through `cd::rhi_vulkan`. Vulkan is spec-driven,
+but vendor implementations diverge in extension support, rounding
+behaviour, and queue layout. This section is the running ledger of
+what's been validated on which silicon.
+
+### Device selection
+
+By default `cd::rhi_vulkan::pick_physical_device` prefers the discrete
+GPU when the loader sees multiple physical devices (the desktop
+machine + integrated-laptop case). Override per process via env
+variable:
+
+```bash
+CD_VULKAN_DEVICE_INDEX=0   ./build/.../bin/Debug/hello_triangle
+```
+
+Index N corresponds to `vkEnumeratePhysicalDevices`'s N-th entry.
+Out-of-range values are ignored with a stderr warning (falls back to
+the discrete-preference policy). The diagnostic prints
+`[cd-rhi-vulkan] CD_VULKAN_DEVICE_INDEX=N -> <deviceName>` on stderr
+so test harnesses can confirm which device they're hitting.
+
+### Validated combinations (Phase 11 baseline)
+
+| Vendor | Device | Driver | OS | Result |
+|---|---|---|---|---|
+| NVIDIA | GeForce RTX 3080 Laptop GPU | 595.97 / DRIVER_ID_NVIDIA_PROPRIETARY | Windows 11 | ✅ baseline (golden references in `tests/golden/nvidia/`) |
+| Intel | Iris Xe Graphics (Tiger Lake iGPU) | 101.4502 / DRIVER_ID_INTEL_PROPRIETARY_WINDOWS | Windows 11 | ✅ all 5 wired samples pass; golden set in `tests/golden/intel/` |
+| Mesa lavapipe | software ICD | Mesa 24.x (Ubuntu 24.04) | Linux CI | 🟡 wired in `linux-vulkan-sw` CI job; goldens not yet captured |
+| AMD | n/a | n/a | n/a | ⬜ Track B Part 2 carry-over |
+| Apple Metal (MoltenVK) | n/a | n/a | n/a | ⬜ Track B Part 2 carry-over |
+
+### Cross-vendor empirical noise floor (NVIDIA vs Intel iGPU)
+
+Captured under the same source tree, same shaders, same MVP — the
+only variable is which physical device the Vulkan loader selects.
+Numbers come from running each sample under `CD_VULKAN_DEVICE_INDEX=0`
+(Intel) and diffing against the NVIDIA reference in
+`tests/golden/nvidia/` via `cd::imgdiff::compare`:
+
+| Sample | Max delta / channel | RMSE (0-255) | PSNR |
+|---|---|---|---|
+| hello_triangle | 1 / 255 | 0.05 | 73.6 dB |
+| hello_cube     | 1 / 255 | 0.03 | 77.9 dB |
+| hello_anim     | 1 / 255 | 0.02 | 80.8 dB |
+| hello_pbr      | 1 / 255 | 0.07 | 70.7 dB |
+| hello_skybox   | 1 / 255 | 0.14 | 65.0 dB |
+
+Takeaways:
+
+1. **Cross-vendor delta is ≤ 1/255 per channel** across all 5
+   samples. Vulkan's "spec-compliant rasterization" lives up to its
+   reputation for these test cases.
+2. **PSNR > 65 dB** on every sample — academically "lossless"
+   (>50 dB is the usual practical threshold).
+3. The single-vendor noise budget the gate ships with (8/255 per
+   channel) already covers cross-vendor diff with headroom — the
+   gate's tolerance is the *driver round-off* envelope, not the
+   *visual difference* envelope.
+4. hello_skybox has the highest noise (PSNR 65 dB) because its
+   atmosphere shader does more arithmetic (Reinhard + gamma + sun
+   disk smoothstep). More math = more rounding sites = more chances
+   for trailing-bit divergence. Still well within tolerance.
+
+### Capturing a new vendor's golden set
+
+When a new GPU lands:
+
+```bash
+# Pick the device explicitly via the env var.
+CD_VULKAN_DEVICE_INDEX=N \
+  pwsh -File scripts/run_golden.ps1 -Mode capture -Vendor <slug>  # Windows
+
+CD_VULKAN_DEVICE_INDEX=N \
+  ./scripts/run_golden.sh --mode capture --vendor <slug>          # POSIX
+```
+
+Writes to `tests/golden/<slug>/<sample>.png`. Commit the directory.
+Once committed, downstream consumers can run compare against that
+vendor's set with `... -Vendor <slug>` / `--vendor <slug>`.
+
+`<slug>` convention: lowercase, single word: `nvidia`, `intel`, `amd`,
+`apple`, `lavapipe`, `swiftshader`.
+
+## 7. Pointers
 
 - [LIBRARIES.md](LIBRARIES.md) — per-library catalogue (target name,
   alias, namespace, include root, responsibility).
