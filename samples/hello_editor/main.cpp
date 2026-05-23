@@ -166,10 +166,13 @@ int main(int argc, char** argv)
         return 4;
     auto& ctx = **ctx_r;
 
-    // Enable ImGui docking so panels can be dragged into docks.
-    // The default dock layout is built on first frame below.
+    // ImGui IO accessor — used below for input-gate flags
+    // (WantCaptureMouse / WantCaptureKeyboard). Docking was
+    // briefly wired in v0.42.0 but the dock host stole interaction
+    // from the pinned panels in some configurations; reverted to
+    // the v0.35.1 deterministic layout in v0.44.0. Docking returns
+    // in Phase 16 with a proper DockBuilder pre-laid-out shape.
     ImGuiIO& imgui_io = ImGui::GetIO();
-    imgui_io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     // ---- 3D viewport resources (Phase 14.E) --------------------------------
     // Geometry + material shared across every entity. Per-entity state
@@ -493,33 +496,11 @@ int main(int argc, char** argv)
 
         ctx.new_frame();
 
-        // ---- Full-screen DockSpace (Phase 15.A) ----------------------------
-        // A transparent, no-background dock host fills the entire viewport
-        // so user-dragged panels can dock anywhere. The 3D viewport
-        // (rendered behind ImGui) shows through the DockSpace
-        // background. PassthruCentralNode keeps the central area clear
-        // so the viewport is visible.
-        {
-            const ImGuiViewport* main_vp = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(main_vp->WorkPos);
-            ImGui::SetNextWindowSize(main_vp->WorkSize);
-            ImGui::SetNextWindowViewport(main_vp->ID);
-            ImGuiWindowFlags host_flags =
-                ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking |
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
-                ImGuiWindowFlags_NoResize  | ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoBringToFrontOnFocus |
-                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
-            ImGui::Begin("##DockSpaceHost", nullptr, host_flags);
-            ImGui::PopStyleVar(3);
-            const ImGuiID dock_id = ImGui::GetID("CDDockSpace");
-            ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
-                             ImGuiDockNodeFlags_PassthruCentralNode);
-            ImGui::End();
-        }
+        // DockSpace host removed in v0.44.0 polish — it stole input
+        // from the pinned panels and was inconsistent across reloads.
+        // Phase 16 returns docking with a proper DockBuilder default
+        // layout (Scene left, Inspector right, Toolbar top, History
+        // bottom, viewport center).
 
         // ---- Default layout (Phase 14.A.1 polish) --------------------------
         // ImGui auto-layout scatters new windows in the top-left and
