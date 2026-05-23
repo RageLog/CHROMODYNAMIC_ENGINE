@@ -533,3 +533,44 @@ TEST(SpatialHash, ClearEmptiesEverything)
     sh.clear();
     EXPECT_EQ(sh.cell_count(), 0u);
 }
+
+#include <cd/scene/Frustum.hpp>
+#include <cd/physics/Aabb.hpp>
+
+namespace {
+
+cd::scene::Frustum make_unit_box_frustum()
+{
+    // Six axis-aligned planes forming the box [-1,1]^3, normals pointing inward.
+    cd::scene::Frustum f;
+    f.left   = {{ 1, 0, 0}, 1.0F};   // x >= -1
+    f.right  = {{-1, 0, 0}, 1.0F};   // x <=  1
+    f.bottom = {{ 0, 1, 0}, 1.0F};   // y >= -1
+    f.top    = {{ 0,-1, 0}, 1.0F};   // y <=  1
+    f.near_  = {{ 0, 0, 1}, 1.0F};   // z >= -1
+    f.far_   = {{ 0, 0,-1}, 1.0F};   // z <=  1
+    return f;
+}
+
+}  // anonymous
+
+TEST(Frustum, AabbInsideIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    cd::physics::Aabb inside { { -0.5F, -0.5F, -0.5F }, { 0.5F, 0.5F, 0.5F } };
+    EXPECT_TRUE(cd::scene::intersects(f, inside));
+}
+
+TEST(Frustum, AabbOutsideIsRejected)
+{
+    const auto f = make_unit_box_frustum();
+    cd::physics::Aabb outside { { 2.0F, 2.0F, 2.0F }, { 3.0F, 3.0F, 3.0F } };
+    EXPECT_FALSE(cd::scene::intersects(f, outside));
+}
+
+TEST(Frustum, AabbStraddlingFaceIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    cd::physics::Aabb cross { { 0.5F, 0.5F, 0.5F }, { 1.5F, 1.5F, 1.5F } };
+    EXPECT_TRUE(cd::scene::intersects(f, cross));
+}

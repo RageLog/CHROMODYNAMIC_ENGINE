@@ -771,3 +771,53 @@ TEST(FirReverb, ResetClearsHistory)
     rev.process(zero, 48000);
     for (float v : zero) EXPECT_FLOAT_EQ(v, 0.0F);
 }
+
+#include <cd/audio/SimpleReverb.hpp>
+
+TEST(SimpleReverb, PassesDryThroughAfterPrepare)
+{
+    cd::audio::SimpleReverb r;
+    r.prepare(8);
+    r.set_feedback(0.0F);  // no feedback => pure dry
+    EXPECT_FLOAT_EQ(r.process(1.0F), 1.0F);
+    EXPECT_FLOAT_EQ(r.process(0.0F), 0.0F);
+}
+
+TEST(SimpleReverb, DelayedTapReappearsAfterNSamples)
+{
+    cd::audio::SimpleReverb r;
+    r.prepare(4);
+    r.set_feedback(0.5F);
+    // Tick impulse on sample 0.
+    const float y0 = r.process(1.0F);   // 1 + 0.5*0 = 1
+    EXPECT_FLOAT_EQ(y0, 1.0F);
+    (void)r.process(0.0F);              // tap 1
+    (void)r.process(0.0F);              // tap 2
+    (void)r.process(0.0F);              // tap 3
+    // On tick 4 the delay line re-reads the stored impulse (=1.0F), so
+    // y = 0 + 0.5*1.0 = 0.5.
+    const float y4 = r.process(0.0F);
+    EXPECT_FLOAT_EQ(y4, 0.5F);
+}
+
+TEST(SimpleReverb, FeedbackClampedToStableRange)
+{
+    cd::audio::SimpleReverb r;
+    r.prepare(8);
+    r.set_feedback(5.0F);
+    EXPECT_LE(r.feedback(), 0.99F);
+    r.set_feedback(-5.0F);
+    EXPECT_GE(r.feedback(), -0.99F);
+}
+
+TEST(SimpleReverb, ResetZeroesState)
+{
+    cd::audio::SimpleReverb r;
+    r.prepare(4);
+    r.set_feedback(0.5F);
+    (void)r.process(1.0F);
+    (void)r.process(1.0F);
+    r.reset();
+    // After reset the very next tick reads zero from the delay line.
+    EXPECT_FLOAT_EQ(r.process(0.0F), 0.0F);
+}

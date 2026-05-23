@@ -7,6 +7,7 @@ cd_add_library(scene
     cd::ecs
     cd::math
     cd::core
+    cd::physics     # for cd/scene/Frustum.hpp (Aabb cull, header-only)
     cd::asset_json  # for cd/scene/Serializer.hpp (header-only)
 )
 
