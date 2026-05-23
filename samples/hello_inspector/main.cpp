@@ -312,7 +312,12 @@ int main(int argc, char** argv)
         if (g_selected.is_valid())
         {
             const auto it = labels.find(static_cast<std::uint64_t>(g_selected.id));
-            ImGui::Text("Selected: %s [#%u]", it != labels.end() ? it->second.c_str() : "<unnamed>", g_selected.id);
+            ImGui::Text(
+                "Selected: %s [#%u gen=%u]",
+                it != labels.end() ? it->second.c_str() : "<unnamed>",
+                g_selected.id,
+                g_selected.generation
+            );
             ImGui::Separator();
             auto* lt = scene.local(g_selected);
             if (lt != nullptr)
@@ -337,6 +342,16 @@ int main(int argc, char** argv)
                     }
                 }
             }
+            else
+            {
+                // Tells the user (and helps catch a regression) that the
+                // selected entity doesn't have a LocalTransform — should
+                // never happen via Scene::create_node, but the inspector
+                // shouldn't silently render nothing if it ever does.
+                ImGui::TextDisabled("(no LocalTransform component)");
+            }
+            // Parent line is rendered regardless of lt — knowing the
+            // hierarchy is useful even when the transform read is missing.
             const auto parent = scene.parent_of(g_selected);
             if (parent.is_valid())
             {
