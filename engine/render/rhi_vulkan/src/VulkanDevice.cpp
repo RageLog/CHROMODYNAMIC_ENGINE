@@ -2731,6 +2731,150 @@ public:
             vkDeviceWaitIdle(device_);
     }
 
+    // ---- Ray tracing (Phase 17.A — BLAS creation) -------------------------
+    //
+    // Creates the AS object + its backing buffer. The BUILD is deferred
+    // to the command buffer (ICommandBuffer::build_acceleration_structure).
+    // BLAS only at v0.48.0 — TLAS + RT pipeline + dispatch_rays land in
+    // 17.B.
+    [[nodiscard]] cd::core::Result<cd::rhi::AccelStructureHandle>
+    create_acceleration_structure(const cd::rhi::AccelStructureDesc& desc) override
+    {
+        if (!features_.ray_tracing)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_acceleration_structure: device lacks RT extensions"));
+        }
+        if (desc.kind != cd::rhi::AccelStructureKind::kBottomLevel)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_acceleration_structure: TLAS lands in 17.B"));
+        }
+        if (desc.triangles.empty())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_acceleration_structure: BLAS must have >=1 triangle geometry"));
+        }
+
+        // Build the per-geometry VkAccelerationStructureGeometryKHR list +
+        // primitive-count list. We rely on the buffers already existing in
+        // buffers_ with bufferDeviceAddress retrievable.
+        std::vector<VkAccelerationStructureGeometryKHR> geos;
+        std::vector<std::uint32_t> primitive_counts;
+        geos.reserve(desc.triangles.size());
+        primitive_counts.reserve(desc.triangles.size());
+
+        auto get_device_address = [this](cd::rhi::BufferHandle bh,
+                                         std::uint64_t offset) -> VkDeviceAddress {
+            auto it = buffers_.find(bh.index());
+            if (it == buffers_.end()) return 0;
+            VkBufferDeviceAddressInfo info {};
+            info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            info.buffer = it->second;
+            return vkGetBufferDeviceAddress(device_, &info) + offset;
+        };
+
+        for (const auto& t : desc.triangles)
+        {
+            VkAccelerationStructureGeometryKHR g {};
+            g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+            g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            g.geometry.triangles.sType =
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+            g.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            g.geometry.triangles.vertexData.deviceAddress =
+                get_device_address(t.vertex_buffer, t.vertex_offset);
+            g.geometry.triangles.vertexStride = t.vertex_stride;
+            g.geometry.triangles.maxVertex =
+                t.vertex_count == 0 ? 0 : t.vertex_count - 1;
+            g.geometry.triangles.indexType =
+                (t.index_count > 0)
+                    ? ((t.index_type == cd::rhi::IndexType::kUInt16) ?
+                        VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32)
+                    : VK_INDEX_TYPE_NONE_KHR;
+            g.geometry.triangles.indexData.deviceAddress =
+                t.index_count > 0
+                    ? get_device_address(t.index_buffer, t.index_offset)
+                    : 0;
+            geos.push_back(g);
+            primitive_counts.push_back(
+                t.index_count > 0 ? t.index_count / 3 : t.vertex_count / 3);
+        }
+
+        VkAccelerationStructureBuildGeometryInfoKHR bgi {};
+        bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        bgi.geometryCount = static_cast<std::uint32_t>(geos.size());
+        bgi.pGeometries = geos.data();
+
+        VkAccelerationStructureBuildSizesInfoKHR sizes {};
+        sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+        vkGetAccelerationStructureBuildSizesKHR(
+            device_,
+            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+            &bgi, primitive_counts.data(), &sizes);
+
+        // AS-storage buffer (DEVICE_ADDRESS + AS_STORAGE).
+        VkBufferCreateInfo bci {};
+        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bci.size = sizes.accelerationStructureSize;
+        bci.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo aci {};
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        VkBuffer storage_buf { VK_NULL_HANDLE };
+        VmaAllocation storage_alloc { VK_NULL_HANDLE };
+        if (vmaCreateBuffer(vma_allocator_, &bci, &aci, &storage_buf, &storage_alloc, nullptr) != VK_SUCCESS)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "AS storage buffer allocation failed"));
+        }
+
+        VkAccelerationStructureCreateInfoKHR aci_as {};
+        aci_as.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+        aci_as.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        aci_as.buffer = storage_buf;
+        aci_as.offset = 0;
+        aci_as.size = sizes.accelerationStructureSize;
+        VkAccelerationStructureKHR as { VK_NULL_HANDLE };
+        if (vkCreateAccelerationStructureKHR(device_, &aci_as, nullptr, &as) != VK_SUCCESS)
+        {
+            vmaDestroyBuffer(vma_allocator_, storage_buf, storage_alloc);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "vkCreateAccelerationStructureKHR failed"));
+        }
+
+        AccelRecord rec;
+        rec.as = as;
+        rec.storage_buf = storage_buf;
+        rec.storage_alloc = storage_alloc;
+        rec.scratch_size = sizes.buildScratchSize;
+        rec.kind = desc.kind;
+        const auto id = next_id_++;
+        accels_.emplace(id, std::move(rec));
+        return cd::rhi::AccelStructureHandle { id, 1u };
+    }
+
+    void destroy_acceleration_structure(cd::rhi::AccelStructureHandle h) override
+    {
+        auto it = accels_.find(h.index());
+        if (it == accels_.end()) return;
+        if (it->second.as != VK_NULL_HANDLE)
+            vkDestroyAccelerationStructureKHR(device_, it->second.as, nullptr);
+        if (it->second.storage_buf != VK_NULL_HANDLE)
+            vmaDestroyBuffer(vma_allocator_, it->second.storage_buf, it->second.storage_alloc);
+        accels_.erase(it);
+    }
+
 private:
     struct BufferMeta
     {
@@ -2866,6 +3010,17 @@ private:
     VkDescriptorPool descriptor_pool_ { VK_NULL_HANDLE };
     std::unordered_map<std::uint32_t, VkDescriptorSet> descriptor_sets_;
     std::unordered_map<std::uint32_t, SwapchainRecord> swapchains_;
+
+    // Phase 17.A — acceleration-structure storage
+    struct AccelRecord
+    {
+        VkAccelerationStructureKHR as { VK_NULL_HANDLE };
+        VkBuffer storage_buf { VK_NULL_HANDLE };
+        VmaAllocation storage_alloc { VK_NULL_HANDLE };
+        VkDeviceSize scratch_size { 0 };
+        cd::rhi::AccelStructureKind kind { cd::rhi::AccelStructureKind::kBottomLevel };
+    };
+    std::unordered_map<std::uint32_t, AccelRecord> accels_;
     std::unordered_map<std::uint32_t, VkSemaphore> semaphores_;
     // Timeline semaphores live in their own map even though Vulkan represents
     // both flavors via VkSemaphore; the separation lets the type system catch
