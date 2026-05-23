@@ -54,6 +54,9 @@ if(WIN32)
   add_subdirectory(hello_d3d12_triangle)
 endif()
 
+# hello_replication is cross-platform (loopback connection, no real socket).
+add_subdirectory(hello_replication)
+
 # hello_editor wires cd::editor::EditHistory + TransformCommands into
 # an ImGui-driven inspector. Gated on CD_ENABLE_VULKAN because it
 # rides the cd::imgui_backend Vulkan path (the cd::ui-based
