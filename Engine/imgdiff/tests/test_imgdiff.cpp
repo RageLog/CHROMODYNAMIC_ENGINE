@@ -418,6 +418,77 @@ TEST(FlipLite, DimensionMismatchReturnsError)
               static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kDimensionMismatch));
 }
 
+// -----------------------------------------------------------------------------
+// Full FLIP (Wave 94) — luminance + chroma with per-channel CSF
+// -----------------------------------------------------------------------------
+
+TEST(FlipFull, IdenticalImagesScoreZero)
+{
+    const auto img = solid(16, 16, 90, 140, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_full(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_DOUBLE_EQ(r->mean_error, 0.0);
+    EXPECT_DOUBLE_EQ(r->max_error, 0.0);
+}
+
+TEST(FlipFull, PureChromaShiftRegistersError)
+{
+    // Same luminance, different chroma: lite (luminance-only) would
+    // largely miss this; full should pick it up via Cx/Cz channels.
+    // Build two solid colours with matched Y ≈ 0.2126·R + 0.7152·G +
+    // 0.0722·B but different R/G/B mixes.
+    const auto a = solid(32, 32, 200, 50, 50, 255);   // red-heavy
+    const auto b = solid(32, 32, 50, 130, 200, 255);  // blue-heavy
+    const cd::imgdiff::ImageView va { a.data(), 32, 32 };
+    const cd::imgdiff::ImageView vb { b.data(), 32, 32 };
+    auto lite = cd::imgdiff::compute_flip_lite(va, vb);
+    auto full = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_TRUE(lite.has_value());
+    ASSERT_TRUE(full.has_value());
+    // Full FLIP picks up chroma; mean error should exceed the lite
+    // result on a chroma-only shift (even if luminance happens to
+    // match imperfectly here, the colour gap is significant).
+    EXPECT_GT(full->mean_error, 0.0);
+}
+
+TEST(FlipFull, LargeLuminanceDeltaDetected)
+{
+    const auto white = solid(16, 16, 255, 255, 255, 255);
+    const auto black = solid(16, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { white.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { black.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GT(r->mean_error, 0.5);
+    EXPECT_FALSE(cd::imgdiff::flip_passes(*r));
+}
+
+TEST(FlipFull, ErrorMapBoundedToUnit)
+{
+    const auto white = solid(16, 16, 255, 0, 0, 255);
+    const auto black = solid(16, 16, 0, 255, 255, 255);
+    const cd::imgdiff::ImageView va { white.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { black.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_TRUE(r.has_value());
+    for (double e : r->error_map)
+    {
+        EXPECT_GE(e, 0.0);
+        EXPECT_LE(e, 1.0);
+    }
+}
+
+TEST(FlipFull, DimensionMismatchReturnsError)
+{
+    const auto a = solid(8, 8, 0, 0, 0, 255);
+    const auto b = solid(16, 8, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { b.data(), 16, 8 };
+    auto r = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_FALSE(r.has_value());
+}
+
 TEST(SsimGaussian, IdenticalImagesScoreOne)
 {
     const auto img = solid(32, 32, 90, 140, 210, 255);
