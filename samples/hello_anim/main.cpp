@@ -257,6 +257,14 @@ int main(int argc, char** argv)
     md.color_attachment_formats = kColorFormats;
     md.depth_attachment_format = kDepthFormat;
     md.push_constants = kPush;
+    // The vertex shader applies `clip.y = -clip.y` (Vulkan NDC Y-flip),
+    // which inverts triangle winding from CCW (as authored in kIndices)
+    // to CW after the perspective divide. Pipeline default
+    // front_face = kCounterClockwise + cull = kBack would then drop the
+    // camera-facing faces and leave only the back faces visible
+    // ("see-through cube" — BUG #5 in v1.0 rollback). hello_cube avoids
+    // this by setting kNone; we match.
+    md.raster.cull = cd::rhi::CullMode::kNone;
     md.depth_stencil.depth_test = true;
     md.depth_stencil.depth_write = true;
     md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
