@@ -975,11 +975,96 @@ public:
                         tex_it->second.resource.Get(), &srv, dst);
                     break;
                 }
+                case cd::rhi::DescriptorType::kStorageImage:
+                {
+                    // UAV (Phase 16.B). Texture2D RW for compute /
+                    // graphics-side image stores.
+                    auto view_it = texture_views_.find(w.view.index());
+                    if (view_it == texture_views_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: UAV view unknown"));
+                    auto tex_it = textures_.find(view_it->second.parent.index());
+                    if (tex_it == textures_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: UAV texture unknown"));
+                    D3D12_UNORDERED_ACCESS_VIEW_DESC uav {};
+                    uav.Format = view_it->second.format;
+                    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                    uav.Texture2D.MipSlice = 0;
+                    uav.Texture2D.PlaneSlice = 0;
+                    device_->CreateUnorderedAccessView(
+                        tex_it->second.resource.Get(), nullptr, &uav, dst);
+                    break;
+                }
+                case cd::rhi::DescriptorType::kStorageBuffer:
+                case cd::rhi::DescriptorType::kStorageBufferDynamic:
+                {
+                    // UAV Buffer (raw / structured). Phase 16.B
+                    // ships the raw flavour (one element per 4 bytes);
+                    // structured stride needs more descriptor metadata.
+                    auto buf_it = buffers_.find(w.buffer.index());
+                    if (buf_it == buffers_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: UAV buffer unknown"));
+                    D3D12_UNORDERED_ACCESS_VIEW_DESC uav {};
+                    uav.Format = DXGI_FORMAT_R32_TYPELESS;
+                    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+                    uav.Buffer.FirstElement = w.buffer_offset / 4;
+                    UINT64 range = w.buffer_range == 0
+                        ? (buf_it->second.size - w.buffer_offset)
+                        : w.buffer_range;
+                    uav.Buffer.NumElements = static_cast<UINT>(range / 4);
+                    uav.Buffer.StructureByteStride = 0;
+                    uav.Buffer.CounterOffsetInBytes = 0;
+                    uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+                    device_->CreateUnorderedAccessView(
+                        buf_it->second.resource.Get(), nullptr, &uav, dst);
+                    break;
+                }
+                case cd::rhi::DescriptorType::kCombinedImageSampler:
+                {
+                    // CombinedImageSampler maps to a Texture2D SRV in
+                    // the CBV/SRV/UAV table (the sampler half goes
+                    // into a separate sampler heap when present; for
+                    // v0.47.0 we route to a static-sampler fallback
+                    // baked into the root signature). Same SRV path
+                    // as kSampledImage.
+                    auto view_it = texture_views_.find(w.view.index());
+                    if (view_it == texture_views_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: combined SRV view unknown"));
+                    auto tex_it = textures_.find(view_it->second.parent.index());
+                    if (tex_it == textures_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: combined SRV texture unknown"));
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
+                    srv.Format = view_it->second.format;
+                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srv.Shader4ComponentMapping =
+                        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srv.Texture2D.MipLevels = 1;
+                    device_->CreateShaderResourceView(
+                        tex_it->second.resource.Get(), &srv, dst);
+                    break;
+                }
+                case cd::rhi::DescriptorType::kSampler:
+                    // Sampler writes belong in a separate sampler heap;
+                    // this CBV/SRV/UAV-only update path skips them.
+                    // The root signature currently bakes static
+                    // samplers (LINEAR clamp by default) so this
+                    // skip is safe for the v0.47.0 short-list of
+                    // forward-shaded samples.
+                    break;
                 default:
                     return std::unexpected(cd::rhi::rhi_errors::make(
                         cd::rhi::rhi_errors::Code::kNotImplemented,
-                        "update_descriptor_set: type not in v0.43.0 short-list "
-                        "(CBV + Texture2D SRV); UAV / sampler / cube SRV later"));
+                        "update_descriptor_set: descriptor type not yet wired "
+                        "(input attachment / cube SRV — coming in a follow-up)"));
             }
         }
         return {};
