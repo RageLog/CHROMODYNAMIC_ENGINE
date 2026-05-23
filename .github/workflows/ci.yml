@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [master, main, dev]
   workflow_dispatch:
+    inputs:
+      capture_lavapipe_goldens:
+        description: "Run lavapipe golden capture and upload as artifact"
+        type: boolean
+        default: false
+        required: false
 
 env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
@@ -250,6 +256,40 @@ jobs:
                                    # collecting; failing the gate is for
                                    # the next iteration once we know its
                                    # noise floor.
+      - name: Golden compare (lavapipe vendor set)
+        # Phase 13.B — runs the wired-sample golden harness against the
+        # committed tests/golden/lavapipe/ set. Skips silently when the
+        # directory is empty (the references are populated by the
+        # workflow_dispatch capture job below; on a fresh repo the
+        # placeholder is the only file present). Once a real reference
+        # set lands, every push triggers a bit-budget compare on the
+        # software backend, which catches regressions that NVIDIA-side
+        # gates can't see.
+        run: |
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          REF_COUNT=$(find tests/golden/lavapipe -maxdepth 1 -name '*.png' 2>/dev/null | wc -l)
+          if [ "${REF_COUNT}" -eq 0 ]; then
+            echo "[lavapipe-compare] tests/golden/lavapipe/ has no .png references yet; skipping."
+            echo "[lavapipe-compare] Trigger the workflow_dispatch 'capture_lavapipe_goldens' job to populate."
+            exit 0
+          fi
+          xvfb-run -a --server-args='-screen 0 1280x720x24' \
+            bash scripts/run_golden.sh \
+              --mode compare \
+              --build-dir build/ci-clang \
+              --config Debug \
+              --vendor lavapipe \
+              --tolerance 16 \
+              --diff-dir build/ci-clang/golden-diff-lavapipe
+        env:
+          CD_RHI_PREFER_X11: "ON"
+      - name: Upload lavapipe golden-diff artifacts (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-vulkan-sw-lavapipe-golden-diff
+          path: build/ci-clang/golden-diff-lavapipe/**
+          if-no-files-found: ignore
       - name: Upload smoke logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -257,6 +297,79 @@ jobs:
           name: linux-vulkan-sw-smoke-logs
           path: build/ci-clang/smoke-logs/**
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Lavapipe golden capture (workflow_dispatch only). Phase 13.B Part 1.
+  #
+  # Trigger from the Actions tab with capture_lavapipe_goldens=true. Builds
+  # the engine, runs every wired sample under xvfb + lavapipe in
+  # `--golden-capture` mode, and uploads the resulting PNG set as an
+  # artifact. Operator workflow:
+  #
+  #   1. Run "CI" workflow with capture_lavapipe_goldens=true.
+  #   2. Download the linux-lavapipe-goldens artifact.
+  #   3. Unzip into tests/golden/lavapipe/ on a working copy.
+  #   4. git add + commit + push.
+  #   5. Subsequent runs of the linux-vulkan-sw job now gate on bit-budget
+  #      compare against the committed set.
+  #
+  # No auto-commit — the captured PNGs are deliberately routed through a
+  # human review step (size sanity, no validation-layer corruption,
+  # no all-black frames). The infrastructure is the marathon-shippable
+  # piece; the artifact requires one intentional re-trigger by an operator.
+  # ---------------------------------------------------------------------------
+  linux-lavapipe-golden-capture:
+    name: Linux / lavapipe golden capture (dispatch only)
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.capture_lavapipe_goldens == 'true'
+    runs-on: ubuntu-24.04
+    needs: lint
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain + Vulkan SW stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            xvfb
+      - name: Vulkan ICD smoke (vulkaninfo)
+        run: |
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          vulkaninfo --summary | head -40 || true
+      - name: Configure (Vulkan ON)
+        run: |
+          cmake --preset ci-clang \
+            -DCD_DISABLE_VCPKG=ON \
+            -DCD_ENABLE_VULKAN=ON
+      - name: Build
+        run: cmake --build --preset ci-clang-debug
+      - name: Capture goldens via run_golden.sh --vendor lavapipe
+        run: |
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          xvfb-run -a --server-args='-screen 0 1280x720x24' \
+            bash scripts/run_golden.sh \
+              --mode capture \
+              --build-dir build/ci-clang \
+              --config Debug \
+              --vendor lavapipe
+        env:
+          CD_RHI_PREFER_X11: "ON"
+      - name: List captured references
+        run: |
+          ls -la tests/golden/lavapipe/
+          file tests/golden/lavapipe/*.png || true
+      - name: Upload captured goldens
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-lavapipe-goldens
+          path: tests/golden/lavapipe/*.png
+          if-no-files-found: error
+          retention-days: 30
 
   # ---------------------------------------------------------------------------
   # macOS (AppleClang) — uses ci-appleclang preset

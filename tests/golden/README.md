@@ -21,7 +21,9 @@ tests/golden/
 │   └── hello_skybox.png
 ├── intel/       ← captured on Intel Iris Xe Graphics (Tiger Lake iGPU)
 │   └── (same 5 sample names)
-├── lavapipe/    ← TBD: Linux Vulkan software ICD (CI runs)
+├── lavapipe/    ← Linux Vulkan software ICD (Phase 13.B; CI runs).
+│                  Populated via the `linux-lavapipe-golden-capture`
+│                  workflow_dispatch job — see `lavapipe/README.md`.
 └── README.md    ← you are here
 ```
 
