@@ -16,6 +16,7 @@
 #include <cd/log/JsonLogger.hpp>
 #include <cd/log/LogLevel.hpp>
 #include <cd/log/LogRecord.hpp>
+#include <cd/log/RingBufferSink.hpp>
 #include <cd/log/Service.hpp>
 #include <gtest/gtest.h>
 
@@ -290,6 +291,115 @@ TEST(JsonLogger, RespectsLevelFilter)
 
     EXPECT_EQ(contents.find("should drop"), std::string::npos);
     EXPECT_NE(contents.find("kept"), std::string::npos);
+}
+
+// --- RingBufferSink (Wave 110) ------------------------------------------
+
+namespace
+{
+cd::log::LogRecord make_record(std::string msg, cd::log::LogLevel lvl = cd::log::LogLevel::Info)
+{
+    cd::log::LogRecord r;
+    r.message = std::move(msg);
+    r.level = lvl;
+    return r;
+}
+}  // namespace
+
+TEST(RingBufferSink, BelowCapacityKeepsAllInsertionOrder)
+{
+    cd::log::RingBufferSink sink { 4 };
+    sink.on_log_record(make_record("a"));
+    sink.on_log_record(make_record("b"));
+    sink.on_log_record(make_record("c"));
+    EXPECT_EQ(sink.size(), 3u);
+    EXPECT_FALSE(sink.wrapped());
+
+    auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 3u);
+    EXPECT_EQ(snap[0].message, "a");
+    EXPECT_EQ(snap[1].message, "b");
+    EXPECT_EQ(snap[2].message, "c");
+}
+
+TEST(RingBufferSink, AtCapacityFullSnapshot)
+{
+    cd::log::RingBufferSink sink { 3 };
+    sink.on_log_record(make_record("a"));
+    sink.on_log_record(make_record("b"));
+    sink.on_log_record(make_record("c"));
+    EXPECT_EQ(sink.size(), 3u);
+    EXPECT_FALSE(sink.wrapped());
+
+    auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 3u);
+    EXPECT_EQ(snap[0].message, "a");
+    EXPECT_EQ(snap[2].message, "c");
+}
+
+TEST(RingBufferSink, WrapDropsOldestKeepsRecent)
+{
+    cd::log::RingBufferSink sink { 3 };
+    sink.on_log_record(make_record("a"));
+    sink.on_log_record(make_record("b"));
+    sink.on_log_record(make_record("c"));
+    sink.on_log_record(make_record("d"));  // 'a' dropped
+    sink.on_log_record(make_record("e"));  // 'b' dropped
+    EXPECT_EQ(sink.size(), 3u);
+    EXPECT_TRUE(sink.wrapped());
+
+    auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 3u);
+    EXPECT_EQ(snap[0].message, "c");
+    EXPECT_EQ(snap[1].message, "d");
+    EXPECT_EQ(snap[2].message, "e");
+}
+
+TEST(RingBufferSink, ClearResetsState)
+{
+    cd::log::RingBufferSink sink { 2 };
+    sink.on_log_record(make_record("a"));
+    sink.on_log_record(make_record("b"));
+    sink.on_log_record(make_record("c"));  // wrap
+    EXPECT_TRUE(sink.wrapped());
+    sink.clear();
+    EXPECT_EQ(sink.size(), 0u);
+    EXPECT_FALSE(sink.wrapped());
+
+    sink.on_log_record(make_record("x"));
+    auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 1u);
+    EXPECT_EQ(snap[0].message, "x");
+}
+
+TEST(RingBufferSink, AttachedToConsoleLoggerObserversReceiveRecords)
+{
+    cd::log::ConsoleLogger logger;
+    logger.set_level(cd::log::LogLevel::Trace);
+    cd::log::RingBufferSink sink { 16 };
+    logger.add_observer(&sink);
+
+    logger.info(std::source_location::current(), "alpha={}", 1);
+    logger.warn(std::source_location::current(), "beta={}", 2);
+
+    logger.remove_observer(&sink);
+
+    auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 2u);
+    EXPECT_NE(snap[0].message.find("alpha=1"), std::string::npos);
+    EXPECT_NE(snap[1].message.find("beta=2"), std::string::npos);
+    EXPECT_EQ(snap[1].level, cd::log::LogLevel::Warning);
+}
+
+TEST(RingBufferSink, CapacityZeroIsClampedToOne)
+{
+    cd::log::RingBufferSink sink { 0 };
+    EXPECT_EQ(sink.capacity(), 1u);
+    sink.on_log_record(make_record("only"));
+    sink.on_log_record(make_record("survivor"));
+    auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 1u);
+    EXPECT_EQ(snap[0].message, "survivor");
 }
 
 }  // namespace
