@@ -9,6 +9,7 @@
 
 cd_add_library(material
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive on cd::shader (vendored glslang)
   SOURCES
     src/Material.cpp
   PUBLIC_DEPS

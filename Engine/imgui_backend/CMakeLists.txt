@@ -18,6 +18,7 @@ FetchContent_MakeAvailable(imgui)
 
 cd_add_library(imgui_backend
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL
   SOURCES
     src/Context.cpp
   PUBLIC_DEPS

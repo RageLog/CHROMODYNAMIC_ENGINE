@@ -13,6 +13,7 @@
 
 cd_add_library(cluster_gpu
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive on cd::shader (vendored glslang)
   SOURCES src/GpuPipeline.cpp
   PUBLIC_DEPS cd::cluster cd::rhi cd::shader cd::core
 )

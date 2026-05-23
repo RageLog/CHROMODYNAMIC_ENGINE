@@ -85,6 +85,7 @@ endif()
 
 cd_add_library(rhi_vulkan
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # vendored volk + Vulkan-Headers + VMA via FetchContent
   SOURCES
     src/VulkanInstance.cpp
     src/VulkanDevice.cpp

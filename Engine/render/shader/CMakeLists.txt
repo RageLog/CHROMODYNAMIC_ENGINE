@@ -59,6 +59,7 @@ endif()
 
 cd_add_library(shader
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # vendored glslang/SPIRV via FetchContent
   SOURCES
     src/SpirvFile.cpp
     src/CachedCompiler.cpp

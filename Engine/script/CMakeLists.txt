@@ -54,6 +54,7 @@ set_target_properties(cd_lua_internal PROPERTIES
 # --- cd::script public library ----------------------------------------------
 
 cd_add_library(script
+  EXCLUDE_FROM_INSTALL  # vendored Lua via FetchContent — not in export set
   SOURCES
     src/Engine.cpp
   PUBLIC_DEPS cd::core

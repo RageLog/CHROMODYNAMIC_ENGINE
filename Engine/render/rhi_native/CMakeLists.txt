@@ -16,6 +16,7 @@ endif()
 
 cd_add_library(rhi_native
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive on cd::rhi_vulkan (vendored volk/VMA)
   SOURCES src/NativeDevice.cpp
   PUBLIC_DEPS ${_RHI_NATIVE_DEPS}
 )

@@ -99,6 +99,12 @@ option(CD_ENABLE_CLANG_FORMAT "Run clang-format as build step (Sprint S2.0+ stub
 option(CD_ENABLE_DOXYGEN     "Generate Doxygen API documentation (Sprint S2.0+ stub)" OFF)
 option(CD_ENABLE_UNITY_BUILD "Enable CMake unity build (faster compile)"         OFF)
 option(CD_ENABLE_COVERAGE    "Enable code coverage instrumentation (GCC/Clang)"  OFF)
+# Install pipeline — default ON for top-level builds, OFF for nested subdirectory builds.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  option(CD_ENABLE_INSTALL "Generate install() + find_package(CHROMODYNAMIC) artifacts" ON)
+else()
+  option(CD_ENABLE_INSTALL "Generate install() + find_package(CHROMODYNAMIC) artifacts" OFF)
+endif()
 # Legacy DfH-style alias kept for migration convenience: ENABLE_SANITIZERS=ON → asan
 if(DEFINED ENABLE_SANITIZERS AND ENABLE_SANITIZERS AND CD_SANITIZER STREQUAL "none")
   set(CD_SANITIZER "asan" CACHE STRING "" FORCE)
@@ -127,6 +133,7 @@ include(CDCompilerDetection)   # CD_HAS_CXX26_* probes
 include(CDVendor)              # cd_mark_target_system_includes
 include(CDDoxygen)             # cd_setup_doxygen → `cd_docs` custom target
 include(CDSmoke)               # cd_setup_smoke   → `smoke` custom target
+include(CDInstall)             # cd_finalize_install → CHROMODYNAMICConfig export
 
 # --- Threads (required by concurrency) ---
 find_package(Threads REQUIRED)
@@ -250,6 +257,9 @@ cd_setup_smoke()
 # the active preset uses (clang-cl on MSVC, g++ on MinGW, clang++ on Clang).
 include(Clangd)
 
+# --- Install pipeline finalization (no-op when CD_ENABLE_INSTALL=OFF) ---
+cd_finalize_install()
+
 # --- Summary ---
 message(STATUS "")
 message(STATUS "[cd] ====== CHROMODYNAMIC ${PROJECT_VERSION} configuration ======")
@@ -261,6 +271,7 @@ message(STATUS "[cd] Warnings as error : ${CD_WARNINGS_AS_ERRORS}")
 message(STATUS "[cd] PCH               : ${CD_ENABLE_PCH}")
 message(STATUS "[cd] LTO               : ${CD_ENABLE_LTO}")
 message(STATUS "[cd] Sanitizer         : ${CD_SANITIZER}")
+message(STATUS "[cd] Install           : ${CD_ENABLE_INSTALL}")
 get_property(_cd_libs GLOBAL PROPERTY CD_ALL_LIBRARIES)
 list(LENGTH _cd_libs _cd_lib_count)
 message(STATUS "[cd] Libraries declared: ${_cd_lib_count}")

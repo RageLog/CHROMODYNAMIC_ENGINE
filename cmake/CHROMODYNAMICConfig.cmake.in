@@ -1,0 +1,45 @@
+# =============================================================================
+# CHROMODYNAMICConfig.cmake.in — package config template
+# Configured by configure_package_config_file() in CDInstall.cmake.
+#
+# Downstream consumers do:
+#
+#   find_package(CHROMODYNAMIC 0.24 REQUIRED)
+#   target_link_libraries(myapp PRIVATE cd::core cd::diag cd::log)
+#
+# This file resolves the install-relative paths and pulls in the
+# generated CHROMODYNAMICTargets.cmake which declares the cd::*
+# IMPORTED targets.
+# =============================================================================
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# CHROMODYNAMIC libraries are self-contained: every public dependency
+# (Vulkan headers, googletest, etc.) is either vendored via FetchContent
+# at build time or compiled into the static library, so the package
+# config itself does not need to find_dependency() anything.
+#
+# Future-proofing: if a tier ever needs an external runtime dependency
+# (e.g. system Vulkan loader for plugin builds), add it here behind a
+# CHROMODYNAMIC_FIND_<COMPONENT>_REQUIRED guard.
+
+include("${CMAKE_CURRENT_LIST_DIR}/CHROMODYNAMICTargets.cmake")
+
+# Sanity: confirm at least one expected target was imported. The list
+# is intentionally tiny — adding every library here would force a
+# version-by-version maintenance burden for no gain. cd::core is the
+# foundation tier root and must be present in any sane install.
+if(NOT TARGET cd::core)
+  set(CHROMODYNAMIC_FOUND FALSE)
+  set(CHROMODYNAMIC_NOT_FOUND_MESSAGE
+    "CHROMODYNAMICTargets.cmake did not import cd::core. "
+    "The install tree is incomplete or was produced by a different version."
+  )
+  return()
+endif()
+
+set(CHROMODYNAMIC_VERSION "@PROJECT_VERSION@")
+# (no components — find_package(CHROMODYNAMIC COMPONENTS ...) isn't a
+# surface we expose, so we don't call check_required_components.)

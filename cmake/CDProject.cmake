@@ -28,7 +28,7 @@ include_guard(GLOBAL)
 # )
 #-------------------------------------------------------------------------------
 function(cd_add_library short_name)
-  set(options "")
+  set(options EXCLUDE_FROM_INSTALL)
   set(oneValueArgs TYPE PCH)
   set(multiValueArgs SOURCES PUBLIC_DEPS PRIVATE_DEPS)
   cmake_parse_arguments(CD "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
@@ -51,7 +51,7 @@ function(cd_add_library short_name)
     target_include_directories(${target_name}
       INTERFACE
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     )
     if(CD_PUBLIC_DEPS)
       target_link_libraries(${target_name} INTERFACE ${CD_PUBLIC_DEPS})
@@ -62,7 +62,7 @@ function(cd_add_library short_name)
     target_include_directories(${target_name}
       PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
       PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
@@ -102,7 +102,48 @@ function(cd_add_library short_name)
 
   add_library(${alias_name} ALIAS ${target_name})
 
+  # EXPORT_NAME drives what install(EXPORT) prints — without it we get
+  # "cd::cd_core" because the namespace prefix is concatenated onto the
+  # raw target name. With EXPORT_NAME=core the consumer sees `cd::core`,
+  # matching the build-tree alias above.
+  set_target_properties(${target_name} PROPERTIES EXPORT_NAME ${short_name})
+
   set_property(GLOBAL APPEND PROPERTY CD_ALL_LIBRARIES ${target_name})
+
+  # Install rules — opt-in via CD_ENABLE_INSTALL (default ON when this
+  # project is the top-level build, OFF when consumed as a subproject).
+  # Per-target opt-out via EXCLUDE_FROM_INSTALL for libraries whose
+  # public headers leak vendored include paths (e.g. imgui_backend
+  # pulls dear-imgui headers from the FetchContent source dir, which
+  # install(EXPORT) rejects because those paths won't exist post-
+  # install). Downstream consumers who need such a library build it
+  # from source against this repo's CMake DSL.
+  # The export set name is CHROMODYNAMICTargets and is finalized by the
+  # top-level CMakeLists.txt (cd_finalize_install() — see CDInstall.cmake).
+  if(CD_ENABLE_INSTALL AND NOT CD_EXCLUDE_FROM_INSTALL)
+    include(GNUInstallDirs)
+    if(CD_TYPE STREQUAL "INTERFACE")
+      install(TARGETS ${target_name}
+        EXPORT CHROMODYNAMICTargets
+      )
+    else()
+      install(TARGETS ${target_name}
+        EXPORT  CHROMODYNAMICTargets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      )
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include")
+      install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING
+          PATTERN "*.hpp"
+          PATTERN "*.h"
+          PATTERN "*.inl"
+      )
+    endif()
+  endif()
 
   if(NOT CD_QUIET)
     message(STATUS "[cd] library ${alias_name} (${CD_TYPE})")
