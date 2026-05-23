@@ -31,6 +31,7 @@ add_subdirectory(hello_watch)
 add_subdirectory(hello_events)
 add_subdirectory(hello_flip)
 add_subdirectory(hello_script)
+add_subdirectory(hello_positional_audio)
 
 # hello_triangle requires the Vulkan backend; gate so the rest of the
 # engine still builds when CD_ENABLE_VULKAN=OFF.
