@@ -121,12 +121,16 @@ TEST(NativeBackend, AlwaysReturnsUsableBackend)
     EXPECT_EQ(result.backend->voice_count(), 0U);
 }
 
-TEST(NativeBackend, CoreAudioStubReturnsNullEverywhere)
+TEST(NativeBackend, CoreAudioReturnsNullOnNonApple)
 {
-    // The CoreAudio backend is a documented stub — the symbol must
-    // exist and return nullptr until the AudioUnit implementation lands.
+    // Post Wave-79: real AudioUnit impl on __APPLE__, nullptr factory
+    // on every other platform. We test on Windows here so the factory
+    // returns nullptr; on macOS CI the factory MAY return non-null if
+    // the runner has a default audio device, or nullptr in headless mode.
     auto core = cd::audio::make_coreaudio_backend();
+#if !defined(__APPLE__)
     EXPECT_EQ(core, nullptr);
+#endif
 }
 
 TEST(NativeBackend, AlsaStubReturnsNullEverywhere)
