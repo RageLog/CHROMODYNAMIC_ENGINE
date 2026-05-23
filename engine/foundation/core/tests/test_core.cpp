@@ -632,3 +632,49 @@ TEST(CoreCVar, EraseRemovesEntry)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Phase 21.B — SmallVector tests (Wave 184)
+// ---------------------------------------------------------------------------
+#include <cd/core/SmallVector.hpp>
+
+TEST(SmallVector, EmptyOnConstruction)
+{
+    cd::core::SmallVector<int, 4> v;
+    EXPECT_EQ(v.size(), 0u);
+    EXPECT_TRUE(v.empty());
+    EXPECT_EQ(v.capacity(), 4u);
+}
+
+TEST(SmallVector, PushBackWithinInlineCapacity)
+{
+    cd::core::SmallVector<int, 4> v;
+    v.push_back(10);
+    v.push_back(20);
+    EXPECT_EQ(v.size(), 2u);
+    EXPECT_EQ(v[0], 10);
+    EXPECT_EQ(v[1], 20);
+    EXPECT_EQ(v.capacity(), 4u);
+}
+
+TEST(SmallVector, GrowsToHeapBeyondInlineCapacity)
+{
+    cd::core::SmallVector<int, 2> v;
+    v.push_back(1);
+    v.push_back(2);
+    v.push_back(3);
+    EXPECT_EQ(v.size(), 3u);
+    EXPECT_GE(v.capacity(), 3u);
+    EXPECT_EQ(v[0], 1);
+    EXPECT_EQ(v[2], 3);
+}
+
+TEST(SmallVector, PopBackShrinks)
+{
+    cd::core::SmallVector<int, 4> v;
+    v.push_back(7);
+    v.push_back(8);
+    v.pop_back();
+    EXPECT_EQ(v.size(), 1u);
+    EXPECT_EQ(v[0], 7);
+}

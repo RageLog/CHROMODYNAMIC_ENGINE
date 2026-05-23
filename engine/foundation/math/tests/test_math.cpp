@@ -481,3 +481,46 @@ TEST(Matrix, SingularMatrixInverseFallsBackToIdentity)
         for (std::size_t r = 0; r < 4; ++r)
             EXPECT_NEAR(inv[c][r], id[c][r], 1e-6f);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 21.E — Easing tests (Wave 184)
+// ---------------------------------------------------------------------------
+#include <cd/math/Easing.hpp>
+
+TEST(Easing, LinearIsIdentityInRange)
+{
+    EXPECT_FLOAT_EQ(cd::math::linear(0.0F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::linear(0.5F), 0.5F);
+    EXPECT_FLOAT_EQ(cd::math::linear(1.0F), 1.0F);
+}
+
+TEST(Easing, LinearClampsOutsideRange)
+{
+    EXPECT_FLOAT_EQ(cd::math::linear(-0.5F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::linear(1.5F), 1.0F);
+}
+
+TEST(Easing, SmoothstepSymmetricAroundHalf)
+{
+    EXPECT_FLOAT_EQ(cd::math::smoothstep(0.0F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::smoothstep(1.0F), 1.0F);
+    // Smoothstep(0.5) = 0.5 by symmetry.
+    EXPECT_NEAR(cd::math::smoothstep(0.5F), 0.5F, 1e-6F);
+}
+
+TEST(Easing, EaseInQuadIsZeroAtZero)
+{
+    EXPECT_FLOAT_EQ(cd::math::ease_in_quad(0.0F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::ease_in_quad(1.0F), 1.0F);
+    EXPECT_FLOAT_EQ(cd::math::ease_in_quad(0.5F), 0.25F);
+}
+
+TEST(Easing, EaseOutQuadMirrorsEaseIn)
+{
+    EXPECT_NEAR(cd::math::ease_out_quad(0.5F), 0.75F, 1e-6F);
+}
+
+TEST(Easing, EaseInOutCubicHalfPointIsHalf)
+{
+    EXPECT_NEAR(cd::math::ease_in_out_cubic(0.5F), 0.5F, 1e-6F);
+}

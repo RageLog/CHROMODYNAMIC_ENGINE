@@ -213,3 +213,36 @@ TEST(Aabb, MergeExpandsToCoverBoth)
     EXPECT_FLOAT_EQ(m.min.x, 0.0F);
     EXPECT_FLOAT_EQ(m.max.x, 3.0F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 21.A — Sphere primitive tests (Wave 184)
+// ---------------------------------------------------------------------------
+#include <cd/physics/Sphere.hpp>
+
+TEST(Sphere, SphereSphereOverlapping)
+{
+    cd::physics::Sphere a { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    cd::physics::Sphere b { cd::math::Vec3f { 1.5F, 0, 0 }, 1.0F };
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(Sphere, SphereSphereSeparated)
+{
+    cd::physics::Sphere a { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    cd::physics::Sphere b { cd::math::Vec3f { 3, 0, 0 }, 1.0F };
+    EXPECT_FALSE(cd::physics::intersects(a, b));
+}
+
+TEST(Sphere, SphereAabbIntersection)
+{
+    cd::physics::Sphere s { cd::math::Vec3f { 2, 0, 0 }, 1.5F };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, -1, -1 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_TRUE(cd::physics::intersects(s, a));
+}
+
+TEST(Sphere, ContainsPoint)
+{
+    cd::physics::Sphere s { cd::math::Vec3f { 0, 0, 0 }, 2.0F };
+    EXPECT_TRUE(cd::physics::contains(s, cd::math::Vec3f { 1, 1, 1 }));
+    EXPECT_FALSE(cd::physics::contains(s, cd::math::Vec3f { 5, 0, 0 }));
+}
