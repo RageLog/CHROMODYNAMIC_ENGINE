@@ -357,6 +357,74 @@ cd::core::Result<void> Engine::call_global_numeric(std::string_view name,
     return {};
 }
 
+cd::core::Result<void> Engine::call_global_mixed(std::string_view name,
+                                                  std::span<const LuaValue> args,
+                                                  std::vector<LuaValue>& out,
+                                                  std::uint32_t expected_returns)
+{
+    out.clear();
+    if (!valid())
+        return std::unexpected(script_errors::make(script_errors::Code::kAllocFailed));
+    install_instruction_cap_(impl_->L, impl_->instruction_cap);
+    const std::string n { name };
+    ::lua_getglobal(impl_->L, n.c_str());
+    if (lua_isfunction(impl_->L, -1) == 0)
+    {
+        ::lua_pop(impl_->L, 1);
+        impl_->last_error = "global '" + n + "' is not callable";
+        return std::unexpected(script_errors::make(
+            script_errors::Code::kRuntimeError));
+    }
+    for (const auto& a : args)
+    {
+        if (std::holds_alternative<double>(a))
+            ::lua_pushnumber(impl_->L, std::get<double>(a));
+        else if (std::holds_alternative<std::string>(a))
+        {
+            const auto& s = std::get<std::string>(a);
+            ::lua_pushlstring(impl_->L, s.data(), s.size());
+        }
+        else
+        {
+            ::lua_pushboolean(impl_->L, std::get<bool>(a) ? 1 : 0);
+        }
+    }
+    const int rc = ::lua_pcall(impl_->L, static_cast<int>(args.size()),
+                               static_cast<int>(expected_returns), 0);
+    if (rc != LUA_OK)
+    {
+        capture_top_error(impl_->L, impl_->last_error);
+        return std::unexpected(script_errors::make(
+            script_errors::Code::kRuntimeError));
+    }
+    out.reserve(expected_returns);
+    for (std::uint32_t i = 0; i < expected_returns; ++i)
+    {
+        const int idx = -static_cast<int>(expected_returns) + static_cast<int>(i);
+        const int t = ::lua_type(impl_->L, idx);
+        if (t == LUA_TNUMBER)
+            out.emplace_back(::lua_tonumber(impl_->L, idx));
+        else if (t == LUA_TBOOLEAN)
+            out.emplace_back(::lua_toboolean(impl_->L, idx) != 0);
+        else if (t == LUA_TSTRING)
+        {
+            std::size_t len = 0;
+            const char* s = ::lua_tolstring(impl_->L, idx, &len);
+            out.emplace_back(std::string { s, len });
+        }
+        else
+        {
+            // Unsupported variant slot → encode as bool(false) so the
+            // caller still gets `expected_returns` entries back. Avoid
+            // silently dropping slots and breaking positional access.
+            out.emplace_back(false);
+        }
+    }
+    ::lua_pop(impl_->L, static_cast<int>(expected_returns));
+    impl_->last_error.clear();
+    return {};
+}
+
 void Engine::set_instruction_cap(std::uint64_t max_instructions) noexcept
 {
     if (impl_)

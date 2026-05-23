@@ -284,4 +284,77 @@ TEST(ScriptSandbox, ClearCapAllowsLongLoops)
     EXPECT_TRUE(good.has_value());
 }
 
+// --- Mixed-type call (Wave 99) ---------------------------------------------
+
+TEST(ScriptMixed, MixedArgsRoundTrip)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string(
+        "function describe(n, name, flag) "
+        "  if flag then return name .. ':' .. tostring(n) "
+        "  else return name end "
+        "end").has_value());
+    std::array<cd::script::LuaValue, 3> args {
+        cd::script::LuaValue { 7.0 },
+        cd::script::LuaValue { std::string { "score" } },
+        cd::script::LuaValue { true }
+    };
+    std::vector<cd::script::LuaValue> out;
+    auto r = eng.call_global_mixed("describe", args, out, 1);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 1U);
+    ASSERT_TRUE(std::holds_alternative<std::string>(out[0]));
+    EXPECT_EQ(std::get<std::string>(out[0]), "score:7.0");
+}
+
+TEST(ScriptMixed, ReturnsHeterogeneousTuple)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string(
+        "function triple() return 42, 'hello', true end").has_value());
+    std::vector<cd::script::LuaValue> out;
+    auto r = eng.call_global_mixed("triple", {}, out, 3);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 3U);
+    ASSERT_TRUE(std::holds_alternative<double>(out[0]));
+    EXPECT_DOUBLE_EQ(std::get<double>(out[0]), 42.0);
+    ASSERT_TRUE(std::holds_alternative<std::string>(out[1]));
+    EXPECT_EQ(std::get<std::string>(out[1]), "hello");
+    ASSERT_TRUE(std::holds_alternative<bool>(out[2]));
+    EXPECT_TRUE(std::get<bool>(out[2]));
+}
+
+TEST(ScriptMixed, FalseBoolReturnsExplicitly)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string("function neg() return false end").has_value());
+    std::vector<cd::script::LuaValue> out;
+    auto r = eng.call_global_mixed("neg", {}, out, 1);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 1U);
+    ASSERT_TRUE(std::holds_alternative<bool>(out[0]));
+    EXPECT_FALSE(std::get<bool>(out[0]));
+}
+
+TEST(ScriptMixed, EmptyArgsZeroReturnsOk)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string("function noop() end").has_value());
+    std::vector<cd::script::LuaValue> out;
+    auto r = eng.call_global_mixed("noop", {}, out, 0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(out.size(), 0U);
+}
+
+TEST(ScriptMixed, NonCallableGlobalFails)
+{
+    cd::script::Engine eng;
+    eng.set_global("notfn", 5.0);
+    std::vector<cd::script::LuaValue> out;
+    auto r = eng.call_global_mixed("notfn", {}, out, 1);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::script::script_errors::Code::kRuntimeError));
+}
+
 }  // namespace

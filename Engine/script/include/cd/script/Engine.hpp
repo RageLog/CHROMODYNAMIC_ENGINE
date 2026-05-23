@@ -32,10 +32,19 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace cd::script
 {
+
+/// Heterogeneous Lua-side value: number, string, or bool. Sufficient
+/// for typical game-script callback patterns (config arrays, mixed
+/// argument lists, multi-typed return tuples). Lua tables and
+/// nested objects stay outside the variant for v1 — callers that
+/// need tables use set_global / get_global as a side channel
+/// (Wave 9+ wave can extend if needed).
+using LuaValue = std::variant<double, std::string, bool>;
 
 namespace script_errors
 {
@@ -129,6 +138,19 @@ public:
                         std::span<const double> args,
                         std::vector<double>& out,
                         std::uint32_t expected_returns = 1);
+
+    /// Heterogeneous-type call entry. Pushes each `args` value with
+    /// its variant-tagged Lua type (number, string, or bool),
+    /// invokes the global, then pops `expected_returns` results
+    /// back into `out` as LuaValue variants. The popped variant
+    /// reflects the Lua value's actual type at that stack slot;
+    /// mismatches between expected and actual count return
+    /// kRuntimeError + populated last_error().
+    [[nodiscard]] cd::core::Result<void>
+    call_global_mixed(std::string_view name,
+                      std::span<const LuaValue> args,
+                      std::vector<LuaValue>& out,
+                      std::uint32_t expected_returns = 1);
 
     // ---- Sandboxing (Wave 92) -------------------------------------------
 
