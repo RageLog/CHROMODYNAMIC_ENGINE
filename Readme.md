@@ -6,9 +6,12 @@ subsystem is shipped as a standalone library (`cd::<name>`), so the engine
 can be consumed wholesale or one module at a time inside an unrelated
 application.
 
-> **Status:** active development. Phase 2 (foundation + runtime) is
-> closed; Phase 3 (rendering + asset + ECS bring-up) is in flight.
-> Library count: **48**. Sample count: **23**. Test binaries: **50**.
+> **Status:** active development. Phases 2–9 closed (foundation,
+> runtime, rendering, asset, ECS, scripting, audio, networking, Forward+
+> GPU compute). Phase 10 ("v1.0 path") in flight: Sprint 1 (Quality)
+> closed at v0.21.0; Sprint 2 (Docs) in progress.
+> Library count: **55**. Sample count: **40**. Test binaries: **58**.
+> Latest tag: **v0.21.0**.
 
 ## Highlights
 
@@ -52,7 +55,7 @@ cmake --build --preset ninja-debug
 ctest --preset ninja-debug --output-on-failure
 ```
 
-You should see `100% tests passed, 0 tests failed out of 47`.
+You should see `100% tests passed, 0 tests failed out of 58`.
 
 ### Run every sample headlessly
 
@@ -63,7 +66,7 @@ cmake --build --preset ninja-debug --target smoke
 This invokes [scripts/run_all_samples.ps1](scripts/run_all_samples.ps1)
 (or `.sh` on POSIX). Every `hello_*` executable is launched with
 `--headless 3`, watched with a 10-second deadline, and its exit code
-captured. Expected output: `18/18 passed, 0 failed`.
+captured.
 
 ### Generate API documentation
 
@@ -114,35 +117,34 @@ GCC 14. C++23 features used: `std::expected`, `consteval`, lambda
 capture-init, deducing `this`, `if constexpr` with explicit template
 arguments.
 
-## Library catalogue (highlights)
+## Architecture
 
-See [docs/LIBRARIES.md](docs/LIBRARIES.md) for the full per-library table
+For the high-level stack diagram, the dependency DAG, and the cross-cutting
+conventions (error policy, ownership, build flags, test discipline, and the
+checklist for adding a new subsystem) read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+See [docs/LIBRARIES.md](docs/LIBRARIES.md) for the full per-library catalogue
 (targets, namespaces, public headers, dependencies).
 
-Foundation tier:
-`cd::core`, `cd::mem`, `cd::concurrency`, `cd::time`, `cd::io`,
-`cd::serialization`, `cd::log`, `cd::events`, `cd::diag`, `cd::profile`,
-`cd::platform`, `cd::plugin`, `cd::config`, `cd::math`, `cd::vfs`.
+Tier summary:
 
-Asset tier:
-`cd::asset`, `cd::asset_image` (PNG/JPG/HDR), `cd::asset_obj`,
-`cd::asset_gltf` (glTF 2.0), `cd::asset_cdmesh`, `cd::asset_cdtex`
-(BC7 cook target), `cd::asset_ktx2` (Khronos KTX2 reader).
-
-Render tier:
-`cd::rhi`, `cd::rhi_vulkan`, `cd::shader`, `cd::material`, `cd::render`,
-`cd::framegraph`, `cd::camera`, `cd::imgui_backend`.
-
-World tier:
-`cd::ecs`, `cd::scene`, `cd::physics`, `cd::anim`, `cd::audio`,
-`cd::input`, `cd::net`.
-
-UI tier:
-`cd::ui`, `cd::editor_ui`, `cd::editor`.
-
-Runtime tier:
-`cd::runtime` — the composition layer that glues every subsystem into a
-production application.
+- **Foundation** — `cd::core`, `cd::mem`, `cd::concurrency`, `cd::time`,
+  `cd::io`, `cd::serialization`, `cd::log`, `cd::events`, `cd::diag`,
+  `cd::profile`, `cd::platform`, `cd::plugin`, `cd::config`, `cd::math`,
+  `cd::vfs`, `cd::bench`.
+- **Asset** — `cd::asset`, `cd::asset_image`, `cd::asset_obj`,
+  `cd::asset_gltf`, `cd::asset_cdmesh`, `cd::asset_cdtex`, `cd::asset_ktx2`,
+  `cd::asset_wav`, `cd::asset_json`, `cd::asset_pak`.
+- **Render** — `cd::rhi`, `cd::rhi_vulkan`, `cd::rhi_d3d12`,
+  `cd::rhi_metal`, `cd::rhi_native`, `cd::shader`, `cd::material`,
+  `cd::render`, `cd::framegraph`, `cd::camera`, `cd::cluster`,
+  `cd::cluster_gpu`, `cd::cluster_pbr`, `cd::volumetric`, `cd::ibl`,
+  `cd::async_submit`, `cd::imgui_backend`.
+- **World** — `cd::ecs`, `cd::scene`, `cd::physics`, `cd::anim`,
+  `cd::audio`, `cd::input`, `cd::net`.
+- **UI** — `cd::ui`, `cd::editor_ui`, `cd::editor`.
+- **Side** — `cd::script` (Lua 5.4), `cd::imgdiff` (FLIP/SSIM/PSNR).
+- **Runtime** — `cd::runtime` — composition layer.
 
 ## Repository layout
 
@@ -194,12 +196,17 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 
 ## Documentation
 
-- [docs/DESIGN.md](docs/DESIGN.md) — master design document
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — engine stack, DAG, and
+  cross-cutting conventions
+- [docs/LIBRARIES.md](docs/LIBRARIES.md) — per-library catalogue
+- [docs/DESIGN.md](docs/DESIGN.md) — long-form design rationale
 - [docs/PLAN.md](docs/PLAN.md) — phase / sprint timeline
-- [docs/ADR/](docs/ADR/) — 17 Architecture Decision Records (the
-  authoritative "why")
-- API reference — generated locally via `cd_docs` target; published to
-  GitHub Pages by the `Docs` workflow on every master push.
+- [docs/ADR/](docs/ADR/) — Architecture Decision Records (the
+  authoritative "why" — 71 entries through Phase 10 Sprint 1)
+- [CHANGELOG.md](CHANGELOG.md) — per-release notes (Conventional Commits)
+- [docs/Modules.dox](docs/Modules.dox) — Doxygen @defgroup hierarchy
+- API reference — generated locally via the `cd_docs` target; published
+  to GitHub Pages by the `Docs` workflow on every master push.
 
 ## Contributing
 
