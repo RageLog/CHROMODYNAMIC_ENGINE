@@ -1,0 +1,143 @@
+// =============================================================================
+// CHROMODYNAMIC — cluster_assign.comp
+// Phase 8 / Wave 88 — Forward+ cluster light assignment compute shader.
+//
+// Two-pass cluster assignment:
+//   PASS 1 (PHASE = 0): per cluster, count lights → cluster_counts[c]
+//   (CPU prefix-sum: cluster_offsets[c+1] = cluster_offsets[c] + counts[c])
+//   PASS 2 (PHASE = 1): per cluster, write lights → light_indices[off..]
+//
+// Each cluster = one workgroup invocation. Local size 1; the actual
+// parallelism is across the global X·Y·Z cluster grid (8×8×4 = 256
+// work items per dispatch group, X·Y·Z / 256 dispatches total).
+//
+// Layout matches cd::render::cluster::ClusterGrid:
+//   cluster_index = (z * cells_y + y) * cells_x + x
+//
+// View-space conventions:
+//   * Camera at origin, looking -Z, +Y up.
+//   * Light position is in view space; view_depth = -view_pos.z.
+//
+// SPIR-V target: Vulkan 1.2 compute, set=0 binding=0..3.
+// =============================================================================
+#version 460
+#extension GL_EXT_buffer_reference : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
+
+struct LightData {
+    vec4 position_radius;  // xyz = view-space position, w = radius
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer InLights {
+    uint  light_count;
+    uint  pad_0;
+    uint  pad_1;
+    uint  pad_2;
+    LightData lights[];
+} u_lights;
+
+layout(set = 0, binding = 1, std430) buffer ClusterCounts {
+    uint counts[];  // size = cells_x * cells_y * cells_z
+} u_counts;
+
+layout(set = 0, binding = 2, std430) readonly buffer ClusterOffsets {
+    uint offsets[];  // size = cells_x * cells_y * cells_z + 1
+} u_offsets;
+
+layout(set = 0, binding = 3, std430) buffer LightIndices {
+    uint indices[];
+} u_indices;
+
+layout(push_constant) uniform PushConstants {
+    uint  cells_x;
+    uint  cells_y;
+    uint  cells_z;
+    float near_plane;
+    float far_plane;
+    float fov_y_rad;
+    float aspect;
+    uint  phase;  // 0 = count, 1 = write
+} u_pc;
+
+// Mirror of cd::render::cluster::depth_to_cluster_z_:
+//   t = log(depth / near) / log(far / near); cluster_z = floor(t * cells_z).
+uint depth_to_cluster_z(float depth) {
+    float clamped = clamp(depth, u_pc.near_plane, u_pc.far_plane);
+    float t = log(clamped / u_pc.near_plane) / log(u_pc.far_plane / u_pc.near_plane);
+    return min(uint(floor(t * float(u_pc.cells_z))), u_pc.cells_z - 1u);
+}
+
+uint angle_to_cluster_x(float angle, float tan_half) {
+    float t = clamp(tan(angle) / tan_half, -1.0, 1.0);
+    float u = (t + 1.0) * 0.5 * float(u_pc.cells_x);
+    return uint(clamp(floor(u), 0.0, float(u_pc.cells_x - 1u)));
+}
+
+uint angle_to_cluster_y(float angle, float tan_half) {
+    float t = clamp(tan(angle) / tan_half, -1.0, 1.0);
+    float u = (t + 1.0) * 0.5 * float(u_pc.cells_y);
+    return uint(clamp(floor(u), 0.0, float(u_pc.cells_y - 1u)));
+}
+
+// Returns true if the light's view-space AABB envelope overlaps the
+// cluster (cx, cy, cz). Mirrors ClusterGrid::assign_light's envelope.
+bool light_overlaps_cluster(LightData ld, uint cx, uint cy, uint cz) {
+    float depth_centre = -ld.position_radius.z;
+    float depth_min = max(u_pc.near_plane, depth_centre - ld.position_radius.w);
+    float depth_max = min(u_pc.far_plane, depth_centre + ld.position_radius.w);
+    if (depth_max < u_pc.near_plane || depth_min > u_pc.far_plane) return false;
+
+    uint cz_min = depth_to_cluster_z(depth_min);
+    uint cz_max = depth_to_cluster_z(depth_max);
+    if (cz < cz_min || cz > cz_max) return false;
+
+    float depth_for_angle = max(depth_min, 1.0e-3);
+    float ang_half = atan(ld.position_radius.w, depth_for_angle);
+    float centre_x = atan(ld.position_radius.x, depth_for_angle);
+    float centre_y = atan(ld.position_radius.y, depth_for_angle);
+
+    float half_fov_y = u_pc.fov_y_rad * 0.5;
+    float tan_half_y = tan(half_fov_y);
+    float tan_half_x = u_pc.aspect * tan_half_y;
+
+    uint cx_min = angle_to_cluster_x(centre_x - ang_half, tan_half_x);
+    uint cx_max = angle_to_cluster_x(centre_x + ang_half, tan_half_x);
+    uint cy_min = angle_to_cluster_y(centre_y - ang_half, tan_half_y);
+    uint cy_max = angle_to_cluster_y(centre_y + ang_half, tan_half_y);
+
+    return cx >= cx_min && cx <= cx_max
+        && cy >= cy_min && cy <= cy_max;
+}
+
+void main() {
+    uint cx = gl_GlobalInvocationID.x;
+    uint cy = gl_GlobalInvocationID.y;
+    uint cz = gl_GlobalInvocationID.z;
+    if (cx >= u_pc.cells_x || cy >= u_pc.cells_y || cz >= u_pc.cells_z) return;
+    uint cluster_id = (cz * u_pc.cells_y + cy) * u_pc.cells_x + cx;
+
+    if (u_pc.phase == 0u) {
+        // PASS 1: count lights overlapping this cluster.
+        uint count = 0u;
+        for (uint i = 0u; i < u_lights.light_count; ++i) {
+            if (light_overlaps_cluster(u_lights.lights[i], cx, cy, cz)) {
+                count += 1u;
+            }
+        }
+        u_counts.counts[cluster_id] = count;
+    } else {
+        // PASS 2: write light indices at the slot CPU computed in
+        // cluster_offsets. local_write_cursor uses atomicAdd so multiple
+        // dispatches that share the same cluster (not the case here —
+        // one thread per cluster — but the pattern is forward-portable).
+        uint slot = u_offsets.offsets[cluster_id];
+        uint write_cursor = 0u;
+        for (uint i = 0u; i < u_lights.light_count; ++i) {
+            if (light_overlaps_cluster(u_lights.lights[i], cx, cy, cz)) {
+                u_indices.indices[slot + write_cursor] = i;
+                write_cursor += 1u;
+            }
+        }
+    }
+}

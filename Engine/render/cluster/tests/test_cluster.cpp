@@ -2,9 +2,12 @@
 // CHROMODYNAMIC — cd::render::cluster tests (Phase 7 Sprint 9 Wave 84-85)
 // =============================================================================
 #include <cd/render/cluster/ClusterGrid.hpp>
+#include <cd/render/cluster/ReferenceCompute.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace
 {
@@ -164,6 +167,130 @@ TEST(ClusterGrid, MultipleLightsPackedCorrectly)
                 }
     EXPECT_TRUE(found_10);
     EXPECT_TRUE(found_20);
+}
+
+// --- ReferenceCompute (CPU sim of cluster_assign.comp) ---------------------
+
+TEST(ReferenceCompute, EmptyLightsProducesEmptyOutput)
+{
+    cd::render::cluster::ClusterConfig cfg {};
+    auto out = cd::render::cluster::run_reference_compute(cfg, {});
+    EXPECT_EQ(out.cluster_counts.size(),
+              static_cast<std::size_t>(cfg.cells_x) * cfg.cells_y * cfg.cells_z);
+    EXPECT_TRUE(out.light_indices.empty());
+    EXPECT_EQ(out.cluster_offsets.back(), 0U);
+}
+
+TEST(ReferenceCompute, OffsetsAreCumulativeSumOfCounts)
+{
+    cd::render::cluster::ClusterConfig cfg { 8, 4, 8, 1.0472F, 16.0F / 9.0F, 0.1F, 50.0F };
+    std::vector<cd::render::cluster::LightSphere> lights;
+    for (int i = 0; i < 8; ++i)
+    {
+        cd::render::cluster::LightSphere s;
+        s.view_pos = { static_cast<float>(i) * 0.5F - 2.0F, 0.0F,
+                       -5.0F - static_cast<float>(i) };
+        s.radius = 1.0F;
+        lights.push_back(s);
+    }
+    auto out = cd::render::cluster::run_reference_compute(cfg, lights);
+    std::uint32_t running = 0;
+    for (std::size_t i = 0; i < out.cluster_counts.size(); ++i)
+    {
+        EXPECT_EQ(out.cluster_offsets[i], running);
+        running += out.cluster_counts[i];
+    }
+    EXPECT_EQ(out.cluster_offsets.back(), running);
+    EXPECT_EQ(out.light_indices.size(), running);
+}
+
+TEST(ReferenceCompute, ParityWithClusterGrid)
+{
+    // The compute-shader reference and the ClusterGrid CPU class
+    // implement the same algorithm; their packed outputs must match
+    // bitwise (cluster_offsets identical, light_indices identical
+    // within each cluster's range).
+    cd::render::cluster::ClusterConfig cfg { 8, 4, 8, 1.0472F, 16.0F / 9.0F, 0.1F, 50.0F };
+    std::vector<cd::render::cluster::LightSphere> lights;
+    for (int i = 0; i < 16; ++i)
+    {
+        cd::render::cluster::LightSphere s;
+        s.view_pos = { static_cast<float>((i * 13) % 7) - 3.0F,
+                       static_cast<float>((i * 7) % 5) - 2.0F,
+                       -2.0F - static_cast<float>(i) * 1.5F };
+        s.radius = 0.5F + static_cast<float>(i % 4) * 0.3F;
+        lights.push_back(s);
+    }
+
+    // Drive the grid the same way (ClusterGrid stores buckets in
+    // arrival order, sorts by cluster_id; per-cluster index order
+    // ends up the same as ReferenceCompute's ascending-light loop
+    // because all lights with index i go to their clusters before
+    // light i+1 — and within a cluster the sort is stable on
+    // cluster_id only, so insertion order = light index order).
+    cd::render::cluster::ClusterGrid grid { cfg };
+    for (std::uint32_t i = 0; i < lights.size(); ++i)
+        grid.assign_light(i, lights[i]);
+    grid.finalize();
+
+    auto ref = cd::render::cluster::run_reference_compute(cfg, lights);
+
+    // Per cluster: lights_in_cluster() vs. ref.light_indices slice.
+    for (std::uint32_t z = 0; z < cfg.cells_z; ++z)
+        for (std::uint32_t y = 0; y < cfg.cells_y; ++y)
+            for (std::uint32_t x = 0; x < cfg.cells_x; ++x)
+            {
+                const std::size_t cid =
+                    (static_cast<std::size_t>(z) * cfg.cells_y + y) * cfg.cells_x + x;
+                const auto from_grid = grid.lights_in_cluster(x, y, z);
+                const auto begin = ref.cluster_offsets[cid];
+                const auto end = ref.cluster_offsets[cid + 1];
+                const std::size_t ref_count = end - begin;
+                ASSERT_EQ(from_grid.size(), ref_count)
+                    << "count mismatch at cluster (" << x << "," << y << "," << z << ")";
+                std::vector<std::uint32_t> grid_sorted(from_grid.begin(), from_grid.end());
+                std::vector<std::uint32_t> ref_sorted(ref.light_indices.data() + begin,
+                                                      ref.light_indices.data() + end);
+                std::sort(grid_sorted.begin(), grid_sorted.end());
+                std::sort(ref_sorted.begin(), ref_sorted.end());
+                EXPECT_EQ(grid_sorted, ref_sorted)
+                    << "membership mismatch at cluster (" << x << "," << y << "," << z << ")";
+            }
+}
+
+TEST(ReferenceCompute, AscendingLightIndexOrderingWithinCluster)
+{
+    // The shader's `for (i = 0; i < light_count; ++i)` loop appends
+    // overlapping lights in ascending index order. ReferenceCompute
+    // mirrors that — within each cluster, the index sequence is
+    // monotonically increasing.
+    cd::render::cluster::ClusterConfig cfg { 8, 4, 4, 1.0472F, 16.0F / 9.0F, 0.1F, 50.0F };
+    // Centre-of-frustum light cluster — pick a single populated cell
+    // and inspect its ordering.
+    std::vector<cd::render::cluster::LightSphere> lights;
+    for (int i = 0; i < 8; ++i)
+    {
+        cd::render::cluster::LightSphere s;
+        s.view_pos = { 0.0F, 0.0F, -5.0F };
+        s.radius = 2.0F;  // all hit the centre cluster
+        lights.push_back(s);
+    }
+    auto out = cd::render::cluster::run_reference_compute(cfg, lights);
+    // Find a cluster with > 1 light and check ascending.
+    bool checked = false;
+    for (std::size_t cid = 0; cid < out.cluster_counts.size(); ++cid)
+    {
+        if (out.cluster_counts[cid] > 1U)
+        {
+            const auto begin = out.cluster_offsets[cid];
+            const auto end = out.cluster_offsets[cid + 1];
+            for (auto k = begin + 1; k < end; ++k)
+                EXPECT_GT(out.light_indices[k], out.light_indices[k - 1]);
+            checked = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(checked) << "no multi-light cluster in this configuration";
 }
 
 }  // namespace
