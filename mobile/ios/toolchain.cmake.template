@@ -1,0 +1,22 @@
+# mobile/ios/toolchain.cmake.template
+#
+# Reference iOS / iPadOS toolchain knobs. The Xcode generator handles
+# code-signing + framework linking; this file pins the engine-side
+# defaults the Xcode project consumes.
+
+# --- Required generator + system ----------------------------------------------
+#   -G Xcode
+#   -DCMAKE_SYSTEM_NAME=iOS
+#   -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0
+#   -DCMAKE_OSX_ARCHITECTURES=arm64
+#
+# For iOS simulator on Apple Silicon use:
+#   -DCMAKE_OSX_SYSROOT=iphonesimulator
+#   -DCMAKE_OSX_ARCHITECTURES=arm64
+
+# --- Engine knobs --------------------------------------------------------------
+set(CD_ENABLE_VULKAN OFF CACHE BOOL "iOS RHI = Metal (MoltenVK opt-in for Vulkan)")
+set(CD_ENABLE_SAMPLES OFF CACHE BOOL "Samples link a desktop window backend")
+set(CD_DISABLE_VCPKG ON  CACHE BOOL  "vcpkg manifest mode is desktop-only")
+set(CD_BUILD_SHARED_LIBS OFF CACHE BOOL "static engine + per-app .framework wrapper")
+set(CD_NO_MOBILE_BACKEND ON CACHE BOOL "Bypass cd::platform::create_window on mobile")

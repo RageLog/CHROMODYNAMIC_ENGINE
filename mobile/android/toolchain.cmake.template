@@ -1,0 +1,35 @@
+# mobile/android/toolchain.cmake.template
+#
+# Reference Android-NDK CMake invocation. Copy or `-include` this in your
+# Android app's nativeBuildSystem step, OR pass the values directly via
+# `cmake -D...` on the command line.
+#
+# DO NOT consume this file directly with -DCMAKE_TOOLCHAIN_FILE — use
+# Google's NDK-provided android.toolchain.cmake. This file documents
+# the *engine-side* knobs that the toolchain composes with.
+
+# --- Required environment variables -------------------------------------------
+#   ANDROID_NDK_HOME  : path to the installed NDK r26 or newer
+#
+# --- Required toolchain entry-point --------------------------------------------
+#   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+#
+# --- Required ABI selection ----------------------------------------------------
+#   -DANDROID_ABI=arm64-v8a       (recommended; phones since 2018)
+#   -DANDROID_PLATFORM=android-29 (Android 10; matches Vulkan 1.1 minimum)
+#
+# --- Engine knobs --------------------------------------------------------------
+set(CD_ENABLE_VULKAN ON  CACHE BOOL  "Android RHI = Vulkan")
+set(CD_ENABLE_SAMPLES OFF CACHE BOOL "Samples link a desktop window backend")
+set(CD_DISABLE_VCPKG ON  CACHE BOOL  "vcpkg manifest mode is desktop-only")
+
+# Static lib only — Android apps load the engine as a shared library
+# composed by gradle's nativeBuildSystem, not via CHROMODYNAMIC's own
+# CD_BUILD_SHARED_LIBS pipeline.
+set(CD_BUILD_SHARED_LIBS OFF CACHE BOOL "static engine + per-app shared wrapper")
+
+# CD_NO_MOBILE_BACKEND silences any platform-window factory that would
+# return kNotImplemented at runtime; an Android app's main loop calls
+# the engine through a custom entry point that owns the ANativeWindow*
+# directly, so the cd::platform::IWindow path is bypassed.
+set(CD_NO_MOBILE_BACKEND ON CACHE BOOL "Bypass cd::platform::create_window on mobile")
