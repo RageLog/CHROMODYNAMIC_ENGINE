@@ -32,6 +32,8 @@
 #include <string>
 #include <string_view>
 
+/// @addtogroup cd_foundation_core
+/// @{
 namespace cd::core
 {
 
@@ -58,3 +60,4 @@ void register_domain(std::uint32_t domain, std::string_view name, CodeNameFn loo
 [[nodiscard]] std::string format(const ErrorCode& ec);
 
 }  // namespace cd::core
+/// @}

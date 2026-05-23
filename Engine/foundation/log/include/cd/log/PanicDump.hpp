@@ -24,6 +24,8 @@
 #include <atomic>
 #include <cstdio>
 
+/// @addtogroup cd_foundation_log
+/// @{
 namespace cd::log
 {
 
@@ -83,3 +85,4 @@ inline cd::diag::PanicHandler install_panic_dump_handler(RingBufferSink* sink) n
 }
 
 }  // namespace cd::log
+/// @}

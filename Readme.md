@@ -204,7 +204,7 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 - [docs/ADR/](docs/ADR/) — Architecture Decision Records (the
   authoritative "why" — 71 entries through Phase 10 Sprint 1)
 - [CHANGELOG.md](CHANGELOG.md) — per-release notes (Conventional Commits)
-- [docs/Modules.dox](docs/Modules.dox) — Doxygen @defgroup hierarchy
+- [docs/Modules.dox](docs/Modules.dox) — Doxygen module hierarchy
 - API reference — generated locally via the `cd_docs` target; published
   to GitHub Pages by the `Docs` workflow on every master push.
 

@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <string_view>
 
+/// @addtogroup cd_foundation_core
+/// @{
 namespace cd::core
 {
 
@@ -89,3 +91,4 @@ constexpr ErrorCode make(Code c, std::string_view message = {}) noexcept
 }  // namespace core_errors
 
 }  // namespace cd::core
+/// @}

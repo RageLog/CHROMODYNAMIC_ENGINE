@@ -19,6 +19,8 @@
 #include <expected>
 #include <utility>
 
+/// @addtogroup cd_foundation_core
+/// @{
 namespace cd::core
 {
 
@@ -52,3 +54,4 @@ using Result = std::expected<T, ErrorCode>;
 }
 
 }  // namespace cd::core
+/// @}

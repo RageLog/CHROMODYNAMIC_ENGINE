@@ -46,6 +46,8 @@
 #include <source_location>
 #include <string_view>
 
+/// @addtogroup cd_foundation_diag
+/// @{
 namespace cd::diag
 {
 
@@ -85,6 +87,7 @@ PanicHandler reset_panic_handler() noexcept;
 [[noreturn]] void panic(const PanicInfo& info);
 
 }  // namespace cd::diag
+/// @}
 
 // -- Macros -------------------------------------------------------------------
 //

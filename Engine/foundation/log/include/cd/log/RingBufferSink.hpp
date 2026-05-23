@@ -32,6 +32,8 @@
 #include <utility>
 #include <vector>
 
+/// @addtogroup cd_foundation_log
+/// @{
 namespace cd::log
 {
 
@@ -114,3 +116,4 @@ private:
 };
 
 }  // namespace cd::log
+/// @}
