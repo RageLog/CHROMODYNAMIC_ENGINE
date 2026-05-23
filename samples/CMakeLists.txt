@@ -11,6 +11,15 @@ add_library(cd_sample_common INTERFACE)
 target_include_directories(cd_sample_common INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/common
 )
+# GoldenCapture.hpp pulls in cd::asset_image (PNG write+read), cd::imgdiff
+# (compare/highlight), and the RHI command-buffer layer (image-to-buffer
+# copy + barriers). Samples consuming the golden helper inherit all of
+# these transitively via cd::sample_common.
+target_link_libraries(cd_sample_common INTERFACE
+  cd::asset_image
+  cd::imgdiff
+  cd::rhi
+)
 add_library(cd::sample_common ALIAS cd_sample_common)
 
 add_subdirectory(hello_core)
