@@ -55,4 +55,29 @@ namespace cd::math
     return Vec3f { h, s, v };
 }
 
+// Phase 25.B — additional color helpers.
+
+[[nodiscard]] inline Vec3f lerp_rgb(const Vec3f& a, const Vec3f& b, float t) noexcept
+{
+    if (t < 0.0F) t = 0.0F;
+    if (t > 1.0F) t = 1.0F;
+    return Vec3f {
+        a.x + (b.x - a.x) * t,
+        a.y + (b.y - a.y) * t,
+        a.z + (b.z - a.z) * t,
+    };
+}
+
+[[nodiscard]] inline float linear_to_srgb(float linear) noexcept
+{
+    if (linear <= 0.0031308F) return 12.92F * linear;
+    return 1.055F * std::pow(linear, 1.0F / 2.4F) - 0.055F;
+}
+
+[[nodiscard]] inline float srgb_to_linear(float srgb) noexcept
+{
+    if (srgb <= 0.04045F) return srgb / 12.92F;
+    return std::pow((srgb + 0.055F) / 1.055F, 2.4F);
+}
+
 }  // namespace cd::math

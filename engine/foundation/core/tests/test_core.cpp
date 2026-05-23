@@ -736,3 +736,33 @@ TEST(ScopeGuard, DismissSkipsCallback)
     }
     EXPECT_EQ(n, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 25.A — FrameAllocator tests (Wave 192)
+// ---------------------------------------------------------------------------
+#include <cd/core/FrameAllocator.hpp>
+
+TEST(FrameAllocator, AllocateReturnsAlignedPointer)
+{
+    cd::core::FrameAllocator a { 1024 };
+    void* p16 = a.allocate(32, 16);
+    ASSERT_NE(p16, nullptr);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(p16) % 16u, 0u);
+}
+
+TEST(FrameAllocator, ExhaustsCapacity)
+{
+    cd::core::FrameAllocator a { 64 };
+    EXPECT_NE(a.allocate(40, 1), nullptr);
+    EXPECT_EQ(a.allocate(40, 1), nullptr);  // overflow
+}
+
+TEST(FrameAllocator, ResetReclaimsAll)
+{
+    cd::core::FrameAllocator a { 128 };
+    (void)a.allocate(100, 1);
+    EXPECT_LT(a.remaining(), 100u);
+    a.reset();
+    EXPECT_EQ(a.used(), 0u);
+    EXPECT_EQ(a.remaining(), 128u);
+}

@@ -277,3 +277,34 @@ TEST(Ray, InsideAabbReturnsZero)
     ASSERT_TRUE(t.has_value());
     EXPECT_NEAR(*t, 0.0F, 1e-5F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 25.C — Obb tests (Wave 192)
+// ---------------------------------------------------------------------------
+#include <cd/physics/Obb.hpp>
+
+TEST(Obb, ContainsPointAtAxisAlignedDefault)
+{
+    cd::physics::Obb b;
+    EXPECT_TRUE(cd::physics::contains(b, cd::math::Vec3f { 0, 0, 0 }));
+    EXPECT_TRUE(cd::physics::contains(b, cd::math::Vec3f { 0.4F, 0, 0 }));
+    EXPECT_FALSE(cd::physics::contains(b, cd::math::Vec3f { 0.6F, 0, 0 }));
+}
+
+TEST(Obb, ContainsPointAfterRotation45Y)
+{
+    cd::physics::Obb b;
+    // 45° around Y: axis_x and axis_z spin in the XZ plane.
+    const float c = 0.7071068F;
+    b.axis_x = cd::math::Vec3f {  c, 0, -c };
+    b.axis_z = cd::math::Vec3f {  c, 0,  c };
+    // The world-aligned corner (0.5, 0, 0.5) is at distance sqrt(0.5) ≈
+    // 0.707 from center along the diagonal — still inside the rotated
+    // box (extends 0.5 along each rotated axis).
+    EXPECT_TRUE(cd::physics::contains(b, cd::math::Vec3f { 0.0F, 0, 0.5F }));
+    // A point along world +X by 0.6 projects to ~0.42 on axis_x —
+    // still inside (the half-extent is 0.5).
+    EXPECT_TRUE(cd::physics::contains(b, cd::math::Vec3f { 0.6F, 0, 0 }));
+    // Far enough to project past half_extents.
+    EXPECT_FALSE(cd::physics::contains(b, cd::math::Vec3f { 0.8F, 0, -0.8F }));
+}
