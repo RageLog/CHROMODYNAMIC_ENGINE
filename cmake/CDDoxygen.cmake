@@ -51,6 +51,7 @@ function(cd_setup_doxygen)
         "${CMAKE_SOURCE_DIR}/tools"
         "${CMAKE_SOURCE_DIR}/docs/DESIGN.md"
         "${CMAKE_SOURCE_DIR}/docs/LIBRARIES.md"
+        "${CMAKE_SOURCE_DIR}/docs/ARCHITECTURE.md"
         "${CMAKE_SOURCE_DIR}/docs/Modules.dox"
     )
     if(EXISTS "${CMAKE_SOURCE_DIR}/README.md")
