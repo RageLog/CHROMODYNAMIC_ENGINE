@@ -29,8 +29,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace cd::script
 {
@@ -116,6 +118,27 @@ public:
     /// Returns kRuntimeError + a populated last_error() if the call
     /// failed (e.g. the named global is nil or not callable).
     [[nodiscard]] cd::core::Result<void> call_global(std::string_view name);
+
+    /// Numeric-call entry: pushes each `args` value as a Lua number,
+    /// invokes the global, then pops `expected_returns` numeric
+    /// results back into `out`. Sufficient for "config callback
+    /// returns N doubles" patterns; richer types (strings, tables)
+    /// keep using set/get_global as the side channel.
+    [[nodiscard]] cd::core::Result<void>
+    call_global_numeric(std::string_view name,
+                        std::span<const double> args,
+                        std::vector<double>& out,
+                        std::uint32_t expected_returns = 1);
+
+    // ---- Sandboxing (Wave 92) -------------------------------------------
+
+    /// Cap the number of Lua VM instructions any subsequent `run_*` /
+    /// `call_global*` call is allowed to execute. The next call that
+    /// exceeds the cap is aborted with kRuntimeError + a populated
+    /// `last_error()` message describing the limit. Pass 0 to clear
+    /// the cap (unlimited — the default).
+    void set_instruction_cap(std::uint64_t max_instructions) noexcept;
+    [[nodiscard]] std::uint64_t instruction_cap() const noexcept;
 
 private:
     struct Impl;

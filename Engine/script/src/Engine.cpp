@@ -51,7 +51,35 @@ struct Engine::Impl
     /// Registered callback slots. unique_ptr keeps addresses stable
     /// across vector growth.
     std::vector<std::unique_ptr<CallbackSlot>> callbacks;
+    /// Sandbox: instruction cap. 0 = uncapped.
+    std::uint64_t instruction_cap { 0 };
 };
+
+namespace
+{
+
+extern "C" void instruction_cap_hook(lua_State* L, lua_Debug* /*ar*/)
+{
+    // The hook fires every N instructions; we raise a Lua error so
+    // pcall catches it and unwinds the VM. No allocation here so we
+    // can't fail the error path.
+    ::luaL_error(L, "instruction cap exceeded");
+}
+
+void install_instruction_cap_(lua_State* L, std::uint64_t cap) noexcept
+{
+    if (cap == 0)
+    {
+        ::lua_sethook(L, nullptr, 0, 0);
+        return;
+    }
+    const int count = cap > static_cast<std::uint64_t>(0x7FFFFFFF)
+                          ? 0x7FFFFFFF
+                          : static_cast<int>(cap);
+    ::lua_sethook(L, &instruction_cap_hook, LUA_MASKCOUNT, count);
+}
+
+}  // namespace
 
 namespace
 {
@@ -97,6 +125,7 @@ cd::core::Result<void> Engine::run_string(std::string_view source)
 {
     if (!valid())
         return std::unexpected(script_errors::make(script_errors::Code::kAllocFailed));
+    install_instruction_cap_(impl_->L, impl_->instruction_cap);
 
     // luaL_loadbufferx compiles the chunk; lua_pcall runs it. Both
     // push an error message on the stack on failure — pop and copy it
@@ -126,6 +155,7 @@ cd::core::Result<void> Engine::run_file(std::string_view path)
 {
     if (!valid())
         return std::unexpected(script_errors::make(script_errors::Code::kAllocFailed));
+    install_instruction_cap_(impl_->L, impl_->instruction_cap);
 
     const std::string p { path };
     const int load_rc = ::luaL_loadfilex(impl_->L, p.c_str(), nullptr);
@@ -262,6 +292,7 @@ cd::core::Result<void> Engine::call_global(std::string_view name)
 {
     if (!valid())
         return std::unexpected(script_errors::make(script_errors::Code::kAllocFailed));
+    install_instruction_cap_(impl_->L, impl_->instruction_cap);
     const std::string n { name };
     ::lua_getglobal(impl_->L, n.c_str());
     if (lua_isfunction(impl_->L, -1) == 0)
@@ -280,6 +311,61 @@ cd::core::Result<void> Engine::call_global(std::string_view name)
     }
     impl_->last_error.clear();
     return {};
+}
+
+cd::core::Result<void> Engine::call_global_numeric(std::string_view name,
+                                                    std::span<const double> args,
+                                                    std::vector<double>& out,
+                                                    std::uint32_t expected_returns)
+{
+    out.clear();
+    if (!valid())
+        return std::unexpected(script_errors::make(script_errors::Code::kAllocFailed));
+    install_instruction_cap_(impl_->L, impl_->instruction_cap);
+    const std::string n { name };
+    ::lua_getglobal(impl_->L, n.c_str());
+    if (lua_isfunction(impl_->L, -1) == 0)
+    {
+        ::lua_pop(impl_->L, 1);
+        impl_->last_error = "global '" + n + "' is not callable";
+        return std::unexpected(script_errors::make(
+            script_errors::Code::kRuntimeError));
+    }
+    for (double a : args)
+        ::lua_pushnumber(impl_->L, a);
+    const int rc = ::lua_pcall(impl_->L, static_cast<int>(args.size()),
+                               static_cast<int>(expected_returns), 0);
+    if (rc != LUA_OK)
+    {
+        capture_top_error(impl_->L, impl_->last_error);
+        return std::unexpected(script_errors::make(
+            script_errors::Code::kRuntimeError));
+    }
+    // Pop returns from top of stack (Lua pushes the FIRST return at the
+    // BOTTOM of the result block, so we read from -expected_returns to -1).
+    out.reserve(expected_returns);
+    for (std::uint32_t i = 0; i < expected_returns; ++i)
+    {
+        const int idx = -static_cast<int>(expected_returns) + static_cast<int>(i);
+        if (::lua_isnumber(impl_->L, idx) != 0)
+            out.push_back(::lua_tonumber(impl_->L, idx));
+        else
+            out.push_back(0.0);
+    }
+    ::lua_pop(impl_->L, static_cast<int>(expected_returns));
+    impl_->last_error.clear();
+    return {};
+}
+
+void Engine::set_instruction_cap(std::uint64_t max_instructions) noexcept
+{
+    if (impl_)
+        impl_->instruction_cap = max_instructions;
+}
+
+std::uint64_t Engine::instruction_cap() const noexcept
+{
+    return impl_ ? impl_->instruction_cap : 0;
 }
 
 }  // namespace cd::script

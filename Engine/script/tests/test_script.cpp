@@ -4,7 +4,9 @@
 #include <cd/script/Engine.hpp>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
+#include <vector>
 
 namespace
 {
@@ -201,6 +203,85 @@ TEST(ScriptFunctions, RegisteredFunctionAndScriptCoexist)
         end
     )").has_value());
     EXPECT_EQ(fires, 2);  // i=2 and i=4
+}
+
+// --- Numeric args + returns (Wave 92) --------------------------------------
+
+TEST(ScriptNumeric, CallReturnsSingleNumber)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string("function sq(x) return x * x end").has_value());
+    std::vector<double> out;
+    std::array<double, 1> args { 7.0 };
+    auto r = eng.call_global_numeric("sq", args, out, /*expected_returns=*/1);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 1U);
+    EXPECT_DOUBLE_EQ(out[0], 49.0);
+}
+
+TEST(ScriptNumeric, CallReturnsMultipleNumbers)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string(
+        "function split(x) return x, x + 1, x * 2 end").has_value());
+    std::vector<double> out;
+    std::array<double, 1> args { 10.0 };
+    auto r = eng.call_global_numeric("split", args, out, 3);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 3U);
+    EXPECT_DOUBLE_EQ(out[0], 10.0);
+    EXPECT_DOUBLE_EQ(out[1], 11.0);
+    EXPECT_DOUBLE_EQ(out[2], 20.0);
+}
+
+TEST(ScriptNumeric, MultipleArgsArePushedInOrder)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string(
+        "function add3(a, b, c) return a + b + c end").has_value());
+    std::vector<double> out;
+    std::array<double, 3> args { 1.0, 2.0, 4.0 };
+    auto r = eng.call_global_numeric("add3", args, out, 1);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 1U);
+    EXPECT_DOUBLE_EQ(out[0], 7.0);
+}
+
+TEST(ScriptNumeric, NonCallableGlobalFails)
+{
+    cd::script::Engine eng;
+    eng.set_global("nope", 1.0);
+    std::vector<double> out;
+    auto r = eng.call_global_numeric("nope", {}, out, 1);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::script::script_errors::Code::kRuntimeError));
+}
+
+// --- Sandbox: instruction cap (Wave 92) ------------------------------------
+
+TEST(ScriptSandbox, InstructionCapAbortsRunawayLoop)
+{
+    cd::script::Engine eng;
+    eng.set_instruction_cap(1000);
+    EXPECT_EQ(eng.instruction_cap(), 1000U);
+    auto r = eng.run_string("while true do end");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::script::script_errors::Code::kRuntimeError));
+    EXPECT_NE(eng.last_error().find("instruction cap"), std::string_view::npos);
+}
+
+TEST(ScriptSandbox, ClearCapAllowsLongLoops)
+{
+    cd::script::Engine eng;
+    eng.set_instruction_cap(1000);
+    auto bad = eng.run_string("for i = 1, 100000 do local x = i end");
+    EXPECT_FALSE(bad.has_value());
+
+    eng.set_instruction_cap(0);  // clear
+    auto good = eng.run_string("for i = 1, 100000 do local x = i end");
+    EXPECT_TRUE(good.has_value());
 }
 
 }  // namespace
