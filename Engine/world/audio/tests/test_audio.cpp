@@ -6,6 +6,7 @@
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/NativeBackend.hpp>
 #include <cd/audio/Positional.hpp>
+#include <cd/audio/PositionalSource.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -226,6 +227,100 @@ TEST(Positional, ListenerAtSourcePositionReturnsUnity)
     auto g = cd::audio::compute_stereo_gains(listener, src);
     EXPECT_NEAR(g.left, 1.0F, 1.0e-5F);
     EXPECT_NEAR(g.right, 1.0F, 1.0e-5F);
+}
+
+// -----------------------------------------------------------------------------
+// PositionalSource (HRTF-lite mixer) — Wave 78
+// -----------------------------------------------------------------------------
+
+TEST(PositionalSource, PrimeAndProcessSizeContract)
+{
+    cd::audio::PositionalSource src;
+    src.prime(/*sample_rate=*/48000, /*max_block=*/128);
+    EXPECT_EQ(src.sample_rate(), 48000U);
+    EXPECT_EQ(src.max_block_samples(), 128U);
+
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f pos { 0.0F, 0.0F, -1.0F };
+    std::vector<float> mono(64, 0.5F);
+    std::vector<float> stereo(64 * 2, 0.0F);
+    src.process(mono, listener, pos, stereo);
+    // Front source → near-equal L/R gains.
+    EXPECT_NEAR(stereo[0], stereo[1], 0.1F);
+}
+
+TEST(PositionalSource, SizeMismatchIsSafelyNoOp)
+{
+    cd::audio::PositionalSource src;
+    src.prime(48000, 64);
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f pos { 0.0F, 0.0F, -1.0F };
+    std::vector<float> mono(32, 0.5F);
+    std::vector<float> stereo(40, -1.0F);  // wrong size (should be 64)
+    src.process(mono, listener, pos, stereo);
+    // Output not touched — sentinel value remains.
+    EXPECT_FLOAT_EQ(stereo[0], -1.0F);
+    EXPECT_FLOAT_EQ(stereo[39], -1.0F);
+}
+
+TEST(PositionalSource, RightSourceFavoursRightChannel)
+{
+    cd::audio::PositionalSource src;
+    src.prime(48000, 128);
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f pos { 5.0F, 0.0F, 0.0F };  // hard right
+    std::vector<float> mono(128, 1.0F);
+    std::vector<float> stereo(128 * 2, 0.0F);
+    src.process(mono, listener, pos, stereo);
+    // Sample a late index after the delay-line warmup.
+    EXPECT_GT(stereo[200 + 1], stereo[200 + 0]);  // right > left
+}
+
+TEST(PositionalSource, ItdDelaysFartherEar)
+{
+    cd::audio::PositionalSource src;
+    src.prime(48000, 64);
+    cd::audio::ListenerPose listener {};
+    // Source 45° to the right: left ear (farther) receives the signal
+    // a few samples later but with nonzero gain so we can measure it.
+    // Hard 90° would zero the left channel via the constant-power pan.
+    const cd::math::Vec3f pos { 1.0F, 0.0F, -1.0F };
+    std::vector<float> mono(64, 0.0F);
+    mono[0] = 1.0F;  // impulse at t=0
+    std::vector<float> stereo(64 * 2, 0.0F);
+    src.process(mono, listener, pos, stereo);
+
+    // Find first non-zero index in each channel.
+    int first_left = -1, first_right = -1;
+    for (std::size_t i = 0; i < 64; ++i)
+    {
+        if (first_right < 0 && stereo[i * 2 + 1] != 0.0F)
+            first_right = static_cast<int>(i);
+        if (first_left < 0 && stereo[i * 2 + 0] != 0.0F)
+            first_left = static_cast<int>(i);
+    }
+    ASSERT_GE(first_right, 0);
+    ASSERT_GE(first_left, 0);
+    EXPECT_GE(first_left, first_right);  // left is delayed (or equal at 0 azimuth)
+}
+
+TEST(PositionalSource, ResetClearsDelayLines)
+{
+    cd::audio::PositionalSource src;
+    src.prime(48000, 32);
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f pos { 5.0F, 0.0F, 0.0F };
+    std::vector<float> mono(32, 1.0F);
+    std::vector<float> stereo(64, 0.0F);
+    src.process(mono, listener, pos, stereo);
+    src.reset();
+    // After reset, process zeros into stereo should give all-zero
+    // output (no residual from earlier block).
+    std::vector<float> mono_zero(32, 0.0F);
+    std::vector<float> stereo_out(64, -1.0F);
+    src.process(mono_zero, listener, pos, stereo_out);
+    for (float v : stereo_out)
+        EXPECT_FLOAT_EQ(v, 0.0F);
 }
 
 }  // namespace
