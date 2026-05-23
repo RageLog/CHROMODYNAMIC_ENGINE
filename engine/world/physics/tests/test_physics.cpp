@@ -170,3 +170,46 @@ TEST(Physics, SetPositionTeleports)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Phase 20.B — AABB primitive tests (Wave 182)
+// ---------------------------------------------------------------------------
+#include <cd/physics/Aabb.hpp>
+
+TEST(Aabb, OverlapsDetectsIntersection)
+{
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 0.5F, 0.5F, 0.5F },
+                          cd::math::Vec3f { 1.5F, 1.5F, 1.5F } };
+    EXPECT_TRUE(cd::physics::overlaps(a, b));
+}
+
+TEST(Aabb, OverlapsTouchingBoxesIsTrue)
+{
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 1, 1, 1 }, cd::math::Vec3f { 2, 2, 2 } };
+    EXPECT_TRUE(cd::physics::overlaps(a, b));
+}
+
+TEST(Aabb, DisjointBoxesReturnFalse)
+{
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 2, 2, 2 }, cd::math::Vec3f { 3, 3, 3 } };
+    EXPECT_FALSE(cd::physics::overlaps(a, b));
+}
+
+TEST(Aabb, ContainsPoint)
+{
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_TRUE(cd::physics::contains(a, cd::math::Vec3f { 0.5F, 0.5F, 0.5F }));
+    EXPECT_FALSE(cd::physics::contains(a, cd::math::Vec3f { 2, 2, 2 }));
+}
+
+TEST(Aabb, MergeExpandsToCoverBoth)
+{
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 2, 0, 0 }, cd::math::Vec3f { 3, 1, 1 } };
+    auto m = cd::physics::merge(a, b);
+    EXPECT_FLOAT_EQ(m.min.x, 0.0F);
+    EXPECT_FLOAT_EQ(m.max.x, 3.0F);
+}

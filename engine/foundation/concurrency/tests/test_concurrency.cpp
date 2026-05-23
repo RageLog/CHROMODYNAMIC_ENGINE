@@ -234,3 +234,27 @@ TEST(Atomics, CpuPauseCompilesAndRuns)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Phase 20.E — Stopwatch tests (Wave 182)
+// ---------------------------------------------------------------------------
+#include <cd/concurrency/Stopwatch.hpp>
+#include <thread>
+
+TEST(Stopwatch, ElapsedAdvances)
+{
+    cd::concurrency::Stopwatch sw;
+    std::this_thread::sleep_for(std::chrono::milliseconds { 5 });
+    EXPECT_GE(sw.elapsed_ms(), 4.0);
+    EXPECT_GE(sw.elapsed().count(), 0);
+}
+
+TEST(Stopwatch, RestartReturnsPriorInterval)
+{
+    cd::concurrency::Stopwatch sw;
+    std::this_thread::sleep_for(std::chrono::milliseconds { 5 });
+    const auto first = sw.restart();
+    EXPECT_GE(std::chrono::duration_cast<std::chrono::milliseconds>(first).count(), 4);
+    // After restart, fresh elapsed starts from zero.
+    EXPECT_LT(sw.elapsed_ms(), 5.0);
+}
