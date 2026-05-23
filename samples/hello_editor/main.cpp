@@ -401,8 +401,13 @@ int main(int argc, char** argv)
 
             // Only steer the camera when the cursor isn't hovering a
             // panel (the IO flag tracks "ImGui wants the mouse").
+            // For keyboard, also consult WantTextInput which is
+            // specifically set when an InputFloat / InputText has
+            // focus (WantCaptureKeyboard alone misses some focus
+            // transitions in the ImGui docking branch).
             const bool ui_wants_mouse = imgui_io.WantCaptureMouse;
-            const bool ui_wants_kbd = imgui_io.WantCaptureKeyboard;
+            const bool ui_wants_kbd =
+                imgui_io.WantCaptureKeyboard || imgui_io.WantTextInput;
 
             // Right-mouse drag → yaw/pitch.
             if (!ui_wants_mouse && ImGui::IsMouseDown(ImGuiMouseButton_Right))
@@ -667,53 +672,59 @@ int main(int argc, char** argv)
                 ImGui::Text("Entity: %s", ent.name.c_str());
                 ImGui::Separator();
 
-                // Position — Apply Translate Delta
-                static float dx = 0.0F, dy = 0.0F, dz = 0.0F;
+                // Position — Apply Translate Delta. Use array to
+                // guarantee contiguous storage for InputFloat3
+                // (separate static floats are NOT guaranteed
+                // contiguous by the C++ standard).
+                static float trans[3] { 0.0F, 0.0F, 0.0F };
                 ImGui::Text("Position: (%.2f, %.2f, %.2f)",
                             static_cast<double>(lt->value.position.x),
                             static_cast<double>(lt->value.position.y),
                             static_cast<double>(lt->value.position.z));
-                ImGui::InputFloat3("translate delta", &dx);
+                ImGui::InputFloat3("translate delta", trans);
                 if (ImGui::Button("Apply Translate"))
                 {
                     history.push(std::make_unique<cd::editor::TranslateCommand>(
-                        scene, ent.handle, cd::math::Vec3f { dx, dy, dz }));
+                        scene, ent.handle,
+                        cd::math::Vec3f { trans[0], trans[1], trans[2] }));
                     log_push("push: TranslateCommand");
-                    dx = dy = dz = 0.0F;
+                    trans[0] = trans[1] = trans[2] = 0.0F;
                 }
 
                 ImGui::Separator();
                 // Scale — Apply Scale Factor
-                static float sx = 1.0F, sy = 1.0F, sz = 1.0F;
+                static float scale[3] { 1.0F, 1.0F, 1.0F };
                 ImGui::Text("Scale: (%.2f, %.2f, %.2f)",
                             static_cast<double>(lt->value.scale.x),
                             static_cast<double>(lt->value.scale.y),
                             static_cast<double>(lt->value.scale.z));
-                ImGui::InputFloat3("scale factor", &sx);
+                ImGui::InputFloat3("scale factor", scale);
                 if (ImGui::Button("Apply Scale"))
                 {
                     history.push(std::make_unique<cd::editor::ScaleCommand>(
-                        scene, ent.handle, cd::math::Vec3f { sx, sy, sz }));
+                        scene, ent.handle,
+                        cd::math::Vec3f { scale[0], scale[1], scale[2] }));
                     log_push("push: ScaleCommand");
-                    sx = sy = sz = 1.0F;
+                    scale[0] = scale[1] = scale[2] = 1.0F;
                 }
 
                 ImGui::Separator();
                 // Rotation — quaternion replacement
-                static float qx = 0.0F, qy = 0.0F, qz = 0.0F, qw = 1.0F;
+                static float quat[4] { 0.0F, 0.0F, 0.0F, 1.0F };
                 ImGui::Text("Rotation: (%.2f, %.2f, %.2f, %.2f)",
                             static_cast<double>(lt->value.rotation.x),
                             static_cast<double>(lt->value.rotation.y),
                             static_cast<double>(lt->value.rotation.z),
                             static_cast<double>(lt->value.rotation.w));
-                ImGui::InputFloat4("new quat (xyzw)", &qx);
+                ImGui::InputFloat4("new quat (xyzw)", quat);
                 if (ImGui::Button("Apply Rotate"))
                 {
                     history.push(std::make_unique<cd::editor::RotateCommand>(
-                        scene, ent.handle, cd::math::Quatf { qx, qy, qz, qw }));
+                        scene, ent.handle,
+                        cd::math::Quatf { quat[0], quat[1], quat[2], quat[3] }));
                     log_push("push: RotateCommand");
-                    qx = qy = qz = 0.0F;
-                    qw = 1.0F;
+                    quat[0] = quat[1] = quat[2] = 0.0F;
+                    quat[3] = 1.0F;
                 }
             }
             else
