@@ -173,3 +173,34 @@ TEST(Window, SetTitleDoesNotCrash)
 #endif  // _WIN32
 
 }  // namespace
+
+#include <cd/platform/StableTime.hpp>
+#include <thread>
+
+TEST(StableTime, MonotonicSecondsIncreasesAcrossCalls)
+{
+    const double t1 = cd::platform::StableTime::monotonic_seconds();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const double t2 = cd::platform::StableTime::monotonic_seconds();
+    EXPECT_GT(t2, t1);
+}
+
+TEST(StableTime, BeginFrameResetsFrameEpoch)
+{
+    cd::platform::StableTime::begin_frame();
+    const double e1 = cd::platform::StableTime::frame_epoch_seconds();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const double e2 = cd::platform::StableTime::frame_epoch_seconds();
+    EXPECT_GT(e2, e1);
+    cd::platform::StableTime::begin_frame();
+    const double e3 = cd::platform::StableTime::frame_epoch_seconds();
+    EXPECT_LT(e3, e2);  // reset brings it back near zero
+}
+
+TEST(StableTime, FrameEpochBoundedByMonotonic)
+{
+    cd::platform::StableTime::begin_frame();
+    const double fe = cd::platform::StableTime::frame_epoch_seconds();
+    const double mo = cd::platform::StableTime::monotonic_seconds();
+    EXPECT_LE(fe, mo);
+}

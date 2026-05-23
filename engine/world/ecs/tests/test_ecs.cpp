@@ -261,3 +261,39 @@ TEST(EcsWorld, BulkLifecycleStress)
 }
 
 }  // namespace
+
+#include <cd/ecs/TagHelpers.hpp>
+
+namespace {
+struct Selected {};
+struct Disabled {};
+}
+
+TEST(TagHelpers, TagThenHasReportsTrue)
+{
+    cd::ecs::World w;
+    auto e = w.create();
+    EXPECT_FALSE(cd::ecs::has_tag<Selected>(w, e));
+    cd::ecs::tag<Selected>(w, e);
+    EXPECT_TRUE(cd::ecs::has_tag<Selected>(w, e));
+}
+
+TEST(TagHelpers, UntagRemovesTag)
+{
+    cd::ecs::World w;
+    auto e = w.create();
+    cd::ecs::tag<Disabled>(w, e);
+    EXPECT_TRUE(cd::ecs::has_tag<Disabled>(w, e));
+    cd::ecs::untag<Disabled>(w, e);
+    EXPECT_FALSE(cd::ecs::has_tag<Disabled>(w, e));
+}
+
+TEST(TagHelpers, MultipleTagsCoexist)
+{
+    cd::ecs::World w;
+    auto e = w.create();
+    cd::ecs::tag<Selected>(w, e);
+    cd::ecs::tag<Disabled>(w, e);
+    EXPECT_TRUE(cd::ecs::has_tag<Selected>(w, e));
+    EXPECT_TRUE(cd::ecs::has_tag<Disabled>(w, e));
+}
