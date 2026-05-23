@@ -692,3 +692,36 @@ TEST(QuatSlerp, HalfwayIsUnitLength)
     const float len = std::sqrt(r.x*r.x + r.y*r.y + r.z*r.z + r.w*r.w);
     EXPECT_NEAR(len, 1.0F, 1e-4F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 28.A — Vec2 ops tests (Wave 197)
+// ---------------------------------------------------------------------------
+#include <cd/math/Vec2Ops.hpp>
+
+TEST(Vec2Ops, Length3_4_Is5)
+{
+    EXPECT_FLOAT_EQ(cd::math::length_v2(cd::math::Vec2f { 3.0F, 4.0F }), 5.0F);
+}
+
+TEST(Vec2Ops, NormalizeProducesUnitLength)
+{
+    const auto n = cd::math::normalize_v2(cd::math::Vec2f { 3.0F, 4.0F });
+    EXPECT_NEAR(cd::math::length_v2(n), 1.0F, 1e-5F);
+}
+
+TEST(Vec2Ops, LerpHalfwayIsMidpoint)
+{
+    const cd::math::Vec2f a { 0.0F, 0.0F };
+    const cd::math::Vec2f b { 10.0F, 4.0F };
+    const auto m = cd::math::lerp_v2(a, b, 0.5F);
+    EXPECT_FLOAT_EQ(m.x, 5.0F);
+    EXPECT_FLOAT_EQ(m.y, 2.0F);
+}
+
+TEST(Vec2Ops, DotProduct)
+{
+    EXPECT_FLOAT_EQ(cd::math::dot_v2(cd::math::Vec2f { 1, 0 },
+                                      cd::math::Vec2f { 0, 1 }), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::dot_v2(cd::math::Vec2f { 2, 3 },
+                                      cd::math::Vec2f { 4, 5 }), 23.0F);
+}
