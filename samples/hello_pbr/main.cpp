@@ -12,6 +12,7 @@
 // (no asset import needed) and that the renderer can dispatch many
 // draws with per-instance push constants.
 // =============================================================================
+#include "GoldenCapture.hpp"
 #include "SampleRuntime.hpp"
 
 #include <cd/camera/Camera.hpp>
@@ -398,6 +399,7 @@ int main(int argc, char** argv)
     events.reserve(64);
     bool needs_rebuild = false;
     std::uint32_t frame_idx = 0;
+    cd::sample::GoldenState golden_state {};
 
     while (true)
     {
@@ -541,6 +543,12 @@ int main(int argc, char** argv)
 
         cmd.end_render_pass();
 
+        if (runtime.is_golden_frame(frame_idx))
+        {
+            (void)cd::sample::schedule_golden_capture(
+                device, cmd, frame.swapchain_image, frame.extent, golden_state);
+        }
+
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
@@ -555,9 +563,14 @@ int main(int argc, char** argv)
     }
 
     renderer.wait_idle();
+
+    int golden_rc = 0;
+    if (golden_state.armed)
+        golden_rc = cd::sample::finish_golden_capture(device, runtime, golden_state);
+
     depth.destroy(device);
     device.destroy_buffer(vb);
     device.destroy_buffer(ib);
     std::printf("hello_pbr: clean exit (%u frames).\n", frame_idx);
-    return 0;
+    return golden_rc;
 }

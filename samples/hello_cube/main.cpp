@@ -8,6 +8,7 @@
 //   * Time-driven animation
 //   * Resize-safe depth-texture recreation
 // =============================================================================
+#include "GoldenCapture.hpp"
 #include "SampleRuntime.hpp"
 
 #include <cd/camera/Camera.hpp>
@@ -354,6 +355,7 @@ int main(int argc, char** argv)
 
     const auto t_start = std::chrono::steady_clock::now();
     std::uint32_t frame_idx = 0;
+    cd::sample::GoldenState golden_state {};
     while (true)
     {
         // Headless mode: trigger window close after N frames so CI exits.
@@ -492,6 +494,12 @@ int main(int argc, char** argv)
         );
         cmd.end_render_pass();
 
+        if (runtime.is_golden_frame(frame_idx))
+        {
+            (void)cd::sample::schedule_golden_capture(
+                device, cmd, frame.swapchain_image, frame.extent, golden_state);
+        }
+
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
@@ -512,9 +520,14 @@ int main(int argc, char** argv)
     }
 
     renderer.wait_idle();
+
+    int golden_rc = 0;
+    if (golden_state.armed)
+        golden_rc = cd::sample::finish_golden_capture(device, runtime, golden_state);
+
     depth.destroy(device);
     device.destroy_buffer(ib);
     device.destroy_buffer(vb);
     std::printf("hello_cube: clean exit.\n");
-    return 0;
+    return golden_rc;
 }

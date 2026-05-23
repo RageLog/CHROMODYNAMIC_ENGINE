@@ -17,6 +17,7 @@
 //
 // Output: sky-blue gradient with a warm sun glow; orbiting view.
 // =============================================================================
+#include "GoldenCapture.hpp"
 #include "SampleRuntime.hpp"
 
 #include <cd/camera/Camera.hpp>
@@ -202,6 +203,7 @@ int main(int argc, char** argv)
     bool needs_rebuild = false;
     float orbit_angle = 0.0F;
     std::uint32_t frame_idx = 0;
+    cd::sample::GoldenState golden_state {};
 
     while (true)
     {
@@ -322,6 +324,12 @@ int main(int argc, char** argv)
 
         cmd.end_render_pass();
 
+        if (runtime.is_golden_frame(frame_idx))
+        {
+            (void)cd::sample::schedule_golden_capture(
+                device, cmd, frame.swapchain_image, frame.extent, golden_state);
+        }
+
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
@@ -336,6 +344,11 @@ int main(int argc, char** argv)
     }
 
     renderer.wait_idle();
+
+    int golden_rc = 0;
+    if (golden_state.armed)
+        golden_rc = cd::sample::finish_golden_capture(device, runtime, golden_state);
+
     std::printf("hello_skybox: clean exit (%u frames).\n", frame_idx);
-    return 0;
+    return golden_rc;
 }

@@ -10,6 +10,7 @@
 // cd::math::Transformf → model matrix push-constant. No skinning yet;
 // per-bone tracks are a follow-up sprint (see Phase 4 closure ADR S4.2.b).
 // =============================================================================
+#include "GoldenCapture.hpp"
 #include "SampleRuntime.hpp"
 
 #include <cd/anim/Animation.hpp>
@@ -289,6 +290,7 @@ int main(int argc, char** argv)
     bool needs_rebuild = false;
     auto t_prev = std::chrono::steady_clock::now();
     std::uint32_t frame_idx = 0;
+    cd::sample::GoldenState golden_state {};
 
     while (true)
     {
@@ -412,6 +414,12 @@ int main(int argc, char** argv)
 
         cmd.end_render_pass();
 
+        if (runtime.is_golden_frame(frame_idx))
+        {
+            (void)cd::sample::schedule_golden_capture(
+                device, cmd, frame.swapchain_image, frame.extent, golden_state);
+        }
+
         auto end_r = renderer.end_frame();
         if (!end_r.has_value())
         {
@@ -426,9 +434,14 @@ int main(int argc, char** argv)
     }
 
     renderer.wait_idle();
+
+    int golden_rc = 0;
+    if (golden_state.armed)
+        golden_rc = cd::sample::finish_golden_capture(device, runtime, golden_state);
+
     depth.destroy(device);
     device.destroy_buffer(vb);
     device.destroy_buffer(ib);
     std::printf("hello_anim: clean exit (%u frames, t=%.2fs).\n", frame_idx, static_cast<double>(player.time()));
-    return 0;
+    return golden_rc;
 }
