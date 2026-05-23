@@ -50,6 +50,7 @@ add_subdirectory(hello_compute_cluster)
 # kBackendInitFailed. Gate the sample so non-Windows builds skip it.
 if(WIN32)
   add_subdirectory(hello_d3d12_boot)
+  add_subdirectory(hello_d3d12_clear)
 endif()
 
 # hello_triangle requires the Vulkan backend; gate so the rest of the
