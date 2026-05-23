@@ -118,6 +118,11 @@ public:
         log_.copies += regions.size();
     }
 
+    void copy_image_to_buffer(TextureHandle, BufferHandle, std::span<const BufferImageCopyRegion> regions) override
+    {
+        log_.copies += regions.size();
+    }
+
     void barrier(std::span<const BufferBarrier> bb, std::span<const TextureBarrier> tb) override
     {
         log_.buffer_barriers += bb.size();

@@ -105,6 +105,12 @@ public:
         std::span<const cd::rhi::BufferImageCopyRegion> regions
     ) override;
 
+    void copy_image_to_buffer(
+        cd::rhi::TextureHandle src,
+        cd::rhi::BufferHandle dst,
+        std::span<const cd::rhi::BufferImageCopyRegion> regions
+    ) override;
+
     void barrier(
         std::span<const cd::rhi::BufferBarrier> buffer_barriers,
         std::span<const cd::rhi::TextureBarrier> texture_barriers

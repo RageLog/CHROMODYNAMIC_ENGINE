@@ -140,6 +140,16 @@ public:
     virtual void
     copy_buffer_to_image(BufferHandle src, TextureHandle dst, std::span<const BufferImageCopyRegion> regions) = 0;
 
+    /// Stream bytes from an image into a host-visible buffer. The source
+    /// image is expected to already be in `kTransferSrc` (the user emits
+    /// the matching barriers around this call). The buffer must be sized
+    /// `width * height * bytes_per_pixel` for an RGBA8 capture, etc. Used
+    /// for screenshot / golden-image capture (Phase 11 Track A) and for
+    /// any readback-style operation a compute or render pass requires.
+    /// Symmetric with `copy_buffer_to_image`.
+    virtual void
+    copy_image_to_buffer(TextureHandle src, BufferHandle dst, std::span<const BufferImageCopyRegion> regions) = 0;
+
     // ---- Barriers ----------------------------------------------------------
     virtual void
     barrier(std::span<const BufferBarrier> buffer_barriers, std::span<const TextureBarrier> texture_barriers) = 0;

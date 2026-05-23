@@ -506,6 +506,47 @@ void VulkanCommandBuffer::copy_buffer_to_image(
     );
 }
 
+void VulkanCommandBuffer::copy_image_to_buffer(
+    cd::rhi::TextureHandle src,
+    cd::rhi::BufferHandle dst,
+    std::span<const cd::rhi::BufferImageCopyRegion> regions
+)
+{
+    if (tables_.buffers == nullptr || tables_.images == nullptr || regions.empty())
+        return;
+    auto src_it = tables_.images->find(src.index());
+    auto dst_it = tables_.buffers->find(dst.index());
+    if (src_it == tables_.images->end() || dst_it == tables_.buffers->end())
+        return;
+
+    std::vector<VkBufferImageCopy> vk_regions;
+    vk_regions.reserve(regions.size());
+    for (const auto& r : regions)
+    {
+        VkBufferImageCopy vr {};
+        vr.bufferOffset = r.buffer_offset;
+        vr.bufferRowLength = 0;
+        vr.bufferImageHeight = 0;
+        vr.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vr.imageSubresource.mipLevel = r.mip_level;
+        vr.imageSubresource.baseArrayLayer = r.base_layer;
+        vr.imageSubresource.layerCount = r.layer_count;
+        vr.imageOffset = { r.image_offset.x, r.image_offset.y, r.image_offset.z };
+        vr.imageExtent = { r.image_extent.width, r.image_extent.height, r.image_extent.depth };
+        vk_regions.push_back(vr);
+    }
+    // Source image expected to be in TRANSFER_SRC_OPTIMAL. Symmetric with
+    // copy_buffer_to_image — the caller owns the surrounding barriers.
+    vkCmdCopyImageToBuffer(
+        cmd_,
+        src_it->second,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        dst_it->second,
+        static_cast<std::uint32_t>(vk_regions.size()),
+        vk_regions.data()
+    );
+}
+
 void VulkanCommandBuffer::barrier(
     std::span<const cd::rhi::BufferBarrier> buffer_barriers,
     std::span<const cd::rhi::TextureBarrier> texture_barriers
