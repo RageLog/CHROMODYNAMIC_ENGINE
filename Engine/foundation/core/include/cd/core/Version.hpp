@@ -26,8 +26,33 @@ struct Version
     }
 };
 
-/// Compile-time engine version (synchronized with top-level CMakeLists.txt).
-inline constexpr Version kEngineVersion { 0, 1, 0, "" };
+// Engine version stamped from CMake `project(... VERSION X.Y.Z ...)`. The
+// build wires `CD_ENGINE_VERSION_MAJOR/MINOR/PATCH` as PUBLIC compile
+// definitions on cd_core (see Engine/foundation/core/CMakeLists.txt) so
+// every translation unit that includes this header sees the same numbers
+// the CMake project carries. Fallback defaults below match the v0.0.0
+// "unconfigured" pattern — if the build forgot to set the macros, the
+// engine reports a clearly-wrong version instead of pretending to be
+// 0.1.0 (the previous hard-coded value, which drifted from PROJECT_VERSION
+// repeatedly during the marathon).
+#ifndef CD_ENGINE_VERSION_MAJOR
+    #define CD_ENGINE_VERSION_MAJOR 0
+#endif
+#ifndef CD_ENGINE_VERSION_MINOR
+    #define CD_ENGINE_VERSION_MINOR 0
+#endif
+#ifndef CD_ENGINE_VERSION_PATCH
+    #define CD_ENGINE_VERSION_PATCH 0
+#endif
+
+/// Compile-time engine version. Synchronized with the top-level CMake
+/// project(... VERSION ...) declaration at configure time.
+inline constexpr Version kEngineVersion {
+    CD_ENGINE_VERSION_MAJOR,
+    CD_ENGINE_VERSION_MINOR,
+    CD_ENGINE_VERSION_PATCH,
+    ""
+};
 
 inline constexpr std::string_view kEngineName = "CHROMODYNAMIC";
 

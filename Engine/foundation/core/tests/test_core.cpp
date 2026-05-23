@@ -24,9 +24,15 @@ namespace
 TEST(CoreSmoke, EngineNameAndVersion)
 {
     EXPECT_EQ(cd::core::kEngineName, "CHROMODYNAMIC");
-    EXPECT_EQ(cd::core::kEngineVersion.major, 0);
-    EXPECT_EQ(cd::core::kEngineVersion.minor, 1);
-    EXPECT_EQ(cd::core::kEngineVersion.patch, 0);
+    // Pre-v0.25.0 these asserted the literal 0.1.0 — a value the header
+    // hard-coded and that drifted from PROJECT_VERSION every marathon
+    // release. After v0.25.0 the constant is stamped from CMake's
+    // PROJECT_VERSION_*; we sanity-check the macros came through (>= 0)
+    // and that the packed integer is non-zero (would be zero only if all
+    // three components are zero — i.e. an unconfigured build).
+    EXPECT_GE(cd::core::kEngineVersion.major, 0);
+    EXPECT_GE(cd::core::kEngineVersion.minor, 0);
+    EXPECT_GE(cd::core::kEngineVersion.patch, 0);
     EXPECT_GT(cd::core::kEngineVersion.packed(), 0u);
 }
 

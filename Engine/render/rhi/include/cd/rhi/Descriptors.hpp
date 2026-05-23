@@ -164,7 +164,21 @@ struct RasterState
 {
     PolygonMode polygon_mode { PolygonMode::kFill };
     CullMode cull { CullMode::kBack };
-    FrontFace front_face { FrontFace::kCounterClockwise };
+    /// Default = kClockwise to match the Vulkan-NDC convention used by every
+    /// sample in the tree (and every modern engine target backend — D3D12 and
+    /// Metal are also Y-down). Source code authored "CCW from outside the
+    /// mesh" still survives because the vertex shader's `clip.y = -clip.y`
+    /// (or any equivalent Y-flip) flips winding after the perspective divide;
+    /// the rasterizer then sees the resulting CW triangles, and with
+    /// `front_face = kClockwise` it correctly classifies them as front.
+    /// This is the default that makes back-face culling actually work.
+    ///
+    /// Pre-v0.25.0 the default was kCounterClockwise. Every Vulkan-NDC sample
+    /// had to override `cull = kNone` to mask the broken winding (BUGs #1,
+    /// #2, #5 in the v1.0 rollback ADR). That boilerplate is now obsolete
+    /// but still present — explicit overrides remain valid and continue to
+    /// behave identically.
+    FrontFace front_face { FrontFace::kClockwise };
     float line_width { 1.0f };
     bool depth_clamp { false };
     bool depth_bias_enable { false };
