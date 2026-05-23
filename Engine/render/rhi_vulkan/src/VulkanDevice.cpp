@@ -984,6 +984,32 @@ public:
         return {};
     }
 
+    [[nodiscard]] cd::core::Result<void>
+    download_buffer(cd::rhi::BufferHandle h, std::uint64_t offset, std::span<std::byte> dst) override
+    {
+        auto bit = buffers_.find(h.index());
+        auto ait = buffer_alloc_.find(h.index());
+        auto met = buffer_meta_.find(h.index());
+        if (bit == buffers_.end() || ait == buffer_alloc_.end() || met == buffer_meta_.end())
+            return std::unexpected(make_err(cd::rhi::rhi_errors::Code::kInvalidArgument,
+                                            "download_buffer: unknown buffer"));
+        if (!met->second.host_visible)
+            return std::unexpected(make_err(cd::rhi::rhi_errors::Code::kInvalidArgument,
+                                            "download_buffer: buffer is not host-visible"));
+        if (offset + dst.size() > met->second.size)
+            return std::unexpected(make_err(cd::rhi::rhi_errors::Code::kInvalidArgument,
+                                            "download_buffer: out of bounds"));
+        if (dst.empty())
+            return {};
+        // vmaCopyAllocationToMemory mirrors vmaCopyMemoryToAllocation:
+        // map+invalidate+memcpy+unmap atomically, handling the non-
+        // coherent-heap invalidate vkMapMemory doesn't.
+        if (vmaCopyAllocationToMemory(vma_allocator_, ait->second, offset, dst.data(), dst.size()) != VK_SUCCESS)
+            return std::unexpected(make_err(cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                                            "vmaCopyAllocationToMemory failed"));
+        return {};
+    }
+
     // --- Shader module (real) --------------------------------------------
     [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle>
     create_shader_module(const cd::rhi::ShaderModuleDesc& desc) override

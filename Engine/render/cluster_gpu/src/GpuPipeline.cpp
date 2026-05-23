@@ -459,16 +459,48 @@ GpuPipeline::run(std::span<const cd::render::cluster::LightSphere> lights)
     out.cluster_counts.assign(cluster_count, 0U);
     out.cluster_offsets.assign(cluster_count + 1, 0U);
 
-    // Readback path requires command-buffer copy → CPU map. cd::rhi has
-    // upload_buffer but not download_buffer in the v1 API; many backends
-    // expose mapping via VMA. For Wave 101 the descriptor-set + pipeline
-    // wire-up is the deliverable; the runtime readback path is the next
-    // wave (102) and depends on backend buffer-map support. Return
-    // kBufferReadbackFailed with a clear message so callers know which
-    // surface needs the follow-up.
-    return std::unexpected(cluster_gpu_errors::make(
-        cluster_gpu_errors::Code::kBufferReadbackFailed,
-        "buffer readback API land in Wave 102; pipeline wired but run() needs it"));
+    {
+        const std::uint64_t bytes =
+            static_cast<std::uint64_t>(cluster_count) * sizeof(std::uint32_t);
+        std::vector<std::byte> staging(static_cast<std::size_t>(bytes));
+        if (auto r = d.download_buffer(impl_->counts_buf, 0, staging); !r.has_value())
+            return std::unexpected(cluster_gpu_errors::make(
+                cluster_gpu_errors::Code::kBufferReadbackFailed, "counts readback"));
+        std::memcpy(out.cluster_counts.data(), staging.data(), staging.size());
+    }
+    std::uint32_t running = 0;
+    for (std::size_t i = 0; i < cluster_count; ++i)
+    {
+        out.cluster_offsets[i] = running;
+        running += out.cluster_counts[i];
+    }
+    out.cluster_offsets[cluster_count] = running;
+
+    // Upload offsets back to GPU for PASS 1.
+    {
+        std::vector<std::byte> offsets_bytes(out.cluster_offsets.size() * sizeof(std::uint32_t));
+        std::memcpy(offsets_bytes.data(), out.cluster_offsets.data(), offsets_bytes.size());
+        if (auto r = d.upload_buffer(impl_->offsets_buf, 0, offsets_bytes); !r.has_value())
+            return std::unexpected(cluster_gpu_errors::make(
+                cluster_gpu_errors::Code::kBufferUploadFailed, "offsets upload"));
+    }
+
+    if (auto r = dispatch_phase(1); !r.has_value())
+        return std::unexpected(r.error());
+
+    // --- Readback light_indices ----------------------------------------------
+    out.light_indices.assign(running, 0U);
+    if (running > 0)
+    {
+        const std::uint64_t bytes =
+            static_cast<std::uint64_t>(running) * sizeof(std::uint32_t);
+        std::vector<std::byte> staging(static_cast<std::size_t>(bytes));
+        if (auto r = d.download_buffer(impl_->indices_buf, 0, staging); !r.has_value())
+            return std::unexpected(cluster_gpu_errors::make(
+                cluster_gpu_errors::Code::kBufferReadbackFailed, "indices readback"));
+        std::memcpy(out.light_indices.data(), staging.data(), staging.size());
+    }
+    return out;
 }
 
 }  // namespace cd::cluster_gpu

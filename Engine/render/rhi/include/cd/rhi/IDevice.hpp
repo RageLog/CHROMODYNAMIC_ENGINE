@@ -256,6 +256,15 @@ public:
     [[nodiscard]] virtual cd::core::Result<void>
     upload_buffer(BufferHandle h, std::uint64_t offset, std::span<const std::byte> data) = 0;
 
+    /// Read from a CPU-visible (kGpuToCpu / kCpuRandomAccess) buffer region.
+    /// `dst.size()` controls the byte count. Returns kInvalidArgument for an
+    /// unknown handle, an OOB range, or a GPU-only buffer. Backends with
+    /// deferred GPU writes (Vulkan) must flush the queue before mapping;
+    /// callers should usually wait_idle() before this call so the data is
+    /// fresh.
+    [[nodiscard]] virtual cd::core::Result<void>
+    download_buffer(BufferHandle h, std::uint64_t offset, std::span<std::byte> dst) = 0;
+
     // ---- Swapchain ---------------------------------------------------------
 
     [[nodiscard]] virtual cd::core::Result<SwapchainHandle> create_swapchain(const SwapchainDesc& desc) = 0;

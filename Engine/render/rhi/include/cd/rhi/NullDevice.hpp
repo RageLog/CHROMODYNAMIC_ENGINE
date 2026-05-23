@@ -174,6 +174,25 @@ public:
         return {};
     }
 
+    [[nodiscard]] cd::core::Result<void>
+    download_buffer(BufferHandle h, std::uint64_t offset, std::span<std::byte> dst) override
+    {
+        auto it = buffers_.find(h.index());
+        if (it == buffers_.end())
+            return std::unexpected(rhi_errors::make(rhi_errors::Code::kInvalidArgument,
+                                                   "download: unknown buffer"));
+        const auto& rec = it->second;
+        if (rec.cpu_storage.empty())
+            return std::unexpected(rhi_errors::make(rhi_errors::Code::kInvalidArgument,
+                                                   "download: buffer is GPU-only"));
+        if (offset + dst.size() > rec.cpu_storage.size())
+            return std::unexpected(rhi_errors::make(rhi_errors::Code::kInvalidArgument,
+                                                   "download: out of bounds"));
+        if (!dst.empty())
+            std::memcpy(dst.data(), rec.cpu_storage.data() + offset, dst.size());
+        return {};
+    }
+
     /// Read-back hook (test-only). Returns a span over the buffer's CPU storage,
     /// or empty if the buffer is GPU-only / unknown.
     [[nodiscard]] std::span<const std::byte> peek_buffer(BufferHandle h) const noexcept
