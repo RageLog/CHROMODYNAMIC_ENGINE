@@ -797,3 +797,34 @@ TEST(PredictionBuffer, CorrectAndReplayRebuildsState)
     EXPECT_EQ(*pb.at(3), 201);
     EXPECT_EQ(*pb.at(4), 202);
 }
+
+#include <cd/net/PacketHeader.hpp>
+
+TEST(PacketHeader, DefaultIsValidWhenOpcodeSet)
+{
+    cd::net::PacketHeader h;
+    EXPECT_FALSE(cd::net::is_valid(h));  // kInvalid opcode
+    h.opcode = cd::net::Opcode::kHandshake;
+    EXPECT_TRUE(cd::net::is_valid(h));
+}
+
+TEST(PacketHeader, MagicMismatchRejected)
+{
+    cd::net::PacketHeader h;
+    h.opcode = cd::net::Opcode::kHeartbeat;
+    h.magic = 0xDEADBEEFu;
+    EXPECT_FALSE(cd::net::is_valid(h));
+}
+
+TEST(PacketHeader, VersionMismatchRejected)
+{
+    cd::net::PacketHeader h;
+    h.opcode = cd::net::Opcode::kReliable;
+    h.version = 99;
+    EXPECT_FALSE(cd::net::is_valid(h));
+}
+
+TEST(PacketHeader, SizeIsEightBytes)
+{
+    EXPECT_EQ(sizeof(cd::net::PacketHeader), 8u);
+}

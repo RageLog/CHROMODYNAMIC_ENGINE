@@ -806,3 +806,37 @@ TEST(RingBuffer, WrapAroundPreservesOrder)
     EXPECT_EQ(*rb.pop(), 4);
     EXPECT_EQ(*rb.pop(), 5);
 }
+
+#include <cd/core/BitOps.hpp>
+
+TEST(BitOps, PopcountCountsSetBits)
+{
+    EXPECT_EQ(cd::core::popcount(0u), 0);
+    EXPECT_EQ(cd::core::popcount(0xFFu), 8);
+    EXPECT_EQ(cd::core::popcount(0b10101010u), 4);
+}
+
+TEST(BitOps, IsPow2)
+{
+    EXPECT_FALSE(cd::core::is_pow2(0));
+    EXPECT_TRUE(cd::core::is_pow2(1));
+    EXPECT_TRUE(cd::core::is_pow2(2));
+    EXPECT_FALSE(cd::core::is_pow2(3));
+    EXPECT_TRUE(cd::core::is_pow2(1024));
+}
+
+TEST(BitOps, NextPow2RoundsUp)
+{
+    EXPECT_EQ(cd::core::next_pow2(0), 1u);
+    EXPECT_EQ(cd::core::next_pow2(1), 1u);
+    EXPECT_EQ(cd::core::next_pow2(5), 8u);
+    EXPECT_EQ(cd::core::next_pow2(1024), 1024u);
+}
+
+TEST(BitOps, AlignUpToPow2)
+{
+    EXPECT_EQ(cd::core::align_up(0, 16), 0u);
+    EXPECT_EQ(cd::core::align_up(1, 16), 16u);
+    EXPECT_EQ(cd::core::align_up(15, 16), 16u);
+    EXPECT_EQ(cd::core::align_up(17, 16), 32u);
+}
