@@ -27,6 +27,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace cd::script
@@ -77,6 +79,27 @@ public:
 
     /// Diagnostic counter — incremented on every successful `run_*` call.
     [[nodiscard]] std::uint64_t script_count() const noexcept;
+
+    // ---- Global variable bindings (Wave 73) -----------------------------
+
+    /// Set a Lua global to a primitive C++ value.
+    void set_global(std::string_view name, double value);
+    void set_global(std::string_view name, std::string_view value);
+    void set_global(std::string_view name, bool value);
+    /// Convenience overload — disambiguates string literal vs. bool.
+    void set_global(std::string_view name, const char* value);
+
+    /// Pull a Lua global as a typed value. Returns nullopt if the
+    /// global is unset or holds a value of an incompatible type.
+    [[nodiscard]] std::optional<double> get_global_number(std::string_view name);
+    [[nodiscard]] std::optional<std::string> get_global_string(std::string_view name);
+    [[nodiscard]] std::optional<bool> get_global_bool(std::string_view name);
+
+    /// Most recent Lua error message captured during the last failing
+    /// `run_*` call. Empty string when no error has occurred since
+    /// construction (or since the last successful run). Stable across
+    /// returns — the Engine owns the backing storage.
+    [[nodiscard]] std::string_view last_error() const noexcept;
 
 private:
     struct Impl;
