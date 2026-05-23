@@ -219,10 +219,20 @@ multi-config). Mixing them yields linker errors about CRT symbols.
 
 ### Version-range matching
 
-`find_package(CHROMODYNAMIC 0.25 REQUIRED)` accepts any 0.25.x. The
-config writes a `SameMajorVersion` policy — `find_package(CHROMODYNAMIC
-1.0 ...)` will reject 0.25.0 install trees and vice versa, which is
-the v1.0 ABI promise in machine-readable form.
+`find_package(CHROMODYNAMIC 0.30 REQUIRED)` accepts any **0.30.x**.
+The config writes a `SameMinorVersion` policy for every 0.x release —
+`find_package(CHROMODYNAMIC 0.29 ...)` against a 0.30 install tree
+will be rejected, because SemVer 2 lets *anything* break across minor
+bumps in 0.x and the project owns up to that. v0.x consumers must
+re-pin and rebuild each minor.
+
+When v1.0 ships, the policy flips to `SameMajorVersion` (the
+canonical SemVer-stable promise), and `find_package(CHROMODYNAMIC 1.0
+REQUIRED)` will then accept any 1.x install tree.
+
+The auto-flip is driven by `PROJECT_VERSION_MAJOR EQUAL 0` in
+[`cmake/CDInstall.cmake`](../cmake/CDInstall.cmake) — no consumer
+action required.
 
 ## 6. What we recommend you ship a smoke for
 

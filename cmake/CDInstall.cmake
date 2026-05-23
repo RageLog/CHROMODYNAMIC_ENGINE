@@ -58,10 +58,22 @@ function(cd_finalize_install)
     NO_CHECK_REQUIRED_COMPONENTS_MACRO
   )
 
+  # SemVer 2 says anything MAY change in 0.x, so SameMajorVersion (treats
+  # 0.25 and 0.99 as interchangeable because both have major=0) lies to
+  # downstream find_package() callers. SameMinorVersion is the honest
+  # policy for the 0.x line — 0.30.x consumers will be required to
+  # rebuild against any 0.31.0 release. When v1.0 ships, flip this back
+  # to SameMajorVersion, which then becomes semantically correct.
+  if(PROJECT_VERSION_MAJOR EQUAL 0)
+    set(_cd_version_compat SameMinorVersion)
+  else()
+    set(_cd_version_compat SameMajorVersion)
+  endif()
+
   write_basic_package_version_file(
     "${_build_version}"
     VERSION       "${PROJECT_VERSION}"
-    COMPATIBILITY SameMajorVersion
+    COMPATIBILITY ${_cd_version_compat}
   )
 
   install(FILES
