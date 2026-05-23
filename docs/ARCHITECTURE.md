@@ -112,8 +112,16 @@ These are not negotiable; the CI matrix enforces them.
   debug-only, `CD_VERIFY(expr)` stays in release. Both route through
   the process-wide `PanicHandler` so tests can swap "abort" for
   "throw" and production can route to telemetry.
-- **`catch(...) {}` is forbidden.** Exception use is limited to ctor /
-  dtor boundary and must be documented at the call site.
+- **Empty `catch(...) {}` is forbidden.** A `catch(...)` block is
+  permitted only when it *observably* records or routes the failure —
+  e.g. increments a failure counter, emits a log line, bumps a stat,
+  or sets an error flag visible to the caller — AND the file is
+  enumerated in [docs/EXCEPTION_BOUNDARIES.md](EXCEPTION_BOUNDARIES.md)
+  with a justification. Silently swallowing an unknown exception is
+  always wrong; demoting one to a counted, observable boundary is
+  sometimes the right shape (detached worker bodies, format-error
+  fallbacks on a logger that must not itself throw, sink-write
+  failures that the caller cannot meaningfully react to).
 - **Error codes pretty-print via `cd::core::format(ec)`** — domain and
   enumerator names come from a registry, so `core::InvalidArgument: x
   must be >= 0` is the standard log line, not `0:2 x must be >= 0`.

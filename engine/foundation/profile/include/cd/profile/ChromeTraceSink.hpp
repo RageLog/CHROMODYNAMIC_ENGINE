@@ -28,6 +28,8 @@
 
 #include <cd/profile/Scope.hpp>
 
+#include <atomic>
+#include <cstdint>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -89,6 +91,12 @@ public:
         }
         catch (...)
         {
+            // ISink::submit is noexcept by contract, but ofstream IO can
+            // still raise via badbit/exceptions or std::bad_alloc. The
+            // profiler must never crash the app, so we count-and-swallow.
+            // Consumers can read failed_writes() to detect a corrupt /
+            // incomplete trace before handing the .json to perfetto.dev.
+            failed_writes_.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -97,11 +105,20 @@ public:
         return out_.is_open();
     }
 
+    /// Number of submit() calls that raised an exception and were
+    /// counted-and-swallowed by the catch-all boundary. Non-zero means
+    /// the emitted trace is incomplete.
+    [[nodiscard]] std::uint64_t failed_writes() const noexcept
+    {
+        return failed_writes_.load(std::memory_order_relaxed);
+    }
+
 private:
     std::string path_;
     std::ofstream out_;
     mutable std::mutex mutex_;
     bool first_ { true };
+    std::atomic<std::uint64_t> failed_writes_ { 0 };
 };
 
 }  // namespace cd::profile

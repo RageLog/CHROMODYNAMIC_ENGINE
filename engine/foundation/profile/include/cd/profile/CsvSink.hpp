@@ -22,6 +22,8 @@
 
 #include <cd/profile/Scope.hpp>
 
+#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <mutex>
@@ -76,8 +78,14 @@ public:
         }
         catch (...)
         {
-            // ISink::submit is noexcept; swallow any exception that
-            // bubbles out of ofstream (e.g. disk full).
+            // ISink::submit is noexcept by contract, but ofstream can still
+            // throw (e.g. badbit + exceptions(failbit)) or the surrounding
+            // code can raise std::bad_alloc. We can't propagate to the
+            // caller (the profiler can't be allowed to crash the app), but
+            // we record the failure on a counter so a downstream reader of
+            // `failed_writes()` can detect dropped samples instead of
+            // silently believing the CSV is complete.
+            failed_writes_.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
@@ -86,11 +94,20 @@ public:
         return out_.is_open();
     }
 
+    /// Number of submit() calls that raised an exception and were
+    /// counted-and-swallowed by the catch-all boundary. Non-zero means
+    /// the CSV stream is incomplete.
+    [[nodiscard]] std::uint64_t failed_writes() const noexcept
+    {
+        return failed_writes_.load(std::memory_order_relaxed);
+    }
+
 private:
     std::string path_;
     std::ofstream out_;
     mutable std::mutex mutex_;
     bool header_written_ { false };
+    std::atomic<std::uint64_t> failed_writes_ { 0 };
 };
 
 }  // namespace cd::profile
