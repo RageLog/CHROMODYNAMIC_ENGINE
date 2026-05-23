@@ -45,6 +45,7 @@ enum class Code : std::uint32_t
     kFileNotFound = 1,
     kDecodeFailed = 2,
     kInvalidArgument = 3,
+    kEncodeFailed = 4,
 };
 
 [[nodiscard]] inline cd::core::ErrorCode make(Code c, std::string_view m = {}) noexcept
@@ -97,6 +98,18 @@ load_image_from_memory(std::span<const std::uint8_t> bytes, const LoadOptions& o
 /// HDR variant — accepts Radiance .hdr inputs. Other formats are decoded
 /// to 8-bit then promoted to float (lossy); prefer load_image for those.
 [[nodiscard]] cd::core::Result<ImageHdr> load_image_hdr(std::string_view path, const LoadOptions& options = {});
+
+/// Write an RGBA8 buffer to disk as PNG. `width * height * 4` bytes are
+/// read from `rgba` row-major, top-left origin (the same convention
+/// `load_image` returns). Returns an error if the path can't be opened,
+/// the encoder rejects the buffer, or the dimensions are zero.
+///
+/// Used by the Track A golden-screenshot pipeline (Phase 11) to write
+/// captured swapchain frames to disk. Engine consumers that need PNG
+/// output for any other reason (asset cooker debug dumps, test fixtures)
+/// can use this directly.
+[[nodiscard]] cd::core::Result<void>
+write_png_rgba(std::string_view path, const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height);
 
 /// 2x2 box-filter mipmap chain generator. Returns a vector of Images,
 /// element 0 being the input copied unchanged and element N being a

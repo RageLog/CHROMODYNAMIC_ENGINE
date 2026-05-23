@@ -221,6 +221,46 @@ TEST(AssetImage, GarbageBufferReturnsDecodeFailed)
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kDecodeFailed));
 }
 
+TEST(AssetImage, WritePngRoundTripPreservesRgbaPixels)
+{
+    // Build a tiny 2x2 RGBA8 test image with distinct corners.
+    const std::array<std::uint8_t, 16> rgba {
+        255, 0,   0,   255,   // top-left:     red
+        0,   255, 0,   255,   // top-right:    green
+        0,   0,   255, 255,   // bottom-left:  blue
+        255, 255, 255, 128,   // bottom-right: white at 50% alpha
+    };
+    const auto tmp = std::filesystem::temp_directory_path() / "cd_test_write_png_rgba_2x2.png";
+    auto w = cd::asset_image::write_png_rgba(tmp.string(), rgba.data(), 2, 2);
+    ASSERT_TRUE(w.has_value()) << "write_png_rgba failed: " << w.error().message;
+
+    auto r = cd::asset_image::load_image(tmp.string());
+    ASSERT_TRUE(r.has_value()) << "load_image failed after write_png_rgba: " << r.error().message;
+    EXPECT_EQ(r->width, 2u);
+    EXPECT_EQ(r->height, 2u);
+    ASSERT_EQ(r->rgba.size(), rgba.size());
+    for (std::size_t i = 0; i < rgba.size(); ++i)
+        EXPECT_EQ(r->rgba[i], rgba[i]) << "byte mismatch at index " << i;
+
+    std::error_code ec;
+    std::filesystem::remove(tmp, ec);
+}
+
+TEST(AssetImage, WritePngNullPointerReturnsInvalidArgument)
+{
+    auto r = cd::asset_image::write_png_rgba("dummy.png", nullptr, 4, 4);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kInvalidArgument));
+}
+
+TEST(AssetImage, WritePngZeroSizeReturnsInvalidArgument)
+{
+    const std::array<std::uint8_t, 4> px { 1, 2, 3, 4 };
+    auto r = cd::asset_image::write_png_rgba("dummy.png", px.data(), 0, 1);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_image::image_errors::Code::kInvalidArgument));
+}
+
 TEST(AssetImage, GenerateMipsFullChainOn256Square)
 {
     cd::asset_image::Image src;

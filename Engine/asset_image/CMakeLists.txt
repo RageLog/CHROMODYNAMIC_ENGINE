@@ -43,6 +43,7 @@ cd_add_library(asset_image
   TYPE STATIC
   SOURCES
     src/Image.cpp
+    src/ImageWrite.cpp
     src/Bc7Compress.cpp
   PUBLIC_DEPS
     cd::core
