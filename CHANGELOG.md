@@ -10,6 +10,17 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.20.0 — 2026-05-23 — Phase 8 closure (7/7) + Phase 10 opened (v1.0 path)
+
+### Features
+
+- **[cluster_pbr]** Forward+ PBR fragment-shader integration helper (`20d7484`)
+- **[diag]** cd::diag CD_ASSERT / CD_VERIFY / CD_PANIC + override hook (`41e1aed`)
+
+### Documentation
+
+- **[adr]** Phase 10 — v1.0 path mimari ADR (Wave 106) (`24c7fba`)
+
 ## v0.19.0 — 2026-05-23 — Phase 9 Sprint 2 (Forward+ GPU compute LIVE)
 
 ### Features
