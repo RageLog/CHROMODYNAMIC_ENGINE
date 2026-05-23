@@ -267,3 +267,46 @@ TEST(BlendTree2, MismatchedPoseSizesFails)
     std::array<cd::math::Transformf, 1> out {};
     EXPECT_FALSE(cd::anim::blend2(a, b, 0.5F, out));
 }
+
+#include <cd/anim/AdditiveBlend.hpp>
+
+TEST(AdditiveBlend, ZeroWeightReturnsBaseUnchanged)
+{
+    std::array<cd::math::Transformf, 1> base {};
+    base[0].position = { 1.0F, 2.0F, 3.0F };
+    base[0].rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+    base[0].scale = { 1.0F, 1.0F, 1.0F };
+    std::array<cd::math::Transformf, 1> delta {};
+    delta[0].position = { 10.0F, 20.0F, 30.0F };
+    delta[0].rotation = { 0.0F, 0.7071F, 0.0F, 0.7071F };
+    delta[0].scale = { 2.0F, 2.0F, 2.0F };
+    std::array<cd::math::Transformf, 1> out {};
+    EXPECT_TRUE(cd::anim::additive_blend(base, delta, 0.0F, out));
+    EXPECT_FLOAT_EQ(out[0].position.x, 1.0F);
+    EXPECT_FLOAT_EQ(out[0].position.y, 2.0F);
+    EXPECT_FLOAT_EQ(out[0].position.z, 3.0F);
+    EXPECT_FLOAT_EQ(out[0].scale.x, 1.0F);
+}
+
+TEST(AdditiveBlend, FullWeightAddsDeltaPosition)
+{
+    std::array<cd::math::Transformf, 1> base {};
+    base[0].position = { 1.0F, 0.0F, 0.0F };
+    base[0].rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+    base[0].scale = { 1.0F, 1.0F, 1.0F };
+    std::array<cd::math::Transformf, 1> delta {};
+    delta[0].position = { 5.0F, 0.0F, 0.0F };
+    delta[0].rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+    delta[0].scale = { 1.0F, 1.0F, 1.0F };
+    std::array<cd::math::Transformf, 1> out {};
+    EXPECT_TRUE(cd::anim::additive_blend(base, delta, 1.0F, out));
+    EXPECT_FLOAT_EQ(out[0].position.x, 6.0F);
+}
+
+TEST(AdditiveBlend, SizeMismatchRejected)
+{
+    std::array<cd::math::Transformf, 1> base {};
+    std::array<cd::math::Transformf, 2> delta {};
+    std::array<cd::math::Transformf, 1> out {};
+    EXPECT_FALSE(cd::anim::additive_blend(base, delta, 0.5F, out));
+}

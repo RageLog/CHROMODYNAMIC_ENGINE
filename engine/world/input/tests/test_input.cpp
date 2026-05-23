@@ -127,4 +127,48 @@ TEST(InputAxis, AnalogOverrideClamps)
     EXPECT_FLOAT_EQ(a.value(), -1.0F);
 }
 
+#include <cd/input/DoubleClick.hpp>
+
+TEST(DoubleClick, FirstClickReturnsOne)
+{
+    cd::input::DoubleClick dc;
+    EXPECT_EQ(dc.click(0.0F), 1u);
+}
+
+TEST(DoubleClick, TwoClicksWithinThresholdReturnTwo)
+{
+    cd::input::DoubleClick dc;
+    dc.set_threshold(0.5F);
+    EXPECT_EQ(dc.click(0.0F), 1u);
+    EXPECT_EQ(dc.click(0.3F), 2u);
+}
+
+TEST(DoubleClick, GapBeyondThresholdResetsToOne)
+{
+    cd::input::DoubleClick dc;
+    dc.set_threshold(0.4F);
+    EXPECT_EQ(dc.click(0.0F), 1u);
+    EXPECT_EQ(dc.click(0.3F), 2u);
+    EXPECT_EQ(dc.click(1.0F), 1u);   // gap = 0.7s > 0.4s
+}
+
+TEST(DoubleClick, TripleClickReachesThree)
+{
+    cd::input::DoubleClick dc;
+    dc.set_threshold(0.5F);
+    dc.click(0.0F);
+    dc.click(0.2F);
+    EXPECT_EQ(dc.click(0.4F), 3u);
+}
+
+TEST(DoubleClick, ResetZeroesCounter)
+{
+    cd::input::DoubleClick dc;
+    dc.click(0.0F);
+    dc.click(0.1F);
+    dc.reset();
+    EXPECT_EQ(dc.count(), 0u);
+    EXPECT_EQ(dc.click(10.0F), 1u);   // fresh start
+}
+
 }  // namespace
