@@ -44,6 +44,14 @@ add_subdirectory(hello_positional_audio)
 add_subdirectory(hello_clustered_lights)
 add_subdirectory(hello_compute_cluster)
 
+# hello_d3d12_boot exercises the Phase 12.B D3D12 backend boot path.
+# Windows-only because cd::rhi_d3d12 only links on Windows; on other
+# platforms the engine ships the same library but its factory returns
+# kBackendInitFailed. Gate the sample so non-Windows builds skip it.
+if(WIN32)
+  add_subdirectory(hello_d3d12_boot)
+endif()
+
 # hello_triangle requires the Vulkan backend; gate so the rest of the
 # engine still builds when CD_ENABLE_VULKAN=OFF.
 if(CD_ENABLE_VULKAN)

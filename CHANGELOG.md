@@ -10,6 +10,30 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.27.0 — 2026-05-23 — Phase 12.B D3D12 backend boot
+
+Boot-only milestone for the D3D12 backend (Windows-only). The backend
+now creates an `ID3D12Device` + DXGI adapter + direct command queue +
+idle fence. IDevice surface beyond introspection + wait_idle returns
+`kNotImplemented`; v0.27.x patches and Phase 13 fill in PSO, draw,
+buffer/texture upload, swapchain present.
+
+### Features
+
+- **[rhi_d3d12]** real `ID3D12Device` + adapter enumeration via
+  `IDXGIFactory6::EnumAdapterByGpuPreference`; direct command queue
+  + idle fence; ComPtr-managed lifetimes.
+- **[rhi]** `rhi_errors::make_owning` helper for run-time-built
+  diagnostic strings (HRESULT formatting, etc).
+- **[samples]** `hello_d3d12_boot` — exits 0 when the D3D12 backend
+  instantiates on the host machine.
+
+### Fixes
+
+- **[rhi_d3d12]** `D3D12CreateInfo::min_feature_level` default was
+  `0x0c00` (mistaken half-value); corrected to `0xc000` =
+  `D3D_FEATURE_LEVEL_12_0`. Pre-fix the adapter probe always failed.
+
 ## v0.26.0 — 2026-05-23 — Phase 12.A performance + profile sweep
 
 ### Features

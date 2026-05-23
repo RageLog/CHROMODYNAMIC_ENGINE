@@ -1,18 +1,25 @@
 # engine/render/rhi_d3d12 — cd::rhi_d3d12
 #
-# Windows D3D12 backend for cd::rhi. Skeleton (Wave 97); full impl
-# Phase 9. Pattern mirrors cd::rhi_metal.
+# Windows D3D12 backend for cd::rhi. Phase 12.B opens the boot-only
+# implementation (device + adapter + queue + swapchain + clear-color
+# present); subsequent v0.27.x patches add PSO, draw, buffer/texture
+# upload. Pattern mirrors cd::rhi_metal scaffolding.
+#
+# EXCLUDE_FROM_INSTALL: the boot stub will be in the install tree
+# once the surface is complete enough to promise ABI stability
+# against. Until then, downstream consumers build from source.
 
 cd_add_library(rhi_d3d12
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # boot-only; v0.27.x patches complete the surface
   SOURCES src/D3D12Device.cpp
   PUBLIC_DEPS cd::core cd::rhi
 )
 
-# On Windows the implementation links d3d12 + dxgi (and dxguid for
-# IID symbols). Phase 9 enables this; Wave 97 stub doesn't link any
-# system libs yet.
+# Windows-only link path. d3d12.lib + dxgi.lib + dxguid.lib are
+# system-provided by the Windows SDK; no FetchContent needed. The
+# guard keeps Linux/macOS builds clean (the .cpp #if-defs out the
+# entire implementation off-Windows).
 if(WIN32)
-  # Stub TU doesn't reference Win32 D3D12 symbols, so no link needed.
-  # Phase 9 wiring will add:  target_link_libraries(cd_rhi_d3d12 PRIVATE d3d12 dxgi dxguid)
+  target_link_libraries(cd_rhi_d3d12 PRIVATE d3d12 dxgi dxguid)
 endif()

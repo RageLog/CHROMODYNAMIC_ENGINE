@@ -99,6 +99,16 @@ enum class Code : std::uint32_t
 {
     return cd::core::ErrorCode { kDomain, static_cast<std::uint32_t>(c), m };
 }
+
+/// Owning-message variant for diagnostics built at run time (e.g.
+/// "D3D12 init failed HRESULT 0x80...", "vkCreateInstance returned ...").
+/// Allocates a shared_ptr so the message survives the caller's local
+/// string going out of scope — mirrors the same pattern in
+/// shader_errors / material_errors / render_errors.
+[[nodiscard]] inline cd::core::ErrorCode make_owning(Code c, std::string m)
+{
+    return cd::core::ErrorCode::make_owning(kDomain, static_cast<std::uint32_t>(c), std::move(m));
+}
 }  // namespace rhi_errors
 
 class IDevice

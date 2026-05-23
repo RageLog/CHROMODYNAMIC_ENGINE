@@ -34,9 +34,11 @@ struct D3D12CreateInfo
     /// Enable D3D12 debug layer (debug-only). Counterpart to the
     /// Vulkan / Metal validation toggles.
     bool enable_validation { true };
-    /// Minimum feature level. Defaults to D3D_FEATURE_LEVEL_12_0
-    /// equivalent (mapped to 0x0c00); higher requires raw_int.
-    std::uint32_t min_feature_level { 0x0c00 };
+    /// Minimum feature level. Default = D3D_FEATURE_LEVEL_12_0 (0xc000
+    /// — the SDK's actual numeric value, not the "compact" 0x0c00 that
+    /// earlier versions of this header mistakenly carried). Raise to
+    /// 0xc100 (12_1) or 0xc200 (12_2) for newer features.
+    std::uint32_t min_feature_level { 0xc000 };
 };
 
 /// Construct a D3D12-backed IDevice. Returns kBackendInitFailed
