@@ -10,6 +10,13 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.17.0 — 2026-05-23 — Phase 8 Sprint 12 (HRTF + Mobile RHI design)
+
+### Features
+
+- **[audio]** analytical HRTF synthesizer + per-voice convolver (`698c7f6`)
+- **[rhi]** Mobile RHI skeleton + unified native-device dispatcher (`f49464e`)
+
 ## v0.16.0 — 2026-05-23 — Phase 8 Sprint 11 (4 routing items closed)
 
 ### Features
