@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::imgdiff tests
 // =============================================================================
+#include <cd/imgdiff/Flip.hpp>
 #include <cd/imgdiff/Gaussian.hpp>
 #include <cd/imgdiff/ImageDiff.hpp>
 #include <cd/imgdiff/Ssim.hpp>
@@ -316,6 +317,106 @@ TEST(GaussianBlur, ImprovesSsimOnNoisyBaseline)
 // -----------------------------------------------------------------------------
 // SSIM Gaussian-weighted (FLIP-lite) — Wave 61
 // -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// FLIP-lite — Wave 68
+// -----------------------------------------------------------------------------
+
+TEST(FlipLite, IdenticalImagesScoreZero)
+{
+    const auto img = solid(16, 16, 100, 150, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_lite(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_DOUBLE_EQ(r->mean_error, 0.0);
+    EXPECT_DOUBLE_EQ(r->max_error, 0.0);
+    EXPECT_DOUBLE_EQ(r->p95_error, 0.0);
+    EXPECT_EQ(r->pixel_count, 256U);
+    EXPECT_TRUE(cd::imgdiff::flip_passes(*r));
+}
+
+TEST(FlipLite, BigLuminanceDiffProducesError)
+{
+    const auto white = solid(16, 16, 255, 255, 255, 255);
+    const auto black = solid(16, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { white.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { black.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_lite(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GT(r->mean_error, 0.5);
+    EXPECT_GE(r->max_error, r->mean_error);
+    EXPECT_FALSE(cd::imgdiff::flip_passes(*r));
+}
+
+TEST(FlipLite, JndFloorMutesTinyNoise)
+{
+    // ±1 LSB noise on luminance — below the perceptual_map JND floor.
+    auto base = solid(16, 16, 128, 128, 128, 255);
+    auto noised = base;
+    for (std::size_t i = 0; i < noised.size(); i += 4)
+    {
+        noised[i + 0] = 129;
+        noised[i + 1] = 129;
+        noised[i + 2] = 129;
+    }
+    const cd::imgdiff::ImageView va { base.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { noised.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_lite(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_LT(r->mean_error, 0.01);  // JND floor muted the noise
+}
+
+TEST(FlipLite, P95IsAtLeastMean)
+{
+    // Synthetic: half black, half white. p95 should be at the white
+    // end → ≥ mean which averages across both halves.
+    std::vector<std::uint8_t> mixed(16 * 16 * 4, 0);
+    for (std::size_t i = 3; i < mixed.size(); i += 4)
+        mixed[i] = 255;
+    for (std::uint32_t y = 0; y < 16; ++y)
+        for (std::uint32_t x = 8; x < 16; ++x)
+        {
+            const std::size_t k = (y * 16 + x) * 4;
+            mixed[k + 0] = 255;
+            mixed[k + 1] = 255;
+            mixed[k + 2] = 255;
+        }
+    const auto base = solid(16, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { base.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { mixed.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_lite(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GE(r->p95_error, r->mean_error);
+}
+
+TEST(FlipLite, HeatmapDimensionsMatch)
+{
+    const auto img = solid(8, 8, 50, 50, 50, 255);
+    const cd::imgdiff::ImageView v { img.data(), 8, 8 };
+    auto r = cd::imgdiff::compute_flip_lite(v, v);
+    ASSERT_TRUE(r.has_value());
+    const auto heat = cd::imgdiff::flip_heatmap(*r, 8, 8);
+    EXPECT_EQ(heat.size(), 8U * 8U * 4U);
+    // Identity → error map all 0 → heatmap all green.
+    for (std::size_t i = 0; i < heat.size(); i += 4)
+    {
+        EXPECT_EQ(heat[i + 0], 0U);     // R
+        EXPECT_EQ(heat[i + 1], 255U);   // G (all-green for zero error)
+        EXPECT_EQ(heat[i + 2], 0U);     // B
+    }
+}
+
+TEST(FlipLite, DimensionMismatchReturnsError)
+{
+    const auto a = solid(8, 8, 0, 0, 0, 255);
+    const auto b = solid(16, 8, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { b.data(), 16, 8 };
+    auto r = cd::imgdiff::compute_flip_lite(va, vb);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kDimensionMismatch));
+}
 
 TEST(SsimGaussian, IdenticalImagesScoreOne)
 {
