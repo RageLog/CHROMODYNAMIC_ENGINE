@@ -53,6 +53,14 @@ if(WIN32)
   add_subdirectory(hello_d3d12_clear)
 endif()
 
+# hello_editor wires cd::editor::EditHistory + TransformCommands into
+# an ImGui-driven inspector. Gated on CD_ENABLE_VULKAN because it
+# rides the cd::imgui_backend Vulkan path (the cd::ui-based
+# cd::editor stack remains available for headless test coverage).
+if(CD_ENABLE_VULKAN)
+  add_subdirectory(hello_editor)
+endif()
+
 # hello_triangle requires the Vulkan backend; gate so the rest of the
 # engine still builds when CD_ENABLE_VULKAN=OFF.
 if(CD_ENABLE_VULKAN)
