@@ -1,11 +1,17 @@
 # engine/ — top-level engine subtree
 # Library DAG order (bottom-up):
-#   foundation  → mem, concurrency, time, io, serialization, log, events, diag, profile,
-#                 platform, plugin, config (Sprint S2.1+)
-#   render      → rhi, shader, material, render (Sprint S2.8+)
-#   world       → ecs, scene, physics, anim, audio, input, net (Sprint S2.14+)
-#   ui          → ui, editor_ui, editor (Phase 4)
+#   foundation  → core, mem, math, concurrency, time, io, log, events, diag,
+#                 profile, platform, plugin, config, vfs, bench
+#   asset       → asset, asset_image, asset_obj, asset_gltf, asset_cdmesh,
+#                 asset_cdtex, asset_ktx2, asset_wav, asset_json, asset_pak
+#   render      → rhi, rhi_vulkan, rhi_d3d12, rhi_metal, rhi_native,
+#                 shader, material, render, framegraph, camera,
+#                 imgui_backend, async_submit, cluster, cluster_gpu,
+#                 cluster_pbr, ibl, volumetric
+#   world       → ecs, scene, physics, anim, audio, input, net
+#   ui          → ui, editor_ui, editor
 #   runtime     → compose layer (final)
+#   cross-cutting → imgdiff (test infra), script (Lua tier)
 
 add_subdirectory(foundation)
 add_subdirectory(asset)
