@@ -57,6 +57,12 @@ endif()
 # hello_replication is cross-platform (loopback connection, no real socket).
 add_subdirectory(hello_replication)
 
+# hello_rt_check probes the ray-tracing feature flags + verifies the
+# API surface lands. Gated on Vulkan because it uses cd::rhi_vulkan.
+if(CD_ENABLE_VULKAN)
+  add_subdirectory(hello_rt_check)
+endif()
+
 # hello_editor wires cd::editor::EditHistory + TransformCommands into
 # an ImGui-driven inspector. Gated on CD_ENABLE_VULKAN because it
 # rides the cd::imgui_backend Vulkan path (the cd::ui-based

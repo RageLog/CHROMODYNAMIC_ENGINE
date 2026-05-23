@@ -169,6 +169,19 @@ public:
     /// transient storage.
     virtual void push_debug_group(std::string_view name) = 0;
     virtual void pop_debug_group() = 0;
+
+    // ---- Ray tracing (Phase 14.G — API shape only at v0.40.0) --------------
+    //
+    // Default non-pure-virtual implementations let backends without RT
+    // support compile cleanly. The marathon-shippable v0.40.0 lands the
+    // *type system* shape; backend wiring (Vulkan
+    // vkBuildAccelerationStructuresKHR + vkCmdTraceRaysKHR) is queued
+    // for the follow-up wave where the shader-binding-table surface
+    // lands too.
+
+    virtual void build_acceleration_structure(AccelStructureHandle /*as*/) {}
+
+    virtual void dispatch_rays(const DispatchRaysDesc& /*desc*/) {}
 };
 
 }  // namespace cd::rhi

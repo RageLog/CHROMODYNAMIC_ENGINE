@@ -83,6 +83,10 @@ struct QueryPoolTag
 {
 };
 
+struct AccelStructureTag
+{
+};
+
 using BufferHandle = cd::core::Handle<BufferTag>;
 using TextureHandle = cd::core::Handle<TextureTag>;
 using TextureViewHandle = cd::core::Handle<TextureViewTag>;
@@ -100,5 +104,10 @@ using SemaphoreHandle = cd::core::Handle<SemaphoreTag>;
 using TimelineSemaphoreHandle = cd::core::Handle<TimelineSemaphoreTag>;
 using FenceHandle = cd::core::Handle<FenceTag>;
 using QueryPoolHandle = cd::core::Handle<QueryPoolTag>;
+/// Acceleration structure (BLAS or TLAS). Phase 14.G shipped the
+/// handle + descriptor surface; backend implementations are queued
+/// for a follow-up wave (Vulkan VK_KHR_acceleration_structure +
+/// VK_KHR_ray_tracing_pipeline / D3D12 DXR Tier 1.1).
+using AccelStructureHandle = cd::core::Handle<AccelStructureTag>;
 
 }  // namespace cd::rhi

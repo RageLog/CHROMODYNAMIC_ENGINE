@@ -300,6 +300,24 @@ public:
     /// on Vulkan's VkSubmitInfo2 so backends translate one-to-one.
     /// Returns kInvalidArgument when any referenced handle is unknown.
     [[nodiscard]] virtual cd::core::Result<void> submit(const SubmitDesc& desc) = 0;
+
+    // ---- Ray tracing (Phase 14.G — API shape only at v0.40.0) -------------
+    //
+    // Backends that don't yet implement RT return kNotImplemented from
+    // these entry points; callers gate on `features().ray_tracing` before
+    // touching them. The default non-pure-virtual implementation lets
+    // existing backends compile without re-implementing the surface
+    // until they're ready.
+
+    [[nodiscard]] virtual cd::core::Result<AccelStructureHandle>
+    create_acceleration_structure(const AccelStructureDesc& /*desc*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "create_acceleration_structure: backend has no RT implementation"));
+    }
+
+    virtual void destroy_acceleration_structure(AccelStructureHandle /*h*/) {}
 };
 
 }  // namespace cd::rhi

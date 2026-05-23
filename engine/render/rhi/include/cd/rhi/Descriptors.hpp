@@ -15,6 +15,7 @@
 #include <cd/rhi/Handles.hpp>
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace cd::rhi
@@ -210,6 +211,60 @@ struct AttachmentDesc
     StoreOp stencil_store_op { StoreOp::kDontCare };
     ResourceState initial_state { ResourceState::kUndefined };
     ResourceState final_state { ResourceState::kPresent };
+};
+
+// ---- Acceleration structures (Phase 14.G — Wave 163) ----------------------
+//
+// API shape lands at v0.40.0; backend implementation is queued for a
+// follow-up wave alongside the ray-tracing pipeline + shader-binding
+// table. The interface mirrors VK_KHR_acceleration_structure +
+// DXR Tier 1.1: BLAS (per-mesh triangle geometry) and TLAS (instance
+// list referencing BLAS handles).
+//
+// Backends that don't support RT return kNotImplemented from the
+// `create_acceleration_structure` / `build_acceleration_structure`
+// entry points; consumers gate on `device.features().ray_tracing`
+// before reaching for these.
+
+enum class AccelStructureKind : std::uint8_t
+{
+    kBottomLevel,  ///< BLAS — per-mesh triangle geometry
+    kTopLevel,     ///< TLAS — instance list referencing one or more BLAS
+};
+
+struct AccelTriangleGeometry
+{
+    /// Vertex buffer (positions). Stride bytes between successive
+    /// vertex positions; format is RGB32Float in v0.40.0.
+    BufferHandle vertex_buffer {};
+    std::uint64_t vertex_offset { 0 };
+    std::uint32_t vertex_count { 0 };
+    std::uint32_t vertex_stride { 12 };  // RGB32F → 12 bytes
+    /// Index buffer (kUInt16 or kUInt32). Optional — when
+    /// `index_count == 0` the geometry is non-indexed.
+    BufferHandle index_buffer {};
+    std::uint64_t index_offset { 0 };
+    std::uint32_t index_count { 0 };
+    IndexType index_type { IndexType::kUInt32 };
+};
+
+struct AccelStructureDesc
+{
+    AccelStructureKind kind { AccelStructureKind::kBottomLevel };
+    /// BLAS: one or more triangle geometries. TLAS: empty here;
+    /// the instance list is supplied at build time via a separate
+    /// surface (a follow-up wave wires it).
+    std::span<const AccelTriangleGeometry> triangles;
+    std::string_view debug_name {};
+};
+
+struct DispatchRaysDesc
+{
+    std::uint32_t width { 0 };
+    std::uint32_t height { 0 };
+    std::uint32_t depth { 1 };
+    /// Shader binding table (raygen / miss / hit) lives in a separate
+    /// follow-up wave; this descriptor is the entry-point shape.
 };
 
 // ---- Swapchain ------------------------------------------------------------
