@@ -118,7 +118,7 @@ cd::core::Result<Renderer> Renderer::create(const RendererDesc& desc)
     auto sc = r.device_->create_swapchain(desc.swapchain);
     if (!sc.has_value())
     {
-        return std::unexpected(render_errors::make(render_errors::Code::kSwapchainCreateFailed, sc.error().message));
+        return std::unexpected(render_errors::wrap(render_errors::Code::kSwapchainCreateFailed, sc.error()));
     }
     r.swapchain_ = *sc;
 
@@ -132,21 +132,21 @@ cd::core::Result<Renderer> Renderer::create(const RendererDesc& desc)
         if (!a.has_value())
         {
             r.release_();
-            return std::unexpected(render_errors::make(render_errors::Code::kSyncCreateFailed, a.error().message));
+            return std::unexpected(render_errors::wrap(render_errors::Code::kSyncCreateFailed, a.error()));
         }
         f.acquire_sem = *a;
         auto p = r.device_->create_semaphore();
         if (!p.has_value())
         {
             r.release_();
-            return std::unexpected(render_errors::make(render_errors::Code::kSyncCreateFailed, p.error().message));
+            return std::unexpected(render_errors::wrap(render_errors::Code::kSyncCreateFailed, p.error()));
         }
         f.present_sem = *p;
         auto fence = r.device_->create_fence(/*signaled=*/true);
         if (!fence.has_value())
         {
             r.release_();
-            return std::unexpected(render_errors::make(render_errors::Code::kSyncCreateFailed, fence.error().message));
+            return std::unexpected(render_errors::wrap(render_errors::Code::kSyncCreateFailed, fence.error()));
         }
         f.fence = *fence;
         f.fence_initialized = true;
@@ -191,7 +191,7 @@ cd::core::Result<FrameContext> Renderer::begin_frame()
     auto w = device_->wait_for_fence(f.fence, kTimelineForever);
     if (!w.has_value())
     {
-        return std::unexpected(render_errors::make(render_errors::Code::kDeviceError, w.error().message));
+        return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, w.error()));
     }
     device_->reset_fence(f.fence);
 
@@ -204,9 +204,9 @@ cd::core::Result<FrameContext> Renderer::begin_frame()
         // translate to our own domain so callers can branch on render_errors.
         if (idx.error().code == static_cast<std::uint32_t>(cd::rhi::rhi_errors::Code::kSwapchainOutOfDate))
         {
-            return std::unexpected(render_errors::make(render_errors::Code::kSwapchainOutOfDate, idx.error().message));
+            return std::unexpected(render_errors::wrap(render_errors::Code::kSwapchainOutOfDate, idx.error()));
         }
-        return std::unexpected(render_errors::make(render_errors::Code::kDeviceError, idx.error().message));
+        return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, idx.error()));
     }
     current_image_index_ = *idx;
 
@@ -278,7 +278,7 @@ cd::core::Result<void> Renderer::end_frame()
     {
         in_progress_ = false;
         ++frame_counter_;
-        return std::unexpected(render_errors::make(render_errors::Code::kDeviceError, sr.error().message));
+        return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, sr.error()));
     }
 
     std::array<cd::rhi::SemaphoreHandle, 1> present_waits { f.present_sem };
@@ -289,9 +289,9 @@ cd::core::Result<void> Renderer::end_frame()
     {
         if (pr.error().code == static_cast<std::uint32_t>(cd::rhi::rhi_errors::Code::kSwapchainOutOfDate))
         {
-            return std::unexpected(render_errors::make(render_errors::Code::kSwapchainOutOfDate, pr.error().message));
+            return std::unexpected(render_errors::wrap(render_errors::Code::kSwapchainOutOfDate, pr.error()));
         }
-        return std::unexpected(render_errors::make(render_errors::Code::kDeviceError, pr.error().message));
+        return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, pr.error()));
     }
     return {};
 }
@@ -335,7 +335,7 @@ cd::core::Result<void> Renderer::recreate_swapchain(cd::rhi::Extent2D new_extent
     auto sc = device_->create_swapchain(desc_.swapchain);
     if (!sc.has_value())
     {
-        return std::unexpected(render_errors::make(render_errors::Code::kSwapchainCreateFailed, sc.error().message));
+        return std::unexpected(render_errors::wrap(render_errors::Code::kSwapchainCreateFailed, sc.error()));
     }
     swapchain_ = *sc;
     in_progress_ = false;  // no in-flight frame after wait_idle

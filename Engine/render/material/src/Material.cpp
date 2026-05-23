@@ -46,7 +46,7 @@ namespace
     auto r = compiler.compile(d);
     if (!r.has_value())
     {
-        return std::unexpected(material_errors::make(material_errors::Code::kShaderCompileFailed, r.error().message));
+        return std::unexpected(material_errors::wrap(material_errors::Code::kShaderCompileFailed, r.error()));
     }
     return std::move(r->spirv);
 }
@@ -214,7 +214,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     if (!vs_r.has_value())
     {
         return std::unexpected(
-            material_errors::make(material_errors::Code::kPipelineCreationFailed, vs_r.error().message)
+            material_errors::wrap(material_errors::Code::kPipelineCreationFailed, vs_r.error())
         );
     }
     m.vs_ = *vs_r;
@@ -227,7 +227,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     if (!fs_r.has_value())
     {
         return std::unexpected(
-            material_errors::make(material_errors::Code::kPipelineCreationFailed, fs_r.error().message)
+            material_errors::wrap(material_errors::Code::kPipelineCreationFailed, fs_r.error())
         );
     }
     m.fs_ = *fs_r;
@@ -242,7 +242,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
         if (!dsl_r.has_value())
         {
             return std::unexpected(
-                material_errors::make(material_errors::Code::kPipelineCreationFailed, dsl_r.error().message)
+                material_errors::wrap(material_errors::Code::kPipelineCreationFailed, dsl_r.error())
             );
         }
         m.desc_layout_ = *dsl_r;
@@ -263,7 +263,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     if (!pl_r.has_value())
     {
         return std::unexpected(
-            material_errors::make(material_errors::Code::kPipelineCreationFailed, pl_r.error().message)
+            material_errors::wrap(material_errors::Code::kPipelineCreationFailed, pl_r.error())
         );
     }
     m.pipeline_layout_ = *pl_r;
@@ -285,7 +285,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     if (!gp_r.has_value())
     {
         return std::unexpected(
-            material_errors::make(material_errors::Code::kPipelineCreationFailed, gp_r.error().message)
+            material_errors::wrap(material_errors::Code::kPipelineCreationFailed, gp_r.error())
         );
     }
     m.pipeline_ = *gp_r;
@@ -355,7 +355,7 @@ cd::core::Result<MaterialInstance> MaterialInstance::create(cd::rhi::IDevice& de
     if (!r.has_value())
     {
         return std::unexpected(
-            material_errors::make(material_errors::Code::kPipelineCreationFailed, r.error().message)
+            material_errors::wrap(material_errors::Code::kPipelineCreationFailed, r.error())
         );
     }
     MaterialInstance inst;
@@ -378,7 +378,7 @@ cd::core::Result<void> MaterialInstance::update(std::span<const cd::rhi::Descrip
     auto r = device_->update_descriptor_set(desc_set_, writes);
     if (!r.has_value())
     {
-        return std::unexpected(material_errors::make(material_errors::Code::kInvalidArgument, r.error().message));
+        return std::unexpected(material_errors::wrap(material_errors::Code::kInvalidArgument, r.error()));
     }
     return {};
 }

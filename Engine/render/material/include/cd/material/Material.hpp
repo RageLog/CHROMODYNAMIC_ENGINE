@@ -63,6 +63,16 @@ enum class Code : std::uint32_t
 {
     return cd::core::ErrorCode { kDomain, static_cast<std::uint32_t>(c), m };
 }
+
+/// Re-tag an upstream ErrorCode with material_errors::Code, preserving
+/// owned diagnostic storage (e.g. glslang infoLog). Prefer this over
+/// `make(code, upstream.message)` because the latter only captures the
+/// `string_view`, losing the upstream's owning storage when the
+/// upstream is destructed.
+[[nodiscard]] inline cd::core::ErrorCode wrap(Code c, const cd::core::ErrorCode& upstream) noexcept
+{
+    return cd::core::ErrorCode::rewrap(kDomain, static_cast<std::uint32_t>(c), upstream);
+}
 }  // namespace material_errors
 
 // ---- Material description --------------------------------------------------

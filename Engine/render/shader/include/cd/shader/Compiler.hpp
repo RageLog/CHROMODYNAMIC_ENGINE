@@ -49,6 +49,14 @@ enum class Code : std::uint32_t
 {
     return cd::core::ErrorCode { kDomain, static_cast<std::uint32_t>(c), m };
 }
+
+/// Owning-message variant for diagnostics built at run time (e.g. glslang
+/// InfoLog concatenation). Allocates a shared_ptr so the message view
+/// stays valid after the caller's local std::string goes out of scope.
+[[nodiscard]] inline cd::core::ErrorCode make_owning(Code c, std::string m)
+{
+    return cd::core::ErrorCode::make_owning(kDomain, static_cast<std::uint32_t>(c), std::move(m));
+}
 }  // namespace shader_errors
 
 // ---- Shader description ----------------------------------------------------

@@ -88,6 +88,54 @@ TEST(CoreErrorCode, Equality)
     EXPECT_EQ(a, b);  // domain+code equality (message is informational)
 }
 
+// --- ErrorCode::make_owning (Wave 126, BUG #3 fix) ----------------------
+TEST(CoreErrorCode, MakeOwningKeepsMessageAfterLocalGoesOutOfScope)
+{
+    auto produce = []() {
+        std::string local = "diagnostic from a local string";
+        local += " (concatenated)";
+        // Returning by value — the local std::string is destructed at the end of this scope.
+        return cd::core::ErrorCode::make_owning(0xDEAD, 7, std::move(local));
+    };
+    auto ec = produce();
+    // The local std::string has been destructed but ec.owned keeps the storage alive.
+    EXPECT_EQ(ec.message, "diagnostic from a local string (concatenated)");
+    EXPECT_NE(ec.owned, nullptr);
+
+    // Copying the ErrorCode shares the owning storage (refcount bump, no copy).
+    const auto& ec_copy = ec;
+    EXPECT_EQ(ec_copy.message.data(), ec.message.data());
+    EXPECT_EQ(ec_copy.owned, ec.owned);
+}
+
+TEST(CoreErrorCode, RewrapPreservesOwnedMessage)
+{
+    auto upstream = cd::core::ErrorCode::make_owning(0xAAAAU, 1, std::string { "glslang parse: ERROR: file.frag:7: '...'" });
+
+    // Re-tag with a different (domain, code) — message must survive.
+    auto wrapped = cd::core::ErrorCode::rewrap(0xBBBBU, 2, upstream);
+    EXPECT_EQ(wrapped.domain, 0xBBBBU);
+    EXPECT_EQ(wrapped.code, 2U);
+    EXPECT_EQ(wrapped.message, "glslang parse: ERROR: file.frag:7: '...'");
+    EXPECT_EQ(wrapped.owned, upstream.owned);  // shared storage
+
+    // Even after upstream is destroyed, wrapped keeps the storage.
+    auto wrapped_after = [&]() {
+        auto u2 = cd::core::ErrorCode::make_owning(0xAAAAU, 1, std::string { "second message" });
+        return cd::core::ErrorCode::rewrap(0xBBBBU, 3, u2);
+    }();
+    EXPECT_EQ(wrapped_after.message, "second message");
+}
+
+TEST(CoreErrorCode, RewrapForwardsNonOwningView)
+{
+    // Upstream uses a literal — no owning storage; rewrap just forwards the view.
+    auto upstream = cd::core::core_errors::make(cd::core::core_errors::Code::kInvalidArgument, "literal");
+    auto wrapped = cd::core::ErrorCode::rewrap(0xCAFEU, 9, upstream);
+    EXPECT_EQ(wrapped.message, "literal");
+    EXPECT_EQ(wrapped.owned, nullptr);
+}
+
 // --- ErrorFormat (Wave 109) ---------------------------------------------
 TEST(CoreErrorFormat, CoreDomainIsRegistered)
 {

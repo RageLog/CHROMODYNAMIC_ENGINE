@@ -68,6 +68,16 @@ enum class Code : std::uint32_t
 {
     return cd::core::ErrorCode { kDomain, static_cast<std::uint32_t>(c), m };
 }
+
+/// Re-tag an upstream ErrorCode with render_errors::Code, preserving
+/// owned diagnostic storage. See material_errors::wrap for the same
+/// pattern — both helpers exist so cross-library error chaining keeps
+/// the upstream's diagnostic text intact instead of leaving a dangling
+/// `string_view`.
+[[nodiscard]] inline cd::core::ErrorCode wrap(Code c, const cd::core::ErrorCode& upstream) noexcept
+{
+    return cd::core::ErrorCode::rewrap(kDomain, static_cast<std::uint32_t>(c), upstream);
+}
 }  // namespace render_errors
 
 // ---- Description -----------------------------------------------------------

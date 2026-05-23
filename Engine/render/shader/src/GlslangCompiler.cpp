@@ -193,7 +193,7 @@ public:
         {
             std::string msg = "glslang parse: ";
             msg += shader.getInfoLog();
-            return std::unexpected(shader_errors::make(shader_errors::Code::kCompileFailed, msg));
+            return std::unexpected(shader_errors::make_owning(shader_errors::Code::kCompileFailed, std::move(msg)));
         }
 
         glslang::TProgram program;
@@ -202,7 +202,7 @@ public:
         {
             std::string msg = "glslang link: ";
             msg += program.getInfoLog();
-            return std::unexpected(shader_errors::make(shader_errors::Code::kLinkFailed, msg));
+            return std::unexpected(shader_errors::make_owning(shader_errors::Code::kLinkFailed, std::move(msg)));
         }
 
         CompileResult out;
@@ -225,7 +225,7 @@ public:
         {
             std::string msg = "glslang SPIR-V emission empty: ";
             msg += logger.getAllMessages();
-            return std::unexpected(shader_errors::make(shader_errors::Code::kLinkFailed, msg));
+            return std::unexpected(shader_errors::make_owning(shader_errors::Code::kLinkFailed, std::move(msg)));
         }
         return out;
     }
