@@ -24,6 +24,7 @@ cd_add_library(imgui_backend
   PUBLIC_DEPS
     cd::core
     cd::platform
+    cd::profile  # Phase 16.D: ProfilerView.hpp consumes cd::profile::Sample
     cd::rhi
     cd::rhi_vulkan
 )

@@ -199,3 +199,72 @@ TEST(AssetRegistry, TagFromExtensionRecognisesKnownFormats)
     EXPECT_EQ(AssetRegistry::tag_from_extension("README"), std::string_view {});
     EXPECT_EQ(AssetRegistry::tag_from_extension("blob.unknown"), std::string_view {});
 }
+
+// ---------------------------------------------------------------------------
+// Phase 16.C — FileWatcher tests (Wave 173)
+// ---------------------------------------------------------------------------
+#include <cd/asset/FileWatcher.hpp>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+
+namespace {
+std::filesystem::path fw_tmp_path(const char* suffix)
+{
+    return std::filesystem::temp_directory_path() /
+           (std::string { "cd_filewatcher_" } + suffix + "_" +
+            std::to_string(static_cast<unsigned long long>(
+                std::chrono::steady_clock::now().time_since_epoch().count())));
+}
+}
+
+TEST(FileWatcher, FreshFileDoesNotFireOnFirstPoll)
+{
+    const auto p = fw_tmp_path("a");
+    { std::ofstream f(p); f << "hello"; }
+
+    int fired = 0;
+    cd::asset::FileWatcher fw;
+    fw.watch(p.string(), [&](std::string_view) { ++fired; });
+
+    EXPECT_EQ(fw.poll(), 0u);
+    EXPECT_EQ(fired, 0);
+
+    std::filesystem::remove(p);
+}
+
+TEST(FileWatcher, FiresOnMtimeAdvance)
+{
+    const auto p = fw_tmp_path("b");
+    { std::ofstream f(p); f << "v1"; }
+
+    int fired = 0;
+    cd::asset::FileWatcher fw;
+    fw.watch(p.string(), [&](std::string_view) { ++fired; });
+
+    std::filesystem::last_write_time(p,
+        std::filesystem::file_time_type::clock::now() + std::chrono::seconds { 1 });
+
+    EXPECT_EQ(fw.poll(), 1u);
+    EXPECT_EQ(fired, 1);
+
+    std::filesystem::remove(p);
+}
+
+TEST(FileWatcher, UnwatchStopsCallbacks)
+{
+    const auto p = fw_tmp_path("c");
+    { std::ofstream f(p); f << "x"; }
+
+    int fired = 0;
+    cd::asset::FileWatcher fw;
+    fw.watch(p.string(), [&](std::string_view) { ++fired; });
+    fw.unwatch(p.string());
+
+    std::filesystem::last_write_time(p,
+        std::filesystem::file_time_type::clock::now() + std::chrono::seconds { 1 });
+    EXPECT_EQ(fw.poll(), 0u);
+    EXPECT_EQ(fired, 0);
+
+    std::filesystem::remove(p);
+}
