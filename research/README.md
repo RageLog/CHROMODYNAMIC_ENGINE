@@ -1,6 +1,6 @@
 # research/ — CHROMODYNAMIC Engine Araştırma Kökü
 
-Bu dizin CHROMODYNAMIC projesinin **akademik + mimari kitap + SOTA araştırma** tarafıdır. Implementasyon kodu (`Engine/`, `Project/`, `CMakeLists.txt`) ile **karıştırılmaz**. Yazıcı ajanlar yalnızca buraya yazar; geliştirici ajanlar buradan **okuyabilir** ama yazmaz.
+Bu dizin CHROMODYNAMIC projesinin **akademik + mimari kitap + SOTA araştırma** tarafıdır. Implementasyon kodu (`engine/`, `Project/`, `CMakeLists.txt`) ile **karıştırılmaz**. Yazıcı ajanlar yalnızca buraya yazar; geliştirici ajanlar buradan **okuyabilir** ama yazmaz.
 
 ## Dizin
 
@@ -33,7 +33,7 @@ research/
 ## Mühendislik tarafıyla ilişki
 
 - **Tek yönlü okuma**: `research/` → kod tabanını okuyabilir (deney, ölçüm, doğrulama için).
-- **Yasak**: Kod tabanı `Engine/` veya `include/chroma/` altına atıflı LaTeX, BibTeX, makale fragmanı bırakılmaz.
+- **Yasak**: Kod tabanı `engine/` veya `include/chroma/` altına atıflı LaTeX, BibTeX, makale fragmanı bırakılmaz.
 - **Köprü**: Sayısal sonuç gerekiyorsa `research/whitepapers/<paper-id>/scripts/` reproducible script çalıştırır, çıktısı `research/whitepapers/<paper-id>/tables/` veya `research/reports/stats/` altına gider.
 
 ## Ajan yazma yetkisi (özet)

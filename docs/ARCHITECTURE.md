@@ -107,7 +107,7 @@ These are not negotiable; the CI matrix enforces them.
 
 - **Fallible boundaries return `cd::core::Result<T>`** (alias for
   `std::expected<T, ErrorCode>`). Hot code paths never throw. See
-  `Engine/foundation/core/include/cd/core/Result.hpp`.
+  `engine/foundation/core/include/cd/core/Result.hpp`.
 - **Invariant violations panic via `cd::diag`.** `CD_ASSERT(expr)` is
   debug-only, `CD_VERIFY(expr)` stays in release. Both route through
   the process-wide `PanicHandler` so tests can swap "abort" for
@@ -134,7 +134,7 @@ These are not negotiable; the CI matrix enforces them.
 - C++23. `static_cast<T>(x)` over C-style casts. `[[nodiscard]]` on
   fallible returns. `override` mandatory on virtuals. `noexcept` only
   where it is honest — see the lesson in
-  [diag/Assert.hpp](../Engine/foundation/diag/include/cd/diag/Assert.hpp):
+  [diag/Assert.hpp](../engine/foundation/diag/include/cd/diag/Assert.hpp):
   the panic dispatch is *not* noexcept because a throwing handler
   (test mode) must be allowed to propagate.
 
@@ -195,7 +195,7 @@ The minimum checklist:
    If the subsystem is a SOTA-influenced choice (rendering, ECS,
    concurrency, allocator), cite peer-reviewed work via the Demir Kural
    pipeline (`research/library/MANIFEST.csv` + `bibliography.bib`).
-3. Add the directory `Engine/<lib>/` with `CMakeLists.txt`,
+3. Add the directory `engine/<lib>/` with `CMakeLists.txt`,
    `include/cd/<lib>/`, `src/`, `tests/`.
 4. Register the library via `cd_add_library(<name> SOURCES ... PUBLIC_DEPS
    cd::<dep> ...)`. The macro stamps include paths, warning flags, and

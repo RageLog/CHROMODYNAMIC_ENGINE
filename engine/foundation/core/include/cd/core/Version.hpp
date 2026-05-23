@@ -28,7 +28,7 @@ struct Version
 
 // Engine version stamped from CMake `project(... VERSION X.Y.Z ...)`. The
 // build wires `CD_ENGINE_VERSION_MAJOR/MINOR/PATCH` as PUBLIC compile
-// definitions on cd_core (see Engine/foundation/core/CMakeLists.txt) so
+// definitions on cd_core (see engine/foundation/core/CMakeLists.txt) so
 // every translation unit that includes this header sees the same numbers
 // the CMake project carries. Fallback defaults below match the v0.0.0
 // "unconfigured" pattern — if the build forgot to set the macros, the

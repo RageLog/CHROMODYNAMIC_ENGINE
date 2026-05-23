@@ -85,7 +85,7 @@ research/
   reports/            # Audit raporları (citation, methodology, peer-review)
   templates/          # Beamer/slide template'leri
 CMakeModules/         # CMake helper'lar (DtForHil'den taşındı + uyarlanmış)
-Engine/               # (eski) — yeniden yapılandırılacak
+engine/               # tüm cd_<lib> kütüphaneleri (canonical lowercase per B2 fix)
 Dependencies/         # vendored / submodule deps
 Project/              # örnek uygulama
 Tests/                # global test runner (modül başına da test var)

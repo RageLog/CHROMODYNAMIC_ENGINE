@@ -65,17 +65,17 @@ bottom — don't just skim — and form an opinion on:
 
 | Library | Header | Pages |
 |---|---|---|
-| `cd::core` | [Engine/foundation/core/include/cd/core/ErrorCode.hpp](../Engine/foundation/core/include/cd/core/ErrorCode.hpp) | typed error code + owning-message back-store |
-| | [Engine/foundation/core/include/cd/core/ErrorFormat.hpp](../Engine/foundation/core/include/cd/core/ErrorFormat.hpp) | pretty-print registry |
-| | [Engine/foundation/core/include/cd/core/Result.hpp](../Engine/foundation/core/include/cd/core/Result.hpp) | `std::expected<T, ErrorCode>` alias + fail() helpers |
-| | [Engine/foundation/core/include/cd/core/Handle.hpp](../Engine/foundation/core/include/cd/core/Handle.hpp) | generational handle pattern |
-| | [Engine/foundation/core/include/cd/core/HandleStore.hpp](../Engine/foundation/core/include/cd/core/HandleStore.hpp) | sparse-set slot map backing the handle |
-| | [Engine/foundation/core/include/cd/core/CVar.hpp](../Engine/foundation/core/include/cd/core/CVar.hpp) | typed config-var registry |
-| | [Engine/foundation/core/include/cd/core/Version.hpp](../Engine/foundation/core/include/cd/core/Version.hpp) | `kEngineVersion` (stamped from PROJECT_VERSION) |
-| `cd::diag` | [Engine/foundation/diag/include/cd/diag/Assert.hpp](../Engine/foundation/diag/include/cd/diag/Assert.hpp) | CD_ASSERT / CD_VERIFY / CD_PANIC + override hook |
-| `cd::log` | [Engine/foundation/log/include/cd/log/ILogger.hpp](../Engine/foundation/log/include/cd/log/ILogger.hpp) | logger interface |
-| | [Engine/foundation/log/include/cd/log/RingBufferSink.hpp](../Engine/foundation/log/include/cd/log/RingBufferSink.hpp) | bounded triage mirror |
-| | [Engine/foundation/log/include/cd/log/PanicDump.hpp](../Engine/foundation/log/include/cd/log/PanicDump.hpp) | diag → log bridge |
+| `cd::core` | [engine/foundation/core/include/cd/core/ErrorCode.hpp](../engine/foundation/core/include/cd/core/ErrorCode.hpp) | typed error code + owning-message back-store |
+| | [engine/foundation/core/include/cd/core/ErrorFormat.hpp](../engine/foundation/core/include/cd/core/ErrorFormat.hpp) | pretty-print registry |
+| | [engine/foundation/core/include/cd/core/Result.hpp](../engine/foundation/core/include/cd/core/Result.hpp) | `std::expected<T, ErrorCode>` alias + fail() helpers |
+| | [engine/foundation/core/include/cd/core/Handle.hpp](../engine/foundation/core/include/cd/core/Handle.hpp) | generational handle pattern |
+| | [engine/foundation/core/include/cd/core/HandleStore.hpp](../engine/foundation/core/include/cd/core/HandleStore.hpp) | sparse-set slot map backing the handle |
+| | [engine/foundation/core/include/cd/core/CVar.hpp](../engine/foundation/core/include/cd/core/CVar.hpp) | typed config-var registry |
+| | [engine/foundation/core/include/cd/core/Version.hpp](../engine/foundation/core/include/cd/core/Version.hpp) | `kEngineVersion` (stamped from PROJECT_VERSION) |
+| `cd::diag` | [engine/foundation/diag/include/cd/diag/Assert.hpp](../engine/foundation/diag/include/cd/diag/Assert.hpp) | CD_ASSERT / CD_VERIFY / CD_PANIC + override hook |
+| `cd::log` | [engine/foundation/log/include/cd/log/ILogger.hpp](../engine/foundation/log/include/cd/log/ILogger.hpp) | logger interface |
+| | [engine/foundation/log/include/cd/log/RingBufferSink.hpp](../engine/foundation/log/include/cd/log/RingBufferSink.hpp) | bounded triage mirror |
+| | [engine/foundation/log/include/cd/log/PanicDump.hpp](../engine/foundation/log/include/cd/log/PanicDump.hpp) | diag → log bridge |
 
 That's ~10 headers, ~700 lines of declarations. Read them.
 
@@ -114,7 +114,7 @@ We labeled each with the axis it informs.
 5. **DAG sanity.** Read the dependency diagram in
    [ARCHITECTURE.md §2](ARCHITECTURE.md). Does any edge look wrong
    (a tier depending on something above it)? Spot-check with
-   `grep -rln "cd::<above-tier>" Engine/<below-tier>/`.
+   `grep -rln "cd::<above-tier>" engine/<below-tier>/`.
 6. **Frozen vs. experimental.** ADR-wave125 lists which libraries
    the v1.0 promise binds. Read that list against
    [LIBRARIES.md](LIBRARIES.md). Anything you'd want to *move*
@@ -239,8 +239,8 @@ git checkout v0.25.0   # the tag under review
 # Read in this order, ~10 minutes:
 less Readme.md
 less docs/ARCHITECTURE.md
-less Engine/foundation/core/include/cd/core/Result.hpp
-less Engine/foundation/diag/include/cd/diag/Assert.hpp
+less engine/foundation/core/include/cd/core/Result.hpp
+less engine/foundation/diag/include/cd/diag/Assert.hpp
 ```
 
 That puts you in the right headspace to know whether you want to

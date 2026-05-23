@@ -126,7 +126,7 @@ These leak vendored FetchContent paths into their `INSTALL_INTERFACE`:
 
 If your downstream needs any of these, the cleanest path today is
 to include CHROMODYNAMIC as a git submodule and `add_subdirectory()`
-its `Engine/...` paths. The Phase 11 plan covers lifting the
+its `engine/...` paths. The Phase 11 plan covers lifting the
 vendored-dep wrappers so these libraries can re-enter the export set
 in v1.x.
 
@@ -201,7 +201,7 @@ same build directory, ensuring you used the matching `--config` flag
 
 You're linking against the engine's headers but not the library.
 Add `cd::core` to your `target_link_libraries` — the function lives
-in `Engine/foundation/core/src/ErrorFormat.cpp`, not the header.
+in `engine/foundation/core/src/ErrorFormat.cpp`, not the header.
 
 ### "target cd::rhi_vulkan not found"
 
