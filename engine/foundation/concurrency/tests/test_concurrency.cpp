@@ -282,3 +282,29 @@ TEST(AtomicCounter, ResetRestoresGivenValue)
     c.reset(50);
     EXPECT_EQ(c.value(), 50u);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 26.D — Once tests (Wave 194)
+// ---------------------------------------------------------------------------
+#include <cd/concurrency/Once.hpp>
+
+TEST(Once, RunsExactlyOnce)
+{
+    cd::concurrency::Once once;
+    int n = 0;
+    once.call([&] { ++n; });
+    once.call([&] { ++n; });
+    once.call([&] { ++n; });
+    EXPECT_EQ(n, 1);
+    EXPECT_TRUE(once.is_done());
+}
+
+TEST(Once, ResetForTestReruns)
+{
+    cd::concurrency::Once once;
+    int n = 0;
+    once.call([&] { ++n; });
+    once.reset_for_test();
+    once.call([&] { ++n; });
+    EXPECT_EQ(n, 2);
+}

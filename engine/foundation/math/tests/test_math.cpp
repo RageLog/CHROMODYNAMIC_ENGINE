@@ -641,3 +641,30 @@ TEST(SmoothingFilter, LinearSnapsWhenInRange)
     cd::math::LinearSmoother lin { 2.0F, 0.0F };
     EXPECT_FLOAT_EQ(lin.update(1.5F), 1.5F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 26.B — CatmullRomSpline tests (Wave 194)
+// ---------------------------------------------------------------------------
+#include <cd/math/Spline.hpp>
+
+TEST(CatmullRomSpline, PassesThroughInteriorControlPoints)
+{
+    // 4 CPs: t=0 → CP[1], t=1 → CP[2]. Catmull-Rom interpolates
+    // strictly between p1 and p2; p0 and p3 control the tangents.
+    std::vector<cd::math::Vec3f> cps {
+        cd::math::Vec3f { -10, 0, 0 },
+        cd::math::Vec3f {   0, 0, 0 },
+        cd::math::Vec3f {  10, 0, 0 },
+        cd::math::Vec3f {  20, 0, 0 },
+    };
+    cd::math::CatmullRomSpline s { std::move(cps) };
+    EXPECT_NEAR(s.at(0.0F).x,  0.0F, 1e-5F);
+    EXPECT_NEAR(s.at(1.0F).x, 10.0F, 1e-5F);
+}
+
+TEST(CatmullRomSpline, EmptyReturnsZeroVec)
+{
+    cd::math::CatmullRomSpline s { {} };
+    const auto v = s.at(0.5F);
+    EXPECT_FLOAT_EQ(v.x, 0.0F);
+}

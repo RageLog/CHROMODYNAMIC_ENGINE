@@ -766,3 +766,43 @@ TEST(FrameAllocator, ResetReclaimsAll)
     EXPECT_EQ(a.used(), 0u);
     EXPECT_EQ(a.remaining(), 128u);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 26.A — RingBuffer tests (Wave 194)
+// ---------------------------------------------------------------------------
+#include <cd/core/RingBuffer.hpp>
+
+TEST(RingBuffer, PushPopFifoOrder)
+{
+    cd::core::RingBuffer<int, 4> rb;
+    EXPECT_TRUE(rb.push(1));
+    EXPECT_TRUE(rb.push(2));
+    EXPECT_TRUE(rb.push(3));
+    EXPECT_EQ(rb.size(), 3u);
+    EXPECT_EQ(*rb.pop(), 1);
+    EXPECT_EQ(*rb.pop(), 2);
+    EXPECT_EQ(*rb.pop(), 3);
+    EXPECT_TRUE(rb.empty());
+}
+
+TEST(RingBuffer, FullReturnsFalseOnPush)
+{
+    cd::core::RingBuffer<int, 2> rb;
+    EXPECT_TRUE(rb.push(1));
+    EXPECT_TRUE(rb.push(2));
+    EXPECT_FALSE(rb.push(3));
+    EXPECT_TRUE(rb.full());
+}
+
+TEST(RingBuffer, WrapAroundPreservesOrder)
+{
+    cd::core::RingBuffer<int, 3> rb;
+    rb.push(1); rb.push(2); rb.push(3);
+    (void)rb.pop();
+    (void)rb.pop();
+    rb.push(4);
+    rb.push(5);
+    EXPECT_EQ(*rb.pop(), 3);
+    EXPECT_EQ(*rb.pop(), 4);
+    EXPECT_EQ(*rb.pop(), 5);
+}

@@ -308,3 +308,27 @@ TEST(Obb, ContainsPointAfterRotation45Y)
     // Far enough to project past half_extents.
     EXPECT_FALSE(cd::physics::contains(b, cd::math::Vec3f { 0.8F, 0, -0.8F }));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 26.C — Capsule tests (Wave 194)
+// ---------------------------------------------------------------------------
+#include <cd/physics/Capsule.hpp>
+
+TEST(Capsule, ContainsPointsAlongSegment)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 4, 0 }, 1.0F };
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 0, 2, 0 }));
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 0.9F, 2, 0 }));
+    EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 1.5F, 2, 0 }));
+}
+
+TEST(Capsule, ContainsEndpointHemispheres)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 4, 0 }, 1.0F };
+    // Point slightly above p1 by 0.5 → inside the top hemisphere.
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 0, 4.5F, 0 }));
+    // Point 2 above p1 → outside.
+    EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 0, 6.0F, 0 }));
+}
