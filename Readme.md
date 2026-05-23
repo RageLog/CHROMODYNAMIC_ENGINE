@@ -141,7 +141,7 @@ See [docs/LIBRARIES.md](docs/LIBRARIES.md) for the full per-library catalogue
 Tier summary:
 
 - **Foundation** — `cd::core`, `cd::mem`, `cd::concurrency`, `cd::time`,
-  `cd::io`, `cd::serialization`, `cd::log`, `cd::events`, `cd::diag`,
+  `cd::io`, `cd::log`, `cd::events`, `cd::diag`,
   `cd::profile`, `cd::platform`, `cd::plugin`, `cd::config`, `cd::math`,
   `cd::vfs`, `cd::bench`.
 - **Asset** — `cd::asset`, `cd::asset_image`, `cd::asset_obj`,
