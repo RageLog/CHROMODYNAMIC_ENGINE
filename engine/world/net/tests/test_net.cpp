@@ -756,3 +756,44 @@ TEST(ChannelMux, ReliableOutOfOrderBuffersUntilGapFills)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Phase 18.E — PredictionBuffer tests (Wave 178)
+// ---------------------------------------------------------------------------
+#include <cd/net/PredictionBuffer.hpp>
+
+TEST(PredictionBuffer, RecordAndLookup)
+{
+    cd::net::PredictionBuffer<int> pb { 16 };
+    pb.record(0, 100);
+    pb.record(1, 110);
+    pb.record(2, 120);
+    EXPECT_EQ(pb.size(), 3u);
+    EXPECT_EQ(*pb.at(0), 100);
+    EXPECT_EQ(*pb.at(2), 120);
+    EXPECT_FALSE(pb.at(3).has_value());
+}
+
+TEST(PredictionBuffer, EvictsOldestWhenFull)
+{
+    cd::net::PredictionBuffer<int> pb { 4 };
+    for (std::uint32_t i = 0; i < 6; ++i)
+        pb.record(i, static_cast<int>(i * 10));
+    EXPECT_EQ(pb.size(), 4u);
+    EXPECT_FALSE(pb.at(0).has_value());
+    EXPECT_FALSE(pb.at(1).has_value());
+    EXPECT_EQ(*pb.at(2), 20);
+    EXPECT_EQ(*pb.at(5), 50);
+}
+
+TEST(PredictionBuffer, CorrectAndReplayRebuildsState)
+{
+    cd::net::PredictionBuffer<int> pb { 16 };
+    for (std::uint32_t i = 0; i < 5; ++i) pb.record(i, static_cast<int>(i));
+    const auto replayed = pb.correct_and_replay(2, 200,
+        [](int prev, std::uint32_t) { return prev + 1; });
+    EXPECT_EQ(replayed, 2u);
+    EXPECT_EQ(*pb.at(2), 200);
+    EXPECT_EQ(*pb.at(3), 201);
+    EXPECT_EQ(*pb.at(4), 202);
+}

@@ -52,6 +52,7 @@ if(WIN32)
   add_subdirectory(hello_d3d12_boot)
   add_subdirectory(hello_d3d12_clear)
   add_subdirectory(hello_d3d12_triangle)
+  add_subdirectory(hello_opengl_boot)  # Phase 18.B
 endif()
 
 # hello_replication is cross-platform (loopback connection, no real socket).
