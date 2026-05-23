@@ -1,0 +1,222 @@
+name: Release
+
+# Tag-driven release pipeline. Fires when a tag matching `v*` is pushed
+# (e.g. v0.22.0, v1.0.0-rc.1). For each supported platform:
+#   1. Configure + build Release.
+#   2. Package the install tree into a platform-native archive
+#      (zip on Windows, tar.zst on Linux/macOS).
+#   3. Upload the artifact to the GitHub Release page.
+#
+# The pipeline is deliberately decoupled from the per-push CI matrix:
+# the per-push CI is the gate that proves we *could* release; this
+# workflow only runs when we've decided we *do* release.
+#
+# This is the Sprint 3 entrypoint to the Sprint 4 release leg — Sprint 4
+# fills in CMake `install/` rules and `find_package(CHROMODYNAMIC)`
+# downstream consumption; this workflow ships those artifacts once
+# Sprint 4 lands.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch to package"
+        required: true
+        default: "dev"
+
+permissions:
+  contents: write   # needed to upload to the GitHub Release
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve the tag/ref this run packages.
+  # ---------------------------------------------------------------------------
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.pick.outputs.ref }}
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            REF="${{ github.event.inputs.ref }}"
+          else
+            REF="${{ github.ref }}"
+          fi
+          # Strip refs/tags/ prefix if present.
+          TAG="${REF#refs/tags/}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Windows Release artifact (clang-cl preset; foundation + RHI Vulkan).
+  # ---------------------------------------------------------------------------
+  windows:
+    needs: resolve
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Install Ninja
+        run: choco install ninja -y
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake --preset ci-clangcl-win `
+            -DCD_DISABLE_VCPKG=ON
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build --preset ci-clangcl-win-release
+      - name: Package archive
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.resolve.outputs.tag }}"
+          $out = "chromodynamic-$tag-windows-x64.zip"
+          $stage = "stage/chromodynamic-$tag"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item -Recurse build/ci-clangcl-win/bin/Release "$stage/bin"
+          Copy-Item -Recurse build/ci-clangcl-win/lib/Release "$stage/lib" -ErrorAction SilentlyContinue
+          Copy-Item Readme.md, CHANGELOG.md, CLAUDE.md $stage
+          Copy-Item -Recurse docs $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath $out
+          Write-Host "Packaged: $out"
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromodynamic-${{ needs.resolve.outputs.tag }}-windows-x64
+          path: chromodynamic-${{ needs.resolve.outputs.tag }}-windows-x64.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux Release artifact (clang; Vulkan headers fetched, no GPU run).
+  # ---------------------------------------------------------------------------
+  linux:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang zstd
+      - name: Configure
+        run: |
+          cmake --preset ci-clang \
+            -DCD_DISABLE_VCPKG=ON \
+            -DCD_ENABLE_VULKAN=OFF
+      - name: Build Release
+        run: cmake --build --preset ci-clang-release
+      - name: Package archive
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          OUT="chromodynamic-${TAG}-linux-x64.tar.zst"
+          STAGE="stage/chromodynamic-${TAG}"
+          mkdir -p "$STAGE"
+          cp -R build/ci-clang/bin "$STAGE/bin"
+          cp -R build/ci-clang/lib "$STAGE/lib" 2>/dev/null || true
+          cp Readme.md CHANGELOG.md CLAUDE.md "$STAGE/"
+          cp -R docs "$STAGE/"
+          tar --use-compress-program=zstd -cf "$OUT" -C stage "chromodynamic-${TAG}"
+          ls -la "$OUT"
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromodynamic-${{ needs.resolve.outputs.tag }}-linux-x64
+          path: chromodynamic-${{ needs.resolve.outputs.tag }}-linux-x64.tar.zst
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # macOS Release artifact (AppleClang).
+  # ---------------------------------------------------------------------------
+  macos:
+    needs: resolve
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Install Ninja + zstd
+        run: brew install ninja zstd
+      - name: Configure
+        run: cmake --preset ci-appleclang -DCD_DISABLE_VCPKG=ON
+      - name: Build Release
+        run: cmake --build --preset ci-appleclang-release
+      - name: Package archive
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          OUT="chromodynamic-${TAG}-macos-arm64.tar.zst"
+          STAGE="stage/chromodynamic-${TAG}"
+          mkdir -p "$STAGE"
+          cp -R build/ci-appleclang/bin "$STAGE/bin"
+          cp -R build/ci-appleclang/lib "$STAGE/lib" 2>/dev/null || true
+          cp Readme.md CHANGELOG.md CLAUDE.md "$STAGE/"
+          cp -R docs "$STAGE/"
+          tar --use-compress-program=zstd -cf "$OUT" -C stage "chromodynamic-${TAG}"
+          ls -la "$OUT"
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromodynamic-${{ needs.resolve.outputs.tag }}-macos-arm64
+          path: chromodynamic-${{ needs.resolve.outputs.tag }}-macos-arm64.tar.zst
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Stitch the three platform artifacts into a single GitHub Release.
+  # Only runs when triggered by a tag push (workflow_dispatch produces
+  # only the per-platform artifacts so dry-runs don't clutter Releases).
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: [resolve, windows, linux, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: List packaged artifacts
+        run: |
+          find dist -type f | sort
+      - name: Build release notes from CHANGELOG
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          NOTES="release-notes-${TAG}.md"
+          # Slice the section between "## ${TAG}" and the next "## v"
+          # heading; awk because sed across newlines is fragile here.
+          awk -v tag="$TAG" '
+            $0 ~ "^## "tag" " { p=1; print; next }
+            p && /^## v[0-9]/         { exit }
+            p                          { print }
+          ' CHANGELOG.md > "$NOTES" || true
+          if [ ! -s "$NOTES" ]; then
+            echo "No matching CHANGELOG section for ${TAG}; using generic notes."
+            echo "## ${TAG}"  > "$NOTES"
+            echo ""           >> "$NOTES"
+            echo "Automated release. See [CHANGELOG.md](CHANGELOG.md) for details." >> "$NOTES"
+          fi
+          echo "----- notes -----"
+          cat "$NOTES"
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: ${{ needs.resolve.outputs.tag }}
+          body_path: release-notes-${{ needs.resolve.outputs.tag }}.md
+          files: |
+            dist/**/chromodynamic-*.zip
+            dist/**/chromodynamic-*.tar.zst
+          draft: false
+          prerelease: ${{ contains(needs.resolve.outputs.tag, '-rc') || contains(needs.resolve.outputs.tag, '-alpha') || contains(needs.resolve.outputs.tag, '-beta') }}
