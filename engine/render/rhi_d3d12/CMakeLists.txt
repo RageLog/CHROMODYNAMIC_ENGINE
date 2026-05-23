@@ -12,7 +12,9 @@
 cd_add_library(rhi_d3d12
   TYPE STATIC
   EXCLUDE_FROM_INSTALL  # boot-only; v0.27.x patches complete the surface
-  SOURCES src/D3D12Device.cpp
+  SOURCES
+    src/D3D12Device.cpp
+    src/D3D12ShaderCompile.cpp
   PUBLIC_DEPS cd::core cd::rhi
 )
 
@@ -21,5 +23,8 @@ cd_add_library(rhi_d3d12
 # guard keeps Linux/macOS builds clean (the .cpp #if-defs out the
 # entire implementation off-Windows).
 if(WIN32)
-  target_link_libraries(cd_rhi_d3d12 PRIVATE d3d12 dxgi dxguid)
+  # d3dcompiler is added Phase 14.C — the backend exposes a
+  # `compile_hlsl()` helper so sample / app code can produce DXIL
+  # blobs at runtime without dragging an SDK dep into every consumer.
+  target_link_libraries(cd_rhi_d3d12 PRIVATE d3d12 dxgi dxguid d3dcompiler)
 endif()

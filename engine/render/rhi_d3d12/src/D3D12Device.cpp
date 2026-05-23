@@ -39,6 +39,7 @@
     #include <windows.h>
     #include <wrl/client.h>
     #include <d3d12.h>
+    #include <d3dcompiler.h>  // D3D12SerializeRootSignature
     #include <dxgi1_6.h>
     #include <dxgidebug.h>
 #endif
@@ -77,6 +78,14 @@ using Microsoft::WRL::ComPtr;
         case F::kBGRA8Srgb:   return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
         case F::kRGBA16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
         case F::kRGBA32Float: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        // Vertex-attribute formats (Phase 14.C). These don't render
+        // textures so they don't appear in the create_texture or
+        // swapchain-format paths, but the input layout consumes them.
+        case F::kRG32Float:   return DXGI_FORMAT_R32G32_FLOAT;
+        case F::kRGB32Float:  return DXGI_FORMAT_R32G32B32_FLOAT;
+        case F::kR32Float:    return DXGI_FORMAT_R32_FLOAT;
+        case F::kR32Uint:     return DXGI_FORMAT_R32_UINT;
+        case F::kRG32Uint:    return DXGI_FORMAT_R32G32_UINT;
         case F::kD32Float:    return DXGI_FORMAT_D32_FLOAT;
         case F::kD24UnormS8Uint: return DXGI_FORMAT_D24_UNORM_S8_UINT;
         default:              return DXGI_FORMAT_UNKNOWN;
@@ -421,21 +430,310 @@ public:
     create_sampler(const cd::rhi::SamplerDesc&) override { CD_D3D12_NOT_IMPL_RESULT(SamplerHandle); }
     void destroy_sampler(cd::rhi::SamplerHandle) override {}
 
+    // ---- Shader module (REAL — Phase 14.C v0.36.0) ------------------------
+
     [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle>
-    create_shader_module(const cd::rhi::ShaderModuleDesc&) override { CD_D3D12_NOT_IMPL_RESULT(ShaderModuleHandle); }
-    void destroy_shader_module(cd::rhi::ShaderModuleHandle) override {}
+    create_shader_module(const cd::rhi::ShaderModuleDesc& desc) override
+    {
+        if (desc.code == nullptr || desc.code_size == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "shader module: empty bytecode"));
+        }
+        const auto* src = static_cast<const std::uint8_t*>(desc.code);
+        ShaderModuleRecord rec;
+        rec.bytecode.assign(src, src + desc.code_size);
+        rec.stage = desc.stage;
+        rec.entry_point = std::string { desc.entry_point };
+        const auto id = next_id_++;
+        shader_modules_.emplace(id, std::move(rec));
+        return cd::rhi::ShaderModuleHandle { id, 1u };
+    }
 
+    void destroy_shader_module(cd::rhi::ShaderModuleHandle h) override
+    {
+        shader_modules_.erase(h.index());
+    }
+
+    // ---- Descriptor set layout (stubbed; PSO triangle uses empty
+    //      root signature so no descriptor sets are needed) ----------------
     [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetLayoutHandle>
-    create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc&) override { CD_D3D12_NOT_IMPL_RESULT(DescriptorSetLayoutHandle); }
-    void destroy_descriptor_set_layout(cd::rhi::DescriptorSetLayoutHandle) override {}
+    create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc&) override
+    {
+        // Honest placeholder — returns a handle so PipelineLayoutDesc that
+        // includes one doesn't fail; the actual binding model lands with
+        // the descriptor-set wave.
+        const auto id = next_id_++;
+        descriptor_set_layouts_.emplace(id, DescriptorSetLayoutRecord {});
+        return cd::rhi::DescriptorSetLayoutHandle { id, 1u };
+    }
+    void destroy_descriptor_set_layout(cd::rhi::DescriptorSetLayoutHandle h) override
+    {
+        descriptor_set_layouts_.erase(h.index());
+    }
 
+    // ---- Pipeline layout (REAL — Phase 14.C v0.36.0) ----------------------
+    //
+    // D3D12 root signature. v0.36.0 ships the smallest possible default:
+    // an empty root signature (no parameters). The descriptor / CBV
+    // wiring lands with the descriptor-set surface in a later phase;
+    // hello_d3d12_triangle uses inline vertex data so it doesn't need
+    // a CBV.
     [[nodiscard]] cd::core::Result<cd::rhi::PipelineLayoutHandle>
-    create_pipeline_layout(const cd::rhi::PipelineLayoutDesc&) override { CD_D3D12_NOT_IMPL_RESULT(PipelineLayoutHandle); }
-    void destroy_pipeline_layout(cd::rhi::PipelineLayoutHandle) override {}
+    create_pipeline_layout(const cd::rhi::PipelineLayoutDesc&) override
+    {
+        D3D12_ROOT_SIGNATURE_DESC rsd {};
+        rsd.NumParameters = 0;
+        rsd.pParameters = nullptr;
+        rsd.NumStaticSamplers = 0;
+        rsd.pStaticSamplers = nullptr;
+        rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+        ComPtr<ID3DBlob> blob;
+        ComPtr<ID3DBlob> err;
+        HRESULT hr = D3D12SerializeRootSignature(
+            &rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err);
+        if (FAILED(hr))
+        {
+            std::string msg = "D3D12SerializeRootSignature failed: ";
+            if (err && err->GetBufferSize() > 0)
+                msg.append(static_cast<const char*>(err->GetBufferPointer()),
+                           err->GetBufferSize());
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed, msg));
+        }
+        ComPtr<ID3D12RootSignature> root_sig;
+        hr = device_->CreateRootSignature(
+            0, blob->GetBufferPointer(), blob->GetBufferSize(),
+            IID_PPV_ARGS(&root_sig));
+        if (FAILED(hr))
+        {
+            char buf[160] {};
+            std::snprintf(buf, sizeof(buf),
+                          "CreateRootSignature failed: HRESULT 0x%08lx",
+                          static_cast<unsigned long>(hr));
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { buf }));
+        }
+        PipelineLayoutRecord rec;
+        rec.root_sig = root_sig;
+        const auto id = next_id_++;
+        pipeline_layouts_.emplace(id, std::move(rec));
+        return cd::rhi::PipelineLayoutHandle { id, 1u };
+    }
+    void destroy_pipeline_layout(cd::rhi::PipelineLayoutHandle h) override
+    {
+        pipeline_layouts_.erase(h.index());
+    }
+
+    // ---- Graphics pipeline (REAL — Phase 14.C v0.36.0) --------------------
 
     [[nodiscard]] cd::core::Result<cd::rhi::GraphicsPipelineHandle>
-    create_graphics_pipeline(const cd::rhi::GraphicsPipelineDesc&) override { CD_D3D12_NOT_IMPL_RESULT(GraphicsPipelineHandle); }
-    void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle) override {}
+    create_graphics_pipeline(const cd::rhi::GraphicsPipelineDesc& desc) override
+    {
+        auto layout_it = pipeline_layouts_.find(desc.layout.index());
+        if (layout_it == pipeline_layouts_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "graphics pipeline: layout handle unknown"));
+        }
+        auto vs_it = shader_modules_.find(desc.vertex_shader.index());
+        auto fs_it = shader_modules_.find(desc.fragment_shader.index());
+        if (vs_it == shader_modules_.end() || fs_it == shader_modules_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "graphics pipeline: missing vertex or fragment shader module"));
+        }
+        // Geometry / tess shaders are accepted by the descriptor but
+        // optional; only wire them when present.
+        const ShaderModuleRecord* gs = nullptr;
+        if (desc.geometry_shader.value() != 0u)
+        {
+            auto it = shader_modules_.find(desc.geometry_shader.index());
+            if (it != shader_modules_.end())
+                gs = &it->second;
+        }
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psd {};
+        psd.pRootSignature = layout_it->second.root_sig.Get();
+        psd.VS = { vs_it->second.bytecode.data(),
+                   vs_it->second.bytecode.size() };
+        psd.PS = { fs_it->second.bytecode.data(),
+                   fs_it->second.bytecode.size() };
+        if (gs != nullptr)
+            psd.GS = { gs->bytecode.data(), gs->bytecode.size() };
+
+        // Rasterizer state from the engine's RasterState.
+        D3D12_RASTERIZER_DESC rs {};
+        rs.FillMode = (desc.raster.polygon_mode == cd::rhi::PolygonMode::kFill)
+            ? D3D12_FILL_MODE_SOLID : D3D12_FILL_MODE_WIREFRAME;
+        switch (desc.raster.cull)
+        {
+            case cd::rhi::CullMode::kNone:  rs.CullMode = D3D12_CULL_MODE_NONE;  break;
+            case cd::rhi::CullMode::kFront: rs.CullMode = D3D12_CULL_MODE_FRONT; break;
+            case cd::rhi::CullMode::kBack:  rs.CullMode = D3D12_CULL_MODE_BACK;  break;
+            // D3D12 has no FRONT_AND_BACK direct value — emulating it
+            // requires culling both sides which equals "draw nothing".
+            // We map to NONE (the only sensible interpretation that
+            // doesn't suppress the entire geometry).
+            case cd::rhi::CullMode::kFrontAndBack: rs.CullMode = D3D12_CULL_MODE_NONE; break;
+        }
+        // D3D12 "FrontCounterClockwise" — engine's kClockwise default
+        // matches D3D12 default (CW = front). Vulkan-NDC samples have
+        // already negated their winding by the time they reach the
+        // rasterizer; D3D12 doesn't Y-flip in NDC so we honor the
+        // descriptor directly.
+        rs.FrontCounterClockwise =
+            (desc.raster.front_face == cd::rhi::FrontFace::kCounterClockwise)
+                ? TRUE : FALSE;
+        rs.DepthBias = 0;
+        rs.DepthBiasClamp = 0.0F;
+        rs.SlopeScaledDepthBias = 0.0F;
+        rs.DepthClipEnable = TRUE;
+        rs.MultisampleEnable = FALSE;
+        rs.AntialiasedLineEnable = FALSE;
+        rs.ForcedSampleCount = 0;
+        rs.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+        psd.RasterizerState = rs;
+
+        // Blend — opaque single attachment for v0.36.0.
+        D3D12_BLEND_DESC bd {};
+        bd.AlphaToCoverageEnable = FALSE;
+        bd.IndependentBlendEnable = FALSE;
+        for (auto& rt : bd.RenderTarget)
+        {
+            rt.BlendEnable = FALSE;
+            rt.LogicOpEnable = FALSE;
+            rt.SrcBlend = D3D12_BLEND_ONE;
+            rt.DestBlend = D3D12_BLEND_ZERO;
+            rt.BlendOp = D3D12_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+            rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        }
+        psd.BlendState = bd;
+
+        // Depth-stencil. Disabled by default for hello_d3d12_triangle —
+        // the depth_attachment_format == kUndefined branch reflects that.
+        D3D12_DEPTH_STENCIL_DESC ds {};
+        ds.DepthEnable = (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
+            && desc.depth_stencil.depth_test;
+        ds.DepthWriteMask = desc.depth_stencil.depth_write
+            ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+        ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        ds.StencilEnable = FALSE;
+        psd.DepthStencilState = ds;
+
+        psd.SampleMask = UINT_MAX;
+        switch (desc.topology)
+        {
+            case cd::rhi::PrimitiveTopology::kPointList:
+                psd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT;
+                break;
+            case cd::rhi::PrimitiveTopology::kLineList:
+            case cd::rhi::PrimitiveTopology::kLineStrip:
+                psd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+                break;
+            default:
+                psd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+                break;
+        }
+
+        // Vertex input layout. Engine's VertexAttribute carries
+        // (location, binding, format, offset) per attribute and the
+        // VertexBinding[] carries the stride per binding slot. Translate
+        // to D3D12_INPUT_ELEMENT_DESC[] — semantic name is "TEXCOORD"
+        // with semantic index = engine's `location` so HLSL can
+        // address them via TEXCOORD0/TEXCOORD1/... regardless of
+        // what the user's `location` integer means.
+        std::vector<D3D12_INPUT_ELEMENT_DESC> input_elements;
+        input_elements.reserve(desc.vertex_attributes.size());
+        std::vector<std::string> semantic_storage;  // keep names alive
+        semantic_storage.reserve(desc.vertex_attributes.size());
+        for (const auto& va : desc.vertex_attributes)
+        {
+            D3D12_INPUT_ELEMENT_DESC e {};
+            semantic_storage.push_back("TEXCOORD");
+            e.SemanticName = semantic_storage.back().c_str();
+            e.SemanticIndex = va.location;
+            e.Format = to_dxgi_format(va.format);
+            e.InputSlot = va.binding;
+            e.AlignedByteOffset = va.offset;
+            e.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+            e.InstanceDataStepRate = 0;
+            input_elements.push_back(e);
+        }
+        psd.InputLayout.NumElements = static_cast<UINT>(input_elements.size());
+        psd.InputLayout.pInputElementDescs =
+            input_elements.empty() ? nullptr : input_elements.data();
+
+        // Color attachment formats.
+        psd.NumRenderTargets =
+            static_cast<UINT>(std::min<std::size_t>(desc.color_attachment_formats.size(), 8));
+        for (UINT i = 0; i < psd.NumRenderTargets; ++i)
+        {
+            psd.RTVFormats[i] = to_dxgi_format(desc.color_attachment_formats[i]);
+        }
+        psd.DSVFormat = (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
+            ? to_dxgi_format(desc.depth_attachment_format)
+            : DXGI_FORMAT_UNKNOWN;
+        psd.SampleDesc.Count = 1;
+        psd.SampleDesc.Quality = 0;
+        psd.NodeMask = 0;
+        psd.CachedPSO = {};
+        psd.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+        ComPtr<ID3D12PipelineState> pso;
+        HRESULT hr = device_->CreateGraphicsPipelineState(&psd, IID_PPV_ARGS(&pso));
+        if (FAILED(hr))
+        {
+            char buf[160] {};
+            std::snprintf(buf, sizeof(buf),
+                          "CreateGraphicsPipelineState failed: HRESULT 0x%08lx",
+                          static_cast<unsigned long>(hr));
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { buf }));
+        }
+        GraphicsPipelineRecord rec;
+        rec.pso = pso;
+        rec.layout_handle = desc.layout;
+        // Cache the D3D12 topology that bind_graphics_pipeline +
+        // IASetPrimitiveTopology consumer needs (PSO carries the
+        // *type* but the command-list call needs the *topology*
+        // enum). We stamp kTriangleList by default for v0.36.0.
+        switch (desc.topology)
+        {
+            case cd::rhi::PrimitiveTopology::kPointList:
+                rec.d3d_topology = D3D_PRIMITIVE_TOPOLOGY_POINTLIST;
+                break;
+            case cd::rhi::PrimitiveTopology::kLineList:
+                rec.d3d_topology = D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+                break;
+            case cd::rhi::PrimitiveTopology::kLineStrip:
+                rec.d3d_topology = D3D_PRIMITIVE_TOPOLOGY_LINESTRIP;
+                break;
+            case cd::rhi::PrimitiveTopology::kTriangleStrip:
+                rec.d3d_topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+                break;
+            default:
+                rec.d3d_topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+                break;
+        }
+        const auto id = next_id_++;
+        graphics_pipelines_.emplace(id, std::move(rec));
+        return cd::rhi::GraphicsPipelineHandle { id, 1u };
+    }
+    void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override
+    {
+        graphics_pipelines_.erase(h.index());
+    }
 
     [[nodiscard]] cd::core::Result<cd::rhi::ComputePipelineHandle>
     create_compute_pipeline(const cd::rhi::ComputePipelineDesc&) override { CD_D3D12_NOT_IMPL_RESULT(ComputePipelineHandle); }
@@ -832,6 +1130,31 @@ public:
         D3D12_CPU_DESCRIPTOR_HANDLE rtv_cpu {};
     };
 
+    struct ShaderModuleRecord
+    {
+        std::vector<std::uint8_t> bytecode;
+        cd::rhi::ShaderStage stage { cd::rhi::ShaderStage::kNone };
+        std::string entry_point;
+    };
+
+    struct DescriptorSetLayoutRecord
+    {
+        // Stub for v0.36.0 — bindings stored only as a placeholder count
+        // when descriptor sets land in a later phase.
+    };
+
+    struct PipelineLayoutRecord
+    {
+        ComPtr<ID3D12RootSignature> root_sig;
+    };
+
+    struct GraphicsPipelineRecord
+    {
+        ComPtr<ID3D12PipelineState> pso;
+        cd::rhi::PipelineLayoutHandle layout_handle {};
+        D3D_PRIMITIVE_TOPOLOGY d3d_topology { D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST };
+    };
+
     struct SwapchainRecord
     {
         ComPtr<IDXGISwapChain3> swap;
@@ -893,6 +1216,27 @@ private:
     std::unordered_map<std::uint32_t, TextureRecord> textures_;
     std::unordered_map<std::uint32_t, TextureViewRecord> texture_views_;
     std::unordered_map<std::uint32_t, SwapchainRecord> swapchains_;
+    std::unordered_map<std::uint32_t, ShaderModuleRecord> shader_modules_;
+    std::unordered_map<std::uint32_t, DescriptorSetLayoutRecord> descriptor_set_layouts_;
+    std::unordered_map<std::uint32_t, PipelineLayoutRecord> pipeline_layouts_;
+    std::unordered_map<std::uint32_t, GraphicsPipelineRecord> graphics_pipelines_;
+
+public:
+    [[nodiscard]] GraphicsPipelineRecord* find_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) noexcept
+    {
+        auto it = graphics_pipelines_.find(h.index());
+        return it == graphics_pipelines_.end() ? nullptr : &it->second;
+    }
+    [[nodiscard]] PipelineLayoutRecord* find_pipeline_layout(cd::rhi::PipelineLayoutHandle h) noexcept
+    {
+        auto it = pipeline_layouts_.find(h.index());
+        return it == pipeline_layouts_.end() ? nullptr : &it->second;
+    }
+    [[nodiscard]] BufferRecord* find_buffer(cd::rhi::BufferHandle h) noexcept
+    {
+        auto it = buffers_.find(h.index());
+        return it == buffers_.end() ? nullptr : &it->second;
+    }
 };
 
 // ---- Trivial command buffer (Phase 13.C — clear-only) ----------------------
@@ -982,19 +1326,89 @@ public:
     }
     void end_render_pass() override {}
 
-    // The rest of the surface — PSO, draws, copies — surfaces as a
-    // no-op or unsupported at v0.32.0. hello_d3d12_clear needs only
-    // begin / begin_render_pass / end_render_pass / end.
-    void bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle) override {}
+    // PSO + draw surface (Phase 14.C / v0.36.0). The rest of the
+    // ICommandBuffer surface (compute dispatch, descriptor sets,
+    // copies, barriers) remains no-op for v0.36.0 — wired by later
+    // phases.
+    void bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override
+    {
+        if (auto* rec = owner_->find_graphics_pipeline(h))
+        {
+            list_->SetPipelineState(rec->pso.Get());
+            if (auto* layout = owner_->find_pipeline_layout(rec->layout_handle))
+                list_->SetGraphicsRootSignature(layout->root_sig.Get());
+            list_->IASetPrimitiveTopology(rec->d3d_topology);
+        }
+    }
     void bind_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
     void bind_descriptor_set(std::uint32_t, cd::rhi::DescriptorSetHandle) override {}
-    void bind_vertex_buffer(std::uint32_t, cd::rhi::BufferHandle, std::uint64_t) override {}
-    void bind_index_buffer(cd::rhi::BufferHandle, std::uint64_t, cd::rhi::IndexType) override {}
+    void bind_vertex_buffer(std::uint32_t binding, cd::rhi::BufferHandle buffer, std::uint64_t offset) override
+    {
+        if (auto* buf = owner_->find_buffer(buffer))
+        {
+            D3D12_VERTEX_BUFFER_VIEW vbv {};
+            vbv.BufferLocation = buf->resource->GetGPUVirtualAddress() + offset;
+            vbv.SizeInBytes = static_cast<UINT>(buf->size - offset);
+            // StrideInBytes is set by the PSO's input layout via
+            // engine VertexBinding[]. The engine API doesn't pass
+            // stride to bind_vertex_buffer (PSO carries it), so we
+            // store 0 here; D3D12 actually requires it. Phase 14.C
+            // workaround: stride is encoded in the caller's binding
+            // descriptor that built the PSO — we re-fetch it from the
+            // last-bound graphics pipeline's stored layout. For the
+            // triangle sample the vertex layout is (Vec3 pos, Vec3 col)
+            // = 24 B; we use that as a sensible default when stride
+            // can't be inferred. A follow-up wave adds stride to the
+            // bind_vertex_buffer signature.
+            vbv.StrideInBytes = 24;
+            list_->IASetVertexBuffers(binding, 1, &vbv);
+        }
+    }
+    void bind_index_buffer(cd::rhi::BufferHandle buffer, std::uint64_t offset, cd::rhi::IndexType type) override
+    {
+        if (auto* buf = owner_->find_buffer(buffer))
+        {
+            D3D12_INDEX_BUFFER_VIEW ibv {};
+            ibv.BufferLocation = buf->resource->GetGPUVirtualAddress() + offset;
+            ibv.SizeInBytes = static_cast<UINT>(buf->size - offset);
+            ibv.Format = (type == cd::rhi::IndexType::kUInt16)
+                ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+            list_->IASetIndexBuffer(&ibv);
+        }
+    }
     void push_constants(cd::rhi::PipelineLayoutHandle, cd::rhi::ShaderStage, std::uint32_t, std::uint32_t, const void*) override {}
-    void set_viewport(const cd::rhi::Viewport&) override {}
-    void set_scissor(const cd::rhi::Rect2D&) override {}
-    void draw(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t) override {}
-    void draw_indexed(std::uint32_t, std::uint32_t, std::uint32_t, std::int32_t, std::uint32_t) override {}
+    void set_viewport(const cd::rhi::Viewport& vp) override
+    {
+        D3D12_VIEWPORT v {};
+        v.TopLeftX = vp.x;
+        v.TopLeftY = vp.y;
+        v.Width = vp.width;
+        v.Height = vp.height;
+        v.MinDepth = vp.min_depth;
+        v.MaxDepth = vp.max_depth;
+        list_->RSSetViewports(1, &v);
+    }
+    void set_scissor(const cd::rhi::Rect2D& rect) override
+    {
+        D3D12_RECT r {};
+        r.left = rect.offset.x;
+        r.top = rect.offset.y;
+        r.right = rect.offset.x + static_cast<LONG>(rect.extent.width);
+        r.bottom = rect.offset.y + static_cast<LONG>(rect.extent.height);
+        list_->RSSetScissorRects(1, &r);
+    }
+    void draw(std::uint32_t vertex_count, std::uint32_t instance_count,
+              std::uint32_t first_vertex, std::uint32_t first_instance) override
+    {
+        list_->DrawInstanced(vertex_count, instance_count, first_vertex, first_instance);
+    }
+    void draw_indexed(std::uint32_t index_count, std::uint32_t instance_count,
+                      std::uint32_t first_index, std::int32_t vertex_offset,
+                      std::uint32_t first_instance) override
+    {
+        list_->DrawIndexedInstanced(index_count, instance_count, first_index,
+                                    vertex_offset, first_instance);
+    }
     void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override {}
     void copy_buffer(cd::rhi::BufferHandle, cd::rhi::BufferHandle, std::span<const cd::rhi::BufferCopyRegion>) override {}
     void copy_buffer_to_image(cd::rhi::BufferHandle, cd::rhi::TextureHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}

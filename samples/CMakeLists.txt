@@ -51,6 +51,7 @@ add_subdirectory(hello_compute_cluster)
 if(WIN32)
   add_subdirectory(hello_d3d12_boot)
   add_subdirectory(hello_d3d12_clear)
+  add_subdirectory(hello_d3d12_triangle)
 endif()
 
 # hello_editor wires cd::editor::EditHistory + TransformCommands into
