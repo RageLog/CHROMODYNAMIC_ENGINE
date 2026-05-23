@@ -10,6 +10,15 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.12.0 — 2026-05-23 — Phase 7 Sprint 7 (Scripting tier — Lua)
+
+### Features
+
+- **[script]** cd::script — Lua 5.4 scripting tier (engine + run_string/run_file) (`33af3e0`)
+- **[script]** cd::script global variable bindings + last_error() (`c984c07`)
+- **[script]** register C++ callbacks + call Lua globals (bidirectional) (`78a9fcc`)
+- **[samples]** hello_script — bidirectional C++ ↔ Lua demo (`93e29ce`)
+
 ## v0.11.0 — 2026-05-23 — Phase 7 Sprint 6 (FLIP perceptual)
 
 ### Features
