@@ -568,4 +568,123 @@ TEST(PositionalSource, ResetClearsDelayLines)
         EXPECT_FLOAT_EQ(v, 0.0F);
 }
 
+// ---------------------------------------------------------------------------
+// Phase 14.F — DspGraph tests (Wave 162)
+// ---------------------------------------------------------------------------
+
 }  // namespace
+
+#include <cd/audio/DspGraph.hpp>
+
+#include <cmath>
+#include <numbers>
+
+namespace
+{
+
+constexpr float kPi = std::numbers::pi_v<float>;
+
+}  // namespace
+
+TEST(DspGraph, EmptyGraphIsIdentity)
+{
+    cd::audio::DspGraph g;
+    std::vector<float> buf { 0.1F, -0.2F, 0.3F, -0.4F };
+    const auto copy = buf;
+    g.process(buf, 48000);
+    for (std::size_t i = 0; i < buf.size(); ++i)
+        EXPECT_FLOAT_EQ(buf[i], copy[i]);
+}
+
+TEST(DspGraph, GainNodeScalesEverySample)
+{
+    cd::audio::DspGraph g;
+    g.push(std::make_unique<cd::audio::GainNode>(0.5F));
+    std::vector<float> buf { 1.0F, -2.0F, 4.0F };
+    g.process(buf, 48000);
+    EXPECT_FLOAT_EQ(buf[0],  0.5F);
+    EXPECT_FLOAT_EQ(buf[1], -1.0F);
+    EXPECT_FLOAT_EQ(buf[2],  2.0F);
+}
+
+TEST(DspGraph, LowpassAttenuatesHighFrequencySine)
+{
+    constexpr std::uint32_t sr = 48000;
+    constexpr std::size_t n = 4096;
+    std::vector<float> buf(n);
+    for (std::size_t i = 0; i < n; ++i)
+        buf[i] = std::sin(2.0F * kPi * 10000.0F *
+                          static_cast<float>(i) / static_cast<float>(sr));
+
+    cd::audio::DspGraph g;
+    g.push(std::make_unique<cd::audio::BiquadNode>(
+        cd::audio::BiquadKind::kLowpass, 1000.0F));
+    g.process(buf, sr);
+
+    float peak = 0.0F;
+    for (std::size_t i = 512; i < n; ++i)
+        peak = std::max(peak, std::fabs(buf[i]));
+    EXPECT_LT(peak, 0.1F);
+}
+
+TEST(DspGraph, HighpassPreservesHighFrequencySine)
+{
+    constexpr std::uint32_t sr = 48000;
+    constexpr std::size_t n = 4096;
+    std::vector<float> buf(n);
+    for (std::size_t i = 0; i < n; ++i)
+        buf[i] = std::sin(2.0F * kPi * 10000.0F *
+                          static_cast<float>(i) / static_cast<float>(sr));
+
+    cd::audio::DspGraph g;
+    g.push(std::make_unique<cd::audio::BiquadNode>(
+        cd::audio::BiquadKind::kHighpass, 1000.0F));
+    g.process(buf, sr);
+
+    float peak = 0.0F;
+    for (std::size_t i = 512; i < n; ++i)
+        peak = std::max(peak, std::fabs(buf[i]));
+    EXPECT_GT(peak, 0.8F);
+}
+
+TEST(DspGraph, ChainOrderProducesSameOutputForLinearNodes)
+{
+    constexpr std::uint32_t sr = 48000;
+    constexpr std::size_t n = 1024;
+    std::vector<float> buf_a(n, 0.0F);
+    std::vector<float> buf_b(n, 0.0F);
+    buf_a[0] = 1.0F;
+    buf_b[0] = 1.0F;
+
+    cd::audio::DspGraph g1;
+    g1.push(std::make_unique<cd::audio::GainNode>(2.0F));
+    g1.push(std::make_unique<cd::audio::BiquadNode>(
+        cd::audio::BiquadKind::kLowpass, 2000.0F));
+    g1.process(buf_a, sr);
+
+    cd::audio::DspGraph g2;
+    g2.push(std::make_unique<cd::audio::BiquadNode>(
+        cd::audio::BiquadKind::kLowpass, 2000.0F));
+    g2.push(std::make_unique<cd::audio::GainNode>(2.0F));
+    g2.process(buf_b, sr);
+
+    // Linear systems commute: gain * LP(impulse) == LP(impulse) * gain
+    for (std::size_t i = 0; i < n; ++i)
+        EXPECT_NEAR(buf_a[i], buf_b[i], 1e-5F) << "i=" << i;
+}
+
+TEST(DspGraph, ResetClearsBiquadState)
+{
+    constexpr std::uint32_t sr = 48000;
+    cd::audio::DspGraph g;
+    g.push(std::make_unique<cd::audio::BiquadNode>(
+        cd::audio::BiquadKind::kLowpass, 1000.0F));
+
+    std::vector<float> step(64, 1.0F);
+    g.process(step, sr);
+    g.reset();
+    std::vector<float> zero(64, 0.0F);
+    g.process(zero, sr);
+    for (float v : zero)
+        EXPECT_FLOAT_EQ(v, 0.0F);
+}
