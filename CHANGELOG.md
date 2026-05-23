@@ -10,6 +10,12 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.18.0 — 2026-05-23 — Phase 9 Sprint 1 (Lua mixed-type bindings)
+
+### Features
+
+- **[script]** call_global_mixed — heterogeneous Lua args + returns (`8b7c31d`)
+
 ## v0.17.0 — 2026-05-23 — Phase 8 Sprint 12 (HRTF + Mobile RHI design)
 
 ### Features
