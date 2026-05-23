@@ -5,6 +5,7 @@
 #include <cd/audio/CoreAudioBackend.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/NativeBackend.hpp>
+#include <cd/audio/AnalyticalHRTF.hpp>
 #include <cd/audio/Positional.hpp>
 #include <cd/audio/PositionalSource.hpp>
 #include <cd/audio/Surround.hpp>
@@ -432,6 +433,120 @@ TEST(Surround, SizeMismatchIsNoOp)
                                       listener, src, gains);
     for (float g : gains)
         EXPECT_FLOAT_EQ(g, -1.0F);
+}
+
+// --- AnalyticalHRTF (Wave 96) ----------------------------------------------
+
+TEST(AnalyticalHRTF, FrontSourceProducesSymmetricCoefficients)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, -1.0F };
+    auto c = cd::audio::synthesize_hrtf(listener, src, 48000);
+    // Source dead ahead → no ITD, equal broadband gains, no notch
+    // diff between ears.
+    EXPECT_EQ(c.late_ear_delay_samples, 0);
+    EXPECT_NEAR(c.left[0], c.right[0], 1e-3F);
+}
+
+TEST(AnalyticalHRTF, RightSourceDelaysLeftEar)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 5.0F, 0.0F, 0.0F };  // hard right
+    auto c = cd::audio::synthesize_hrtf(listener, src, 48000);
+    // Right ear early (tap 0); left ear delayed by ITD samples.
+    EXPECT_GT(c.late_ear_delay_samples, 0);
+    EXPECT_GT(c.right[0], 0.0F);
+    // left[0] is the early-ear tap of the left ear (which is the late
+    // ear in this scenario), so its impulse lives at the delayed tap;
+    // tap 0 should be near zero (constant-power L gain at hard right
+    // is cos(π/2) ≈ 0, with float-precision noise tolerated).
+    EXPECT_NEAR(c.left[0], 0.0F, 1e-5F);
+    // Sum across left's coefficients should still be < right's broadband
+    // due to head-shadow ILD attenuation.
+    float left_sum = 0.0F, right_sum = 0.0F;
+    for (std::uint32_t i = 0; i < cd::audio::kFirTaps; ++i)
+    {
+        left_sum += std::abs(c.left[i]);
+        right_sum += std::abs(c.right[i]);
+    }
+    EXPECT_LT(left_sum, right_sum);
+}
+
+TEST(AnalyticalHRTF, LeftSourceDelaysRightEar)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { -5.0F, 0.0F, 0.0F };  // hard left
+    auto c = cd::audio::synthesize_hrtf(listener, src, 48000);
+    EXPECT_GT(c.late_ear_delay_samples, 0);
+    EXPECT_NEAR(c.right[0], 0.0F, 1e-5F);
+    EXPECT_GT(c.left[0], 0.0F);
+}
+
+TEST(AnalyticalHRTF, CoincidentSourceProducesUnitImpulse)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, 0.0F };
+    auto c = cd::audio::synthesize_hrtf(listener, src, 48000);
+    EXPECT_FLOAT_EQ(c.left[0], 1.0F);
+    EXPECT_FLOAT_EQ(c.right[0], 1.0F);
+    EXPECT_EQ(c.late_ear_delay_samples, 0);
+}
+
+TEST(HrtfConvolver, ImpulseInputReproducesCoefficients)
+{
+    cd::audio::HrtfConvolver conv;
+    cd::audio::HrtfCoefficients c {};
+    c.left[0] = 0.7F;
+    c.left[3] = 0.3F;
+    c.right[0] = 0.5F;
+    c.right[5] = -0.1F;
+    conv.set_coefficients(c);
+
+    std::array<float, 16> impulse {};
+    impulse[0] = 1.0F;
+    std::array<float, 32> stereo {};
+    conv.process(impulse, stereo);
+    // Tap 0: L=0.7, R=0.5
+    EXPECT_FLOAT_EQ(stereo[0], 0.7F);
+    EXPECT_FLOAT_EQ(stereo[1], 0.5F);
+    // Tap 3: L=0.3 at sample 3
+    EXPECT_FLOAT_EQ(stereo[3 * 2 + 0], 0.3F);
+    // Tap 5: R=-0.1 at sample 5
+    EXPECT_FLOAT_EQ(stereo[5 * 2 + 1], -0.1F);
+}
+
+TEST(HrtfConvolver, ResetClearsHistory)
+{
+    cd::audio::HrtfConvolver conv;
+    cd::audio::HrtfCoefficients c {};
+    c.left[0] = 1.0F;
+    c.right[0] = 1.0F;
+    conv.set_coefficients(c);
+
+    std::array<float, 8> input;
+    input.fill(1.0F);
+    std::array<float, 16> out {};
+    conv.process(input, out);
+    conv.reset();
+    // After reset, processing zeros should produce zeros (no
+    // residual history energy).
+    std::array<float, 8> zeros {};
+    std::array<float, 16> out2;
+    out2.fill(-1.0F);
+    conv.process(zeros, out2);
+    for (float v : out2)
+        EXPECT_FLOAT_EQ(v, 0.0F);
+}
+
+TEST(HrtfConvolver, SizeMismatchSafelyNoOp)
+{
+    cd::audio::HrtfConvolver conv;
+    std::array<float, 4> in {};
+    std::array<float, 6> bad {};  // not 8
+    bad.fill(-1.0F);
+    conv.process(in, bad);
+    for (float v : bad)
+        EXPECT_FLOAT_EQ(v, -1.0F);
 }
 
 TEST(PositionalSource, ResetClearsDelayLines)
