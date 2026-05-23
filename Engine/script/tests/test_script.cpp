@@ -155,4 +155,52 @@ TEST(ScriptGlobals, LastErrorPopulatedOnFailureClearedOnSuccess)
     EXPECT_TRUE(eng.last_error().empty());
 }
 
+// --- Function bindings (Wave 74) -------------------------------------------
+
+TEST(ScriptFunctions, RegisteredFunctionFiresFromLua)
+{
+    cd::script::Engine eng;
+    int fires = 0;
+    eng.register_function("native_ping", [&] { ++fires; });
+    auto r = eng.run_string("native_ping(); native_ping(); native_ping()");
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(fires, 3);
+}
+
+TEST(ScriptFunctions, CallGlobalScriptFunction)
+{
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string("function bump() counter = (counter or 0) + 1 end").has_value());
+    ASSERT_TRUE(eng.call_global("bump").has_value());
+    ASSERT_TRUE(eng.call_global("bump").has_value());
+    ASSERT_TRUE(eng.call_global("bump").has_value());
+    auto v = eng.get_global_number("counter");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_DOUBLE_EQ(*v, 3.0);
+}
+
+TEST(ScriptFunctions, CallGlobalOnNonFunctionFails)
+{
+    cd::script::Engine eng;
+    eng.set_global("not_a_function", 7.0);
+    auto r = eng.call_global("not_a_function");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::script::script_errors::Code::kRuntimeError));
+    EXPECT_FALSE(eng.last_error().empty());
+}
+
+TEST(ScriptFunctions, RegisteredFunctionAndScriptCoexist)
+{
+    cd::script::Engine eng;
+    int fires = 0;
+    eng.register_function("on_event", [&] { ++fires; });
+    ASSERT_TRUE(eng.run_string(R"(
+        for i = 1, 5 do
+            if i % 2 == 0 then on_event() end
+        end
+    )").has_value());
+    EXPECT_EQ(fires, 2);  // i=2 and i=4
+}
+
 }  // namespace

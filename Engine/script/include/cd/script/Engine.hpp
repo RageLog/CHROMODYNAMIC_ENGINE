@@ -26,6 +26,7 @@
 #include <cd/core/Result.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -100,6 +101,21 @@ public:
     /// construction (or since the last successful run). Stable across
     /// returns — the Engine owns the backing storage.
     [[nodiscard]] std::string_view last_error() const noexcept;
+
+    // ---- Function bindings (Wave 74) ------------------------------------
+
+    using VoidFunction = std::function<void()>;
+
+    /// Bind a C++ callable to a Lua global of the given name. When Lua
+    /// code calls `name()` the closure runs on the calling thread; no
+    /// arguments are passed and no return value is produced. Sufficient
+    /// for the common "Lua triggers a C++ side effect" pattern.
+    void register_function(std::string_view name, VoidFunction fn);
+
+    /// Call a Lua global function with no args / no return value.
+    /// Returns kRuntimeError + a populated last_error() if the call
+    /// failed (e.g. the named global is nil or not callable).
+    [[nodiscard]] cd::core::Result<void> call_global(std::string_view name);
 
 private:
     struct Impl;

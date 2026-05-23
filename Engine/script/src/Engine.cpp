@@ -14,16 +14,43 @@ extern "C" {
 }
 
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace cd::script
 {
+
+namespace
+{
+
+/// Stable-address slot for a registered C++ callback. The Lua closure
+/// holds a light userdata pointer into this slot; the Engine owns the
+/// slot via unique_ptr so the address never moves.
+struct CallbackSlot
+{
+    Engine::VoidFunction fn;
+};
+
+extern "C" int void_trampoline(lua_State* L)
+{
+    auto* slot = static_cast<CallbackSlot*>(
+        ::lua_touserdata(L, lua_upvalueindex(1)));
+    if (slot != nullptr && slot->fn)
+        slot->fn();
+    return 0;
+}
+
+}  // namespace
 
 struct Engine::Impl
 {
     lua_State* L { nullptr };
     std::uint64_t script_count { 0 };
     std::string last_error;  ///< Most recent Lua-side error message.
+    /// Registered callback slots. unique_ptr keeps addresses stable
+    /// across vector growth.
+    std::vector<std::unique_ptr<CallbackSlot>> callbacks;
 };
 
 namespace
@@ -214,6 +241,45 @@ std::optional<bool> Engine::get_global_bool(std::string_view name)
 std::string_view Engine::last_error() const noexcept
 {
     return impl_ ? std::string_view { impl_->last_error } : std::string_view {};
+}
+
+// ---- Function bindings (Wave 74) ------------------------------------------
+
+void Engine::register_function(std::string_view name, VoidFunction fn)
+{
+    if (!valid())
+        return;
+    auto slot = std::make_unique<CallbackSlot>();
+    slot->fn = std::move(fn);
+    ::lua_pushlightuserdata(impl_->L, slot.get());
+    ::lua_pushcclosure(impl_->L, &void_trampoline, 1);
+    const std::string n { name };
+    ::lua_setglobal(impl_->L, n.c_str());
+    impl_->callbacks.push_back(std::move(slot));
+}
+
+cd::core::Result<void> Engine::call_global(std::string_view name)
+{
+    if (!valid())
+        return std::unexpected(script_errors::make(script_errors::Code::kAllocFailed));
+    const std::string n { name };
+    ::lua_getglobal(impl_->L, n.c_str());
+    if (lua_isfunction(impl_->L, -1) == 0)
+    {
+        ::lua_pop(impl_->L, 1);
+        impl_->last_error = "global '" + n + "' is not callable";
+        return std::unexpected(script_errors::make(
+            script_errors::Code::kRuntimeError));
+    }
+    const int rc = ::lua_pcall(impl_->L, 0, 0, 0);
+    if (rc != LUA_OK)
+    {
+        capture_top_error(impl_->L, impl_->last_error);
+        return std::unexpected(script_errors::make(
+            script_errors::Code::kRuntimeError));
+    }
+    impl_->last_error.clear();
+    return {};
 }
 
 }  // namespace cd::script
