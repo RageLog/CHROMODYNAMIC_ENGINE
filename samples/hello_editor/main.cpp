@@ -51,6 +51,7 @@
 #include <cd/shader/Compiler.hpp>
 #include <imgui.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 
@@ -164,6 +165,11 @@ int main(int argc, char** argv)
     if (!ctx_r.has_value())
         return 4;
     auto& ctx = **ctx_r;
+
+    // Enable ImGui docking so panels can be dragged into docks.
+    // The default dock layout is built on first frame below.
+    ImGuiIO& imgui_io = ImGui::GetIO();
+    imgui_io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
     // ---- 3D viewport resources (Phase 14.E) --------------------------------
     // Geometry + material shared across every entity. Per-entity state
@@ -290,6 +296,19 @@ int main(int argc, char** argv)
             path_buf[i] = default_path[i];
     }
 
+    // ---- Free-fly camera state (Phase 15.A) --------------------------------
+    // Initial pose looks down toward the cubes. W/A/S/D translate along
+    // camera-relative axes; right-mouse drag rotates yaw/pitch. ImGui
+    // input gates so dragging over a panel doesn't move the camera.
+    struct FlyCamera {
+        cd::math::Vec3f position { 0.0F, 2.0F, 5.0F };
+        float yaw { 3.14159F };    // looking toward -Z initially
+        float pitch { -0.25F };    // slight downward tilt
+        float speed { 3.0F };      // units / second
+        float mouse_sensitivity { 0.005F };
+    } camera;
+    auto last_time = std::chrono::steady_clock::now();
+
     std::printf("hello_editor: ready. ESC to exit.\n");
     std::fflush(stdout);
 
@@ -366,20 +385,78 @@ int main(int argc, char** argv)
         if (cube_mat_r.has_value() && cube_vb.is_valid() && cube_ib.is_valid())
         {
             auto& cube_mat = *cube_mat_r;
-            // Auto-orbiting camera so the viewport is always alive even
-            // without input plumbing. WASD / mouse-look land in a later
-            // wave.
+            // Free-fly camera (Phase 15.A) — WASD translate + right-mouse
+            // drag rotate. ImGui input gates ensure dragging across a
+            // panel does not move the camera.
             const auto t_now = std::chrono::steady_clock::now();
-            static const auto t0 = t_now;
-            const float t = std::chrono::duration<float>(t_now - t0).count();
-            const float eye_r = 5.0F;
-            const cd::math::Vec3f eye {
-                eye_r * std::cos(t * 0.4F),
-                2.0F,
-                eye_r * std::sin(t * 0.4F)
+            const float dt =
+                std::chrono::duration<float>(t_now - last_time).count();
+            last_time = t_now;
+
+            // Only steer the camera when the cursor isn't hovering a
+            // panel (the IO flag tracks "ImGui wants the mouse").
+            const bool ui_wants_mouse = imgui_io.WantCaptureMouse;
+            const bool ui_wants_kbd = imgui_io.WantCaptureKeyboard;
+
+            // Right-mouse drag → yaw/pitch.
+            if (!ui_wants_mouse && ImGui::IsMouseDown(ImGuiMouseButton_Right))
+            {
+                const ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
+                camera.yaw   -= drag.x * camera.mouse_sensitivity;
+                camera.pitch -= drag.y * camera.mouse_sensitivity;
+                camera.pitch = std::clamp(camera.pitch, -1.55F, 1.55F);
+                ImGui::ResetMouseDragDelta(ImGuiMouseButton_Right);
+            }
+
+            // Forward / right vectors derived from yaw + pitch.
+            const float cp = std::cos(camera.pitch);
+            const cd::math::Vec3f forward {
+                std::cos(camera.yaw) * cp,
+                std::sin(camera.pitch),
+                std::sin(camera.yaw) * cp
             };
-            const cd::math::Vec3f target { 0.0F, 0.0F, 0.0F };
-            const cd::math::Vec3f up { 0.0F, 1.0F, 0.0F };
+            const cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+            const cd::math::Vec3f right {
+                forward.z, 0.0F, -forward.x
+            };
+
+            // WASD translation.
+            if (!ui_wants_kbd)
+            {
+                const float step = camera.speed * dt;
+                if (ImGui::IsKeyDown(ImGuiKey_W))
+                {
+                    camera.position.x += forward.x * step;
+                    camera.position.y += forward.y * step;
+                    camera.position.z += forward.z * step;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_S))
+                {
+                    camera.position.x -= forward.x * step;
+                    camera.position.y -= forward.y * step;
+                    camera.position.z -= forward.z * step;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_D))
+                {
+                    camera.position.x += right.x * step;
+                    camera.position.z += right.z * step;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_A))
+                {
+                    camera.position.x -= right.x * step;
+                    camera.position.z -= right.z * step;
+                }
+                if (ImGui::IsKeyDown(ImGuiKey_E))
+                    camera.position.y += step;
+                if (ImGui::IsKeyDown(ImGuiKey_Q))
+                    camera.position.y -= step;
+            }
+
+            const cd::math::Vec3f eye = camera.position;
+            const cd::math::Vec3f target {
+                eye.x + forward.x, eye.y + forward.y, eye.z + forward.z
+            };
+            const cd::math::Vec3f up = world_up;
             const auto view = cd::math::look_at(eye, target, up);
             const float aspect =
                 static_cast<float>(frame.extent.width) /
@@ -412,6 +489,34 @@ int main(int argc, char** argv)
         }
 
         ctx.new_frame();
+
+        // ---- Full-screen DockSpace (Phase 15.A) ----------------------------
+        // A transparent, no-background dock host fills the entire viewport
+        // so user-dragged panels can dock anywhere. The 3D viewport
+        // (rendered behind ImGui) shows through the DockSpace
+        // background. PassthruCentralNode keeps the central area clear
+        // so the viewport is visible.
+        {
+            const ImGuiViewport* main_vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(main_vp->WorkPos);
+            ImGui::SetNextWindowSize(main_vp->WorkSize);
+            ImGui::SetNextWindowViewport(main_vp->ID);
+            ImGuiWindowFlags host_flags =
+                ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking |
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                ImGuiWindowFlags_NoResize  | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoBringToFrontOnFocus |
+                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
+            ImGui::Begin("##DockSpaceHost", nullptr, host_flags);
+            ImGui::PopStyleVar(3);
+            const ImGuiID dock_id = ImGui::GetID("CDDockSpace");
+            ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
+                             ImGuiDockNodeFlags_PassthruCentralNode);
+            ImGui::End();
+        }
 
         // ---- Default layout (Phase 14.A.1 polish) --------------------------
         // ImGui auto-layout scatters new windows in the top-left and
