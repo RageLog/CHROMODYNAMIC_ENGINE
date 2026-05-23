@@ -10,6 +10,17 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.14.0 — 2026-05-23 — Phase 7 FINAL closure (Forward+ CPU baseline)
+
+### Documentation
+
+- **[adr]** Forward+ / clustered light culling architecture (Wave 83) (`724a1f7`)
+
+### Features
+
+- **[cluster]** cd::render::cluster::ClusterGrid CPU forward+ baseline (`4fb5866`)
+- **[samples]** hello_clustered_lights — Forward+ CPU baseline demo (`7decf11`)
+
 ## v0.13.0 — 2026-05-23 — Phase 7 Sprint 8 (Audio trifecta + 3D positional)
 
 ### Features
