@@ -163,7 +163,11 @@ int main()
     sd.display_handle = GetModuleHandleW(nullptr);
     sd.extent = { kWidth, kHeight };
     sd.image_count = 2;
-    sd.format = cd::rhi::Format::kRGBA8Unorm;
+    // sRGB swapchain so the linear RGB color the pixel shader writes
+    // gets gamma-encoded by the display hardware. UNORM = "show
+    // values verbatim", which makes mid-tones look washed-out
+    // compared to a Vulkan sample running an sRGB swapchain.
+    sd.format = cd::rhi::Format::kRGBA8Srgb;
     sd.vsync = true;
     auto swap_r = device.create_swapchain(sd);
     if (!swap_r.has_value()) return 2;
@@ -229,7 +233,9 @@ int main()
         { /*location=*/1, /*binding=*/0, cd::rhi::Format::kRGB32Float,
           /*offset=*/sizeof(float) * 3 },
     }};
-    std::array<cd::rhi::Format, 1> color_formats { cd::rhi::Format::kRGBA8Unorm };
+    // Must match the swapchain's logical format so the PSO's RTV
+    // sees the same sRGB sibling the back-buffer was created with.
+    std::array<cd::rhi::Format, 1> color_formats { cd::rhi::Format::kRGBA8Srgb };
 
     cd::rhi::GraphicsPipelineDesc gpd {};
     gpd.layout = *layout_r;
