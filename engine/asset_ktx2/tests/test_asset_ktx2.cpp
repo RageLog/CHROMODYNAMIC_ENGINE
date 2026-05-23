@@ -208,6 +208,104 @@ TEST(Ktx2, CubemapRejectedAsUnsupportedFormat)
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset_ktx2::ktx2_errors::Code::kUnsupportedFormat));
 }
 
+// ----- encode_to_memory + write (Phase 14.B / Wave 158) -----
+
+TEST(Ktx2Encode, EncodeDecodeRoundTripsRgba8)
+{
+    cd::asset_ktx2::Ktx2 src;
+    src.format = cd::asset_ktx2::Ktx2VkFormat::kR8G8B8A8_Unorm;
+    src.width = 4;
+    src.height = 4;
+    cd::asset_ktx2::Ktx2Mip m0;
+    m0.width = 4;
+    m0.height = 4;
+    m0.bytes.assign(static_cast<std::size_t>(4 * 4 * 4), std::uint8_t { 0x77 });
+    src.mips.push_back(std::move(m0));
+
+    auto enc = cd::asset_ktx2::encode_to_memory(src);
+    ASSERT_TRUE(enc.has_value()) << enc.error().message;
+    auto dec = cd::asset_ktx2::load_from_memory(*enc);
+    ASSERT_TRUE(dec.has_value()) << dec.error().message;
+    EXPECT_EQ(dec->format, src.format);
+    EXPECT_EQ(dec->width, 4U);
+    EXPECT_EQ(dec->height, 4U);
+    ASSERT_EQ(dec->mips.size(), 1U);
+    EXPECT_EQ(dec->mips[0].bytes, src.mips[0].bytes);
+}
+
+TEST(Ktx2Encode, EncodeMipChainPreservesEveryLevel)
+{
+    cd::asset_ktx2::Ktx2 src;
+    src.format = cd::asset_ktx2::Ktx2VkFormat::kBC7_Unorm;
+    src.width = 8;
+    src.height = 8;
+    // Three mip levels: 8x8 (4 BC7 blocks), 4x4 (1 block), 2x2 (1 padded block).
+    for (std::uint32_t lvl = 0; lvl < 3; ++lvl)
+    {
+        cd::asset_ktx2::Ktx2Mip m;
+        m.width = std::max(8U >> lvl, 1U);
+        m.height = std::max(8U >> lvl, 1U);
+        const std::size_t block_w = (m.width + 3) / 4;
+        const std::size_t block_h = (m.height + 3) / 4;
+        m.bytes.assign(block_w * block_h * 16,
+                       static_cast<std::uint8_t>(0x10 + lvl));
+        src.mips.push_back(std::move(m));
+    }
+
+    auto enc = cd::asset_ktx2::encode_to_memory(src);
+    ASSERT_TRUE(enc.has_value()) << enc.error().message;
+    auto dec = cd::asset_ktx2::load_from_memory(*enc);
+    ASSERT_TRUE(dec.has_value()) << dec.error().message;
+    ASSERT_EQ(dec->mips.size(), src.mips.size());
+    for (std::size_t i = 0; i < src.mips.size(); ++i)
+    {
+        EXPECT_EQ(dec->mips[i].bytes, src.mips[i].bytes)
+            << "mip " << i << " mismatched";
+        EXPECT_EQ(dec->mips[i].width, src.mips[i].width);
+        EXPECT_EQ(dec->mips[i].height, src.mips[i].height);
+    }
+}
+
+TEST(Ktx2Encode, WriteToDiskMatchesLoadFromDisk)
+{
+    cd::asset_ktx2::Ktx2 src;
+    src.format = cd::asset_ktx2::Ktx2VkFormat::kBC7_Srgb;
+    src.width = 4;
+    src.height = 4;
+    cd::asset_ktx2::Ktx2Mip m0;
+    m0.width = 4;
+    m0.height = 4;
+    m0.bytes.assign(16, std::uint8_t { 0x3C });
+    src.mips.push_back(std::move(m0));
+
+    const auto p = tmp_path();
+    auto write_r = cd::asset_ktx2::write(src, p.string());
+    ASSERT_TRUE(write_r.has_value()) << write_r.error().message;
+
+    auto disk = cd::asset_ktx2::load(p.string());
+    ASSERT_TRUE(disk.has_value()) << disk.error().message;
+    EXPECT_EQ(disk->format, src.format);
+    EXPECT_EQ(disk->width, src.width);
+    EXPECT_EQ(disk->height, src.height);
+    ASSERT_EQ(disk->mips.size(), 1U);
+    EXPECT_EQ(disk->mips[0].bytes, src.mips[0].bytes);
+    fs::remove(p);
+}
+
+TEST(Ktx2Encode, EmptyMipsRejected)
+{
+    cd::asset_ktx2::Ktx2 src;
+    src.format = cd::asset_ktx2::Ktx2VkFormat::kR8G8B8A8_Unorm;
+    src.width = 4;
+    src.height = 4;
+    // src.mips intentionally empty.
+
+    auto enc = cd::asset_ktx2::encode_to_memory(src);
+    ASSERT_FALSE(enc.has_value());
+    EXPECT_EQ(enc.error().code,
+              static_cast<std::uint32_t>(cd::asset_ktx2::ktx2_errors::Code::kInvalidArgument));
+}
+
 // ----- AssetLoader adapter -----
 
 #include <cd/asset_ktx2/AssetLoader.hpp>

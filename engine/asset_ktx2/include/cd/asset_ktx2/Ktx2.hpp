@@ -95,4 +95,25 @@ struct Ktx2
 /// asset bundles). Caller retains ownership of `bytes`.
 [[nodiscard]] cd::core::Result<Ktx2> load_from_memory(std::span<const std::uint8_t> bytes);
 
+// ---------------------------------------------------------------------------
+// Write side (Phase 14.B / Wave 158)
+//
+// Encode an in-memory Ktx2 (one mip OR a fully-populated mip chain) into
+// the v2 binary format. Same short-list of vkFormats as the reader plus
+// `supercompressionScheme = 0` (no Basis / Zstd). DFD / KVD / SGD blobs
+// are written as empty (length 0 offsets 0) to keep the cooker output
+// minimal — the engine reader silently tolerates this because it never
+// reads DFD/KVD. A compliant KTX2 reader (PVRTexTool, etc.) accepts
+// empty DFD; engines that *require* DFD won't accept this output, which
+// is a known marathon-scope trade-off.
+//
+// Returns kInvalidArgument when `tex.mips` is empty or `tex.format` is
+// not on the supported short-list.
+// ---------------------------------------------------------------------------
+[[nodiscard]] cd::core::Result<std::vector<std::uint8_t>> encode_to_memory(const Ktx2& tex);
+
+/// Convenience: encode to memory then write to disk. Same error space as
+/// `encode_to_memory` plus `kIoError` on file write failure.
+[[nodiscard]] cd::core::Result<void> write(const Ktx2& tex, std::string_view path);
+
 }  // namespace cd::asset_ktx2
