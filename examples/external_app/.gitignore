@@ -1,0 +1,14 @@
+# Build output
+build/
+build-*/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Generated
+compile_commands.json
+.cache/
