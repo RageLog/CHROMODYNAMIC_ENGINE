@@ -17,6 +17,16 @@ if(WIN32)
   target_link_libraries(cd_audio PRIVATE ole32 uuid)
 endif()
 
+# ALSA backend: Linux-only. The TU has a build gate
+# (#if defined(__linux__)); on Linux we link libasound (snd_pcm).
+# Wave 80.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_library(CD_ALSA_LIB asound)
+  if(CD_ALSA_LIB)
+    target_link_libraries(cd_audio PRIVATE ${CD_ALSA_LIB})
+  endif()
+endif()
+
 # CoreAudio backend: macOS-only. The TU has a build gate
 # (#if defined(__APPLE__)); on Apple we link the AudioUnit /
 # AudioToolbox / CoreAudio / CoreFoundation frameworks. Wave 79.

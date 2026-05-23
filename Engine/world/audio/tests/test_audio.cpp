@@ -133,10 +133,16 @@ TEST(NativeBackend, CoreAudioReturnsNullOnNonApple)
 #endif
 }
 
-TEST(NativeBackend, AlsaStubReturnsNullEverywhere)
+TEST(NativeBackend, AlsaReturnsNullOnNonLinux)
 {
+    // Post Wave-80: real snd_pcm impl on __linux__, nullptr factory
+    // on every other host. On Linux CI the factory MAY return non-
+    // null if a default audio device is available, or nullptr in
+    // headless mode without PipeWire / a /dev/snd device.
     auto alsa = cd::audio::make_alsa_backend();
+#if !defined(__linux__)
     EXPECT_EQ(alsa, nullptr);
+#endif
 }
 
 TEST(NativeBackend, KindMatchesHostPlatform)
