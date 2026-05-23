@@ -10,6 +10,16 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.23.0 — 2026-05-23 — Phase 10 Sprint 3 (CI / Platform leg complete)
+
+### Documentation
+
+- **[readme]** CI / Docs / Bench / Tag status badges (`b0f9401`)
+
+### CI
+
+- **[release]** tag-driven artifact + GitHub Release workflow (`590a286`)
+
 ## v0.22.0 — 2026-05-23 — Phase 10 Sprint 2 (Docs leg complete)
 
 ### Documentation
