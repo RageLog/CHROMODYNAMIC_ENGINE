@@ -456,16 +456,24 @@ public:
         shader_modules_.erase(h.index());
     }
 
-    // ---- Descriptor set layout (stubbed; PSO triangle uses empty
-    //      root signature so no descriptor sets are needed) ----------------
+    // ---- Descriptor set layout (REAL — Phase 15.B v0.43.0) ----------------
     [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetLayoutHandle>
-    create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc&) override
+    create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc& desc) override
     {
-        // Honest placeholder — returns a handle so PipelineLayoutDesc that
-        // includes one doesn't fail; the actual binding model lands with
-        // the descriptor-set wave.
+        DescriptorSetLayoutRecord rec;
+        rec.bindings.assign(desc.bindings.begin(), desc.bindings.end());
+        // Count descriptor-table entries — every binding occupies
+        // one slot in the CPU heap regardless of type. Samplers are
+        // budgeted separately if/when sampler bindings appear.
+        for (const auto& b : rec.bindings)
+        {
+            if (b.type == cd::rhi::DescriptorType::kSampler)
+                rec.sampler_count += b.count;
+            else
+                rec.view_count += b.count;
+        }
         const auto id = next_id_++;
-        descriptor_set_layouts_.emplace(id, DescriptorSetLayoutRecord {});
+        descriptor_set_layouts_.emplace(id, std::move(rec));
         return cd::rhi::DescriptorSetLayoutHandle { id, 1u };
     }
     void destroy_descriptor_set_layout(cd::rhi::DescriptorSetLayoutHandle h) override
@@ -473,19 +481,90 @@ public:
         descriptor_set_layouts_.erase(h.index());
     }
 
-    // ---- Pipeline layout (REAL — Phase 14.C v0.36.0) ----------------------
+    // ---- Pipeline layout (REAL — Phase 14.C v0.36.0 / Phase 15.B v0.43.0)
     //
-    // D3D12 root signature. v0.36.0 ships the smallest possible default:
-    // an empty root signature (no parameters). The descriptor / CBV
-    // wiring lands with the descriptor-set surface in a later phase;
-    // hello_d3d12_triangle uses inline vertex data so it doesn't need
-    // a CBV.
+    // D3D12 root signature. Builds one DESCRIPTOR_TABLE root parameter
+    // per descriptor-set layout in the PipelineLayoutDesc; each table
+    // contains separate ranges per descriptor type (CBV / SRV / UAV).
+    // Sampler bindings live in their own table when present (D3D12
+    // requires sampler heaps to be separate from CBV/SRV/UAV heaps).
+    // Empty layout (no set_layouts) still produces a valid signature
+    // — the triangle sample uses inline vertex data.
     [[nodiscard]] cd::core::Result<cd::rhi::PipelineLayoutHandle>
-    create_pipeline_layout(const cd::rhi::PipelineLayoutDesc&) override
+    create_pipeline_layout(const cd::rhi::PipelineLayoutDesc& desc) override
     {
+        std::vector<D3D12_ROOT_PARAMETER> params;
+        std::vector<std::vector<D3D12_DESCRIPTOR_RANGE>> all_ranges;
+        all_ranges.reserve(desc.set_layouts.size() * 2);
+        std::vector<std::uint32_t> table_params;
+        table_params.reserve(desc.set_layouts.size());
+
+        for (const auto h : desc.set_layouts)
+        {
+            auto it = descriptor_set_layouts_.find(h.index());
+            if (it == descriptor_set_layouts_.end())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "pipeline_layout: unknown descriptor_set_layout handle"));
+            }
+            const auto& layout = it->second;
+
+            // Single descriptor table (CBV/SRV/UAV only — samplers are
+            // a separate table when present).
+            std::vector<D3D12_DESCRIPTOR_RANGE> ranges;
+            ranges.reserve(layout.bindings.size());
+            for (const auto& b : layout.bindings)
+            {
+                if (b.type == cd::rhi::DescriptorType::kSampler) continue;
+                D3D12_DESCRIPTOR_RANGE r {};
+                switch (b.type)
+                {
+                    case cd::rhi::DescriptorType::kUniformBuffer:
+                    case cd::rhi::DescriptorType::kUniformBufferDynamic:
+                        r.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+                        break;
+                    case cd::rhi::DescriptorType::kSampledImage:
+                    case cd::rhi::DescriptorType::kCombinedImageSampler:
+                    case cd::rhi::DescriptorType::kInputAttachment:
+                        r.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                        break;
+                    case cd::rhi::DescriptorType::kStorageImage:
+                    case cd::rhi::DescriptorType::kStorageBuffer:
+                    case cd::rhi::DescriptorType::kStorageBufferDynamic:
+                        r.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+                        break;
+                    default: continue;
+                }
+                r.NumDescriptors = b.count;
+                r.BaseShaderRegister = b.binding;
+                r.RegisterSpace = 0;
+                r.OffsetInDescriptorsFromTableStart =
+                    D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                ranges.push_back(r);
+            }
+            if (ranges.empty())
+            {
+                // Edge case: layout has nothing but samplers. Skip the
+                // CBV/SRV/UAV table; a future wave can add a sampler
+                // table when sample code needs it.
+                continue;
+            }
+            all_ranges.push_back(std::move(ranges));
+
+            D3D12_ROOT_PARAMETER p {};
+            p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            p.DescriptorTable.NumDescriptorRanges =
+                static_cast<UINT>(all_ranges.back().size());
+            p.DescriptorTable.pDescriptorRanges = all_ranges.back().data();
+            p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            table_params.push_back(static_cast<std::uint32_t>(params.size()));
+            params.push_back(p);
+        }
+
         D3D12_ROOT_SIGNATURE_DESC rsd {};
-        rsd.NumParameters = 0;
-        rsd.pParameters = nullptr;
+        rsd.NumParameters = static_cast<UINT>(params.size());
+        rsd.pParameters = params.empty() ? nullptr : params.data();
         rsd.NumStaticSamplers = 0;
         rsd.pStaticSamplers = nullptr;
         rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -519,6 +598,7 @@ public:
         }
         PipelineLayoutRecord rec;
         rec.root_sig = root_sig;
+        rec.table_params = std::move(table_params);
         const auto id = next_id_++;
         pipeline_layouts_.emplace(id, std::move(rec));
         return cd::rhi::PipelineLayoutHandle { id, 1u };
@@ -739,16 +819,170 @@ public:
     create_compute_pipeline(const cd::rhi::ComputePipelineDesc&) override { CD_D3D12_NOT_IMPL_RESULT(ComputePipelineHandle); }
     void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
 
+    // ---- Descriptor set (REAL — Phase 15.B v0.43.0) -----------------------
+
     [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetHandle>
-    allocate_descriptor_set(cd::rhi::DescriptorSetLayoutHandle) override { CD_D3D12_NOT_IMPL_RESULT(DescriptorSetHandle); }
-    void destroy_descriptor_set(cd::rhi::DescriptorSetHandle) override {}
+    allocate_descriptor_set(cd::rhi::DescriptorSetLayoutHandle layout) override
+    {
+        auto it = descriptor_set_layouts_.find(layout.index());
+        if (it == descriptor_set_layouts_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "allocate_descriptor_set: unknown layout"));
+        }
+        const auto vcount = it->second.view_count;
+        if (cpu_heap_ == nullptr)
+        {
+            // Lazily create the CPU-visible descriptor heap. 4096 slots
+            // covers the marathon-shippable set count; future waves can
+            // grow it or switch to a slab allocator.
+            D3D12_DESCRIPTOR_HEAP_DESC hd {};
+            hd.NumDescriptors = 4096;
+            hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+            if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&cpu_heap_))))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "CPU descriptor heap creation failed"));
+            }
+            cpu_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
+        if (cpu_heap_cursor_ + vcount > 4096)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CPU descriptor heap exhausted (4096-slot cap)"));
+        }
+        DescriptorSetRecord rec;
+        rec.layout_handle = layout;
+        rec.cpu_heap_offset = cpu_heap_cursor_;
+        rec.view_count = vcount;
+        cpu_heap_cursor_ += vcount;
+        const auto id = next_id_++;
+        descriptor_sets_.emplace(id, std::move(rec));
+        return cd::rhi::DescriptorSetHandle { id, 1u };
+    }
+    void destroy_descriptor_set(cd::rhi::DescriptorSetHandle h) override
+    {
+        descriptor_sets_.erase(h.index());
+        // CPU heap slots are not reclaimed (bump allocator). Acceptable
+        // until the slab allocator wave.
+    }
 
     [[nodiscard]] cd::core::Result<void>
-    update_descriptor_set(cd::rhi::DescriptorSetHandle, std::span<const cd::rhi::DescriptorWrite>) override
+    update_descriptor_set(
+        cd::rhi::DescriptorSetHandle h,
+        std::span<const cd::rhi::DescriptorWrite> writes) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented,
-            "D3D12 backend is boot-only at v0.27.0; this entry point lands in v0.27.x"));
+        auto set_it = descriptor_sets_.find(h.index());
+        if (set_it == descriptor_sets_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "update_descriptor_set: unknown set"));
+        }
+        const auto& set = set_it->second;
+        auto layout_it = descriptor_set_layouts_.find(set.layout_handle.index());
+        if (layout_it == descriptor_set_layouts_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "update_descriptor_set: layout vanished"));
+        }
+        const auto& layout = layout_it->second;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE heap_base = cpu_heap_->GetCPUDescriptorHandleForHeapStart();
+        heap_base.ptr += static_cast<SIZE_T>(set.cpu_heap_offset) *
+                         cpu_heap_increment_;
+
+        for (const auto& w : writes)
+        {
+            // Find the offset of this binding within the set's
+            // descriptor table. Sum view-typed binding counts of
+            // earlier bindings.
+            std::uint32_t offset = 0;
+            bool found = false;
+            for (const auto& b : layout.bindings)
+            {
+                if (b.binding == w.binding)
+                {
+                    found = true;
+                    break;
+                }
+                if (b.type != cd::rhi::DescriptorType::kSampler)
+                    offset += b.count;
+            }
+            if (!found)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "update_descriptor_set: write binding not in layout"));
+            }
+            D3D12_CPU_DESCRIPTOR_HANDLE dst = heap_base;
+            dst.ptr += static_cast<SIZE_T>(offset + w.array_element) *
+                       cpu_heap_increment_;
+
+            switch (w.type)
+            {
+                case cd::rhi::DescriptorType::kUniformBuffer:
+                case cd::rhi::DescriptorType::kUniformBufferDynamic:
+                {
+                    auto buf_it = buffers_.find(w.buffer.index());
+                    if (buf_it == buffers_.end())
+                    {
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: CBV buffer unknown"));
+                    }
+                    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv {};
+                    cbv.BufferLocation =
+                        buf_it->second.resource->GetGPUVirtualAddress() + w.buffer_offset;
+                    UINT64 range = w.buffer_range == 0
+                        ? (buf_it->second.size - w.buffer_offset)
+                        : w.buffer_range;
+                    // CBV size must be a multiple of 256.
+                    range = (range + 255u) & ~static_cast<UINT64>(255u);
+                    cbv.SizeInBytes = static_cast<UINT>(range);
+                    device_->CreateConstantBufferView(&cbv, dst);
+                    break;
+                }
+                case cd::rhi::DescriptorType::kSampledImage:
+                {
+                    auto view_it = texture_views_.find(w.view.index());
+                    if (view_it == texture_views_.end())
+                    {
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: SRV view unknown"));
+                    }
+                    auto tex_it = textures_.find(view_it->second.parent.index());
+                    if (tex_it == textures_.end())
+                    {
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: SRV texture unknown"));
+                    }
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
+                    srv.Format = view_it->second.format;
+                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srv.Shader4ComponentMapping =
+                        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srv.Texture2D.MipLevels = 1;
+                    device_->CreateShaderResourceView(
+                        tex_it->second.resource.Get(), &srv, dst);
+                    break;
+                }
+                default:
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kNotImplemented,
+                        "update_descriptor_set: type not in v0.43.0 short-list "
+                        "(CBV + Texture2D SRV); UAV / sampler / cube SRV later"));
+            }
+        }
+        return {};
     }
 
     [[nodiscard]] cd::core::Result<cd::rhi::SemaphoreHandle>
@@ -1139,13 +1373,29 @@ public:
 
     struct DescriptorSetLayoutRecord
     {
-        // Stub for v0.36.0 — bindings stored only as a placeholder count
-        // when descriptor sets land in a later phase.
+        std::vector<cd::rhi::DescriptorSetLayoutBinding> bindings;
+        std::uint32_t view_count { 0 };       // CBV + SRV + UAV total
+        std::uint32_t sampler_count { 0 };
     };
 
     struct PipelineLayoutRecord
     {
         ComPtr<ID3D12RootSignature> root_sig;
+        /// Index of the first table parameter per descriptor-set slot.
+        /// table_params[i] == root-signature parameter index of the
+        /// descriptor table that backs descriptor-set index i.
+        std::vector<std::uint32_t> table_params;
+    };
+
+    struct DescriptorSetRecord
+    {
+        cd::rhi::DescriptorSetLayoutHandle layout_handle {};
+        /// CPU-heap slot range that holds this set's descriptors. The
+        /// values are written into the CPU-visible heap by
+        /// update_descriptor_set and copied into the per-frame GPU
+        /// heap by bind_descriptor_set.
+        std::uint32_t cpu_heap_offset { 0 };
+        std::uint32_t view_count { 0 };
     };
 
     struct GraphicsPipelineRecord
@@ -1220,6 +1470,19 @@ private:
     std::unordered_map<std::uint32_t, DescriptorSetLayoutRecord> descriptor_set_layouts_;
     std::unordered_map<std::uint32_t, PipelineLayoutRecord> pipeline_layouts_;
     std::unordered_map<std::uint32_t, GraphicsPipelineRecord> graphics_pipelines_;
+    std::unordered_map<std::uint32_t, DescriptorSetRecord> descriptor_sets_;
+
+    // CPU-visible descriptor heap (CBV/SRV/UAV) — slot-bump allocator.
+    ComPtr<ID3D12DescriptorHeap> cpu_heap_;
+    UINT cpu_heap_increment_ { 0 };
+    std::uint32_t cpu_heap_cursor_ { 0 };
+    // GPU-visible descriptor heap — populated per-bind by copying from
+    // the CPU heap. Ring-buffer style allocator (16k slots) so frames
+    // don't trample each other.
+    ComPtr<ID3D12DescriptorHeap> gpu_heap_;
+    UINT gpu_heap_increment_ { 0 };
+    std::uint32_t gpu_heap_cursor_ { 0 };
+    static constexpr UINT kGpuHeapCap = 16384;
 
 public:
     [[nodiscard]] GraphicsPipelineRecord* find_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) noexcept
@@ -1237,6 +1500,46 @@ public:
         auto it = buffers_.find(h.index());
         return it == buffers_.end() ? nullptr : &it->second;
     }
+    [[nodiscard]] DescriptorSetRecord* find_descriptor_set(cd::rhi::DescriptorSetHandle h) noexcept
+    {
+        auto it = descriptor_sets_.find(h.index());
+        return it == descriptor_sets_.end() ? nullptr : &it->second;
+    }
+
+    /// Copy `view_count` descriptors from this set's CPU heap slots into
+    /// the per-frame GPU-visible heap and return the resulting GPU
+    /// descriptor handle. Allocates a fresh GPU heap on first call.
+    /// Returns an invalid handle (ptr == 0) on failure.
+    [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
+    copy_set_to_gpu_heap(const DescriptorSetRecord& set)
+    {
+        if (gpu_heap_ == nullptr)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC hd {};
+            hd.NumDescriptors = kGpuHeapCap;
+            hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&gpu_heap_))))
+                return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
+            gpu_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
+        if (gpu_heap_cursor_ + set.view_count > kGpuHeapCap)
+            gpu_heap_cursor_ = 0;  // wrap (ring); rely on wait_idle()
+                                   // between frames to keep things sane
+        const auto slot = gpu_heap_cursor_;
+        gpu_heap_cursor_ += set.view_count;
+        D3D12_CPU_DESCRIPTOR_HANDLE src = cpu_heap_->GetCPUDescriptorHandleForHeapStart();
+        src.ptr += static_cast<SIZE_T>(set.cpu_heap_offset) * cpu_heap_increment_;
+        D3D12_CPU_DESCRIPTOR_HANDLE gpu_cpu = gpu_heap_->GetCPUDescriptorHandleForHeapStart();
+        gpu_cpu.ptr += static_cast<SIZE_T>(slot) * gpu_heap_increment_;
+        device_->CopyDescriptorsSimple(set.view_count, gpu_cpu, src,
+                                       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_GPU_DESCRIPTOR_HANDLE out = gpu_heap_->GetGPUDescriptorHandleForHeapStart();
+        out.ptr += static_cast<UINT64>(slot) * gpu_heap_increment_;
+        return out;
+    }
+    [[nodiscard]] ID3D12DescriptorHeap* gpu_heap() noexcept { return gpu_heap_.Get(); }
 };
 
 // ---- Trivial command buffer (Phase 13.C — clear-only) ----------------------
@@ -1341,7 +1644,19 @@ public:
         }
     }
     void bind_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
-    void bind_descriptor_set(std::uint32_t, cd::rhi::DescriptorSetHandle) override {}
+    void bind_descriptor_set(std::uint32_t set_index, cd::rhi::DescriptorSetHandle set) override
+    {
+        // Phase 15.B real implementation: copy this set's descriptors
+        // into the per-frame GPU-visible heap and bind it as the root
+        // descriptor table for parameter `set_index`.
+        auto* rec = owner_->find_descriptor_set(set);
+        if (rec == nullptr) return;
+        const auto gpu = owner_->copy_set_to_gpu_heap(*rec);
+        if (gpu.ptr == 0) return;
+        ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap() };
+        list_->SetDescriptorHeaps(1, heaps);
+        list_->SetGraphicsRootDescriptorTable(set_index, gpu);
+    }
     void bind_vertex_buffer(std::uint32_t binding, cd::rhi::BufferHandle buffer, std::uint64_t offset) override
     {
         if (auto* buf = owner_->find_buffer(buffer))
