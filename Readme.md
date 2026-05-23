@@ -1,5 +1,10 @@
 # CHROMODYNAMIC Engine
 
+[![CI](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/ci.yml)
+[![Docs](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/docs.yml/badge.svg?branch=master)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/docs.yml)
+[![Bench regression](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/bench-regression.yml/badge.svg)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/actions/workflows/bench-regression.yml)
+[![Latest tag](https://img.shields.io/github/v/tag/RageLog/CHROMODYNAMIC_ENGINE?sort=semver&label=tag)](https://github.com/RageLog/CHROMODYNAMIC_ENGINE/tags)
+
 CHROMODYNAMIC is a cross-platform, cross-API hybrid 2D+3D game engine and
 general-purpose rendering / framework, written in modern C++23. Every
 subsystem is shipped as a standalone library (`cd::<name>`), so the engine
@@ -9,9 +14,10 @@ application.
 > **Status:** active development. Phases 2–9 closed (foundation,
 > runtime, rendering, asset, ECS, scripting, audio, networking, Forward+
 > GPU compute). Phase 10 ("v1.0 path") in flight: Sprint 1 (Quality)
-> closed at v0.21.0; Sprint 2 (Docs) in progress.
+> and Sprint 2 (Docs) closed at v0.22.0; Sprint 3 (CI / Platform) in
+> progress.
 > Library count: **55**. Sample count: **40**. Test binaries: **58**.
-> Latest tag: **v0.21.0**.
+> Latest tag: **v0.22.0**.
 
 ## Highlights
 
