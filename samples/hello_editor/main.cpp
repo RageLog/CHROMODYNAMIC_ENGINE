@@ -50,6 +50,7 @@
 #include <cd/scene/Serializer.hpp>
 #include <cd/shader/Compiler.hpp>
 #include <imgui.h>
+#include <imgui_internal.h>  // DockBuilder API (Phase 16.A)
 
 #include <algorithm>
 #include <chrono>
@@ -166,13 +167,12 @@ int main(int argc, char** argv)
         return 4;
     auto& ctx = **ctx_r;
 
-    // ImGui IO accessor — used below for input-gate flags
-    // (WantCaptureMouse / WantCaptureKeyboard). Docking was
-    // briefly wired in v0.42.0 but the dock host stole interaction
-    // from the pinned panels in some configurations; reverted to
-    // the v0.35.1 deterministic layout in v0.44.0. Docking returns
-    // in Phase 16 with a proper DockBuilder pre-laid-out shape.
+    // Re-enable docking (Phase 16.A). DockBuilder constructs the
+    // default layout on the first frame; user-resized splits and
+    // moved panels then persist via imgui.ini across runs.
     ImGuiIO& imgui_io = ImGui::GetIO();
+    imgui_io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    bool dock_initialised = false;
 
     // ---- 3D viewport resources (Phase 14.E) --------------------------------
     // Geometry + material shared across every entity. Per-entity state
@@ -507,13 +507,68 @@ int main(int argc, char** argv)
 
         ctx.new_frame();
 
-        // DockSpace host removed in v0.44.0 polish — it stole input
-        // from the pinned panels and was inconsistent across reloads.
-        // Phase 16 returns docking with a proper DockBuilder default
-        // layout (Scene left, Inspector right, Toolbar top, History
-        // bottom, viewport center).
+        // ---- DockSpace host + DockBuilder default layout (Phase 16.A) ----
+        {
+            const ImGuiViewport* main_vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(main_vp->WorkPos);
+            ImGui::SetNextWindowSize(main_vp->WorkSize);
+            ImGui::SetNextWindowViewport(main_vp->ID);
+            const ImGuiWindowFlags host_flags =
+                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
+            ImGui::Begin("##DockSpaceHost", nullptr, host_flags);
+            ImGui::PopStyleVar(3);
 
-        // ---- Default layout (Phase 14.A.1 polish) --------------------------
+            const ImGuiID dock_id = ImGui::GetID("CDDockSpace");
+
+            // First-frame layout: split the dockspace into top
+            // (Toolbar) / center (3 columns: Scene | viewport |
+            // Inspector) / bottom (History log), then dock each
+            // panel into its node.
+            if (!dock_initialised && ImGui::DockBuilderGetNode(dock_id) == nullptr)
+            {
+                ImGui::DockBuilderRemoveNode(dock_id);
+                // Bitwise-or between ImGuiDockNodeFlagsPrivate_
+                // (DockSpace) and ImGuiDockNodeFlags_ (PassthruCentralNode)
+                // is a deprecated enum-enum mix under -Wdeprecated-enum-
+                // enum-conversion. Compose via the underlying int.
+                const int dock_flags =
+                    static_cast<int>(ImGuiDockNodeFlags_DockSpace) |
+                    static_cast<int>(ImGuiDockNodeFlags_PassthruCentralNode);
+                ImGui::DockBuilderAddNode(dock_id,
+                    static_cast<ImGuiDockNodeFlags>(dock_flags));
+                ImGui::DockBuilderSetNodeSize(dock_id, main_vp->WorkSize);
+
+                ImGuiID dock_main = dock_id;
+                ImGuiID dock_top = ImGui::DockBuilderSplitNode(
+                    dock_main, ImGuiDir_Up,   0.15F, nullptr, &dock_main);
+                ImGuiID dock_bot = ImGui::DockBuilderSplitNode(
+                    dock_main, ImGuiDir_Down, 0.22F, nullptr, &dock_main);
+                ImGuiID dock_left = ImGui::DockBuilderSplitNode(
+                    dock_main, ImGuiDir_Left, 0.18F, nullptr, &dock_main);
+                ImGuiID dock_right = ImGui::DockBuilderSplitNode(
+                    dock_main, ImGuiDir_Right, 0.25F, nullptr, &dock_main);
+
+                ImGui::DockBuilderDockWindow("Toolbar",     dock_top);
+                ImGui::DockBuilderDockWindow("Scene",       dock_left);
+                ImGui::DockBuilderDockWindow("Inspector",   dock_right);
+                ImGui::DockBuilderDockWindow("History log", dock_bot);
+                ImGui::DockBuilderFinish(dock_id);
+                dock_initialised = true;
+            }
+
+            ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
+                             ImGuiDockNodeFlags_PassthruCentralNode);
+            ImGui::End();
+        }
+
+        // ---- Default layout (legacy SetNextWindowPos removed now
+        //      that DockBuilder handles initial placement) --------------------
         // ImGui auto-layout scatters new windows in the top-left and
         // overlaps them. Pin the four panels to deterministic positions
         // on first use so the editor opens with a sensible layout. The
