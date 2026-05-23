@@ -10,6 +10,15 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.16.0 — 2026-05-23 — Phase 8 Sprint 11 (4 routing items closed)
+
+### Features
+
+- **[volumetric]** cd::render::volumetric Fog CPU baseline (`6afb4a0`)
+- **[script]** numeric call_global_numeric + instruction-cap sandbox (`6a53c48`)
+- **[audio]** multi-channel surround routing (mono/stereo/5.1/7.1) (`edda831`)
+- **[imgdiff]** compute_flip_full — chroma channels + per-channel CSF (`836af72`)
+
 ## v0.15.0 — 2026-05-23 — Phase 8 Sprint 10 (Forward+ GPU compute port)
 
 ### Features
