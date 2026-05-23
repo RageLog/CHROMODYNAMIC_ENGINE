@@ -10,6 +10,14 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.19.0 — 2026-05-23 — Phase 9 Sprint 2 (Forward+ GPU compute LIVE)
+
+### Features
+
+- **[cluster_gpu]** Vulkan compute pipeline wrapper for cluster_assign.comp (`23d3cb6`)
+- **[rhi]** download_buffer staging API + cluster_gpu readback path (`b1f46b4`)
+- **[samples]** hello_gpu_cluster — end-to-end GPU parity verification (`d8221cc`)
+
 ## v0.18.0 — 2026-05-23 — Phase 9 Sprint 1 (Lua mixed-type bindings)
 
 ### Features
