@@ -433,8 +433,12 @@ int main(int argc, char** argv)
                 std::sin(camera.yaw) * cp
             };
             const cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+            // Right = forward × up in a right-handed Y-up frame.
+            // forward = (0, *, -1) (looking -Z) ⇒ right = (1, 0, 0)
+            // = world +X. Previous formula had the sign inverted,
+            // making A and D swap (user-reported).
             const cd::math::Vec3f right {
-                forward.z, 0.0F, -forward.x
+                -forward.z, 0.0F, forward.x
             };
 
             // WASD translation.
