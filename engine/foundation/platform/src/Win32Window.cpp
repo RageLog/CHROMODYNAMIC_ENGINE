@@ -329,6 +329,21 @@ private:
                 pending_.push_back(e);
                 return 0;
             }
+            case WM_CHAR:
+            {
+                // wParam carries the Unicode code point (we use the
+                // wide window class, so Win32 calls WM_CHAR not
+                // WM_UNICHAR). Skip control characters except for the
+                // ones ImGui expects (tab=9, newline=10, return=13).
+                const std::uint32_t cp = static_cast<std::uint32_t>(w);
+                if (cp == 0 || (cp < 32 && cp != 9 && cp != 10 && cp != 13))
+                    return 0;
+                OSEvent e {};
+                e.kind = OSEventKind::kTextChar;
+                e.code_point = cp;
+                pending_.push_back(e);
+                return 0;
+            }
             case WM_LBUTTONDOWN:
             case WM_RBUTTONDOWN:
             case WM_MBUTTONDOWN:

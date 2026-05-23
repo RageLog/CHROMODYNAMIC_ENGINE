@@ -155,6 +155,7 @@ enum class OSEventKind : std::uint8_t
     kMouseButtonDown,
     kMouseButtonUp,
     kMouseWheel,
+    kTextChar,  ///< Translated character (WM_CHAR / equivalent). Phase 15.E.
 };
 
 struct OSEvent
@@ -172,6 +173,10 @@ struct OSEvent
     float mouse_y { 0.0F };
     /// Wheel delta (positive = scroll up / forward).
     float wheel { 0.0F };
+    /// Unicode code-point for kTextChar (Win32 WM_CHAR low word,
+    /// XLib XLookupString equivalent). ImGui consumes via
+    /// AddInputCharacter for InputText/InputFloat widgets.
+    std::uint32_t code_point { 0 };
 };
 
 // ---- Window description ---------------------------------------------------

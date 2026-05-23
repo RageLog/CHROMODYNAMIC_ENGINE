@@ -278,6 +278,15 @@ void Context::handle_event(const cd::platform::OSEvent& event)
                 io.AddKeyEvent(k, false);
         }
         break;
+        case K::kTextChar:
+            // Phase 15.E (Wave 170): InputText / InputFloat receive
+            // typed characters via this path. Without it, ImGui
+            // text widgets accept focus but ignore keystrokes
+            // because Windows splits VK_KEYDOWN (already wired) and
+            // WM_CHAR (the translated character) into separate events.
+            if (event.code_point != 0)
+                io.AddInputCharacter(event.code_point);
+            break;
         case K::kResize:
             io.DisplaySize = ImVec2 { static_cast<float>(event.width), static_cast<float>(event.height) };
             break;

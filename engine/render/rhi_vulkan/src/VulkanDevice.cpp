@@ -2991,6 +2991,43 @@ namespace
     // rendering: Vulkan 1.3 core feature, no extension string needed.
     exts.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
+    // ---- Ray tracing extension auto-enable (Phase 15.E / Wave 170)
+    //
+    // Probe the device's extension list once here; auto-add the
+    // KHR ray-tracing trio when ALL THREE are present:
+    //   VK_KHR_acceleration_structure   — BLAS / TLAS build
+    //   VK_KHR_ray_tracing_pipeline     — tracing pipeline + SBT
+    //   VK_KHR_deferred_host_operations — required dependency
+    // If any of the three is missing the entire RT path stays off
+    // (matches Phase 12.D detection contract). Ray-query is enabled
+    // independently when its extension is present.
+    bool rt_enabled = false;
+    bool rq_enabled = false;
+    {
+        std::uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(pd, nullptr, &count, nullptr);
+        std::vector<VkExtensionProperties> available(count);
+        vkEnumerateDeviceExtensionProperties(pd, nullptr, &count, available.data());
+        auto has = [&](const char* name) {
+            for (const auto& e : available)
+                if (std::strcmp(e.extensionName, name) == 0) return true;
+            return false;
+        };
+        const bool a = has("VK_KHR_acceleration_structure");
+        const bool p = has("VK_KHR_ray_tracing_pipeline");
+        const bool d = has("VK_KHR_deferred_host_operations");
+        if (a && p && d)
+        {
+            exts.push_back("VK_KHR_acceleration_structure");
+            exts.push_back("VK_KHR_ray_tracing_pipeline");
+            exts.push_back("VK_KHR_deferred_host_operations");
+            rt_enabled = true;
+        }
+        rq_enabled = has("VK_KHR_ray_query");
+        if (rq_enabled)
+            exts.push_back("VK_KHR_ray_query");
+    }
+
     const float queue_priority = 1.0F;
     const VkDeviceQueueCreateInfo qci {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -3026,6 +3063,37 @@ namespace
     f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     f12.pNext = &f13;
     f12.timelineSemaphore = VK_TRUE;
+    // bufferDeviceAddress is required by VK_KHR_acceleration_structure
+    // (the AS build path consumes GPU pointers via VkDeviceAddress).
+    // Enable it when RT was opted in; no-op otherwise.
+    if (rt_enabled)
+        f12.bufferDeviceAddress = VK_TRUE;
+
+    // RT feature structs — only chained when rt_enabled. The driver
+    // would reject vkCreateDevice if we requested a feature without
+    // its required extension also enabled, so the guard matches the
+    // extension push above.
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR f_as {};
+    f_as.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    f_as.accelerationStructure = VK_TRUE;
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR f_rtp {};
+    f_rtp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    f_rtp.rayTracingPipeline = VK_TRUE;
+    VkPhysicalDeviceRayQueryFeaturesKHR f_rq {};
+    f_rq.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    f_rq.rayQuery = VK_TRUE;
+    if (rt_enabled)
+    {
+        // Chain: f12 → f_as → f_rtp → existing-tail
+        f_as.pNext  = f12.pNext;
+        f_rtp.pNext = &f_as;
+        f12.pNext   = &f_rtp;
+    }
+    if (rq_enabled)
+    {
+        f_rq.pNext = f12.pNext;
+        f12.pNext  = &f_rq;
+    }
 
     // Vulkan 1.4 features (opt-in). Headers ≥ 1.4 SDK define the structure;
     // the device only honors it when the driver supports 1.4 AND we present
