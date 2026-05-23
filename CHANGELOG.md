@@ -10,6 +10,13 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.15.0 — 2026-05-23 — Phase 8 Sprint 10 (Forward+ GPU compute port)
+
+### Features
+
+- **[cluster]** GLSL compute shader + CPU parity simulator (`46fa84a`)
+- **[samples]** hello_compute_cluster — GPU compute parity demo (`187e79f`)
+
 ## v0.14.0 — 2026-05-23 — Phase 7 FINAL closure (Forward+ CPU baseline)
 
 ### Documentation
