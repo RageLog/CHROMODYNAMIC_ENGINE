@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd::rhi tests (Sprint S3.0)
 // =============================================================================
 #include <cd/rhi/Barriers.hpp>
+#include <cd/rhi/BlendPresets.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Enums.hpp>
 #include <cd/rhi/Format.hpp>
@@ -308,6 +309,37 @@ TEST(NullDevice, SubmitIncrementsCount)
     dev.submit(*cb);
     dev.submit(*cb);
     EXPECT_EQ(dev.submit_count(), 2u);
+}
+
+TEST(BlendPresets, OpaqueIsBlendDisabled)
+{
+    const auto s = cd::rhi::blend_opaque();
+    EXPECT_FALSE(s.blend_enable);
+}
+
+TEST(BlendPresets, AlphaUsesSrcAlphaOneMinusSrcAlpha)
+{
+    const auto s = cd::rhi::blend_alpha();
+    EXPECT_TRUE(s.blend_enable);
+    EXPECT_EQ(s.src_color, cd::rhi::BlendFactor::kSrcAlpha);
+    EXPECT_EQ(s.dst_color, cd::rhi::BlendFactor::kOneMinusSrcAlpha);
+    EXPECT_EQ(s.color_op,  cd::rhi::BlendOp::kAdd);
+}
+
+TEST(BlendPresets, AdditiveSumsSourceWithDest)
+{
+    const auto s = cd::rhi::blend_additive();
+    EXPECT_TRUE(s.blend_enable);
+    EXPECT_EQ(s.dst_color, cd::rhi::BlendFactor::kOne);
+    EXPECT_EQ(s.color_op,  cd::rhi::BlendOp::kAdd);
+}
+
+TEST(BlendPresets, PremultipliedUsesOneAsSourceColor)
+{
+    const auto s = cd::rhi::blend_premultiplied();
+    EXPECT_TRUE(s.blend_enable);
+    EXPECT_EQ(s.src_color, cd::rhi::BlendFactor::kOne);
+    EXPECT_EQ(s.dst_color, cd::rhi::BlendFactor::kOneMinusSrcAlpha);
 }
 
 }  // namespace

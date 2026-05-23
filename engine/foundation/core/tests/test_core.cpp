@@ -840,3 +840,66 @@ TEST(BitOps, AlignUpToPow2)
     EXPECT_EQ(cd::core::align_up(15, 16), 16u);
     EXPECT_EQ(cd::core::align_up(17, 16), 32u);
 }
+
+#include <cd/core/Bitset.hpp>
+
+TEST(Bitset, DefaultIsAllClear)
+{
+    cd::core::Bitset<128> b;
+    EXPECT_EQ(b.count(), 0u);
+    EXPECT_FALSE(b.any());
+    EXPECT_TRUE(b.none());
+}
+
+TEST(Bitset, SetAndTest)
+{
+    cd::core::Bitset<128> b;
+    b.set(42);
+    b.set(100);
+    EXPECT_TRUE(b.test(42));
+    EXPECT_TRUE(b.test(100));
+    EXPECT_FALSE(b.test(43));
+    EXPECT_EQ(b.count(), 2u);
+}
+
+TEST(Bitset, ClearRemovesBit)
+{
+    cd::core::Bitset<64> b;
+    b.set(5);
+    b.set(10);
+    b.clear(5);
+    EXPECT_FALSE(b.test(5));
+    EXPECT_TRUE(b.test(10));
+    EXPECT_EQ(b.count(), 1u);
+}
+
+TEST(Bitset, FindFirstSet)
+{
+    cd::core::Bitset<256> b;
+    EXPECT_EQ(b.find_first_set(), 256u);  // sentinel for empty
+    b.set(73);
+    b.set(200);
+    EXPECT_EQ(b.find_first_set(), 73u);
+}
+
+TEST(Bitset, ForEachSetVisitsInOrder)
+{
+    cd::core::Bitset<128> b;
+    b.set(1);
+    b.set(64);
+    b.set(120);
+    std::vector<std::size_t> visited;
+    b.for_each_set([&](std::size_t i) { visited.push_back(i); });
+    ASSERT_EQ(visited.size(), 3u);
+    EXPECT_EQ(visited[0], 1u);
+    EXPECT_EQ(visited[1], 64u);
+    EXPECT_EQ(visited[2], 120u);
+}
+
+TEST(Bitset, ResetClearsAll)
+{
+    cd::core::Bitset<64> b;
+    b.set(0); b.set(63);
+    b.reset();
+    EXPECT_TRUE(b.none());
+}
