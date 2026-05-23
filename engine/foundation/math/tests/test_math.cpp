@@ -725,3 +725,49 @@ TEST(Vec2Ops, DotProduct)
     EXPECT_FLOAT_EQ(cd::math::dot_v2(cd::math::Vec2f { 2, 3 },
                                       cd::math::Vec2f { 4, 5 }), 23.0F);
 }
+
+#include <cd/math/Mat3Inverse.hpp>
+
+TEST(Mat3Inverse, IdentityInverseIsIdentity)
+{
+    const auto i = cd::math::Mat3f::identity();
+    const auto inv = cd::math::inverse_3(i);
+    EXPECT_FLOAT_EQ(inv[0][0], 1.0F);
+    EXPECT_FLOAT_EQ(inv[1][1], 1.0F);
+    EXPECT_FLOAT_EQ(inv[2][2], 1.0F);
+    EXPECT_FLOAT_EQ(inv[0][1], 0.0F);
+}
+
+TEST(Mat3Inverse, InverseTimesOriginalEqualsIdentity)
+{
+    // A non-trivial invertible 3x3.
+    const cd::math::Mat3f m {
+        cd::math::Vec3f { 2.0F, 1.0F, 0.0F },
+        cd::math::Vec3f { 1.0F, 3.0F, 0.0F },
+        cd::math::Vec3f { 0.0F, 0.0F, 4.0F },
+    };
+    const auto inv = cd::math::inverse_3(m);
+    const auto p = m * inv;
+    EXPECT_NEAR(p[0][0], 1.0F, 1e-5F);
+    EXPECT_NEAR(p[1][1], 1.0F, 1e-5F);
+    EXPECT_NEAR(p[2][2], 1.0F, 1e-5F);
+    EXPECT_NEAR(p[0][1], 0.0F, 1e-5F);
+    EXPECT_NEAR(p[1][0], 0.0F, 1e-5F);
+}
+
+TEST(Mat3Inverse, SingularReturnsIdentity)
+{
+    cd::math::Mat3f m {};   // all zeros => singular
+    const auto inv = cd::math::inverse_3(m);
+    EXPECT_FLOAT_EQ(inv[0][0], 1.0F);
+    EXPECT_FLOAT_EQ(inv[1][1], 1.0F);
+    EXPECT_FLOAT_EQ(inv[2][2], 1.0F);
+}
+
+TEST(Mat3Inverse, NormalMatrixFromIdentity4)
+{
+    const auto nm = cd::math::normal_matrix(cd::math::Mat4f::identity());
+    EXPECT_FLOAT_EQ(nm[0][0], 1.0F);
+    EXPECT_FLOAT_EQ(nm[1][1], 1.0F);
+    EXPECT_FLOAT_EQ(nm[2][2], 1.0F);
+}

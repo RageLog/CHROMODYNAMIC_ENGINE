@@ -308,3 +308,48 @@ TEST(Once, ResetForTestReruns)
     once.call([&] { ++n; });
     EXPECT_EQ(n, 2);
 }
+
+#include <cd/concurrency/Latch.hpp>
+#include <thread>
+#include <vector>
+
+TEST(Latch, ReadyAfterCountdownToZero)
+{
+    cd::concurrency::Latch l { 3 };
+    EXPECT_FALSE(l.is_ready());
+    l.count_down();
+    l.count_down();
+    l.count_down();
+    EXPECT_TRUE(l.is_ready());
+}
+
+TEST(Latch, ParallelWorkersConverge)
+{
+    constexpr std::ptrdiff_t kN = 8;
+    cd::concurrency::Latch  l { kN };
+    std::atomic<int> hits { 0 };
+    std::vector<std::thread> ts;
+    ts.reserve(kN);
+    for (std::ptrdiff_t i = 0; i < kN; ++i)
+    {
+        ts.emplace_back([&] {
+            hits.fetch_add(1);
+            l.count_down();
+        });
+    }
+    l.wait();
+    EXPECT_EQ(hits.load(), kN);
+    for (auto& t : ts) t.join();
+}
+
+TEST(Latch, ArriveAndWaitJoinsAllWorkers)
+{
+    constexpr std::ptrdiff_t kN = 4;
+    cd::concurrency::Latch  l { kN };
+    std::vector<std::thread> ts;
+    ts.reserve(kN);
+    for (std::ptrdiff_t i = 0; i < kN; ++i)
+        ts.emplace_back([&] { l.arrive_and_wait(); });
+    for (auto& t : ts) t.join();
+    EXPECT_TRUE(l.is_ready());
+}
