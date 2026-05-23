@@ -10,6 +10,8 @@ cd_add_sample(hello_editor
     cd::imgui_backend
     cd::platform
     cd::render
+    cd::material
+    cd::shader
     cd::rhi
     cd::rhi_vulkan
     cd::sample_common

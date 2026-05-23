@@ -36,7 +36,10 @@
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/imgui/Context.hpp>
+#include <cd/material/Material.hpp>
+#include <cd/math/Matrix.hpp>
 #include <cd/math/Quaternion.hpp>
+#include <cd/math/Transform.hpp>
 #include <cd/math/Vector.hpp>
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
@@ -45,7 +48,11 @@
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/Serializer.hpp>
+#include <cd/shader/Compiler.hpp>
 #include <imgui.h>
+
+#include <chrono>
+#include <cmath>
 
 #include <array>
 #include <cstdint>
@@ -64,6 +71,55 @@ struct SceneEntity
 {
     cd::ecs::Entity handle {};
     std::string name;
+    cd::math::Vec3f tint { 1.0F, 1.0F, 1.0F };
+};
+
+// Cube geometry shared across every entity in the viewport.
+struct CubeVertex { float pos[3]; float color[3]; };
+
+constexpr std::array<CubeVertex, 8> kCubeVerts {{
+    { { -0.5F, -0.5F, -0.5F }, { 0.0F, 0.0F, 0.0F } },
+    { {  0.5F, -0.5F, -0.5F }, { 1.0F, 0.0F, 0.0F } },
+    { {  0.5F,  0.5F, -0.5F }, { 1.0F, 1.0F, 0.0F } },
+    { { -0.5F,  0.5F, -0.5F }, { 0.0F, 1.0F, 0.0F } },
+    { { -0.5F, -0.5F,  0.5F }, { 0.0F, 0.0F, 1.0F } },
+    { {  0.5F, -0.5F,  0.5F }, { 1.0F, 0.0F, 1.0F } },
+    { {  0.5F,  0.5F,  0.5F }, { 1.0F, 1.0F, 1.0F } },
+    { { -0.5F,  0.5F,  0.5F }, { 0.0F, 1.0F, 1.0F } },
+}};
+constexpr std::array<std::uint16_t, 36> kCubeIndices {
+    0,1,2, 0,2,3,  4,6,5, 4,7,6,
+    0,3,7, 0,7,4,  1,5,6, 1,6,2,
+    0,4,5, 0,5,1,  3,2,6, 3,6,7,
+};
+
+constexpr const char* kViewportVS = R"glsl(
+#version 450
+layout(push_constant) uniform PC {
+    mat4 mvp;
+    vec4 tint;  // .rgb modulates vertex color; .a unused
+} pc;
+layout(location = 0) in vec3 in_pos;
+layout(location = 1) in vec3 in_color;
+layout(location = 0) out vec3 v_color;
+void main() {
+    vec4 clip = pc.mvp * vec4(in_pos, 1.0);
+    clip.y = -clip.y;  // Vulkan NDC Y-down
+    gl_Position = clip;
+    v_color = in_color * pc.tint.rgb;
+}
+)glsl";
+
+constexpr const char* kViewportFS = R"glsl(
+#version 450
+layout(location = 0) in  vec3 v_color;
+layout(location = 0) out vec4 out_color;
+void main() { out_color = vec4(v_color, 1.0); }
+)glsl";
+
+struct CubePushConstants {
+    cd::math::Mat4f mvp {};
+    float tint[4] { 1.0F, 1.0F, 1.0F, 1.0F };
 };
 
 }  // namespace
@@ -109,6 +165,89 @@ int main(int argc, char** argv)
         return 4;
     auto& ctx = **ctx_r;
 
+    // ---- 3D viewport resources (Phase 14.E) --------------------------------
+    // Geometry + material shared across every entity. Per-entity state
+    // (tint, MVP) is pushed via push constants in the draw loop.
+    auto make_upload_buf = [&](std::span<const std::byte> bytes,
+                               cd::rhi::BufferUsage usage) -> cd::rhi::BufferHandle {
+        cd::rhi::BufferDesc bd {};
+        bd.size = bytes.size();
+        bd.usage = usage;
+        bd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+        auto r = device.create_buffer(bd);
+        if (!r.has_value()) return {};
+        (void)device.upload_buffer(*r, 0, bytes);
+        return *r;
+    };
+    const std::span<const std::byte> vb_bytes {
+        reinterpret_cast<const std::byte*>(kCubeVerts.data()),
+        kCubeVerts.size() * sizeof(CubeVertex) };
+    const std::span<const std::byte> ib_bytes {
+        reinterpret_cast<const std::byte*>(kCubeIndices.data()),
+        kCubeIndices.size() * sizeof(std::uint16_t) };
+    auto cube_vb = make_upload_buf(vb_bytes, cd::rhi::BufferUsage::kVertex);
+    auto cube_ib = make_upload_buf(ib_bytes, cd::rhi::BufferUsage::kIndex);
+
+    // Depth target for the viewport (rebuilt on resize).
+    constexpr auto kDepthFormat = cd::rhi::Format::kD32Float;
+    cd::rhi::TextureHandle depth_image {};
+    cd::rhi::TextureViewHandle depth_view {};
+    auto make_depth = [&](cd::rhi::Extent2D size) {
+        if (depth_view.is_valid()) device.destroy_texture_view(depth_view);
+        if (depth_image.is_valid()) device.destroy_texture(depth_image);
+        cd::rhi::TextureDesc td {};
+        td.type = cd::rhi::TextureType::k2D;
+        td.format = kDepthFormat;
+        td.extent = { size.width, size.height, 1 };
+        td.usage = cd::rhi::TextureUsage::kDepthStencilAttachment;
+        td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+        auto t = device.create_texture(td);
+        if (!t.has_value()) return false;
+        cd::rhi::TextureViewDesc vd {};
+        vd.texture = *t;
+        vd.format = kDepthFormat;
+        vd.mip_count = 1;
+        vd.layer_count = 1;
+        auto v = device.create_texture_view(vd);
+        if (!v.has_value()) { device.destroy_texture(*t); return false; }
+        depth_image = *t;
+        depth_view = *v;
+        return true;
+    };
+    make_depth({ window.width(), window.height() });
+
+    // Shader + material for the cube.
+    auto compiler = cd::shader::make_glslang_compiler();
+    constexpr std::array<cd::rhi::VertexBinding, 1> kVtxBindings {
+        cd::rhi::VertexBinding { 0, sizeof(CubeVertex), false }
+    };
+    constexpr std::array<cd::rhi::VertexAttribute, 2> kVtxAttrs {
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(CubeVertex, pos)   },
+        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(CubeVertex, color) }
+    };
+    constexpr std::array<cd::rhi::Format, 1> kColorFormats { cd::rhi::Format::kBGRA8Unorm };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange {
+            .stages = cd::rhi::ShaderStage::kVertex,
+            .offset = 0,
+            .size = static_cast<std::uint32_t>(sizeof(CubePushConstants)) }
+    };
+    cd::material::MaterialDesc cube_md {};
+    cube_md.vertex_glsl = kViewportVS;
+    cube_md.fragment_glsl = kViewportFS;
+    cube_md.vertex_bindings = kVtxBindings;
+    cube_md.vertex_attributes = kVtxAttrs;
+    cube_md.color_attachment_formats = kColorFormats;
+    cube_md.depth_attachment_format = kDepthFormat;
+    cube_md.push_constants = kPush;
+    cube_md.topology = cd::rhi::PrimitiveTopology::kTriangleList;
+    cube_md.raster.cull = cd::rhi::CullMode::kBack;
+    cube_md.depth_stencil.depth_test = true;
+    cube_md.depth_stencil.depth_write = true;
+    cube_md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
+    cube_md.name = "viewport_cube";
+    auto cube_mat_r = cd::material::Material::create(device, compiler.get(), cube_md);
+
     // ---- World / Scene / EditHistory ---------------------------------------
     cd::ecs::World world;
     cd::scene::Scene scene { world };
@@ -120,14 +259,24 @@ int main(int argc, char** argv)
     };
 
     std::vector<SceneEntity> entities;
-    for (const char* name : { "Cube", "Sphere", "Cone" })
     {
-        SceneEntity e;
-        e.handle = scene.create_node();
-        e.name = name;
-        entities.push_back(std::move(e));
+        struct Init { const char* name; cd::math::Vec3f pos; cd::math::Vec3f tint; };
+        const std::array<Init, 3> seeds {{
+            { "Cube",   { -1.6F, 0.0F, 0.0F }, { 1.0F, 0.4F, 0.4F } },
+            { "Sphere", {  0.0F, 0.0F, 0.0F }, { 0.4F, 1.0F, 0.4F } },
+            { "Cone",   {  1.6F, 0.0F, 0.0F }, { 0.4F, 0.4F, 1.0F } },
+        }};
+        for (const auto& s : seeds)
+        {
+            SceneEntity e;
+            e.handle = scene.create_node();
+            e.name = s.name;
+            e.tint = s.tint;
+            scene.local(e.handle)->value.position = s.pos;
+            entities.push_back(std::move(e));
+        }
     }
-    log_push("Spawned 3 entities (Cube, Sphere, Cone)");
+    log_push("Spawned 3 entities (Cube, Sphere, Cone) with tinted cube meshes");
 
     int selected = 0;
 
@@ -169,6 +318,7 @@ int main(int argc, char** argv)
                 continue;
             if (!renderer.recreate_swapchain({ window.width(), window.height() }).has_value())
                 continue;
+            make_depth({ window.width(), window.height() });
             needs_rebuild = false;
         }
 
@@ -194,9 +344,16 @@ int main(int argc, char** argv)
                 .clear_color = { .f32 = { 0.12F, 0.13F, 0.16F, 1.0F } }
             }
         };
+        cd::rhi::DepthStencilAttachmentInfo depth_attach {};
+        depth_attach.view = depth_view;
+        depth_attach.depth_load = cd::rhi::LoadOp::kClear;
+        depth_attach.depth_store = cd::rhi::StoreOp::kStore;
+        depth_attach.clear.depth = 1.0F;
         cd::rhi::RenderPassBeginInfo rp {};
         rp.render_area = cd::rhi::Rect2D { { 0, 0 }, frame.extent };
         rp.color_attachments = color_attach;
+        if (cube_mat_r.has_value())
+            rp.depth_stencil = &depth_attach;
         cmd.begin_render_pass(rp);
         cmd.set_viewport(cd::rhi::Viewport {
             0.0F, 0.0F,
@@ -204,6 +361,55 @@ int main(int argc, char** argv)
             static_cast<float>(frame.extent.height),
             0.0F, 1.0F });
         cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, frame.extent });
+
+        // ---- 3D viewport pass: one tinted cube per entity ------------------
+        if (cube_mat_r.has_value() && cube_vb.is_valid() && cube_ib.is_valid())
+        {
+            auto& cube_mat = *cube_mat_r;
+            // Auto-orbiting camera so the viewport is always alive even
+            // without input plumbing. WASD / mouse-look land in a later
+            // wave.
+            const auto t_now = std::chrono::steady_clock::now();
+            static const auto t0 = t_now;
+            const float t = std::chrono::duration<float>(t_now - t0).count();
+            const float eye_r = 5.0F;
+            const cd::math::Vec3f eye {
+                eye_r * std::cos(t * 0.4F),
+                2.0F,
+                eye_r * std::sin(t * 0.4F)
+            };
+            const cd::math::Vec3f target { 0.0F, 0.0F, 0.0F };
+            const cd::math::Vec3f up { 0.0F, 1.0F, 0.0F };
+            const auto view = cd::math::look_at(eye, target, up);
+            const float aspect =
+                static_cast<float>(frame.extent.width) /
+                static_cast<float>(std::max(1u, frame.extent.height));
+            const auto proj = cd::math::perspective<float>(
+                0.9F /* ~50° fov */, aspect, 0.1F, 100.0F);
+            const auto vp = proj * view;
+
+            cmd.bind_graphics_pipeline(cube_mat.pipeline());
+            cmd.bind_vertex_buffer(0, cube_vb, 0);
+            cmd.bind_index_buffer(cube_ib, 0, cd::rhi::IndexType::kUInt16);
+
+            for (const auto& ent : entities)
+            {
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) continue;
+                const auto model = cd::math::to_mat4(lt->value);
+                CubePushConstants pc {};
+                pc.mvp = vp * model;
+                pc.tint[0] = ent.tint.x;
+                pc.tint[1] = ent.tint.y;
+                pc.tint[2] = ent.tint.z;
+                pc.tint[3] = 1.0F;
+                cmd.push_constants(cube_mat.pipeline_layout(),
+                                   cd::rhi::ShaderStage::kVertex,
+                                   0, sizeof(pc), &pc);
+                cmd.draw_indexed(static_cast<std::uint32_t>(kCubeIndices.size()),
+                                 1, 0, 0, 0);
+            }
+        }
 
         ctx.new_frame();
 
