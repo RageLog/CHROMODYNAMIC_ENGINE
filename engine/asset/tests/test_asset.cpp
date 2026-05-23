@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/asset/AssetId.hpp>
 #include <cd/asset/AssetRegistry.hpp>
+#include <cd/asset/AssetTag.hpp>
 #include <cd/asset/IAssetLoader.hpp>
 #include <cd/asset/SchemaRegistry.hpp>
 #include <cd/vfs/MemorySource.hpp>
@@ -267,4 +268,43 @@ TEST(FileWatcher, UnwatchStopsCallbacks)
     EXPECT_EQ(fired, 0);
 
     std::filesystem::remove(p);
+}
+
+TEST(AssetTag, MakeTagHashesString)
+{
+    constexpr auto t = cd::asset::make_tag("character");
+    EXPECT_NE(t.hash, 0u);
+    // FNV-1a is deterministic.
+    EXPECT_EQ(cd::asset::make_tag("character"), cd::asset::make_tag("character"));
+    EXPECT_NE(cd::asset::make_tag("character"), cd::asset::make_tag("enemy"));
+}
+
+TEST(AssetTagSet, AddAndContainsRoundTrip)
+{
+    cd::asset::AssetTagSet s;
+    s.add(cd::asset::make_tag("hero"));
+    s.add(cd::asset::make_tag("tier3"));
+    EXPECT_TRUE(s.contains(cd::asset::make_tag("hero")));
+    EXPECT_TRUE(s.contains(cd::asset::make_tag("tier3")));
+    EXPECT_FALSE(s.contains(cd::asset::make_tag("missing")));
+    EXPECT_EQ(s.size(), 2u);
+}
+
+TEST(AssetTagSet, DuplicateAddIsNoOp)
+{
+    cd::asset::AssetTagSet s;
+    s.add(cd::asset::make_tag("dup"));
+    s.add(cd::asset::make_tag("dup"));
+    EXPECT_EQ(s.size(), 1u);
+}
+
+TEST(AssetTagSet, RemoveDropsEntry)
+{
+    cd::asset::AssetTagSet s;
+    s.add(cd::asset::make_tag("a"));
+    s.add(cd::asset::make_tag("b"));
+    s.remove(cd::asset::make_tag("a"));
+    EXPECT_FALSE(s.contains(cd::asset::make_tag("a")));
+    EXPECT_TRUE(s.contains(cd::asset::make_tag("b")));
+    EXPECT_EQ(s.size(), 1u);
 }

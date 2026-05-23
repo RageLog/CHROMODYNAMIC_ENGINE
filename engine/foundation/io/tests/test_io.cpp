@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/io/BinaryStream.hpp>
 #include <cd/io/BitStream.hpp>
+#include <cd/io/Crc32.hpp>
 #include <cd/io/Endian.hpp>
 #include <cd/io/Framing.hpp>
 #include <gtest/gtest.h>
@@ -331,3 +332,43 @@ TEST(Framing, MultipleFramesOneFeed)
 }
 
 }  // namespace
+
+TEST(Crc32, EmptyInputReturnsZero)
+{
+    const auto v = cd::io::crc32(std::span<const std::byte> {});
+    EXPECT_EQ(v, 0u);
+}
+
+TEST(Crc32, KnownVectorFor123456789)
+{
+    // CRC-32/IEEE of ASCII "123456789" is 0xCBF43926 (zlib test vector).
+    constexpr char data[] = "123456789";
+    const auto bytes = std::span<const std::byte> {
+        reinterpret_cast<const std::byte*>(data), sizeof(data) - 1,
+    };
+    EXPECT_EQ(cd::io::crc32(bytes), 0xCBF43926u);
+}
+
+TEST(Crc32, IncrementalEqualsOneShot)
+{
+    constexpr char data[] = "abcdefghij";
+    const auto bytes = std::span<const std::byte> {
+        reinterpret_cast<const std::byte*>(data), sizeof(data) - 1,
+    };
+    cd::io::Crc32 c;
+    c.update(bytes.subspan(0, 4));
+    c.update(bytes.subspan(4));
+    EXPECT_EQ(c.value(), cd::io::crc32(bytes));
+}
+
+TEST(Crc32, ResetReturnsToInitial)
+{
+    constexpr char d[] = "xyz";
+    const auto bytes = std::span<const std::byte> {
+        reinterpret_cast<const std::byte*>(d), sizeof(d) - 1,
+    };
+    cd::io::Crc32 c;
+    c.update(bytes);
+    c.reset();
+    EXPECT_EQ(c.value(), 0u);
+}
