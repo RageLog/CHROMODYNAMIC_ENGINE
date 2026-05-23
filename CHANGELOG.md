@@ -10,6 +10,12 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.24.0 — 2026-05-23 — Phase 10 Sprint 4 first artifact (install + find_package)
+
+### Build
+
+- **[install]** CMake install/ tree + find_package(CHROMODYNAMIC) export (`3267b71`)
+
 ## v0.23.0 — 2026-05-23 — Phase 10 Sprint 3 (CI / Platform leg complete)
 
 ### Documentation
