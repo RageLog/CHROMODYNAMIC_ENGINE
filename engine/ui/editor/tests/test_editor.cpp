@@ -4,6 +4,7 @@
 // End-to-end test of the integration shell: drive input via push_event,
 // run tick(), inspect the resulting draw commands + selection state.
 // =============================================================================
+#include <algorithm>
 #include <cd/editor/Editor.hpp>
 #include <gtest/gtest.h>
 
@@ -243,6 +244,53 @@ TEST(TransformCommands, RotateUndoRedoRoundTrip)
 
     EXPECT_TRUE(hist.redo());
     EXPECT_FLOAT_EQ(scene.local(entity)->value.rotation.y, target.y);
+}
+
+#include <cd/editor/CommandPalette.hpp>
+
+TEST(CommandPalette, EmptyQueryReturnsAll)
+{
+    cd::editor::CommandPalette p;
+    p.register_command(1, "Open File", [] {});
+    p.register_command(2, "Save File", [] {});
+    EXPECT_EQ(p.filter("").size(), 2u);
+}
+
+TEST(CommandPalette, FuzzyFindsSubsequence)
+{
+    cd::editor::CommandPalette p;
+    p.register_command(1, "Open File", [] {});
+    p.register_command(2, "Open Folder", [] {});
+    p.register_command(3, "Save All", [] {});
+    const auto hits = p.filter("of");
+    EXPECT_GE(hits.size(), 2u);
+    EXPECT_NE(std::find(hits.begin(), hits.end(), std::size_t { 0 }), hits.end());
+    EXPECT_NE(std::find(hits.begin(), hits.end(), std::size_t { 1 }), hits.end());
+}
+
+TEST(CommandPalette, NoMatchReturnsEmpty)
+{
+    cd::editor::CommandPalette p;
+    p.register_command(1, "Open File", [] {});
+    EXPECT_TRUE(p.filter("xyz").empty());
+}
+
+TEST(CommandPalette, InvokeFiresAction)
+{
+    cd::editor::CommandPalette p;
+    int fired = 0;
+    p.register_command(7, "Hit Me", [&] { ++fired; });
+    EXPECT_TRUE(p.invoke(0));
+    EXPECT_EQ(fired, 1);
+}
+
+TEST(CommandPalette, ReRegisterOverwrites)
+{
+    cd::editor::CommandPalette p;
+    p.register_command(1, "Old", [] {});
+    p.register_command(1, "New", [] {});
+    EXPECT_EQ(p.size(), 1u);
+    EXPECT_EQ(p.at(0).label, "New");
 }
 
 }  // namespace

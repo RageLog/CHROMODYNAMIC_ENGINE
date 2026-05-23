@@ -194,4 +194,47 @@ TEST(UiWidget, ParentRelativeDrawCommandsCompose)
     EXPECT_FLOAT_EQ(cmds[1].rect.y, 120.0F);
 }
 
+#include <cd/ui/Anchor.hpp>
+
+TEST(Anchor, StretchFillsParent)
+{
+    cd::ui::Rect parent { 0, 0, 1920, 1080 };
+    auto r = cd::ui::resolve(parent, cd::ui::stretch());
+    EXPECT_EQ(r.x, 0);
+    EXPECT_EQ(r.y, 0);
+    EXPECT_EQ(r.w, 1920);
+    EXPECT_EQ(r.h, 1080);
+}
+
+TEST(Anchor, CenterPlacesFixedRect)
+{
+    cd::ui::Rect parent { 0, 0, 800, 600 };
+    auto r = cd::ui::resolve(parent, cd::ui::center(200, 100));
+    EXPECT_EQ(r.w, 200);
+    EXPECT_EQ(r.h, 100);
+    EXPECT_EQ(r.x, 300);  // (800 - 200) / 2
+    EXPECT_EQ(r.y, 250);  // (600 - 100) / 2
+}
+
+TEST(Anchor, OffsetMarginShrinksFromEdges)
+{
+    cd::ui::Rect parent { 0, 0, 1000, 1000 };
+    cd::ui::Anchor a { 0.0F, 0.0F, 1.0F, 1.0F, 50, 50, -50, -50 };
+    auto r = cd::ui::resolve(parent, a);
+    EXPECT_EQ(r.x, 50);
+    EXPECT_EQ(r.y, 50);
+    EXPECT_EQ(r.w, 900);
+    EXPECT_EQ(r.h, 900);
+}
+
+TEST(Anchor, NestedParentOriginRespected)
+{
+    cd::ui::Rect parent { 100, 200, 400, 300 };
+    auto r = cd::ui::resolve(parent, cd::ui::stretch());
+    EXPECT_EQ(r.x, 100);
+    EXPECT_EQ(r.y, 200);
+    EXPECT_EQ(r.w, 400);
+    EXPECT_EQ(r.h, 300);
+}
+
 }  // namespace
