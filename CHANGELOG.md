@@ -10,6 +10,34 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v1.0.0-rc.1 — 2026-05-23 — Release candidate: v1.0 path closes
+
+Phase 10 closes with the v1.0 surface frozen for soak. CMake project
+version bumped to 1.0.0; the rc.1 tag fronts the soak window before
+GA. Marathon footprint at rc.1:
+
+- 55 libraries (foundation 16 · asset 10 · render 17 · world 7 · ui 3
+  · runtime 1 · side 2 [script, imgdiff]).
+- 40 hello_* samples covering every public surface.
+- 58 gtest binaries, 100 % green on ninja-debug.
+- Install tree consumable via `find_package(CHROMODYNAMIC 1.0)` —
+  cd::core + 47 other targets in the export set (7 vendored-dep
+  libraries explicitly excluded; see ADR-20260523-wave122).
+- Doxygen 1.16.1 build is zero-warning; group hierarchy in
+  `docs/Modules.dox`; foundation public headers opt into the tree
+  via `@addtogroup` brackets.
+- CI matrix: Windows × 4 toolchains (MSVC, Clang-CL, LLVM-Clang,
+  Ninja-MC) + Linux × 2 (GCC, Clang) + macOS (AppleClang) + coverage
+  + ASan/TSan/UBSan sanitizer jobs + bench-regression hard PR gate +
+  Doxygen → GitHub Pages publish.
+- Tag-driven `release.yml` produces per-platform archives (Windows
+  zip, Linux + macOS tar.zst) and stitches them into a GitHub Release
+  with notes sliced from this file.
+
+### Release
+
+- **[version]** project version 0.24.0 → 1.0.0 (rc.1)
+
 ## v0.24.0 — 2026-05-23 — Phase 10 Sprint 4 first artifact (install + find_package)
 
 ### Build
