@@ -455,7 +455,12 @@ int main(int argc, char** argv)
         );
 
         // MVP — spin around the Y axis, slight tilt for depth illusion.
-        const float elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - t_start).count();
+        // --no-spin pins elapsed to 0 so the cube freezes at its
+        // initial orientation, giving the golden-capture gate
+        // deterministic input across runs (Phase 11 Track A).
+        const float elapsed = runtime.no_spin
+            ? 0.0F
+            : std::chrono::duration<float>(std::chrono::steady_clock::now() - t_start).count();
         const float angle = elapsed * 1.2F;                                   // rad/s
         cd::math::Transformf model_xf;
         model_xf.rotation = cd::math::Quatf { std::sin(angle * 0.5F) * 0.0F,  // x

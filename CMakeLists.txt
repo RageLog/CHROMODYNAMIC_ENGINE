@@ -133,6 +133,7 @@ include(CDCompilerDetection)   # CD_HAS_CXX26_* probes
 include(CDVendor)              # cd_mark_target_system_includes
 include(CDDoxygen)             # cd_setup_doxygen → `cd_docs` custom target
 include(CDSmoke)               # cd_setup_smoke   → `smoke` custom target
+include(CDGolden)              # cd_setup_golden  → `smoke-golden-*` custom targets
 include(CDInstall)             # cd_finalize_install → CHROMODYNAMICConfig export
 
 # --- Threads (required by concurrency) ---
@@ -251,6 +252,9 @@ cd_setup_doxygen()
 
 # --- Smoke test driver target ---
 cd_setup_smoke()
+
+# --- Golden-image (Phase 11 Track A) capture + compare targets ---
+cd_setup_golden()
 
 # --- .clangd regeneration (per-preset driver / std-flag / build-dir) ---
 # Renders .clangd from .clangd.in so clangd parses with the same toolchain
