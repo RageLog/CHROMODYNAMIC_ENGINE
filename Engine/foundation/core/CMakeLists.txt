@@ -5,6 +5,7 @@
 cd_add_library(core
   SOURCES
     src/CorePlaceholder.cpp
+    src/ErrorFormat.cpp
 )
 
 if(CD_ENABLE_TESTING)

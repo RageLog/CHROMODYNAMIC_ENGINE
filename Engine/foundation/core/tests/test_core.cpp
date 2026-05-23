@@ -7,6 +7,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/core/Definitions.hpp>
 #include <cd/core/ErrorCode.hpp>
+#include <cd/core/ErrorFormat.hpp>
 #include <cd/core/Handle.hpp>
 #include <cd/core/HandleStore.hpp>
 #include <cd/core/Result.hpp>
@@ -85,6 +86,58 @@ TEST(CoreErrorCode, Equality)
     auto a = cd::core::core_errors::make(cd::core::core_errors::Code::kNotFound);
     auto b = cd::core::core_errors::make(cd::core::core_errors::Code::kNotFound, "different msg");
     EXPECT_EQ(a, b);  // domain+code equality (message is informational)
+}
+
+// --- ErrorFormat (Wave 109) ---------------------------------------------
+TEST(CoreErrorFormat, CoreDomainIsRegistered)
+{
+    EXPECT_EQ(cd::core::domain_name(cd::core::core_errors::kDomain), "core");
+    EXPECT_EQ(cd::core::code_name(cd::core::core_errors::kDomain,
+                                  static_cast<std::uint32_t>(cd::core::core_errors::Code::kInvalidArgument)),
+              "InvalidArgument");
+}
+
+TEST(CoreErrorFormat, FormatsKnownDomainAndCode)
+{
+    auto ec = cd::core::core_errors::make(cd::core::core_errors::Code::kInvalidArgument, "x must be >= 0");
+    EXPECT_EQ(cd::core::format(ec), "core::InvalidArgument: x must be >= 0");
+}
+
+TEST(CoreErrorFormat, FormatsKnownCodeWithoutMessage)
+{
+    auto ec = cd::core::core_errors::make(cd::core::core_errors::Code::kNotFound);
+    EXPECT_EQ(cd::core::format(ec), "core::NotFound");
+}
+
+TEST(CoreErrorFormat, FallsBackToHexForUnknownDomain)
+{
+    cd::core::ErrorCode ec { 0xCAFEu, 0x07u, "boom" };
+    EXPECT_EQ(cd::core::format(ec), "0xcafe::0x07: boom");
+}
+
+TEST(CoreErrorFormat, FallsBackToHexCodeForKnownDomainUnknownCode)
+{
+    cd::core::ErrorCode ec { cd::core::core_errors::kDomain, 0x99u };
+    // Domain "core" is known but code 0x99 is not in the enum — code falls back to hex.
+    EXPECT_EQ(cd::core::format(ec), "core::0x99");
+}
+
+TEST(CoreErrorFormat, RegisterAndLookupCustomDomain)
+{
+    constexpr std::uint32_t kMyDomain = 0xBEEFu;
+    auto resolver = [](std::uint32_t code) -> std::string_view {
+        if (code == 1u) return "Frobnicated";
+        if (code == 2u) return "Wibbled";
+        return {};
+    };
+    cd::core::register_domain(kMyDomain, "mylib", +resolver);
+
+    EXPECT_EQ(cd::core::domain_name(kMyDomain), "mylib");
+    EXPECT_EQ(cd::core::code_name(kMyDomain, 1u), "Frobnicated");
+    EXPECT_EQ(cd::core::code_name(kMyDomain, 99u), std::string_view {});
+
+    cd::core::ErrorCode ec { kMyDomain, 2u, "oops" };
+    EXPECT_EQ(cd::core::format(ec), "mylib::Wibbled: oops");
 }
 
 // --- Result<T> smoke -----------------------------------------------------
