@@ -366,6 +366,16 @@ int main(int argc, char** argv)
     md.vertex_bindings = kBindings;
     md.vertex_attributes = kAttrs;
     md.push_constants = kPush;
+    // Same Vulkan NDC Y-flip + default-cull trap as hello_anim (BUG #5).
+    // `clip.y = -clip.y` in the vertex shader inverts winding after the
+    // perspective divide; default cull=kBack + front_face=CCW then drops
+    // the camera-facing triangles. Without this line the fragment shader
+    // would only see the back hemisphere of each sphere, with its vertex
+    // normals pointing away from the viewer — N·L and N·V both negative,
+    // diffuse and Cook-Torrance specular both clamp to zero, and the
+    // 5×5 metallic/roughness sweep looks like flat plastic. That's the
+    // suspected root cause of BUG #2 from the v1.0 smoke.
+    md.raster.cull = cd::rhi::CullMode::kNone;
     md.depth_stencil.depth_test = true;
     md.depth_stencil.depth_write = true;
     md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
