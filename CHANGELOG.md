@@ -10,6 +10,16 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.13.0 — 2026-05-23 — Phase 7 Sprint 8 (Audio trifecta + 3D positional)
+
+### Features
+
+- **[audio]** 3D positional cues (ITD + ILD + stereo gains) (`494b4d0`)
+- **[audio]** PositionalSource HRTF-lite per-voice mixer (`89d1b2f`)
+- **[audio]** real CoreAudio AudioUnit backend (macOS) (`b1cbdd9`)
+- **[audio]** real ALSA snd_pcm backend (Linux) (`12e1465`)
+- **[samples]** hello_positional_audio — orbital pan demo (`af42d37`)
+
 ## v0.12.0 — 2026-05-23 — Phase 7 Sprint 7 (Scripting tier — Lua)
 
 ### Features
