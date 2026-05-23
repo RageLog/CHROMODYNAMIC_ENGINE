@@ -48,6 +48,14 @@ public:
     /// invalidated. Trivially-destructible payloads only.
     void reset() noexcept { used_ = 0; }
 
+    /// Rewind to a prior `used()` snapshot. Lets callers reclaim
+    /// scratch space at scope granularity finer than a full frame —
+    /// pair with `ArenaScope` for RAII bracketing.
+    void rewind(std::size_t mark) noexcept
+    {
+        if (mark <= used_) used_ = mark;
+    }
+
     [[nodiscard]] std::size_t used() const noexcept { return used_; }
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
     [[nodiscard]] std::size_t remaining() const noexcept { return capacity_ - used_; }

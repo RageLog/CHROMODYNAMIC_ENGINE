@@ -280,3 +280,39 @@ TEST(Renderer, ThreeFrameLoop)
 #endif  // _WIN32
 
 }  // namespace
+
+#include <cd/render/SortKey.hpp>
+
+TEST(SortKey, LayerBitsAtTopOrderLayers)
+{
+    using namespace cd::render;
+    const auto opaque = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 0, 0, 0);
+    const auto ui     = make_sort_key(SortLayer::kUi,     0, SortBlend::kOff, 0, 0, 0);
+    EXPECT_LT(opaque.value, ui.value);
+}
+
+TEST(SortKey, MaterialIdRecoverable)
+{
+    using namespace cd::render;
+    const std::uint32_t mat = 0x123456u;
+    const auto k = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, mat, 0, 0);
+    EXPECT_EQ(material_id_of(k), mat);
+}
+
+TEST(SortKey, DepthBitsRecoverable)
+{
+    using namespace cd::render;
+    const std::uint32_t depth = 0xABCDEFu;
+    const auto k = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 0, depth, 0);
+    EXPECT_EQ(depth_bits_of(k), depth);
+}
+
+TEST(SortKey, AscendingSortGroupsByLayerThenMaterialThenDepth)
+{
+    using namespace cd::render;
+    const auto a = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 5, 100, 0);
+    const auto b = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 5, 200, 0);
+    const auto c = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 6,   0, 0);
+    EXPECT_LT(a.value, b.value);
+    EXPECT_LT(b.value, c.value);
+}

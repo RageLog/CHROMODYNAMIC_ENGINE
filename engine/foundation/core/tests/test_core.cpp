@@ -903,3 +903,48 @@ TEST(Bitset, ResetClearsAll)
     b.reset();
     EXPECT_TRUE(b.none());
 }
+
+#include <cd/core/ArenaScope.hpp>
+
+TEST(ArenaScope, RewindsToConstructionMark)
+{
+    cd::core::FrameAllocator arena { 1024 };
+    (void)arena.allocate(64);
+    const std::size_t before = arena.used();
+    {
+        cd::core::ArenaScope scope { arena };
+        (void)arena.allocate(128);
+        (void)arena.allocate(256);
+        EXPECT_GT(arena.used(), before);
+    }
+    EXPECT_EQ(arena.used(), before);
+}
+
+TEST(ArenaScope, NestedScopesPopLifo)
+{
+    cd::core::FrameAllocator arena { 1024 };
+    (void)arena.allocate(16);
+    const std::size_t outer = arena.used();
+    {
+        cd::core::ArenaScope a { arena };
+        (void)arena.allocate(32);
+        const std::size_t mid = arena.used();
+        {
+            cd::core::ArenaScope b { arena };
+            (void)arena.allocate(64);
+            EXPECT_GT(arena.used(), mid);
+        }
+        EXPECT_EQ(arena.used(), mid);
+    }
+    EXPECT_EQ(arena.used(), outer);
+}
+
+TEST(FrameAllocator, RewindRestoresMark)
+{
+    cd::core::FrameAllocator arena { 256 };
+    (void)arena.allocate(64);
+    const auto mark = arena.used();
+    (void)arena.allocate(64);
+    arena.rewind(mark);
+    EXPECT_EQ(arena.used(), mark);
+}
