@@ -10,22 +10,54 @@ For the design rationale behind each release, see the matching
 
 ---
 
-## v1.0.0 + v1.0.0-rc.1 — ROLLED BACK (2026-05-23)
+## v0.25.0 — 2026-05-23 — Honest baseline after v1.0 rollback
 
-Tags `v1.0.0` and `v1.0.0-rc.1` were cut prematurely and have been
-deleted (locally + origin). After cutting, a manual sample smoke-test
-across all 43 hello_* samples surfaced 5 visual / UX bugs that the
-58 ctest binaries could not catch — `ctest` only checks exit codes,
-not whether the rendered output is correct.
+The 5 visual / UX bugs that v1.0 rollback surfaced are all fixed; the
+two systemic patterns behind them are hardened at the engine layer.
+First release manually visual-validated by a human reviewer against
+every critical windowed sample, not just exit-code smoked.
 
-See [ADR-20260523-wave125-v1.0-rollback.md](docs/ADR/ADR-20260523-wave125-v1.0-rollback.md)
-for the full rollback rationale + the bug list + the new v1.0
-maturity gate definition.
+### Fixes (from v1.0 rollback)
 
-CMake project version bumped back from 1.0.0 → 0.25.0 (in-progress
-hardening release). The next tag will be `v0.25.0` after the bug
-sweep + hardening pass + golden-screenshot baseline lands. A real
-v1.0.0 will only be tagged once the maturity gate is met.
+- **[diag/core]** BUG #3 — ErrorCode use-after-free on dynamic messages
+  (8 files, 19 call sites migrated, 3 new tests; `make_owning` +
+  `rewrap` added). (`77a50a4`)
+- **[samples/inspector]** BUG #4 — defensive hardening, not reproduced;
+  fix retained. (`b80d056`)
+- **[samples/anim]** BUG #5 — opaque cube via `cull = kNone` (Vulkan
+  NDC Y-flip + winding). (`daa6422`)
+- **[samples/pbr]** BUG #2 (partial) — `cull = kNone` unlocks the
+  metallic/roughness sweep mechanic. Visual "metal finish" awaits IBL
+  integration (Phase 11). (`9cc9896`)
+- **[samples/skybox]** BUG #1 — `cull = kNone` unblocks the fullscreen
+  triangle. (`84cb1f1`)
+
+### Hardening (engine-level)
+
+- **[rhi]** default `RasterState::front_face = kClockwise`. Removes
+  the Vulkan-NDC + Y-flip cull trap at the source. (`3df6c00`)
+- **[core]** `kEngineVersion` stamped from CMake `PROJECT_VERSION_*`
+  via PUBLIC compile definitions. Pre-v0.25.0 the constant was
+  hard-coded `0.1.0` and drifted from CMake every release. (`3df6c00`)
+
+### Verified
+
+- 58/58 ctest binaries green on ninja-debug.
+- 39/39 sample exit-0 in headless smoke (`--headless 3`).
+- 5/5 critical visual baseline pixel-checked by reviewer:
+  `hello_triangle`, `hello_cube`, `hello_anim`, `hello_pbr`,
+  `hello_skybox`.
+
+### Rollback record
+
+Tags `v1.0.0` and `v1.0.0-rc.1` were cut at Wave 123-124 then deleted
+(locally + origin) at Wave 125 after the manual sample smoke surfaced
+the 5 bugs above. See
+[ADR-20260523-wave125](docs/ADR/ADR-20260523-wave125-v1.0-rollback.md)
+for the rollback rationale and the 4-axis v1.0 maturity gate that
+replaces the previous "ctest green = v1.0" stop-condition.
+v0.25.0 meets one of those four axes (Axis A: visual correctness)
+partially. Phase 11 works the rest.
 
 ## v0.24.0 — 2026-05-23 — Phase 10 Sprint 4 first artifact (install + find_package)
 

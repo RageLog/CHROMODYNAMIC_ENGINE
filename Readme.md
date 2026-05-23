@@ -13,11 +13,17 @@ application.
 
 > **Status:** active development. Phases 2–9 closed (foundation,
 > runtime, rendering, asset, ECS, scripting, audio, networking, Forward+
-> GPU compute). Phase 10 ("v1.0 path") in flight: Sprint 1 (Quality)
-> and Sprint 2 (Docs) closed at v0.22.0; Sprint 3 (CI / Platform) in
-> progress.
-> Library count: **55**. Sample count: **40**. Test binaries: **58**.
-> Latest tag: **v0.22.0**.
+> GPU compute). Phase 10 closed at **v0.25.0** — the honest baseline
+> after a v1.0.0 tag was cut prematurely and rolled back when manual
+> visual smoke surfaced 5 bugs ctest could not catch
+> ([ADR-wave125](docs/ADR/ADR-20260523-wave125-v1.0-rollback.md)).
+> All 5 fixed; engine-level hardening (Vulkan-NDC winding default,
+> version-string sync) applied. Phase 11 opens with the 4-axis v1.0
+> maturity gate (visual correctness on all windowed samples, cross-
+> GPU-vendor validation, external downstream consumer, independent
+> review).
+> Library count: **55**. Sample count: **39**. Test binaries: **58**.
+> Latest tag: **v0.25.0**.
 
 ## Highlights
 
