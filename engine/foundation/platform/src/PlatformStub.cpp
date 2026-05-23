@@ -7,7 +7,7 @@
 // =============================================================================
 #include <cd/platform/Window.hpp>
 
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(CD_PLATFORM_WAYLAND) && !defined(CD_PLATFORM_XLIB)
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && !defined(CD_PLATFORM_WAYLAND) && !defined(CD_PLATFORM_XLIB)
 
     #include <memory>
 

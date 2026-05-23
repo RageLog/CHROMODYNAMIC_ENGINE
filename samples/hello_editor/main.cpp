@@ -406,14 +406,20 @@ int main(int argc, char** argv)
             // focus (WantCaptureKeyboard alone misses some focus
             // transitions in the ImGui docking branch).
             const bool ui_wants_mouse = imgui_io.WantCaptureMouse;
-            const bool ui_wants_kbd =
-                imgui_io.WantCaptureKeyboard || imgui_io.WantTextInput;
+            // For keyboard: gate ONLY on WantTextInput (an active text
+            // widget). WantCaptureKeyboard is more aggressive — it
+            // stays true when any window has focus, which blocked
+            // WASD entirely after the user clicked a panel once.
+            const bool ui_wants_kbd = imgui_io.WantTextInput;
 
             // Right-mouse drag → yaw/pitch.
             if (!ui_wants_mouse && ImGui::IsMouseDown(ImGuiMouseButton_Right))
             {
                 const ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
-                camera.yaw   -= drag.x * camera.mouse_sensitivity;
+                // Drag right → camera looks right. Drag up → looks up.
+                // (FPS / Unity / UE convention: drag direction equals
+                // gaze-direction change.)
+                camera.yaw   += drag.x * camera.mouse_sensitivity;
                 camera.pitch -= drag.y * camera.mouse_sensitivity;
                 camera.pitch = std::clamp(camera.pitch, -1.55F, 1.55F);
                 ImGui::ResetMouseDragDelta(ImGuiMouseButton_Right);
@@ -709,22 +715,38 @@ int main(int argc, char** argv)
                 }
 
                 ImGui::Separator();
-                // Rotation — quaternion replacement
-                static float quat[4] { 0.0F, 0.0F, 0.0F, 1.0F };
-                ImGui::Text("Rotation: (%.2f, %.2f, %.2f, %.2f)",
+                // Rotation — Euler XYZ (degrees) → quaternion. User-
+                // friendly: editing raw quat xyzw is unintuitive; the
+                // backend EditHistory still stores the quaternion form.
+                static float euler_deg[3] { 0.0F, 0.0F, 0.0F };
+                ImGui::Text("Rotation: (%.2f, %.2f, %.2f, %.2f) quat",
                             static_cast<double>(lt->value.rotation.x),
                             static_cast<double>(lt->value.rotation.y),
                             static_cast<double>(lt->value.rotation.z),
                             static_cast<double>(lt->value.rotation.w));
-                ImGui::InputFloat4("new quat (xyzw)", quat);
+                ImGui::InputFloat3("euler xyz (deg)", euler_deg);
                 if (ImGui::Button("Apply Rotate"))
                 {
+                    // Euler ZYX intrinsic → quaternion. Each axis
+                    // rotation builds its own quat, then composes
+                    // in Z * Y * X order (common engine convention).
+                    constexpr float kDeg2Rad = 3.14159265358979F / 180.0F;
+                    const float hx = euler_deg[0] * kDeg2Rad * 0.5F;
+                    const float hy = euler_deg[1] * kDeg2Rad * 0.5F;
+                    const float hz = euler_deg[2] * kDeg2Rad * 0.5F;
+                    const float cx = std::cos(hx), sx = std::sin(hx);
+                    const float cy = std::cos(hy), sy = std::sin(hy);
+                    const float cz = std::cos(hz), sz = std::sin(hz);
+                    // ZYX composition:  q = qz * qy * qx
+                    cd::math::Quatf q;
+                    q.w = cz * cy * cx + sz * sy * sx;
+                    q.x = cz * cy * sx - sz * sy * cx;
+                    q.y = cz * sy * cx + sz * cy * sx;
+                    q.z = sz * cy * cx - cz * sy * sx;
                     history.push(std::make_unique<cd::editor::RotateCommand>(
-                        scene, ent.handle,
-                        cd::math::Quatf { quat[0], quat[1], quat[2], quat[3] }));
-                    log_push("push: RotateCommand");
-                    quat[0] = quat[1] = quat[2] = 0.0F;
-                    quat[3] = 1.0F;
+                        scene, ent.handle, q));
+                    log_push("push: RotateCommand (from Euler)");
+                    euler_deg[0] = euler_deg[1] = euler_deg[2] = 0.0F;
                 }
             }
             else
