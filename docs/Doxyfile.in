@@ -23,7 +23,7 @@ USE_MDFILE_AS_MAINPAGE = "@CD_DOXYGEN_MAINPAGE@"
 # Do NOT wrap @CD_DOXYGEN_INPUT@ in additional quotes here.
 INPUT                  = @CD_DOXYGEN_INPUT@
 INPUT_ENCODING         = UTF-8
-FILE_PATTERNS          = *.cpp *.hpp *.h *.md
+FILE_PATTERNS          = *.cpp *.hpp *.h *.md *.dox
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */build/* \
                          */.git/* \

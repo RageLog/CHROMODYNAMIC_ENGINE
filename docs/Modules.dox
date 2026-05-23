@@ -1,0 +1,148 @@
+// =============================================================================
+// CHROMODYNAMIC — Doxygen module hierarchy
+//
+// This file is parsed by Doxygen alone (not compiled). It declares the
+// @defgroup tags that organise the rendered API into a navigable tree
+// in the "Modules" sidebar.
+//
+// Headers and classes opt into a group with @ingroup <slug>; this file
+// only declares the groups themselves so the structure exists even when
+// no opt-in tag has been written yet.
+// =============================================================================
+
+/**
+ * @defgroup cd_foundation Foundation
+ * @brief Low-level engine primitives shared by every higher-tier library.
+ *
+ * The foundation tier sits at the bottom of CHROMODYNAMIC's dependency
+ * DAG and is the only layer that may not depend on any other engine
+ * library. Above it lie math/memory, then concurrency/io, then the
+ * subsystem stack (rhi, asset, ecs, scene, render, …).
+ */
+
+/**
+ * @defgroup cd_foundation_core Core
+ * @ingroup cd_foundation
+ * @brief Primitives: ErrorCode, Result<T>, Handle, HandleStore, CVar, Version.
+ */
+
+/**
+ * @defgroup cd_foundation_diag Diagnostics
+ * @ingroup cd_foundation
+ * @brief Assertion macros + structured panic handler + crash reporter hook.
+ */
+
+/**
+ * @defgroup cd_foundation_log Logging
+ * @ingroup cd_foundation
+ * @brief ILogger / observers / sinks (console, JSON, ring buffer) +
+ *        diag → log triage bridge.
+ */
+
+/**
+ * @defgroup cd_foundation_math Math
+ * @ingroup cd_foundation
+ * @brief Vector / matrix / quaternion / SIMD primitives.
+ */
+
+/**
+ * @defgroup cd_foundation_mem Memory
+ * @ingroup cd_foundation
+ * @brief Allocators (arena, pool), allocator-aware containers.
+ */
+
+/**
+ * @defgroup cd_foundation_concurrency Concurrency
+ * @ingroup cd_foundation
+ * @brief Job system, atomics helpers, fibers, lock-free primitives.
+ */
+
+/**
+ * @defgroup cd_foundation_io IO
+ * @ingroup cd_foundation
+ * @brief Sync + async file IO, file watching, paths.
+ */
+
+/**
+ * @defgroup cd_foundation_platform Platform
+ * @ingroup cd_foundation
+ * @brief OS-abstraction: time, threads, dynamic library loading,
+ *        backtrace, env queries.
+ */
+
+/**
+ * @defgroup cd_foundation_time Time
+ * @ingroup cd_foundation
+ * @brief Steady / system / engine clocks, frame timing.
+ */
+
+/**
+ * @defgroup cd_foundation_profile Profiling
+ * @ingroup cd_foundation
+ * @brief Tracy / built-in markers, GPU timestamp helpers.
+ */
+
+/**
+ * @defgroup cd_foundation_events Events
+ * @ingroup cd_foundation
+ * @brief Type-erased event bus, observer pattern primitives.
+ */
+
+/**
+ * @defgroup cd_foundation_vfs VFS
+ * @ingroup cd_foundation
+ * @brief Virtual filesystem mounts, layered overlay resolution.
+ */
+
+/**
+ * @defgroup cd_foundation_plugin Plugin
+ * @ingroup cd_foundation
+ * @brief Hot-loadable plugin descriptors + lifecycle.
+ */
+
+// -----------------------------------------------------------------------------
+
+/**
+ * @defgroup cd_asset Asset
+ * @brief Asset pipeline: registry, IDs, importers (glTF, OBJ, KTX2, WAV, PAK).
+ */
+
+/**
+ * @defgroup cd_render Render
+ * @brief Rendering subsystems: RHI abstraction, framegraph, materials,
+ *        clustered light culling (CPU + GPU), volumetric, IBL.
+ */
+
+/**
+ * @defgroup cd_render_rhi RHI
+ * @ingroup cd_render
+ * @brief Cross-API render hardware interface (Vulkan / D3D12 / Metal /
+ *        Null / Mobile native dispatcher).
+ */
+
+/**
+ * @defgroup cd_render_cluster Forward+ clustered lighting
+ * @ingroup cd_render
+ * @brief X×Y×log(Z) cluster grid, CPU baseline + GPU compute port,
+ *        PBR fragment-shader integration helper.
+ */
+
+/**
+ * @defgroup cd_world World
+ * @brief ECS + scene graph + physics + animation + audio + input + UI + net.
+ */
+
+/**
+ * @defgroup cd_script Scripting
+ * @brief Lua 5.4 sandbox, mixed-type bindings, instruction-cap.
+ */
+
+/**
+ * @defgroup cd_runtime Runtime
+ * @brief Application loop, plugin orchestration, headless mode.
+ */
+
+/**
+ * @defgroup cd_imgdiff Image diff
+ * @brief Perceptual + numeric image comparison (FLIP, SSIM, PSNR).
+ */
