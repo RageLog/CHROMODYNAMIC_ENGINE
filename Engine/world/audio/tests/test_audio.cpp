@@ -7,6 +7,7 @@
 #include <cd/audio/NativeBackend.hpp>
 #include <cd/audio/Positional.hpp>
 #include <cd/audio/PositionalSource.hpp>
+#include <cd/audio/Surround.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -312,6 +313,125 @@ TEST(PositionalSource, ItdDelaysFartherEar)
     ASSERT_GE(first_right, 0);
     ASSERT_GE(first_left, 0);
     EXPECT_GE(first_left, first_right);  // left is delayed (or equal at 0 azimuth)
+}
+
+// --- Multi-channel surround routing (Wave 93) ------------------------------
+
+TEST(Surround, ChannelCountMatchesLayout)
+{
+    EXPECT_EQ(cd::audio::channel_count(cd::audio::SpeakerLayout::kMono), 1U);
+    EXPECT_EQ(cd::audio::channel_count(cd::audio::SpeakerLayout::kStereo), 2U);
+    EXPECT_EQ(cd::audio::channel_count(cd::audio::SpeakerLayout::kSurround51), 6U);
+    EXPECT_EQ(cd::audio::channel_count(cd::audio::SpeakerLayout::kSurround71), 8U);
+}
+
+TEST(Surround, MonoLayoutSingleGain)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 5.0F, 0.0F, -1.0F };
+    std::array<float, 1> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kMono,
+                                      listener, src, gains);
+    EXPECT_GT(gains[0], 0.0F);
+    EXPECT_LE(gains[0], 1.0F);
+}
+
+TEST(Surround, StereoCentredSourceBalanced)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, -1.0F };  // dead ahead
+    std::array<float, 2> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kStereo,
+                                      listener, src, gains);
+    EXPECT_NEAR(gains[0], gains[1], 1e-3F);
+    EXPECT_GT(gains[0], 0.0F);
+}
+
+TEST(Surround, FivePointOneFrontCentreFavoursFC)
+{
+    // 5.1 layout slots: [FL, FR, FC, LFE, RL, RR]. A source ahead
+    // (azimuth 0°) should pan between FL and FC — but the FC speaker
+    // is exactly at 0°, so it should dominate. Pairwise pan: FL(-30)
+    // ↔ FC(0) bracket θ=0 with t=1 → FC = sin(π/2) = 1, FL = 0.
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, -1.0F };  // 0° azimuth
+    std::array<float, 6> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kSurround51,
+                                      listener, src, gains);
+    // gains[2] = FC.
+    EXPECT_NEAR(gains[2], 1.0F, 0.05F);
+    EXPECT_NEAR(gains[3], 0.0F, 1e-5F);  // LFE always 0
+    EXPECT_GE(gains[2], gains[0]);  // FC >= FL
+    EXPECT_GE(gains[2], gains[1]);  // FC >= FR
+    EXPECT_GE(gains[2], gains[4]);  // FC >= RL
+    EXPECT_GE(gains[2], gains[5]);  // FC >= RR
+}
+
+TEST(Surround, FivePointOneRightSourceFavoursFR)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 1.0F, 0.0F, -1.0F };  // ~45° right
+    std::array<float, 6> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kSurround51,
+                                      listener, src, gains);
+    EXPECT_GT(gains[1], gains[0]);  // FR > FL
+    EXPECT_GT(gains[1], gains[2]);  // FR > FC (45° is past FR at 30°)
+    EXPECT_NEAR(gains[3], 0.0F, 1e-5F);
+}
+
+TEST(Surround, FivePointOneBehindFavoursRearChannels)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, +1.0F };  // directly behind
+    std::array<float, 6> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kSurround51,
+                                      listener, src, gains);
+    // RL (idx 4) + RR (idx 5) should dominate.
+    EXPECT_GT(gains[4] + gains[5], gains[0] + gains[1] + gains[2]);
+    EXPECT_NEAR(gains[3], 0.0F, 1e-5F);
+}
+
+TEST(Surround, SevenPointOneHasNoZeroChannelsOnArbitrarySource)
+{
+    // For an arbitrary off-axis source, at least one pair of 7.1
+    // speakers gets non-zero gain. Just sanity-check the layout size
+    // and LFE invariant.
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.7F, 0.0F, -0.5F };
+    std::array<float, 8> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kSurround71,
+                                      listener, src, gains);
+    float sum = 0.0F;
+    for (float g : gains)
+        sum += g;
+    EXPECT_GT(sum, 0.0F);
+    EXPECT_NEAR(gains[3], 0.0F, 1e-5F);  // LFE idx = 3
+}
+
+TEST(Surround, CoincidentSourceSpreadsAcrossNonLfe)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, 0.0F };
+    std::array<float, 6> gains {};
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kSurround51,
+                                      listener, src, gains);
+    EXPECT_NEAR(gains[3], 0.0F, 1e-5F);  // LFE
+    // The other 5 should be equal (uniform mono fold-in).
+    EXPECT_NEAR(gains[0], gains[1], 1e-5F);
+    EXPECT_NEAR(gains[0], gains[2], 1e-5F);
+    EXPECT_NEAR(gains[0], gains[4], 1e-5F);
+    EXPECT_NEAR(gains[0], gains[5], 1e-5F);
+}
+
+TEST(Surround, SizeMismatchIsNoOp)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, -1.0F };
+    std::array<float, 4> gains { -1.0F, -1.0F, -1.0F, -1.0F };  // wrong size for 5.1
+    cd::audio::compute_surround_gains(cd::audio::SpeakerLayout::kSurround51,
+                                      listener, src, gains);
+    for (float g : gains)
+        EXPECT_FLOAT_EQ(g, -1.0F);
 }
 
 TEST(PositionalSource, ResetClearsDelayLines)
