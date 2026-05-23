@@ -505,3 +505,31 @@ TEST(LodSelector, ForceOverridesDistance)
     s.unforce();
     EXPECT_EQ(s.select(100.0F), 1u);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22.A — SpatialHash tests (Wave 186)
+// ---------------------------------------------------------------------------
+#include <cd/scene/SpatialHash.hpp>
+
+TEST(SpatialHash, InsertAndQueryReturnsCandidate)
+{
+    cd::scene::SpatialHash<int> sh { 5.0F };
+    sh.insert(1, cd::math::Vec3f { 0, 0, 0 });
+    sh.insert(2, cd::math::Vec3f { 100, 100, 100 });
+    std::vector<int> out;
+    sh.query_sphere(cd::math::Vec3f { 0, 0, 0 }, 1.0F, out);
+    // item 1 is in the queried cell range; item 2 is far away.
+    bool saw_1 = false;
+    for (int v : out) if (v == 1) saw_1 = true;
+    EXPECT_TRUE(saw_1);
+}
+
+TEST(SpatialHash, ClearEmptiesEverything)
+{
+    cd::scene::SpatialHash<int> sh { 5.0F };
+    sh.insert(1, cd::math::Vec3f { 0, 0, 0 });
+    sh.insert(2, cd::math::Vec3f { 6, 0, 0 });
+    EXPECT_GE(sh.cell_count(), 1u);
+    sh.clear();
+    EXPECT_EQ(sh.cell_count(), 0u);
+}

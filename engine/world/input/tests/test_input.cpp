@@ -92,4 +92,39 @@ TEST(Input, MouseButtonStateTracked)
     EXPECT_FALSE(ctx.state().is_mouse_button_down(cd::input::MouseButton::kLeft));
 }
 
+// ---------------------------------------------------------------------------
+// Phase 22.B — Axis tests (Wave 186)
+// ---------------------------------------------------------------------------
+#include <cd/input/Axis.hpp>
+
+TEST(InputAxis, BothPressedIsZero)
+{
+    cd::input::Axis a;
+    a.set_keys(true, true);
+    EXPECT_FLOAT_EQ(a.value(), 0.0F);
+}
+
+TEST(InputAxis, OnlyPositivePressedIsOne)
+{
+    cd::input::Axis a;
+    a.set_keys(false, true);
+    EXPECT_FLOAT_EQ(a.value(), 1.0F);
+}
+
+TEST(InputAxis, OnlyNegativePressedIsMinusOne)
+{
+    cd::input::Axis a;
+    a.set_keys(true, false);
+    EXPECT_FLOAT_EQ(a.value(), -1.0F);
+}
+
+TEST(InputAxis, AnalogOverrideClamps)
+{
+    cd::input::Axis a;
+    a.set_analog(1.5F);
+    EXPECT_FLOAT_EQ(a.value(), 1.0F);
+    a.set_analog(-2.0F);
+    EXPECT_FLOAT_EQ(a.value(), -1.0F);
+}
+
 }  // namespace

@@ -246,3 +246,34 @@ TEST(Sphere, ContainsPoint)
     EXPECT_TRUE(cd::physics::contains(s, cd::math::Vec3f { 1, 1, 1 }));
     EXPECT_FALSE(cd::physics::contains(s, cd::math::Vec3f { 5, 0, 0 }));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22.C — Ray + ray-AABB tests (Wave 186)
+// ---------------------------------------------------------------------------
+#include <cd/physics/Ray.hpp>
+
+TEST(Ray, IntersectsAabbFromOutside)
+{
+    cd::physics::Ray r { cd::math::Vec3f { -5, 0.5F, 0.5F }, cd::math::Vec3f { 1, 0, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    auto t = cd::physics::intersect_ray_aabb(r, a);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 5.0F, 1e-5F);
+}
+
+TEST(Ray, MissesAabb)
+{
+    cd::physics::Ray r { cd::math::Vec3f { -5, 5, 0.5F }, cd::math::Vec3f { 1, 0, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    auto t = cd::physics::intersect_ray_aabb(r, a);
+    EXPECT_FALSE(t.has_value());
+}
+
+TEST(Ray, InsideAabbReturnsZero)
+{
+    cd::physics::Ray r { cd::math::Vec3f { 0.5F, 0.5F, 0.5F }, cd::math::Vec3f { 1, 0, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    auto t = cd::physics::intersect_ray_aabb(r, a);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 0.0F, 1e-5F);
+}

@@ -524,3 +524,27 @@ TEST(Easing, EaseInOutCubicHalfPointIsHalf)
 {
     EXPECT_NEAR(cd::math::ease_in_out_cubic(0.5F), 0.5F, 1e-6F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22.D — CubicBezier tests (Wave 186)
+// ---------------------------------------------------------------------------
+#include <cd/math/CubicBezier.hpp>
+
+TEST(CubicBezier, EndpointsExact)
+{
+    cd::math::CubicBezier b;
+    b.p0 = cd::math::Vec3f { 0, 0, 0 };
+    b.p3 = cd::math::Vec3f { 10, 0, 0 };
+    EXPECT_NEAR(b.at(0.0F).x,  0.0F, 1e-5F);
+    EXPECT_NEAR(b.at(1.0F).x, 10.0F, 1e-5F);
+}
+
+TEST(CubicBezier, ArcLengthOfStraightLine)
+{
+    cd::math::CubicBezier b;
+    b.p0 = cd::math::Vec3f { 0, 0, 0 };
+    b.p1 = cd::math::Vec3f { 3.33F, 0, 0 };
+    b.p2 = cd::math::Vec3f { 6.66F, 0, 0 };
+    b.p3 = cd::math::Vec3f { 10, 0, 0 };
+    EXPECT_NEAR(b.arc_length(64), 10.0F, 0.1F);
+}

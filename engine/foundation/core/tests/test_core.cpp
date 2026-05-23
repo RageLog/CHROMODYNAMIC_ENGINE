@@ -678,3 +678,37 @@ TEST(SmallVector, PopBackShrinks)
     EXPECT_EQ(v.size(), 1u);
     EXPECT_EQ(v[0], 7);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22.E — FixedString tests (Wave 186)
+// ---------------------------------------------------------------------------
+#include <cd/core/FixedString.hpp>
+
+TEST(FixedString, EmptyDefault)
+{
+    cd::core::FixedString<32> s;
+    EXPECT_TRUE(s.empty());
+    EXPECT_EQ(s.size(), 0u);
+}
+
+TEST(FixedString, AssignFromStringView)
+{
+    cd::core::FixedString<16> s { "hello" };
+    EXPECT_EQ(s.size(), 5u);
+    EXPECT_EQ(s.view(), std::string_view { "hello" });
+    EXPECT_STREQ(s.c_str(), "hello");
+}
+
+TEST(FixedString, TruncatesAtCapacity)
+{
+    cd::core::FixedString<8> s { "this is too long" };
+    EXPECT_EQ(s.size(), 7u);  // N-1 == 7 chars + null terminator
+    EXPECT_EQ(s.view(), std::string_view { "this is" });
+}
+
+TEST(FixedString, EqualityComparesContents)
+{
+    cd::core::FixedString<16> a { "abc" }, b { "abc" }, c { "def" };
+    EXPECT_TRUE(a == b);
+    EXPECT_FALSE(a == c);
+}
