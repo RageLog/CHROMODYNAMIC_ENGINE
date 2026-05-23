@@ -332,3 +332,46 @@ TEST(Capsule, ContainsEndpointHemispheres)
     // Point 2 above p1 → outside.
     EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 0, 6.0F, 0 }));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 27.B — Triangle barycentric tests (Wave 196)
+// ---------------------------------------------------------------------------
+#include <cd/physics/Triangle.hpp>
+
+TEST(Triangle, BarycentricVertexAReturnsUOne)
+{
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 1, 0, 0 },
+        cd::math::Vec3f { 0, 1, 0 },
+    };
+    const auto bc = cd::physics::barycentric(t, cd::math::Vec3f { 0, 0, 0 });
+    EXPECT_NEAR(bc.x, 1.0F, 1e-4F);  // u
+    EXPECT_NEAR(bc.y, 0.0F, 1e-4F);  // v
+    EXPECT_NEAR(bc.z, 0.0F, 1e-4F);  // w
+}
+
+TEST(Triangle, BarycentricCentroidIsThird)
+{
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 3, 0, 0 },
+        cd::math::Vec3f { 0, 3, 0 },
+    };
+    const cd::math::Vec3f cent { 1, 1, 0 };  // (a+b+c)/3
+    const auto bc = cd::physics::barycentric(t, cent);
+    EXPECT_NEAR(bc.x, 1.0F / 3.0F, 1e-4F);
+    EXPECT_NEAR(bc.y, 1.0F / 3.0F, 1e-4F);
+    EXPECT_NEAR(bc.z, 1.0F / 3.0F, 1e-4F);
+}
+
+TEST(Triangle, ContainsInteriorPoint)
+{
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 4, 0, 0 },
+        cd::math::Vec3f { 0, 4, 0 },
+    };
+    EXPECT_TRUE(cd::physics::contains(t, cd::math::Vec3f { 1, 1, 0 }));
+    EXPECT_FALSE(cd::physics::contains(t, cd::math::Vec3f { 3, 3, 0 }));
+}

@@ -668,3 +668,27 @@ TEST(CatmullRomSpline, EmptyReturnsZeroVec)
     const auto v = s.at(0.5F);
     EXPECT_FLOAT_EQ(v.x, 0.0F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 27.A — Quat SLERP tests (Wave 196)
+// ---------------------------------------------------------------------------
+#include <cd/math/QuatSlerp.hpp>
+
+TEST(QuatSlerp, EndpointsExact)
+{
+    const cd::math::Quatf a { 0, 0, 0, 1 };
+    const cd::math::Quatf b { 0, 1, 0, 0 };
+    auto r0 = cd::math::slerp(a, b, 0.0F);
+    auto r1 = cd::math::slerp(a, b, 1.0F);
+    EXPECT_NEAR(r0.w, 1.0F, 1e-5F);
+    EXPECT_NEAR(r1.y, 1.0F, 1e-5F);
+}
+
+TEST(QuatSlerp, HalfwayIsUnitLength)
+{
+    const cd::math::Quatf a { 0, 0, 0, 1 };
+    const cd::math::Quatf b { 0, 0.7071F, 0, 0.7071F };
+    auto r = cd::math::slerp(a, b, 0.5F);
+    const float len = std::sqrt(r.x*r.x + r.y*r.y + r.z*r.z + r.w*r.w);
+    EXPECT_NEAR(len, 1.0F, 1e-4F);
+}
