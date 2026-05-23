@@ -4,6 +4,7 @@
 cd_add_library(diag
   SOURCES
     src/CrashReporter.cpp
+    src/Assert.cpp
   PUBLIC_DEPS cd::core cd::platform
 )
 

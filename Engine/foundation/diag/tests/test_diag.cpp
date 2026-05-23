@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::diag tests (Sprint S2.1.e + S2.4)
 // =============================================================================
+#include <cd/diag/Assert.hpp>
 #include <cd/diag/CrashReporter.hpp>
 #include <cd/diag/DeadlineMonitor.hpp>
 #include <gtest/gtest.h>
@@ -8,7 +9,9 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -147,5 +150,93 @@ TEST(DeadlineMonitor, HeartbeatUnknownIsNoop)
     m.heartbeat("never-registered");  // must not crash, no entry created
     EXPECT_EQ(m.subsystem_count(), 0u);
 }
+
+// --- Assert macros (Wave 107) ---------------------------------------------
+//
+// The macros must terminate the process if the handler returns; for
+// unit tests we install a throwing handler so we can observe failure
+// without aborting. The handler stays installed for the duration of
+// each test via an RAII guard.
+
+namespace
+{
+
+struct ThrowingPanicGuard
+{
+    cd::diag::PanicHandler prev;
+    ThrowingPanicGuard() : prev { cd::diag::set_panic_handler(&throw_handler) } {}
+    ~ThrowingPanicGuard() { (void)cd::diag::set_panic_handler(prev); }
+
+    static thread_local cd::diag::PanicInfo last_info;
+    static void throw_handler(const cd::diag::PanicInfo& info)
+    {
+        last_info = info;
+        // String copies into the thread_local so the std::string_view
+        // members stay valid after the macro's local std::source_location
+        // goes out of scope.
+        captured_file = std::string { info.file };
+        captured_expr = std::string { info.expression };
+        captured_msg = std::string { info.message };
+        last_info.file = captured_file;
+        last_info.expression = captured_expr;
+        last_info.message = captured_msg;
+        throw std::runtime_error { "panic captured" };
+    }
+    static thread_local std::string captured_file;
+    static thread_local std::string captured_expr;
+    static thread_local std::string captured_msg;
+};
+
+thread_local cd::diag::PanicInfo ThrowingPanicGuard::last_info {};
+thread_local std::string ThrowingPanicGuard::captured_file {};
+thread_local std::string ThrowingPanicGuard::captured_expr {};
+thread_local std::string ThrowingPanicGuard::captured_msg {};
+
+}  // namespace
+
+TEST(Assert, VerifyPassesOnTrue)
+{
+    ThrowingPanicGuard guard;
+    EXPECT_NO_THROW(CD_VERIFY(2 + 2 == 4));
+}
+
+TEST(Assert, VerifyThrowsOnFalse)
+{
+    ThrowingPanicGuard guard;
+    EXPECT_THROW(CD_VERIFY(1 == 2), std::runtime_error);
+    EXPECT_NE(ThrowingPanicGuard::captured_expr.find("1 == 2"), std::string::npos);
+    EXPECT_GT(ThrowingPanicGuard::last_info.line, 0U);
+}
+
+TEST(Assert, VerifyMsgCarriesMessage)
+{
+    ThrowingPanicGuard guard;
+    EXPECT_THROW(CD_VERIFY_MSG(false, "custom failure"), std::runtime_error);
+    EXPECT_EQ(ThrowingPanicGuard::captured_msg, "custom failure");
+}
+
+TEST(Assert, PanicUnconditionalFires)
+{
+    ThrowingPanicGuard guard;
+    EXPECT_THROW(CD_PANIC("intentional"), std::runtime_error);
+    EXPECT_EQ(ThrowingPanicGuard::captured_msg, "intentional");
+}
+
+TEST(Assert, SetHandlerReturnsPrevious)
+{
+    auto a = cd::diag::current_panic_handler();
+    auto b = cd::diag::set_panic_handler(&ThrowingPanicGuard::throw_handler);
+    EXPECT_EQ(b, a);
+    auto c = cd::diag::reset_panic_handler();
+    EXPECT_EQ(c, &ThrowingPanicGuard::throw_handler);
+}
+
+#if !defined(NDEBUG)
+TEST(Assert, DebugAssertFiresInDebugBuilds)
+{
+    ThrowingPanicGuard guard;
+    EXPECT_THROW(CD_ASSERT(false), std::runtime_error);
+}
+#endif
 
 }  // namespace
