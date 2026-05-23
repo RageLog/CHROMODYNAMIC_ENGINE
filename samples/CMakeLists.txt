@@ -64,6 +64,10 @@ if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_rt_check)
 endif()
 
+# Phase 24 headless samples
+add_subdirectory(hello_particles)
+add_subdirectory(hello_bezier)
+
 # hello_editor wires cd::editor::EditHistory + TransformCommands into
 # an ImGui-driven inspector. Gated on CD_ENABLE_VULKAN because it
 # rides the cd::imgui_backend Vulkan path (the cd::ui-based

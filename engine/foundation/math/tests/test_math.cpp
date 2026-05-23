@@ -591,3 +591,53 @@ TEST(Color, RgbRoundTripsThroughHsv)
     EXPECT_NEAR(back.y, rgb0.y, 1e-4F);
     EXPECT_NEAR(back.z, rgb0.z, 1e-4F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 24.A — Random (PCG32) tests (Wave 190)
+// ---------------------------------------------------------------------------
+#include <cd/math/Random.hpp>
+
+TEST(Random, DeterministicWithSeed)
+{
+    cd::math::Random a { 42 };
+    cd::math::Random b { 42 };
+    for (int i = 0; i < 16; ++i)
+        EXPECT_EQ(a.next_u32(), b.next_u32());
+}
+
+TEST(Random, FloatInUnitRange)
+{
+    cd::math::Random r { 7 };
+    for (int i = 0; i < 1024; ++i)
+    {
+        const float v = r.next_float();
+        EXPECT_GE(v, 0.0F);
+        EXPECT_LT(v, 1.0F);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 24.B — SmoothingFilter tests
+// ---------------------------------------------------------------------------
+#include <cd/math/SmoothingFilter.hpp>
+
+TEST(SmoothingFilter, EmaConvergesToTarget)
+{
+    cd::math::EmaSmoother ema { 0.5F, 0.0F };
+    for (int i = 0; i < 32; ++i)
+        ema.update(10.0F);
+    EXPECT_NEAR(ema.value(), 10.0F, 0.01F);
+}
+
+TEST(SmoothingFilter, LinearAdvancesByMaxStep)
+{
+    cd::math::LinearSmoother lin { 1.0F, 0.0F };
+    EXPECT_FLOAT_EQ(lin.update(5.0F), 1.0F);
+    EXPECT_FLOAT_EQ(lin.update(5.0F), 2.0F);
+}
+
+TEST(SmoothingFilter, LinearSnapsWhenInRange)
+{
+    cd::math::LinearSmoother lin { 2.0F, 0.0F };
+    EXPECT_FLOAT_EQ(lin.update(1.5F), 1.5F);
+}
