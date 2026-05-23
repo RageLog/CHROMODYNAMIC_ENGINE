@@ -31,6 +31,7 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
+#include <cd/asset_json/Json.hpp>
 #include <cd/ecs/World.hpp>
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/TransformCommands.hpp>
@@ -43,12 +44,16 @@
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
+#include <cd/scene/Serializer.hpp>
 #include <imgui.h>
 
 #include <array>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -125,6 +130,16 @@ int main(int argc, char** argv)
     log_push("Spawned 3 entities (Cube, Sphere, Cone)");
 
     int selected = 0;
+
+    // Save/Load default file path. The editor writes/reads
+    // hello_editor.cdscene.json next to the binary; the
+    // ImGui InputText below lets users change it at runtime.
+    std::array<char, 256> path_buf {};
+    {
+        const char* default_path = "hello_editor.cdscene.json";
+        for (std::size_t i = 0; i < std::strlen(default_path); ++i)
+            path_buf[i] = default_path[i];
+    }
 
     std::printf("hello_editor: ready. ESC to exit.\n");
     std::fflush(stdout);
@@ -225,6 +240,82 @@ int main(int argc, char** argv)
                 ImGui::SameLine();
                 std::string lbl { history.next_undo_label() };
                 ImGui::TextDisabled("next undo: %s", lbl.c_str());
+            }
+
+            // ---- Save / Load (Phase 14.A) ------------------------------
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(360);
+            ImGui::InputText("scene path", path_buf.data(), path_buf.size());
+            ImGui::SameLine();
+            if (ImGui::Button("Save"))
+            {
+                const auto json = cd::scene::serialize_scene(scene);
+                const auto text = cd::asset_json::serialize(json, true);
+                std::ofstream f(path_buf.data(), std::ios::binary);
+                if (f)
+                {
+                    f.write(text.data(), static_cast<std::streamsize>(text.size()));
+                    log_push(std::string { "save: " } + path_buf.data() +
+                             " (" + std::to_string(text.size()) + " bytes)");
+                }
+                else
+                {
+                    log_push(std::string { "save failed: " } + path_buf.data());
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load"))
+            {
+                std::ifstream f(path_buf.data(), std::ios::binary);
+                if (!f)
+                {
+                    log_push(std::string { "load failed (no file): " } + path_buf.data());
+                }
+                else
+                {
+                    std::stringstream ss;
+                    ss << f.rdbuf();
+                    const auto text = ss.str();
+                    auto json_r = cd::asset_json::parse(text);
+                    if (!json_r.has_value())
+                    {
+                        log_push("load failed (parse error)");
+                    }
+                    else
+                    {
+                        // Fresh world + scene; rebuild the entity list from
+                        // the deserialized id map. The EditHistory becomes
+                        // invalid because the old entities are gone; clear
+                        // it (per cd::editor::EditHistory contract).
+                        world = cd::ecs::World {};
+                        scene = cd::scene::Scene { world };
+                        history.clear();
+                        entities.clear();
+                        auto map_r = cd::scene::deserialize_scene(scene, *json_r);
+                        if (!map_r.has_value())
+                        {
+                            log_push("load failed (deserialize error)");
+                        }
+                        else
+                        {
+                            // Re-attach human-readable names. The
+                            // serializer doesn't preserve names yet, so we
+                            // tag them n_0, n_1, ... in iteration order.
+                            std::size_t i = 0;
+                            scene.for_each_node(
+                                [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
+                                {
+                                    SceneEntity se;
+                                    se.handle = e;
+                                    se.name = "n_" + std::to_string(i++);
+                                    entities.push_back(std::move(se));
+                                });
+                            selected = entities.empty() ? -1 : 0;
+                            log_push(std::string { "load: " } + path_buf.data() +
+                                     " (" + std::to_string(entities.size()) + " entities)");
+                        }
+                    }
+                }
             }
         }
         ImGui::End();

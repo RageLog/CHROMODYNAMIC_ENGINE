@@ -6,6 +6,7 @@ cd_add_sample(hello_editor
     cd::ecs
     cd::scene
     cd::editor
+    cd::asset_json
     cd::imgui_backend
     cd::platform
     cd::render
