@@ -10,6 +10,19 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v1.0.0 — 2026-05-23 — General Availability: Phase 10 closes
+
+The v1.0 surface is locked. Frozen libraries (cd::core, cd::diag,
+cd::log, cd::math, cd::mem, cd::time, cd::events, cd::vfs,
+cd::profile, cd::config, cd::platform, cd::plugin, cd::bench,
+cd::asset.*, cd::rhi descriptor surface, cd::ecs, cd::scene,
+cd::imgdiff) are ABI-stable for the entire v1.x line. Experimental
+tier (cd::rhi_metal skeleton, cd::rhi_d3d12 minimal, cd::editor*,
+cd::script binding helpers) graduates in v1.x point releases.
+
+Marathon footprint at GA (unchanged from rc.1; rc.1 was a publish
+gate, not a re-test):
+
 ## v1.0.0-rc.1 — 2026-05-23 — Release candidate: v1.0 path closes
 
 Phase 10 closes with the v1.0 surface frozen for soak. CMake project
