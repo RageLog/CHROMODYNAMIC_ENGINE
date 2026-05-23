@@ -10,6 +10,29 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.28.0 — 2026-05-23 — Phase 12.C editor undo/redo + transform commands
+
+The cd::editor library was a working integration shell (World + Scene
++ Input + widget tree) but had no mutation-history primitive. Phase
+12.C adds the smallest piece every editor needs: a bounded undo/redo
+stack with type-erased commands + concrete commands for scene
+transform edits.
+
+### Features
+
+- **[editor]** `cd::editor::EditHistory` — bounded LIFO of
+  `unique_ptr<ICommand>` with entry-cap + byte-budget eviction;
+  push() applies immediately; undo()/redo() symmetric; next_undo_label
+  / next_redo_label drive UI menu strings.
+- **[editor]** `TranslateCommand` / `ScaleCommand` / `RotateCommand`
+  — three concrete commands targeting `cd::scene::LocalTransform`.
+  apply()/revert() are pure inverses; round-trip tests prove byte-
+  equal state restoration.
+- **[editor/tests]** 8 new gtests cover push-apply, undo+redo round-
+  trip, push-after-undo-discards-redo, entry-cap eviction, clear
+  semantics, and the three transform-command round-trips against a
+  real cd::scene::Scene + cd::ecs::World.
+
 ## v0.27.0 — 2026-05-23 — Phase 12.B D3D12 backend boot
 
 Boot-only milestone for the D3D12 backend (Windows-only). The backend

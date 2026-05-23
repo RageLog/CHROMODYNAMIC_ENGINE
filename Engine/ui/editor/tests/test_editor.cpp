@@ -81,3 +81,168 @@ TEST(Editor, InputContextStateUpdatedByPushEvent)
 }
 
 }  // namespace
+
+// ---- Phase 12.C / v0.28.0 — EditHistory + TransformCommands ----
+
+#include <cd/editor/EditHistory.hpp>
+#include <cd/editor/TransformCommands.hpp>
+
+namespace
+{
+
+class CounterCommand final : public cd::editor::ICommand
+{
+public:
+    explicit CounterCommand(int* sink) : sink_(sink) {}
+    void apply() override { ++(*sink_); }
+    void revert() override { --(*sink_); }
+    [[nodiscard]] std::string_view label() const noexcept override { return "Counter"; }
+    [[nodiscard]] std::size_t byte_size() const noexcept override { return sizeof(*this); }
+private:
+    int* sink_;
+};
+
+TEST(EditHistory, PushAppliesImmediately)
+{
+    cd::editor::EditHistory hist;
+    int counter = 0;
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    EXPECT_EQ(counter, 1);
+    EXPECT_TRUE(hist.can_undo());
+    EXPECT_FALSE(hist.can_redo());
+    EXPECT_EQ(hist.next_undo_label(), "Counter");
+}
+
+TEST(EditHistory, UndoRedoRoundTrip)
+{
+    cd::editor::EditHistory hist;
+    int counter = 0;
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    EXPECT_EQ(counter, 3);
+    EXPECT_EQ(hist.undo_depth(), 3U);
+
+    EXPECT_TRUE(hist.undo());
+    EXPECT_EQ(counter, 2);
+    EXPECT_TRUE(hist.undo());
+    EXPECT_EQ(counter, 1);
+    EXPECT_EQ(hist.redo_depth(), 2U);
+
+    EXPECT_TRUE(hist.redo());
+    EXPECT_EQ(counter, 2);
+    EXPECT_TRUE(hist.redo());
+    EXPECT_EQ(counter, 3);
+    EXPECT_FALSE(hist.can_redo());
+}
+
+TEST(EditHistory, PushAfterUndoDiscardsRedoTrail)
+{
+    cd::editor::EditHistory hist;
+    int counter = 0;
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    EXPECT_TRUE(hist.undo());
+    EXPECT_TRUE(hist.can_redo());
+
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    EXPECT_FALSE(hist.can_redo());
+    EXPECT_EQ(counter, 2);
+}
+
+TEST(EditHistory, EntryCapEvictsOldest)
+{
+    cd::editor::EditHistory::Config cfg;
+    cfg.max_entries = 3;
+    cd::editor::EditHistory hist { cfg };
+    int counter = 0;
+    for (int i = 0; i < 10; ++i)
+        hist.push(std::make_unique<CounterCommand>(&counter));
+    EXPECT_EQ(counter, 10);
+    EXPECT_EQ(hist.undo_depth(), 3U);
+    EXPECT_TRUE(hist.undo());
+    EXPECT_TRUE(hist.undo());
+    EXPECT_TRUE(hist.undo());
+    EXPECT_EQ(counter, 7);
+    EXPECT_FALSE(hist.can_undo());
+}
+
+TEST(EditHistory, ClearWipesBothStacks)
+{
+    cd::editor::EditHistory hist;
+    int counter = 0;
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    hist.push(std::make_unique<CounterCommand>(&counter));
+    EXPECT_TRUE(hist.undo());
+    hist.clear();
+    EXPECT_FALSE(hist.can_undo());
+    EXPECT_FALSE(hist.can_redo());
+    EXPECT_EQ(hist.bytes_in_use(), 0U);
+}
+
+TEST(TransformCommands, TranslateUndoRedoRoundTrip)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    auto entity = scene.create_node();
+    scene.local(entity)->value.position = cd::math::Vec3f { 1.0F, 2.0F, 3.0F };
+
+    cd::editor::EditHistory hist;
+    hist.push(std::make_unique<cd::editor::TranslateCommand>(
+        scene, entity, cd::math::Vec3f { 5.0F, -1.0F, 0.5F }));
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.x, 6.0F);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.y, 1.0F);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.z, 3.5F);
+
+    EXPECT_TRUE(hist.undo());
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.x, 1.0F);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.y, 2.0F);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.z, 3.0F);
+
+    EXPECT_TRUE(hist.redo());
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.x, 6.0F);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.y, 1.0F);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.position.z, 3.5F);
+}
+
+TEST(TransformCommands, ScaleUndoRedoRoundTrip)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    auto entity = scene.create_node();
+    scene.local(entity)->value.scale = cd::math::Vec3f { 2.0F, 2.0F, 2.0F };
+
+    cd::editor::EditHistory hist;
+    hist.push(std::make_unique<cd::editor::ScaleCommand>(
+        scene, entity, cd::math::Vec3f { 1.5F, 1.5F, 1.5F }));
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.scale.x, 3.0F);
+
+    EXPECT_TRUE(hist.undo());
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.scale.x, 2.0F);
+
+    EXPECT_TRUE(hist.redo());
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.scale.x, 3.0F);
+}
+
+TEST(TransformCommands, RotateUndoRedoRoundTrip)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    auto entity = scene.create_node();
+    const cd::math::Quatf original { 0.0F, 0.0F, 0.0F, 1.0F };
+    const cd::math::Quatf target { 0.0F, 0.707F, 0.0F, 0.707F };
+    scene.local(entity)->value.rotation = original;
+
+    cd::editor::EditHistory hist;
+    hist.push(std::make_unique<cd::editor::RotateCommand>(scene, entity, target));
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.rotation.y, target.y);
+
+    EXPECT_TRUE(hist.undo());
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.rotation.y, original.y);
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.rotation.w, original.w);
+
+    EXPECT_TRUE(hist.redo());
+    EXPECT_FLOAT_EQ(scene.local(entity)->value.rotation.y, target.y);
+}
+
+}  // namespace
