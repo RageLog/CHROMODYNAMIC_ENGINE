@@ -712,3 +712,27 @@ TEST(FixedString, EqualityComparesContents)
     EXPECT_TRUE(a == b);
     EXPECT_FALSE(a == c);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 23.C — ScopeGuard tests (Wave 188)
+// ---------------------------------------------------------------------------
+#include <cd/core/ScopeGuard.hpp>
+
+TEST(ScopeGuard, FiresAtScopeExit)
+{
+    int n = 0;
+    {
+        auto g = cd::core::make_scope_guard([&] { ++n; });
+    }
+    EXPECT_EQ(n, 1);
+}
+
+TEST(ScopeGuard, DismissSkipsCallback)
+{
+    int n = 0;
+    {
+        auto g = cd::core::make_scope_guard([&] { ++n; });
+        g.dismiss();
+    }
+    EXPECT_EQ(n, 0);
+}

@@ -258,3 +258,27 @@ TEST(Stopwatch, RestartReturnsPriorInterval)
     // After restart, fresh elapsed starts from zero.
     EXPECT_LT(sw.elapsed_ms(), 5.0);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 23.D — AtomicCounter tests (Wave 188)
+// ---------------------------------------------------------------------------
+#include <cd/concurrency/AtomicCounter.hpp>
+
+TEST(AtomicCounter, NextReturnsPreviousValueAndIncrements)
+{
+    cd::concurrency::AtomicCounter c;
+    EXPECT_EQ(c.value(), 0u);
+    EXPECT_EQ(c.next(), 0u);
+    EXPECT_EQ(c.next(), 1u);
+    EXPECT_EQ(c.next(), 2u);
+    EXPECT_EQ(c.value(), 3u);
+}
+
+TEST(AtomicCounter, ResetRestoresGivenValue)
+{
+    cd::concurrency::AtomicCounter c { 100 };
+    EXPECT_EQ(c.value(), 100u);
+    c.next();
+    c.reset(50);
+    EXPECT_EQ(c.value(), 50u);
+}

@@ -548,3 +548,46 @@ TEST(CubicBezier, ArcLengthOfStraightLine)
     b.p3 = cd::math::Vec3f { 10, 0, 0 };
     EXPECT_NEAR(b.arc_length(64), 10.0F, 0.1F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 23.A — Plane tests (Wave 188)
+// ---------------------------------------------------------------------------
+#include <cd/math/Plane.hpp>
+
+TEST(Plane, SignedDistanceForAxisAlignedPlane)
+{
+    cd::math::Plane p { cd::math::Vec3f { 0, 1, 0 }, 0.0F };
+    EXPECT_FLOAT_EQ(cd::math::signed_distance(p, cd::math::Vec3f { 0, 5, 0 }),  5.0F);
+    EXPECT_FLOAT_EQ(cd::math::signed_distance(p, cd::math::Vec3f { 0, -2, 0 }), -2.0F);
+}
+
+TEST(Plane, ClassifyPointPositiveNegativeOn)
+{
+    cd::math::Plane p { cd::math::Vec3f { 0, 1, 0 }, 0.0F };
+    EXPECT_EQ(cd::math::classify_point(p, cd::math::Vec3f { 0, 1, 0 }),  1);
+    EXPECT_EQ(cd::math::classify_point(p, cd::math::Vec3f { 0, -1, 0 }), -1);
+    EXPECT_EQ(cd::math::classify_point(p, cd::math::Vec3f { 0, 0, 0 }),  0);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 23.B — HSV ↔ RGB tests (Wave 188)
+// ---------------------------------------------------------------------------
+#include <cd/math/Color.hpp>
+
+TEST(Color, RedHsvIsExpected)
+{
+    auto rgb = cd::math::hsv_to_rgb(0.0F, 1.0F, 1.0F);
+    EXPECT_NEAR(rgb.x, 1.0F, 1e-5F);
+    EXPECT_NEAR(rgb.y, 0.0F, 1e-5F);
+    EXPECT_NEAR(rgb.z, 0.0F, 1e-5F);
+}
+
+TEST(Color, RgbRoundTripsThroughHsv)
+{
+    const cd::math::Vec3f rgb0 { 0.6F, 0.3F, 0.1F };
+    const auto hsv = cd::math::rgb_to_hsv(rgb0.x, rgb0.y, rgb0.z);
+    const auto back = cd::math::hsv_to_rgb(hsv.x, hsv.y, hsv.z);
+    EXPECT_NEAR(back.x, rgb0.x, 1e-4F);
+    EXPECT_NEAR(back.y, rgb0.y, 1e-4F);
+    EXPECT_NEAR(back.z, rgb0.z, 1e-4F);
+}
