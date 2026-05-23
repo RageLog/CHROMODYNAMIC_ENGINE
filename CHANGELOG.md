@@ -10,6 +10,23 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.26.0 — 2026-05-23 — Phase 12.A performance + profile sweep
+
+### Features
+
+- **[bench]** hello_bench expanded from 7 to 21 micro-benchmarks
+  covering math kernels, foundation primitives, log ring, imgdiff,
+  CVar, ECS for_each (`f24c84c`).
+- **[bench]** tests/bench/baseline-debug-nvidia.json committed as
+  the v0.26.0 perf floor; `cd_bench_compare` reads it (`630b72b`).
+- **[build]** `smoke-bench` + `smoke-bench-capture` CMake targets
+  (`caba40e`).
+
+### Documentation
+
+- **[perf]** docs/PERFORMANCE.md — bench surface tour + gate
+  semantics (`f7d62e9`).
+
 ## v0.25.0 — 2026-05-23 — Honest baseline after v1.0 rollback
 
 The 5 visual / UX bugs that v1.0 rollback surfaced are all fixed; the
