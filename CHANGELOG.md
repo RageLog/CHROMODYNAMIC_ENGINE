@@ -10,6 +10,14 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.22.0 — 2026-05-23 — Phase 10 Sprint 2 (Docs leg complete)
+
+### Documentation
+
+- **[arch]** add docs/ARCHITECTURE.md — engine stack mental model (`22fafb8`)
+- **[readme]** refresh status, counts, links — Phase 10 / v0.21.0 (`2688608`)
+- **[doxygen]** @addtogroup brackets on foundation public headers (`378bd43`)
+
 ## v0.21.0 — 2026-05-23 — Phase 10 Sprint 1 (Quality leg complete)
 
 ### Features
