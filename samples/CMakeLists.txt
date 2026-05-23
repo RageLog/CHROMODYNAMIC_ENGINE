@@ -29,6 +29,7 @@ add_subdirectory(hello_audio_wasapi)
 add_subdirectory(hello_udp)
 add_subdirectory(hello_watch)
 add_subdirectory(hello_events)
+add_subdirectory(hello_flip)
 
 # hello_triangle requires the Vulkan backend; gate so the rest of the
 # engine still builds when CD_ENABLE_VULKAN=OFF.
