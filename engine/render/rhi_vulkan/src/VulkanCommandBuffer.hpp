@@ -13,6 +13,8 @@
 #include <volk.h>
 
 #include <cstdint>
+#include <deque>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -134,6 +136,16 @@ private:
     // layout that the most-recent bind_*_pipeline call implied.
     VkPipelineLayout current_graphics_layout_ { VK_NULL_HANDLE };
     VkPipelineLayout current_compute_layout_ { VK_NULL_HANDLE };
+
+    // Per-command-buffer storage for debug-group label strings. The
+    // Vulkan spec lets the driver read VkDebugUtilsLabelEXT::pLabelName
+    // up until command-buffer execution completes, so a stack buffer in
+    // push_debug_group() would dangle. `std::deque<std::string>`
+    // guarantees pointer stability across push_back (unlike std::vector)
+    // so each label's c_str() remains valid for the lifetime of this
+    // command buffer. Cleared in begin(); the next begin() reuses the
+    // already-allocated nodes.
+    std::deque<std::string> debug_label_arena_ {};
 };
 
 }  // namespace cd::rhi_vulkan

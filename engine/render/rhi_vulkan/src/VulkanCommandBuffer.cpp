@@ -3,8 +3,6 @@
 // =============================================================================
 #include "VulkanCommandBuffer.hpp"
 
-#include <cstring>
-
 namespace cd::rhi_vulkan
 {
 
@@ -132,6 +130,13 @@ VulkanCommandBuffer::~VulkanCommandBuffer()
 
 void VulkanCommandBuffer::begin()
 {
+    // Discard last frame's debug-label strings — the GPU has long since
+    // consumed them. clear() releases the std::string payloads but
+    // leaves the deque's bookkeeping nodes for reuse; reset() would
+    // also release those, which is the wrong tradeoff for a per-frame
+    // command buffer that will refill the arena immediately.
+    debug_label_arena_.clear();
+
     const VkCommandBufferBeginInfo bi {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pNext = nullptr,
@@ -635,16 +640,17 @@ void VulkanCommandBuffer::push_debug_group(std::string_view name)
 {
     if (vkCmdBeginDebugUtilsLabelEXT == nullptr)
         return;
-    // VkDebugUtilsLabelEXT.pLabelName requires a C string. Copy into a small
-    // buffer to ensure null termination; debug labels are short by convention.
-    char buf[128];
-    const auto n = name.size() < sizeof(buf) - 1 ? name.size() : sizeof(buf) - 1;
-    std::memcpy(buf, name.data(), n);
-    buf[n] = '\0';
+    // The Vulkan spec lets the driver read VkDebugUtilsLabelEXT::pLabelName
+    // up until the command buffer finishes executing on the GPU. A stack
+    // buffer here would dangle the moment this function returns, so the
+    // label string lives in a per-command-buffer std::deque<std::string>
+    // (stable pointers across emplace_back) that's cleared at begin().
+    // The deque owns the storage; we pass the c_str() into Vulkan.
+    const auto& stored = debug_label_arena_.emplace_back(name);
     const VkDebugUtilsLabelEXT label {
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
         .pNext = nullptr,
-        .pLabelName = buf,
+        .pLabelName = stored.c_str(),
         .color = { 1.0F, 1.0F, 1.0F, 1.0F },
     };
     vkCmdBeginDebugUtilsLabelEXT(cmd_, &label);

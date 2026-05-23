@@ -155,6 +155,18 @@ public:
     barrier(std::span<const BufferBarrier> buffer_barriers, std::span<const TextureBarrier> texture_barriers) = 0;
 
     // ---- Debug -------------------------------------------------------------
+    /// Pushes a named debug-group marker (RenderDoc / PIX / NSight Graphics
+    /// surface this as a hierarchical scope).
+    ///
+    /// Lifetime contract: `name` only needs to outlive *this call*. The
+    /// backend is required to copy the string into per-command-buffer
+    /// storage before returning, because the underlying API (Vulkan
+    /// `vkCmdBeginDebugUtilsLabelEXT`, D3D12 `BeginEvent`, Metal
+    /// `pushDebugGroup:`) can keep the pointer alive until the command
+    /// buffer finishes executing on the GPU — long after this call
+    /// returns. Callers may therefore safely pass a `string_view` over a
+    /// temporary `std::string`, a `std::format` buffer, or any other
+    /// transient storage.
     virtual void push_debug_group(std::string_view name) = 0;
     virtual void pop_debug_group() = 0;
 };
