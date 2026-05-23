@@ -35,6 +35,8 @@
 // =============================================================================
 #pragma once
 
+#include <cd/audio/AnalyticalHRTF.hpp>
+#include <cd/audio/Positional.hpp>
 #include <cd/core/Defines.hpp>
 
 #include <algorithm>
@@ -250,6 +252,122 @@ public:
 
 private:
     std::vector<std::unique_ptr<IDspNode>> nodes_;
+};
+
+// ---------------------------------------------------------------------------
+// HRTFNode (Phase 15.D) — wraps cd::audio::HrtfConvolver as a DSP-graph
+// node. Output is stereo-interleaved, so this node BREAKS the
+// "mono → mono in place" contract of the rest of the chain. Use it as
+// the *terminal* node of the chain; downstream nodes after HRTFNode
+// would need to be stereo-aware.
+//
+// Call `set_pose(listener, source_world_pos, sample_rate)` before
+// process() to refresh the per-direction HRTF coefficients.
+// process(span) treats the input as mono, writes the stereo
+// interleaved output into the supplied `stereo_out` buffer (must be
+// 2x the input size). This node intentionally does NOT mutate the
+// input span — it can't, because of the channel-count change.
+// ---------------------------------------------------------------------------
+class HRTFNode final : public IDspNode
+{
+public:
+    void set_pose(const ListenerPose& listener, const cd::math::Vec3f& src,
+                  std::uint32_t sample_rate) noexcept
+    {
+        const auto coefs = synthesize_hrtf(listener, src, sample_rate);
+        conv_.set_coefficients(coefs);
+    }
+
+    /// Mono → stereo convolution. `samples` carries the mono input;
+    /// `stereo_out` must point at a buffer of size `samples.size() * 2`.
+    void render(std::span<const float> samples, std::span<float> stereo_out) noexcept
+    {
+        conv_.process(samples, stereo_out);
+    }
+
+    /// DspGraph contract: in-place mono process. We can't perform a
+    /// proper HRTF (which is mono → stereo) in place, so the chain
+    /// contract for this node is: place it at the END of the chain,
+    /// then call `render()` separately with the stereo destination.
+    /// In-place process() is a *passthrough* so accidental chain
+    /// placement is benign.
+    void process(std::span<float> /*samples*/,
+                 std::uint32_t /*sample_rate*/) override
+    {
+        // intentionally no-op — see render() above.
+    }
+
+    void reset() noexcept override { conv_.reset(); }
+
+    [[nodiscard]] std::string_view label() const noexcept override { return label_; }
+
+private:
+    HrtfConvolver conv_;
+    std::string label_ { "hrtf" };
+};
+
+// ---------------------------------------------------------------------------
+// FirReverbNode (Phase 15.D) — small impulse-response convolution for
+// "early reflections" of a small room. The impulse response is a
+// hard-coded 11-tap sequence at 48 kHz approximating direct + four
+// early reflections from typical wall/floor/ceiling distances. Not a
+// late-tail reverb (no diffuse tail) — that's a Phase-16 candidate.
+//
+// Direct-form FIR. Allocations only in the constructor (history buffer).
+// Mono → mono in-place.
+// ---------------------------------------------------------------------------
+class FirReverbNode final : public IDspNode
+{
+public:
+    explicit FirReverbNode(float wet = 0.35F) noexcept : wet_ { wet }
+    {
+        // Coefficients tuned for "small room" early reflections:
+        // direct at tap 0 (gain 1.0), four reflections spaced at
+        // 7, 14, 23, 31 taps with attenuating gain.
+        ir_.fill(0.0F);
+        ir_[0]  = 1.0F;
+        ir_[7]  = 0.45F;
+        ir_[14] = 0.30F;
+        ir_[23] = 0.18F;
+        ir_[31] = 0.10F;
+        history_.fill(0.0F);
+    }
+
+    void set_wet(float w) noexcept { wet_ = std::clamp(w, 0.0F, 1.0F); }
+    [[nodiscard]] float wet() const noexcept { return wet_; }
+
+    void process(std::span<float> samples, std::uint32_t /*sample_rate*/) override
+    {
+        const float dry = 1.0F - wet_;
+        for (auto& x : samples)
+        {
+            history_[cursor_] = x;
+            float y = 0.0F;
+            for (std::size_t k = 0; k < kTaps; ++k)
+            {
+                const auto idx = (cursor_ + kTaps - k) % kTaps;
+                y += ir_[k] * history_[idx];
+            }
+            x = dry * x + wet_ * y;
+            cursor_ = (cursor_ + 1U) % kTaps;
+        }
+    }
+
+    void reset() noexcept override
+    {
+        history_.fill(0.0F);
+        cursor_ = 0;
+    }
+
+    [[nodiscard]] std::string_view label() const noexcept override { return label_; }
+
+private:
+    static constexpr std::size_t kTaps = 32;
+    std::array<float, kTaps> ir_ {};
+    std::array<float, kTaps> history_ {};
+    std::size_t cursor_ { 0 };
+    float wet_ { 0.35F };
+    std::string label_ { "fir_reverb" };
 };
 
 }  // namespace cd::audio
