@@ -10,6 +10,18 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.21.0 — 2026-05-23 — Phase 10 Sprint 1 (Quality leg complete)
+
+### Features
+
+- **[core]** cd::core::format(ErrorCode) + domain/code name registry (`741ef2a`)
+- **[log]** cd::log::RingBufferSink — bounded triage mirror (`4d8b77c`)
+- **[log]** cd::log::install_panic_dump_handler — diag → log bridge (`cbcdd7d`)
+
+### Documentation
+
+- **[doxygen]** module hierarchy via docs/Modules.dox (`ea81a29`)
+
 ## v0.20.0 — 2026-05-23 — Phase 8 closure (7/7) + Phase 10 opened (v1.0 path)
 
 ### Features
