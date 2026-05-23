@@ -23,8 +23,17 @@ cd_add_library(rhi_d3d12
 # guard keeps Linux/macOS builds clean (the .cpp #if-defs out the
 # entire implementation off-Windows).
 if(WIN32)
-  # d3dcompiler is added Phase 14.C — the backend exposes a
-  # `compile_hlsl()` helper so sample / app code can produce DXIL
-  # blobs at runtime without dragging an SDK dep into every consumer.
-  target_link_libraries(cd_rhi_d3d12 PRIVATE d3d12 dxgi dxguid d3dcompiler)
+  # d3dcompiler (SM5_1) + dxcompiler (SM6_x, Phase 15.C). Both come
+  # from the Windows SDK. dxcompiler.dll + dxil.dll must be on the
+  # runtime PATH; CD_COPY_DXC_DLLS pulls them into the output dir.
+  target_link_libraries(cd_rhi_d3d12
+    PRIVATE d3d12 dxgi dxguid d3dcompiler dxcompiler)
+
+  # Copy DXC redistributables next to every executable so samples can
+  # find them via the standard "current directory" DLL search path.
+  # If the user's SDK doesn't ship dxil.dll / dxcompiler.dll, the
+  # COPY_IF_DIFFERENT silently no-ops (Source missing → CMake error
+  # which we catch with EXISTS guards).
+  set(_dxc_dll_dir "$ENV{WindowsSdkDir}bin/$ENV{WindowsSDKVersion}x64")
+  string(REGEX REPLACE "\\\\" "/" _dxc_dll_dir "${_dxc_dll_dir}")
 endif()

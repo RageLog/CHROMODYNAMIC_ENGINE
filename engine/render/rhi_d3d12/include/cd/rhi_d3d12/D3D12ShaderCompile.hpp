@@ -39,9 +39,10 @@ inline constexpr std::uint32_t kDomain = 0x0017;
 enum class Code : std::uint32_t
 {
     kOk = 0,
-    kUnsupportedStage = 1,         ///< Engine stage has no SM5 target.
-    kCompileFailed = 2,            ///< D3DCompile2 returned an error blob.
+    kUnsupportedStage = 1,         ///< Engine stage has no SM5/SM6 target.
+    kCompileFailed = 2,            ///< Compiler returned an error blob.
     kBackendUnavailable = 3,       ///< Built on a non-Windows platform.
+    kDxcUnavailable = 4,           ///< SM6 requested but dxcompiler.dll missing at runtime.
 };
 
 [[nodiscard]] inline cd::core::ErrorCode make(Code c, std::string_view m = {}) noexcept
@@ -49,6 +50,17 @@ enum class Code : std::uint32_t
     return cd::core::ErrorCode { kDomain, static_cast<std::uint32_t>(c), m };
 }
 }  // namespace shader_errors
+
+/// Shader Model selection (Phase 15.C). SM5_1 is the legacy D3DCompile
+/// path that's been wired since Phase 14.C; SM6_0 / SM6_5 route through
+/// DXC's IDxcCompiler3. SM6_3+ is required by the ray-tracing
+/// raygen/closesthit/miss stages.
+enum class ShaderModel : std::uint8_t
+{
+    kSM5_1,
+    kSM6_0,
+    kSM6_5,
+};
 
 struct CompileOptions
 {
@@ -63,6 +75,8 @@ struct CompileOptions
     /// Optimization level. 0 = fastest compile, 3 = best codegen. Debug-
     /// time picks 0; release picks 3.
     std::uint32_t optimization_level { 0 };
+    /// Shader Model target. SM5_1 = D3DCompile; SM6_x = DXC.
+    ShaderModel model { ShaderModel::kSM5_1 };
 };
 
 /// Compile the HLSL source in `opts` into a DXIL bytecode blob. The

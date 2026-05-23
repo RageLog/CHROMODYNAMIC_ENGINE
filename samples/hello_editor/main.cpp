@@ -301,8 +301,11 @@ int main(int argc, char** argv)
     // camera-relative axes; right-mouse drag rotates yaw/pitch. ImGui
     // input gates so dragging over a panel doesn't move the camera.
     struct FlyCamera {
-        cd::math::Vec3f position { 0.0F, 2.0F, 5.0F };
-        float yaw { 3.14159F };    // looking toward -Z initially
+        cd::math::Vec3f position { 0.0F, 2.0F, 6.0F };
+        // yaw = -π/2 makes forward = (0, *, -1) — looking down -Z
+        // toward the cubes at origin. Earlier (yaw = π → forward = -X)
+        // pointed away from the cubes so the viewport was empty.
+        float yaw { -1.5707963F };
         float pitch { -0.25F };    // slight downward tilt
         float speed { 3.0F };      // units / second
         float mouse_sensitivity { 0.005F };
