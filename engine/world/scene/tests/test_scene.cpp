@@ -435,3 +435,73 @@ TEST(SceneBinarySerializer, BadMagicRejected)
     EXPECT_EQ(r.error().code,
               static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kMagicMismatch));
 }
+
+// ---------------------------------------------------------------------------
+// Phase 19.E — ParticleSystem tests (Wave 180)
+// ---------------------------------------------------------------------------
+#include <cd/scene/ParticleSystem.hpp>
+
+TEST(ParticleSystem, SpawnIncrementsLiveCount)
+{
+    cd::scene::ParticleSystem ps { 4 };
+    EXPECT_EQ(ps.live_count(), 0u);
+    EXPECT_TRUE(ps.spawn(cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 1, 0 }, 1.0F));
+    EXPECT_TRUE(ps.spawn(cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 1, 0 }, 1.0F));
+    EXPECT_EQ(ps.live_count(), 2u);
+}
+
+TEST(ParticleSystem, PoolExhaustedReturnsFalse)
+{
+    cd::scene::ParticleSystem ps { 2 };
+    EXPECT_TRUE(ps.spawn(cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 0, 0 }, 1.0F));
+    EXPECT_TRUE(ps.spawn(cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 0, 0 }, 1.0F));
+    EXPECT_FALSE(ps.spawn(cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 0, 0 }, 1.0F));
+}
+
+TEST(ParticleSystem, TickAdvancesPositionAndKillsExpired)
+{
+    cd::scene::ParticleSystem ps { 4 };
+    ps.spawn(cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 0, 0 }, 1.0F);
+    ps.tick(0.5F);
+    EXPECT_EQ(ps.live_count(), 1u);
+    // The pool allocates from the back of the free list, so the
+    // first spawn lands at an arbitrary slot. Walk the pool and
+    // assert the one alive particle has the expected position.
+    bool found = false;
+    for (const auto& p : ps.particles())
+    {
+        if (p.alive)
+        {
+            EXPECT_NEAR(p.position.x, 0.5F, 1e-5F);
+            found = true;
+        }
+    }
+    EXPECT_TRUE(found);
+    ps.tick(0.6F);
+    EXPECT_EQ(ps.live_count(), 0u);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 19.G — LodSelector tests
+// ---------------------------------------------------------------------------
+#include <cd/scene/LodSelector.hpp>
+
+TEST(LodSelector, ThreeLodsTwoThresholds)
+{
+    cd::scene::LodSelector s { { 5.0F, 20.0F } };
+    EXPECT_EQ(s.lod_count(), 3u);
+    EXPECT_EQ(s.select(0.0F),  0u);
+    EXPECT_EQ(s.select(4.99F), 0u);
+    EXPECT_EQ(s.select(5.0F),  1u);
+    EXPECT_EQ(s.select(19.0F), 1u);
+    EXPECT_EQ(s.select(50.0F), 2u);
+}
+
+TEST(LodSelector, ForceOverridesDistance)
+{
+    cd::scene::LodSelector s { { 5.0F } };
+    s.force(0);
+    EXPECT_EQ(s.select(100.0F), 0u);
+    s.unforce();
+    EXPECT_EQ(s.select(100.0F), 1u);
+}

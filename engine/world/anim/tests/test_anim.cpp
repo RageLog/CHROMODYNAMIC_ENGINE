@@ -225,3 +225,45 @@ TEST(Skeleton, ComputeSkinningMatricesAtBindGivesIdentity)
                 EXPECT_NEAR(m[c][r], id[c][r], 1e-5F);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Phase 19.F — BlendTree2 tests (Wave 180)
+// ---------------------------------------------------------------------------
+#include <cd/anim/BlendTree2.hpp>
+
+#include <array>
+
+TEST(BlendTree2, ZeroWeightReturnsPoseA)
+{
+    std::array<cd::math::Transformf, 1> a {}, b {}, out {};
+    a[0].position = cd::math::Vec3f { 1, 0, 0 };
+    b[0].position = cd::math::Vec3f { 5, 0, 0 };
+    ASSERT_TRUE(cd::anim::blend2(a, b, 0.0F, out));
+    EXPECT_NEAR(out[0].position.x, 1.0F, 1e-5F);
+}
+
+TEST(BlendTree2, FullWeightReturnsPoseB)
+{
+    std::array<cd::math::Transformf, 1> a {}, b {}, out {};
+    a[0].position = cd::math::Vec3f { 1, 0, 0 };
+    b[0].position = cd::math::Vec3f { 5, 0, 0 };
+    ASSERT_TRUE(cd::anim::blend2(a, b, 1.0F, out));
+    EXPECT_NEAR(out[0].position.x, 5.0F, 1e-5F);
+}
+
+TEST(BlendTree2, HalfWeightInterpolatesPosition)
+{
+    std::array<cd::math::Transformf, 1> a {}, b {}, out {};
+    a[0].position = cd::math::Vec3f { 0, 0, 0 };
+    b[0].position = cd::math::Vec3f { 10, 0, 0 };
+    ASSERT_TRUE(cd::anim::blend2(a, b, 0.5F, out));
+    EXPECT_NEAR(out[0].position.x, 5.0F, 1e-5F);
+}
+
+TEST(BlendTree2, MismatchedPoseSizesFails)
+{
+    std::array<cd::math::Transformf, 1> a {};
+    std::array<cd::math::Transformf, 2> b {};
+    std::array<cd::math::Transformf, 1> out {};
+    EXPECT_FALSE(cd::anim::blend2(a, b, 0.5F, out));
+}
