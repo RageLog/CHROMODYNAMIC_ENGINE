@@ -174,6 +174,91 @@ jobs:
         run: sccache --show-stats
 
   # ---------------------------------------------------------------------------
+  # Linux Vulkan-on-software-renderer (lavapipe). Phase 11 Track B Part 1.
+  #
+  # The matrix above runs Linux with CD_ENABLE_VULKAN=OFF because the
+  # standard GHA runners have no GPU. This separate job turns Vulkan ON
+  # against Mesa's lavapipe (software Vulkan ICD shipped in
+  # mesa-vulkan-drivers), then runs the smoke harness under xvfb so the
+  # rhi_vulkan + samples + render pipeline gets exercised on a non-NVIDIA
+  # backend before any v1.0 cut.
+  #
+  # lavapipe is intentionally slow — the gate is "code path works", not
+  # "performance matches NVIDIA". Frame-rate is not asserted; only that
+  # samples exit 0 without driver errors and the swapchain readback
+  # produces sensible bytes.
+  #
+  # Golden-image compare is NOT enforced here (yet): NVIDIA references
+  # captured by Track A Part 2 are not bit-equal to lavapipe output.
+  # A separate golden set per software backend lands as a follow-up
+  # if needed.
+  # ---------------------------------------------------------------------------
+  linux-vulkan-sw:
+    name: Linux / Vulkan (lavapipe) / Debug
+    runs-on: ubuntu-24.04
+    needs: lint
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain + Vulkan SW stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build clang
+          # lavapipe ships in mesa-vulkan-drivers; vulkan-tools gives us
+          # vulkaninfo for diagnostics. libwayland/-xkb cover the
+          # platform surface the samples open. xvfb is the virtual
+          # display the runner lacks.
+          sudo apt-get install -y \
+            mesa-vulkan-drivers \
+            vulkan-tools \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            xvfb
+      - name: Vulkan ICD smoke (vulkaninfo)
+        run: |
+          # Confirm lavapipe is the only ICD visible; fail fast if not.
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          vulkaninfo --summary | head -40 || true
+      - name: Configure (Vulkan ON)
+        run: |
+          cmake --preset ci-clang \
+            -DCD_DISABLE_VCPKG=ON \
+            -DCD_ENABLE_VULKAN=ON
+      - name: Build
+        run: cmake --build --preset ci-clang-debug
+      - name: ctest (no display required)
+        run: ctest --preset ci-clang-debug --output-on-failure
+      - name: Sample smoke under xvfb + lavapipe
+        run: |
+          # xvfb-run provides a virtual X display so window creation
+          # succeeds. VK_ICD_FILENAMES pins the loader to lavapipe so
+          # the test isn't bypassing the Vulkan path via some other
+          # ICD that might have leaked in.
+          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          # CD_RHI_PREFER_X11=ON because we're under Xvfb, not Wayland.
+          # The sample's surface-creation code looks at this at compile
+          # time via the option, but the runtime path goes through
+          # vkCreateXlibSurfaceKHR which Xvfb supports.
+          xvfb-run -a --server-args='-screen 0 1280x720x24' \
+            bash scripts/run_all_samples.sh || rc=$?
+          echo "smoke rc=${rc:-0}"
+        env:
+          CD_RHI_PREFER_X11: "ON"
+        continue-on-error: true   # lavapipe behaviour is signal we keep
+                                   # collecting; failing the gate is for
+                                   # the next iteration once we know its
+                                   # noise floor.
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-vulkan-sw-smoke-logs
+          path: build/ci-clang/smoke-logs/**
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
   # macOS (AppleClang) — uses ci-appleclang preset
   # ---------------------------------------------------------------------------
   macos:

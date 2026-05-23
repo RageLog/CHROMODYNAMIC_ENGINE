@@ -60,13 +60,43 @@ function(cd_setup_golden)
         endif()
         message(STATUS "[cd-golden] golden targets installed: smoke-golden-capture / smoke-golden-compare")
     else()
-        # POSIX: the .sh wrapper is a follow-up. Track A Part 1 ships the
-        # Windows driver where the human reviewer captures references;
-        # Track B Part 1 will add Linux SwiftShader and the .sh wrapper
-        # together so the same script works in both runners.
+        # POSIX: the same dispatch via scripts/run_golden.sh. Linux CI
+        # runs this under xvfb-run + lavapipe so the Vulkan path is
+        # exercised on a software renderer (Track B Part 1).
         if(NOT EXISTS "${_script_sh}")
-            message(STATUS "[cd-golden] scripts/run_golden.sh missing; targets disabled on POSIX (queued in Track B).")
+            message(STATUS "[cd-golden] scripts/run_golden.sh missing; targets disabled on POSIX.")
             return()
         endif()
+        find_program(_bash NAMES bash DOC "Bash for golden harness")
+        if(NOT _bash)
+            message(STATUS "[cd-golden] bash not found; golden targets disabled on POSIX.")
+            return()
+        endif()
+        add_custom_target(smoke-golden-capture
+            COMMAND ${_bash} "${_script_sh}"
+                --mode capture
+                --build-dir "${CMAKE_BINARY_DIR}"
+                --config "$<CONFIG>"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "[cd-golden] Re-capturing golden references (overwrites tests/golden/*.png)"
+            VERBATIM
+            USES_TERMINAL
+        )
+        add_custom_target(smoke-golden-compare
+            COMMAND ${_bash} "${_script_sh}"
+                --mode compare
+                --build-dir "${CMAKE_BINARY_DIR}"
+                --config "$<CONFIG>"
+                --diff-dir "${CMAKE_BINARY_DIR}/golden-diff"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "[cd-golden] Comparing rendered output against tests/golden/*.png"
+            VERBATIM
+            USES_TERMINAL
+        )
+        if(_cd_samples)
+            add_dependencies(smoke-golden-capture ${_cd_samples})
+            add_dependencies(smoke-golden-compare ${_cd_samples})
+        endif()
+        message(STATUS "[cd-golden] golden targets installed (POSIX): smoke-golden-capture / smoke-golden-compare")
     endif()
 endfunction()
