@@ -246,8 +246,27 @@ struct DeviceLimits
 
 struct DeviceFeatures
 {
+    /// Coarse-grained "the device exposes a ray-tracing path". Set when
+    /// the backend sees `VK_KHR_acceleration_structure` +
+    /// `VK_KHR_ray_tracing_pipeline` on Vulkan, or DXR Tier 1.0 on D3D12.
+    /// Phase 12.D v0.29.0 lights this bit up so callers can branch on
+    /// "do I have RT?" before writing RT-dependent code paths. The
+    /// actual dispatch_rays / build_acceleration_structure RHI surface
+    /// lands in Phase 13.
     bool ray_tracing { false };
+
+    /// Mesh + task shader stage. Set when the backend sees
+    /// `VK_EXT_mesh_shader` (preferred) or `VK_NV_mesh_shader`, or
+    /// `D3D12_MESH_SHADER_TIER_1`. Same Phase 12.D detection-only
+    /// approach as ray_tracing above.
     bool mesh_shader { false };
+
+    /// Pipeline allows ray-query intrinsics in conventional fragment /
+    /// compute shaders. `VK_KHR_ray_query` on Vulkan; closely related
+    /// to but not the same as ray_tracing. Some hardware exposes ray
+    /// query without full ray-tracing-pipeline support.
+    bool ray_query { false };
+
     bool variable_rate_shading { false };
     bool bindless_resources { false };
     bool timestamp_queries { false };

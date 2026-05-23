@@ -73,4 +73,6 @@ if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_skybox)
   add_subdirectory(hello_render_thread)
   add_subdirectory(hello_gpu_cluster)
+  # Phase 12.D capability-detection sample.
+  add_subdirectory(hello_rhi_features)
 endif()

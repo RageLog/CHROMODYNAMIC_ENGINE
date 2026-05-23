@@ -10,6 +10,28 @@ For the design rationale behind each release, see the matching
 
 ---
 
+## v0.29.0 — 2026-05-23 — Phase 12.D ray-tracing + mesh-shader detection
+
+Detection-only milestone for advanced GPU features. The RHI now surfaces
+RT / ray-query / mesh-shader capability bits via `cd::rhi::DeviceFeatures`;
+the Vulkan backend probes the device extension list and lights the bits
+up. The actual dispatch_rays / build_acceleration_structure /
+draw_mesh_tasks RHI surface lands in Phase 13 — same "boot-only without
+human pixel-checker" scope rationale as the v0.27.0 D3D12 milestone.
+
+### Features
+
+- **[rhi]** `DeviceFeatures` gains `ray_tracing`, `ray_query`, and
+  `mesh_shader` capability bits (documented inline).
+- **[rhi_vulkan]** Device init enumerates device extensions and sets
+  the new bits: `ray_tracing = (VK_KHR_acceleration_structure &&
+  VK_KHR_ray_tracing_pipeline)`, `ray_query = VK_KHR_ray_query`,
+  `mesh_shader = VK_EXT_mesh_shader || VK_NV_mesh_shader`.
+- **[samples]** `hello_rhi_features` — prints the capability matrix
+  for the chosen adapter. Verified live on NVIDIA RTX 3080 Laptop
+  (all three RT/RQ/mesh = yes) and Intel Iris Xe (all three = no,
+  as expected for the integrated GPU).
+
 ## v0.28.0 — 2026-05-23 — Phase 12.C editor undo/redo + transform commands
 
 The cd::editor library was a working integration shell (World + Scene

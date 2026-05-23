@@ -2769,6 +2769,36 @@ private:
         features_.dual_source_blend = (f.dualSrcBlend != 0);
         features_.geometry_shader = (f.geometryShader != 0);
         features_.tessellation_shader = (f.tessellationShader != 0);
+
+        // Phase 12.D / v0.29.0 — RT + mesh shader detection. We probe
+        // the device extension list (the cheapest possible signal) and
+        // set the coarse-grained capability bits in DeviceFeatures.
+        // Wiring the actual ray-tracing-pipeline / mesh-shader pipeline
+        // RHI surface lands in Phase 13; today, callers can branch on
+        // these bits before writing a code path that would otherwise
+        // fail later.
+        std::uint32_t ext_count = 0;
+        vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count, nullptr);
+        std::vector<VkExtensionProperties> exts(ext_count);
+        vkEnumerateDeviceExtensionProperties(physical_, nullptr, &ext_count, exts.data());
+        const auto has_ext = [&](const char* name) -> bool {
+            for (const auto& e : exts)
+                if (std::strcmp(e.extensionName, name) == 0)
+                    return true;
+            return false;
+        };
+        // Both accel-struct and rt-pipeline must be present for full RT.
+        // Ray query is a separate capability that some drivers expose
+        // independently of the rt-pipeline path.
+        const bool has_accel  = has_ext("VK_KHR_acceleration_structure");
+        const bool has_rt_pl  = has_ext("VK_KHR_ray_tracing_pipeline");
+        const bool has_rq     = has_ext("VK_KHR_ray_query");
+        features_.ray_tracing = has_accel && has_rt_pl;
+        features_.ray_query   = has_rq;
+        // Prefer the cross-vendor EXT extension over the older NV one;
+        // either lights the bit.
+        features_.mesh_shader = has_ext("VK_EXT_mesh_shader") ||
+                                has_ext("VK_NV_mesh_shader");
     }
 
     std::unique_ptr<VulkanInstance> inst_;
