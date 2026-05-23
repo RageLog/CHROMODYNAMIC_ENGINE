@@ -574,3 +574,35 @@ TEST(Frustum, AabbStraddlingFaceIsAccepted)
     cd::physics::Aabb cross { { 0.5F, 0.5F, 0.5F }, { 1.5F, 1.5F, 1.5F } };
     EXPECT_TRUE(cd::scene::intersects(f, cross));
 }
+
+#include <cd/scene/VisibilityMask.hpp>
+
+TEST(VisibilityMask, DefaultMaskIsAllOnes)
+{
+    cd::scene::VisibilityMask m;
+    EXPECT_EQ(m.bits, cd::scene::kVisAll);
+}
+
+TEST(VisibilityMask, AllSeesEverything)
+{
+    cd::scene::VisibilityMask entity;       // kVisAll
+    cd::scene::VisibilityMask camera;
+    camera.bits = cd::scene::kVisShadowPass;
+    EXPECT_TRUE(cd::scene::is_visible(entity, camera));
+}
+
+TEST(VisibilityMask, EditorGizmoHiddenFromMainCamera)
+{
+    cd::scene::VisibilityMask gizmo { cd::scene::kVisEditorGizmo };
+    cd::scene::VisibilityMask main_cam { cd::scene::kVisMainCamera };
+    EXPECT_FALSE(cd::scene::is_visible(gizmo, main_cam));
+}
+
+TEST(VisibilityMask, WithBitTurnsOnAndWithoutTurnsOff)
+{
+    cd::scene::VisibilityMask m { cd::scene::kVisMainCamera };
+    auto added = cd::scene::with_bit(m, cd::scene::kVisShadowPass);
+    EXPECT_NE(added.bits & cd::scene::kVisShadowPass, 0u);
+    auto removed = cd::scene::without_bit(added, cd::scene::kVisShadowPass);
+    EXPECT_EQ(removed.bits & cd::scene::kVisShadowPass, 0u);
+}

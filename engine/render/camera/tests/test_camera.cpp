@@ -121,3 +121,47 @@ TEST(Frustum, FullyInsideAabbReportsKInside)
     auto r = cd::camera::test_aabb(f, { -0.01F, -0.01F, -0.01F }, { 0.01F, 0.01F, 0.01F });
     EXPECT_EQ(r, cd::camera::CullResult::kInside);
 }
+
+#include <cd/camera/CameraPath.hpp>
+
+TEST(CameraPath, EmptySampleReturnsOrigin)
+{
+    cd::camera::CameraPath p;
+    auto k = p.sample(0.5F);
+    EXPECT_FLOAT_EQ(k.eye.x, 0.0F);
+    EXPECT_FLOAT_EQ(k.eye.y, 0.0F);
+    EXPECT_FLOAT_EQ(k.eye.z, 0.0F);
+}
+
+TEST(CameraPath, SingleKeyEverywhere)
+{
+    cd::camera::CameraPath p;
+    cd::camera::CameraKey k0 { 0.0F, { 1, 2, 3 }, { 4, 5, 6 } };
+    p.add_key(k0);
+    auto a = p.sample(-1.0F);  // before
+    auto b = p.sample(0.0F);   // exact
+    auto c = p.sample(10.0F);  // after
+    EXPECT_FLOAT_EQ(a.eye.x, 1.0F);
+    EXPECT_FLOAT_EQ(b.eye.x, 1.0F);
+    EXPECT_FLOAT_EQ(c.eye.x, 1.0F);
+}
+
+TEST(CameraPath, SampleAtKeyTimeReturnsKey)
+{
+    cd::camera::CameraPath p;
+    p.add_key(cd::camera::CameraKey { 0.0F, { 0, 0, 0 }, { 1, 0, 0 } });
+    p.add_key(cd::camera::CameraKey { 1.0F, { 5, 0, 0 }, { 6, 0, 0 } });
+    auto k = p.sample(1.0F);
+    EXPECT_FLOAT_EQ(k.eye.x, 5.0F);
+    EXPECT_FLOAT_EQ(k.target.x, 6.0F);
+}
+
+TEST(CameraPath, ApplyWritesIntoCamera)
+{
+    cd::camera::CameraPath p;
+    p.add_key(cd::camera::CameraKey { 0.0F, { 7, 0, 0 }, { 8, 0, 0 } });
+    cd::camera::Camera cam;
+    cd::camera::CameraPath::apply(cam, p.sample(0.0F));
+    EXPECT_FLOAT_EQ(cam.eye.x, 7.0F);
+    EXPECT_FLOAT_EQ(cam.target.x, 8.0F);
+}
