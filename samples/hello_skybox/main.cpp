@@ -177,6 +177,15 @@ int main(int argc, char** argv)
     md.fragment_glsl = kFS;
     md.color_attachment_formats = kColorFormats;
     md.push_constants = kPush;
+    // The fullscreen triangle vertices (-1,-1)/(3,-1)/(-1,3) are CCW in
+    // GL/D3D NDC but CW in Vulkan NDC (Y is down). Pipeline default
+    // front_face=CCW + cull=kBack would then discard the entire triangle
+    // before rasterization — leaving the swapchain at clear color (BUG #1
+    // from the v1.0 smoke: 5578 frames of uniform black). Same root cause
+    // as hello_anim (BUG #5) and hello_pbr (BUG #2) — the engine's default
+    // cull mode is the wrong choice for any sample doing Vulkan-NDC-aware
+    // rendering.
+    md.raster.cull = cd::rhi::CullMode::kNone;
     md.depth_stencil.depth_test = false;
     md.depth_stencil.depth_write = false;
     md.name = "hello_skybox";
