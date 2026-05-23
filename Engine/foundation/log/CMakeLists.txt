@@ -3,7 +3,7 @@
 
 cd_add_library(log
   TYPE INTERFACE
-  PUBLIC_DEPS cd::core
+  PUBLIC_DEPS cd::core cd::diag
 )
 
 if(CD_ENABLE_TESTING)
