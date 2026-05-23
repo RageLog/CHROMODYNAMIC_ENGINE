@@ -207,6 +207,24 @@ int main(int argc, char** argv)
 
         ctx.new_frame();
 
+        // ---- Default layout (Phase 14.A.1 polish) --------------------------
+        // ImGui auto-layout scatters new windows in the top-left and
+        // overlaps them. Pin the four panels to deterministic positions
+        // on first use so the editor opens with a sensible layout. The
+        // ImGuiCond_FirstUseEver guard means user-resized / moved
+        // windows survive across frames.
+        const float vw = static_cast<float>(frame.extent.width);
+        const float vh = static_cast<float>(frame.extent.height);
+        const float gutter = 8.0F;
+        const float toolbar_h = 130.0F;
+        const float scene_w = 240.0F;
+        const float inspector_w = 380.0F;
+        const float history_h = 200.0F;
+        // Toolbar — top, full width.
+        ImGui::SetNextWindowPos(ImVec2 { gutter, gutter }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(
+            ImVec2 { vw - 2 * gutter, toolbar_h }, ImGuiCond_FirstUseEver);
+
         // ---- Toolbar (undo / redo / counts) --------------------------------
         ImGui::Begin("Toolbar");
         {
@@ -235,16 +253,17 @@ int main(int argc, char** argv)
             ImGui::Text("depth: undo=%zu redo=%zu  (bytes=%zu)",
                         history.undo_depth(), history.redo_depth(),
                         history.bytes_in_use());
+            // "next undo" on its own line so the toolbar doesn't
+            // horizontally overflow on narrower windows.
             if (can_undo)
             {
-                ImGui::SameLine();
                 std::string lbl { history.next_undo_label() };
                 ImGui::TextDisabled("next undo: %s", lbl.c_str());
             }
 
             // ---- Save / Load (Phase 14.A) ------------------------------
             ImGui::Separator();
-            ImGui::SetNextItemWidth(360);
+            ImGui::SetNextItemWidth(420);
             ImGui::InputText("scene path", path_buf.data(), path_buf.size());
             ImGui::SameLine();
             if (ImGui::Button("Save"))
@@ -321,6 +340,12 @@ int main(int argc, char** argv)
         ImGui::End();
 
         // ---- Scene tree ---------------------------------------------------
+        // Left column under the toolbar.
+        ImGui::SetNextWindowPos(
+            ImVec2 { gutter, gutter + toolbar_h + gutter }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(
+            ImVec2 { scene_w, vh - toolbar_h - history_h - 4 * gutter },
+            ImGuiCond_FirstUseEver);
         ImGui::Begin("Scene");
         for (std::size_t i = 0; i < entities.size(); ++i)
         {
@@ -331,6 +356,13 @@ int main(int argc, char** argv)
         ImGui::End();
 
         // ---- Inspector ----------------------------------------------------
+        // Right column under the toolbar.
+        ImGui::SetNextWindowPos(
+            ImVec2 { vw - inspector_w - gutter, gutter + toolbar_h + gutter },
+            ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(
+            ImVec2 { inspector_w, vh - toolbar_h - history_h - 4 * gutter },
+            ImGuiCond_FirstUseEver);
         ImGui::Begin("Inspector");
         if (selected >= 0 && selected < static_cast<int>(entities.size()))
         {
@@ -401,6 +433,11 @@ int main(int argc, char** argv)
         ImGui::End();
 
         // ---- History log --------------------------------------------------
+        // Bottom strip, full width.
+        ImGui::SetNextWindowPos(
+            ImVec2 { gutter, vh - history_h - gutter }, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(
+            ImVec2 { vw - 2 * gutter, history_h }, ImGuiCond_FirstUseEver);
         ImGui::Begin("History log");
         for (auto it = log.rbegin(); it != log.rend(); ++it)
             ImGui::TextUnformatted(it->c_str());
