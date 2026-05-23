@@ -7,7 +7,7 @@ cd_add_library(audio
     src/CoreAudioBackend.cpp
     src/AlsaBackend.cpp
     src/NativeBackend.cpp
-  PUBLIC_DEPS cd::core
+  PUBLIC_DEPS cd::core cd::math
 )
 
 # WASAPI backend: Windows-only. The TU has a build gate (#if defined(_WIN32))

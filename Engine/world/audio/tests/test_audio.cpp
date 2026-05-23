@@ -5,6 +5,7 @@
 #include <cd/audio/CoreAudioBackend.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/NativeBackend.hpp>
+#include <cd/audio/Positional.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -147,6 +148,84 @@ TEST(NativeBackend, KindMatchesHostPlatform)
 #else
     EXPECT_EQ(result.kind, cd::audio::NativeBackendKind::kNullFallback);
 #endif
+}
+
+// -----------------------------------------------------------------------------
+// Positional audio math — Wave 77
+// -----------------------------------------------------------------------------
+
+TEST(Positional, SourceInFrontProducesZeroItdAndZeroIld)
+{
+    cd::audio::ListenerPose listener {};  // at origin, looking -Z, up +Y
+    const cd::math::Vec3f src { 0.0F, 0.0F, -5.0F };  // directly in front
+    EXPECT_NEAR(cd::audio::compute_itd_seconds(listener, src), 0.0F, 1.0e-5F);
+    EXPECT_NEAR(cd::audio::compute_ild_db(listener, src), 0.0F, 1.0e-3F);
+}
+
+TEST(Positional, SourceOnRightDelaysLeftEar)
+{
+    // Listener at origin, source 5 m to its right. Right ear hears
+    // first → ITD should be NEGATIVE (right ear delayed = positive
+    // by our convention; right ear EARLIER = negative).
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 5.0F, 0.0F, 0.0F };
+    const float itd = cd::audio::compute_itd_seconds(listener, src);
+    EXPECT_LT(itd, 0.0F);   // right ear arrives first → ITD negative
+    EXPECT_GT(itd, -0.001F);  // within ±1 ms (Woodworth max ~640 µs)
+}
+
+TEST(Positional, SourceOnRightIldFavoursRight)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 5.0F, 0.0F, 0.0F };  // right
+    EXPECT_GT(cd::audio::compute_ild_db(listener, src), 0.0F);
+}
+
+TEST(Positional, SourceOnLeftIldFavoursLeft)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { -5.0F, 0.0F, 0.0F };  // left
+    EXPECT_LT(cd::audio::compute_ild_db(listener, src), 0.0F);
+}
+
+TEST(Positional, StereoGainsSumToConstantPower)
+{
+    cd::audio::ListenerPose listener {};
+    // Source directly ahead at the reference distance → constant-power
+    // pan gives equal gains of ~sqrt(0.5).
+    const cd::math::Vec3f src { 0.0F, 0.0F, -1.0F };
+    auto g = cd::audio::compute_stereo_gains(listener, src, 1.0F, 1.0F);
+    EXPECT_NEAR(g.left, 0.707F, 0.05F);
+    EXPECT_NEAR(g.right, 0.707F, 0.05F);
+}
+
+TEST(Positional, StereoGainsAttenuateWithDistance)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f near_src { 0.0F, 0.0F, -1.0F };
+    const cd::math::Vec3f far_src { 0.0F, 0.0F, -10.0F };
+    auto g_near = cd::audio::compute_stereo_gains(listener, near_src);
+    auto g_far = cd::audio::compute_stereo_gains(listener, far_src);
+    EXPECT_GT(g_near.left, g_far.left);
+    EXPECT_GT(g_near.right, g_far.right);
+}
+
+TEST(Positional, StereoGainsHardRightZerosLeft)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 100.0F, 0.0F, 0.0F };  // ~90° right
+    auto g = cd::audio::compute_stereo_gains(listener, src);
+    EXPECT_NEAR(g.left, 0.0F, 0.05F);
+    EXPECT_LT(g.right, 1.0F);  // also attenuated by distance
+}
+
+TEST(Positional, ListenerAtSourcePositionReturnsUnity)
+{
+    cd::audio::ListenerPose listener {};
+    const cd::math::Vec3f src { 0.0F, 0.0F, 0.0F };  // coincident
+    auto g = cd::audio::compute_stereo_gains(listener, src);
+    EXPECT_NEAR(g.left, 1.0F, 1.0e-5F);
+    EXPECT_NEAR(g.right, 1.0F, 1.0e-5F);
 }
 
 }  // namespace
