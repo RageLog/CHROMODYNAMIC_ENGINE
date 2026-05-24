@@ -73,7 +73,7 @@ endif()
 
 # --- Project ---
 project(CHROMODYNAMIC
-  VERSION 0.99.73
+  VERSION 0.99.74
   DESCRIPTION "CHROMODYNAMIC — cross-platform, cross-API hybrid 2D+3D engine + framework"
   HOMEPAGE_URL "https://github.com/CRFLT/CHROMODYNAMIC"
   LANGUAGES CXX C
