@@ -1,14 +1,15 @@
-# Marathon summary — Phase 13 → Phase 100 (v0.30.0 → v0.99.32) — centennial
+# Marathon summary — Phase 13 → Phase 101 (v0.30.0 → v0.99.33) — centennial + demo reel
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 32 patch releases = 103 tags total** shipped from the
+**71 minor + 33 patch releases = 104 tags total** shipped from the
 marathon's start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.32). v1.0.0 sign-off authority is reserved to the user.
+through v0.99.33). v1.0.0 sign-off authority is reserved to the user.
 
 **🎉 100-tag milestone achieved at v0.99.29 (Phase 97).**
 **🎯 Phase 100 centennial reached at v0.99.32.**
+**🎬 Demo reel published at v0.99.33 (Phase 101) — see [DEMO_REEL.md](DEMO_REEL.md).**
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -119,6 +120,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.30 | 98   | rhi::RasterStatePresets + asset::AssetRefCount |
 | v0.99.31 | 99   | input::Cursor + core::Singleton (CRTP) |
 | **v0.99.32** | **100** | **scene::TagBucket + core::CounterTable — CENTENNIAL** |
+| v0.99.33 | 101 | **Demo reel** — hello_audio_chain (DSP graph) + hello_net_sim (replication sim) + hello_command_palette (fuzzy filter) + DEMO_REEL.md walkthrough |
 
 ## Major capabilities added across the marathon
 

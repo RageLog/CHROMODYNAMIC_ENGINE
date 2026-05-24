@@ -60,7 +60,11 @@ public:
 
     [[nodiscard]] float gain_db() const noexcept
     {
-        return 20.0F * std::log10(std::max(gain_, 1e-6F));
+        // Clamp before log10 so a stalled signal can't drive the dB
+        // readout to -inf. `std::max` would need <algorithm> just for
+        // one scalar compare — inline the branch instead.
+        const float g = (gain_ > 1e-6F) ? gain_ : 1e-6F;
+        return 20.0F * std::log10(g);
     }
 
     void reset() noexcept { env_ = 0.0F; gain_ = 1.0F; }
