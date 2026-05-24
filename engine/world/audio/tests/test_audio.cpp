@@ -921,3 +921,33 @@ TEST(LowPass, AlphaInZeroToOneRange)
     EXPECT_GT(lp.alpha(), 0.0F);
     EXPECT_LT(lp.alpha(), 1.0F);
 }
+
+#include <cd/audio/Compressor.hpp>
+
+TEST(Compressor, QuietSignalPassesThrough)
+{
+    cd::audio::Compressor c;
+    c.prepare(48000.0F, 0.5F, 4.0F);
+    for (int i = 0; i < 200; ++i) (void)c.process(0.1F);
+    const float y = c.process(0.1F);
+    EXPECT_NEAR(y, 0.1F, 1e-2F);
+}
+
+TEST(Compressor, LoudSignalAttenuated)
+{
+    cd::audio::Compressor c;
+    c.prepare(48000.0F, 0.3F, 8.0F);
+    float y = 0.0F;
+    for (int i = 0; i < 2000; ++i) y = c.process(1.0F);
+    EXPECT_LT(std::fabs(y), 1.0F);
+}
+
+TEST(Compressor, ResetReturnsToUnityGain)
+{
+    cd::audio::Compressor c;
+    c.prepare(48000.0F);
+    for (int i = 0; i < 200; ++i) (void)c.process(2.0F);
+    c.reset();
+    const float y = c.process(0.0F);
+    EXPECT_FLOAT_EQ(y, 0.0F);
+}

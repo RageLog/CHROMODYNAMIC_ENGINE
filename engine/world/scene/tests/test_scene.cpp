@@ -805,3 +805,39 @@ TEST(LayerRegistry, ClearEmpties)
     EXPECT_EQ(r.size(), 0u);
     EXPECT_EQ(r.find("a"), cd::scene::kInvalidLayer);
 }
+
+#include <cd/scene/LightProbe.hpp>
+
+TEST(LightProbe, ZeroCoefficientsYieldZeroIrradiance)
+{
+    cd::scene::LightProbe p;
+    auto r = cd::scene::evaluate(p, cd::math::Vec3f { 0, 1, 0 });
+    EXPECT_FLOAT_EQ(r.x, 0.0F);
+    EXPECT_FLOAT_EQ(r.y, 0.0F);
+    EXPECT_FLOAT_EQ(r.z, 0.0F);
+}
+
+TEST(LightProbe, ConstantCoefficientReturnsConstant)
+{
+    // Only the constant (Y_0_0) term set → output = c * 0.282095 for
+    // every direction.
+    cd::scene::LightProbe p;
+    p.coefficients[0] = { 1.0F, 2.0F, 3.0F };
+    auto r1 = cd::scene::evaluate(p, cd::math::Vec3f { 1, 0, 0 });
+    auto r2 = cd::scene::evaluate(p, cd::math::Vec3f { 0, 0, -1 });
+    EXPECT_FLOAT_EQ(r1.x, r2.x);
+    EXPECT_FLOAT_EQ(r1.y, r2.y);
+    EXPECT_NEAR(r1.z, 3.0F * 0.282095F, 1e-5F);
+}
+
+TEST(LightProbe, FirstOrderDirectional)
+{
+    // Set Y_1_1 (x-direction) RGB green only → +x irradiates green,
+    // -x irradiates negative green.
+    cd::scene::LightProbe p;
+    p.coefficients[3] = { 0.0F, 1.0F, 0.0F };
+    auto rx = cd::scene::evaluate(p, cd::math::Vec3f { 1, 0, 0 });
+    auto rn = cd::scene::evaluate(p, cd::math::Vec3f { -1, 0, 0 });
+    EXPECT_GT(rx.y, 0.0F);
+    EXPECT_LT(rn.y, 0.0F);
+}
