@@ -156,6 +156,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.60 | 134 | **RT pipeline handle + IDevice virtuals** — `RtPipelineHandle` + `create_rt_pipeline` + `destroy_rt_pipeline` + SBT-authoring helpers (handle size / alignment / base alignment / `get_rt_shader_group_handles`); defaults kNotImplemented so existing backends compile unchanged |
 | v0.99.61 | 135 | **Vulkan RT pipeline + dispatch_rays impl** — `vkCreateRayTracingPipelinesKHR` (groups derived from `RtShaderEntry::group` index, hit/general type chosen automatically), SBT handle bytes via `vkGetRayTracingShaderGroupHandlesKHR`, `bind_rt_pipeline` + `vkCmdTraceRaysKHR` overrides; `RtShaderEntry` ABI now takes pre-compiled `ShaderModuleHandle` |
 | v0.99.62 | 136 | **hello_rt sample** — full RT chain runtime smoke: cd::shader compiles 3 RT shaders (raygen+miss+chit), `create_rt_pipeline` + `get_rt_shader_group_handles` exercised; cd::shader gains 6 RT stage enum values. Dispatch deferred until DescriptorType::kAccelerationStructure lands |
+| v0.99.63 | 137 | **OpenGL DSA buffer path** — inline WGL loader for glCreateBuffers / glNamedBufferStorage / glNamedBufferSubData / glDeleteBuffers; create_buffer + destroy_buffer real impls mirroring Vulkan VMA semantics. Texture + swapchain remain stubbed (each needs its own loader slice) |
 
 ## Major capabilities added across the marathon
 
