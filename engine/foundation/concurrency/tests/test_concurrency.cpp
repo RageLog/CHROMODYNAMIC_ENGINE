@@ -571,3 +571,36 @@ TEST(JobToken, WaitUnblocksOnCancel)
     EXPECT_TRUE(t.is_cancelled());
     worker.join();
 }
+
+#include <cd/concurrency/Future.hpp>
+
+TEST(Future, SetMakesReady)
+{
+    cd::concurrency::Promise<int> p;
+    auto f = p.future();
+    EXPECT_FALSE(f.is_ready());
+    p.set(42);
+    EXPECT_TRUE(f.is_ready());
+    EXPECT_EQ(f.get(), 42);
+}
+
+TEST(Future, TryGetBeforeSetIsEmpty)
+{
+    cd::concurrency::Promise<int> p;
+    auto f = p.future();
+    auto v = f.try_get();
+    EXPECT_FALSE(v.has_value());
+}
+
+TEST(Future, WaitUnblocksOnSet)
+{
+    cd::concurrency::Promise<int> p;
+    auto f = p.future();
+    std::thread setter([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        p.set(7);
+    });
+    f.wait();
+    EXPECT_EQ(f.get(), 7);
+    setter.join();
+}

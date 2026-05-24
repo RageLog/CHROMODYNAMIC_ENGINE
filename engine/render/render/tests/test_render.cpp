@@ -421,3 +421,28 @@ TEST(MeshStats, BboxExtentAndCenter)
     EXPECT_FLOAT_EQ(c.x, 0.0F);
     EXPECT_FLOAT_EQ(c.y, 0.0F);
 }
+
+#include <cd/render/TextLayoutMetrics.hpp>
+
+TEST(TextLayoutMetrics, EmptyTextZero)
+{
+    auto m = cd::render::measure_simple("", 14.0F, 7.0F);
+    EXPECT_FLOAT_EQ(m.width, 0.0F);
+    EXPECT_FLOAT_EQ(m.height, 0.0F);
+}
+
+TEST(TextLayoutMetrics, SingleLineMonospace)
+{
+    auto m = cd::render::measure_simple("hello", 14.0F, 7.0F);
+    EXPECT_FLOAT_EQ(m.width, 5.0F * 7.0F);
+    EXPECT_EQ(m.line_count, 1u);
+    EXPECT_FLOAT_EQ(m.height, 14.0F);
+}
+
+TEST(TextLayoutMetrics, NewlineIncrementsLineCount)
+{
+    auto m = cd::render::measure_simple("abc\nde", 14.0F, 7.0F);
+    EXPECT_EQ(m.line_count, 2u);
+    EXPECT_FLOAT_EQ(m.width, 3.0F * 7.0F);   // longest line
+    EXPECT_FLOAT_EQ(m.height, 28.0F);
+}
