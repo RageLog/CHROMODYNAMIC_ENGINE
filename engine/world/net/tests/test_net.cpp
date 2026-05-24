@@ -910,3 +910,54 @@ TEST(DeltaWriter, TruncatedDeltaRejected)
                                    std::byte{0}, std::byte{0} };
     EXPECT_FALSE(cd::net::apply_delta(tgt, bad));
 }
+
+#include <cd/net/SnapshotBuffer.hpp>
+
+namespace {
+struct PosState
+{
+    float x { 0.0F };
+
+    PosState operator+(const PosState& b) const noexcept { return { x + b.x }; }
+    PosState operator*(float s) const noexcept { return { x * s }; }
+};
+}  // namespace
+
+TEST(SnapshotBuffer, SampleAtKeyTimeMatchesState)
+{
+    cd::net::SnapshotBuffer<PosState> b;
+    b.push(0.0, PosState { 10.0F });
+    b.push(1.0, PosState { 20.0F });
+    auto r = b.sample(1.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FLOAT_EQ(r->x, 20.0F);
+}
+
+TEST(SnapshotBuffer, SampleInterpolatesLinearly)
+{
+    cd::net::SnapshotBuffer<PosState> b;
+    b.push(0.0, PosState { 0.0F });
+    b.push(2.0, PosState { 10.0F });
+    auto r = b.sample(1.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(r->x, 5.0F, 1e-4F);
+}
+
+TEST(SnapshotBuffer, SampleBeforeFirstClamps)
+{
+    cd::net::SnapshotBuffer<PosState> b;
+    b.push(5.0, PosState { 42.0F });
+    auto r = b.sample(0.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FLOAT_EQ(r->x, 42.0F);
+}
+
+TEST(SnapshotBuffer, DropOlderThanReducesSize)
+{
+    cd::net::SnapshotBuffer<PosState> b;
+    b.push(0.0, PosState {});
+    b.push(1.0, PosState {});
+    b.push(2.0, PosState {});
+    b.drop_older_than(1.5);
+    EXPECT_EQ(b.size(), 1u);   // only 2.0 remains (0.0 and 1.0 are < 1.5)
+}

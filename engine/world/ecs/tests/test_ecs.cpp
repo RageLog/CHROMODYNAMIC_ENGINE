@@ -418,3 +418,52 @@ TEST(FilterFn, EmptyInputReturnsEmptyOutput)
         [](cd::ecs::Entity) { return true; });
     EXPECT_TRUE(r.empty());
 }
+
+#include <cd/ecs/SystemGraph.hpp>
+
+TEST(SystemGraph, LinearChainOrder)
+{
+    cd::ecs::SystemGraph g;
+    g.add("a");
+    g.add("b", { "a" });
+    g.add("c", { "b" });
+    auto r = g.build_order();
+    EXPECT_FALSE(r.has_cycle);
+    ASSERT_EQ(r.order.size(), 3u);
+    EXPECT_EQ(r.order[0], "a");
+    EXPECT_EQ(r.order[1], "b");
+    EXPECT_EQ(r.order[2], "c");
+}
+
+TEST(SystemGraph, DiamondDependency)
+{
+    cd::ecs::SystemGraph g;
+    g.add("input");
+    g.add("physics", { "input" });
+    g.add("animation", { "input" });
+    g.add("render", { "physics", "animation" });
+    auto r = g.build_order();
+    EXPECT_FALSE(r.has_cycle);
+    EXPECT_EQ(r.order.size(), 4u);
+    EXPECT_EQ(r.order.front(), "input");
+    EXPECT_EQ(r.order.back(), "render");
+}
+
+TEST(SystemGraph, CycleDetected)
+{
+    cd::ecs::SystemGraph g;
+    g.add("a", { "b" });
+    g.add("b", { "a" });
+    auto r = g.build_order();
+    EXPECT_TRUE(r.has_cycle);
+    EXPECT_LT(r.order.size(), 2u);
+}
+
+TEST(SystemGraph, MissingDepIgnored)
+{
+    cd::ecs::SystemGraph g;
+    g.add("a", { "nonexistent" });
+    auto r = g.build_order();
+    EXPECT_FALSE(r.has_cycle);
+    EXPECT_EQ(r.order.size(), 1u);
+}
