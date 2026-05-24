@@ -2822,6 +2822,9 @@ public:
             rec.storage_alloc = storage_alloc;
             rec.scratch_size = sizes.buildScratchSize;
             rec.kind = desc.kind;
+            // Phase 130 — deep-copy the instance list so the build path
+            // doesn't need the caller's span to outlive create_*.
+            rec.instances.assign(desc.instances.begin(), desc.instances.end());
             const auto id = next_id_++;
             accels_.emplace(id, std::move(rec));
             return cd::rhi::AccelStructureHandle { id, 1u };
@@ -2933,6 +2936,8 @@ public:
         rec.storage_alloc = storage_alloc;
         rec.scratch_size = sizes.buildScratchSize;
         rec.kind = desc.kind;
+        // Phase 130 — deep-copy the triangle list for the build path.
+        rec.triangles.assign(desc.triangles.begin(), desc.triangles.end());
         const auto id = next_id_++;
         accels_.emplace(id, std::move(rec));
         return cd::rhi::AccelStructureHandle { id, 1u };
@@ -3085,7 +3090,13 @@ private:
     std::unordered_map<std::uint32_t, VkDescriptorSet> descriptor_sets_;
     std::unordered_map<std::uint32_t, SwapchainRecord> swapchains_;
 
-    // Phase 17.A — acceleration-structure storage
+    // Phase 17.A — acceleration-structure storage.
+    // Phase 130 (this run) — record stores a deep copy of the build-
+    // input lists so a future `build_acceleration_structure` command
+    // can rebuild the VkAccelerationStructureGeometryKHR list without
+    // requiring the caller to re-pass them. AccelTriangleGeometry and
+    // AccelInstance are POD-ish structs already living in cd::rhi —
+    // we copy them by value.
     struct AccelRecord
     {
         VkAccelerationStructureKHR as { VK_NULL_HANDLE };
@@ -3093,6 +3104,11 @@ private:
         VmaAllocation storage_alloc { VK_NULL_HANDLE };
         VkDeviceSize scratch_size { 0 };
         cd::rhi::AccelStructureKind kind { cd::rhi::AccelStructureKind::kBottomLevel };
+        // Phase 130 — deep-copy build inputs (BLAS only sets triangles;
+        // TLAS only sets instances; both empty until cmd build path
+        // lands in a follow-up).
+        std::vector<cd::rhi::AccelTriangleGeometry> triangles;
+        std::vector<cd::rhi::AccelInstance>         instances;
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
     std::unordered_map<std::uint32_t, VkSemaphore> semaphores_;

@@ -150,6 +150,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.54 | 127 | **Vulkan TLAS create** — mirrors Phase 17.A BLAS path: INSTANCES geometry + placeholder device-address for size query + TOP_LEVEL AS type; VMA-backed storage buffer; build still deferred (cmd-buffer path no-op) |
 | v0.99.55 | 128 | **hello_rt_check extended** — probes BLAS + TLAS create, static_asserts `AccelInstance==64B`, prints `RtShaderEntry/RtPipelineDesc/SbtRegion` sizes; validates Phase 117/118/127 layout contract |
 | v0.99.56 | 129 | **D3D12 input-attachment** — `kInputAttachment` branch in update_descriptor_set wired to the Texture2D SRV path (D3D12 binds the same resource as both RTV + SRV — no subpass distinction); D3D12 NotImpl count 4 → 3 |
+| v0.99.57 | 130 | **Vulkan AccelRecord build-info** — deep-copies BLAS triangles + TLAS instances into the record at create time so a future cmd-buffer build path can rebuild the VkAccelerationStructureGeometryKHR list without the caller re-passing them |
 
 ## Major capabilities added across the marathon
 
