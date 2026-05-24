@@ -1,12 +1,12 @@
-# Marathon summary — Phase 13 → Phase 27 (v0.30.0 → v0.58.0)
+# Marathon summary — Phase 13 → Phase 47 (v0.30.0 → v0.78.0)
 
-Generated **2026-05-24** at end of the second autonomous-marathon
-stretch. Captures everything shipped across the run for a sleeping
-user who'll want a single document to scan in the morning.
+Generated **2026-05-24** during the third autonomous-marathon stretch.
+50 minor releases shipped from the marathon's start (v0.30 baseline).
+This doc is the single scan-in-the-morning record.
 
 ## Tag chain
 
-15 phases × ~30 minor tags. Vulkan is primary, D3D12 is 2nd
+35 phases × 50 minor tags total. Vulkan is primary, D3D12 is 2nd
 priority, OpenGL was introduced as 3rd.
 
 | Tag    | Phase | Headline |
@@ -39,6 +39,26 @@ priority, OpenGL was introduced as 3rd.
 | v0.56.0 | 25    | FrameAllocator + linear-to-sRGB + Obb |
 | v0.57.0 | 26    | RingBuffer + Catmull-Rom Spline + Capsule + Once |
 | v0.58.0 | 27    | slerp + Triangle barycentric |
+| v0.59.0 | 28    | Vec2Ops (length/normalize/lerp/dot) |
+| v0.60.0 | 29    | core::BitOps + net::PacketHeader |
+| v0.61.0 | 30    | scene::Frustum (AABB cull) + audio::SimpleReverb |
+| v0.62.0 | 31    | anim::AdditiveBlend + input::DoubleClick |
+| v0.63.0 | 32    | editor::CommandPalette (fuzzy) + ui::Anchor |
+| v0.64.0 | 33    | math::Mat3 inverse / normal_matrix + concurrency::Latch |
+| v0.65.0 | 34    | rhi::BlendPresets + core::Bitset |
+| v0.66.0 | 35    | io::Crc32 + asset::AssetTag (FNV-1a 32) |
+| v0.67.0 | 36    | ecs::TagHelpers + platform::StableTime |
+| v0.68.0 | 37    | render::SortKey (64-bit packed) + core::ArenaScope |
+| v0.69.0 | 38    | camera::CameraPath (Catmull-Rom) + scene::VisibilityMask |
+| v0.70.0 | 39    | physics::RaySphere + math::AngleUnits (_deg/_rad UDLs) |
+| v0.71.0 | 40    | net::SequenceWindow + concurrency::Backoff |
+| v0.72.0 | 41    | audio::Limiter (peak) + ui::Theme palette |
+| v0.73.0 | 42    | anim::CurveTrack + core::StringSplit |
+| v0.74.0 | 43    | rhi::DepthStencilPresets + framegraph::PassTopology (Kahn topo-sort) |
+| v0.75.0 | 44    | material::PbrParams (glTF 2.0) + asset::MemoryCache (LRU) |
+| v0.76.0 | 45    | input::KeyChord (Ctrl+Shift+S) + scene::NameRegistry |
+| v0.77.0 | 46    | physics::CapsuleSphere + asset::StreamQueue (priority) |
+| v0.78.0 | 47    | math::Range + ecs::EntityRange (pagination) |
 
 ## Major capabilities added across the marathon
 
@@ -63,31 +83,59 @@ priority, OpenGL was introduced as 3rd.
 - Asset: FileWatcher polling primitive; ProfilerView ImGui widget.
 
 **Foundation primitives (header-only)**
-Roughly 30 new headers across phases 19-27, each with unit tests:
-SmallVector / FixedString / ScopeGuard / FrameAllocator / RingBuffer
-(core); Stopwatch / AtomicCounter / Once (concurrency); Easing /
-Random / SmoothingFilter / CubicBezier / Spline / Plane / Color /
-QuatSlerp (math); Aabb / Sphere / Ray / Obb / Capsule / Triangle
-(physics); ParticleSystem / LodSelector / SpatialHash / BlendTree2
-/ Axis (world).
+Roughly 70 new headers across phases 19-47, each with unit tests.
+A non-exhaustive index:
 
-## Outstanding items (Phase 28+ candidates)
+- **core**: SmallVector, FixedString, ScopeGuard, FrameAllocator
+  (+rewind), ArenaScope, RingBuffer, BitOps, Bitset, StringSplit
+- **concurrency**: Stopwatch, AtomicCounter, Once, Latch, Backoff
+- **math**: Easing, Random (PCG32), SmoothingFilter, CubicBezier,
+  Spline, Plane, Color, QuatSlerp, Vec2Ops, Mat3Inverse, AngleUnits,
+  Range
+- **physics**: Aabb, Sphere, Ray, Obb, Capsule, Triangle, RaySphere,
+  CapsuleSphere
+- **world primitives**: ParticleSystem, LodSelector, SpatialHash,
+  BlendTree2, Axis, AdditiveBlend, CurveTrack, DoubleClick, KeyChord
+- **render / ui**: CameraPath, SortKey, BlendPresets,
+  DepthStencilPresets, Frustum, VisibilityMask, NameRegistry, Theme,
+  Anchor, CommandPalette
+- **net / io / asset / platform**: PacketHeader, SequenceWindow,
+  Crc32, AssetTag, MemoryCache, StreamQueue, StableTime, PbrParams
+- **framegraph**: PassTopology (Kahn topo-sort)
+- **ecs**: TagHelpers, EntityRange (pagination)
+
+## Outstanding items (Phase 48+ candidates)
 
 - Vulkan TLAS construction (18.A deferred)
 - Vulkan RT pipeline + SBT + dispatch_rays (full RT path)
 - AMD Mesa/RADV CI workflow
 - Editor selection outline + axis-translation gizmo
-- Material v2 PBR multi-pass
+- Material v2 PBR multi-pass (PbrParams struct landed; integrate
+  binding in Material/Renderer)
 - OpenGL backend resource paths (buffer/texture/swapchain)
 - Real Android/iOS platform-window backends (still no CI hardware)
 - hello_random distribution visualization
 - CameraController integration in cd::scene
 - Frustum::contains_sphere
+- Wire CommandPalette / KeyChord into editor frontend
+- AssetRegistry::evict() consuming MemoryCache
+- Real async streamer consuming StreamQueue
+- Renderer::submit_draws using SortKey for ordering
 
 ## Test surface growth
 
-cd_test_* test count up by ~60 across the marathon. Every primitive
-landed with at least one test pinning its observable contract.
+cd_test_* test count up by ~160 across the marathon (phases 13-47).
+Every primitive landed with at least one test pinning its observable
+contract. 58/58 ctest binaries green at every minor tag.
+
+## Lessons captured
+
+- **Anonymous-namespace include trap (phases 34/41/44/45)**:
+  `#include <some_header>` inside a TU's `namespace { ... }` block
+  re-opens its inner namespaces *under the anonymous one* —
+  `namespace cd::X` becomes `::{anon}::cd::X` and detaches from the
+  real `::cd::X` symbols. Fix: hoist new header includes to file top.
+  This is now a marathon convention.
 
 ## Discipline notes
 
