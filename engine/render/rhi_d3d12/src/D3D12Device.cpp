@@ -445,13 +445,15 @@ public:
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
                 "create_texture_view: unknown parent texture handle"));
         }
-        // 2D only for now — cube + 3D are Phase 124 follow-ups
-        // (matches the limit in create_texture).
-        if (desc.type != cd::rhi::TextureType::k2D)
+        // Phase 126 — TextureType::kCube now supported for the
+        // sampled / IBL path. Texture3D + Texture2DArray-rt still
+        // pending (no IBL bake path needs them yet).
+        const bool is_cube_view = (desc.type == cd::rhi::TextureType::kCube);
+        if (desc.type != cd::rhi::TextureType::k2D && !is_cube_view)
         {
             return std::unexpected(cd::rhi::rhi_errors::make(
                 cd::rhi::rhi_errors::Code::kNotImplemented,
-                "create_texture_view: only TextureType::k2D wired in v0.99.51"));
+                "create_texture_view: only k2D + kCube wired in v0.99.53"));
         }
 
         const DXGI_FORMAT view_fmt = (desc.format == cd::rhi::Format::kUndefined)
@@ -467,6 +469,7 @@ public:
         TextureViewRecord vrec;
         vrec.parent = desc.texture;
         vrec.format = view_fmt;
+        vrec.is_cube = is_cube_view;
 
         const auto u = static_cast<std::uint32_t>(trec->usage);
         const bool is_rt    = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kColorAttachment)) != 0;
@@ -535,21 +538,44 @@ public:
             {
                 D3D12_SHADER_RESOURCE_VIEW_DESC sd {};
                 sd.Format = view_fmt;
-                sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                 sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                sd.Texture2D.MostDetailedMip = desc.base_mip;
-                sd.Texture2D.MipLevels = (desc.mip_count == 0u) ? 1u : desc.mip_count;
-                sd.Texture2D.PlaneSlice = 0;
-                sd.Texture2D.ResourceMinLODClamp = 0.0F;
+                if (is_cube_view)
+                {
+                    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                    sd.TextureCube.MostDetailedMip = desc.base_mip;
+                    sd.TextureCube.MipLevels = (desc.mip_count == 0u) ? 1u : desc.mip_count;
+                    sd.TextureCube.ResourceMinLODClamp = 0.0F;
+                }
+                else
+                {
+                    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    sd.Texture2D.MostDetailedMip = desc.base_mip;
+                    sd.Texture2D.MipLevels = (desc.mip_count == 0u) ? 1u : desc.mip_count;
+                    sd.Texture2D.PlaneSlice = 0;
+                    sd.Texture2D.ResourceMinLODClamp = 0.0F;
+                }
                 device_->CreateShaderResourceView(trec->resource.Get(), &sd, cpu);
             }
             else  // is_uav
             {
                 D3D12_UNORDERED_ACCESS_VIEW_DESC ud {};
                 ud.Format = view_fmt;
-                ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-                ud.Texture2D.MipSlice = desc.base_mip;
-                ud.Texture2D.PlaneSlice = 0;
+                if (is_cube_view)
+                {
+                    // Cube UAV maps to a TEXTURE2DARRAY UAV view in DX12
+                    // (no dedicated cube UAV). 6 array slices, all mips.
+                    ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                    ud.Texture2DArray.MipSlice = desc.base_mip;
+                    ud.Texture2DArray.FirstArraySlice = 0;
+                    ud.Texture2DArray.ArraySize = 6;
+                    ud.Texture2DArray.PlaneSlice = 0;
+                }
+                else
+                {
+                    ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                    ud.Texture2D.MipSlice = desc.base_mip;
+                    ud.Texture2D.PlaneSlice = 0;
+                }
                 device_->CreateUnorderedAccessView(trec->resource.Get(), nullptr, &ud, cpu);
             }
             vrec.rtv_cpu = cpu;
@@ -1113,10 +1139,23 @@ public:
                     }
                     D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
                     srv.Format = view_it->second.format;
-                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srv.Shader4ComponentMapping =
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    srv.Texture2D.MipLevels = 1;
+                    // Phase 126 — pick TEXTURECUBE dimension when the
+                    // view was created from a kCube parent. Otherwise
+                    // standard Texture2D.
+                    if (view_it->second.is_cube)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                        srv.TextureCube.MostDetailedMip = 0;
+                        srv.TextureCube.MipLevels = 1;
+                        srv.TextureCube.ResourceMinLODClamp = 0.0F;
+                    }
+                    else
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                        srv.Texture2D.MipLevels = 1;
+                    }
                     device_->CreateShaderResourceView(
                         tex_it->second.resource.Get(), &srv, dst);
                     break;
@@ -1190,10 +1229,20 @@ public:
                             "update_descriptor_set: combined SRV texture unknown"));
                     D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
                     srv.Format = view_it->second.format;
-                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srv.Shader4ComponentMapping =
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    srv.Texture2D.MipLevels = 1;
+                    if (view_it->second.is_cube)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                        srv.TextureCube.MostDetailedMip = 0;
+                        srv.TextureCube.MipLevels = 1;
+                        srv.TextureCube.ResourceMinLODClamp = 0.0F;
+                    }
+                    else
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                        srv.Texture2D.MipLevels = 1;
+                    }
                     device_->CreateShaderResourceView(
                         tex_it->second.resource.Get(), &srv, dst);
                     break;
@@ -1210,7 +1259,7 @@ public:
                     return std::unexpected(cd::rhi::rhi_errors::make(
                         cd::rhi::rhi_errors::Code::kNotImplemented,
                         "update_descriptor_set: descriptor type not yet wired "
-                        "(input attachment / cube SRV — coming in a follow-up)"));
+                        "(input attachment — Phase 127 candidate)"));
             }
         }
         return {};
@@ -1789,6 +1838,11 @@ public:
         cd::rhi::TextureHandle parent {};
         DXGI_FORMAT format { DXGI_FORMAT_UNKNOWN };
         D3D12_CPU_DESCRIPTOR_HANDLE rtv_cpu {};
+        /// Phase 126 — true when the view was created with
+        /// `TextureType::kCube`. `update_descriptor_set` uses this hint
+        /// to pick `D3D12_SRV_DIMENSION_TEXTURECUBE` instead of TEX2D
+        /// when (re-)creating the SRV at descriptor-set update time.
+        bool is_cube { false };
     };
 
     struct ShaderModuleRecord

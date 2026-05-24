@@ -146,6 +146,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.50 | 123 | **AMD RADV CI lane** — dormant self-hosted workflow targeting `[self-hosted, amd-gpu, linux]`; preflight probes (`lspci` + `vulkaninfo`); RADV-pinned VK_ICD_FILENAMES; golden-compare against `tests/golden/radv/`; CI_SELF_HOSTED.md runbook |
 | v0.99.51 | 124 | **D3D12 create_texture_view** — real implementation w/ device-level RTV (256) + DSV (256) bump-alloc pools, shared SRV/UAV via existing CBV_SRV_UAV cpu_heap (4096); inferred view kind from parent texture usage flags; 2D only (cube/3D in follow-up) |
 | v0.99.52 | 125 | **D3D12 sync primitives** — ID3D12Fence-backed Semaphore + Fence + TimelineSemaphore wrappers; SetEventOnCompletion + WaitForSingleObject host wait w/ ns→ms timeout; D3D12 NotImpl count 8 → 4 |
+| v0.99.53 | 126 | **D3D12 cube-map view** — `TextureType::kCube` now handled by create_texture_view (TEXTURECUBE SRV + TEXTURE2DARRAY UAV with ArraySize=6); TextureViewRecord gains `is_cube`; update_descriptor_set's SRV branches pick TEXTURECUBE dimension; clears Phase 122 audit "cube SRV follow-up" remark |
 
 ## Major capabilities added across the marathon
 
