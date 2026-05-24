@@ -1149,3 +1149,35 @@ TEST(RangeMap, InvertedOutputRange)
 {
     EXPECT_FLOAT_EQ(cd::math::remap(0.5F, 0.0F, 1.0F, 100.0F, 0.0F), 50.0F);
 }
+
+#include <cd/math/Damping.hpp>
+
+TEST(Damping, ConvergesToTarget)
+{
+    float x = 0.0F;
+    float v = 0.0F;
+    for (int i = 0; i < 200; ++i)
+        cd::math::step_critically_damped(x, v, 10.0F, 5.0F, 0.016F);
+    EXPECT_NEAR(x, 10.0F, 0.5F);
+}
+
+TEST(Damping, ZeroDtNoChange)
+{
+    float x = 1.0F;
+    float v = 0.0F;
+    cd::math::step_critically_damped(x, v, 100.0F, 5.0F, 0.0F);
+    EXPECT_FLOAT_EQ(x, 1.0F);
+    EXPECT_FLOAT_EQ(v, 0.0F);
+}
+
+TEST(Damping, Vec3Converges)
+{
+    float x[3] { 0, 0, 0 };
+    float v[3] { 0, 0, 0 };
+    const float target[3] { 5.0F, -2.0F, 1.0F };
+    for (int i = 0; i < 200; ++i)
+        cd::math::step_critically_damped_vec3(x, v, target, 5.0F, 0.016F);
+    EXPECT_NEAR(x[0], 5.0F, 0.5F);
+    EXPECT_NEAR(x[1], -2.0F, 0.5F);
+    EXPECT_NEAR(x[2], 1.0F, 0.5F);
+}

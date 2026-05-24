@@ -951,3 +951,37 @@ TEST(Compressor, ResetReturnsToUnityGain)
     const float y = c.process(0.0F);
     EXPECT_FLOAT_EQ(y, 0.0F);
 }
+
+#include <cd/audio/PanLaw.hpp>
+
+TEST(PanLaw, LinearCenterIsHalfHalf)
+{
+    auto g = cd::audio::linear_pan(0.0F);
+    EXPECT_FLOAT_EQ(g.left, 0.5F);
+    EXPECT_FLOAT_EQ(g.right, 0.5F);
+}
+
+TEST(PanLaw, LinearLeftFullL)
+{
+    auto g = cd::audio::linear_pan(-1.0F);
+    EXPECT_FLOAT_EQ(g.left, 1.0F);
+    EXPECT_FLOAT_EQ(g.right, 0.0F);
+}
+
+TEST(PanLaw, ConstantPowerEnergyIsOne)
+{
+    for (float p : { -1.0F, -0.5F, 0.0F, 0.5F, 1.0F })
+    {
+        auto g = cd::audio::constant_power_pan(p);
+        const float energy = g.left * g.left + g.right * g.right;
+        EXPECT_NEAR(energy, 1.0F, 1e-4F);
+    }
+}
+
+TEST(PanLaw, ClampsOutOfRange)
+{
+    auto g_left  = cd::audio::linear_pan(-5.0F);
+    auto g_right = cd::audio::linear_pan(5.0F);
+    EXPECT_FLOAT_EQ(g_left.left, 1.0F);
+    EXPECT_FLOAT_EQ(g_right.right, 1.0F);
+}
