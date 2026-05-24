@@ -7,6 +7,7 @@
 #include <cd/io/Crc32.hpp>
 #include <cd/io/Endian.hpp>
 #include <cd/io/Framing.hpp>
+#include <cd/io/Hex.hpp>
 #include <cd/io/PathUtils.hpp>
 #include <gtest/gtest.h>
 
@@ -442,4 +443,43 @@ TEST(ByteBuffer, ClearEmpties)
     b.append_pod<std::uint32_t>(1u);
     b.clear();
     EXPECT_TRUE(b.empty());
+}
+
+TEST(Hex, EncodeBytes)
+{
+    std::array<std::byte, 3> b { std::byte { 0xAB }, std::byte { 0xCD }, std::byte { 0x01 } };
+    EXPECT_EQ(cd::io::to_hex(b), "abcd01");
+}
+
+TEST(Hex, EmptyInput)
+{
+    EXPECT_EQ(cd::io::to_hex(std::span<const std::byte> {}), "");
+}
+
+TEST(Hex, RoundTrip)
+{
+    const std::string in = "deadbeef00ff";
+    std::vector<std::byte> out;
+    ASSERT_TRUE(cd::io::from_hex(in, out));
+    EXPECT_EQ(cd::io::to_hex(out), in);
+}
+
+TEST(Hex, RejectsOddLength)
+{
+    std::vector<std::byte> out;
+    EXPECT_FALSE(cd::io::from_hex("abc", out));
+}
+
+TEST(Hex, RejectsInvalidChar)
+{
+    std::vector<std::byte> out;
+    EXPECT_FALSE(cd::io::from_hex("zz", out));
+}
+
+TEST(Hex, AcceptsUppercase)
+{
+    std::vector<std::byte> out;
+    ASSERT_TRUE(cd::io::from_hex("AABB", out));
+    EXPECT_EQ(out.size(), 2u);
+    EXPECT_EQ(static_cast<std::uint8_t>(out[0]), 0xAAu);
 }

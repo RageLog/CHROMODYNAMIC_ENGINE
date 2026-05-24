@@ -11,6 +11,7 @@
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/MenuBar.hpp>
+#include <cd/editor/PreferencesStore.hpp>
 #include <cd/editor/SelectionSet.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <gtest/gtest.h>
@@ -468,4 +469,45 @@ TEST(MenuBar, SubmenuNests)
     recent.add_item("level2.scene", [] {});
     EXPECT_EQ(bar.menus()[0]->children.size(), 1u);   // submenu
     EXPECT_EQ(bar.menus()[0]->children[0]->children.size(), 2u);   // grandchildren
+}
+
+TEST(PreferencesStore, SetAndGetBool)
+{
+    cd::editor::PreferencesStore p;
+    p.set("show_grid", true);
+    EXPECT_TRUE(p.has("show_grid"));
+    auto v = p.get_bool("show_grid");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_TRUE(*v);
+}
+
+TEST(PreferencesStore, IntAndDoubleAndString)
+{
+    cd::editor::PreferencesStore p;
+    p.set("font_size", std::int64_t { 14 });
+    p.set("ui_scale", 1.25);
+    p.set("theme", std::string { "dark" });
+    EXPECT_EQ(p.get_int("font_size").value_or(0), 14);
+    EXPECT_DOUBLE_EQ(p.get_double("ui_scale").value_or(0.0), 1.25);
+    EXPECT_EQ(p.get_string("theme").value_or(""), "dark");
+}
+
+TEST(PreferencesStore, TypeMismatchReturnsNullopt)
+{
+    cd::editor::PreferencesStore p;
+    p.set("font_size", std::int64_t { 14 });
+    EXPECT_FALSE(p.get_bool("font_size").has_value());
+    EXPECT_FALSE(p.get_string("font_size").has_value());
+}
+
+TEST(PreferencesStore, RemoveAndClear)
+{
+    cd::editor::PreferencesStore p;
+    p.set("k1", true);
+    p.set("k2", std::int64_t { 1 });
+    p.remove("k1");
+    EXPECT_FALSE(p.has("k1"));
+    EXPECT_EQ(p.size(), 1u);
+    p.clear();
+    EXPECT_EQ(p.size(), 0u);
 }
