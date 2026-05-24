@@ -894,3 +894,30 @@ TEST(Mixer, OutOfRangeChannelIgnored)
     m.mix(99, 1.0F);
     EXPECT_FLOAT_EQ(m.pull(), 0.0F);
 }
+
+#include <cd/audio/LowPass.hpp>
+
+TEST(LowPass, PassesDcThroughAfterSettling)
+{
+    cd::audio::LowPass lp;
+    lp.prepare(48000.0F, 1000.0F);
+    for (int i = 0; i < 5000; ++i) (void)lp.process(0.5F);
+    EXPECT_NEAR(lp.process(0.5F), 0.5F, 1e-3F);
+}
+
+TEST(LowPass, ResetZerosState)
+{
+    cd::audio::LowPass lp;
+    lp.prepare(48000.0F, 1000.0F);
+    for (int i = 0; i < 100; ++i) (void)lp.process(1.0F);
+    lp.reset();
+    EXPECT_FLOAT_EQ(lp.process(0.0F), 0.0F);
+}
+
+TEST(LowPass, AlphaInZeroToOneRange)
+{
+    cd::audio::LowPass lp;
+    lp.prepare(48000.0F, 1000.0F);
+    EXPECT_GT(lp.alpha(), 0.0F);
+    EXPECT_LT(lp.alpha(), 1.0F);
+}

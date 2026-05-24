@@ -484,3 +484,32 @@ TEST(HotReloadQueue, ClearWithoutDrain)
     q.clear();
     EXPECT_EQ(q.pending_count(), 0u);
 }
+
+#include <cd/asset/PathResolver.hpp>
+
+TEST(PathResolver, NoVariablesPassesThrough)
+{
+    cd::asset::PathResolver r;
+    EXPECT_EQ(r.expand("plain/path/file.png"), "plain/path/file.png");
+}
+
+TEST(PathResolver, SubstitutesKnownVariables)
+{
+    cd::asset::PathResolver r;
+    r.set("LEVEL", "level01");
+    r.set("REGION", "tundra");
+    EXPECT_EQ(r.expand("{LEVEL}/textures/{REGION}.cdtex"),
+              "level01/textures/tundra.cdtex");
+}
+
+TEST(PathResolver, UnknownVariableLeftLiteral)
+{
+    cd::asset::PathResolver r;
+    EXPECT_EQ(r.expand("{UNKNOWN}/file"), "{UNKNOWN}/file");
+}
+
+TEST(PathResolver, UnclosedBraceLeftAsIs)
+{
+    cd::asset::PathResolver r;
+    EXPECT_EQ(r.expand("a/b/{NOEND"), "a/b/{NOEND");
+}
