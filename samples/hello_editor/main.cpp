@@ -807,7 +807,27 @@ int main(int argc, char** argv)
             ImGui::SameLine();
             if (ImGui::Button("Save"))
             {
-                const auto json = cd::scene::serialize_scene(scene);
+                // Phase 121: serialize entity name + tint as extra
+                // per-node JSON fields so the load path can restore
+                // the actual entity identity (not just transforms).
+                const auto json = cd::scene::serialize_scene_with(scene,
+                    [&](cd::ecs::Entity e, cd::asset_json::Object& obj) {
+                        for (const auto& se : entities)
+                        {
+                            if (se.handle.id != e.id) continue;
+                            obj["name"] = cd::asset_json::Value { se.name };
+                            cd::asset_json::Array tint;
+                            tint.push_back(cd::asset_json::Value { static_cast<double>(se.tint.x) });
+                            tint.push_back(cd::asset_json::Value { static_cast<double>(se.tint.y) });
+                            tint.push_back(cd::asset_json::Value { static_cast<double>(se.tint.z) });
+                            obj["tint"] = cd::asset_json::Value { std::move(tint) };
+                            obj["mesh"] = cd::asset_json::Value {
+                                (se.mesh == SceneEntity::MeshKind::kCube)   ? std::string{"Cube"} :
+                                (se.mesh == SceneEntity::MeshKind::kSphere) ? std::string{"Sphere"} :
+                                                                              std::string{"Cone"} };
+                            break;
+                        }
+                    });
                 const auto text = cd::asset_json::serialize(json, true);
                 std::ofstream f(path_buf.data(), std::ios::binary);
                 if (f)
@@ -856,15 +876,11 @@ int main(int argc, char** argv)
                         }
                         else
                         {
-                            // Re-attach human-readable names + mesh kind.
-                            // The Phase 14.A serializer only stores the
-                            // LocalTransform — entity name / tint / mesh
-                            // kind are sample-side state. To survive
-                            // round-trips we cycle the first three loaded
-                            // entities through the original Cube/Sphere/
-                            // Cone seed defaults (matching their on-disk
-                            // ordering); anything beyond three falls back
-                            // to a neutral n_<i> name.
+                            // Phase 121: real name + tint round-trip via
+                            // `deserialize_scene_with` callback. The
+                            // older fallback (cycling Cube/Sphere/Cone
+                            // by position) stays in place for legacy
+                            // saves that lack name/tint/mesh keys.
                             static const std::array<const char*, 3> kSeedNames {
                                 "Cube", "Sphere", "Cone"
                             };
@@ -873,26 +889,63 @@ int main(int argc, char** argv)
                                 { 0.4F, 1.0F, 0.4F },
                                 { 0.4F, 0.4F, 1.0F },
                             }};
-                            std::size_t i = 0;
-                            scene.for_each_node(
-                                [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
+                            std::size_t loaded_count = 0;
+                            // First clear any partial state left by the
+                            // earlier deserialize_scene call.
+                            entities.clear();
+                            world = cd::ecs::World {};
+                            scene = cd::scene::Scene { world };
+                            auto map_again = cd::scene::deserialize_scene_with(
+                                scene, *json_r,
+                                [&](cd::ecs::Entity e, const cd::asset_json::Object& node)
                                 {
                                     SceneEntity se;
                                     se.handle = e;
-                                    if (i < kSeedNames.size())
+                                    if (auto it = node.find("name");
+                                        it != node.end() && it->second.is_string())
                                     {
-                                        se.name = kSeedNames[i];
-                                        se.tint = kSeedTints[i];
+                                        se.name = it->second.as_string();
+                                    }
+                                    else if (loaded_count < kSeedNames.size())
+                                    {
+                                        se.name = kSeedNames[loaded_count];
                                     }
                                     else
                                     {
-                                        se.name = "n_" + std::to_string(i);
+                                        se.name = "n_" + std::to_string(loaded_count);
+                                    }
+                                    if (auto it = node.find("tint");
+                                        it != node.end() && it->second.is_array() &&
+                                        it->second.as_array().size() >= 3)
+                                    {
+                                        const auto& a = it->second.as_array();
+                                        se.tint = {
+                                            static_cast<float>(a[0].as_number()),
+                                            static_cast<float>(a[1].as_number()),
+                                            static_cast<float>(a[2].as_number())
+                                        };
+                                    }
+                                    else if (loaded_count < kSeedTints.size())
+                                    {
+                                        se.tint = kSeedTints[loaded_count];
+                                    }
+                                    else
+                                    {
                                         se.tint = { 0.7F, 0.7F, 0.7F };
                                     }
-                                    se.mesh = mesh_kind_from_name(se.name);
+                                    if (auto it = node.find("mesh");
+                                        it != node.end() && it->second.is_string())
+                                    {
+                                        se.mesh = mesh_kind_from_name(it->second.as_string());
+                                    }
+                                    else
+                                    {
+                                        se.mesh = mesh_kind_from_name(se.name);
+                                    }
                                     entities.push_back(std::move(se));
-                                    ++i;
+                                    ++loaded_count;
                                 });
+                            (void)map_again;  // already consumed in callback
                             selected = entities.empty() ? -1 : 0;
                             log_push(std::string { "load: " } + path_buf.data() +
                                      " (" + std::to_string(entities.size()) + " entities)");

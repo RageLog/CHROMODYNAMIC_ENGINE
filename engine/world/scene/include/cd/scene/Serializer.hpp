@@ -74,6 +74,18 @@ enum class Code : std::uint32_t
 
 inline constexpr std::uint32_t kSceneJsonVersion = 1;
 
+// Forward declarations — the template variants live below the
+// non-template wrappers that call them.
+template <class WriteExtras>
+[[nodiscard]] inline cd::asset_json::Value
+serialize_scene_with(const Scene& scene, WriteExtras&& write_extras);
+
+using IdMap = std::unordered_map<std::uint64_t, cd::ecs::Entity>;
+
+template <class ReadExtras>
+[[nodiscard]] inline cd::core::Result<IdMap>
+deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtras&& read_extras);
+
 /// Convert a Vec3f to a JSON 3-element array.
 [[nodiscard]] inline cd::asset_json::Value vec3_to_json(const cd::math::Vec3f& v)
 {
@@ -129,17 +141,39 @@ inline constexpr std::uint32_t kSceneJsonVersion = 1;
 }
 
 /// Serialize every entity with a LocalTransform into a JSON Value.
+/// Callers that want to attach extra per-node fields (entity name,
+/// material tint, gameplay tags, etc.) should use the templated
+/// `serialize_scene_with` overload below — this thin wrapper kept
+/// for backward compat.
 [[nodiscard]] inline cd::asset_json::Value serialize_scene(const Scene& scene)
+{
+    return serialize_scene_with(scene, [](cd::ecs::Entity, cd::asset_json::Object&) {});
+}
+
+/// Phase 121 — serialize every entity with a LocalTransform plus any
+/// extra fields the caller wants to inject per node. `write_extras` is
+/// called once per node with the node's JSON object; the caller is
+/// free to set string / number / array / object keys on it. Keys
+/// already used by the serializer (`id`, `translation`, `rotation`,
+/// `scale`, `parent`) WILL be overwritten by the serializer if the
+/// caller pre-sets them — set custom keys only.
+template <class WriteExtras>
+[[nodiscard]] inline cd::asset_json::Value
+serialize_scene_with(const Scene& scene, WriteExtras&& write_extras)
 {
     cd::asset_json::Object root;
     root["version"] = cd::asset_json::Value { static_cast<int>(kSceneJsonVersion) };
 
     cd::asset_json::Array nodes;
-    auto& w = const_cast<cd::ecs::World&>(scene.world());  // for_each<T> exposes both const & mut
+    auto& w = const_cast<cd::ecs::World&>(scene.world());
     w.for_each<LocalTransform>(
         [&](cd::ecs::Entity e, LocalTransform& lt)
         {
             cd::asset_json::Object obj;
+            // Let the caller pre-populate so we can guarantee the
+            // canonical fields win (id, transform, parent are set
+            // AFTER write_extras, overwriting any conflict).
+            write_extras(e, obj);
             obj["id"] = cd::asset_json::Value { static_cast<std::int64_t>(e.id) };
             obj["translation"] = vec3_to_json(lt.value.position);
             obj["rotation"] = quat_to_json(lt.value.rotation);
@@ -154,15 +188,24 @@ inline constexpr std::uint32_t kSceneJsonVersion = 1;
     return cd::asset_json::Value { std::move(root) };
 }
 
-/// Mapping from JSON-id → newly created Entity in the target scene's
-/// world. Useful when external references (asset ids, etc.) need to
-/// rewire after a round-trip.
-using IdMap = std::unordered_map<std::uint64_t, cd::ecs::Entity>;
+/// (IdMap declared above near the forward declarations.)
 
 /// Recreate scene nodes from `json`. Adds new entities to `scene` (does
 /// not destroy existing ones). Returns the IdMap so the caller can
 /// resolve `json["id"]` back to the new Entity.
 [[nodiscard]] inline cd::core::Result<IdMap> deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
+{
+    return deserialize_scene_with(scene, json,
+        [](cd::ecs::Entity, const cd::asset_json::Object&) {});
+}
+
+/// Phase 121 — deserialize plus per-node callback. `read_extras` is
+/// invoked once per node with the newly created Entity and the node's
+/// JSON object so the caller can pull out fields the canonical
+/// serializer ignored (name, tint, custom metadata).
+template <class ReadExtras>
+[[nodiscard]] inline cd::core::Result<IdMap>
+deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtras&& read_extras)
 {
     if (!json.is_object())
         return std::unexpected(
@@ -237,6 +280,11 @@ using IdMap = std::unordered_map<std::uint64_t, cd::ecs::Entity>;
         const auto ent = scene.create_node();
         scene.local(ent)->value = xf;
         id_map[json_id] = ent;
+        // Phase 121: surface the raw JSON object to the caller so they
+        // can pull out fields the canonical serializer doesn't know
+        // about (entity name, tint, gameplay tags). The transform +
+        // parent fields are already consumed by this scope.
+        read_extras(ent, node);
 
         PendingNode pn;
         pn.entity = ent;

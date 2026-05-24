@@ -127,6 +127,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.37 | 106 | **cd::asset::Primitives** — header-only builders for cube/sphere/cone/cylinder/plane/torus/capsule with a canonical 44 B pos+normal+uv+color vertex layout |
 | v0.99.38 | 107 | **cd::editor::PropertyDrawer** — DragSession helper (pre-drag snapshot + release flag) for the live-drag-then-push-command pattern; imgui-agnostic (function-pointer callbacks) |
 | v0.99.39 | 109+110 | **Frustum::contains_sphere + SceneCameraController** — sphere cull (inclusive + strict variants, +5 unit tests) and a scene-aware orbit-camera facade that follows a target entity's world transform |
+| v0.99.40 | 121 | **Serializer metadata round-trip** — serialize_scene_with / deserialize_scene_with template overloads accept a per-node write/read callback; hello_editor save/load preserves entity name + tint + mesh kind across reloads |
 
 ## Major capabilities added across the marathon
 
