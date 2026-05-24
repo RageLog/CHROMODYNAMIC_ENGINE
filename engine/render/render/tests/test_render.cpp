@@ -316,3 +316,46 @@ TEST(SortKey, AscendingSortGroupsByLayerThenMaterialThenDepth)
     EXPECT_LT(a.value, b.value);
     EXPECT_LT(b.value, c.value);
 }
+
+#include <cd/render/PostProcessChain.hpp>
+
+TEST(PostProcessChain, AddAndQuerySize)
+{
+    cd::render::PostProcessChain c;
+    c.add("ToneMap");
+    c.add("FXAA");
+    EXPECT_EQ(c.size(), 2u);
+}
+
+TEST(PostProcessChain, EnabledViewSkipsDisabled)
+{
+    cd::render::PostProcessChain c;
+    c.add("ToneMap");
+    c.add("FXAA");
+    c.add("Vignette");
+    c.set_enabled("FXAA", false);
+    auto view = c.enabled_view();
+    EXPECT_EQ(view.size(), 2u);
+    EXPECT_EQ(view[0]->name, "ToneMap");
+    EXPECT_EQ(view[1]->name, "Vignette");
+}
+
+TEST(PostProcessChain, RemoveByName)
+{
+    cd::render::PostProcessChain c;
+    c.add("ToneMap");
+    c.add("FXAA");
+    EXPECT_TRUE(c.remove("ToneMap"));
+    EXPECT_EQ(c.size(), 1u);
+    EXPECT_FALSE(c.remove("Missing"));
+}
+
+TEST(PostProcessChain, InsertionOrderPreserved)
+{
+    cd::render::PostProcessChain c;
+    c.add("First");
+    c.add("Second");
+    c.add("Third");
+    EXPECT_EQ(c.passes()[0].name, "First");
+    EXPECT_EQ(c.passes()[2].name, "Third");
+}

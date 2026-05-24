@@ -340,3 +340,51 @@ TEST(EntityRange, OutOfRangeClampsToLastPage)
     EXPECT_EQ(p.page_count, 3u);
     EXPECT_EQ(p.page_index, 2u);
 }
+
+#include <cd/ecs/Lifecycle.hpp>
+
+TEST(LifecycleRegistry, OnCreatedFiresForEveryHandler)
+{
+    cd::ecs::LifecycleRegistry r;
+    int hits = 0;
+    r.on_created([&](cd::ecs::Entity) { ++hits; });
+    r.on_created([&](cd::ecs::Entity) { ++hits; });
+    r.notify_created(cd::ecs::Entity { 1, 1 });
+    EXPECT_EQ(hits, 2);
+}
+
+TEST(LifecycleRegistry, OnDestroyedSeparateFromCreated)
+{
+    cd::ecs::LifecycleRegistry r;
+    int created = 0;
+    int destroyed = 0;
+    r.on_created([&](cd::ecs::Entity) { ++created; });
+    r.on_destroyed([&](cd::ecs::Entity) { ++destroyed; });
+    r.notify_created(cd::ecs::Entity { 1, 1 });
+    EXPECT_EQ(created, 1);
+    EXPECT_EQ(destroyed, 0);
+    r.notify_destroyed(cd::ecs::Entity { 1, 1 });
+    EXPECT_EQ(created, 1);
+    EXPECT_EQ(destroyed, 1);
+}
+
+TEST(LifecycleRegistry, RemoveByHandleId)
+{
+    cd::ecs::LifecycleRegistry r;
+    int hits = 0;
+    auto id = r.on_created([&](cd::ecs::Entity) { ++hits; });
+    EXPECT_TRUE(r.remove(id));
+    r.notify_created(cd::ecs::Entity { 1, 1 });
+    EXPECT_EQ(hits, 0);
+    EXPECT_FALSE(r.remove(id));  // already gone
+}
+
+TEST(LifecycleRegistry, HandlerCountsAccurate)
+{
+    cd::ecs::LifecycleRegistry r;
+    r.on_created([](cd::ecs::Entity) {});
+    r.on_destroyed([](cd::ecs::Entity) {});
+    r.on_destroyed([](cd::ecs::Entity) {});
+    EXPECT_EQ(r.created_handler_count(), 1u);
+    EXPECT_EQ(r.destroyed_handler_count(), 2u);
+}
