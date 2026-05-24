@@ -84,6 +84,19 @@ void glslang_shutdown()
             return EShLangTessControl;
         case ShaderStage::kTessEval:
             return EShLangTessEvaluation;
+        // Phase 136 — RT pipeline stages.
+        case ShaderStage::kRaygen:
+            return EShLangRayGen;
+        case ShaderStage::kMiss:
+            return EShLangMiss;
+        case ShaderStage::kClosestHit:
+            return EShLangClosestHit;
+        case ShaderStage::kAnyHit:
+            return EShLangAnyHit;
+        case ShaderStage::kIntersection:
+            return EShLangIntersect;
+        case ShaderStage::kCallable:
+            return EShLangCallable;
     }
     return EShLangVertex;
 }

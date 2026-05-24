@@ -155,6 +155,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.59 | 132+133 | **Vulkan AS build cmd path** — `VulkanCommandBuffer::build_acceleration_structure` wired for BLAS + TLAS; AccelRecord caches Vk-format geometries + per-AS scratch + TLAS instance buffer + AS device addresses; static lookup callback through ResourceTables |
 | v0.99.60 | 134 | **RT pipeline handle + IDevice virtuals** — `RtPipelineHandle` + `create_rt_pipeline` + `destroy_rt_pipeline` + SBT-authoring helpers (handle size / alignment / base alignment / `get_rt_shader_group_handles`); defaults kNotImplemented so existing backends compile unchanged |
 | v0.99.61 | 135 | **Vulkan RT pipeline + dispatch_rays impl** — `vkCreateRayTracingPipelinesKHR` (groups derived from `RtShaderEntry::group` index, hit/general type chosen automatically), SBT handle bytes via `vkGetRayTracingShaderGroupHandlesKHR`, `bind_rt_pipeline` + `vkCmdTraceRaysKHR` overrides; `RtShaderEntry` ABI now takes pre-compiled `ShaderModuleHandle` |
+| v0.99.62 | 136 | **hello_rt sample** — full RT chain runtime smoke: cd::shader compiles 3 RT shaders (raygen+miss+chit), `create_rt_pipeline` + `get_rt_shader_group_handles` exercised; cd::shader gains 6 RT stage enum values. Dispatch deferred until DescriptorType::kAccelerationStructure lands |
 
 ## Major capabilities added across the marathon
 

@@ -73,6 +73,13 @@ enum class ShaderStage : std::uint8_t
     kGeometry,
     kTessControl,
     kTessEval,
+    // Phase 136 — ray-tracing pipeline stages.
+    kRaygen,
+    kMiss,
+    kClosestHit,
+    kAnyHit,
+    kIntersection,
+    kCallable,
 };
 
 /// Source language at the compiler input. Vulkan SPIR-V is always the output.

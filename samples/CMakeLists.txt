@@ -62,6 +62,7 @@ add_subdirectory(hello_replication)
 # API surface lands. Gated on Vulkan because it uses cd::rhi_vulkan.
 if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_rt_check)
+  add_subdirectory(hello_rt)      # Phase 136 — full RT pipeline + SBT smoke
 endif()
 
 # Phase 24 headless samples
