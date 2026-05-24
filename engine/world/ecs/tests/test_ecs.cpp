@@ -388,3 +388,33 @@ TEST(LifecycleRegistry, HandlerCountsAccurate)
     EXPECT_EQ(r.created_handler_count(), 1u);
     EXPECT_EQ(r.destroyed_handler_count(), 2u);
 }
+
+#include <cd/ecs/FilterFn.hpp>
+
+TEST(FilterFn, KeepsMatchingEntities)
+{
+    std::vector<cd::ecs::Entity> all;
+    for (std::uint32_t i = 0; i < 10; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    auto evens = cd::ecs::filter_entities(all,
+        [](cd::ecs::Entity e) { return (e.id % 2) == 0; });
+    EXPECT_EQ(evens.size(), 5u);
+    EXPECT_EQ(evens[0].id, 0u);
+    EXPECT_EQ(evens[4].id, 8u);
+}
+
+TEST(FilterFn, CountVariantNoAllocation)
+{
+    std::vector<cd::ecs::Entity> all;
+    for (std::uint32_t i = 0; i < 20; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    auto n = cd::ecs::count_entities(all,
+        [](cd::ecs::Entity e) { return e.id < 5; });
+    EXPECT_EQ(n, 5u);
+}
+
+TEST(FilterFn, EmptyInputReturnsEmptyOutput)
+{
+    std::vector<cd::ecs::Entity> all;
+    auto r = cd::ecs::filter_entities(all,
+        [](cd::ecs::Entity) { return true; });
+    EXPECT_TRUE(r.empty());
+}

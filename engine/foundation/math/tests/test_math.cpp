@@ -891,3 +891,52 @@ TEST(Noise, Fbm2dStaysInUnitRange)
         EXPECT_LE(v, 1.0F);
     }
 }
+
+#include <cd/math/Statistics.hpp>
+
+TEST(Statistics, EmptyHasZeroCount)
+{
+    cd::math::Statistics s;
+    EXPECT_EQ(s.count(), 0u);
+    EXPECT_DOUBLE_EQ(s.mean(), 0.0);
+    EXPECT_DOUBLE_EQ(s.variance(), 0.0);
+}
+
+TEST(Statistics, MeanOfThreeSamples)
+{
+    cd::math::Statistics s;
+    s.add(1.0);
+    s.add(2.0);
+    s.add(3.0);
+    EXPECT_EQ(s.count(), 3u);
+    EXPECT_DOUBLE_EQ(s.mean(), 2.0);
+}
+
+TEST(Statistics, MinMaxTracked)
+{
+    cd::math::Statistics s;
+    s.add(5.0);
+    s.add(-3.0);
+    s.add(10.0);
+    EXPECT_DOUBLE_EQ(s.min(), -3.0);
+    EXPECT_DOUBLE_EQ(s.max(), 10.0);
+}
+
+TEST(Statistics, VarianceApproximatesKnownSet)
+{
+    // Sample variance of {2, 4, 4, 4, 5, 5, 7, 9} = 32/7 ≈ 4.571
+    cd::math::Statistics s;
+    for (double v : { 2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0 }) s.add(v);
+    EXPECT_NEAR(s.variance(), 4.571428, 1e-3);
+    EXPECT_NEAR(s.stddev(), 2.138, 1e-3);
+}
+
+TEST(Statistics, ResetReturnsToInitial)
+{
+    cd::math::Statistics s;
+    s.add(5.0);
+    s.add(10.0);
+    s.reset();
+    EXPECT_EQ(s.count(), 0u);
+    EXPECT_DOUBLE_EQ(s.mean(), 0.0);
+}
