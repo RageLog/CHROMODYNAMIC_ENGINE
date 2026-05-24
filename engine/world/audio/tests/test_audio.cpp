@@ -985,3 +985,38 @@ TEST(PanLaw, ClampsOutOfRange)
     EXPECT_FLOAT_EQ(g_left.left, 1.0F);
     EXPECT_FLOAT_EQ(g_right.right, 1.0F);
 }
+
+#include <cd/audio/PitchShift.hpp>
+
+TEST(PitchShift, ZeroSemitonesIsUnitStep)
+{
+    std::array<float, 4> src { 1, 2, 3, 4 };
+    cd::audio::PitchShift p;
+    p.prepare(src, 0.0F);
+    EXPECT_FLOAT_EQ(p.step(), 1.0F);
+    EXPECT_FLOAT_EQ(p.process(), 1.0F);
+    EXPECT_FLOAT_EQ(p.process(), 2.0F);
+}
+
+TEST(PitchShift, OctaveUpDoublesStep)
+{
+    std::array<float, 8> src { 0, 1, 2, 3, 4, 5, 6, 7 };
+    cd::audio::PitchShift p;
+    p.prepare(src, 12.0F);   // one octave → step 2
+    EXPECT_NEAR(p.step(), 2.0F, 1e-3F);
+}
+
+TEST(PitchShift, OctaveDownHalvesStep)
+{
+    std::array<float, 4> src { 0, 1, 2, 3 };
+    cd::audio::PitchShift p;
+    p.prepare(src, -12.0F);
+    EXPECT_NEAR(p.step(), 0.5F, 1e-3F);
+}
+
+TEST(PitchShift, EmptySourceReturnsZero)
+{
+    cd::audio::PitchShift p;
+    p.prepare(std::span<const float> {}, 0.0F);
+    EXPECT_FLOAT_EQ(p.process(), 0.0F);
+}

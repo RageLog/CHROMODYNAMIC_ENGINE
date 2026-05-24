@@ -921,3 +921,30 @@ TEST(Light, SpotConeAnglesDefaults)
     l.kind = cd::scene::LightKind::kSpot;
     EXPECT_LT(l.inner_cone, l.outer_cone);
 }
+
+#include <cd/scene/Skybox.hpp>
+
+TEST(Skybox, DefaultHasNoCubemap)
+{
+    cd::scene::Skybox s;
+    EXPECT_FALSE(cd::scene::has_cubemap(s));
+    EXPECT_FLOAT_EQ(s.tint.x, 1.0F);
+    EXPECT_FLOAT_EQ(s.intensity, 1.0F);
+}
+
+TEST(Skybox, HasCubemapAfterAssign)
+{
+    cd::scene::Skybox s;
+    s.cubemap = cd::asset::AssetId::from_path("sky/dawn.cubemap");
+    EXPECT_TRUE(cd::scene::has_cubemap(s));
+}
+
+TEST(Skybox, TintAndIntensityIndependent)
+{
+    cd::scene::Skybox s;
+    s.tint = { 0.5F, 0.8F, 1.0F };
+    s.intensity = 2.0F;
+    s.rotation_y = 0.5F;
+    EXPECT_FLOAT_EQ(s.intensity, 2.0F);
+    EXPECT_FLOAT_EQ(s.rotation_y, 0.5F);
+}
