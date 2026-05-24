@@ -33,6 +33,7 @@
 
 #include <cd/asset_json/Json.hpp>
 #include <cd/ecs/World.hpp>
+#include <cd/editor/CommandPalette.hpp>
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/imgui/Context.hpp>
@@ -414,6 +415,14 @@ int main(int argc, char** argv)
         while (log.size() > 32) log.pop_front();
     };
 
+    // Phase 111: register the fuzzy CommandPalette + a Ctrl+Shift+P
+    // hotkey. Palette is visible as a popup (ImGui InputText + filter
+    // list) only when `palette_visible` is true. Caller-side state:
+    cd::editor::CommandPalette palette;
+    bool        palette_visible = false;
+    std::string palette_query;
+    palette_query.reserve(64);
+
     std::vector<SceneEntity> entities;
     {
         struct Init { const char* name; cd::math::Vec3f pos; cd::math::Vec3f tint; };
@@ -435,7 +444,51 @@ int main(int argc, char** argv)
     }
     log_push("Spawned 3 entities (Cube, Sphere, Cone) — each draws its own primitive mesh");
 
-    int selected = 0;
+    int selected = 0;  // moved before palette registration (Phase 111
+                       // commands capture &selected via lambda).
+
+    // Phase 111: command registry. Each command captures the bits of
+    // editor state it touches (history, log, entities) via &-reference
+    // capture. The palette is rendering-agnostic — we just consult
+    // its filter() output and render a popup ourselves below.
+    palette.register_command(1, "Edit: Undo",
+        [&]() { if (history.undo()) log_push("palette: Undo"); });
+    palette.register_command(2, "Edit: Redo",
+        [&]() { if (history.redo()) log_push("palette: Redo"); });
+    palette.register_command(3, "Edit: Clear History",
+        [&]() { history.clear(); log_push("palette: history cleared"); });
+    palette.register_command(10, "Select: Cube",
+        [&]() { for (std::size_t i = 0; i < entities.size(); ++i)
+                  if (entities[i].name == "Cube") { selected = static_cast<int>(i); log_push("palette: select Cube"); break; } });
+    palette.register_command(11, "Select: Sphere",
+        [&]() { for (std::size_t i = 0; i < entities.size(); ++i)
+                  if (entities[i].name == "Sphere") { selected = static_cast<int>(i); log_push("palette: select Sphere"); break; } });
+    palette.register_command(12, "Select: Cone",
+        [&]() { for (std::size_t i = 0; i < entities.size(); ++i)
+                  if (entities[i].name == "Cone") { selected = static_cast<int>(i); log_push("palette: select Cone"); break; } });
+    palette.register_command(20, "Transform: Reset Selected",
+        [&]() {
+            if (selected >= 0 && selected < static_cast<int>(entities.size()))
+            {
+                auto& ent = entities[static_cast<std::size_t>(selected)];
+                if (auto* lt = scene.local(ent.handle); lt != nullptr)
+                {
+                    lt->value.position = {};
+                    lt->value.scale = { 1.0F, 1.0F, 1.0F };
+                    lt->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+                    log_push("palette: reset selected transform");
+                }
+            }
+        });
+    palette.register_command(30, "View: Toggle Auto-Spin Camera",
+        [&]() { /* hook for SceneCameraController when integrated */
+                log_push("palette: TODO toggle auto-spin (Phase 110 hook)"); });
+    palette.register_command(40, "Help: Print Shortcuts",
+        [&]() {
+            log_push("Ctrl+Shift+P : open command palette");
+            log_push("Ctrl+Z / Ctrl+Y : undo / redo");
+            log_push("Esc : close palette / exit");
+        });
 
     // Save/Load default file path. The editor writes/reads
     // hello_editor.cdscene.json next to the binary; the
@@ -481,9 +534,28 @@ int main(int argc, char** argv)
         {
             ctx.handle_event(e);
             if (e.kind == cd::platform::OSEventKind::kKeyDown && e.key == cd::platform::KeyCode::kEscape)
-                window.request_close();
+            {
+                // Phase 111: Esc closes the palette first; only on the
+                // second press does it quit the app.
+                if (palette_visible) { palette_visible = false; palette_query.clear(); }
+                else                  window.request_close();
+            }
             else if (e.kind == cd::platform::OSEventKind::kResize)
                 needs_rebuild = true;
+            else if (e.kind == cd::platform::OSEventKind::kKeyDown &&
+                     e.key == cd::platform::KeyCode::kP)
+            {
+                // Ctrl+Shift+P toggles the command palette. We read the
+                // current keyboard state from ImGui's IO since the
+                // platform event doesn't carry modifier flags directly
+                // — ImGui already mirrors them via Context::handle_event.
+                const ImGuiIO& io = ImGui::GetIO();
+                if (io.KeyCtrl && io.KeyShift)
+                {
+                    palette_visible = !palette_visible;
+                    if (palette_visible) palette_query.clear();
+                }
+            }
         }
         if (needs_rebuild)
         {
@@ -1164,6 +1236,66 @@ int main(int argc, char** argv)
             ImGui::TextDisabled("no selection");
         }
         ImGui::End();
+
+        // ---- Command palette (Phase 111) ----------------------------------
+        // VS Code-style fuzzy-search popup pinned to the top centre of
+        // the viewport. Opens with Ctrl+Shift+P; closes with Esc, click-
+        // away, or running a command. Up/Down arrow keys move the
+        // active hit (currently just the first match); Enter invokes.
+        if (palette_visible)
+        {
+            const float palette_w = 520.0F;
+            const float palette_h = 320.0F;
+            ImGui::SetNextWindowPos(
+                ImVec2 { (vw - palette_w) * 0.5F, 80.0F },
+                ImGuiCond_Always);
+            ImGui::SetNextWindowSize(
+                ImVec2 { palette_w, palette_h },
+                ImGuiCond_Always);
+            const ImGuiWindowFlags pf =
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
+            if (ImGui::Begin("Command Palette", &palette_visible, pf))
+            {
+                // Auto-focus the InputText every frame the palette opens.
+                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                char buf[128] {};
+                std::snprintf(buf, sizeof(buf), "%s", palette_query.c_str());
+                if (ImGui::InputText("##palette_query", buf, sizeof(buf)))
+                    palette_query = buf;
+                ImGui::Separator();
+                const auto hits = palette.filter(palette_query);
+                if (hits.empty())
+                {
+                    ImGui::TextDisabled("no match (%zu commands registered)",
+                                        palette.size());
+                }
+                else
+                {
+                    for (std::size_t i = 0; i < hits.size() && i < 16; ++i)
+                    {
+                        const auto& entry = palette.at(hits[i]);
+                        char row[160] {};
+                        std::snprintf(row, sizeof(row), "  %s", entry.label.c_str());
+                        if (ImGui::Selectable(row))
+                        {
+                            (void)palette.invoke(hits[i]);
+                            palette_visible = false;
+                            palette_query.clear();
+                            break;
+                        }
+                    }
+                }
+                // Enter on first match — fast-path keyboarders.
+                if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) && !hits.empty())
+                {
+                    (void)palette.invoke(hits.front());
+                    palette_visible = false;
+                    palette_query.clear();
+                }
+            }
+            ImGui::End();
+        }
 
         // ---- History log --------------------------------------------------
         // Bottom strip, full width.
