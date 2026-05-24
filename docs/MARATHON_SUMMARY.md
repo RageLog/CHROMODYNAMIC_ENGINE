@@ -1,13 +1,14 @@
-# Marathon summary — Phase 13 → Phase 97 (v0.30.0 → v0.99.29) — 100 tag milestone
+# Marathon summary — Phase 13 → Phase 100 (v0.30.0 → v0.99.32) — centennial
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 29 patch releases = 100 tags total** shipped from the
+**71 minor + 32 patch releases = 103 tags total** shipped from the
 marathon's start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.29). v1.0.0 sign-off authority is reserved to the user.
+through v0.99.32). v1.0.0 sign-off authority is reserved to the user.
 
 **🎉 100-tag milestone achieved at v0.99.29 (Phase 97).**
+**🎯 Phase 100 centennial reached at v0.99.32.**
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -115,6 +116,9 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.27 | 95   | audio::Voice + concurrency::Flag (atomic bool) |
 | v0.99.28 | 96   | scene::Trigger + math::EulerAngles |
 | **v0.99.29** | **97** | **core::Assert + scene::SceneStats — 100-TAG MILESTONE** |
+| v0.99.30 | 98   | rhi::RasterStatePresets + asset::AssetRefCount |
+| v0.99.31 | 99   | input::Cursor + core::Singleton (CRTP) |
+| **v0.99.32** | **100** | **scene::TagBucket + core::CounterTable — CENTENNIAL** |
 
 ## Major capabilities added across the marathon
 
