@@ -422,9 +422,155 @@ public:
         "D3D12 backend at v0.32.0 ships buffer/texture/swapchain only; "          \
         "this entry point lands in a later phase"))
 
+    // ---- Texture view (REAL — Phase 124 v0.99.51) -------------------------
+    //
+    // D3D12 has no standalone "texture view" object — views are
+    // descriptor-heap entries. We allocate the appropriate descriptor
+    // (RTV / DSV / SRV / UAV) based on the parent texture's usage flags
+    // and store the resulting CPU handle in TextureViewRecord. The
+    // command buffer's begin_render_pass + descriptor-set bind paths
+    // already know how to consume those handles.
+    //
+    // Bump-allocator pools per descriptor heap type. 256 slots each is
+    // sufficient for marathon-scale scenes; switch to a free-list when
+    // the cap shows up in profiling.
+
     [[nodiscard]] cd::core::Result<cd::rhi::TextureViewHandle>
-    create_texture_view(const cd::rhi::TextureViewDesc&) override { CD_D3D12_NOT_IMPL_RESULT(TextureViewHandle); }
-    void destroy_texture_view(cd::rhi::TextureViewHandle) override {}
+    create_texture_view(const cd::rhi::TextureViewDesc& desc) override
+    {
+        auto* trec = find_texture(desc.texture);
+        if (trec == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_texture_view: unknown parent texture handle"));
+        }
+        // 2D only for now — cube + 3D are Phase 124 follow-ups
+        // (matches the limit in create_texture).
+        if (desc.type != cd::rhi::TextureType::k2D)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_texture_view: only TextureType::k2D wired in v0.99.51"));
+        }
+
+        const DXGI_FORMAT view_fmt = (desc.format == cd::rhi::Format::kUndefined)
+            ? trec->format
+            : to_dxgi_format(desc.format);
+        if (view_fmt == DXGI_FORMAT_UNKNOWN)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_texture_view: unsupported view format"));
+        }
+
+        TextureViewRecord vrec;
+        vrec.parent = desc.texture;
+        vrec.format = view_fmt;
+
+        const auto u = static_cast<std::uint32_t>(trec->usage);
+        const bool is_rt    = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kColorAttachment)) != 0;
+        const bool is_depth = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kDepthStencilAttachment)) != 0;
+        const bool is_samp  = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kSampled)) != 0;
+        const bool is_uav   = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kStorage)) != 0;
+
+        if (is_rt)
+        {
+            if (auto r = ensure_rtv_pool_(); !r.has_value()) return std::unexpected(r.error());
+            if (rtv_cursor_ >= kViewPoolCap)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "create_texture_view: RTV pool exhausted"));
+            }
+            D3D12_CPU_DESCRIPTOR_HANDLE cpu = rtv_pool_->GetCPUDescriptorHandleForHeapStart();
+            cpu.ptr += static_cast<SIZE_T>(rtv_cursor_) * rtv_increment_;
+            ++rtv_cursor_;
+
+            D3D12_RENDER_TARGET_VIEW_DESC rd {};
+            rd.Format = view_fmt;
+            rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+            rd.Texture2D.MipSlice = desc.base_mip;
+            device_->CreateRenderTargetView(trec->resource.Get(), &rd, cpu);
+            vrec.rtv_cpu = cpu;
+        }
+        else if (is_depth)
+        {
+            if (auto r = ensure_dsv_pool_(); !r.has_value()) return std::unexpected(r.error());
+            if (dsv_cursor_ >= kViewPoolCap)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "create_texture_view: DSV pool exhausted"));
+            }
+            D3D12_CPU_DESCRIPTOR_HANDLE cpu = dsv_pool_->GetCPUDescriptorHandleForHeapStart();
+            cpu.ptr += static_cast<SIZE_T>(dsv_cursor_) * dsv_increment_;
+            ++dsv_cursor_;
+
+            D3D12_DEPTH_STENCIL_VIEW_DESC dd {};
+            dd.Format = view_fmt;
+            dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+            dd.Texture2D.MipSlice = desc.base_mip;
+            device_->CreateDepthStencilView(trec->resource.Get(), &dd, cpu);
+            // The DSV handle lives in a separate pool; we reuse rtv_cpu
+            // as the "primary attachment view slot" — begin_render_pass'
+            // depth-stencil path reads this slot when the parent texture
+            // was created with kDepthStencilAttachment usage.
+            vrec.rtv_cpu = cpu;
+        }
+        else if (is_samp || is_uav)
+        {
+            if (auto r = ensure_cpu_heap_(); !r.has_value()) return std::unexpected(r.error());
+            if (cpu_heap_cursor_ >= 4096)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "create_texture_view: SRV/UAV pool exhausted (4096 cap shared with descriptor sets)"));
+            }
+            D3D12_CPU_DESCRIPTOR_HANDLE cpu = cpu_heap_->GetCPUDescriptorHandleForHeapStart();
+            cpu.ptr += static_cast<SIZE_T>(cpu_heap_cursor_) * cpu_heap_increment_;
+            ++cpu_heap_cursor_;
+
+            if (is_samp)
+            {
+                D3D12_SHADER_RESOURCE_VIEW_DESC sd {};
+                sd.Format = view_fmt;
+                sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                sd.Texture2D.MostDetailedMip = desc.base_mip;
+                sd.Texture2D.MipLevels = (desc.mip_count == 0u) ? 1u : desc.mip_count;
+                sd.Texture2D.PlaneSlice = 0;
+                sd.Texture2D.ResourceMinLODClamp = 0.0F;
+                device_->CreateShaderResourceView(trec->resource.Get(), &sd, cpu);
+            }
+            else  // is_uav
+            {
+                D3D12_UNORDERED_ACCESS_VIEW_DESC ud {};
+                ud.Format = view_fmt;
+                ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                ud.Texture2D.MipSlice = desc.base_mip;
+                ud.Texture2D.PlaneSlice = 0;
+                device_->CreateUnorderedAccessView(trec->resource.Get(), nullptr, &ud, cpu);
+            }
+            vrec.rtv_cpu = cpu;
+        }
+        else
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_texture_view: parent texture has no view-creatable usage flag set"));
+        }
+
+        const auto id = next_id_++;
+        texture_views_.emplace(id, vrec);
+        return cd::rhi::TextureViewHandle { id, 1u };
+    }
+    void destroy_texture_view(cd::rhi::TextureViewHandle h) override
+    {
+        // Bump-allocator pools — handle entry is dropped, slot reuse
+        // requires a free-list pass (Phase 125 candidate).
+        texture_views_.erase(h.index());
+    }
 
     [[nodiscard]] cd::core::Result<cd::rhi::SamplerHandle>
     create_sampler(const cd::rhi::SamplerDesc&) override { CD_D3D12_NOT_IMPL_RESULT(SamplerHandle); }
@@ -1561,6 +1707,70 @@ private:
     ComPtr<ID3D12DescriptorHeap> cpu_heap_;
     UINT cpu_heap_increment_ { 0 };
     std::uint32_t cpu_heap_cursor_ { 0 };
+
+    // Phase 124 — device-level RTV / DSV pools for create_texture_view.
+    // Bump allocators. The swapchain RTV path uses its own per-swapchain
+    // heap (Phase 13.C); these pools are for non-swapchain attachments
+    // (depth target, offscreen colour pass, IBL render).
+    static constexpr std::uint32_t kViewPoolCap = 256;
+    ComPtr<ID3D12DescriptorHeap> rtv_pool_;
+    UINT                          rtv_increment_ { 0 };
+    std::uint32_t                 rtv_cursor_    { 0 };
+    ComPtr<ID3D12DescriptorHeap> dsv_pool_;
+    UINT                          dsv_increment_ { 0 };
+    std::uint32_t                 dsv_cursor_    { 0 };
+
+    [[nodiscard]] cd::core::Result<void> ensure_rtv_pool_()
+    {
+        if (rtv_pool_ != nullptr) return {};
+        D3D12_DESCRIPTOR_HEAP_DESC hd {};
+        hd.NumDescriptors = kViewPoolCap;
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_pool_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "RTV view-pool heap creation failed"));
+        }
+        rtv_increment_ = device_->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        return {};
+    }
+    [[nodiscard]] cd::core::Result<void> ensure_dsv_pool_()
+    {
+        if (dsv_pool_ != nullptr) return {};
+        D3D12_DESCRIPTOR_HEAP_DESC hd {};
+        hd.NumDescriptors = kViewPoolCap;
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_pool_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "DSV view-pool heap creation failed"));
+        }
+        dsv_increment_ = device_->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+        return {};
+    }
+    [[nodiscard]] cd::core::Result<void> ensure_cpu_heap_()
+    {
+        if (cpu_heap_ != nullptr) return {};
+        D3D12_DESCRIPTOR_HEAP_DESC hd {};
+        hd.NumDescriptors = 4096;
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&cpu_heap_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CPU descriptor heap creation failed (view path)"));
+        }
+        cpu_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        return {};
+    }
     // GPU-visible descriptor heap — populated per-bind by copying from
     // the CPU heap. Ring-buffer style allocator (16k slots) so frames
     // don't trample each other.
