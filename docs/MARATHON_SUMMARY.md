@@ -1,11 +1,13 @@
-# Marathon summary — Phase 13 → Phase 91 (v0.30.0 → v0.99.23)
+# Marathon summary — Phase 13 → Phase 97 (v0.30.0 → v0.99.29) — 100 tag milestone
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 23 patch releases (94 tags total)** shipped from the marathon's
-start (v0.30 baseline).
+**71 minor + 29 patch releases = 100 tags total** shipped from the
+marathon's start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.23). v1.0.0 sign-off authority is reserved to the user.
+through v0.99.29). v1.0.0 sign-off authority is reserved to the user.
+
+**🎉 100-tag milestone achieved at v0.99.29 (Phase 97).**
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -107,6 +109,12 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.21 | 89   | editor::PreferencesStore (variant) + io::Hex codec |
 | v0.99.22 | 90   | scene::Skybox + audio::PitchShift (resample) |
 | v0.99.23 | 91   | input::Hold + math::GammaSpace (Vec3 + approx) |
+| v0.99.24 | 92   | anim::BoneSocket + render::DrawBatchKey |
+| v0.99.25 | 93   | net::Throttle (token bucket) + ecs::Generation helpers |
+| v0.99.26 | 94   | physics::SpringJoint + ui::ContextMenu |
+| v0.99.27 | 95   | audio::Voice + concurrency::Flag (atomic bool) |
+| v0.99.28 | 96   | scene::Trigger + math::EulerAngles |
+| **v0.99.29** | **97** | **core::Assert + scene::SceneStats — 100-TAG MILESTONE** |
 
 ## Major capabilities added across the marathon
 
