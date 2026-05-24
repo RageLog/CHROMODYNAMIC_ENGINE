@@ -282,13 +282,70 @@ struct AccelStructureDesc
     std::string_view debug_name {};
 };
 
+/// Phase 118 — RT pipeline shader-stage tags. Mirrors
+/// `VkRayTracingShaderGroupTypeKHR` / DXR hit-group categories.
+enum class RtShaderStage : std::uint8_t
+{
+    kRaygen      = 0,   ///< origin generator — one per dispatch
+    kMiss        = 1,   ///< invoked when no hit found within tmax
+    kClosestHit  = 2,   ///< per-hit-group; runs at closest valid hit
+    kAnyHit      = 3,   ///< per-hit-group; runs per intersection (optional)
+    kIntersection = 4,  ///< custom primitive shader (optional)
+    kCallable    = 5,   ///< callable from any RT stage (optional)
+};
+
+/// One entry in the RT pipeline shader-stage list. The shader source is
+/// SPIR-V or GLSL the same way `MaterialDesc` consumes shaders.
+struct RtShaderEntry
+{
+    RtShaderStage      stage   { RtShaderStage::kRaygen };
+    std::string_view   glsl    {};   ///< pre-compiled SPIR-V bytes go via a parallel path
+    std::string_view   entry   { "main" };
+    /// Group index assigned by the caller. Same group index ties
+    /// closest-hit + any-hit + intersection into one hit group.
+    std::uint32_t      group   { 0 };
+};
+
+struct RtPipelineDesc
+{
+    std::span<const RtShaderEntry> shaders;
+    /// Maximum recursion depth for `traceRayEXT`. Vulkan + DXR both
+    /// guarantee at least 1; runtime queries the actual hardware
+    /// limit before pipeline creation.
+    std::uint32_t                  max_recursion { 1 };
+    /// Maximum payload size in bytes (rayPayloadEXT struct). 64 is the
+    /// typical default; tune up for thick payloads.
+    std::uint32_t                  max_payload_bytes { 64 };
+    /// Maximum hit-attribute size (intersect / any-hit communication).
+    std::uint32_t                  max_attribute_bytes { 32 };
+    std::string_view               debug_name {};
+};
+
+/// Shader binding table region. The actual SBT is one device-local
+/// buffer, but each region (raygen / miss / hit / callable) is a
+/// sub-range with its own stride. Mirrors the four
+/// `VkStridedDeviceAddressRegionKHR` parameters of
+/// `vkCmdTraceRaysKHR`.
+struct SbtRegion
+{
+    BufferHandle  buffer {};
+    std::uint64_t offset       { 0 };
+    std::uint64_t stride_bytes { 0 };
+    std::uint64_t size_bytes   { 0 };
+};
+
 struct DispatchRaysDesc
 {
-    std::uint32_t width { 0 };
+    std::uint32_t width  { 0 };
     std::uint32_t height { 0 };
-    std::uint32_t depth { 1 };
-    /// Shader binding table (raygen / miss / hit) lives in a separate
-    /// follow-up wave; this descriptor is the entry-point shape.
+    std::uint32_t depth  { 1 };
+    /// Phase 118: shader binding table regions. raygen is REQUIRED;
+    /// miss + hit are optional but typically present; callable is
+    /// optional. A region whose buffer is invalid is skipped.
+    SbtRegion     raygen   {};
+    SbtRegion     miss     {};
+    SbtRegion     hit      {};
+    SbtRegion     callable {};
 };
 
 // ---- Swapchain ------------------------------------------------------------
