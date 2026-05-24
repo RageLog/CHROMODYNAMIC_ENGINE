@@ -5,6 +5,7 @@
 // run tick(), inspect the resulting draw commands + selection state.
 // =============================================================================
 #include <algorithm>
+#include <cd/editor/Bookmark.hpp>
 #include <cd/editor/CommandPalette.hpp>
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/Editor.hpp>
@@ -344,4 +345,39 @@ TEST(SelectionSet, ClearResetsEverything)
     s.clear();
     EXPECT_TRUE(s.empty());
     EXPECT_FALSE(s.primary().is_valid());
+}
+
+TEST(BookmarkSet, AddAndApply)
+{
+    cd::editor::BookmarkSet bs;
+    cd::camera::Camera cam;
+    cam.eye = { 5, 6, 7 };
+    cam.target = { 8, 9, 10 };
+    bs.add("front", cam);
+    EXPECT_EQ(bs.size(), 1u);
+
+    cd::camera::Camera other;
+    EXPECT_TRUE(bs.apply(0, other));
+    EXPECT_FLOAT_EQ(other.eye.x, 5.0F);
+    EXPECT_FLOAT_EQ(other.target.z, 10.0F);
+}
+
+TEST(BookmarkSet, ApplyOutOfRangeRejected)
+{
+    cd::editor::BookmarkSet bs;
+    cd::camera::Camera cam;
+    EXPECT_FALSE(bs.apply(0, cam));   // empty set
+}
+
+TEST(BookmarkSet, RemoveCompacts)
+{
+    cd::editor::BookmarkSet bs;
+    cd::camera::Camera cam;
+    bs.add("a", cam);
+    bs.add("b", cam);
+    bs.add("c", cam);
+    bs.remove(1);   // drop "b"
+    EXPECT_EQ(bs.size(), 2u);
+    EXPECT_EQ(bs.at(0)->name, "a");
+    EXPECT_EQ(bs.at(1)->name, "c");
 }

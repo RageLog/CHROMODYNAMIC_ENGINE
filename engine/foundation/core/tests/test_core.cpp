@@ -1027,3 +1027,33 @@ TEST(ProfileRegistry, UnknownNameReturnsZero)
     EXPECT_EQ(s.count, 0u);
     EXPECT_EQ(s.total_ns, 0u);
 }
+
+#include <cd/core/RetryPolicy.hpp>
+
+TEST(RetryPolicy, FirstAttemptUsesBaseDelay)
+{
+    cd::core::RetryPolicy p { 5, 100, 5000, 2.0F };
+    EXPECT_EQ(p.attempt_delay_ms(1), 100u);
+}
+
+TEST(RetryPolicy, ExponentialBackoff)
+{
+    cd::core::RetryPolicy p { 5, 100, 5000, 2.0F };
+    EXPECT_EQ(p.attempt_delay_ms(2), 200u);
+    EXPECT_EQ(p.attempt_delay_ms(3), 400u);
+    EXPECT_EQ(p.attempt_delay_ms(4), 800u);
+}
+
+TEST(RetryPolicy, ClampsAtMaxDelay)
+{
+    cd::core::RetryPolicy p { 10, 100, 500, 2.0F };
+    EXPECT_LE(p.attempt_delay_ms(10), 500u);
+}
+
+TEST(RetryPolicy, ShouldRetryRespectsMaxAttempts)
+{
+    cd::core::RetryPolicy p { 3, 100, 5000, 2.0F };
+    EXPECT_TRUE(p.should_retry(1));
+    EXPECT_TRUE(p.should_retry(2));
+    EXPECT_FALSE(p.should_retry(3));
+}
