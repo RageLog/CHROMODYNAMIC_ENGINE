@@ -470,3 +470,33 @@ TEST(ClearColor, DebugMagentaIsObvious)
     EXPECT_FLOAT_EQ(c[1], 0.0F);
     EXPECT_FLOAT_EQ(c[2], 1.0F);
 }
+
+#include <cd/render/DrawBatchKey.hpp>
+
+TEST(DrawBatchKey, SizeIs24Bytes)
+{
+    EXPECT_EQ(sizeof(cd::render::DrawBatchKey), 24u);
+}
+
+TEST(DrawBatchKey, EqualityIsFieldwise)
+{
+    cd::render::DrawBatchKey a { 1, 2, 3, 4 };
+    cd::render::DrawBatchKey b { 1, 2, 3, 4 };
+    cd::render::DrawBatchKey c { 1, 2, 3, 5 };
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
+TEST(DrawBatchKey, HashStableAcrossEquals)
+{
+    cd::render::DrawBatchKey a { 0xAA, 0xBB, 0xCC, 0xDD };
+    cd::render::DrawBatchKey b { 0xAA, 0xBB, 0xCC, 0xDD };
+    EXPECT_EQ(a.hash(), b.hash());
+}
+
+TEST(DrawBatchKey, DifferentMeshDifferentHash)
+{
+    cd::render::DrawBatchKey a { 1, 0, 0, 0 };
+    cd::render::DrawBatchKey b { 2, 0, 0, 0 };
+    EXPECT_NE(a.hash(), b.hash());
+}

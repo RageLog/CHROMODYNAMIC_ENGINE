@@ -467,3 +467,32 @@ TEST(PoseAlign, VelocityZeroDtSafeFallback)
     auto v = cd::anim::root_velocity(p, c, 0.0F);
     EXPECT_FLOAT_EQ(v.x, 0.0F);
 }
+
+#include <cd/anim/BoneSocket.hpp>
+
+TEST(BoneSocketSet, AddAndFindByName)
+{
+    cd::anim::BoneSocketSet s;
+    cd::math::Transformf t;
+    t.position = { 0, 0.1F, 0 };
+    s.add("WeaponR_Slot", 7, t);
+    const auto* p = s.find("WeaponR_Slot");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p->bone_index, 7u);
+    EXPECT_FLOAT_EQ(p->local_offset.position.y, 0.1F);
+}
+
+TEST(BoneSocketSet, MissingNameReturnsNull)
+{
+    cd::anim::BoneSocketSet s;
+    EXPECT_EQ(s.find("nope"), nullptr);
+}
+
+TEST(BoneSocketSet, ClearEmpties)
+{
+    cd::anim::BoneSocketSet s;
+    s.add("a", 0);
+    s.add("b", 1);
+    s.clear();
+    EXPECT_EQ(s.size(), 0u);
+}
