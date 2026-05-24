@@ -237,4 +237,40 @@ TEST(Anchor, NestedParentOriginRespected)
     EXPECT_EQ(r.h, 300);
 }
 
+#include <cd/ui/Theme.hpp>
+
+TEST(Theme, DarkThemeHasDarkBackground)
+{
+    const auto t = cd::ui::dark_theme();
+    EXPECT_LT(t.background.r, 64);
+    EXPECT_LT(t.background.g, 64);
+    EXPECT_LT(t.background.b, 64);
+}
+
+TEST(Theme, LightThemeHasLightBackground)
+{
+    const auto t = cd::ui::light_theme();
+    EXPECT_GT(t.background.r, 192);
+    EXPECT_GT(t.background.g, 192);
+    EXPECT_GT(t.background.b, 192);
+}
+
+TEST(Theme, SpacingTokensIncrease)
+{
+    const auto t = cd::ui::dark_theme();
+    EXPECT_LT(t.pad_xs, t.pad_s);
+    EXPECT_LT(t.pad_s,  t.pad_m);
+    EXPECT_LT(t.pad_m,  t.pad_l);
+    EXPECT_LT(t.pad_l,  t.pad_xl);
+}
+
+TEST(Theme, Color32Equality)
+{
+    cd::ui::Color32 a { 1, 2, 3, 4 };
+    cd::ui::Color32 b { 1, 2, 3, 4 };
+    cd::ui::Color32 c { 5, 6, 7, 8 };
+    EXPECT_EQ(a, b);
+    EXPECT_FALSE(a == c);
+}
+
 }  // namespace

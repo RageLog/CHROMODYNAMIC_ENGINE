@@ -821,3 +821,34 @@ TEST(SimpleReverb, ResetZeroesState)
     // After reset the very next tick reads zero from the delay line.
     EXPECT_FLOAT_EQ(r.process(0.0F), 0.0F);
 }
+
+#include <cd/audio/Limiter.hpp>
+
+TEST(Limiter, BelowThresholdPassesUnaltered)
+{
+    cd::audio::Limiter lim;
+    lim.prepare(48000.0F, 0.95F);
+    // Several below-threshold ticks should converge gain → 1.
+    for (int i = 0; i < 200; ++i) (void)lim.process(0.3F);
+    EXPECT_NEAR(lim.current_gain(), 1.0F, 0.05F);
+}
+
+TEST(Limiter, AboveThresholdAttenuates)
+{
+    cd::audio::Limiter lim;
+    lim.prepare(48000.0F, 0.5F, 0.0005F, 0.05F);
+    float y = 0.0F;
+    for (int i = 0; i < 2000; ++i) y = lim.process(1.5F);  // way above
+    EXPECT_LT(std::fabs(y), 1.0F);
+    EXPECT_LT(lim.current_gain(), 1.0F);
+}
+
+TEST(Limiter, ResetReturnsToUnityGain)
+{
+    cd::audio::Limiter lim;
+    lim.prepare(48000.0F);
+    for (int i = 0; i < 200; ++i) (void)lim.process(2.0F);
+    lim.reset();
+    EXPECT_FLOAT_EQ(lim.current_gain(), 1.0F);
+    EXPECT_FLOAT_EQ(lim.envelope(), 0.0F);
+}
