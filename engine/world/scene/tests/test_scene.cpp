@@ -767,3 +767,41 @@ TEST(MarkerSet, AddOverwritesSameName)
     EXPECT_EQ(ms.size(), 1u);
     EXPECT_FLOAT_EQ(ms.find("Slot")->transform.position.x, 2.0F);
 }
+
+#include <cd/scene/Layer.hpp>
+
+TEST(LayerRegistry, AddReturnsIncrementingIndex)
+{
+    cd::scene::LayerRegistry r;
+    EXPECT_EQ(r.add("Background"), 0);
+    EXPECT_EQ(r.add("Geometry"), 1);
+    EXPECT_EQ(r.add("UI"), 2);
+    EXPECT_EQ(r.size(), 3u);
+}
+
+TEST(LayerRegistry, FindByNameReturnsIndex)
+{
+    cd::scene::LayerRegistry r;
+    r.add("Background");
+    r.add("UI");
+    EXPECT_EQ(r.find("UI"), 1);
+    EXPECT_EQ(r.find("Missing"), cd::scene::kInvalidLayer);
+}
+
+TEST(LayerRegistry, NameLookupReverse)
+{
+    cd::scene::LayerRegistry r;
+    r.add("Foreground");
+    EXPECT_EQ(r.name(0), "Foreground");
+    EXPECT_EQ(r.name(99), "");
+}
+
+TEST(LayerRegistry, ClearEmpties)
+{
+    cd::scene::LayerRegistry r;
+    r.add("a");
+    r.add("b");
+    r.clear();
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_EQ(r.find("a"), cd::scene::kInvalidLayer);
+}

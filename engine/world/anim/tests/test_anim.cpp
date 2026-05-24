@@ -397,3 +397,36 @@ TEST(EventTrack, AdvanceWindowExcludesStartInclusiveOfEnd)
     t.advance(0.0F, 0.2F, [&](std::uint32_t) { ++fired; });
     EXPECT_EQ(fired, 1u);   // 0.2 IS in (0.0, 0.2]
 }
+
+#include <cd/anim/BoneMask.hpp>
+
+TEST(BoneMask, DefaultWeightIsFullAfterResize)
+{
+    cd::anim::BoneMask m { 8 };
+    EXPECT_EQ(m.size(), 8u);
+    for (std::size_t i = 0; i < 8; ++i)
+        EXPECT_FLOAT_EQ(m.weight(i), 1.0F);
+}
+
+TEST(BoneMask, SetWeightClamps)
+{
+    cd::anim::BoneMask m { 4 };
+    m.set_weight(0, -1.0F);
+    m.set_weight(1, 2.0F);
+    EXPECT_FLOAT_EQ(m.weight(0), 0.0F);
+    EXPECT_FLOAT_EQ(m.weight(1), 1.0F);
+}
+
+TEST(BoneMask, OutOfRangeReadReturnsFullWeight)
+{
+    cd::anim::BoneMask m { 4 };
+    EXPECT_FLOAT_EQ(m.weight(100), 1.0F);
+}
+
+TEST(BoneMask, FillSetsAllWeights)
+{
+    cd::anim::BoneMask m { 4 };
+    m.fill(0.25F);
+    for (std::size_t i = 0; i < 4; ++i)
+        EXPECT_FLOAT_EQ(m.weight(i), 0.25F);
+}
