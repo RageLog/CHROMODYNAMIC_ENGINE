@@ -866,3 +866,47 @@ TEST(SequenceWindow, OutOfWindowRejected)
     EXPECT_TRUE(w.accept(100));
     EXPECT_FALSE(w.accept(80));  // too old
 }
+
+#include <cd/net/DeltaWriter.hpp>
+#include <cstring>
+
+TEST(DeltaWriter, EmptyChangesProducesEmptyMarker)
+{
+    std::array<std::byte, 16> base {};
+    std::array<std::byte, 16> cur {};
+    auto d = cd::net::write_delta(base, cur);
+    ASSERT_EQ(d.size(), 2u);   // just the count = 0 header
+    EXPECT_EQ(static_cast<std::uint8_t>(d[0]), 0u);
+    EXPECT_EQ(static_cast<std::uint8_t>(d[1]), 0u);
+}
+
+TEST(DeltaWriter, RoundTripThroughApply)
+{
+    std::array<std::byte, 32> base {};
+    std::array<std::byte, 32> cur  {};
+    cur[5]  = std::byte { 0xAB };
+    cur[10] = std::byte { 0xCD };
+    cur[20] = std::byte { 0xEF };
+    auto d = cd::net::write_delta(base, cur);
+    EXPECT_EQ(d.size(), 2u + 3u * 3u);
+
+    std::array<std::byte, 32> restored {};
+    ASSERT_TRUE(cd::net::apply_delta(restored, d));
+    EXPECT_EQ(std::memcmp(restored.data(), cur.data(), 32), 0);
+}
+
+TEST(DeltaWriter, MismatchedSizesProduceEmptyDelta)
+{
+    std::array<std::byte, 8>  a {};
+    std::array<std::byte, 16> b {};
+    auto d = cd::net::write_delta(a, b);
+    EXPECT_TRUE(d.empty());
+}
+
+TEST(DeltaWriter, TruncatedDeltaRejected)
+{
+    std::array<std::byte, 8> tgt {};
+    std::array<std::byte, 4> bad { std::byte{1}, std::byte{0},
+                                   std::byte{0}, std::byte{0} };
+    EXPECT_FALSE(cd::net::apply_delta(tgt, bad));
+}

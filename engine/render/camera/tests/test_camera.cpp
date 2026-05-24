@@ -165,3 +165,35 @@ TEST(CameraPath, ApplyWritesIntoCamera)
     EXPECT_FLOAT_EQ(cam.eye.x, 7.0F);
     EXPECT_FLOAT_EQ(cam.target.x, 8.0F);
 }
+
+#include <cd/camera/Lens.hpp>
+
+TEST(Lens, StandardLensYieldsReasonableFov)
+{
+    cd::camera::Lens l = cd::camera::lens_standard();
+    const float fov = l.fov_y_for(24.0F);
+    // 50mm on 24mm sensor → ~0.45 rad ≈ 26°
+    EXPECT_GT(fov, 0.4F);
+    EXPECT_LT(fov, 0.5F);
+}
+
+TEST(Lens, WideLensHasLargerFovThanTelephoto)
+{
+    auto wide = cd::camera::lens_wide().fov_y_for();
+    auto tele = cd::camera::lens_telephoto().fov_y_for();
+    EXPECT_GT(wide, tele);
+}
+
+TEST(Lens, ApplyToCameraUpdatesFovY)
+{
+    cd::camera::Camera cam;
+    const float before = cam.fov_y;
+    cd::camera::lens_portrait().apply_to(cam);
+    EXPECT_NE(cam.fov_y, before);
+}
+
+TEST(Lens, ZeroFocalLengthReturnsSafeFallback)
+{
+    cd::camera::Lens l { 0.0F, 1.4F, 5.0F };
+    EXPECT_FLOAT_EQ(l.fov_y_for(), 1.0F);
+}
