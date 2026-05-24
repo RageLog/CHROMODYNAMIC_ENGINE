@@ -430,3 +430,40 @@ TEST(BoneMask, FillSetsAllWeights)
     for (std::size_t i = 0; i < 4; ++i)
         EXPECT_FLOAT_EQ(m.weight(i), 0.25F);
 }
+
+#include <cd/anim/PoseAlign.hpp>
+
+TEST(PoseAlign, AlignSubtractsRestRoot)
+{
+    std::array<cd::math::Transformf, 2> frames {};
+    frames[0].position = { 10, 5, 0 };
+    frames[1].position = { 12, 5, 1 };
+    cd::math::Vec3f rest { 10, 5, 0 };
+    cd::anim::align_root_position(frames, rest);
+    EXPECT_FLOAT_EQ(frames[0].position.x, 0.0F);
+    EXPECT_FLOAT_EQ(frames[1].position.x, 2.0F);
+}
+
+TEST(PoseAlign, ComposeAddsWorldRoot)
+{
+    std::array<cd::math::Transformf, 1> frames {};
+    frames[0].position = { 1, 0, 0 };
+    cd::anim::compose_root_motion(frames, { 100, 0, 0 });
+    EXPECT_FLOAT_EQ(frames[0].position.x, 101.0F);
+}
+
+TEST(PoseAlign, VelocityFromPosDelta)
+{
+    cd::math::Transformf prev {}, cur {};
+    prev.position = { 0, 0, 0 };
+    cur.position = { 10, 0, 0 };
+    auto v = cd::anim::root_velocity(prev, cur, 0.5F);
+    EXPECT_FLOAT_EQ(v.x, 20.0F);   // 10 m / 0.5 s
+}
+
+TEST(PoseAlign, VelocityZeroDtSafeFallback)
+{
+    cd::math::Transformf p {}, c {};
+    auto v = cd::anim::root_velocity(p, c, 0.0F);
+    EXPECT_FLOAT_EQ(v.x, 0.0F);
+}

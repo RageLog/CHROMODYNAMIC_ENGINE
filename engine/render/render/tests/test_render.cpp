@@ -446,3 +446,27 @@ TEST(TextLayoutMetrics, NewlineIncrementsLineCount)
     EXPECT_FLOAT_EQ(m.width, 3.0F * 7.0F);   // longest line
     EXPECT_FLOAT_EQ(m.height, 28.0F);
 }
+
+#include <cd/render/ClearColorPreset.hpp>
+
+TEST(ClearColor, BlackIsZero)
+{
+    const auto c = cd::render::clear_black();
+    EXPECT_FLOAT_EQ(c[0], 0.0F);
+    EXPECT_FLOAT_EQ(c[3], 1.0F);
+}
+
+TEST(ClearColor, CornflowerBlue)
+{
+    const auto c = cd::render::clear_cornflower_blue();
+    EXPECT_NEAR(c[0], 0.392F, 1e-3F);
+    EXPECT_NEAR(c[2], 0.929F, 1e-3F);
+}
+
+TEST(ClearColor, DebugMagentaIsObvious)
+{
+    const auto c = cd::render::clear_debug_magenta();
+    EXPECT_FLOAT_EQ(c[0], 1.0F);
+    EXPECT_FLOAT_EQ(c[1], 0.0F);
+    EXPECT_FLOAT_EQ(c[2], 1.0F);
+}
