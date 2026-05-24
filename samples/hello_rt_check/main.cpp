@@ -65,23 +65,68 @@ int main()
     std::fprintf(stdout, "  ray_query         : %s\n", f.ray_query   ? "YES" : "no");
     std::fprintf(stdout, "  mesh_shader       : %s\n", f.mesh_shader ? "YES" : "no");
 
-    // Probe the API surface. v0.40.0 ships the shape with every backend
-    // returning kNotImplemented; this is the marathon-honest contract
-    // until the SBT + pipeline wave lands.
-    cd::rhi::AccelStructureDesc as_desc {};
-    as_desc.kind = cd::rhi::AccelStructureKind::kBottomLevel;
-    auto as_r = device.create_acceleration_structure(as_desc);
-    if (as_r.has_value())
+    // Phase 128 — probe BOTH BLAS and TLAS create paths. Phase 17.A
+    // landed BLAS; Phase 127 landed TLAS create. The build (and
+    // dispatch_rays + pipeline) are still queued for a follow-up
+    // wave; the contract here is "create-AS objects succeed if the
+    // adapter exposes RT".
     {
-        std::fprintf(stdout, "[rt] create_acceleration_structure: OK (handle valid)\n");
-        device.destroy_acceleration_structure(*as_r);
+        cd::rhi::AccelStructureDesc blas_desc {};
+        blas_desc.kind = cd::rhi::AccelStructureKind::kBottomLevel;
+        auto blas_r = device.create_acceleration_structure(blas_desc);
+        if (blas_r.has_value())
+        {
+            std::fprintf(stdout, "[rt] create_acceleration_structure(BLAS): OK\n");
+            device.destroy_acceleration_structure(*blas_r);
+        }
+        else
+        {
+            std::fprintf(stdout, "[rt] create_acceleration_structure(BLAS): %.*s\n",
+                         static_cast<int>(blas_r.error().message.size()),
+                         blas_r.error().message.data());
+        }
     }
-    else
     {
-        std::fprintf(stdout, "[rt] create_acceleration_structure: %.*s\n",
-                     static_cast<int>(as_r.error().message.size()),
-                     as_r.error().message.data());
+        // Single identity-transform instance referencing a null BLAS.
+        // The Vulkan TLAS-size query (Phase 127) doesn't deref the
+        // BLAS handle — it only needs instance COUNT.
+        cd::rhi::AccelInstance inst {};  // identity, mask=0xFF, valid defaults
+        const cd::rhi::AccelInstance one_inst[1] = { inst };
+        cd::rhi::AccelStructureDesc tlas_desc {};
+        tlas_desc.kind = cd::rhi::AccelStructureKind::kTopLevel;
+        tlas_desc.instances = std::span<const cd::rhi::AccelInstance>(one_inst);
+        auto tlas_r = device.create_acceleration_structure(tlas_desc);
+        if (tlas_r.has_value())
+        {
+            std::fprintf(stdout, "[rt] create_acceleration_structure(TLAS): OK\n");
+            device.destroy_acceleration_structure(*tlas_r);
+        }
+        else
+        {
+            std::fprintf(stdout, "[rt] create_acceleration_structure(TLAS): %.*s\n",
+                         static_cast<int>(tlas_r.error().message.size()),
+                         tlas_r.error().message.data());
+        }
     }
+
+    // Phase 118 — RT pipeline + SBT interface shape probe. We don't
+    // actually create a pipeline (backend still kNotImplemented);
+    // just verify the descriptor types compile + have the right
+    // sizes so a future backend wave can fill in CreateRayTracingPipelinesKHR.
+    static_assert(sizeof(cd::rhi::AccelInstance) == 64,
+                  "AccelInstance must match VkAccelerationStructureInstanceKHR layout");
+    static_assert(sizeof(cd::rhi::SbtRegion) >= 32,
+                  "SbtRegion should fit four 8-byte members");
+    std::fprintf(stdout,
+                 "[rt] RT pipeline descriptors (Phase 118 shape):\n"
+                 "      RtShaderEntry sz = %zu B\n"
+                 "      RtPipelineDesc sz = %zu B\n"
+                 "      SbtRegion sz      = %zu B\n"
+                 "      AccelInstance sz  = %zu B (must == 64)\n",
+                 sizeof(cd::rhi::RtShaderEntry),
+                 sizeof(cd::rhi::RtPipelineDesc),
+                 sizeof(cd::rhi::SbtRegion),
+                 sizeof(cd::rhi::AccelInstance));
 
     // Probe the command-buffer surface symmetrically.
     auto cb = device.create_command_buffer(cd::rhi::QueueType::kGraphics);
@@ -98,7 +143,7 @@ int main()
     }
 
     std::fprintf(stdout,
-                 "[rt] API surface present; backend implementation queued for"
-                 " a follow-up wave\n");
+                 "[rt] API surface fully present at v0.99.54; build/dispatch"
+                 " pipeline lands in a follow-up wave\n");
     return 0;
 }
