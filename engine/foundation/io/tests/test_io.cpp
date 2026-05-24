@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/io/BinaryStream.hpp>
 #include <cd/io/BitStream.hpp>
+#include <cd/io/ByteBuffer.hpp>
 #include <cd/io/Crc32.hpp>
 #include <cd/io/Endian.hpp>
 #include <cd/io/Framing.hpp>
@@ -400,4 +401,45 @@ TEST(PathUtils, ParentIsDirectoryPortion)
 {
     EXPECT_EQ(cd::io::parent("a/b/c.txt"), "a/b");
     EXPECT_EQ(cd::io::parent("file.txt"), "");
+}
+
+TEST(ByteBuffer, EmptyByDefault)
+{
+    cd::io::ByteBuffer b;
+    EXPECT_TRUE(b.empty());
+    EXPECT_EQ(b.size(), 0u);
+}
+
+TEST(ByteBuffer, AppendPodAccumulates)
+{
+    cd::io::ByteBuffer b;
+    b.append_pod<std::uint32_t>(0xDEADBEEF);
+    b.append_pod<std::uint16_t>(0x1234);
+    EXPECT_EQ(b.size(), 6u);
+}
+
+TEST(ByteBuffer, AppendSpanCopiesBytes)
+{
+    cd::io::ByteBuffer b;
+    std::array<std::byte, 4> src { std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4} };
+    b.append(src);
+    ASSERT_EQ(b.size(), 4u);
+    EXPECT_EQ(static_cast<std::uint8_t>(b.data()[2]), 3u);
+}
+
+TEST(ByteBuffer, ReleaseTransfersOwnership)
+{
+    cd::io::ByteBuffer b;
+    b.append_pod<std::uint32_t>(42u);
+    auto v = b.release();
+    EXPECT_EQ(v.size(), 4u);
+    EXPECT_TRUE(b.empty());
+}
+
+TEST(ByteBuffer, ClearEmpties)
+{
+    cd::io::ByteBuffer b;
+    b.append_pod<std::uint32_t>(1u);
+    b.clear();
+    EXPECT_TRUE(b.empty());
 }

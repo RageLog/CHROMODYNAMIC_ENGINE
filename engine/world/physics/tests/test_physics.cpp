@@ -527,3 +527,27 @@ TEST(InertiaTensor, InvMassReciprocal)
     auto m = cd::physics::solid_sphere(4.0F, 1.0F);
     EXPECT_FLOAT_EQ(m.inv_mass, 0.25F);
 }
+
+#include <cd/physics/SoftBodyParams.hpp>
+
+TEST(SoftBodyParams, DefaultsAreSane)
+{
+    cd::physics::SoftBodyParams p;
+    EXPECT_GT(p.stiffness, 0.0F);
+    EXPECT_GT(p.iterations, 0u);
+    EXPECT_FLOAT_EQ(p.gravity.y, -9.81F);
+}
+
+TEST(SoftBodyParams, ClothPresetSofterThanRope)
+{
+    auto cloth = cd::physics::soft_body_cloth_default();
+    auto rope  = cd::physics::soft_body_rope_default();
+    EXPECT_LT(cloth.stiffness, rope.stiffness);
+}
+
+TEST(SoftBodyParams, IterationsConfigurable)
+{
+    cd::physics::SoftBodyParams p;
+    p.iterations = 20;
+    EXPECT_EQ(p.iterations, 20u);
+}
