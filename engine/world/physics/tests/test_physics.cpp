@@ -551,3 +551,42 @@ TEST(SoftBodyParams, IterationsConfigurable)
     p.iterations = 20;
     EXPECT_EQ(p.iterations, 20u);
 }
+
+#include <cd/physics/ContactPoint.hpp>
+
+TEST(ContactManifold, EmptyByDefault)
+{
+    cd::physics::ContactManifold m;
+    EXPECT_TRUE(m.empty());
+    EXPECT_EQ(m.size(), 0u);
+}
+
+TEST(ContactManifold, AddAccumulates)
+{
+    cd::physics::ContactManifold m;
+    cd::physics::ContactPoint p;
+    p.world_position = { 1, 2, 3 };
+    p.penetration = 0.05F;
+    EXPECT_TRUE(m.add(p));
+    EXPECT_EQ(m.size(), 1u);
+    EXPECT_FLOAT_EQ(m.at(0).world_position.y, 2.0F);
+}
+
+TEST(ContactManifold, CapacityRejectsOverflow)
+{
+    cd::physics::ContactManifold m;
+    cd::physics::ContactPoint p;
+    for (int i = 0; i < 4; ++i) EXPECT_TRUE(m.add(p));
+    EXPECT_FALSE(m.add(p));   // capacity 4
+    EXPECT_EQ(m.size(), 4u);
+}
+
+TEST(ContactManifold, ClearEmpties)
+{
+    cd::physics::ContactManifold m;
+    cd::physics::ContactPoint p;
+    m.add(p);
+    m.add(p);
+    m.clear();
+    EXPECT_TRUE(m.empty());
+}

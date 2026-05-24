@@ -1066,3 +1066,28 @@ TEST(LatencyStats, MinMaxTracked)
     EXPECT_EQ(s.min_us(), 10000u);
     EXPECT_EQ(s.max_us(), 200000u);
 }
+
+#include <cd/net/QoSTier.hpp>
+
+TEST(QoSTier, CriticalIsHighestPriority)
+{
+    EXPECT_GT(cd::net::tier_priority(cd::net::QoSTier::kCritical),
+              cd::net::tier_priority(cd::net::QoSTier::kHigh));
+    EXPECT_GT(cd::net::tier_priority(cd::net::QoSTier::kHigh),
+              cd::net::tier_priority(cd::net::QoSTier::kNormal));
+}
+
+TEST(QoSTier, LowMayDrop)
+{
+    EXPECT_TRUE(cd::net::may_drop_on_congestion(cd::net::QoSTier::kLow));
+    EXPECT_TRUE(cd::net::may_drop_on_congestion(cd::net::QoSTier::kNormal));
+    EXPECT_FALSE(cd::net::may_drop_on_congestion(cd::net::QoSTier::kHigh));
+    EXPECT_FALSE(cd::net::may_drop_on_congestion(cd::net::QoSTier::kCritical));
+}
+
+TEST(QoSTier, HighRequiresReliable)
+{
+    EXPECT_TRUE(cd::net::requires_reliable_delivery(cd::net::QoSTier::kCritical));
+    EXPECT_TRUE(cd::net::requires_reliable_delivery(cd::net::QoSTier::kHigh));
+    EXPECT_FALSE(cd::net::requires_reliable_delivery(cd::net::QoSTier::kNormal));
+}
