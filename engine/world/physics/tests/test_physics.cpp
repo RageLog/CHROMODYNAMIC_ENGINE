@@ -492,3 +492,38 @@ TEST(Sweep, ImmediateContactReturnsTOIZero)
     EXPECT_TRUE(r.hit);
     EXPECT_FLOAT_EQ(r.toi, 0.0F);
 }
+
+#include <cd/physics/InertiaTensor.hpp>
+
+TEST(InertiaTensor, SolidSphereDiagonalEqual)
+{
+    auto m = cd::physics::solid_sphere(2.0F, 0.5F);
+    EXPECT_FLOAT_EQ(m.mass, 2.0F);
+    EXPECT_NEAR(m.inertia.x, 0.4F * 2.0F * 0.25F, 1e-5F);
+    EXPECT_FLOAT_EQ(m.inertia.x, m.inertia.y);
+    EXPECT_FLOAT_EQ(m.inertia.x, m.inertia.z);
+}
+
+TEST(InertiaTensor, SolidBoxAxisDependent)
+{
+    auto m = cd::physics::solid_box(12.0F, 2.0F, 4.0F, 6.0F);
+    // Ixx = (1/12) * 12 * (16 + 36) = 52
+    EXPECT_FLOAT_EQ(m.inertia.x, 52.0F);
+    // Iyy = (1/12) * 12 * (4 + 36) = 40
+    EXPECT_FLOAT_EQ(m.inertia.y, 40.0F);
+    // Izz = (1/12) * 12 * (4 + 16) = 20
+    EXPECT_FLOAT_EQ(m.inertia.z, 20.0F);
+}
+
+TEST(InertiaTensor, KinematicHasZeroInverses)
+{
+    auto m = cd::physics::kinematic();
+    EXPECT_FLOAT_EQ(m.inv_mass, 0.0F);
+    EXPECT_FLOAT_EQ(m.inv_inertia.x, 0.0F);
+}
+
+TEST(InertiaTensor, InvMassReciprocal)
+{
+    auto m = cd::physics::solid_sphere(4.0F, 1.0F);
+    EXPECT_FLOAT_EQ(m.inv_mass, 0.25F);
+}

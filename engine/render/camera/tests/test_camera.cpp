@@ -197,3 +197,40 @@ TEST(Lens, ZeroFocalLengthReturnsSafeFallback)
     cd::camera::Lens l { 0.0F, 1.4F, 5.0F };
     EXPECT_FLOAT_EQ(l.fov_y_for(), 1.0F);
 }
+
+#include <cd/camera/ViewportInfo.hpp>
+
+TEST(ViewportInfo, AspectComputation)
+{
+    cd::camera::ViewportInfo v { 0, 0, 1920, 1080 };
+    EXPECT_NEAR(cd::camera::aspect(v), 1.7778F, 1e-3F);
+}
+
+TEST(ViewportInfo, AspectZeroHeightSafeFallback)
+{
+    cd::camera::ViewportInfo v { 0, 0, 100, 0 };
+    EXPECT_FLOAT_EQ(cd::camera::aspect(v), 1.0F);
+}
+
+TEST(ViewportInfo, ScreenToNdcCorners)
+{
+    cd::camera::ViewportInfo v { 0, 0, 800, 600 };
+    float xn = 0.0F, yn = 0.0F;
+    cd::camera::screen_to_ndc(v, 0.0F, 0.0F, xn, yn);
+    EXPECT_FLOAT_EQ(xn, -1.0F);
+    EXPECT_FLOAT_EQ(yn,  1.0F);
+    cd::camera::screen_to_ndc(v, 800.0F, 600.0F, xn, yn);
+    EXPECT_FLOAT_EQ(xn,  1.0F);
+    EXPECT_FLOAT_EQ(yn, -1.0F);
+}
+
+TEST(ViewportInfo, RoundTrip)
+{
+    cd::camera::ViewportInfo v { 100, 200, 800, 600 };
+    float xn = 0.0F, yn = 0.0F;
+    cd::camera::screen_to_ndc(v, 500.0F, 400.0F, xn, yn);
+    float px = 0.0F, py = 0.0F;
+    cd::camera::ndc_to_screen(v, xn, yn, px, py);
+    EXPECT_NEAR(px, 500.0F, 1e-3F);
+    EXPECT_NEAR(py, 400.0F, 1e-3F);
+}
