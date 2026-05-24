@@ -353,3 +353,30 @@ TEST(Latch, ArriveAndWaitJoinsAllWorkers)
     for (auto& t : ts) t.join();
     EXPECT_TRUE(l.is_ready());
 }
+
+#include <cd/concurrency/Backoff.hpp>
+
+TEST(Backoff, StepCountsUp)
+{
+    cd::concurrency::Backoff b;
+    EXPECT_EQ(b.step(), 0u);
+    b.pause();
+    EXPECT_EQ(b.step(), 1u);
+    b.pause();
+    EXPECT_EQ(b.step(), 2u);
+}
+
+TEST(Backoff, ResetRestoresZero)
+{
+    cd::concurrency::Backoff b;
+    b.pause(); b.pause(); b.pause();
+    b.reset();
+    EXPECT_EQ(b.step(), 0u);
+}
+
+TEST(Backoff, StepCappedAt20)
+{
+    cd::concurrency::Backoff b;
+    for (int i = 0; i < 30; ++i) b.pause();
+    EXPECT_LE(b.step(), 20u);
+}

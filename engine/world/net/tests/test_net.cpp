@@ -828,3 +828,41 @@ TEST(PacketHeader, SizeIsEightBytes)
 {
     EXPECT_EQ(sizeof(cd::net::PacketHeader), 8u);
 }
+
+#include <cd/net/SequenceWindow.hpp>
+
+TEST(SequenceWindow, FirstAcceptIsTrue)
+{
+    cd::net::SequenceWindow<> w;
+    EXPECT_TRUE(w.accept(100));
+}
+
+TEST(SequenceWindow, AscendingSequenceAlwaysAccepted)
+{
+    cd::net::SequenceWindow<> w;
+    for (std::uint32_t i = 0; i < 100; ++i)
+        EXPECT_TRUE(w.accept(i));
+}
+
+TEST(SequenceWindow, DuplicateRejected)
+{
+    cd::net::SequenceWindow<> w;
+    EXPECT_TRUE(w.accept(10));
+    EXPECT_FALSE(w.accept(10));
+}
+
+TEST(SequenceWindow, OutOfOrderInsideWindowAccepted)
+{
+    cd::net::SequenceWindow<> w;
+    EXPECT_TRUE(w.accept(5));
+    EXPECT_TRUE(w.accept(8));
+    EXPECT_TRUE(w.accept(6));   // older but in window
+    EXPECT_FALSE(w.accept(6));  // now duplicate
+}
+
+TEST(SequenceWindow, OutOfWindowRejected)
+{
+    cd::net::SequenceWindow<8> w;
+    EXPECT_TRUE(w.accept(100));
+    EXPECT_FALSE(w.accept(80));  // too old
+}
