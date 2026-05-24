@@ -1001,3 +1001,28 @@ TEST(RleCodec, LongRunSplitsAt255)
     EXPECT_EQ(r[0], 255u);
     EXPECT_EQ(r[2], 45u);
 }
+
+#include <cd/net/SequenceId.hpp>
+
+TEST(SequenceId, NewerLessThanOlderViaWrap)
+{
+    using cd::net::seq_greater_than;
+    // u16 wrap: 65535 → 0 → 1 → ...
+    EXPECT_TRUE(seq_greater_than<std::uint16_t>(0, 65535));   // 0 is "newer" than 65535
+    EXPECT_FALSE(seq_greater_than<std::uint16_t>(65535, 0));
+}
+
+TEST(SequenceId, BasicMonotonic)
+{
+    using cd::net::seq_greater_than;
+    EXPECT_TRUE(seq_greater_than<std::uint16_t>(100, 50));
+    EXPECT_FALSE(seq_greater_than<std::uint16_t>(50, 100));
+    EXPECT_FALSE(seq_greater_than<std::uint16_t>(100, 100));   // equal not greater
+}
+
+TEST(SequenceId, DistanceWrapsModulo)
+{
+    using cd::net::seq_distance;
+    // Distance from 5 to 65535 (going backwards) should wrap as 6.
+    EXPECT_EQ(seq_distance<std::uint16_t>(5, 65535), 6);
+}

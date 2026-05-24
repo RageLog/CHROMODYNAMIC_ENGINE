@@ -467,3 +467,35 @@ TEST(SystemGraph, MissingDepIgnored)
     EXPECT_FALSE(r.has_cycle);
     EXPECT_EQ(r.order.size(), 1u);
 }
+
+#include <cd/ecs/QuerySig.hpp>
+
+namespace {
+struct Pos {};
+struct Vel {};
+struct Hp  {};
+}
+
+TEST(QuerySig, OrderIndependent)
+{
+    const auto a = cd::ecs::query_signature<Pos, Vel, Hp>();
+    const auto b = cd::ecs::query_signature<Hp, Pos, Vel>();
+    EXPECT_EQ(a, b);
+}
+
+TEST(QuerySig, DifferentSetsHaveDifferentSig)
+{
+    const auto a = cd::ecs::query_signature<Pos, Vel>();
+    const auto b = cd::ecs::query_signature<Pos, Hp>();
+    EXPECT_NE(a, b);
+}
+
+TEST(QuerySig, EmptyIsZero)
+{
+    EXPECT_EQ(cd::ecs::query_signature<>(), 0u);
+}
+
+TEST(QuerySig, SingleComponentNonZero)
+{
+    EXPECT_NE(cd::ecs::query_signature<Pos>(), 0u);
+}
