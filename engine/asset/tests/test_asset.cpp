@@ -444,3 +444,43 @@ TEST(LoadProfile, ClearEmptiesEverything)
     p.clear();
     EXPECT_EQ(p.sample_count(), 0u);
 }
+
+#include <cd/asset/HotReloadQueue.hpp>
+
+TEST(HotReloadQueue, DuplicateNotifyCoalesces)
+{
+    cd::asset::HotReloadQueue q;
+    auto id = cd::asset::AssetId::from_path("a.png");
+    q.notify(id);
+    q.notify(id);
+    q.notify(id);
+    EXPECT_EQ(q.pending_count(), 1u);
+    EXPECT_TRUE(q.is_pending(id));
+}
+
+TEST(HotReloadQueue, DrainEmptiesQueueAndFiresEachOnce)
+{
+    cd::asset::HotReloadQueue q;
+    q.notify(cd::asset::AssetId::from_path("a"));
+    q.notify(cd::asset::AssetId::from_path("b"));
+    q.notify(cd::asset::AssetId::from_path("c"));
+    int fired = 0;
+    q.drain([&](cd::asset::AssetId) { ++fired; });
+    EXPECT_EQ(fired, 3);
+    EXPECT_EQ(q.pending_count(), 0u);
+}
+
+TEST(HotReloadQueue, InvalidAssetIdIgnored)
+{
+    cd::asset::HotReloadQueue q;
+    q.notify(cd::asset::AssetId {});
+    EXPECT_EQ(q.pending_count(), 0u);
+}
+
+TEST(HotReloadQueue, ClearWithoutDrain)
+{
+    cd::asset::HotReloadQueue q;
+    q.notify(cd::asset::AssetId::from_path("x"));
+    q.clear();
+    EXPECT_EQ(q.pending_count(), 0u);
+}

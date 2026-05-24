@@ -852,3 +852,45 @@ TEST(Limiter, ResetReturnsToUnityGain)
     EXPECT_FLOAT_EQ(lim.current_gain(), 1.0F);
     EXPECT_FLOAT_EQ(lim.envelope(), 0.0F);
 }
+
+#include <cd/audio/Mixer.hpp>
+
+TEST(Mixer, DefaultGainPassesThrough)
+{
+    cd::audio::Mixer<4> m;
+    m.mix(0, 0.5F);
+    EXPECT_FLOAT_EQ(m.pull(), 0.5F);
+}
+
+TEST(Mixer, PullClearsAccumulator)
+{
+    cd::audio::Mixer<4> m;
+    m.mix(0, 1.0F);
+    (void)m.pull();
+    EXPECT_FLOAT_EQ(m.pull(), 0.0F);
+}
+
+TEST(Mixer, GainScalesContribution)
+{
+    cd::audio::Mixer<4> m;
+    m.set_gain(0, 0.5F);
+    m.set_gain(1, 0.25F);
+    m.mix(0, 1.0F);
+    m.mix(1, 1.0F);
+    EXPECT_FLOAT_EQ(m.pull(), 0.5F + 0.25F);
+}
+
+TEST(Mixer, NegativeGainClampedToZero)
+{
+    cd::audio::Mixer<4> m;
+    m.set_gain(0, -1.0F);
+    m.mix(0, 1.0F);
+    EXPECT_FLOAT_EQ(m.pull(), 0.0F);
+}
+
+TEST(Mixer, OutOfRangeChannelIgnored)
+{
+    cd::audio::Mixer<4> m;
+    m.mix(99, 1.0F);
+    EXPECT_FLOAT_EQ(m.pull(), 0.0F);
+}

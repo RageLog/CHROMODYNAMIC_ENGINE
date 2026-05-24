@@ -1,7 +1,7 @@
-# Marathon summary — Phase 13 → Phase 52 (v0.30.0 → v0.83.0)
+# Marathon summary — Phase 13 → Phase 55 (v0.30.0 → v0.86.0)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**55 minor releases** shipped from the marathon's start (v0.30 baseline).
+**58 minor releases** shipped from the marathon's start (v0.30 baseline).
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -64,6 +64,9 @@ priority, OpenGL was introduced as 3rd.
 | v0.81.0 | 50    | editor::SelectionSet + asset::LoadProfile |
 | v0.82.0 | 51    | render::PostProcessChain + ecs::Lifecycle |
 | v0.83.0 | 52    | shader::ShaderStageDesc + core::ProfileSpan |
+| v0.84.0 | 53    | net::DeltaWriter + camera::Lens (focal-length) |
+| v0.85.0 | 54    | physics::SweepResult + concurrency::ParallelFor |
+| v0.86.0 | 55    | audio::Mixer + asset::HotReloadQueue |
 
 ## Major capabilities added across the marathon
 
