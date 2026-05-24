@@ -400,6 +400,64 @@ TEST(AssetRegistryEvict, ZeroBytesIsNoOp)
     EXPECT_EQ(mem_cache.total_bytes(), 100u);
 }
 
+#include <cd/asset/AsyncStreamer.hpp>
+
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+TEST(AsyncStreamer, EnqueueAndComplete)
+{
+    std::atomic<int> load_calls { 0 };
+    cd::asset::AsyncStreamer streamer {
+        [&load_calls](cd::asset::AssetId) {
+            ++load_calls;
+            return true;  // success
+        }
+    };
+    streamer.start();
+    const auto id_a = cd::asset::AssetId::from_path("a");
+    const auto id_b = cd::asset::AssetId::from_path("b");
+    streamer.enqueue(cd::asset::StreamRequest { id_a, 1, 0 });
+    streamer.enqueue(cd::asset::StreamRequest { id_b, 5, 0 });
+
+    // Wait up to 1 second for both to finish.
+    for (int i = 0; i < 100; ++i)
+    {
+        if (load_calls.load() >= 2) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    streamer.stop();
+
+    EXPECT_GE(load_calls.load(), 2);
+    EXPECT_EQ(streamer.state_of(id_a), cd::asset::StreamState::kComplete);
+    EXPECT_EQ(streamer.state_of(id_b), cd::asset::StreamState::kComplete);
+}
+
+TEST(AsyncStreamer, FailureMarksFailed)
+{
+    cd::asset::AsyncStreamer streamer {
+        [](cd::asset::AssetId) { return false; }
+    };
+    streamer.start();
+    const auto id = cd::asset::AssetId::from_path("doomed");
+    streamer.enqueue(cd::asset::StreamRequest { id, 0, 0 });
+    for (int i = 0; i < 100; ++i)
+    {
+        if (streamer.state_of(id) == cd::asset::StreamState::kFailed) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    streamer.stop();
+    EXPECT_EQ(streamer.state_of(id), cd::asset::StreamState::kFailed);
+}
+
+TEST(AsyncStreamer, StopWithoutStartIsNoop)
+{
+    cd::asset::AsyncStreamer streamer { [](cd::asset::AssetId) { return true; } };
+    streamer.stop();  // should not crash, no thread started
+    EXPECT_FALSE(streamer.is_running());
+}
+
 #include <cd/asset/StreamRequest.hpp>
 
 TEST(StreamQueue, EmptyOnConstruction)
