@@ -151,6 +151,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.55 | 128 | **hello_rt_check extended** — probes BLAS + TLAS create, static_asserts `AccelInstance==64B`, prints `RtShaderEntry/RtPipelineDesc/SbtRegion` sizes; validates Phase 117/118/127 layout contract |
 | v0.99.56 | 129 | **D3D12 input-attachment** — `kInputAttachment` branch in update_descriptor_set wired to the Texture2D SRV path (D3D12 binds the same resource as both RTV + SRV — no subpass distinction); D3D12 NotImpl count 4 → 3 |
 | v0.99.57 | 130 | **Vulkan AccelRecord build-info** — deep-copies BLAS triangles + TLAS instances into the record at create time so a future cmd-buffer build path can rebuild the VkAccelerationStructureGeometryKHR list without the caller re-passing them |
+| v0.99.58 | 131 | **cd::rhi::DeferredDestroy** — header-only frame-fence-keyed destroy queue for transient scratch / staging buffers; enqueue(frame, action) + flush_completed(frame_id); unblocks Phase 132 Vulkan AS build cmd path |
 
 ## Major capabilities added across the marathon
 
