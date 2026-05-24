@@ -535,3 +535,39 @@ TEST(EventBus, UnsubscribeStopsCallback)
     bus.publish(TestEvent {});
     EXPECT_EQ(hits, 1);
 }
+
+#include <cd/concurrency/JobToken.hpp>
+
+TEST(JobToken, NewTokenIsNotSettled)
+{
+    cd::concurrency::JobToken t;
+    EXPECT_FALSE(t.is_cancelled());
+    EXPECT_FALSE(t.is_complete());
+    EXPECT_FALSE(t.is_settled());
+}
+
+TEST(JobToken, CancelPropagatesToCopy)
+{
+    cd::concurrency::JobToken a;
+    cd::concurrency::JobToken b = a;   // shared state
+    a.cancel();
+    EXPECT_TRUE(b.is_cancelled());
+    EXPECT_TRUE(b.is_settled());
+}
+
+TEST(JobToken, CompleteDistinctFromCancel)
+{
+    cd::concurrency::JobToken t;
+    t.complete();
+    EXPECT_TRUE(t.is_complete());
+    EXPECT_FALSE(t.is_cancelled());
+}
+
+TEST(JobToken, WaitUnblocksOnCancel)
+{
+    cd::concurrency::JobToken t;
+    std::thread worker([t] { t.cancel(); });
+    t.wait();
+    EXPECT_TRUE(t.is_cancelled());
+    worker.join();
+}

@@ -359,3 +359,33 @@ TEST(PostProcessChain, InsertionOrderPreserved)
     EXPECT_EQ(c.passes()[0].name, "First");
     EXPECT_EQ(c.passes()[2].name, "Third");
 }
+
+#include <cd/render/Tonemap.hpp>
+
+TEST(Tonemap, ReinhardMapsZeroToZero)
+{
+    EXPECT_FLOAT_EQ(cd::render::tonemap_reinhard(0.0F), 0.0F);
+}
+
+TEST(Tonemap, ReinhardAsymptoticToOne)
+{
+    EXPECT_LT(cd::render::tonemap_reinhard(100.0F), 1.0F);
+    EXPECT_GT(cd::render::tonemap_reinhard(100.0F), 0.95F);
+}
+
+TEST(Tonemap, AcesFittedClampedToUnitRange)
+{
+    for (float x : { 0.0F, 0.5F, 1.0F, 5.0F, 100.0F })
+    {
+        const float v = cd::render::tonemap_aces_fitted(x);
+        EXPECT_GE(v, 0.0F);
+        EXPECT_LE(v, 1.0F);
+    }
+}
+
+TEST(Tonemap, Uncharted2ProducesFiniteOutput)
+{
+    const float v = cd::render::tonemap_uncharted2(2.0F);
+    EXPECT_GT(v, 0.0F);
+    EXPECT_LT(v, 5.0F);
+}
