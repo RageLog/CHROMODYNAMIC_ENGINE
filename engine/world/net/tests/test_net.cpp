@@ -1091,3 +1091,41 @@ TEST(QoSTier, HighRequiresReliable)
     EXPECT_TRUE(cd::net::requires_reliable_delivery(cd::net::QoSTier::kHigh));
     EXPECT_FALSE(cd::net::requires_reliable_delivery(cd::net::QoSTier::kNormal));
 }
+
+#include <cd/net/Throttle.hpp>
+
+TEST(Throttle, StartsFull)
+{
+    cd::net::Throttle t { 10.0F, 5.0F };
+    EXPECT_FLOAT_EQ(t.tokens(), 10.0F);
+}
+
+TEST(Throttle, ConsumeDecreasesTokens)
+{
+    cd::net::Throttle t { 10.0F, 5.0F };
+    EXPECT_TRUE(t.try_consume(3.0F));
+    EXPECT_FLOAT_EQ(t.tokens(), 7.0F);
+}
+
+TEST(Throttle, ConsumeOverBudgetFails)
+{
+    cd::net::Throttle t { 5.0F, 1.0F };
+    EXPECT_FALSE(t.try_consume(10.0F));
+    EXPECT_FLOAT_EQ(t.tokens(), 5.0F);
+}
+
+TEST(Throttle, UpdateRegeneratesTokens)
+{
+    cd::net::Throttle t { 10.0F, 5.0F };
+    (void)t.try_consume(8.0F);
+    t.update(1.0F);
+    EXPECT_FLOAT_EQ(t.tokens(), 7.0F);   // 2 + 5*1 = 7
+}
+
+TEST(Throttle, UpdateClampsToCapacity)
+{
+    cd::net::Throttle t { 10.0F, 100.0F };
+    (void)t.try_consume(2.0F);
+    t.update(10.0F);
+    EXPECT_FLOAT_EQ(t.tokens(), 10.0F);
+}

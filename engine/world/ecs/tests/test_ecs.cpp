@@ -545,3 +545,35 @@ TEST(ComponentMask, SubsetCheck)
     EXPECT_TRUE(cd::ecs::mask_subset(a, abc));
     EXPECT_FALSE(cd::ecs::mask_subset(abc, a));
 }
+
+#include <cd/ecs/Generation.hpp>
+
+TEST(Generation, IsNullForDefaultEntity)
+{
+    cd::ecs::Entity e;
+    EXPECT_TRUE(cd::ecs::is_null(e));
+}
+
+TEST(Generation, IsNotNullAfterGenerationSet)
+{
+    cd::ecs::Entity e { 1, 1 };
+    EXPECT_FALSE(cd::ecs::is_null(e));
+}
+
+TEST(Generation, SameGenerationMatchesId)
+{
+    cd::ecs::Entity a { 5, 2 };
+    cd::ecs::Entity b { 5, 2 };
+    cd::ecs::Entity c { 5, 3 };
+    cd::ecs::Entity d { 6, 2 };
+    EXPECT_TRUE(cd::ecs::same_generation(a, b));
+    EXPECT_FALSE(cd::ecs::same_generation(a, c));
+    EXPECT_FALSE(cd::ecs::same_generation(a, d));
+}
+
+TEST(Generation, StaleDetectsOldHandle)
+{
+    cd::ecs::Entity handle { 5, 2 };
+    EXPECT_FALSE(cd::ecs::stale(handle, 2));
+    EXPECT_TRUE(cd::ecs::stale(handle, 3));   // entity recycled
+}
