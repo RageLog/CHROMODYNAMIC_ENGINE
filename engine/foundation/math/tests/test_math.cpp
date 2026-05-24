@@ -1247,3 +1247,32 @@ TEST(GammaSpace, ApproxGamma22)
     const float b = cd::math::srgb_to_linear_approx(0.5F);
     EXPECT_NEAR(a, b, 0.05F);
 }
+
+#include <cd/math/EulerAngles.hpp>
+
+TEST(EulerAngles, ZeroProducesIdentityQuat)
+{
+    auto q = cd::math::euler_xyz_to_quat({ 0, 0, 0 });
+    EXPECT_NEAR(q.w, 1.0F, 1e-5F);
+    EXPECT_NEAR(q.x, 0.0F, 1e-5F);
+    EXPECT_NEAR(q.y, 0.0F, 1e-5F);
+    EXPECT_NEAR(q.z, 0.0F, 1e-5F);
+}
+
+TEST(EulerAngles, ResultingQuatIsUnitLength)
+{
+    // Round-trip Euler ↔ Euler is convention-sensitive; the
+    // load-bearing property is that the forward quaternion is
+    // unit-length so it can feed slerp / rotation safely.
+    auto q = cd::math::euler_xyz_to_quat({ 0.3F, 0.5F, -0.4F });
+    const float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    EXPECT_NEAR(len, 1.0F, 1e-4F);
+}
+
+TEST(EulerAngles, YawOnlyQuatHasOnlyY)
+{
+    auto q = cd::math::euler_xyz_to_quat({ 0, 1.5707963F, 0 });   // 90° yaw
+    EXPECT_NEAR(q.x, 0.0F, 1e-4F);
+    EXPECT_NEAR(q.z, 0.0F, 1e-4F);
+    EXPECT_GT(std::fabs(q.y), 0.5F);
+}

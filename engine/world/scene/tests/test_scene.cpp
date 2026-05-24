@@ -948,3 +948,44 @@ TEST(Skybox, TintAndIntensityIndependent)
     EXPECT_FLOAT_EQ(s.intensity, 2.0F);
     EXPECT_FLOAT_EQ(s.rotation_y, 0.5F);
 }
+
+#include <cd/scene/Trigger.hpp>
+
+TEST(Trigger, OnEnterFiresWhenEntering)
+{
+    cd::physics::Aabb v { { -1, -1, -1 }, { 1, 1, 1 } };
+    cd::scene::Trigger t { "Zone", v };
+    int enters = 0;
+    t.set_on_enter([&](cd::ecs::Entity) { ++enters; });
+    cd::ecs::Entity e { 1, 1 };
+    t.update(e, { 5, 0, 0 });   // outside
+    EXPECT_EQ(enters, 0);
+    t.update(e, { 0, 0, 0 });   // inside
+    EXPECT_EQ(enters, 1);
+    t.update(e, { 0.5F, 0, 0 });   // still inside — no re-fire
+    EXPECT_EQ(enters, 1);
+}
+
+TEST(Trigger, OnExitFiresWhenLeaving)
+{
+    cd::physics::Aabb v { { -1, -1, -1 }, { 1, 1, 1 } };
+    cd::scene::Trigger t { "Zone", v };
+    int exits = 0;
+    t.set_on_exit([&](cd::ecs::Entity) { ++exits; });
+    cd::ecs::Entity e { 1, 1 };
+    t.update(e, { 0, 0, 0 });    // enter
+    t.update(e, { 5, 0, 0 });    // exit
+    EXPECT_EQ(exits, 1);
+    EXPECT_FALSE(t.is_occupied());
+}
+
+TEST(Trigger, NeverEnteredDoesNotFireExit)
+{
+    cd::physics::Aabb v { { -1, -1, -1 }, { 1, 1, 1 } };
+    cd::scene::Trigger t { "Zone", v };
+    int exits = 0;
+    t.set_on_exit([&](cd::ecs::Entity) { ++exits; });
+    cd::ecs::Entity e { 1, 1 };
+    t.update(e, { 5, 0, 0 });
+    EXPECT_EQ(exits, 0);
+}
