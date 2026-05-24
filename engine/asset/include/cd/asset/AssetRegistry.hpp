@@ -15,6 +15,7 @@
 
 #include <cd/asset/AssetId.hpp>
 #include <cd/asset/IAssetLoader.hpp>
+#include <cd/asset/MemoryCache.hpp>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
 #include <cd/vfs/VirtualFileSystem.hpp>
@@ -163,6 +164,38 @@ public:
     {
         std::unique_lock guard { mutex_ };
         cache_.clear();
+    }
+
+    /// Phase 113 — LRU eviction driven by an external MemoryCache. The
+    /// caller is responsible for `memory_cache.touch(id, bytes)` whenever
+    /// it knows an asset's byte cost (typically right after `load()`);
+    /// `evict(...)` then asks the cache for victims and drops them from
+    /// both the registry's `cache_` and the memory cache's tracking
+    /// table. Returns the number of assets actually evicted.
+    ///
+    /// Decoupling rationale: IAsset has no `byte_size()` virtual, so the
+    /// registry can't unilaterally know an asset's footprint. Pushing
+    /// the accounting outside lets gameplay / streamer code report the
+    /// cost it knows (texture VRAM, mesh vertex bytes, decompressed
+    /// audio buffer length) without forcing every loader to implement
+    /// a size method.
+    std::size_t evict(MemoryCache& memory_cache, std::uint64_t release_bytes)
+    {
+        if (release_bytes == 0)
+            return 0;
+        const auto victims = memory_cache.victims(release_bytes);
+        std::size_t evicted = 0;
+        for (const auto id : victims)
+        {
+            {
+                std::unique_lock guard { mutex_ };
+                if (cache_.erase(id) == 0)
+                    continue;  // already gone — skip the count
+            }
+            memory_cache.forget(id);
+            ++evicted;
+        }
+        return evicted;
     }
 
     [[nodiscard]] std::size_t loader_count() const

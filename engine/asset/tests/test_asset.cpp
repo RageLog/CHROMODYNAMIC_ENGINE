@@ -353,6 +353,53 @@ TEST(MemoryCache, VictimsReturnsOldestFirst)
     EXPECT_EQ(v[0], id_b);   // oldest after re-touch
 }
 
+TEST(AssetRegistryEvict, DropsLruVictimsAndClearsMemoryCache)
+{
+    // Phase 113 — `AssetRegistry::evict()` consults a MemoryCache for
+    // LRU victim selection, then drops them from both the registry
+    // cache and the memory cache.
+    cd::vfs::VirtualFileSystem vfs;
+    cd::asset::AssetRegistry registry { vfs };
+    cd::asset::MemoryCache mem_cache;
+
+    const auto id_old = cd::asset::AssetId::from_path("oldest");
+    const auto id_mid = cd::asset::AssetId::from_path("mid");
+    const auto id_new = cd::asset::AssetId::from_path("newest");
+
+    registry.install(id_old, std::make_unique<cd::asset::TextAsset>("oldest"));
+    mem_cache.touch(id_old, 1024);
+    registry.install(id_mid, std::make_unique<cd::asset::TextAsset>("mid"));
+    mem_cache.touch(id_mid, 1024);
+    registry.install(id_new, std::make_unique<cd::asset::TextAsset>("newest"));
+    mem_cache.touch(id_new, 1024);
+
+    EXPECT_EQ(registry.cached_count(), 3u);
+    EXPECT_EQ(mem_cache.total_bytes(), 3072u);
+
+    // Request 1500 bytes — should evict the two oldest (oldest + mid).
+    const std::size_t n = registry.evict(mem_cache, /*release_bytes=*/1500);
+    EXPECT_EQ(n, 2u);
+    EXPECT_EQ(registry.cached_count(), 1u);
+    EXPECT_EQ(mem_cache.total_bytes(), 1024u);
+    EXPECT_TRUE(registry.find(id_new) != nullptr);   // newest survives
+    EXPECT_TRUE(registry.find(id_old) == nullptr);
+    EXPECT_TRUE(registry.find(id_mid) == nullptr);
+}
+
+TEST(AssetRegistryEvict, ZeroBytesIsNoOp)
+{
+    cd::vfs::VirtualFileSystem vfs;
+    cd::asset::AssetRegistry registry { vfs };
+    cd::asset::MemoryCache mem_cache;
+    const auto id = cd::asset::AssetId::from_path("only");
+    registry.install(id, std::make_unique<cd::asset::TextAsset>("only"));
+    mem_cache.touch(id, 100);
+    const std::size_t n = registry.evict(mem_cache, 0);
+    EXPECT_EQ(n, 0u);
+    EXPECT_EQ(registry.cached_count(), 1u);
+    EXPECT_EQ(mem_cache.total_bytes(), 100u);
+}
+
 #include <cd/asset/StreamRequest.hpp>
 
 TEST(StreamQueue, EmptyOnConstruction)

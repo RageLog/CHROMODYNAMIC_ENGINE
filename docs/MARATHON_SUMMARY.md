@@ -130,6 +130,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.40 | 121 | **Serializer metadata round-trip** — serialize_scene_with / deserialize_scene_with template overloads accept a per-node write/read callback; hello_editor save/load preserves entity name + tint + mesh kind across reloads |
 | v0.99.41 | 111 | **CommandPalette wired into hello_editor** — Ctrl+Shift+P opens a VS-Code-style fuzzy palette with 8 commands (Undo/Redo/Select Cube/Sphere/Cone/Reset/Help); Enter fast-path on first match |
 | v0.99.42 | 112 | **hello_random distribution viz** — ASCII histograms for PCG32 uniform + Box-Muller normal + 2-stream Pearson correlation + determinism check |
+| v0.99.43 | 113 | **AssetRegistry::evict** — LRU eviction wired through MemoryCache; drops victim assets from both the registry cache and the memory accountant; 2 new gtests; MemoryCache.hpp `<algorithm>` include fix |
 
 ## Major capabilities added across the marathon
 

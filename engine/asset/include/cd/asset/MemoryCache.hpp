@@ -20,8 +20,10 @@
 #include <cd/asset/AssetId.hpp>
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cd::asset
