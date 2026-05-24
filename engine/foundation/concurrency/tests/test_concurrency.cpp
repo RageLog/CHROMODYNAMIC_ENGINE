@@ -638,3 +638,46 @@ TEST(TaskGroup, WaitIsIdempotent)
     g.wait();   // second call: no-op
     EXPECT_EQ(g.size(), 0u);
 }
+
+#include <cd/concurrency/Flag.hpp>
+
+TEST(Flag, InitialFalse)
+{
+    cd::concurrency::Flag f;
+    EXPECT_FALSE(f.is_raised());
+}
+
+TEST(Flag, InitialTrue)
+{
+    cd::concurrency::Flag f { true };
+    EXPECT_TRUE(f.is_raised());
+}
+
+TEST(Flag, RaiseLowerToggle)
+{
+    cd::concurrency::Flag f;
+    f.raise();
+    EXPECT_TRUE(f.is_raised());
+    f.lower();
+    EXPECT_FALSE(f.is_raised());
+}
+
+TEST(Flag, TryLowerReturnsPrev)
+{
+    cd::concurrency::Flag f { true };
+    EXPECT_TRUE(f.try_lower());   // was true → returned true
+    EXPECT_FALSE(f.try_lower());  // now false → returned false
+    EXPECT_FALSE(f.is_raised());
+}
+
+TEST(Flag, WaitUnblocksFromOtherThread)
+{
+    cd::concurrency::Flag f;
+    std::thread raiser([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        f.raise();
+    });
+    f.wait_until_raised();
+    EXPECT_TRUE(f.is_raised());
+    raiser.join();
+}

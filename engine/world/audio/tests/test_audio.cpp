@@ -1020,3 +1020,51 @@ TEST(PitchShift, EmptySourceReturnsZero)
     p.prepare(std::span<const float> {}, 0.0F);
     EXPECT_FLOAT_EQ(p.process(), 0.0F);
 }
+
+#include <cd/audio/Voice.hpp>
+
+TEST(Voice, IdleByDefault)
+{
+    cd::audio::Voice v;
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
+    EXPECT_FALSE(v.is_active());
+}
+
+TEST(Voice, PlayThenAdvanceToFinish)
+{
+    cd::audio::Voice v;
+    v.play(/*sample_count=*/10, /*loop=*/false);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPlaying);
+    v.advance(15.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kFinished);
+}
+
+TEST(Voice, LoopWrapsReadPos)
+{
+    cd::audio::Voice v;
+    v.play(10, true);
+    v.advance(12.0F);
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPlaying);
+    EXPECT_LT(v.read_pos(), 10.0F);
+}
+
+TEST(Voice, PauseResumeRoundTrip)
+{
+    cd::audio::Voice v;
+    v.play(100);
+    v.pause();
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPaused);
+    v.advance(50.0F);   // pausedda hareket etmemeli
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+    v.resume();
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kPlaying);
+}
+
+TEST(Voice, StopResetsToIdle)
+{
+    cd::audio::Voice v;
+    v.play(100);
+    v.stop();
+    EXPECT_EQ(v.state(), cd::audio::VoiceState::kIdle);
+    EXPECT_FLOAT_EQ(v.read_pos(), 0.0F);
+}
