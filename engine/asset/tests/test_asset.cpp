@@ -402,3 +402,45 @@ TEST(StreamQueue, MarkFailedUpdatesState)
     q.mark_failed(id);
     EXPECT_EQ(q.state_of(id), cd::asset::StreamState::kFailed);
 }
+
+#include <cd/asset/LoadProfile.hpp>
+
+TEST(LoadProfile, RecordsSamples)
+{
+    cd::asset::LoadProfile p;
+    auto id = cd::asset::AssetId::from_path("model.gltf");
+    p.record(id, 1000);
+    p.record(id, 3000);
+    EXPECT_EQ(p.count(id), 2u);
+    EXPECT_EQ(p.total_us(id), 4000u);
+    EXPECT_EQ(p.mean_us(id), 2000u);
+}
+
+TEST(LoadProfile, SlowestNReturnsTopByDuration)
+{
+    cd::asset::LoadProfile p;
+    p.record(cd::asset::AssetId::from_path("a"), 100);
+    p.record(cd::asset::AssetId::from_path("b"), 500);
+    p.record(cd::asset::AssetId::from_path("c"), 200);
+    auto top = p.slowest(2);
+    ASSERT_EQ(top.size(), 2u);
+    EXPECT_EQ(top[0].duration_us, 500u);
+    EXPECT_EQ(top[1].duration_us, 200u);
+}
+
+TEST(LoadProfile, UnseenIdReturnsZero)
+{
+    cd::asset::LoadProfile p;
+    auto unknown = cd::asset::AssetId::from_path("nope");
+    EXPECT_EQ(p.count(unknown), 0u);
+    EXPECT_EQ(p.total_us(unknown), 0u);
+    EXPECT_EQ(p.mean_us(unknown), 0u);
+}
+
+TEST(LoadProfile, ClearEmptiesEverything)
+{
+    cd::asset::LoadProfile p;
+    p.record(cd::asset::AssetId::from_path("a"), 100);
+    p.clear();
+    EXPECT_EQ(p.sample_count(), 0u);
+}

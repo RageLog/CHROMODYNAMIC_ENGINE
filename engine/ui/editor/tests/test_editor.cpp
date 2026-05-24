@@ -5,7 +5,11 @@
 // run tick(), inspect the resulting draw commands + selection state.
 // =============================================================================
 #include <algorithm>
+#include <cd/editor/CommandPalette.hpp>
+#include <cd/editor/EditHistory.hpp>
 #include <cd/editor/Editor.hpp>
+#include <cd/editor/SelectionSet.hpp>
+#include <cd/editor/TransformCommands.hpp>
 #include <gtest/gtest.h>
 
 namespace
@@ -84,9 +88,6 @@ TEST(Editor, InputContextStateUpdatedByPushEvent)
 }  // namespace
 
 // ---- Phase 12.C / v0.28.0 — EditHistory + TransformCommands ----
-
-#include <cd/editor/EditHistory.hpp>
-#include <cd/editor/TransformCommands.hpp>
 
 namespace
 {
@@ -246,8 +247,6 @@ TEST(TransformCommands, RotateUndoRedoRoundTrip)
     EXPECT_FLOAT_EQ(scene.local(entity)->value.rotation.y, target.y);
 }
 
-#include <cd/editor/CommandPalette.hpp>
-
 TEST(CommandPalette, EmptyQueryReturnsAll)
 {
     cd::editor::CommandPalette p;
@@ -294,3 +293,55 @@ TEST(CommandPalette, ReRegisterOverwrites)
 }
 
 }  // namespace
+
+TEST(SelectionSet, EmptyByDefault)
+{
+    cd::editor::SelectionSet s;
+    EXPECT_TRUE(s.empty());
+    EXPECT_EQ(s.size(), 0u);
+    EXPECT_FALSE(s.primary().is_valid());
+}
+
+TEST(SelectionSet, AddInsertsAndSetsPrimary)
+{
+    cd::editor::SelectionSet s;
+    cd::ecs::Entity a { 1, 1 };
+    cd::ecs::Entity b { 2, 1 };
+    s.add(a);
+    s.add(b);
+    EXPECT_TRUE(s.contains(a));
+    EXPECT_TRUE(s.contains(b));
+    EXPECT_EQ(s.primary(), b);   // most-recently-added
+    EXPECT_EQ(s.size(), 2u);
+}
+
+TEST(SelectionSet, DuplicateAddIsNoOp)
+{
+    cd::editor::SelectionSet s;
+    cd::ecs::Entity a { 5, 1 };
+    s.add(a);
+    s.add(a);
+    EXPECT_EQ(s.size(), 1u);
+}
+
+TEST(SelectionSet, RemoveDropsAndAdjustsPrimary)
+{
+    cd::editor::SelectionSet s;
+    cd::ecs::Entity a { 1, 1 };
+    cd::ecs::Entity b { 2, 1 };
+    s.add(a); s.add(b);
+    s.remove(b);
+    EXPECT_FALSE(s.contains(b));
+    EXPECT_TRUE(s.primary().is_valid());
+    EXPECT_NE(s.primary(), b);
+}
+
+TEST(SelectionSet, ClearResetsEverything)
+{
+    cd::editor::SelectionSet s;
+    s.add(cd::ecs::Entity { 1, 1 });
+    s.add(cd::ecs::Entity { 2, 1 });
+    s.clear();
+    EXPECT_TRUE(s.empty());
+    EXPECT_FALSE(s.primary().is_valid());
+}
