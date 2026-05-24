@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/BlendPresets.hpp>
+#include <cd/rhi/DepthStencilPresets.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Enums.hpp>
 #include <cd/rhi/Format.hpp>
@@ -340,6 +341,35 @@ TEST(BlendPresets, PremultipliedUsesOneAsSourceColor)
     EXPECT_TRUE(s.blend_enable);
     EXPECT_EQ(s.src_color, cd::rhi::BlendFactor::kOne);
     EXPECT_EQ(s.dst_color, cd::rhi::BlendFactor::kOneMinusSrcAlpha);
+}
+
+TEST(DepthStencilPresets, DefaultIsLessWithWrite)
+{
+    const auto s = cd::rhi::depth_default();
+    EXPECT_TRUE(s.depth_test);
+    EXPECT_TRUE(s.depth_write);
+    EXPECT_EQ(s.depth_compare, cd::rhi::CompareOp::kLess);
+}
+
+TEST(DepthStencilPresets, ReadonlyKeepsTestDisablesWrite)
+{
+    const auto s = cd::rhi::depth_readonly();
+    EXPECT_TRUE(s.depth_test);
+    EXPECT_FALSE(s.depth_write);
+}
+
+TEST(DepthStencilPresets, DisabledHasNoTestNorWrite)
+{
+    const auto s = cd::rhi::depth_disabled();
+    EXPECT_FALSE(s.depth_test);
+    EXPECT_FALSE(s.depth_write);
+}
+
+TEST(DepthStencilPresets, EqualForPrePass)
+{
+    const auto s = cd::rhi::depth_equal();
+    EXPECT_EQ(s.depth_compare, cd::rhi::CompareOp::kEqual);
+    EXPECT_FALSE(s.depth_write);
 }
 
 }  // namespace

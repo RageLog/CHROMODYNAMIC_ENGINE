@@ -7,6 +7,7 @@
 // of compile / execute / state-tracking semantics.
 // =============================================================================
 #include <cd/framegraph/FrameGraph.hpp>
+#include <cd/framegraph/PassTopology.hpp>
 #include <cd/rhi/NullCommandBuffer.hpp>
 #include <cd/rhi/NullDevice.hpp>
 #include <gtest/gtest.h>
@@ -265,3 +266,48 @@ TEST(FrameGraph, ManyPassesBatchAndOrder)
 }
 
 }  // namespace
+
+TEST(PassTopology, LinearChainPreservesOrder)
+{
+    using namespace cd::framegraph;
+    auto r = topo_sort(4, { {0, 1}, {1, 2}, {2, 3} });
+    EXPECT_FALSE(r.has_cycle);
+    ASSERT_EQ(r.order.size(), 4u);
+    EXPECT_EQ(r.order[0], 0u);
+    EXPECT_EQ(r.order[3], 3u);
+}
+
+TEST(PassTopology, IndependentNodesAllAppear)
+{
+    using namespace cd::framegraph;
+    auto r = topo_sort(3, {});
+    EXPECT_FALSE(r.has_cycle);
+    EXPECT_EQ(r.order.size(), 3u);
+}
+
+TEST(PassTopology, DiamondPattern)
+{
+    using namespace cd::framegraph;
+    // 0 → 1 → 3; 0 → 2 → 3
+    auto r = topo_sort(4, { {0, 1}, {0, 2}, {1, 3}, {2, 3} });
+    EXPECT_FALSE(r.has_cycle);
+    ASSERT_EQ(r.order.size(), 4u);
+    EXPECT_EQ(r.order.front(), 0u);
+    EXPECT_EQ(r.order.back(),  3u);
+}
+
+TEST(PassTopology, CycleDetected)
+{
+    using namespace cd::framegraph;
+    auto r = topo_sort(3, { {0, 1}, {1, 2}, {2, 0} });
+    EXPECT_TRUE(r.has_cycle);
+    EXPECT_LT(r.order.size(), 3u);
+}
+
+TEST(PassTopology, OutOfRangeEdgesIgnored)
+{
+    using namespace cd::framegraph;
+    auto r = topo_sort(2, { {0, 5} });  // 5 invalid → silently dropped
+    EXPECT_FALSE(r.has_cycle);
+    EXPECT_EQ(r.order.size(), 2u);
+}
