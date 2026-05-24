@@ -1,7 +1,10 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::input tests
 // =============================================================================
+#include <cd/input/Axis.hpp>
+#include <cd/input/DoubleClick.hpp>
 #include <cd/input/Input.hpp>
+#include <cd/input/KeyChord.hpp>
 #include <gtest/gtest.h>
 
 namespace
@@ -95,8 +98,6 @@ TEST(Input, MouseButtonStateTracked)
 // ---------------------------------------------------------------------------
 // Phase 22.B — Axis tests (Wave 186)
 // ---------------------------------------------------------------------------
-#include <cd/input/Axis.hpp>
-
 TEST(InputAxis, BothPressedIsZero)
 {
     cd::input::Axis a;
@@ -126,8 +127,6 @@ TEST(InputAxis, AnalogOverrideClamps)
     a.set_analog(-2.0F);
     EXPECT_FLOAT_EQ(a.value(), -1.0F);
 }
-
-#include <cd/input/DoubleClick.hpp>
 
 TEST(DoubleClick, FirstClickReturnsOne)
 {
@@ -169,6 +168,64 @@ TEST(DoubleClick, ResetZeroesCounter)
     dc.reset();
     EXPECT_EQ(dc.count(), 0u);
     EXPECT_EQ(dc.click(10.0F), 1u);   // fresh start
+}
+
+TEST(KeyChord, MatchesCtrlSOnKeyDown)
+{
+    cd::input::InputContext ctx;
+    // press Ctrl
+    cd::input::InputEvent ctrl_down {};
+    ctrl_down.kind = cd::input::EventKind::kKeyDown;
+    ctrl_down.key = cd::input::KeyCode::kLCtrl;
+    ctx.push_event(ctrl_down);
+    // press S
+    cd::input::InputEvent s_down {};
+    s_down.kind = cd::input::EventKind::kKeyDown;
+    s_down.key = cd::input::KeyCode::kS;
+    cd::input::KeyChord c { cd::input::KeyCode::kS, cd::input::Mod::kCtrl };
+    EXPECT_TRUE(cd::input::matches(c, s_down, ctx.state()));
+}
+
+TEST(KeyChord, RequiresTriggerKeyDownNotUp)
+{
+    cd::input::InputContext ctx;
+    cd::input::InputEvent ctrl_down {};
+    ctrl_down.kind = cd::input::EventKind::kKeyDown;
+    ctrl_down.key = cd::input::KeyCode::kLCtrl;
+    ctx.push_event(ctrl_down);
+    cd::input::InputEvent s_up {};
+    s_up.kind = cd::input::EventKind::kKeyUp;
+    s_up.key = cd::input::KeyCode::kS;
+    cd::input::KeyChord c { cd::input::KeyCode::kS, cd::input::Mod::kCtrl };
+    EXPECT_FALSE(cd::input::matches(c, s_up, ctx.state()));
+}
+
+TEST(KeyChord, MissingModRejected)
+{
+    cd::input::InputContext ctx;  // no Ctrl pressed
+    cd::input::InputEvent s_down {};
+    s_down.kind = cd::input::EventKind::kKeyDown;
+    s_down.key = cd::input::KeyCode::kS;
+    cd::input::KeyChord c { cd::input::KeyCode::kS, cd::input::Mod::kCtrl };
+    EXPECT_FALSE(cd::input::matches(c, s_down, ctx.state()));
+}
+
+TEST(KeyChord, ExtraModRejected)
+{
+    cd::input::InputContext ctx;
+    for (auto k : { cd::input::KeyCode::kLCtrl, cd::input::KeyCode::kLShift })
+    {
+        cd::input::InputEvent d {};
+        d.kind = cd::input::EventKind::kKeyDown;
+        d.key = k;
+        ctx.push_event(d);
+    }
+    cd::input::InputEvent s_down {};
+    s_down.kind = cd::input::EventKind::kKeyDown;
+    s_down.key = cd::input::KeyCode::kS;
+    // chord expects ONLY Ctrl, but Shift is also held → no match
+    cd::input::KeyChord c { cd::input::KeyCode::kS, cd::input::Mod::kCtrl };
+    EXPECT_FALSE(cd::input::matches(c, s_down, ctx.state()));
 }
 
 }  // namespace

@@ -606,3 +606,52 @@ TEST(VisibilityMask, WithBitTurnsOnAndWithoutTurnsOff)
     auto removed = cd::scene::without_bit(added, cd::scene::kVisShadowPass);
     EXPECT_EQ(removed.bits & cd::scene::kVisShadowPass, 0u);
 }
+
+#include <cd/scene/NameRegistry.hpp>
+
+TEST(NameRegistry, BindAndFindByName)
+{
+    cd::scene::NameRegistry r;
+    cd::ecs::Entity player { 1, 1 };
+    r.bind(player, "Player");
+    EXPECT_EQ(r.find("Player"), player);
+    EXPECT_EQ(r.size(), 1u);
+}
+
+TEST(NameRegistry, NameOfRoundTrip)
+{
+    cd::scene::NameRegistry r;
+    cd::ecs::Entity sun { 7, 2 };
+    r.bind(sun, "Sun");
+    EXPECT_EQ(r.name_of(sun), "Sun");
+}
+
+TEST(NameRegistry, UnbindRemoves)
+{
+    cd::scene::NameRegistry r;
+    cd::ecs::Entity e { 3, 1 };
+    r.bind(e, "Tmp");
+    r.unbind(e);
+    EXPECT_EQ(r.size(), 0u);
+    EXPECT_FALSE(r.find("Tmp").is_valid());
+}
+
+TEST(NameRegistry, RebindOverwritesPrevious)
+{
+    cd::scene::NameRegistry r;
+    cd::ecs::Entity e { 5, 1 };
+    r.bind(e, "First");
+    r.bind(e, "Second");
+    EXPECT_EQ(r.size(), 1u);
+    EXPECT_EQ(r.name_of(e), "Second");
+    EXPECT_FALSE(r.find("First").is_valid());
+}
+
+TEST(NameRegistry, HashLookupMatchesStringLookup)
+{
+    cd::scene::NameRegistry r;
+    cd::ecs::Entity e { 9, 1 };
+    r.bind(e, "Cam");
+    const auto h = cd::scene::name_hash("Cam");
+    EXPECT_EQ(r.find_by_hash(h), e);
+}
