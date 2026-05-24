@@ -14,6 +14,7 @@
 #include <cd/rhi/NullCommandBuffer.hpp>
 #include <cd/rhi/NullDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
+#include <cd/rhi/PipelineCacheKey.hpp>
 #include <cd/rhi/VertexLayoutBuilder.hpp>
 #include <gtest/gtest.h>
 
@@ -436,6 +437,29 @@ TEST(DebugMarkerScope, NestedScopesPushBoth)
     EXPECT_EQ(cb.log().debug_groups.size(), 2u);
     EXPECT_EQ(cb.log().debug_groups[0], "outer");
     EXPECT_EQ(cb.log().debug_groups[1], "inner");
+}
+
+TEST(PipelineCacheKey, EqualityIsFieldwise)
+{
+    cd::rhi::PipelineCacheKey a { 1, 2, 3, 4, 5 };
+    cd::rhi::PipelineCacheKey b { 1, 2, 3, 4, 5 };
+    cd::rhi::PipelineCacheKey c { 1, 2, 3, 4, 6 };
+    EXPECT_EQ(a, b);
+    EXPECT_NE(a, c);
+}
+
+TEST(PipelineCacheKey, HashStableForSameInputs)
+{
+    cd::rhi::PipelineCacheKey a { 0xAA, 0xBB, 0xCC, 1, 2 };
+    cd::rhi::PipelineCacheKey b { 0xAA, 0xBB, 0xCC, 1, 2 };
+    EXPECT_EQ(a.hash(), b.hash());
+}
+
+TEST(PipelineCacheKey, DifferentShadersDifferentHash)
+{
+    cd::rhi::PipelineCacheKey a { 1, 2, 0, 0, 0 };
+    cd::rhi::PipelineCacheKey b { 3, 4, 0, 0, 0 };
+    EXPECT_NE(a.hash(), b.hash());
 }
 
 }  // namespace

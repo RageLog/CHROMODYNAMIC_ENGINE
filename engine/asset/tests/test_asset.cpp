@@ -556,3 +556,45 @@ TEST(BundleMeta, OversizedPayloadRejected)
     h.asset_count = 1;
     EXPECT_FALSE(cd::asset::is_valid_header(h, cd::asset::kBundleMagicMesh));
 }
+
+#include <cd/asset/DependencyGraph.hpp>
+
+TEST(DependencyGraph, OneHopDependents)
+{
+    cd::asset::DependencyGraph g;
+    auto mat = cd::asset::AssetId::from_path("mat.json");
+    auto tex = cd::asset::AssetId::from_path("tex.png");
+    g.depend(mat, tex);   // mat depends on tex
+    auto deps = g.dependents_of(tex);
+    ASSERT_EQ(deps.size(), 1u);
+    EXPECT_EQ(deps[0], mat);
+}
+
+TEST(DependencyGraph, NoEdgesEmptyDependents)
+{
+    cd::asset::DependencyGraph g;
+    auto x = cd::asset::AssetId::from_path("x");
+    EXPECT_TRUE(g.dependents_of(x).empty());
+}
+
+TEST(DependencyGraph, TransitiveDependents)
+{
+    cd::asset::DependencyGraph g;
+    auto scene = cd::asset::AssetId::from_path("scene.json");
+    auto mat   = cd::asset::AssetId::from_path("mat.json");
+    auto tex   = cd::asset::AssetId::from_path("tex.png");
+    // scene depends on mat, mat depends on tex
+    g.depend(scene, mat);
+    g.depend(mat, tex);
+    auto t = g.transitive_dependents(tex);
+    // Both mat and scene should be in the transitive closure.
+    EXPECT_EQ(t.size(), 2u);
+}
+
+TEST(DependencyGraph, InvalidIdRejected)
+{
+    cd::asset::DependencyGraph g;
+    g.depend(cd::asset::AssetId {}, cd::asset::AssetId::from_path("x"));
+    g.depend(cd::asset::AssetId::from_path("y"), cd::asset::AssetId {});
+    EXPECT_EQ(g.edge_node_count(), 0u);
+}
