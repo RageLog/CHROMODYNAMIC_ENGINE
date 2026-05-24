@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/input/Axis.hpp>
 #include <cd/input/DoubleClick.hpp>
+#include <cd/input/GamepadState.hpp>
 #include <cd/input/Input.hpp>
 #include <cd/input/KeyChord.hpp>
 #include <gtest/gtest.h>
@@ -226,6 +227,42 @@ TEST(KeyChord, ExtraModRejected)
     // chord expects ONLY Ctrl, but Shift is also held → no match
     cd::input::KeyChord c { cd::input::KeyCode::kS, cd::input::Mod::kCtrl };
     EXPECT_FALSE(cd::input::matches(c, s_down, ctx.state()));
+}
+
+TEST(GamepadState, DefaultIsZeroAndDisconnected)
+{
+    cd::input::GamepadState g;
+    EXPECT_FALSE(g.connected);
+    EXPECT_FLOAT_EQ(g.left_stick_x, 0.0F);
+    EXPECT_EQ(g.buttons, 0u);
+}
+
+TEST(GamepadState, ButtonBitmaskCheck)
+{
+    cd::input::GamepadState g;
+    g.buttons = static_cast<std::uint32_t>(cd::input::GamepadButton::kA)
+              | static_cast<std::uint32_t>(cd::input::GamepadButton::kDpadLeft);
+    EXPECT_TRUE(cd::input::is_button_down(g, cd::input::GamepadButton::kA));
+    EXPECT_TRUE(cd::input::is_button_down(g, cd::input::GamepadButton::kDpadLeft));
+    EXPECT_FALSE(cd::input::is_button_down(g, cd::input::GamepadButton::kB));
+}
+
+TEST(GamepadState, DeadzoneZerosSmallInput)
+{
+    float x = 0.05F;
+    float y = 0.05F;
+    cd::input::apply_deadzone(x, y, 0.15F);
+    EXPECT_FLOAT_EQ(x, 0.0F);
+    EXPECT_FLOAT_EQ(y, 0.0F);
+}
+
+TEST(GamepadState, DeadzoneScalesOutsideRange)
+{
+    float x = 1.0F;
+    float y = 0.0F;
+    cd::input::apply_deadzone(x, y, 0.2F);
+    EXPECT_NEAR(x, 1.0F, 1e-4F);
+    EXPECT_FLOAT_EQ(y, 0.0F);
 }
 
 }  // namespace

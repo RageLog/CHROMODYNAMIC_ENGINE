@@ -492,3 +492,46 @@ TEST(Channel, CloseUnblocksReceiver)
     EXPECT_FALSE(v.has_value());
     closer.join();
 }
+
+#include <cd/concurrency/EventBus.hpp>
+
+namespace {
+struct TestEvent { int value { 0 }; };
+struct AnotherEvent { float score { 0.0F }; };
+}
+
+TEST(EventBus, SubscribeAndPublishMatch)
+{
+    cd::concurrency::EventBus bus;
+    int sum = 0;
+    bus.subscribe<TestEvent>([&](const TestEvent& e) { sum += e.value; });
+    bus.publish(TestEvent { 5 });
+    bus.publish(TestEvent { 10 });
+    EXPECT_EQ(sum, 15);
+}
+
+TEST(EventBus, DifferentEventTypesIsolated)
+{
+    cd::concurrency::EventBus bus;
+    int hits_a = 0;
+    int hits_b = 0;
+    bus.subscribe<TestEvent>([&](const TestEvent&) { ++hits_a; });
+    bus.subscribe<AnotherEvent>([&](const AnotherEvent&) { ++hits_b; });
+    bus.publish(TestEvent { 0 });
+    bus.publish(TestEvent { 0 });
+    bus.publish(AnotherEvent {});
+    EXPECT_EQ(hits_a, 2);
+    EXPECT_EQ(hits_b, 1);
+}
+
+TEST(EventBus, UnsubscribeStopsCallback)
+{
+    cd::concurrency::EventBus bus;
+    int hits = 0;
+    auto id = bus.subscribe<TestEvent>([&](const TestEvent&) { ++hits; });
+    bus.publish(TestEvent {});
+    EXPECT_EQ(hits, 1);
+    EXPECT_TRUE(bus.unsubscribe(id));
+    bus.publish(TestEvent {});
+    EXPECT_EQ(hits, 1);
+}
