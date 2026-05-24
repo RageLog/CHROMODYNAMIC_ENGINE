@@ -124,6 +124,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.34 | 102 | **Demo quality fixes** — hello_pbr overhaul (3-light + analytical-sky IBL + real skybox pass + ACES tonemap + copper albedo) makes the metallic axis legible; hello_editor Inspector restructured (480 px wide, SeparatorText sections, label/widget split, fixed-width Apply + reset) |
 | v0.99.35 | 103 | **Editor live-drag + primitive meshes** — hello_editor now spawns procedural sphere + cone (in addition to cube) and the Inspector edits position/scale/rotation via DragFloat3 sliders that apply live; drag-release pushes a single delta command into EditHistory. docs.yml YAML linter workaround (schema pin + .vscode/settings.json) |
 | v0.99.36 | 104+105 | **Engine-side StandardPbr + AnalyticalSky materials** — Cook-Torrance + GGX + Schlick + Smith G + split-sum IBL + ACES (StandardPbrMaterial.hpp) and 3-band procedural atmosphere (AnalyticalSkyMaterial.hpp) lifted out of hello_pbr into cd::material headers; sample shrinks by ~280 GLSL lines |
+| v0.99.37 | 106 | **cd::asset::Primitives** — header-only builders for cube/sphere/cone/cylinder/plane/torus/capsule with a canonical 44 B pos+normal+uv+color vertex layout |
 
 ## Major capabilities added across the marathon
 
