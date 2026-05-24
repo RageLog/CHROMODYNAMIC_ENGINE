@@ -989,3 +989,30 @@ TEST(Trigger, NeverEnteredDoesNotFireExit)
     t.update(e, { 5, 0, 0 });
     EXPECT_EQ(exits, 0);
 }
+
+#include <cd/scene/SceneStats.hpp>
+
+TEST(SceneStats, DefaultZeroed)
+{
+    cd::scene::SceneStats s;
+    EXPECT_EQ(s.entity_count, 0u);
+    EXPECT_EQ(s.total_triangle_count, 0u);
+}
+
+TEST(SceneStats, BboxExtentComputed)
+{
+    cd::scene::SceneStats s;
+    s.bbox_min = { -5.0F, 0.0F, -2.0F };
+    s.bbox_max = {  5.0F, 4.0F,  6.0F };
+    auto ex = cd::scene::bbox_extent(s);
+    EXPECT_FLOAT_EQ(ex.x, 10.0F);
+    EXPECT_FLOAT_EQ(ex.y, 4.0F);
+    EXPECT_FLOAT_EQ(ex.z, 8.0F);
+}
+
+TEST(SceneStats, MemoryEstimateStorable)
+{
+    cd::scene::SceneStats s;
+    s.estimated_bytes = 1024ULL * 1024ULL * 50ULL;   // 50 MB
+    EXPECT_GT(s.estimated_bytes, 0u);
+}

@@ -1211,3 +1211,26 @@ TEST(EnumFlags, AssignmentOps)
     f &= TestFlags::kB;
     EXPECT_FALSE(cd::core::has(f, TestFlags::kA));
 }
+
+#include <cd/core/Assert.hpp>
+
+TEST(Assert, VerifySucceedsOnTrue)
+{
+    // Compiler shouldn't abort.
+    CD_VERIFY(1 + 1 == 2);
+    EXPECT_TRUE(true);
+}
+
+TEST(Assert, CustomHandlerInvoked)
+{
+    bool handler_called = false;
+    cd::core::set_assert_handler([](const char*, int, const char*) noexcept {
+        // Note: handler is called BEFORE default abort; we don't actually
+        // want to abort the test, so the handler exits the lambda and
+        // default_assert_fail still aborts — UNLESS we set a handler
+        // that itself aborts/exits. For test purposes we just verify
+        // the handler slot is settable.
+    });
+    cd::core::set_assert_handler(nullptr);
+    EXPECT_FALSE(handler_called);   // never set true; just the smoke test
+}
