@@ -1,11 +1,11 @@
-# Marathon summary — Phase 13 → Phase 84 (v0.30.0 → v0.99.16)
+# Marathon summary — Phase 13 → Phase 88 (v0.30.0 → v0.99.20)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 16 patch releases (87 tags total)** shipped from the marathon's
+**71 minor + 20 patch releases (91 tags total)** shipped from the marathon's
 start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.16). v1.0.0 sign-off authority is reserved to the user.
+through v0.99.20). v1.0.0 sign-off authority is reserved to the user.
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -100,6 +100,10 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.14 | 82   | audio::PanLaw + math::Damping (critical spring) |
 | v0.99.15 | 83   | editor::MenuBar + core::Ref (non-owning) — *wave 250 milestone* |
 | v0.99.16 | 84   | scene::Light + math::QuadraticSolver (Vieta stable form) |
+| v0.99.17 | 85   | net::LatencyStats (RFC 6298) + ecs::ComponentMask |
+| v0.99.18 | 86   | ui::TabBar + core::EnumFlags (CD_ENUM_FLAGS macro) |
+| v0.99.19 | 87   | anim::PoseAlign (root motion) + render::ClearColorPreset |
+| v0.99.20 | 88   | net::QoSTier + physics::ContactPoint manifold |
 
 ## Major capabilities added across the marathon
 
