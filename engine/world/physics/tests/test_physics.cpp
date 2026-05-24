@@ -590,3 +590,28 @@ TEST(ContactManifold, ClearEmpties)
     m.clear();
     EXPECT_TRUE(m.empty());
 }
+
+#include <cd/physics/SpringJoint.hpp>
+
+TEST(SpringJoint, DefaultStiffnessSane)
+{
+    cd::physics::SpringJoint j;
+    EXPECT_GT(j.stiffness, 0.0F);
+    EXPECT_GE(j.damping, 0.0F);
+    EXPECT_FLOAT_EQ(j.rest_length, 1.0F);
+}
+
+TEST(SpringJoint, RopeFactoryStifferThanCloth)
+{
+    auto rope = cd::physics::make_rope_link(0, 1, 1.0F);
+    auto cloth = cd::physics::make_cloth_link(0, 1, 1.0F);
+    EXPECT_GT(rope.stiffness, cloth.stiffness);
+}
+
+TEST(SpringJoint, BodyIndicesStored)
+{
+    auto j = cd::physics::make_rope_link(5, 10, 2.0F);
+    EXPECT_EQ(j.body_a, 5u);
+    EXPECT_EQ(j.body_b, 10u);
+    EXPECT_FLOAT_EQ(j.rest_length, 2.0F);
+}

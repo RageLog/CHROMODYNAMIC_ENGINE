@@ -476,3 +476,46 @@ TEST(TabBar, CloseAdjustsActive)
     EXPECT_NE(b.active(), nullptr);
     EXPECT_EQ(b.size(), 2u);
 }
+
+#include <cd/ui/ContextMenu.hpp>
+
+TEST(ContextMenu, NotOpenByDefault)
+{
+    cd::ui::ContextMenu m;
+    EXPECT_FALSE(m.is_open());
+}
+
+TEST(ContextMenu, OpenSetsPositionAndFlag)
+{
+    cd::ui::ContextMenu m;
+    m.open(100.0F, 200.0F);
+    EXPECT_TRUE(m.is_open());
+    EXPECT_FLOAT_EQ(m.x(), 100.0F);
+    EXPECT_FLOAT_EQ(m.y(), 200.0F);
+}
+
+TEST(ContextMenu, InvokeFiresAndCloses)
+{
+    cd::ui::ContextMenu m;
+    int hits = 0;
+    m.add_item("Foo", [&] { ++hits; });
+    m.open(0.0F, 0.0F);
+    EXPECT_TRUE(m.invoke(0));
+    EXPECT_EQ(hits, 1);
+    EXPECT_FALSE(m.is_open());
+}
+
+TEST(ContextMenu, DisabledItemNotInvoked)
+{
+    cd::ui::ContextMenu m;
+    int hits = 0;
+    m.add_item("Foo", [&] { ++hits; }, /*enabled=*/false);
+    EXPECT_FALSE(m.invoke(0));
+    EXPECT_EQ(hits, 0);
+}
+
+TEST(ContextMenu, OutOfRangeIndexFails)
+{
+    cd::ui::ContextMenu m;
+    EXPECT_FALSE(m.invoke(99));
+}
