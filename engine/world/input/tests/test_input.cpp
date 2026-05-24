@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/input/Axis.hpp>
 #include <cd/input/Bindings.hpp>
+#include <cd/input/Cursor.hpp>
 #include <cd/input/DoubleClick.hpp>
 #include <cd/input/GamepadState.hpp>
 #include <cd/input/Hold.hpp>
@@ -369,6 +370,42 @@ TEST(Hold, ReleaseClearsHold)
     EXPECT_FALSE(h.is_pressed());
     EXPECT_FALSE(h.is_held(10.0F));
     EXPECT_FLOAT_EQ(h.held_duration(10.0F), 0.0F);
+}
+
+TEST(Cursor, DefaultNormal)
+{
+    cd::input::CursorState s;
+    EXPECT_EQ(s.requested(), cd::input::CursorMode::kNormal);
+    EXPECT_EQ(s.applied(), cd::input::CursorMode::kNormal);
+}
+
+TEST(Cursor, RequestSetsRequestedNotApplied)
+{
+    cd::input::CursorState s;
+    s.request(cd::input::CursorMode::kLocked);
+    EXPECT_EQ(s.requested(), cd::input::CursorMode::kLocked);
+    EXPECT_EQ(s.applied(), cd::input::CursorMode::kNormal);
+    s.mark_applied(cd::input::CursorMode::kLocked);
+    EXPECT_EQ(s.applied(), cd::input::CursorMode::kLocked);
+}
+
+TEST(Cursor, SetAbsoluteComputesDelta)
+{
+    cd::input::CursorState s;
+    s.set_absolute(100.0F, 100.0F);
+    s.set_absolute(110.0F, 95.0F);
+    EXPECT_FLOAT_EQ(s.delta_x(), 10.0F);
+    EXPECT_FLOAT_EQ(s.delta_y(), -5.0F);
+}
+
+TEST(Cursor, ClearDeltaZeroes)
+{
+    cd::input::CursorState s;
+    s.set_absolute(0.0F, 0.0F);
+    s.set_absolute(5.0F, 5.0F);
+    s.clear_delta();
+    EXPECT_FLOAT_EQ(s.delta_x(), 0.0F);
+    EXPECT_FLOAT_EQ(s.delta_y(), 0.0F);
 }
 
 }  // namespace

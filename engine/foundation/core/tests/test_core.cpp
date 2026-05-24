@@ -1234,3 +1234,32 @@ TEST(Assert, CustomHandlerInvoked)
     cd::core::set_assert_handler(nullptr);
     EXPECT_FALSE(handler_called);   // never set true; just the smoke test
 }
+
+#include <cd/core/Singleton.hpp>
+
+namespace {
+class TestSink : public cd::core::Singleton<TestSink>
+{
+    friend class cd::core::Singleton<TestSink>;
+    TestSink() = default;
+public:
+    void bump() noexcept { ++counter_; }
+    [[nodiscard]] int counter() const noexcept { return counter_; }
+private:
+    int counter_ { 0 };
+};
+}
+
+TEST(Singleton, InstanceIsSame)
+{
+    auto& a = TestSink::instance();
+    auto& b = TestSink::instance();
+    EXPECT_EQ(&a, &b);
+}
+
+TEST(Singleton, MutationPersists)
+{
+    TestSink::instance().bump();
+    TestSink::instance().bump();
+    EXPECT_GE(TestSink::instance().counter(), 2);
+}
