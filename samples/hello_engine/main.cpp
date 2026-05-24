@@ -30,7 +30,10 @@
 // Stays at marathon discipline (sample pattern, single main.cpp,
 // no engine apps-layer mimicry; that lands at v1.0+ time).
 // =============================================================================
+#include <cd/asset/AssetId.hpp>
+#include <cd/asset/AsyncStreamer.hpp>
 #include <cd/asset/Primitives.hpp>
+#include <cd/asset/StreamRequest.hpp>
 #include <cd/asset_json/Json.hpp>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
@@ -76,6 +79,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -86,6 +90,7 @@
 #include <ios>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -681,6 +686,37 @@ int main()
     double                        net_t = 0.0;
     double                        next_net_tick = 0.0;
 
+    // ---- AsyncStreamer demo (Phase 150) ----
+    // Drives a background worker thread that processes simulated load
+    // requests with a sleep so the streamer panel can show pending →
+    // in-flight → complete transitions in real time.
+    std::atomic<std::uint32_t> streamer_completed { 0 };
+    std::atomic<std::uint32_t> streamer_failed    { 0 };
+    cd::asset::AsyncStreamer streamer {
+        [&streamer_completed, &streamer_failed](cd::asset::AssetId id) -> bool {
+            const auto v = id.value();
+            std::this_thread::sleep_for(std::chrono::milliseconds(120 + (v % 5) * 80));
+            const bool ok = (v % 17 != 0);
+            if (ok) streamer_completed.fetch_add(1, std::memory_order_relaxed);
+            else    streamer_failed.fetch_add(1, std::memory_order_relaxed);
+            return ok;
+        }
+    };
+    streamer.start();
+    std::vector<cd::asset::AssetId> streamer_tracked;
+    std::uint64_t                   streamer_next_id = 1;
+    auto streamer_enqueue = [&](std::int32_t priority) {
+        cd::asset::AssetId id { streamer_next_id++ };
+        cd::asset::StreamRequest req;
+        req.id = id;
+        req.priority = priority;
+        streamer.enqueue(req);
+        streamer_tracked.push_back(id);
+        if (streamer_tracked.size() > 32)
+            streamer_tracked.erase(streamer_tracked.begin(),
+                                   streamer_tracked.begin() + 8);
+    };
+
     // ---- Random viz ----
     cd::math::Random rand_rng { 0xA1B2C3D4u };
     Histogram hist_uniform;
@@ -828,6 +864,12 @@ int main()
                 log_push("[scene] Save failed (ofstream)");
             }
         });
+    palette.register_command(90, "Streamer: Enqueue 8 burst",
+        [&]{ for (int i = 0; i < 8; ++i) streamer_enqueue(i * 10);
+             log_push("[palette] Streamer +8 burst"); });
+    palette.register_command(91, "Streamer: Enqueue 32 burst",
+        [&]{ for (int i = 0; i < 32; ++i) streamer_enqueue(i % 4);
+             log_push("[palette] Streamer +32 burst"); });
     palette.register_command(81, "Scene: Load (replace world)",
         [&]{
             auto r = cd::asset_json::load(kSavePath);
@@ -1255,6 +1297,7 @@ int main()
                 ImGui::DockBuilderDockWindow("Random",    dock_right);
                 ImGui::DockBuilderDockWindow("Audio",     dock_bot);
                 ImGui::DockBuilderDockWindow("Net Sim",   dock_bot);
+                ImGui::DockBuilderDockWindow("Streamer",  dock_bot);
                 ImGui::DockBuilderDockWindow("History",   dock_botR);
                 ImGui::DockBuilderFinish(dock_id);
                 dock_initialised = true;
@@ -1493,6 +1536,40 @@ int main()
         ImGui::Text("snapshots buffered: %zu", net_snapbuf.size());
         ImGui::End();
 
+        // ---- Streamer (Phase 150) ----
+        ImGui::Begin("Streamer");
+        ImGui::Text("worker: %s   pending %zu",
+                    streamer.is_running() ? "RUNNING" : "STOPPED",
+                    streamer.pending_count());
+        ImGui::Text("completed %u   failed %u",
+                    streamer_completed.load(std::memory_order_relaxed),
+                    streamer_failed.load(std::memory_order_relaxed));
+        ImGui::Separator();
+        if (ImGui::Button("Enqueue (low prio)"))   streamer_enqueue(0);
+        ImGui::SameLine();
+        if (ImGui::Button("Enqueue (high prio)"))  streamer_enqueue(100);
+        ImGui::SameLine();
+        if (ImGui::Button("Enqueue 8 burst"))      { for (int i=0;i<8;++i) streamer_enqueue(i*10); }
+        ImGui::Separator();
+        // Recent-tracked rows: id, state.
+        for (auto it = streamer_tracked.rbegin(); it != streamer_tracked.rend(); ++it)
+        {
+            const auto st = streamer.state_of(*it);
+            const char* lbl =
+                st == cd::asset::StreamState::kComplete ? "COMPLETE"
+              : st == cd::asset::StreamState::kInflight ? "INFLIGHT"
+              : st == cd::asset::StreamState::kFailed   ? "FAILED"
+              :                                           "PENDING";
+            const ImVec4 col =
+                st == cd::asset::StreamState::kComplete ? ImVec4(0.4F,1.0F,0.4F,1) :
+                st == cd::asset::StreamState::kInflight ? ImVec4(1.0F,0.85F,0.3F,1) :
+                st == cd::asset::StreamState::kFailed   ? ImVec4(1.0F,0.4F,0.4F,1) :
+                                                          ImVec4(0.7F,0.7F,0.7F,1);
+            ImGui::TextColored(col, "id %llu  %s",
+                               static_cast<unsigned long long>(it->value()), lbl);
+        }
+        ImGui::End();
+
         // ---- History ----
         ImGui::Begin("History");
         ImGui::Text("undo depth %zu  redo depth %zu  (bytes %zu)",
@@ -1566,6 +1643,7 @@ int main()
     }
 
     renderer.wait_idle();
+    streamer.stop();
 
     // ---- Cleanup ----
     destroy_mesh(device, cube_mesh);
