@@ -27,6 +27,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace cd::rhi_opengl
 {
@@ -35,6 +36,71 @@ namespace cd::rhi_opengl
 
 namespace
 {
+
+// Phase 137 — minimum-viable WGL extension loader. opengl32.lib only
+// exports GL 1.1 symbols; anything past that (DSA buffer functions,
+// Direct State Access etc.) has to come from `wglGetProcAddress`.
+// We bind the handful of functions create_buffer needs and leave the
+// rest of the surface stubbed out.
+
+using GLuint    = unsigned int;
+using GLsizei   = int;
+using GLsizeiptr = long long;  // matches Khronos khrplatform.h for x64
+using GLenum    = unsigned int;
+using GLbitfield = unsigned int;
+using GLvoid    = void;
+
+constexpr GLenum     kGL_NoError                  = 0;
+// glMapBufferRange access bits used by create_buffer's host-visible path.
+constexpr GLbitfield kGL_MapReadBit                = 0x0001;
+constexpr GLbitfield kGL_MapWriteBit               = 0x0002;
+constexpr GLbitfield kGL_DynamicStorageBit         = 0x0100;
+
+using PFNGLCREATEBUFFERSPROC      = void (*)(GLsizei n, GLuint* buffers);
+using PFNGLDELETEBUFFERSPROC      = void (*)(GLsizei n, const GLuint* buffers);
+using PFNGLNAMEDBUFFERDATAPROC    = void (*)(GLuint buffer, GLsizeiptr size, const GLvoid* data, GLenum usage);
+using PFNGLNAMEDBUFFERSUBDATAPROC = void (*)(GLuint buffer, GLsizeiptr offset, GLsizeiptr size, const GLvoid* data);
+using PFNGLNAMEDBUFFERSTORAGEPROC = void (*)(GLuint buffer, GLsizeiptr size, const GLvoid* data, GLbitfield flags);
+using PFNGLGETERRORPROC           = GLenum (*)();
+
+struct GLLoader
+{
+    PFNGLCREATEBUFFERSPROC      glCreateBuffers      { nullptr };
+    PFNGLDELETEBUFFERSPROC      glDeleteBuffersDSA   { nullptr };
+    PFNGLNAMEDBUFFERDATAPROC    glNamedBufferData    { nullptr };
+    PFNGLNAMEDBUFFERSUBDATAPROC glNamedBufferSubData { nullptr };
+    PFNGLNAMEDBUFFERSTORAGEPROC glNamedBufferStorage { nullptr };
+    PFNGLGETERRORPROC           glGetErrorPtr        { nullptr };
+
+    [[nodiscard]] bool valid() const noexcept
+    {
+        return glCreateBuffers != nullptr
+            && glNamedBufferStorage != nullptr
+            && glNamedBufferSubData != nullptr
+            && glDeleteBuffersDSA != nullptr;
+    }
+};
+
+[[nodiscard]] inline GLLoader load_dsa_buffer_funcs()
+{
+    GLLoader L {};
+    auto get = [](const char* name) -> PROC {
+        // wglGetProcAddress can return small ints (1, 2, 3, -1) on
+        // failure rather than nullptr — guard explicitly.
+        PROC p = wglGetProcAddress(name);
+        const auto v = reinterpret_cast<intptr_t>(p);
+        if (v == 0 || v == 1 || v == 2 || v == 3 || v == -1) return nullptr;
+        return p;
+    };
+    L.glCreateBuffers      = reinterpret_cast<PFNGLCREATEBUFFERSPROC>(get("glCreateBuffers"));
+    L.glDeleteBuffersDSA   = reinterpret_cast<PFNGLDELETEBUFFERSPROC>(get("glDeleteBuffers"));
+    L.glNamedBufferData    = reinterpret_cast<PFNGLNAMEDBUFFERDATAPROC>(get("glNamedBufferData"));
+    L.glNamedBufferSubData = reinterpret_cast<PFNGLNAMEDBUFFERSUBDATAPROC>(get("glNamedBufferSubData"));
+    L.glNamedBufferStorage = reinterpret_cast<PFNGLNAMEDBUFFERSTORAGEPROC>(get("glNamedBufferStorage"));
+    L.glGetErrorPtr        = reinterpret_cast<PFNGLGETERRORPROC>(get("glGetError"));
+    return L;
+}
+
 
 class OpenGLDevice final : public cd::rhi::IDevice
 {
@@ -82,6 +148,11 @@ public:
             adapter_name_ = reinterpret_cast<const char*>(renderer);
         else
             adapter_name_ = "OpenGL renderer (unknown)";
+
+        // Phase 137 — bind DSA buffer entry points via wglGetProcAddress.
+        // Other entry points (texture, swapchain, pipeline) stay
+        // kNotImplemented until their respective phases land.
+        gl_ = load_dsa_buffer_funcs();
 
         if (const auto* version = glGetString(GL_VERSION))
         {
@@ -140,9 +211,62 @@ public:
         "OpenGL backend is boot-only at v0.49.0; entry point queued for "         \
         "follow-up waves"))
 
+    // Phase 137 — DSA buffer create. Texture + swapchain stay stubbed
+    // until their loader-tax-equivalent lands.
     [[nodiscard]] cd::core::Result<cd::rhi::BufferHandle>
-    create_buffer(const cd::rhi::BufferDesc&) override { CD_GL_NOT_IMPL_RESULT(BufferHandle); }
-    void destroy_buffer(cd::rhi::BufferHandle) override {}
+    create_buffer(const cd::rhi::BufferDesc& desc) override
+    {
+        if (!gl_.valid())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "OpenGL backend: DSA buffer entry points not exported by the driver"));
+        }
+        if (desc.size == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_buffer: size must be > 0"));
+        }
+        GLuint id = 0;
+        gl_.glCreateBuffers(1, &id);
+        if (id == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glCreateBuffers returned 0"));
+        }
+        // Match the Vulkan VMA path: host-visible buffers get persistent-
+        // mapped storage flags; GPU-only buffers use immutable storage.
+        GLbitfield flags = 0;
+        if (desc.memory == cd::rhi::MemoryUsage::kCpuToGpu ||
+            desc.memory == cd::rhi::MemoryUsage::kGpuToCpu)
+        {
+            flags |= kGL_DynamicStorageBit | kGL_MapWriteBit | kGL_MapReadBit;
+        }
+        gl_.glNamedBufferStorage(id, static_cast<GLsizeiptr>(desc.size), nullptr, flags);
+        if (gl_.glGetErrorPtr != nullptr && gl_.glGetErrorPtr() != kGL_NoError)
+        {
+            gl_.glDeleteBuffersDSA(1, &id);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glNamedBufferStorage failed"));
+        }
+        const auto handle_id = next_id_++;
+        buffers_.emplace(handle_id, GLBuffer { id, desc.size });
+        return cd::rhi::BufferHandle { handle_id, 1u };
+    }
+    void destroy_buffer(cd::rhi::BufferHandle h) override
+    {
+        auto it = buffers_.find(h.index());
+        if (it == buffers_.end()) return;
+        if (gl_.glDeleteBuffersDSA != nullptr)
+        {
+            const GLuint id = it->second.gl_id;
+            gl_.glDeleteBuffersDSA(1, &id);
+        }
+        buffers_.erase(it);
+    }
     [[nodiscard]] cd::core::Result<cd::rhi::TextureHandle>
     create_texture(const cd::rhi::TextureDesc&) override { CD_GL_NOT_IMPL_RESULT(TextureHandle); }
     void destroy_texture(cd::rhi::TextureHandle) override {}
@@ -257,6 +381,16 @@ private:
     std::string adapter_name_;
     cd::rhi::DeviceLimits   limits_   {};
     cd::rhi::DeviceFeatures features_ {};
+
+    // Phase 137 — DSA buffer plumbing.
+    struct GLBuffer
+    {
+        GLuint        gl_id { 0 };
+        std::uint64_t size  { 0 };
+    };
+    GLLoader gl_ {};
+    std::unordered_map<std::uint32_t, GLBuffer> buffers_;
+    std::uint32_t next_id_ { 1 };
 };
 
 }  // namespace
