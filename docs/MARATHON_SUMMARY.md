@@ -135,6 +135,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.45 | 108 | **DrawBucket** — SortKey-driven draw-call bucket with deferred emit callbacks; stable_sort by 64-bit key; 3 new gtests |
 | v0.99.46 | 117 | **TLAS interface contract** — `cd::rhi::AccelInstance` POD (3x4 transform + blas handle + instance_id/mask/hit_offset/flags) + `AccelStructureDesc::instances` span; Vulkan backend implementation deferred to Phase 118 |
 | v0.99.47 | 118 | **RT pipeline + SBT interface** — `RtShaderStage` enum, `RtShaderEntry`, `RtPipelineDesc` (recursion / payload / attribute budgets), `SbtRegion` (strided buffer region), `DispatchRaysDesc` extended with raygen/miss/hit/callable SBT regions |
+| v0.99.48 | 115+116 | **SelectionOutline + AxisGizmo state** — header-only editor primitives: selection set + outline style/color/thickness/opacity, and a translation-gizmo state machine (hover/drag axis + origin snapshot + total-delta on end_drag) |
 
 ## Major capabilities added across the marathon
 
