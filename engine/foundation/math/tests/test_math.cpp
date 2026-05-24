@@ -1008,3 +1008,47 @@ TEST(Histogram, ClearEmptiesAllBuckets)
     EXPECT_EQ(h.total(), 0u);
     EXPECT_EQ(h.count(0), 0u);
 }
+
+#include <cd/math/QuatLog.hpp>
+
+TEST(QuatLog, IdentityLogIsZero)
+{
+    cd::math::Quatf q { 0.0F, 0.0F, 0.0F, 1.0F };
+    auto lg = cd::math::quat_log(q);
+    EXPECT_NEAR(lg.x, 0.0F, 1e-5F);
+    EXPECT_NEAR(lg.y, 0.0F, 1e-5F);
+    EXPECT_NEAR(lg.z, 0.0F, 1e-5F);
+}
+
+TEST(QuatLog, ExpZeroIsIdentity)
+{
+    cd::math::Quatf v { 0.0F, 0.0F, 0.0F, 0.0F };
+    auto e = cd::math::quat_exp(v);
+    EXPECT_FLOAT_EQ(e.w, 1.0F);
+}
+
+TEST(QuatLog, LogExpRoundTrip)
+{
+    // 90° around Y: (sin45, ?, ?, cos45)
+    const float s = 0.7071068F;
+    cd::math::Quatf q { 0.0F, s, 0.0F, s };
+    auto lg = cd::math::quat_log(q);
+    auto back = cd::math::quat_exp(lg);
+    EXPECT_NEAR(back.y, s, 1e-4F);
+    EXPECT_NEAR(back.w, s, 1e-4F);
+}
+
+TEST(QuatPow, ZeroIsIdentity)
+{
+    cd::math::Quatf q { 0.0F, 0.7071068F, 0.0F, 0.7071068F };
+    auto half = cd::math::quat_pow(q, 0.0F);
+    EXPECT_NEAR(half.w, 1.0F, 1e-4F);
+}
+
+TEST(QuatPow, OneReturnsOriginal)
+{
+    cd::math::Quatf q { 0.0F, 0.7071068F, 0.0F, 0.7071068F };
+    auto same = cd::math::quat_pow(q, 1.0F);
+    EXPECT_NEAR(same.y, q.y, 1e-4F);
+    EXPECT_NEAR(same.w, q.w, 1e-4F);
+}

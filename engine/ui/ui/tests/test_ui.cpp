@@ -394,3 +394,40 @@ TEST(Spinner, ResetReturnsToZero)
     s.reset();
     EXPECT_FLOAT_EQ(s.angle(), 0.0F);
 }
+
+#include <cd/ui/Toast.hpp>
+
+TEST(ToastQueue, PushAccumulates)
+{
+    cd::ui::ToastQueue q;
+    q.push("first", 1.0, 0.0);
+    q.push("second", 1.0, 0.0);
+    EXPECT_EQ(q.size(), 2u);
+}
+
+TEST(ToastQueue, UpdateEvictsExpired)
+{
+    cd::ui::ToastQueue q;
+    q.push("short", 0.5, 0.0);
+    q.push("long", 5.0, 0.0);
+    q.update(1.0);
+    EXPECT_EQ(q.size(), 1u);
+    EXPECT_EQ(q.active()[0].message, "long");
+}
+
+TEST(ToastQueue, DismissByIdRemoves)
+{
+    cd::ui::ToastQueue q;
+    auto id = q.push("dismiss-me", 10.0, 0.0);
+    EXPECT_TRUE(q.dismiss(id));
+    EXPECT_EQ(q.size(), 0u);
+    EXPECT_FALSE(q.dismiss(9999));
+}
+
+TEST(ToastQueue, SeverityPropagates)
+{
+    cd::ui::ToastQueue q;
+    q.push("err", 1.0, 0.0, cd::ui::ToastSeverity::kError);
+    ASSERT_EQ(q.size(), 1u);
+    EXPECT_EQ(q.active()[0].severity, cd::ui::ToastSeverity::kError);
+}

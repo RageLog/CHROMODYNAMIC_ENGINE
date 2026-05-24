@@ -1,7 +1,8 @@
-# Marathon summary — Phase 13 → Phase 63 (v0.30.0 → v0.94.0)
+# Marathon summary — Phase 13 → Phase 68 (v0.30.0 → v0.99.0)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**66 minor releases** shipped from the marathon's start (v0.30 baseline).
+**71 minor releases** shipped from the marathon's start (v0.30 baseline).
+**v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -75,6 +76,11 @@ priority, OpenGL was introduced as 3rd.
 | v0.92.0 | 61    | rhi::VertexLayoutBuilder + io::PathUtils |
 | v0.93.0 | 62    | physics::InertiaTensor + camera::ViewportInfo |
 | v0.94.0 | 63    | ui::Spinner + math::Histogram |
+| v0.95.0 | 64    | render::Tonemap (Reinhard/ACES/Uncharted2) + concurrency::JobToken |
+| v0.96.0 | 65    | net::SnapshotBuffer + ecs::SystemGraph (Kahn topo) |
+| v0.97.0 | 66    | audio::LowPass + asset::PathResolver ({VAR} substitution) |
+| v0.98.0 | 67    | core::RetryPolicy + editor::Bookmark (camera snapshots) |
+| v0.99.0 | 68    | math::QuatLog/Exp/Pow + ui::Toast notifications |
 
 ## Major capabilities added across the marathon
 
