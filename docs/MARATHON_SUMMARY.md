@@ -1,11 +1,11 @@
-# Marathon summary — Phase 13 → Phase 88 (v0.30.0 → v0.99.20)
+# Marathon summary — Phase 13 → Phase 91 (v0.30.0 → v0.99.23)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 20 patch releases (91 tags total)** shipped from the marathon's
+**71 minor + 23 patch releases (94 tags total)** shipped from the marathon's
 start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.20). v1.0.0 sign-off authority is reserved to the user.
+through v0.99.23). v1.0.0 sign-off authority is reserved to the user.
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -104,6 +104,9 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.18 | 86   | ui::TabBar + core::EnumFlags (CD_ENUM_FLAGS macro) |
 | v0.99.19 | 87   | anim::PoseAlign (root motion) + render::ClearColorPreset |
 | v0.99.20 | 88   | net::QoSTier + physics::ContactPoint manifold |
+| v0.99.21 | 89   | editor::PreferencesStore (variant) + io::Hex codec |
+| v0.99.22 | 90   | scene::Skybox + audio::PitchShift (resample) |
+| v0.99.23 | 91   | input::Hold + math::GammaSpace (Vec3 + approx) |
 
 ## Major capabilities added across the marathon
 
