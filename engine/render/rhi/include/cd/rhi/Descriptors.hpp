@@ -248,13 +248,37 @@ struct AccelTriangleGeometry
     IndexType index_type { IndexType::kUInt32 };
 };
 
+/// Phase 117 — TLAS instance descriptor. Mirrors
+/// `VkAccelerationStructureInstanceKHR` (and DXR
+/// `D3D12_RAYTRACING_INSTANCE_DESC`): each instance references a BLAS
+/// handle, places it in the world with a 3x4 row-major transform
+/// (column 3 is translation), and carries a 24-bit instance id, an
+/// 8-bit visibility mask, a 24-bit hit-group / SBT-record offset, and
+/// 8 bits of flags. Default-constructed instance is identity-transform
+/// and fully visible.
+struct AccelInstance
+{
+    /// 3x4 row-major transform. Identity by default.
+    float                  transform[12] {
+        1.0F, 0.0F, 0.0F, 0.0F,
+        0.0F, 1.0F, 0.0F, 0.0F,
+        0.0F, 0.0F, 1.0F, 0.0F
+    };
+    AccelStructureHandle   blas {};            ///< target BLAS reference
+    std::uint32_t          instance_id : 24    { 0 };  ///< exposed to hit shader as InstanceCustomIndex
+    std::uint32_t          mask        :  8    { 0xFF }; ///< visibility (TraceRays cullmask & this)
+    std::uint32_t          hit_offset  : 24    { 0 };  ///< SBT hit-group offset
+    std::uint32_t          flags       :  8    { 0 };  ///< VkGeometryInstanceFlagsKHR bits
+};
+
 struct AccelStructureDesc
 {
     AccelStructureKind kind { AccelStructureKind::kBottomLevel };
-    /// BLAS: one or more triangle geometries. TLAS: empty here;
-    /// the instance list is supplied at build time via a separate
-    /// surface (a follow-up wave wires it).
+    /// BLAS: one or more triangle geometries.
     std::span<const AccelTriangleGeometry> triangles;
+    /// TLAS: one or more BLAS instances (Phase 117). Ignored when
+    /// `kind == kBottomLevel`.
+    std::span<const AccelInstance>         instances;
     std::string_view debug_name {};
 };
 
