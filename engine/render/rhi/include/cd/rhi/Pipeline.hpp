@@ -28,6 +28,8 @@ enum class DescriptorType : std::uint8_t
     kUniformBufferDynamic,
     kStorageBufferDynamic,
     kInputAttachment,
+    kAccelerationStructure, // Phase 140 — VkAccelerationStructureKHR /
+                            // D3D12 RaytracingAccelerationStructure SRV
 };
 
 struct DescriptorSetLayoutBinding
@@ -108,6 +110,12 @@ struct DescriptorWrite
     // Image / sampler-side
     TextureViewHandle view {};
     SamplerHandle sampler {};
+
+    // Acceleration structure (Phase 140) — populated when
+    // `type == DescriptorType::kAccelerationStructure`. Backends
+    // chain a VkWriteDescriptorSetAccelerationStructureKHR (Vulkan)
+    // or place an AccelerationStructure SRV (D3D12) per binding.
+    AccelStructureHandle accel {};
 };
 
 }  // namespace cd::rhi

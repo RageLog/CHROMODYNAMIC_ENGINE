@@ -699,6 +699,12 @@ public:
                     case cd::rhi::DescriptorType::kSampledImage:
                     case cd::rhi::DescriptorType::kCombinedImageSampler:
                     case cd::rhi::DescriptorType::kInputAttachment:
+                    case cd::rhi::DescriptorType::kAccelerationStructure:
+                        // DXR exposes acceleration structures as SRVs of
+                        // a special RAYTRACING_ACCELERATION_STRUCTURE
+                        // type. The root-signature range slot is plain
+                        // SRV; the descriptor-write side fills in the
+                        // RAYTRACING_ACCELERATION_STRUCTURE SRV desc.
                         r.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
                         break;
                     case cd::rhi::DescriptorType::kStorageImage:

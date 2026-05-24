@@ -572,6 +572,8 @@ struct VmaUsageMapping
             return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
         case DT::kInputAttachment:
             return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+        case DT::kAccelerationStructure:
+            return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
     }
     return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 }
@@ -1781,6 +1783,16 @@ public:
         std::vector<VkWriteDescriptorSet> vk_writes;
         vk_writes.reserve(writes.size());
 
+        // Acceleration-structure writes need a chained
+        // VkWriteDescriptorSetAccelerationStructureKHR plus storage for
+        // the VkAccelerationStructureKHR pointer that struct points at.
+        // The pNext payload addresses must stay live until
+        // vkUpdateDescriptorSets returns, so we own both vectors here.
+        std::vector<VkWriteDescriptorSetAccelerationStructureKHR> accel_writes;
+        accel_writes.reserve(writes.size());
+        std::vector<VkAccelerationStructureKHR>                   accel_handles;
+        accel_handles.reserve(writes.size());
+
         for (const auto& w : writes)
         {
             const VkDescriptorType vk_type = map_descriptor_type(w.type);
@@ -1885,6 +1897,26 @@ public:
                         }
                     );
                     entry.pImageInfo = &image_infos.back();
+                    break;
+                }
+                case cd::rhi::DescriptorType::kAccelerationStructure:
+                {
+                    auto as_it = accels_.find(w.accel.index());
+                    if (as_it == accels_.end())
+                    {
+                        return std::unexpected(make_err(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: unknown acceleration structure"
+                        ));
+                    }
+                    accel_handles.push_back(as_it->second.as);
+                    accel_writes.push_back(VkWriteDescriptorSetAccelerationStructureKHR {
+                        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+                        .pNext = nullptr,
+                        .accelerationStructureCount = 1,
+                        .pAccelerationStructures = &accel_handles.back(),
+                    });
+                    entry.pNext = &accel_writes.back();
                     break;
                 }
             }
