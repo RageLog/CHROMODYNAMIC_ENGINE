@@ -6,6 +6,7 @@
 #include <cd/io/Crc32.hpp>
 #include <cd/io/Endian.hpp>
 #include <cd/io/Framing.hpp>
+#include <cd/io/PathUtils.hpp>
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -371,4 +372,32 @@ TEST(Crc32, ResetReturnsToInitial)
     c.update(bytes);
     c.reset();
     EXPECT_EQ(c.value(), 0u);
+}
+
+TEST(PathUtils, FilenameStripsPath)
+{
+    EXPECT_EQ(cd::io::filename("foo/bar/baz.txt"), "baz.txt");
+    EXPECT_EQ(cd::io::filename("baz.txt"), "baz.txt");
+    EXPECT_EQ(cd::io::filename(""), "");
+}
+
+TEST(PathUtils, ExtensionWithLeadingDot)
+{
+    EXPECT_EQ(cd::io::extension("a/b/c.png"), ".png");
+    EXPECT_EQ(cd::io::extension("README"), "");
+    EXPECT_EQ(cd::io::extension("a/.hidden"), "");   // dot at index 0 of filename
+    EXPECT_EQ(cd::io::extension("archive.tar.gz"), ".gz");
+}
+
+TEST(PathUtils, StemStripsExtension)
+{
+    EXPECT_EQ(cd::io::stem("path/to/file.png"), "file");
+    EXPECT_EQ(cd::io::stem("README"), "README");
+    EXPECT_EQ(cd::io::stem("a/b.c.d"), "b.c");
+}
+
+TEST(PathUtils, ParentIsDirectoryPortion)
+{
+    EXPECT_EQ(cd::io::parent("a/b/c.txt"), "a/b");
+    EXPECT_EQ(cd::io::parent("file.txt"), "");
 }

@@ -13,6 +13,7 @@
 #include <cd/rhi/NullCommandBuffer.hpp>
 #include <cd/rhi/NullDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
+#include <cd/rhi/VertexLayoutBuilder.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -370,6 +371,45 @@ TEST(DepthStencilPresets, EqualForPrePass)
     const auto s = cd::rhi::depth_equal();
     EXPECT_EQ(s.depth_compare, cd::rhi::CompareOp::kEqual);
     EXPECT_FALSE(s.depth_write);
+}
+
+TEST(VertexLayoutBuilder, AutoAssignsLocationAndOffset)
+{
+    cd::rhi::VertexLayoutBuilder b;
+    b.add(cd::rhi::Format::kRGB32Float);   // 12B
+    b.add(cd::rhi::Format::kRGB32Float);   // 12B
+    b.add(cd::rhi::Format::kRG32Float);    // 8B
+    auto layout = b.build();
+    ASSERT_EQ(layout.size(), 3u);
+    EXPECT_EQ(layout[0].location, 0u);
+    EXPECT_EQ(layout[0].offset, 0u);
+    EXPECT_EQ(layout[1].location, 1u);
+    EXPECT_EQ(layout[1].offset, 12u);
+    EXPECT_EQ(layout[2].location, 2u);
+    EXPECT_EQ(layout[2].offset, 24u);
+}
+
+TEST(VertexLayoutBuilder, StrideMatchesSum)
+{
+    cd::rhi::VertexLayoutBuilder b;
+    b.add(cd::rhi::Format::kRGB32Float);
+    b.add(cd::rhi::Format::kRG32Float);
+    EXPECT_EQ(b.stride(), 20u);  // 12 + 8
+}
+
+TEST(VertexLayoutBuilder, BindingOverloadHonored)
+{
+    cd::rhi::VertexLayoutBuilder b;
+    b.add(cd::rhi::Format::kRGB32Float, 7);
+    auto layout = b.build();
+    EXPECT_EQ(layout[0].binding, 7u);
+}
+
+TEST(VertexLayoutBuilder, BytesOfFormat)
+{
+    EXPECT_EQ(cd::rhi::bytes_of(cd::rhi::Format::kRGB32Float), 12u);
+    EXPECT_EQ(cd::rhi::bytes_of(cd::rhi::Format::kR32Float),   4u);
+    EXPECT_EQ(cd::rhi::bytes_of(cd::rhi::Format::kRGBA8Unorm), 4u);
 }
 
 }  // namespace
