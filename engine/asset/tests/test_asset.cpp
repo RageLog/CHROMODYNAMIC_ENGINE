@@ -352,3 +352,53 @@ TEST(MemoryCache, VictimsReturnsOldestFirst)
     ASSERT_FALSE(v.empty());
     EXPECT_EQ(v[0], id_b);   // oldest after re-touch
 }
+
+#include <cd/asset/StreamRequest.hpp>
+
+TEST(StreamQueue, EmptyOnConstruction)
+{
+    cd::asset::StreamQueue q;
+    EXPECT_TRUE(q.empty());
+    EXPECT_EQ(q.size(), 0u);
+}
+
+TEST(StreamQueue, PopReturnsHighestPriorityFirst)
+{
+    cd::asset::StreamQueue q;
+    q.push(cd::asset::StreamRequest { cd::asset::AssetId::from_path("a"), 1, 0 });
+    q.push(cd::asset::StreamRequest { cd::asset::AssetId::from_path("b"), 5, 0 });
+    q.push(cd::asset::StreamRequest { cd::asset::AssetId::from_path("c"), 2, 0 });
+    auto r = q.pop_top();
+    EXPECT_EQ(r.priority, 5);
+    EXPECT_EQ(r.id, cd::asset::AssetId::from_path("b"));
+}
+
+TEST(StreamQueue, PopMarksInflight)
+{
+    cd::asset::StreamQueue q;
+    auto id = cd::asset::AssetId::from_path("x");
+    q.push(cd::asset::StreamRequest { id, 0, 0 });
+    EXPECT_EQ(q.state_of(id), cd::asset::StreamState::kPending);
+    (void)q.pop_top();
+    EXPECT_EQ(q.state_of(id), cd::asset::StreamState::kInflight);
+}
+
+TEST(StreamQueue, MarkCompleteUpdatesState)
+{
+    cd::asset::StreamQueue q;
+    auto id = cd::asset::AssetId::from_path("y");
+    q.push(cd::asset::StreamRequest { id, 0, 0 });
+    (void)q.pop_top();
+    q.mark_complete(id);
+    EXPECT_EQ(q.state_of(id), cd::asset::StreamState::kComplete);
+}
+
+TEST(StreamQueue, MarkFailedUpdatesState)
+{
+    cd::asset::StreamQueue q;
+    auto id = cd::asset::AssetId::from_path("z");
+    q.push(cd::asset::StreamRequest { id, 0, 0 });
+    (void)q.pop_top();
+    q.mark_failed(id);
+    EXPECT_EQ(q.state_of(id), cd::asset::StreamState::kFailed);
+}

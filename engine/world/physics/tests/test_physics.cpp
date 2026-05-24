@@ -419,3 +419,46 @@ TEST(RaySphere, InsideSphereReturnsZero)
     ASSERT_TRUE(t.has_value());
     EXPECT_FLOAT_EQ(*t, 0.0F);
 }
+
+#include <cd/physics/CapsuleSphere.hpp>
+
+TEST(CapsuleSphere, OverlapWhenSphereInsideCapsule)
+{
+    cd::physics::Capsule c;
+    c.p0 = { 0, 0, 0 };
+    c.p1 = { 0, 10, 0 };
+    c.radius = 1.0F;
+    cd::physics::Sphere s { { 0, 5, 0 }, 0.5F };
+    EXPECT_TRUE(cd::physics::intersects(c, s));
+}
+
+TEST(CapsuleSphere, NoOverlapWhenFarAway)
+{
+    cd::physics::Capsule c;
+    c.p0 = { 0, 0, 0 };
+    c.p1 = { 0, 10, 0 };
+    c.radius = 1.0F;
+    cd::physics::Sphere s { { 100, 5, 0 }, 0.5F };
+    EXPECT_FALSE(cd::physics::intersects(c, s));
+}
+
+TEST(CapsuleSphere, TouchingSurfaces)
+{
+    cd::physics::Capsule c;
+    c.p0 = { 0, 0, 0 };
+    c.p1 = { 0, 10, 0 };
+    c.radius = 1.0F;
+    // sphere center at (1.5, 5, 0), radius 0.5 → outer surfaces touch
+    cd::physics::Sphere s { { 1.5F, 5, 0 }, 0.5F };
+    EXPECT_TRUE(cd::physics::intersects(c, s));
+}
+
+TEST(CapsuleSphere, SymmetricSphereCapsule)
+{
+    cd::physics::Capsule c;
+    c.p0 = { 0, 0, 0 };
+    c.p1 = { 5, 0, 0 };
+    c.radius = 1.0F;
+    cd::physics::Sphere s { { 2.5F, 0.5F, 0 }, 0.6F };
+    EXPECT_EQ(cd::physics::intersects(c, s), cd::physics::intersects(s, c));
+}
