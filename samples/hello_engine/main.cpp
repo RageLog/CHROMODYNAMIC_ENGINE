@@ -780,6 +780,111 @@ int main()
              log_push("Right-mouse drag in viewport: orbit");
              log_push("Mouse wheel: zoom"); });
 
+    // Phase 154 — scene save/load round-trip. The serializer pulls
+    // transforms out of cd::scene::Scene; per-entity metadata (name,
+    // tint, primitive kind) rides the WriteExtras/ReadExtras callbacks
+    // so the round-trip is lossless.
+    constexpr const char* kSavePath = "hello_engine.cdscene.json";
+    auto kind_name = [](PrimitiveKind k) -> const char* {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return "Sphere";
+            case PrimitiveKind::kCone:     return "Cone";
+            case PrimitiveKind::kCylinder: return "Cylinder";
+            case PrimitiveKind::kTorus:    return "Torus";
+            case PrimitiveKind::kCube:     return "Cube";
+        }
+        return "Cube";
+    };
+    palette.register_command(80, "Scene: Save",
+        [&]{
+            auto find_entity = [&](cd::ecs::Entity e) -> const SceneEntity* {
+                for (const auto& en : entities)
+                    if (en.handle.id == e.id) return &en;
+                return nullptr;
+            };
+            auto root = cd::scene::serialize_scene_with(scene,
+                [&](cd::ecs::Entity e, cd::asset_json::Object& obj) {
+                    const auto* en = find_entity(e);
+                    if (en == nullptr) return;
+                    obj["name"] = cd::asset_json::Value { en->name };
+                    obj["kind"] = cd::asset_json::Value { std::string { kind_name(en->kind) } };
+                    cd::asset_json::Array tint;
+                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.x) });
+                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.y) });
+                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.z) });
+                    obj["tint"] = cd::asset_json::Value { std::move(tint) };
+                });
+            const auto text = cd::asset_json::serialize(root, /*pretty=*/true);
+            std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
+            if (f)
+            {
+                f.write(text.data(), static_cast<std::streamsize>(text.size()));
+                log_push(std::string { "[scene] Saved " } + std::to_string(entities.size()) +
+                         " entities to " + kSavePath);
+            }
+            else
+            {
+                log_push("[scene] Save failed (ofstream)");
+            }
+        });
+    palette.register_command(81, "Scene: Load (replace world)",
+        [&]{
+            auto r = cd::asset_json::load(kSavePath);
+            if (!r.has_value())
+            {
+                log_push(std::string { "[scene] Load failed: " } + std::string { r.error().message });
+                return;
+            }
+            // Build a fresh world+scene; old `world` / `scene` get
+            // replaced via assignment (cd::scene::Scene holds a
+            // reference so we have to rebuild entities vector too).
+            // The simpler path: clear `entities`, deserialize into the
+            // existing scene, and pull metadata back from the JSON.
+            for (auto& en : entities)
+            {
+                if (en.handle.is_valid()) scene.destroy_node(en.handle);
+            }
+            entities.clear();
+            std::vector<SceneEntity> loaded;
+            auto rd = cd::scene::deserialize_scene_with(scene, *r,
+                [&](cd::ecs::Entity e, const cd::asset_json::Object& obj) {
+                    SceneEntity en;
+                    en.handle = e;
+                    en.kind = PrimitiveKind::kCube;
+                    en.tint = { 1.0F, 1.0F, 1.0F };
+                    if (auto it = obj.find("name"); it != obj.end() && it->second.is_string())
+                        en.name = it->second.as_string();
+                    if (auto it = obj.find("kind"); it != obj.end() && it->second.is_string())
+                        en.kind = kind_from_name(it->second.as_string());
+                    if (auto it = obj.find("tint"); it != obj.end() && it->second.is_array() &&
+                        it->second.as_array().size() == 3)
+                    {
+                        const auto& a = it->second.as_array();
+                        if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                        {
+                            en.tint = {
+                                static_cast<float>(a[0].as_number()),
+                                static_cast<float>(a[1].as_number()),
+                                static_cast<float>(a[2].as_number()),
+                            };
+                        }
+                    }
+                    loaded.push_back(std::move(en));
+                });
+            if (!rd.has_value())
+            {
+                log_push(std::string { "[scene] Deserialize failed: " } +
+                         std::string { rd.error().message });
+                return;
+            }
+            entities = std::move(loaded);
+            selected = entities.empty() ? -1 : 0;
+            history.clear();
+            log_push(std::string { "[scene] Loaded " } + std::to_string(entities.size()) +
+                     " entities from " + kSavePath);
+        });
+
     // ---- Frame loop ----
     using clock = std::chrono::steady_clock;
     auto last_tick = clock::now();
