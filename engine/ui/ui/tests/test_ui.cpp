@@ -273,4 +273,49 @@ TEST(Theme, Color32Equality)
     EXPECT_FALSE(a == c);
 }
 
+#include <cd/ui/Tooltip.hpp>
+
+TEST(Tooltip, NotVisibleBeforeDelay)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(0.5F);
+    t.update(1, 0.0F);
+    EXPECT_FALSE(t.visible());
+    t.update(1, 0.3F);
+    EXPECT_FALSE(t.visible());
+}
+
+TEST(Tooltip, VisibleAfterDelay)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(0.5F);
+    t.update(1, 0.0F);
+    t.update(1, 0.6F);
+    EXPECT_TRUE(t.visible());
+}
+
+TEST(Tooltip, NewTargetRestartsTimer)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(0.4F);
+    t.update(1, 0.0F);
+    t.update(1, 0.5F);  // visible
+    EXPECT_TRUE(t.visible());
+    t.update(2, 0.6F);  // new target — restart
+    EXPECT_FALSE(t.visible());
+    EXPECT_EQ(t.target(), 2u);
+}
+
+TEST(Tooltip, ZeroTargetClears)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(0.1F);
+    t.update(1, 0.0F);
+    t.update(1, 0.2F);
+    EXPECT_TRUE(t.visible());
+    t.update(0, 0.3F);
+    EXPECT_FALSE(t.visible());
+    EXPECT_EQ(t.target(), 0u);
+}
+
 }  // namespace

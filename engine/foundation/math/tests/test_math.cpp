@@ -842,3 +842,52 @@ TEST(MathRange, NormalizeSwapsReversed)
     EXPECT_EQ(n.min, 0);
     EXPECT_EQ(n.max, 10);
 }
+
+#include <cd/math/Noise.hpp>
+
+TEST(Noise, ValueInUnitRange)
+{
+    for (int i = 0; i < 50; ++i)
+    {
+        const float v = cd::math::noise2d(static_cast<float>(i) * 0.13F,
+                                          static_cast<float>(i) * 0.27F, 42);
+        EXPECT_GE(v, 0.0F);
+        EXPECT_LE(v, 1.0F);
+    }
+}
+
+TEST(Noise, DeterministicForSameSeed)
+{
+    const float a = cd::math::noise2d(0.5F, 0.5F, 7);
+    const float b = cd::math::noise2d(0.5F, 0.5F, 7);
+    EXPECT_FLOAT_EQ(a, b);
+}
+
+TEST(Noise, DifferentSeedYieldsDifferentValue)
+{
+    const float a = cd::math::noise2d(0.5F, 0.5F, 1);
+    const float b = cd::math::noise2d(0.5F, 0.5F, 2);
+    EXPECT_NE(a, b);
+}
+
+TEST(Noise, IntegerLatticeReturnsHashSample)
+{
+    // At integer lattice points, t = 0 → noise == the hash sample, so
+    // sampling exactly at (0,0) and (1,0) should usually differ.
+    const float a = cd::math::noise2d(0.0F, 0.0F, 100);
+    const float b = cd::math::noise2d(1.0F, 0.0F, 100);
+    // (Hash collisions theoretically possible, but with 32-bit hash
+    // the probability is negligible for our two specific points.)
+    EXPECT_NE(a, b);
+}
+
+TEST(Noise, Fbm2dStaysInUnitRange)
+{
+    for (int i = 0; i < 30; ++i)
+    {
+        const float v = cd::math::fbm2d(static_cast<float>(i) * 0.07F,
+                                        static_cast<float>(i) * 0.11F, 999, 5);
+        EXPECT_GE(v, 0.0F);
+        EXPECT_LE(v, 1.0F);
+    }
+}
