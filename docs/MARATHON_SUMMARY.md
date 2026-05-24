@@ -157,6 +157,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.61 | 135 | **Vulkan RT pipeline + dispatch_rays impl** — `vkCreateRayTracingPipelinesKHR` (groups derived from `RtShaderEntry::group` index, hit/general type chosen automatically), SBT handle bytes via `vkGetRayTracingShaderGroupHandlesKHR`, `bind_rt_pipeline` + `vkCmdTraceRaysKHR` overrides; `RtShaderEntry` ABI now takes pre-compiled `ShaderModuleHandle` |
 | v0.99.62 | 136 | **hello_rt sample** — full RT chain runtime smoke: cd::shader compiles 3 RT shaders (raygen+miss+chit), `create_rt_pipeline` + `get_rt_shader_group_handles` exercised; cd::shader gains 6 RT stage enum values. Dispatch deferred until DescriptorType::kAccelerationStructure lands |
 | v0.99.63 | 137 | **OpenGL DSA buffer path** — inline WGL loader for glCreateBuffers / glNamedBufferStorage / glNamedBufferSubData / glDeleteBuffers; create_buffer + destroy_buffer real impls mirroring Vulkan VMA semantics. Texture + swapchain remain stubbed (each needs its own loader slice) |
+| v0.99.64 | 138 | **hello_engine mega-showcase** — single window with 8 ImGui-docked panels (3D viewport w/ sky + 5×5 PBR + 5 procedural primitives, Scene tree, Inspector live-drag, History, Audio meter, Net Sim ticker, Random histograms, Counters) + 15-command palette; every marathon subsystem visible at once |
 
 ## Major capabilities added across the marathon
 

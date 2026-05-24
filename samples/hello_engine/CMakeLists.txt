@@ -1,0 +1,21 @@
+cd_add_sample(hello_engine
+  SOURCES main.cpp
+  DEPS
+    cd::asset
+    cd::asset_json
+    cd::audio
+    cd::camera
+    cd::core
+    cd::ecs
+    cd::editor
+    cd::imgui_backend
+    cd::material
+    cd::math
+    cd::net
+    cd::platform
+    cd::render
+    cd::rhi
+    cd::rhi_vulkan
+    cd::scene
+    cd::shader
+)
