@@ -72,6 +72,7 @@ add_subdirectory(hello_bezier)
 add_subdirectory(hello_audio_chain)        # Mixer+Compressor+Reverb+LowPass+Limiter
 add_subdirectory(hello_net_sim)            # SnapshotBuffer+DeltaWriter+LatencyStats+Throttle
 add_subdirectory(hello_command_palette)    # fuzzy editor command palette
+add_subdirectory(hello_random)             # PCG32 + Box-Muller distribution viz
 
 # hello_editor wires cd::editor::EditHistory + TransformCommands into
 # an ImGui-driven inspector. Gated on CD_ENABLE_VULKAN because it
