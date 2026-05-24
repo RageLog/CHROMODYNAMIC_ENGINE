@@ -87,6 +87,10 @@ struct AccelStructureTag
 {
 };
 
+struct RtPipelineTag
+{
+};
+
 using BufferHandle = cd::core::Handle<BufferTag>;
 using TextureHandle = cd::core::Handle<TextureTag>;
 using TextureViewHandle = cd::core::Handle<TextureViewTag>;
@@ -109,5 +113,10 @@ using QueryPoolHandle = cd::core::Handle<QueryPoolTag>;
 /// for a follow-up wave (Vulkan VK_KHR_acceleration_structure +
 /// VK_KHR_ray_tracing_pipeline / D3D12 DXR Tier 1.1).
 using AccelStructureHandle = cd::core::Handle<AccelStructureTag>;
+
+/// Phase 134 — ray-tracing pipeline (raygen + miss + hit groups
+/// bound together via VkPipelineLayout + an SBT). Vulkan backend
+/// implementation arrives with Phase 135.
+using RtPipelineHandle = cd::core::Handle<RtPipelineTag>;
 
 }  // namespace cd::rhi

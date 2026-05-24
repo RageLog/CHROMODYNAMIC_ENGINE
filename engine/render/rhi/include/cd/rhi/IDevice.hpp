@@ -318,6 +318,41 @@ public:
     }
 
     virtual void destroy_acceleration_structure(AccelStructureHandle /*h*/) {}
+
+    // Phase 134 — ray-tracing pipeline. Backends without RT return
+    // kNotImplemented; callers gate on `features().ray_tracing`.
+    [[nodiscard]] virtual cd::core::Result<RtPipelineHandle>
+    create_rt_pipeline(const RtPipelineDesc& /*desc*/,
+                      PipelineLayoutHandle /*layout*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "create_rt_pipeline: backend has no RT implementation"));
+    }
+
+    virtual void destroy_rt_pipeline(RtPipelineHandle /*h*/) {}
+
+    /// Phase 134 — RT shader-group handle size + alignment for SBT
+    /// authoring. Returns 0 on backends without RT.
+    [[nodiscard]] virtual std::uint32_t rt_shader_group_handle_size() const noexcept { return 0; }
+    [[nodiscard]] virtual std::uint32_t rt_shader_group_handle_alignment() const noexcept { return 0; }
+    [[nodiscard]] virtual std::uint32_t rt_shader_group_base_alignment() const noexcept { return 0; }
+
+    /// Phase 134 — copy a contiguous block of shader-group handles
+    /// (raygen + miss + hit) out of an RT pipeline into a caller-
+    /// provided byte buffer. The buffer is then uploaded into the
+    /// SBT region(s) the caller passes to `dispatch_rays`. Returns
+    /// kNotImplemented on backends without RT.
+    [[nodiscard]] virtual cd::core::Result<void>
+    get_rt_shader_group_handles(RtPipelineHandle /*pipeline*/,
+                                std::uint32_t /*first_group*/,
+                                std::uint32_t /*group_count*/,
+                                std::span<std::byte> /*out*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "get_rt_shader_group_handles: backend has no RT implementation"));
+    }
 };
 
 }  // namespace cd::rhi
