@@ -2746,11 +2746,85 @@ public:
                 cd::rhi::rhi_errors::Code::kNotImplemented,
                 "create_acceleration_structure: device lacks RT extensions"));
         }
-        if (desc.kind != cd::rhi::AccelStructureKind::kBottomLevel)
+        // Phase 127 — TLAS create path (build deferred to a future
+        // command-buffer wave). Mirror BLAS but feed the size query
+        // an INSTANCES geometry with a placeholder instance buffer
+        // address (sizes only depend on instance count).
+        if (desc.kind == cd::rhi::AccelStructureKind::kTopLevel)
         {
-            return std::unexpected(cd::rhi::rhi_errors::make(
-                cd::rhi::rhi_errors::Code::kNotImplemented,
-                "create_acceleration_structure: TLAS lands in 17.B"));
+            if (desc.instances.empty())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_acceleration_structure: TLAS must have >=1 instance"));
+            }
+
+            VkAccelerationStructureGeometryKHR g {};
+            g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+            g.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+            g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            g.geometry.instances.sType =
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+            g.geometry.instances.arrayOfPointers = VK_FALSE;
+            g.geometry.instances.data.deviceAddress = 0;  // placeholder
+
+            VkAccelerationStructureBuildGeometryInfoKHR bgi {};
+            bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+            bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+            bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            bgi.geometryCount = 1;
+            bgi.pGeometries = &g;
+
+            std::uint32_t prim_count = static_cast<std::uint32_t>(desc.instances.size());
+            VkAccelerationStructureBuildSizesInfoKHR sizes {};
+            sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+            vkGetAccelerationStructureBuildSizesKHR(
+                device_,
+                VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                &bgi, &prim_count, &sizes);
+
+            VkBufferCreateInfo bci {};
+            bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            bci.size = sizes.accelerationStructureSize;
+            bci.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            VmaAllocationCreateInfo aci {};
+            aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+            VkBuffer storage_buf { VK_NULL_HANDLE };
+            VmaAllocation storage_alloc { VK_NULL_HANDLE };
+            if (vmaCreateBuffer(vma_allocator_, &bci, &aci, &storage_buf, &storage_alloc, nullptr) != VK_SUCCESS)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "TLAS storage buffer allocation failed"));
+            }
+
+            VkAccelerationStructureCreateInfoKHR aci_as {};
+            aci_as.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+            aci_as.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+            aci_as.buffer = storage_buf;
+            aci_as.offset = 0;
+            aci_as.size = sizes.accelerationStructureSize;
+            VkAccelerationStructureKHR as { VK_NULL_HANDLE };
+            if (vkCreateAccelerationStructureKHR(device_, &aci_as, nullptr, &as) != VK_SUCCESS)
+            {
+                vmaDestroyBuffer(vma_allocator_, storage_buf, storage_alloc);
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "vkCreateAccelerationStructureKHR(TLAS) failed"));
+            }
+
+            AccelRecord rec;
+            rec.as = as;
+            rec.storage_buf = storage_buf;
+            rec.storage_alloc = storage_alloc;
+            rec.scratch_size = sizes.buildScratchSize;
+            rec.kind = desc.kind;
+            const auto id = next_id_++;
+            accels_.emplace(id, std::move(rec));
+            return cd::rhi::AccelStructureHandle { id, 1u };
         }
         if (desc.triangles.empty())
         {

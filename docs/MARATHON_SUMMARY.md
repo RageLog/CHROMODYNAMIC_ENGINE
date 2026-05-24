@@ -147,6 +147,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.51 | 124 | **D3D12 create_texture_view** — real implementation w/ device-level RTV (256) + DSV (256) bump-alloc pools, shared SRV/UAV via existing CBV_SRV_UAV cpu_heap (4096); inferred view kind from parent texture usage flags; 2D only (cube/3D in follow-up) |
 | v0.99.52 | 125 | **D3D12 sync primitives** — ID3D12Fence-backed Semaphore + Fence + TimelineSemaphore wrappers; SetEventOnCompletion + WaitForSingleObject host wait w/ ns→ms timeout; D3D12 NotImpl count 8 → 4 |
 | v0.99.53 | 126 | **D3D12 cube-map view** — `TextureType::kCube` now handled by create_texture_view (TEXTURECUBE SRV + TEXTURE2DARRAY UAV with ArraySize=6); TextureViewRecord gains `is_cube`; update_descriptor_set's SRV branches pick TEXTURECUBE dimension; clears Phase 122 audit "cube SRV follow-up" remark |
+| v0.99.54 | 127 | **Vulkan TLAS create** — mirrors Phase 17.A BLAS path: INSTANCES geometry + placeholder device-address for size query + TOP_LEVEL AS type; VMA-backed storage buffer; build still deferred (cmd-buffer path no-op) |
 
 ## Major capabilities added across the marathon
 
