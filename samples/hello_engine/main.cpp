@@ -33,10 +33,12 @@
 #include <cd/asset/Primitives.hpp>
 #include <cd/asset_json/Json.hpp>
 #include <cd/audio/Compressor.hpp>
+#include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/Limiter.hpp>
 #include <cd/audio/LowPass.hpp>
 #include <cd/audio/Mixer.hpp>
 #include <cd/audio/SimpleReverb.hpp>
+#include <cd/audio/WasapiBackend.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/core/CounterTable.hpp>
 #include <cd/ecs/Entity.hpp>
@@ -79,6 +81,8 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <fstream>
+#include <ios>
 #include <span>
 #include <string>
 #include <vector>
@@ -601,6 +605,66 @@ int main()
     float         audio_limiter_gain_min = 1.0F;
     std::deque<float> audio_meter_history;  // last ~120 ticks of peak
 
+    // Phase 139 — last-5-seconds ring buffer of DSP chain output (s16
+    // PCM). User clicks "Save WAV" in the Audio panel and the buffer
+    // gets dumped to disk; play with any system audio player.
+    constexpr std::size_t kAudioRingFrames = kAudioSampleRate * 5u;  // 5 s mono
+    std::vector<std::int16_t> audio_ring(kAudioRingFrames, 0);
+    std::size_t   audio_ring_write = 0;
+    std::uint64_t audio_total_written = 0;
+
+    // Phase 139 v2 — WASAPI live playback. Pre-render 2 seconds of the
+    // DSP chain at startup, create a looping clip, play. The visual
+    // panel keeps ticking against the same DSP for an in-sync meter,
+    // but the audible output is the pre-rendered loop (WASAPI clip
+    // semantics don't expose continuous-stream push from sample code).
+    // Without this the user heard nothing because the engine's audio
+    // backend was never instantiated by hello_engine.
+    auto audio_backend = cd::audio::make_wasapi_audio_backend();
+    cd::audio::ClipHandle  live_clip {};
+    cd::audio::VoiceHandle live_voice {};
+    bool audio_live_ok = (audio_backend != nullptr);
+    if (audio_live_ok)
+    {
+        // Render 2 seconds of audio through the same DSP chain that
+        // the on-screen meter walks every frame, then feed it to
+        // WASAPI as a looping clip.
+        constexpr std::size_t kPreRenderFrames = kAudioSampleRate * 2u;
+        std::vector<float> live_buf(kPreRenderFrames, 0.0F);
+        // Use a separate set of DSP nodes so the "live ticker" the
+        // UI walks isn't pre-cooked by this render pass.
+        cd::audio::Mixer<2>      m2;        m2.set_gain(0, 0.6F); m2.set_gain(1, 0.7F);
+        cd::audio::Compressor    c2;        c2.prepare(static_cast<float>(kAudioSampleRate), 0.40F, 6.0F, 0.004F, 0.080F);
+        cd::audio::SimpleReverb  r2;        r2.prepare(kAudioSampleRate / 8); r2.set_feedback(0.35F);
+        cd::audio::LowPass       l2;        l2.prepare(static_cast<float>(kAudioSampleRate), 6500.0F);
+        cd::audio::Limiter       L2;        L2.prepare(static_cast<float>(kAudioSampleRate), 0.92F, 0.0002F, 0.040F);
+        for (std::size_t i = 0; i < kPreRenderFrames; ++i)
+        {
+            m2.mix(0, square_wave(i, 440.0F));
+            m2.mix(1, burst_noise(i));
+            float x = m2.pull();
+            x = c2.process(x);
+            const float wet = r2.process(x);
+            x = 0.75F * x + 0.20F * wet;
+            x = l2.process(x);
+            x = L2.process(x);
+            if (x >  1.0F) x =  1.0F;
+            if (x < -1.0F) x = -1.0F;
+            live_buf[i] = x * 0.7F;  // -3 dB headroom on output
+        }
+        cd::audio::ClipDesc cd_desc {};
+        cd_desc.samples     = std::span<const float>(live_buf);
+        cd_desc.channels    = 1;
+        cd_desc.sample_rate = kAudioSampleRate;
+        auto clip_r = audio_backend->create_clip(cd_desc);
+        if (clip_r.has_value())
+        {
+            live_clip = *clip_r;
+            auto voice_r = audio_backend->play(live_clip, /*vol=*/0.65F, /*loop=*/true);
+            if (voice_r.has_value()) live_voice = *voice_r;
+        }
+    }
+
     // ---- Net sim (continuous tick) ----
     cd::net::Throttle             net_throttle { /*cap=*/4.0F, /*rate=*/30.0F };
     cd::net::SnapshotBuffer<float> net_snapbuf;  // tiny scalar state for the demo
@@ -696,8 +760,13 @@ int main()
             }
         });
     palette.register_command(40, "Audio: Toggle Mute",
-        [&]{ audio_muted = !audio_muted;
-             log_push(std::string("[palette] Audio: ") + (audio_muted?"MUTED":"LIVE")); });
+        [&]{
+            audio_muted = !audio_muted;
+            // Phase 139 v3 — drive WASAPI voice volume so mute is audible.
+            if (audio_live_ok && audio_backend && live_voice.is_valid())
+                audio_backend->set_volume(live_voice, audio_muted ? 0.0F : 0.65F);
+            log_push(std::string("[palette] Audio: ") + (audio_muted?"MUTED":"LIVE"));
+        });
     palette.register_command(50, "Net: Toggle Sim",
         [&]{ net_enabled = !net_enabled;
              log_push(std::string("[palette] Net sim: ") + (net_enabled?"RUNNING":"PAUSED")); });
@@ -718,6 +787,13 @@ int main()
     std::vector<cd::platform::OSEvent> events;
     events.reserve(64);
 
+    // Phase 139 v2 — platform-level modifier tracking. cd::imgui_backend
+    // doesn't forward Ctrl/Shift state into ImGui's IO reliably, so we
+    // track from the same OSEvent KeyDown/KeyUp pairs that drive the
+    // rest of the sample.
+    bool mod_ctrl  = false;
+    bool mod_shift = false;
+
     while (true)
     {
         events.clear();
@@ -735,15 +811,32 @@ int main()
             {
                 needs_rebuild = true;
             }
+            // F1 alternatif (focus-bağımsız, zero-modifier).
             else if (e.kind == cd::platform::OSEventKind::kKeyDown &&
-                     e.key == cd::platform::KeyCode::kP)
+                     e.key == cd::platform::KeyCode::kF1)
             {
-                const ImGuiIO& io = ImGui::GetIO();
-                if (io.KeyCtrl && io.KeyShift)
+                palette_visible = !palette_visible;
+                if (palette_visible) palette_query.clear();
+            }
+            // Phase 139 v2 — platform modifier tracking + Ctrl+Shift+P.
+            else if (e.kind == cd::platform::OSEventKind::kKeyDown)
+            {
+                if (e.key == cd::platform::KeyCode::kLCtrl  ||
+                    e.key == cd::platform::KeyCode::kRCtrl)  mod_ctrl  = true;
+                if (e.key == cd::platform::KeyCode::kLShift ||
+                    e.key == cd::platform::KeyCode::kRShift) mod_shift = true;
+                if (e.key == cd::platform::KeyCode::kP && mod_ctrl && mod_shift)
                 {
                     palette_visible = !palette_visible;
                     if (palette_visible) palette_query.clear();
                 }
+            }
+            else if (e.kind == cd::platform::OSEventKind::kKeyUp)
+            {
+                if (e.key == cd::platform::KeyCode::kLCtrl  ||
+                    e.key == cd::platform::KeyCode::kRCtrl)  mod_ctrl  = false;
+                if (e.key == cd::platform::KeyCode::kLShift ||
+                    e.key == cd::platform::KeyCode::kRShift) mod_shift = false;
             }
         }
         if (needs_rebuild)
@@ -781,6 +874,14 @@ int main()
                 x = limiter.process(x);
                 if (limiter.current_gain() < lim_gain_min) lim_gain_min = limiter.current_gain();
                 if (std::fabs(x) > peak) peak = std::fabs(x);
+                // Phase 139 — capture to 5 s ring buffer.
+                if (x >  1.0F) x =  1.0F;
+                if (x < -1.0F) x = -1.0F;
+                audio_ring[audio_ring_write] =
+                    static_cast<std::int16_t>(x * 32760.0F);
+                ++audio_ring_write;
+                if (audio_ring_write >= kAudioRingFrames) audio_ring_write = 0;
+                ++audio_total_written;
             }
             audio_peak_window      = peak;
             audio_comp_db_window   = comp_db_min;
@@ -989,6 +1090,15 @@ int main()
         // ---- ImGui frame ----
         ctx.new_frame();
 
+        // Phase 139 — palette hotkey through ImGui (after new_frame so
+        // IO modifier state is current). This is the path that works
+        // regardless of focus / text-input absorption.
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P))
+        {
+            palette_visible = !palette_visible;
+            if (palette_visible) palette_query.clear();
+        }
+
         // DockSpace host.
         {
             const ImGuiViewport* main_vp = ImGui::GetMainViewport();
@@ -1121,7 +1231,10 @@ int main()
         // ---- Counters ----
         ImGui::Begin("Counters");
         const auto snap = counters.snapshot();
-        ImGui::Text("Frame: %u   dt: %.2f ms", frame_idx, static_cast<double>(dt) * 1000.0);
+        // Phase 139 — FPS / dt readout up top.
+        const double fps = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
+        ImGui::Text("FPS: %5.1f   dt: %.2f ms   frame: %u",
+                    fps, static_cast<double>(dt) * 1000.0, frame_idx);
         ImGui::Separator();
         for (const auto& [name, value] : snap)
         {
@@ -1171,10 +1284,71 @@ int main()
         ImGui::Text("limiter min gain     %.4f", static_cast<double>(audio_limiter_gain_min));
         if (!audio_meter_history.empty())
         {
-            std::vector<float> v(audio_meter_history.begin(), audio_meter_history.end());
-            ImGui::PlotLines("##peak_hist", v.data(),
-                             static_cast<int>(v.size()), 0, "peak history",
+            std::vector<float> vv(audio_meter_history.begin(), audio_meter_history.end());
+            ImGui::PlotLines("##peak_hist", vv.data(),
+                             static_cast<int>(vv.size()), 0, "peak history",
                              0.0F, 1.0F, ImVec2(0, 60));
+        }
+        // Phase 139 — last 5 s of DSP output dump.
+        ImGui::Separator();
+        ImGui::TextDisabled("No live audio backend wired in this sample —");
+        ImGui::TextDisabled("DSP chain ticks in memory. Save WAV to hear it.");
+        if (ImGui::Button("Save Last 5 s as hello_engine_out.wav"))
+        {
+            // Compose contiguous buffer from ring (oldest → newest).
+            std::vector<std::int16_t> samples;
+            samples.reserve(kAudioRingFrames);
+            std::size_t start = audio_ring_write;
+            std::size_t n = (audio_total_written < kAudioRingFrames)
+                ? static_cast<std::size_t>(audio_total_written)
+                : kAudioRingFrames;
+            if (audio_total_written < kAudioRingFrames) start = 0;
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                samples.push_back(audio_ring[(start + i) % kAudioRingFrames]);
+            }
+            // Minimal WAV header (mono s16) — same encoder shape as
+            // hello_audio_chain / hello_audio_synth.
+            const std::uint32_t data_bytes =
+                static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+            const std::uint32_t fmt_size = 16;
+            const std::uint32_t riff_size = 4u + 8u + fmt_size + 8u + data_bytes;
+            std::vector<std::byte> bytes;
+            bytes.reserve(8u + riff_size);
+            auto push_tag = [&](const char (&t)[5]) {
+                for (int i = 0; i < 4; ++i) bytes.push_back(static_cast<std::byte>(t[i]));
+            };
+            auto push_le = [&](std::uint64_t v, int n_bytes) {
+                for (int i = 0; i < n_bytes; ++i)
+                {
+                    const auto shift = static_cast<unsigned>(i) * 8u;
+                    bytes.push_back(std::byte{static_cast<unsigned char>((v >> shift) & 0xFFu)});
+                }
+            };
+            push_tag("RIFF"); push_le(riff_size, 4); push_tag("WAVE");
+            push_tag("fmt "); push_le(fmt_size, 4);
+            push_le(1u, 2);                            // PCM
+            push_le(1u, 2);                            // mono
+            push_le(kAudioSampleRate, 4);
+            push_le(kAudioSampleRate * 1u * 2u, 4);    // byte rate
+            push_le(2u, 2);                            // block align
+            push_le(16u, 2);                           // bits per sample
+            push_tag("data"); push_le(data_bytes, 4);
+            bytes.insert(bytes.end(),
+                         reinterpret_cast<const std::byte*>(samples.data()),
+                         reinterpret_cast<const std::byte*>(samples.data() + samples.size()));
+            std::ofstream f { "hello_engine_out.wav", std::ios::binary | std::ios::trunc };
+            if (f)
+            {
+                f.write(reinterpret_cast<const char*>(bytes.data()),
+                        static_cast<std::streamsize>(bytes.size()));
+                log_push("[audio] wrote hello_engine_out.wav (" +
+                         std::to_string(bytes.size()) + " B)");
+            }
+            else
+            {
+                log_push("[audio] WAV write failed (ofstream)");
+            }
         }
         ImGui::End();
 

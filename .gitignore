@@ -10,6 +10,7 @@ install/
 imgui.ini
 hello_audio_synth_out.wav
 hello_audio_play_out.wav
+hello_engine_out.wav
 *.cdtex
 *.cdmesh
 .claude/scheduled_tasks.lock
