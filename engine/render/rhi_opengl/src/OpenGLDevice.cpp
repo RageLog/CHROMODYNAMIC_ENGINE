@@ -56,12 +56,39 @@ constexpr GLbitfield kGL_MapReadBit                = 0x0001;
 constexpr GLbitfield kGL_MapWriteBit               = 0x0002;
 constexpr GLbitfield kGL_DynamicStorageBit         = 0x0100;
 
+// Phase 143-144 — texture / sampler enums (subset)
+constexpr GLenum     kGL_Texture2D                 = 0x0DE1;
+constexpr GLenum     kGL_RGBA8                     = 0x8058;
+constexpr GLenum     kGL_R8                        = 0x8229;
+constexpr GLenum     kGL_DEPTH_COMPONENT24         = 0x81A6;
+constexpr GLenum     kGL_DEPTH24_STENCIL8          = 0x88F0;
+constexpr GLenum     kGL_TextureMinFilter          = 0x2801;
+constexpr GLenum     kGL_TextureMagFilter          = 0x2800;
+constexpr GLenum     kGL_TextureWrapS              = 0x2802;
+constexpr GLenum     kGL_TextureWrapT              = 0x2803;
+constexpr GLenum     kGL_TextureWrapR              = 0x8072;
+constexpr GLenum     kGL_Repeat                    = 0x2901;
+constexpr GLenum     kGL_ClampToEdge               = 0x812F;
+constexpr GLenum     kGL_MirroredRepeat            = 0x8370;
+constexpr GLenum     kGL_Nearest                   = 0x2600;
+constexpr GLenum     kGL_Linear                    = 0x2601;
+constexpr GLenum     kGL_LinearMipmapLinear        = 0x2703;
+
 using PFNGLCREATEBUFFERSPROC      = void (*)(GLsizei n, GLuint* buffers);
 using PFNGLDELETEBUFFERSPROC      = void (*)(GLsizei n, const GLuint* buffers);
 using PFNGLNAMEDBUFFERDATAPROC    = void (*)(GLuint buffer, GLsizeiptr size, const GLvoid* data, GLenum usage);
 using PFNGLNAMEDBUFFERSUBDATAPROC = void (*)(GLuint buffer, GLsizeiptr offset, GLsizeiptr size, const GLvoid* data);
 using PFNGLNAMEDBUFFERSTORAGEPROC = void (*)(GLuint buffer, GLsizeiptr size, const GLvoid* data, GLbitfield flags);
 using PFNGLGETERRORPROC           = GLenum (*)();
+
+// Phase 143/144 — texture + sampler DSA entry points.
+using PFNGLCREATETEXTURESPROC     = void (*)(GLenum target, GLsizei n, GLuint* textures);
+using PFNGLDELETETEXTURESPROC     = void (*)(GLsizei n, const GLuint* textures);
+using PFNGLTEXTURESTORAGE2DPROC   = void (*)(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height);
+using PFNGLTEXTURESTORAGE3DPROC   = void (*)(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth);
+using PFNGLCREATESAMPLERSPROC     = void (*)(GLsizei n, GLuint* samplers);
+using PFNGLDELETESAMPLERSPROC     = void (*)(GLsizei n, const GLuint* samplers);
+using PFNGLSAMPLERPARAMETERIPROC  = void (*)(GLuint sampler, GLenum pname, int param);
 
 struct GLLoader
 {
@@ -72,12 +99,33 @@ struct GLLoader
     PFNGLNAMEDBUFFERSTORAGEPROC glNamedBufferStorage { nullptr };
     PFNGLGETERRORPROC           glGetErrorPtr        { nullptr };
 
+    // Phase 143/144 — texture + sampler DSA. Optional; nullptr means
+    // the GL implementation lacks DSA 4.5 and the texture/sampler
+    // paths still return kNotImplemented.
+    PFNGLCREATETEXTURESPROC     glCreateTextures     { nullptr };
+    PFNGLDELETETEXTURESPROC     glDeleteTexturesDSA  { nullptr };
+    PFNGLTEXTURESTORAGE2DPROC   glTextureStorage2D   { nullptr };
+    PFNGLTEXTURESTORAGE3DPROC   glTextureStorage3D   { nullptr };
+    PFNGLCREATESAMPLERSPROC     glCreateSamplers     { nullptr };
+    PFNGLDELETESAMPLERSPROC     glDeleteSamplersDSA  { nullptr };
+    PFNGLSAMPLERPARAMETERIPROC  glSamplerParameteri  { nullptr };
+
     [[nodiscard]] bool valid() const noexcept
     {
         return glCreateBuffers != nullptr
             && glNamedBufferStorage != nullptr
             && glNamedBufferSubData != nullptr
             && glDeleteBuffersDSA != nullptr;
+    }
+    [[nodiscard]] bool texture_valid() const noexcept
+    {
+        return glCreateTextures != nullptr && glTextureStorage2D != nullptr
+            && glDeleteTexturesDSA != nullptr;
+    }
+    [[nodiscard]] bool sampler_valid() const noexcept
+    {
+        return glCreateSamplers != nullptr && glSamplerParameteri != nullptr
+            && glDeleteSamplersDSA != nullptr;
     }
 };
 
@@ -98,6 +146,14 @@ struct GLLoader
     L.glNamedBufferSubData = reinterpret_cast<PFNGLNAMEDBUFFERSUBDATAPROC>(get("glNamedBufferSubData"));
     L.glNamedBufferStorage = reinterpret_cast<PFNGLNAMEDBUFFERSTORAGEPROC>(get("glNamedBufferStorage"));
     L.glGetErrorPtr        = reinterpret_cast<PFNGLGETERRORPROC>(get("glGetError"));
+    // Phase 143/144 — DSA texture + sampler.
+    L.glCreateTextures     = reinterpret_cast<PFNGLCREATETEXTURESPROC>(get("glCreateTextures"));
+    L.glDeleteTexturesDSA  = reinterpret_cast<PFNGLDELETETEXTURESPROC>(get("glDeleteTextures"));
+    L.glTextureStorage2D   = reinterpret_cast<PFNGLTEXTURESTORAGE2DPROC>(get("glTextureStorage2D"));
+    L.glTextureStorage3D   = reinterpret_cast<PFNGLTEXTURESTORAGE3DPROC>(get("glTextureStorage3D"));
+    L.glCreateSamplers     = reinterpret_cast<PFNGLCREATESAMPLERSPROC>(get("glCreateSamplers"));
+    L.glDeleteSamplersDSA  = reinterpret_cast<PFNGLDELETESAMPLERSPROC>(get("glDeleteSamplers"));
+    L.glSamplerParameteri  = reinterpret_cast<PFNGLSAMPLERPARAMETERIPROC>(get("glSamplerParameteri"));
     return L;
 }
 
@@ -267,15 +323,147 @@ public:
         }
         buffers_.erase(it);
     }
+    // Phase 143 — texture create / destroy via DSA glCreateTextures +
+    // glTextureStorage2D. View creation maps 1:1 to the texture in GL
+    // (no separate view object — return the same gl_id).
     [[nodiscard]] cd::core::Result<cd::rhi::TextureHandle>
-    create_texture(const cd::rhi::TextureDesc&) override { CD_GL_NOT_IMPL_RESULT(TextureHandle); }
-    void destroy_texture(cd::rhi::TextureHandle) override {}
+    create_texture(const cd::rhi::TextureDesc& desc) override
+    {
+        if (!gl_.texture_valid())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "OpenGL backend: DSA texture entry points not exported"));
+        }
+        if (desc.extent.width == 0 || desc.extent.height == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_texture: extent must be > 0"));
+        }
+        // Map Format → GL internal format (subset; expand as needed).
+        GLenum gl_ifmt = kGL_RGBA8;
+        switch (desc.format)
+        {
+            case cd::rhi::Format::kRGBA8Unorm:  gl_ifmt = kGL_RGBA8; break;
+            case cd::rhi::Format::kBGRA8Unorm:  gl_ifmt = kGL_RGBA8; break;
+            case cd::rhi::Format::kR8Unorm:     gl_ifmt = kGL_R8; break;
+            case cd::rhi::Format::kD24UnormS8Uint: gl_ifmt = kGL_DEPTH24_STENCIL8; break;
+            case cd::rhi::Format::kD32Float:       gl_ifmt = kGL_DEPTH_COMPONENT24; break;
+            default:                            gl_ifmt = kGL_RGBA8; break;
+        }
+        GLuint id = 0;
+        gl_.glCreateTextures(kGL_Texture2D, 1, &id);
+        if (id == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glCreateTextures returned 0"));
+        }
+        gl_.glTextureStorage2D(id,
+                               static_cast<GLsizei>(desc.mip_levels),
+                               gl_ifmt,
+                               static_cast<GLsizei>(desc.extent.width),
+                               static_cast<GLsizei>(desc.extent.height));
+        if (gl_.glGetErrorPtr != nullptr && gl_.glGetErrorPtr() != kGL_NoError)
+        {
+            gl_.glDeleteTexturesDSA(1, &id);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glTextureStorage2D failed"));
+        }
+        const auto handle_id = next_id_++;
+        textures_.emplace(handle_id, GLTexture { id, desc.extent.width, desc.extent.height });
+        return cd::rhi::TextureHandle { handle_id, 1u };
+    }
+    void destroy_texture(cd::rhi::TextureHandle h) override
+    {
+        auto it = textures_.find(h.index());
+        if (it == textures_.end()) return;
+        if (gl_.glDeleteTexturesDSA != nullptr)
+        {
+            const GLuint id = it->second.gl_id;
+            gl_.glDeleteTexturesDSA(1, &id);
+        }
+        textures_.erase(it);
+    }
+    // Texture views in OpenGL share the underlying texture object —
+    // the "view" abstraction is a no-op accessor over the same id.
     [[nodiscard]] cd::core::Result<cd::rhi::TextureViewHandle>
-    create_texture_view(const cd::rhi::TextureViewDesc&) override { CD_GL_NOT_IMPL_RESULT(TextureViewHandle); }
-    void destroy_texture_view(cd::rhi::TextureViewHandle) override {}
+    create_texture_view(const cd::rhi::TextureViewDesc& desc) override
+    {
+        auto it = textures_.find(desc.texture.index());
+        if (it == textures_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_texture_view: unknown texture"));
+        }
+        const auto handle_id = next_id_++;
+        texture_views_.emplace(handle_id, it->second.gl_id);
+        return cd::rhi::TextureViewHandle { handle_id, 1u };
+    }
+    void destroy_texture_view(cd::rhi::TextureViewHandle h) override
+    {
+        texture_views_.erase(h.index());
+    }
+    // Phase 144 — sampler create / destroy via DSA glCreateSamplers +
+    // glSamplerParameteri. Captures filter mode + wrap.
     [[nodiscard]] cd::core::Result<cd::rhi::SamplerHandle>
-    create_sampler(const cd::rhi::SamplerDesc&) override { CD_GL_NOT_IMPL_RESULT(SamplerHandle); }
-    void destroy_sampler(cd::rhi::SamplerHandle) override {}
+    create_sampler(const cd::rhi::SamplerDesc& desc) override
+    {
+        if (!gl_.sampler_valid())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "OpenGL backend: DSA sampler entry points not exported"));
+        }
+        GLuint id = 0;
+        gl_.glCreateSamplers(1, &id);
+        if (id == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glCreateSamplers returned 0"));
+        }
+        auto map_filter = [](cd::rhi::SamplerFilter f) -> GLenum {
+            return f == cd::rhi::SamplerFilter::kNearest ? kGL_Nearest : kGL_Linear;
+        };
+        auto map_wrap = [](cd::rhi::SamplerAddressMode m) -> GLenum {
+            switch (m)
+            {
+                case cd::rhi::SamplerAddressMode::kRepeat:           return kGL_Repeat;
+                case cd::rhi::SamplerAddressMode::kMirroredRepeat:   return kGL_MirroredRepeat;
+                case cd::rhi::SamplerAddressMode::kClampToEdge:      return kGL_ClampToEdge;
+                default:                                             return kGL_ClampToEdge;
+            }
+        };
+        gl_.glSamplerParameteri(id, static_cast<int>(kGL_TextureMinFilter),
+            static_cast<int>((desc.mipmap_mode == cd::rhi::SamplerMipmapMode::kLinear)
+                ? kGL_LinearMipmapLinear : map_filter(desc.min_filter)));
+        gl_.glSamplerParameteri(id, static_cast<int>(kGL_TextureMagFilter),
+            static_cast<int>(map_filter(desc.mag_filter)));
+        gl_.glSamplerParameteri(id, static_cast<int>(kGL_TextureWrapS),
+            static_cast<int>(map_wrap(desc.address_u)));
+        gl_.glSamplerParameteri(id, static_cast<int>(kGL_TextureWrapT),
+            static_cast<int>(map_wrap(desc.address_v)));
+        gl_.glSamplerParameteri(id, static_cast<int>(kGL_TextureWrapR),
+            static_cast<int>(map_wrap(desc.address_w)));
+        const auto handle_id = next_id_++;
+        samplers_.emplace(handle_id, id);
+        return cd::rhi::SamplerHandle { handle_id, 1u };
+    }
+    void destroy_sampler(cd::rhi::SamplerHandle h) override
+    {
+        auto it = samplers_.find(h.index());
+        if (it == samplers_.end()) return;
+        if (gl_.glDeleteSamplersDSA != nullptr)
+        {
+            const GLuint id = it->second;
+            gl_.glDeleteSamplersDSA(1, &id);
+        }
+        samplers_.erase(it);
+    }
     [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle>
     create_shader_module(const cd::rhi::ShaderModuleDesc&) override { CD_GL_NOT_IMPL_RESULT(ShaderModuleHandle); }
     void destroy_shader_module(cd::rhi::ShaderModuleHandle) override {}
@@ -388,8 +576,18 @@ private:
         GLuint        gl_id { 0 };
         std::uint64_t size  { 0 };
     };
+    // Phase 143/144 — texture + sampler plumbing.
+    struct GLTexture
+    {
+        GLuint        gl_id { 0 };
+        std::uint32_t width { 0 };
+        std::uint32_t height { 0 };
+    };
     GLLoader gl_ {};
-    std::unordered_map<std::uint32_t, GLBuffer> buffers_;
+    std::unordered_map<std::uint32_t, GLBuffer>  buffers_;
+    std::unordered_map<std::uint32_t, GLTexture> textures_;
+    std::unordered_map<std::uint32_t, GLuint>    texture_views_;
+    std::unordered_map<std::uint32_t, GLuint>    samplers_;
     std::uint32_t next_id_ { 1 };
 };
 
