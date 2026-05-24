@@ -153,6 +153,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.57 | 130 | **Vulkan AccelRecord build-info** — deep-copies BLAS triangles + TLAS instances into the record at create time so a future cmd-buffer build path can rebuild the VkAccelerationStructureGeometryKHR list without the caller re-passing them |
 | v0.99.58 | 131 | **cd::rhi::DeferredDestroy** — header-only frame-fence-keyed destroy queue for transient scratch / staging buffers; enqueue(frame, action) + flush_completed(frame_id); unblocks Phase 132 Vulkan AS build cmd path |
 | v0.99.59 | 132+133 | **Vulkan AS build cmd path** — `VulkanCommandBuffer::build_acceleration_structure` wired for BLAS + TLAS; AccelRecord caches Vk-format geometries + per-AS scratch + TLAS instance buffer + AS device addresses; static lookup callback through ResourceTables |
+| v0.99.60 | 134 | **RT pipeline handle + IDevice virtuals** — `RtPipelineHandle` + `create_rt_pipeline` + `destroy_rt_pipeline` + SBT-authoring helpers (handle size / alignment / base alignment / `get_rt_shader_group_handles`); defaults kNotImplemented so existing backends compile unchanged |
 
 ## Major capabilities added across the marathon
 
