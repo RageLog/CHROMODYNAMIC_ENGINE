@@ -176,3 +176,35 @@ void main() { c = vec4(1.0, 0.5, 0.2, 1.0); }
 }
 
 }  // namespace
+
+#include <cd/material/PbrParams.hpp>
+
+TEST(PbrParams, DefaultIsWhiteHalfRoughDielectric)
+{
+    cd::material::PbrParams p;
+    EXPECT_FLOAT_EQ(p.factors.albedo[0], 1.0F);
+    EXPECT_FLOAT_EQ(p.factors.metallic, 0.0F);
+    EXPECT_FLOAT_EQ(p.factors.roughness, 0.5F);
+    EXPECT_FLOAT_EQ(p.factors.occlusion, 1.0F);
+}
+
+TEST(PbrParams, IsOpaqueAtAlpha1)
+{
+    cd::material::PbrFactors f;
+    EXPECT_TRUE(cd::material::is_opaque(f));
+    f.albedo[3] = 0.5F;
+    EXPECT_FALSE(cd::material::is_opaque(f));
+}
+
+TEST(PbrParams, IsEmissiveOnlyWhenAnyChannelNonZero)
+{
+    cd::material::PbrFactors f;
+    EXPECT_FALSE(cd::material::is_emissive(f));
+    f.emissive[1] = 0.5F;
+    EXPECT_TRUE(cd::material::is_emissive(f));
+}
+
+TEST(PbrParams, FactorsSizeIsStd140Compatible)
+{
+    EXPECT_EQ(sizeof(cd::material::PbrFactors), 48u);
+}

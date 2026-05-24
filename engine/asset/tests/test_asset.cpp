@@ -308,3 +308,47 @@ TEST(AssetTagSet, RemoveDropsEntry)
     EXPECT_TRUE(s.contains(cd::asset::make_tag("b")));
     EXPECT_EQ(s.size(), 1u);
 }
+
+#include <cd/asset/MemoryCache.hpp>
+
+TEST(MemoryCache, EmptyCacheIsZero)
+{
+    cd::asset::MemoryCache c;
+    EXPECT_EQ(c.total_bytes(), 0u);
+    EXPECT_EQ(c.size(), 0u);
+}
+
+TEST(MemoryCache, TouchAccumulatesBytes)
+{
+    cd::asset::MemoryCache c;
+    c.touch(cd::asset::AssetId::from_path("a"), 100);
+    c.touch(cd::asset::AssetId::from_path("b"), 200);
+    EXPECT_EQ(c.total_bytes(), 300u);
+    EXPECT_EQ(c.size(), 2u);
+}
+
+TEST(MemoryCache, ForgetReleasesBytes)
+{
+    cd::asset::MemoryCache c;
+    auto id_a = cd::asset::AssetId::from_path("a");
+    c.touch(id_a, 100);
+    c.forget(id_a);
+    EXPECT_EQ(c.total_bytes(), 0u);
+    EXPECT_EQ(c.size(), 0u);
+}
+
+TEST(MemoryCache, VictimsReturnsOldestFirst)
+{
+    cd::asset::MemoryCache c;
+    auto id_a = cd::asset::AssetId::from_path("a");
+    auto id_b = cd::asset::AssetId::from_path("b");
+    auto id_c = cd::asset::AssetId::from_path("c");
+    c.touch(id_a, 50);
+    c.touch(id_b, 50);
+    c.touch(id_c, 50);
+    // Re-touch a — it becomes newest.
+    c.touch(id_a, 50);
+    auto v = c.victims(60);
+    ASSERT_FALSE(v.empty());
+    EXPECT_EQ(v[0], id_b);   // oldest after re-touch
+}

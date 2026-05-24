@@ -16,6 +16,7 @@ cd_add_library(material
     cd::rhi
     cd::shader
     cd::core
+    cd::asset   # PbrParams.hpp references AssetId
 )
 
 if(CD_ENABLE_TESTING)
