@@ -499,3 +499,49 @@ TEST(QuerySig, SingleComponentNonZero)
 {
     EXPECT_NE(cd::ecs::query_signature<Pos>(), 0u);
 }
+
+#include <cd/ecs/ComponentMask.hpp>
+
+namespace {
+struct CompA {};
+struct CompB {};
+struct CompC {};
+}
+
+TEST(ComponentMask, EachTypeGetsUniqueBit)
+{
+    const auto a = cd::ecs::mask_of<CompA>();
+    const auto b = cd::ecs::mask_of<CompB>();
+    EXPECT_NE(a, b);
+    EXPECT_NE(a & b, a);   // distinct bits
+}
+
+TEST(ComponentMask, MakeMaskCombinesTypes)
+{
+    const auto ab = cd::ecs::make_mask<CompA, CompB>();
+    const auto a  = cd::ecs::mask_of<CompA>();
+    const auto b  = cd::ecs::mask_of<CompB>();
+    EXPECT_EQ(ab, a | b);
+}
+
+TEST(ComponentMask, OverlapDetected)
+{
+    const auto ab = cd::ecs::make_mask<CompA, CompB>();
+    const auto bc = cd::ecs::make_mask<CompB, CompC>();
+    EXPECT_TRUE(cd::ecs::masks_overlap(ab, bc));
+}
+
+TEST(ComponentMask, NonOverlapDistinct)
+{
+    const auto a = cd::ecs::mask_of<CompA>();
+    const auto c = cd::ecs::mask_of<CompC>();
+    EXPECT_FALSE(cd::ecs::masks_overlap(a, c));
+}
+
+TEST(ComponentMask, SubsetCheck)
+{
+    const auto a   = cd::ecs::mask_of<CompA>();
+    const auto abc = cd::ecs::make_mask<CompA, CompB, CompC>();
+    EXPECT_TRUE(cd::ecs::mask_subset(a, abc));
+    EXPECT_FALSE(cd::ecs::mask_subset(abc, a));
+}

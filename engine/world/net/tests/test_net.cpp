@@ -1026,3 +1026,43 @@ TEST(SequenceId, DistanceWrapsModulo)
     // Distance from 5 to 65535 (going backwards) should wrap as 6.
     EXPECT_EQ(seq_distance<std::uint16_t>(5, 65535), 6);
 }
+
+#include <cd/net/LatencyStats.hpp>
+
+TEST(LatencyStats, FirstSampleBecomesRtt)
+{
+    cd::net::LatencyStats s;
+    s.record(50000);   // 50 ms
+    EXPECT_FLOAT_EQ(s.current_rtt_us(), 50000.0F);
+    EXPECT_FLOAT_EQ(s.jitter_us(), 0.0F);
+    EXPECT_EQ(s.sample_count(), 1u);
+}
+
+TEST(LatencyStats, EwmaSmoothsAcrossSamples)
+{
+    cd::net::LatencyStats s;
+    for (int i = 0; i < 100; ++i) s.record(50000);
+    EXPECT_NEAR(s.current_rtt_us(), 50000.0F, 1.0F);
+    s.record(100000);   // spike — should not fully dominate
+    EXPECT_LT(s.current_rtt_us(), 100000.0F);
+    EXPECT_GT(s.current_rtt_us(), 50000.0F);
+}
+
+TEST(LatencyStats, JitterTracksVariation)
+{
+    cd::net::LatencyStats s;
+    s.record(50000);
+    s.record(70000);
+    s.record(50000);
+    EXPECT_GT(s.jitter_us(), 0.0F);
+}
+
+TEST(LatencyStats, MinMaxTracked)
+{
+    cd::net::LatencyStats s;
+    s.record(50000);
+    s.record(10000);
+    s.record(200000);
+    EXPECT_EQ(s.min_us(), 10000u);
+    EXPECT_EQ(s.max_us(), 200000u);
+}
