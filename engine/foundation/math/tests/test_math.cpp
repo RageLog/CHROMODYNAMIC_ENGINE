@@ -771,3 +771,32 @@ TEST(Mat3Inverse, NormalMatrixFromIdentity4)
     EXPECT_FLOAT_EQ(nm[1][1], 1.0F);
     EXPECT_FLOAT_EQ(nm[2][2], 1.0F);
 }
+
+#include <cd/math/AngleUnits.hpp>
+
+TEST(AngleUnits, ToRadiansAndBack)
+{
+    EXPECT_NEAR(cd::math::to_radians(180.0F), 3.14159265F, 1e-5F);
+    EXPECT_NEAR(cd::math::to_degrees(3.14159265F), 180.0F, 1e-3F);
+}
+
+TEST(AngleUnits, UDLDeg)
+{
+    using namespace cd::math::literals;
+    const float r = 180.0_deg;
+    EXPECT_NEAR(r, 3.14159265F, 1e-5F);
+}
+
+TEST(AngleUnits, UDLRadIsIdentity)
+{
+    using namespace cd::math::literals;
+    const float r = 1.5_rad;
+    EXPECT_FLOAT_EQ(r, 1.5F);
+}
+
+TEST(AngleUnits, UDLAcceptsIntegerLiteral)
+{
+    using namespace cd::math::literals;
+    const float r = 90_deg;
+    EXPECT_NEAR(r, 1.5707963F, 1e-5F);
+}

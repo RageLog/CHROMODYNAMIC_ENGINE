@@ -375,3 +375,47 @@ TEST(Triangle, ContainsInteriorPoint)
     EXPECT_TRUE(cd::physics::contains(t, cd::math::Vec3f { 1, 1, 0 }));
     EXPECT_FALSE(cd::physics::contains(t, cd::math::Vec3f { 3, 3, 0 }));
 }
+
+#include <cd/physics/RaySphere.hpp>
+
+TEST(RaySphere, HitsSphereInFront)
+{
+    cd::physics::Ray r;
+    r.origin = { 0, 0, 0 };
+    r.direction = { 0, 0, 1 };
+    cd::physics::Sphere s { { 0, 0, 5 }, 1.0F };
+    auto t = cd::physics::intersect_ray_sphere(r, s);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 4.0F, 1e-4F);
+}
+
+TEST(RaySphere, MissesWhenOffset)
+{
+    cd::physics::Ray r;
+    r.origin = { 5, 5, 0 };
+    r.direction = { 0, 0, 1 };
+    cd::physics::Sphere s { { 0, 0, 5 }, 1.0F };
+    auto t = cd::physics::intersect_ray_sphere(r, s);
+    EXPECT_FALSE(t.has_value());
+}
+
+TEST(RaySphere, BehindOriginReturnsNullopt)
+{
+    cd::physics::Ray r;
+    r.origin = { 0, 0, 10 };
+    r.direction = { 0, 0, 1 };
+    cd::physics::Sphere s { { 0, 0, 0 }, 1.0F };
+    auto t = cd::physics::intersect_ray_sphere(r, s);
+    EXPECT_FALSE(t.has_value());
+}
+
+TEST(RaySphere, InsideSphereReturnsZero)
+{
+    cd::physics::Ray r;
+    r.origin = { 0, 0, 0 };
+    r.direction = { 0, 0, 1 };
+    cd::physics::Sphere s { { 0, 0, 0 }, 1.0F };
+    auto t = cd::physics::intersect_ray_sphere(r, s);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_FLOAT_EQ(*t, 0.0F);
+}
