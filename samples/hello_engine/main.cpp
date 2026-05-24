@@ -40,6 +40,7 @@
 #include <cd/audio/SimpleReverb.hpp>
 #include <cd/audio/WasapiBackend.hpp>
 #include <cd/camera/Camera.hpp>
+#include <cd/camera/Frustum.hpp>
 #include <cd/core/CounterTable.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/ecs/World.hpp>
@@ -1035,6 +1036,16 @@ int main()
         constexpr int kGrid = 5;
         constexpr float kSpacing = 1.2F;
         std::uint32_t culled = 0;
+        std::uint32_t intersecting = 0;
+        std::uint32_t fully_inside = 0;
+        // Phase 153: extract frustum from the current VP each frame and
+        // use sphere-vs-frustum to drive cull stats. Bounding-sphere
+        // radius is the diagonal of the unit-sphere mesh AABB scaled by
+        // its world position; the mesh in pbr_sphere has unit radius so
+        // we use 0.5F as the cull radius (visual radius is slightly
+        // smaller than the bounding sphere).
+        const auto frustum = cd::camera::extract_frustum(vp);
+        constexpr float kSphereRadius = 0.5F;
         for (int row = 0; row < kGrid; ++row)
         {
             for (int col = 0; col < kGrid; ++col)
@@ -1045,8 +1056,11 @@ int main()
                 const float x = (static_cast<float>(col) - 2.0F) * kSpacing;
                 const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
                 const float z = -4.5F;
-                // Trivial frustum cull stub: anything with z < -10 is "out".
-                if (z < -10.0F) { ++culled; continue; }
+                const cd::math::Vec3f center { x, y, z };
+                const auto cull = cd::camera::test_sphere(frustum, center, kSphereRadius);
+                if (cull == cd::camera::CullResult::kOutside) { ++culled; continue; }
+                if (cull == cd::camera::CullResult::kIntersecting) ++intersecting;
+                else ++fully_inside;
                 cd::math::Mat4f model = cd::math::Mat4f::identity();
                 model[3][0] = x; model[3][1] = y; model[3][2] = z;
                 const auto mvp = vp * model;
@@ -1064,6 +1078,8 @@ int main()
             }
         }
         counters.set("culled_pbr", culled);
+        counters.set("intersecting_pbr", intersecting);
+        counters.set("inside_pbr", fully_inside);
 
         // ---- ECS entity primitives row (front of the viewport) ----
         prim_material.apply(cmd);

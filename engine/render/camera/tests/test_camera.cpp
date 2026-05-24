@@ -122,6 +122,64 @@ TEST(Frustum, FullyInsideAabbReportsKInside)
     EXPECT_EQ(r, cd::camera::CullResult::kInside);
 }
 
+// Phase 153 — Frustum::test_sphere / contains_sphere.
+TEST(Frustum, SphereAtOriginIsVisible)
+{
+    cd::camera::Camera c {};
+    c.eye = { 0.0F, 0.0F, 3.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    auto f = cd::camera::extract_frustum(c, 1.0F);
+    EXPECT_NE(cd::camera::test_sphere(f, { 0.0F, 0.0F, 0.0F }, 0.5F),
+              cd::camera::CullResult::kOutside);
+    EXPECT_TRUE(cd::camera::contains_sphere(f, { 0.0F, 0.0F, 0.0F }, 0.5F));
+}
+
+TEST(Frustum, SphereBehindCameraIsCulled)
+{
+    cd::camera::Camera c {};
+    c.eye = { 0.0F, 0.0F, 3.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    auto f = cd::camera::extract_frustum(c, 1.0F);
+    // Sphere 20 units behind camera (positive Z).
+    EXPECT_EQ(cd::camera::test_sphere(f, { 0.0F, 0.0F, 23.0F }, 0.5F),
+              cd::camera::CullResult::kOutside);
+    EXPECT_FALSE(cd::camera::contains_sphere(f, { 0.0F, 0.0F, 23.0F }, 0.5F));
+}
+
+TEST(Frustum, SphereOffToTheSideIsCulled)
+{
+    cd::camera::Camera c {};
+    c.eye = { 0.0F, 0.0F, 3.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    c.fov_y = 0.5F;
+    auto f = cd::camera::extract_frustum(c, 1.0F);
+    EXPECT_EQ(cd::camera::test_sphere(f, { 100.0F, 0.0F, 0.0F }, 0.5F),
+              cd::camera::CullResult::kOutside);
+}
+
+TEST(Frustum, LargeSphereStraddlingFrustumReportsIntersecting)
+{
+    cd::camera::Camera c {};
+    c.eye = { 0.0F, 0.0F, 5.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    c.fov_y = 0.8F;
+    auto f = cd::camera::extract_frustum(c, 1.0F);
+    // Big sphere positioned so it overlaps the frustum boundary.
+    auto r = cd::camera::test_sphere(f, { 2.5F, 0.0F, 0.0F }, 2.0F);
+    EXPECT_EQ(r, cd::camera::CullResult::kIntersecting);
+}
+
+TEST(Frustum, TinyCentralSphereReportsKInside)
+{
+    cd::camera::Camera c {};
+    c.eye = { 0.0F, 0.0F, 10.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    c.fov_y = 1.5F;
+    auto f = cd::camera::extract_frustum(c, 1.0F);
+    EXPECT_EQ(cd::camera::test_sphere(f, { 0.0F, 0.0F, 0.0F }, 0.01F),
+              cd::camera::CullResult::kInside);
+}
+
 #include <cd/camera/CameraPath.hpp>
 
 TEST(CameraPath, EmptySampleReturnsOrigin)

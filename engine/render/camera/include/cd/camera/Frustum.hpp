@@ -171,4 +171,39 @@ test_aabb(const Frustum& f, const cd::math::Vec3f& bb_min, const cd::math::Vec3f
     return intersect ? CullResult::kIntersecting : CullResult::kInside;
 }
 
+/// Test a sphere (center + radius) against the frustum. For each plane,
+/// the signed distance from the center to the plane (along the inward
+/// normal) is computed:
+///   * d < -r → entire sphere on the outside of that plane → kOutside
+///   * |d| <= r on any plane → straddles → kIntersecting (after all
+///                            planes accept the center+r margin)
+///   * d >  r on every plane → fully inside → kInside
+///
+/// Cheaper than the AABB test (one dot + compare per plane) and a closer
+/// match for primitives whose bounding volume is naturally spherical
+/// (point lights, particle systems, mesh bounding spheres).
+[[nodiscard]] inline CullResult
+test_sphere(const Frustum& f, const cd::math::Vec3f& center, float radius) noexcept
+{
+    bool intersect = false;
+    for (const auto& p : f.planes)
+    {
+        const float d = p.normal[0] * center[0] + p.normal[1] * center[1] + p.normal[2] * center[2] + p.d;
+        if (d < -radius)
+            return CullResult::kOutside;
+        if (d < radius)
+            intersect = true;
+    }
+    return intersect ? CullResult::kIntersecting : CullResult::kInside;
+}
+
+/// Convenience predicate — true iff `test_sphere` returns
+/// kIntersecting or kInside. Matches the naming users will reach for
+/// in cull stats panels.
+[[nodiscard]] inline bool
+contains_sphere(const Frustum& f, const cd::math::Vec3f& center, float radius) noexcept
+{
+    return test_sphere(f, center, radius) != CullResult::kOutside;
+}
+
 }  // namespace cd::camera
