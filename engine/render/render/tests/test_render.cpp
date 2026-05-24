@@ -13,13 +13,17 @@
     #include <windows.h>
 #endif
 
+#include <cd/render/DrawBucket.hpp>
 #include <cd/render/Renderer.hpp>
+#include <cd/render/SortKey.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi_vulkan/VulkanDevice.hpp>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace
 {
@@ -248,6 +252,72 @@ TEST(Renderer, RecreateSwapchainRejectsZeroExtent)
     auto bad = r->recreate_swapchain({ 0, 0 });
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, static_cast<std::uint32_t>(cd::render::render_errors::Code::kInvalidArgument));
+}
+
+TEST(Renderer, SubmitDrawsRejectsOutsideFrame)
+{
+    SKIP_IF_NO_VULKAN(dev);
+    HiddenWindow w;
+    cd::render::RendererDesc d {};
+    d.device = dev.get();
+    d.swapchain.window_handle = w.hwnd();
+    d.swapchain.display_handle = w.hinstance();
+    d.swapchain.extent = { 64, 64 };
+    d.swapchain.format = cd::rhi::Format::kBGRA8Unorm;
+    auto r = cd::render::Renderer::create(d);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    cd::render::DrawBucket bucket;
+    auto bad = r->submit_draws(bucket);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(
+        bad.error().code,
+        static_cast<std::uint32_t>(cd::render::render_errors::Code::kFrameInFlight)
+    );
+}
+
+TEST(Renderer, SubmitDrawsReplaysBucketInSortedOrder)
+{
+    SKIP_IF_NO_VULKAN(dev);
+    HiddenWindow w;
+    cd::render::RendererDesc d {};
+    d.device = dev.get();
+    d.swapchain.window_handle = w.hwnd();
+    d.swapchain.display_handle = w.hinstance();
+    d.swapchain.extent = { 64, 64 };
+    d.swapchain.image_count = 2;
+    d.swapchain.format = cd::rhi::Format::kBGRA8Unorm;
+    d.frames_in_flight = 2;
+    auto r = cd::render::Renderer::create(d);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+
+    auto frame = r->begin_frame();
+    ASSERT_TRUE(frame.has_value()) << frame.error().message;
+
+    cd::render::DrawBucket bucket;
+    std::vector<std::uint64_t> emitted_order;
+    const std::array<std::uint64_t, 5> insertion { 400, 100, 300, 50, 200 };
+    for (auto v : insertion)
+    {
+        cd::render::SortKey k; k.value = v;
+        bucket.add(k, [&emitted_order, v](cd::rhi::ICommandBuffer&) {
+            emitted_order.push_back(v);
+        });
+    }
+
+    auto sub = r->submit_draws(bucket);
+    ASSERT_TRUE(sub.has_value()) << sub.error().message;
+
+    ASSERT_EQ(emitted_order.size(), 5u);
+    EXPECT_EQ(emitted_order[0], 50u);
+    EXPECT_EQ(emitted_order[1], 100u);
+    EXPECT_EQ(emitted_order[2], 200u);
+    EXPECT_EQ(emitted_order[3], 300u);
+    EXPECT_EQ(emitted_order[4], 400u);
+    EXPECT_TRUE(bucket.is_sorted_cached());
+    EXPECT_EQ(bucket.size(), 5u);  // submit_draws does not clear
+
+    ASSERT_TRUE(r->end_frame().has_value());
+    r->wait_idle();
 }
 
 TEST(Renderer, ThreeFrameLoop)

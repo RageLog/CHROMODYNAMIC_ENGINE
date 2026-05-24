@@ -47,6 +47,8 @@ class ICommandBuffer;
 namespace cd::render
 {
 
+class DrawBucket;
+
 // ---- Error domain -----------------------------------------------------------
 
 namespace render_errors
@@ -162,6 +164,16 @@ public:
     /// Finalize the in-flight frame: insert the COLOR→PRESENT barrier on the
     /// swapchain image, end() the command buffer, submit, and present.
     [[nodiscard]] cd::core::Result<void> end_frame();
+
+    /// Replay every draw staged in `bucket` against the current frame's
+    /// command buffer, sorted by SortKey. Convenience over
+    /// `bucket.emit_all(*frame.command_buffer)` for the common case where
+    /// the caller has already obtained a FrameContext from begin_frame().
+    ///
+    /// Returns kFrameInFlight if called outside of an active begin/end
+    /// pair. Bucket state is preserved (no clear) — caller decides whether
+    /// to reuse the bucket next frame or clear it.
+    [[nodiscard]] cd::core::Result<void> submit_draws(DrawBucket& bucket);
 
     /// Block until every queued frame has completed. Call before destruction
     /// (the destructor calls it automatically) and before any swapchain

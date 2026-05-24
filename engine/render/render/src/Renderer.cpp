@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/render/Renderer.cpp
 // =============================================================================
 #include <cd/render/Renderer.hpp>
+#include <cd/render/DrawBucket.hpp>
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 
@@ -293,6 +294,23 @@ cd::core::Result<void> Renderer::end_frame()
         }
         return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, pr.error()));
     }
+    return {};
+}
+
+// ---- Phase 149 — DrawBucket bridge ----------------------------------------
+
+cd::core::Result<void> Renderer::submit_draws(DrawBucket& bucket)
+{
+    if (!in_progress_)
+    {
+        return std::unexpected(render_errors::make(
+            render_errors::Code::kFrameInFlight,
+            "submit_draws requires an active begin_frame"
+        ));
+    }
+    const auto slot = static_cast<std::uint32_t>(frame_counter_ % desc_.frames_in_flight);
+    auto& cmd = *frames_[slot].cmd;
+    bucket.emit_all(cmd);
     return {};
 }
 

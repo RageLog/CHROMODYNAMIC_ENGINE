@@ -27,6 +27,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <compare>
 #include <cstdint>
 
 namespace cd::render
