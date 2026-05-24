@@ -416,3 +416,35 @@ TEST(Barrier, CountReadable)
     cd::concurrency::Barrier b { 3 };
     EXPECT_EQ(b.count(), 3);
 }
+
+#include <cd/concurrency/ParallelFor.hpp>
+
+TEST(ParallelFor, EveryIndexVisitedExactlyOnce)
+{
+    constexpr std::size_t kN = 64;
+    std::vector<std::atomic<int>> hits(kN);
+    for (auto& h : hits) h.store(0);
+    cd::concurrency::parallel_for(0, kN, [&](std::size_t i)
+    {
+        hits[i].fetch_add(1);
+    });
+    for (std::size_t i = 0; i < kN; ++i)
+        EXPECT_EQ(hits[i].load(), 1) << "index " << i;
+}
+
+TEST(ParallelFor, EmptyRangeReturnsImmediately)
+{
+    std::atomic<int> hits { 0 };
+    cd::concurrency::parallel_for(5, 5, [&](std::size_t) { hits.fetch_add(1); });
+    EXPECT_EQ(hits.load(), 0);
+}
+
+TEST(ParallelFor, SingleWorkerDegradesToSerial)
+{
+    constexpr std::size_t kN = 16;
+    std::vector<int> seen(kN, 0);
+    cd::concurrency::parallel_for(0, kN,
+        [&](std::size_t i) { seen[i] = static_cast<int>(i + 1); }, 1u);
+    for (std::size_t i = 0; i < kN; ++i)
+        EXPECT_EQ(seen[i], static_cast<int>(i + 1));
+}

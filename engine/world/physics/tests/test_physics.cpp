@@ -462,3 +462,33 @@ TEST(CapsuleSphere, SymmetricSphereCapsule)
     cd::physics::Sphere s { { 2.5F, 0.5F, 0 }, 0.6F };
     EXPECT_EQ(cd::physics::intersects(c, s), cd::physics::intersects(s, c));
 }
+
+#include <cd/physics/SweepResult.hpp>
+
+TEST(Sweep, NoHitWhenFar)
+{
+    cd::physics::Aabb box { { 10, 10, 10 }, { 11, 11, 11 } };
+    auto r = cd::physics::sweep_sphere_aabb(
+        { 0, 0, 0 }, { 0, 0, 1 }, 0.5F, box);
+    EXPECT_FALSE(r.hit);
+}
+
+TEST(Sweep, HitForwardOnAxis)
+{
+    cd::physics::Aabb box { { 0, -1, 4 }, { 1, 1, 5 } };
+    auto r = cd::physics::sweep_sphere_aabb(
+        { 0.5F, 0, 0 }, { 0, 0, 10 }, 0.5F, box);
+    EXPECT_TRUE(r.hit);
+    EXPECT_LT(r.toi, 1.0F);
+    EXPECT_GT(r.toi, 0.0F);
+    EXPECT_FLOAT_EQ(r.normal.z, -1.0F);
+}
+
+TEST(Sweep, ImmediateContactReturnsTOIZero)
+{
+    cd::physics::Aabb box { { -1, -1, -1 }, { 1, 1, 1 } };
+    auto r = cd::physics::sweep_sphere_aabb(
+        { 0, 0, 0 }, { 0, 0, 1 }, 0.5F, box);
+    EXPECT_TRUE(r.hit);
+    EXPECT_FLOAT_EQ(r.toi, 0.0F);
+}
