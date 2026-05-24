@@ -1255,11 +1255,42 @@ public:
                     // skip is safe for the v0.47.0 short-list of
                     // forward-shaded samples.
                     break;
+                case cd::rhi::DescriptorType::kInputAttachment:
+                {
+                    // Phase 129 — D3D12 doesn't have a distinct "input
+                    // attachment" concept. Vulkan input attachments are
+                    // colour/depth render targets read back as textures
+                    // inside the same render pass. On D3D12 the same
+                    // image is bound twice (as an RTV in the OM and as
+                    // an SRV in the root table); a developer writing
+                    // cross-backend code can declare the same handle
+                    // as kInputAttachment, and we route it down the
+                    // SRV path so the descriptor is filled with a
+                    // TEXTURE2D SRV.
+                    auto view_it = texture_views_.find(w.view.index());
+                    if (view_it == texture_views_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: input-attachment view unknown"));
+                    auto tex_it = textures_.find(view_it->second.parent.index());
+                    if (tex_it == textures_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: input-attachment texture unknown"));
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
+                    srv.Format = view_it->second.format;
+                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srv.Shader4ComponentMapping =
+                        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srv.Texture2D.MipLevels = 1;
+                    device_->CreateShaderResourceView(
+                        tex_it->second.resource.Get(), &srv, dst);
+                    break;
+                }
                 default:
                     return std::unexpected(cd::rhi::rhi_errors::make(
                         cd::rhi::rhi_errors::Code::kNotImplemented,
-                        "update_descriptor_set: descriptor type not yet wired "
-                        "(input attachment — Phase 127 candidate)"));
+                        "update_descriptor_set: unhandled DescriptorType value"));
             }
         }
         return {};
