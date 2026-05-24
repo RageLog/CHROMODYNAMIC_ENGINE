@@ -961,3 +961,43 @@ TEST(SnapshotBuffer, DropOlderThanReducesSize)
     b.drop_older_than(1.5);
     EXPECT_EQ(b.size(), 1u);   // only 2.0 remains (0.0 and 1.0 are < 1.5)
 }
+
+#include <cd/net/RleCodec.hpp>
+
+TEST(RleCodec, EncodesRunOfZeros)
+{
+    std::vector<std::uint8_t> src(10, 0u);
+    auto r = cd::net::rle_encode(src);
+    ASSERT_EQ(r.size(), 2u);
+    EXPECT_EQ(r[0], 10u);
+    EXPECT_EQ(r[1], 0u);
+}
+
+TEST(RleCodec, RoundTripMixedData)
+{
+    std::vector<std::uint8_t> src;
+    for (int i = 0; i < 5; ++i) src.push_back(0xAA);
+    for (int i = 0; i < 8; ++i) src.push_back(0x55);
+    src.push_back(0x77);
+    for (int i = 0; i < 3; ++i) src.push_back(0xFF);
+    auto enc = cd::net::rle_encode(src);
+    auto dec = cd::net::rle_decode(enc);
+    EXPECT_EQ(dec, src);
+}
+
+TEST(RleCodec, EmptyInputProducesEmptyOutput)
+{
+    std::vector<std::uint8_t> src;
+    EXPECT_TRUE(cd::net::rle_encode(src).empty());
+    EXPECT_TRUE(cd::net::rle_decode(src).empty());
+}
+
+TEST(RleCodec, LongRunSplitsAt255)
+{
+    std::vector<std::uint8_t> src(300, 0xCCu);
+    auto r = cd::net::rle_encode(src);
+    // Two records: (255, 0xCC) + (45, 0xCC) = 4 bytes
+    ASSERT_EQ(r.size(), 4u);
+    EXPECT_EQ(r[0], 255u);
+    EXPECT_EQ(r[2], 45u);
+}

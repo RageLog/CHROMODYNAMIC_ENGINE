@@ -1089,3 +1089,49 @@ TEST(Bytes, BinaryMultiplierConstants)
     EXPECT_EQ(cd::core::kMB, 1024u * 1024u);
     EXPECT_EQ(cd::core::kGB, 1024u * 1024u * 1024u);
 }
+
+#include <cd/core/PoolAllocator.hpp>
+
+TEST(PoolAllocator, AllocateReturnsDistinctPointers)
+{
+    cd::core::PoolAllocator p { 64, 8 };
+    void* a = p.allocate();
+    void* b = p.allocate();
+    void* c = p.allocate();
+    EXPECT_NE(a, b);
+    EXPECT_NE(b, c);
+    EXPECT_EQ(p.used_count(), 3u);
+}
+
+TEST(PoolAllocator, ExhaustionReturnsNullptr)
+{
+    cd::core::PoolAllocator p { 32, 3 };
+    void* a = p.allocate();
+    void* b = p.allocate();
+    void* c = p.allocate();
+    void* d = p.allocate();   // pool empty
+    EXPECT_NE(a, nullptr);
+    EXPECT_NE(b, nullptr);
+    EXPECT_NE(c, nullptr);
+    EXPECT_EQ(d, nullptr);
+}
+
+TEST(PoolAllocator, DeallocateMakesSlotAvailable)
+{
+    cd::core::PoolAllocator p { 32, 2 };
+    void* a = p.allocate();
+    void* b = p.allocate();
+    EXPECT_EQ(p.allocate(), nullptr);
+    p.deallocate(a);
+    void* d = p.allocate();
+    EXPECT_NE(d, nullptr);
+    p.deallocate(b);
+    p.deallocate(d);
+    EXPECT_EQ(p.used_count(), 0u);
+}
+
+TEST(PoolAllocator, BlockSizeMinimumIsPointerSize)
+{
+    cd::core::PoolAllocator p { 4, 4 };   // requested 4, clamped to sizeof(void*)
+    EXPECT_GE(p.block_size(), sizeof(void*));
+}
