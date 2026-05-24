@@ -1,11 +1,11 @@
-# Marathon summary — Phase 13 → Phase 73 (v0.30.0 → v0.99.5)
+# Marathon summary — Phase 13 → Phase 75 (v0.30.0 → v0.99.7)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 5 patch releases (76 tags total)** shipped from the marathon's
+**71 minor + 7 patch releases (78 tags total)** shipped from the marathon's
 start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.5) to avoid an autonomous v1.0 bump.
+through v0.99.7) to avoid an autonomous v1.0 bump.
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -89,6 +89,8 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.3 | 71    | net::RleCodec + core::PoolAllocator |
 | v0.99.4 | 72    | input::ActionBindings + math::Aabb2 |
 | v0.99.5 | 73    | rhi::DebugMarkerScope + asset::BundleMeta (32-byte header) |
+| v0.99.6 | 74    | physics::SoftBodyParams + io::ByteBuffer |
+| v0.99.7 | 75    | net::SequenceId (Fiedler wrap-aware) + ecs::QuerySig |
 
 ## Major capabilities added across the marathon
 
