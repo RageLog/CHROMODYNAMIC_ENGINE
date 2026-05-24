@@ -132,6 +132,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.42 | 112 | **hello_random distribution viz** — ASCII histograms for PCG32 uniform + Box-Muller normal + 2-stream Pearson correlation + determinism check |
 | v0.99.43 | 113 | **AssetRegistry::evict** — LRU eviction wired through MemoryCache; drops victim assets from both the registry cache and the memory accountant; 2 new gtests; MemoryCache.hpp `<algorithm>` include fix |
 | v0.99.44 | 114 | **AsyncStreamer** — header-only worker thread wrapping StreamQueue; cv-driven sleep, load_fn outside lock, idempotent start/stop; 3 new gtests |
+| v0.99.45 | 108 | **DrawBucket** — SortKey-driven draw-call bucket with deferred emit callbacks; stable_sort by 64-bit key; 3 new gtests |
 
 ## Major capabilities added across the marathon
 

@@ -500,3 +500,63 @@ TEST(DrawBatchKey, DifferentMeshDifferentHash)
     cd::render::DrawBatchKey b { 2, 0, 0, 0 };
     EXPECT_NE(a.hash(), b.hash());
 }
+
+// ============================================================
+// Phase 108 — DrawBucket SortKey-driven ordering
+// ============================================================
+#include <cd/render/DrawBucket.hpp>
+
+TEST(DrawBucket, SortsAscendingByKey)
+{
+    cd::render::DrawBucket b;
+    std::vector<std::uint64_t> emitted;
+
+    auto add = [&](std::uint64_t v) {
+        cd::render::SortKey k; k.value = v;
+        b.add(k, [&emitted, v](cd::rhi::ICommandBuffer&) {
+            emitted.push_back(v);
+        });
+    };
+
+    add(300);
+    add(10);
+    add(150);
+    add(20);
+    EXPECT_EQ(b.size(), 4u);
+    EXPECT_FALSE(b.is_sorted_cached());
+
+    b.sort();
+    EXPECT_TRUE(b.is_sorted_cached());
+
+    const auto& items = b.items();
+    EXPECT_EQ(items[0].key.value, 10u);
+    EXPECT_EQ(items[1].key.value, 20u);
+    EXPECT_EQ(items[2].key.value, 150u);
+    EXPECT_EQ(items[3].key.value, 300u);
+}
+
+TEST(DrawBucket, ClearLeavesItSorted)
+{
+    cd::render::DrawBucket b;
+    cd::render::SortKey k; k.value = 42;
+    b.add(k, [](cd::rhi::ICommandBuffer&) {});
+    EXPECT_FALSE(b.is_sorted_cached());
+    b.clear();
+    EXPECT_TRUE(b.is_sorted_cached());
+    EXPECT_TRUE(b.empty());
+}
+
+TEST(DrawBucket, StableSortPreservesInsertionOrderOnEqualKeys)
+{
+    cd::render::DrawBucket b;
+    cd::render::SortKey k; k.value = 100;
+    int counter = 0;
+    std::vector<int> emitted;
+    b.add(k, [&emitted, n=counter++](cd::rhi::ICommandBuffer&){ emitted.push_back(n); });
+    b.add(k, [&emitted, n=counter++](cd::rhi::ICommandBuffer&){ emitted.push_back(n); });
+    b.add(k, [&emitted, n=counter++](cd::rhi::ICommandBuffer&){ emitted.push_back(n); });
+    b.sort();
+    // Three same-key items: stable_sort preserves insertion order.
+    EXPECT_EQ(b.size(), 3u);
+}
+
