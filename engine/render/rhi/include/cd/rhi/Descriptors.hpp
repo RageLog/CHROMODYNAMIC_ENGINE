@@ -294,12 +294,14 @@ enum class RtShaderStage : std::uint8_t
     kCallable    = 5,   ///< callable from any RT stage (optional)
 };
 
-/// One entry in the RT pipeline shader-stage list. The shader source is
-/// SPIR-V or GLSL the same way `MaterialDesc` consumes shaders.
+/// One entry in the RT pipeline shader-stage list. Shader source is
+/// pre-compiled to SPIR-V via `cd::shader::ICompiler` + passed in as
+/// a `ShaderModuleHandle` — same contract as graphics + compute
+/// pipelines. Decouples `cd::rhi_vulkan` from `cd::shader`.
 struct RtShaderEntry
 {
     RtShaderStage      stage   { RtShaderStage::kRaygen };
-    std::string_view   glsl    {};   ///< pre-compiled SPIR-V bytes go via a parallel path
+    ShaderModuleHandle module  {};
     std::string_view   entry   { "main" };
     /// Group index assigned by the caller. Same group index ties
     /// closest-hit + any-hit + intersection into one hit group.

@@ -2582,8 +2582,17 @@ public:
                 .descriptor_sets = &descriptor_sets_,
                 .accel_lookup = &VulkanDevice::accel_lookup_static_,
                 .accel_lookup_user = this,
+                .rt_pipeline_lookup = &VulkanDevice::rt_pipeline_lookup_static_,
             }
         );
+    }
+
+    // Phase 135 — static callback for cmd-buffer bind_rt_pipeline.
+    static VkPipeline rt_pipeline_lookup_static_(void* user, std::uint32_t idx) noexcept
+    {
+        auto* self = static_cast<VulkanDevice*>(user);
+        auto it = self->rt_pipelines_.find(idx);
+        return (it == self->rt_pipelines_.end()) ? VK_NULL_HANDLE : it->second.pipeline;
     }
 
     // Phase 132 — static callback the VulkanCommandBuffer invokes to
@@ -3104,6 +3113,219 @@ public:
         accels_.erase(it);
     }
 
+    // ===== Phase 135 — Ray-tracing pipeline (Vulkan impl) =================
+
+    [[nodiscard]] cd::core::Result<cd::rhi::RtPipelineHandle>
+    create_rt_pipeline(const cd::rhi::RtPipelineDesc& desc,
+                      cd::rhi::PipelineLayoutHandle layout) override
+    {
+        if (!features_.ray_tracing || vkCreateRayTracingPipelinesKHR == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_rt_pipeline: device lacks RT pipeline extension"));
+        }
+        if (desc.shaders.empty())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_rt_pipeline: empty shader list"));
+        }
+
+        auto layout_it = pipeline_layouts_.find(layout.index());
+        if (layout_it == pipeline_layouts_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_rt_pipeline: unknown pipeline layout"));
+        }
+
+        // Build VkPipelineShaderStageCreateInfo array. RtShaderEntry
+        // carries pre-compiled SPIR-V via ShaderModuleHandle.
+        std::vector<VkPipelineShaderStageCreateInfo> stages;
+        stages.reserve(desc.shaders.size());
+        auto stage_bit = [](cd::rhi::RtShaderStage s) -> VkShaderStageFlagBits {
+            switch (s)
+            {
+                case cd::rhi::RtShaderStage::kRaygen:       return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+                case cd::rhi::RtShaderStage::kMiss:         return VK_SHADER_STAGE_MISS_BIT_KHR;
+                case cd::rhi::RtShaderStage::kClosestHit:   return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+                case cd::rhi::RtShaderStage::kAnyHit:       return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+                case cd::rhi::RtShaderStage::kIntersection: return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+                case cd::rhi::RtShaderStage::kCallable:     return VK_SHADER_STAGE_CALLABLE_BIT_KHR;
+            }
+            return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        };
+        // Vulkan's pPipelineShaderStageCreateInfo::pName needs a c_str
+        // that outlives the create call. Pin every entry name into a
+        // std::vector<std::string> to keep stable pointers.
+        std::vector<std::string> entry_arena;
+        entry_arena.reserve(desc.shaders.size());
+        for (const auto& e : desc.shaders)
+        {
+            auto sm_it = shaders_.find(e.module.index());
+            if (sm_it == shaders_.end())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_rt_pipeline: unknown shader module handle"));
+            }
+            const auto& pinned_name = entry_arena.emplace_back(e.entry);
+            VkPipelineShaderStageCreateInfo s {};
+            s.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            s.stage  = stage_bit(e.stage);
+            s.module = sm_it->second;
+            s.pName  = pinned_name.c_str();
+            stages.push_back(s);
+        }
+
+        // Build shader-group list. Each unique `group` index becomes
+        // one VkRayTracingShaderGroupCreateInfoKHR. Entries within
+        // the same group either represent a triangle-hit-group
+        // (closest_hit + optional any_hit + intersection) or a
+        // single general shader (raygen / miss / callable).
+        std::vector<VkRayTracingShaderGroupCreateInfoKHR> groups;
+        // Collect groups by first-occurrence order.
+        std::vector<std::uint32_t> group_ids_seen;
+        for (const auto& e : desc.shaders)
+        {
+            if (std::find(group_ids_seen.begin(), group_ids_seen.end(), e.group) ==
+                group_ids_seen.end())
+            {
+                group_ids_seen.push_back(e.group);
+            }
+        }
+        for (auto gid : group_ids_seen)
+        {
+            VkRayTracingShaderGroupCreateInfoKHR g {};
+            g.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+            g.generalShader      = VK_SHADER_UNUSED_KHR;
+            g.closestHitShader   = VK_SHADER_UNUSED_KHR;
+            g.anyHitShader       = VK_SHADER_UNUSED_KHR;
+            g.intersectionShader = VK_SHADER_UNUSED_KHR;
+            bool is_hit_group = false;
+            for (std::uint32_t i = 0; i < desc.shaders.size(); ++i)
+            {
+                const auto& e = desc.shaders[i];
+                if (e.group != gid) continue;
+                switch (e.stage)
+                {
+                    case cd::rhi::RtShaderStage::kRaygen:
+                    case cd::rhi::RtShaderStage::kMiss:
+                    case cd::rhi::RtShaderStage::kCallable:
+                        g.generalShader = i;
+                        break;
+                    case cd::rhi::RtShaderStage::kClosestHit:
+                        g.closestHitShader = i;
+                        is_hit_group = true;
+                        break;
+                    case cd::rhi::RtShaderStage::kAnyHit:
+                        g.anyHitShader = i;
+                        is_hit_group = true;
+                        break;
+                    case cd::rhi::RtShaderStage::kIntersection:
+                        g.intersectionShader = i;
+                        is_hit_group = true;
+                        break;
+                }
+            }
+            g.type = is_hit_group
+                ? (g.intersectionShader != VK_SHADER_UNUSED_KHR
+                       ? VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR
+                       : VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR)
+                : VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+            groups.push_back(g);
+        }
+
+        VkRayTracingPipelineCreateInfoKHR pci {};
+        pci.sType      = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+        pci.stageCount = static_cast<std::uint32_t>(stages.size());
+        pci.pStages    = stages.data();
+        pci.groupCount = static_cast<std::uint32_t>(groups.size());
+        pci.pGroups    = groups.data();
+        pci.maxPipelineRayRecursionDepth = desc.max_recursion;
+        pci.layout     = layout_it->second;
+
+        VkPipeline pipeline { VK_NULL_HANDLE };
+        VkResult res = vkCreateRayTracingPipelinesKHR(
+            device_, VK_NULL_HANDLE, VK_NULL_HANDLE,
+            1, &pci, nullptr, &pipeline);
+        if (res != VK_SUCCESS || pipeline == VK_NULL_HANDLE)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "vkCreateRayTracingPipelinesKHR failed"));
+        }
+
+        const auto id = next_id_++;
+        rt_pipelines_.emplace(id, RtPipelineRecord {
+            .pipeline    = pipeline,
+            .group_count = static_cast<std::uint32_t>(groups.size()),
+        });
+        return cd::rhi::RtPipelineHandle { id, 1u };
+    }
+
+    void destroy_rt_pipeline(cd::rhi::RtPipelineHandle h) override
+    {
+        auto it = rt_pipelines_.find(h.index());
+        if (it == rt_pipelines_.end()) return;
+        if (it->second.pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device_, it->second.pipeline, nullptr);
+        rt_pipelines_.erase(it);
+    }
+
+    [[nodiscard]] std::uint32_t rt_shader_group_handle_size() const noexcept override
+    {
+        return rt_pipeline_props_.shaderGroupHandleSize;
+    }
+    [[nodiscard]] std::uint32_t rt_shader_group_handle_alignment() const noexcept override
+    {
+        return rt_pipeline_props_.shaderGroupHandleAlignment;
+    }
+    [[nodiscard]] std::uint32_t rt_shader_group_base_alignment() const noexcept override
+    {
+        return rt_pipeline_props_.shaderGroupBaseAlignment;
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    get_rt_shader_group_handles(cd::rhi::RtPipelineHandle pipeline,
+                                std::uint32_t first_group,
+                                std::uint32_t group_count,
+                                std::span<std::byte> out) override
+    {
+        if (vkGetRayTracingShaderGroupHandlesKHR == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "get_rt_shader_group_handles: extension unavailable"));
+        }
+        auto it = rt_pipelines_.find(pipeline.index());
+        if (it == rt_pipelines_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "get_rt_shader_group_handles: unknown pipeline"));
+        }
+        const std::size_t needed =
+            static_cast<std::size_t>(group_count) * rt_pipeline_props_.shaderGroupHandleSize;
+        if (out.size() < needed)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "get_rt_shader_group_handles: output buffer too small"));
+        }
+        if (vkGetRayTracingShaderGroupHandlesKHR(
+                device_, it->second.pipeline,
+                first_group, group_count,
+                needed, out.data()) != VK_SUCCESS)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "vkGetRayTracingShaderGroupHandlesKHR failed"));
+        }
+        return {};
+    }
+
     struct BufferMeta
     {
         VkDeviceSize size { 0 };
@@ -3171,6 +3393,20 @@ public:
         // either lights the bit.
         features_.mesh_shader = has_ext("VK_EXT_mesh_shader") ||
                                 has_ext("VK_NV_mesh_shader");
+
+        // Phase 135 — probe RT pipeline properties (handle size +
+        // alignment values needed for SBT authoring). Only meaningful
+        // when ray_tracing is true; harmless otherwise (struct stays
+        // zero-initialized so the getters return 0).
+        if (features_.ray_tracing)
+        {
+            rt_pipeline_props_.sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+            VkPhysicalDeviceProperties2 props2 {};
+            props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            props2.pNext = &rt_pipeline_props_;
+            vkGetPhysicalDeviceProperties2(physical_, &props2);
+        }
     }
 
     std::unique_ptr<VulkanInstance> inst_;
@@ -3270,6 +3506,15 @@ public:
         std::vector<std::uint32_t>                      vk_primitive_counts;
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
+
+    // Phase 135 — RT pipeline storage + cached props.
+    struct RtPipelineRecord
+    {
+        VkPipeline    pipeline { VK_NULL_HANDLE };
+        std::uint32_t group_count { 0 };
+    };
+    std::unordered_map<std::uint32_t, RtPipelineRecord> rt_pipelines_;
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt_pipeline_props_ {};
     std::unordered_map<std::uint32_t, VkSemaphore> semaphores_;
     // Timeline semaphores live in their own map even though Vulkan represents
     // both flavors via VkSemaphore; the separation lets the type system catch

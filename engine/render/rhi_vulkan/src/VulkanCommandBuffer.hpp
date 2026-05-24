@@ -62,6 +62,12 @@ struct ResourceTables
     using AccelLookupFn = bool(*)(void* user, std::uint32_t handle_index, AccelBuildView& out);
     AccelLookupFn accel_lookup { nullptr };
     void*         accel_lookup_user { nullptr };
+
+    /// Phase 135 — RT pipeline lookup callback. Returns the VkPipeline
+    /// (RT) for a given RtPipelineHandle index, or VK_NULL_HANDLE on
+    /// unknown handle. Shares `accel_lookup_user` (also VulkanDevice*).
+    using RtPipelineLookupFn = VkPipeline (*)(void* user, std::uint32_t handle_index);
+    RtPipelineLookupFn rt_pipeline_lookup { nullptr };
 };
 
 class VulkanCommandBuffer final : public cd::rhi::ICommandBuffer
@@ -146,6 +152,10 @@ public:
 
     // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
     void build_acceleration_structure(cd::rhi::AccelStructureHandle as) override;
+
+    // Phase 135 — RT pipeline bind + vkCmdTraceRaysKHR dispatch.
+    void bind_rt_pipeline(cd::rhi::RtPipelineHandle pipeline) override;
+    void dispatch_rays(const cd::rhi::DispatchRaysDesc& desc) override;
 
     [[nodiscard]] VkCommandBuffer native() const noexcept
     {

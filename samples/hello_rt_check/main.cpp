@@ -117,6 +117,9 @@ int main()
                   "AccelInstance must match VkAccelerationStructureInstanceKHR layout");
     static_assert(sizeof(cd::rhi::SbtRegion) >= 32,
                   "SbtRegion should fit four 8-byte members");
+    // Phase 134: RtShaderEntry now takes ShaderModuleHandle rather
+    // than a GLSL string_view. Size shrinks accordingly; we no
+    // longer pin a specific number.
     std::fprintf(stdout,
                  "[rt] RT pipeline descriptors (Phase 118 shape):\n"
                  "      RtShaderEntry sz = %zu B\n"

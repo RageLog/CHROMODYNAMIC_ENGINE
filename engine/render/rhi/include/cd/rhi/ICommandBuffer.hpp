@@ -95,6 +95,9 @@ public:
     // ---- Pipeline binding --------------------------------------------------
     virtual void bind_graphics_pipeline(GraphicsPipelineHandle pipeline) = 0;
     virtual void bind_compute_pipeline(ComputePipelineHandle pipeline) = 0;
+    /// Phase 135 — RT pipeline binding. Non-pure-virtual default
+    /// no-op so non-RT backends compile unchanged.
+    virtual void bind_rt_pipeline(RtPipelineHandle /*pipeline*/) {}
 
     virtual void bind_descriptor_set(std::uint32_t set_index, DescriptorSetHandle set) = 0;
 

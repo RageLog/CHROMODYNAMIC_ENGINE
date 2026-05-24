@@ -663,6 +663,40 @@ void VulkanCommandBuffer::pop_debug_group()
     vkCmdEndDebugUtilsLabelEXT(cmd_);
 }
 
+// Phase 135 — RT pipeline bind.
+void VulkanCommandBuffer::bind_rt_pipeline(cd::rhi::RtPipelineHandle pipeline)
+{
+    if (tables_.rt_pipeline_lookup == nullptr) return;
+    VkPipeline vp = tables_.rt_pipeline_lookup(tables_.accel_lookup_user, pipeline.index());
+    if (vp == VK_NULL_HANDLE) return;
+    vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, vp);
+}
+
+// Phase 135 — vkCmdTraceRaysKHR dispatch.
+void VulkanCommandBuffer::dispatch_rays(const cd::rhi::DispatchRaysDesc& desc)
+{
+    if (vkCmdTraceRaysKHR == nullptr || tables_.buffers == nullptr) return;
+    auto resolve = [this](const cd::rhi::SbtRegion& r) -> VkStridedDeviceAddressRegionKHR {
+        VkStridedDeviceAddressRegionKHR out {};
+        if (!r.buffer.is_valid()) return out;
+        auto it = tables_.buffers->find(r.buffer.index());
+        if (it == tables_.buffers->end()) return out;
+        VkBufferDeviceAddressInfo info {};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        info.buffer = it->second;
+        out.deviceAddress = vkGetBufferDeviceAddress(device_, &info) + r.offset;
+        out.stride        = r.stride_bytes;
+        out.size          = r.size_bytes;
+        return out;
+    };
+    const auto rg = resolve(desc.raygen);
+    const auto ms = resolve(desc.miss);
+    const auto hi = resolve(desc.hit);
+    const auto ca = resolve(desc.callable);
+    vkCmdTraceRaysKHR(cmd_, &rg, &ms, &hi, &ca,
+                      desc.width, desc.height, desc.depth);
+}
+
 // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
 void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHandle as)
 {
