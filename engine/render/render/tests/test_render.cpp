@@ -389,3 +389,35 @@ TEST(Tonemap, Uncharted2ProducesFiniteOutput)
     EXPECT_GT(v, 0.0F);
     EXPECT_LT(v, 5.0F);
 }
+
+#include <cd/render/MeshStats.hpp>
+
+TEST(MeshStats, TriangleCountDivides)
+{
+    cd::render::MeshStats s;
+    s.index_count = 6;
+    EXPECT_EQ(s.triangle_count(), 2u);
+    s.index_count = 0;
+    EXPECT_EQ(s.triangle_count(), 0u);
+}
+
+TEST(MeshStats, EstimatedVertexBytes)
+{
+    cd::render::MeshStats s;
+    s.vertex_count = 1000;
+    s.vertex_stride_bytes = 32;   // pos + normal + uv
+    EXPECT_EQ(s.estimated_vertex_bytes(), 32000u);
+}
+
+TEST(MeshStats, BboxExtentAndCenter)
+{
+    cd::render::MeshStats s;
+    s.bbox_min = { -1.0F, -2.0F, -3.0F };
+    s.bbox_max = {  1.0F,  2.0F,  3.0F };
+    const auto ex = s.bbox_extent();
+    EXPECT_FLOAT_EQ(ex.x, 2.0F);
+    EXPECT_FLOAT_EQ(ex.z, 6.0F);
+    const auto c = s.bbox_center();
+    EXPECT_FLOAT_EQ(c.x, 0.0F);
+    EXPECT_FLOAT_EQ(c.y, 0.0F);
+}

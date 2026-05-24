@@ -1057,3 +1057,35 @@ TEST(RetryPolicy, ShouldRetryRespectsMaxAttempts)
     EXPECT_TRUE(p.should_retry(2));
     EXPECT_FALSE(p.should_retry(3));
 }
+
+#include <cd/core/Bytes.hpp>
+
+TEST(Bytes, FormatsSmallAsBytes)
+{
+    EXPECT_EQ(cd::core::format_bytes(500), "500 B");
+    EXPECT_EQ(cd::core::format_bytes(1023), "1023 B");
+}
+
+TEST(Bytes, FormatsKilobytes)
+{
+    EXPECT_EQ(cd::core::format_bytes(1024), "1.00 KB");
+    EXPECT_EQ(cd::core::format_bytes(1536), "1.50 KB");
+}
+
+TEST(Bytes, FormatsMegabytes)
+{
+    EXPECT_EQ(cd::core::format_bytes(cd::core::kMB), "1.00 MB");
+    EXPECT_EQ(cd::core::format_bytes(cd::core::kMB + cd::core::kKB * 512), "1.50 MB");
+}
+
+TEST(Bytes, FormatsGigabytes)
+{
+    EXPECT_EQ(cd::core::format_bytes(cd::core::kGB * 2), "2.00 GB");
+}
+
+TEST(Bytes, BinaryMultiplierConstants)
+{
+    EXPECT_EQ(cd::core::kKB, 1024u);
+    EXPECT_EQ(cd::core::kMB, 1024u * 1024u);
+    EXPECT_EQ(cd::core::kGB, 1024u * 1024u * 1024u);
+}
