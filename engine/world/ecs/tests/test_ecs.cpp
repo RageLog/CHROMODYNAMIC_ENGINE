@@ -297,3 +297,46 @@ TEST(TagHelpers, MultipleTagsCoexist)
     EXPECT_TRUE(cd::ecs::has_tag<Selected>(w, e));
     EXPECT_TRUE(cd::ecs::has_tag<Disabled>(w, e));
 }
+
+#include <cd/ecs/EntityRange.hpp>
+
+TEST(EntityRange, EmptyInputReturnsZeroPages)
+{
+    std::vector<cd::ecs::Entity> all;
+    auto p = cd::ecs::paginate(all, 10, 0);
+    EXPECT_EQ(p.total, 0u);
+    EXPECT_EQ(p.page_count, 0u);
+    EXPECT_TRUE(p.entities.empty());
+}
+
+TEST(EntityRange, SinglePageFits)
+{
+    std::vector<cd::ecs::Entity> all;
+    for (std::uint32_t i = 0; i < 3; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    auto p = cd::ecs::paginate(all, 10, 0);
+    EXPECT_EQ(p.total, 3u);
+    EXPECT_EQ(p.page_count, 1u);
+    EXPECT_EQ(p.entities.size(), 3u);
+}
+
+TEST(EntityRange, MultiPagePartitions)
+{
+    std::vector<cd::ecs::Entity> all;
+    for (std::uint32_t i = 0; i < 25; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    auto p0 = cd::ecs::paginate(all, 10, 0);
+    auto p1 = cd::ecs::paginate(all, 10, 1);
+    auto p2 = cd::ecs::paginate(all, 10, 2);
+    EXPECT_EQ(p0.entities.size(), 10u);
+    EXPECT_EQ(p1.entities.size(), 10u);
+    EXPECT_EQ(p2.entities.size(), 5u);
+    EXPECT_EQ(p0.page_count, 3u);
+}
+
+TEST(EntityRange, OutOfRangeClampsToLastPage)
+{
+    std::vector<cd::ecs::Entity> all;
+    for (std::uint32_t i = 0; i < 5; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    auto p = cd::ecs::paginate(all, 2, 99);
+    EXPECT_EQ(p.page_count, 3u);
+    EXPECT_EQ(p.page_index, 2u);
+}

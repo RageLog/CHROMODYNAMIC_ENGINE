@@ -800,3 +800,45 @@ TEST(AngleUnits, UDLAcceptsIntegerLiteral)
     const float r = 90_deg;
     EXPECT_NEAR(r, 1.5707963F, 1e-5F);
 }
+
+#include <cd/math/Range.hpp>
+
+TEST(MathRange, ContainsRespectsBounds)
+{
+    cd::math::Range<float> r { 0.0F, 1.0F };
+    EXPECT_TRUE(cd::math::contains(r, 0.5F));
+    EXPECT_TRUE(cd::math::contains(r, 0.0F));
+    EXPECT_TRUE(cd::math::contains(r, 1.0F));
+    EXPECT_FALSE(cd::math::contains(r, 1.5F));
+}
+
+TEST(MathRange, ClampForcesIntoRange)
+{
+    cd::math::Range<int> r { 5, 10 };
+    EXPECT_EQ(cd::math::clamp(r, 0), 5);
+    EXPECT_EQ(cd::math::clamp(r, 7), 7);
+    EXPECT_EQ(cd::math::clamp(r, 99), 10);
+}
+
+TEST(MathRange, LerpInverseLerpRoundTrip)
+{
+    cd::math::Range<float> r { 10.0F, 20.0F };
+    EXPECT_FLOAT_EQ(cd::math::lerp(r, 0.5F), 15.0F);
+    EXPECT_FLOAT_EQ(cd::math::inverse_lerp(r, 15.0F), 0.5F);
+}
+
+TEST(MathRange, ExpandSymmetric)
+{
+    cd::math::Range<int> r { 0, 10 };
+    auto e = cd::math::expand(r, 5);
+    EXPECT_EQ(e.min, -5);
+    EXPECT_EQ(e.max, 15);
+}
+
+TEST(MathRange, NormalizeSwapsReversed)
+{
+    cd::math::Range<int> r { 10, 0 };
+    auto n = cd::math::normalize(r);
+    EXPECT_EQ(n.min, 0);
+    EXPECT_EQ(n.max, 10);
+}
