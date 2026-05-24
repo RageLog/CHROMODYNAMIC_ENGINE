@@ -993,3 +993,37 @@ TEST(StringSplit, CountPartsMatchesSplit)
     EXPECT_EQ(cd::core::count_parts("a,b,c", ','), 3u);
     EXPECT_EQ(cd::core::count_parts(",,", ','), 3u);
 }
+
+#include <cd/core/ProfileSpan.hpp>
+#include <thread>
+
+TEST(ProfileSpan, RecordsElapsedOnScopeExit)
+{
+    cd::core::ProfileRegistry::instance().clear();
+    {
+        cd::core::ProfileSpan _ { "phase52_test_a" };
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    auto s = cd::core::ProfileRegistry::instance().stats("phase52_test_a");
+    EXPECT_EQ(s.count, 1u);
+    EXPECT_GT(s.total_ns, 0u);
+}
+
+TEST(ProfileSpan, CountAccumulatesAcrossSpans)
+{
+    cd::core::ProfileRegistry::instance().clear();
+    for (int i = 0; i < 5; ++i)
+    {
+        cd::core::ProfileSpan _ { "phase52_test_b" };
+    }
+    auto s = cd::core::ProfileRegistry::instance().stats("phase52_test_b");
+    EXPECT_EQ(s.count, 5u);
+}
+
+TEST(ProfileRegistry, UnknownNameReturnsZero)
+{
+    cd::core::ProfileRegistry::instance().clear();
+    auto s = cd::core::ProfileRegistry::instance().stats("phase52_no_such_name");
+    EXPECT_EQ(s.count, 0u);
+    EXPECT_EQ(s.total_ns, 0u);
+}

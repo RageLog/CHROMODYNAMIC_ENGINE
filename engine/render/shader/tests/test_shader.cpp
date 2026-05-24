@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd::shader tests
 // =============================================================================
 #include <cd/shader/Compiler.hpp>
+#include <cd/shader/ShaderStage.hpp>
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -152,6 +153,39 @@ TEST(ShaderCompiler, SlangFactoryHonorsBuildToggle)
 #else
     EXPECT_EQ(c, nullptr);
 #endif
+}
+
+TEST(ShaderStageDesc, GlslFactoryDefaults)
+{
+    auto s = cd::shader::ShaderStageDesc::from_glsl(cd::shader::StageKind::kVertex);
+    EXPECT_EQ(s.stage, cd::shader::StageKind::kVertex);
+    EXPECT_EQ(s.language, cd::shader::Language::kGlsl);
+    EXPECT_EQ(s.entry_point, "main");
+}
+
+TEST(ShaderStageDesc, HlslFactoryAcceptsCustomEntry)
+{
+    auto s = cd::shader::ShaderStageDesc::from_hlsl(cd::shader::StageKind::kFragment, "PSMain");
+    EXPECT_EQ(s.language, cd::shader::Language::kHlsl);
+    EXPECT_EQ(s.entry_point, "PSMain");
+}
+
+TEST(ShaderStageDesc, DefineAppendsValueDefault)
+{
+    auto s = cd::shader::ShaderStageDesc::from_glsl(cd::shader::StageKind::kCompute);
+    s.define("USE_PBR");
+    s.define("MAX_LIGHTS", "8");
+    ASSERT_EQ(s.defines.size(), 2u);
+    EXPECT_EQ(s.defines[0].key, "USE_PBR");
+    EXPECT_EQ(s.defines[0].value, "1");
+    EXPECT_EQ(s.defines[1].value, "8");
+}
+
+TEST(ShaderStageDesc, ToStringCoversAllStages)
+{
+    EXPECT_STREQ(cd::shader::to_string(cd::shader::StageKind::kVertex), "vertex");
+    EXPECT_STREQ(cd::shader::to_string(cd::shader::StageKind::kFragment), "fragment");
+    EXPECT_STREQ(cd::shader::to_string(cd::shader::StageKind::kRayGen), "raygen");
 }
 
 }  // namespace
