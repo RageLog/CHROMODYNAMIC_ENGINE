@@ -576,6 +576,43 @@ TEST(Frustum, AabbStraddlingFaceIsAccepted)
     EXPECT_TRUE(cd::scene::intersects(f, cross));
 }
 
+TEST(Frustum, ContainsSphere_AtOriginIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    EXPECT_TRUE(cd::scene::contains_sphere(f, { 0.0F, 0.0F, 0.0F }, 0.5F));
+}
+
+TEST(Frustum, ContainsSphere_FarOutsideIsRejected)
+{
+    const auto f = make_unit_box_frustum();
+    // Center at (10, 0, 0); plane "x <= 1" puts signed_distance(center) = -9.
+    // With radius 0.5, -9 < -0.5 → reject.
+    EXPECT_FALSE(cd::scene::contains_sphere(f, { 10.0F, 0.0F, 0.0F }, 0.5F));
+}
+
+TEST(Frustum, ContainsSphere_TouchingPlaneIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    // Center just outside +X plane by radius — touches inclusive boundary.
+    EXPECT_TRUE(cd::scene::contains_sphere(f, { 1.5F, 0.0F, 0.0F }, 0.5F));
+}
+
+TEST(Frustum, ContainsSphere_PartialOverlapIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    // Center well outside one face but radius reaches in.
+    EXPECT_TRUE(cd::scene::contains_sphere(f, { 1.8F, 0.0F, 0.0F }, 1.0F));
+}
+
+TEST(Frustum, FullyContainsSphere_StrictlyInsideOnly)
+{
+    const auto f = make_unit_box_frustum();
+    // Small sphere fully inside.
+    EXPECT_TRUE(cd::scene::fully_contains_sphere(f, { 0.0F, 0.0F, 0.0F }, 0.25F));
+    // Sphere crossing the +X plane: partially in but NOT fully.
+    EXPECT_FALSE(cd::scene::fully_contains_sphere(f, { 0.9F, 0.0F, 0.0F }, 0.25F));
+}
+
 #include <cd/scene/VisibilityMask.hpp>
 
 TEST(VisibilityMask, DefaultMaskIsAllOnes)

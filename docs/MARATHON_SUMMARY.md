@@ -126,6 +126,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.36 | 104+105 | **Engine-side StandardPbr + AnalyticalSky materials** — Cook-Torrance + GGX + Schlick + Smith G + split-sum IBL + ACES (StandardPbrMaterial.hpp) and 3-band procedural atmosphere (AnalyticalSkyMaterial.hpp) lifted out of hello_pbr into cd::material headers; sample shrinks by ~280 GLSL lines |
 | v0.99.37 | 106 | **cd::asset::Primitives** — header-only builders for cube/sphere/cone/cylinder/plane/torus/capsule with a canonical 44 B pos+normal+uv+color vertex layout |
 | v0.99.38 | 107 | **cd::editor::PropertyDrawer** — DragSession helper (pre-drag snapshot + release flag) for the live-drag-then-push-command pattern; imgui-agnostic (function-pointer callbacks) |
+| v0.99.39 | 109+110 | **Frustum::contains_sphere + SceneCameraController** — sphere cull (inclusive + strict variants, +5 unit tests) and a scene-aware orbit-camera facade that follows a target entity's world transform |
 
 ## Major capabilities added across the marathon
 

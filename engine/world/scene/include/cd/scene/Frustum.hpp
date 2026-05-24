@@ -70,4 +70,41 @@ struct Frustum
     return true;
 }
 
+/// Returns true iff the sphere `(center, radius)` is at least
+/// partially inside the frustum. Classic bounding-sphere cull: a
+/// sphere is outside iff its center is on the negative side of any
+/// plane by MORE than its radius. This is the cheapest cull test
+/// engines apply before the AABB-level intersects() above.
+///
+/// Inclusive — a sphere just touching a plane (signed_distance == -r)
+/// is considered inside. Required by Phase 109 marathon item; same
+/// convention as `intersects(Frustum, Aabb)`.
+[[nodiscard]] inline bool contains_sphere(const Frustum& f,
+                                          const cd::math::Vec3f& center,
+                                          float radius) noexcept
+{
+    const Plane planes[6] = { f.left, f.right, f.bottom, f.top, f.near_, f.far_ };
+    const float neg_r = -radius;
+    for (const auto& p : planes)
+    {
+        if (signed_distance(p, center) < neg_r) return false;
+    }
+    return true;
+}
+
+/// Strict containment: returns true iff the sphere is FULLY inside
+/// every half-space (no plane crosses the sphere). Useful for picking
+/// "trivially-accept" shadow-frustum candidates.
+[[nodiscard]] inline bool fully_contains_sphere(const Frustum& f,
+                                                const cd::math::Vec3f& center,
+                                                float radius) noexcept
+{
+    const Plane planes[6] = { f.left, f.right, f.bottom, f.top, f.near_, f.far_ };
+    for (const auto& p : planes)
+    {
+        if (signed_distance(p, center) < radius) return false;
+    }
+    return true;
+}
+
 }  // namespace cd::scene
