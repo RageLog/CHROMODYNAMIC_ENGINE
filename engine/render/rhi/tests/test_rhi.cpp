@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/BlendPresets.hpp>
+#include <cd/rhi/DebugMarkerScope.hpp>
 #include <cd/rhi/DepthStencilPresets.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Enums.hpp>
@@ -410,6 +411,31 @@ TEST(VertexLayoutBuilder, BytesOfFormat)
     EXPECT_EQ(cd::rhi::bytes_of(cd::rhi::Format::kRGB32Float), 12u);
     EXPECT_EQ(cd::rhi::bytes_of(cd::rhi::Format::kR32Float),   4u);
     EXPECT_EQ(cd::rhi::bytes_of(cd::rhi::Format::kRGBA8Unorm), 4u);
+}
+
+TEST(DebugMarkerScope, PushOnConstructionEmitsLabel)
+{
+    cd::rhi::NullCommandBuffer cb;
+    EXPECT_EQ(cb.log().debug_groups.size(), 0u);
+    {
+        cd::rhi::DebugMarkerScope _ { cb, "TestGroup" };
+        EXPECT_EQ(cb.log().debug_groups.size(), 1u);
+        EXPECT_EQ(cb.log().debug_groups[0], "TestGroup");
+    }   // pop_debug_group fires; NullCommandBuffer pop is a no-op (no log)
+}
+
+TEST(DebugMarkerScope, NestedScopesPushBoth)
+{
+    cd::rhi::NullCommandBuffer cb;
+    {
+        cd::rhi::DebugMarkerScope outer { cb, "outer" };
+        {
+            cd::rhi::DebugMarkerScope inner { cb, "inner" };
+        }
+    }
+    EXPECT_EQ(cb.log().debug_groups.size(), 2u);
+    EXPECT_EQ(cb.log().debug_groups[0], "outer");
+    EXPECT_EQ(cb.log().debug_groups[1], "inner");
 }
 
 }  // namespace

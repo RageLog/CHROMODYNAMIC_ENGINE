@@ -513,3 +513,46 @@ TEST(PathResolver, UnclosedBraceLeftAsIs)
     cd::asset::PathResolver r;
     EXPECT_EQ(r.expand("a/b/{NOEND"), "a/b/{NOEND");
 }
+
+#include <cd/asset/BundleMeta.hpp>
+
+TEST(BundleMeta, HeaderSizeIs32Bytes)
+{
+    EXPECT_EQ(sizeof(cd::asset::BundleHeader), 32u);
+}
+
+TEST(BundleMeta, ValidHeaderAccepted)
+{
+    cd::asset::BundleHeader h;
+    h.magic = cd::asset::kBundleMagicMesh;
+    h.payload_size = 1024;
+    h.asset_count = 1;
+    EXPECT_TRUE(cd::asset::is_valid_header(h, cd::asset::kBundleMagicMesh));
+}
+
+TEST(BundleMeta, MagicMismatchRejected)
+{
+    cd::asset::BundleHeader h;
+    h.magic = cd::asset::kBundleMagicMesh;
+    h.payload_size = 1024;
+    h.asset_count = 1;
+    EXPECT_FALSE(cd::asset::is_valid_header(h, cd::asset::kBundleMagicTexture));
+}
+
+TEST(BundleMeta, ZeroAssetCountRejected)
+{
+    cd::asset::BundleHeader h;
+    h.magic = cd::asset::kBundleMagicScene;
+    h.payload_size = 100;
+    h.asset_count = 0;
+    EXPECT_FALSE(cd::asset::is_valid_header(h, cd::asset::kBundleMagicScene));
+}
+
+TEST(BundleMeta, OversizedPayloadRejected)
+{
+    cd::asset::BundleHeader h;
+    h.magic = cd::asset::kBundleMagicMesh;
+    h.payload_size = 1ULL << 40;
+    h.asset_count = 1;
+    EXPECT_FALSE(cd::asset::is_valid_header(h, cd::asset::kBundleMagicMesh));
+}
