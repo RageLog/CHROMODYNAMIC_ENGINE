@@ -719,3 +719,51 @@ TEST(HeightField, CellSizeRespected)
     // world x = 2 units/cell * 2 = 4
     EXPECT_FLOAT_EQ(hf.sample(4.0F, 4.0F), 10.0F);
 }
+
+#include <cd/scene/Marker.hpp>
+
+TEST(MarkerSet, AddAndFindByName)
+{
+    cd::scene::MarkerSet ms;
+    cd::math::Transformf t;
+    t.position = { 1, 2, 3 };
+    ms.add("Spawn", t);
+    const auto* m = ms.find("Spawn");
+    ASSERT_NE(m, nullptr);
+    EXPECT_FLOAT_EQ(m->transform.position.x, 1.0F);
+    EXPECT_EQ(m->name, "Spawn");
+}
+
+TEST(MarkerSet, FindByHashRoundTrip)
+{
+    cd::scene::MarkerSet ms;
+    cd::math::Transformf t;
+    t.position = { 9, 8, 7 };
+    ms.add("CamFocus", t);
+    const auto h = cd::scene::name_hash("CamFocus");
+    const auto* m = ms.find_by_hash(h);
+    ASSERT_NE(m, nullptr);
+    EXPECT_FLOAT_EQ(m->transform.position.z, 7.0F);
+}
+
+TEST(MarkerSet, RemoveDrops)
+{
+    cd::scene::MarkerSet ms;
+    cd::math::Transformf t;
+    ms.add("Tmp", t);
+    ms.remove("Tmp");
+    EXPECT_EQ(ms.size(), 0u);
+    EXPECT_EQ(ms.find("Tmp"), nullptr);
+}
+
+TEST(MarkerSet, AddOverwritesSameName)
+{
+    cd::scene::MarkerSet ms;
+    cd::math::Transformf a, b;
+    a.position = { 1, 0, 0 };
+    b.position = { 2, 0, 0 };
+    ms.add("Slot", a);
+    ms.add("Slot", b);
+    EXPECT_EQ(ms.size(), 1u);
+    EXPECT_FLOAT_EQ(ms.find("Slot")->transform.position.x, 2.0F);
+}

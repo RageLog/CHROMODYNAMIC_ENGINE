@@ -357,3 +357,43 @@ TEST(CurveTrack, AddKeyMaintainsSortOrder)
     EXPECT_FLOAT_EQ(c.keys()[1].t, 1.0F);
     EXPECT_FLOAT_EQ(c.keys()[2].t, 2.0F);
 }
+
+#include <cd/anim/EventTrack.hpp>
+
+TEST(EventTrack, AddMaintainsSortOrder)
+{
+    cd::anim::EventTrack t;
+    t.add(0.5F, 10);
+    t.add(0.2F, 20);
+    t.add(0.8F, 30);
+    ASSERT_EQ(t.size(), 3u);
+    EXPECT_FLOAT_EQ(t.events()[0].t, 0.2F);
+    EXPECT_FLOAT_EQ(t.events()[1].t, 0.5F);
+    EXPECT_FLOAT_EQ(t.events()[2].t, 0.8F);
+}
+
+TEST(EventTrack, AdvanceFiresEventsInWindow)
+{
+    cd::anim::EventTrack t;
+    t.add(0.1F, 1);
+    t.add(0.3F, 2);
+    t.add(0.5F, 3);
+    t.add(0.7F, 4);
+    std::vector<std::uint32_t> fired;
+    auto n = t.advance(0.2F, 0.6F, [&](std::uint32_t id) { fired.push_back(id); });
+    EXPECT_EQ(n, 2u);
+    ASSERT_EQ(fired.size(), 2u);
+    EXPECT_EQ(fired[0], 2u);
+    EXPECT_EQ(fired[1], 3u);
+}
+
+TEST(EventTrack, AdvanceWindowExcludesStartInclusiveOfEnd)
+{
+    cd::anim::EventTrack t;
+    t.add(0.2F, 1);
+    std::size_t fired = 0;
+    t.advance(0.2F, 0.5F, [&](std::uint32_t) { ++fired; });
+    EXPECT_EQ(fired, 0u);   // 0.2 not in (0.2, 0.5]
+    t.advance(0.0F, 0.2F, [&](std::uint32_t) { ++fired; });
+    EXPECT_EQ(fired, 1u);   // 0.2 IS in (0.0, 0.2]
+}
