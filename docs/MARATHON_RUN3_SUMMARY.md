@@ -1,7 +1,7 @@
-# Marathon Run 3 — Summary (v0.99.33 → v0.99.56)
+# Marathon Run 3 — Summary (v0.99.33 → v0.99.58)
 
-Generated **2026-05-24**. 24 tags shipped across this stretch
-(v0.99.33 demo-reel kickoff through v0.99.56 D3D12 input-attachment).
+Generated **2026-05-24**. 26 tags shipped across this stretch
+(v0.99.33 demo-reel kickoff through v0.99.58 DeferredDestroy queue).
 **v1.0.0 still user-only** per the ADR-wave125 rollback rule.
 
 ## Tag chain
@@ -32,6 +32,8 @@ Generated **2026-05-24**. 24 tags shipped across this stretch
 | v0.99.54  | 127      | Vulkan TLAS create path                                                                   |
 | v0.99.55  | 128      | hello_rt_check extended (BLAS+TLAS probes + size table)                                   |
 | v0.99.56  | 129      | D3D12 input-attachment branch (last update_descriptor_set stub cleared)                   |
+| v0.99.57  | 130      | Vulkan AccelRecord build-info (deep-copy triangles + instances for build path)            |
+| v0.99.58  | 131      | cd::rhi::DeferredDestroy frame-fence destroy queue (unblocks AS build scratch)            |
 
 ## Themes
 
@@ -82,12 +84,14 @@ Generated **2026-05-24**. 24 tags shipped across this stretch
   features + sample/CI/doc improvements + interface contracts.
   Avoids open-ended multi-hour single-phase work.
 
-## Repo state at v0.99.56
+## Repo state at v0.99.58
 
-- 56 patch releases on v0.99 line.
+- 58 patch releases on v0.99 line.
 - Engine + 33 samples + tools all build clean across Vulkan-enabled
   presets (ninja-base, llvm-win-base, clangcl-win-base, ...).
-- 33 ADRs added this run (waves 268 → 291).
+- 35 ADRs added this run (waves 268 → 293).
 - Sample count: 50 (`hello_audio_chain`, `hello_net_sim`,
   `hello_command_palette`, `hello_random` newly shipped; the rest
   unchanged).
+- Infrastructure laid for Phase 132+ Vulkan AS build cmd path
+  (`AccelRecord::triangles/instances` + `DeferredDestroy` queue).
