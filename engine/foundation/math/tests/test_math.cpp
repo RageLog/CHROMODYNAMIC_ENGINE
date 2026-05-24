@@ -1052,3 +1052,46 @@ TEST(QuatPow, OneReturnsOriginal)
     EXPECT_NEAR(same.y, q.y, 1e-4F);
     EXPECT_NEAR(same.w, q.w, 1e-4F);
 }
+
+#include <cd/math/Aabb2.hpp>
+
+TEST(Aabb2, ContainsRespectsBounds)
+{
+    cd::math::Aabb2 b { 0, 0, 10, 10 };
+    EXPECT_TRUE(cd::math::contains(b, 5, 5));
+    EXPECT_TRUE(cd::math::contains(b, 0, 0));
+    EXPECT_TRUE(cd::math::contains(b, 10, 10));
+    EXPECT_FALSE(cd::math::contains(b, -1, 5));
+}
+
+TEST(Aabb2, OverlapsBox)
+{
+    cd::math::Aabb2 a { 0, 0, 10, 10 };
+    cd::math::Aabb2 b { 5, 5, 15, 15 };
+    cd::math::Aabb2 c { 20, 20, 30, 30 };
+    EXPECT_TRUE(cd::math::overlaps(a, b));
+    EXPECT_FALSE(cd::math::overlaps(a, c));
+}
+
+TEST(Aabb2, MergeUnions)
+{
+    cd::math::Aabb2 a { 0, 0, 5, 5 };
+    cd::math::Aabb2 b { 3, 3, 10, 10 };
+    auto m = cd::math::merge(a, b);
+    EXPECT_FLOAT_EQ(m.min_x, 0.0F);
+    EXPECT_FLOAT_EQ(m.max_x, 10.0F);
+}
+
+TEST(Aabb2, ExpandPadsSymmetric)
+{
+    cd::math::Aabb2 b { 0, 0, 10, 10 };
+    auto e = cd::math::expand(b, 5);
+    EXPECT_FLOAT_EQ(e.min_x, -5.0F);
+    EXPECT_FLOAT_EQ(e.max_x, 15.0F);
+}
+
+TEST(Aabb2, AreaProduct)
+{
+    cd::math::Aabb2 b { 0, 0, 10, 5 };
+    EXPECT_FLOAT_EQ(cd::math::area(b), 50.0F);
+}

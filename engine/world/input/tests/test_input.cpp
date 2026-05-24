@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd::input tests
 // =============================================================================
 #include <cd/input/Axis.hpp>
+#include <cd/input/Bindings.hpp>
 #include <cd/input/DoubleClick.hpp>
 #include <cd/input/GamepadState.hpp>
 #include <cd/input/Input.hpp>
@@ -263,6 +264,42 @@ TEST(GamepadState, DeadzoneScalesOutsideRange)
     cd::input::apply_deadzone(x, y, 0.2F);
     EXPECT_NEAR(x, 1.0F, 1e-4F);
     EXPECT_FLOAT_EQ(y, 0.0F);
+}
+
+TEST(ActionBindings, BindAndCheckIsDown)
+{
+    cd::input::InputContext ctx;
+    cd::input::InputEvent down {};
+    down.kind = cd::input::EventKind::kKeyDown;
+    down.key = cd::input::KeyCode::kA;
+    ctx.push_event(down);
+
+    cd::input::ActionBindings bindings;
+    bindings.bind("MoveLeft", cd::input::KeyCode::kA);
+    EXPECT_TRUE(bindings.is_down("MoveLeft", ctx.state()));
+    EXPECT_FALSE(bindings.is_down("MoveRight", ctx.state()));
+}
+
+TEST(ActionBindings, MultipleKeysForOneAction)
+{
+    cd::input::InputContext ctx;
+    cd::input::ActionBindings bindings;
+    bindings.bind("MoveLeft", cd::input::KeyCode::kA);
+    bindings.bind("MoveLeft", cd::input::KeyCode::kLeft);
+
+    cd::input::InputEvent left {};
+    left.kind = cd::input::EventKind::kKeyDown;
+    left.key = cd::input::KeyCode::kLeft;
+    ctx.push_event(left);
+    EXPECT_TRUE(bindings.is_down("MoveLeft", ctx.state()));
+}
+
+TEST(ActionBindings, UnbindRemovesAll)
+{
+    cd::input::ActionBindings bindings;
+    bindings.bind("Jump", cd::input::KeyCode::kSpace);
+    bindings.unbind_all("Jump");
+    EXPECT_EQ(bindings.action_count(), 0u);
 }
 
 }  // namespace
