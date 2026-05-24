@@ -1216,48 +1216,244 @@ public:
         return {};
     }
 
+    // ---- Synchronization (REAL — Phase 125 v0.99.52) ----------------------
+    //
+    // D3D12 doesn't have binary semaphores in the Vulkan sense; the
+    // queue-side sync primitive is `ID3D12Fence` (which is essentially
+    // a Vulkan timeline semaphore). We map:
+    //
+    //   * `SemaphoreHandle`  — `ID3D12Fence` + a per-instance value
+    //                          that bumps to "1" on each signal.
+    //                          acquire_next_image / present accept the
+    //                          handle for interface parity and ignore
+    //                          it (DXGI handles its own backbuffer
+    //                          fencing).
+    //   * `FenceHandle`      — `ID3D12Fence` + a Win32 event the host
+    //                          waits on (`SetEventOnCompletion`).
+    //                          `signaled` boot state matches Vulkan's
+    //                          `VkFenceCreateFlagBits::VK_FENCE_CREATE_SIGNALED_BIT`.
+    //   * `TimelineSemaphoreHandle` — `ID3D12Fence` exposed natively
+    //                          since fences already carry a u64 counter.
+    //
+    // All three share an ID3D12Fence underneath; the wrapper types
+    // exist for ABI parity with Vulkan code paths.
+
     [[nodiscard]] cd::core::Result<cd::rhi::SemaphoreHandle>
-    create_semaphore() override { CD_D3D12_NOT_IMPL_RESULT(SemaphoreHandle); }
-    void destroy_semaphore(cd::rhi::SemaphoreHandle) override {}
+    create_semaphore() override
+    {
+        ComPtr<ID3D12Fence> fence;
+        HRESULT hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                          IID_PPV_ARGS(&fence));
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CreateFence(semaphore) failed"));
+        }
+        const auto id = next_id_++;
+        SemaphoreRecord rec;
+        rec.fence = fence;
+        rec.value = 0;
+        semaphores_.emplace(id, std::move(rec));
+        return cd::rhi::SemaphoreHandle { id, 1u };
+    }
+    void destroy_semaphore(cd::rhi::SemaphoreHandle h) override
+    {
+        semaphores_.erase(h.index());
+    }
 
     [[nodiscard]] cd::core::Result<cd::rhi::FenceHandle>
-    create_fence(bool) override { CD_D3D12_NOT_IMPL_RESULT(FenceHandle); }
-    void destroy_fence(cd::rhi::FenceHandle) override {}
-
-    [[nodiscard]] cd::core::Result<void>
-    wait_for_fence(cd::rhi::FenceHandle, std::uint64_t) override
+    create_fence(bool signaled) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented,
-            "D3D12 backend is boot-only at v0.27.0"));
+        ComPtr<ID3D12Fence> fence;
+        const UINT64 initial = signaled ? 1u : 0u;
+        HRESULT hr = device_->CreateFence(initial, D3D12_FENCE_FLAG_NONE,
+                                          IID_PPV_ARGS(&fence));
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CreateFence(fence) failed"));
+        }
+        HANDLE evt = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (evt == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CreateEvent(fence) failed"));
+        }
+        const auto id = next_id_++;
+        FenceRecord rec;
+        rec.fence = fence;
+        rec.event = evt;
+        rec.target_value = initial;  // matches the value the fence was created at
+        fences_.emplace(id, std::move(rec));
+        return cd::rhi::FenceHandle { id, 1u };
+    }
+    void destroy_fence(cd::rhi::FenceHandle h) override
+    {
+        auto it = fences_.find(h.index());
+        if (it == fences_.end()) return;
+        if (it->second.event != nullptr) ::CloseHandle(it->second.event);
+        fences_.erase(it);
     }
 
-    void reset_fence(cd::rhi::FenceHandle) override {}
-    [[nodiscard]] bool is_fence_signaled(cd::rhi::FenceHandle) override { return false; }
+    [[nodiscard]] cd::core::Result<void>
+    wait_for_fence(cd::rhi::FenceHandle h, std::uint64_t timeout_ns) override
+    {
+        auto it = fences_.find(h.index());
+        if (it == fences_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "wait_for_fence: unknown fence handle"));
+        }
+        auto& rec = it->second;
+        // Fast path: already at or above target.
+        if (rec.fence->GetCompletedValue() >= rec.target_value) return {};
+
+        if (FAILED(rec.fence->SetEventOnCompletion(rec.target_value, rec.event)))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "SetEventOnCompletion failed"));
+        }
+        // ns → ms with rounding-up; INFINITE on a 0-tag timeout
+        // (matching Vulkan's UINT64_MAX semantic).
+        const DWORD ms = (timeout_ns == 0u || timeout_ns == ~std::uint64_t { 0 })
+            ? INFINITE
+            : static_cast<DWORD>((timeout_ns + 999'999u) / 1'000'000u);
+        const DWORD wr = ::WaitForSingleObject(rec.event, ms);
+        if (wr == WAIT_TIMEOUT)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kTimeout,
+                "wait_for_fence: timed out"));
+        }
+        if (wr != WAIT_OBJECT_0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "wait_for_fence: WaitForSingleObject failed"));
+        }
+        return {};
+    }
+
+    void reset_fence(cd::rhi::FenceHandle h) override
+    {
+        auto it = fences_.find(h.index());
+        if (it == fences_.end()) return;
+        // D3D12 fences are monotonic counters — "reset" means
+        // setting the target value forward to the next signal we
+        // expect. The caller is responsible for queueing the next
+        // signal via command-queue Signal afterwards.
+        ++it->second.target_value;
+    }
+
+    [[nodiscard]] bool is_fence_signaled(cd::rhi::FenceHandle h) override
+    {
+        auto it = fences_.find(h.index());
+        if (it == fences_.end()) return false;
+        return it->second.fence->GetCompletedValue() >= it->second.target_value;
+    }
 
     [[nodiscard]] cd::core::Result<cd::rhi::TimelineSemaphoreHandle>
-    create_timeline_semaphore(std::uint64_t) override { CD_D3D12_NOT_IMPL_RESULT(TimelineSemaphoreHandle); }
-    void destroy_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle) override {}
-
-    [[nodiscard]] cd::core::Result<void>
-    wait_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle, std::uint64_t, std::uint64_t) override
+    create_timeline_semaphore(std::uint64_t initial_value) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented,
-            "D3D12 backend is boot-only at v0.27.0"));
+        ComPtr<ID3D12Fence> fence;
+        HRESULT hr = device_->CreateFence(initial_value, D3D12_FENCE_FLAG_NONE,
+                                          IID_PPV_ARGS(&fence));
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CreateFence(timeline) failed"));
+        }
+        HANDLE evt = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (evt == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CreateEvent(timeline) failed"));
+        }
+        const auto id = next_id_++;
+        TimelineRecord rec;
+        rec.fence = fence;
+        rec.event = evt;
+        timelines_.emplace(id, std::move(rec));
+        return cd::rhi::TimelineSemaphoreHandle { id, 1u };
+    }
+    void destroy_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h) override
+    {
+        auto it = timelines_.find(h.index());
+        if (it == timelines_.end()) return;
+        if (it->second.event != nullptr) ::CloseHandle(it->second.event);
+        timelines_.erase(it);
     }
 
     [[nodiscard]] cd::core::Result<void>
-    signal_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle, std::uint64_t) override
+    wait_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h,
+                            std::uint64_t value,
+                            std::uint64_t timeout_ns) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented,
-            "D3D12 backend is boot-only at v0.27.0"));
+        auto it = timelines_.find(h.index());
+        if (it == timelines_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "wait_timeline_semaphore: unknown handle"));
+        }
+        auto& rec = it->second;
+        if (rec.fence->GetCompletedValue() >= value) return {};
+        if (FAILED(rec.fence->SetEventOnCompletion(value, rec.event)))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "SetEventOnCompletion(timeline) failed"));
+        }
+        const DWORD ms = (timeout_ns == 0u || timeout_ns == ~std::uint64_t { 0 })
+            ? INFINITE
+            : static_cast<DWORD>((timeout_ns + 999'999u) / 1'000'000u);
+        const DWORD wr = ::WaitForSingleObject(rec.event, ms);
+        if (wr == WAIT_TIMEOUT)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kTimeout,
+                "wait_timeline_semaphore: timed out"));
+        }
+        if (wr != WAIT_OBJECT_0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "WaitForSingleObject(timeline) failed"));
+        }
+        return {};
     }
 
-    [[nodiscard]] std::uint64_t timeline_semaphore_value(cd::rhi::TimelineSemaphoreHandle) const override
+    [[nodiscard]] cd::core::Result<void>
+    signal_timeline_semaphore(cd::rhi::TimelineSemaphoreHandle h, std::uint64_t value) override
     {
-        return 0;
+        auto it = timelines_.find(h.index());
+        if (it == timelines_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "signal_timeline_semaphore: unknown handle"));
+        }
+        if (FAILED(it->second.fence->Signal(value)))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "Signal(timeline) failed"));
+        }
+        return {};
+    }
+
+    [[nodiscard]] std::uint64_t timeline_semaphore_value(cd::rhi::TimelineSemaphoreHandle h) const override
+    {
+        auto it = timelines_.find(h.index());
+        if (it == timelines_.end()) return 0;
+        return it->second.fence->GetCompletedValue();
     }
 
     // ---- acquire / present (REAL — Phase 13.C v0.32.0) --------------------
@@ -1602,6 +1798,25 @@ public:
         std::string entry_point;
     };
 
+    // Phase 125 — sync primitive storage. All three are backed by
+    // ID3D12Fence; the wrappers differ in surface semantics.
+    struct SemaphoreRecord
+    {
+        ComPtr<ID3D12Fence> fence;
+        std::uint64_t       value { 0 };
+    };
+    struct FenceRecord
+    {
+        ComPtr<ID3D12Fence> fence;
+        HANDLE              event { nullptr };
+        std::uint64_t       target_value { 0 };
+    };
+    struct TimelineRecord
+    {
+        ComPtr<ID3D12Fence> fence;
+        HANDLE              event { nullptr };
+    };
+
     struct DescriptorSetLayoutRecord
     {
         std::vector<cd::rhi::DescriptorSetLayoutBinding> bindings;
@@ -1707,6 +1922,11 @@ private:
     ComPtr<ID3D12DescriptorHeap> cpu_heap_;
     UINT cpu_heap_increment_ { 0 };
     std::uint32_t cpu_heap_cursor_ { 0 };
+
+    // Phase 125 — sync primitive registries.
+    std::unordered_map<std::uint32_t, SemaphoreRecord> semaphores_;
+    std::unordered_map<std::uint32_t, FenceRecord>     fences_;
+    std::unordered_map<std::uint32_t, TimelineRecord>  timelines_;
 
     // Phase 124 — device-level RTV / DSV pools for create_texture_view.
     // Bump allocators. The swapchain RTV path uses its own per-swapchain
