@@ -10,6 +10,7 @@
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
+#include <cd/editor/MenuBar.hpp>
 #include <cd/editor/SelectionSet.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <gtest/gtest.h>
@@ -424,4 +425,47 @@ TEST(HierarchyView, ToggleFlipsExpansion)
     EXPECT_TRUE(hv.is_expanded(e));
     hv.toggle(e);
     EXPECT_FALSE(hv.is_expanded(e));
+}
+
+TEST(MenuBar, AddMenuIncrementsSize)
+{
+    cd::editor::MenuBar bar;
+    bar.add_menu("File");
+    bar.add_menu("Edit");
+    EXPECT_EQ(bar.size(), 2u);
+}
+
+TEST(MenuBar, AddItemAccumulatesChildren)
+{
+    cd::editor::MenuBar bar;
+    auto file = bar.add_menu("File");
+    file.add_item("Open", [] {});
+    file.add_separator();
+    file.add_item("Save", [] {});
+    ASSERT_EQ(bar.menus().size(), 1u);
+    EXPECT_EQ(bar.menus()[0]->children.size(), 3u);
+    EXPECT_EQ(bar.menus()[0]->children[1]->kind, cd::editor::MenuItem::Kind::kSeparator);
+}
+
+TEST(MenuBar, ActionInvokesCallback)
+{
+    cd::editor::MenuBar bar;
+    int hits = 0;
+    auto file = bar.add_menu("File");
+    file.add_item("Hit", [&] { ++hits; });
+    ASSERT_EQ(bar.menus()[0]->children.size(), 1u);
+    auto& item = *bar.menus()[0]->children[0];
+    item.action();
+    EXPECT_EQ(hits, 1);
+}
+
+TEST(MenuBar, SubmenuNests)
+{
+    cd::editor::MenuBar bar;
+    auto file = bar.add_menu("File");
+    auto recent = file.add_submenu("Recent");
+    recent.add_item("level1.scene", [] {});
+    recent.add_item("level2.scene", [] {});
+    EXPECT_EQ(bar.menus()[0]->children.size(), 1u);   // submenu
+    EXPECT_EQ(bar.menus()[0]->children[0]->children.size(), 2u);   // grandchildren
 }

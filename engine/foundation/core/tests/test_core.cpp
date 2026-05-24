@@ -1135,3 +1135,32 @@ TEST(PoolAllocator, BlockSizeMinimumIsPointerSize)
     cd::core::PoolAllocator p { 4, 4 };   // requested 4, clamped to sizeof(void*)
     EXPECT_GE(p.block_size(), sizeof(void*));
 }
+
+#include <cd/core/Ref.hpp>
+
+namespace {
+struct Foo { int n { 0 }; };
+void take_foo(Foo& f) { ++f.n; }
+}
+
+TEST(Ref, ImplicitFromLvalue)
+{
+    Foo f { 5 };
+    cd::core::Ref<Foo> r { f };
+    EXPECT_EQ(r.get().n, 5);
+}
+
+TEST(Ref, ConvertsImplicitlyToLvalue)
+{
+    Foo f { 10 };
+    cd::core::Ref<Foo> r { f };
+    take_foo(r);
+    EXPECT_EQ(f.n, 11);   // mutation propagates
+}
+
+TEST(Ref, ArrowDereferences)
+{
+    Foo f { 99 };
+    cd::core::Ref<Foo> r { f };
+    EXPECT_EQ(r->n, 99);
+}
