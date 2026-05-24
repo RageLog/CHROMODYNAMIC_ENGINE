@@ -1164,3 +1164,50 @@ TEST(Ref, ArrowDereferences)
     cd::core::Ref<Foo> r { f };
     EXPECT_EQ(r->n, 99);
 }
+
+#include <cd/core/EnumFlags.hpp>
+
+namespace {
+enum class TestFlags : std::uint32_t
+{
+    kNone = 0,
+    kA    = 1,
+    kB    = 2,
+    kC    = 4,
+};
+CD_ENUM_FLAGS(TestFlags)
+}
+
+TEST(EnumFlags, OrCombines)
+{
+    auto f = TestFlags::kA | TestFlags::kC;
+    EXPECT_TRUE(cd::core::has(f, TestFlags::kA));
+    EXPECT_FALSE(cd::core::has(f, TestFlags::kB));
+    EXPECT_TRUE(cd::core::has(f, TestFlags::kC));
+}
+
+TEST(EnumFlags, AndIntersects)
+{
+    auto ab = TestFlags::kA | TestFlags::kB;
+    auto bc = TestFlags::kB | TestFlags::kC;
+    auto i  = ab & bc;
+    EXPECT_TRUE(cd::core::has(i, TestFlags::kB));
+    EXPECT_FALSE(cd::core::has(i, TestFlags::kA));
+}
+
+TEST(EnumFlags, NotInverts)
+{
+    auto f = TestFlags::kA;
+    auto n = ~f;
+    EXPECT_FALSE(cd::core::has(n, TestFlags::kA));
+    EXPECT_TRUE(cd::core::has(n, TestFlags::kB));
+}
+
+TEST(EnumFlags, AssignmentOps)
+{
+    auto f = TestFlags::kA;
+    f |= TestFlags::kB;
+    EXPECT_TRUE(cd::core::has(f, TestFlags::kB));
+    f &= TestFlags::kB;
+    EXPECT_FALSE(cd::core::has(f, TestFlags::kA));
+}

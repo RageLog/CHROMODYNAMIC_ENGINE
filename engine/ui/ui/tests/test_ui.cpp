@@ -4,6 +4,7 @@
 #include <cd/ui/Anchor.hpp>
 #include <cd/ui/ProgressBar.hpp>
 #include <cd/ui/Spinner.hpp>
+#include <cd/ui/TabBar.hpp>
 #include <cd/ui/Theme.hpp>
 #include <cd/ui/Tooltip.hpp>
 #include <cd/ui/Widget.hpp>
@@ -430,4 +431,48 @@ TEST(ToastQueue, SeverityPropagates)
     q.push("err", 1.0, 0.0, cd::ui::ToastSeverity::kError);
     ASSERT_EQ(q.size(), 1u);
     EXPECT_EQ(q.active()[0].severity, cd::ui::ToastSeverity::kError);
+}
+
+TEST(TabBar, AddSetsFirstActive)
+{
+    cd::ui::TabBar b;
+    b.add(1, "alpha");
+    ASSERT_NE(b.active(), nullptr);
+    EXPECT_EQ(b.active()->id, 1u);
+}
+
+TEST(TabBar, SetActiveByIdSwitches)
+{
+    cd::ui::TabBar b;
+    b.add(1, "a");
+    b.add(2, "b");
+    b.add(3, "c");
+    EXPECT_TRUE(b.set_active(3));
+    EXPECT_EQ(b.active()->id, 3u);
+    EXPECT_FALSE(b.set_active(99));
+}
+
+TEST(TabBar, NextPrevWrapsAround)
+{
+    cd::ui::TabBar b;
+    b.add(1, "a");
+    b.add(2, "b");
+    b.add(3, "c");
+    b.set_active(3);
+    b.next();
+    EXPECT_EQ(b.active()->id, 1u);
+    b.prev();
+    EXPECT_EQ(b.active()->id, 3u);
+}
+
+TEST(TabBar, CloseAdjustsActive)
+{
+    cd::ui::TabBar b;
+    b.add(1, "a");
+    b.add(2, "b");
+    b.add(3, "c");
+    b.set_active(2);
+    EXPECT_TRUE(b.close(2));
+    EXPECT_NE(b.active(), nullptr);
+    EXPECT_EQ(b.size(), 2u);
 }
