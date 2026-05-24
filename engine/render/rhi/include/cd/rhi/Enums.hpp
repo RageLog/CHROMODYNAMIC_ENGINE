@@ -193,6 +193,11 @@ enum class BufferUsage : std::uint32_t
     kIndex = 1u << 5,
     kIndirect = 1u << 6,
     kQuery = 1u << 7,
+    // Phase 141 — buffers carrying the SBT regions consumed by
+    // vkCmdTraceRaysKHR / DispatchRays. Backends implicitly also
+    // enable shader-device-address since SBT regions are addressed
+    // by device VA.
+    kShaderBindingTable = 1u << 8,
 };
 
 enum class TextureUsage : std::uint32_t

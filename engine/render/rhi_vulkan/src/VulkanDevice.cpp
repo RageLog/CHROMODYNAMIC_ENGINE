@@ -78,6 +78,11 @@ namespace
         out |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     if (cd::rhi::has(u, BU::kIndirect))
         out |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    if (cd::rhi::has(u, BU::kShaderBindingTable))
+    {
+        out |= VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR;
+        out |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
     return out;
 }
 
@@ -3837,8 +3842,16 @@ namespace
     vma_fns.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     vma_fns.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
 
+    // Phase 141: when ray-tracing is enabled the engine creates
+    // SBT buffers + acceleration-structure scratch buffers that
+    // require VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT — VMA must
+    // also be told about device-address support or it asserts on the
+    // first SBT allocation.
+    const VmaAllocatorCreateFlags vma_flags =
+        rt_enabled ? VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT : 0;
+
     const VmaAllocatorCreateInfo vaci {
-        .flags = 0,
+        .flags = vma_flags,
         .physicalDevice = pd,
         .device = dev,
         .preferredLargeHeapBlockSize = 0,  // VMA default (256 MiB)
