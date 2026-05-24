@@ -101,5 +101,23 @@
   },
 
   "// --- Terminal default to Git Bash on Windows (per CLAUDE.md §9) ---": "",
-  "terminal.integrated.defaultProfile.windows": "Git Bash"
+  "terminal.integrated.defaultProfile.windows": "Git Bash",
+
+  "// --- YAML + GitHub Actions schemas ---": "",
+  "// Pin workflow files to the schemastore github-workflow schema so the": "",
+  "// 'Value not valid' false-positive on `environment.name: github-pages`": "",
+  "// in docs.yml stops firing. The Microsoft GitHub Actions extension": "",
+  "// validates env names against the live repo environments list — until": "",
+  "// the repo Settings → Pages → Source is set to 'GitHub Actions' (which": "",
+  "// auto-creates the github-pages env), this fallback schema accepts any": "",
+  "// string and silences the warning.": "",
+  "yaml.schemas": {
+    "https://json.schemastore.org/github-workflow.json":
+      [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+    "https://json.schemastore.org/github-action.json":
+      [".github/actions/*/action.yml", ".github/actions/*/action.yaml"]
+  },
+  "yaml.customTags": [],
+  "yaml.validate": true,
+  "github-actions.workflows.pinned.refresh.enabled": false
 }

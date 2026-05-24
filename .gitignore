@@ -98,3 +98,4 @@ research/papers/*.zip
 .shader_cache/
 
 
+hello_editor.cdscene.json

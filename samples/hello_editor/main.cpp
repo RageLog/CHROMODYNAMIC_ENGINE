@@ -74,9 +74,10 @@ struct SceneEntity
     cd::ecs::Entity handle {};
     std::string name;
     cd::math::Vec3f tint { 1.0F, 1.0F, 1.0F };
+    enum class MeshKind : std::uint8_t { kCube, kSphere, kCone } mesh { MeshKind::kCube };
 };
 
-// Cube geometry shared across every entity in the viewport.
+// Shared vertex format for all three viewport meshes.
 struct CubeVertex { float pos[3]; float color[3]; };
 
 constexpr std::array<CubeVertex, 8> kCubeVerts {{
@@ -94,6 +95,127 @@ constexpr std::array<std::uint16_t, 36> kCubeIndices {
     0,3,7, 0,7,4,  1,5,6, 1,6,2,
     0,4,5, 0,5,1,  3,2,6, 3,6,7,
 };
+
+// Build a unit-radius UV-sphere (radius 0.5 to match cube ø). Vertex
+// color is a smooth normal-to-pastel mapping so the sphere reads as a
+// 3D object even before per-entity tint is applied.
+struct MeshCpu
+{
+    std::vector<CubeVertex>   verts;
+    std::vector<std::uint16_t> idx;
+};
+
+[[nodiscard]] inline MeshCpu make_sphere(int stacks = 18, int slices = 24)
+{
+    MeshCpu m;
+    constexpr float kPi = 3.14159265358979F;
+    m.verts.reserve(static_cast<std::size_t>((stacks + 1) * (slices + 1)));
+    for (int i = 0; i <= stacks; ++i)
+    {
+        const float phi    = static_cast<float>(i) / static_cast<float>(stacks) * kPi;
+        const float sin_p  = std::sin(phi);
+        const float cos_p  = std::cos(phi);
+        for (int j = 0; j <= slices; ++j)
+        {
+            const float theta = static_cast<float>(j) / static_cast<float>(slices) * 2.0F * kPi;
+            const float sin_t = std::sin(theta);
+            const float cos_t = std::cos(theta);
+            CubeVertex v {};
+            v.pos[0] = 0.5F * sin_p * cos_t;
+            v.pos[1] = 0.5F * cos_p;
+            v.pos[2] = 0.5F * sin_p * sin_t;
+            // Pastel normal mapping: x*0.5+0.5 → 0..1 per axis.
+            v.color[0] = v.pos[0] + 0.5F;
+            v.color[1] = v.pos[1] + 0.5F;
+            v.color[2] = v.pos[2] + 0.5F;
+            m.verts.push_back(v);
+        }
+    }
+    m.idx.reserve(static_cast<std::size_t>(stacks * slices * 6));
+    for (int i = 0; i < stacks; ++i)
+    {
+        for (int j = 0; j < slices; ++j)
+        {
+            const auto a = static_cast<std::uint16_t>(i * (slices + 1) + j);
+            const auto b = static_cast<std::uint16_t>(a + slices + 1);
+            m.idx.push_back(a);
+            m.idx.push_back(b);
+            m.idx.push_back(static_cast<std::uint16_t>(a + 1));
+            m.idx.push_back(b);
+            m.idx.push_back(static_cast<std::uint16_t>(b + 1));
+            m.idx.push_back(static_cast<std::uint16_t>(a + 1));
+        }
+    }
+    return m;
+}
+
+// Build a cone — apex at +Y 0.5, circular base at -Y 0.5, radius 0.5.
+// Sides + base disk both rendered. Vertex color goes from white at the
+// apex to mid-grey at the base so the cone shape reads from any angle.
+[[nodiscard]] inline MeshCpu make_cone(int slices = 32)
+{
+    MeshCpu m;
+    constexpr float kPi = 3.14159265358979F;
+    // Indexing layout:
+    //   0                     = apex
+    //   1                     = base center
+    //   2 .. 2+slices-1       = base ring vertices (for the side fan)
+    //   2+slices .. 2+2*slices-1 = base ring vertices again (for the disk fan)
+    // Side + base use separate rings so each can have its own
+    // (color / normal-like) attribute without sharing a vertex.
+    m.verts.reserve(static_cast<std::size_t>(2 + 2 * slices));
+    m.verts.push_back({ {  0.0F,  0.5F, 0.0F }, { 1.00F, 1.00F, 1.00F } });  // apex
+    m.verts.push_back({ {  0.0F, -0.5F, 0.0F }, { 0.30F, 0.30F, 0.30F } });  // base center
+    for (int i = 0; i < slices; ++i)
+    {
+        const float t = static_cast<float>(i) / static_cast<float>(slices) * 2.0F * kPi;
+        const float x = 0.5F * std::cos(t);
+        const float z = 0.5F * std::sin(t);
+        CubeVertex side {};
+        side.pos[0] = x; side.pos[1] = -0.5F; side.pos[2] = z;
+        side.color[0] = 0.5F + 0.5F * std::cos(t);
+        side.color[1] = 0.7F;
+        side.color[2] = 0.5F + 0.5F * std::sin(t);
+        m.verts.push_back(side);
+    }
+    for (int i = 0; i < slices; ++i)
+    {
+        const float t = static_cast<float>(i) / static_cast<float>(slices) * 2.0F * kPi;
+        const float x = 0.5F * std::cos(t);
+        const float z = 0.5F * std::sin(t);
+        CubeVertex disk {};
+        disk.pos[0] = x; disk.pos[1] = -0.5F; disk.pos[2] = z;
+        disk.color[0] = 0.20F; disk.color[1] = 0.20F; disk.color[2] = 0.25F;
+        m.verts.push_back(disk);
+    }
+    m.idx.reserve(static_cast<std::size_t>(slices * 6));
+    // Sides — apex (0) → ring[i] → ring[i+1]
+    for (int i = 0; i < slices; ++i)
+    {
+        const auto a = static_cast<std::uint16_t>(2 + i);
+        const auto b = static_cast<std::uint16_t>(2 + (i + 1) % slices);
+        m.idx.push_back(0);
+        m.idx.push_back(a);
+        m.idx.push_back(b);
+    }
+    // Base disk — center (1) → ring[i+1] → ring[i] (CCW from below)
+    for (int i = 0; i < slices; ++i)
+    {
+        const auto a = static_cast<std::uint16_t>(2 + slices + i);
+        const auto b = static_cast<std::uint16_t>(2 + slices + (i + 1) % slices);
+        m.idx.push_back(1);
+        m.idx.push_back(b);
+        m.idx.push_back(a);
+    }
+    return m;
+}
+
+[[nodiscard]] inline SceneEntity::MeshKind mesh_kind_from_name(const std::string& name) noexcept
+{
+    if (name == "Sphere") return SceneEntity::MeshKind::kSphere;
+    if (name == "Cone")   return SceneEntity::MeshKind::kCone;
+    return SceneEntity::MeshKind::kCube;
+}
 
 constexpr const char* kViewportVS = R"glsl(
 #version 450
@@ -197,6 +319,31 @@ int main(int argc, char** argv)
     auto cube_vb = make_upload_buf(vb_bytes, cd::rhi::BufferUsage::kVertex);
     auto cube_ib = make_upload_buf(ib_bytes, cd::rhi::BufferUsage::kIndex);
 
+    // Procedural sphere + cone meshes so entities named "Sphere" / "Cone"
+    // draw their actual primitive shape instead of always rendering as a
+    // tinted cube. Index buffers store the per-mesh triangle count for
+    // the draw_indexed dispatch below.
+    const auto sphere_cpu = make_sphere(20, 28);
+    const auto cone_cpu   = make_cone(40);
+    const std::span<const std::byte> sphere_vb_bytes {
+        reinterpret_cast<const std::byte*>(sphere_cpu.verts.data()),
+        sphere_cpu.verts.size() * sizeof(CubeVertex) };
+    const std::span<const std::byte> sphere_ib_bytes {
+        reinterpret_cast<const std::byte*>(sphere_cpu.idx.data()),
+        sphere_cpu.idx.size() * sizeof(std::uint16_t) };
+    const std::span<const std::byte> cone_vb_bytes {
+        reinterpret_cast<const std::byte*>(cone_cpu.verts.data()),
+        cone_cpu.verts.size() * sizeof(CubeVertex) };
+    const std::span<const std::byte> cone_ib_bytes {
+        reinterpret_cast<const std::byte*>(cone_cpu.idx.data()),
+        cone_cpu.idx.size() * sizeof(std::uint16_t) };
+    auto sphere_vb = make_upload_buf(sphere_vb_bytes, cd::rhi::BufferUsage::kVertex);
+    auto sphere_ib = make_upload_buf(sphere_ib_bytes, cd::rhi::BufferUsage::kIndex);
+    auto cone_vb   = make_upload_buf(cone_vb_bytes,   cd::rhi::BufferUsage::kVertex);
+    auto cone_ib   = make_upload_buf(cone_ib_bytes,   cd::rhi::BufferUsage::kIndex);
+    const auto sphere_index_count = static_cast<std::uint32_t>(sphere_cpu.idx.size());
+    const auto cone_index_count   = static_cast<std::uint32_t>(cone_cpu.idx.size());
+
     // Depth target for the viewport (rebuilt on resize).
     constexpr auto kDepthFormat = cd::rhi::Format::kD32Float;
     cd::rhi::TextureHandle depth_image {};
@@ -281,11 +428,12 @@ int main(int argc, char** argv)
             e.handle = scene.create_node();
             e.name = s.name;
             e.tint = s.tint;
+            e.mesh = mesh_kind_from_name(e.name);
             scene.local(e.handle)->value.position = s.pos;
             entities.push_back(std::move(e));
         }
     }
-    log_push("Spawned 3 entities (Cube, Sphere, Cone) with tinted cube meshes");
+    log_push("Spawned 3 entities (Cube, Sphere, Cone) — each draws its own primitive mesh");
 
     int selected = 0;
 
@@ -487,26 +635,47 @@ int main(int argc, char** argv)
             const auto vp = proj * view;
 
             cmd.bind_graphics_pipeline(cube_mat.pipeline());
-            cmd.bind_vertex_buffer(0, cube_vb, 0);
-            cmd.bind_index_buffer(cube_ib, 0, cd::rhi::IndexType::kUInt16);
 
-            for (const auto& ent : entities)
+            // Group by mesh kind so we bind each pair of VB/IB once,
+            // not three times per kind. (For 3 entities this is mostly
+            // pedagogical; with hundreds the saved bind calls matter.)
+            auto draw_kind = [&](SceneEntity::MeshKind kind,
+                                 cd::rhi::BufferHandle vb,
+                                 cd::rhi::BufferHandle ib,
+                                 std::uint32_t index_count)
             {
-                auto* lt = scene.local(ent.handle);
-                if (lt == nullptr) continue;
-                const auto model = cd::math::to_mat4(lt->value);
-                CubePushConstants pc {};
-                pc.mvp = vp * model;
-                pc.tint[0] = ent.tint.x;
-                pc.tint[1] = ent.tint.y;
-                pc.tint[2] = ent.tint.z;
-                pc.tint[3] = 1.0F;
-                cmd.push_constants(cube_mat.pipeline_layout(),
-                                   cd::rhi::ShaderStage::kVertex,
-                                   0, sizeof(pc), &pc);
-                cmd.draw_indexed(static_cast<std::uint32_t>(kCubeIndices.size()),
-                                 1, 0, 0, 0);
-            }
+                bool bound = false;
+                for (const auto& ent : entities)
+                {
+                    if (ent.mesh != kind) continue;
+                    auto* lt = scene.local(ent.handle);
+                    if (lt == nullptr) continue;
+                    if (!bound)
+                    {
+                        cmd.bind_vertex_buffer(0, vb, 0);
+                        cmd.bind_index_buffer(ib, 0, cd::rhi::IndexType::kUInt16);
+                        bound = true;
+                    }
+                    const auto model = cd::math::to_mat4(lt->value);
+                    CubePushConstants pc {};
+                    pc.mvp = vp * model;
+                    pc.tint[0] = ent.tint.x;
+                    pc.tint[1] = ent.tint.y;
+                    pc.tint[2] = ent.tint.z;
+                    pc.tint[3] = 1.0F;
+                    cmd.push_constants(cube_mat.pipeline_layout(),
+                                       cd::rhi::ShaderStage::kVertex,
+                                       0, sizeof(pc), &pc);
+                    cmd.draw_indexed(index_count, 1, 0, 0, 0);
+                }
+            };
+            draw_kind(SceneEntity::MeshKind::kCube,
+                      cube_vb, cube_ib,
+                      static_cast<std::uint32_t>(kCubeIndices.size()));
+            draw_kind(SceneEntity::MeshKind::kSphere,
+                      sphere_vb, sphere_ib, sphere_index_count);
+            draw_kind(SceneEntity::MeshKind::kCone,
+                      cone_vb, cone_ib, cone_index_count);
         }
 
         ctx.new_frame();
@@ -687,17 +856,42 @@ int main(int argc, char** argv)
                         }
                         else
                         {
-                            // Re-attach human-readable names. The
-                            // serializer doesn't preserve names yet, so we
-                            // tag them n_0, n_1, ... in iteration order.
+                            // Re-attach human-readable names + mesh kind.
+                            // The Phase 14.A serializer only stores the
+                            // LocalTransform — entity name / tint / mesh
+                            // kind are sample-side state. To survive
+                            // round-trips we cycle the first three loaded
+                            // entities through the original Cube/Sphere/
+                            // Cone seed defaults (matching their on-disk
+                            // ordering); anything beyond three falls back
+                            // to a neutral n_<i> name.
+                            static const std::array<const char*, 3> kSeedNames {
+                                "Cube", "Sphere", "Cone"
+                            };
+                            static const std::array<cd::math::Vec3f, 3> kSeedTints {{
+                                { 1.0F, 0.4F, 0.4F },
+                                { 0.4F, 1.0F, 0.4F },
+                                { 0.4F, 0.4F, 1.0F },
+                            }};
                             std::size_t i = 0;
                             scene.for_each_node(
                                 [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
                                 {
                                     SceneEntity se;
                                     se.handle = e;
-                                    se.name = "n_" + std::to_string(i++);
+                                    if (i < kSeedNames.size())
+                                    {
+                                        se.name = kSeedNames[i];
+                                        se.tint = kSeedTints[i];
+                                    }
+                                    else
+                                    {
+                                        se.name = "n_" + std::to_string(i);
+                                        se.tint = { 0.7F, 0.7F, 0.7F };
+                                    }
+                                    se.mesh = mesh_kind_from_name(se.name);
                                     entities.push_back(std::move(se));
+                                    ++i;
                                 });
                             selected = entities.empty() ? -1 : 0;
                             log_push(std::string { "load: " } + path_buf.data() +
@@ -739,100 +933,171 @@ int main(int argc, char** argv)
             auto& ent = entities[static_cast<std::size_t>(selected)];
             if (auto* lt = scene.local(ent.handle); lt != nullptr)
             {
-                // Reserve generous right-hand padding for ImGui's auto-
-                // placed label column so InputFloat3 X/Y/Z mini-fields
-                // never bleed into the label text. The default 0.65F
-                // ratio left only ~95 px for three numeric boxes — too
-                // tight on a 480-wide panel.
+                // Reserve generous right-hand padding so DragFloat3 X/Y/Z
+                // mini-fields never bleed into the label column.
                 ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.62F);
 
                 ImGui::Text("Entity: %s", ent.name.c_str());
 
+                // Drag widgets edit the scene transform LIVE. Pre-drag
+                // values are snapshotted on `IsItemActivated()` so we can
+                // synthesize a single delta-command for EditHistory when
+                // the user releases the mouse (`IsItemDeactivatedAfterEdit`).
+                // This way undo/redo still works without spamming the
+                // history with per-pixel sub-commands.
+
                 // ---- Position ---------------------------------------------
                 ImGui::SeparatorText("Position");
-                static float trans[3] { 0.0F, 0.0F, 0.0F };
-                ImGui::Text("current  (%.2f, %.2f, %.2f)",
-                            static_cast<double>(lt->value.position.x),
-                            static_cast<double>(lt->value.position.y),
-                            static_cast<double>(lt->value.position.z));
-                // `##` hides the label inside the widget but keeps the
-                // id unique so ImGui's state map still works. Pair every
-                // input with a leading Text() that names the field — this
-                // separates "şekil" (widget) from "isim" (label) cleanly.
-                ImGui::Text("delta XYZ");
-                ImGui::SameLine();
-                ImGui::InputFloat3("##trans", trans);
-                if (ImGui::Button("Apply##t", ImVec2 { 120, 0 }))
                 {
-                    history.push(std::make_unique<cd::editor::TranslateCommand>(
-                        scene, ent.handle,
-                        cd::math::Vec3f { trans[0], trans[1], trans[2] }));
-                    log_push("push: TranslateCommand");
-                    trans[0] = trans[1] = trans[2] = 0.0F;
+                    static cd::math::Vec3f pre_drag {};
+                    float xyz[3] {
+                        lt->value.position.x,
+                        lt->value.position.y,
+                        lt->value.position.z };
+                    ImGui::Text("X Y Z");
+                    ImGui::SameLine();
+                    const bool changed = ImGui::DragFloat3(
+                        "##pos", xyz, 0.05F, -10.0F, 10.0F, "%.3f");
+                    if (ImGui::IsItemActivated())
+                        pre_drag = lt->value.position;
+                    if (changed)
+                        lt->value.position = { xyz[0], xyz[1], xyz[2] };
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        const cd::math::Vec3f delta {
+                            lt->value.position.x - pre_drag.x,
+                            lt->value.position.y - pre_drag.y,
+                            lt->value.position.z - pre_drag.z };
+                        if (delta.x != 0.0F || delta.y != 0.0F || delta.z != 0.0F)
+                        {
+                            // Restore pre-drag value, then let the command
+                            // re-apply the delta through the history path
+                            // so undo lands cleanly.
+                            lt->value.position = pre_drag;
+                            history.push(std::make_unique<cd::editor::TranslateCommand>(
+                                scene, ent.handle, delta));
+                            log_push("drag-end: TranslateCommand");
+                        }
+                    }
                 }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("0##t"))
-                    trans[0] = trans[1] = trans[2] = 0.0F;
 
                 // ---- Scale ------------------------------------------------
                 ImGui::SeparatorText("Scale");
-                static float scale[3] { 1.0F, 1.0F, 1.0F };
-                ImGui::Text("current  (%.2f, %.2f, %.2f)",
-                            static_cast<double>(lt->value.scale.x),
-                            static_cast<double>(lt->value.scale.y),
-                            static_cast<double>(lt->value.scale.z));
-                ImGui::Text("factor XYZ");
-                ImGui::SameLine();
-                ImGui::InputFloat3("##scale", scale);
-                if (ImGui::Button("Apply##s", ImVec2 { 120, 0 }))
                 {
-                    history.push(std::make_unique<cd::editor::ScaleCommand>(
-                        scene, ent.handle,
-                        cd::math::Vec3f { scale[0], scale[1], scale[2] }));
-                    log_push("push: ScaleCommand");
-                    scale[0] = scale[1] = scale[2] = 1.0F;
+                    static cd::math::Vec3f pre_drag { 1.0F, 1.0F, 1.0F };
+                    float xyz[3] {
+                        lt->value.scale.x,
+                        lt->value.scale.y,
+                        lt->value.scale.z };
+                    ImGui::Text("X Y Z");
+                    ImGui::SameLine();
+                    const bool changed = ImGui::DragFloat3(
+                        "##scale", xyz, 0.02F, 0.05F, 5.0F, "%.3f");
+                    if (ImGui::IsItemActivated())
+                        pre_drag = lt->value.scale;
+                    if (changed)
+                        lt->value.scale = { xyz[0], xyz[1], xyz[2] };
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        // ScaleCommand multiplies the current scale by the
+                        // factor — derive the per-axis ratio so the
+                        // command lands the user's drag exactly.
+                        const cd::math::Vec3f factor {
+                            (pre_drag.x != 0.0F) ? (lt->value.scale.x / pre_drag.x) : 1.0F,
+                            (pre_drag.y != 0.0F) ? (lt->value.scale.y / pre_drag.y) : 1.0F,
+                            (pre_drag.z != 0.0F) ? (lt->value.scale.z / pre_drag.z) : 1.0F };
+                        if (factor.x != 1.0F || factor.y != 1.0F || factor.z != 1.0F)
+                        {
+                            lt->value.scale = pre_drag;
+                            history.push(std::make_unique<cd::editor::ScaleCommand>(
+                                scene, ent.handle, factor));
+                            log_push("drag-end: ScaleCommand");
+                        }
+                    }
                 }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("1##s"))
-                    scale[0] = scale[1] = scale[2] = 1.0F;
 
                 // ---- Rotation ---------------------------------------------
-                ImGui::SeparatorText("Rotation");
-                static float euler_deg[3] { 0.0F, 0.0F, 0.0F };
-                ImGui::Text("quat  (%.2f, %.2f, %.2f, %.2f)",
-                            static_cast<double>(lt->value.rotation.x),
-                            static_cast<double>(lt->value.rotation.y),
-                            static_cast<double>(lt->value.rotation.z),
-                            static_cast<double>(lt->value.rotation.w));
-                ImGui::Text("euler  (deg)");
-                ImGui::SameLine();
-                ImGui::InputFloat3("##rot", euler_deg);
-                if (ImGui::Button("Apply##r", ImVec2 { 120, 0 }))
+                // Edit absolute euler angles (degrees). Re-derived from
+                // the quaternion every frame the widget is NOT active so
+                // external changes (Undo, scene reload) sync into the
+                // display; while the widget IS active we hold the
+                // editor's own euler state to dodge gimbal-induced
+                // round-trip jitter.
+                ImGui::SeparatorText("Rotation (Euler, deg)");
                 {
-                    // Euler ZYX intrinsic → quaternion. Each axis
-                    // rotation builds its own quat, then composes
-                    // in Z * Y * X order (common engine convention).
+                    constexpr float kRad2Deg = 180.0F / 3.14159265358979F;
                     constexpr float kDeg2Rad = 3.14159265358979F / 180.0F;
-                    const float hx = euler_deg[0] * kDeg2Rad * 0.5F;
-                    const float hy = euler_deg[1] * kDeg2Rad * 0.5F;
-                    const float hz = euler_deg[2] * kDeg2Rad * 0.5F;
-                    const float cx = std::cos(hx), sx = std::sin(hx);
-                    const float cy = std::cos(hy), sy = std::sin(hy);
-                    const float cz = std::cos(hz), sz = std::sin(hz);
-                    // ZYX composition:  q = qz * qy * qx
-                    cd::math::Quatf q;
-                    q.w = cz * cy * cx + sz * sy * sx;
-                    q.x = cz * cy * sx - sz * sy * cx;
-                    q.y = cz * sy * cx + sz * cy * sx;
-                    q.z = sz * cy * cx - cz * sy * sx;
-                    history.push(std::make_unique<cd::editor::RotateCommand>(
-                        scene, ent.handle, q));
-                    log_push("push: RotateCommand (from Euler)");
-                    euler_deg[0] = euler_deg[1] = euler_deg[2] = 0.0F;
+                    static cd::math::Quatf pre_drag { 0.0F, 0.0F, 0.0F, 1.0F };
+                    static float          editor_euler_deg[3] { 0.0F, 0.0F, 0.0F };
+                    static bool           editing = false;
+
+                    auto quat_to_euler_zyx = [](const cd::math::Quatf& q) {
+                        // Convention matches the old Apply Euler block
+                        // (q = qz * qy * qx); inverse derivation below.
+                        const float sx = 2.0F * (q.w * q.x + q.y * q.z);
+                        const float cx = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
+                        const float roll = std::atan2(sx, cx);
+                        float sy = 2.0F * (q.w * q.y - q.z * q.x);
+                        if (sy >  1.0F) sy =  1.0F;
+                        if (sy < -1.0F) sy = -1.0F;
+                        const float pitch = std::asin(sy);
+                        const float sz = 2.0F * (q.w * q.z + q.x * q.y);
+                        const float cz = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
+                        const float yaw = std::atan2(sz, cz);
+                        return std::array<float, 3> { roll, pitch, yaw };
+                    };
+                    auto euler_to_quat_zyx = [](float ex, float ey, float ez) {
+                        const float hx = ex * 0.5F;
+                        const float hy = ey * 0.5F;
+                        const float hz = ez * 0.5F;
+                        const float cx = std::cos(hx), sx = std::sin(hx);
+                        const float cy = std::cos(hy), sy = std::sin(hy);
+                        const float cz = std::cos(hz), sz = std::sin(hz);
+                        cd::math::Quatf q;
+                        q.w = cz * cy * cx + sz * sy * sx;
+                        q.x = cz * cy * sx - sz * sy * cx;
+                        q.y = cz * sy * cx + sz * cy * sx;
+                        q.z = sz * cy * cx - cz * sy * sx;
+                        return q;
+                    };
+
+                    if (!editing)
+                    {
+                        const auto e = quat_to_euler_zyx(lt->value.rotation);
+                        editor_euler_deg[0] = e[0] * kRad2Deg;
+                        editor_euler_deg[1] = e[1] * kRad2Deg;
+                        editor_euler_deg[2] = e[2] * kRad2Deg;
+                    }
+
+                    ImGui::Text("X Y Z");
+                    ImGui::SameLine();
+                    const bool changed = ImGui::DragFloat3(
+                        "##rot", editor_euler_deg, 1.0F, -180.0F, 180.0F, "%.1f");
+
+                    if (ImGui::IsItemActivated())
+                    {
+                        pre_drag = lt->value.rotation;
+                        editing = true;
+                    }
+                    if (changed && editing)
+                    {
+                        lt->value.rotation = euler_to_quat_zyx(
+                            editor_euler_deg[0] * kDeg2Rad,
+                            editor_euler_deg[1] * kDeg2Rad,
+                            editor_euler_deg[2] * kDeg2Rad);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        // Restore pre-drag rotation, push absolute new
+                        // quaternion via RotateCommand for clean undo.
+                        const cd::math::Quatf final_rot = lt->value.rotation;
+                        lt->value.rotation = pre_drag;
+                        history.push(std::make_unique<cd::editor::RotateCommand>(
+                            scene, ent.handle, final_rot));
+                        log_push("drag-end: RotateCommand");
+                        editing = false;
+                    }
                 }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("0##r"))
-                    euler_deg[0] = euler_deg[1] = euler_deg[2] = 0.0F;
 
                 ImGui::PopItemWidth();
             }

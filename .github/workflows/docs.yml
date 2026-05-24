@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Docs
 
 # Generates Doxygen HTML and publishes to GitHub Pages.
@@ -77,8 +78,14 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
+    # GitHub Pages deployment environment. "github-pages" is a reserved
+    # name auto-provisioned by `actions/deploy-pages@v4` — it does NOT
+    # need to be created manually under repo Settings → Environments.
+    # Some VSCode YAML schemas flag this as "not valid" because they
+    # only know about user-defined environments; the schemastore.org
+    # GitHub-Workflow schema above accepts any string here.
     environment:
-      name: github-pages
+      name: "github-pages"
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
