@@ -1219,3 +1219,31 @@ TEST(QuadraticSolver, RootsAreSorted)
     auto r = cd::math::solve_quadratic(1.0F, -1.0F, -6.0F);   // (x-3)(x+2) → -2, 3
     EXPECT_LT(r.x1, r.x2);
 }
+
+#include <cd/math/GammaSpace.hpp>
+
+TEST(GammaSpace, Vec3SrgbToLinearAppliesPerChannel)
+{
+    cd::math::Vec3f c { 0.5F, 0.0F, 1.0F };
+    auto l = cd::math::srgb_to_linear(c);
+    EXPECT_NEAR(l.x, cd::math::srgb_to_linear(0.5F), 1e-5F);
+    EXPECT_FLOAT_EQ(l.y, 0.0F);
+    EXPECT_FLOAT_EQ(l.z, 1.0F);
+}
+
+TEST(GammaSpace, Vec3LinearToSrgbRoundtrip)
+{
+    cd::math::Vec3f c { 0.25F, 0.5F, 0.75F };
+    auto round = cd::math::linear_to_srgb(cd::math::srgb_to_linear(c));
+    EXPECT_NEAR(round.x, c.x, 1e-4F);
+    EXPECT_NEAR(round.y, c.y, 1e-4F);
+    EXPECT_NEAR(round.z, c.z, 1e-4F);
+}
+
+TEST(GammaSpace, ApproxGamma22)
+{
+    // approx and accurate should agree to ~2%
+    const float a = cd::math::srgb_to_linear(0.5F);
+    const float b = cd::math::srgb_to_linear_approx(0.5F);
+    EXPECT_NEAR(a, b, 0.05F);
+}

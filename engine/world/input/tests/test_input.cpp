@@ -5,6 +5,7 @@
 #include <cd/input/Bindings.hpp>
 #include <cd/input/DoubleClick.hpp>
 #include <cd/input/GamepadState.hpp>
+#include <cd/input/Hold.hpp>
 #include <cd/input/Input.hpp>
 #include <cd/input/KeyChord.hpp>
 #include <cd/input/MouseDragState.hpp>
@@ -339,6 +340,35 @@ TEST(MouseDragState, ReleaseResetsState)
     s.on_release();
     EXPECT_FALSE(s.is_pressed());
     EXPECT_FALSE(s.is_dragging());
+}
+
+TEST(Hold, NotHeldBeforeThreshold)
+{
+    cd::input::Hold h;
+    h.set_threshold(0.5F);
+    h.on_press(0.0F);
+    EXPECT_FALSE(h.is_held(0.2F));
+    EXPECT_TRUE(h.is_pressed());
+}
+
+TEST(Hold, HeldAfterThreshold)
+{
+    cd::input::Hold h;
+    h.set_threshold(0.5F);
+    h.on_press(0.0F);
+    EXPECT_TRUE(h.is_held(0.6F));
+    EXPECT_FLOAT_EQ(h.held_duration(0.6F), 0.6F);
+}
+
+TEST(Hold, ReleaseClearsHold)
+{
+    cd::input::Hold h;
+    h.set_threshold(0.5F);
+    h.on_press(0.0F);
+    h.on_release();
+    EXPECT_FALSE(h.is_pressed());
+    EXPECT_FALSE(h.is_held(10.0F));
+    EXPECT_FLOAT_EQ(h.held_duration(10.0F), 0.0F);
 }
 
 }  // namespace
