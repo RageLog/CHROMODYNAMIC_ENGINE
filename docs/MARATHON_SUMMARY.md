@@ -121,6 +121,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.31 | 99   | input::Cursor + core::Singleton (CRTP) |
 | **v0.99.32** | **100** | **scene::TagBucket + core::CounterTable — CENTENNIAL** |
 | v0.99.33 | 101 | **Demo reel** — hello_audio_chain (DSP graph) + hello_net_sim (replication sim) + hello_command_palette (fuzzy filter) + DEMO_REEL.md walkthrough |
+| v0.99.34 | 102 | **Demo quality fixes** — hello_pbr overhaul (3-light + analytical-sky IBL + real skybox pass + ACES tonemap + copper albedo) makes the metallic axis legible; hello_editor Inspector restructured (480 px wide, SeparatorText sections, label/widget split, fixed-width Apply + reset) |
 
 ## Major capabilities added across the marathon
 

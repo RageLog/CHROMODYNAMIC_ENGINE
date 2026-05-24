@@ -3,9 +3,16 @@
 //
 // Classic PBR showcase: a 5×5 sphere grid where the X axis sweeps metallic
 // from 0 (dielectric) to 1 (metal) and the Y axis sweeps roughness from
-// 0.05 (mirror) to 1 (matte). Single hard-coded directional light + a
-// faint ambient. Albedo is the same warm copper-ish tone everywhere so
-// the material parameter response is the only visual variable.
+// 0.05 (mirror) to 1 (matte). Three-light rig (warm key + cool fill +
+// warm back-rim) plus analytical-sky split-sum IBL ambient so metallic
+// and dielectric materials read distinctly without a precomputed cubemap.
+//
+// Material model:
+//   * Cook-Torrance specular = D_GGX * G_Smith * F_Schlick / (4 NoV NoL)
+//   * Roughness-aware Fresnel for the IBL ambient (Lazarov/Karis)
+//   * IBL split-sum stand-in: env sampled along reflection R, blurred
+//     toward N by roughness. Real prefiltered cubemap + BRDF LUT comes
+//     with the Phase 17 IBL bake pipeline.
 //
 // Demonstrates that cd::material + cd::shader::ICompiler + the GLSL
 // Cook-Torrance pipeline first introduced in hello_gltf works standalone
@@ -125,6 +132,90 @@ struct PushBlock
 
 static_assert(sizeof(PushBlock) == 128, "PushBlock size must equal 128 (Vulkan minimum push constant range)");
 
+// 64-byte push block for the skybox pass — camera basis vectors so the
+// fragment shader reconstructs world rays without a matrix inverse.
+struct SkyPush
+{
+    std::array<float, 4> cam_right;  // xyz=right basis, w=half_w = tan(fov/2)*aspect
+    std::array<float, 4> cam_up;     // xyz=up    basis, w=half_h = tan(fov/2)
+    std::array<float, 4> cam_fwd;    // xyz=forward (toward target), w=_
+    std::array<float, 4> sun_dir;    // xyz=normalized direction, w=intensity
+};
+
+static_assert(sizeof(SkyPush) == 64, "SkyPush must equal 64 B");
+
+constexpr const char* kSkyVS = R"glsl(
+#version 450
+// Fullscreen triangle without a vertex buffer — vertex index 0,1,2 maps
+// to (-1,-1), (3,-1), (-1,3) which after clipping covers the full NDC.
+layout(location = 0) out vec2 v_ndc;
+void main() {
+  vec2 p = vec2((gl_VertexIndex == 1) ? 3.0 : -1.0,
+                (gl_VertexIndex == 2) ? 3.0 : -1.0);
+  v_ndc = p;
+  gl_Position = vec4(p, 1.0, 1.0);  // z=1 — pin to back of depth range.
+}
+)glsl";
+
+// Sky FS reuses the exact 3-band palette as the PBR fragment's
+// `sample_env` so the spheres' IBL reflections agree with the
+// background they sit on. Plus a sun disk so the warm key light has
+// a visible source.
+constexpr const char* kSkyFS = R"glsl(
+#version 450
+layout(push_constant) uniform SkyPC {
+  vec4 cam_right;
+  vec4 cam_up;
+  vec4 cam_fwd;
+  vec4 sun_dir;
+} pc;
+layout(location = 0) in  vec2 v_ndc;
+layout(location = 0) out vec4 out_color;
+
+vec3 ray_dir(vec2 ndc) {
+  vec3 forward = pc.cam_fwd.xyz;
+  vec3 right   = pc.cam_right.xyz;
+  vec3 up      = pc.cam_up.xyz;
+  return normalize(forward
+                 + ndc.x * pc.cam_right.w * right
+                 - ndc.y * pc.cam_up.w    * up);
+}
+
+vec3 sample_env(vec3 dir) {
+  vec3 zenith  = vec3(0.18, 0.42, 0.85);
+  vec3 horizon = vec3(0.78, 0.86, 0.96);
+  vec3 ground  = vec3(0.10, 0.10, 0.14);
+  float h = dir.y;
+  if (h >= 0.0) return mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.6));
+  return mix(horizon, ground, pow(clamp(-h, 0.0, 1.0), 0.5));
+}
+
+void main() {
+  vec3 dir = ray_dir(v_ndc);
+  vec3 sky = sample_env(dir);
+
+  // Sun disk + glow aligned with PBR key light direction.
+  vec3 L = normalize(-pc.sun_dir.xyz);
+  float cos_a = clamp(dot(dir, L), 0.0, 1.0);
+  float disk = smoothstep(0.9994, 0.9998, cos_a);
+  float glow = pow(cos_a, 64.0);
+  vec3 sun_color = vec3(1.0, 0.93, 0.82) * pc.sun_dir.w;
+  vec3 result = sky + sun_color * (disk * 6.0 + glow * 0.5);
+
+  // ACES tonemap (matches sphere shader) + gamma.
+  const float a_ = 2.51;
+  const float b_ = 0.03;
+  const float c_ = 2.43;
+  const float d_ = 0.59;
+  const float e_ = 0.14;
+  result = clamp((result * (a_ * result + b_)) /
+                 (result * (c_ * result + d_) + e_),
+                 vec3(0.0), vec3(1.0));
+  result = pow(result, vec3(1.0 / 2.2));
+  out_color = vec4(result, 1.0);
+}
+)glsl";
+
 constexpr const char* kVS = R"glsl(
 #version 450
 layout(push_constant) uniform PC {
@@ -183,37 +274,100 @@ vec3 F_Schlick(float HoV, vec3 F0) {
   return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
 }
 
-void main() {
-  vec3 albedo = pc.albedo.rgb;
-  float metallic = clamp(pc.mr_amb.x, 0.0, 1.0);
-  float roughness = clamp(pc.mr_amb.y, 0.04, 1.0);
-  float ambient   = pc.mr_amb.z;
+// Lazarov / Karis roughness-aware Fresnel for IBL ambient. Without this
+// rough metals would over-reflect at grazing angles. The "(1-roughness)"
+// term collapses the off-axis lobe as roughness rises so a rough copper
+// ball looks matte-copper rather than chrome-copper.
+vec3 F_Schlick_roughness(float cos_theta, vec3 F0, float roughness) {
+  vec3 ceiling = max(vec3(1.0 - roughness), F0);
+  return F0 + (ceiling - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
+}
 
-  vec3 N = normalize(v_normal);
-  vec3 V = normalize(pc.camera_pos.xyz - v_world_pos);
-  vec3 L = normalize(-pc.light_dir.xyz);
+// Analytical sky — same 3-band palette as hello_skybox so the sphere
+// grid mirrors the same atmosphere a scene-wide skybox would draw.
+vec3 sample_env(vec3 dir) {
+  vec3 zenith  = vec3(0.18, 0.42, 0.85);
+  vec3 horizon = vec3(0.78, 0.86, 0.96);
+  vec3 ground  = vec3(0.10, 0.10, 0.14);
+  float h = dir.y;
+  if (h >= 0.0) return mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.6));
+  return mix(horizon, ground, pow(clamp(-h, 0.0, 1.0), 0.5));
+}
+
+// Cook-Torrance lobe for one analytical light direction.
+vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
+                 vec3 albedo, float metallic, float roughness,
+                 vec3 F0, vec3 light_color)
+{
   vec3 H = normalize(L + V);
-
   float NoL = max(dot(N, L), 0.0);
   float NoV = max(dot(N, V), 0.0);
   float NoH = max(dot(N, H), 0.0);
   float HoV = max(dot(H, V), 0.0);
-
-  vec3 F0 = mix(vec3(0.04), albedo, metallic);
   float D = D_GGX(NoH, roughness * roughness);
   float G = G_Smith(NoV, NoL, roughness);
   vec3  F = F_Schlick(HoV, F0);
-
   vec3 specular = (D * G) * F / (4.0 * NoV * NoL + 1e-7);
   vec3 kS = F;
   vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
   vec3 diffuse = kD * albedo / PI;
-  vec3 lit = (diffuse + specular) * NoL * pc.light_dir.w;
-  vec3 amb = ambient * albedo;
-  vec3 color = amb + lit;
+  return (diffuse + specular) * NoL * light_color;
+}
 
-  // Reinhard tone-map + gamma.
-  color = color / (color + vec3(1.0));
+void main() {
+  vec3 albedo = pc.albedo.rgb;
+  float metallic = clamp(pc.mr_amb.x, 0.0, 1.0);
+  float roughness = clamp(pc.mr_amb.y, 0.04, 1.0);
+
+  vec3 N = normalize(v_normal);
+  vec3 V = normalize(pc.camera_pos.xyz - v_world_pos);
+  float NoV = max(dot(N, V), 0.0);
+  vec3 F0 = mix(vec3(0.04), albedo, metallic);
+
+  // ---- Direct lighting --------------------------------------------------
+  // Three lights: warm key (from PushBlock) + cool fill + back-rim. The
+  // fill softens the shadow side; the rim outlines metallic spheres so
+  // the camera-side highlight is unmistakable.
+  vec3 L_key  = normalize(-pc.light_dir.xyz);
+  vec3 L_fill = normalize(vec3( 0.6, 0.3,  0.7));
+  vec3 L_rim  = normalize(vec3(-0.1, 0.2, -1.0));
+  vec3 C_key  = vec3(1.00, 0.93, 0.82) * pc.light_dir.w;     // warm
+  vec3 C_fill = vec3(0.55, 0.70, 0.95) * pc.light_dir.w * 0.30;  // cool
+  vec3 C_rim  = vec3(1.00, 0.88, 0.70) * pc.light_dir.w * 0.55;  // back warm
+
+  vec3 direct  = direct_lobe(N, V, L_key,  albedo, metallic, roughness, F0, C_key);
+       direct += direct_lobe(N, V, L_fill, albedo, metallic, roughness, F0, C_fill);
+       direct += direct_lobe(N, V, L_rim,  albedo, metallic, roughness, F0, C_rim);
+
+  // ---- IBL ambient (split-sum without BRDF LUT) -------------------------
+  // Diffuse irradiance ≈ env sampled along N. Specular reflection ≈ env
+  // along R, blurred toward N as roughness rises. Phase 17 will land a
+  // proper prefiltered cubemap + BRDF LUT; this is the analytical
+  // stand-in good enough to make metallic vs. dielectric obvious.
+  vec3 R = reflect(-V, N);
+  vec3 env_diffuse  = sample_env(N);
+  vec3 env_specular = mix(sample_env(R), env_diffuse, roughness);
+
+  vec3 ibl_F  = F_Schlick_roughness(NoV, F0, roughness);
+  vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
+  vec3 ibl    = ibl_kD * env_diffuse * albedo + env_specular * ibl_F;
+
+  vec3 color = direct + ibl;
+
+  // Narkowicz fitted ACES tone-map + gamma. ACES preserves highlight
+  // tint (Fresnel colour on metals) far better than Reinhard, which
+  // crushes the warm highlight + cool reflection blend into white and
+  // erases the metallic-vs-dielectric distinction.
+  // Source: Krzysztof Narkowicz, "ACES Filmic Tone Mapping Curve",
+  // 2015. Five-coefficient rational approximation of the ACES RRT+ODT.
+  const float a_ = 2.51;
+  const float b_ = 0.03;
+  const float c_ = 2.43;
+  const float d_ = 0.59;
+  const float e_ = 0.14;
+  color = clamp((color * (a_ * color + b_)) /
+                (color * (c_ * color + d_) + e_),
+                vec3(0.0), vec3(1.0));
   color = pow(color, vec3(1.0 / 2.2));
   out_color = vec4(color, 1.0);
 }
@@ -359,6 +513,29 @@ int main(int argc, char** argv)
                                     .size = static_cast<std::uint32_t>(sizeof(PushBlock)) }
     };
 
+    // ---- Skybox material (no vertex buffer, no depth) --------------------
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kSkyPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                    .offset = 0,
+                                    .size = static_cast<std::uint32_t>(sizeof(SkyPush)) }
+    };
+    cd::material::MaterialDesc smd {};
+    smd.vertex_glsl = kSkyVS;
+    smd.fragment_glsl = kSkyFS;
+    smd.color_attachment_formats = kColorFormats;
+    // The sky pass clears the swapchain and writes color, but does NOT
+    // touch the depth buffer (depth_write=false, no depth_attachment_format).
+    // Sphere pass that follows will then write depth normally.
+    smd.push_constants = kSkyPush;
+    smd.raster.cull = cd::rhi::CullMode::kNone;
+    smd.depth_stencil.depth_test = false;
+    smd.depth_stencil.depth_write = false;
+    smd.name = "hello_pbr/sky";
+    auto sky_r = cd::material::Material::create(device, compiler.get(), smd);
+    if (!sky_r.has_value())
+        return 7;
+    auto& sky_material = *sky_r;
+
     cd::material::MaterialDesc md {};
     md.vertex_glsl = kVS;
     md.fragment_glsl = kFS;
@@ -459,11 +636,14 @@ int main(int argc, char** argv)
             depth_initialized_on_gpu = true;
         }
 
+        // Clear color is irrelevant — sky pass overwrites every pixel
+        // before any sphere draws. Keep magenta so a regression that
+        // disables the sky pass is immediately visible.
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
             cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.05F, 0.05F, 0.07F, 1.0F } } }
+                                          .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } }
         };
         cd::rhi::DepthStencilAttachmentInfo depth_attach {};
         depth_attach.view = depth.view;
@@ -493,10 +673,6 @@ int main(int argc, char** argv)
                 frame.extent
         }
         );
-        material.apply(cmd);
-        cmd.bind_vertex_buffer(0, vb, 0);
-        cmd.bind_index_buffer(ib, 0, cd::rhi::IndexType::kUInt16);
-
         cd::camera::Camera cam {};
         cam.eye = { kOrbitDistance * std::sin(orbit_angle), 1.5F, kOrbitDistance * std::cos(orbit_angle) };
         cam.target = { 0.0F, 0.0F, 0.0F };
@@ -506,6 +682,50 @@ int main(int argc, char** argv)
         const float aspect = static_cast<float>(frame.extent.width) / static_cast<float>(frame.extent.height);
         const cd::math::Mat4f vp = cd::camera::view_projection(cam, aspect);
         const std::array<float, 3> camera_pos { cam.eye.x, cam.eye.y, cam.eye.z };
+
+        // ---- Sky pass (first, no depth) -----------------------------------
+        // Compute camera basis the same way hello_skybox does, push to the
+        // sky material's fragment shader, draw a fullscreen triangle.
+        cd::math::Vec3f forward {
+            cam.target.x - cam.eye.x, cam.target.y - cam.eye.y, cam.target.z - cam.eye.z,
+        };
+        const float fl = std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+        forward.x /= fl; forward.y /= fl; forward.z /= fl;
+        constexpr cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+        cd::math::Vec3f sky_right { forward.y * world_up.z - forward.z * world_up.y,
+                                    forward.z * world_up.x - forward.x * world_up.z,
+                                    forward.x * world_up.y - forward.y * world_up.x };
+        const float rl = std::sqrt(sky_right.x * sky_right.x + sky_right.y * sky_right.y + sky_right.z * sky_right.z);
+        sky_right.x /= rl; sky_right.y /= rl; sky_right.z /= rl;
+        const cd::math::Vec3f sky_up {
+            sky_right.y * forward.z - sky_right.z * forward.y,
+            sky_right.z * forward.x - sky_right.x * forward.z,
+            sky_right.x * forward.y - sky_right.y * forward.x };
+        const float half_h = std::tan(cam.fov_y * 0.5F);
+        const float half_w = half_h * aspect;
+
+        SkyPush spush {};
+        spush.cam_right = { sky_right.x, sky_right.y, sky_right.z, half_w };
+        spush.cam_up    = { sky_up.x,    sky_up.y,    sky_up.z,    half_h };
+        spush.cam_fwd   = { forward.x,   forward.y,   forward.z,   0.0F   };
+        // Match the sphere shader's L_key (negated because the shader
+        // also negates internally: L_key = normalize(-pc.light_dir.xyz)).
+        spush.sun_dir   = { -0.4F, -0.6F, -0.7F, 0.9F };
+
+        sky_material.apply(cmd);
+        cmd.push_constants(
+            sky_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            /*offset=*/0,
+            static_cast<std::uint32_t>(sizeof(spush)),
+            &spush
+        );
+        cmd.draw(3, 1, 0, 0);
+
+        // ---- Sphere pass --------------------------------------------------
+        material.apply(cmd);
+        cmd.bind_vertex_buffer(0, vb, 0);
+        cmd.bind_index_buffer(ib, 0, cd::rhi::IndexType::kUInt16);
 
         for (int row = 0; row < kGrid; ++row)
         {
@@ -525,10 +745,31 @@ int main(int argc, char** argv)
 
                 PushBlock pb {};
                 pb.mvp = mvp;
-                pb.albedo = { 0.95F, 0.55F, 0.25F, 1.0F };
-                pb.mr_amb = { metallic, roughness, 0.03F, 0.0F };
+                // Warm copper-ish albedo (0.95, 0.64, 0.32). With ACES
+                // tonemap retaining tint and a cool sky reflecting from
+                // the upper hemisphere, the X axis reads cleanly as:
+                //   metallic=0 → tinted dielectric (F0=0.04 grey-white
+                //                highlight on copper diffuse — "shiny
+                //                copper-painted plastic")
+                //   metallic=1 → tinted metal (F0=albedo, no diffuse,
+                //                spec lobe is copper-coloured, reflection
+                //                of cool sky tints the upper hemisphere
+                //                cyan-on-copper). The Fresnel grazing
+                //                rim is unmistakably copper on the right
+                //                column and unmistakably white on the
+                //                left column.
+                pb.albedo = { 0.95F, 0.64F, 0.32F, 1.0F };
+                // mr_amb.z (legacy "ambient") is now ignored — IBL term
+                // in the shader replaces the flat ambient. Kept the slot
+                // for binary-compat with any cached PushBlock layout.
+                pb.mr_amb = { metallic, roughness, 0.0F, 0.0F };
                 pb.camera_pos = { camera_pos[0], camera_pos[1], camera_pos[2], 0.0F };
-                pb.light_dir = { -0.4F, -0.6F, -0.7F, 4.0F };
+                // Key-light intensity 0.9 — with ACES tonemap and the
+                // analytical-sky IBL contributing ~0.4 ambient, 0.9 lands
+                // peak luminance in ACES's linear region so the Fresnel
+                // tint on the metallic side stays visible instead of
+                // saturating to white.
+                pb.light_dir = { -0.4F, -0.6F, -0.7F, 0.9F };
 
                 cmd.push_constants(
                     material.pipeline_layout(),

@@ -583,7 +583,12 @@ int main(int argc, char** argv)
         const float gutter = 8.0F;
         const float toolbar_h = 130.0F;
         const float scene_w = 240.0F;
-        const float inspector_w = 380.0F;
+        // Inspector widened from 380 → 480 so the 3-field InputFloat3
+        // widgets keep their right-side label visible. At 380 the X / Y /
+        // Z mini-boxes ran into the trailing "translate delta" label and
+        // the Apply buttons wrapped onto the next line — user-reported
+        // as "şekille isimler karışıyor".
+        const float inspector_w = 480.0F;
         const float history_h = 200.0F;
         // Toolbar — top, full width.
         ImGui::SetNextWindowPos(ImVec2 { gutter, gutter }, ImGuiCond_FirstUseEver);
@@ -734,20 +739,30 @@ int main(int argc, char** argv)
             auto& ent = entities[static_cast<std::size_t>(selected)];
             if (auto* lt = scene.local(ent.handle); lt != nullptr)
             {
-                ImGui::Text("Entity: %s", ent.name.c_str());
-                ImGui::Separator();
+                // Reserve generous right-hand padding for ImGui's auto-
+                // placed label column so InputFloat3 X/Y/Z mini-fields
+                // never bleed into the label text. The default 0.65F
+                // ratio left only ~95 px for three numeric boxes — too
+                // tight on a 480-wide panel.
+                ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.62F);
 
-                // Position — Apply Translate Delta. Use array to
-                // guarantee contiguous storage for InputFloat3
-                // (separate static floats are NOT guaranteed
-                // contiguous by the C++ standard).
+                ImGui::Text("Entity: %s", ent.name.c_str());
+
+                // ---- Position ---------------------------------------------
+                ImGui::SeparatorText("Position");
                 static float trans[3] { 0.0F, 0.0F, 0.0F };
-                ImGui::Text("Position: (%.2f, %.2f, %.2f)",
+                ImGui::Text("current  (%.2f, %.2f, %.2f)",
                             static_cast<double>(lt->value.position.x),
                             static_cast<double>(lt->value.position.y),
                             static_cast<double>(lt->value.position.z));
-                ImGui::InputFloat3("translate delta", trans);
-                if (ImGui::Button("Apply Translate"))
+                // `##` hides the label inside the widget but keeps the
+                // id unique so ImGui's state map still works. Pair every
+                // input with a leading Text() that names the field — this
+                // separates "şekil" (widget) from "isim" (label) cleanly.
+                ImGui::Text("delta XYZ");
+                ImGui::SameLine();
+                ImGui::InputFloat3("##trans", trans);
+                if (ImGui::Button("Apply##t", ImVec2 { 120, 0 }))
                 {
                     history.push(std::make_unique<cd::editor::TranslateCommand>(
                         scene, ent.handle,
@@ -755,16 +770,21 @@ int main(int argc, char** argv)
                     log_push("push: TranslateCommand");
                     trans[0] = trans[1] = trans[2] = 0.0F;
                 }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("0##t"))
+                    trans[0] = trans[1] = trans[2] = 0.0F;
 
-                ImGui::Separator();
-                // Scale — Apply Scale Factor
+                // ---- Scale ------------------------------------------------
+                ImGui::SeparatorText("Scale");
                 static float scale[3] { 1.0F, 1.0F, 1.0F };
-                ImGui::Text("Scale: (%.2f, %.2f, %.2f)",
+                ImGui::Text("current  (%.2f, %.2f, %.2f)",
                             static_cast<double>(lt->value.scale.x),
                             static_cast<double>(lt->value.scale.y),
                             static_cast<double>(lt->value.scale.z));
-                ImGui::InputFloat3("scale factor", scale);
-                if (ImGui::Button("Apply Scale"))
+                ImGui::Text("factor XYZ");
+                ImGui::SameLine();
+                ImGui::InputFloat3("##scale", scale);
+                if (ImGui::Button("Apply##s", ImVec2 { 120, 0 }))
                 {
                     history.push(std::make_unique<cd::editor::ScaleCommand>(
                         scene, ent.handle,
@@ -772,19 +792,22 @@ int main(int argc, char** argv)
                     log_push("push: ScaleCommand");
                     scale[0] = scale[1] = scale[2] = 1.0F;
                 }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("1##s"))
+                    scale[0] = scale[1] = scale[2] = 1.0F;
 
-                ImGui::Separator();
-                // Rotation — Euler XYZ (degrees) → quaternion. User-
-                // friendly: editing raw quat xyzw is unintuitive; the
-                // backend EditHistory still stores the quaternion form.
+                // ---- Rotation ---------------------------------------------
+                ImGui::SeparatorText("Rotation");
                 static float euler_deg[3] { 0.0F, 0.0F, 0.0F };
-                ImGui::Text("Rotation: (%.2f, %.2f, %.2f, %.2f) quat",
+                ImGui::Text("quat  (%.2f, %.2f, %.2f, %.2f)",
                             static_cast<double>(lt->value.rotation.x),
                             static_cast<double>(lt->value.rotation.y),
                             static_cast<double>(lt->value.rotation.z),
                             static_cast<double>(lt->value.rotation.w));
-                ImGui::InputFloat3("euler xyz (deg)", euler_deg);
-                if (ImGui::Button("Apply Rotate"))
+                ImGui::Text("euler  (deg)");
+                ImGui::SameLine();
+                ImGui::InputFloat3("##rot", euler_deg);
+                if (ImGui::Button("Apply##r", ImVec2 { 120, 0 }))
                 {
                     // Euler ZYX intrinsic → quaternion. Each axis
                     // rotation builds its own quat, then composes
@@ -807,6 +830,11 @@ int main(int argc, char** argv)
                     log_push("push: RotateCommand (from Euler)");
                     euler_deg[0] = euler_deg[1] = euler_deg[2] = 0.0F;
                 }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("0##r"))
+                    euler_deg[0] = euler_deg[1] = euler_deg[2] = 0.0F;
+
+                ImGui::PopItemWidth();
             }
             else
             {
