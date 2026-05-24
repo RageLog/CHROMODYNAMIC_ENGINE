@@ -598,3 +598,42 @@ TEST(DependencyGraph, InvalidIdRejected)
     g.depend(cd::asset::AssetId::from_path("y"), cd::asset::AssetId {});
     EXPECT_EQ(g.edge_node_count(), 0u);
 }
+
+#include <cd/asset/AssetRefCount.hpp>
+
+TEST(AssetRefCount, AcquireIncrements)
+{
+    cd::asset::AssetRefCount rc;
+    auto id = cd::asset::AssetId::from_path("tex.png");
+    EXPECT_EQ(rc.acquire(id), 1);
+    EXPECT_EQ(rc.acquire(id), 2);
+    EXPECT_EQ(rc.count_of(id), 2);
+}
+
+TEST(AssetRefCount, ReleaseDecrements)
+{
+    cd::asset::AssetRefCount rc;
+    auto id = cd::asset::AssetId::from_path("mesh.bin");
+    rc.acquire(id);
+    rc.acquire(id);
+    EXPECT_EQ(rc.release(id), 1);
+    EXPECT_EQ(rc.release(id), 0);
+    EXPECT_FALSE(rc.is_held(id));
+}
+
+TEST(AssetRefCount, OverReleaseSafe)
+{
+    cd::asset::AssetRefCount rc;
+    auto id = cd::asset::AssetId::from_path("a");
+    EXPECT_EQ(rc.release(id), 0);   // never acquired
+    rc.acquire(id);
+    EXPECT_EQ(rc.release(id), 0);   // back to zero
+    EXPECT_EQ(rc.release(id), 0);   // extra release no-op
+}
+
+TEST(AssetRefCount, InvalidIdRejected)
+{
+    cd::asset::AssetRefCount rc;
+    EXPECT_EQ(rc.acquire(cd::asset::AssetId {}), 0);
+    EXPECT_EQ(rc.tracked_count(), 0u);
+}

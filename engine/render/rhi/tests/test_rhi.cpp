@@ -15,6 +15,7 @@
 #include <cd/rhi/NullDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
 #include <cd/rhi/PipelineCacheKey.hpp>
+#include <cd/rhi/RasterStatePresets.hpp>
 #include <cd/rhi/VertexLayoutBuilder.hpp>
 #include <gtest/gtest.h>
 
@@ -460,6 +461,32 @@ TEST(PipelineCacheKey, DifferentShadersDifferentHash)
     cd::rhi::PipelineCacheKey a { 1, 2, 0, 0, 0 };
     cd::rhi::PipelineCacheKey b { 3, 4, 0, 0, 0 };
     EXPECT_NE(a.hash(), b.hash());
+}
+
+TEST(RasterStatePresets, SolidBackIsDefaultCullBack)
+{
+    const auto s = cd::rhi::raster_solid_back();
+    EXPECT_EQ(s.polygon_mode, cd::rhi::PolygonMode::kFill);
+    EXPECT_EQ(s.cull, cd::rhi::CullMode::kBack);
+}
+
+TEST(RasterStatePresets, SolidNoneDisablesCull)
+{
+    const auto s = cd::rhi::raster_solid_none();
+    EXPECT_EQ(s.cull, cd::rhi::CullMode::kNone);
+}
+
+TEST(RasterStatePresets, WireframeUsesLineMode)
+{
+    const auto s = cd::rhi::raster_wireframe();
+    EXPECT_EQ(s.polygon_mode, cd::rhi::PolygonMode::kLine);
+    EXPECT_EQ(s.cull, cd::rhi::CullMode::kNone);
+}
+
+TEST(RasterStatePresets, ShadowCullsFront)
+{
+    const auto s = cd::rhi::raster_shadow_front();
+    EXPECT_EQ(s.cull, cd::rhi::CullMode::kFront);
 }
 
 }  // namespace
