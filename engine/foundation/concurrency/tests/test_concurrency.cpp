@@ -380,3 +380,39 @@ TEST(Backoff, StepCappedAt20)
     for (int i = 0; i < 30; ++i) b.pause();
     EXPECT_LE(b.step(), 20u);
 }
+
+#include <cd/concurrency/Barrier.hpp>
+#include <thread>
+#include <atomic>
+#include <vector>
+
+TEST(Barrier, ReusableAcrossPhases)
+{
+    constexpr std::ptrdiff_t kN = 4;
+    cd::concurrency::Barrier b { kN };
+    std::atomic<int> phase_a { 0 };
+    std::atomic<int> phase_b { 0 };
+    std::vector<std::thread> ts;
+    ts.reserve(kN);
+    for (std::ptrdiff_t i = 0; i < kN; ++i)
+    {
+        ts.emplace_back([&]
+        {
+            phase_a.fetch_add(1);
+            b.arrive_and_wait();
+            // After release of phase A, every thread sees phase_a == kN.
+            EXPECT_EQ(phase_a.load(), kN);
+            phase_b.fetch_add(1);
+            b.arrive_and_wait();
+            EXPECT_EQ(phase_b.load(), kN);
+        });
+    }
+    for (auto& t : ts) t.join();
+    EXPECT_EQ(b.count(), kN);
+}
+
+TEST(Barrier, CountReadable)
+{
+    cd::concurrency::Barrier b { 3 };
+    EXPECT_EQ(b.count(), 3);
+}

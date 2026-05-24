@@ -5,6 +5,7 @@
 #include <cd/ecs/World.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Transform.hpp>
+#include <cd/scene/EnvironmentLight.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/Serializer.hpp>
 #include <gtest/gtest.h>
@@ -654,4 +655,26 @@ TEST(NameRegistry, HashLookupMatchesStringLookup)
     r.bind(e, "Cam");
     const auto h = cd::scene::name_hash("Cam");
     EXPECT_EQ(r.find_by_hash(h), e);
+}
+
+TEST(EnvironmentLight, DefaultHasNoIblButHasAmbient)
+{
+    cd::scene::EnvironmentLight e;
+    EXPECT_FALSE(cd::scene::has_ibl(e));
+    EXPECT_FLOAT_EQ(e.intensity, 1.0F);
+    EXPECT_GT(e.ambient_rgb[2], 0.0F);
+}
+
+TEST(EnvironmentLight, HasIblAfterCubemapAssigned)
+{
+    cd::scene::EnvironmentLight e;
+    e.cubemap = cd::asset::AssetId::from_path("env/sunset.cubemap");
+    EXPECT_TRUE(cd::scene::has_ibl(e));
+}
+
+TEST(EnvironmentLight, IntensityScalable)
+{
+    cd::scene::EnvironmentLight e;
+    e.intensity = 2.5F;
+    EXPECT_FLOAT_EQ(e.intensity, 2.5F);
 }

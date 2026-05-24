@@ -8,6 +8,7 @@ cd_add_library(scene
     cd::math
     cd::core
     cd::physics     # for cd/scene/Frustum.hpp (Aabb cull, header-only)
+    cd::asset       # for cd/scene/EnvironmentLight.hpp (AssetId ref)
     cd::asset_json  # for cd/scene/Serializer.hpp (header-only)
 )
 
