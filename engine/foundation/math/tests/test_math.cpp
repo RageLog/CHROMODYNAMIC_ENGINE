@@ -1121,3 +1121,31 @@ TEST(SmoothstepRemap, BetweenEdges)
     EXPECT_FLOAT_EQ(cd::math::smoothstep_remap(0.0F, 10.0F, -5.0F), 0.0F);
     EXPECT_FLOAT_EQ(cd::math::smoothstep_remap(0.0F, 10.0F, 15.0F), 1.0F);
 }
+
+#include <cd/math/RangeMap.hpp>
+
+TEST(RangeMap, MidpointMapsToMid)
+{
+    EXPECT_FLOAT_EQ(cd::math::remap(5.0F, 0.0F, 10.0F, 0.0F, 100.0F), 50.0F);
+}
+
+TEST(RangeMap, ExtrapolatesOutsideRange)
+{
+    EXPECT_FLOAT_EQ(cd::math::remap(15.0F, 0.0F, 10.0F, 0.0F, 100.0F), 150.0F);
+}
+
+TEST(RangeMap, ClampedRemapStaysInOutputRange)
+{
+    EXPECT_FLOAT_EQ(cd::math::clamped_remap(15.0F, 0.0F, 10.0F, 0.0F, 100.0F), 100.0F);
+    EXPECT_FLOAT_EQ(cd::math::clamped_remap(-5.0F, 0.0F, 10.0F, 0.0F, 100.0F), 0.0F);
+}
+
+TEST(RangeMap, ZeroWidthInputReturnsOutMin)
+{
+    EXPECT_FLOAT_EQ(cd::math::remap(5.0F, 3.0F, 3.0F, 100.0F, 200.0F), 100.0F);
+}
+
+TEST(RangeMap, InvertedOutputRange)
+{
+    EXPECT_FLOAT_EQ(cd::math::remap(0.5F, 0.0F, 1.0F, 100.0F, 0.0F), 50.0F);
+}

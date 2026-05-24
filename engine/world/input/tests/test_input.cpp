@@ -7,6 +7,7 @@
 #include <cd/input/GamepadState.hpp>
 #include <cd/input/Input.hpp>
 #include <cd/input/KeyChord.hpp>
+#include <cd/input/MouseDragState.hpp>
 #include <gtest/gtest.h>
 
 namespace
@@ -300,6 +301,44 @@ TEST(ActionBindings, UnbindRemovesAll)
     bindings.bind("Jump", cd::input::KeyCode::kSpace);
     bindings.unbind_all("Jump");
     EXPECT_EQ(bindings.action_count(), 0u);
+}
+
+TEST(MouseDragState, NotPressedByDefault)
+{
+    cd::input::MouseDragState s;
+    EXPECT_FALSE(s.is_pressed());
+    EXPECT_FALSE(s.is_dragging());
+}
+
+TEST(MouseDragState, PressMoveBelowThresholdNotDragging)
+{
+    cd::input::MouseDragState s;
+    s.set_threshold(10.0F);
+    s.on_press(100.0F, 100.0F);
+    s.on_move(102.0F, 101.0F);
+    EXPECT_TRUE(s.is_pressed());
+    EXPECT_FALSE(s.is_dragging());
+}
+
+TEST(MouseDragState, PressMoveAboveThresholdIsDragging)
+{
+    cd::input::MouseDragState s;
+    s.set_threshold(5.0F);
+    s.on_press(100.0F, 100.0F);
+    s.on_move(110.0F, 110.0F);
+    EXPECT_TRUE(s.is_dragging());
+    EXPECT_FLOAT_EQ(s.drag_delta_x(), 10.0F);
+    EXPECT_FLOAT_EQ(s.drag_delta_y(), 10.0F);
+}
+
+TEST(MouseDragState, ReleaseResetsState)
+{
+    cd::input::MouseDragState s;
+    s.on_press(0.0F, 0.0F);
+    s.on_move(100.0F, 100.0F);
+    s.on_release();
+    EXPECT_FALSE(s.is_pressed());
+    EXPECT_FALSE(s.is_dragging());
 }
 
 }  // namespace
