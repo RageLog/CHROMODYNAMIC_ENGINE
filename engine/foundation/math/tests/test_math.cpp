@@ -967,3 +967,44 @@ TEST(BarycentricInterp, Vec3fInterp)
     EXPECT_FLOAT_EQ(r.y, 0.25F);
     EXPECT_FLOAT_EQ(r.z, 0.5F);
 }
+
+#include <cd/math/Histogram.hpp>
+
+TEST(Histogram, RecordsAndCounts)
+{
+    cd::math::Histogram h { 4, 0.0, 4.0 };  // bucket width = 1
+    h.record(0.5);
+    h.record(1.5);
+    h.record(2.5);
+    h.record(3.5);
+    h.record(1.5);
+    EXPECT_EQ(h.total(), 5u);
+    EXPECT_EQ(h.count(1), 2u);
+}
+
+TEST(Histogram, ClampsOutOfRange)
+{
+    cd::math::Histogram h { 4, 0.0, 4.0 };
+    h.record(-100.0);
+    h.record(999.0);
+    EXPECT_EQ(h.count(0), 1u);
+    EXPECT_EQ(h.count(3), 1u);
+}
+
+TEST(Histogram, ModeBucketSpotsBusiestBin)
+{
+    cd::math::Histogram h { 5, 0.0, 5.0 };
+    for (int i = 0; i < 10; ++i) h.record(2.5);
+    h.record(0.5);
+    EXPECT_EQ(h.mode_bucket(), 2u);
+}
+
+TEST(Histogram, ClearEmptiesAllBuckets)
+{
+    cd::math::Histogram h { 3, 0.0, 3.0 };
+    h.record(0.5);
+    h.record(1.5);
+    h.clear();
+    EXPECT_EQ(h.total(), 0u);
+    EXPECT_EQ(h.count(0), 0u);
+}

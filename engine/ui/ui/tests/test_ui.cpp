@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/ui/Anchor.hpp>
 #include <cd/ui/ProgressBar.hpp>
+#include <cd/ui/Spinner.hpp>
 #include <cd/ui/Theme.hpp>
 #include <cd/ui/Tooltip.hpp>
 #include <cd/ui/Widget.hpp>
@@ -366,4 +367,30 @@ TEST(ProgressBar, SetDoneClamps)
     p.set_total(5);
     p.set_done(99);
     EXPECT_EQ(p.done(), 5u);
+}
+
+TEST(Spinner, TickAdvancesAngle)
+{
+    cd::ui::Spinner s;
+    s.set_speed_rps(1.0F);  // 2*pi per second
+    const float before = s.angle();
+    s.tick(0.25F);          // 0.25s → +pi/2
+    EXPECT_GT(s.angle(), before);
+}
+
+TEST(Spinner, AngleWrapsAtTau)
+{
+    cd::ui::Spinner s;
+    s.set_speed_rps(1.0F);
+    s.tick(2.0F);           // 2 full turns → wraps
+    EXPECT_GE(s.angle(), 0.0F);
+    EXPECT_LT(s.angle(), 6.2832F);
+}
+
+TEST(Spinner, ResetReturnsToZero)
+{
+    cd::ui::Spinner s;
+    s.tick(0.5F);
+    s.reset();
+    EXPECT_FLOAT_EQ(s.angle(), 0.0F);
 }

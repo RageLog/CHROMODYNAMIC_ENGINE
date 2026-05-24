@@ -1,7 +1,7 @@
-# Marathon summary — Phase 13 → Phase 58 (v0.30.0 → v0.89.0)
+# Marathon summary — Phase 13 → Phase 63 (v0.30.0 → v0.94.0)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**61 minor releases** shipped from the marathon's start (v0.30 baseline).
+**66 minor releases** shipped from the marathon's start (v0.30 baseline).
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -70,6 +70,11 @@ priority, OpenGL was introduced as 3rd.
 | v0.87.0 | 56    | ecs::FilterFn + math::Statistics (Welford) |
 | v0.88.0 | 57    | ui::ProgressBar + concurrency::Channel (+ Anchor IntRect rename fix) |
 | v0.89.0 | 58    | scene::HeightField + math::BarycentricInterp |
+| v0.90.0 | 59    | input::GamepadState + concurrency::EventBus |
+| v0.91.0 | 60    | anim::EventTrack + scene::Marker |
+| v0.92.0 | 61    | rhi::VertexLayoutBuilder + io::PathUtils |
+| v0.93.0 | 62    | physics::InertiaTensor + camera::ViewportInfo |
+| v0.94.0 | 63    | ui::Spinner + math::Histogram |
 
 ## Major capabilities added across the marathon
 
