@@ -1,0 +1,114 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: CI / AMD RADV
+
+# Phase 123 — AMD GPU + Mesa RADV (open-source Vulkan driver) CI lane.
+#
+# Triggered manually (workflow_dispatch) and on tags so we don't burn
+# self-hosted minutes on every push. Requires a self-hosted runner
+# labelled `amd-gpu` (RADV-capable physical hardware). Until such a
+# runner is available the job stays gated behind workflow_dispatch
+# and never runs on hosted GitHub minutes.
+#
+# Rationale: lavapipe (the software Vulkan ICD on ubuntu-24.04 hosted
+# runners) catches "code path works" regressions but cannot reproduce
+# vendor-specific GLSL miscompiles, descriptor-indexing quirks, or
+# float / int conversion subtleties that AMD's RADV stack exposes.
+# This workflow is the future home for that signal.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_full_samples:
+        description: "Run every visual sample (default: smoke only)"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  radv-linux:
+    name: Linux / AMD RADV / Debug
+    # Self-hosted runner labelled `amd-gpu` — see /docs/CI_SELF_HOSTED.md
+    # for setup. Job is skipped (not failed) when no labelled runner
+    # comes online within the queue timeout.
+    runs-on: [self-hosted, amd-gpu, linux]
+    timeout-minutes: 45
+    if: github.repository == 'RageLog/CHROMODYNAMIC_ENGINE'
+
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      # Pin VK_ICD_FILENAMES to RADV so the loader doesn't fall back
+      # to lavapipe if both are installed.
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain probe
+        run: |
+          clang --version
+          cmake --version
+          ninja --version
+          # lspci should report at least one AMD GPU.
+          lspci | grep -i 'amd\|radeon' || (echo "no AMD GPU visible" && exit 1)
+
+      - name: Vulkan probe (RADV)
+        run: |
+          vulkaninfo --summary | head -40
+          # Fail if the loader didn't pick RADV.
+          vulkaninfo --summary | grep -E 'driverName.*=.*radv' || {
+            echo "RADV driver not selected — check VK_ICD_FILENAMES and packages."
+            exit 1
+          }
+
+      - name: Configure (Vulkan ON, Debug)
+        run: |
+          cmake --preset ci-clang \
+            -DCD_DISABLE_VCPKG=ON \
+            -DCD_ENABLE_VULKAN=ON
+
+      - name: Build
+        run: cmake --build --preset ci-clang-debug
+
+      - name: ctest
+        run: ctest --preset ci-clang-debug --output-on-failure
+
+      - name: Sample smoke (3 frames each)
+        if: ${{ ! inputs.run_full_samples }}
+        run: |
+          # Hardware-backed RADV — no Xvfb, the runner has a real
+          # display (or a DRI render node). Run a representative
+          # subset only; full sweep gated behind the workflow input.
+          bash scripts/run_smoke_samples.sh hello_triangle hello_cube hello_pbr hello_skybox hello_anim
+
+      - name: Sample sweep (full)
+        if: ${{ inputs.run_full_samples }}
+        run: |
+          bash scripts/run_all_samples.sh
+
+      - name: Golden compare (RADV vendor set)
+        run: |
+          REF_COUNT=$(find tests/golden/radv -maxdepth 1 -name '*.png' 2>/dev/null | wc -l)
+          if [ "${REF_COUNT}" -eq 0 ]; then
+            echo "[radv-compare] tests/golden/radv/ has no .png references yet; skipping."
+            exit 0
+          fi
+          bash scripts/run_golden.sh \
+            --mode compare \
+            --build-dir build/ci-clang \
+            --golden-dir tests/golden/radv
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radv-failure-artifacts
+          path: |
+            build/ci-clang/Testing/Temporary/LastTest.log
+            tests/golden/radv-actual/
+            *.log
+          retention-days: 14

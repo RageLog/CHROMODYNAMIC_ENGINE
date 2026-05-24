@@ -137,6 +137,7 @@ priority, OpenGL was introduced as 3rd.
 | v0.99.47 | 118 | **RT pipeline + SBT interface** — `RtShaderStage` enum, `RtShaderEntry`, `RtPipelineDesc` (recursion / payload / attribute budgets), `SbtRegion` (strided buffer region), `DispatchRaysDesc` extended with raygen/miss/hit/callable SBT regions |
 | v0.99.48 | 115+116 | **SelectionOutline + AxisGizmo state** — header-only editor primitives: selection set + outline style/color/thickness/opacity, and a translation-gizmo state machine (hover/drag axis + origin snapshot + total-delta on end_drag) |
 | v0.99.49 | 122 | **D3D12 parity audit** — docs/D3D12_PARITY_AUDIT.md per-method matrix across Vulkan/D3D12/OpenGL/Metal; outstanding-gap list with source line refs; recommended next-phase priorities |
+| v0.99.50 | 123 | **AMD RADV CI lane** — dormant self-hosted workflow targeting `[self-hosted, amd-gpu, linux]`; preflight probes (`lspci` + `vulkaninfo`); RADV-pinned VK_ICD_FILENAMES; golden-compare against `tests/golden/radv/`; CI_SELF_HOSTED.md runbook |
 
 ## Major capabilities added across the marathon
 
