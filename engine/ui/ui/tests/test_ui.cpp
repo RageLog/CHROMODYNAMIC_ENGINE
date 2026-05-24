@@ -1,6 +1,10 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::ui tests
 // =============================================================================
+#include <cd/ui/Anchor.hpp>
+#include <cd/ui/ProgressBar.hpp>
+#include <cd/ui/Theme.hpp>
+#include <cd/ui/Tooltip.hpp>
 #include <cd/ui/Widget.hpp>
 #include <gtest/gtest.h>
 
@@ -194,11 +198,10 @@ TEST(UiWidget, ParentRelativeDrawCommandsCompose)
     EXPECT_FLOAT_EQ(cmds[1].rect.y, 120.0F);
 }
 
-#include <cd/ui/Anchor.hpp>
 
 TEST(Anchor, StretchFillsParent)
 {
-    cd::ui::Rect parent { 0, 0, 1920, 1080 };
+    cd::ui::IntRect parent { 0, 0, 1920, 1080 };
     auto r = cd::ui::resolve(parent, cd::ui::stretch());
     EXPECT_EQ(r.x, 0);
     EXPECT_EQ(r.y, 0);
@@ -208,7 +211,7 @@ TEST(Anchor, StretchFillsParent)
 
 TEST(Anchor, CenterPlacesFixedRect)
 {
-    cd::ui::Rect parent { 0, 0, 800, 600 };
+    cd::ui::IntRect parent { 0, 0, 800, 600 };
     auto r = cd::ui::resolve(parent, cd::ui::center(200, 100));
     EXPECT_EQ(r.w, 200);
     EXPECT_EQ(r.h, 100);
@@ -218,7 +221,7 @@ TEST(Anchor, CenterPlacesFixedRect)
 
 TEST(Anchor, OffsetMarginShrinksFromEdges)
 {
-    cd::ui::Rect parent { 0, 0, 1000, 1000 };
+    cd::ui::IntRect parent { 0, 0, 1000, 1000 };
     cd::ui::Anchor a { 0.0F, 0.0F, 1.0F, 1.0F, 50, 50, -50, -50 };
     auto r = cd::ui::resolve(parent, a);
     EXPECT_EQ(r.x, 50);
@@ -229,7 +232,7 @@ TEST(Anchor, OffsetMarginShrinksFromEdges)
 
 TEST(Anchor, NestedParentOriginRespected)
 {
-    cd::ui::Rect parent { 100, 200, 400, 300 };
+    cd::ui::IntRect parent { 100, 200, 400, 300 };
     auto r = cd::ui::resolve(parent, cd::ui::stretch());
     EXPECT_EQ(r.x, 100);
     EXPECT_EQ(r.y, 200);
@@ -237,7 +240,7 @@ TEST(Anchor, NestedParentOriginRespected)
     EXPECT_EQ(r.h, 300);
 }
 
-#include <cd/ui/Theme.hpp>
+
 
 TEST(Theme, DarkThemeHasDarkBackground)
 {
@@ -273,7 +276,7 @@ TEST(Theme, Color32Equality)
     EXPECT_FALSE(a == c);
 }
 
-#include <cd/ui/Tooltip.hpp>
+
 
 TEST(Tooltip, NotVisibleBeforeDelay)
 {
@@ -319,3 +322,48 @@ TEST(Tooltip, ZeroTargetClears)
 }
 
 }  // namespace
+
+
+
+TEST(ProgressBar, EmptyTotalReturnsZeroProgress)
+{
+    cd::ui::ProgressBar p;
+    EXPECT_FLOAT_EQ(p.progress(), 0.0F);
+    EXPECT_FALSE(p.is_complete());
+}
+
+TEST(ProgressBar, TickAdvancesProgress)
+{
+    cd::ui::ProgressBar p;
+    p.set_total(10);
+    p.tick(3);
+    EXPECT_FLOAT_EQ(p.progress(), 0.3F);
+    EXPECT_FALSE(p.is_complete());
+}
+
+TEST(ProgressBar, TickClampsToTotal)
+{
+    cd::ui::ProgressBar p;
+    p.set_total(5);
+    p.tick(100);
+    EXPECT_EQ(p.done(), 5u);
+    EXPECT_TRUE(p.is_complete());
+    EXPECT_FLOAT_EQ(p.progress(), 1.0F);
+}
+
+TEST(ProgressBar, ResetReturnsToZero)
+{
+    cd::ui::ProgressBar p;
+    p.set_total(8);
+    p.tick(5);
+    p.reset();
+    EXPECT_EQ(p.done(), 0u);
+}
+
+TEST(ProgressBar, SetDoneClamps)
+{
+    cd::ui::ProgressBar p;
+    p.set_total(5);
+    p.set_done(99);
+    EXPECT_EQ(p.done(), 5u);
+}

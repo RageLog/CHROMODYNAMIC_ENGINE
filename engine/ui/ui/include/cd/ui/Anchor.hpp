@@ -12,7 +12,7 @@
 //
 // When min == max the child has a fixed pixel size (offset_max -
 // offset_min); when min != max the child stretches with the parent
-// (Godot Control / Unity RectTransform semantics).
+// (Godot Control / Unity IntRectTransform semantics).
 //
 // All math is integer pixel — no float drift across resolution changes.
 // =============================================================================
@@ -25,7 +25,7 @@
 namespace cd::ui
 {
 
-struct Rect
+struct IntRect
 {
     std::int32_t x { 0 };
     std::int32_t y { 0 };
@@ -45,7 +45,7 @@ struct Anchor
     std::int32_t offset_max_y { 0 };
 };
 
-[[nodiscard]] inline Rect resolve(const Rect& parent, const Anchor& a) noexcept
+[[nodiscard]] inline IntRect resolve(const IntRect& parent, const Anchor& a) noexcept
 {
     const float pwf = static_cast<float>(parent.w);
     const float phf = static_cast<float>(parent.h);
@@ -53,7 +53,7 @@ struct Anchor
     const auto y0 = parent.y + static_cast<std::int32_t>(a.min_y * phf) + a.offset_min_y;
     const auto x1 = parent.x + static_cast<std::int32_t>(a.max_x * pwf) + a.offset_max_x;
     const auto y1 = parent.y + static_cast<std::int32_t>(a.max_y * phf) + a.offset_max_y;
-    return Rect { x0, y0, x1 - x0, y1 - y0 };
+    return IntRect { x0, y0, x1 - x0, y1 - y0 };
 }
 
 /// Convenience: full-bleed (child fills parent).

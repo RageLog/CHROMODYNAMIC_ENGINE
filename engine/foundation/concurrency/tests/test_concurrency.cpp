@@ -448,3 +448,47 @@ TEST(ParallelFor, SingleWorkerDegradesToSerial)
     for (std::size_t i = 0; i < kN; ++i)
         EXPECT_EQ(seen[i], static_cast<int>(i + 1));
 }
+
+#include <cd/concurrency/Channel.hpp>
+
+TEST(Channel, TrySendThenTryReceive)
+{
+    cd::concurrency::Channel<int> ch { 4 };
+    EXPECT_TRUE(ch.try_send(42));
+    auto v = ch.try_receive();
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(*v, 42);
+}
+
+TEST(Channel, TrySendFullReturnsFalse)
+{
+    cd::concurrency::Channel<int> ch { 2 };
+    EXPECT_TRUE(ch.try_send(1));
+    EXPECT_TRUE(ch.try_send(2));
+    EXPECT_FALSE(ch.try_send(3));
+}
+
+TEST(Channel, ProducerConsumerRoundTrip)
+{
+    cd::concurrency::Channel<int> ch { 4 };
+    std::thread prod([&] {
+        for (int i = 0; i < 10; ++i) (void)ch.send(i);
+        ch.close();
+    });
+    int sum = 0;
+    while (auto v = ch.receive()) sum += *v;
+    prod.join();
+    EXPECT_EQ(sum, 45);   // 0+1+...+9
+}
+
+TEST(Channel, CloseUnblocksReceiver)
+{
+    cd::concurrency::Channel<int> ch { 4 };
+    std::thread closer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        ch.close();
+    });
+    auto v = ch.receive();
+    EXPECT_FALSE(v.has_value());
+    closer.join();
+}
