@@ -1,7 +1,7 @@
-# Marathon summary — Phase 13 → Phase 47 (v0.30.0 → v0.78.0)
+# Marathon summary — Phase 13 → Phase 52 (v0.30.0 → v0.83.0)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-50 minor releases shipped from the marathon's start (v0.30 baseline).
+**55 minor releases** shipped from the marathon's start (v0.30 baseline).
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
@@ -59,6 +59,11 @@ priority, OpenGL was introduced as 3rd.
 | v0.76.0 | 45    | input::KeyChord (Ctrl+Shift+S) + scene::NameRegistry |
 | v0.77.0 | 46    | physics::CapsuleSphere + asset::StreamQueue (priority) |
 | v0.78.0 | 47    | math::Range + ecs::EntityRange (pagination) |
+| v0.79.0 | 48    | scene::EnvironmentLight (IBL) + concurrency::Barrier |
+| v0.80.0 | 49    | ui::Tooltip + math::Noise (value noise + fbm) |
+| v0.81.0 | 50    | editor::SelectionSet + asset::LoadProfile |
+| v0.82.0 | 51    | render::PostProcessChain + ecs::Lifecycle |
+| v0.83.0 | 52    | shader::ShaderStageDesc + core::ProfileSpan |
 
 ## Major capabilities added across the marathon
 
