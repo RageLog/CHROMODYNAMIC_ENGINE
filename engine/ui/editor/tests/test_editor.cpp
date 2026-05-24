@@ -9,6 +9,7 @@
 #include <cd/editor/CommandPalette.hpp>
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/Editor.hpp>
+#include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/SelectionSet.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <gtest/gtest.h>
@@ -380,4 +381,47 @@ TEST(BookmarkSet, RemoveCompacts)
     EXPECT_EQ(bs.size(), 2u);
     EXPECT_EQ(bs.at(0)->name, "a");
     EXPECT_EQ(bs.at(1)->name, "c");
+}
+
+TEST(HierarchyView, RootOnlyWhenCollapsed)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    auto root = scene.create_node();
+    auto child = scene.create_node();
+    scene.attach(child, root);
+
+    cd::editor::HierarchyView hv;
+    auto rows = hv.visible_order(scene);
+    EXPECT_EQ(rows.size(), 1u);   // root only — collapsed
+    EXPECT_EQ(rows[0].first, root);
+    EXPECT_EQ(rows[0].second, 0u);
+}
+
+TEST(HierarchyView, ExpandShowsChildren)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    auto root = scene.create_node();
+    auto child = scene.create_node();
+    scene.attach(child, root);
+
+    cd::editor::HierarchyView hv;
+    hv.expand(root);
+    auto rows = hv.visible_order(scene);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].second, 0u);
+    EXPECT_EQ(rows[1].first, child);
+    EXPECT_EQ(rows[1].second, 1u);
+}
+
+TEST(HierarchyView, ToggleFlipsExpansion)
+{
+    cd::editor::HierarchyView hv;
+    cd::ecs::Entity e { 5, 1 };
+    EXPECT_FALSE(hv.is_expanded(e));
+    hv.toggle(e);
+    EXPECT_TRUE(hv.is_expanded(e));
+    hv.toggle(e);
+    EXPECT_FALSE(hv.is_expanded(e));
 }

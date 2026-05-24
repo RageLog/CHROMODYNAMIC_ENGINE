@@ -1095,3 +1095,29 @@ TEST(Aabb2, AreaProduct)
     cd::math::Aabb2 b { 0, 0, 10, 5 };
     EXPECT_FLOAT_EQ(cd::math::area(b), 50.0F);
 }
+
+#include <cd/math/Smoothstep.hpp>
+
+TEST(Smootherstep, EndpointsExact)
+{
+    EXPECT_FLOAT_EQ(cd::math::smootherstep(0.0F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::smootherstep(1.0F), 1.0F);
+}
+
+TEST(Smootherstep, MidpointIsHalf)
+{
+    EXPECT_NEAR(cd::math::smootherstep(0.5F), 0.5F, 1e-5F);
+}
+
+TEST(Smootherstep, ClampsOutsideRange)
+{
+    EXPECT_FLOAT_EQ(cd::math::smootherstep(-1.0F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::smootherstep(2.0F), 1.0F);
+}
+
+TEST(SmoothstepRemap, BetweenEdges)
+{
+    EXPECT_FLOAT_EQ(cd::math::smoothstep_remap(0.0F, 10.0F, 5.0F), 0.5F);
+    EXPECT_FLOAT_EQ(cd::math::smoothstep_remap(0.0F, 10.0F, -5.0F), 0.0F);
+    EXPECT_FLOAT_EQ(cd::math::smoothstep_remap(0.0F, 10.0F, 15.0F), 1.0F);
+}
