@@ -47,7 +47,9 @@
 #include <cd/core/CounterTable.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/ecs/World.hpp>
+#include <cd/editor/AxisGizmo.hpp>
 #include <cd/editor/CommandPalette.hpp>
+#include <cd/editor/SelectionOutline.hpp>
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/imgui/Context.hpp>
@@ -576,6 +578,18 @@ int main()
     log_push("[boot] 5 ECS entities spawned via cd::asset::Primitives.");
     int selected = 0;
 
+    // Phase 151 — selection-outline state. Style defaults to
+    // kWireframe (the cheapest of the three documented techniques
+    // and the one we draw as an ImGui foreground overlay below).
+    cd::editor::SelectionOutline outline;
+    outline.style = cd::editor::OutlineStyle::kWireframe;
+
+    // Phase 152 — axis-translation gizmo state + UI bookkeeping.
+    cd::editor::AxisGizmo gizmo;
+    bool gizmo_visible = true;       // toggle via palette
+    ImVec2 gizmo_drag_anchor { 0,0 }; // screen-pixel mouse at begin_drag
+    cd::math::Vec3f gizmo_drag_world_start {};  // target position at begin_drag
+
     // ---- Camera + SceneCameraController (orbit) ----
     cd::camera::Camera cam {};
     cam.eye = { 0.0F, 2.5F, 8.0F };
@@ -864,6 +878,9 @@ int main()
                 log_push("[scene] Save failed (ofstream)");
             }
         });
+    palette.register_command(95, "Gizmo: Toggle Visibility",
+        [&]{ gizmo_visible = !gizmo_visible;
+             log_push(std::string("[gizmo] visible=") + (gizmo_visible?"true":"false")); });
     palette.register_command(90, "Streamer: Enqueue 8 burst",
         [&]{ for (int i = 0; i < 8; ++i) streamer_enqueue(i * 10);
              log_push("[palette] Streamer +8 burst"); });
@@ -1578,6 +1595,203 @@ int main()
         for (auto it = log.rbegin(); it != log.rend(); ++it)
             ImGui::TextUnformatted(it->c_str());
         ImGui::End();
+
+        // ---- Phase 151 — selection outline (ImGui overlay) ----
+        // We use the kWireframe style: project the selected entity's
+        // world position onto the screen, then draw a circle around it
+        // via ImGui's foreground draw list. Cheap, no extra GPU pass,
+        // and demonstrates SelectionOutline state end-to-end.
+        if (selected >= 0 && selected < static_cast<int>(entities.size()))
+        {
+            outline.set(entities[static_cast<std::size_t>(selected)].handle);
+        }
+        else
+        {
+            outline.clear();
+        }
+        outline.clamp_params();
+        if (outline.style != cd::editor::OutlineStyle::kNone && !outline.empty())
+        {
+            const float vw = static_cast<float>(frame.extent.width);
+            const float vh = static_cast<float>(frame.extent.height);
+            auto* dl = ImGui::GetForegroundDrawList();
+            const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+                ImVec4(outline.color.x, outline.color.y, outline.color.z, outline.opacity));
+            for (const auto& e : outline.entities())
+            {
+                auto* lt = scene.local(e);
+                if (lt == nullptr) continue;
+                const auto& p = lt->value.position;
+                // Project world → NDC → pixel.
+                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+                cd::math::Vec4f clip {};
+                for (std::size_t r = 0; r < 4; ++r)
+                {
+                    clip[r] = vp[0][r]*wp[0] + vp[1][r]*wp[1] + vp[2][r]*wp[2] + vp[3][r]*wp[3];
+                }
+                if (clip[3] <= 0.0F) continue;  // behind camera
+                const float ndc_x = clip[0] / clip[3];
+                const float ndc_y = clip[1] / clip[3];
+                const float sx = (ndc_x * 0.5F + 0.5F) * vw;
+                const float sy = (1.0F - (ndc_y * 0.5F + 0.5F)) * vh;
+                // Radius shrinks with distance.
+                const float radius = std::max(8.0F, 60.0F / std::max(0.5F, clip[3] * 0.25F));
+                dl->AddCircle(ImVec2(sx, sy), radius, col, 32, outline.thickness * 1.5F);
+                // Crosshair tick marks for emphasis.
+                dl->AddLine(ImVec2(sx - radius - 6.0F, sy),
+                            ImVec2(sx - radius + 6.0F, sy), col, outline.thickness);
+                dl->AddLine(ImVec2(sx + radius - 6.0F, sy),
+                            ImVec2(sx + radius + 6.0F, sy), col, outline.thickness);
+                dl->AddLine(ImVec2(sx, sy - radius - 6.0F),
+                            ImVec2(sx, sy - radius + 6.0F), col, outline.thickness);
+                dl->AddLine(ImVec2(sx, sy + radius - 6.0F),
+                            ImVec2(sx, sy + radius + 6.0F), col, outline.thickness);
+            }
+        }
+
+        // ---- Phase 152 — axis-translation gizmo (ImGui overlay) ----
+        // Project the selected entity's world position to screen,
+        // draw three colored axis arrows, do hover/click drag in
+        // screen-space, map back into world delta along the active
+        // axis, and push a TranslateCommand on release.
+        if (gizmo_visible && selected >= 0 && selected < static_cast<int>(entities.size()))
+        {
+            auto sel_ent = entities[static_cast<std::size_t>(selected)].handle;
+            auto* lt = scene.local(sel_ent);
+            if (lt != nullptr)
+            {
+                gizmo.set_target(lt->value.position);
+                const float vw = static_cast<float>(frame.extent.width);
+                const float vh = static_cast<float>(frame.extent.height);
+                auto project = [&](const cd::math::Vec3f& p) -> ImVec2 {
+                    const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+                    cd::math::Vec4f c {};
+                    for (std::size_t r = 0; r < 4; ++r)
+                        c[r] = vp[0][r]*wp[0] + vp[1][r]*wp[1] + vp[2][r]*wp[2] + vp[3][r]*wp[3];
+                    if (c[3] <= 0.0F) return ImVec2(-1.0F, -1.0F);
+                    return ImVec2(
+                        (c[0] / c[3] * 0.5F + 0.5F) * vw,
+                        (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+                };
+                const auto& tgt = gizmo.target();
+                constexpr float kAxisLen = 1.5F;
+                const ImVec2 p_org = project(tgt);
+                const ImVec2 p_x = project({ tgt.x + kAxisLen, tgt.y, tgt.z });
+                const ImVec2 p_y = project({ tgt.x, tgt.y + kAxisLen, tgt.z });
+                const ImVec2 p_z = project({ tgt.x, tgt.y, tgt.z + kAxisLen });
+
+                if (p_org.x >= 0.0F)
+                {
+                    auto* dl = ImGui::GetForegroundDrawList();
+                    auto axis_color_imgui = [](cd::editor::GizmoAxis a) {
+                        const auto c = cd::editor::axis_color(a);
+                        return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0F));
+                    };
+                    const ImU32 cx = axis_color_imgui(cd::editor::GizmoAxis::kX);
+                    const ImU32 cy = axis_color_imgui(cd::editor::GizmoAxis::kY);
+                    const ImU32 cz = axis_color_imgui(cd::editor::GizmoAxis::kZ);
+
+                    auto thick = [&](cd::editor::GizmoAxis a) -> float {
+                        return (gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
+                    };
+
+                    dl->AddLine(p_org, p_x, cx, thick(cd::editor::GizmoAxis::kX));
+                    dl->AddLine(p_org, p_y, cy, thick(cd::editor::GizmoAxis::kY));
+                    dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
+                    // Arrowheads (filled triangles).
+                    auto arrowhead = [&](ImVec2 from, ImVec2 to, ImU32 col) {
+                        const float dx = to.x - from.x, dy = to.y - from.y;
+                        const float len = std::sqrt(dx*dx + dy*dy);
+                        if (len < 1e-3F) return;
+                        const float nx = dx / len, ny = dy / len;
+                        const float sx = -ny, sy = nx;
+                        constexpr float kHead = 10.0F;
+                        const ImVec2 a = to;
+                        const ImVec2 b { to.x - nx * kHead + sx * 5.0F, to.y - ny * kHead + sy * 5.0F };
+                        const ImVec2 c { to.x - nx * kHead - sx * 5.0F, to.y - ny * kHead - sy * 5.0F };
+                        dl->AddTriangleFilled(a, b, c, col);
+                    };
+                    arrowhead(p_org, p_x, cx);
+                    arrowhead(p_org, p_y, cy);
+                    arrowhead(p_org, p_z, cz);
+
+                    // Hover test via perpendicular distance from mouse to each axis line.
+                    const ImVec2 mp = ImGui::GetIO().MousePos;
+                    auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p) {
+                        const float dx = b.x - a.x, dy = b.y - a.y;
+                        const float L2 = dx*dx + dy*dy;
+                        if (L2 < 1e-4F) return std::sqrt((p.x-a.x)*(p.x-a.x) + (p.y-a.y)*(p.y-a.y));
+                        const float t = std::clamp(((p.x-a.x)*dx + (p.y-a.y)*dy) / L2, 0.0F, 1.0F);
+                        const float qx = a.x + t * dx, qy = a.y + t * dy;
+                        return std::sqrt((p.x-qx)*(p.x-qx) + (p.y-qy)*(p.y-qy));
+                    };
+                    cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
+                    float best_d = gizmo.hover_tolerance_pixels;
+                    if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kX; }
+                    if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kY; }
+                    if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kZ; }
+                    gizmo.set_hover(best);
+
+                    const bool over_imgui_ui = ImGui::GetIO().WantCaptureMouse &&
+                                                ImGui::IsAnyItemHovered();
+                    if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
+                    {
+                        gizmo.begin_drag(best, lt->value.position);
+                        gizmo_drag_anchor = mp;
+                        gizmo_drag_world_start = lt->value.position;
+                    }
+                    if (gizmo.is_dragging())
+                    {
+                        // Screen-space delta along the projected axis,
+                        // mapped to world delta by pixels_per_world_unit
+                        // on the active axis projection.
+                        ImVec2 axis_screen_end = p_x;
+                        if (gizmo.active_axis() == cd::editor::GizmoAxis::kY) axis_screen_end = p_y;
+                        else if (gizmo.active_axis() == cd::editor::GizmoAxis::kZ) axis_screen_end = p_z;
+                        const float ax_dx = axis_screen_end.x - p_org.x;
+                        const float ax_dy = axis_screen_end.y - p_org.y;
+                        const float ax_len_px = std::sqrt(ax_dx*ax_dx + ax_dy*ax_dy);
+                        if (ax_len_px > 1.0F)
+                        {
+                            const float nx = ax_dx / ax_len_px, ny = ax_dy / ax_len_px;
+                            const float mouse_dx = mp.x - gizmo_drag_anchor.x;
+                            const float mouse_dy = mp.y - gizmo_drag_anchor.y;
+                            const float dot_px = mouse_dx * nx + mouse_dy * ny;
+                            const float world_per_px = kAxisLen / ax_len_px;
+                            const float delta_world = dot_px * world_per_px;
+                            cd::math::Vec3f cur = gizmo_drag_world_start;
+                            switch (gizmo.active_axis())
+                            {
+                                case cd::editor::GizmoAxis::kX: cur.x += delta_world; break;
+                                case cd::editor::GizmoAxis::kY: cur.y -= delta_world; break;  // screen Y is flipped
+                                case cd::editor::GizmoAxis::kZ: cur.z += delta_world; break;
+                                default: break;
+                            }
+                            // Drive live position; commit a single delta to history on release.
+                            lt->value.position = cur;
+                            gizmo.update_drag(cur);
+                        }
+                        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+                        {
+                            const auto delta = gizmo.end_drag();
+                            if (std::abs(delta.x) + std::abs(delta.y) + std::abs(delta.z) > 1e-4F)
+                            {
+                                // Roll back the live mutation, then push the command
+                                // so apply() reapplies it and the undo stack stays
+                                // consistent.
+                                lt->value.position = gizmo_drag_world_start;
+                                history.push(std::make_unique<cd::editor::TranslateCommand>(
+                                    scene, sel_ent, delta));
+                                log_push("[gizmo] translate dx=" + std::to_string(delta.x) +
+                                         " dy=" + std::to_string(delta.y) +
+                                         " dz=" + std::to_string(delta.z));
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // ---- Palette popup ----
         if (palette_visible)
