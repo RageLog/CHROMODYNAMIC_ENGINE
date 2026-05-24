@@ -678,3 +678,44 @@ TEST(EnvironmentLight, IntensityScalable)
     e.intensity = 2.5F;
     EXPECT_FLOAT_EQ(e.intensity, 2.5F);
 }
+
+#include <cd/scene/HeightField.hpp>
+
+TEST(HeightField, GetReturnsStoredValue)
+{
+    cd::scene::HeightField hf { 4, 4, 1.0F };
+    hf.set(1, 2, 5.0F);
+    EXPECT_FLOAT_EQ(hf.get(1, 2), 5.0F);
+}
+
+TEST(HeightField, OutOfBoundsGetReturnsZero)
+{
+    cd::scene::HeightField hf { 4, 4 };
+    EXPECT_FLOAT_EQ(hf.get(99, 99), 0.0F);
+}
+
+TEST(HeightField, SampleBilinearMidpoint)
+{
+    cd::scene::HeightField hf { 2, 2, 1.0F };
+    hf.set(0, 0, 0.0F);
+    hf.set(1, 0, 1.0F);
+    hf.set(0, 1, 2.0F);
+    hf.set(1, 1, 3.0F);
+    // sample at (0.5, 0.5) — average of all 4 = 1.5
+    EXPECT_FLOAT_EQ(hf.sample(0.5F, 0.5F), 1.5F);
+}
+
+TEST(HeightField, SampleClampsOutOfBounds)
+{
+    cd::scene::HeightField hf { 2, 2, 1.0F };
+    hf.set(1, 1, 5.0F);
+    EXPECT_FLOAT_EQ(hf.sample(100.0F, 100.0F), 5.0F);
+}
+
+TEST(HeightField, CellSizeRespected)
+{
+    cd::scene::HeightField hf { 4, 4, 2.0F };   // 2 units per cell
+    hf.set(2, 2, 10.0F);
+    // world x = 2 units/cell * 2 = 4
+    EXPECT_FLOAT_EQ(hf.sample(4.0F, 4.0F), 10.0F);
+}

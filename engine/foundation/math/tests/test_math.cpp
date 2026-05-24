@@ -940,3 +940,30 @@ TEST(Statistics, ResetReturnsToInitial)
     EXPECT_EQ(s.count(), 0u);
     EXPECT_DOUBLE_EQ(s.mean(), 0.0);
 }
+
+#include <cd/math/BarycentricInterp.hpp>
+
+TEST(BarycentricInterp, ScalarMidpoint)
+{
+    EXPECT_FLOAT_EQ(cd::math::barycentric_interp(0.0F, 10.0F, 20.0F,
+                                                 1.0F/3.0F, 1.0F/3.0F, 1.0F/3.0F),
+                    10.0F);
+}
+
+TEST(BarycentricInterp, VertexCornerYieldsVertexValue)
+{
+    EXPECT_FLOAT_EQ(cd::math::barycentric_interp(7.0F, 11.0F, 13.0F, 1.0F, 0.0F, 0.0F), 7.0F);
+    EXPECT_FLOAT_EQ(cd::math::barycentric_interp(7.0F, 11.0F, 13.0F, 0.0F, 1.0F, 0.0F), 11.0F);
+    EXPECT_FLOAT_EQ(cd::math::barycentric_interp(7.0F, 11.0F, 13.0F, 0.0F, 0.0F, 1.0F), 13.0F);
+}
+
+TEST(BarycentricInterp, Vec3fInterp)
+{
+    cd::math::Vec3f a { 1, 0, 0 };
+    cd::math::Vec3f b { 0, 1, 0 };
+    cd::math::Vec3f c { 0, 0, 1 };
+    auto r = cd::math::barycentric_interp(a, b, c, 0.25F, 0.25F, 0.5F);
+    EXPECT_FLOAT_EQ(r.x, 0.25F);
+    EXPECT_FLOAT_EQ(r.y, 0.25F);
+    EXPECT_FLOAT_EQ(r.z, 0.5F);
+}
