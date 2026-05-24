@@ -604,3 +604,37 @@ TEST(Future, WaitUnblocksOnSet)
     EXPECT_EQ(f.get(), 7);
     setter.join();
 }
+
+#include <cd/concurrency/TaskGroup.hpp>
+
+TEST(TaskGroup, AllTasksRunBeforeDestructor)
+{
+    std::atomic<int> hits { 0 };
+    {
+        cd::concurrency::TaskGroup g;
+        g.run([&] { hits.fetch_add(1); });
+        g.run([&] { hits.fetch_add(1); });
+        g.run([&] { hits.fetch_add(1); });
+    }   // dtor joins all
+    EXPECT_EQ(hits.load(), 3);
+}
+
+TEST(TaskGroup, WaitJoinsExplicitly)
+{
+    std::atomic<int> hits { 0 };
+    cd::concurrency::TaskGroup g;
+    g.run([&] { hits.fetch_add(1); });
+    g.run([&] { hits.fetch_add(1); });
+    g.wait();
+    EXPECT_EQ(hits.load(), 2);
+    EXPECT_EQ(g.size(), 0u);   // wait() clears
+}
+
+TEST(TaskGroup, WaitIsIdempotent)
+{
+    cd::concurrency::TaskGroup g;
+    g.run([] {});
+    g.wait();
+    g.wait();   // second call: no-op
+    EXPECT_EQ(g.size(), 0u);
+}

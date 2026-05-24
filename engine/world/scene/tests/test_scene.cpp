@@ -841,3 +841,50 @@ TEST(LightProbe, FirstOrderDirectional)
     EXPECT_GT(rx.y, 0.0F);
     EXPECT_LT(rn.y, 0.0F);
 }
+
+#include <cd/scene/Polyline3D.hpp>
+
+TEST(Polyline3D, EmptyHasZeroLength)
+{
+    cd::scene::Polyline3D p;
+    EXPECT_EQ(p.point_count(), 0u);
+    EXPECT_FLOAT_EQ(p.length(), 0.0F);
+}
+
+TEST(Polyline3D, LengthOfStraightSegment)
+{
+    cd::scene::Polyline3D p;
+    p.add({ 0, 0, 0 });
+    p.add({ 3, 4, 0 });
+    EXPECT_NEAR(p.length(), 5.0F, 1e-5F);   // 3-4-5 triangle
+}
+
+TEST(Polyline3D, PointAtMidIsHalf)
+{
+    cd::scene::Polyline3D p;
+    p.add({ 0, 0, 0 });
+    p.add({ 10, 0, 0 });
+    auto mid = p.point_at(5.0F);
+    EXPECT_FLOAT_EQ(mid.x, 5.0F);
+}
+
+TEST(Polyline3D, PointAtClampsAtEndpoints)
+{
+    cd::scene::Polyline3D p;
+    p.add({ 0, 0, 0 });
+    p.add({ 10, 0, 0 });
+    auto before = p.point_at(-5.0F);
+    auto after  = p.point_at(100.0F);
+    EXPECT_FLOAT_EQ(before.x, 0.0F);
+    EXPECT_FLOAT_EQ(after.x, 10.0F);
+}
+
+TEST(Polyline3D, ThreeSegmentArcLength)
+{
+    cd::scene::Polyline3D p;
+    p.add({ 0, 0, 0 });
+    p.add({ 1, 0, 0 });
+    p.add({ 1, 1, 0 });
+    p.add({ 1, 1, 1 });
+    EXPECT_NEAR(p.length(), 3.0F, 1e-5F);
+}
