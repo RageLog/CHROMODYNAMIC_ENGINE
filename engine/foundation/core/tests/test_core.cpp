@@ -1263,3 +1263,47 @@ TEST(Singleton, MutationPersists)
     TestSink::instance().bump();
     EXPECT_GE(TestSink::instance().counter(), 2);
 }
+
+#include <cd/core/CounterTable.hpp>
+
+TEST(CounterTable, IncrementAccumulates)
+{
+    cd::core::CounterTable c;
+    c.increment("hits");
+    c.increment("hits");
+    c.increment("hits", 5);
+    EXPECT_EQ(c.get("hits"), 7);
+}
+
+TEST(CounterTable, SetReplaces)
+{
+    cd::core::CounterTable c;
+    c.set("score", 100);
+    c.set("score", 250);
+    EXPECT_EQ(c.get("score"), 250);
+}
+
+TEST(CounterTable, UnknownKeyZero)
+{
+    cd::core::CounterTable c;
+    EXPECT_EQ(c.get("missing"), 0);
+}
+
+TEST(CounterTable, SnapshotIncludesAll)
+{
+    cd::core::CounterTable c;
+    c.increment("a", 1);
+    c.increment("b", 2);
+    c.increment("c", 3);
+    auto snap = c.snapshot();
+    EXPECT_EQ(snap.size(), 3u);
+}
+
+TEST(CounterTable, ResetAllToZeroPreservesKeys)
+{
+    cd::core::CounterTable c;
+    c.increment("k", 10);
+    c.reset_all_to_zero();
+    EXPECT_EQ(c.size(), 1u);
+    EXPECT_EQ(c.get("k"), 0);
+}

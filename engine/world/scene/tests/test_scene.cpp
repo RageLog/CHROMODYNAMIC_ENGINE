@@ -1016,3 +1016,42 @@ TEST(SceneStats, MemoryEstimateStorable)
     s.estimated_bytes = 1024ULL * 1024ULL * 50ULL;   // 50 MB
     EXPECT_GT(s.estimated_bytes, 0u);
 }
+
+#include <cd/scene/TagBucket.hpp>
+
+TEST(TagBucket, TagAddsToBucket)
+{
+    cd::scene::TagBucket b;
+    cd::ecs::Entity e1 { 1, 1 };
+    cd::ecs::Entity e2 { 2, 1 };
+    b.tag(e1, "Enemy");
+    b.tag(e2, "Enemy");
+    EXPECT_EQ(b.entities_with("Enemy").size(), 2u);
+}
+
+TEST(TagBucket, DuplicateTagNoOp)
+{
+    cd::scene::TagBucket b;
+    cd::ecs::Entity e { 1, 1 };
+    b.tag(e, "X");
+    b.tag(e, "X");
+    EXPECT_EQ(b.entities_with("X").size(), 1u);
+}
+
+TEST(TagBucket, UntagRemoves)
+{
+    cd::scene::TagBucket b;
+    cd::ecs::Entity e1 { 1, 1 };
+    cd::ecs::Entity e2 { 2, 1 };
+    b.tag(e1, "X");
+    b.tag(e2, "X");
+    b.untag(e1, "X");
+    EXPECT_EQ(b.entities_with("X").size(), 1u);
+    EXPECT_EQ(b.entities_with("X")[0], e2);
+}
+
+TEST(TagBucket, UnknownTagReturnsEmpty)
+{
+    cd::scene::TagBucket b;
+    EXPECT_TRUE(b.entities_with("nope").empty());
+}
