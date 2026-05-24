@@ -1,15 +1,21 @@
-# Marathon summary — Phase 13 → Phase 101 (v0.30.0 → v0.99.33) — centennial + demo reel
+# Marathon summary — Phase 13 → Phase 125 (v0.30.0 → v0.99.52)
 
 Generated **2026-05-24** during the third autonomous-marathon stretch.
-**71 minor + 33 patch releases = 104 tags total** shipped from the
+**71 minor + 52 patch releases = 123 tags total** shipped from the
 marathon's start (v0.30 baseline).
 **v0.99.0 reached — v1.0 still user-only per ADR-wave125 rollback.**
 After v0.99.0, marathon switched to **patch-level tagging** (v0.99.1
-through v0.99.33). v1.0.0 sign-off authority is reserved to the user.
+through v0.99.52). v1.0.0 sign-off authority is reserved to the user.
 
 **🎉 100-tag milestone achieved at v0.99.29 (Phase 97).**
 **🎯 Phase 100 centennial reached at v0.99.32.**
 **🎬 Demo reel published at v0.99.33 (Phase 101) — see [DEMO_REEL.md](DEMO_REEL.md).**
+**🎨 PBR + skybox + editor live-drag polish (Phases 102-103) at v0.99.35.**
+**📦 Engine-side StandardPbr + AnalyticalSky materials + procedural primitives (Phases 104-106) at v0.99.37.**
+**🎮 Editor PropertyDrawer + Frustum sphere cull + SceneCameraController + serializer metadata (Phases 107-110, 121) at v0.99.40.**
+**🚀 CommandPalette wired + hello_random + AssetRegistry::evict + AsyncStreamer + DrawBucket (Phases 111-114, 108) at v0.99.45.**
+**⚡ TLAS + RT-pipeline interface + outline/gizmo state + parity audit + RADV CI (Phases 117-118, 115-116, 122-123) at v0.99.50.**
+**💎 D3D12 real create_texture_view + sync primitives (Phases 124-125) at v0.99.52.**
 This doc is the single scan-in-the-morning record.
 
 ## Tag chain
