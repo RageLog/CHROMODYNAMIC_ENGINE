@@ -888,3 +888,36 @@ TEST(Polyline3D, ThreeSegmentArcLength)
     p.add({ 1, 1, 1 });
     EXPECT_NEAR(p.length(), 3.0F, 1e-5F);
 }
+
+#include <cd/scene/Light.hpp>
+
+TEST(Light, DefaultIsPointLight)
+{
+    cd::scene::Light l;
+    EXPECT_EQ(l.kind, cd::scene::LightKind::kPoint);
+    EXPECT_FLOAT_EQ(l.intensity, 1.0F);
+}
+
+TEST(Light, PointLightFactory)
+{
+    auto l = cd::scene::point_light({ 1, 2, 3 }, { 1, 0, 0 }, 5.0F, 20.0F);
+    EXPECT_EQ(l.kind, cd::scene::LightKind::kPoint);
+    EXPECT_FLOAT_EQ(l.position.x, 1.0F);
+    EXPECT_FLOAT_EQ(l.color.x, 1.0F);
+    EXPECT_FLOAT_EQ(l.intensity, 5.0F);
+    EXPECT_FLOAT_EQ(l.range, 20.0F);
+}
+
+TEST(Light, DirectionalLightFactory)
+{
+    auto l = cd::scene::directional_light({ 0, -1, 0 }, { 1, 1, 0.8F });
+    EXPECT_EQ(l.kind, cd::scene::LightKind::kDirectional);
+    EXPECT_FLOAT_EQ(l.direction.y, -1.0F);
+}
+
+TEST(Light, SpotConeAnglesDefaults)
+{
+    cd::scene::Light l;
+    l.kind = cd::scene::LightKind::kSpot;
+    EXPECT_LT(l.inner_cone, l.outer_cone);
+}

@@ -1181,3 +1181,41 @@ TEST(Damping, Vec3Converges)
     EXPECT_NEAR(x[1], -2.0F, 0.5F);
     EXPECT_NEAR(x[2], 1.0F, 0.5F);
 }
+
+#include <cd/math/QuadraticSolver.hpp>
+
+TEST(QuadraticSolver, TwoRealRoots)
+{
+    // x² - 5x + 6 = 0 → (x-2)(x-3) → roots 2, 3.
+    auto r = cd::math::solve_quadratic(1.0F, -5.0F, 6.0F);
+    EXPECT_EQ(r.count, 2);
+    EXPECT_NEAR(r.x1, 2.0F, 1e-5F);
+    EXPECT_NEAR(r.x2, 3.0F, 1e-5F);
+}
+
+TEST(QuadraticSolver, DoubleRoot)
+{
+    // x² - 4x + 4 = 0 → (x-2)² → single root 2.
+    auto r = cd::math::solve_quadratic(1.0F, -4.0F, 4.0F);
+    EXPECT_EQ(r.count, 1);
+    EXPECT_NEAR(r.x1, 2.0F, 1e-5F);
+}
+
+TEST(QuadraticSolver, NoRealRoots)
+{
+    auto r = cd::math::solve_quadratic(1.0F, 0.0F, 1.0F);   // x² + 1 = 0
+    EXPECT_EQ(r.count, 0);
+}
+
+TEST(QuadraticSolver, LinearFallback)
+{
+    auto r = cd::math::solve_quadratic(0.0F, 2.0F, -8.0F);   // 2x - 8 = 0
+    EXPECT_EQ(r.count, 1);
+    EXPECT_FLOAT_EQ(r.x1, 4.0F);
+}
+
+TEST(QuadraticSolver, RootsAreSorted)
+{
+    auto r = cd::math::solve_quadratic(1.0F, -1.0F, -6.0F);   // (x-3)(x+2) → -2, 3
+    EXPECT_LT(r.x1, r.x2);
+}
