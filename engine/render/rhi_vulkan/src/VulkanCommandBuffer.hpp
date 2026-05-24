@@ -21,6 +21,22 @@
 namespace cd::rhi_vulkan
 {
 
+/// Phase 132 — opaque holder for build-time AS state. Cmd buffer
+/// pulls one of these from `ResourceTables::accel_lookup`; pointer
+/// fields reference vectors owned by the AccelRecord (lifetime tied
+/// to the AS handle).
+struct AccelBuildView
+{
+    VkAccelerationStructureKHR  as { VK_NULL_HANDLE };
+    VkDeviceAddress             scratch_device_address { 0 };
+    bool                        is_tlas { false };
+    VkDeviceAddress             instance_device_address { 0 };
+    std::uint32_t               instance_count { 0 };
+    const VkAccelerationStructureGeometryKHR* triangle_geos { nullptr };
+    const std::uint32_t*                      triangle_primitive_counts { nullptr };
+    std::uint32_t                             triangle_count { 0 };
+};
+
 /// Non-owning views into the producing VulkanDevice's resource tables. The
 /// command buffer uses these to translate engine-side handles (BufferHandle,
 /// TextureHandle, etc.) to native Vk objects at record time. Pointers must
@@ -39,6 +55,13 @@ struct ResourceTables
     /// bound pipeline without the caller passing it again.
     const std::unordered_map<std::uint32_t, VkPipelineLayout>* pipeline_to_layout { nullptr };
     const std::unordered_map<std::uint32_t, VkDescriptorSet>* descriptor_sets { nullptr };
+
+    /// Phase 132 — callback that resolves an AS handle to an
+    /// AccelBuildView (BLAS triangles or TLAS instances + scratch).
+    /// Returns false on unknown handle.
+    using AccelLookupFn = bool(*)(void* user, std::uint32_t handle_index, AccelBuildView& out);
+    AccelLookupFn accel_lookup { nullptr };
+    void*         accel_lookup_user { nullptr };
 };
 
 class VulkanCommandBuffer final : public cd::rhi::ICommandBuffer
@@ -120,6 +143,9 @@ public:
 
     void push_debug_group(std::string_view name) override;
     void pop_debug_group() override;
+
+    // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
+    void build_acceleration_structure(cd::rhi::AccelStructureHandle as) override;
 
     [[nodiscard]] VkCommandBuffer native() const noexcept
     {

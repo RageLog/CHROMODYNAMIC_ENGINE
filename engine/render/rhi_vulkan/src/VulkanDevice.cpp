@@ -23,6 +23,7 @@
 #endif
 
 #include <cd/rhi/ICommandBuffer.hpp>  // full type — VulkanDevice::create_command_buffer
+#include "VulkanCommandBuffer.hpp"   // ResourceTables + AccelBuildView (Phase 132)
                                       // returns unique_ptr<ICommandBuffer>, the
                                       // dtor needs the complete type at the call
                                       // site (GCC enforces this earlier than Clang).
@@ -2579,8 +2580,30 @@ public:
                 .pipeline_layouts = &pipeline_layouts_,
                 .pipeline_to_layout = &pipeline_to_layout_,
                 .descriptor_sets = &descriptor_sets_,
+                .accel_lookup = &VulkanDevice::accel_lookup_static_,
+                .accel_lookup_user = this,
             }
         );
+    }
+
+    // Phase 132 — static callback the VulkanCommandBuffer invokes to
+    // resolve an AS handle into an AccelBuildView. Static so it can
+    // sit in a function-pointer slot; `user` is the VulkanDevice*.
+    static bool accel_lookup_static_(void* user, std::uint32_t idx, AccelBuildView& out) noexcept
+    {
+        auto* self = static_cast<VulkanDevice*>(user);
+        auto it = self->accels_.find(idx);
+        if (it == self->accels_.end()) return false;
+        const auto& rec = it->second;
+        out.as = rec.as;
+        out.scratch_device_address = rec.scratch_device_address;
+        out.is_tlas = (rec.kind == cd::rhi::AccelStructureKind::kTopLevel);
+        out.instance_device_address = rec.instance_device_address;
+        out.instance_count = static_cast<std::uint32_t>(rec.instances.size());
+        out.triangle_geos = rec.vk_triangle_geos.data();
+        out.triangle_primitive_counts = rec.vk_primitive_counts.data();
+        out.triangle_count = static_cast<std::uint32_t>(rec.vk_triangle_geos.size());
+        return true;
     }
 
     void submit(cd::rhi::ICommandBuffer& cmd) override
@@ -2822,9 +2845,96 @@ public:
             rec.storage_alloc = storage_alloc;
             rec.scratch_size = sizes.buildScratchSize;
             rec.kind = desc.kind;
-            // Phase 130 — deep-copy the instance list so the build path
-            // doesn't need the caller's span to outlive create_*.
             rec.instances.assign(desc.instances.begin(), desc.instances.end());
+
+            // Phase 132 — allocate per-AS scratch buffer.
+            {
+                VkBufferCreateInfo sbci {};
+                sbci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                sbci.size = rec.scratch_size;
+                sbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                sbci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+                VmaAllocationCreateInfo saci {};
+                saci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+                if (vmaCreateBuffer(vma_allocator_, &sbci, &saci,
+                                    &rec.scratch_buf, &rec.scratch_alloc, nullptr) != VK_SUCCESS)
+                {
+                    vkDestroyAccelerationStructureKHR(device_, as, nullptr);
+                    vmaDestroyBuffer(vma_allocator_, storage_buf, storage_alloc);
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        "TLAS scratch buffer allocation failed"));
+                }
+                VkBufferDeviceAddressInfo si {};
+                si.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                si.buffer = rec.scratch_buf;
+                rec.scratch_device_address = vkGetBufferDeviceAddress(device_, &si);
+            }
+
+            // Resolve this TLAS's own device address.
+            {
+                VkAccelerationStructureDeviceAddressInfoKHR info {};
+                info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+                info.accelerationStructure = as;
+                rec.as_device_address = vkGetAccelerationStructureDeviceAddressKHR(device_, &info);
+            }
+
+            // Phase 133 — allocate + upload the TLAS instance buffer
+            // (translate engine AccelInstance → VkAS InstanceKHR).
+            if (!rec.instances.empty())
+            {
+                const VkDeviceSize ibytes =
+                    sizeof(VkAccelerationStructureInstanceKHR) * rec.instances.size();
+                VkBufferCreateInfo ibci {};
+                ibci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                ibci.size = ibytes;
+                ibci.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                ibci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+                VmaAllocationCreateInfo iaci {};
+                iaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                iaci.usage = VMA_MEMORY_USAGE_AUTO;
+                VmaAllocationInfo iai {};
+                if (vmaCreateBuffer(vma_allocator_, &ibci, &iaci,
+                                    &rec.instance_buf, &rec.instance_alloc, &iai) != VK_SUCCESS)
+                {
+                    vmaDestroyBuffer(vma_allocator_, rec.scratch_buf, rec.scratch_alloc);
+                    vkDestroyAccelerationStructureKHR(device_, as, nullptr);
+                    vmaDestroyBuffer(vma_allocator_, storage_buf, storage_alloc);
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        "TLAS instance buffer allocation failed"));
+                }
+                auto* dst = static_cast<VkAccelerationStructureInstanceKHR*>(iai.pMappedData);
+                for (std::size_t i = 0; i < rec.instances.size(); ++i)
+                {
+                    const auto& src = rec.instances[i];
+                    VkAccelerationStructureInstanceKHR& out = dst[i];
+                    std::memcpy(&out.transform, src.transform, sizeof(out.transform));
+                    out.instanceCustomIndex = src.instance_id & 0xFFFFFFu;
+                    out.mask                = src.mask;
+                    out.instanceShaderBindingTableRecordOffset = src.hit_offset & 0xFFFFFFu;
+                    out.flags               = src.flags;
+                    if (src.blas.is_valid())
+                    {
+                        auto blas_it = accels_.find(src.blas.index());
+                        out.accelerationStructureReference =
+                            (blas_it != accels_.end()) ? blas_it->second.as_device_address : 0;
+                    }
+                    else
+                    {
+                        out.accelerationStructureReference = 0;
+                    }
+                }
+                VkBufferDeviceAddressInfo bdai {};
+                bdai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                bdai.buffer = rec.instance_buf;
+                rec.instance_device_address = vkGetBufferDeviceAddress(device_, &bdai);
+            }
+
             const auto id = next_id_++;
             accels_.emplace(id, std::move(rec));
             return cd::rhi::AccelStructureHandle { id, 1u };
@@ -2936,8 +3046,43 @@ public:
         rec.storage_alloc = storage_alloc;
         rec.scratch_size = sizes.buildScratchSize;
         rec.kind = desc.kind;
-        // Phase 130 — deep-copy the triangle list for the build path.
         rec.triangles.assign(desc.triangles.begin(), desc.triangles.end());
+        // Phase 132 — keep the Vk-format triangle list for the build pass.
+        rec.vk_triangle_geos = geos;
+        rec.vk_primitive_counts = primitive_counts;
+
+        // Phase 132 — allocate per-BLAS scratch buffer.
+        {
+            VkBufferCreateInfo sbci {};
+            sbci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            sbci.size = rec.scratch_size;
+            sbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+            sbci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            VmaAllocationCreateInfo saci {};
+            saci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+            if (vmaCreateBuffer(vma_allocator_, &sbci, &saci,
+                                &rec.scratch_buf, &rec.scratch_alloc, nullptr) != VK_SUCCESS)
+            {
+                vkDestroyAccelerationStructureKHR(device_, as, nullptr);
+                vmaDestroyBuffer(vma_allocator_, storage_buf, storage_alloc);
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "BLAS scratch buffer allocation failed"));
+            }
+            VkBufferDeviceAddressInfo si {};
+            si.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            si.buffer = rec.scratch_buf;
+            rec.scratch_device_address = vkGetBufferDeviceAddress(device_, &si);
+        }
+        // Resolve this BLAS's device address for downstream TLAS instances.
+        {
+            VkAccelerationStructureDeviceAddressInfoKHR info {};
+            info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+            info.accelerationStructure = as;
+            rec.as_device_address = vkGetAccelerationStructureDeviceAddressKHR(device_, &info);
+        }
+
         const auto id = next_id_++;
         accels_.emplace(id, std::move(rec));
         return cd::rhi::AccelStructureHandle { id, 1u };
@@ -2949,12 +3094,16 @@ public:
         if (it == accels_.end()) return;
         if (it->second.as != VK_NULL_HANDLE)
             vkDestroyAccelerationStructureKHR(device_, it->second.as, nullptr);
+        // Free scratch + instance auxiliary buffers (Phase 132/133).
+        if (it->second.scratch_buf != VK_NULL_HANDLE)
+            vmaDestroyBuffer(vma_allocator_, it->second.scratch_buf, it->second.scratch_alloc);
+        if (it->second.instance_buf != VK_NULL_HANDLE)
+            vmaDestroyBuffer(vma_allocator_, it->second.instance_buf, it->second.instance_alloc);
         if (it->second.storage_buf != VK_NULL_HANDLE)
             vmaDestroyBuffer(vma_allocator_, it->second.storage_buf, it->second.storage_alloc);
         accels_.erase(it);
     }
 
-private:
     struct BufferMeta
     {
         VkDeviceSize size { 0 };
@@ -3091,24 +3240,34 @@ private:
     std::unordered_map<std::uint32_t, SwapchainRecord> swapchains_;
 
     // Phase 17.A — acceleration-structure storage.
-    // Phase 130 (this run) — record stores a deep copy of the build-
-    // input lists so a future `build_acceleration_structure` command
-    // can rebuild the VkAccelerationStructureGeometryKHR list without
-    // requiring the caller to re-pass them. AccelTriangleGeometry and
-    // AccelInstance are POD-ish structs already living in cd::rhi —
-    // we copy them by value.
+    // Phase 130 — record stores deep copy of build-input lists.
+    // Phase 132 — record also carries per-AS scratch buffer + device
+    // address + Vulkan-format triangle geometry list so
+    // `vkCmdBuildAccelerationStructuresKHR` can fire with no further
+    // allocation from the cmd-buffer side.
+    // Phase 133 — TLAS instance buffer (host-visible VkAS InstanceKHR
+    // array). BLAS leaves these null.
     struct AccelRecord
     {
         VkAccelerationStructureKHR as { VK_NULL_HANDLE };
         VkBuffer storage_buf { VK_NULL_HANDLE };
         VmaAllocation storage_alloc { VK_NULL_HANDLE };
         VkDeviceSize scratch_size { 0 };
+        VkBuffer scratch_buf { VK_NULL_HANDLE };
+        VmaAllocation scratch_alloc { VK_NULL_HANDLE };
+        VkDeviceAddress scratch_device_address { 0 };
+        VkDeviceAddress as_device_address { 0 };
         cd::rhi::AccelStructureKind kind { cd::rhi::AccelStructureKind::kBottomLevel };
-        // Phase 130 — deep-copy build inputs (BLAS only sets triangles;
-        // TLAS only sets instances; both empty until cmd build path
-        // lands in a follow-up).
         std::vector<cd::rhi::AccelTriangleGeometry> triangles;
         std::vector<cd::rhi::AccelInstance>         instances;
+        VkBuffer        instance_buf { VK_NULL_HANDLE };
+        VmaAllocation   instance_alloc { VK_NULL_HANDLE };
+        VkDeviceAddress instance_device_address { 0 };
+        // Phase 132 — Vulkan-format triangle list cached at create
+        // time so the cmd-buffer build path can reference it without
+        // rebuilding from the engine descriptor.
+        std::vector<VkAccelerationStructureGeometryKHR> vk_triangle_geos;
+        std::vector<std::uint32_t>                      vk_primitive_counts;
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
     std::unordered_map<std::uint32_t, VkSemaphore> semaphores_;

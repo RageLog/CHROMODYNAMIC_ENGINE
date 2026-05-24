@@ -663,4 +663,69 @@ void VulkanCommandBuffer::pop_debug_group()
     vkCmdEndDebugUtilsLabelEXT(cmd_);
 }
 
+// Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
+void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHandle as)
+{
+    if (tables_.accel_lookup == nullptr || vkCmdBuildAccelerationStructuresKHR == nullptr)
+        return;
+    AccelBuildView view {};
+    if (!tables_.accel_lookup(tables_.accel_lookup_user, as.index(), view))
+        return;
+    if (view.as == VK_NULL_HANDLE || view.scratch_device_address == 0)
+        return;
+
+    VkAccelerationStructureBuildGeometryInfoKHR bgi {};
+    bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    bgi.mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    bgi.dstAccelerationStructure = view.as;
+    bgi.scratchData.deviceAddress = view.scratch_device_address;
+
+    VkAccelerationStructureGeometryKHR instances_geo {};
+    VkAccelerationStructureBuildRangeInfoKHR range_one {};
+
+    if (view.is_tlas)
+    {
+        bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+
+        instances_geo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        instances_geo.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        instances_geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        instances_geo.geometry.instances.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+        instances_geo.geometry.instances.arrayOfPointers = VK_FALSE;
+        instances_geo.geometry.instances.data.deviceAddress = view.instance_device_address;
+        bgi.geometryCount = 1;
+        bgi.pGeometries   = &instances_geo;
+
+        range_one.primitiveCount = view.instance_count;
+    }
+    else
+    {
+        bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        bgi.geometryCount = view.triangle_count;
+        bgi.pGeometries   = view.triangle_geos;
+    }
+
+    // BLAS may have multiple geometries; allocate a small stack array.
+    constexpr std::size_t kMaxBuildGeos = 32;
+    VkAccelerationStructureBuildRangeInfoKHR ranges[kMaxBuildGeos] {};
+    const VkAccelerationStructureBuildRangeInfoKHR* range_ptrs[1] { nullptr };
+
+    if (view.is_tlas)
+    {
+        range_ptrs[0] = &range_one;
+    }
+    else
+    {
+        const std::uint32_t n = (view.triangle_count > kMaxBuildGeos)
+            ? static_cast<std::uint32_t>(kMaxBuildGeos) : view.triangle_count;
+        for (std::uint32_t i = 0; i < n; ++i)
+            ranges[i].primitiveCount = view.triangle_primitive_counts[i];
+        range_ptrs[0] = ranges;
+    }
+
+    vkCmdBuildAccelerationStructuresKHR(cmd_, 1, &bgi, range_ptrs);
+}
+
 }  // namespace cd::rhi_vulkan
