@@ -310,3 +310,50 @@ TEST(AdditiveBlend, SizeMismatchRejected)
     std::array<cd::math::Transformf, 1> out {};
     EXPECT_FALSE(cd::anim::additive_blend(base, delta, 0.5F, out));
 }
+
+#include <cd/anim/CurveTrack.hpp>
+
+TEST(CurveTrack, EmptySampleReturnsZero)
+{
+    cd::anim::CurveTrack c;
+    EXPECT_FLOAT_EQ(c.sample(0.5F), 0.0F);
+}
+
+TEST(CurveTrack, SingleKeyClampsAround)
+{
+    cd::anim::CurveTrack c;
+    c.add_key(0.5F, 42.0F);
+    EXPECT_FLOAT_EQ(c.sample(-10.0F), 42.0F);
+    EXPECT_FLOAT_EQ(c.sample(0.5F),   42.0F);
+    EXPECT_FLOAT_EQ(c.sample(10.0F),  42.0F);
+}
+
+TEST(CurveTrack, LinearMidpoint)
+{
+    cd::anim::CurveTrack c;
+    c.add_key(0.0F, 0.0F);
+    c.add_key(1.0F, 10.0F);
+    EXPECT_FLOAT_EQ(c.sample(0.5F), 5.0F);
+    EXPECT_FLOAT_EQ(c.sample(0.25F), 2.5F);
+}
+
+TEST(CurveTrack, ClampsOutsideRange)
+{
+    cd::anim::CurveTrack c;
+    c.add_key(0.0F, 1.0F);
+    c.add_key(1.0F, 5.0F);
+    EXPECT_FLOAT_EQ(c.sample(-1.0F), 1.0F);
+    EXPECT_FLOAT_EQ(c.sample(2.0F),  5.0F);
+}
+
+TEST(CurveTrack, AddKeyMaintainsSortOrder)
+{
+    cd::anim::CurveTrack c;
+    c.add_key(2.0F, 20.0F);
+    c.add_key(0.0F, 0.0F);
+    c.add_key(1.0F, 10.0F);
+    ASSERT_EQ(c.size(), 3u);
+    EXPECT_FLOAT_EQ(c.keys()[0].t, 0.0F);
+    EXPECT_FLOAT_EQ(c.keys()[1].t, 1.0F);
+    EXPECT_FLOAT_EQ(c.keys()[2].t, 2.0F);
+}

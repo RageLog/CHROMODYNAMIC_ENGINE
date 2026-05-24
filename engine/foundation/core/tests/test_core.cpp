@@ -948,3 +948,48 @@ TEST(FrameAllocator, RewindRestoresMark)
     arena.rewind(mark);
     EXPECT_EQ(arena.used(), mark);
 }
+
+#include <cd/core/StringSplit.hpp>
+
+TEST(StringSplit, EmptyInputCallsOnceWithEmpty)
+{
+    std::vector<std::string_view> parts;
+    cd::core::split(std::string_view {}, ',', [&](std::string_view p) { parts.push_back(p); });
+    ASSERT_EQ(parts.size(), 1u);
+    EXPECT_TRUE(parts[0].empty());
+}
+
+TEST(StringSplit, SimpleCsv)
+{
+    std::vector<std::string_view> parts;
+    cd::core::split("a,b,c", ',', [&](std::string_view p) { parts.push_back(p); });
+    ASSERT_EQ(parts.size(), 3u);
+    EXPECT_EQ(parts[0], "a");
+    EXPECT_EQ(parts[1], "b");
+    EXPECT_EQ(parts[2], "c");
+}
+
+TEST(StringSplit, EmptySegmentsPreserved)
+{
+    std::vector<std::string_view> parts;
+    cd::core::split("a,,b", ',', [&](std::string_view p) { parts.push_back(p); });
+    ASSERT_EQ(parts.size(), 3u);
+    EXPECT_TRUE(parts[1].empty());
+}
+
+TEST(StringSplit, NonEmptyVariantSkipsEmpty)
+{
+    std::vector<std::string_view> parts;
+    cd::core::split_nonempty(",,a,,b,,", ',', [&](std::string_view p) { parts.push_back(p); });
+    ASSERT_EQ(parts.size(), 2u);
+    EXPECT_EQ(parts[0], "a");
+    EXPECT_EQ(parts[1], "b");
+}
+
+TEST(StringSplit, CountPartsMatchesSplit)
+{
+    EXPECT_EQ(cd::core::count_parts("", ','), 0u);
+    EXPECT_EQ(cd::core::count_parts("a", ','), 1u);
+    EXPECT_EQ(cd::core::count_parts("a,b,c", ','), 3u);
+    EXPECT_EQ(cd::core::count_parts(",,", ','), 3u);
+}
