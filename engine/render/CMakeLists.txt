@@ -28,6 +28,7 @@ add_subdirectory(post_tonemap)        # Day 13 — AGX / Hill / Hable / Narkowic
 add_subdirectory(post_bloom)          # Day  8 — Karis 2013 stable bloom
 add_subdirectory(post_taa)            # Day 11 — Karis 2014 TAA
 add_subdirectory(post_gtao)           # Day  4 — Jimenez 2016 GTAO
+add_subdirectory(post_ssr)            # Day  5 — Stachowiak 2015 SSR
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
