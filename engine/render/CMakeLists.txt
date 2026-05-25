@@ -30,6 +30,7 @@ add_subdirectory(post_taa)            # Day 11 — Karis 2014 TAA
 add_subdirectory(post_gtao)           # Day  4 — Jimenez 2016 GTAO
 add_subdirectory(post_ssr)            # Day  5 — Stachowiak 2015 SSR
 add_subdirectory(atmosphere)          # Day 15 — Hillaire 2020 sky LUTs
+add_subdirectory(volumetric_fog)      # Day 16 — Wronski 2014 froxel fog
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
