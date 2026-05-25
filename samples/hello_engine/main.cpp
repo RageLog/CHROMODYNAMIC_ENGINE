@@ -647,6 +647,14 @@ int main()
     bool pending_pick = false;
     float pick_x = 0.0F, pick_y = 0.0F;
 
+    // ---- Manual camera mode ----
+    // Once the user touches WASD or right-mouse drag, the camera goes
+    // into "manual mode" and scene_cam stops updating cam.eye/target —
+    // otherwise the orbit camera snaps the eye back to its own pose on
+    // every frame. Manual mode persists until palette "Camera: Toggle
+    // Auto-Spin" is hit (which re-engages scene_cam orbit).
+    bool cam_manual_mode = false;
+
     // ---- Audio chain (continuous tick) ----
     cd::audio::Mixer<2> audio_bus;
     audio_bus.set_gain(0, 0.6F);
@@ -882,6 +890,9 @@ int main()
         });
     palette.register_command(30, "Camera: Toggle Auto-Spin",
         [&]{ scene_cam.set_auto_spin(!scene_cam.auto_spin());
+             // Re-engaging auto-spin also exits manual mode so the
+             // orbit camera takes back control.
+             if (scene_cam.auto_spin()) cam_manual_mode = false;
              log_push(std::string("[palette] Auto-spin: ") +
                       (scene_cam.auto_spin() ? "ON" : "OFF")); });
     palette.register_command(31, "Camera: Follow Selected",
@@ -1098,6 +1109,18 @@ int main()
                 if (e.key == cd::platform::KeyCode::kD) key_d = v;
                 if (e.key == cd::platform::KeyCode::kQ) key_q = v;
                 if (e.key == cd::platform::KeyCode::kE) key_e = v;
+                // Engage manual mode on any WASD/QE press so scene_cam
+                // stops fighting the user.
+                if (key_dn && (e.key == cd::platform::KeyCode::kW ||
+                               e.key == cd::platform::KeyCode::kA ||
+                               e.key == cd::platform::KeyCode::kS ||
+                               e.key == cd::platform::KeyCode::kD ||
+                               e.key == cd::platform::KeyCode::kQ ||
+                               e.key == cd::platform::KeyCode::kE))
+                {
+                    cam_manual_mode = true;
+                    scene_cam.set_auto_spin(false);
+                }
             }
             // F = focus the camera on the currently selected entity (frame).
             if (key_dn && e.key == cd::platform::KeyCode::kF &&
@@ -1117,9 +1140,10 @@ int main()
             {
                 if (e.mouse_button == cd::platform::MouseButton::kRight)
                 {
-                    cam_right_drag = true;
-                    has_last_mouse = false;  // reset so first delta is 0
-                    scene_cam.set_auto_spin(false);  // disable auto orbit during look
+                    cam_right_drag   = true;
+                    cam_manual_mode  = true;       // persist until user re-enables auto-spin
+                    has_last_mouse   = false;
+                    scene_cam.set_auto_spin(false);
                     // INIT yaw/pitch + dist from the current orbit camera so
                     // the right-drag mode doesn't snap to a default pose.
                     const float dxd = cam.target.x - cam.eye.x;
@@ -1321,8 +1345,11 @@ int main()
             cam.eye.y = cam.target.y - forward.y * cam_dist;
             cam.eye.z = cam.target.z - forward.z * cam_dist;
         }
-        else
+        else if (!cam_manual_mode)
         {
+            // Only auto-orbit if the user hasn't started manual control.
+            // Once manual mode engages, the camera stays exactly where
+            // the user left it on right-mouse release / WASD release.
             scene_cam.update(dt);
         }
 
