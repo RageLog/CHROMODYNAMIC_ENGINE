@@ -164,8 +164,18 @@ vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
   return (diffuse + specular) * NoL * radiance;
 }
 
-// Analytical sky as IBL fallback (Phase 172 swaps this for a real cubemap).
-vec3 sample_env(vec3 dir) {
+// Phase 172 — real IBL cubemap samplers + split-sum BRDF LUT.
+// Caller binds: set 0 binding 1 = irradiance cubemap (diffuse env),
+//                set 0 binding 2 = pre-filtered specular cubemap (mips),
+//                set 0 binding 3 = BRDF LUT (2D, RG, sampled at (NoV, roughness)).
+// When the IBL strength push constant (light_count_pad.y) is 0,
+// these samplers can be unbound — the analytical fallback covers.
+layout(set = 0, binding = 1) uniform samplerCube u_irradiance;
+layout(set = 0, binding = 2) uniform samplerCube u_prefiltered;
+layout(set = 0, binding = 3) uniform sampler2D   u_brdf_lut;
+
+// Analytical sky fallback (when IBL textures aren't bound / strength=0).
+vec3 sample_env_analytical(vec3 dir) {
   vec3 zenith  = vec3(0.18, 0.42, 0.85);
   vec3 horizon = vec3(0.78, 0.86, 0.96);
   vec3 ground  = vec3(0.10, 0.10, 0.14);
@@ -219,14 +229,32 @@ void main() {
     direct += direct_lobe(N, V, L_dir, albedo, metallic, roughness, F0, radiance);
   }
 
-  // ---- IBL ambient (analytical sky for now) ----
+  // ---- IBL ambient (split-sum: cubemap × BRDF LUT) ----
+  // light_count_pad.y is the IBL strength multiplier.
+  // light_count_pad.z >= 1 means "real cubemap textures bound";
+  //   otherwise fall back to the analytical sky.
   vec3 R = reflect(-V, N);
-  vec3 env_diffuse  = sample_env(N);
-  vec3 env_specular = mix(sample_env(R), env_diffuse, roughness);
   vec3 ibl_F  = F_Schlick_rough(NoV, F0, roughness);
   vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
-  vec3 ibl    = ibl_kD * env_diffuse * albedo + env_specular * ibl_F;
-  ibl *= pc.light_count_pad.y;  // IBL strength multiplier
+
+  vec3 env_diffuse;
+  vec3 prefiltered;
+  if (pc.light_count_pad.z >= 1.0) {
+    // Real IBL: irradiance cube for diffuse, prefiltered cube for
+    // specular (LOD = roughness * max_mip), BRDF LUT for F0 scale+bias.
+    env_diffuse = texture(u_irradiance, N).rgb;
+    float max_mip = float(textureQueryLevels(u_prefiltered) - 1);
+    prefiltered  = textureLod(u_prefiltered, R, roughness * max_mip).rgb;
+  } else {
+    env_diffuse = sample_env_analytical(N);
+    prefiltered = mix(sample_env_analytical(R), env_diffuse, roughness);
+  }
+  vec2 brdf = texture(u_brdf_lut, vec2(NoV, roughness)).rg;
+  // Split-sum specular reconstruction: F = F0 * scale + bias.
+  vec3 specular_ibl = prefiltered * (F0 * brdf.x + vec3(brdf.y));
+
+  vec3 ibl = ibl_kD * env_diffuse * albedo + specular_ibl;
+  ibl *= pc.light_count_pad.y;
 
   vec3 color = direct + ibl;
 
@@ -241,13 +269,17 @@ void main() {
 )glsl";
 
 /// Push-constant block for LitPbrMaterial (128 B).
+///   light_count_pad.x = light count (0..32)
+///   light_count_pad.y = IBL strength multiplier (0..1)
+///   light_count_pad.z = >=1 if real IBL cubemaps are bound, else analytical
+///   light_count_pad.w = reserved (0)
 struct LitPbrPush
 {
     float mvp[16];
     float albedo[4];
     float mr_amb[4];          ///< metallic, roughness, _, _
     float camera_pos[4];
-    float light_count_pad[4]; ///< x=light count, y=IBL strength
+    float light_count_pad[4];
 };
 
 static_assert(sizeof(LitPbrPush) == 128, "LitPbrPush must equal 128 bytes");

@@ -253,3 +253,55 @@ TEST(BrdfLut, SmoothLowAngleHasLowScaleHighBias)
     auto t = integrate_brdf(0.03F, 0.05F, 512);
     EXPECT_LT(t.scale, t.bias);
 }
+
+// Phase 171 — LitPbrMaterial std140 packer
+#include <cd/material/LitPbrMaterial.hpp>
+
+TEST(LitPbr, StdLayoutSizes)
+{
+    EXPECT_EQ(sizeof(cd::material::LitPbrPush), 128U);
+    EXPECT_EQ(sizeof(cd::material::LitPbrLightStd140), 128U);
+}
+
+TEST(LitPbr, PackLightStd140PreservesFields)
+{
+    auto src = cd::light::point({ 1.0F, 2.0F, 3.0F }, { 0.9F, 0.8F, 0.7F }, 1200.0F, 8.0F);
+    auto packed = cd::material::pack_light_std140(src);
+    EXPECT_FLOAT_EQ(packed.position_range[0], 1.0F);
+    EXPECT_FLOAT_EQ(packed.position_range[3], 8.0F);  // range
+    EXPECT_FLOAT_EQ(packed.color_kelvin[0], 0.9F);
+    EXPECT_FLOAT_EQ(packed.direction_intensity[3], 1200.0F);
+    EXPECT_EQ(packed.slots[2], static_cast<std::uint32_t>(cd::light::LightType::kPoint));
+}
+
+TEST(LitPbr, PackSpotIncludesConePreCompute)
+{
+    auto src = cd::light::spot({ 0,0,0 }, { 0,-1,0 }, { 1,1,1 }, 800.0F,
+                               5.0F, 0.4F, 0.7F);
+    auto packed = cd::material::pack_light_std140(src);
+    EXPECT_GT(packed.cone_params[0], packed.cone_params[1]);  // cos(inner) > cos(outer)
+    EXPECT_GT(packed.cone_params[2], 0.0F);                    // inv_cone_range positive
+}
+
+TEST(LitPbr, ShaderSourcesAreCompilableShaped)
+{
+    const std::string vs { cd::material::kLitPbrVS };
+    const std::string fs { cd::material::kLitPbrFS };
+    EXPECT_NE(vs.find("gl_Position"), std::string::npos);
+    EXPECT_NE(fs.find("u_lights.lights"), std::string::npos);
+    EXPECT_NE(fs.find("distance_atten"), std::string::npos);
+    EXPECT_NE(fs.find("cone_atten"), std::string::npos);
+}
+
+// Phase 172 — IBL cubemap descriptor bindings + split-sum reconstruction.
+TEST(LitPbr, ShaderDeclaresIblBindings)
+{
+    const std::string fs { cd::material::kLitPbrFS };
+    EXPECT_NE(fs.find("samplerCube u_irradiance"), std::string::npos);
+    EXPECT_NE(fs.find("samplerCube u_prefiltered"), std::string::npos);
+    EXPECT_NE(fs.find("sampler2D   u_brdf_lut"), std::string::npos);
+    // Split-sum reconstruction: F = F0 * scale + bias.
+    EXPECT_NE(fs.find("F0 * brdf.x + vec3(brdf.y)"), std::string::npos);
+    // Roughness-driven mip lookup on the prefiltered cubemap.
+    EXPECT_NE(fs.find("textureLod(u_prefiltered"), std::string::npos);
+}
