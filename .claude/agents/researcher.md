@@ -27,10 +27,10 @@ model: sonnet
 
 1. Hedefli arama (engine bağlamında öncelikli kaynaklar):
    - **Genel C++**: `site:cppreference.com`, `site:github.com`, `site:isocpp.org`
-   - **Engine SOTA**: Unreal Engine docs, Filament docs (Google), bgfx wiki, Sokol README, The Forge docs, Diligent Engine docs, WebGPU/Dawn spec
+   - **Engine SOTA**: Filament docs (Google), bgfx wiki, Sokol README, The Forge docs, Diligent Engine docs, WebGPU/Dawn spec
    - **Graphics SOTA**: Khronos (Vulkan/SPIR-V), Microsoft Direct3D docs, GPUOpen (AMD), NVIDIA Developer, Intel Graphics Devs
    - **Talks/blogs**: GDC Vault, SIGGRAPH course notes (open), Inside Render of..., Our Machinery (archived) blog, Niagara/Lumen talks, Naughty Dog engine talks, RenderHell PDF (yazar: Simon Trumpler), DDS/KTX2 specs
-   - **ECS/DOD**: EnTT, Flecs, Bevy book, Unity DOTS docs
+   - **ECS/DOD**: EnTT, Flecs, Bevy book, 
    - **Concurrency**: Sean Parent talks, Bryce Adelstein-Lelbach, ISO C++ SG1 papers
 2. Modern C++23 öncele; legacy çözümleri filtrele.
 3. **Confidence-based puanlama** (0–10) (engine ekseni):

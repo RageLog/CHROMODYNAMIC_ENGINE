@@ -26,7 +26,7 @@
 // dot+divide per vertex.
 //
 // Reference: Khronos glTF 2.0 skin chapter; Frostbite "Moving to
-// PBR" 2014 §7; Unity Animation programming guide.
+// PBR" 2014 §7; production Animation programming guide.
 // =============================================================================
 #pragma once
 
@@ -44,8 +44,8 @@ namespace cd::anim
 {
 
 /// Maximum bones per skinning UBO. 256 covers every animated
-/// character asset shipped in mainstream games (Unreal's default is
-/// 256; Unity's `BlendShape` limit is 254). Larger skeletons split
+/// character asset shipped in mainstream games (default is
+/// 256; production engine's `BlendShape` limit is 254). Larger skeletons split
 /// into multiple draws.
 inline constexpr std::uint32_t kMaxBones = 256;
 

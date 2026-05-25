@@ -606,6 +606,27 @@ int main()
     scene_cam.set_auto_spin(true);
     scene_cam.orbit().auto_spin_rate = 0.25F;
 
+    // ---- Free-look camera state (WASD + right-mouse look + wheel zoom) ----
+    // When the user holds the right mouse button, we disable auto-spin and
+    // switch to FPS-style yaw/pitch from mouse delta + WASD translation.
+    bool   cam_right_drag    = false;
+    float  cam_yaw           = 0.0F;    // around +Y
+    float  cam_pitch         = -0.15F;  // looking slightly down
+    float  cam_dist          = 8.0F;    // distance from target (used as zoom)
+    float  last_mouse_x      = 0.0F;
+    float  last_mouse_y      = 0.0F;
+    bool   has_last_mouse    = false;
+    bool   key_w = false, key_a = false, key_s = false, key_d = false;
+    bool   key_q = false, key_e = false;  // up/down
+    constexpr float kCamMoveSpeed = 6.0F;     // m/s
+    constexpr float kCamLookSpeed = 0.005F;   // rad/pixel
+
+    // ---- Pick state (3D click-to-select) ----
+    // Left click in the viewport casts a ray from the mouse pixel into
+    // world space and tests against every entity's sphere bound.
+    bool pending_pick = false;
+    float pick_x = 0.0F, pick_y = 0.0F;
+
     // ---- Audio chain (continuous tick) ----
     cd::audio::Mixer<2> audio_bus;
     audio_bus.set_gain(0, 0.6F);
@@ -1042,6 +1063,67 @@ int main()
                 if (e.key == cd::platform::KeyCode::kLShift ||
                     e.key == cd::platform::KeyCode::kRShift) mod_shift = false;
             }
+
+            // ---- WASD movement keys (continuous state) ----
+            const bool key_dn = (e.kind == cd::platform::OSEventKind::kKeyDown);
+            const bool key_up = (e.kind == cd::platform::OSEventKind::kKeyUp);
+            if (key_dn || key_up)
+            {
+                const bool v = key_dn;
+                if (e.key == cd::platform::KeyCode::kW) key_w = v;
+                if (e.key == cd::platform::KeyCode::kA) key_a = v;
+                if (e.key == cd::platform::KeyCode::kS) key_s = v;
+                if (e.key == cd::platform::KeyCode::kD) key_d = v;
+                if (e.key == cd::platform::KeyCode::kQ) key_q = v;
+                if (e.key == cd::platform::KeyCode::kE) key_e = v;
+            }
+
+            // ---- Right-mouse drag → FPS look; left-click → request pick ----
+            if (e.kind == cd::platform::OSEventKind::kMouseButtonDown)
+            {
+                if (e.mouse_button == cd::platform::MouseButton::kRight)
+                {
+                    cam_right_drag = true;
+                    has_last_mouse = false;  // reset so first delta is 0
+                    scene_cam.set_auto_spin(false);  // disable auto orbit during look
+                }
+                else if (e.mouse_button == cd::platform::MouseButton::kLeft &&
+                         !ImGui::GetIO().WantCaptureMouse)
+                {
+                    pending_pick = true;
+                    pick_x = e.mouse_x;
+                    pick_y = e.mouse_y;
+                }
+            }
+            if (e.kind == cd::platform::OSEventKind::kMouseButtonUp &&
+                e.mouse_button == cd::platform::MouseButton::kRight)
+            {
+                cam_right_drag = false;
+            }
+            if (e.kind == cd::platform::OSEventKind::kMouseMove)
+            {
+                if (cam_right_drag && has_last_mouse)
+                {
+                    const float dx = e.mouse_x - last_mouse_x;
+                    const float dy = e.mouse_y - last_mouse_y;
+                    cam_yaw   -= dx * kCamLookSpeed;
+                    cam_pitch -= dy * kCamLookSpeed;
+                    // Clamp pitch so we don't flip the camera over.
+                    constexpr float kHalfPi = 1.5707963F;
+                    if (cam_pitch >  kHalfPi - 0.05F) cam_pitch =  kHalfPi - 0.05F;
+                    if (cam_pitch < -kHalfPi + 0.05F) cam_pitch = -kHalfPi + 0.05F;
+                }
+                last_mouse_x   = e.mouse_x;
+                last_mouse_y   = e.mouse_y;
+                has_last_mouse = true;
+            }
+            if (e.kind == cd::platform::OSEventKind::kMouseWheel &&
+                !ImGui::GetIO().WantCaptureMouse)
+            {
+                cam_dist *= (e.wheel > 0.0F) ? 0.9F : 1.1F;
+                if (cam_dist < 1.0F)   cam_dist = 1.0F;
+                if (cam_dist > 100.0F) cam_dist = 100.0F;
+            }
         }
         if (needs_rebuild)
         {
@@ -1149,7 +1231,118 @@ int main()
         }
 
         // ---- Update scene camera ----
-        scene_cam.update(dt);
+        // If the user is right-dragging OR pressing any WASD key, take
+        // direct control: the SceneCameraController's orbit is bypassed
+        // and we drive cam.eye / cam.target from yaw/pitch/dist + WASD.
+        const bool wasd_active = key_w || key_a || key_s || key_d || key_q || key_e;
+        if (cam_right_drag || wasd_active)
+        {
+            // Forward = view direction in world space.
+            const float cp = std::cos(cam_pitch), sp = std::sin(cam_pitch);
+            const float cy = std::cos(cam_yaw),   sy = std::sin(cam_yaw);
+            cd::math::Vec3f forward { cp * sy, sp, -cp * cy };
+            cd::math::Vec3f right   { cy,      0.0F, sy };
+
+            // WASD moves the camera *target* (and eye follows by cam_dist).
+            const float spd = kCamMoveSpeed * dt;
+            if (key_w) { cam.target.x += forward.x * spd; cam.target.y += forward.y * spd; cam.target.z += forward.z * spd; }
+            if (key_s) { cam.target.x -= forward.x * spd; cam.target.y -= forward.y * spd; cam.target.z -= forward.z * spd; }
+            if (key_d) { cam.target.x += right.x   * spd; cam.target.z += right.z   * spd; }
+            if (key_a) { cam.target.x -= right.x   * spd; cam.target.z -= right.z   * spd; }
+            if (key_e) { cam.target.y += spd; }
+            if (key_q) { cam.target.y -= spd; }
+
+            // Eye = target - forward * cam_dist (so the target stays in view).
+            cam.eye.x = cam.target.x - forward.x * cam_dist;
+            cam.eye.y = cam.target.y - forward.y * cam_dist;
+            cam.eye.z = cam.target.z - forward.z * cam_dist;
+        }
+        else
+        {
+            scene_cam.update(dt);
+        }
+
+        // ---- 3D click-to-pick ----
+        // Unproject the click pixel to a world ray, then sphere-test
+        // each entity. Pick the closest hit and set `selected`.
+        if (pending_pick)
+        {
+            pending_pick = false;
+            const float vw = static_cast<float>(window.width());
+            const float vh = static_cast<float>(window.height());
+            if (vw > 0 && vh > 0)
+            {
+                const float aspect_pick = vw / vh;
+                // Invert VP analytically would be ideal; we use unproject
+                // via two ray endpoints (NDC near + far) → world.
+                const float ndc_x = (2.0F * pick_x / vw) - 1.0F;
+                const float ndc_y = 1.0F - (2.0F * pick_y / vh);
+                // Build inverse VP by row-by-row 4x4 inversion. Use the
+                // engine's existing utility if present; otherwise a small
+                // local Gauss-Jordan would do. Quick path: use camera
+                // basis directly.
+                const float cp = std::cos(cam_pitch), sp = std::sin(cam_pitch);
+                const float cy = std::cos(cam_yaw),   sy = std::sin(cam_yaw);
+                cd::math::Vec3f fwd { cp * sy, sp, -cp * cy };
+                cd::math::Vec3f rgt { cy,      0.0F, sy };
+                cd::math::Vec3f up_v {
+                    fwd.y*rgt.z - fwd.z*rgt.y,
+                    fwd.z*rgt.x - fwd.x*rgt.z,
+                    fwd.x*rgt.y - fwd.y*rgt.x };
+                // Use the orbit camera's basis when we're NOT in WASD mode.
+                if (!cam_right_drag && !wasd_active)
+                {
+                    fwd.x = cam.target.x - cam.eye.x;
+                    fwd.y = cam.target.y - cam.eye.y;
+                    fwd.z = cam.target.z - cam.eye.z;
+                    const float fl = std::sqrt(fwd.x*fwd.x + fwd.y*fwd.y + fwd.z*fwd.z);
+                    if (fl > 1e-5F) { fwd.x/=fl; fwd.y/=fl; fwd.z/=fl; }
+                    cd::math::Vec3f world_up { 0,1,0 };
+                    rgt.x = fwd.y*world_up.z - fwd.z*world_up.y;
+                    rgt.y = fwd.z*world_up.x - fwd.x*world_up.z;
+                    rgt.z = fwd.x*world_up.y - fwd.y*world_up.x;
+                    const float rl = std::sqrt(rgt.x*rgt.x + rgt.y*rgt.y + rgt.z*rgt.z);
+                    if (rl > 1e-5F) { rgt.x/=rl; rgt.y/=rl; rgt.z/=rl; }
+                    up_v.x = rgt.y*fwd.z - rgt.z*fwd.y;
+                    up_v.y = rgt.z*fwd.x - rgt.x*fwd.z;
+                    up_v.z = rgt.x*fwd.y - rgt.y*fwd.x;
+                }
+                const float tan_half_fov = std::tan(cam.fov_y * 0.5F);
+                const float scale_x = aspect_pick * tan_half_fov;
+                const float scale_y = tan_half_fov;
+                cd::math::Vec3f ray_dir {
+                    fwd.x + rgt.x * ndc_x * scale_x + up_v.x * ndc_y * scale_y,
+                    fwd.y + rgt.y * ndc_x * scale_x + up_v.y * ndc_y * scale_y,
+                    fwd.z + rgt.z * ndc_x * scale_x + up_v.z * ndc_y * scale_y };
+                const float rdl = std::sqrt(ray_dir.x*ray_dir.x + ray_dir.y*ray_dir.y + ray_dir.z*ray_dir.z);
+                if (rdl > 1e-5F) { ray_dir.x/=rdl; ray_dir.y/=rdl; ray_dir.z/=rdl; }
+
+                // Sphere-test every entity. Radius = 0.55 (unit primitive + slack).
+                float best_t = 1e30F;
+                int   best_i = -1;
+                for (std::size_t i = 0; i < entities.size(); ++i)
+                {
+                    auto* lt = scene.local(entities[i].handle);
+                    if (lt == nullptr) continue;
+                    const cd::math::Vec3f c { lt->value.position.x,
+                                              lt->value.position.y,
+                                              lt->value.position.z };
+                    const cd::math::Vec3f oc {
+                        cam.eye.x - c.x, cam.eye.y - c.y, cam.eye.z - c.z };
+                    const float b = oc.x*ray_dir.x + oc.y*ray_dir.y + oc.z*ray_dir.z;
+                    const float cc = oc.x*oc.x + oc.y*oc.y + oc.z*oc.z - 0.55F*0.55F;
+                    const float disc = b*b - cc;
+                    if (disc < 0.0F) continue;
+                    const float t = -b - std::sqrt(disc);
+                    if (t > 0.0F && t < best_t) { best_t = t; best_i = static_cast<int>(i); }
+                }
+                if (best_i >= 0)
+                {
+                    selected = best_i;
+                    log_push("[pick] selected " + entities[static_cast<std::size_t>(best_i)].name);
+                }
+            }
+        }
 
         // ---- Begin GPU frame ----
         auto frame_r = renderer.begin_frame();
@@ -1629,7 +1822,7 @@ int main()
 
         // ---- Lights (Phase 171/172 — cd::light system) ----
         ImGui::Begin("Lights");
-        ImGui::TextDisabled("cd::light — Frostbite + Filament + UE5 model");
+        ImGui::TextDisabled("cd::light — Frostbite + Filament model");
         ImGui::Separator();
 
         // Per-frame: refresh CCT→RGB, then assign every enabled light

@@ -64,7 +64,7 @@ Out-of-scope phase 1; API surfaces **infrastructure-ready**: `cd::ui::Widget::Ac
 
 **Custom HUD overlay** (her zaman aktif): `cd::profile::HudOverlay` — frame-time histogram, 1%/0.1% low, draw call count, triangle count, GPU memory, allocator pages. F2 toggle default.
 
-**Reddedilen**: Optick (unmaintained 2022 sonrası); perfetto secondary; UE5 Insights closed.
+**Reddedilen**: Optick (unmaintained 2022 sonrası); perfetto secondary; closed-source profilers.
 
 #### B.1 GPU Profiler
 
@@ -74,7 +74,7 @@ Out-of-scope phase 1; API surfaces **infrastructure-ready**: `cd::ui::Widget::Ac
 
 #### B.2 Memory Tracking (S5 cross-cut)
 
-`cd::mem::Allocator` her alloc/free → Tracy event + `cd::profile::MemoryTag`. UE5 LLM pattern: per-allocator tag (`MemoryTag::Renderer`, `::Audio`, vb.).
+`cd::mem::Allocator` her alloc/free → Tracy event + `cd::profile::MemoryTag`. per-allocator pattern: per-allocator tag (`MemoryTag::Renderer`, `::Audio`, vb.).
 
 #### B.3 Production Telemetry
 
@@ -101,7 +101,7 @@ Out-of-scope phase 1; API surfaces **infrastructure-ready**: `cd::ui::Widget::Ac
 - Windows: SEH (`AddVectoredExceptionHandler`) — Crashpad.
 - Linux: `sigaction` SIGSEGV/SIGBUS/SIGFPE/SIGILL/SIGABRT — Crashpad alternate stack.
 - macOS: Mach exception ports — Crashpad native.
-- Soft assert: `cd::diag::capture_non_fatal()` minidump üretir, process devam eder (UE5 pattern).
+- Soft assert: `cd::diag::capture_non_fatal()` minidump üretir, process devam eder (common pattern).
 
 #### C.3 Hot-Data Sentinel (aşma noktası)
 
@@ -117,7 +117,7 @@ Crash handler bunu minidump'a "user stream" olarak ekler (Crashpad `UserStreamDa
 - Engine **hiçbir telemetri toplamaz** — open source güveni.
 - Oyun geliştirici opt-in dialog gösterir (GDPR Recital 32, CCPA §1798.135).
 - `cd::analytics::Consent` API: per-category (`Crash`, `Performance`, `Gameplay`).
-- Plugin: `cd::analytics::ISink` — built-in sink yok. Studio Sentry/GameAnalytics/Unity Analytics/custom HTTP plugin yazar.
+- Plugin: `cd::analytics::ISink` — built-in sink yok. Studio Sentry/GameAnalytics/production Analytics/custom HTTP plugin yazar.
 
 ```cpp
 namespace cd::analytics {
@@ -135,12 +135,12 @@ OpenTelemetry production telemetry için opt-in.
 
 ### E. Aşma Noktaları
 
-1. **Fluent + hot-reload + ICU optional** — UE/Unity ya ICU heavy ya gettext static. İkisinden iyi yanı.
-2. **Tracy + custom HUD birlikte** — UE5 Insights closed; Unity Profiler kapalı. Biz BSD baseline + opsiyonel kendi.
+1. **Fluent + hot-reload + ICU optional** — UE/production ya ICU heavy ya gettext static. İkisinden iyi yanı.
+2. **Tracy + custom HUD birlikte** — closed-source profilers; production profiler kapalı. Biz BSD baseline + opsiyonel kendi.
 3. **Crashpad + Sentinel hot-data ring** — Crashpad alone'dan iyi: son N frame + log tail + scene minidump'a gömülü.
 4. **OTel opt-in** — Hiçbir AAA engine standardize OTel; biz veriyoruz (SRE-friendly).
 5. **Plugin analytics, zero built-in tracking** — Open source güven sinyali.
-6. **Memory tracking S5 ile dokunmuş** — UE5 LLM benzeri, allocator tag'leri compile-time enum (overhead ~0).
+6. **Memory tracking S5 ile dokunmuş** — per-allocator benzeri, allocator tag'leri compile-time enum (overhead ~0).
 
 ## Reddedilen
 
@@ -150,7 +150,7 @@ OpenTelemetry production telemetry için opt-in.
 - **Optick** (unmaintained).
 - **Breakpad** (Crashpad halefi).
 - **Backtrace.io SDK** (vendor lock).
-- **Built-in analytics (Unity/UE pattern)** (open source güven + GDPR risk).
+- **Built-in analytics (production engine/UE pattern)** (open source güven + GDPR risk).
 - **Custom crash handler v1** (3-6 ay edge case → Phase 4 hedef).
 
 ## Sonuçlar

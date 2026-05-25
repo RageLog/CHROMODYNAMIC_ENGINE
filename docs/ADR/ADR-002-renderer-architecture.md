@@ -21,7 +21,7 @@ User decisions:
 
 **Opt-in**: Visibility-buffer geometry path (Nanite-style) — deferred-material evaluation, trillion-triangle scale. Activated per render-pass (not per-mesh) for trillion-triangle scenes.
 
-**UCVE differentiator**: single geometry submission produces *both* a 3D froxel cluster (lights/decals/probes/fog) *and* an opt-in 64-bit visibility-buffer pixel. Shading pass chooses path per material tag. No shipping engine does this symmetrically (UE5 picks Nanite-or-not at mesh level; we pick per render-pass).
+**UCVE differentiator**: single geometry submission produces *both* a 3D froxel cluster (lights/decals/probes/fog) *and* an opt-in 64-bit visibility-buffer pixel. Shading pass chooses path per material tag. No shipping engine does this symmetrically (production engines picks Nanite-or-not at mesh level; we pick per render-pass).
 
 Mesh-shader requirement floor: tier-2 HW for vis-buffer path; compute-shader emulation fallback otherwise. Register pressure mitigation via mesh-shader path when available.
 
@@ -125,4 +125,4 @@ Renderer consumes `cd::material::MaterialInstance*` (from ADR-003) and calls `bi
 - Geffroy — Doom Eternal id Tech 7 SIGGRAPH 2020: https://advances.realtimerendering.com/s2020/RenderingDoomEternal.pdf
 - Filament Materials Guide: https://google.github.io/filament/Materials.md.html
 - DirectX-Specs — Work Graphs: https://microsoft.github.io/DirectX-Specs/d3d/WorkGraphs.html
-- UE5.7 Lumen Tech Docs: https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-technical-details-in-unreal-engine
+- production engines 7 Lumen Tech Docs: https://dev.epicgames.com/documentation/en-us/unreal-engine/lumen-technical-details-in-unreal-engine

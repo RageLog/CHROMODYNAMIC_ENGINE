@@ -29,9 +29,9 @@ Kısıtlar: 4-compiler matrix (MSVC/Clang-cl/Clang/GCC) × {Win, Linux} × {x86_
 
 ### C. Math / Float Precision
 
-- **Default**: `cd::math::vec3` = float; `cd::math::dvec3` = double; `cd::math::world_pos` typedef compile-time-resolved via `CD_WORLD_DOUBLE_PRECISION` (ON for engine, OFF for standalone `cd::math` users). Camera-relative float rebase for render (UE5 LWC pattern).
+- **Default**: `cd::math::vec3` = float; `cd::math::dvec3` = double; `cd::math::world_pos` typedef compile-time-resolved via `CD_WORLD_DOUBLE_PRECISION` (ON for engine, OFF for standalone `cd::math` users). Camera-relative float rebase for render (large-world-coordinates pattern).
 - **Determinism**: opt-in per-TU `CD_DETERMINISTIC` flag enabling `cd::math::fixed32_16` Q-format with deterministic transcendental tables. x86_64 desktop cross-OS strict-FP path (`-ffp-contract=off`, `-fno-fast-math`, `_controlfp` pin). ARM↔x86 lockstep requires fixed-point.
-- **Coordinate system**: compile-time configurable; **default Right-Handed Z-up** (Blender/Unreal world). `CD_COORD_RH_ZUP` default flag.
+- **Coordinate system**: compile-time configurable; **default Right-Handed Z-up** (Blender/production world). `CD_COORD_RH_ZUP` default flag.
 
 ### D. Memory Allocator
 
@@ -113,7 +113,7 @@ Kısıtlar: 4-compiler matrix (MSVC/Clang-cl/Clang/GCC) × {Win, Linux} × {x86_
 ## Kanıt
 
 - mimalloc: https://microsoft.github.io/mimalloc/bench.html (acc 2026-05-16)
-- UE5 Large World Coordinates: https://dev.epicgames.com/documentation/en-us/unreal-engine/large-world-coordinates-in-unreal-engine-5
+- production engines Large World Coordinates: https://dev.epicgames.com/documentation/en-us/unreal-engine/large-world-coordinates-in-unreal-engine-5
 - Glenn Fiedler — Fix Your Timestep: https://gafferongames.com/post/fix_your_timestep/
 - Bruce Dawson — Floating-Point Determinism: https://randomascii.wordpress.com/2013/07/16/floating-point-determinism/
 - TLSF: A New Dynamic Memory Allocator for Real-Time Systems (ECRTS'04 PDF): http://www.gii.upv.es/tlsf/files/papers/ecrts04_tlsf.pdf — **STUB**

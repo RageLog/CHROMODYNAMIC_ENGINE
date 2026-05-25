@@ -124,7 +124,7 @@ Bu kuralı `academic-researcher` ve `citation-verifier` mekanik olarak zorlar; s
 #### Engine Phase 1 — Discovery
 
 - `analyst` — etki/risk haritası (mevcut library DAG'a etki)
-- `researcher` — engine/graphics SOTA (Unreal RHI, Filament backend, bgfx, Sokol, The Forge, Diligent, EnTT, Bevy, Flecs, Jolt, mimalloc, vb.)
+- `researcher` — engine/graphics SOTA (Filament backend, bgfx, Sokol, The Forge, Diligent, EnTT, Bevy, Flecs, Jolt, mimalloc, vb.)
 - `academic-researcher` — peer-reviewed paper (rendering, GPU sched, ECS, allocator, concurrency) — PDF indir + MANIFEST
 
 #### Engine Phase 2 — Design

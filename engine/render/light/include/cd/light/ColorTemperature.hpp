@@ -5,7 +5,7 @@
 // Implements Krystek's 1985 approximation of the Planckian locus in
 // CIE xyY chromaticity, then transforms to linear sRGB via the
 // standard sRGB primaries matrix. The same conversion every modern
-// engine (Filament, UE5, Unity HDRP, Godot 4) uses for "tungsten /
+// engine (Filament, , Godot 4) uses for "tungsten /
 // daylight / overcast" lighting presets.
 //
 // Reference: Krystek, M. (1985). "An algorithm to calculate

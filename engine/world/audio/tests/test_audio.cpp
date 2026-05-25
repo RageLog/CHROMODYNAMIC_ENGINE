@@ -270,7 +270,7 @@ TEST(Positional, StereoGainsHardRightZerosLeft)
     EXPECT_LT(g.right, 1.0F);  // also attenuated by distance
 }
 
-TEST(Positional, ListenerAtSourcePositionReturnsUnity)
+TEST(Positional, ListenerAtSourcePositionReturnsproduction engine)
 {
     cd::audio::ListenerPose listener {};
     const cd::math::Vec3f src { 0.0F, 0.0F, 0.0F };  // coincident
@@ -881,7 +881,7 @@ TEST(Limiter, AboveThresholdAttenuates)
     EXPECT_LT(lim.current_gain(), 1.0F);
 }
 
-TEST(Limiter, ResetReturnsToUnityGain)
+TEST(Limiter, ResetReturnsToproduction engineGain)
 {
     cd::audio::Limiter lim;
     lim.prepare(48000.0F);
@@ -980,7 +980,7 @@ TEST(Compressor, LoudSignalAttenuated)
     EXPECT_LT(std::fabs(y), 1.0F);
 }
 
-TEST(Compressor, ResetReturnsToUnityGain)
+TEST(Compressor, ResetReturnsToproduction engineGain)
 {
     cd::audio::Compressor c;
     c.prepare(48000.0F);

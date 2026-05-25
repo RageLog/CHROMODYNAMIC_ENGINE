@@ -13,7 +13,7 @@
 //
 // For the rotation we use the cheaper *quaternion nlerp identity* form
 // — interpolate between identity and the delta, then multiply into the
-// base. This matches Unreal's UE5 layered-blend formula (Animation
+// base. This matches layered-blend formula (Animation
 // Kernel docs).
 //
 // Pose dimensionality must match (base.size() == delta.size() == out.size()).

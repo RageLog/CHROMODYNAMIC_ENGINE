@@ -3,7 +3,7 @@
 > Bu suite üç kimliği **kayıpsız** birleştirir:
 >
 > 1. **Engine mimar/geliştirici kimliği** — modern C++23 / CMake / Ninja, ASAN/UBSAN, library-oriented modüler engine kalitesi.
-> 2. **Graphics & engine SOTA araştırmacı kimliği** — Unreal RHI, Filament, bgfx, Sokol, The Forge, Diligent, EnTT, Bevy, Jolt karşılaştırması; engineering blog/talk/paper toplama.
+> 2. **Graphics & engine SOTA araştırmacı kimliği** — Filament, bgfx, Sokol, The Forge, Diligent, EnTT, Bevy, Jolt karşılaştırması; engineering blog/talk/paper toplama.
 > 3. **Akademik araştırmacı kimliği** — peer-reviewed rendering, GPU sched, ECS, allocator, concurrency literatürü; Q1 disiplini ile kanıt + atıf.
 >
 > Hiçbir geliştirme yeteneği kaybedilmedi; üstüne akademik denetim katmanı eklendi. Bu suite, DtForHil hibrit suite'inin **game engine** domain'ine **kayıpsız** uyarlanmış sürümüdür.
@@ -54,7 +54,7 @@ research/
 |                         | safety-integration        | opus   | concurrency / lifetime / UB denetim (BLOCKING, engine kritik)  |
 |                         | code-consistency          | haiku  | clang-tidy / clang-format mekanik fix                          |
 |                         | troubleshooter            | sonnet | RCA reçete                                                     |
-|                         | researcher                | sonnet | rapor (engine/graphics SOTA: Unreal/Filament/bgfx/EnTT/Bevy)   |
+|                         | researcher                | sonnet | rapor (engine/graphics SOTA: Filament/bgfx/EnTT/Bevy)   |
 | Academic Research       | academic-researcher       | sonnet | `research/library/{pdf,notes,bibliography.bib,MANIFEST.csv}`    |
 |                         | citation-verifier         | sonnet | `research/reports/verification_*` (BLOCKING)                    |
 |                         | independent-auditor       | opus   | `research/reports/independent_audit_*` (BAĞIMSIZ DOUBLE-CHECK)  |
@@ -118,7 +118,7 @@ Tarama başarısızsa yazı kabul edilmez — yeniden yazılır.
 
 ```text
 team-lead
- ├─ [Discovery, paralel]   researcher (engine/graphics SOTA: Unreal/Filament/bgfx/...)
+ ├─ [Discovery, paralel]   researcher (engine/graphics SOTA: Filament/bgfx/...)
  │                         academic-researcher (peer-reviewed papers, PDF indir + MANIFEST)
  │                         analyst (mevcut kod tabanı etki haritası)
  │                         reproducibility-engineer (benchmark env baseline — varsa)
@@ -171,7 +171,7 @@ team-lead
 1. **Otomatik dispatch** — `team-lead`'i çağır:
 
    ```text
-   "RHI (Render Hardware Interface) tasarımı yapalım. Unreal/Filament/bgfx/Sokol/Forge/Diligent
+   "RHI (Render Hardware Interface) tasarımı yapalım. Filament/bgfx/Sokol/Forge/Diligent
     SOTA analizi yap, akademik literatür tara (PDF indir), kendi tasarımımızın hangi noktada
     üstün olacağını gerekçele, ADR-NNNN-rhi-design.md yaz."
    ```

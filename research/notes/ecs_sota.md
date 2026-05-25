@@ -8,7 +8,7 @@
 | Axis | Decision | Rationale |
 |---|---|---|
 | Storage | Sparse-set primary + owning-group opt-in | Dynamic gameplay add/remove ~10× cheaper than archetype migration; EnTT benchmark: 1M entity × 7 systems = 40 ms |
-| Entity ID | 64-bit (32 index / 32 generation) | EnTT 20-bit default caps at ~1M; Flecs/Bevy/Unity all 64-bit; necessary for large worlds |
+| Entity ID | 64-bit (32 index / 32 generation) | EnTT 20-bit default caps at ~1M; Flecs/Bevy/production all 64-bit; necessary for large worlds |
 | Component registration | Runtime (Flecs-style `world.component<T>()`) | Compile-time lock-in blocks scripting and editor integration; runtime model gives both typed zero-overhead path and type-erased C-ABI for scripts |
 | Query API | Builder DSL, cached queries for systems, uncached ad-hoc | Flecs query builder = best ergonomics; `[[nodiscard]]` mandatory; `for_each` + range views |
 | Multi-threading | Declared `reads<T>`/`writes<T>` DAG, injectable `IJobDispatcher` | Thread pool should not live inside `cd::ecs`; CommandBuffer per worker, deterministic merge at sync point |
@@ -26,8 +26,8 @@
 | EnTT (skypjack) | 2017–present | C++17/20 | MIT | General-purpose game dev (Minecraft Bedrock, Mojang) |
 | Flecs (Sander Mertens) | 2018–present | C99 + C++ binding | MIT | Game/sim engines; production use at multiple studios |
 | Bevy ECS | 2020–present | Rust | MIT/Apache-2 | Bevy engine |
-| Unity DOTS | 2018–present | C# + Burst | Unity EULA | Unity Entities package; AAA Unity titles |
-| Unreal Mass | 2021–present | C++ | UE EULA | UE 5.x crowd/AI |
+| production DOTS | 2018–present | C# + Burst | production EULA | production Entities package; AAA production titles |
+| production Mass | 2021–present | C++ | UE EULA | UE 5.x crowd/AI |
 | EntityX / ANAX | 2013–2017 | C++11 | MIT | Historical reference; OO-flavored |
 
 ---
@@ -48,9 +48,9 @@ sparse maps     [N × Position] [M × Velocity] ... per component type
 Pro: O(1) add/remove regardless of component count per entity. Iteration over single-component queries is cache-coherent.
 Con: Multi-component queries pay a sparse-set probe per entity per extra component.
 
-### Archetype-chunked (Flecs default, Unity DOTS, Bevy)
+### Archetype-chunked (Flecs default, production DOTS, Bevy)
 
-Entities are bucketed into "archetypes" — distinct (Position, Velocity) component sets. Each archetype owns 16 KiB chunks (Unity convention) of struct-of-arrays storage. Multi-component iteration is straight pointer arithmetic — no indirection.
+Entities are bucketed into "archetypes" — distinct (Position, Velocity) component sets. Each archetype owns 16 KiB chunks (production convention) of struct-of-arrays storage. Multi-component iteration is straight pointer arithmetic — no indirection.
 
 **Memory layout:**
 ```
@@ -109,7 +109,7 @@ fn movement(mut q: Query<(&mut Position, &Velocity), Without<Frozen>>) {
 }
 ```
 
-### Unity DOTS (Burst-compiled)
+### production DOTS (Burst-compiled)
 
 ```csharp
 public void OnUpdate(ref SystemState state) {
@@ -121,7 +121,7 @@ public void OnUpdate(ref SystemState state) {
 }
 ```
 
-**Verdict:** Flecs has the cleanest builder API. EnTT view is concise but the compile-time `entt::exclude` syntax is awkward. Bevy and Unity rely on macro magic.
+**Verdict:** Flecs has the cleanest builder API. EnTT view is concise but the compile-time `entt::exclude` syntax is awkward. Bevy and production rely on macro magic.
 
 ---
 
@@ -132,8 +132,8 @@ public void OnUpdate(ref SystemState state) {
 | EnTT | Manual | User schedules `view::each` across threads; explicit synchronization | No built-in scheduler |
 | Flecs | Yes | Phase pipeline + thread count; declared component read/write determines parallelizability | Single-writer-per-component enforced |
 | Bevy | Yes | Stage graph; system parameters' Query types declare reads/writes; scheduler builds DAG | One-frame-lag for some change-detection scenarios |
-| Unity DOTS | Yes | IJobEntity + Burst codegen; ScheduleParallel API | Memory aliasing checks at job boundaries |
-| Unreal Mass | Partial | Processors parallel-able but command-buffer flushing is serialized | Forum thread: parallel deferred-command bug stalls Mass |
+| production DOTS | Yes | IJobEntity + Burst codegen; ScheduleParallel API | Memory aliasing checks at job boundaries |
+| production Mass | Partial | Processors parallel-able but command-buffer flushing is serialized | Forum thread: parallel deferred-command bug stalls Mass |
 
 **Recommendation for `cd::ecs`:** System declares `reads<Position>().writes<Velocity>()`; scheduler builds a DAG and dispatches non-conflicting systems in parallel via an externally-injected `IJobDispatcher` (so `cd::ecs` does not own the thread pool — that belongs to a job-system layer).
 
@@ -152,7 +152,7 @@ public void OnUpdate(ref SystemState state) {
 
 - **Flecs:** `ChildOf` relation; cached query re-matching when entities cross archetype boundaries due to relation changes.
 - **Bevy:** `Children` component (Vec of child entity IDs) + `Parent` (single entity).
-- **Unity DOTS:** `Parent` + `Child` buffer components; transform propagation system handles propagation.
+- **production DOTS:** `Parent` + `Child` buffer components; transform propagation system handles propagation.
 - **Recommendation:** Keep hierarchy out of `cd::ecs` core — `cd::scene` owns `Parent` + `Children` + `LocalTransform` + `WorldTransform` (already implemented this way in CHROMODYNAMIC).
 
 ---
@@ -183,7 +183,7 @@ EnTT (compile-time `view<T>()`) gives zero-overhead, type-safe APIs but blocks s
 
 ### Tension 3: Manual vs. framework-controlled data layout
 
-Unity DOTS demands struct-of-arrays via codegen; Bevy queries enforce reads/writes via the type system; EnTT defers everything to the user. The trade-off: framework control gives SIMD-friendly layout automatically; user control gives flexibility for unusual access patterns.
+production DOTS demands struct-of-arrays via codegen; Bevy queries enforce reads/writes via the type system; EnTT defers everything to the user. The trade-off: framework control gives SIMD-friendly layout automatically; user control gives flexibility for unusual access patterns.
 
 ### Tension 4: Exclusive write vs. RW lock per component
 
@@ -191,7 +191,7 @@ Flecs enforces single-writer-per-component-per-stage; Bevy uses borrow checking 
 
 ### Tension 5: Single-world vs. multi-world
 
-EnTT/Flecs/Bevy all allow multiple `registry`/`world` instances. Unity DOTS originally had one global world. Multi-world is useful for editor + runtime split, networking authority partition, undo/redo snapshots.
+EnTT/Flecs/Bevy all allow multiple `registry`/`world` instances. production DOTS originally had one global world. Multi-world is useful for editor + runtime split, networking authority partition, undo/redo snapshots.
 
 ---
 
@@ -224,11 +224,11 @@ EnTT/Flecs/Bevy all allow multiple `registry`/`world` instances. Unity DOTS orig
 
 ## Alternatives explicitly rejected
 
-- **Archetype-only** (Flecs default / Unity DOTS): rejected. Dynamic gameplay add/remove is 10× more expensive; the Samurai Gunn 2 case proves the production risk; archetype migration is O(k) where k = component count on the entity; unsuitable for a gameplay-first engine.
+- **Archetype-only** (Flecs default / production DOTS): rejected. Dynamic gameplay add/remove is 10× more expensive; the Samurai Gunn 2 case proves the production risk; archetype migration is O(k) where k = component count on the entity; unsuitable for a gameplay-first engine.
 - **EnTT groups-only without sparse-set baseline:** rejected. Group monopoly constrains prototyping; sparse-set as the default plus groups as opt-in is the documented EnTT-author-recommended hybrid.
 - **Bevy ECS:** rejected. Rust; cannot be ported to a C++23 engine.
-- **Unity DOTS:** rejected. C# + Burst + EULA lock-in; cannot ship as a standalone library.
-- **Unreal Mass:** rejected. UE plugin; standalone build not supported; parallel path immature per UE forum thread on processor-parallelism bugs.
+- **production DOTS:** rejected. C# + Burst + EULA lock-in; cannot ship as a standalone library.
+- **production Mass:** rejected. UE plugin; standalone build not supported; parallel path immature per UE forum thread on processor-parallelism bugs.
 - **EntityX / ANAX:** historical context only. 2013–2014 designs that don't scale past ~7 k entities.
 
 ---
@@ -254,10 +254,10 @@ EnTT/Flecs/Bevy all allow multiple `registry`/`world` instances. Unity DOTS orig
 - [Archetypal ECS Considered Harmful (Moonside Games)](https://moonside.games/posts/archetypal-ecs-considered-harmful/)
 - [Your ECS Probably Still Sucks (Dreaming381)](https://gist.github.com/Dreaming381/89d65f81b9b430ffead443a2d430defc)
 - [Eurographics sparse-set vs archetype paper](https://diglib.eg.org/items/6e291ae6-e32c-4c21-a89b-021fd9986ede)
-- [Unity ECS core concepts](https://docs.unity3d.com/Packages/com.unity.entities@0.50/manual/ecs_core.html)
-- [Unity cache miss optimization guide](https://learn.unity.com/course/dots-best-practices/unit/part-3-implementation-and-optimization/tutorial/part-3-3-minimizing-cache-misses)
-- [Unreal Mass Entity overview](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-mass-entity-in-unreal-engine)
-- [Unreal Mass parallel forum thread](https://forums.unrealengine.com/t/mass-entity-processors-not-processing-in-parallel/1297162)
+- [production ECS core concepts](https://docs.unity3d.com/Packages/com.unity.entities@0.50/manual/ecs_core.html)
+- [production cache miss optimization guide](https://learn.unity.com/course/dots-best-practices/unit/part-3-implementation-and-optimization/tutorial/part-3-3-minimizing-cache-misses)
+- [production Mass Entity overview](https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-mass-entity-in-unreal-engine)
+- [production Mass parallel forum thread](https://forums.unrealengine.com/t/mass-entity-processors-not-processing-in-parallel/1297162)
 - [Building an ECS #3: Storage in Pictures](https://ajmmertens.medium.com/building-an-ecs-storage-in-pictures-642b8bfd6e04)
 - [EntityX GitHub](https://github.com/alecthomas/entityx)
 - [ANAX GitHub (archived)](https://github.com/miguelmartin75/anax)

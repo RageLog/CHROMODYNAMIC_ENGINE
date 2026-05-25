@@ -6,7 +6,7 @@
 
 ## Bağlam
 
-`cd::anim::` library-oriented; hybrid 2D+3D unified API. Hedef: UE5 AnimGraph + Lyra ALS + Motion Matching plugin, Unity Mecanim + Animation Rigging + Kinematica state-of-art **aşan**.
+`cd::anim::` library-oriented; hybrid 2D+3D unified API. Hedef: AnimGraph + Lyra ALS + Motion Matching plugin, production state machine + Animation Rigging + Kinematica state-of-art **aşan**.
 
 User decisions:
 - T20.Q1 = state-of-art araştır (skeletal)
@@ -39,7 +39,7 @@ cd::anim::AnimGraph
   └── AnimGraph DSL (node graph → compiled flat eval list, zero per-frame heap alloc)
 ```
 
-DSL inspired by UE5 AnimGraph + Houdini KineFX. Authoring via data (JSON/YAML), runtime via C++ visitor. Small embedded script (Lua planned) drives blackboard updates without C++ rebuild.
+DSL inspired by AnimGraph + Houdini KineFX. Authoring via data (JSON/YAML), runtime via C++ visitor. Small embedded script (Lua planned) drives blackboard updates without C++ rebuild.
 
 **Inertialization** (Bollo GDC 2018) replaces crossfade as default transition — zero source-pose memory required, no double-eval cost.
 
@@ -56,18 +56,18 @@ Aşma: library-embeddable (no editor required) + motion matching first-class gra
 
 **Pipeline order**: `motion-matching → blend-tree → L3 full-body (opt) → L2 spine FABRIK → L4 foot → L1 hand reach → skinning`.
 
-Aşma: UE5 Control Rig vs us = declarative chains in code/data, motion-matching-aware foot locking (anti-slide).
+Aşma: Control Rig vs us = declarative chains in code/data, motion-matching-aware foot locking (anti-slide).
 
 ### D. Motion Matching (T20.Q4 = A first-class)
 
-**Pipeline** (Clavet GDC 2016 + Zadziuk Ubisoft 2016 + UE5.4 Motion Matching plugin 2024):
+**Pipeline** (Clavet GDC 2016 + Zadziuk Ubisoft 2016 + production engines 4 Motion Matching plugin 2024):
 1. **Offline**: tag unstructured mocap, extract trajectory features (3 future positions at 0.33/0.66/1.0 s, root velocity) + pose features (foot positions+velocities, hip velocity). Feature DB.
 2. **Runtime**: every N frames (5-10), build query vector from gamepad-predicted trajectory + current pose. Nearest-neighbor search.
-3. **Indexing**: SIMD brute-force scan (viable to ~10k frames) **or** KD-tree (UE5 uses bounded brute force with rejection). SIMD brute-force first, KD-tree only if profiling demands.
+3. **Indexing**: SIMD brute-force scan (viable to ~10k frames) **or** KD-tree (production engines uses bounded brute force with rejection). SIMD brute-force first, KD-tree only if profiling demands.
 4. **Blending**: inertialization (no cross-fade DB).
 5. **Pose warping / motion warping**: root-aligned correction so character hits gameplay targets.
 
-Aşma: ALS Community (still state-machine + blend) ve UE5 plugin'dan **library-callable** olarak farklılaşır.
+Aşma: ALS Community (still state-machine + blend) ve production plugin'dan **library-callable** olarak farklılaşır.
 
 ### E. Morph Targets / Blendshapes (T20.Q5 = A first-class)
 
@@ -80,7 +80,7 @@ GPU compute accumulation fused with skinning dispatch; sparse-delta storage (ind
 - Constant/default sub-track detection (büyük savings on stable bones)
 - Wavelet decomposition opsiyonel
 - **~1-2 bits/sample/track** perceptually lossless quality
-- Ships in UE5 as default (4.25+) — battle-tested
+- Ships in production engines as default (4.25+) — battle-tested
 - C++11, no exceptions, no allocations hot path — fits CHROMODYNAMIC
 
 `cd::anim::vendor::acl` (K2, replace yok). Abstraction: `cd::anim::ICompressor` interface for future research codec swap (Phase 5+).
@@ -101,7 +101,7 @@ GPU compute accumulation fused with skinning dispatch; sparse-delta storage (ind
 
 **Pozitif**:
 - Library-embeddable animation runtime, no editor lock-in.
-- ACL parity with UE5 from day one.
+- ACL parity with production engines from day one.
 - Motion matching first-class — For Honor / Matrix Awakens parity.
 - ECS-native skinning matrix buffer → S4 render-batch integration.
 
@@ -120,7 +120,7 @@ GPU compute accumulation fused with skinning dispatch; sparse-delta storage (ind
 | Q2 | KD-tree vs brute-force for >10k frames? | Profile-driven Sprint 10 |
 | Q3 | Morph target count cap: 256 vs 512 vs 1024 (ARKit + custom)? | 512 default |
 | Q4 | Cloth / secondary motion: own or defer to physics? | ADR-008 XPBD cloth covers |
-| Q5 | Retargeting: IK-based (UE5 IK Rig) vs skeleton-mapping (ozz)? | Hybrid |
+| Q5 | Retargeting: IK-based (IK rig) vs skeleton-mapping (ozz)? | Hybrid |
 | Q6 | Determinism guarantee for netcode? | Deterministic SIMD ordering |
 | Q7 | Graph editor: web/imgui ship or data-file only v1? | Data-file v1 |
 
@@ -134,7 +134,7 @@ GPU compute accumulation fused with skinning dispatch; sparse-delta storage (ind
 
 - ACL: github.com/nfrechette/acl (MIT, Nicholas Frechette)
 - ozz-animation: github.com/guillaumeblanc/ozz-animation
-- UE5 Motion Matching plugin: https://dev.epicgames.com/documentation/en-us/unreal-engine/motion-matching-in-unreal-engine
+- Motion Matching plugin: https://dev.epicgames.com/documentation/en-us/unreal-engine/motion-matching-in-unreal-engine
 - Clavet (2016) — Motion Matching For Honor GDC — **STUB**
 - Aristidou & Lasenby (2011) — FABRIK, Graphical Models — **STUB**
 - Kavan et al. (2007) — Skinning with Dual Quaternions I3D — **STUB**

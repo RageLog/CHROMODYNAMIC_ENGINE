@@ -44,7 +44,7 @@ struct CascadeSplit
 
 /// Practical Split Scheme: blend uniform + logarithmic splits with
 /// λ in [0, 1]. λ=0 → pure uniform, λ=1 → pure log. Doom Eternal
-/// uses ~0.75; UE5 default is ~0.85.
+/// uses ~0.75; common production default is ~0.85.
 [[nodiscard]] inline std::array<float, kMaxCascades + 1>
 practical_split_distances(float near_z, float far_z,
                           std::uint32_t cascade_count = 4,

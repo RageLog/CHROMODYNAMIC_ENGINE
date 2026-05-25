@@ -71,9 +71,9 @@ Collapses permutation matrix from "all 2^N pre-cooked" (UE) to "only realized N 
 
 ### E. PSO Cache (T13.Q5 = D — 3-tier)
 
-1. **Driver-level**: `VkPipelineCache` + `ID3D12PipelineLibrary` — serialized to disk per-GPU-per-driver-version under `%LOCALAPPDATA%/CHROMODYNAMIC/pso_cache/<gpu_uuid>/<driver_ver>/`. Re-cache on driver change (UE5.6+ pattern).
+1. **Driver-level**: `VkPipelineCache` + `ID3D12PipelineLibrary` — serialized to disk per-GPU-per-driver-version under `%LOCALAPPDATA%/CHROMODYNAMIC/pso_cache/<gpu_uuid>/<driver_ver>/`. Re-cache on driver change (production engines 6+ pattern).
 2. **Application-level**: hash-keyed blob store (`xxh3_128(pipeline_desc + shader_spv_hash + render_state)`). Survives driver changes; rehydrates driver cache on cold start.
-3. **Async warm-up at session start**: background thread submits known-good PSOs from a **PSO trace manifest** (captured during dev playtests, à la Unity 6 PSO Tracing + UE PSO Precaching). Manifest lives in asset bundle.
+3. **Async warm-up at session start**: background thread submits known-good PSOs from a **PSO trace manifest** (captured during dev playtests, à la production 6 PSO Tracing + UE PSO Precaching). Manifest lives in asset bundle.
 
 **Per-platform binary asset**: `.cdshd` container, magic `CDSH`, sections `{slang_ir | spirv_vk | dxil_d3d | glsl_gl | msl_apple | reflection_json | pso_hints}`. Loader picks right section based on active RHI.
 
@@ -143,6 +143,6 @@ Standalone CLI + library, **engine'siz kullanılabilir** (library-oriented). Ass
 - DirectX Adopting SPIR-V: https://devblogs.microsoft.com/directx/directx-adopting-spir-v/
 - HLSL as First-Class Vulkan Shading Language: https://www.khronos.org/blog/hlsl-first-class-vulkan-shading-language
 - UE Substrate Materials 5.7 Production Ready: https://dev.epicgames.com/documentation/en-us/unreal-engine/overview-of-substrate-materials-in-unreal-engine
-- Unity 6 PSO Tracing: https://discussions.unity.com/t/prevent-shader-compilation-stutters-with-pso-tracing-in-unity-6/951031
+- production 6 PSO Tracing: https://discussions.unity.com/t/prevent-shader-compilation-stutters-with-pso-tracing-in-unity-6/951031
 - Foley & Hanrahan — Spark: modular composable shaders SIGGRAPH 2011 — **STUB**
 - He et al. — Slang language mechanisms SIGGRAPH 2018 — **STUB**

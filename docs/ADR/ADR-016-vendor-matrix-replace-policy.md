@@ -138,7 +138,7 @@ Yeni vendor önerisi için:
 
 ## Reddedilen Alternatifler
 
-- **Tam vendor kabul (UE5 pattern)**: çekirdek kontrolün kaybı, library-oriented prensibe aykırı.
+- **Tam vendor kabul (common pattern)**: çekirdek kontrolün kaybı, library-oriented prensibe aykırı.
 - **Tam custom (UE3 öncesi pattern)**: 5-10 yıl kayıp, Phase 1 hız hedefiyle çelişir.
 - **vcpkg port-only model**: bağımlılık şişer, izole vendor kontrolü zayıflar.
 - **Per-ADR vendor karar dağıtık**: tutarsızlık + replace policy çakışması; tek normatif ADR daha temiz.

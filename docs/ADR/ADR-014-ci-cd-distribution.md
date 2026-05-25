@@ -34,7 +34,7 @@ AWS_ACCESS_KEY_ID=...
 
 **Asset DDC cache (S6 cross-cut)**: aynı R2, ayrı bucket `chromodynamic-ddc`. CI bake upload, dev pull-only. zstd-compressed blob + JSON manifest.
 
-**Reddedilen**: ccache (MSVC yok), distcc/icecream (modern incremental+sccache yeterli; LTO uyumsuz), FASTBuild (Windows/Unreal world'üne özgü).
+**Reddedilen**: ccache (MSVC yok), distcc/icecream (modern incremental+sccache yeterli; LTO uyumsuz), FASTBuild (Windows/production world'üne özgü).
 
 ### C. Compiler Matrix CI
 

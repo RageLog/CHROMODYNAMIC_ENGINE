@@ -8,7 +8,7 @@
 // the lights that overlap its cluster — the standard
 // "Clustered Deferred / Forward+" technique introduced by Olsson et
 // al. 2012 ("Clustered Deferred and Forward Shading") and now used
-// by every modern engine (Unity HDRP, UE5, Doom Eternal, Filament,
+// by every modern engine (, Doom Eternal, Filament,
 // id Tech 6/7, Cyberpunk 2077).
 //
 // Grid layout (defaults match Doom 2016 / Eternal):

@@ -13,7 +13,7 @@ Editor mimari: **hybrid in-process** + ileride IPC-ready (E5=c). Hot-reload: hep
 ### A. 3-Katmanlı Mimari
 
 ```
-cd::editor::gizmo    — UE5 InteractiveToolsFramework-esinli composable subgizmo
+cd::editor::gizmo    — composable composable subgizmo
 cd::editor::level    — modeling/spline/terrain/decal/lighting/outliner
 cd::editor::viewport — orbit/fly/fps/ortho cam, 1/2/4-pane layout
 ```
@@ -22,7 +22,7 @@ Edit pipeline: tüm mutasyonlar `EditOp` event-sourced — undo/redo + IPC + fut
 
 ### B. Gizmo System
 
-UE5 ITF (`IGizmoStateTarget`, `IGizmoTransformSource`, `IGizmoAxisSource`, `IGizmoClickTarget`) decoupling ilham. Blender modal operator + numeric input ("G, X, 5, Enter") power-user için zorunlu.
+Interactive Tools Framework (`IGizmoStateTarget`, `IGizmoTransformSource`, `IGizmoAxisSource`, `IGizmoClickTarget`) decoupling ilham. Blender modal operator + numeric input ("G, X, 5, Enter") power-user için zorunlu.
 
 ```cpp
 namespace cd::editor::gizmo {
@@ -102,7 +102,7 @@ Kendi yazılır (vendor terrain license/perf uyumsuz).
 
 #### C.4 Decal Placement
 
-UE5 DecalActor + DBuffer pattern. Surface-projected + spline-along-path. Sprint 13.
+production engines DecalActor + DBuffer pattern. Surface-projected + spline-along-path. Sprint 13.
 
 #### C.5 Light Placement + Probe Bake UI
 
@@ -144,7 +144,7 @@ class ViewportManager {
 
 ### E. Hot-Reload Tools
 
-Tools plugin DLL (`cd::plugin::Loader` ADR-017 P2). State-preserving reload — gizmo state'i kaybetmez (UE5 Live++'tan üstün).
+Tools plugin DLL (`cd::plugin::Loader` ADR-017 P2). State-preserving reload — gizmo state'i kaybetmez (production engines Live++'tan üstün).
 
 ### F. Editor Scripting (T22.Q4=C)
 
@@ -152,13 +152,13 @@ Her tool hem C++ hem script API çağrılabilir — Blender Python operator para
 
 ### G. Aşma Noktaları
 
-1. **C++23 concept-based** gizmo target/snap (vs UE5 runtime virtual dispatch).
+1. **C++23 concept-based** gizmo target/snap (vs production engines runtime virtual dispatch).
 2. **Hot-reload first** — state-preserving plugin reload.
 3. **Editor scripting** C+++script aynı surface (T22.Q4).
 4. **IPC-ready EditOp log** — replay + collaborative editing (faz-3).
 5. **Quad-view + perspective parite** — LD geleneği koru.
 6. **Universal gizmo default** — ayrı T/R/S yerine başlangıç.
-7. **Spline + terrain + modeling birleşik selection mod** — Blender ortak, Unity ayrı (her toolda farklı).
+7. **Spline + terrain + modeling birleşik selection mod** — Blender ortak, production ayrı (her toolda farklı).
 
 ## Reddedilen
 
@@ -204,7 +204,7 @@ Her tool hem C++ hem script API çağrılabilir — Blender Python operator para
 
 ## Kanıt
 
-- UE5 InteractiveToolsFramework: dev.epicgames.com/documentation
+- Interactive Tools Framework: dev.epicgames.com/documentation
 - Blender BMesh: docs.blender.org/api/current/bmesh.html
 - ProBuilder: docs.unity3d.com/Packages/com.unity.probuilder
 - Trenchbroom: github.com/TrenchBroom/TrenchBroom

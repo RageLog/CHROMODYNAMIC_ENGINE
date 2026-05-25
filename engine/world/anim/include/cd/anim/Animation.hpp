@@ -7,8 +7,8 @@
 // current pose via SLERP for rotation and linear interpolation for
 // translation/scale, and exposes the resulting Transform to game code.
 //
-// SOTA references: glTF skinning spec, Unity's `AnimationCurve`,
-// Unreal `UAnimSequence`. The MVP here covers the single-target
+// SOTA references: glTF skinning spec, production engine's `AnimationCurve`,
+// production `UAnimSequence`. The MVP here covers the single-target
 // (root-transform) case that virtually every introductory animation
 // runtime needs; per-bone tracks layer on top in a follow-up sprint.
 // =============================================================================

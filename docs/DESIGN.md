@@ -10,7 +10,7 @@ Bu doküman 17 ADR'ı entegre bir engine vizyonuna sentezler. Detay her bir ADR'
 
 ## 1. Vizyon
 
-CHROMODYNAMIC, sadece bir oyun motoru değil; **hybrid 2D+3D rendering + general-purpose framework**. Game + scientific visualization + tooling first-class kullanım senaryoları. Mevcut state-of-the-art (Unreal Engine, Filament, bgfx, EnTT, Bevy, Jolt) **aşılacak hedef** — kopya değil.
+CHROMODYNAMIC, sadece bir oyun motoru değil; **hybrid 2D+3D rendering + general-purpose framework**. Game + scientific visualization + tooling first-class kullanım senaryoları. Mevcut state-of-the-art (production Engine, Filament, bgfx, EnTT, Bevy, Jolt) **aşılacak hedef** — kopya değil.
 
 ### 1.1 Temel Prensipler
 
@@ -150,9 +150,9 @@ CHROMODYNAMIC, sadece bir oyun motoru değil; **hybrid 2D+3D rendering + general
 
 #### `cd::math` (ADR-005 C)
 - vec2/3/4, mat2/3/4, quat, transform — SIMD (Highway-wrap, ADR-015)
-- `world_pos` compile-time float/double resolution (UE5 LWC pattern)
+- `world_pos` compile-time float/double resolution (large-world-coordinates pattern)
 - Fixed-point `cd::math::fixed32_16` opt-in determinism
-- **Default: Right-Handed Z-up** (Blender/Unreal world coord)
+- **Default: Right-Handed Z-up** (Blender/production world coord)
 - SIMD: SSE2/AVX2/AVX-512/NEON/SVE/RVV via Highway
 
 #### `cd::mem` (ADR-005 D, ADR-016 K4 mimalloc Phase 3 replace)
@@ -317,7 +317,7 @@ CHROMODYNAMIC, sadece bir oyun motoru değil; **hybrid 2D+3D rendering + general
 - 12-18 ay engineering, ~50 KLOC
 
 #### `cd::editor` (ADR-012)
-- `gizmo` (UE5 ITF-vari composable)
+- `gizmo` (composable subgizmo composable)
 - `level` (8-core half-edge modeling + spline + terrain + decal + lighting + outliner)
 - `viewport` (orbit/fly/fps/ortho + 4-pane quad mandatory)
 - EditOp event-sourced (undo + IPC + future collab)
@@ -358,7 +358,7 @@ T3.Q2 = D opt-in cross-cutting:
 
 ### 4.3 Memory Tracking
 
-`cd::mem::TrackingAllocator<Inner>` + `cd::profile::MemoryTag` (compile-time enum, ~0 overhead) → Tracy events + UE5 LLM-vari per-subsystem budget tracking (ADR-005 B + ADR-013 B.2).
+`cd::mem::TrackingAllocator<Inner>` + `cd::profile::MemoryTag` (compile-time enum, ~0 overhead) → Tracy events + per-allocator-vari per-subsystem budget tracking (ADR-005 B + ADR-013 B.2).
 
 ### 4.4 C++23 → C++26 Migration Path
 
@@ -465,9 +465,9 @@ ADR-016 D2 hedefi:
 CHROMODYNAMIC tasarımı, **mevcut SOTA çözümlerin best-of-breed birleşimi + ölçülebilir aşma noktaları** üzerine kurulmuştur:
 
 - **Library-oriented + replace-ready**: Hiçbir SOTA engine bu kombinasyonu sunmuyor.
-- **3 paralel RHI backend + bindless-first + 2-tier graph**: Unreal+Filament+bgfx üzerine.
+- **3 paralel RHI backend + bindless-first + 2-tier graph**: production+Filament+bgfx üzerine.
 - **Slang as single source language**: Khronos 2024 dönüşümü; ilk early adopter open-source engine.
-- **Hybrid ECS chunk+sparse+chunk-aware observers**: Unity DOTS hot + EnTT cold + Bevy reactive hybrid.
+- **Hybrid ECS chunk+sparse+chunk-aware observers**: production DOTS hot + EnTT cold + Bevy reactive hybrid.
 - **DtForHil 24-pattern salvage**: Üretim-kalite kod tabanı miras (yozlaştırmadan).
 - **Determinism opt-in foundation**: Rollback netcode + lockstep + replay test "free" gelir.
 - **Vendor matrix normative + Replace-Ready**: Low-level custom-first bias gelecekte tam bağımsızlık.

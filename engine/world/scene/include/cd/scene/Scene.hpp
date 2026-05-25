@@ -16,8 +16,8 @@
 //   * `cd::scene::Children`      — list of direct children. Maintained by
 //     attach()/detach() so renderers can do top-down traversal cheaply.
 //
-// Design notes (SOTA references: Unity's Transform Hierarchy [GDC 2018],
-// Unreal's USceneComponent, godot::Node3D):
+// Design notes (SOTA references: production engine's Transform Hierarchy [GDC 2018],
+// USceneComponent, godot::Node3D):
 //   * Transform propagation is a *single* depth-first walk from each root,
 //     running in registration order — no cycles allowed.
 //   * The world matrix is column-major (matches Vulkan/D3D upload layout).

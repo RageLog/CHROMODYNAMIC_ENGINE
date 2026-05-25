@@ -4,7 +4,7 @@
 //
 // Replaces the minimal cd::scene::Light (Phase 83.A) with the
 // production engine model used by Frostbite (Real Shading 2014),
-// Filament 1.x, and Unreal Engine 5 (Lumen). Key differences:
+// Filament 1.x, and . Key differences:
 //
 //   * Physical units. Point/spot intensity in LUMENS, directional in
 //     LUX (illuminance). Conversion → radiant energy at shade time
@@ -19,7 +19,7 @@
 //
 //     — physically motivated inverse-square plus a smooth range
 //     cutoff so the light goes to exactly 0 at `range` without
-//     popping. Same falloff as Filament + UE5 + Unity HDRP.
+//     popping. Same falloff as Filament + production engines + .
 //   * Spot light angle terms pre-computed (cos_inner / cos_outer +
 //     reciprocal) so the shader only needs two multiply-adds.
 //   * Area lights. Rectangular (LTC — Heitz 2016) and disk.

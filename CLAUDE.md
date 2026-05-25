@@ -4,7 +4,7 @@
 
 ## 0. Proje Kimliği
 
-**CHROMODYNAMIC** — cross-platform, cross-API, library-oriented hibrid 2D+3D oyun motoru ve general-purpose rendering/framework. Hedef: state-of-the-art (Unreal RHI, Filament, bgfx, EnTT/Bevy) **aşılacak** mimari kalite. Tüm alt-sistemler bağımsız kütüphane olarak da tüketilebilir olacak.
+**CHROMODYNAMIC** — cross-platform, cross-API, library-oriented hibrid 2D+3D oyun motoru ve general-purpose rendering/framework. Hedef: state-of-the-art (Filament, bgfx, EnTT/Bevy) **aşılacak** mimari kalite. Tüm alt-sistemler bağımsız kütüphane olarak da tüketilebilir olacak.
 
 **Phase 1 = sadece tasarım ve plan** — implementasyon yok. Her büyük karar **araştırma + ADR** ile gerekçelendirilir.
 
@@ -20,7 +20,7 @@
 
 ## 2. Araştırma-Önce Disiplini (Phase 1 zorunlu)
 
-- **Her** alt-sistem tasarım kararı öncesi: SOTA analizi (Unreal, Filament, bgfx, Sokol, The Forge, Diligent, WebGPU/Dawn, EnTT, Bevy, Flecs, Jolt, vb.) → ADR.
+- **Her** alt-sistem tasarım kararı öncesi: SOTA analizi (Filament, bgfx, Sokol, The Forge, Diligent, WebGPU/Dawn, EnTT, Bevy, Flecs, Jolt, vb.) → ADR.
 - ADR yolu: `docs/ADR/ADR-YYYYMMDD-konu.md` — Iglberger formatı (Bağlam / Karar / Reddedilen alternatifler / Sonuçlar).
 - **Akademik atıf** gerektiğinde Demir Kural geçerlidir: `research/library/MANIFEST.csv` doğrulanmış PDF + `bibliography.bib` BibTeX olmadan atıf yapılamaz. (`academic-researcher` ajanı bunu zorlar.)
 - Engineering SOTA (blog, GitHub, cppreference, vendor docs) `researcher` ajanı tarafından toplanır; rapor + link + erişim tarihi formatında.

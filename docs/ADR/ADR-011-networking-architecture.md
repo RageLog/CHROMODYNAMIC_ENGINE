@@ -43,7 +43,7 @@ Tek `cd::net::ITransport` adapter; build flag `CD_NET_TRANSPORT=gns|enet|both` +
 2. **Deterministic Lockstep** — RTS/fighting (legacy).
 3. **Rollback Netcode** — fighting/P2P RTS, GGPO-style.
 
-**Aşma noktası**: Tek motor build'de 3 mode **runtime-switchable** (Mirror/Iris'te yok). Tri-clock (ADR-005) + opt-in determinism (T3.Q2) + fixed-tick scheduler hepsinin temeli — rollback netcode "free" gelir (UE/Unity'de retrofit zor).
+**Aşma noktası**: Tek motor build'de 3 mode **runtime-switchable** (Mirror/Iris'te yok). Tri-clock (ADR-005) + opt-in determinism (T3.Q2) + fixed-tick scheduler hepsinin temeli — rollback netcode "free" gelir (UE/production engine'de retrofit zor).
 
 ### D. DtForHil Pattern Salvage (ADR-017 P3)
 

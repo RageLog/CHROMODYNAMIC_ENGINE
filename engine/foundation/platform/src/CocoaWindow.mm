@@ -16,7 +16,7 @@
 // Metal backend (cd::rhi_metal) stays a separate v1.3 phase; this
 // file just owns the NSWindow + event loop. Vulkan apps can sit on
 // top via MoltenVK and VK_KHR_metal_surface — same as Filament
-// + UE5's Apple path.
+// + production engines's Apple path.
 // =============================================================================
 #include <cd/platform/Window.hpp>
 

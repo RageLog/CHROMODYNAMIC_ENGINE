@@ -637,7 +637,7 @@ int main(int argc, char** argv)
             {
                 const ImVec2 drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
                 // Drag right → camera looks right. Drag up → looks up.
-                // (FPS / Unity / UE convention: drag direction equals
+                // (FPS / production / UE convention: drag direction equals
                 // gaze-direction change.)
                 camera.yaw   += drag.x * camera.mouse_sensitivity;
                 camera.pitch -= drag.y * camera.mouse_sensitivity;

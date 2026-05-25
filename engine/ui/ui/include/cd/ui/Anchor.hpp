@@ -12,7 +12,7 @@
 //
 // When min == max the child has a fixed pixel size (offset_max -
 // offset_min); when min != max the child stretches with the parent
-// (Godot Control / Unity IntRectTransform semantics).
+// (Godot Control / production IntRectTransform semantics).
 //
 // All math is integer pixel — no float drift across resolution changes.
 // =============================================================================

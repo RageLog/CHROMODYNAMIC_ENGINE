@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | Frostbite FrameGraph | 2017 | Proprietary | C++ | DX11/12, PS4, Xbox One |
 | Granite (Themaister) | 2017–present | MIT | C++ | Vulkan |
-| Unreal RDG | 2018–present | Custom EULA | C++ | DX11/12, Vulkan, Metal |
+| production RDG | 2018–present | Custom EULA | C++ | DX11/12, Vulkan, Metal |
 | AMD RPS SDK | 2022–present | MIT | C++ + RPSL | DX12, Vulkan |
 | skaarj1989/FrameGraph | 2021–present | MIT | C++ | Renderer-agnostic |
 | bgfx | 2012–present | BSD-2 | C++ | Many |
@@ -55,9 +55,9 @@ pass.set_build_render_pass([=](Vulkan::CommandBuffer& cmd) {
 });
 ```
 
-### Unreal RDG
+### production RDG
 
-Source: [dev.epicgames.com — Render Dependency Graph in Unreal Engine](https://dev.epicgames.com/documentation/en-us/unreal-engine/render-dependency-graph-in-unreal-engine)
+Source: [dev.epicgames.com — Render Dependency Graph in production Engine](https://dev.epicgames.com/documentation/en-us/unreal-engine/render-dependency-graph-in-unreal-engine)
 
 `FRDGBuilder::AddPass(name, parameters, flags, lambda)`. Resources created with typed descriptor structs (`FRDGTextureDesc::Create2D`). Dependency edges are **inferred automatically** from the parameter struct via compile-time macro reflection (`SHADER_PARAMETER_RDG_TEXTURE`, etc.) — no explicit `builder.read()` call. Pass flags: `ERDGPassFlags::Raster`, `::Compute`, `::AsyncCompute`, `::Copy`.
 
@@ -93,11 +93,11 @@ Source: [github.com/ConfettiFX/The-Forge](https://github.com/ConfettiFX/The-Forg
 |---|---|---|---|
 | Frostbite | Typed handle from `builder.create<>()` | Frame-scoped | `RegisterExternalTexture()` |
 | Granite | String at declare; `RenderResource*` handle | Frame-scoped default; `persistent=true` opt-in | Physical resource binding |
-| Unreal RDG | `FRDGTexture*` / `FRDGBuffer*` pointer | Frame-scoped | `FRDGBuilder::RegisterExternal*` |
+| production RDG | `FRDGTexture*` / `FRDGBuffer*` pointer | Frame-scoped | `FRDGBuilder::RegisterExternal*` |
 | AMD RPS | RPSL typed params / `create_tex2d()` | Transient / persistent / external | Entry function parameters |
 | skaarj1989 | `FrameGraphResource` (opaque 32-bit) | Frame-scoped | `fg.import()` |
 
-Both Frostbite and Unreal RDG explicitly decline to alias imported resources even when their lifetimes are fully knowable — a documented correctness-over-optimization choice.
+Both Frostbite and production RDG explicitly decline to alias imported resources even when their lifetimes are fully knowable — a documented correctness-over-optimization choice.
 
 ---
 
@@ -105,7 +105,7 @@ Both Frostbite and Unreal RDG explicitly decline to alias imported resources eve
 
 ### Per-frame full rebuild (Frostbite, UE RDG, skaarj1989)
 
-Graph declared and compiled every frame. Compilation steps: backward reachability culling (from output handles), lifetime interval computation, resource aliasing pass, barrier generation. UE5 RDG parallelizes execute-lambda recording with one `FRHICommandList` per pass group joined before queue submission. Per-frame rebuild enables fully dynamic pass sets with no invalidation signals.
+Graph declared and compiled every frame. Compilation steps: backward reachability culling (from output handles), lifetime interval computation, resource aliasing pass, barrier generation. render dependency graph parallelizes execute-lambda recording with one `FRHICommandList` per pass group joined before queue submission. Per-frame rebuild enables fully dynamic pass sets with no invalidation signals.
 
 ### Bake-once with per-frame reset (Granite)
 
@@ -130,7 +130,7 @@ Aliasing barrier required between users; `DiscardResource` and metadata reinitia
 
 Aliasing determined by `physical_index` mapping. `build_physical_resources()` assigns multiple logical resources to the same physical slot when: dimensions + format + sample count match AND their first/last-use intervals do not overlap. Color input/output pairs within a single pass auto-alias. Storage images and history-tracked resources are excluded.
 
-### Unreal RDG
+### production RDG
 
 Power-of-two bucketing for texture dimensions. `r.RDG.TransientAllocator` cvar gates the feature. Imports never aliased. Epic documents approximately 50% memory savings in typical use.
 
@@ -146,7 +146,7 @@ The Xbox One ESRAM figure (570 MB) is an extreme console-specific case. On PC Vu
 |---|---|---|---|
 | Frostbite | Yes | `builder.asyncComputeEnable(true)`; compiler inserts semaphore | Yes |
 | Granite | Yes | Per-pass queue flag; separate semaphore tracking; external lock interface | Yes (most complete OSS) |
-| Unreal RDG | Yes | `ERDGPassFlags::AsyncCompute`; compiler finds last producer, inserts fence | Yes (automatic fence) |
+| production RDG | Yes | `ERDGPassFlags::AsyncCompute`; compiler finds last producer, inserts fence | Yes (automatic fence) |
 | AMD RPS | Declared | Architecture supports; details not verified beyond API flags | Partial confidence |
 | skaarj1989 | No | Single-queue only | No |
 | bgfx, Sokol | No | Single-queue abstraction | No |
@@ -160,7 +160,7 @@ The Xbox One ESRAM figure (570 MB) is an extreme console-specific case. On PC Vu
 |---|---|---|---|---|
 | Frostbite | Internal timeline viewer (GDC only) | Yes | Yes | Unknown |
 | Granite | None built-in | No | No | No |
-| Unreal RDG | RDG Insights | Yes | Yes (heap allocation overlap) | No (proprietary) |
+| production RDG | RDG Insights | Yes | Yes (heap allocation overlap) | No (proprietary) |
 | AMD RPS | RPSL Explorer + DAGPrintPhase | Yes (interactive) | Yes (heap timeline) | Yes (DOT) |
 | skaarj1989 | None built-in | No | No | No |
 

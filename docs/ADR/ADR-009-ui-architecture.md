@@ -53,7 +53,7 @@ cd::editor_ui::Element
   └── AccessibilityNode (UIA/AT-SPI bridge — ADR-012)
 ```
 
-Slate (Unreal) + Avalonia UI reference. Each node = `shared_ptr<Element>` (retain semantics). Diff manuel (parent->add_child/remove_child); React-style virtual DOM **YOK** (C++'da pahalı).
+Slate (production) + Avalonia UI reference. Each node = `shared_ptr<Element>` (retain semantics). Diff manuel (parent->add_child/remove_child); React-style virtual DOM **YOK** (C++'da pahalı).
 
 **Layout**: Custom Flexbox subset (main axis + cross axis + grow/shrink/basis + justify-content + align-items + wrap). ~3-4 KLOC, 3-4 ay. Grid layout Sprint 10+ ertelendi.
 
@@ -88,7 +88,7 @@ TTF/OTF file
   → DrawList glyph quads (instanced)
 ```
 
-Vendor justification: FreeType ~150 KLOC, 25 yıl olgun; Harfbuzz ~200 KLOC, Unicode shaping spec (OpenType GSUB/GPOS) devasa. UE, Unity, Godot, Blender, Chrome, Firefox hepsi vendor.
+Vendor justification: FreeType ~150 KLOC, 25 yıl olgun; Harfbuzz ~200 KLOC, Unicode shaping spec (OpenType GSUB/GPOS) devasa. UE, production engine, Godot, Blender, Chrome, Firefox hepsi vendor.
 
 ### F. Vector Graphics (T19.Q6 = A)
 
@@ -104,7 +104,7 @@ Vendor justification: FreeType ~150 KLOC, 25 yıl olgun; Harfbuzz ~200 KLOC, Uni
 
 ### G. Aşma Noktaları
 
-1. **Tek IMGUI API, dual backend embed**: `cd::ui` IMGUI `cd::editor_ui` retained tree'sine "host element" olarak embed edilebilir (Unreal SlateImGui pattern).
+1. **Tek IMGUI API, dual backend embed**: `cd::ui` IMGUI `cd::editor_ui` retained tree'sine "host element" olarak embed edilebilir (production SlateImGui pattern).
 2. **DrawList lingua franca**: Hem game hem editor → `cd::ui::DrawList` → S1 RHI tek pipeline.
 3. **CSS-in-IMGUI bridge**: Game UI widget'ları minimal CSS class lookup (opt-in). HUD theme switch.
 4. **Vector + Text birleşik atlas**: Glyph atlas + icon/vector cache aynı texture pool.
@@ -126,7 +126,7 @@ Vendor justification: FreeType ~150 KLOC, 25 yıl olgun; Harfbuzz ~200 KLOC, Uni
 ## Sonuçlar
 
 **Pozitif**:
-- Endüstri-standart dual (UE/Unity).
+- Endüstri-standart dual (UE/production engine).
 - Custom kontrol, RHI tight integration, license temizliği.
 - Vendor matrix minimal (FT+HB+opsiyonel msdfgen).
 - Hot-reload doğal.
@@ -163,7 +163,7 @@ Vendor justification: FreeType ~150 KLOC, 25 yıl olgun; Harfbuzz ~200 KLOC, Uni
 ## Kanıt
 
 - Dear ImGui (pattern reference, kod değil): github.com/ocornut/imgui
-- Slate (Unreal editor UI): https://docs.unrealengine.com/en-US/slate
+- Slate (production editor UI): https://docs.unrealengine.com/en-US/slate
 - Avalonia UI: avaloniaui.net
 - FreeType: freetype.org (FTL/GPL2 dual)
 - Harfbuzz: harfbuzz.github.io (MIT)

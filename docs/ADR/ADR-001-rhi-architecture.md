@@ -13,11 +13,11 @@ CHROMODYNAMIC, library-oriented, hibrid 2D+3D, cross-platform/cross-API bir engi
 - T11.Q7 = hepsi — compile-time + runtime polymorphism + concept-based dispatch
 - T11.Q9 = C+D — üç backend paralel iskelet; Vulkan MVP, sonra hızlı parça parça D3D12+OpenGL
 - E4 = b — MVP: mesh + texture + camera + tek directional light
-- Kullanıcı vurgusu: Unreal RHI ve Filament backend'i **aşan** tasarım
+- Kullanıcı vurgusu: production RHI ve Filament backend'i **aşan** tasarım
 
 Performans kısıtı: VR-grade düşük gecikme (motion-to-photon < 20 ms), 60/144/240 FPS scalable; modern donanım (Vulkan 1.3 / D3D12 / OpenGL 4.6) hedef. Library-oriented prensibi `cd::rhi` modülünün tek başına bağımsız kullanılabilir olmasını gerektirir.
 
-Mevcut SOTA: Unreal 5 RHI + RDG, Google Filament backend, bgfx, sokol_gfx, The Forge, Diligent Engine, WebGPU/Dawn, NVRHI, EA SEED Halcyon, Granite, AMD RPS SDK. Hiçbiri (a) iki-katman + bindless-first + concept-based dispatch + frame-graph subgraph algebra'sının tamamını birleştirmez.
+Mevcut SOTA: production engines RHI + RDG, Google Filament backend, bgfx, sokol_gfx, The Forge, Diligent Engine, WebGPU/Dawn, NVRHI, EA SEED Halcyon, Granite, AMD RPS SDK. Hiçbiri (a) iki-katman + bindless-first + concept-based dispatch + frame-graph subgraph algebra'sının tamamını birleştirmez.
 
 ## Karar (Decision)
 
@@ -36,7 +36,7 @@ Mevcut SOTA: Unreal 5 RHI + RDG, Google Filament backend, bgfx, sokol_gfx, The F
 
 - **Frame graph compiler** (Frostbite 2017 inspired): nodes declare reads/writes, scheduler computes barriers + transient memory aliasing.
 - **Subgraph algebra**: `Subgraph` is a pure-value type with input/output bindings; user libraries (post-FX, GI) ship composable subgraphs that link at frame-build time.
-- **Lowering boundary explicit**: graph emits `core` calls via single lowering pass; no cross-talk (Unreal RDG conflates lifetime + allocator with FRHICommandList — we forbid this).
+- **Lowering boundary explicit**: graph emits `core` calls via single lowering pass; no cross-talk (production RDG conflates lifetime + allocator with FRHICommandList — we forbid this).
 
 ### Backend dispatch policy (T11.Q7 = hepsi)
 
@@ -115,7 +115,7 @@ namespace cd::rhi {
 
 ## Kanıt
 
-- Unreal 5 RHI: https://dev.epicgames.com/documentation/en-us/unreal-engine/render-dependency-graph-in-unreal-engine (acc 2026-05-16)
+- production engines RHI: https://dev.epicgames.com/documentation/en-us/unreal-engine/render-dependency-graph-in-unreal-engine (acc 2026-05-16)
 - Filament DriverApi + FrameGraph: https://github.com/google/filament (acc 2026-05-16)
 - NVRHI: https://github.com/NVIDIA-RTX/NVRHI (acc 2026-05-16)
 - Granite render_graph: https://themaister.net/blog/2017/08/15/render-graphs-and-vulkan-a-deep-dive/ (acc 2026-05-16)

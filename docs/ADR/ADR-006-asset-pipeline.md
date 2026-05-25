@@ -6,7 +6,7 @@
 
 ## Bağlam
 
-Library-oriented engine için `cd_asset_compiler` standalone tool + `libcd_asset` library zorunlu. SOTA: UE5 DDC + Iostore + Nanite, Unity Addressables, Bevy AssetServer, Godot 4 ResourceFormatLoader, O3DE AssetProcessor, Filament matc, id Tech 7 megatextures. Vendor minimum (T5.Q2); E2 matrix: glTF kendi parser, FBX (ufbx) opsiyonel, USD opsiyonel, KTX2 vendor (Khronos referans), Box2D vendor (E2 reverse).
+Library-oriented engine için `cd_asset_compiler` standalone tool + `libcd_asset` library zorunlu. SOTA: asset DDC + Iostore + Nanite, asset addressables, Bevy AssetServer, Godot 4 ResourceFormatLoader, O3DE AssetProcessor, Filament matc, id Tech 7 megatextures. Vendor minimum (T5.Q2); E2 matrix: glTF kendi parser, FBX (ufbx) opsiyonel, USD opsiyonel, KTX2 vendor (Khronos referans), Box2D vendor (E2 reverse).
 
 ## Karar
 
@@ -30,7 +30,7 @@ glTF KHR extensions native: `KHR_mesh_quantization`, `KHR_draco_mesh_compression
 - Normal maps: BC5 / EAC_RG11
 - Mobile: ASTC supertranscode path
 
-Aşma noktası: UE5 Virtual Texture + KTX2 tile — VT page'leri runtime'da Basis transcode et (Filament/UE'da yok).
+Aşma noktası: Virtual Texture + KTX2 tile — VT page'leri runtime'da Basis transcode et (Filament/production engines yok).
 
 ### C. Mesh
 
@@ -43,11 +43,11 @@ glTF/FBX/USD sadece source; cooked her zaman `.cdmesh`. **Aşma noktası**: mesh
 **`cd_asset_compiler`** standalone CLI + library:
 - Content-addressed (CAS), Blake3 hash input → cooked output.
 - Shared cache: `%LOCALAPPDATA%/cd_ddc` (Win) veya `~/.cache/cd_ddc` (Linux).
-- Opsiyonel HTTP shared DDC (UE5 derived data sharing pattern).
+- Opsiyonel HTTP shared DDC (derived-data sharing pattern).
 - Editor mode: runtime import fallback (dev quality of life).
 - Ship mode: zorunlu cooked.
 
-**Aşma noktası**: Merkle DAG dep graph → asset dependency cache invalidation otomatik (texture değişirse material rebuild). UE5'te manuel; Bevy/Godot'ta yok. Bazel Remote Execution API-uyumlu (gelecek CI inanılmaz hızlı).
+**Aşma noktası**: Merkle DAG dep graph → asset dependency cache invalidation otomatik (texture değişirse material rebuild). production engines manuel; Bevy/Godot'ta yok. Bazel Remote Execution API-uyumlu (gelecek CI inanılmaz hızlı).
 
 ### E. Streaming (T15.Q5)
 
@@ -59,7 +59,7 @@ Sprint 6 temel:
 
 Phase 2-3: Nanite-vari software raster, megatexture-vari unique texel.
 
-**Aşma noktası**: GPU-driven streaming feedback — GPU shader residency feedback buffer'a yazar, CPU async IO scheduler okur (id Tech 7 + Nanite). Unity/Godot/Bevy/Filament yapmıyor — open-source ilk impl hedef.
+**Aşma noktası**: GPU-driven streaming feedback — GPU shader residency feedback buffer'a yazar, CPU async IO scheduler okur (id Tech 7 + Nanite). production engine/Godot/Bevy/Filament yapmıyor — open-source ilk impl hedef.
 
 ### F. Registry (T15.Q6 — Hybrid)
 
@@ -69,13 +69,13 @@ Phase 2-3: Nanite-vari software raster, megatexture-vari unique texel.
 - **Recursive CTE**: dep graph query.
 - C++26 reflection ile asset struct → SQLite schema otomatik.
 
-UE5 binary `.bin`; Unity `.meta` YAML — biz iki dünyanın iyi yanını alıyoruz.
+production binary `.bin`; production `.meta` YAML — biz iki dünyanın iyi yanını alıyoruz.
 
 ### G. Hot Reload (T15.Q7)
 
 Cross-platform watcher (`efsw` MIT vendor veya kendi yazımız ~500 LOC). Değişen source → cd_asset_compiler tetikle (background) → cooked hash diff → engine'e IPC message → **bindless texture/mesh slot atomic swap** (RHI handle değişmez, descriptor table yenilenir).
 
-**Aşma noktası**: bindless slot stability — UE5'te hot-reload material/shader rebuild expensive. Bizde slot stabil; sadece içerik değişir → frame içinde swap. UE5/Filament bunu yapmıyor (4 katmanlı: mesh + texture + material + shader hot-reload).
+**Aşma noktası**: bindless slot stability — production engines hot-reload material/shader rebuild expensive. Bizde slot stabil; sadece içerik değişir → frame içinde swap. production engines/Filament bunu yapmıyor (4 katmanlı: mesh + texture + material + shader hot-reload).
 
 ### H. Format Matrix Özet
 
@@ -134,7 +134,7 @@ Cross-platform watcher (`efsw` MIT vendor veya kendi yazımız ~500 LOC). Deği�
 
 ## Kanıt
 
-- UE5 DDC: https://dev.epicgames.com/documentation/en-us/unreal-engine/derived-data-cache
+- asset DDC: https://dev.epicgames.com/documentation/en-us/unreal-engine/derived-data-cache
 - KTX2 spec: https://github.khronos.org/KTX-Specification/
 - Basis Universal: github.com/BinomialLLC/basis_universal
 - Karis Nanite SIGGRAPH 2021: https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf

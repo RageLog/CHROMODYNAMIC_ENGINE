@@ -17,7 +17,7 @@
 // Blackboard: a lightweight key/value store (string → float) that
 // transition conditions consult. Keeping it stringly-typed instead
 // of templated keeps the API surface tractable and matches how every
-// production controller is built (Unity Animator, Unreal AnimBP,
+// production controller is built (production animator, production AnimBP,
 // Bevy bevy_animation_graph).
 //
 // Header-only because the implementation is a small loop over the

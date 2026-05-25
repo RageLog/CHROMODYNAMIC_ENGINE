@@ -6,7 +6,7 @@
 
 ## Bağlam
 
-CHROMODYNAMIC needs an ECS that (a) beats EnTT in iteration throughput on wide queries, (b) matches Bevy in scheduler ergonomics, (c) approaches Unity DOTS in chunk-cache behavior, (d) stays library-oriented so `cd::ecs` ships without `cd::scene`.
+CHROMODYNAMIC needs an ECS that (a) beats EnTT in iteration throughput on wide queries, (b) matches Bevy in scheduler ergonomics, (c) approaches production DOTS in chunk-cache behavior, (d) stays library-oriented so `cd::ecs` ships without `cd::scene`.
 
 User decisions:
 - T14.Q1 = C+D — hybrid chunk-archetype hot + sparse-set cold + custom chunk-based with bitmask
@@ -55,7 +55,7 @@ Compile-time conflict detection for parallel scheduler (Bevy ECS book §schedule
 
 ### D. Prefab (T14.Q4)
 
-Entity-tree template + variant override list + nested prefab reference, stored as **archetype delta** (sparse override map). Unity prefab UX, archetype-delta storage keeps hot path clean and makes hot-reload diffable.
+Entity-tree template + variant override list + nested prefab reference, stored as **archetype delta** (sparse override map). production prefab UX, archetype-delta storage keeps hot path clean and makes hot-reload diffable.
 
 Override resolution at spawn; precompiled to "flat instantiation recipe" for runtime use.
 
@@ -107,10 +107,10 @@ Reflection feeds:
 |---|---|
 | **EnTT-only sparse-set** | Chunk SIMD wins lost, ergonomic phase scheduler lost (perf ceiling) |
 | **Pure archetype (Flecs)** | Structural-change cost on cold/churn components too high |
-| **Unity DOTS clone (chunk-only)** | Forces all components into chunks → poor for singletons/sparse |
-| **Unreal Mass processor model** | Tightly coupled to Unreal TaskGraph; not library-oriented |
+| **production DOTS clone (chunk-only)** | Forces all components into chunks → poor for singletons/sparse |
+| **production Mass processor model** | Tightly coupled to production TaskGraph; not library-oriented |
 | **Scene-graph-as-truth (gameplay3d/UE AActor)** | Violates DOD baseline, two-truths problem |
-| **Two-way sync (Unity GameObject↔Entity baking)** | Invasive editor pipeline before Sprint 8 makes no sense |
+| **Two-way sync (production GameObject↔Entity baking)** | Invasive editor pipeline before Sprint 8 makes no sense |
 | **No hierarchy (flat-only)** | Insufficient for 3D scene |
 | **DLL hot-swap from day one** | Too invasive; tiered approach reduces risk |
 | **Singleton ECS registry** | CLAUDE.md §7; embedded use cases blocked |
@@ -119,7 +119,7 @@ Reflection feeds:
 
 **Pozitif**:
 - `cd::ecs` standalone library shippable.
-- Hot path matches Unity DOTS class; cold path matches EnTT class.
+- Hot path matches production DOTS class; cold path matches EnTT class.
 - Determinism slot reserved without runtime tax.
 - C++26 reflection upgrade path non-breaking.
 - Chunk-aware reactive observers = differentiator.
@@ -159,7 +159,7 @@ Reflection feeds:
 - EnTT (sparse-set): https://github.com/skypjack/entt
 - Flecs (archetype + relations): https://www.flecs.dev/flecs/md_docs_2Relationships.html
 - Bevy ECS book: https://bevy-cheatbook.github.io/programming/ec.html
-- Unity DOTS: https://docs.unity3d.com/Packages/com.unity.entities@1.0/manual/
+- production DOTS: https://docs.unity3d.com/Packages/com.unity.entities@1.0/manual/
 - Jolt dynamic BVH: https://github.com/jrouwe/JoltPhysics/blob/master/Docs/Architecture.md
 - Acton — Data-Oriented Design CppCon 2014 — **STUB**
 - Caini — EnTT ECS back and forth — engineering blog

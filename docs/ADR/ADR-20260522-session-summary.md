@@ -94,7 +94,7 @@ ve detaylı ADR'lere işaret eder.
   * `research/notes/framegraph_sota.md` — Frostbite/Granite/UE RDG/AMD
     RPS/bgfx/The Forge/Sokol karşılaştırması, cd::framegraph design
     önerileri
-  * `research/notes/ecs_sota.md` — EnTT/Flecs/Bevy/Unity DOTS/Unreal
+  * `research/notes/ecs_sota.md` — EnTT/Flecs/Bevy/production DOTS/production
     Mass karşılaştırması, cd::ecs design validation
 
 ## Sonuçlar

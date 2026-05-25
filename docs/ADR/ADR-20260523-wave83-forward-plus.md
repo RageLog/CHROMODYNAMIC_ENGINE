@@ -11,7 +11,7 @@ Phase 7 Sprint 9 = Phase 7 routing tablosundaki son büyük item:
   hızlanma sağlar; deferred'tan farklı olarak MSAA, OIT, transparency
   ve material-per-pixel ile native uyumlu.
 - Modern motorlarda standart: Doom 2016 (clustered forward),
-  Frostbite/Killzone (tile-based forward+), Unreal Engine 5 (cluster
+  Frostbite/Killzone (tile-based forward+),  (cluster
   + tile hybrid).
 
 Phase 7 önceki sprint'leri (FLIP / scripting / audio) library-tier

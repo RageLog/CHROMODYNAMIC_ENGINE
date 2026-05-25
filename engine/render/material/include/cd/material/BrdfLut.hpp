@@ -29,7 +29,7 @@
 //   * round-tripped through cd_cook_texture
 //   * tested without a GPU
 //
-// Reference: Karis, "Real Shading in Unreal Engine 4" (SIGGRAPH 2013)
+// Reference: Karis, "Real Shading in production Engine 4" (SIGGRAPH 2013)
 // =============================================================================
 #pragma once
 

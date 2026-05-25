@@ -3,7 +3,7 @@
 // Phase 165 / v0.99.87 — physically-motivated distance + cone attenuation.
 //
 // Implements the same falloff every modern PBR engine uses (Frostbite
-// 2014, Filament 1.x, UE5):
+// 2014, Filament 1.x):
 //
 //   distance:  f(d) = saturate( 1 - (d / range)^4 )^2 / (d^2 + epsilon)
 //

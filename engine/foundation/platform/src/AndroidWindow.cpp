@@ -14,7 +14,7 @@
 // Marathon scope: this file is written without an Android device or
 // NDK build host. The shape mirrors the recommended Google Android
 // game-loop pattern (game-activity, swappy) and matches what
-// Filament/UE5/Unity ship on Android. Reviewer with an NDK build
+// Filament ship on Android. Reviewer with an NDK build
 // should be able to plug an `ANativeWindow*` and `AInputQueue*`
 // into the helpers below and have a working window.
 // =============================================================================

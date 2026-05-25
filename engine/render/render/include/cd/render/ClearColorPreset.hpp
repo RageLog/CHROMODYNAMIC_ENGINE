@@ -2,7 +2,7 @@
 // CHROMODYNAMIC — cd/render/ClearColorPreset.hpp
 // Phase 86.B / Wave 254 — named clear-color choices.
 //
-// Common scene clear colors: cornflower blue (XNA / Unity legacy),
+// Common scene clear colors: cornflower blue (XNA / production legacy),
 // black, magenta debug, soft gray editor. Returns a 4-component
 // linear RGBA in [0, 1] — caller applies sRGB conversion if the
 // target framebuffer is sRGB.

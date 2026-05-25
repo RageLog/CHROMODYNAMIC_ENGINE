@@ -4,7 +4,7 @@
 
 cd::ecs sparse-set tabanlı bir implementasyon ile geliyor (13 birim
 testi). Bu oturumda SOTA tarama (`research/notes/ecs_sota.md`) EnTT,
-Flecs, Bevy ECS, Unity DOTS, Unreal Mass, EntityX, ANAX'i inceledi.
+Flecs, Bevy ECS, production DOTS, production Mass, EntityX, ANAX'i inceledi.
 
 Bu ADR mevcut tasarımın SOTA önerilerine uyumunu doğrular ve gelecek
 sprint için enhancement listesi çıkarır.
@@ -25,7 +25,7 @@ sprint için enhancement listesi çıkarır.
 
 ## Reddedilen alternatifler (SOTA tarama detayı)
 
-* **Archetype-only (Flecs default, Unity DOTS):** Multi-component
+* **Archetype-only (Flecs default, production DOTS):** Multi-component
   iteration en hızlı yol ama dinamik gameplay add/remove için 10×
   pahalı. Samurai Gunn 2 case study (Moonside Games) production'da
   300→5 FPS regression yaratmıştı. Gameplay-first engine için uygun
@@ -33,8 +33,8 @@ sprint için enhancement listesi çıkarır.
 * **EnTT groups-only:** Groups kullanışlı ama default tek storage'a
   zorlamak prototipleme aşamasında kısıtlayıcı.
 * **Bevy ECS (Rust):** Engine C++23; portable değil.
-* **Unity DOTS (C# + Burst):** Lisans + dil kısıtı.
-* **Unreal Mass:** UE plugin, standalone build yok.
+* **production DOTS (C# + Burst):** Lisans + dil kısıtı.
+* **production Mass:** UE plugin, standalone build yok.
 
 ## Yapılan iyileştirmeler (W13.4)
 

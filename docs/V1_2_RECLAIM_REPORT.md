@@ -33,7 +33,7 @@ ships across v0.99.87 → v0.99.93 that closed it.
 | GPU skinning shader                          | ✅ canonical GLSL + UBO + helpers              |
 | OpenGL swapchain + triangle draw             | ✅ visible RGB triangle on RTX 3080            |
 | Skinned glTF importer                        | ✅ bridge to cd::anim::Skeleton                |
-| **Light system (SOTA)**                      | ✅ cd::light — Frostbite + Filament + UE5 model |
+| **Light system (SOTA)**                      | ✅ cd::light — Frostbite + Filament model |
 
 ## Marathon-wide cumulative stats
 
@@ -55,8 +55,8 @@ The user explicitly flagged the missing lighting layer. Shipped:
 
 | Module                           | What it does                                                  | Reference                                |
 |----------------------------------|----------------------------------------------------------------|-------------------------------------------|
-| `cd::light::Light`               | 112 B std140 record. 5 types (dir/point/spot/rect/disk area), physical units (lumens/lux), color + CCT, pre-computed cone, area-light basis, shadow + IES slot | Frostbite §4 + UE5 light data model       |
-| `cd::light::cct_to_linear_rgb`   | Kelvin → linear sRGB via Krystek 1985 + CIE 1931 + Lindbloom | Filament / Unity HDRP CCT presets         |
+| `cd::light::Light`               | 112 B std140 record. 5 types (dir/point/spot/rect/disk area), physical units (lumens/lux), color + CCT, pre-computed cone, area-light basis, shadow + IES slot | Frostbite §4 + AAA production light data model       |
+| `cd::light::cct_to_linear_rgb`   | Kelvin → linear sRGB via Krystek 1985 + CIE 1931 + Lindbloom | Filament CCT presets         |
 | `cd::light::distance_attenuation`| Windowed inverse-square `(1-(d/r)^4)^2 / (d² + ε)`             | Lagarde & de Rousiers 2014 §3            |
 | `cd::light::cone_attenuation`    | Smoothstep-squared cone                                       | Frostbite §3.1                            |
 | `cd::light::lumens_to_*`         | Lumens → radiant intensity (point: Φ/4π, spot: Φ/(2π(1-cos))) | Frostbite §6.2                            |
