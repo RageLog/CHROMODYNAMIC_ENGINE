@@ -14,6 +14,7 @@ if(CD_ENABLE_VULKAN)
 endif()
 
 add_subdirectory(material)
+add_subdirectory(light)        # Phase 165 — SOTA light primitives + clustered + CSM
 add_subdirectory(camera)
 add_subdirectory(framegraph)
 add_subdirectory(render)
