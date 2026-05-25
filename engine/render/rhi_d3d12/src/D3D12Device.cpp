@@ -223,6 +223,21 @@ public:
         else
             adapter_name_ = "D3D12 adapter (unknown)";
 
+        // ---- 6. DXR feature query (Phase 142 — v0.99.84) -------------------
+        // Tier 1.1 is the DXR generation that includes inline ray queries
+        // (the equivalent of Vulkan VK_KHR_ray_query). Tier 1.0 covers the
+        // pipeline + traceRayEXT-equivalent. Both are reported via
+        // D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier.
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 {};
+        if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5,
+                                                   &opts5, sizeof(opts5))))
+        {
+            features_.ray_tracing = (opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0);
+            // Query ID3D12Device5 for the AS-related entry points; if it
+            // succeeds we can call BuildRaytracingAccelerationStructure.
+            (void)device_.As(&device5_);
+        }
+
         return S_OK;
     }
 
@@ -1988,6 +2003,7 @@ private:
 
     ComPtr<IDXGIFactory6> factory_;
     ComPtr<ID3D12Device> device_;
+    ComPtr<ID3D12Device5> device5_;  // DXR entry points (Phase 142)
     ComPtr<ID3D12CommandQueue> graphics_queue_;
     ComPtr<ID3D12Fence> idle_fence_;
     UINT64 idle_value_ { 0 };
