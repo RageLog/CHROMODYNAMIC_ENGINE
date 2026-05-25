@@ -342,13 +342,51 @@ void main() {
     return;
   }
 
+  // tint.w > 1.5 = "floor draw" — overlay an analytic grid in the
+  // fragment shader instead of via ImGui's foreground draw list. This
+  // keeps grid lines properly z-occluded by other geometry (the user-
+  // flagged "grid objects arasindan gozukmemeli" issue) for free.
+  // Otherwise identical to a normal lit shading path.
+  vec3 albedo = v_albedo;
+  if (pc.tint.w > 1.5) {
+    // Minor cells every 1 m, major every 5 m. fwidth gives a
+    // distance-aware line width so lines stay constant-thickness as
+    // the camera moves, instead of aliasing into glitter.
+    vec2 p   = v_world_pos.xz;
+    vec2 dp  = fwidth(p);
+    vec2 mod1 = abs(fract(p) - 0.5);
+    vec2 mod5 = abs(fract(p * 0.2) - 0.5);
+    float lminor = min(mod1.x, mod1.y);
+    float lmajor = min(mod5.x, mod5.y);
+    float dminor = max(dp.x, dp.y) * 0.7;
+    float dmajor = max(dp.x, dp.y) * 0.7 * 0.2;
+    float a_minor = 1.0 - smoothstep(0.5 - dminor * 1.5, 0.5 - dminor * 0.5, lminor + 0.5 - dminor);
+    float a_major = 1.0 - smoothstep(0.5 - dmajor * 2.0, 0.5 - dmajor * 0.5, lmajor + 0.5 - dmajor);
+    // Wrap minor/major into a single intensity. Minor lines are dim
+    // greyish; major every-5m and axis lines (x=0 / z=0) are brighter.
+    float on_axis_x = step(abs(p.x), max(dp.x, 0.005));
+    float on_axis_z = step(abs(p.y), max(dp.y, 0.005));
+    vec3 minor_col = vec3(0.50, 0.52, 0.58);
+    vec3 major_col = vec3(0.75, 0.78, 0.85);
+    vec3 ax_x_col  = vec3(0.95, 0.30, 0.25);   // red = X axis (in world.x)
+    vec3 ax_z_col  = vec3(0.25, 0.45, 0.95);   // blue = Z axis (in world.z)
+    vec3 line_col  = minor_col;
+    float line_a   = a_minor * 0.35;
+    line_col = mix(line_col, major_col, smoothstep(0.0, 0.8, a_major));
+    line_a   = max(line_a, a_major * 0.6);
+    line_col = mix(line_col, ax_x_col, on_axis_z * 0.85);  // axis X runs along z=0
+    line_col = mix(line_col, ax_z_col, on_axis_x * 0.85);  // axis Z runs along x=0
+    line_a   = max(line_a, max(on_axis_x, on_axis_z));
+    albedo = mix(albedo, line_col, clamp(line_a, 0.0, 1.0));
+  }
+
   vec3 N = normalize(v_world_normal);
   vec3 lit = vec3(0.0);
 
   // Directional sun.
   vec3 Ld = normalize(-pc.sun_dir.xyz);
   float ndl_sun = max(dot(N, Ld), 0.0);
-  lit += v_albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun);
+  lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun);
 
   // Point light — true per-fragment direction + attenuation.
   if (pc.point_pos_range.w > 0.0) {
@@ -358,7 +396,7 @@ void main() {
       vec3 Lp = to_p / d;
       float ndl_p = max(dot(N, Lp), 0.0);
       float atten = distance_atten(d, pc.point_pos_range.w);
-      lit += v_albedo * pc.point_color.rgb * (pc.point_color.w * ndl_p * atten);
+      lit += albedo * pc.point_color.rgb * (pc.point_color.w * ndl_p * atten);
     }
   }
 
@@ -370,7 +408,7 @@ void main() {
   vec3  sky_c  = vec3(0.55, 0.65, 0.85);
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
-  vec3  ambient = v_albedo * hemi;
+  vec3  ambient = albedo * hemi;
   vec3  c       = lit + ambient;
 
   // ACES Narkowicz tonemap + gamma.
@@ -1906,7 +1944,10 @@ int main()
             fp.mvp   = floor_mvp;
             fp.model = floor_model;
             // Slightly cool neutral floor — receives lighting + hemisphere AO.
-            fp.tint[0] = 0.45F; fp.tint[1] = 0.46F; fp.tint[2] = 0.50F; fp.tint[3] = 1.0F;
+            // tint[3] = 2.0 is the FS sentinel that enables the analytic
+            // grid overlay (depth-tested via the floor geometry, so the
+            // grid no longer shows through other objects).
+            fp.tint[0] = 0.45F; fp.tint[1] = 0.46F; fp.tint[2] = 0.50F; fp.tint[3] = 2.0F;
             fp.sun_dir[0] = sun_dir.x; fp.sun_dir[1] = sun_dir.y;
             fp.sun_dir[2] = sun_dir.z; fp.sun_dir[3] = sun_str;
             fp.sun_color[0] = sun_col.x; fp.sun_color[1] = sun_col.y;
@@ -2531,81 +2572,11 @@ int main()
         }
 
         // ---- World grid (floor) ----
-        // Projected XZ-plane grid at y=0. ±20 m, 1 m cells; thicker
-        // axis lines every 5 m. Gives the user a spatial reference
-        // for orientation + scale.
-        {
-            const float vw = static_cast<float>(frame.extent.width);
-            const float vh = static_cast<float>(frame.extent.height);
-            auto* dl_g = ImGui::GetForegroundDrawList();
-            // Homogeneous-coord clip helper. Returns world→clip then
-            // clip→screen-pixel with proper near-plane line clipping so
-            // segments that straddle the camera don't disappear or wrap
-            // across the screen. Skipping the whole line when EITHER
-            // endpoint is behind the camera was the previous bug — fix
-            // is to find the intersection with the near plane (clip.w =
-            // near_eps) and project the inside point + the intersection.
-            auto to_clip = [&](const cd::math::Vec3f& p) -> cd::math::Vec4f {
-                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
-                cd::math::Vec4f c {};
-                for (std::size_t r = 0; r < 4; ++r)
-                    c[r] = vp[0][r]*wp[0] + vp[1][r]*wp[1] + vp[2][r]*wp[2] + vp[3][r]*wp[3];
-                return c;
-            };
-            auto clip_to_screen = [&](const cd::math::Vec4f& c) -> ImVec2 {
-                const float inv_w = 1.0F / c[3];
-                return ImVec2(
-                    (c[0] * inv_w * 0.5F + 0.5F) * vw,
-                    (1.0F - (c[1] * inv_w * 0.5F + 0.5F)) * vh);
-            };
-            auto draw_world_line = [&](const cd::math::Vec3f& a,
-                                       const cd::math::Vec3f& b,
-                                       ImU32 col, float thickness)
-            {
-                constexpr float kNearEps = 0.01F;
-                auto ca = to_clip(a);
-                auto cb = to_clip(b);
-                const bool a_in = (ca[3] > kNearEps);
-                const bool b_in = (cb[3] > kNearEps);
-                if (!a_in && !b_in) return;  // both behind camera
-                if (!a_in)
-                {
-                    // Clip a side at near plane.
-                    const float t = (kNearEps - ca[3]) / (cb[3] - ca[3]);
-                    for (std::size_t k = 0; k < 4; ++k) ca[k] = ca[k] + (cb[k] - ca[k]) * t;
-                }
-                else if (!b_in)
-                {
-                    const float t = (kNearEps - cb[3]) / (ca[3] - cb[3]);
-                    for (std::size_t k = 0; k < 4; ++k) cb[k] = cb[k] + (ca[k] - cb[k]) * t;
-                }
-                dl_g->AddLine(clip_to_screen(ca), clip_to_screen(cb), col, thickness);
-            };
-
-            constexpr int   kGridExtent = 40;     // ±40 m → 81×81 cells
-            constexpr float kCellSize   = 1.0F;
-            const ImU32 minor_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.45F, 0.45F, 0.50F, 0.35F));
-            const ImU32 major_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.65F, 0.65F, 0.70F, 0.55F));
-            const ImU32 axis_x    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.95F, 0.30F, 0.25F, 0.85F));
-            const ImU32 axis_z    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.25F, 0.45F, 0.95F, 0.85F));
-            for (int i = -kGridExtent; i <= kGridExtent; ++i)
-            {
-                const float v = static_cast<float>(i) * kCellSize;
-                // Sit grid lines just above the floor (kFloorY + tiny lift)
-                // so they layer on top of the floor mesh rather than floating
-                // 0.55 m above it (where they were before the floor existed).
-                constexpr float kGridY = -0.54F;
-                const cd::math::Vec3f a { v, kGridY, static_cast<float>(-kGridExtent) * kCellSize };
-                const cd::math::Vec3f b { v, kGridY, static_cast<float>( kGridExtent) * kCellSize };
-                const cd::math::Vec3f c { static_cast<float>(-kGridExtent) * kCellSize, kGridY, v };
-                const cd::math::Vec3f d { static_cast<float>( kGridExtent) * kCellSize, kGridY, v };
-                const ImU32 col_v = (i == 0) ? axis_z : (i % 5 == 0 ? major_col : minor_col);
-                const ImU32 col_h = (i == 0) ? axis_x : (i % 5 == 0 ? major_col : minor_col);
-                const float thick = (i % 5 == 0) ? 1.5F : 1.0F;
-                draw_world_line(a, b, col_v, thick);
-                draw_world_line(c, d, col_h, thick);
-            }
-        }
+        // Moved into the floor fragment shader (analytic XZ grid with
+        // fwidth-based line width). That respects the depth buffer so
+        // the grid no longer shows through entities — user-flagged
+        // "grid objeler arasindan gozukmemeli". The floor mesh draw
+        // above sets tint[3] = 2.0 to enable that shader branch.
 
         // ---- Phase D — Light source markers (world-space overlay) ----
         // Each enabled light gets a small visual in the viewport so
