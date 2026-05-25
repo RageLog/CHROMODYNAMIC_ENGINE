@@ -132,12 +132,19 @@ struct GLLoader
 [[nodiscard]] inline GLLoader load_dsa_buffer_funcs()
 {
     GLLoader L {};
-    auto get = [](const char* name) -> PROC {
-        // wglGetProcAddress can return small ints (1, 2, 3, -1) on
-        // failure rather than nullptr — guard explicitly.
+    // wglGetProcAddress doesn't expose OpenGL 1.0/1.1 functions —
+    // those are in opengl32.dll directly. Phase 143 hit this: the
+    // DSA-3.3 sampler delete (glDeleteSamplers) resolved fine via
+    // wglGetProcAddress, but glDeleteTextures (a GL-1.1 function)
+    // came back NULL. Dual-resolution fixes the inconsistency.
+    HMODULE opengl_dll = GetModuleHandleW(L"opengl32.dll");
+    if (opengl_dll == nullptr) opengl_dll = LoadLibraryW(L"opengl32.dll");
+    auto get = [opengl_dll](const char* name) -> PROC {
         PROC p = wglGetProcAddress(name);
         const auto v = reinterpret_cast<intptr_t>(p);
-        if (v == 0 || v == 1 || v == 2 || v == 3 || v == -1) return nullptr;
+        if (v == 0 || v == 1 || v == 2 || v == 3 || v == -1) p = nullptr;
+        if (p == nullptr && opengl_dll != nullptr)
+            p = GetProcAddress(opengl_dll, name);
         return p;
     };
     L.glCreateBuffers      = reinterpret_cast<PFNGLCREATEBUFFERSPROC>(get("glCreateBuffers"));
