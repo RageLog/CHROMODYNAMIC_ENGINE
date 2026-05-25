@@ -347,6 +347,7 @@ layout(push_constant) uniform PC {
   vec4 sun_color;
   vec4 point_pos_range;
   vec4 point_color;
+  vec4 spot_dir_cos;  // Faz 1.8: xyz=spot forward, w=cos(outer) (<=0 = point)
 } pc;
 // Faz 1.6 CSM descriptors — match the VS layout.
 layout(set = 0, binding = 0) uniform Shadow {
@@ -2675,10 +2676,14 @@ int main()
         // ---- ImGui frame ----
         ctx.new_frame();
 
-        // Phase 139 — palette hotkey through ImGui (after new_frame so
-        // IO modifier state is current). This is the path that works
-        // regardless of focus / text-input absorption.
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P))
+        // Palette hotkeys via ImGui (after new_frame so IO modifier
+        // state is current). Multiple combos because user reported
+        // Ctrl+Shift+P sometimes not firing — IME / global keyboard
+        // hooks can intercept the chord. F2 + GraveAccent + the chord
+        // all toggle, any one works.
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
+            ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
+            ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent))
         {
             palette_visible = !palette_visible;
             if (palette_visible) palette_query.clear();
