@@ -576,3 +576,69 @@ TEST(PoseBlend, AdditiveWithWeightOneAppliesFullOffset)
     cd::anim::additive_apply(base, additive, 1.0F, out);
     EXPECT_FLOAT_EQ(out.joint_locals[0].position.x, 1.5F);
 }
+
+// Phase 156 — AnimStateMachine on top of PoseBlend.
+#include <cd/anim/StateMachine.hpp>
+
+TEST(AnimStateMachine, EmptyMachineTickNoOp)
+{
+    cd::anim::AnimStateMachine sm;
+    cd::anim::Skeleton skel;
+    sm.tick(0.016F, skel);
+    EXPECT_TRUE(sm.current_state().empty());
+}
+
+TEST(AnimStateMachine, TransitionFiresOnPredicate)
+{
+    cd::anim::AnimStateMachine sm;
+    sm.add_state({ "idle", nullptr, true, 1.0F, 0.0F });
+    sm.add_state({ "walk", nullptr, true, 1.0F, 0.0F });
+    sm.add_transition({
+        "idle", "walk",
+        [](const std::unordered_map<std::string,float>& bb, float) {
+            auto it = bb.find("speed");
+            return it != bb.end() && it->second > 1.0F;
+        },
+        0.1F
+    });
+    sm.set_initial_state("idle");
+    cd::anim::Skeleton skel;  // empty skeleton is fine; no clips
+    sm.tick(0.016F, skel);
+    EXPECT_EQ(sm.current_state(), "idle");
+    sm.set("speed", 2.0F);
+    sm.tick(0.016F, skel);
+    EXPECT_EQ(sm.current_state(), "walk");
+    EXPECT_TRUE(sm.is_blending());
+}
+
+TEST(AnimStateMachine, BlendingCompletesAfterDuration)
+{
+    cd::anim::AnimStateMachine sm;
+    sm.add_state({ "a", nullptr, true, 1.0F, 0.0F });
+    sm.add_state({ "b", nullptr, true, 1.0F, 0.0F });
+    sm.add_transition({
+        "a", "b",
+        [](const auto& bb, float) {
+            auto it = bb.find("go"); return it != bb.end() && it->second > 0.5F;
+        },
+        0.05F
+    });
+    sm.set_initial_state("a");
+    cd::anim::Skeleton skel;
+    sm.tick(0.016F, skel);
+    sm.set("go", 1.0F);
+    sm.tick(0.016F, skel);
+    EXPECT_TRUE(sm.is_blending());
+    // 0.06s further (exceeds 0.05 blend duration) should finish the blend.
+    sm.tick(0.06F, skel);
+    EXPECT_FALSE(sm.is_blending());
+    EXPECT_EQ(sm.current_state(), "b");
+}
+
+TEST(AnimStateMachine, BlackboardSetGet)
+{
+    cd::anim::AnimStateMachine sm;
+    sm.set("x", 42.0F);
+    EXPECT_FLOAT_EQ(sm.get("x"), 42.0F);
+    EXPECT_FLOAT_EQ(sm.get("missing", 99.0F), 99.0F);
+}
