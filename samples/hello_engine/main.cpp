@@ -287,6 +287,13 @@ layout(push_constant) uniform PC {
   vec4 point_pos_range;  // xyz=world position, w=range (0 = no point light)
   vec4 point_color;      // xyz=color, w=intensity (lumens/4π)
 } pc;
+// Faz 1.6 CSM — light-space view-projection for shadow sampling.
+// Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
+// the host with the current sun's ortho VP. Binding 1 (sampler) is
+// declared in the fragment shader.
+layout(set = 0, binding = 0) uniform Shadow {
+  mat4 light_vp;
+} cd_shadow;
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
@@ -294,6 +301,7 @@ layout(location = 3) in vec3 in_color;
 layout(location = 0) out vec3 v_world_pos;
 layout(location = 1) out vec3 v_world_normal;
 layout(location = 2) out vec3 v_albedo;
+layout(location = 3) out vec4 v_shadow_pos;
 void main() {
   v_albedo = in_color * pc.tint.rgb;
   vec4 wp = pc.model * vec4(in_pos, 1.0);
@@ -301,6 +309,10 @@ void main() {
   // Inverse-transpose-of-model would be more correct for non-uniform
   // scale; for the sample we use model directly (scales are uniform).
   v_world_normal = normalize((pc.model * vec4(in_normal, 0.0)).xyz);
+  // Shadow-space position. light_vp is set up so x,y ∈ [-1,1] and
+  // z ∈ [0,1] for fragments inside the shadow ortho frustum. Vulkan
+  // sample-side flips y to match texture v-down, done in the FS.
+  v_shadow_pos = cd_shadow.light_vp * vec4(v_world_pos, 1.0);
   vec4 clip = pc.mvp * vec4(in_pos, 1.0);
   clip.y = -clip.y;
   gl_Position = clip;
@@ -318,9 +330,15 @@ layout(push_constant) uniform PC {
   vec4 point_pos_range;
   vec4 point_color;
 } pc;
+// Faz 1.6 CSM descriptors — match the VS layout.
+layout(set = 0, binding = 0) uniform Shadow {
+  mat4 light_vp;
+} cd_shadow;
+layout(set = 0, binding = 1) uniform sampler2D cd_shadow_map;
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
+layout(location = 3) in vec4 v_shadow_pos;
 layout(location = 0) out vec4 out_color;
 
 // Frostbite windowed inverse-square attenuation.
@@ -329,6 +347,31 @@ float distance_atten(float d, float range) {
   float ratio = d / range;
   float w = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
   return (w * w) / (d * d + 0.01);
+}
+
+// 3×3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
+// occluded. Vulkan clip space x,y ∈ [-1,1], depth ∈ [0,1]; texture
+// uv has y down (matches Vulkan clip y after perspective divide).
+float sample_shadow(vec4 sp, vec3 N, vec3 L) {
+  // Perspective divide — ortho gives w=1 but keep for generality.
+  vec3 p = sp.xyz / sp.w;
+  // Outside the shadow ortho frustum → assume lit (sky / far away).
+  if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0 ||
+      p.z < 0.0 || p.z > 1.0) return 1.0;
+  // Vulkan: NDC y down → texture v down, same orientation, no flip.
+  vec2 uv = p.xy * 0.5 + 0.5;
+  // Slope-scaled depth bias — fights shadow acne on grazing-angle
+  // fragments. Coefficient picked empirically.
+  float bias = max(0.0025 * (1.0 - max(dot(N, L), 0.0)), 0.0005);
+  float ref  = p.z - bias;
+  vec2 ts = 1.0 / vec2(textureSize(cd_shadow_map, 0));
+  float s = 0.0;
+  for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+      float d = texture(cd_shadow_map, uv + vec2(float(dx), float(dy)) * ts).r;
+      s += (d < ref) ? 0.0 : 1.0;
+    }
+  return s / 9.0;
 }
 
 void main() {
@@ -383,10 +426,11 @@ void main() {
   vec3 N = normalize(v_world_normal);
   vec3 lit = vec3(0.0);
 
-  // Directional sun.
+  // Directional sun + CSM shadow attenuation.
   vec3 Ld = normalize(-pc.sun_dir.xyz);
   float ndl_sun = max(dot(N, Ld), 0.0);
-  lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun);
+  float shade = sample_shadow(v_shadow_pos, N, Ld);
+  lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun * shade);
 
   // Point light — true per-fragment direction + attenuation.
   if (pc.point_pos_range.w > 0.0) {
@@ -417,6 +461,26 @@ void main() {
   c = pow(c, vec3(1.0/2.2));
   out_color = vec4(c, 1.0);
 }
+)glsl";
+
+// ============================================================================
+// Shadow-map pipeline (Faz 1.6 CSM). Depth-only render pass: a single
+// 2K shadow map rendered from the sun's POV with an orthographic
+// projection sized to cover the entire scene. Vertex shader is
+// trivial — multiply by light_mvp. Fragment shader is empty (depth
+// is the only output we need; Vulkan still requires a stage but the
+// validator accepts a no-op FS).
+// ============================================================================
+constexpr const char* kShadowVS = R"glsl(
+#version 450
+layout(push_constant) uniform PC { mat4 light_mvp; } pc;
+layout(location = 0) in vec3 in_pos;
+void main() { gl_Position = pc.light_mvp * vec4(in_pos, 1.0); }
+)glsl";
+
+constexpr const char* kShadowFS = R"glsl(
+#version 450
+void main() {}
 )glsl";
 
 struct PrimPush
@@ -501,10 +565,12 @@ struct DepthTarget
     }
 };
 
-[[nodiscard]] bool create_depth_target(cd::rhi::IDevice& dev,
-                                       cd::rhi::Extent2D size,
-                                       cd::rhi::Format   format,
-                                       DepthTarget&      out)
+[[nodiscard]] bool create_depth_target(cd::rhi::IDevice&    dev,
+                                       cd::rhi::Extent2D    size,
+                                       cd::rhi::Format      format,
+                                       DepthTarget&         out,
+                                       cd::rhi::TextureUsage extra_usage =
+                                           cd::rhi::TextureUsage::kNone)
 {
     out.destroy(dev);
     cd::rhi::TextureDesc td {};
@@ -513,7 +579,7 @@ struct DepthTarget
     td.extent = { size.width, size.height, 1 };
     td.mip_levels = 1;
     td.array_layers = 1;
-    td.usage = cd::rhi::TextureUsage::kDepthStencilAttachment;
+    td.usage  = cd::rhi::TextureUsage::kDepthStencilAttachment | extra_usage;
     td.memory = cd::rhi::MemoryUsage::kGpuOnly;
     auto img = dev.create_texture(td);
     if (!img.has_value()) return false;
@@ -679,6 +745,21 @@ int main()
                                                cd::rhi::ShaderStage::kFragment,
                                      .offset = 0,
                                      .size = static_cast<std::uint32_t>(sizeof(PrimPush)) } };
+    // Faz 1.6 CSM — two descriptor bindings on the prim pipeline:
+    //   0: UBO  with the sun's light_vp matrix (vertex + fragment).
+    //   1: sampler2D over the shadow depth map (fragment only).
+    // These are populated each frame from a single per-pipeline
+    // MaterialInstance (`prim_inst`) created right after the material.
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 2> kPrimDescBindings {
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
+                                              .type    = cd::rhi::DescriptorType::kUniformBuffer,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kVertex |
+                                                         cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 1,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc prim_md {};
     prim_md.vertex_glsl   = kPrimVS;
     prim_md.fragment_glsl = kPrimFS;
@@ -687,6 +768,7 @@ int main()
     prim_md.vertex_bindings = kPrimBindings;
     prim_md.vertex_attributes = kPrimAttrs;
     prim_md.push_constants = kPrimPushRange;
+    prim_md.descriptor_bindings = kPrimDescBindings;
     prim_md.raster.cull = cd::rhi::CullMode::kNone;
     prim_md.depth_stencil.depth_test = true;
     prim_md.depth_stencil.depth_write = true;
@@ -695,6 +777,89 @@ int main()
     auto prim_r = cd::material::Material::create(device, compiler.get(), prim_md);
     if (!prim_r.has_value()) return 9;
     auto& prim_material = *prim_r;
+
+    // Shadow material (Faz 1.6 CSM) — depth-only pipeline (no color
+    // attachment) with a trivial mat4 push constant. Used in the
+    // shadow pass to rasterize every caster from the sun's POV.
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kShadowPushRange {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
+                                     .offset = 0,
+                                     .size = static_cast<std::uint32_t>(
+                                         sizeof(cd::math::Mat4f)) } };
+    cd::material::MaterialDesc shadow_md {};
+    shadow_md.vertex_glsl   = kShadowVS;
+    shadow_md.fragment_glsl = kShadowFS;
+    shadow_md.color_attachment_formats = {};  // depth-only
+    shadow_md.depth_attachment_format  = kDepthFormat;
+    shadow_md.vertex_bindings   = kPrimBindings;
+    shadow_md.vertex_attributes = kPrimAttrs;
+    shadow_md.push_constants    = kShadowPushRange;
+    // Back-face culling for casters reduces shadow acne on the back
+    // side of each mesh by ~50%. depth_bias_enable + slope pushes
+    // shadow depth slightly away from the caster surface (Persson's
+    // shadow-acne mitigation pattern).
+    shadow_md.raster.cull = cd::rhi::CullMode::kBack;
+    shadow_md.raster.depth_bias_enable   = true;
+    shadow_md.raster.depth_bias_constant = 1.25F;
+    shadow_md.raster.depth_bias_slope    = 1.75F;
+    shadow_md.depth_stencil.depth_test    = true;
+    shadow_md.depth_stencil.depth_write   = true;
+    shadow_md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
+    shadow_md.name = "hello_engine/shadow";
+    auto shadow_r = cd::material::Material::create(device, compiler.get(), shadow_md);
+    if (!shadow_r.has_value()) return 10;
+    auto& shadow_material = *shadow_r;
+
+    // ---- Shadow-map resources (Faz 1.6 CSM) ----
+    // 2K depth texture + sampler + UBO holding light_vp. The
+    // MaterialInstance below points the prim pipeline at all three.
+    constexpr cd::rhi::Extent2D kShadowMapSize { 2048, 2048 };
+    DepthTarget shadow_target {};
+    if (!create_depth_target(device, kShadowMapSize, kDepthFormat,
+                             shadow_target,
+                             cd::rhi::TextureUsage::kSampled))
+        return 11;
+    bool shadow_initialised_on_gpu = false;
+
+    cd::rhi::SamplerDesc shadow_sd {};
+    shadow_sd.mag_filter   = cd::rhi::SamplerFilter::kLinear;
+    shadow_sd.min_filter   = cd::rhi::SamplerFilter::kLinear;
+    shadow_sd.mipmap_mode  = cd::rhi::SamplerMipmapMode::kNearest;
+    shadow_sd.address_u    = cd::rhi::SamplerAddressMode::kClampToBorder;
+    shadow_sd.address_v    = cd::rhi::SamplerAddressMode::kClampToBorder;
+    shadow_sd.address_w    = cd::rhi::SamplerAddressMode::kClampToBorder;
+    shadow_sd.border_color = cd::rhi::BorderColor::kFloatOpaqueWhite;  // 1.0 depth = no shadow
+    shadow_sd.max_lod      = 1.0F;
+    auto shadow_samp_r = device.create_sampler(shadow_sd);
+    if (!shadow_samp_r.has_value()) return 12;
+    const auto shadow_sampler = *shadow_samp_r;
+
+    cd::rhi::BufferDesc shadow_ubo_desc {};
+    shadow_ubo_desc.size   = sizeof(cd::math::Mat4f);  // 64 bytes
+    shadow_ubo_desc.usage  = cd::rhi::BufferUsage::kUniform;
+    shadow_ubo_desc.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto shadow_ubo_r = device.create_buffer(shadow_ubo_desc);
+    if (!shadow_ubo_r.has_value()) return 13;
+    const auto shadow_ubo = *shadow_ubo_r;
+
+    auto prim_inst_r = cd::material::MaterialInstance::create(device, prim_material);
+    if (!prim_inst_r.has_value()) return 14;
+    auto& prim_inst = *prim_inst_r;
+    {
+        std::array<cd::rhi::DescriptorWrite, 2> writes {
+            cd::rhi::DescriptorWrite { .binding = 0,
+                                       .array_element = 0,
+                                       .type = cd::rhi::DescriptorType::kUniformBuffer,
+                                       .buffer = shadow_ubo,
+                                       .buffer_offset = 0,
+                                       .buffer_range = sizeof(cd::math::Mat4f) },
+            cd::rhi::DescriptorWrite { .binding = 1,
+                                       .array_element = 0,
+                                       .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view = shadow_target.view,
+                                       .sampler = shadow_sampler } };
+        if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
+    }
 
     // ---- Meshes (one PBR sphere, five primitive entities) ----
     const auto cube_cpu     = cd::asset::make_cube();
@@ -1713,6 +1878,161 @@ int main()
             depth_initialised_on_gpu = true;
         }
 
+        // ---- Shadow map pass (Faz 1.6 CSM) ----
+        // Pick the first enabled directional light for the shadow caster.
+        // No directional → shadow map is cleared to white (no shadow).
+        cd::math::Vec3f csm_sun_dir { -0.4F, -0.9F, -0.2F };
+        bool            csm_has_sun = false;
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+            csm_sun_dir = lrow.light.direction;
+            csm_has_sun = true;
+            break;
+        }
+        // Build the sun's view + ortho. Eye placed -30 m along the
+        // ray, looking at origin. Up vector flips to +Z when the sun
+        // is nearly vertical to avoid the look_at degeneracy.
+        {
+            cd::math::Vec3f sd = csm_sun_dir;
+            // Normalize defensively in case the slider produced a tiny
+            // vector before renormalize fired.
+            const float sd_len = std::sqrt(sd.x*sd.x + sd.y*sd.y + sd.z*sd.z);
+            if (sd_len > 1e-4F) { sd.x/=sd_len; sd.y/=sd_len; sd.z/=sd_len; }
+            else { sd = { 0.0F, -1.0F, 0.0F }; }
+            const cd::math::Vec3f eye {
+                -sd.x * 30.0F, -sd.y * 30.0F, -sd.z * 30.0F };
+            const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
+            const cd::math::Vec3f up = (std::fabs(sd.y) > 0.99F)
+                ? cd::math::Vec3f{ 0.0F, 0.0F, 1.0F }
+                : cd::math::Vec3f{ 0.0F, 1.0F, 0.0F };
+            const auto light_view = cd::math::look_at(eye, tgt, up);
+            const auto light_proj = cd::math::ortho(-25.0F, 25.0F,
+                                                    -25.0F, 25.0F,
+                                                    0.1F, 60.0F);
+            const cd::math::Mat4f light_vp = light_proj * light_view;
+            // Upload to UBO (kCpuToGpu, no staging).
+            (void)device.upload_buffer(shadow_ubo, 0,
+                std::span<const std::byte>(
+                    reinterpret_cast<const std::byte*>(&light_vp),
+                    sizeof(light_vp)));
+        }
+
+        // First-frame transition for the shadow target.
+        if (!shadow_initialised_on_gpu)
+        {
+            std::array<cd::rhi::TextureBarrier, 1> sb {
+                cd::rhi::TextureBarrier {
+                    .texture = shadow_target.image,
+                    .from = cd::rhi::ResourceState::kUndefined,
+                    .to = cd::rhi::ResourceState::kDepthWrite,
+                    .range = { .base_mip = 0, .mip_count = 1,
+                               .base_layer = 0, .layer_count = 1 } } };
+            cmd.barrier({}, sb);
+            shadow_initialised_on_gpu = true;
+        }
+        else
+        {
+            // Subsequent frames: shader-resource → depth-write.
+            std::array<cd::rhi::TextureBarrier, 1> sb {
+                cd::rhi::TextureBarrier {
+                    .texture = shadow_target.image,
+                    .from = cd::rhi::ResourceState::kShaderResource,
+                    .to = cd::rhi::ResourceState::kDepthWrite,
+                    .range = { .base_mip = 0, .mip_count = 1,
+                               .base_layer = 0, .layer_count = 1 } } };
+            cmd.barrier({}, sb);
+        }
+        {
+            cd::rhi::DepthStencilAttachmentInfo sda {};
+            sda.view = shadow_target.view;
+            sda.depth_load  = cd::rhi::LoadOp::kClear;
+            sda.depth_store = cd::rhi::StoreOp::kStore;
+            sda.clear.depth = 1.0F;
+            cd::rhi::RenderPassBeginInfo srp {};
+            srp.render_area = cd::rhi::Rect2D { {0,0}, kShadowMapSize };
+            srp.color_attachments = {};
+            srp.depth_stencil = &sda;
+            cmd.begin_render_pass(srp);
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(kShadowMapSize.width),
+                static_cast<float>(kShadowMapSize.height),
+                0.0F, 1.0F });
+            cmd.set_scissor(cd::rhi::Rect2D { {0,0}, kShadowMapSize });
+            if (csm_has_sun)
+            {
+                shadow_material.apply(cmd);
+                // Rebuild light_vp into a local — we already uploaded but
+                // also need it as a CPU-side push for the per-caster
+                // light_mvp computation. Re-derive (cheap).
+                cd::math::Vec3f sd = csm_sun_dir;
+                const float sl = std::sqrt(sd.x*sd.x + sd.y*sd.y + sd.z*sd.z);
+                if (sl > 1e-4F) { sd.x/=sl; sd.y/=sl; sd.z/=sl; }
+                else { sd = { 0.0F, -1.0F, 0.0F }; }
+                const cd::math::Vec3f eye { -sd.x*30.0F, -sd.y*30.0F, -sd.z*30.0F };
+                const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
+                const cd::math::Vec3f up = (std::fabs(sd.y) > 0.99F)
+                    ? cd::math::Vec3f{ 0.0F, 0.0F, 1.0F }
+                    : cd::math::Vec3f{ 0.0F, 1.0F, 0.0F };
+                const auto light_view2 = cd::math::look_at(eye, tgt, up);
+                const auto light_proj2 = cd::math::ortho(-25.0F, 25.0F,
+                                                         -25.0F, 25.0F,
+                                                         0.1F, 60.0F);
+                const cd::math::Mat4f light_vp2 = light_proj2 * light_view2;
+                // Casters: each ECS entity (using its mesh+transform).
+                for (const auto& ent : entities)
+                {
+                    const auto& mesh = mesh_for(ent.kind);
+                    if (!mesh.vb.is_valid()) continue;
+                    auto* lt = scene.local(ent.handle);
+                    if (lt == nullptr) continue;
+                    cmd.bind_vertex_buffer(0, mesh.vb, 0);
+                    cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+                    const auto model     = cd::math::to_mat4(lt->value);
+                    const auto light_mvp = light_vp2 * model;
+                    cmd.push_constants(shadow_material.pipeline_layout(),
+                                       cd::rhi::ShaderStage::kVertex,
+                                       0, sizeof(light_mvp), &light_mvp);
+                    cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+                }
+                // Casters: 5×5 PBR sphere grid (use PrimitiveVertex sphere mesh).
+                cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
+                cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+                constexpr int kGSh = 5;
+                constexpr float kSph = 1.2F;
+                for (int row = 0; row < kGSh; ++row)
+                {
+                    for (int col = 0; col < kGSh; ++col)
+                    {
+                        const float x = (static_cast<float>(col) - 2.0F) * kSph;
+                        const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
+                        const float z = -4.5F;
+                        cd::math::Mat4f model = cd::math::Mat4f::identity();
+                        model[3][0] = x; model[3][1] = y; model[3][2] = z;
+                        const auto light_mvp = light_vp2 * model;
+                        cmd.push_constants(shadow_material.pipeline_layout(),
+                                           cd::rhi::ShaderStage::kVertex,
+                                           0, sizeof(light_mvp), &light_mvp);
+                        cmd.draw_indexed(sphere_mesh.index_count, 1, 0, 0, 0);
+                    }
+                }
+            }
+            cmd.end_render_pass();
+        }
+        // Transition back to shader-resource for main pass sampling.
+        {
+            std::array<cd::rhi::TextureBarrier, 1> sb {
+                cd::rhi::TextureBarrier {
+                    .texture = shadow_target.image,
+                    .from = cd::rhi::ResourceState::kDepthWrite,
+                    .to = cd::rhi::ResourceState::kShaderResource,
+                    .range = { .base_mip = 0, .mip_count = 1,
+                               .base_layer = 0, .layer_count = 1 } } };
+            cmd.barrier({}, sb);
+        }
+
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
             cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
@@ -1926,6 +2246,7 @@ int main()
         }
 
         prim_material.apply(cmd);
+        prim_inst.bind(cmd, 0);  // Faz 1.6 CSM — UBO + shadow map descriptor
 
         // ---- Floor (large flat quad) ----
         // Faz 1.5 — real geometry on which the planar-shadow pass can
@@ -3230,6 +3551,10 @@ int main()
     destroy_mesh(device, floor_mesh);
     destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
+    // Faz 1.6 CSM resources.
+    shadow_target.destroy(device);
+    device.destroy_sampler(shadow_sampler);
+    device.destroy_buffer(shadow_ubo);
     std::printf("hello_engine: clean exit (%u frames).\n", frame_idx);
     return 0;
 }
