@@ -13,6 +13,16 @@ set(_platform_sources
   src/AndroidWindow.cpp
   src/PlatformStub.cpp
 )
+# Phase 158 (v0.99.93) — Linux X11 backend, opt-in.
+option(CD_PLATFORM_XLIB "Build Xlib window backend (Linux)" OFF)
+if(CD_PLATFORM_XLIB AND UNIX AND NOT APPLE)
+  list(APPEND _platform_sources src/X11Window.cpp)
+endif()
+# Phase 159 (v0.99.94) — macOS Cocoa backend, opt-in.
+option(CD_PLATFORM_COCOA "Build Cocoa window backend (macOS)" OFF)
+if(CD_PLATFORM_COCOA AND APPLE)
+  list(APPEND _platform_sources src/CocoaWindow.mm)
+endif()
 if(APPLE)
   list(APPEND _platform_sources src/IosWindow.mm)
 endif()
@@ -26,6 +36,19 @@ if(WIN32)
   # User32 + GDI are required for CreateWindowEx / DefWindowProc /
   # LoadCursor — Win32Window.cpp pulls them in unconditionally.
   target_link_libraries(cd_platform PRIVATE user32 gdi32)
+endif()
+if(CD_PLATFORM_XLIB AND UNIX AND NOT APPLE)
+  find_package(X11 REQUIRED)
+  target_compile_definitions(cd_platform PRIVATE CD_PLATFORM_XLIB=1)
+  target_link_libraries(cd_platform PRIVATE ${X11_LIBRARIES})
+  target_include_directories(cd_platform PRIVATE ${X11_INCLUDE_DIR})
+endif()
+if(CD_PLATFORM_COCOA AND APPLE)
+  target_compile_definitions(cd_platform PRIVATE CD_PLATFORM_COCOA=1)
+  target_link_libraries(cd_platform PRIVATE
+    "-framework Cocoa"
+    "-framework QuartzCore"
+  )
 endif()
 
 if(CD_ENABLE_TESTING)
