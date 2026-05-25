@@ -642,3 +642,54 @@ TEST(AnimStateMachine, BlackboardSetGet)
     EXPECT_FLOAT_EQ(sm.get("x"), 42.0F);
     EXPECT_FLOAT_EQ(sm.get("missing", 99.0F), 99.0F);
 }
+
+// Phase 168 — GPU skinning helpers.
+#include <cd/anim/GpuSkinning.hpp>
+
+TEST(GpuSkinning, SkinnedVertexIs64Bytes)
+{
+    static_assert(sizeof(cd::anim::SkinnedVertex) == 64);
+    EXPECT_EQ(sizeof(cd::anim::SkinnedVertex), 64U);
+}
+
+TEST(GpuSkinning, UboSizeIs16KB)
+{
+    EXPECT_EQ(sizeof(cd::anim::SkinningMatricesUbo), 256U * 64U);
+}
+
+TEST(GpuSkinning, PackEmptySkeletonReturnsZero)
+{
+    cd::anim::Skeleton skel;
+    cd::anim::Pose pose;
+    cd::anim::SkinningMatricesUbo ubo {};
+    const auto n = cd::anim::pack_skinning_matrices(skel, pose, ubo);
+    EXPECT_EQ(n, 0U);
+}
+
+TEST(GpuSkinning, PackTwoJointSkeletonFillsTwoMatrices)
+{
+    std::vector<cd::anim::Joint> joints(2);
+    joints[0].name = "root";
+    joints[0].parent = -1;
+    joints[1].name = "child";
+    joints[1].parent = 0;
+    cd::anim::Skeleton skel { std::move(joints) };
+    auto pose = cd::anim::Pose::bind_pose(skel);
+    cd::anim::SkinningMatricesUbo ubo {};
+    const auto n = cd::anim::pack_skinning_matrices(skel, pose, ubo);
+    EXPECT_EQ(n, 2U);
+    // At bind pose, every matrix should be ~identity.
+    EXPECT_FLOAT_EQ(ubo.bones[0][0][0], 1.0F);
+    EXPECT_FLOAT_EQ(ubo.bones[1][1][1], 1.0F);
+}
+
+TEST(GpuSkinning, ShaderSourceLooksReasonable)
+{
+    const auto* src = cd::anim::kSkinningVertexShaderGlsl;
+    ASSERT_NE(src, nullptr);
+    // Must contain the canonical skinning expression.
+    std::string s { src };
+    EXPECT_NE(s.find("skinning.bones["), std::string::npos);
+    EXPECT_NE(s.find("a_bone_weights"), std::string::npos);
+    EXPECT_NE(s.find("gl_Position"), std::string::npos);
+}
