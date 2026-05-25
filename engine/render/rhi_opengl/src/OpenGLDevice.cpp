@@ -74,6 +74,15 @@ constexpr GLenum     kGL_Nearest                   = 0x2600;
 constexpr GLenum     kGL_Linear                    = 0x2601;
 constexpr GLenum     kGL_LinearMipmapLinear        = 0x2703;
 
+// Phase 146-147 — shader / program enums
+constexpr GLenum     kGL_VertexShader              = 0x8B31;
+constexpr GLenum     kGL_FragmentShader            = 0x8B30;
+constexpr GLenum     kGL_GeometryShader            = 0x8DD9;
+constexpr GLenum     kGL_ComputeShader             = 0x91B9;
+constexpr GLenum     kGL_CompileStatus             = 0x8B81;
+constexpr GLenum     kGL_LinkStatus                = 0x8B82;
+constexpr GLenum     kGL_InfoLogLength             = 0x8B84;
+
 using PFNGLCREATEBUFFERSPROC      = void (*)(GLsizei n, GLuint* buffers);
 using PFNGLDELETEBUFFERSPROC      = void (*)(GLsizei n, const GLuint* buffers);
 using PFNGLNAMEDBUFFERDATAPROC    = void (*)(GLuint buffer, GLsizeiptr size, const GLvoid* data, GLenum usage);
@@ -89,6 +98,21 @@ using PFNGLTEXTURESTORAGE3DPROC   = void (*)(GLuint texture, GLsizei levels, GLe
 using PFNGLCREATESAMPLERSPROC     = void (*)(GLsizei n, GLuint* samplers);
 using PFNGLDELETESAMPLERSPROC     = void (*)(GLsizei n, const GLuint* samplers);
 using PFNGLSAMPLERPARAMETERIPROC  = void (*)(GLuint sampler, GLenum pname, int param);
+
+// Phase 146/147 — shader compile + program link entry points.
+using GLchar = char;
+using PFNGLCREATESHADERPROC       = GLuint (*)(GLenum type);
+using PFNGLDELETESHADERPROC       = void (*)(GLuint shader);
+using PFNGLSHADERSOURCEPROC       = void (*)(GLuint shader, GLsizei count, const GLchar* const* string, const int* length);
+using PFNGLCOMPILESHADERPROC      = void (*)(GLuint shader);
+using PFNGLGETSHADERIVPROC        = void (*)(GLuint shader, GLenum pname, int* params);
+using PFNGLGETSHADERINFOLOGPROC   = void (*)(GLuint shader, GLsizei maxLength, GLsizei* length, GLchar* infoLog);
+using PFNGLCREATEPROGRAMPROC      = GLuint (*)();
+using PFNGLDELETEPROGRAMPROC      = void (*)(GLuint program);
+using PFNGLATTACHSHADERPROC       = void (*)(GLuint program, GLuint shader);
+using PFNGLLINKPROGRAMPROC        = void (*)(GLuint program);
+using PFNGLGETPROGRAMIVPROC       = void (*)(GLuint program, GLenum pname, int* params);
+using PFNGLGETPROGRAMINFOLOGPROC  = void (*)(GLuint program, GLsizei maxLength, GLsizei* length, GLchar* infoLog);
 
 struct GLLoader
 {
@@ -110,6 +134,20 @@ struct GLLoader
     PFNGLDELETESAMPLERSPROC     glDeleteSamplersDSA  { nullptr };
     PFNGLSAMPLERPARAMETERIPROC  glSamplerParameteri  { nullptr };
 
+    // Phase 146/147 — shader + program.
+    PFNGLCREATESHADERPROC       glCreateShader       { nullptr };
+    PFNGLDELETESHADERPROC       glDeleteShader       { nullptr };
+    PFNGLSHADERSOURCEPROC       glShaderSource       { nullptr };
+    PFNGLCOMPILESHADERPROC      glCompileShader      { nullptr };
+    PFNGLGETSHADERIVPROC        glGetShaderiv        { nullptr };
+    PFNGLGETSHADERINFOLOGPROC   glGetShaderInfoLog   { nullptr };
+    PFNGLCREATEPROGRAMPROC      glCreateProgram      { nullptr };
+    PFNGLDELETEPROGRAMPROC      glDeleteProgram      { nullptr };
+    PFNGLATTACHSHADERPROC       glAttachShader       { nullptr };
+    PFNGLLINKPROGRAMPROC        glLinkProgram        { nullptr };
+    PFNGLGETPROGRAMIVPROC       glGetProgramiv       { nullptr };
+    PFNGLGETPROGRAMINFOLOGPROC  glGetProgramInfoLog  { nullptr };
+
     [[nodiscard]] bool valid() const noexcept
     {
         return glCreateBuffers != nullptr
@@ -126,6 +164,18 @@ struct GLLoader
     {
         return glCreateSamplers != nullptr && glSamplerParameteri != nullptr
             && glDeleteSamplersDSA != nullptr;
+    }
+    [[nodiscard]] bool shader_valid() const noexcept
+    {
+        return glCreateShader != nullptr && glShaderSource != nullptr
+            && glCompileShader != nullptr && glGetShaderiv != nullptr
+            && glDeleteShader != nullptr;
+    }
+    [[nodiscard]] bool program_valid() const noexcept
+    {
+        return glCreateProgram != nullptr && glAttachShader != nullptr
+            && glLinkProgram != nullptr && glGetProgramiv != nullptr
+            && glDeleteProgram != nullptr;
     }
 };
 
@@ -161,6 +211,19 @@ struct GLLoader
     L.glCreateSamplers     = reinterpret_cast<PFNGLCREATESAMPLERSPROC>(get("glCreateSamplers"));
     L.glDeleteSamplersDSA  = reinterpret_cast<PFNGLDELETESAMPLERSPROC>(get("glDeleteSamplers"));
     L.glSamplerParameteri  = reinterpret_cast<PFNGLSAMPLERPARAMETERIPROC>(get("glSamplerParameteri"));
+    // Phase 146/147 — shader + program.
+    L.glCreateShader      = reinterpret_cast<PFNGLCREATESHADERPROC>(get("glCreateShader"));
+    L.glDeleteShader      = reinterpret_cast<PFNGLDELETESHADERPROC>(get("glDeleteShader"));
+    L.glShaderSource      = reinterpret_cast<PFNGLSHADERSOURCEPROC>(get("glShaderSource"));
+    L.glCompileShader     = reinterpret_cast<PFNGLCOMPILESHADERPROC>(get("glCompileShader"));
+    L.glGetShaderiv       = reinterpret_cast<PFNGLGETSHADERIVPROC>(get("glGetShaderiv"));
+    L.glGetShaderInfoLog  = reinterpret_cast<PFNGLGETSHADERINFOLOGPROC>(get("glGetShaderInfoLog"));
+    L.glCreateProgram     = reinterpret_cast<PFNGLCREATEPROGRAMPROC>(get("glCreateProgram"));
+    L.glDeleteProgram     = reinterpret_cast<PFNGLDELETEPROGRAMPROC>(get("glDeleteProgram"));
+    L.glAttachShader      = reinterpret_cast<PFNGLATTACHSHADERPROC>(get("glAttachShader"));
+    L.glLinkProgram       = reinterpret_cast<PFNGLLINKPROGRAMPROC>(get("glLinkProgram"));
+    L.glGetProgramiv      = reinterpret_cast<PFNGLGETPROGRAMIVPROC>(get("glGetProgramiv"));
+    L.glGetProgramInfoLog = reinterpret_cast<PFNGLGETPROGRAMINFOLOGPROC>(get("glGetProgramInfoLog"));
     return L;
 }
 
@@ -471,18 +534,142 @@ public:
         }
         samplers_.erase(it);
     }
+    // Phase 146 — shader compile via GLSL source. The OpenGL backend
+    // expects ShaderModuleDesc::code to point at NULL-terminated GLSL
+    // source (Vulkan/D3D12 expect SPIR-V/DXIL bytecode there). Caller
+    // chooses based on which backend they're feeding.
     [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle>
-    create_shader_module(const cd::rhi::ShaderModuleDesc&) override { CD_GL_NOT_IMPL_RESULT(ShaderModuleHandle); }
-    void destroy_shader_module(cd::rhi::ShaderModuleHandle) override {}
+    create_shader_module(const cd::rhi::ShaderModuleDesc& desc) override
+    {
+        if (!gl_.shader_valid())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "OpenGL backend: shader entry points not exported"));
+        }
+        if (desc.code == nullptr || desc.code_size == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_shader_module: code / code_size must be set"));
+        }
+        GLenum gl_stage = kGL_VertexShader;
+        switch (desc.stage)
+        {
+            case cd::rhi::ShaderStage::kVertex:   gl_stage = kGL_VertexShader; break;
+            case cd::rhi::ShaderStage::kFragment: gl_stage = kGL_FragmentShader; break;
+            case cd::rhi::ShaderStage::kGeometry: gl_stage = kGL_GeometryShader; break;
+            case cd::rhi::ShaderStage::kCompute:  gl_stage = kGL_ComputeShader; break;
+            default:
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kNotImplemented,
+                    "create_shader_module: unsupported shader stage on OpenGL"));
+        }
+        const GLuint id = gl_.glCreateShader(gl_stage);
+        if (id == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glCreateShader returned 0"));
+        }
+        const auto* src = static_cast<const GLchar*>(desc.code);
+        const int   len = static_cast<int>(desc.code_size);
+        gl_.glShaderSource(id, 1, &src, &len);
+        gl_.glCompileShader(id);
+        int status = 0;
+        gl_.glGetShaderiv(id, kGL_CompileStatus, &status);
+        if (status == 0)
+        {
+            int log_len = 0;
+            gl_.glGetShaderiv(id, kGL_InfoLogLength, &log_len);
+            std::string log(static_cast<std::size_t>(std::max(0, log_len)), '\0');
+            if (log_len > 0 && gl_.glGetShaderInfoLog != nullptr)
+                gl_.glGetShaderInfoLog(id, log_len, nullptr, log.data());
+            gl_.glDeleteShader(id);
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { "glCompileShader failed: " } + log));
+        }
+        const auto handle_id = next_id_++;
+        shader_modules_.emplace(handle_id, id);
+        return cd::rhi::ShaderModuleHandle { handle_id, 1u };
+    }
+    void destroy_shader_module(cd::rhi::ShaderModuleHandle h) override
+    {
+        auto it = shader_modules_.find(h.index());
+        if (it == shader_modules_.end()) return;
+        if (gl_.glDeleteShader != nullptr) gl_.glDeleteShader(it->second);
+        shader_modules_.erase(it);
+    }
     [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetLayoutHandle>
     create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc&) override { CD_GL_NOT_IMPL_RESULT(DescriptorSetLayoutHandle); }
     void destroy_descriptor_set_layout(cd::rhi::DescriptorSetLayoutHandle) override {}
+    // Phase 147 — pipeline layout is a no-op in GL (no PSO object);
+    // we return an opaque handle so callers' code is symmetric with
+    // Vulkan/D3D12. The handle records nothing useful right now.
     [[nodiscard]] cd::core::Result<cd::rhi::PipelineLayoutHandle>
-    create_pipeline_layout(const cd::rhi::PipelineLayoutDesc&) override { CD_GL_NOT_IMPL_RESULT(PipelineLayoutHandle); }
-    void destroy_pipeline_layout(cd::rhi::PipelineLayoutHandle) override {}
+    create_pipeline_layout(const cd::rhi::PipelineLayoutDesc&) override
+    {
+        const auto handle_id = next_id_++;
+        pipeline_layouts_.emplace(handle_id, 0u);  // no GL counterpart
+        return cd::rhi::PipelineLayoutHandle { handle_id, 1u };
+    }
+    void destroy_pipeline_layout(cd::rhi::PipelineLayoutHandle h) override
+    {
+        pipeline_layouts_.erase(h.index());
+    }
+    // Phase 147 — graphics pipeline: link a GL program from the
+    // attached shaders + remember the captured raster/depth state.
     [[nodiscard]] cd::core::Result<cd::rhi::GraphicsPipelineHandle>
-    create_graphics_pipeline(const cd::rhi::GraphicsPipelineDesc&) override { CD_GL_NOT_IMPL_RESULT(GraphicsPipelineHandle); }
-    void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle) override {}
+    create_graphics_pipeline(const cd::rhi::GraphicsPipelineDesc& desc) override
+    {
+        if (!gl_.program_valid())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "OpenGL backend: program entry points not exported"));
+        }
+        const GLuint prog = gl_.glCreateProgram();
+        if (prog == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "glCreateProgram returned 0"));
+        }
+        auto attach_if = [&](cd::rhi::ShaderModuleHandle h) {
+            if (!h.is_valid()) return;
+            auto it = shader_modules_.find(h.index());
+            if (it != shader_modules_.end()) gl_.glAttachShader(prog, it->second);
+        };
+        attach_if(desc.vertex_shader);
+        attach_if(desc.fragment_shader);
+        attach_if(desc.geometry_shader);
+        gl_.glLinkProgram(prog);
+        int status = 0;
+        gl_.glGetProgramiv(prog, kGL_LinkStatus, &status);
+        if (status == 0)
+        {
+            int log_len = 0;
+            gl_.glGetProgramiv(prog, kGL_InfoLogLength, &log_len);
+            std::string log(static_cast<std::size_t>(std::max(0, log_len)), '\0');
+            if (log_len > 0 && gl_.glGetProgramInfoLog != nullptr)
+                gl_.glGetProgramInfoLog(prog, log_len, nullptr, log.data());
+            gl_.glDeleteProgram(prog);
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { "glLinkProgram failed: " } + log));
+        }
+        const auto handle_id = next_id_++;
+        graphics_pipelines_.emplace(handle_id, prog);
+        return cd::rhi::GraphicsPipelineHandle { handle_id, 1u };
+    }
+    void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override
+    {
+        auto it = graphics_pipelines_.find(h.index());
+        if (it == graphics_pipelines_.end()) return;
+        if (gl_.glDeleteProgram != nullptr) gl_.glDeleteProgram(it->second);
+        graphics_pipelines_.erase(it);
+    }
     [[nodiscard]] cd::core::Result<cd::rhi::ComputePipelineHandle>
     create_compute_pipeline(const cd::rhi::ComputePipelineDesc&) override { CD_GL_NOT_IMPL_RESULT(ComputePipelineHandle); }
     void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
@@ -595,6 +782,10 @@ private:
     std::unordered_map<std::uint32_t, GLTexture> textures_;
     std::unordered_map<std::uint32_t, GLuint>    texture_views_;
     std::unordered_map<std::uint32_t, GLuint>    samplers_;
+    // Phase 146/147 — shader + pipeline.
+    std::unordered_map<std::uint32_t, GLuint>    shader_modules_;
+    std::unordered_map<std::uint32_t, GLuint>    pipeline_layouts_;
+    std::unordered_map<std::uint32_t, GLuint>    graphics_pipelines_;
     std::uint32_t next_id_ { 1 };
 };
 
