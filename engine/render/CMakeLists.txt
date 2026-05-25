@@ -36,6 +36,7 @@ add_subdirectory(brdf_sss)            # Day 20 — Burley 2015 SSS + Jimenez blu
 add_subdirectory(decal)               # Day 22 — Persson 2009 deferred decals
 add_subdirectory(velocity)            # Day 24 — motion-vector pass (TAA prereq)
 add_subdirectory(mesh_shader)         # Day 25 — meshlet cluster builder + task/mesh shaders
+add_subdirectory(restir_di)           # Day  6 — Bitterli 2020 ReSTIR DI reservoir
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
