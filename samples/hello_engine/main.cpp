@@ -2107,6 +2107,174 @@ int main()
             }
         }
 
+        // ---- Phase D — Light source markers (world-space overlay) ----
+        // Each enabled light gets a small visual in the viewport so
+        // the user can SEE where the lights are placed.
+        // - Directional: a yellow line from sky toward target (sun ray)
+        // - Point: filled circle in light color + range ring
+        // - Spot:  filled circle at apex + cone wireframe (4 lines to far disk)
+        // - Rect area: 4 corners outlined in light color
+        {
+            const float vw = static_cast<float>(frame.extent.width);
+            const float vh = static_cast<float>(frame.extent.height);
+            auto* dl_m = ImGui::GetForegroundDrawList();
+            auto project = [&](const cd::math::Vec3f& p) -> ImVec2 {
+                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+                cd::math::Vec4f c {};
+                for (std::size_t r = 0; r < 4; ++r)
+                    c[r] = vp[0][r]*wp[0] + vp[1][r]*wp[1] + vp[2][r]*wp[2] + vp[3][r]*wp[3];
+                if (c[3] <= 0.0F) return ImVec2(-1.0F, -1.0F);
+                return ImVec2(
+                    (c[0] / c[3] * 0.5F + 0.5F) * vw,
+                    (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+            };
+            for (const auto& lrow : lights)
+            {
+                if (!lrow.enabled) continue;
+                const auto& L = lrow.light;
+                const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
+                const ImU32 col_dim = ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
+                switch (L.type)
+                {
+                    case cd::light::LightType::kDirectional:
+                    {
+                        // Render an arrow from sky position toward scene center.
+                        cd::math::Vec3f sky_origin {
+                            -L.direction.x * 15.0F,
+                            -L.direction.y * 15.0F,
+                            -L.direction.z * 15.0F };
+                        cd::math::Vec3f tip {
+                            sky_origin.x + L.direction.x * 8.0F,
+                            sky_origin.y + L.direction.y * 8.0F,
+                            sky_origin.z + L.direction.z * 8.0F };
+                        const auto p0 = project(sky_origin);
+                        const auto p1 = project(tip);
+                        if (p0.x >= 0.0F && p1.x >= 0.0F)
+                        {
+                            dl_m->AddLine(p0, p1, col, 3.0F);
+                            dl_m->AddCircleFilled(p0, 8.0F, col);
+                            dl_m->AddText(ImVec2(p0.x + 10.0F, p0.y - 8.0F),
+                                          col, "SUN");
+                        }
+                        break;
+                    }
+                    case cd::light::LightType::kPoint:
+                    {
+                        const auto p = project(L.position);
+                        if (p.x >= 0.0F)
+                        {
+                            dl_m->AddCircleFilled(p, 10.0F, col);
+                            dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
+                            // Render an approximate range ring by projecting 8
+                            // points on the world-space circle at light.range.
+                            for (int i = 0; i < 16; ++i)
+                            {
+                                const float t0 = static_cast<float>(i)     / 16.0F * 6.2831853F;
+                                const float t1 = static_cast<float>(i + 1) / 16.0F * 6.2831853F;
+                                cd::math::Vec3f a {
+                                    L.position.x + std::cos(t0) * L.range,
+                                    L.position.y,
+                                    L.position.z + std::sin(t0) * L.range };
+                                cd::math::Vec3f b {
+                                    L.position.x + std::cos(t1) * L.range,
+                                    L.position.y,
+                                    L.position.z + std::sin(t1) * L.range };
+                                const auto pa = project(a);
+                                const auto pb = project(b);
+                                if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                    dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                            }
+                            dl_m->AddText(ImVec2(p.x + 14.0F, p.y - 8.0F),
+                                          col, "POINT");
+                        }
+                        break;
+                    }
+                    case cd::light::LightType::kSpot:
+                    {
+                        const auto p_apex = project(L.position);
+                        // Far disk at range along direction.
+                        cd::math::Vec3f far_center {
+                            L.position.x + L.direction.x * L.range,
+                            L.position.y + L.direction.y * L.range,
+                            L.position.z + L.direction.z * L.range };
+                        // Use a tangent basis on the cone axis.
+                        cd::math::Vec3f up { 0,1,0 };
+                        if (std::abs(L.direction.y) > 0.95F) up = { 1,0,0 };
+                        cd::math::Vec3f rgt {
+                            L.direction.y*up.z - L.direction.z*up.y,
+                            L.direction.z*up.x - L.direction.x*up.z,
+                            L.direction.x*up.y - L.direction.y*up.x };
+                        const float rgt_len = std::sqrt(rgt.x*rgt.x + rgt.y*rgt.y + rgt.z*rgt.z);
+                        if (rgt_len > 1e-5F) { rgt.x/=rgt_len; rgt.y/=rgt_len; rgt.z/=rgt_len; }
+                        cd::math::Vec3f bt {
+                            L.direction.y*rgt.z - L.direction.z*rgt.y,
+                            L.direction.z*rgt.x - L.direction.x*rgt.z,
+                            L.direction.x*rgt.y - L.direction.y*rgt.x };
+                        // outer cone half-angle from cos_outer
+                        const float outer_angle = std::acos(std::clamp(L.cos_outer_cone, -1.0F, 1.0F));
+                        const float disk_r = L.range * std::tan(outer_angle);
+                        // 4 cone "edges"
+                        for (int i = 0; i < 8; ++i)
+                        {
+                            const float t = static_cast<float>(i) / 8.0F * 6.2831853F;
+                            const float ct = std::cos(t), st = std::sin(t);
+                            cd::math::Vec3f edge {
+                                far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
+                                far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
+                                far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
+                            const auto pe = project(edge);
+                            if (p_apex.x >= 0.0F && pe.x >= 0.0F)
+                                dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
+                        }
+                        if (p_apex.x >= 0.0F)
+                        {
+                            dl_m->AddCircleFilled(p_apex, 8.0F, col);
+                            dl_m->AddText(ImVec2(p_apex.x + 10.0F, p_apex.y - 8.0F),
+                                          col, "SPOT");
+                        }
+                        break;
+                    }
+                    case cd::light::LightType::kRectArea:
+                    case cd::light::LightType::kDiskArea:
+                    {
+                        // Project 4 corners.
+                        const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
+                        cd::math::Vec3f c0 {
+                            L.position.x - L.area_tangent.x * hw - L.area_bitangent.x * hh,
+                            L.position.y - L.area_tangent.y * hw - L.area_bitangent.y * hh,
+                            L.position.z - L.area_tangent.z * hw - L.area_bitangent.z * hh };
+                        cd::math::Vec3f c1 {
+                            L.position.x + L.area_tangent.x * hw - L.area_bitangent.x * hh,
+                            L.position.y + L.area_tangent.y * hw - L.area_bitangent.y * hh,
+                            L.position.z + L.area_tangent.z * hw - L.area_bitangent.z * hh };
+                        cd::math::Vec3f c2 {
+                            L.position.x + L.area_tangent.x * hw + L.area_bitangent.x * hh,
+                            L.position.y + L.area_tangent.y * hw + L.area_bitangent.y * hh,
+                            L.position.z + L.area_tangent.z * hw + L.area_bitangent.z * hh };
+                        cd::math::Vec3f c3 {
+                            L.position.x - L.area_tangent.x * hw + L.area_bitangent.x * hh,
+                            L.position.y - L.area_tangent.y * hw + L.area_bitangent.y * hh,
+                            L.position.z - L.area_tangent.z * hw + L.area_bitangent.z * hh };
+                        const auto p0 = project(c0);
+                        const auto p1 = project(c1);
+                        const auto p2 = project(c2);
+                        const auto p3 = project(c3);
+                        if (p0.x >= 0.0F && p1.x >= 0.0F && p2.x >= 0.0F && p3.x >= 0.0F)
+                        {
+                            dl_m->AddLine(p0, p1, col, 2.0F);
+                            dl_m->AddLine(p1, p2, col, 2.0F);
+                            dl_m->AddLine(p2, p3, col, 2.0F);
+                            dl_m->AddLine(p3, p0, col, 2.0F);
+                            dl_m->AddText(p0, col, "AREA");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         // ---- Phase 152 — axis-translation gizmo (ImGui overlay) ----
         // Project the selected entity's world position to screen,
         // draw three colored axis arrows, do hover/click drag in
