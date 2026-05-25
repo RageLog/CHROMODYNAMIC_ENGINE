@@ -2228,6 +2228,48 @@ int main()
             }
         }
 
+        // ---- World grid (floor) ----
+        // Projected XZ-plane grid at y=0. ±20 m, 1 m cells; thicker
+        // axis lines every 5 m. Gives the user a spatial reference
+        // for orientation + scale.
+        {
+            const float vw = static_cast<float>(frame.extent.width);
+            const float vh = static_cast<float>(frame.extent.height);
+            auto* dl_g = ImGui::GetForegroundDrawList();
+            auto project_g = [&](const cd::math::Vec3f& p) -> ImVec2 {
+                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+                cd::math::Vec4f c {};
+                for (std::size_t r = 0; r < 4; ++r)
+                    c[r] = vp[0][r]*wp[0] + vp[1][r]*wp[1] + vp[2][r]*wp[2] + vp[3][r]*wp[3];
+                if (c[3] <= 0.05F) return ImVec2(-9999.0F, -9999.0F);
+                return ImVec2(
+                    (c[0] / c[3] * 0.5F + 0.5F) * vw,
+                    (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+            };
+            constexpr int   kGridExtent = 20;
+            constexpr float kCellSize   = 1.0F;
+            const ImU32 minor_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.45F, 0.45F, 0.50F, 0.35F));
+            const ImU32 major_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.65F, 0.65F, 0.70F, 0.55F));
+            const ImU32 axis_x    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.95F, 0.30F, 0.25F, 0.80F));
+            const ImU32 axis_z    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.25F, 0.45F, 0.95F, 0.80F));
+            for (int i = -kGridExtent; i <= kGridExtent; ++i)
+            {
+                const float v = static_cast<float>(i) * kCellSize;
+                const cd::math::Vec3f a { v, 0.0F, static_cast<float>(-kGridExtent) * kCellSize };
+                const cd::math::Vec3f b { v, 0.0F, static_cast<float>( kGridExtent) * kCellSize };
+                const cd::math::Vec3f c { static_cast<float>(-kGridExtent) * kCellSize, 0.0F, v };
+                const cd::math::Vec3f d { static_cast<float>( kGridExtent) * kCellSize, 0.0F, v };
+                const auto pa = project_g(a), pb = project_g(b);
+                const auto pc = project_g(c), pd = project_g(d);
+                ImU32 col_v = (i == 0) ? axis_z : (i % 5 == 0 ? major_col : minor_col);
+                ImU32 col_h = (i == 0) ? axis_x : (i % 5 == 0 ? major_col : minor_col);
+                if (pa.x > -1000.0F && pb.x > -1000.0F)
+                    dl_g->AddLine(pa, pb, col_v, (i % 5 == 0) ? 1.5F : 1.0F);
+                if (pc.x > -1000.0F && pd.x > -1000.0F)
+                    dl_g->AddLine(pc, pd, col_h, (i % 5 == 0) ? 1.5F : 1.0F);
+            }
+        }
+
         // ---- Phase D — Light source markers (world-space overlay) ----
         // Each enabled light gets a small visual in the viewport so
         // the user can SEE where the lights are placed.
