@@ -101,3 +101,70 @@ TEST(EditorUI, SceneTreeViewEmptyWhenRootDead)
 }
 
 }  // namespace
+
+// =============================================================================
+// PaletteRegistry + EscChain tests (new, from docs/EDITOR_LESSONS_LEARNED.md).
+// =============================================================================
+#include <cd/editor_ui/AssetPalette.hpp>
+#include <cd/editor_ui/EscChain.hpp>
+
+namespace {
+
+TEST(EditorUI, PaletteRegistryStartsEmpty)
+{
+    cd::editor_ui::PaletteRegistry r;
+    EXPECT_EQ(r.size(), 0U);
+}
+
+TEST(EditorUI, PaletteRegistrySeedsDefaultEntries)
+{
+    cd::editor_ui::PaletteRegistry r;
+    r.seed_defaults();
+    EXPECT_GE(r.size(), 10U);
+    EXPECT_NE(r.find("mesh.cube"), nullptr);
+    EXPECT_NE(r.find("light.spot"), nullptr);
+    EXPECT_NE(r.find("audio.source"), nullptr);
+}
+
+TEST(EditorUI, PaletteRegistryFilterByCategory)
+{
+    cd::editor_ui::PaletteRegistry r;
+    r.seed_defaults();
+    const auto lights = r.filter(cd::editor_ui::PaletteCategory::kLight);
+    EXPECT_EQ(lights.size(), 4U);  // dir + point + spot + rect
+}
+
+TEST(EditorUI, EscChainEmptyReturnsFalse)
+{
+    cd::editor_ui::EscChain c;
+    EXPECT_FALSE(c.handle());
+}
+
+TEST(EditorUI, EscChainHigherPriorityRunsFirst)
+{
+    cd::editor_ui::EscChain c;
+    int last_run = -1;
+    c.register_handler(cd::editor_ui::EscPriority::kSelection,
+        [&]{ last_run = 3; return false; });
+    c.register_handler(cd::editor_ui::EscPriority::kActiveDrag,
+        [&]{ last_run = 0; return true; });   // consumes
+    c.register_handler(cd::editor_ui::EscPriority::kPalette,
+        [&]{ last_run = 2; return false; });
+    EXPECT_TRUE(c.handle());
+    EXPECT_EQ(last_run, 0);  // ActiveDrag ran + consumed; chain stopped
+}
+
+TEST(EditorUI, EscChainFallsThroughWhenAllHandlersDecline)
+{
+    cd::editor_ui::EscChain c;
+    bool first = false, second = false;
+    c.register_handler(cd::editor_ui::EscPriority::kModalDialog,
+        [&]{ first = true; return false; });
+    c.register_handler(cd::editor_ui::EscPriority::kPalette,
+        [&]{ second = true; return false; });
+    EXPECT_FALSE(c.handle());
+    EXPECT_TRUE(first);
+    EXPECT_TRUE(second);
+}
+
+}  // namespace
