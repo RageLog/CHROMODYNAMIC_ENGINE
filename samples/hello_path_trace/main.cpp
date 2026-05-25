@@ -281,7 +281,7 @@ int main()
     if (!compiler) return 2;
 
     const auto rg = compile_to_module(*compiler, device, kPtRaygenGlsl,
-                                      cd::shader::ShaderStage::kRayGen, "pt.rgen");
+                                      cd::shader::ShaderStage::kRaygen, "pt.rgen");
     const auto ms = compile_to_module(*compiler, device, kPtMissGlsl,
                                       cd::shader::ShaderStage::kMiss, "pt.rmiss");
     const auto sm = compile_to_module(*compiler, device, kPtShadowMissGlsl,

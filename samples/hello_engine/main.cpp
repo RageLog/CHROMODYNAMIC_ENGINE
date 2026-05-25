@@ -332,6 +332,16 @@ float distance_atten(float d, float range) {
 }
 
 void main() {
+  // tint.w sentinel: < 0.5 = "shadow-projection draw" — bypass lighting
+  // entirely and output a flat dark silhouette. Used by the planar-
+  // shadow pass that re-draws each caster, projected onto the floor
+  // plane along the sun direction. Alpha-blend would soften the result
+  // but isn't wired in MaterialDesc yet, so we ship hard shadows.
+  if (pc.tint.w < 0.5) {
+    out_color = vec4(pc.tint.rgb, 1.0);
+    return;
+  }
+
   vec3 N = normalize(v_world_normal);
   vec3 lit = vec3(0.0);
 
@@ -352,9 +362,16 @@ void main() {
     }
   }
 
-  // Ambient term so unlit faces aren't pure black.
-  vec3 ambient = v_albedo * pc.sun_color.w;
-  vec3 c = lit + ambient;
+  // Hemisphere ambient (sky-up / ground-down). Top-facing fragments
+  // pick up cool sky bounce, bottom-facing pick up warm ground bounce.
+  // Cheap stand-in for indirect light until the IBL UBO+descriptor
+  // path lands (Faz E). Reference: Lagarde & de Rousiers 2014 §3.
+  float up_t   = N.y * 0.5 + 0.5;
+  vec3  sky_c  = vec3(0.55, 0.65, 0.85);
+  vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
+  vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
+  vec3  ambient = v_albedo * hemi;
+  vec3  c       = lit + ambient;
 
   // ACES Narkowicz tonemap + gamma.
   const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
@@ -376,6 +393,59 @@ struct PrimPush
 };
 
 static_assert(sizeof(PrimPush) == 208, "PrimPush layout drift");
+
+// ----------------------------------------------------------------------------
+// Planar-shadow projection matrix.
+//
+// Builds the affine transform that flattens any point onto the plane
+// y = plane_y along the (directional-light) ray direction `sun_dir`.
+// Treats `sun_dir` as the direction the light travels in (so for a sun
+// pointing down-forward, sun_dir.y < 0).
+//
+// Derivation: for caster point P, projected point P' lies on the line
+//   P' = P + t * sun_dir,    requiring P'.y = plane_y
+//   ⇒ t = (plane_y - P.y) / sun_dir.y
+//   ⇒ P'.x = P.x + t * sun_dir.x
+//   ⇒ P'.z = P.z + t * sun_dir.z
+//
+// In column-major Mat4f (cd::math convention, see ADR-017 P4):
+//   S[0] = ( 1,            0,       0,            0 )
+//   S[1] = ( -Lx/Ly,       0,      -Lz/Ly,        0 )
+//   S[2] = ( 0,            0,       1,            0 )
+//   S[3] = ( plane_y*Lx/Ly, plane_y, plane_y*Lz/Ly, 1 )
+//
+// `lift` is added to plane_y in the matrix only so projected verts sit
+// just above the floor and dodge depth-fight with it.
+// ----------------------------------------------------------------------------
+[[nodiscard]] inline cd::math::Mat4f
+make_planar_shadow_matrix(const cd::math::Vec3f& sun_dir,
+                          float                  plane_y,
+                          float                  lift) noexcept
+{
+    // Clamp |Ly| away from 0 so a sun coming in horizontally doesn't
+    // produce an infinite-length shadow (numerically: divide-by-zero).
+    constexpr float kMinAbs = 0.10F;
+    float Ly = sun_dir.y;
+    if (std::fabs(Ly) < kMinAbs) Ly = (Ly < 0.0F) ? -kMinAbs : kMinAbs;
+    const float k = 1.0F / Ly;
+    const float ax = sun_dir.x * k;
+    const float az = sun_dir.z * k;
+    const float py = plane_y + lift;
+    cd::math::Mat4f m = cd::math::Mat4f::identity();
+    // Column 0: x-axis untouched.
+    m[0][0] = 1.0F; m[0][1] = 0.0F; m[0][2] = 0.0F; m[0][3] = 0.0F;
+    // Column 1: y-input bleeds into x and z, y-output zeroed (plane).
+    m[1][0] = -ax;  m[1][1] = 0.0F; m[1][2] = -az;  m[1][3] = 0.0F;
+    // Column 2: z-axis untouched.
+    m[2][0] = 0.0F; m[2][1] = 0.0F; m[2][2] = 1.0F; m[2][3] = 0.0F;
+    // Column 3: translation pins y to plane_y+lift and adds the
+    // origin-shift contribution from the (h - 0) projection offset.
+    m[3][0] = py * ax;
+    m[3][1] = py;
+    m[3][2] = py * az;
+    m[3][3] = 1.0F;
+    return m;
+}
 
 // ============================================================================
 // Depth target helper.
@@ -594,12 +664,17 @@ int main()
     const auto cone_cpu     = cd::asset::make_cone(32);
     const auto cyl_cpu      = cd::asset::make_cylinder(32);
     const auto torus_cpu    = cd::asset::make_torus(0.45F, 0.18F, 16, 24);
+    // Floor quad — 80×80 m centred at origin, normal +Y. Faz 1.5: real
+    // geometry on which the planar shadow pass can project caster
+    // silhouettes (no actual floor previously, only an ImGui grid).
+    const auto floor_cpu    = cd::asset::make_plane(80.0F);
 
     GpuMesh cube_mesh   = upload_mesh(device, cube_cpu);
     GpuMesh sphere_mesh = upload_mesh(device, sphere_cpu);
     GpuMesh cone_mesh   = upload_mesh(device, cone_cpu);
     GpuMesh cyl_mesh    = upload_mesh(device, cyl_cpu);
     GpuMesh torus_mesh  = upload_mesh(device, torus_cpu);
+    GpuMesh floor_mesh  = upload_mesh(device, floor_cpu);
     GpuMesh pbr_sphere  = upload_pbr_mesh(device, sphere_cpu);
 
     auto mesh_for = [&](PrimitiveKind k) -> const GpuMesh& {
@@ -1790,6 +1865,40 @@ int main()
         }
 
         prim_material.apply(cmd);
+
+        // ---- Floor (large flat quad) ----
+        // Faz 1.5 — real geometry on which the planar-shadow pass can
+        // project caster silhouettes. Floor sits at y = kFloorY so the
+        // front-row primitives (which extend ±0.5 m around y=0) just
+        // touch it.
+        constexpr float kFloorY      = -0.55F;
+        constexpr float kShadowLift  =  0.01F;
+        {
+            cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
+            cmd.bind_index_buffer(floor_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+            cd::math::Mat4f floor_model = cd::math::Mat4f::identity();
+            floor_model[3][1] = kFloorY;  // translate quad to y = kFloorY
+            const auto floor_mvp = vp * floor_model;
+            PrimPush fp {};
+            fp.mvp   = floor_mvp;
+            fp.model = floor_model;
+            // Slightly cool neutral floor — receives lighting + hemisphere AO.
+            fp.tint[0] = 0.45F; fp.tint[1] = 0.46F; fp.tint[2] = 0.50F; fp.tint[3] = 1.0F;
+            fp.sun_dir[0] = sun_dir.x; fp.sun_dir[1] = sun_dir.y;
+            fp.sun_dir[2] = sun_dir.z; fp.sun_dir[3] = sun_str;
+            fp.sun_color[0] = sun_col.x; fp.sun_color[1] = sun_col.y;
+            fp.sun_color[2] = sun_col.z; fp.sun_color[3] = ambient_w;
+            fp.point_pos_range[0] = point_pos.x; fp.point_pos_range[1] = point_pos.y;
+            fp.point_pos_range[2] = point_pos.z; fp.point_pos_range[3] = point_range;
+            fp.point_color[0] = point_col.x; fp.point_color[1] = point_col.y;
+            fp.point_color[2] = point_col.z; fp.point_color[3] = point_str;
+            cmd.push_constants(prim_material.pipeline_layout(),
+                               cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                               0, sizeof(fp), &fp);
+            cmd.draw_indexed(floor_mesh.index_count, 1, 0, 0, 0);
+            counters.increment("draws_prim");
+        }
+
         for (const auto& ent : entities)
         {
             const auto& mesh = mesh_for(ent.kind);
@@ -1817,6 +1926,76 @@ int main()
                                0, sizeof(pp), &pp);
             cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
             counters.increment("draws_prim");
+        }
+
+        // ---- Planar projective shadows (Faz 1.5) ----
+        // For each caster (ECS entities + 5×5 PBR sphere grid), build a
+        // shadow projection matrix that flattens the geometry onto the
+        // floor plane along the sun direction, then redraw with the
+        // tint.w sentinel that triggers the shader's shadow-bypass
+        // (flat dark output, no lighting). Hard shadows — soft shadows
+        // need alpha blending in MaterialDesc (Faz 1.6 / future work).
+        // Skips when sun is disabled or pointing upward.
+        if (sun_str > 1e-4F && sun_dir.y < -1e-3F)
+        {
+            const auto S = make_planar_shadow_matrix(sun_dir, kFloorY, kShadowLift);
+            PrimPush sp {};
+            // Shadow tint: tint.w < 0.5 triggers shader bypass; rgb is the
+            // shadow color (linear, post-tonemap output).
+            sp.tint[0] = 0.04F; sp.tint[1] = 0.04F; sp.tint[2] = 0.05F; sp.tint[3] = 0.0F;
+            // Zero out lighting fields — shadow path doesn't read them
+            // but keep the push deterministic for SPIR-V validators.
+            sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
+            sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
+            sp.point_pos_range[3] = 0.0F;
+
+            // Entity casters.
+            for (const auto& ent : entities)
+            {
+                const auto& mesh = mesh_for(ent.kind);
+                if (!mesh.vb.is_valid()) continue;
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) continue;
+                cmd.bind_vertex_buffer(0, mesh.vb, 0);
+                cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+                const auto model        = cd::math::to_mat4(lt->value);
+                const auto shadow_model = S * model;
+                sp.mvp   = vp * shadow_model;
+                sp.model = shadow_model;
+                cmd.push_constants(prim_material.pipeline_layout(),
+                                   cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                   0, sizeof(sp), &sp);
+                cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+                counters.increment("draws_shadow");
+            }
+
+            // PBR sphere grid casters (use the PrimitiveVertex sphere
+            // mesh — same shape, different vertex format. The prim
+            // shader expects PrimitiveVertex, so we bind sphere_mesh
+            // not pbr_sphere even though the spheres are PBR-rendered.)
+            cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
+            cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+            constexpr int kGS = 5;
+            constexpr float kSp = 1.2F;
+            for (int row = 0; row < kGS; ++row)
+            {
+                for (int col = 0; col < kGS; ++col)
+                {
+                    const float x = (static_cast<float>(col) - 2.0F) * kSp;
+                    const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
+                    const float z = -4.5F;
+                    cd::math::Mat4f model = cd::math::Mat4f::identity();
+                    model[3][0] = x; model[3][1] = y; model[3][2] = z;
+                    const auto shadow_model = S * model;
+                    sp.mvp   = vp * shadow_model;
+                    sp.model = shadow_model;
+                    cmd.push_constants(prim_material.pipeline_layout(),
+                                       cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                       0, sizeof(sp), &sp);
+                    cmd.draw_indexed(sphere_mesh.index_count, 1, 0, 0, 0);
+                    counters.increment("draws_shadow");
+                }
+            }
         }
 
         // ---- ImGui frame ----
@@ -2355,10 +2534,14 @@ int main()
             for (int i = -kGridExtent; i <= kGridExtent; ++i)
             {
                 const float v = static_cast<float>(i) * kCellSize;
-                const cd::math::Vec3f a { v, 0.0F, static_cast<float>(-kGridExtent) * kCellSize };
-                const cd::math::Vec3f b { v, 0.0F, static_cast<float>( kGridExtent) * kCellSize };
-                const cd::math::Vec3f c { static_cast<float>(-kGridExtent) * kCellSize, 0.0F, v };
-                const cd::math::Vec3f d { static_cast<float>( kGridExtent) * kCellSize, 0.0F, v };
+                // Sit grid lines just above the floor (kFloorY + tiny lift)
+                // so they layer on top of the floor mesh rather than floating
+                // 0.55 m above it (where they were before the floor existed).
+                constexpr float kGridY = -0.54F;
+                const cd::math::Vec3f a { v, kGridY, static_cast<float>(-kGridExtent) * kCellSize };
+                const cd::math::Vec3f b { v, kGridY, static_cast<float>( kGridExtent) * kCellSize };
+                const cd::math::Vec3f c { static_cast<float>(-kGridExtent) * kCellSize, kGridY, v };
+                const cd::math::Vec3f d { static_cast<float>( kGridExtent) * kCellSize, kGridY, v };
                 const ImU32 col_v = (i == 0) ? axis_z : (i % 5 == 0 ? major_col : minor_col);
                 const ImU32 col_h = (i == 0) ? axis_x : (i % 5 == 0 ? major_col : minor_col);
                 const float thick = (i % 5 == 0) ? 1.5F : 1.0F;
@@ -2653,9 +2836,44 @@ int main()
                     }
                     else if (gizmo_mode == GizmoMode::kRotate)
                     {
-                        dl->AddCircle(p_x, 6.0F, cx, 12, 2.0F);
-                        dl->AddCircle(p_y, 6.0F, cy, 12, 2.0F);
-                        dl->AddCircle(p_z, 6.0F, cz, 12, 2.0F);
+                        // Draw the standard 3 rotation rings on each
+                        // world-axis plane. Each ring is the projection
+                        // of a unit-radius circle (scaled by kAxisLen)
+                        // in the plane perpendicular to its color axis.
+                        constexpr int   kRingSeg = 48;
+                        constexpr float kRingRad = 1.5F;
+                        auto draw_ring = [&](cd::math::Vec3f u, cd::math::Vec3f v,
+                                             ImU32 c, float t)
+                        {
+                            for (int i = 0; i < kRingSeg; ++i)
+                            {
+                                const float a = static_cast<float>(i)     / kRingSeg * 6.2831853F;
+                                const float b = static_cast<float>(i + 1) / kRingSeg * 6.2831853F;
+                                const float ca0 = std::cos(a), sa0 = std::sin(a);
+                                const float cb0 = std::cos(b), sb0 = std::sin(b);
+                                cd::math::Vec3f wa {
+                                    tgt.x + (u.x * ca0 + v.x * sa0) * kRingRad,
+                                    tgt.y + (u.y * ca0 + v.y * sa0) * kRingRad,
+                                    tgt.z + (u.z * ca0 + v.z * sa0) * kRingRad };
+                                cd::math::Vec3f wb {
+                                    tgt.x + (u.x * cb0 + v.x * sb0) * kRingRad,
+                                    tgt.y + (u.y * cb0 + v.y * sb0) * kRingRad,
+                                    tgt.z + (u.z * cb0 + v.z * sb0) * kRingRad };
+                                const auto pa = project(wa);
+                                const auto pb = project(wb);
+                                if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                    dl->AddLine(pa, pb, c, t);
+                            }
+                        };
+                        const float th_x = (gizmo.hover() == cd::editor::GizmoAxis::kX) ? 4.0F : 2.0F;
+                        const float th_y = (gizmo.hover() == cd::editor::GizmoAxis::kY) ? 4.0F : 2.0F;
+                        const float th_z = (gizmo.hover() == cd::editor::GizmoAxis::kZ) ? 4.0F : 2.0F;
+                        // Ring around X axis lives in (Y, Z) plane.
+                        draw_ring({0,1,0}, {0,0,1}, cx, th_x);
+                        // Ring around Y axis lives in (X, Z) plane.
+                        draw_ring({1,0,0}, {0,0,1}, cy, th_y);
+                        // Ring around Z axis lives in (X, Y) plane.
+                        draw_ring({1,0,0}, {0,1,0}, cz, th_z);
                     }
                     else  // kScale
                     {
@@ -2773,7 +2991,22 @@ int main()
                                 case GizmoMode::kRotate:
                                 {
                                     if (lt == nullptr) break;
-                                    const float ang = delta_world * 0.5F;
+                                    // Compute the angle the mouse has swept around the
+                                    // gizmo center since drag start (atan2 difference).
+                                    // This is the natural rotation gizmo UX: dragging
+                                    // tangentially around the object rotates it.
+                                    const float anchor_dx = gizmo_drag_anchor.x - p_org.x;
+                                    const float anchor_dy = gizmo_drag_anchor.y - p_org.y;
+                                    const float cur_dx    = mp.x - p_org.x;
+                                    const float cur_dy    = mp.y - p_org.y;
+                                    if (std::sqrt(anchor_dx*anchor_dx + anchor_dy*anchor_dy) < 5.0F)
+                                        break;  // too close to center, ignore
+                                    const float a_anchor = std::atan2(anchor_dy, anchor_dx);
+                                    const float a_now    = std::atan2(cur_dy,    cur_dx);
+                                    float ang = a_now - a_anchor;
+                                    // Wrap to (-π, π].
+                                    while (ang >  3.1415926F) ang -= 6.2831853F;
+                                    while (ang < -3.1415926F) ang += 6.2831853F;
                                     const float ca = std::cos(ang * 0.5F);
                                     const float sa = std::sin(ang * 0.5F);
                                     cd::math::Quatf q { 0,0,0,1 };
@@ -2784,6 +3017,8 @@ int main()
                                         case cd::editor::GizmoAxis::kZ: q = { 0, 0, sa, ca }; break;
                                         default: break;
                                     }
+                                    // new_rot = q * start (apply axis-rotation in
+                                    // world-space to the start orientation).
                                     const auto& a = q;
                                     const auto& b = gizmo_drag_rot_start;
                                     lt->value.rotation = cd::math::Quatf {
@@ -2909,6 +3144,7 @@ int main()
     destroy_mesh(device, cone_mesh);
     destroy_mesh(device, cyl_mesh);
     destroy_mesh(device, torus_mesh);
+    destroy_mesh(device, floor_mesh);
     destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
     std::printf("hello_engine: clean exit (%u frames).\n", frame_idx);
