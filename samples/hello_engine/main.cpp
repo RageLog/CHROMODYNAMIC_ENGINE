@@ -608,7 +608,7 @@ int main()
     cam.far_z = 200.0F;
     cd::scene::SceneCameraController scene_cam;
     scene_cam.attach(cam, scene, /*follow=*/{});
-    scene_cam.set_auto_spin(true);
+    scene_cam.set_auto_spin(false);    // user-controlled by default; toggle from palette
     scene_cam.orbit().auto_spin_rate = 0.25F;
 
     // ---- Free-look camera state (WASD + right-mouse look + wheel zoom) ----
@@ -649,7 +649,7 @@ int main()
     limiter.prepare(static_cast<float>(kAudioSampleRate),
                     /*thresh=*/0.92F, /*attack=*/0.0002F, /*release=*/0.040F);
     std::uint64_t audio_t = 0;
-    bool          audio_muted = false;
+    bool          audio_muted = true;  // start muted; palette "Audio: Toggle Mute" opens it
     float         audio_peak_window      = 0.0F;
     float         audio_comp_db_window   = 0.0F;
     float         audio_limiter_gain_min = 1.0F;
@@ -710,7 +710,9 @@ int main()
         if (clip_r.has_value())
         {
             live_clip = *clip_r;
-            auto voice_r = audio_backend->play(live_clip, /*vol=*/0.65F, /*loop=*/true);
+            // Start silent so the user doesn't get a sudden tone. The
+            // "Audio: Toggle Mute" palette command unmutes to 0.65F.
+            auto voice_r = audio_backend->play(live_clip, /*vol=*/0.0F, /*loop=*/true);
             if (voice_r.has_value()) live_voice = *voice_r;
         }
     }
@@ -2147,7 +2149,7 @@ int main()
                             switch (gizmo.active_axis())
                             {
                                 case cd::editor::GizmoAxis::kX: cur.x += delta_world; break;
-                                case cd::editor::GizmoAxis::kY: cur.y -= delta_world; break;  // screen Y is flipped
+                                case cd::editor::GizmoAxis::kY: cur.y += delta_world; break;
                                 case cd::editor::GizmoAxis::kZ: cur.z += delta_world; break;
                                 default: break;
                             }
