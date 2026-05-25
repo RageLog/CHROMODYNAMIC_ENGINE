@@ -521,9 +521,22 @@ void main() {
   vec3  ambient = albedo * hemi;
   vec3  c       = lit + ambient;
 
-  // ACES Narkowicz tonemap + gamma.
-  const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
-  c = clamp((c * (a_ * c + b_)) / (c * (c_ * c + d_) + e_), vec3(0.0), vec3(1.0));
+  // AGX tonemap (Sobotka 2022) — saturation-preserving on coloured
+  // highlights vs. ACES Narkowicz which over-desaturates. Closes the
+  // user-flagged "renklerde bir gariplik" anomaly.
+  // Source matches cd::post_tonemap::kAgxGlsl line-for-line.
+  const float kMinEv = -12.47393, kMaxEv = 4.026069;
+  vec3 agx_log = clamp((log2(max(c, vec3(1e-10))) - vec3(kMinEv)) /
+                       (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
+  vec3 x2  = agx_log * agx_log;
+  vec3 x4  = x2 * x2;
+  c = clamp( 15.5  * x4 * x2
+           - 40.14 * x4 * agx_log
+           + 31.96 * x4
+           -  6.868 * x2 * agx_log
+           +  0.4298 * x2
+           +  0.1191 * agx_log
+           -  0.00232, vec3(0.0), vec3(1.0));
   c = pow(c, vec3(1.0/2.2));
   out_color = vec4(c, 1.0);
 }
