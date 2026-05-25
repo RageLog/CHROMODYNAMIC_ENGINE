@@ -9,11 +9,11 @@ using cd::brdf_sheen_clearcoat::charlie_d;
 using cd::brdf_sheen_clearcoat::clearcoat_d_v;
 using cd::brdf_sheen_clearcoat::v_neubelt;
 
-constexpr float kEps = 1e-3F;
-
-TEST(SheenClearcoat, CharlieDPositive)
+TEST(SheenClearcoat, CharlieDPositiveAtGrazing)
 {
-    EXPECT_GT(charlie_d(0.3F, 1.0F), 0.0F);
+    // Charlie peaks at sin^2 ~ 1; n_dot_h ~ 0 means full grazing.
+    EXPECT_GT(charlie_d(0.3F, 0.0F), 0.0F);
+    EXPECT_GT(charlie_d(0.5F, 0.3F), 0.0F);
 }
 
 TEST(SheenClearcoat, CharlieDPeaksAtGrazing)
