@@ -24,6 +24,7 @@ add_subdirectory(asset_ktx2)
 add_subdirectory(asset_wav)
 add_subdirectory(asset_json)
 add_subdirectory(asset_pak)
+add_subdirectory(asset_streaming)   # Day 28 — priority-queue async I/O
 add_subdirectory(imgdiff)
 add_subdirectory(script)
 add_subdirectory(render)
