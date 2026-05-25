@@ -1475,12 +1475,56 @@ int main()
                 cd::math::Mat4f model = cd::math::Mat4f::identity();
                 model[3][0] = x; model[3][1] = y; model[3][2] = z;
                 const auto mvp = vp * model;
+                // cd::light → render bridge: use the first enabled
+                // directional light to drive the shader's key light.
+                // Modulate the copper albedo by the light's color so
+                // toggling the Sun OR changing CCT visibly affects
+                // the spheres. (Phase 171's LitPbrMaterial does the
+                // full UBO + N-light iteration; until that ships with
+                // a descriptor set, this is the smallest visible
+                // wiring of cd::light data into the existing shader.)
+                cd::math::Vec3f light_dir { -0.4F, -0.6F, -0.7F };
+                cd::math::Vec3f light_color { 1.0F, 1.0F, 1.0F };
+                float           light_intensity = 0.9F;
+                for (const auto& lrow : lights)
+                {
+                    if (!lrow.enabled) continue;
+                    if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+                    light_dir   = lrow.light.direction;
+                    light_color = lrow.light.color;  // already CCT-converted in Lights panel
+                    // Map 0..200000 lux slider to ~0..2.5 shader intensity.
+                    light_intensity = std::min(2.5F, lrow.light.intensity / 80000.0F);
+                    break;
+                }
+                // Find a single warm point light, fold its color * range
+                // into the ambient term (mr_amb.z) — gives the spheres a
+                // visible "key + bounce" feel.
+                cd::math::Vec3f point_color_contrib { 0.0F, 0.0F, 0.0F };
+                for (const auto& lrow : lights)
+                {
+                    if (!lrow.enabled) continue;
+                    if (lrow.light.type != cd::light::LightType::kPoint) continue;
+                    const float k = std::min(1.0F, lrow.light.intensity / 2000.0F) * 0.15F;
+                    point_color_contrib.x = lrow.light.color.x * k;
+                    point_color_contrib.y = lrow.light.color.y * k;
+                    point_color_contrib.z = lrow.light.color.z * k;
+                    break;
+                }
+
                 cd::material::StandardPbrPush pb {};
                 std::memcpy(pb.mvp, &mvp, sizeof(pb.mvp));
-                pb.albedo[0] = 0.95F; pb.albedo[1] = 0.64F; pb.albedo[2] = 0.32F; pb.albedo[3] = 1.0F;
+                // Copper base albedo, tinted by light color so CCT slider
+                // produces a visible warm/cool shift on the spheres.
+                pb.albedo[0] = 0.95F * (0.4F + 0.6F * light_color.x) + point_color_contrib.x;
+                pb.albedo[1] = 0.64F * (0.4F + 0.6F * light_color.y) + point_color_contrib.y;
+                pb.albedo[2] = 0.32F * (0.4F + 0.6F * light_color.z) + point_color_contrib.z;
+                pb.albedo[3] = 1.0F;
                 pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness; pb.mr_amb[2] = 0.0F; pb.mr_amb[3] = 0.0F;
                 pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z; pb.camera_pos[3] = 0.0F;
-                pb.light_dir[0]  = -0.4F; pb.light_dir[1]  = -0.6F; pb.light_dir[2]  = -0.7F; pb.light_dir[3]  = 0.9F;
+                pb.light_dir[0]  = light_dir.x;
+                pb.light_dir[1]  = light_dir.y;
+                pb.light_dir[2]  = light_dir.z;
+                pb.light_dir[3]  = light_intensity;
                 cmd.push_constants(pbr_material.pipeline_layout(),
                                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                    0, sizeof(pb), &pb);
