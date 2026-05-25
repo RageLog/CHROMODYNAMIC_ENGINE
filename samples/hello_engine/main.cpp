@@ -172,7 +172,8 @@ struct GpuMesh
 {
     cd::rhi::BufferHandle vb;
     cd::rhi::BufferHandle ib;
-    std::uint32_t         index_count { 0 };
+    std::uint32_t         vertex_count { 0 };  // Faz 1.7: BLAS reads positions
+    std::uint32_t         index_count  { 0 };
 };
 
 [[nodiscard]] GpuMesh upload_mesh(cd::rhi::IDevice& dev, const cd::asset::PrimitiveMesh& m)
@@ -180,7 +181,13 @@ struct GpuMesh
     GpuMesh out {};
     cd::rhi::BufferDesc vbd {};
     vbd.size = m.vertices.size() * sizeof(cd::asset::PrimitiveVertex);
-    vbd.usage = cd::rhi::BufferUsage::kVertex;
+    // Faz 1.7: kStorage + kTransferDst added so the BLAS builder can
+    // read positions out of this buffer. Same usage list hello_path_
+    // trace uses for its scene VB. kVertex is still here for the
+    // raster path.
+    vbd.usage = cd::rhi::BufferUsage::kVertex
+              | cd::rhi::BufferUsage::kStorage
+              | cd::rhi::BufferUsage::kTransferDst;
     vbd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
     auto vb_r = dev.create_buffer(vbd);
     if (!vb_r.has_value()) return out;
@@ -190,7 +197,9 @@ struct GpuMesh
 
     cd::rhi::BufferDesc ibd {};
     ibd.size = m.indices.size() * sizeof(std::uint16_t);
-    ibd.usage = cd::rhi::BufferUsage::kIndex;
+    ibd.usage = cd::rhi::BufferUsage::kIndex
+              | cd::rhi::BufferUsage::kStorage
+              | cd::rhi::BufferUsage::kTransferDst;
     ibd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
     auto ib_r = dev.create_buffer(ibd);
     if (!ib_r.has_value())
@@ -204,7 +213,8 @@ struct GpuMesh
 
     out.vb = *vb_r;
     out.ib = *ib_r;
-    out.index_count = static_cast<std::uint32_t>(m.indices.size());
+    out.vertex_count = static_cast<std::uint32_t>(m.vertices.size());
+    out.index_count  = static_cast<std::uint32_t>(m.indices.size());
     return out;
 }
 
@@ -267,7 +277,8 @@ to_pbr_vertices(const cd::asset::PrimitiveMesh& m)
 
     out.vb = *vb_r;
     out.ib = *ib_r;
-    out.index_count = static_cast<std::uint32_t>(m.indices.size());
+    out.vertex_count = static_cast<std::uint32_t>(verts.size());
+    out.index_count  = static_cast<std::uint32_t>(m.indices.size());
     return out;
 }
 
@@ -320,7 +331,13 @@ void main() {
 )glsl";
 
 constexpr const char* kPrimFS = R"glsl(
-#version 450
+#version 460
+// Faz 1.7 — inline RT shadows via ray queries inside the raster FS.
+// VK_KHR_ray_query is required at the device level; the material
+// creation gates on device.features().ray_query so this extension
+// guard never fires on unsupported hardware. GLSL 460 is required
+// because ray-query intrinsics were introduced for that profile.
+#extension GL_EXT_ray_query : require
 layout(push_constant) uniform PC {
   mat4 mvp;
   mat4 model;
@@ -335,6 +352,10 @@ layout(set = 0, binding = 0) uniform Shadow {
   mat4 light_vp;
 } cd_shadow;
 layout(set = 0, binding = 1) uniform sampler2D cd_shadow_map;
+// Faz 1.7 TLAS — rebuilt every frame on the host with the current
+// scene transforms. Used to shadow-test punctual / spot / area
+// lights that CSM can't cover (CSM is single-directional only).
+layout(set = 0, binding = 2) uniform accelerationStructureEXT cd_tlas;
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
@@ -347,6 +368,26 @@ float distance_atten(float d, float range) {
   float ratio = d / range;
   float w = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
   return (w * w) / (d * d + 0.01);
+}
+
+// Faz 1.7 inline RT shadow visibility test. Shoots a ray from the
+// surface point toward `dir` for at most `tmax` metres. Returns 1.0
+// when nothing blocks (lit) and 0.0 on any committed intersection
+// (shadowed). The kTerminateOnFirstHit ray flag lets us early-out as
+// soon as the first opaque triangle is hit — no need to find the
+// closest one. Ray origin is biased by +1mm along the surface
+// normal to dodge self-intersection acne.
+float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(
+      rq, cd_tlas,
+      gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+      0xFFu,
+      origin + N * 0.001,
+      0.0, dir, tmax);
+  while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
+  return (rayQueryGetIntersectionTypeEXT(rq, true) ==
+          gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
 }
 
 // 3×3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
@@ -432,7 +473,11 @@ void main() {
   float shade = sample_shadow(v_shadow_pos, N, Ld);
   lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun * shade);
 
-  // Point light — true per-fragment direction + attenuation.
+  // Point light — true per-fragment direction + attenuation, gated
+  // by an inline RT shadow ray against the scene TLAS (Faz 1.7).
+  // Skip the ray test when the surface is back-facing the light —
+  // saves the rayQuery cost on fragments that would be zeroed by
+  // NdotL anyway.
   if (pc.point_pos_range.w > 0.0) {
     vec3 to_p = pc.point_pos_range.xyz - v_world_pos;
     float d   = length(to_p);
@@ -440,7 +485,11 @@ void main() {
       vec3 Lp = to_p / d;
       float ndl_p = max(dot(N, Lp), 0.0);
       float atten = distance_atten(d, pc.point_pos_range.w);
-      lit += albedo * pc.point_color.rgb * (pc.point_color.w * ndl_p * atten);
+      float vis   = (ndl_p > 0.0)
+                  ? ray_visibility(v_world_pos, N, Lp, d - 0.01)
+                  : 0.0;
+      lit += albedo * pc.point_color.rgb *
+             (pc.point_color.w * ndl_p * atten * vis);
     }
   }
 
@@ -745,12 +794,25 @@ int main()
                                                cd::rhi::ShaderStage::kFragment,
                                      .offset = 0,
                                      .size = static_cast<std::uint32_t>(sizeof(PrimPush)) } };
-    // Faz 1.6 CSM — two descriptor bindings on the prim pipeline:
+    // Faz 1.6 CSM + Faz 1.7 inline RT — three descriptor bindings on
+    // the prim pipeline:
     //   0: UBO  with the sun's light_vp matrix (vertex + fragment).
     //   1: sampler2D over the shadow depth map (fragment only).
-    // These are populated each frame from a single per-pipeline
-    // MaterialInstance (`prim_inst`) created right after the material.
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 2> kPrimDescBindings {
+    //   2: scene TLAS (acceleration structure) for ray queries
+    //      against the punctual / spot / area lights' shadow tests.
+    // Faz 1.7 requires ray_query device support — gated below before
+    // we attempt prim_material creation. Without it the shader's
+    // `#extension GL_EXT_ray_query : require` would fail to compile.
+    if (!device.features().ray_query)
+    {
+        std::fprintf(stderr,
+            "hello_engine: device lacks VK_KHR_ray_query; "
+            "Faz 1.7 inline RT shadows require it. "
+            "Re-run on RT-capable hardware or git-checkout f04b588 "
+            "(pre-1.7 CSM-only ship).\n");
+        return 9;
+    }
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 3> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -758,6 +820,10 @@ int main()
                                                          cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 1,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 2,
+                                              .type    = cd::rhi::DescriptorType::kAccelerationStructure,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc prim_md {};
@@ -775,7 +841,13 @@ int main()
     prim_md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
     prim_md.name = "hello_engine/prim";
     auto prim_r = cd::material::Material::create(device, compiler.get(), prim_md);
-    if (!prim_r.has_value()) return 9;
+    if (!prim_r.has_value())
+    {
+        std::fprintf(stderr, "hello_engine: prim_material create failed: %.*s\n",
+            static_cast<int>(prim_r.error().message.size()),
+            prim_r.error().message.data());
+        return 9;
+    }
     auto& prim_material = *prim_r;
 
     // Shadow material (Faz 1.6 CSM) — depth-only pipeline (no color
@@ -890,6 +962,73 @@ int main()
             default:                       return cube_mesh;
         }
     };
+
+    // ---- Faz 1.7 — per-mesh-kind BLAS ----
+    // One BLAS per shape (cube / sphere / cone / cylinder / torus +
+    // floor quad). Geometry is static, so we build these once at
+    // boot and keep them for the lifetime of the program.
+    auto build_blas = [&](const GpuMesh& m,
+                          std::string_view name) -> cd::rhi::AccelStructureHandle {
+        cd::rhi::AccelTriangleGeometry tri {};
+        tri.vertex_buffer = m.vb;
+        tri.vertex_offset = 0;
+        tri.vertex_count  = m.vertex_count;
+        tri.vertex_stride = sizeof(cd::asset::PrimitiveVertex);
+        tri.index_buffer  = m.ib;
+        tri.index_offset  = 0;
+        tri.index_count   = m.index_count;
+        tri.index_type    = cd::rhi::IndexType::kUInt16;
+        std::array<cd::rhi::AccelTriangleGeometry, 1> tris { tri };
+        cd::rhi::AccelStructureDesc bd {};
+        bd.kind        = cd::rhi::AccelStructureKind::kBottomLevel;
+        bd.triangles   = std::span<const cd::rhi::AccelTriangleGeometry>(tris);
+        bd.debug_name  = name;
+        auto r = device.create_acceleration_structure(bd);
+        return r.has_value() ? *r : cd::rhi::AccelStructureHandle {};
+    };
+    cd::rhi::AccelStructureHandle blas_cube   = build_blas(cube_mesh,   "blas_cube");
+    cd::rhi::AccelStructureHandle blas_sphere = build_blas(sphere_mesh, "blas_sphere");
+    cd::rhi::AccelStructureHandle blas_cone   = build_blas(cone_mesh,   "blas_cone");
+    cd::rhi::AccelStructureHandle blas_cyl    = build_blas(cyl_mesh,    "blas_cyl");
+    cd::rhi::AccelStructureHandle blas_torus  = build_blas(torus_mesh,  "blas_torus");
+    cd::rhi::AccelStructureHandle blas_floor  = build_blas(floor_mesh,  "blas_floor");
+    auto blas_for_kind = [&](PrimitiveKind k) -> cd::rhi::AccelStructureHandle {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return blas_sphere;
+            case PrimitiveKind::kCone:     return blas_cone;
+            case PrimitiveKind::kCylinder: return blas_cyl;
+            case PrimitiveKind::kTorus:    return blas_torus;
+            default:                       return blas_cube;
+        }
+    };
+    // Build all BLAS on a one-shot cmd buffer. The renderer's
+    // per-frame cmd buffers don't exist until begin_frame, so we
+    // borrow a transient one for this boot operation.
+    {
+        auto bcmd_ptr = device.create_command_buffer();
+        if (bcmd_ptr == nullptr) return 16;
+        auto& bcmd = *bcmd_ptr;
+        bcmd.begin();
+        for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl,
+                        blas_torus, blas_floor })
+            if (h.is_valid()) bcmd.build_acceleration_structure(h);
+        bcmd.end();
+        cd::rhi::SubmitDesc bsd {};
+        std::array<cd::rhi::ICommandBuffer*, 1> bcbs { &bcmd };
+        bsd.command_buffers = bcbs;
+        (void)device.submit(bsd);
+        device.wait_idle();
+    }
+
+    // Per-frame TLAS scratch. `current_tlas` is what the descriptor
+    // points at this frame; `tlas_destroy_queue` holds handles whose
+    // destroy must wait until the renderer has cycled past the
+    // submission that referenced them (frames_in_flight=2 → wait 3
+    // frames as a defensive margin).
+    cd::rhi::AccelStructureHandle current_tlas {};
+    struct DeferredTlas { cd::rhi::AccelStructureHandle h; std::uint32_t destroy_at_frame; };
+    std::deque<DeferredTlas> tlas_destroy_queue;
 
     // ---- World / Scene / EditHistory ----
     cd::ecs::World      world;
@@ -1865,6 +2004,84 @@ int main()
         }
         auto& frame = *frame_r;
         auto& cmd = *frame.command_buffer;
+
+        // ---- Faz 1.7 — per-frame TLAS rebuild ----
+        // 1) tick deferred destroy queue (TLAS handles older than 3
+        //    frames are guaranteed past the in-flight window),
+        // 2) collect instances (ECS entities + sphere grid + floor),
+        // 3) create + build the TLAS on this frame's cmd buffer,
+        // 4) defer destroy of the previous frame's TLAS,
+        // 5) update the prim_inst descriptor binding 2 to the new TLAS.
+        while (!tlas_destroy_queue.empty() &&
+               tlas_destroy_queue.front().destroy_at_frame <= frame_idx)
+        {
+            device.destroy_acceleration_structure(tlas_destroy_queue.front().h);
+            tlas_destroy_queue.pop_front();
+        }
+        {
+            std::vector<cd::rhi::AccelInstance> instances;
+            instances.reserve(entities.size() + 25 + 1);
+            auto push_inst = [&](cd::rhi::AccelStructureHandle blas,
+                                 const cd::math::Mat4f& m)
+            {
+                if (!blas.is_valid()) return;
+                cd::rhi::AccelInstance inst {};
+                // 3×4 row-major transform from column-major Mat4f.
+                for (std::size_t r = 0; r < 3; ++r)
+                {
+                    inst.transform[r*4 + 0] = m[0][r];
+                    inst.transform[r*4 + 1] = m[1][r];
+                    inst.transform[r*4 + 2] = m[2][r];
+                    inst.transform[r*4 + 3] = m[3][r];
+                }
+                inst.blas = blas;
+                inst.mask = 0xFFu;
+                instances.push_back(inst);
+            };
+            for (const auto& ent : entities)
+            {
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) continue;
+                push_inst(blas_for_kind(ent.kind), cd::math::to_mat4(lt->value));
+            }
+            constexpr int kRtGS = 5;
+            constexpr float kRtSp = 1.2F;
+            for (int row = 0; row < kRtGS; ++row)
+                for (int col = 0; col < kRtGS; ++col)
+                {
+                    const float x = (static_cast<float>(col) - 2.0F) * kRtSp;
+                    const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
+                    const float z = -4.5F;
+                    cd::math::Mat4f m = cd::math::Mat4f::identity();
+                    m[3][0] = x; m[3][1] = y; m[3][2] = z;
+                    push_inst(blas_sphere, m);
+                }
+            // Floor: identity scale, y = kFloorY (matches the floor draw).
+            {
+                cd::math::Mat4f fm = cd::math::Mat4f::identity();
+                fm[3][1] = -0.55F;
+                push_inst(blas_floor, fm);
+            }
+            cd::rhi::AccelStructureDesc tld {};
+            tld.kind       = cd::rhi::AccelStructureKind::kTopLevel;
+            tld.instances  = std::span<const cd::rhi::AccelInstance>(instances);
+            tld.debug_name = "tlas_frame";
+            auto new_r = device.create_acceleration_structure(tld);
+            if (new_r.has_value())
+            {
+                cmd.build_acceleration_structure(*new_r);
+                if (current_tlas.is_valid())
+                    tlas_destroy_queue.push_back({ current_tlas, frame_idx + 3 });
+                current_tlas = *new_r;
+                std::array<cd::rhi::DescriptorWrite, 1> tlas_writes {
+                    cd::rhi::DescriptorWrite {
+                        .binding = 2,
+                        .array_element = 0,
+                        .type  = cd::rhi::DescriptorType::kAccelerationStructure,
+                        .accel = current_tlas } };
+                (void)prim_inst.update(tlas_writes);
+            }
+        }
 
         if (!depth_initialised_on_gpu)
         {
@@ -3555,6 +3772,17 @@ int main()
     shadow_target.destroy(device);
     device.destroy_sampler(shadow_sampler);
     device.destroy_buffer(shadow_ubo);
+    // Faz 1.7 RT resources — wait_idle so any in-flight cmd buffers
+    // that referenced these structures are guaranteed done, then
+    // tear down the TLAS queue + every BLAS.
+    device.wait_idle();
+    if (current_tlas.is_valid()) device.destroy_acceleration_structure(current_tlas);
+    while (!tlas_destroy_queue.empty()) {
+        device.destroy_acceleration_structure(tlas_destroy_queue.front().h);
+        tlas_destroy_queue.pop_front();
+    }
+    for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl, blas_torus, blas_floor })
+        if (h.is_valid()) device.destroy_acceleration_structure(h);
     std::printf("hello_engine: clean exit (%u frames).\n", frame_idx);
     return 0;
 }
