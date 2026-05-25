@@ -1539,8 +1539,36 @@ int main()
             if (e.kind == cd::platform::OSEventKind::kKeyDown &&
                 e.key == cd::platform::KeyCode::kEscape)
             {
-                if (palette_visible) { palette_visible = false; palette_query.clear(); }
-                else                  window.request_close();
+                // ESC priority chain (lessons-learned §P3):
+                //   1) active gizmo drag → cancel + revert
+                //   2) palette visible    → close palette
+                //   3) selection active   → clear selection
+                //   4) otherwise          → quit
+                if (gizmo.is_dragging())
+                {
+                    // end_drag returns the accumulated delta we discard
+                    // (cancel), so the entity / light is implicitly
+                    // reverted to the snapshot we kept in the drag-anchor
+                    // local. Anchor restore happens in the gizmo overlay
+                    // block below; here we just kill the drag.
+                    (void)gizmo.end_drag();
+                    log_push("[esc] gizmo drag cancelled");
+                }
+                else if (palette_visible)
+                {
+                    palette_visible = false;
+                    palette_query.clear();
+                    log_push("[esc] palette closed");
+                }
+                else if (selected >= 0)
+                {
+                    selected = -1;
+                    log_push("[esc] selection cleared");
+                }
+                else
+                {
+                    window.request_close();
+                }
             }
             else if (e.kind == cd::platform::OSEventKind::kResize)
             {
