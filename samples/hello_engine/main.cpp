@@ -297,6 +297,7 @@ layout(push_constant) uniform PC {
   vec4 sun_color;        // xyz=color, w=ambient
   vec4 point_pos_range;  // xyz=world position, w=range (0 = no point light)
   vec4 point_color;      // xyz=color, w=intensity (lumens/4π)
+  vec4 spot_dir_cos;     // xyz=spot forward, w=cos(outer); w<=0 = point
 } pc;
 // Faz 1.6 CSM — light-space view-projection for shadow sampling.
 // Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
@@ -473,11 +474,12 @@ void main() {
   float shade = sample_shadow(v_shadow_pos, N, Ld);
   lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun * shade);
 
-  // Point light — true per-fragment direction + attenuation, gated
-  // by an inline RT shadow ray against the scene TLAS (Faz 1.7).
-  // Skip the ray test when the surface is back-facing the light —
-  // saves the rayQuery cost on fragments that would be zeroed by
-  // NdotL anyway.
+  // Point / spot light — per-fragment direction + attenuation,
+  // gated by an inline RT shadow ray (Faz 1.7). When spot_dir_cos.w
+  // > 0 the cone falloff multiplies the contribution; otherwise
+  // (point light) the cone factor is 1.0. Skip the ray test when
+  // the surface is back-facing the light — saves the rayQuery cost
+  // on fragments that would be zeroed by NdotL anyway.
   if (pc.point_pos_range.w > 0.0) {
     vec3 to_p = pc.point_pos_range.xyz - v_world_pos;
     float d   = length(to_p);
@@ -485,11 +487,25 @@ void main() {
       vec3 Lp = to_p / d;
       float ndl_p = max(dot(N, Lp), 0.0);
       float atten = distance_atten(d, pc.point_pos_range.w);
-      float vis   = (ndl_p > 0.0)
-                  ? ray_visibility(v_world_pos, N, Lp, d - 0.01)
-                  : 0.0;
+      // Spot cone falloff (Frostbite-style smooth step). spot_dir.w
+      // holds cos(outer); cos(inner) is auto-derived as outer+0.05
+      // so the penumbra is a few degrees wide without extra push
+      // bytes. spot_dir.w <= 0 disables the cone (acts as point).
+      // Lp points from fragment TO light, so the angle between the
+      // beam axis and the light-to-frag direction is dot(-Lp, axis).
+      float cone = 1.0;
+      if (pc.spot_dir_cos.w > 0.0) {
+        vec3  spot_axis = normalize(pc.spot_dir_cos.xyz);
+        float cos_b     = dot(-Lp, spot_axis);
+        float cos_out   = pc.spot_dir_cos.w;
+        float cos_in    = clamp(cos_out + 0.05, cos_out, 0.9999);
+        cone            = smoothstep(cos_out, cos_in, cos_b);
+      }
+      float vis = (ndl_p > 0.0 && cone > 0.0)
+                ? ray_visibility(v_world_pos, N, Lp, d - 0.01)
+                : 0.0;
       lit += albedo * pc.point_color.rgb *
-             (pc.point_color.w * ndl_p * atten * vis);
+             (pc.point_color.w * ndl_p * atten * vis * cone);
     }
   }
 
@@ -541,9 +557,15 @@ struct PrimPush
     float           sun_color[4];
     float           point_pos_range[4];
     float           point_color[4];
+    // Spot-cone — xyz = forward direction (normalised), w = cos(outer
+    // half-angle). w <= 0.0 means "this is a point light, no cone";
+    // the FS uses w as the sentinel to skip the cone falloff math.
+    // Inner half-angle is auto-derived as cos(outer) + 0.05 so the
+    // penumbra is a few degrees wide without extra push bytes.
+    float           spot_dir_cos[4];
 };
 
-static_assert(sizeof(PrimPush) == 208, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 224, "PrimPush layout drift");
 
 // ----------------------------------------------------------------------------
 // Planar-shadow projection matrix.
@@ -1543,14 +1565,15 @@ int main()
                 //   1) active gizmo drag → cancel + revert
                 //   2) palette visible    → close palette
                 //   3) selection active   → clear selection
-                //   4) otherwise          → quit
+                //   4) otherwise          → no-op (NEVER quit)
+                //
+                // User feedback: ESC kept closing the window even with
+                // the priority chain, because empty editor state fell
+                // through to window.request_close(). Production editors
+                // (Unity, Blender, UE) never quit on ESC — quit is a
+                // menu / close-button action only. Match that.
                 if (gizmo.is_dragging())
                 {
-                    // end_drag returns the accumulated delta we discard
-                    // (cancel), so the entity / light is implicitly
-                    // reverted to the snapshot we kept in the drag-anchor
-                    // local. Anchor restore happens in the gizmo overlay
-                    // block below; here we just kill the drag.
                     (void)gizmo.end_drag();
                     log_push("[esc] gizmo drag cancelled");
                 }
@@ -1565,10 +1588,7 @@ int main()
                     selected = -1;
                     log_push("[esc] selection cleared");
                 }
-                else
-                {
-                    window.request_close();
-                }
+                // else: do nothing — ESC must never close the window.
             }
             else if (e.kind == cd::platform::OSEventKind::kResize)
             {
@@ -2475,6 +2495,11 @@ int main()
         cd::math::Vec3f point_col { 0,0,0 };
         float           point_range = 0.0F;
         float           point_str   = 0.0F;
+        // Spot cone — xyz=direction, w=cos(outer half-angle); w<=0
+        // means "point light, no cone". Read from the same lights[]
+        // pass and pushed through PrimPush::spot_dir_cos.
+        cd::math::Vec3f spot_dir { 0.0F, -1.0F, 0.0F };
+        float           spot_cos_outer = 0.0F;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
@@ -2487,6 +2512,21 @@ int main()
             // says I = Φ / (4π); divide further by ~5 so a 1200 lm bulb
             // at 5m matches eye expectation.
             point_str   = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
+            if (lrow.light.type == cd::light::LightType::kSpot)
+            {
+                spot_dir       = lrow.light.direction;
+                // cd::light::Light stores the precomputed cosines as
+                // cos_outer_cone / cos_inner_cone (factories set them).
+                spot_cos_outer = lrow.light.cos_outer_cone;
+                // Boost spot intensity so the beam is visible — spots
+                // concentrate flux into a small solid angle so the 4π
+                // divide above under-reads relative to the eye.
+                point_str *= 6.0F;
+            }
+            else
+            {
+                spot_cos_outer = 0.0F;  // sentinel: not a spot
+            }
             break;
         }
 
@@ -2522,6 +2562,8 @@ int main()
             fp.point_pos_range[2] = point_pos.z; fp.point_pos_range[3] = point_range;
             fp.point_color[0] = point_col.x; fp.point_color[1] = point_col.y;
             fp.point_color[2] = point_col.z; fp.point_color[3] = point_str;
+            fp.spot_dir_cos[0] = spot_dir.x; fp.spot_dir_cos[1] = spot_dir.y;
+            fp.spot_dir_cos[2] = spot_dir.z; fp.spot_dir_cos[3] = spot_cos_outer;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -2551,6 +2593,8 @@ int main()
             pp.point_pos_range[2] = point_pos.z; pp.point_pos_range[3] = point_range;
             pp.point_color[0] = point_col.x; pp.point_color[1] = point_col.y;
             pp.point_color[2] = point_col.z; pp.point_color[3] = point_str;
+            pp.spot_dir_cos[0] = spot_dir.x; pp.spot_dir_cos[1] = spot_dir.y;
+            pp.spot_dir_cos[2] = spot_dir.z; pp.spot_dir_cos[3] = spot_cos_outer;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
