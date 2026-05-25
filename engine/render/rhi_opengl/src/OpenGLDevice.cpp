@@ -715,26 +715,68 @@ public:
     {
         return 0;
     }
+    // Phase 167 — OpenGL swapchain. GL has no first-class swapchain
+    // object — the OS's GDI back buffer is implicit. We model it as
+    // a single-image handle that the caller can acquire/present, with
+    // present calling SwapBuffers on the bound HDC.
     [[nodiscard]] cd::core::Result<std::uint32_t>
-    acquire_next_image(cd::rhi::SwapchainHandle, cd::rhi::SemaphoreHandle, cd::rhi::FenceHandle, std::uint64_t) override
+    acquire_next_image(cd::rhi::SwapchainHandle h,
+                       cd::rhi::SemaphoreHandle,
+                       cd::rhi::FenceHandle,
+                       std::uint64_t) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented, "OpenGL boot-only"));
+        if (swapchains_.find(h.index()) == swapchains_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "acquire_next_image: unknown swapchain"));
+        }
+        return 0u;  // single-image swapchain
     }
     [[nodiscard]] cd::core::Result<void>
-    present(cd::rhi::SwapchainHandle, std::uint32_t, std::span<const cd::rhi::SemaphoreHandle>) override
+    present(cd::rhi::SwapchainHandle h, std::uint32_t,
+            std::span<const cd::rhi::SemaphoreHandle>) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented, "OpenGL boot-only"));
+        auto it = swapchains_.find(h.index());
+        if (it == swapchains_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "present: unknown swapchain"));
+        }
+        if (it->second.hdc != nullptr)
+            ::SwapBuffers(static_cast<HDC>(it->second.hdc));
+        return {};
     }
     [[nodiscard]] cd::rhi::TextureViewHandle swapchain_image_view(cd::rhi::SwapchainHandle, std::uint32_t) const override { return {}; }
-    [[nodiscard]] std::uint32_t swapchain_image_count(cd::rhi::SwapchainHandle) const override { return 0; }
-    [[nodiscard]] cd::rhi::TextureHandle swapchain_image(cd::rhi::SwapchainHandle, std::uint32_t) const override { return {}; }
-    [[nodiscard]] cd::core::Result<void>
-    upload_buffer(cd::rhi::BufferHandle, std::uint64_t, std::span<const std::byte>) override
+    [[nodiscard]] std::uint32_t swapchain_image_count(cd::rhi::SwapchainHandle h) const override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented, "OpenGL boot-only"));
+        return swapchains_.find(h.index()) != swapchains_.end() ? 1u : 0u;
+    }
+    [[nodiscard]] cd::rhi::TextureHandle swapchain_image(cd::rhi::SwapchainHandle, std::uint32_t) const override { return {}; }
+    // Phase 167 — host → device upload via glNamedBufferSubData (DSA).
+    [[nodiscard]] cd::core::Result<void>
+    upload_buffer(cd::rhi::BufferHandle h, std::uint64_t offset,
+                  std::span<const std::byte> data) override
+    {
+        auto it = buffers_.find(h.index());
+        if (it == buffers_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "upload_buffer: unknown buffer"));
+        }
+        if (gl_.glNamedBufferSubData == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "upload_buffer: DSA entry point not exported"));
+        }
+        gl_.glNamedBufferSubData(it->second.gl_id,
+                                 static_cast<GLsizeiptr>(offset),
+                                 static_cast<GLsizeiptr>(data.size_bytes()),
+                                 data.data());
+        return {};
     }
     [[nodiscard]] cd::core::Result<void>
     download_buffer(cd::rhi::BufferHandle, std::uint64_t, std::span<std::byte>) override
@@ -743,8 +785,67 @@ public:
             cd::rhi::rhi_errors::Code::kNotImplemented, "OpenGL boot-only"));
     }
     [[nodiscard]] cd::core::Result<cd::rhi::SwapchainHandle>
-    create_swapchain(const cd::rhi::SwapchainDesc&) override { CD_GL_NOT_IMPL_RESULT(SwapchainHandle); }
-    void destroy_swapchain(cd::rhi::SwapchainHandle) override {}
+    create_swapchain(const cd::rhi::SwapchainDesc& desc) override
+    {
+        // Two paths:
+        //   (a) Caller passed a real HWND/HINSTANCE → use that window's
+        //       HDC for SwapBuffers. The dummy GL context binds to the
+        //       new HDC (wglMakeCurrent) for subsequent draws.
+        //   (b) Caller passed nullptr → reuse the dummy window the
+        //       device initialised with. Useful for headless tests that
+        //       still want a present cycle.
+        SwapchainRec rec;
+        if (desc.window_handle != nullptr)
+        {
+            HWND hwnd = static_cast<HWND>(desc.window_handle);
+            HDC hdc = GetDC(hwnd);
+            if (hdc == nullptr)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "create_swapchain: GetDC failed"));
+            }
+            PIXELFORMATDESCRIPTOR pfd {};
+            pfd.nSize = sizeof(pfd);
+            pfd.nVersion = 1;
+            pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+            pfd.iPixelType = PFD_TYPE_RGBA;
+            pfd.cColorBits = 32;
+            pfd.cDepthBits = 24;
+            pfd.cStencilBits = 8;
+            const int pf = ChoosePixelFormat(hdc, &pfd);
+            if (pf == 0 || !SetPixelFormat(hdc, pf, &pfd))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "create_swapchain: SetPixelFormat failed"));
+            }
+            // Re-bind the GL context to the new HDC.
+            if (hglrc_ != nullptr) wglMakeCurrent(hdc, hglrc_);
+            rec.hwnd = hwnd;
+            rec.hdc = hdc;
+            rec.owns_dc = true;
+        }
+        else
+        {
+            rec.hwnd = hwnd_;
+            rec.hdc  = hdc_;
+            rec.owns_dc = false;
+        }
+        rec.width  = desc.extent.width;
+        rec.height = desc.extent.height;
+        const auto id = next_id_++;
+        swapchains_.emplace(id, rec);
+        return cd::rhi::SwapchainHandle { id, 1u };
+    }
+    void destroy_swapchain(cd::rhi::SwapchainHandle h) override
+    {
+        auto it = swapchains_.find(h.index());
+        if (it == swapchains_.end()) return;
+        if (it->second.owns_dc && it->second.hwnd != nullptr && it->second.hdc != nullptr)
+            ReleaseDC(static_cast<HWND>(it->second.hwnd), static_cast<HDC>(it->second.hdc));
+        swapchains_.erase(it);
+    }
     [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer>
     create_command_buffer(cd::rhi::QueueType) override { return nullptr; }
     void submit(cd::rhi::ICommandBuffer&) override {}
@@ -786,6 +887,16 @@ private:
     std::unordered_map<std::uint32_t, GLuint>    shader_modules_;
     std::unordered_map<std::uint32_t, GLuint>    pipeline_layouts_;
     std::unordered_map<std::uint32_t, GLuint>    graphics_pipelines_;
+    // Phase 167 — swapchain.
+    struct SwapchainRec
+    {
+        void* hwnd { nullptr };  // HWND
+        void* hdc  { nullptr };  // HDC
+        std::uint32_t width  { 0 };
+        std::uint32_t height { 0 };
+        bool owns_dc { false };
+    };
+    std::unordered_map<std::uint32_t, SwapchainRec> swapchains_;
     std::uint32_t next_id_ { 1 };
 };
 
