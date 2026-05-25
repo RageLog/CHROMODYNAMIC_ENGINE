@@ -25,9 +25,11 @@
 
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace cd::rhi_opengl
 {
@@ -74,6 +76,15 @@ constexpr GLenum     kGL_Nearest                   = 0x2600;
 constexpr GLenum     kGL_Linear                    = 0x2601;
 constexpr GLenum     kGL_LinearMipmapLinear        = 0x2703;
 
+// Phase 173 — draw + state enums
+constexpr GLenum     kGL_COLOR_BUFFER_BIT          = 0x4000;
+constexpr GLenum     kGL_DEPTH_BUFFER_BIT          = 0x0100;
+constexpr GLenum     kGL_TRIANGLES                 = 0x0004;
+constexpr GLenum     kGL_ARRAY_BUFFER              = 0x8892;
+constexpr GLenum     kGL_ELEMENT_ARRAY_BUFFER      = 0x8893;
+constexpr GLenum     kGL_UNSIGNED_SHORT            = 0x1403;
+constexpr GLenum     kGL_UNSIGNED_INT              = 0x1405;
+
 // Phase 146-147 — shader / program enums
 constexpr GLenum     kGL_VertexShader              = 0x8B31;
 constexpr GLenum     kGL_FragmentShader            = 0x8B30;
@@ -98,6 +109,21 @@ using PFNGLTEXTURESTORAGE3DPROC   = void (*)(GLuint texture, GLsizei levels, GLe
 using PFNGLCREATESAMPLERSPROC     = void (*)(GLsizei n, GLuint* samplers);
 using PFNGLDELETESAMPLERSPROC     = void (*)(GLsizei n, const GLuint* samplers);
 using PFNGLSAMPLERPARAMETERIPROC  = void (*)(GLuint sampler, GLenum pname, int param);
+
+// Phase 173 — draw + state entry points.
+using PFNGLCLEARCOLORPROC          = void (*)(float, float, float, float);
+using PFNGLCLEARPROC               = void (*)(GLbitfield);
+using PFNGLVIEWPORTPROC            = void (*)(int, int, GLsizei, GLsizei);
+using PFNGLSCISSORPROC             = void (*)(int, int, GLsizei, GLsizei);
+using PFNGLDRAWARRAYSPROC          = void (*)(GLenum, int, GLsizei);
+using PFNGLDRAWELEMENTSPROC        = void (*)(GLenum, GLsizei, GLenum, const void*);
+using PFNGLBINDBUFFERPROC          = void (*)(GLenum, GLuint);
+using PFNGLBINDVERTEXARRAYPROC     = void (*)(GLuint);
+using PFNGLGENVERTEXARRAYSPROC     = void (*)(GLsizei, GLuint*);
+using PFNGLDELETEVERTEXARRAYSPROC  = void (*)(GLsizei, const GLuint*);
+using PFNGLUSEPROGRAMPROC          = void (*)(GLuint);
+using PFNGLENABLEPROC              = void (*)(GLenum);
+using PFNGLDISABLEPROC             = void (*)(GLenum);
 
 // Phase 146/147 — shader compile + program link entry points.
 using GLchar = char;
@@ -147,6 +173,21 @@ struct GLLoader
     PFNGLLINKPROGRAMPROC        glLinkProgram        { nullptr };
     PFNGLGETPROGRAMIVPROC       glGetProgramiv       { nullptr };
     PFNGLGETPROGRAMINFOLOGPROC  glGetProgramInfoLog  { nullptr };
+
+    // Phase 173 — draw + state.
+    PFNGLCLEARCOLORPROC         glClearColor         { nullptr };
+    PFNGLCLEARPROC              glClear              { nullptr };
+    PFNGLVIEWPORTPROC           glViewport           { nullptr };
+    PFNGLSCISSORPROC            glScissor            { nullptr };
+    PFNGLDRAWARRAYSPROC         glDrawArrays         { nullptr };
+    PFNGLDRAWELEMENTSPROC       glDrawElements       { nullptr };
+    PFNGLBINDBUFFERPROC         glBindBufferGL       { nullptr };  // glBindBuffer clashes with internal naming
+    PFNGLBINDVERTEXARRAYPROC    glBindVertexArray    { nullptr };
+    PFNGLGENVERTEXARRAYSPROC    glGenVertexArrays    { nullptr };
+    PFNGLDELETEVERTEXARRAYSPROC glDeleteVertexArrays { nullptr };
+    PFNGLUSEPROGRAMPROC         glUseProgram         { nullptr };
+    PFNGLENABLEPROC             glEnable             { nullptr };
+    PFNGLDISABLEPROC            glDisable            { nullptr };
 
     [[nodiscard]] bool valid() const noexcept
     {
@@ -224,9 +265,158 @@ struct GLLoader
     L.glLinkProgram       = reinterpret_cast<PFNGLLINKPROGRAMPROC>(get("glLinkProgram"));
     L.glGetProgramiv      = reinterpret_cast<PFNGLGETPROGRAMIVPROC>(get("glGetProgramiv"));
     L.glGetProgramInfoLog = reinterpret_cast<PFNGLGETPROGRAMINFOLOGPROC>(get("glGetProgramInfoLog"));
+    // Phase 173 — draw + state.
+    L.glClearColor        = reinterpret_cast<PFNGLCLEARCOLORPROC>(get("glClearColor"));
+    L.glClear             = reinterpret_cast<PFNGLCLEARPROC>(get("glClear"));
+    L.glViewport          = reinterpret_cast<PFNGLVIEWPORTPROC>(get("glViewport"));
+    L.glScissor           = reinterpret_cast<PFNGLSCISSORPROC>(get("glScissor"));
+    L.glDrawArrays        = reinterpret_cast<PFNGLDRAWARRAYSPROC>(get("glDrawArrays"));
+    L.glDrawElements      = reinterpret_cast<PFNGLDRAWELEMENTSPROC>(get("glDrawElements"));
+    L.glBindBufferGL      = reinterpret_cast<PFNGLBINDBUFFERPROC>(get("glBindBuffer"));
+    L.glBindVertexArray   = reinterpret_cast<PFNGLBINDVERTEXARRAYPROC>(get("glBindVertexArray"));
+    L.glGenVertexArrays   = reinterpret_cast<PFNGLGENVERTEXARRAYSPROC>(get("glGenVertexArrays"));
+    L.glDeleteVertexArrays= reinterpret_cast<PFNGLDELETEVERTEXARRAYSPROC>(get("glDeleteVertexArrays"));
+    L.glUseProgram        = reinterpret_cast<PFNGLUSEPROGRAMPROC>(get("glUseProgram"));
+    L.glEnable            = reinterpret_cast<PFNGLENABLEPROC>(get("glEnable"));
+    L.glDisable           = reinterpret_cast<PFNGLDISABLEPROC>(get("glDisable"));
     return L;
 }
 
+// Forward declare so GLCommandBuffer can hold a back-pointer.
+class OpenGLDevice;
+
+// =============================================================================
+// Phase 173 — OpenGL ICommandBuffer (deferred-command record/replay).
+//
+// GL has implicit ordering on the bound context — every call executes
+// in order on the worker thread. We model the command-buffer surface
+// as a vector of std::function<void()> that submit() replays in order
+// after begin/end has been called.
+//
+// This isn't true command-buffer parallelism (GL can't record from
+// multiple threads), but it unifies the API with Vulkan/D3D12 so the
+// rest of the engine sees one shape.
+// =============================================================================
+class GLCommandBuffer final : public cd::rhi::ICommandBuffer
+{
+public:
+    GLCommandBuffer(OpenGLDevice* owner, const GLLoader* gl) noexcept
+        : owner_ { owner }, gl_ { gl } {}
+    ~GLCommandBuffer() override = default;
+    GLCommandBuffer(const GLCommandBuffer&) = delete;
+    GLCommandBuffer& operator=(const GLCommandBuffer&) = delete;
+    GLCommandBuffer(GLCommandBuffer&&) = delete;
+    GLCommandBuffer& operator=(GLCommandBuffer&&) = delete;
+
+    void begin() override { cmds_.clear(); recording_ = true; }
+    void end()   override { recording_ = false; }
+
+    void begin_render_pass(const cd::rhi::RenderPassBeginInfo& info) override
+    {
+        // Apply per-attachment LoadOp::kClear → glClearColor + glClear.
+        for (const auto& a : info.color_attachments)
+        {
+            if (a.load_op == cd::rhi::LoadOp::kClear)
+            {
+                const float r = a.clear_color.f32[0];
+                const float g = a.clear_color.f32[1];
+                const float b = a.clear_color.f32[2];
+                const float al = a.clear_color.f32[3];
+                cmds_.emplace_back([g_ = gl_, r, g, b, al]() {
+                    if (g_->glClearColor) g_->glClearColor(r, g, b, al);
+                    if (g_->glClear)      g_->glClear(kGL_COLOR_BUFFER_BIT);
+                });
+            }
+        }
+        if (info.depth_stencil != nullptr &&
+            info.depth_stencil->depth_load == cd::rhi::LoadOp::kClear)
+        {
+            cmds_.emplace_back([g_ = gl_]() {
+                if (g_->glClear) g_->glClear(kGL_DEPTH_BUFFER_BIT);
+            });
+        }
+    }
+    void end_render_pass() override {}
+
+    void bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override;  // defined below
+
+    void bind_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
+    void bind_descriptor_set(std::uint32_t, cd::rhi::DescriptorSetHandle) override {}
+
+    void bind_vertex_buffer(std::uint32_t, cd::rhi::BufferHandle buffer, std::uint64_t) override;
+    void bind_index_buffer(cd::rhi::BufferHandle buffer, std::uint64_t, cd::rhi::IndexType type) override;
+
+    void push_constants(cd::rhi::PipelineLayoutHandle, cd::rhi::ShaderStage,
+                        std::uint32_t, std::uint32_t, const void*) override {}
+
+    void set_viewport(const cd::rhi::Viewport& vp) override
+    {
+        const float x = vp.x, y = vp.y, w = vp.width, h = vp.height;
+        cmds_.emplace_back([g_ = gl_, x, y, w, h]() {
+            if (g_->glViewport)
+                g_->glViewport(static_cast<int>(x), static_cast<int>(y),
+                               static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        });
+    }
+    void set_scissor(const cd::rhi::Rect2D& r) override
+    {
+        const auto x = r.offset.x, y = r.offset.y;
+        const auto w = r.extent.width, h = r.extent.height;
+        cmds_.emplace_back([g_ = gl_, x, y, w, h]() {
+            if (g_->glScissor)
+                g_->glScissor(x, y, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        });
+    }
+
+    void draw(std::uint32_t vertex_count, std::uint32_t instance_count,
+              std::uint32_t first_vertex, std::uint32_t first_instance) override
+    {
+        (void)instance_count; (void)first_instance;  // instanced draw is v1.4
+        const auto fv = first_vertex, vc = vertex_count;
+        cmds_.emplace_back([g_ = gl_, fv, vc]() {
+            if (g_->glDrawArrays)
+                g_->glDrawArrays(kGL_TRIANGLES, static_cast<int>(fv), static_cast<GLsizei>(vc));
+        });
+    }
+    void draw_indexed(std::uint32_t index_count, std::uint32_t instance_count,
+                      std::uint32_t first_index, std::int32_t vertex_offset,
+                      std::uint32_t first_instance) override
+    {
+        (void)instance_count; (void)vertex_offset; (void)first_instance;
+        const auto fi = first_index;
+        const auto ic = index_count;
+        const auto t  = index_type_;
+        cmds_.emplace_back([g_ = gl_, fi, ic, t]() {
+            if (g_->glDrawElements)
+            {
+                const std::size_t stride = (t == cd::rhi::IndexType::kUInt16) ? 2 : 4;
+                g_->glDrawElements(kGL_TRIANGLES, static_cast<GLsizei>(ic),
+                                   t == cd::rhi::IndexType::kUInt16 ? kGL_UNSIGNED_SHORT : kGL_UNSIGNED_INT,
+                                   reinterpret_cast<const void*>(fi * stride));
+            }
+        });
+    }
+    void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void copy_buffer(cd::rhi::BufferHandle, cd::rhi::BufferHandle, std::span<const cd::rhi::BufferCopyRegion>) override {}
+    void copy_buffer_to_image(cd::rhi::BufferHandle, cd::rhi::TextureHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}
+    void copy_image_to_buffer(cd::rhi::TextureHandle, cd::rhi::BufferHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}
+    void barrier(std::span<const cd::rhi::BufferBarrier>, std::span<const cd::rhi::TextureBarrier>) override {}
+    void push_debug_group(std::string_view) override {}
+    void pop_debug_group() override {}
+
+    // Replay all recorded commands in order. Called from OpenGLDevice::submit.
+    void replay() noexcept
+    {
+        for (const auto& c : cmds_) c();
+    }
+
+private:
+    OpenGLDevice* owner_ { nullptr };
+    const GLLoader* gl_  { nullptr };
+    std::vector<std::function<void()>> cmds_;
+    cd::rhi::IndexType index_type_ { cd::rhi::IndexType::kUInt16 };
+    bool recording_ { false };
+};
 
 class OpenGLDevice final : public cd::rhi::IDevice
 {
@@ -847,13 +1037,37 @@ public:
         swapchains_.erase(it);
     }
     [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer>
-    create_command_buffer(cd::rhi::QueueType) override { return nullptr; }
-    void submit(cd::rhi::ICommandBuffer&) override {}
-    [[nodiscard]] cd::core::Result<void>
-    submit(const cd::rhi::SubmitDesc&) override
+    create_command_buffer(cd::rhi::QueueType) override
     {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented, "OpenGL boot-only"));
+        return std::make_unique<GLCommandBuffer>(this, &gl_);
+    }
+    void submit(cd::rhi::ICommandBuffer& cb) override
+    {
+        if (auto* gl_cb = dynamic_cast<GLCommandBuffer*>(&cb))
+            gl_cb->replay();
+    }
+    [[nodiscard]] cd::core::Result<void>
+    submit(const cd::rhi::SubmitDesc& sd) override
+    {
+        for (auto* cb : sd.command_buffers)
+        {
+            if (cb != nullptr)
+                if (auto* gl_cb = dynamic_cast<GLCommandBuffer*>(cb))
+                    gl_cb->replay();
+        }
+        return {};
+    }
+
+    // Accessors used by GLCommandBuffer for lookups during record.
+    [[nodiscard]] GLuint program_of(cd::rhi::GraphicsPipelineHandle h) const noexcept
+    {
+        auto it = graphics_pipelines_.find(h.index());
+        return it == graphics_pipelines_.end() ? 0u : it->second;
+    }
+    [[nodiscard]] GLuint buffer_id(cd::rhi::BufferHandle h) const noexcept
+    {
+        auto it = buffers_.find(h.index());
+        return it == buffers_.end() ? 0u : it->second.gl_id;
     }
 #undef CD_GL_NOT_IMPL_RESULT
 
@@ -899,6 +1113,39 @@ private:
     std::unordered_map<std::uint32_t, SwapchainRec> swapchains_;
     std::uint32_t next_id_ { 1 };
 };
+
+// ---- GLCommandBuffer out-of-class definitions (depend on OpenGLDevice) ----
+
+void GLCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h)
+{
+    const GLuint prog = owner_ ? owner_->program_of(h) : 0;
+    cmds_.emplace_back([g_ = gl_, prog]() {
+        if (g_->glUseProgram && prog != 0) g_->glUseProgram(prog);
+    });
+}
+
+void GLCommandBuffer::bind_vertex_buffer(std::uint32_t /*binding*/,
+                                         cd::rhi::BufferHandle buffer,
+                                         std::uint64_t /*offset*/)
+{
+    const GLuint id = owner_ ? owner_->buffer_id(buffer) : 0;
+    cmds_.emplace_back([g_ = gl_, id]() {
+        if (g_->glBindBufferGL && id != 0)
+            g_->glBindBufferGL(kGL_ARRAY_BUFFER, id);
+    });
+}
+
+void GLCommandBuffer::bind_index_buffer(cd::rhi::BufferHandle buffer,
+                                        std::uint64_t /*offset*/,
+                                        cd::rhi::IndexType type)
+{
+    index_type_ = type;
+    const GLuint id = owner_ ? owner_->buffer_id(buffer) : 0;
+    cmds_.emplace_back([g_ = gl_, id]() {
+        if (g_->glBindBufferGL && id != 0)
+            g_->glBindBufferGL(kGL_ELEMENT_ARRAY_BUFFER, id);
+    });
+}
 
 }  // namespace
 
