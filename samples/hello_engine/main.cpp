@@ -280,23 +280,27 @@ constexpr const char* kPrimVS = R"glsl(
 #version 450
 layout(push_constant) uniform PC {
   mat4 mvp;
-  vec4 tint;          // xyz = base color, w = unused
-  vec4 light_dir;     // xyz = directional light dir, w = intensity
-  vec4 light_color;   // xyz = directional light color (CCT-converted), w = ambient
+  mat4 model;            // world-space transform of this entity
+  vec4 tint;
+  vec4 sun_dir;          // xyz=directional dir, w=intensity
+  vec4 sun_color;        // xyz=color, w=ambient
+  vec4 point_pos_range;  // xyz=world position, w=range (0 = no point light)
+  vec4 point_color;      // xyz=color, w=intensity (lumens/4π)
 } pc;
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec3 in_color;
-layout(location = 0) out vec3 v_color;
+layout(location = 0) out vec3 v_world_pos;
+layout(location = 1) out vec3 v_world_normal;
+layout(location = 2) out vec3 v_albedo;
 void main() {
-  vec3 albedo = in_color * pc.tint.rgb;
-  vec3 N = normalize(in_normal);
-  vec3 L = normalize(-pc.light_dir.xyz);
-  float ndl = max(dot(N, L), 0.0);
-  vec3 lit = albedo * pc.light_color.rgb * (pc.light_dir.w * ndl);
-  vec3 ambient = albedo * pc.light_color.w;  // ambient term modulated by sky tint
-  v_color = lit + ambient;
+  v_albedo = in_color * pc.tint.rgb;
+  vec4 wp = pc.model * vec4(in_pos, 1.0);
+  v_world_pos = wp.xyz;
+  // Inverse-transpose-of-model would be more correct for non-uniform
+  // scale; for the sample we use model directly (scales are uniform).
+  v_world_normal = normalize((pc.model * vec4(in_normal, 0.0)).xyz);
   vec4 clip = pc.mvp * vec4(in_pos, 1.0);
   clip.y = -clip.y;
   gl_Position = clip;
@@ -305,11 +309,54 @@ void main() {
 
 constexpr const char* kPrimFS = R"glsl(
 #version 450
-layout(location = 0) in  vec3 v_color;
+layout(push_constant) uniform PC {
+  mat4 mvp;
+  mat4 model;
+  vec4 tint;
+  vec4 sun_dir;
+  vec4 sun_color;
+  vec4 point_pos_range;
+  vec4 point_color;
+} pc;
+layout(location = 0) in vec3 v_world_pos;
+layout(location = 1) in vec3 v_world_normal;
+layout(location = 2) in vec3 v_albedo;
 layout(location = 0) out vec4 out_color;
+
+// Frostbite windowed inverse-square attenuation.
+float distance_atten(float d, float range) {
+  if (range <= 0.0) return 0.0;
+  float ratio = d / range;
+  float w = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
+  return (w * w) / (d * d + 0.01);
+}
+
 void main() {
-  // ACES Narkowicz tonemap so high-intensity lights don't blow out.
-  vec3 c = v_color;
+  vec3 N = normalize(v_world_normal);
+  vec3 lit = vec3(0.0);
+
+  // Directional sun.
+  vec3 Ld = normalize(-pc.sun_dir.xyz);
+  float ndl_sun = max(dot(N, Ld), 0.0);
+  lit += v_albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun);
+
+  // Point light — true per-fragment direction + attenuation.
+  if (pc.point_pos_range.w > 0.0) {
+    vec3 to_p = pc.point_pos_range.xyz - v_world_pos;
+    float d   = length(to_p);
+    if (d > 1e-4) {
+      vec3 Lp = to_p / d;
+      float ndl_p = max(dot(N, Lp), 0.0);
+      float atten = distance_atten(d, pc.point_pos_range.w);
+      lit += v_albedo * pc.point_color.rgb * (pc.point_color.w * ndl_p * atten);
+    }
+  }
+
+  // Ambient term so unlit faces aren't pure black.
+  vec3 ambient = v_albedo * pc.sun_color.w;
+  vec3 c = lit + ambient;
+
+  // ACES Narkowicz tonemap + gamma.
   const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
   c = clamp((c * (a_ * c + b_)) / (c * (c_ * c + d_) + e_), vec3(0.0), vec3(1.0));
   c = pow(c, vec3(1.0/2.2));
@@ -320,12 +367,15 @@ void main() {
 struct PrimPush
 {
     cd::math::Mat4f mvp;
+    cd::math::Mat4f model;
     float           tint[4];
-    float           light_dir[4];
-    float           light_color[4];
+    float           sun_dir[4];
+    float           sun_color[4];
+    float           point_pos_range[4];
+    float           point_color[4];
 };
 
-static_assert(sizeof(PrimPush) == 112, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 208, "PrimPush layout drift");
 
 // ============================================================================
 // Depth target helper.
@@ -1704,27 +1754,38 @@ int main()
         counters.set("inside_pbr", fully_inside);
 
         // ---- ECS entity primitives row (front of the viewport) ----
-        // Phase B: drive prim shader's light from the first enabled
-        // directional light (same source as PBR sphere sweep below).
-        cd::math::Vec3f prim_light_dir { -0.4F, -0.7F, -0.6F };
-        cd::math::Vec3f prim_light_color { 1.0F, 1.0F, 1.0F };
-        float           prim_light_intensity = 0.9F;
-        float           prim_ambient = 0.18F;
+        // Per-fragment lighting now: sun + first enabled point light with
+        // distance attenuation. So rotating/moving an entity (or moving
+        // a light) updates its shading correctly.
+        cd::math::Vec3f sun_dir { -0.4F, -0.7F, -0.6F };
+        cd::math::Vec3f sun_col { 1.0F, 1.0F, 1.0F };
+        float           sun_str = 0.9F;
+        float           ambient_w = 0.18F;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
             if (lrow.light.type != cd::light::LightType::kDirectional) continue;
-            prim_light_dir       = lrow.light.direction;
-            prim_light_color     = lrow.light.color;
-            prim_light_intensity = std::min(2.5F, lrow.light.intensity / 80000.0F);
+            sun_dir = lrow.light.direction;
+            sun_col = lrow.light.color;
+            sun_str = std::min(2.5F, lrow.light.intensity / 80000.0F);
             break;
         }
-        // Boost ambient from any enabled point light (cheap proxy for indirect).
+        cd::math::Vec3f point_pos { 0,0,0 };
+        cd::math::Vec3f point_col { 0,0,0 };
+        float           point_range = 0.0F;
+        float           point_str   = 0.0F;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
-            if (lrow.light.type != cd::light::LightType::kPoint) continue;
-            prim_ambient = 0.18F + std::min(0.25F, lrow.light.intensity / 4000.0F);
+            if (lrow.light.type != cd::light::LightType::kPoint &&
+                lrow.light.type != cd::light::LightType::kSpot) continue;
+            point_pos   = lrow.light.position;
+            point_col   = lrow.light.color;
+            point_range = lrow.light.range;
+            // Map lumens → unit-ish intensity for the shader. Frostbite
+            // says I = Φ / (4π); divide further by ~5 so a 1200 lm bulb
+            // at 5m matches eye expectation.
+            point_str   = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
             break;
         }
 
@@ -1741,11 +1802,16 @@ int main()
             const auto mvp = vp * model;
             PrimPush pp {};
             pp.mvp = mvp;
+            pp.model = model;
             pp.tint[0] = ent.tint.x; pp.tint[1] = ent.tint.y; pp.tint[2] = ent.tint.z; pp.tint[3] = 1.0F;
-            pp.light_dir[0] = prim_light_dir.x; pp.light_dir[1] = prim_light_dir.y;
-            pp.light_dir[2] = prim_light_dir.z; pp.light_dir[3] = prim_light_intensity;
-            pp.light_color[0] = prim_light_color.x; pp.light_color[1] = prim_light_color.y;
-            pp.light_color[2] = prim_light_color.z; pp.light_color[3] = prim_ambient;
+            pp.sun_dir[0] = sun_dir.x; pp.sun_dir[1] = sun_dir.y;
+            pp.sun_dir[2] = sun_dir.z; pp.sun_dir[3] = sun_str;
+            pp.sun_color[0] = sun_col.x; pp.sun_color[1] = sun_col.y;
+            pp.sun_color[2] = sun_col.z; pp.sun_color[3] = ambient_w;
+            pp.point_pos_range[0] = point_pos.x; pp.point_pos_range[1] = point_pos.y;
+            pp.point_pos_range[2] = point_pos.z; pp.point_pos_range[3] = point_range;
+            pp.point_color[0] = point_col.x; pp.point_color[1] = point_col.y;
+            pp.point_color[2] = point_col.z; pp.point_color[3] = point_str;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
@@ -2236,22 +2302,56 @@ int main()
             const float vw = static_cast<float>(frame.extent.width);
             const float vh = static_cast<float>(frame.extent.height);
             auto* dl_g = ImGui::GetForegroundDrawList();
-            auto project_g = [&](const cd::math::Vec3f& p) -> ImVec2 {
+            // Homogeneous-coord clip helper. Returns world→clip then
+            // clip→screen-pixel with proper near-plane line clipping so
+            // segments that straddle the camera don't disappear or wrap
+            // across the screen. Skipping the whole line when EITHER
+            // endpoint is behind the camera was the previous bug — fix
+            // is to find the intersection with the near plane (clip.w =
+            // near_eps) and project the inside point + the intersection.
+            auto to_clip = [&](const cd::math::Vec3f& p) -> cd::math::Vec4f {
                 const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
                 cd::math::Vec4f c {};
                 for (std::size_t r = 0; r < 4; ++r)
                     c[r] = vp[0][r]*wp[0] + vp[1][r]*wp[1] + vp[2][r]*wp[2] + vp[3][r]*wp[3];
-                if (c[3] <= 0.05F) return ImVec2(-9999.0F, -9999.0F);
-                return ImVec2(
-                    (c[0] / c[3] * 0.5F + 0.5F) * vw,
-                    (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+                return c;
             };
-            constexpr int   kGridExtent = 20;
+            auto clip_to_screen = [&](const cd::math::Vec4f& c) -> ImVec2 {
+                const float inv_w = 1.0F / c[3];
+                return ImVec2(
+                    (c[0] * inv_w * 0.5F + 0.5F) * vw,
+                    (1.0F - (c[1] * inv_w * 0.5F + 0.5F)) * vh);
+            };
+            auto draw_world_line = [&](const cd::math::Vec3f& a,
+                                       const cd::math::Vec3f& b,
+                                       ImU32 col, float thickness)
+            {
+                constexpr float kNearEps = 0.01F;
+                auto ca = to_clip(a);
+                auto cb = to_clip(b);
+                const bool a_in = (ca[3] > kNearEps);
+                const bool b_in = (cb[3] > kNearEps);
+                if (!a_in && !b_in) return;  // both behind camera
+                if (!a_in)
+                {
+                    // Clip a side at near plane.
+                    const float t = (kNearEps - ca[3]) / (cb[3] - ca[3]);
+                    for (std::size_t k = 0; k < 4; ++k) ca[k] = ca[k] + (cb[k] - ca[k]) * t;
+                }
+                else if (!b_in)
+                {
+                    const float t = (kNearEps - cb[3]) / (ca[3] - cb[3]);
+                    for (std::size_t k = 0; k < 4; ++k) cb[k] = cb[k] + (ca[k] - cb[k]) * t;
+                }
+                dl_g->AddLine(clip_to_screen(ca), clip_to_screen(cb), col, thickness);
+            };
+
+            constexpr int   kGridExtent = 40;     // ±40 m → 81×81 cells
             constexpr float kCellSize   = 1.0F;
             const ImU32 minor_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.45F, 0.45F, 0.50F, 0.35F));
             const ImU32 major_col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.65F, 0.65F, 0.70F, 0.55F));
-            const ImU32 axis_x    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.95F, 0.30F, 0.25F, 0.80F));
-            const ImU32 axis_z    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.25F, 0.45F, 0.95F, 0.80F));
+            const ImU32 axis_x    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.95F, 0.30F, 0.25F, 0.85F));
+            const ImU32 axis_z    = ImGui::ColorConvertFloat4ToU32(ImVec4(0.25F, 0.45F, 0.95F, 0.85F));
             for (int i = -kGridExtent; i <= kGridExtent; ++i)
             {
                 const float v = static_cast<float>(i) * kCellSize;
@@ -2259,14 +2359,11 @@ int main()
                 const cd::math::Vec3f b { v, 0.0F, static_cast<float>( kGridExtent) * kCellSize };
                 const cd::math::Vec3f c { static_cast<float>(-kGridExtent) * kCellSize, 0.0F, v };
                 const cd::math::Vec3f d { static_cast<float>( kGridExtent) * kCellSize, 0.0F, v };
-                const auto pa = project_g(a), pb = project_g(b);
-                const auto pc = project_g(c), pd = project_g(d);
-                ImU32 col_v = (i == 0) ? axis_z : (i % 5 == 0 ? major_col : minor_col);
-                ImU32 col_h = (i == 0) ? axis_x : (i % 5 == 0 ? major_col : minor_col);
-                if (pa.x > -1000.0F && pb.x > -1000.0F)
-                    dl_g->AddLine(pa, pb, col_v, (i % 5 == 0) ? 1.5F : 1.0F);
-                if (pc.x > -1000.0F && pd.x > -1000.0F)
-                    dl_g->AddLine(pc, pd, col_h, (i % 5 == 0) ? 1.5F : 1.0F);
+                const ImU32 col_v = (i == 0) ? axis_z : (i % 5 == 0 ? major_col : minor_col);
+                const ImU32 col_h = (i == 0) ? axis_x : (i % 5 == 0 ? major_col : minor_col);
+                const float thick = (i % 5 == 0) ? 1.5F : 1.0F;
+                draw_world_line(a, b, col_v, thick);
+                draw_world_line(c, d, col_h, thick);
             }
         }
 
@@ -2452,19 +2549,48 @@ int main()
         // draw three colored axis arrows, do hover/click drag in
         // screen-space, map back into world delta along the active
         // axis, and push a TranslateCommand on release.
-        if (!gizmo_visible || selected_kind != SelKind::kEntity ||
-            selected < 0 || selected >= static_cast<int>(entities.size()))
+        // Gizmo target can be either an entity transform OR a light's
+        // position. The lambda below makes the same draw + drag code
+        // path applicable to both — point/spot/area lights drag their
+        // position; directional lights have no world position so they
+        // skip the gizmo.
+        auto gizmo_target_pos = [&]() -> cd::math::Vec3f* {
+            if (selected < 0) return nullptr;
+            if (selected_kind == SelKind::kEntity)
+            {
+                if (selected >= static_cast<int>(entities.size())) return nullptr;
+                if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
+                    return &lt->value.position;
+                return nullptr;
+            }
+            if (selected_kind == SelKind::kLight)
+            {
+                if (selected >= static_cast<int>(lights.size())) return nullptr;
+                auto& L = lights[static_cast<std::size_t>(selected)].light;
+                if (L.type == cd::light::LightType::kDirectional) return nullptr;
+                return &L.position;
+            }
+            return nullptr;
+        };
+
+        if (!gizmo_visible || gizmo_target_pos() == nullptr)
         {
             gizmo_was_hovered = false;
         }
-        if (gizmo_visible && selected_kind == SelKind::kEntity &&
-            selected >= 0 && selected < static_cast<int>(entities.size()))
+        if (gizmo_visible && gizmo_target_pos() != nullptr)
         {
-            auto sel_ent = entities[static_cast<std::size_t>(selected)].handle;
-            auto* lt = scene.local(sel_ent);
-            if (lt != nullptr)
+            cd::math::Vec3f* target_pos = gizmo_target_pos();
+            // For entity targets, also need transform record for full
+            // rotate/scale ops; for light targets, only position drag.
+            const bool target_is_entity = (selected_kind == SelKind::kEntity);
+            cd::ecs::Entity sel_ent = target_is_entity
+                ? entities[static_cast<std::size_t>(selected)].handle
+                : cd::ecs::Entity {};
+            cd::scene::LocalTransform* lt = target_is_entity
+                ? scene.local(sel_ent) : nullptr;
+            if (target_pos != nullptr)
             {
-                gizmo.set_target(lt->value.position);
+                gizmo.set_target(*target_pos);
                 const float vw = static_cast<float>(frame.extent.width);
                 const float vh = static_cast<float>(frame.extent.height);
                 auto project = [&](const cd::math::Vec3f& p) -> ImVec2 {
@@ -2580,11 +2706,14 @@ int main()
                     if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
                     {
-                        gizmo.begin_drag(best, lt->value.position);
+                        gizmo.begin_drag(best, *target_pos);
                         gizmo_drag_anchor      = mp;
-                        gizmo_drag_world_start = lt->value.position;
-                        gizmo_drag_scale_start = lt->value.scale;
-                        gizmo_drag_rot_start   = lt->value.rotation;
+                        gizmo_drag_world_start = *target_pos;
+                        if (lt != nullptr)
+                        {
+                            gizmo_drag_scale_start = lt->value.scale;
+                            gizmo_drag_rot_start   = lt->value.rotation;
+                        }
                     }
                     if (gizmo.is_dragging())
                     {
@@ -2604,6 +2733,9 @@ int main()
                             const float dot_px = mouse_dx * nx + mouse_dy * ny;
                             const float world_per_px = kAxisLen / ax_len_px;
                             const float delta_world = dot_px * world_per_px;
+                            // Only translate works for both entities and
+                            // lights; rotate/scale need a transform record
+                            // and are gated on lt != nullptr.
                             switch (gizmo_mode)
                             {
                                 case GizmoMode::kTranslate:
@@ -2616,15 +2748,14 @@ int main()
                                         case cd::editor::GizmoAxis::kZ: cur.z += delta_world; break;
                                         default: break;
                                     }
-                                    lt->value.position = cur;
+                                    *target_pos = cur;
                                     gizmo.update_drag(cur);
                                     break;
                                 }
                                 case GizmoMode::kScale:
                                 {
+                                    if (lt == nullptr) break;
                                     cd::math::Vec3f cur = gizmo_drag_scale_start;
-                                    // Drag is multiplicative — each axis-length of
-                                    // screen movement doubles/halves the scale.
                                     const float factor = std::exp(delta_world * 0.5F);
                                     switch (gizmo.active_axis())
                                     {
@@ -2641,9 +2772,8 @@ int main()
                                 }
                                 case GizmoMode::kRotate:
                                 {
-                                    // delta_world here means angle in radians.
-                                    // Build an axis-angle quaternion, multiply by start.
-                                    const float ang = delta_world * 0.5F;  // dampen
+                                    if (lt == nullptr) break;
+                                    const float ang = delta_world * 0.5F;
                                     const float ca = std::cos(ang * 0.5F);
                                     const float sa = std::sin(ang * 0.5F);
                                     cd::math::Quatf q { 0,0,0,1 };
@@ -2654,7 +2784,6 @@ int main()
                                         case cd::editor::GizmoAxis::kZ: q = { 0, 0, sa, ca }; break;
                                         default: break;
                                     }
-                                    // new_rot = q * start (compose; world-space axis)
                                     const auto& a = q;
                                     const auto& b = gizmo_drag_rot_start;
                                     lt->value.rotation = cd::math::Quatf {
@@ -2670,29 +2799,36 @@ int main()
                         {
                             const auto delta = gizmo.end_drag();
                             (void)delta;
-                            // Only translate has an undoable command wired today;
-                            // rotate/scale apply directly + log.
                             switch (gizmo_mode)
                             {
                                 case GizmoMode::kTranslate:
                                 {
-                                    const float dx = lt->value.position.x - gizmo_drag_world_start.x;
-                                    const float dy = lt->value.position.y - gizmo_drag_world_start.y;
-                                    const float dz = lt->value.position.z - gizmo_drag_world_start.z;
+                                    const float dx = target_pos->x - gizmo_drag_world_start.x;
+                                    const float dy = target_pos->y - gizmo_drag_world_start.y;
+                                    const float dz = target_pos->z - gizmo_drag_world_start.z;
                                     if (std::abs(dx) + std::abs(dy) + std::abs(dz) > 1e-4F)
                                     {
-                                        lt->value.position = gizmo_drag_world_start;
-                                        history.push(std::make_unique<cd::editor::TranslateCommand>(
-                                            scene, sel_ent, cd::math::Vec3f { dx, dy, dz }));
-                                        log_push("[gizmo] translate (undoable)");
+                                        if (target_is_entity && lt != nullptr)
+                                        {
+                                            // Roll back live mutation + push undoable command.
+                                            *target_pos = gizmo_drag_world_start;
+                                            history.push(std::make_unique<cd::editor::TranslateCommand>(
+                                                scene, sel_ent, cd::math::Vec3f { dx, dy, dz }));
+                                            log_push("[gizmo] entity translate (undoable)");
+                                        }
+                                        else
+                                        {
+                                            // Light translate — apply directly (no history wire yet).
+                                            log_push("[gizmo] light translate applied");
+                                        }
                                     }
                                     break;
                                 }
                                 case GizmoMode::kScale:
-                                    log_push("[gizmo] scale applied");
+                                    if (lt != nullptr) log_push("[gizmo] scale applied");
                                     break;
                                 case GizmoMode::kRotate:
-                                    log_push("[gizmo] rotate applied");
+                                    if (lt != nullptr) log_push("[gizmo] rotate applied");
                                     break;
                             }
                         }
