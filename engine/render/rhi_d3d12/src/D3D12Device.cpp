@@ -1863,6 +1863,150 @@ public:
             "D3D12 SubmitDesc path lands with the PSO surface (post-13.C)"));
     }
 
+    // ---- Phase 142 step 2 — DXR acceleration-structure create/destroy -----
+    //
+    // Builds the result + scratch UAV buffers per
+    // GetRaytracingAccelerationStructurePrebuildInfo. The actual
+    // BuildRaytracingAccelerationStructure happens on a command list
+    // (step 3); this method only allocates the GPU memory.
+    [[nodiscard]] cd::core::Result<cd::rhi::AccelStructureHandle>
+    create_acceleration_structure(const cd::rhi::AccelStructureDesc& desc) override
+    {
+        if (!features_.ray_tracing || !device5_)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_acceleration_structure: adapter lacks DXR"));
+        }
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs {};
+        inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geos;
+        if (desc.kind == cd::rhi::AccelStructureKind::kBottomLevel)
+        {
+            if (desc.triangles.empty())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_acceleration_structure: BLAS must have >=1 triangle"));
+            }
+            geos.reserve(desc.triangles.size());
+            for (const auto& t : desc.triangles)
+            {
+                auto vb_it = buffers_.find(t.vertex_buffer.index());
+                if (vb_it == buffers_.end())
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kInvalidArgument,
+                        "create_acceleration_structure: unknown vertex buffer"));
+                }
+                D3D12_RAYTRACING_GEOMETRY_DESC g {};
+                g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+                g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+                g.Triangles.Transform3x4 = 0;
+                g.Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
+                g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+                g.Triangles.IndexCount = t.index_count;
+                g.Triangles.VertexCount = t.vertex_count;
+                g.Triangles.IndexBuffer = 0;
+                g.Triangles.VertexBuffer.StartAddress =
+                    vb_it->second.resource->GetGPUVirtualAddress() + t.vertex_offset;
+                g.Triangles.VertexBuffer.StrideInBytes = t.vertex_stride;
+                geos.push_back(g);
+            }
+            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            inputs.NumDescs = static_cast<UINT>(geos.size());
+            inputs.pGeometryDescs = geos.data();
+        }
+        else  // TLAS
+        {
+            if (desc.instances.empty())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_acceleration_structure: TLAS must have >=1 instance"));
+            }
+            for (const auto& inst : desc.instances)
+            {
+                if (!inst.blas.is_valid() || accels_.find(inst.blas.index()) == accels_.end())
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kInvalidArgument,
+                        "create_acceleration_structure: TLAS instance "
+                        "references invalid or unknown BLAS handle"));
+                }
+            }
+            inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+            inputs.NumDescs = static_cast<UINT>(desc.instances.size());
+            inputs.InstanceDescs = 0;  // placeholder — build step fills this
+        }
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info {};
+        device5_->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+        if (info.ResultDataMaxSizeInBytes == 0 || info.ScratchDataSizeInBytes == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "create_acceleration_structure: zero-size prebuild info"));
+        }
+
+        // Helper: allocate a UAV-state default-heap buffer at requested size.
+        auto alloc_uav = [this](UINT64 size, D3D12_RESOURCE_STATES initial_state)
+            -> cd::core::Result<ComPtr<ID3D12Resource>>
+        {
+            D3D12_HEAP_PROPERTIES hp {};
+            hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC rd {};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = size;
+            rd.Height = 1;
+            rd.DepthOrArraySize = 1;
+            rd.MipLevels = 1;
+            rd.Format = DXGI_FORMAT_UNKNOWN;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ComPtr<ID3D12Resource> res;
+            const HRESULT hr = device_->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &rd, initial_state, nullptr,
+                IID_PPV_ARGS(&res));
+            if (FAILED(hr))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "CreateCommittedResource (AS buffer) failed"));
+            }
+            return res;
+        };
+
+        auto result_r = alloc_uav(info.ResultDataMaxSizeInBytes,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+        if (!result_r.has_value()) return std::unexpected(result_r.error());
+        auto scratch_r = alloc_uav(info.ScratchDataSizeInBytes,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (!scratch_r.has_value()) return std::unexpected(scratch_r.error());
+
+        AccelRecord rec;
+        rec.kind = desc.kind;
+        rec.result = *result_r;
+        rec.scratch = *scratch_r;
+        rec.result_gva = rec.result->GetGPUVirtualAddress();
+        rec.scratch_gva = rec.scratch->GetGPUVirtualAddress();
+        rec.result_size = info.ResultDataMaxSizeInBytes;
+        rec.scratch_size = info.ScratchDataSizeInBytes;
+
+        const auto id = next_id_++;
+        accels_.emplace(id, std::move(rec));
+        return cd::rhi::AccelStructureHandle { id, 1u };
+    }
+
+    void destroy_acceleration_structure(cd::rhi::AccelStructureHandle h) override
+    {
+        accels_.erase(h.index());
+    }
+
 #undef CD_D3D12_NOT_IMPL_RESULT
 
     // ---- Resource records (Phase 13.C) ------------------------------------
@@ -2024,6 +2168,19 @@ private:
     std::unordered_map<std::uint32_t, PipelineLayoutRecord> pipeline_layouts_;
     std::unordered_map<std::uint32_t, GraphicsPipelineRecord> graphics_pipelines_;
     std::unordered_map<std::uint32_t, DescriptorSetRecord> descriptor_sets_;
+
+    // Phase 142 step 2 — DXR acceleration-structure record.
+    struct AccelRecord
+    {
+        cd::rhi::AccelStructureKind kind { cd::rhi::AccelStructureKind::kBottomLevel };
+        ComPtr<ID3D12Resource>      result;   // result-data buffer (also the AS object)
+        ComPtr<ID3D12Resource>      scratch;  // scratch-data buffer (build-time)
+        D3D12_GPU_VIRTUAL_ADDRESS   result_gva { 0 };
+        D3D12_GPU_VIRTUAL_ADDRESS   scratch_gva { 0 };
+        UINT64                      result_size { 0 };
+        UINT64                      scratch_size { 0 };
+    };
+    std::unordered_map<std::uint32_t, AccelRecord> accels_;
 
     // CPU-visible descriptor heap (CBV/SRV/UAV) — slot-bump allocator.
     ComPtr<ID3D12DescriptorHeap> cpu_heap_;
