@@ -9,6 +9,7 @@ cd_add_sample(hello_engine
     cd::ecs
     cd::editor
     cd::imgui_backend
+    cd::light
     cd::material
     cd::math
     cd::net

@@ -51,6 +51,10 @@
 #include <cd/editor/CommandPalette.hpp>
 #include <cd/editor/SelectionOutline.hpp>
 #include <cd/editor/EditHistory.hpp>
+#include <cd/light/Attenuation.hpp>
+#include <cd/light/ClusterGrid.hpp>
+#include <cd/light/ColorTemperature.hpp>
+#include <cd/light/Light.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/material/AnalyticalSkyMaterial.hpp>
@@ -700,6 +704,41 @@ int main()
     double                        net_t = 0.0;
     double                        next_net_tick = 0.0;
 
+    // ---- cd::light demo (Phase 171/172) ----
+    // 4 lights representing the four common light types. Each has a
+    // CCT slider that drives the color via Krystek's CCT→RGB; the
+    // panel previews the resulting linear RGB.
+    struct LightRow
+    {
+        std::string         name;
+        cd::light::Light    light;
+        bool                enabled { true };
+        float               kelvin  { 6500.0F };  // mirrors light.color_kelvin
+    };
+    std::vector<LightRow> lights;
+    lights.push_back({ "Sun (cool 6500K)",
+        cd::light::directional({ -0.3F, -0.9F, -0.2F }, { 1, 1, 1 }, 100000.0F),
+        true, 6500.0F });
+    lights.push_back({ "Tungsten point (2700K)",
+        cd::light::point({ 2.0F, 2.0F, -2.0F }, { 1, 1, 1 }, 1200.0F, 8.0F),
+        true, 2700.0F });
+    lights.push_back({ "Halogen spot (3200K)",
+        cd::light::spot({ -2.0F, 3.0F, 1.0F }, { 0.4F, -1.0F, -0.2F },
+                        { 1, 1, 1 }, 1500.0F, 10.0F, 0.4F, 0.7F),
+        true, 3200.0F });
+    lights.push_back({ "Cyan rect-area (8000K)",
+        cd::light::rect_area({ 0.0F, 4.0F, 3.0F }, { 0, 0, -1 }, { 1, 0, 0 },
+                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 800.0F),
+        true, 8000.0F });
+
+    // Per-frame ClusterGrid for stats. View-space Z range here is just
+    // for the panel's "lights per cluster" preview.
+    cd::light::ClusterGrid cluster_grid;
+    cd::light::ClusterGridDesc cluster_desc;
+    cluster_desc.tiles_x = 8; cluster_desc.tiles_y = 4; cluster_desc.slices_z = 8;
+    cluster_desc.near_z = 0.1F; cluster_desc.far_z = 100.0F;
+    cluster_grid.configure(cluster_desc);
+
     // ---- AsyncStreamer demo (Phase 150) ----
     // Drives a background worker thread that processes simulated load
     // requests with a sleep so the streamer panel can show pending →
@@ -1315,6 +1354,7 @@ int main()
                 ImGui::DockBuilderDockWindow("Audio",     dock_bot);
                 ImGui::DockBuilderDockWindow("Net Sim",   dock_bot);
                 ImGui::DockBuilderDockWindow("Streamer",  dock_bot);
+                ImGui::DockBuilderDockWindow("Lights",    dock_right);
                 ImGui::DockBuilderDockWindow("History",   dock_botR);
                 ImGui::DockBuilderFinish(dock_id);
                 dock_initialised = true;
@@ -1584,6 +1624,85 @@ int main()
                                                           ImVec4(0.7F,0.7F,0.7F,1);
             ImGui::TextColored(col, "id %llu  %s",
                                static_cast<unsigned long long>(it->value()), lbl);
+        }
+        ImGui::End();
+
+        // ---- Lights (Phase 171/172 — cd::light system) ----
+        ImGui::Begin("Lights");
+        ImGui::TextDisabled("cd::light — Frostbite + Filament + UE5 model");
+        ImGui::Separator();
+
+        // Per-frame: refresh CCT→RGB, then assign every enabled light
+        // into the cluster grid for the stats line.
+        cluster_grid.clear();
+        std::uint32_t enabled_count = 0;
+        std::uint32_t cluster_hits  = 0;
+        for (std::size_t i = 0; i < lights.size(); ++i)
+        {
+            auto& row = lights[i];
+            if (row.kelvin > 0.0F)
+                row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+            if (row.enabled)
+            {
+                ++enabled_count;
+                cluster_hits += cluster_grid.assign(static_cast<std::uint32_t>(i),
+                                                    row.light, row.light.position);
+            }
+        }
+
+        ImGui::Text("enabled %u / %zu     cluster assignments %u",
+                    enabled_count, lights.size(), cluster_hits);
+        ImGui::Text("grid: %ux%ux%u  near %.1f  far %.1f",
+                    cluster_desc.tiles_x, cluster_desc.tiles_y, cluster_desc.slices_z,
+                    static_cast<double>(cluster_desc.near_z),
+                    static_cast<double>(cluster_desc.far_z));
+        ImGui::Separator();
+
+        for (std::size_t i = 0; i < lights.size(); ++i)
+        {
+            auto& row = lights[i];
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::Checkbox(row.name.c_str(), &row.enabled);
+
+            // Color preview swatch — what the CCT actually produces.
+            const ImVec4 col {
+                row.light.color.x, row.light.color.y, row.light.color.z, 1.0F
+            };
+            ImGui::SameLine();
+            ImGui::ColorButton("##swatch", col,
+                               ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
+                               ImVec2(24, 14));
+
+            // Type badge.
+            const char* type_str =
+                row.light.type == cd::light::LightType::kDirectional ? "DIR " :
+                row.light.type == cd::light::LightType::kPoint       ? "POINT" :
+                row.light.type == cd::light::LightType::kSpot        ? "SPOT" :
+                row.light.type == cd::light::LightType::kRectArea    ? "RECT" :
+                                                                       "DISK";
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%s]", type_str);
+
+            // CCT + intensity sliders.
+            ImGui::SliderFloat("CCT (K)", &row.kelvin, 1000.0F, 15000.0F, "%.0f K");
+            const char* unit =
+                row.light.type == cd::light::LightType::kDirectional ? "lx" : "lm";
+            ImGui::SliderFloat("intensity", &row.light.intensity,
+                               0.0F, 200000.0F, ("%.0f " + std::string { unit }).c_str());
+            if (row.light.type == cd::light::LightType::kPoint ||
+                row.light.type == cd::light::LightType::kSpot)
+            {
+                ImGui::SliderFloat("range", &row.light.range, 0.5F, 50.0F, "%.1f m");
+
+                // Live attenuation preview at 1m, 5m, range/2.
+                const float a1 = cd::light::distance_attenuation(1.0F, row.light.range);
+                const float a5 = cd::light::distance_attenuation(5.0F, row.light.range);
+                const float ah = cd::light::distance_attenuation(row.light.range * 0.5F, row.light.range);
+                ImGui::TextDisabled("atten 1m=%.3f  5m=%.4f  r/2=%.3f",
+                    static_cast<double>(a1), static_cast<double>(a5), static_cast<double>(ah));
+            }
+            ImGui::PopID();
+            if (i + 1 < lights.size()) ImGui::Separator();
         }
         ImGui::End();
 
