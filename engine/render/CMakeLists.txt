@@ -26,6 +26,7 @@ add_subdirectory(cluster_pbr)
 add_subdirectory(volumetric)
 add_subdirectory(post_tonemap)        # Day 13 — AGX / Hill / Hable / Narkowicz
 add_subdirectory(post_bloom)          # Day  8 — Karis 2013 stable bloom
+add_subdirectory(post_taa)            # Day 11 — Karis 2014 TAA
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
