@@ -593,6 +593,11 @@ int main()
     bool gizmo_visible = true;       // toggle via palette
     ImVec2 gizmo_drag_anchor { 0,0 }; // screen-pixel mouse at begin_drag
     cd::math::Vec3f gizmo_drag_world_start {};  // target position at begin_drag
+    // Cross-frame: was the mouse on an axis arrow LAST frame? Used so
+    // the pick path (which runs earlier in the frame than the gizmo
+    // overlay) can suppress entity-pick when the user is starting a
+    // gizmo drag. One-frame lag is invisible at 60+ FPS.
+    bool gizmo_was_hovered = false;
 
     // ---- Camera + SceneCameraController (orbit) ----
     cd::camera::Camera cam {};
@@ -1264,7 +1269,17 @@ int main()
 
         // ---- 3D click-to-pick ----
         // Unproject the click pixel to a world ray, then sphere-test
-        // each entity. Pick the closest hit and set `selected`.
+        // each entity. The gizmo overlay (rendered later in this
+        // frame) may set `pending_pick=false` if the click landed on
+        // an axis arrow — in that case it consumed the click and we
+        // skip the pick. The frame here is one-late but for a UX
+        // click the lag is invisible.
+        if (pending_pick && gizmo_was_hovered)
+        {
+            // The user is clicking on a gizmo arrow (hover detected
+            // last frame). Don't repick; let the gizmo claim the drag.
+            pending_pick = false;
+        }
         if (pending_pick)
         {
             pending_pick = false;
@@ -1966,6 +1981,10 @@ int main()
         // draw three colored axis arrows, do hover/click drag in
         // screen-space, map back into world delta along the active
         // axis, and push a TranslateCommand on release.
+        if (!gizmo_visible || selected < 0 || selected >= static_cast<int>(entities.size()))
+        {
+            gizmo_was_hovered = false;
+        }
         if (gizmo_visible && selected >= 0 && selected < static_cast<int>(entities.size()))
         {
             auto sel_ent = entities[static_cast<std::size_t>(selected)].handle;
@@ -2043,9 +2062,17 @@ int main()
                     if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kY; }
                     if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kZ; }
                     gizmo.set_hover(best);
+                    gizmo_was_hovered = (best != cd::editor::GizmoAxis::kNone);
 
                     const bool over_imgui_ui = ImGui::GetIO().WantCaptureMouse &&
                                                 ImGui::IsAnyItemHovered();
+                    // If the mouse is hovering an axis arrow AND a left-
+                    // click is pending from the OS event loop, the gizmo
+                    // wins over the 3D pick path — suppress the pick.
+                    if (pending_pick && best != cd::editor::GizmoAxis::kNone)
+                    {
+                        pending_pick = false;
+                    }
                     if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
                     {
