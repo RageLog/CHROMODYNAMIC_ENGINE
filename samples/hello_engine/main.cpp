@@ -280,7 +280,9 @@ constexpr const char* kPrimVS = R"glsl(
 #version 450
 layout(push_constant) uniform PC {
   mat4 mvp;
-  vec4 tint;
+  vec4 tint;          // xyz = base color, w = unused
+  vec4 light_dir;     // xyz = directional light dir, w = intensity
+  vec4 light_color;   // xyz = directional light color (CCT-converted), w = ambient
 } pc;
 layout(location = 0) in vec3 in_pos;
 layout(location = 1) in vec3 in_normal;
@@ -288,9 +290,13 @@ layout(location = 2) in vec2 in_uv;
 layout(location = 3) in vec3 in_color;
 layout(location = 0) out vec3 v_color;
 void main() {
-  vec3 mixed = in_color * pc.tint.rgb;
-  float ndl = max(dot(normalize(in_normal), normalize(vec3(0.4, 0.7, 0.5))), 0.15);
-  v_color = mixed * (0.35 + 0.65 * ndl);
+  vec3 albedo = in_color * pc.tint.rgb;
+  vec3 N = normalize(in_normal);
+  vec3 L = normalize(-pc.light_dir.xyz);
+  float ndl = max(dot(N, L), 0.0);
+  vec3 lit = albedo * pc.light_color.rgb * (pc.light_dir.w * ndl);
+  vec3 ambient = albedo * pc.light_color.w;  // ambient term modulated by sky tint
+  v_color = lit + ambient;
   vec4 clip = pc.mvp * vec4(in_pos, 1.0);
   clip.y = -clip.y;
   gl_Position = clip;
@@ -301,16 +307,25 @@ constexpr const char* kPrimFS = R"glsl(
 #version 450
 layout(location = 0) in  vec3 v_color;
 layout(location = 0) out vec4 out_color;
-void main() { out_color = vec4(v_color, 1.0); }
+void main() {
+  // ACES Narkowicz tonemap so high-intensity lights don't blow out.
+  vec3 c = v_color;
+  const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
+  c = clamp((c * (a_ * c + b_)) / (c * (c_ * c + d_) + e_), vec3(0.0), vec3(1.0));
+  c = pow(c, vec3(1.0/2.2));
+  out_color = vec4(c, 1.0);
+}
 )glsl";
 
 struct PrimPush
 {
     cd::math::Mat4f mvp;
     float           tint[4];
+    float           light_dir[4];
+    float           light_color[4];
 };
 
-static_assert(sizeof(PrimPush) == 80, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 112, "PrimPush layout drift");
 
 // ============================================================================
 // Depth target helper.
@@ -1084,6 +1099,18 @@ int main()
                 if (e.key == cd::platform::KeyCode::kQ) key_q = v;
                 if (e.key == cd::platform::KeyCode::kE) key_e = v;
             }
+            // F = focus the camera on the currently selected entity (frame).
+            if (key_dn && e.key == cd::platform::KeyCode::kF &&
+                selected >= 0 && selected < static_cast<int>(entities.size()))
+            {
+                if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
+                {
+                    cam.target.x = lt->value.position.x;
+                    cam.target.y = lt->value.position.y;
+                    cam.target.z = lt->value.position.z;
+                    log_push("[cam] focus " + entities[static_cast<std::size_t>(selected)].name);
+                }
+            }
 
             // ---- Right-mouse drag → FPS look; left-click → request pick ----
             if (e.kind == cd::platform::OSEventKind::kMouseButtonDown)
@@ -1093,6 +1120,18 @@ int main()
                     cam_right_drag = true;
                     has_last_mouse = false;  // reset so first delta is 0
                     scene_cam.set_auto_spin(false);  // disable auto orbit during look
+                    // INIT yaw/pitch + dist from the current orbit camera so
+                    // the right-drag mode doesn't snap to a default pose.
+                    const float dxd = cam.target.x - cam.eye.x;
+                    const float dyd = cam.target.y - cam.eye.y;
+                    const float dzd = cam.target.z - cam.eye.z;
+                    const float dist = std::sqrt(dxd*dxd + dyd*dyd + dzd*dzd);
+                    if (dist > 1e-3F)
+                    {
+                        cam_dist  = dist;
+                        cam_pitch = std::asin(dyd / dist);
+                        cam_yaw   = std::atan2(dxd, -dzd);
+                    }
                 }
                 else if (e.mouse_button == cd::platform::MouseButton::kLeft &&
                          !ImGui::GetIO().WantCaptureMouse)
@@ -1244,6 +1283,24 @@ int main()
         const bool wasd_active = key_w || key_a || key_s || key_d || key_q || key_e;
         if (cam_right_drag || wasd_active)
         {
+            // On WASD-first frame, sync yaw/pitch/dist from current cam so
+            // the position doesn't snap.
+            static bool wasd_was_active_prev = false;
+            if (wasd_active && !wasd_was_active_prev && !cam_right_drag)
+            {
+                const float dxd = cam.target.x - cam.eye.x;
+                const float dyd = cam.target.y - cam.eye.y;
+                const float dzd = cam.target.z - cam.eye.z;
+                const float dist = std::sqrt(dxd*dxd + dyd*dyd + dzd*dzd);
+                if (dist > 1e-3F)
+                {
+                    cam_dist  = dist;
+                    cam_pitch = std::asin(dyd / dist);
+                    cam_yaw   = std::atan2(dxd, -dzd);
+                }
+            }
+            wasd_was_active_prev = wasd_active;
+
             // Forward = view direction in world space.
             const float cp = std::cos(cam_pitch), sp = std::sin(cam_pitch);
             const float cy = std::cos(cam_yaw),   sy = std::sin(cam_yaw);
@@ -1539,6 +1596,30 @@ int main()
         counters.set("inside_pbr", fully_inside);
 
         // ---- ECS entity primitives row (front of the viewport) ----
+        // Phase B: drive prim shader's light from the first enabled
+        // directional light (same source as PBR sphere sweep below).
+        cd::math::Vec3f prim_light_dir { -0.4F, -0.7F, -0.6F };
+        cd::math::Vec3f prim_light_color { 1.0F, 1.0F, 1.0F };
+        float           prim_light_intensity = 0.9F;
+        float           prim_ambient = 0.18F;
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+            prim_light_dir       = lrow.light.direction;
+            prim_light_color     = lrow.light.color;
+            prim_light_intensity = std::min(2.5F, lrow.light.intensity / 80000.0F);
+            break;
+        }
+        // Boost ambient from any enabled point light (cheap proxy for indirect).
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kPoint) continue;
+            prim_ambient = 0.18F + std::min(0.25F, lrow.light.intensity / 4000.0F);
+            break;
+        }
+
         prim_material.apply(cmd);
         for (const auto& ent : entities)
         {
@@ -1553,6 +1634,10 @@ int main()
             PrimPush pp {};
             pp.mvp = mvp;
             pp.tint[0] = ent.tint.x; pp.tint[1] = ent.tint.y; pp.tint[2] = ent.tint.z; pp.tint[3] = 1.0F;
+            pp.light_dir[0] = prim_light_dir.x; pp.light_dir[1] = prim_light_dir.y;
+            pp.light_dir[2] = prim_light_dir.z; pp.light_dir[3] = prim_light_intensity;
+            pp.light_color[0] = prim_light_color.x; pp.light_color[1] = prim_light_color.y;
+            pp.light_color[2] = prim_light_color.z; pp.light_color[3] = prim_ambient;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
