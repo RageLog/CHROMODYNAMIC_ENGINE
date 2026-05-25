@@ -41,6 +41,7 @@ add_subdirectory(restir_gi)           # Day  7 — Ouyang 2021 ReSTIR GI bounce 
 add_subdirectory(denoise)             # Day 30 — A-trous + OIDN-slot path-trace denoiser
 add_subdirectory(post_motion_blur)    # Day  9 — McGuire 2012 tiled-max motion blur
 add_subdirectory(post_dof)            # Day 10 — Sousa 2013 hexagonal bokeh DOF
+add_subdirectory(brdf_sheen_clearcoat)  # Day 21 — Charlie sheen + Filament clearcoat
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
