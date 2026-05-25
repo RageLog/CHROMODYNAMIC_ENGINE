@@ -44,6 +44,8 @@ add_subdirectory(post_dof)            # Day 10 — Sousa 2013 hexagonal bokeh DO
 add_subdirectory(brdf_sheen_clearcoat)  # Day 21 — Charlie sheen + Filament clearcoat
 add_subdirectory(post_smaa)           # Day 12 — Jimenez 2012 SMAA T2x
 add_subdirectory(hdr_display)         # Day 14 — HDR10 PQ + scRGB
+add_subdirectory(volumetric_clouds)   # Day 17 — Schneider 2017 cloud ray-march
+add_subdirectory(light_shafts)        # Day 18 — Mitchell 2007 god rays
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
