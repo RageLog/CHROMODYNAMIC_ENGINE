@@ -2827,6 +2827,21 @@ public:
                     cd::rhi::rhi_errors::Code::kInvalidArgument,
                     "create_acceleration_structure: TLAS must have >=1 instance"));
             }
+            // Reject every instance whose BLAS handle isn't backed by an
+            // existing AccelRecord. Without this guard the build path
+            // would later call vkGetBufferDeviceAddress on a missing
+            // entry and segfault.
+            for (const auto& inst : desc.instances)
+            {
+                if (!inst.blas.is_valid() ||
+                    accels_.find(inst.blas.index()) == accels_.end())
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kInvalidArgument,
+                        "create_acceleration_structure: TLAS instance "
+                        "references invalid or unknown BLAS handle"));
+                }
+            }
 
             VkAccelerationStructureGeometryKHR g {};
             g.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
