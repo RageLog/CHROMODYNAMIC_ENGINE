@@ -106,6 +106,7 @@ enum class KeyCode : std::uint16_t
     kEscape,
     kTab,
     kBackspace,
+    kDelete,
     kLShift,
     kRShift,
     kLCtrl,

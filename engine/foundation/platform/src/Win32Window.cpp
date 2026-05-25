@@ -59,6 +59,8 @@ namespace
             return KeyCode::kTab;
         case VK_BACK:
             return KeyCode::kBackspace;
+        case VK_DELETE:
+            return KeyCode::kDelete;
         case VK_LSHIFT:
             return KeyCode::kLShift;
         case VK_RSHIFT:

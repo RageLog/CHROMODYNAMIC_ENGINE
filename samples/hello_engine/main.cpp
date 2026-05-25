@@ -1281,6 +1281,29 @@ int main()
                                                           "SCALE";
                 log_push(std::string { "[gizmo] mode: " } + mode_str);
             }
+            // Delete = remove currently selected entity OR light (user feedback:
+            // "objeleri ve isiklari kafama gore silebilmeliyim"). Gated on
+            // WantCaptureKeyboard so text-input fields in ImGui don't trigger.
+            if (key_dn && e.key == cd::platform::KeyCode::kDelete &&
+                !ImGui::GetIO().WantCaptureKeyboard && selected >= 0)
+            {
+                if (selected_kind == SelKind::kEntity &&
+                    selected < static_cast<int>(entities.size()))
+                {
+                    const std::string name = entities[static_cast<std::size_t>(selected)].name;
+                    scene.destroy_node(entities[static_cast<std::size_t>(selected)].handle);
+                    entities.erase(entities.begin() + selected);
+                    log_push(std::string { "[edit] entity deleted: " } + name);
+                }
+                else if (selected_kind == SelKind::kLight &&
+                         selected < static_cast<int>(lights.size()))
+                {
+                    const std::string name = lights[static_cast<std::size_t>(selected)].name;
+                    lights.erase(lights.begin() + selected);
+                    log_push(std::string { "[edit] light deleted: " } + name);
+                }
+                selected = -1;
+            }
 
             // ---- Right-mouse drag → FPS look; left-click → request pick ----
             if (e.kind == cd::platform::OSEventKind::kMouseButtonDown)
@@ -2405,6 +2428,40 @@ int main()
                 ImGui::TextDisabled("atten 1m=%.3f  5m=%.4f  r/2=%.3f",
                     static_cast<double>(a1), static_cast<double>(a5), static_cast<double>(ah));
             }
+            // Direction control for any light type that has a meaningful
+            // forward axis (everything except omnidirectional point). User
+            // feedback: "isiklara yun veremiyorum" — give them a slider.
+            // Sliders are raw xyz in [-1, 1]; renormalized after edit so
+            // |dir| == 1 holds for the shading + shadow code that reads it.
+            if (row.light.type == cd::light::LightType::kDirectional ||
+                row.light.type == cd::light::LightType::kSpot        ||
+                row.light.type == cd::light::LightType::kRectArea    ||
+                row.light.type == cd::light::LightType::kDiskArea)
+            {
+                float dir[3] {
+                    row.light.direction.x,
+                    row.light.direction.y,
+                    row.light.direction.z };
+                if (ImGui::SliderFloat3("dir xyz", dir, -1.0F, 1.0F, "%.2f"))
+                {
+                    const float L = std::sqrt(dir[0]*dir[0] +
+                                              dir[1]*dir[1] +
+                                              dir[2]*dir[2]);
+                    if (L > 1e-4F)
+                    {
+                        row.light.direction.x = dir[0] / L;
+                        row.light.direction.y = dir[1] / L;
+                        row.light.direction.z = dir[2] / L;
+                    }
+                }
+                if (row.light.type == cd::light::LightType::kDirectional)
+                {
+                    ImGui::TextDisabled("sun pointing %s",
+                        row.light.direction.y < 0.0F
+                            ? "DOWN (casts shadow)"
+                            : "UP (no shadow)");
+                }
+            }
             ImGui::PopID();
             if (i + 1 < lights.size()) ImGui::Separator();
         }
@@ -2894,7 +2951,12 @@ int main()
                                 ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,0.9F)),
                                 mode_lbl);
 
-                    // Hover test via perpendicular distance from mouse to each axis line.
+                    // Hover test. Translate/Scale modes measure mouse-to-
+                    // axis-line distance (arrows). Rotate mode measures
+                    // mouse-to-ring polyline distance (so the user grabs a
+                    // ring, not an arrow — feedback "rotation islemini
+                    // yeni koydugun cemberler userinden yapabilmek
+                    // istiyorum").
                     const ImVec2 mp = ImGui::GetIO().MousePos;
                     auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p) {
                         const float dx = b.x - a.x, dy = b.y - a.y;
@@ -2906,9 +2968,59 @@ int main()
                     };
                     cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
                     float best_d = gizmo.hover_tolerance_pixels;
-                    if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kX; }
-                    if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kY; }
-                    if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kZ; }
+                    if (gizmo_mode == GizmoMode::kRotate)
+                    {
+                        // Sample each ring at the same resolution we draw
+                        // it (48 segments); compute min distance from
+                        // mouse to the ring polyline. Cheap (3 × 48 = 144
+                        // segments per frame at hover-test time).
+                        constexpr int   kHoverSeg = 48;
+                        constexpr float kHoverRad = 1.5F;  // matches kRingRad above
+                        auto ring_dist = [&](cd::math::Vec3f u,
+                                             cd::math::Vec3f v) -> float
+                        {
+                            float min_d = std::numeric_limits<float>::infinity();
+                            ImVec2 prev {};
+                            bool prev_ok = false;
+                            for (int i = 0; i <= kHoverSeg; ++i)
+                            {
+                                const float a = static_cast<float>(i) / kHoverSeg * 6.2831853F;
+                                const float ca = std::cos(a), sa = std::sin(a);
+                                const cd::math::Vec3f w {
+                                    tgt.x + (u.x * ca + v.x * sa) * kHoverRad,
+                                    tgt.y + (u.y * ca + v.y * sa) * kHoverRad,
+                                    tgt.z + (u.z * ca + v.z * sa) * kHoverRad };
+                                const auto pw = project(w);
+                                if (pw.x >= 0.0F)
+                                {
+                                    if (prev_ok)
+                                    {
+                                        const float d = dist_to_seg(prev, pw, mp);
+                                        if (d < min_d) min_d = d;
+                                    }
+                                    prev = pw;
+                                    prev_ok = true;
+                                }
+                                else
+                                {
+                                    prev_ok = false;
+                                }
+                            }
+                            return min_d;
+                        };
+                        const float dx = ring_dist({0,1,0}, {0,0,1});  // X-axis ring lives in YZ
+                        const float dy = ring_dist({1,0,0}, {0,0,1});  // Y-axis ring lives in XZ
+                        const float dz = ring_dist({1,0,0}, {0,1,0});  // Z-axis ring lives in XY
+                        if (dx < best_d) { best_d = dx; best = cd::editor::GizmoAxis::kX; }
+                        if (dy < best_d) { best_d = dy; best = cd::editor::GizmoAxis::kY; }
+                        if (dz < best_d) { best_d = dz; best = cd::editor::GizmoAxis::kZ; }
+                    }
+                    else  // translate / scale — axis-arrow hover
+                    {
+                        if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kX; }
+                        if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kY; }
+                        if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kZ; }
+                    }
                     gizmo.set_hover(best);
                     gizmo_was_hovered = (best != cd::editor::GizmoAxis::kNone);
 
