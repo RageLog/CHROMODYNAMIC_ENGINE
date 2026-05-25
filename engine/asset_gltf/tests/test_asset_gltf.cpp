@@ -399,3 +399,73 @@ TEST(GltfLoader, NoSkinSceneLeavesSkinsEmpty)
     if (!r->meshes.front().primitives.empty())
         EXPECT_TRUE(r->meshes.front().primitives.front().skin_vertices.empty());
 }
+
+// Phase 170 — SkinnedMeshBridge
+#include <cd/asset_gltf/SkinnedMeshBridge.hpp>
+
+TEST(SkinnedMeshBridge, ToSkinnedVerticesPreservesPositionsAndUv)
+{
+    cd::asset_gltf::GltfPrimitive prim;
+    prim.vertices.resize(2);
+    prim.vertices[0].position = { 1.0F, 2.0F, 3.0F };
+    prim.vertices[0].normal   = { 0.0F, 1.0F, 0.0F };
+    prim.vertices[0].texcoord0 = { 0.25F, 0.75F };
+    prim.vertices[1].position = { 4.0F, 5.0F, 6.0F };
+    cd::asset_gltf::GltfSkinVertex sv;
+    sv.joints = { 2, 5, 0, 0 };
+    sv.weights = { 0.6F, 0.4F, 0.0F, 0.0F };
+    prim.skin_vertices.push_back(sv);
+    prim.skin_vertices.push_back({});
+
+    auto out = cd::asset_gltf::to_skinned_vertices(prim);
+    ASSERT_EQ(out.size(), 2U);
+    EXPECT_FLOAT_EQ(out[0].position.x, 1.0F);
+    EXPECT_FLOAT_EQ(out[0].uv.x, 0.25F);
+    EXPECT_EQ(out[0].bone_ids[0], 2);
+    EXPECT_EQ(out[0].bone_ids[1], 5);
+    EXPECT_FLOAT_EQ(out[0].bone_weights[0], 0.6F);
+    EXPECT_FLOAT_EQ(out[1].position.y, 5.0F);
+}
+
+TEST(SkinnedMeshBridge, ToSkinnedVerticesHandlesNonSkinnedPrimitive)
+{
+    cd::asset_gltf::GltfPrimitive prim;
+    prim.vertices.resize(1);
+    prim.vertices[0].position = { 7.0F, 8.0F, 9.0F };
+    // No skin_vertices.
+    auto out = cd::asset_gltf::to_skinned_vertices(prim);
+    ASSERT_EQ(out.size(), 1U);
+    // Default fallback: full weight on bone 0.
+    EXPECT_FLOAT_EQ(out[0].bone_weights[0], 1.0F);
+    EXPECT_FLOAT_EQ(out[0].bone_weights[1], 0.0F);
+}
+
+TEST(SkinnedMeshBridge, ToSkeletonHandlesEmptyScene)
+{
+    cd::asset_gltf::GltfScene scene;
+    auto skel = cd::asset_gltf::to_skeleton(scene, 0);
+    EXPECT_EQ(skel.joint_count(), 0U);
+}
+
+TEST(SkinnedMeshBridge, ToSkeletonTwoJointChain)
+{
+    cd::asset_gltf::GltfScene scene;
+    scene.nodes.resize(2);
+    scene.nodes[0].name = "root";
+    scene.nodes[0].parent = -1;
+    scene.nodes[0].children = { 1 };
+    scene.nodes[0].local_matrix = cd::math::Mat4f::identity();
+    scene.nodes[1].name = "child";
+    scene.nodes[1].parent = 0;
+    scene.nodes[1].local_matrix = cd::math::Mat4f::identity();
+    cd::asset_gltf::GltfSkin skin;
+    skin.joints = { 0, 1 };
+    skin.inverse_bind_matrices = { cd::math::Mat4f::identity(),
+                                   cd::math::Mat4f::identity() };
+    scene.skins.push_back(std::move(skin));
+
+    auto skel = cd::asset_gltf::to_skeleton(scene, 0);
+    ASSERT_EQ(skel.joint_count(), 2U);
+    EXPECT_EQ(skel.joint(0).parent, -1);
+    EXPECT_EQ(skel.joint(1).parent, 0);
+}

@@ -47,6 +47,7 @@ cd_add_library(asset_gltf
   PUBLIC_DEPS
     cd::core
     cd::math
+    cd::anim   # Phase 170 — SkinnedMeshBridge header inline-uses anim types
   PRIVATE_DEPS
     cd::asset
 )
