@@ -596,6 +596,9 @@ int main()
     }
     log_push("[boot] 5 ECS entities spawned via cd::asset::Primitives.");
     int selected = 0;
+    // Selection kind — entities and lights are both pickable.
+    enum class SelKind : std::uint8_t { kEntity = 0, kLight = 1 };
+    SelKind selected_kind = SelKind::kEntity;
 
     // Phase 151 — selection-outline state. Style defaults to
     // kWireframe (the cheapest of the three documented techniques
@@ -606,8 +609,12 @@ int main()
     // Phase 152 — axis-translation gizmo state + UI bookkeeping.
     cd::editor::AxisGizmo gizmo;
     bool gizmo_visible = true;       // toggle via palette
+    enum class GizmoMode : std::uint8_t { kTranslate = 0, kRotate = 1, kScale = 2 };
+    GizmoMode gizmo_mode = GizmoMode::kTranslate;
     ImVec2 gizmo_drag_anchor { 0,0 }; // screen-pixel mouse at begin_drag
     cd::math::Vec3f gizmo_drag_world_start {};  // target position at begin_drag
+    cd::math::Vec3f gizmo_drag_scale_start { 1.0F, 1.0F, 1.0F };  // scale at begin_drag
+    cd::math::Quatf gizmo_drag_rot_start {};                       // rotation at begin_drag
     // Cross-frame: was the mouse on an axis arrow LAST frame? Used so
     // the pick path (which runs earlier in the frame than the gizmo
     // overlay) can suppress entity-pick when the user is starting a
@@ -918,10 +925,13 @@ int main()
         [&]{ rand_rng = cd::math::Random { static_cast<std::uint64_t>(std::rand()) };
              rebuild_random_viz(); log_push("[palette] Random reseeded"); });
     palette.register_command(70, "Help: Print Shortcuts",
-        [&]{ log_push("Ctrl+Shift+P: command palette");
+        [&]{ log_push("Ctrl+Shift+P / F1: command palette");
              log_push("Esc: close palette / quit");
-             log_push("Right-mouse drag in viewport: orbit");
-             log_push("Mouse wheel: zoom"); });
+             log_push("WASD: move camera target | Q/E: down/up");
+             log_push("Right-mouse drag: FPS look | wheel: zoom");
+             log_push("Left-click entity: select | empty space: unselect");
+             log_push("F: focus camera on selected");
+             log_push("Space: cycle gizmo mode (Translate/Rotate/Scale)"); });
 
     // Phase 154 — scene save/load round-trip. The serializer pulls
     // transforms out of cd::scene::Scene; per-entity metadata (name,
@@ -1133,6 +1143,18 @@ int main()
                     cam.target.z = lt->value.position.z;
                     log_push("[cam] focus " + entities[static_cast<std::size_t>(selected)].name);
                 }
+            }
+            // Space = cycle gizmo mode translate → rotate → scale → translate.
+            if (key_dn && e.key == cd::platform::KeyCode::kSpace &&
+                !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                gizmo_mode = static_cast<GizmoMode>(
+                    (static_cast<std::uint8_t>(gizmo_mode) + 1u) % 3u);
+                const char* mode_str =
+                    gizmo_mode == GizmoMode::kTranslate ? "TRANSLATE" :
+                    gizmo_mode == GizmoMode::kRotate    ? "ROTATE"    :
+                                                          "SCALE";
+                log_push(std::string { "[gizmo] mode: " } + mode_str);
             }
 
             // ---- Right-mouse drag → FPS look; left-click → request pick ----
@@ -1437,10 +1459,46 @@ int main()
                     const float t = -b - std::sqrt(disc);
                     if (t > 0.0F && t < best_t) { best_t = t; best_i = static_cast<int>(i); }
                 }
-                if (best_i >= 0)
+                // Also try light positions (point/spot only — directional
+                // has no world position, area is bigger but we use its center).
+                int   best_light = -1;
+                float best_light_t = best_t;
+                for (std::size_t i = 0; i < lights.size(); ++i)
+                {
+                    const auto& Lt = lights[i].light;
+                    if (Lt.type == cd::light::LightType::kDirectional) continue;
+                    const cd::math::Vec3f c { Lt.position.x, Lt.position.y, Lt.position.z };
+                    const cd::math::Vec3f oc {
+                        cam.eye.x - c.x, cam.eye.y - c.y, cam.eye.z - c.z };
+                    constexpr float kLightPickR = 0.4F;
+                    const float b = oc.x*ray_dir.x + oc.y*ray_dir.y + oc.z*ray_dir.z;
+                    const float cc = oc.x*oc.x + oc.y*oc.y + oc.z*oc.z - kLightPickR*kLightPickR;
+                    const float disc = b*b - cc;
+                    if (disc < 0.0F) continue;
+                    const float t = -b - std::sqrt(disc);
+                    if (t > 0.0F && t < best_light_t)
+                    { best_light_t = t; best_light = static_cast<int>(i); }
+                }
+                if (best_light >= 0)
+                {
+                    selected = best_light;
+                    selected_kind = SelKind::kLight;
+                    log_push("[pick] selected light " + lights[static_cast<std::size_t>(best_light)].name);
+                }
+                else if (best_i >= 0)
                 {
                     selected = best_i;
+                    selected_kind = SelKind::kEntity;
                     log_push("[pick] selected " + entities[static_cast<std::size_t>(best_i)].name);
+                }
+                else
+                {
+                    // Empty-space click → unselect.
+                    if (selected >= 0)
+                    {
+                        log_push("[pick] cleared selection");
+                        selected = -1;
+                    }
                 }
             }
         }
@@ -2051,7 +2109,19 @@ int main()
         {
             auto& row = lights[i];
             ImGui::PushID(static_cast<int>(i));
-            ImGui::Checkbox(row.name.c_str(), &row.enabled);
+            // Click on row name selects the light (so Inspector + gizmo see it).
+            const bool row_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
+            if (row_sel)
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
+            if (ImGui::Selectable((row_sel ? std::string { "> " } + row.name : row.name).c_str(),
+                                  row_sel, ImGuiSelectableFlags_AllowOverlap))
+            {
+                selected = static_cast<int>(i);
+                selected_kind = SelKind::kLight;
+            }
+            if (row_sel) ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::Checkbox("##en", &row.enabled);
 
             // Color preview swatch — what the CCT actually produces.
             const ImVec4 col {
@@ -2109,7 +2179,8 @@ int main()
         // world position onto the screen, then draw a circle around it
         // via ImGui's foreground draw list. Cheap, no extra GPU pass,
         // and demonstrates SelectionOutline state end-to-end.
-        if (selected >= 0 && selected < static_cast<int>(entities.size()))
+        if (selected_kind == SelKind::kEntity &&
+            selected >= 0 && selected < static_cast<int>(entities.size()))
         {
             outline.set(entities[static_cast<std::size_t>(selected)].handle);
         }
@@ -2178,14 +2249,18 @@ int main()
                     (c[0] / c[3] * 0.5F + 0.5F) * vw,
                     (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
             };
-            for (const auto& lrow : lights)
+            for (std::size_t li = 0; li < lights.size(); ++li)
             {
+                const auto& lrow = lights[li];
                 if (!lrow.enabled) continue;
                 const auto& L = lrow.light;
+                const bool sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(li));
                 const ImU32 col = ImGui::ColorConvertFloat4ToU32(
                     ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
                 const ImU32 col_dim = ImGui::ColorConvertFloat4ToU32(
                     ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
+                const ImU32 col_sel = ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(1.0F, 0.85F, 0.0F, 1.0F));  // golden hover-style for selected
                 switch (L.type)
                 {
                     case cd::light::LightType::kDirectional:
@@ -2205,6 +2280,7 @@ int main()
                         {
                             dl_m->AddLine(p0, p1, col, 3.0F);
                             dl_m->AddCircleFilled(p0, 8.0F, col);
+                            if (sel) dl_m->AddCircle(p0, 16.0F, col_sel, 16, 3.0F);
                             dl_m->AddText(ImVec2(p0.x + 10.0F, p0.y - 8.0F),
                                           col, "SUN");
                         }
@@ -2217,6 +2293,7 @@ int main()
                         {
                             dl_m->AddCircleFilled(p, 10.0F, col);
                             dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
+                            if (sel) dl_m->AddCircle(p, 18.0F, col_sel, 16, 3.0F);
                             // Render an approximate range ring by projecting 8
                             // points on the world-space circle at light.range.
                             for (int i = 0; i < 16; ++i)
@@ -2281,6 +2358,7 @@ int main()
                         if (p_apex.x >= 0.0F)
                         {
                             dl_m->AddCircleFilled(p_apex, 8.0F, col);
+                            if (sel) dl_m->AddCircle(p_apex, 16.0F, col_sel, 16, 3.0F);
                             dl_m->AddText(ImVec2(p_apex.x + 10.0F, p_apex.y - 8.0F),
                                           col, "SPOT");
                         }
@@ -2313,10 +2391,12 @@ int main()
                         const auto p3 = project(c3);
                         if (p0.x >= 0.0F && p1.x >= 0.0F && p2.x >= 0.0F && p3.x >= 0.0F)
                         {
-                            dl_m->AddLine(p0, p1, col, 2.0F);
-                            dl_m->AddLine(p1, p2, col, 2.0F);
-                            dl_m->AddLine(p2, p3, col, 2.0F);
-                            dl_m->AddLine(p3, p0, col, 2.0F);
+                            const float thickness = sel ? 4.0F : 2.0F;
+                            const ImU32  use_col   = sel ? col_sel : col;
+                            dl_m->AddLine(p0, p1, use_col, thickness);
+                            dl_m->AddLine(p1, p2, use_col, thickness);
+                            dl_m->AddLine(p2, p3, use_col, thickness);
+                            dl_m->AddLine(p3, p0, use_col, thickness);
                             dl_m->AddText(p0, col, "AREA");
                         }
                         break;
@@ -2330,11 +2410,13 @@ int main()
         // draw three colored axis arrows, do hover/click drag in
         // screen-space, map back into world delta along the active
         // axis, and push a TranslateCommand on release.
-        if (!gizmo_visible || selected < 0 || selected >= static_cast<int>(entities.size()))
+        if (!gizmo_visible || selected_kind != SelKind::kEntity ||
+            selected < 0 || selected >= static_cast<int>(entities.size()))
         {
             gizmo_was_hovered = false;
         }
-        if (gizmo_visible && selected >= 0 && selected < static_cast<int>(entities.size()))
+        if (gizmo_visible && selected_kind == SelKind::kEntity &&
+            selected >= 0 && selected < static_cast<int>(entities.size()))
         {
             auto sel_ent = entities[static_cast<std::size_t>(selected)].handle;
             auto* lt = scene.local(sel_ent);
@@ -2391,9 +2473,40 @@ int main()
                         const ImVec2 c { to.x - nx * kHead - sx * 5.0F, to.y - ny * kHead - sy * 5.0F };
                         dl->AddTriangleFilled(a, b, c, col);
                     };
-                    arrowhead(p_org, p_x, cx);
-                    arrowhead(p_org, p_y, cy);
-                    arrowhead(p_org, p_z, cz);
+                    // Mode-specific tip decoration:
+                    //   translate → arrowheads
+                    //   rotate    → small circles at tips
+                    //   scale     → small filled cubes at tips
+                    if (gizmo_mode == GizmoMode::kTranslate)
+                    {
+                        arrowhead(p_org, p_x, cx);
+                        arrowhead(p_org, p_y, cy);
+                        arrowhead(p_org, p_z, cz);
+                    }
+                    else if (gizmo_mode == GizmoMode::kRotate)
+                    {
+                        dl->AddCircle(p_x, 6.0F, cx, 12, 2.0F);
+                        dl->AddCircle(p_y, 6.0F, cy, 12, 2.0F);
+                        dl->AddCircle(p_z, 6.0F, cz, 12, 2.0F);
+                    }
+                    else  // kScale
+                    {
+                        const auto cube_at = [&](ImVec2 c, ImU32 col) {
+                            const ImVec2 a { c.x - 5, c.y - 5 };
+                            const ImVec2 b { c.x + 5, c.y + 5 };
+                            dl->AddRectFilled(a, b, col);
+                        };
+                        cube_at(p_x, cx);
+                        cube_at(p_y, cy);
+                        cube_at(p_z, cz);
+                    }
+                    // Mode label.
+                    const char* mode_lbl =
+                        gizmo_mode == GizmoMode::kTranslate ? "T" :
+                        gizmo_mode == GizmoMode::kRotate    ? "R" : "S";
+                    dl->AddText(ImVec2(p_org.x + 8, p_org.y + 8),
+                                ImGui::ColorConvertFloat4ToU32(ImVec4(1,1,1,0.9F)),
+                                mode_lbl);
 
                     // Hover test via perpendicular distance from mouse to each axis line.
                     const ImVec2 mp = ImGui::GetIO().MousePos;
@@ -2426,14 +2539,15 @@ int main()
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
                     {
                         gizmo.begin_drag(best, lt->value.position);
-                        gizmo_drag_anchor = mp;
+                        gizmo_drag_anchor      = mp;
                         gizmo_drag_world_start = lt->value.position;
+                        gizmo_drag_scale_start = lt->value.scale;
+                        gizmo_drag_rot_start   = lt->value.rotation;
                     }
                     if (gizmo.is_dragging())
                     {
                         // Screen-space delta along the projected axis,
-                        // mapped to world delta by pixels_per_world_unit
-                        // on the active axis projection.
+                        // mapped to world delta by pixels_per_world_unit.
                         ImVec2 axis_screen_end = p_x;
                         if (gizmo.active_axis() == cd::editor::GizmoAxis::kY) axis_screen_end = p_y;
                         else if (gizmo.active_axis() == cd::editor::GizmoAxis::kZ) axis_screen_end = p_z;
@@ -2448,32 +2562,96 @@ int main()
                             const float dot_px = mouse_dx * nx + mouse_dy * ny;
                             const float world_per_px = kAxisLen / ax_len_px;
                             const float delta_world = dot_px * world_per_px;
-                            cd::math::Vec3f cur = gizmo_drag_world_start;
-                            switch (gizmo.active_axis())
+                            switch (gizmo_mode)
                             {
-                                case cd::editor::GizmoAxis::kX: cur.x += delta_world; break;
-                                case cd::editor::GizmoAxis::kY: cur.y += delta_world; break;
-                                case cd::editor::GizmoAxis::kZ: cur.z += delta_world; break;
-                                default: break;
+                                case GizmoMode::kTranslate:
+                                {
+                                    cd::math::Vec3f cur = gizmo_drag_world_start;
+                                    switch (gizmo.active_axis())
+                                    {
+                                        case cd::editor::GizmoAxis::kX: cur.x += delta_world; break;
+                                        case cd::editor::GizmoAxis::kY: cur.y += delta_world; break;
+                                        case cd::editor::GizmoAxis::kZ: cur.z += delta_world; break;
+                                        default: break;
+                                    }
+                                    lt->value.position = cur;
+                                    gizmo.update_drag(cur);
+                                    break;
+                                }
+                                case GizmoMode::kScale:
+                                {
+                                    cd::math::Vec3f cur = gizmo_drag_scale_start;
+                                    // Drag is multiplicative — each axis-length of
+                                    // screen movement doubles/halves the scale.
+                                    const float factor = std::exp(delta_world * 0.5F);
+                                    switch (gizmo.active_axis())
+                                    {
+                                        case cd::editor::GizmoAxis::kX: cur.x *= factor; break;
+                                        case cd::editor::GizmoAxis::kY: cur.y *= factor; break;
+                                        case cd::editor::GizmoAxis::kZ: cur.z *= factor; break;
+                                        default: break;
+                                    }
+                                    if (cur.x < 0.05F) cur.x = 0.05F;
+                                    if (cur.y < 0.05F) cur.y = 0.05F;
+                                    if (cur.z < 0.05F) cur.z = 0.05F;
+                                    lt->value.scale = cur;
+                                    break;
+                                }
+                                case GizmoMode::kRotate:
+                                {
+                                    // delta_world here means angle in radians.
+                                    // Build an axis-angle quaternion, multiply by start.
+                                    const float ang = delta_world * 0.5F;  // dampen
+                                    const float ca = std::cos(ang * 0.5F);
+                                    const float sa = std::sin(ang * 0.5F);
+                                    cd::math::Quatf q { 0,0,0,1 };
+                                    switch (gizmo.active_axis())
+                                    {
+                                        case cd::editor::GizmoAxis::kX: q = { sa, 0, 0, ca }; break;
+                                        case cd::editor::GizmoAxis::kY: q = { 0, sa, 0, ca }; break;
+                                        case cd::editor::GizmoAxis::kZ: q = { 0, 0, sa, ca }; break;
+                                        default: break;
+                                    }
+                                    // new_rot = q * start (compose; world-space axis)
+                                    const auto& a = q;
+                                    const auto& b = gizmo_drag_rot_start;
+                                    lt->value.rotation = cd::math::Quatf {
+                                        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+                                        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+                                        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+                                        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z };
+                                    break;
+                                }
                             }
-                            // Drive live position; commit a single delta to history on release.
-                            lt->value.position = cur;
-                            gizmo.update_drag(cur);
                         }
                         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
                         {
                             const auto delta = gizmo.end_drag();
-                            if (std::abs(delta.x) + std::abs(delta.y) + std::abs(delta.z) > 1e-4F)
+                            (void)delta;
+                            // Only translate has an undoable command wired today;
+                            // rotate/scale apply directly + log.
+                            switch (gizmo_mode)
                             {
-                                // Roll back the live mutation, then push the command
-                                // so apply() reapplies it and the undo stack stays
-                                // consistent.
-                                lt->value.position = gizmo_drag_world_start;
-                                history.push(std::make_unique<cd::editor::TranslateCommand>(
-                                    scene, sel_ent, delta));
-                                log_push("[gizmo] translate dx=" + std::to_string(delta.x) +
-                                         " dy=" + std::to_string(delta.y) +
-                                         " dz=" + std::to_string(delta.z));
+                                case GizmoMode::kTranslate:
+                                {
+                                    const float dx = lt->value.position.x - gizmo_drag_world_start.x;
+                                    const float dy = lt->value.position.y - gizmo_drag_world_start.y;
+                                    const float dz = lt->value.position.z - gizmo_drag_world_start.z;
+                                    if (std::abs(dx) + std::abs(dy) + std::abs(dz) > 1e-4F)
+                                    {
+                                        lt->value.position = gizmo_drag_world_start;
+                                        history.push(std::make_unique<cd::editor::TranslateCommand>(
+                                            scene, sel_ent, cd::math::Vec3f { dx, dy, dz }));
+                                        log_push("[gizmo] translate (undoable)");
+                                    }
+                                    break;
+                                }
+                                case GizmoMode::kScale:
+                                    log_push("[gizmo] scale applied");
+                                    break;
+                                case GizmoMode::kRotate:
+                                    log_push("[gizmo] rotate applied");
+                                    break;
                             }
                         }
                     }

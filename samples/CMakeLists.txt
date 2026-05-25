@@ -64,7 +64,8 @@ add_subdirectory(hello_replication)
 # API surface lands. Gated on Vulkan because it uses cd::rhi_vulkan.
 if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_rt_check)
-  add_subdirectory(hello_rt)      # Phase 136 — full RT pipeline + SBT smoke
+  add_subdirectory(hello_rt)         # Phase 136 — full RT pipeline + SBT smoke
+  add_subdirectory(hello_path_trace) # Faz 2 — multi-bounce PT + NEE + MIS + accum
   add_subdirectory(hello_engine)  # Phase 138 — mega-showcase
 endif()
 
