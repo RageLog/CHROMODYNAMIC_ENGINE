@@ -33,6 +33,7 @@ add_subdirectory(atmosphere)          # Day 15 — Hillaire 2020 sky LUTs
 add_subdirectory(volumetric_fog)      # Day 16 — Wronski 2014 froxel fog
 add_subdirectory(brdf_ltc)            # Day 19 — Heitz 2016 LTC area lights
 add_subdirectory(brdf_sss)            # Day 20 — Burley 2015 SSS + Jimenez blur
+add_subdirectory(decal)               # Day 22 — Persson 2009 deferred decals
 add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
