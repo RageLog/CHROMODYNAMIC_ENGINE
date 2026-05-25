@@ -50,7 +50,8 @@ layout(push_constant) uniform SkyPC {
   vec4 cam_right;
   vec4 cam_up;
   vec4 cam_fwd;
-  vec4 sun_dir;
+  vec4 sun_dir;    // xyz = direction, w = intensity
+  vec4 sun_color;  // xyz = linear RGB (CCT-converted), w = horizon tint blend [0,1]
 } pc;
 layout(location = 0) in  vec2 v_ndc;
 layout(location = 0) out vec4 out_color;
@@ -64,9 +65,12 @@ vec3 ray_dir(vec2 ndc) {
                  - ndc.y * pc.cam_up.w    * up);
 }
 
-vec3 sample_env(vec3 dir) {
-  vec3 zenith  = vec3(0.18, 0.42, 0.85);
-  vec3 horizon = vec3(0.78, 0.86, 0.96);
+vec3 sample_env(vec3 dir, vec3 sky_tint) {
+  // Base palette + per-frame sky tint from the sun's color. The
+  // horizon gets a small fraction of sky_tint so sunsets show warm
+  // glow, daylight stays neutral, night under blue moon stays cool.
+  vec3 zenith  = mix(vec3(0.18, 0.42, 0.85), sky_tint * 0.30, 0.20);
+  vec3 horizon = mix(vec3(0.78, 0.86, 0.96), sky_tint, 0.35);
   vec3 ground  = vec3(0.10, 0.10, 0.14);
   float h = dir.y;
   if (h >= 0.0) return mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.6));
@@ -75,14 +79,15 @@ vec3 sample_env(vec3 dir) {
 
 void main() {
   vec3 dir = ray_dir(v_ndc);
-  vec3 sky = sample_env(dir);
+  vec3 sky = sample_env(dir, pc.sun_color.rgb);
 
   // Sun disk + soft glow aligned with the caller's directional light.
+  // The sun color (CCT-converted) drives both disk and glow.
   vec3 L = normalize(-pc.sun_dir.xyz);
   float cos_a = clamp(dot(dir, L), 0.0, 1.0);
   float disk = smoothstep(0.9994, 0.9998, cos_a);
   float glow = pow(cos_a, 64.0);
-  vec3 sun_color = vec3(1.0, 0.93, 0.82) * pc.sun_dir.w;
+  vec3 sun_color = pc.sun_color.rgb * pc.sun_dir.w;
   vec3 result = sky + sun_color * (disk * 6.0 + glow * 0.5);
 
   // ACES Narkowicz tonemap — matches StandardPbrFS so sky and spheres
@@ -109,9 +114,10 @@ struct AnalyticalSkyPush
     float cam_up[4];    ///< xyz = up basis,    w = half_h
     float cam_fwd[4];   ///< xyz = forward,     w unused
     float sun_dir[4];   ///< xyz = direction,   w = intensity
+    float sun_color[4]; ///< xyz = linear RGB,  w = sky tint blend [0,1]
 };
 
-static_assert(sizeof(AnalyticalSkyPush) == 64,
-              "AnalyticalSkyPush must equal 64 B");
+static_assert(sizeof(AnalyticalSkyPush) == 80,
+              "AnalyticalSkyPush must equal 80 B");
 
 }  // namespace cd::material

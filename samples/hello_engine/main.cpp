@@ -1492,7 +1492,30 @@ int main()
         spush.cam_right[0] = sky_right.x; spush.cam_right[1] = sky_right.y; spush.cam_right[2] = sky_right.z; spush.cam_right[3] = half_w;
         spush.cam_up[0]    = sky_up.x;    spush.cam_up[1]    = sky_up.y;    spush.cam_up[2]    = sky_up.z;    spush.cam_up[3]    = half_h;
         spush.cam_fwd[0]   = forward.x;   spush.cam_fwd[1]   = forward.y;   spush.cam_fwd[2]   = forward.z;   spush.cam_fwd[3]   = 0.0F;
-        spush.sun_dir[0]   = -0.4F;       spush.sun_dir[1]   = -0.6F;       spush.sun_dir[2]   = -0.7F;       spush.sun_dir[3]   = 0.9F;
+        // Phase G — sky pulls sun direction + intensity + color from
+        // the first enabled directional light. CCT slider in the
+        // Lights panel now affects the SKY tint too (sunset feel at
+        // 2000-3000K, neutral at D65, cold blue at 10000K).
+        cd::math::Vec3f sky_sun_dir { -0.4F, -0.6F, -0.7F };
+        cd::math::Vec3f sky_sun_col { 1.0F, 0.93F, 0.82F };
+        float           sky_sun_strength = 0.9F;
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+            sky_sun_dir       = lrow.light.direction;
+            sky_sun_col       = lrow.light.color;
+            sky_sun_strength  = std::min(2.5F, lrow.light.intensity / 80000.0F);
+            break;
+        }
+        spush.sun_dir[0]   = sky_sun_dir.x;
+        spush.sun_dir[1]   = sky_sun_dir.y;
+        spush.sun_dir[2]   = sky_sun_dir.z;
+        spush.sun_dir[3]   = sky_sun_strength;
+        spush.sun_color[0] = sky_sun_col.x;
+        spush.sun_color[1] = sky_sun_col.y;
+        spush.sun_color[2] = sky_sun_col.z;
+        spush.sun_color[3] = 1.0F;  // full sky-tint blend
         sky_material.apply(cmd);
         cmd.push_constants(sky_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
