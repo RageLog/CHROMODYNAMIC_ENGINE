@@ -17,6 +17,7 @@ cd_add_library(material
     cd::shader
     cd::core
     cd::asset   # PbrParams.hpp references AssetId
+    cd::light   # Phase 171 — LitPbrMaterial packs cd::light::Light
 )
 
 if(CD_ENABLE_TESTING)
