@@ -86,6 +86,19 @@ struct VoiceRec
     std::uint32_t cursor { 0 };
 };
 
+// Phase 157 — push-stream record. The queue holds interleaved float
+// frames at the stream's native channel count. The mix loop converts
+// channel layouts on the fly (mono → device-channels broadcast,
+// stereo → first two device channels).
+struct StreamRec
+{
+    std::uint32_t channels { 1 };
+    std::uint32_t sample_rate { 48000 };
+    float         volume { 1.0F };
+    std::vector<float> queue;   // FIFO of interleaved samples
+    std::size_t   read_offset { 0 };
+};
+
 class WasapiBackend final : public IAudioBackend
 {
 public:
@@ -270,6 +283,64 @@ public:
         return master_.load(std::memory_order_acquire);
     }
 
+    // ---- Phase 157 — push-stream API ----------------------------------
+
+    [[nodiscard]] cd::core::Result<StreamHandle>
+    create_stream(std::uint32_t channels, std::uint32_t sample_rate, float volume) override
+    {
+        if (channels == 0 || sample_rate == 0)
+        {
+            return std::unexpected(audio_errors::make(
+                audio_errors::Code::kInvalidArgument,
+                "create_stream: channels / sample_rate must be > 0"));
+        }
+        std::lock_guard guard { state_mu_ };
+        const auto id = static_cast<std::uint32_t>(next_stream_id_++);
+        StreamRec rec;
+        rec.channels = channels;
+        rec.sample_rate = sample_rate;
+        rec.volume = volume;
+        streams_.emplace(id, std::move(rec));
+        return StreamHandle { id, 1u };
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    push_stream_samples(StreamHandle stream, std::span<const float> samples) override
+    {
+        std::lock_guard guard { state_mu_ };
+        auto it = streams_.find(stream.index());
+        if (it == streams_.end())
+        {
+            return std::unexpected(audio_errors::make(
+                audio_errors::Code::kInvalidArgument,
+                "push_stream_samples: unknown stream"));
+        }
+        it->second.queue.insert(it->second.queue.end(), samples.begin(), samples.end());
+        return {};
+    }
+
+    void destroy_stream(StreamHandle stream) override
+    {
+        std::lock_guard guard { state_mu_ };
+        streams_.erase(stream.index());
+    }
+
+    [[nodiscard]] std::size_t stream_pending_frames(StreamHandle stream) const noexcept override
+    {
+        std::lock_guard guard { state_mu_ };
+        auto it = streams_.find(stream.index());
+        if (it == streams_.end() || it->second.channels == 0) return 0;
+        const auto remaining = it->second.queue.size() > it->second.read_offset
+            ? it->second.queue.size() - it->second.read_offset : 0;
+        return remaining / it->second.channels;
+    }
+
+    [[nodiscard]] std::size_t stream_count() const noexcept override
+    {
+        std::lock_guard guard { state_mu_ };
+        return streams_.size();
+    }
+
 private:
     void render_loop_() noexcept
     {
@@ -359,7 +430,42 @@ private:
                         static_cast<std::size_t>(v.cursor) * c.channels + use_ch;
                     acc += c.samples[idx] * v.volume;
                 }
+                // Phase 157 — mix in push-streams. Each stream contributes
+                // one frame from its queue; broadcast / drop channels as
+                // needed to match the device layout. Empty queue → silence
+                // (no underrun pop).
+                for (auto& [_, s] : streams_)
+                {
+                    const auto avail = s.queue.size() > s.read_offset
+                        ? s.queue.size() - s.read_offset : 0;
+                    if (avail < s.channels) continue;
+                    const std::uint32_t use_ch = ch < s.channels ? ch : 0u;
+                    acc += s.queue[s.read_offset + use_ch] * s.volume;
+                }
                 out[i * device_channels_ + ch] = std::clamp(acc * master, -1.0F, 1.0F);
+            }
+            // After writing this device frame, advance every stream by
+            // one source frame.
+            for (auto& [_, s] : streams_)
+            {
+                const auto avail = s.queue.size() > s.read_offset
+                    ? s.queue.size() - s.read_offset : 0;
+                if (avail >= s.channels) s.read_offset += s.channels;
+            }
+            // Compact stream queues when the read offset gets large to
+            // keep memory bounded — drop the consumed prefix.
+            for (auto& [_, s] : streams_)
+            {
+                if (s.read_offset > 8192 && s.read_offset < s.queue.size())
+                {
+                    s.queue.erase(s.queue.begin(), s.queue.begin() + static_cast<std::ptrdiff_t>(s.read_offset));
+                    s.read_offset = 0;
+                }
+                else if (s.read_offset >= s.queue.size() && !s.queue.empty())
+                {
+                    s.queue.clear();
+                    s.read_offset = 0;
+                }
             }
             // Advance every active voice's cursor by 1 frame at the
             // CLIP's sample rate. WASAPI's AUTOCONVERTPCM rescales the
@@ -411,6 +517,10 @@ private:
     std::unordered_map<std::uint64_t, ClipRec> clips_;
     std::unordered_map<std::uint64_t, VoiceRec> voices_;
     std::vector<float> scratch_;
+
+    // Phase 157 — push-stream storage.
+    std::uint32_t next_stream_id_ { 1 };
+    std::unordered_map<std::uint32_t, StreamRec> streams_;
 };
 
 }  // namespace

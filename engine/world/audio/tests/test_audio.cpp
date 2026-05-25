@@ -5,6 +5,7 @@
 #include <cd/audio/CoreAudioBackend.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/NativeBackend.hpp>
+#include <cd/audio/WasapiBackend.hpp>
 #include <cd/audio/AnalyticalHRTF.hpp>
 #include <cd/audio/Positional.hpp>
 #include <cd/audio/PositionalSource.hpp>
@@ -146,6 +147,43 @@ TEST(NativeBackend, AlsaReturnsNullOnNonLinux)
     EXPECT_EQ(alsa, nullptr);
 #endif
 }
+
+// Phase 157 — push-stream API. Verify the API rejects unknown handles
+// and accepts valid push/destroy cycles on the WASAPI backend.
+#if defined(_WIN32)
+TEST(WasapiPushStream, CreateAcceptsValidParamsAndPushAppendsToQueue)
+{
+    auto backend = cd::audio::make_wasapi_audio_backend();
+    if (!backend) GTEST_SKIP() << "no WASAPI device on CI host";
+    auto stream = backend->create_stream(2, 48000, 0.5F);
+    ASSERT_TRUE(stream.has_value()) << stream.error().message;
+    EXPECT_EQ(backend->stream_count(), 1u);
+
+    std::vector<float> chunk(480 * 2, 0.1F);  // 10 ms of stereo @ 48 kHz
+    EXPECT_TRUE(backend->push_stream_samples(*stream, chunk).has_value());
+    EXPECT_GE(backend->stream_pending_frames(*stream), 0u);
+
+    backend->destroy_stream(*stream);
+    EXPECT_EQ(backend->stream_count(), 0u);
+}
+
+TEST(WasapiPushStream, RejectsInvalidCreateArgs)
+{
+    auto backend = cd::audio::make_wasapi_audio_backend();
+    if (!backend) GTEST_SKIP() << "no WASAPI device on CI host";
+    EXPECT_FALSE(backend->create_stream(0, 48000, 1.0F).has_value());
+    EXPECT_FALSE(backend->create_stream(2, 0,     1.0F).has_value());
+}
+
+TEST(WasapiPushStream, PushToUnknownStreamRejected)
+{
+    auto backend = cd::audio::make_wasapi_audio_backend();
+    if (!backend) GTEST_SKIP() << "no WASAPI device on CI host";
+    cd::audio::StreamHandle bogus { 999u, 1u };
+    std::vector<float> samples(48, 0.0F);
+    EXPECT_FALSE(backend->push_stream_samples(bogus, samples).has_value());
+}
+#endif
 
 TEST(NativeBackend, KindMatchesHostPlatform)
 {

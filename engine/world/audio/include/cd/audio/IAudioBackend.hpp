@@ -55,6 +55,15 @@ struct VoiceTag
 /// so multiple overlapping playbacks of the same clip are first-class.
 using VoiceHandle = cd::core::Handle<VoiceTag>;
 
+/// Phase 157 — continuous-push audio stream. Differs from a Clip+Voice
+/// pair in that the caller feeds PCM samples in real time rather than
+/// uploading the whole sound up-front. Use for microphone, network
+/// voice, procedural synthesis, or any non-precomputed source.
+struct StreamTag
+{
+};
+using StreamHandle = cd::core::Handle<StreamTag>;
+
 /// PCM clip description. The MVP accepts interleaved float samples in [-1, 1].
 struct ClipDesc
 {
@@ -92,6 +101,45 @@ public:
 
     virtual void set_master_volume(float v) noexcept = 0;
     [[nodiscard]] virtual float master_volume() const noexcept = 0;
+
+    // ---- Phase 157 — push-stream API -----------------------------------
+    //
+    // Continuous PCM stream. Caller obtains a handle via
+    // `create_stream(...)`, then feeds float samples in real time via
+    // `push_stream_samples(...)`. The backend pulls from the queue at
+    // the device tick rate; if the queue underruns the backend emits
+    // silence (no crash, no resync). Destroy on exit.
+    //
+    // The default no-op overrides let backends that don't support
+    // streaming (file-sink, null) compile + report kNotImplemented at
+    // runtime — matches the IDevice RT default pattern.
+
+    [[nodiscard]] virtual cd::core::Result<StreamHandle>
+    create_stream(std::uint32_t /*channels*/,
+                  std::uint32_t /*sample_rate*/,
+                  float /*volume*/ = 1.0F)
+    {
+        return std::unexpected(audio_errors::make(
+            audio_errors::Code::kBackendError,
+            "create_stream: backend has no push-stream implementation"));
+    }
+
+    [[nodiscard]] virtual cd::core::Result<void>
+    push_stream_samples(StreamHandle /*stream*/, std::span<const float> /*samples*/)
+    {
+        return std::unexpected(audio_errors::make(
+            audio_errors::Code::kBackendError,
+            "push_stream_samples: backend has no push-stream implementation"));
+    }
+
+    virtual void destroy_stream(StreamHandle /*stream*/) {}
+
+    /// Pending PCM frames waiting in the stream's queue. 0 means the
+    /// next mix tick will emit silence. Useful for back-pressure.
+    [[nodiscard]] virtual std::size_t
+    stream_pending_frames(StreamHandle /*stream*/) const noexcept { return 0; }
+
+    [[nodiscard]] virtual std::size_t stream_count() const noexcept { return 0; }
 };
 
 /// Null backend: accepts everything, plays nothing. Returns deterministic
