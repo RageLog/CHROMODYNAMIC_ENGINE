@@ -496,3 +496,83 @@ TEST(BoneSocketSet, ClearEmpties)
     s.clear();
     EXPECT_EQ(s.size(), 0u);
 }
+
+// Phase 156 — pose blend / additive layer.
+#include <cd/anim/PoseBlend.hpp>
+
+TEST(PoseBlend, WeightZeroReturnsLeft)
+{
+    cd::anim::Pose a, b;
+    a.joint_locals.resize(2);
+    b.joint_locals.resize(2);
+    a.joint_locals[0].position = { 1.0F, 0.0F, 0.0F };
+    b.joint_locals[0].position = { 0.0F, 0.0F, 0.0F };
+    cd::anim::Pose out;
+    cd::anim::blend_pose(a, b, 0.0F, out);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.x, 1.0F);
+}
+
+TEST(PoseBlend, WeightOneReturnsRight)
+{
+    cd::anim::Pose a, b;
+    a.joint_locals.resize(2);
+    b.joint_locals.resize(2);
+    a.joint_locals[0].position = { 1.0F, 0.0F, 0.0F };
+    b.joint_locals[0].position = { 0.0F, 5.0F, 0.0F };
+    cd::anim::Pose out;
+    cd::anim::blend_pose(a, b, 1.0F, out);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.x, 0.0F);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.y, 5.0F);
+}
+
+TEST(PoseBlend, WeightHalfLerpsLinearly)
+{
+    cd::anim::Pose a, b;
+    a.joint_locals.resize(1);
+    b.joint_locals.resize(1);
+    a.joint_locals[0].position = { 2.0F, 0.0F, 0.0F };
+    b.joint_locals[0].position = { 0.0F, 4.0F, 0.0F };
+    cd::anim::Pose out;
+    cd::anim::blend_pose(a, b, 0.5F, out);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.x, 1.0F);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.y, 2.0F);
+}
+
+TEST(PoseBlend, FilterSkipsExcludedJoints)
+{
+    cd::anim::Pose target, b;
+    target.joint_locals.resize(2);
+    b.joint_locals.resize(2);
+    target.joint_locals[0].position = { 1.0F, 0.0F, 0.0F };
+    target.joint_locals[1].position = { 2.0F, 0.0F, 0.0F };
+    b.joint_locals[0].position      = { 0.0F, 0.0F, 0.0F };
+    b.joint_locals[1].position      = { 0.0F, 0.0F, 0.0F };
+    cd::anim::blend_pose_into(target, b, 1.0F,
+        [](std::size_t i) { return i != 0; });
+    EXPECT_FLOAT_EQ(target.joint_locals[0].position.x, 1.0F);
+    EXPECT_FLOAT_EQ(target.joint_locals[1].position.x, 0.0F);
+}
+
+TEST(PoseBlend, AdditiveWithWeightZeroIsBase)
+{
+    cd::anim::Pose base, additive;
+    base.joint_locals.resize(1);
+    additive.joint_locals.resize(1);
+    base.joint_locals[0].position     = { 1.0F, 0.0F, 0.0F };
+    additive.joint_locals[0].position = { 0.5F, 0.0F, 0.0F };
+    cd::anim::Pose out;
+    cd::anim::additive_apply(base, additive, 0.0F, out);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.x, 1.0F);
+}
+
+TEST(PoseBlend, AdditiveWithWeightOneAppliesFullOffset)
+{
+    cd::anim::Pose base, additive;
+    base.joint_locals.resize(1);
+    additive.joint_locals.resize(1);
+    base.joint_locals[0].position     = { 1.0F, 0.0F, 0.0F };
+    additive.joint_locals[0].position = { 0.5F, 0.0F, 0.0F };
+    cd::anim::Pose out;
+    cd::anim::additive_apply(base, additive, 1.0F, out);
+    EXPECT_FLOAT_EQ(out.joint_locals[0].position.x, 1.5F);
+}
