@@ -952,6 +952,7 @@ layout(push_constant) uniform PC {
   vec4 shafts;  // x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
   vec4 sun_col; // rgb=sun colour, a=reserved
   vec4 atmo;    // x=fog_density (1/m), y=aerial_perspective_strength, z=vignette, w=film_grain
+  vec4 lens;    // x=chromatic_aberration_px (radial growth), y/z/w=reserved
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -990,8 +991,25 @@ float depth_ao(vec2 uv, float center_d) {
   return clamp(1.0 - occ, 0.0, 1.0);
 }
 
+// Chromatic aberration — radial RGB split. Strength grows with
+// distance from screen centre (lens-style barrel), so the centre
+// stays sharp. Single offset shared per channel pair.
+vec3 sample_chromab(vec2 uv) {
+  if (pc.lens.x <= 0.001) return texture(cd_hdr_color, uv).rgb;
+  vec2 vc = uv - vec2(0.5);
+  float r = length(vc);
+  vec2 dir = (r > 1e-4) ? vc / r : vec2(0.0);
+  vec2 px = 1.0 / vec2(textureSize(cd_hdr_color, 0));
+  float offs = pc.lens.x * r * r * 8.0;
+  vec3 c;
+  c.r = texture(cd_hdr_color, uv + dir * offs * px).r;
+  c.g = texture(cd_hdr_color, uv).g;
+  c.b = texture(cd_hdr_color, uv - dir * offs * px).b;
+  return c;
+}
+
 void main() {
-  vec3 c = texture(cd_hdr_color, v_uv).rgb;
+  vec3 c = sample_chromab(v_uv);
   float center_d = texture(cd_depth, v_uv).r;
 
   // AO modulation — depth-only horizon scan. Applied to HDR before
@@ -1133,8 +1151,9 @@ struct CompositePush
     float shafts[4];  // x=sun_uv_x, y=sun_uv_y, z=strength (neg = sun behind), w=decay
     float sun_col[4]; // xyz=linear sun colour, w=reserved
     float atmo[4];    // x=fog_density, y=aerial_strength, z=vignette, w=film_grain
+    float lens[4];    // x=chromatic_aberration_px, y=reserved, z=reserved, w=reserved
 };
-static_assert(sizeof(CompositePush) == 96, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 112, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -2962,6 +2981,7 @@ int main()
     float fx_dof_strength   = 0.0F;   // wired to composite (phase207)
     float fx_vignette_strength = 0.25F;  // soft default — readable cinematic edge
     float fx_film_grain     = 0.0F;   // 0 = off; 0.5 = visible filmic noise
+    float fx_chromab_strength = 0.0F; // 0 = off; 0.5 = subtle radial RGB split
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
@@ -6627,6 +6647,10 @@ int main()
         cp.atmo[1] = fx_aerial_perspective;
         cp.atmo[2] = fx_vignette_strength;
         cp.atmo[3] = fx_film_grain;
+        cp.lens[0] = fx_chromab_strength;
+        cp.lens[1] = 0.0F;
+        cp.lens[2] = 0.0F;
+        cp.lens[3] = 0.0F;
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
