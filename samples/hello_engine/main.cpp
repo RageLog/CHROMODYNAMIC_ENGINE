@@ -300,6 +300,7 @@ layout(push_constant) uniform PC {
   vec4 point_pos_range;  // xyz=world position, w=range (0 = no point light)
   vec4 point_color;      // xyz=color, w=intensity (lumens/4π)
   vec4 spot_dir_cos;     // xyz=spot forward, w=cos(outer); w<=0 = point
+  vec4 fx_params;        // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
 } pc;
 // Faz 1.6 CSM — light-space view-projection for shadow sampling.
 // Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
@@ -523,22 +524,39 @@ void main() {
   vec3  ambient = albedo * hemi;
   vec3  c       = lit + ambient;
 
-  // AGX tonemap (Sobotka 2022) — saturation-preserving on coloured
-  // highlights vs. ACES Narkowicz which over-desaturates. Closes the
-  // user-flagged "renklerde bir gariplik" anomaly.
-  // Source matches cd::post_tonemap::kAgxGlsl line-for-line.
-  const float kMinEv = -12.47393, kMaxEv = 4.026069;
-  vec3 agx_log = clamp((log2(max(c, vec3(1e-10))) - vec3(kMinEv)) /
-                       (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
-  vec3 x2  = agx_log * agx_log;
-  vec3 x4  = x2 * x2;
-  c = clamp( 15.5  * x4 * x2
-           - 40.14 * x4 * agx_log
-           + 31.96 * x4
-           -  6.868 * x2 * agx_log
-           +  0.4298 * x2
-           +  0.1191 * agx_log
-           -  0.00232, vec3(0.0), vec3(1.0));
+  // Runtime tonemap operator selector (pc.fx_params.x).
+  //   0 = Narkowicz ACES        (deep blacks, soft highlights)
+  //   1 = Hill ACES             (production fit, Filament-style)
+  //   2 = Hable / Uncharted 2   (filmic, warmer highlights)
+  //   3 = AGX (Sobotka 2022)    (saturation-preserving) — default
+  int op = int(pc.fx_params.x);
+  if (op == 0) {
+    const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
+    c = clamp((c * (a_*c + b_)) / (c * (c_*c + d_) + e_),
+              vec3(0.0), vec3(1.0));
+  } else if (op == 1) {
+    vec3 a = c * (c + 0.0245786) - 0.000090537;
+    vec3 b = c * (0.983729 * c + 0.4329510) + 0.238081;
+    c = clamp(a / b, vec3(0.0), vec3(1.0));
+  } else if (op == 2) {
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30, W = 11.2;
+    vec3 cf = ((c * (A*c + C*B) + D*E) / (c * (A*c + B) + D*F)) - E/F;
+    vec3 wf = vec3(((W * (A*W + C*B) + D*E) / (W * (A*W + B) + D*F)) - E/F);
+    c = clamp(cf / wf, vec3(0.0), vec3(1.0));
+  } else {
+    const float kMinEv = -12.47393, kMaxEv = 4.026069;
+    vec3 lg = clamp((log2(max(c, vec3(1e-10))) - vec3(kMinEv)) /
+                    (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
+    vec3 x2  = lg * lg;
+    vec3 x4  = x2 * x2;
+    c = clamp( 15.5  * x4 * x2
+             - 40.14 * x4 * lg
+             + 31.96 * x4
+             -  6.868 * x2 * lg
+             +  0.4298 * x2
+             +  0.1191 * lg
+             -  0.00232, vec3(0.0), vec3(1.0));
+  }
   c = pow(c, vec3(1.0/2.2));
   out_color = vec4(c, 1.0);
 }
@@ -574,14 +592,14 @@ struct PrimPush
     float           point_pos_range[4];
     float           point_color[4];
     // Spot-cone — xyz = forward direction (normalised), w = cos(outer
-    // half-angle). w <= 0.0 means "this is a point light, no cone";
-    // the FS uses w as the sentinel to skip the cone falloff math.
-    // Inner half-angle is auto-derived as cos(outer) + 0.05 so the
-    // penumbra is a few degrees wide without extra push bytes.
+    // half-angle). w <= 0.0 means "this is a point light, no cone".
     float           spot_dir_cos[4];
+    // FX params — x = tonemap op (0=Narkowicz / 1=Hill ACES / 2=Hable
+    // / 3=AGX), yzw reserved for future post-FX selectors.
+    float           fx_params[4];
 };
 
-static_assert(sizeof(PrimPush) == 224, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 240, "PrimPush layout drift");
 
 // ----------------------------------------------------------------------------
 // Planar-shadow projection matrix.
@@ -1481,6 +1499,17 @@ int main()
     cd::editor::CommandPalette palette;
     bool        palette_visible = false;
     std::string palette_query;
+    // FX state — runtime-tweakable, pushed into PrimPush::fx_params
+    // each draw. tonemap_op: 0=Narkowicz, 1=Hill, 2=Hable, 3=AGX.
+    int tonemap_op = 3;  // default AGX
+    palette.register_command(70, "Tonemap: AGX (Sobotka 2022)",
+        [&]{ tonemap_op = 3; log_push("[fx] tonemap = AGX"); });
+    palette.register_command(71, "Tonemap: Hill ACES (Filament fit)",
+        [&]{ tonemap_op = 1; log_push("[fx] tonemap = Hill ACES"); });
+    palette.register_command(72, "Tonemap: Hable / Uncharted 2",
+        [&]{ tonemap_op = 2; log_push("[fx] tonemap = Hable"); });
+    palette.register_command(73, "Tonemap: Narkowicz ACES",
+        [&]{ tonemap_op = 0; log_push("[fx] tonemap = Narkowicz"); });
     palette.register_command(1, "Edit: Undo",
         [&]{ if (history.undo()) log_push("[palette] Undo"); });
     palette.register_command(2, "Edit: Redo",
@@ -2606,10 +2635,17 @@ int main()
         // Per-fragment lighting now: sun + first enabled point light with
         // distance attenuation. So rotating/moving an entity (or moving
         // a light) updates its shading correctly.
-        cd::math::Vec3f sun_dir { -0.4F, -0.7F, -0.6F };
-        cd::math::Vec3f sun_col { 1.0F, 1.0F, 1.0F };
-        float           sun_str = 0.9F;
-        float           ambient_w = 0.18F;
+        // Lights-off baseline: NOTHING contributes. Defaults are
+        // intentionally zeroed so the scene goes to (near-)black when
+        // every light is disabled — user feedback: "isik yoksa golge
+        // yada isik beklemem". The for-loop below promotes the first
+        // enabled directional to the sun slot; absent that, sun_str
+        // stays 0 and the FS sun term contributes nothing.
+        cd::math::Vec3f sun_dir { 0.0F, -1.0F, 0.0F };
+        cd::math::Vec3f sun_col { 0.0F, 0.0F, 0.0F };
+        float           sun_str = 0.0F;
+        float           ambient_w = 0.0F;
+        bool            has_sun = false;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
@@ -2617,8 +2653,13 @@ int main()
             sun_dir = lrow.light.direction;
             sun_col = lrow.light.color;
             sun_str = std::min(2.5F, lrow.light.intensity / 80000.0F);
+            // Sky hemisphere tied to sun being enabled: no sun, no
+            // sky bounce — the universe is dark.
+            ambient_w = 0.18F;
+            has_sun = true;
             break;
         }
+        (void)has_sun;
         cd::math::Vec3f point_pos { 0,0,0 };
         cd::math::Vec3f point_col { 0,0,0 };
         float           point_range = 0.0F;
@@ -2717,6 +2758,8 @@ int main()
             fp.point_color[2] = point_col.z; fp.point_color[3] = point_str;
             fp.spot_dir_cos[0] = spot_dir.x; fp.spot_dir_cos[1] = spot_dir.y;
             fp.spot_dir_cos[2] = spot_dir.z; fp.spot_dir_cos[3] = spot_cos_outer;
+            fp.fx_params[0] = static_cast<float>(tonemap_op);
+            fp.fx_params[1] = fp.fx_params[2] = fp.fx_params[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -2748,6 +2791,8 @@ int main()
             pp.point_color[2] = point_col.z; pp.point_color[3] = point_str;
             pp.spot_dir_cos[0] = spot_dir.x; pp.spot_dir_cos[1] = spot_dir.y;
             pp.spot_dir_cos[2] = spot_dir.z; pp.spot_dir_cos[3] = spot_cos_outer;
+            pp.fx_params[0] = static_cast<float>(tonemap_op);
+            pp.fx_params[1] = pp.fx_params[2] = pp.fx_params[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
