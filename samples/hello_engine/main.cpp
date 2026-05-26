@@ -1384,20 +1384,35 @@ int main()
 
     // ---- Meshes (one PBR sphere, five primitive entities) ----
     auto cube_cpu = cd::asset::make_cube();
-    // make_cube ships per-face axis-coloured vertices (red/green/blue
-    // debug viz). For the entity tint pipeline we want one uniform
-    // colour so the per-instance tint actually shows; flatten to a
-    // neutral 0.7 grey (matches make_sphere/cone/cyl).
-    for (auto& v : cube_cpu.vertices)
-    {
-        v.color[0] = 0.7F;
-        v.color[1] = 0.7F;
-        v.color[2] = 0.7F;
-    }
-    const auto sphere_cpu   = cd::asset::make_sphere(18, 28);
-    const auto cone_cpu     = cd::asset::make_cone(32);
-    const auto cyl_cpu      = cd::asset::make_cylinder(32);
-    const auto torus_cpu    = cd::asset::make_torus(0.45F, 0.18F, 16, 24);
+    // make_cube ships per-face axis-coloured (red/green/blue) and
+    // make_sphere/cone/cyl/torus ship pos-based rainbow vertex
+    // colours. Both patterns FIGHT the per-instance tint multiply
+    // (v_albedo = in_color * pc.tint.rgb), producing a muddy wash
+    // where every entity looks similar regardless of its tint. Flat-
+    // ten EVERY primitive to white (1,1,1) so the entity tint shows
+    // unmodified — closes the user-flagged 'proseduriel cisimlerin
+    // renkleri ayni' regression.
+    auto sphere_cpu_mut = cd::asset::make_sphere(18, 28);
+    auto cone_cpu_mut   = cd::asset::make_cone(32);
+    auto cyl_cpu_mut    = cd::asset::make_cylinder(32);
+    auto torus_cpu_mut  = cd::asset::make_torus(0.45F, 0.18F, 16, 24);
+    auto flatten_white = [](auto& mesh) {
+        for (auto& v : mesh.vertices)
+        {
+            v.color[0] = 1.0F;
+            v.color[1] = 1.0F;
+            v.color[2] = 1.0F;
+        }
+    };
+    flatten_white(cube_cpu);
+    flatten_white(sphere_cpu_mut);
+    flatten_white(cone_cpu_mut);
+    flatten_white(cyl_cpu_mut);
+    flatten_white(torus_cpu_mut);
+    const auto& sphere_cpu = sphere_cpu_mut;
+    const auto& cone_cpu   = cone_cpu_mut;
+    const auto& cyl_cpu    = cyl_cpu_mut;
+    const auto& torus_cpu  = torus_cpu_mut;
     // Floor quad — 1000 m × 1000 m centred at origin, normal +Y. The
     // size is far larger than the camera ever reaches; the FS
     // distance-fade (30 m -> 60 m) handles the apparent infinite-grid
