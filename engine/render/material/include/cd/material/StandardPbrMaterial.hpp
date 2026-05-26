@@ -229,12 +229,10 @@ void main() {
   // Gated by total scene-light energy so the IBL stays meaningfully
   // tied to the lit state (sun off + other lights on => IBL still
   // contributes; all lights off => IBL ≈ 0).
-  float total_light_e = sun_i;
-  for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
-    if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
-    total_light_e += cd_lights.slots[li2].color_int.w;
-  }
-  float ibl_gate = clamp(total_light_e * 0.6, 0.0, 1.0);
+  // IBL = environment bounce; tied to the SUN only. Direct lights
+  // (point/spot/rect) shouldn't generate a global ambient lift —
+  // they illuminate via their direct contribution only.
+  float ibl_gate = clamp(sun_i * 0.6, 0.0, 1.0);
   vec3  R           = reflect(-V, N);
   float spec_lod    = roughness * kIblMaxMipLod;
   vec3  prefiltered = textureLod(cd_ibl_spec, R, spec_lod).rgb;

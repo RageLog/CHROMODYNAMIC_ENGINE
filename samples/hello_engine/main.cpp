@@ -716,12 +716,12 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    float ibl_e = pc.sun_dir.w;
-    for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
-      if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
-      ibl_e += cd_lights.slots[li2].color_int.w;
-    }
-    float ibl_gate = clamp(ibl_e * 0.6, 0.0, 1.0);
+    // IBL = environment bounce; tied to the SUN only. Point/spot/rect
+    // lights are direct sources and shouldn't synthesise a global
+    // ambient lift on objects outside their reach. Closes the user-
+    // flagged 'spot isik object'in disinda olsa bile aydinlaniyor'
+    // bug. Real bounce light needs GI (R4 ReSTIR / DDGI ship).
+    float ibl_gate = clamp(pc.sun_dir.w * 0.6, 0.0, 1.0);
     ambient += ibl * ibl_gate * 0.55;
   }
 
@@ -968,9 +968,96 @@ void main() {
 
 struct CompositePush
 {
-    float fx[4];  // x=tonemap_op, y=exposure, z=sat_boost, w=_
+    float fx[4];  // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
 };
 static_assert(sizeof(CompositePush) == 16, "CompositePush layout");
+
+// ============================================================================
+// R3 — Multi-mip bloom (Karis 2013 stable pipeline).
+//
+// 4 progressively halving render targets. Prefilter: HDR (soft-knee)
+// -> mip0. Downsample chain: mip0 -> 1 -> 2 -> 3 using a Karis 13-tap
+// fireflies-suppressing reduction. Upsample chain: mip3 -> 2 -> 1 ->
+// 0 with 9-tap tent filter + additive blend. Final mip0 contribution
+// added in the composite pass before tonemap.
+// ============================================================================
+[[maybe_unused]] constexpr std::uint32_t kBloomMipCount = 4;
+
+[[maybe_unused]] constexpr const char* kBloomPrefilterFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(push_constant) uniform PC {
+  vec4 params; // x=threshold, y=knee, z=_, w=_
+} pc;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+  vec3 c = texture(src, v_uv).rgb;
+  float br = max(c.r, max(c.g, c.b));
+  float thr = max(pc.params.x, 1e-4);
+  float knee = max(pc.params.y, 1e-4);
+  float rq = clamp(br - thr + knee, 0.0, 2.0 * knee);
+  float scale = (rq * rq) / (4.0 * knee + 1e-4);
+  float factor = max(br - thr, scale) / max(br, 1e-4);
+  out_color = vec4(c * factor, 1.0);
+}
+)glsl";
+
+[[maybe_unused]] constexpr const char* kBloomDownsampleFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+  vec2 px = 1.0 / vec2(textureSize(src, 0));
+  vec3 A = texture(src, v_uv + px * vec2(-1, -1)).rgb;
+  vec3 B = texture(src, v_uv + px * vec2( 0, -1)).rgb;
+  vec3 C = texture(src, v_uv + px * vec2( 1, -1)).rgb;
+  vec3 D = texture(src, v_uv + px * vec2(-1,  0)).rgb;
+  vec3 E = texture(src, v_uv                       ).rgb;
+  vec3 F = texture(src, v_uv + px * vec2( 1,  0)).rgb;
+  vec3 G = texture(src, v_uv + px * vec2(-1,  1)).rgb;
+  vec3 H = texture(src, v_uv + px * vec2( 0,  1)).rgb;
+  vec3 I = texture(src, v_uv + px * vec2( 1,  1)).rgb;
+  vec3 J = texture(src, v_uv + px * vec2(-0.5, -0.5)).rgb;
+  vec3 K = texture(src, v_uv + px * vec2( 0.5, -0.5)).rgb;
+  vec3 L = texture(src, v_uv + px * vec2(-0.5,  0.5)).rgb;
+  vec3 M = texture(src, v_uv + px * vec2( 0.5,  0.5)).rgb;
+  vec3 partial = (J + K + L + M) * (0.5  / 4.0)
+               + (A + B + D + E) * (0.125 / 4.0)
+               + (B + C + E + F) * (0.125 / 4.0)
+               + (D + E + G + H) * (0.125 / 4.0)
+               + (E + F + H + I) * (0.125 / 4.0);
+  out_color = vec4(partial, 1.0);
+}
+)glsl";
+
+[[maybe_unused]] constexpr const char* kBloomUpsampleFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(push_constant) uniform PC {
+  vec4 params; // x=radius, y=intensity, z=_, w=_
+} pc;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+  vec2 px = pc.params.x / vec2(textureSize(src, 0));
+  vec3 sum  = texture(src, v_uv + px * vec2(-1, -1)).rgb * 1.0;
+  sum      += texture(src, v_uv + px * vec2( 0, -1)).rgb * 2.0;
+  sum      += texture(src, v_uv + px * vec2( 1, -1)).rgb * 1.0;
+  sum      += texture(src, v_uv + px * vec2(-1,  0)).rgb * 2.0;
+  sum      += texture(src, v_uv                       ).rgb * 4.0;
+  sum      += texture(src, v_uv + px * vec2( 1,  0)).rgb * 2.0;
+  sum      += texture(src, v_uv + px * vec2(-1,  1)).rgb * 1.0;
+  sum      += texture(src, v_uv + px * vec2( 0,  1)).rgb * 2.0;
+  sum      += texture(src, v_uv + px * vec2( 1,  1)).rgb * 1.0;
+  sum *= (1.0 / 16.0);
+  out_color = vec4(sum * pc.params.y, 1.0);
+}
+)glsl";
+
+struct BloomPrefilterPush { float params[4]; };
+struct BloomUpsamplePush  { float params[4]; };
 
 struct PrimPush
 {
