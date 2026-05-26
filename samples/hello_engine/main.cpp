@@ -407,6 +407,34 @@ float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
 // 3×3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
 // occluded. Vulkan clip space x,y ∈ [-1,1], depth ∈ [0,1]; texture
 // uv has y down (matches Vulkan clip y after perspective divide).
+// LTC polygon irradiance for area lights (#3). Lambert-only fit
+// (identity inverse matrix — production wants a 64x64 LUT keyed
+// by roughness/NoV). N is the surface normal at the shading
+// point; corners are in world-space, relative to the shading
+// point. Returns the form-factor of the polygon visible from N.
+float cd_ltc_edge_integral(vec3 a, vec3 b) {
+  float ct = clamp(dot(a, b), -1.0, 1.0);
+  float th = acos(ct);
+  vec3  cr = cross(a, b);
+  float si = sin(th);
+  return (si < 1e-5) ? 0.0 : (th / si) * cr.z;
+}
+float cd_ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+  vec3 up = abs(N.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+  vec3 T  = normalize(cross(up, N));
+  vec3 B  = cross(N, T);
+  mat3 frame = transpose(mat3(T, B, N));
+  vec3 p0 = normalize(frame * c0);
+  vec3 p1 = normalize(frame * c1);
+  vec3 p2 = normalize(frame * c2);
+  vec3 p3 = normalize(frame * c3);
+  float s = cd_ltc_edge_integral(p0, p1) +
+            cd_ltc_edge_integral(p1, p2) +
+            cd_ltc_edge_integral(p2, p3) +
+            cd_ltc_edge_integral(p3, p0);
+  return abs(s) / 6.28318530;
+}
+
 float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   // Perspective divide — ortho gives w=1 but keep for generality.
   vec3 p = sp.xyz / sp.w;
@@ -498,28 +526,55 @@ void main() {
   float shade = sample_shadow(v_shadow_pos, N, Ld);
   lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun * shade);
 
-  // Multi-light loop (gap #2). Iterates every enabled non-sun light
-  // in the per-frame UBO and accumulates its contribution. Type
-  // selector decoded from slot.dir_type.w:
-  //   1 = Point  — distance attenuation only
-  //   2 = Spot   — distance attenuation + cone falloff (Frostbite)
-  //   3 = Rect   — area-as-point fallback; LTC wire-in lands in #3
-  //   4 = Disk   — area-as-point fallback
-  // Every slot's contribution is gated by an inline RT shadow ray
-  // against the TLAS (Faz 1.7) when NdotL > 0.
+  // Multi-light loop (gap #2 + #3). Per type:
+  //   1 = Point  — Frostbite windowed inverse-square, RT shadow
+  //   2 = Spot   — same + smoothstep cone falloff
+  //   3 = Rect   — LTC polygon irradiance (Heitz 2016, Lambert fit)
+  //   4 = Disk   — LTC polygon irradiance with disk approximated by quad
+  // Each contribution gated by an inline RT shadow ray (Faz 1.7).
   for (uint li = 0; li < cd_lights.count; ++li) {
     vec3 lp_pos = cd_lights.slots[li].pos_range.xyz;
     float rng  = cd_lights.slots[li].pos_range.w;
     int   ltp  = int(cd_lights.slots[li].dir_type.w);
-    vec3 to_p  = lp_pos - v_world_pos;
-    float d    = length(to_p);
-    if (d < 1e-4 || rng <= 0.0) continue;
-    vec3 Lp     = to_p / d;
-    float ndl   = max(dot(N, Lp), 0.0);
+    if (rng <= 0.0) continue;
+
+    if (ltp == 3 || ltp == 4) {
+      // Area light: LTC polygon irradiance from 4 corners.
+      vec3 ln = normalize(cd_lights.slots[li].dir_type.xyz);
+      vec3 up_ref = (abs(ln.y) > 0.95) ? vec3(1.0,0.0,0.0) : vec3(0.0,1.0,0.0);
+      vec3 right  = normalize(cross(up_ref, ln));
+      vec3 up_v   = cross(ln, right);
+      float w = cd_lights.slots[li].extras.y * 0.5;
+      float h = cd_lights.slots[li].extras.z * 0.5;
+      // Corners as world-space positions, then made relative to the
+      // shading point so the LTC frame transform yields directions.
+      vec3 c0 = lp_pos - right*w - up_v*h - v_world_pos;
+      vec3 c1 = lp_pos + right*w - up_v*h - v_world_pos;
+      vec3 c2 = lp_pos + right*w + up_v*h - v_world_pos;
+      vec3 c3 = lp_pos - right*w + up_v*h - v_world_pos;
+      float E = cd_ltc_polygon_irradiance(N, c0, c1, c2, c3);
+      // Visibility test from area-light centre (one ray; full
+      // many-sample area shadow needs a denoiser).
+      vec3 to_c   = lp_pos - v_world_pos;
+      float d_c   = max(length(to_c), 1e-4);
+      vec3 Lc     = to_c / d_c;
+      float vis_a = ray_visibility(v_world_pos, N, Lc, d_c - 0.01);
+      vec3  col   = cd_lights.slots[li].color_int.xyz;
+      float ki    = cd_lights.slots[li].color_int.w;
+      lit += albedo * col * (ki * E * vis_a);
+      continue;
+    }
+
+    // Point / Spot path.
+    vec3 to_p = lp_pos - v_world_pos;
+    float d   = length(to_p);
+    if (d < 1e-4) continue;
+    vec3 Lp   = to_p / d;
+    float ndl = max(dot(N, Lp), 0.0);
     if (ndl <= 0.0) continue;
     float atten = distance_atten(d, rng);
     float cone  = 1.0;
-    if (ltp == 2) {  // Spot
+    if (ltp == 2) {
       vec3  axis    = normalize(cd_lights.slots[li].dir_type.xyz);
       float cos_b   = dot(-Lp, axis);
       float cos_out = cd_lights.slots[li].extras.x;
@@ -527,14 +582,10 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // Area lights (Rect / Disk): point-fallback shading until the
-    // LTC GLSL helper from cd::brdf_ltc lands here. Boost atten a
-    // touch so the wider area-of-emission reads brighter.
-    float area_boost = (ltp == 3 || ltp == 4) ? 0.5 : 1.0;
     float vis = ray_visibility(v_world_pos, N, Lp, d - 0.01);
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
-    lit += albedo * col * (ki * ndl * atten * vis * cone * area_boost);
+    lit += albedo * col * (ki * ndl * atten * vis * cone);
   }
 
   // Hemisphere ambient (sky-up / ground-down). Top-facing fragments
