@@ -963,6 +963,51 @@ constexpr const char* kShadowFS = R"glsl(
 void main() {}
 )glsl";
 
+// ============================================================================
+// R3 — Composite pass.
+//
+// Fullscreen-triangle VS + FS that samples the HDR scene target and
+// blits it to the swapchain. Acts as the home for post-process
+// operations that compose multiple inputs (bloom, GTAO, SSR) before
+// the final tonemap. First ship: pass-through (HDR linear -> sRGB
+// gamma) so the scene shaders no longer carry the tonemap themselves.
+// ============================================================================
+constexpr const char* kCompositeVS = R"glsl(
+#version 450
+layout(location = 0) out vec2 v_uv;
+void main() {
+  // Single triangle covering NDC [-1, 3] x [-1, 3]; clipped to viewport.
+  vec2 ndc = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+  v_uv = ndc * vec2(1.0, 1.0);
+  gl_Position = vec4(ndc * 2.0 - 1.0, 0.0, 1.0);
+}
+)glsl";
+
+constexpr const char* kCompositeFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
+layout(push_constant) uniform PC {
+  vec4 fx; // reserved — prim/PBR FS already apply tonemap inline.
+} pc;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+
+void main() {
+  // Pass-through. The scene shaders (prim FS, StandardPbrFS) already
+  // run the full tonemap + saturation + gamma chain inline. When the
+  // post-fx work moves out of those shaders into a dedicated post-fx
+  // stage (R3 multi-mip bloom / GTAO / SSR / TAA), composite gains
+  // the proper Hable + sat-boost + gamma steps. For now we just blit.
+  out_color = vec4(texture(cd_hdr_color, v_uv).rgb, 1.0);
+}
+)glsl";
+
+struct CompositePush
+{
+    float fx[4];  // x=tonemap_op, y=exposure, z=sat_boost, w=_
+};
+static_assert(sizeof(CompositePush) == 16, "CompositePush layout");
+
 struct PrimPush
 {
     cd::math::Mat4f mvp;
@@ -1211,6 +1256,60 @@ struct DepthTarget
 }
 
 // ============================================================================
+// R3 — HDR off-screen color target.
+//
+// RGBA16F render target that the scene draws into instead of the swap-
+// chain. A separate composite pass samples it, applies bloom + tonemap
+// + post-fx, then writes to the swapchain. Foundation for the v1.7
+// frame-graph rework.
+// ============================================================================
+struct ColorTarget
+{
+    cd::rhi::TextureHandle     image {};
+    cd::rhi::TextureViewHandle view  {};
+    cd::rhi::Extent2D          extent {};
+    cd::rhi::Format            format { cd::rhi::Format::kRGBA16Float };
+    void destroy(cd::rhi::IDevice& dev)
+    {
+        if (view.is_valid())  dev.destroy_texture_view(view);
+        if (image.is_valid()) dev.destroy_texture(image);
+        *this = {};
+    }
+};
+
+[[nodiscard]] inline bool
+create_color_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size,
+                    cd::rhi::Format format, ColorTarget& out)
+{
+    out.destroy(dev);
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::k2D;
+    td.format = format;
+    td.extent = { size.width, size.height, 1 };
+    td.mip_levels = 1;
+    td.array_layers = 1;
+    td.usage  = cd::rhi::TextureUsage::kColorAttachment |
+                cd::rhi::TextureUsage::kSampled |
+                cd::rhi::TextureUsage::kStorage;  // for compute bloom/AO
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return false;
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = *img;
+    vd.type = cd::rhi::TextureType::k2D;
+    vd.format = format;
+    vd.base_mip = 0; vd.mip_count = 1;
+    vd.base_layer = 0; vd.layer_count = 1;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(*img); return false; }
+    out.image  = *img;
+    out.view   = *v;
+    out.extent = size;
+    out.format = format;
+    return true;
+}
+
+// ============================================================================
 // Mini histogram helper for the random viz panel.
 // ============================================================================
 struct Histogram
@@ -1286,12 +1385,25 @@ int main()
         return 6;
     bool depth_initialised_on_gpu = false;
 
+    // R3 — HDR offscreen color target. Scene + sky + UI overlay all
+    // draw into this RGBA16F target; a separate composite pass blits
+    // it to the swapchain with tonemap + saturation correction.
+    constexpr auto kHdrFormat = cd::rhi::Format::kRGBA16Float;
+    ColorTarget hdr_target {};
+    if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
+        return 31;
+
+    // R3: scene materials draw into the HDR off-screen target now.
+    // Composite reads HDR + applies tonemap + writes to swapchain.
+    constexpr std::array<cd::rhi::Format, 1> kColorFmts {
+        cd::rhi::Format::kRGBA16Float };
+    constexpr std::array<cd::rhi::Format, 1> kSwapchainFmts {
+        cd::rhi::Format::kBGRA8Unorm };
+
     // Sky material — no vertex buffer, depth off.
     cd::material::MaterialDesc sky_md {};
     sky_md.vertex_glsl   = cd::material::kAnalyticalSkyVS;
     sky_md.fragment_glsl = cd::material::kAnalyticalSkyFS;
-    constexpr std::array<cd::rhi::Format, 1> kColorFmts {
-        cd::rhi::Format::kBGRA8Unorm };
     sky_md.color_attachment_formats = kColorFmts;
     constexpr std::array<cd::rhi::PushConstantRange, 1> kSkyPush {
         cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex |
@@ -1307,6 +1419,33 @@ int main()
     auto sky_r = cd::material::Material::create(device, compiler.get(), sky_md);
     if (!sky_r.has_value()) return 7;
     auto& sky_material = *sky_r;
+
+    // R3 composite material — full-screen triangle, samples HDR target,
+    // writes to swapchain. Carries the tonemap + saturation pass that
+    // previously lived inline in prim/PBR FS.
+    cd::material::MaterialDesc comp_md {};
+    comp_md.vertex_glsl   = kCompositeVS;
+    comp_md.fragment_glsl = kCompositeFS;
+    comp_md.color_attachment_formats = kSwapchainFmts;
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kCompositePush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment,
+                                     .offset = 0,
+                                     .size = sizeof(CompositePush) } };
+    comp_md.push_constants = kCompositePush;
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kCompositeBindings {
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 0,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment } };
+    comp_md.descriptor_bindings = kCompositeBindings;
+    comp_md.raster.cull = cd::rhi::CullMode::kNone;
+    comp_md.depth_stencil.depth_test = false;
+    comp_md.depth_stencil.depth_write = false;
+    comp_md.name = "hello_engine/composite";
+    auto comp_r = cd::material::Material::create(device, compiler.get(), comp_md);
+    if (!comp_r.has_value()) return 32;
+    auto& composite_material = *comp_r;
 
     // Standard PBR material for the 5x5 sphere sweep.
     constexpr std::array<cd::rhi::VertexBinding, 1> kPbrBindings {
@@ -1722,6 +1861,22 @@ int main()
                                        .sampler = ibl_sampler } };
         if (auto wr = pbr_inst.update(writes); !wr.has_value()) return 18;
     }
+
+    // R3: composite material instance + HDR sampler binding.
+    auto comp_inst_r = cd::material::MaterialInstance::create(device, composite_material);
+    if (!comp_inst_r.has_value()) return 33;
+    auto& composite_inst = *comp_inst_r;
+    auto bind_composite_hdr = [&]() {
+        std::array<cd::rhi::DescriptorWrite, 1> writes {
+            cd::rhi::DescriptorWrite {
+                .binding = 0,
+                .array_element = 0,
+                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view    = hdr_target.view,
+                .sampler = albedo_sampler } };
+        (void)composite_inst.update(writes);
+    };
+    bind_composite_hdr();
 
     // ---- Meshes (one PBR sphere, five primitive entities) ----
     auto cube_cpu = cd::asset::make_cube();
@@ -3128,6 +3283,9 @@ int main()
                 continue;
             if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth))
                 continue;
+            if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
+                continue;
+            bind_composite_hdr();
             depth_initialised_on_gpu = false;
             needs_rebuild = false;
         }
@@ -3664,8 +3822,22 @@ int main()
             cmd.barrier({}, sb);
         }
 
+        // R3: scene draws into the HDR offscreen target; composite +
+        // ImGui write to the swapchain in a follow-up render pass.
+        // Transition HDR to ColorAttachment on first use; subsequent
+        // frames re-enter from kShaderResource (sampled in composite).
+        {
+            std::array<cd::rhi::TextureBarrier, 1> hb {
+                cd::rhi::TextureBarrier {
+                    .texture = hdr_target.image,
+                    .from    = (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined
+                                                : cd::rhi::ResourceState::kShaderResource,
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, hb);
+        }
         std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
-            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
+            cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } } };
@@ -5695,7 +5867,50 @@ int main()
             ImGui::End();
         }
 
-        // ---- ImGui pass ----
+        // R3: end the HDR scene pass, transition HDR -> ShaderResource,
+        // begin the composite render pass on the swapchain, draw the
+        // fullscreen-triangle composite material (which samples HDR
+        // and applies tonemap + saturation + gamma), then let ImGui
+        // draw on top.
+        cmd.end_render_pass();
+        {
+            std::array<cd::rhi::TextureBarrier, 1> hb {
+                cd::rhi::TextureBarrier {
+                    .texture = hdr_target.image,
+                    .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, hb);
+        }
+        std::array<cd::rhi::ColorAttachmentInfo, 1> swap_attach {
+            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } } };
+        cd::rhi::RenderPassBeginInfo swap_rp {};
+        swap_rp.render_area = cd::rhi::Rect2D { {0,0}, frame.extent };
+        swap_rp.color_attachments = swap_attach;
+        swap_rp.depth_stencil = nullptr;
+        cmd.begin_render_pass(swap_rp);
+        cmd.set_viewport(cd::rhi::Viewport {
+            0.0F, 0.0F,
+            static_cast<float>(frame.extent.width),
+            static_cast<float>(frame.extent.height),
+            0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { {0,0}, frame.extent });
+        composite_material.apply(cmd);
+        composite_inst.bind(cmd, 0);
+        CompositePush cp {};
+        cp.fx[0] = static_cast<float>(tonemap_op);
+        cp.fx[1] = 3.0F;   // exposure (matches old prim FS inline)
+        cp.fx[2] = 1.50F;  // saturation pull-away
+        cp.fx[3] = 0.0F;
+        cmd.push_constants(composite_material.pipeline_layout(),
+                           cd::rhi::ShaderStage::kFragment,
+                           0, sizeof(cp), &cp);
+        cmd.draw(3, 1, 0, 0);
+
+        // ---- ImGui pass (on swapchain, after composite) ----
         ctx.render(cmd);
         cmd.end_render_pass();
 
@@ -5724,6 +5939,7 @@ int main()
     destroy_mesh(device, floor_mesh);
     destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
+    hdr_target.destroy(device);
     // Faz 1.6 CSM resources.
     shadow_target.destroy(device);
     device.destroy_sampler(shadow_sampler);
