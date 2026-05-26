@@ -1825,7 +1825,11 @@ int main()
     std::string palette_query;
     // FX state — runtime-tweakable, pushed into PrimPush::fx_params
     // each draw. tonemap_op: 0=Narkowicz, 1=Hill, 2=Hable, 3=AGX.
-    int tonemap_op = 3;  // default AGX
+    // Default = Hable (Uncharted 2). AGX desaturates the LDR-range
+    // shading the sample produces; Hable preserves tints on the
+    // front primitives + back metallic spheres. AGX still wins on
+    // HDR-heavy frames — switch via palette ('Tonemap: AGX').
+    int tonemap_op = 2;  // 0=Narkowicz 1=Hill 2=Hable 3=AGX
     palette.register_command(70, "Tonemap: AGX (Sobotka 2022)",
         [&]{ tonemap_op = 3; log_push("[fx] tonemap = AGX"); });
     palette.register_command(71, "Tonemap: Hill ACES (Filament fit)",
