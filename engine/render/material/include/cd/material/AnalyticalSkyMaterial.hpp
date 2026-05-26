@@ -90,16 +90,23 @@ void main() {
   vec3 sun_color = pc.sun_color.rgb * pc.sun_dir.w;
   vec3 result = sky + sun_color * (disk * 6.0 + glow * 0.5);
 
-  // ACES Narkowicz tonemap — matches StandardPbrFS so sky and spheres
-  // share a single tone-mapping curve. No mid-frame curve mismatch.
-  const float a_ = 2.51;
-  const float b_ = 0.03;
-  const float c_ = 2.43;
-  const float d_ = 0.59;
-  const float e_ = 0.14;
-  result = clamp((result * (a_ * result + b_)) /
-                 (result * (c_ * result + d_) + e_),
-                 vec3(0.0), vec3(1.0));
+  // AGX tonemap (Sobotka 2022) — matches StandardPbrFS + prim FS so
+  // sky / PBR spheres / ECS primitives share a single saturation-
+  // preserving curve. Closes the "sky tint washes everything to
+  // pastel" anomaly that surfaced under the prior Narkowicz path.
+  const float kMinEv = -12.47393;
+  const float kMaxEv =   4.026069;
+  vec3 lg = clamp((log2(max(result, vec3(1e-10))) - vec3(kMinEv)) /
+                  (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
+  vec3 x2 = lg * lg;
+  vec3 x4 = x2 * x2;
+  result = clamp( 15.5  * x4 * x2
+               - 40.14 * x4 * lg
+               + 31.96 * x4
+               -  6.868 * x2 * lg
+               +  0.4298 * x2
+               +  0.1191 * lg
+               -  0.00232, vec3(0.0), vec3(1.0));
   result = pow(result, vec3(1.0 / 2.2));
   out_color = vec4(result, 1.0);
 }

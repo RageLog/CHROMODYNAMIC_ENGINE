@@ -159,15 +159,23 @@ void main() {
 
   vec3 color = direct + ibl;
 
-  // ACES Narkowicz tonemap + gamma.
-  const float a_ = 2.51;
-  const float b_ = 0.03;
-  const float c_ = 2.43;
-  const float d_ = 0.59;
-  const float e_ = 0.14;
-  color = clamp((color * (a_ * color + b_)) /
-                (color * (c_ * color + d_) + e_),
-                vec3(0.0), vec3(1.0));
+  // AGX tonemap (Sobotka 2022) — saturation-preserving on coloured
+  // highlights, matches the prim pipeline so PBR spheres + ECS
+  // primitives + sky read with the same chromaticity.
+  // Source matches cd::post_tonemap::kAgxGlsl.
+  const float kMinEv = -12.47393;
+  const float kMaxEv =   4.026069;
+  vec3 lg = clamp((log2(max(color, vec3(1e-10))) - vec3(kMinEv)) /
+                  (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
+  vec3 x2 = lg * lg;
+  vec3 x4 = x2 * x2;
+  color = clamp( 15.5  * x4 * x2
+              - 40.14 * x4 * lg
+              + 31.96 * x4
+              -  6.868 * x2 * lg
+              +  0.4298 * x2
+              +  0.1191 * lg
+              -  0.00232, vec3(0.0), vec3(1.0));
   color = pow(color, vec3(1.0 / 2.2));
   out_color = vec4(color, pc.albedo.a);
 }
