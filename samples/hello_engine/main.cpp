@@ -951,6 +951,7 @@ layout(push_constant) uniform PC {
   vec4 dof;     // x=dof_strength, y=focus_distance (m), z=focus_range (m), w=max_blur_px
   vec4 shafts;  // x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
   vec4 sun_col; // rgb=sun colour, a=reserved
+  vec4 atmo;    // x=fog_density (1/m), y=aerial_perspective_strength, z=vignette, w=film_grain
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -997,6 +998,22 @@ void main() {
   // bloom add so haloed pixels don't fight the darkening.
   float ao = depth_ao(v_uv, center_d);
   c *= mix(1.0, ao, clamp(pc.ao.x, 0.0, 1.0));
+
+  // Atmospheric / aerial perspective — distant pixels tint toward the
+  // sky horizon palette (matches AnalyticalSkyFS::sample_env). Two
+  // independent dials: pc.atmo.x = exp-fog density (uniform haze),
+  // pc.atmo.y = aerial perspective strength (Rayleigh-flavoured
+  // wavelength shift toward bluish horizon). Sky pixels skip.
+  if (center_d < 0.999 && (pc.atmo.x > 0.001 || pc.atmo.y > 0.001)) {
+    float lz = linearize_z(center_d);
+    // Horizon palette mixed with sun colour, matching sky FS.
+    vec3 horizon_base = vec3(0.78, 0.86, 0.96);
+    vec3 horizon_lit  = mix(horizon_base, pc.sun_col.rgb, 0.35);
+    float fog_t = 1.0 - exp(-lz * max(pc.atmo.x, 0.0));
+    float aer_t = 1.0 - exp(-lz * 0.08);  // soft built-in falloff
+    c = mix(c, horizon_lit, clamp(fog_t, 0.0, 1.0));
+    c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
+  }
 
   // Depth-of-field — circle-of-confusion in linear-Z space. 8-tap
   // golden-spiral bokeh blur around the centre pixel; CoC grows
@@ -1086,6 +1103,24 @@ void main() {
     c = clamp(mix(vec3(luma), c, sb), vec3(0.0), vec3(1.0));
   }
   c = pow(c, vec3(1.0/2.2));
+
+  // Vignette — radial darkening from screen centre. Strength 0 = off.
+  if (pc.atmo.z > 0.001) {
+    vec2 vc = v_uv - vec2(0.5);
+    float r2 = dot(vc, vc);
+    float v = 1.0 - r2 * 4.0 * clamp(pc.atmo.z, 0.0, 1.0);
+    c *= clamp(v, 0.0, 1.0);
+  }
+
+  // Film grain — hash-based per-pixel noise, anchored to screen
+  // coordinates so it doesn't crawl across frames (still works as
+  // texture-style grain). Strength 0 = off.
+  if (pc.atmo.w > 0.001) {
+    vec2 sp = v_uv * vec2(textureSize(cd_hdr_color, 0));
+    float h = fract(sin(dot(sp, vec2(12.9898, 78.233))) * 43758.5453);
+    c += (h - 0.5) * pc.atmo.w * 0.15;
+  }
+
   out_color = vec4(c, 1.0);
 }
 )glsl";
@@ -1097,8 +1132,9 @@ struct CompositePush
     float dof[4];     // x=dof_strength, y=focus_distance, z=focus_range, w=max_blur_px
     float shafts[4];  // x=sun_uv_x, y=sun_uv_y, z=strength (neg = sun behind), w=decay
     float sun_col[4]; // xyz=linear sun colour, w=reserved
+    float atmo[4];    // x=fog_density, y=aerial_strength, z=vignette, w=film_grain
 };
-static_assert(sizeof(CompositePush) == 80, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 96, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -2923,7 +2959,9 @@ int main()
     float fx_smaa_strength  = 0.0F;
     float fx_motion_blur    = 0.0F;   // queued for v1.7 frame-graph
     float fx_taa_amount     = 0.0F;   // queued for v1.7 frame-graph
-    float fx_dof_strength   = 0.0F;   // queued for v1.7 frame-graph
+    float fx_dof_strength   = 0.0F;   // wired to composite (phase207)
+    float fx_vignette_strength = 0.25F;  // soft default — readable cinematic edge
+    float fx_film_grain     = 0.0F;   // 0 = off; 0.5 = visible filmic noise
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
@@ -6582,6 +6620,13 @@ int main()
             cp.sun_col[3] = 0.0F;
             break;
         }
+        // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
+        // horizon tint with distance). Reuses the existing UI sliders
+        // so the composite is now the *one* home for these effects.
+        cp.atmo[0] = fx_fog_density;
+        cp.atmo[1] = fx_aerial_perspective;
+        cp.atmo[2] = fx_vignette_strength;
+        cp.atmo[3] = fx_film_grain;
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
