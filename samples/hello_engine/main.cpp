@@ -2982,6 +2982,12 @@ int main()
     float fx_vignette_strength = 0.25F;  // soft default — readable cinematic edge
     float fx_film_grain     = 0.0F;   // 0 = off; 0.5 = visible filmic noise
     float fx_chromab_strength = 0.0F; // 0 = off; 0.5 = subtle radial RGB split
+    // Composite tonemap/HDR knobs — own the entire post-fx settle here.
+    float fx_exposure         = 3.0F;  // pre-tonemap exposure boost
+    float fx_saturation_boost = 1.50F; // post-tonemap saturation pull-away
+    float fx_bloom_post       = 0.04F; // bloom mip0 contribution mixed into HDR
+    float fx_ao_strength      = 0.55F; // composite AO crease darkening
+    float fx_shafts_strength  = 0.35F; // light shafts radial intensity
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
@@ -5094,10 +5100,16 @@ int main()
                                     ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::TextDisabled("single composite pass — AO/DOF/shafts/bloom/atmo");
-            ImGui::SliderFloat("DOF strength",       &fx_dof_strength,    0.0F, 1.0F);
-            ImGui::SliderFloat("Motion blur",        &fx_motion_blur,     0.0F, 1.0F);
-            ImGui::SliderFloat("TAA amount",         &fx_taa_amount,      0.0F, 1.0F);
-            ImGui::TextDisabled("motion blur + TAA queued — need velocity buffer");
+            ImGui::SliderFloat("Exposure",           &fx_exposure,         0.1F, 10.0F);
+            ImGui::SliderFloat("Saturation boost",   &fx_saturation_boost, 0.5F, 2.5F);
+            ImGui::SliderFloat("Bloom strength",     &fx_bloom_post,       0.0F, 0.30F);
+            ImGui::SliderFloat("AO strength",        &fx_ao_strength,      0.0F, 1.0F);
+            ImGui::SliderFloat("DOF strength",       &fx_dof_strength,     0.0F, 1.0F);
+            ImGui::SliderFloat("Light shafts",       &fx_shafts_strength,  0.0F, 1.5F);
+            ImGui::Separator();
+            ImGui::TextDisabled("Motion blur + TAA queued — need velocity buffer");
+            ImGui::SliderFloat("Motion blur (off)",  &fx_motion_blur,      0.0F, 1.0F);
+            ImGui::SliderFloat("TAA amount (off)",   &fx_taa_amount,       0.0F, 1.0F);
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
         {
@@ -6560,10 +6572,10 @@ int main()
         composite_inst.bind(cmd, 0);
         CompositePush cp {};
         cp.fx[0] = static_cast<float>(tonemap_op);
-        cp.fx[1] = 3.0F;   // exposure (matches old prim FS inline)
-        cp.fx[2] = 1.50F;  // saturation pull-away
-        cp.fx[3] = 0.04F;  // bloom strength (final mip0 contribution)
-        cp.ao[0] = 0.55F;  // ao_strength — visible crease darkening
+        cp.fx[1] = fx_exposure;
+        cp.fx[2] = fx_saturation_boost;
+        cp.fx[3] = fx_bloom_post;
+        cp.ao[0] = fx_ao_strength;
         cp.ao[1] = 4.0F;   // ao_radius_px — 4 px ring radius
         cp.ao[2] = cam.near_z;
         cp.ao[3] = cam.far_z;
@@ -6642,7 +6654,7 @@ int main()
                 std::max(0.0F, 1.0F - std::max(std::abs(sun_ndc_x),
                                                std::abs(sun_ndc_y)) - 0.0F));
             edge_fade = std::clamp(edge_fade, 0.0F, 1.0F);
-            cp.shafts[2] = 0.35F * edge_fade;  // base shaft strength
+            cp.shafts[2] = fx_shafts_strength * edge_fade;
             cp.shafts[3] = 3.5F;               // decay (per UV distance)
             cp.sun_col[0] = lrow.light.color.x;
             cp.sun_col[1] = lrow.light.color.y;
