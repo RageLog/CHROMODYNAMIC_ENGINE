@@ -395,8 +395,16 @@ struct LightSlot {
   vec4 extras;      // x=cos_outer, y=area_w, z=area_h, w=cos_inner
 };
 layout(set = 0, binding = 3) uniform LightArray {
+  // std140 packing: 'uint pad[3]' would be stride-16 (48 B) and push
+  // slots[] to offset 64, but the C++ LightUboGpu uses packed
+  // std::uint32_t pad[3] (12 B contiguous) with slots starting at
+  // offset 16. Using 3 separate scalar uints matches the packed C++
+  // layout — fixes the entire multi-light contribution being read
+  // from a wrong offset on the GPU side.
   uint count;
-  uint pad[3];
+  uint pad_a;
+  uint pad_b;
+  uint pad_c;
   LightSlot slots[8];
 } cd_lights;
 layout(location = 0) in vec3 v_world_pos;

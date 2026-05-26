@@ -72,8 +72,16 @@ struct CdLightSlot {
   vec4 extras;
 };
 layout(set = 0, binding = 0) uniform CdLightArray {
+  // std140 packing: 'uint pad[3]' would be stride-16 (48 B) and push
+  // slots[] to offset 64, but the C++ LightUboGpu uses packed
+  // std::uint32_t pad[3] (12 B contiguous) with slots starting at
+  // offset 16. Using 3 separate scalar uints matches the packed C++
+  // layout — fixes the entire multi-light contribution being read
+  // from a wrong offset on the GPU side.
   uint count;
-  uint pad[3];
+  uint pad_a;
+  uint pad_b;
+  uint pad_c;
   CdLightSlot slots[8];
 } cd_lights;
 layout(push_constant) uniform PC {
