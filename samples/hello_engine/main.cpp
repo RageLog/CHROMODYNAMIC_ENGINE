@@ -944,14 +944,56 @@ constexpr const char* kCompositeFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
+layout(set = 0, binding = 2) uniform sampler2D cd_depth;
 layout(push_constant) uniform PC {
-  vec4 fx; // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+  vec4 fx;  // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+  vec4 ao;  // x=ao_strength, y=ao_radius_px, z=near, w=far
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
+float linearize_z(float d) {
+  // Reverse-Z aware: protect against d == 0 (far plane returns NaN).
+  // Standard perspective: z_view = (n*f) / (f - d*(f-n)).
+  return pc.ao.z * pc.ao.w / max(pc.ao.w - d * (pc.ao.w - pc.ao.z), 1e-4);
+}
+
+// Depth-only horizon-scan AO. 8 ring samples around the centre pixel;
+// each sample whose linear-Z is in front of the centre contributes
+// to occlusion, weighted by inverse depth distance. Not a true GTAO
+// (no normal reconstruction) but visibly closes creases between
+// nearby objects — the cheap "ambient darkening" pass.
+float depth_ao(vec2 uv, float center_d) {
+  if (center_d >= 0.999) return 1.0;  // sky pixel
+  float lc = linearize_z(center_d);
+  vec2 px = 1.0 / vec2(textureSize(cd_depth, 0));
+  vec2 ring[8] = vec2[8](
+    vec2( 1.0,  0.0), vec2( 0.707,  0.707),
+    vec2( 0.0,  1.0), vec2(-0.707,  0.707),
+    vec2(-1.0,  0.0), vec2(-0.707, -0.707),
+    vec2( 0.0, -1.0), vec2( 0.707, -0.707));
+  float occ = 0.0;
+  for (int i = 0; i < 8; ++i) {
+    vec2 sp = uv + ring[i] * pc.ao.y * px;
+    float nd = texture(cd_depth, sp).r;
+    float ln = linearize_z(nd);
+    float dz = lc - ln;  // > 0 → neighbour closer
+    float bias = 0.02 * lc;
+    float falloff = 1.0 / (1.0 + abs(dz) * 4.0);
+    occ += clamp((dz - bias) / 0.5, 0.0, 1.0) * falloff;
+  }
+  occ *= 1.0 / 8.0;
+  return clamp(1.0 - occ, 0.0, 1.0);
+}
+
 void main() {
   vec3 c = texture(cd_hdr_color, v_uv).rgb;
+
+  // AO modulation — depth-only horizon scan. Applied to HDR before
+  // bloom add so haloed pixels don't fight the darkening.
+  float ao = depth_ao(v_uv, texture(cd_depth, v_uv).r);
+  c *= mix(1.0, ao, clamp(pc.ao.x, 0.0, 1.0));
+
   // Bloom: additive halo from the upsample chain's final mip0.
   // pc.fx.w is the user-facing strength dial (0 disables completely).
   vec3 bloom = texture(cd_bloom_mip0, v_uv).rgb;
@@ -997,8 +1039,9 @@ void main() {
 struct CompositePush
 {
     float fx[4];  // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+    float ao[4];  // x=ao_strength, y=ao_radius_px, z=near, w=far
 };
-static_assert(sizeof(CompositePush) == 16, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 32, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -1498,7 +1541,10 @@ int main()
 
     constexpr auto kDepthFormat = cd::rhi::Format::kD32Float;
     DepthTarget depth {};
-    if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth))
+    // kSampled — needed for the composite-pass GTAO inline AO that
+    // samples the scene depth after the HDR pass ends.
+    if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth,
+                             cd::rhi::TextureUsage::kSampled))
         return 6;
     bool depth_initialised_on_gpu = false;
 
@@ -1549,7 +1595,7 @@ int main()
                                      .offset = 0,
                                      .size = sizeof(CompositePush) } };
     comp_md.push_constants = kCompositePush;
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 2> kCompositeBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 3> kCompositeBindings {
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 0,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
@@ -1557,6 +1603,11 @@ int main()
             .stages  = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 1,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 2,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
             .count   = 1,
             .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2118,7 +2169,7 @@ int main()
     bind_bloom_descriptors();
 
     auto bind_composite_hdr = [&]() {
-        std::array<cd::rhi::DescriptorWrite, 2> writes {
+        std::array<cd::rhi::DescriptorWrite, 3> writes {
             cd::rhi::DescriptorWrite {
                 .binding = 0,
                 .array_element = 0,
@@ -2130,6 +2181,12 @@ int main()
                 .array_element = 0,
                 .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                 .view    = bloom_chain.mips[0].view,
+                .sampler = albedo_sampler },
+            cd::rhi::DescriptorWrite {
+                .binding = 2,
+                .array_element = 0,
+                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view    = depth.view,
                 .sampler = albedo_sampler } };
         (void)composite_inst.update(writes);
     };
@@ -3564,7 +3621,8 @@ int main()
             if (window.width() == 0 || window.height() == 0) continue;
             if (!renderer.recreate_swapchain({ window.width(), window.height() }).has_value())
                 continue;
-            if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth))
+            if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth,
+                                     cd::rhi::TextureUsage::kSampled))
                 continue;
             if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
                 continue;
@@ -3966,6 +4024,19 @@ int main()
                     .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
             cmd.barrier({}, db);
             depth_initialised_on_gpu = true;
+        }
+        else
+        {
+            // Subsequent frames: composite-pass GTAO sampled the depth
+            // target as ShaderResource at the end of the prior frame;
+            // bring it back to kDepthWrite before the HDR scene pass.
+            std::array<cd::rhi::TextureBarrier, 1> db {
+                cd::rhi::TextureBarrier {
+                    .texture = depth.image,
+                    .from = cd::rhi::ResourceState::kShaderResource,
+                    .to = cd::rhi::ResourceState::kDepthWrite,
+                    .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+            cmd.barrier({}, db);
         }
 
         // ---- Shadow map pass (Faz 1.6 CSM) ----
@@ -6228,10 +6299,17 @@ int main()
         // draw on top.
         cmd.end_render_pass();
         {
-            std::array<cd::rhi::TextureBarrier, 1> hb {
+            // Two barriers: HDR target -> ShaderResource (composite read),
+            // and the scene depth -> ShaderResource (composite-inline GTAO).
+            std::array<cd::rhi::TextureBarrier, 2> hb {
                 cd::rhi::TextureBarrier {
                     .texture = hdr_target.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = depth.image,
+                    .from    = cd::rhi::ResourceState::kDepthWrite,
                     .to      = cd::rhi::ResourceState::kShaderResource,
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, hb);
@@ -6360,6 +6438,10 @@ int main()
         cp.fx[1] = 3.0F;   // exposure (matches old prim FS inline)
         cp.fx[2] = 1.50F;  // saturation pull-away
         cp.fx[3] = 0.04F;  // bloom strength (final mip0 contribution)
+        cp.ao[0] = 0.55F;  // ao_strength — visible crease darkening
+        cp.ao[1] = 4.0F;   // ao_radius_px — 4 px ring radius
+        cp.ao[2] = cam.near_z;
+        cp.ao[3] = cam.far_z;
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
