@@ -15,9 +15,13 @@ cd_add_sample(hello_engine
     cd::brdf_ltc
     cd::brdf_sheen_clearcoat
     cd::brdf_sss
+    cd::ddgi
     cd::decal
     cd::gpu_particles
     cd::light_shafts
+    cd::nrc
+    cd::restir_di
+    cd::restir_gi
     cd::material
     cd::math
     cd::net

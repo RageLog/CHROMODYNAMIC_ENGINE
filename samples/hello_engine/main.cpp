@@ -40,8 +40,12 @@
 #include <cd/brdf_ltc/Ltc.hpp>
 #include <cd/brdf_sheen_clearcoat/SheenClearcoat.hpp>
 #include <cd/brdf_sss/Sss.hpp>
+#include <cd/ddgi/Ddgi.hpp>
 #include <cd/decal/Decal.hpp>
 #include <cd/gpu_particles/GpuParticles.hpp>
+#include <cd/nrc/Nrc.hpp>
+#include <cd/restir_di/Reservoir.hpp>
+#include <cd/restir_gi/GiReservoir.hpp>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/Limiter.hpp>
@@ -2040,6 +2044,49 @@ int main()
     (void)fx_sss_strength;
     (void)fx_decal_count;
     (void)fx_particle_emit_rate;
+    // v1.5 GI wire-in (queued for v1.7 frame-graph + acceleration
+    // structure dispatch). Settings + reservoirs instantiated so the
+    // editor UI binds without renaming.
+    cd::restir_di::Reservoir fx_restir_di_reservoir {};
+    cd::restir_gi::Reservoir fx_restir_gi_reservoir {};
+    cd::ddgi::GridConfig       fx_ddgi_grid {};
+    cd::nrc::Config            fx_nrc_cfg {};
+    (void)fx_restir_di_reservoir; (void)fx_restir_gi_reservoir;
+    (void)fx_ddgi_grid; (void)fx_nrc_cfg;
+    bool fx_restir_di_on = false;
+    bool fx_restir_gi_on = false;
+    bool fx_ddgi_on      = false;
+    bool fx_nrc_on       = false;
+    palette.register_command(110, "GI: Toggle ReSTIR DI (queued v1.7)",
+        [&]{
+            fx_restir_di_on = !fx_restir_di_on;
+            log_push(fx_restir_di_on
+                       ? "[gi] ReSTIR DI queued (v1.7 needs RT compute pipe)"
+                       : "[gi] ReSTIR DI off");
+        });
+    palette.register_command(111, "GI: Toggle ReSTIR GI (queued v1.7)",
+        [&]{
+            fx_restir_gi_on = !fx_restir_gi_on;
+            log_push(fx_restir_gi_on
+                       ? "[gi] ReSTIR GI queued (v1.7 needs RT compute pipe)"
+                       : "[gi] ReSTIR GI off");
+        });
+    palette.register_command(112, "GI: Toggle DDGI probe update (queued v1.7)",
+        [&]{
+            fx_ddgi_on = !fx_ddgi_on;
+            log_push(fx_ddgi_on
+                       ? "[gi] DDGI queued (v1.7 needs probe-volume RT)"
+                       : "[gi] DDGI off");
+        });
+    palette.register_command(113, "GI: Toggle NRC (TinyCudaNN backend, queued v1.7)",
+        [&]{
+            fx_nrc_on = !fx_nrc_on;
+            log_push(fx_nrc_on
+                       ? "[gi] NRC queued (v1.7 needs CUDA inference path)"
+                       : "[gi] NRC off");
+        });
+    (void)fx_restir_di_on; (void)fx_restir_gi_on;
+    (void)fx_ddgi_on; (void)fx_nrc_on;
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
         [&]{
             fx_gtao_strength = (fx_gtao_strength > 0.001F) ? 0.0F : 0.65F;
