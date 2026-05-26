@@ -20,6 +20,7 @@ cd_add_sample(hello_engine
     cd::decal
     cd::framegraph
     cd::ibl
+    cd::ibl_gpu
     cd::gpu_particles
     cd::light_shafts
     cd::nrc
