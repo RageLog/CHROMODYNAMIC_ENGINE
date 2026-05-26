@@ -5149,6 +5149,24 @@ int main()
                     fx_view_mode = i;
             }
         }
+        // Sun direction controller — drives the directional light + IBL
+        // gate. Each axis [-1,1]; normalised before push fill.
+        if (ImGui::CollapsingHeader("Sun direction"))
+        {
+            if (!lights.empty())
+            {
+                auto& sun = lights[0].light;
+                ImGui::SliderFloat("dir.x", &sun.direction.x, -1.0F, 1.0F);
+                ImGui::SliderFloat("dir.y", &sun.direction.y, -1.0F, 1.0F);
+                ImGui::SliderFloat("dir.z", &sun.direction.z, -1.0F, 1.0F);
+                ImGui::SliderFloat("intensity (lx)", &sun.intensity, 0.0F, 200000.0F);
+                if (ImGui::Button("Reset sun"))
+                {
+                    sun.direction = { -0.3F, -0.9F, -0.2F };
+                    sun.intensity = 100000.0F;
+                }
+            }
+        }
         if (ImGui::CollapsingHeader("R6  Advanced BRDFs"))
         {
             ImGui::SliderFloat("Clearcoat",  &fx_clearcoat_strength, 0.0F, 1.0F);
