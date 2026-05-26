@@ -118,4 +118,15 @@ void main() {
 }
 )glsl";
 
+/// Cheap fragment-shader wrap-diffusion approximation used inline
+/// when a full Burley separable-blur pass isn't available. Backlit
+/// pixels receive a warm subsurface bleed.
+constexpr std::string_view kInlineBurleyWrapGlsl = R"glsl(
+vec3 sss_inline_wrap(vec3 N, vec3 L, float sun_intensity, float strength) {
+  float backlit = clamp(dot(-N, L), 0.0, 1.0);
+  vec3 tint = vec3(0.95, 0.55, 0.45);
+  return tint * pow(backlit, 1.5) * strength * sun_intensity * 0.8;
+}
+)glsl";
+
 }  // namespace cd::brdf_sss

@@ -92,4 +92,17 @@ void main() {
 }
 )glsl";
 
+/// Cheap fragment-shader cone-alignment approximation used inline
+/// before the full kRadialBlurCS dispatch is wired up. Brightens
+/// pixels whose camera-to-fragment direction aligns with the sun.
+constexpr std::string_view kInlineConeShaftGlsl = R"glsl(
+vec3 light_shafts_inline_cone(vec3 cam_to_p, vec3 sun_L,
+                              vec3 sun_color, float sun_intensity,
+                              float strength) {
+  float align = max(dot(cam_to_p, sun_L), 0.0);
+  float shaft = pow(align, 32.0) * strength;
+  return sun_color * sun_intensity * shaft * 0.6;
+}
+)glsl";
+
 }  // namespace cd::light_shafts

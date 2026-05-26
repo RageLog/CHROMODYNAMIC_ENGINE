@@ -87,4 +87,20 @@ float clearcoat_dv(float r, float nh, float nv, float nl) {
 }
 )glsl";
 
+/// Cheap inline rim approximations used when a full BRDF lobe with
+/// proper half-vector + Fresnel-Schlick isn't running. Useful for
+/// stand-in forward shading until the v1.7 material-graph rework
+/// dispatches the proper kSheenClearcoatGlsl path.
+constexpr std::string_view kInlineRimApproxGlsl = R"glsl(
+vec3 clearcoat_inline_lobe(vec3 prefilt_spec, float NoV, float strength) {
+  float fres_cc = 0.04 + 0.96 * pow(1.0 - NoV, 5.0);
+  return prefilt_spec * fres_cc * strength * 0.6;
+}
+vec3 sheen_inline_lobe(float NoV, float strength) {
+  float rim = pow(1.0 - NoV, 4.0);
+  vec3 col = vec3(0.95, 0.92, 0.88);
+  return col * rim * strength * 1.2;
+}
+)glsl";
+
 }  // namespace cd::brdf_sheen_clearcoat

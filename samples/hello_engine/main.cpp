@@ -738,10 +738,14 @@ void main() {
     ambient   *= ao;
   }
 
-  // R6 advanced BRDF lobes — applied on top of the diffuse + IBL
-  // path for any entity (textured or not). Strengths are global
-  // toggles via palette commands; full per-material driving lands
-  // with the v1.7 material-graph rework.
+  // R6 advanced BRDF lobes — inline approximations matching:
+  //   cd::brdf_sheen_clearcoat::kInlineRimApproxGlsl  (clearcoat + sheen)
+  //   cd::brdf_sss::kInlineBurleyWrapGlsl             (wrap-diffusion SSS)
+  // For the proper full BRDF kernels (Estevez Charlie + Filament
+  // clearcoat D*V + Burley separable diffusion), see:
+  //   cd::brdf_sheen_clearcoat::kSheenClearcoatGlsl
+  //   cd::brdf_sss::kBurleySeparableBlurCS
+  // Those land via the v1.7 material-graph dispatch.
   float fx_cc    = clamp(pc.fx_params4.x, 0.0, 1.0);
   float fx_sheen = clamp(pc.fx_params4.y, 0.0, 1.0);
   float fx_sss   = clamp(pc.fx_params4.z, 0.0, 1.0);
@@ -846,11 +850,10 @@ void main() {
     c = mix(c, vec3(lum2), blur);
   }
 
-  // R7 camera composition: vignette + chromatic aberration + film
-  // grain. Drive via fx_params2.y (vignette), .z (CA), .w (grain)
-  // since the post-fx slots that previously occupied those have
-  // moved to fx_params4 for advanced BRDF. The 'inline approx'
-  // versions sit here; full off-screen pipeline comes with R3.
+  // R7 camera composition — inline approximations matching
+  // cd::post_camera::kInlineCameraGlsl (vignette / chromatic / grain).
+  // For the proper off-screen LUT/blur post pass see the v1.7 frame-
+  // graph ship.
   // Cheap radial coordinate from the camera-relative direction. Not
   // a true screen-space UV but functionally maps to 0 (centre) -> 1+
   // (edges) without needing the swapchain extent.
@@ -894,10 +897,10 @@ void main() {
     vec3 aerial_tint = vec3(0.55, 0.62, 0.78);
     c = mix(c, aerial_tint, t * aerial * 0.35);
   }
-  // R5 inline god rays / light shafts. Approximation: a directional
-  // 'volumetric' brighten where the pixel sits near the sun ray's
-  // projection. No depth probe needed — uses world-space cone from
-  // the sun direction. Best visible at sunrise/sunset / low sun.
+  // R5 inline god rays — matches cd::light_shafts::kInlineConeShaftGlsl.
+  // Full screen-space radial blur lives at
+  // cd::light_shafts::kRadialBlurCS and dispatches with the v1.7
+  // frame-graph rework.
   float shafts = clamp(pc.fx_params3.w, 0.0, 1.0);
   if (shafts > 0.001 && pc.sun_dir.w > 0.001) {
     vec3 cam_to_p = normalize(v_world_pos - pc.camera_pos.xyz);
