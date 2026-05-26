@@ -779,76 +779,10 @@ void main() {
 
   vec3  c       = lit + ambient;
 
-  // Pre-tonemap exposure boost. Pixel-fidelity measurement showed
-  // pure-RGB tints landing at ~0.55 brightness when expected 1.0;
-  // 3x shift moves the operating point into the linear region of
-  // Hable's curve so saturated colours read at ~0.8-0.95 brightness.
-  // HDR headroom remains via the tonemap roll-off above ~3.
-  c *= 3.0;
-
-  // Runtime tonemap operator selector (pc.fx_params.x).
-  //   0 = Narkowicz ACES        (deep blacks, soft highlights)
-  //   1 = Hill ACES             (production fit, Filament-style)
-  //   2 = Hable / Uncharted 2   (filmic, warmer highlights)
-  //   3 = AGX (Sobotka 2022)    (saturation-preserving) — default
-  int op = int(pc.fx_params.x);
-  if (op == 0) {
-    const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
-    c = clamp((c * (a_*c + b_)) / (c * (c_*c + d_) + e_),
-              vec3(0.0), vec3(1.0));
-  } else if (op == 1) {
-    vec3 a = c * (c + 0.0245786) - 0.000090537;
-    vec3 b = c * (0.983729 * c + 0.4329510) + 0.238081;
-    c = clamp(a / b, vec3(0.0), vec3(1.0));
-  } else if (op == 2) {
-    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30, W = 11.2;
-    vec3 cf = ((c * (A*c + C*B) + D*E) / (c * (A*c + B) + D*F)) - E/F;
-    vec3 wf = vec3(((W * (A*W + C*B) + D*E) / (W * (A*W + B) + D*F)) - E/F);
-    c = clamp(cf / wf, vec3(0.0), vec3(1.0));
-  } else {
-    const float kMinEv = -12.47393, kMaxEv = 4.026069;
-    vec3 lg = clamp((log2(max(c, vec3(1e-10))) - vec3(kMinEv)) /
-                    (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
-    vec3 x2  = lg * lg;
-    vec3 x4  = x2 * x2;
-    c = clamp( 15.5  * x4 * x2
-             - 40.14 * x4 * lg
-             + 31.96 * x4
-             -  6.868 * x2 * lg
-             +  0.4298 * x2
-             +  0.1191 * lg
-             -  0.00232, vec3(0.0), vec3(1.0));
-  }
-
-  // Inline bloom approximation (v1.4 day-ship wire-in). True multi-mip
-  // post_bloom::kDownsampleCS + kUpsampleCS lands in v1.7 frame-graph
-  // rework; here we emulate the visible 'highlight bleed' by boosting
-  // luminance over 0.75 into a soft halo. Strength = pc.fx_params.w.
-  float bloom_strength = clamp(pc.fx_params.w, 0.0, 1.0);
-  if (bloom_strength > 0.001) {
-    float lum = dot(c, vec3(0.299, 0.587, 0.114));
-    float halo = smoothstep(0.75, 1.0, lum) * bloom_strength * 0.35;
-    c = clamp(c + vec3(halo), vec3(0.0), vec3(1.0));
-  }
-
-  // Post-tonemap saturation boost so the tint pipeline reads as
-  // vivid as the source albedo intends. Tonemaps inherently dampen
-  // chroma at mid-tones; a 50% pull-away from luma restores the
-  // material colour without changing brightness. Closes the user-
-  // flagged 'beyaz boya atilmis gibi soluk renkler' regression.
-  {
-    float luma = dot(c, vec3(0.299, 0.587, 0.114));
-    c = clamp(mix(vec3(luma), c, 1.50), vec3(0.0), vec3(1.0));
-  }
-
-  // Inline SMAA-feel approximation (v1.4 day-ship wire-in).
-  float smaa_strength = clamp(pc.fx_params2.x, 0.0, 1.0);
-  if (smaa_strength > 0.001) {
-    float lum2 = dot(c, vec3(0.299, 0.587, 0.114));
-    float edge = clamp(fwidth(lum2) * 5.0, 0.0, 1.0);
-    float blur = edge * smaa_strength * 0.20;
-    c = mix(c, vec3(lum2), blur);
-  }
+  // R3: tonemap + exposure + bloom + saturation + gamma all live in
+  // the composite pass now. Scene shaders below only apply world-
+  // space effects (vignette / CA / grain / fog / aerial / shafts)
+  // that need scene data, then emit linear HDR.
 
   // R7 camera composition — inline approximations matching
   // cd::post_camera::kInlineCameraGlsl (vignette / chromatic / grain).
@@ -911,7 +845,7 @@ void main() {
     c += shaft_col * shaft * 0.6;
   }
 
-  c = pow(c, vec3(1.0/2.2));
+  // Linear HDR output — composite pass owns the gamma transform.
 
   // Debug view modes (fx_params4.w):
   //   1 albedo only, 2 world normal, 3 MR map, 4 AO, 5 perturbed
@@ -987,18 +921,48 @@ constexpr const char* kCompositeFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(push_constant) uniform PC {
-  vec4 fx; // reserved — prim/PBR FS already apply tonemap inline.
+  vec4 fx; // x=tonemap_op, y=exposure, z=sat_boost, w=reserved
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 void main() {
-  // Pass-through. The scene shaders (prim FS, StandardPbrFS) already
-  // run the full tonemap + saturation + gamma chain inline. When the
-  // post-fx work moves out of those shaders into a dedicated post-fx
-  // stage (R3 multi-mip bloom / GTAO / SSR / TAA), composite gains
-  // the proper Hable + sat-boost + gamma steps. For now we just blit.
-  out_color = vec4(texture(cd_hdr_color, v_uv).rgb, 1.0);
+  vec3 c = texture(cd_hdr_color, v_uv).rgb;
+  // Pre-tonemap exposure boost.
+  c *= max(pc.fx.y, 0.001);
+
+  int op = int(pc.fx.x + 0.5);
+  if (op == 0) {
+    const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
+    c = clamp((c * (a_*c + b_)) / (c * (c_*c + d_) + e_),
+              vec3(0.0), vec3(1.0));
+  } else if (op == 1) {
+    vec3 a = c * (c + 0.0245786) - 0.000090537;
+    vec3 b = c * (0.983729 * c + 0.4329510) + 0.238081;
+    c = clamp(a / b, vec3(0.0), vec3(1.0));
+  } else if (op == 2) {
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30, W = 11.2;
+    vec3 cf = ((c * (A*c + C*B) + D*E) / (c * (A*c + B) + D*F)) - E/F;
+    vec3 wf = vec3(((W * (A*W + C*B) + D*E) / (W * (A*W + B) + D*F)) - E/F);
+    c = clamp(cf / wf, vec3(0.0), vec3(1.0));
+  } else {
+    const float kMinEv = -12.47393, kMaxEv = 4.026069;
+    vec3 lg = clamp((log2(max(c, vec3(1e-10))) - vec3(kMinEv)) /
+                    (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
+    vec3 x2 = lg * lg;
+    vec3 x4 = x2 * x2;
+    c = clamp( 15.5  * x4 * x2 - 40.14 * x4 * lg + 31.96 * x4
+             -  6.868 * x2 * lg + 0.4298 * x2 + 0.1191 * lg - 0.00232,
+             vec3(0.0), vec3(1.0));
+  }
+  // Post-tonemap saturation pull-away.
+  {
+    float luma = dot(c, vec3(0.299, 0.587, 0.114));
+    float sb = max(pc.fx.z, 0.001);
+    c = clamp(mix(vec3(luma), c, sb), vec3(0.0), vec3(1.0));
+  }
+  c = pow(c, vec3(1.0/2.2));
+  out_color = vec4(c, 1.0);
 }
 )glsl";
 

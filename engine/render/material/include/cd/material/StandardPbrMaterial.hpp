@@ -248,31 +248,11 @@ void main() {
 
   vec3 color = direct + ibl;
 
-  // Hable (Uncharted 2) tonemap — preserves colour saturation in LDR
-  // range better than AGX/Narkowicz. Matches prim pipeline so PBR
-  // spheres + ECS primitives read with the same chromaticity.
-  // F(x) = ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F)) - E/F
-  const float A_ = 0.15, B_ = 0.50, C_ = 0.10, D_ = 0.20, E_ = 0.02, F_ = 0.30;
-  const float W_ = 11.2;
-  vec3 num   = color * (A_*color + C_*B_) + D_*E_;
-  vec3 den   = color * (A_*color + B_)    + D_*F_;
-  color      = num / den - E_/F_;
-  float wnum = W_ * (A_*W_ + C_*B_) + D_*E_;
-  float wden = W_ * (A_*W_ + B_)    + D_*F_;
-  float wsc  = wnum / wden - E_/F_;
-  color      = clamp(color / wsc, vec3(0.0), vec3(1.0));
+  // R3: output linear HDR. The composite pass in hello_engine
+  // (kCompositeFS) owns the tonemap + saturation pull-away + gamma
+  // transform once at the swapchain step. PBR FS used to run these
+  // inline; the off-screen render target lets us centralise them.
 
-  // Saturation boost (70%) — counteracts tonemap chroma dampening so
-  // metallic F0 + light tints read vividly. Matches the prim FS so
-  // PBR sphere grid + ECS primitives + sky share the same vibrancy.
-  // Higher than prim's 1.40 because metallic IBL reflection drags
-  // toward env-cream more aggressively than diffuse prim shading.
-  {
-    float luma = dot(color, vec3(0.299, 0.587, 0.114));
-    color = clamp(mix(vec3(luma), color, 1.70), vec3(0.0), vec3(1.0));
-  }
-
-  color      = pow(color, vec3(1.0 / 2.2));
   out_color = vec4(color, pc.albedo.a);
 }
 )glsl";

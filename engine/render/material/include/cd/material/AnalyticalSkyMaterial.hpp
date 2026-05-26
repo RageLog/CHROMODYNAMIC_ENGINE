@@ -98,25 +98,7 @@ void main() {
   float glow = pow(cos_a, 64.0);
   vec3 sun_color = pc.sun_color.rgb * pc.sun_dir.w;
   vec3 result = sky + sun_color * (disk * 6.0 + glow * 0.5);
-
-  // AGX tonemap (Sobotka 2022) — matches StandardPbrFS + prim FS so
-  // sky / PBR spheres / ECS primitives share a single saturation-
-  // preserving curve. Closes the "sky tint washes everything to
-  // pastel" anomaly that surfaced under the prior Narkowicz path.
-  const float kMinEv = -12.47393;
-  const float kMaxEv =   4.026069;
-  vec3 lg = clamp((log2(max(result, vec3(1e-10))) - vec3(kMinEv)) /
-                  (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
-  vec3 x2 = lg * lg;
-  vec3 x4 = x2 * x2;
-  result = clamp( 15.5  * x4 * x2
-               - 40.14 * x4 * lg
-               + 31.96 * x4
-               -  6.868 * x2 * lg
-               +  0.4298 * x2
-               +  0.1191 * lg
-               -  0.00232, vec3(0.0), vec3(1.0));
-  result = pow(result, vec3(1.0 / 2.2));
+  // R3: output linear HDR. Composite pass owns the tonemap + gamma.
   out_color = vec4(result, 1.0);
 }
 )glsl";
