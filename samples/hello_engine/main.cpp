@@ -298,9 +298,6 @@ layout(push_constant) uniform PC {
   vec4 tint;
   vec4 sun_dir;          // xyz=directional dir, w=intensity
   vec4 sun_color;        // xyz=color, w=ambient
-  vec4 point_pos_range;  // xyz=world position, w=range (0 = no point light)
-  vec4 point_color;      // xyz=color, w=intensity (lumens/4π)
-  vec4 spot_dir_cos;     // xyz=spot forward, w=cos(outer); w<=0 = point
   vec4 fx_params;        // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
 } pc;
 // Faz 1.6 CSM — light-space view-projection for shadow sampling.
@@ -349,9 +346,6 @@ layout(push_constant) uniform PC {
   vec4 tint;
   vec4 sun_dir;
   vec4 sun_color;
-  vec4 point_pos_range;
-  vec4 point_color;
-  vec4 spot_dir_cos;  // Faz 1.8: xyz=spot forward, w=cos(outer) (<=0 = point)
   vec4 fx_params;     // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
 } pc;
 // Faz 1.6 CSM descriptors — match the VS layout.
@@ -363,6 +357,19 @@ layout(set = 0, binding = 1) uniform sampler2D cd_shadow_map;
 // scene transforms. Used to shadow-test punctual / spot / area
 // lights that CSM can't cover (CSM is single-directional only).
 layout(set = 0, binding = 2) uniform accelerationStructureEXT cd_tlas;
+// Faz 1.9 multi-light UBO (gap #2 + #3 foundation) — 8 non-sun
+// lights with full type-specific data.
+struct LightSlot {
+  vec4 pos_range;   // xyz=world pos, w=range
+  vec4 dir_type;    // xyz=direction or right-basis, w=type (0=Dir,1=Point,2=Spot,3=Rect,4=Disk)
+  vec4 color_int;   // xyz=linear colour, w=intensity (scaled)
+  vec4 extras;      // x=cos_outer, y=area_w, z=area_h, w=cos_inner
+};
+layout(set = 0, binding = 3) uniform LightArray {
+  uint count;
+  uint pad[3];
+  LightSlot slots[8];
+} cd_lights;
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
@@ -480,39 +487,43 @@ void main() {
   float shade = sample_shadow(v_shadow_pos, N, Ld);
   lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun * shade);
 
-  // Point / spot light — per-fragment direction + attenuation,
-  // gated by an inline RT shadow ray (Faz 1.7). When spot_dir_cos.w
-  // > 0 the cone falloff multiplies the contribution; otherwise
-  // (point light) the cone factor is 1.0. Skip the ray test when
-  // the surface is back-facing the light — saves the rayQuery cost
-  // on fragments that would be zeroed by NdotL anyway.
-  if (pc.point_pos_range.w > 0.0) {
-    vec3 to_p = pc.point_pos_range.xyz - v_world_pos;
-    float d   = length(to_p);
-    if (d > 1e-4) {
-      vec3 Lp = to_p / d;
-      float ndl_p = max(dot(N, Lp), 0.0);
-      float atten = distance_atten(d, pc.point_pos_range.w);
-      // Spot cone falloff (Frostbite-style smooth step). spot_dir.w
-      // holds cos(outer); cos(inner) is auto-derived as outer+0.05
-      // so the penumbra is a few degrees wide without extra push
-      // bytes. spot_dir.w <= 0 disables the cone (acts as point).
-      // Lp points from fragment TO light, so the angle between the
-      // beam axis and the light-to-frag direction is dot(-Lp, axis).
-      float cone = 1.0;
-      if (pc.spot_dir_cos.w > 0.0) {
-        vec3  spot_axis = normalize(pc.spot_dir_cos.xyz);
-        float cos_b     = dot(-Lp, spot_axis);
-        float cos_out   = pc.spot_dir_cos.w;
-        float cos_in    = clamp(cos_out + 0.05, cos_out, 0.9999);
-        cone            = smoothstep(cos_out, cos_in, cos_b);
-      }
-      float vis = (ndl_p > 0.0 && cone > 0.0)
-                ? ray_visibility(v_world_pos, N, Lp, d - 0.01)
-                : 0.0;
-      lit += albedo * pc.point_color.rgb *
-             (pc.point_color.w * ndl_p * atten * vis * cone);
+  // Multi-light loop (gap #2). Iterates every enabled non-sun light
+  // in the per-frame UBO and accumulates its contribution. Type
+  // selector decoded from slot.dir_type.w:
+  //   1 = Point  — distance attenuation only
+  //   2 = Spot   — distance attenuation + cone falloff (Frostbite)
+  //   3 = Rect   — area-as-point fallback; LTC wire-in lands in #3
+  //   4 = Disk   — area-as-point fallback
+  // Every slot's contribution is gated by an inline RT shadow ray
+  // against the TLAS (Faz 1.7) when NdotL > 0.
+  for (uint li = 0; li < cd_lights.count; ++li) {
+    vec3 lp_pos = cd_lights.slots[li].pos_range.xyz;
+    float rng  = cd_lights.slots[li].pos_range.w;
+    int   ltp  = int(cd_lights.slots[li].dir_type.w);
+    vec3 to_p  = lp_pos - v_world_pos;
+    float d    = length(to_p);
+    if (d < 1e-4 || rng <= 0.0) continue;
+    vec3 Lp     = to_p / d;
+    float ndl   = max(dot(N, Lp), 0.0);
+    if (ndl <= 0.0) continue;
+    float atten = distance_atten(d, rng);
+    float cone  = 1.0;
+    if (ltp == 2) {  // Spot
+      vec3  axis    = normalize(cd_lights.slots[li].dir_type.xyz);
+      float cos_b   = dot(-Lp, axis);
+      float cos_out = cd_lights.slots[li].extras.x;
+      float cos_in  = clamp(cos_out + 0.05, cos_out, 0.9999);
+      cone          = smoothstep(cos_out, cos_in, cos_b);
+      if (cone <= 0.0) continue;
     }
+    // Area lights (Rect / Disk): point-fallback shading until the
+    // LTC GLSL helper from cd::brdf_ltc lands here. Boost atten a
+    // touch so the wider area-of-emission reads brighter.
+    float area_boost = (ltp == 3 || ltp == 4) ? 0.5 : 1.0;
+    float vis = ray_visibility(v_world_pos, N, Lp, d - 0.01);
+    vec3  col = cd_lights.slots[li].color_int.xyz;
+    float ki  = cd_lights.slots[li].color_int.w;
+    lit += albedo * col * (ki * ndl * atten * vis * cone * area_boost);
   }
 
   // Hemisphere ambient (sky-up / ground-down). Top-facing fragments
@@ -591,17 +602,30 @@ struct PrimPush
     float           tint[4];
     float           sun_dir[4];
     float           sun_color[4];
-    float           point_pos_range[4];
-    float           point_color[4];
-    // Spot-cone — xyz = forward direction (normalised), w = cos(outer
-    // half-angle). w <= 0.0 means "this is a point light, no cone".
-    float           spot_dir_cos[4];
     // FX params — x = tonemap op (0=Narkowicz / 1=Hill ACES / 2=Hable
     // / 3=AGX), yzw reserved for future post-FX selectors.
     float           fx_params[4];
 };
 
-static_assert(sizeof(PrimPush) == 240, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 192, "PrimPush layout drift");
+
+// Multi-light UBO slot — matches std140 layout in the FS.
+struct LightSlotGpu
+{
+    float pos_range[4];   // xyz=world position, w=range
+    float dir_type[4];    // xyz=direction or right-basis, w=type as float
+    float color_int[4];   // xyz=colour, w=intensity (scaled, ready for FS)
+    float extras[4];      // x=cos_outer, y=area_w, z=area_h, w=cos_inner
+};
+static_assert(sizeof(LightSlotGpu) == 64, "LightSlotGpu must be 64 B");
+
+struct LightUboGpu
+{
+    std::uint32_t count;
+    std::uint32_t pad[3];
+    LightSlotGpu  slots[8];
+};
+static_assert(sizeof(LightUboGpu) == 16 + 8 * 64, "LightUboGpu must be 528 B");
 
 // ----------------------------------------------------------------------------
 // Planar-shadow projection matrix.
@@ -870,7 +894,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 3> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -882,6 +906,14 @@ int main()
                                               .stages  = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 2,
                                               .type    = cd::rhi::DescriptorType::kAccelerationStructure,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // gap #2 — multi-light UBO. Up to 8 non-sun lights with
+        // full data (position, direction/right basis, color,
+        // intensity, type, cone cosines, area width/height) so
+        // the FS can shade every enabled light in one pass.
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 3,
+                                              .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc prim_md {};
@@ -972,11 +1004,30 @@ int main()
     if (!shadow_ubo_r.has_value()) return 13;
     const auto shadow_ubo = *shadow_ubo_r;
 
+    // ---- Multi-light UBO (gap #2 + #3 foundation) ----
+    // 8 non-sun lights * 64 bytes per slot + 16-byte header = 528 B.
+    // std140 layout: each vec4 = 16-byte aligned.
+    //   header: uint count + 3 uint pad
+    //   slot:   vec4 pos_range
+    //           vec4 dir_type     (xyz=dir for spot/dir / right-basis for area; w=type as float)
+    //           vec4 color_int    (xyz=linear colour, w=intensity)
+    //           vec4 extras       (x=cos_outer for spot, y=area_w, z=area_h, w=cos_inner)
+    constexpr std::uint32_t kMaxLights      = 8;
+    constexpr std::uint32_t kLightSlotBytes = 64;
+    constexpr std::uint32_t kLightUboBytes  = 16 + kMaxLights * kLightSlotBytes;  // 528
+    cd::rhi::BufferDesc lights_ubo_desc {};
+    lights_ubo_desc.size   = kLightUboBytes;
+    lights_ubo_desc.usage  = cd::rhi::BufferUsage::kUniform;
+    lights_ubo_desc.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto lights_ubo_r = device.create_buffer(lights_ubo_desc);
+    if (!lights_ubo_r.has_value()) return 16;
+    const auto lights_ubo = *lights_ubo_r;
+
     auto prim_inst_r = cd::material::MaterialInstance::create(device, prim_material);
     if (!prim_inst_r.has_value()) return 14;
     auto& prim_inst = *prim_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 2> writes {
+        std::array<cd::rhi::DescriptorWrite, 3> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
@@ -987,7 +1038,13 @@ int main()
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kCombinedImageSampler,
                                        .view = shadow_target.view,
-                                       .sampler = shadow_sampler } };
+                                       .sampler = shadow_sampler },
+            cd::rhi::DescriptorWrite { .binding = 3,
+                                       .array_element = 0,
+                                       .type = cd::rhi::DescriptorType::kUniformBuffer,
+                                       .buffer = lights_ubo,
+                                       .buffer_offset = 0,
+                                       .buffer_range = kLightUboBytes } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
@@ -2777,72 +2834,57 @@ int main()
             break;
         }
         (void)has_sun;
-        cd::math::Vec3f point_pos { 0,0,0 };
-        cd::math::Vec3f point_col { 0,0,0 };
-        float           point_range = 0.0F;
-        float           point_str   = 0.0F;
-        // Spot cone — xyz=direction, w=cos(outer half-angle); w<=0
-        // means "point light, no cone". Read from the same lights[]
-        // pass and pushed through PrimPush::spot_dir_cos.
-        cd::math::Vec3f spot_dir { 0.0F, -1.0F, 0.0F };
-        float           spot_cos_outer = 0.0F;
-        // Pick the first enabled non-sun light (point / spot / rect-
-        // area / disk-area) and drive the shader's single secondary
-        // light slot from it. Multi-light + proper LTC area shading
-        // needs the UBO+descriptor refactor documented in the lessons
-        // file; until then, area lights are evaluated as if they were
-        // point lights at the area's centre so they at least
-        // contribute (user-flagged: "area isikta etki etmiyor").
-        for (const auto& lrow : lights)
+        // ---- Multi-light UBO fill (gap #2) ----
+        // Walk every enabled non-sun light and pack into the
+        // descriptor-bound UBO. Up to kMaxLights (8) slots; extras
+        // drop silently (logged once via the counter).
         {
-            if (!lrow.enabled) continue;
-            const auto k = lrow.light.type;
-            const bool is_point_like =
-                k == cd::light::LightType::kPoint    ||
-                k == cd::light::LightType::kSpot     ||
-                k == cd::light::LightType::kRectArea ||
-                k == cd::light::LightType::kDiskArea;
-            if (!is_point_like) continue;
-            point_pos   = lrow.light.position;
-            point_col   = lrow.light.color;
-            // Range: point/spot already have it; area lights borrow
-            // (width + height) * 4 as a perceptually reasonable falloff
-            // for the point-approximation.
-            point_range = (k == cd::light::LightType::kPoint ||
-                           k == cd::light::LightType::kSpot)
-                        ? lrow.light.range
-                        : (lrow.light.area_width + lrow.light.area_height) * 4.0F;
-            // Lumens → unit-ish intensity. Frostbite says I = Φ/(4π);
-            // further /5 calibrates a 1200 lm bulb at 5 m to eye
-            // expectation in the sample.
-            point_str = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
-            if (k == cd::light::LightType::kSpot)
+            LightUboGpu ubo {};
+            ubo.count = 0;
+            for (const auto& lrow : lights)
             {
-                spot_dir       = lrow.light.direction;
-                spot_cos_outer = lrow.light.cos_outer_cone;
-                // Boost spot intensity so the beam reads — spots
-                // concentrate flux into a small solid angle so the
-                // 4π divide under-reads relative to the eye.
-                point_str *= 6.0F;
+                if (!lrow.enabled) continue;
+                const auto k = lrow.light.type;
+                if (k == cd::light::LightType::kDirectional) continue;
+                if (ubo.count >= kMaxLights) break;
+                auto& s = ubo.slots[ubo.count];
+                s.pos_range[0] = lrow.light.position.x;
+                s.pos_range[1] = lrow.light.position.y;
+                s.pos_range[2] = lrow.light.position.z;
+                // Range: point/spot already have it; area lights derive
+                // a sensible falloff from area extents.
+                s.pos_range[3] = (k == cd::light::LightType::kPoint ||
+                                  k == cd::light::LightType::kSpot)
+                                 ? lrow.light.range
+                                 : (lrow.light.area_width + lrow.light.area_height) * 4.0F;
+                s.dir_type[0] = lrow.light.direction.x;
+                s.dir_type[1] = lrow.light.direction.y;
+                s.dir_type[2] = lrow.light.direction.z;
+                s.dir_type[3] = static_cast<float>(static_cast<int>(k));
+                s.color_int[0] = lrow.light.color.x;
+                s.color_int[1] = lrow.light.color.y;
+                s.color_int[2] = lrow.light.color.z;
+                // Lumens → unit intensity. Spot boost x6 (small solid
+                // angle), area dampen ×0.05 (large emitter surface).
+                float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
+                if (k == cd::light::LightType::kSpot) ki *= 6.0F;
+                else if (k == cd::light::LightType::kRectArea ||
+                         k == cd::light::LightType::kDiskArea) ki *= 0.05F;
+                s.color_int[3] = ki;
+                s.extras[0] = lrow.light.cos_outer_cone;
+                s.extras[1] = lrow.light.area_width;
+                s.extras[2] = lrow.light.area_height;
+                s.extras[3] = lrow.light.cos_inner_cone;
+                ubo.count++;
             }
-            else if (k == cd::light::LightType::kRectArea ||
-                     k == cd::light::LightType::kDiskArea)
-            {
-                spot_cos_outer = 0.0F;  // no cone for the area-as-point fallback
-                // Area lights emit over a large surface — scale down
-                // the per-fragment intensity so 100K lumens doesn't
-                // wash everything.
-                point_str *= 0.05F;
-            }
-            else
-            {
-                spot_cos_outer = 0.0F;
-            }
-            break;
+            (void)device.upload_buffer(lights_ubo, 0,
+                std::span<const std::byte>(
+                    reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo)));
+            counters.set("lights_active", ubo.count);
         }
 
         prim_material.apply(cmd);
-        prim_inst.bind(cmd, 0);  // Faz 1.6 CSM — UBO + shadow map descriptor
+        prim_inst.bind(cmd, 0);  // Faz 1.6 CSM + Faz 1.9 light UBO
 
         // ---- Floor (large flat quad) ----
         // Faz 1.5 — real geometry on which the planar-shadow pass can
@@ -2869,12 +2911,6 @@ int main()
             fp.sun_dir[2] = sun_dir.z; fp.sun_dir[3] = sun_str;
             fp.sun_color[0] = sun_col.x; fp.sun_color[1] = sun_col.y;
             fp.sun_color[2] = sun_col.z; fp.sun_color[3] = ambient_w;
-            fp.point_pos_range[0] = point_pos.x; fp.point_pos_range[1] = point_pos.y;
-            fp.point_pos_range[2] = point_pos.z; fp.point_pos_range[3] = point_range;
-            fp.point_color[0] = point_col.x; fp.point_color[1] = point_col.y;
-            fp.point_color[2] = point_col.z; fp.point_color[3] = point_str;
-            fp.spot_dir_cos[0] = spot_dir.x; fp.spot_dir_cos[1] = spot_dir.y;
-            fp.spot_dir_cos[2] = spot_dir.z; fp.spot_dir_cos[3] = spot_cos_outer;
             fp.fx_params[0] = static_cast<float>(tonemap_op);
             fp.fx_params[1] = fp.fx_params[2] = fp.fx_params[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
@@ -2902,12 +2938,6 @@ int main()
             pp.sun_dir[2] = sun_dir.z; pp.sun_dir[3] = sun_str;
             pp.sun_color[0] = sun_col.x; pp.sun_color[1] = sun_col.y;
             pp.sun_color[2] = sun_col.z; pp.sun_color[3] = ambient_w;
-            pp.point_pos_range[0] = point_pos.x; pp.point_pos_range[1] = point_pos.y;
-            pp.point_pos_range[2] = point_pos.z; pp.point_pos_range[3] = point_range;
-            pp.point_color[0] = point_col.x; pp.point_color[1] = point_col.y;
-            pp.point_color[2] = point_col.z; pp.point_color[3] = point_str;
-            pp.spot_dir_cos[0] = spot_dir.x; pp.spot_dir_cos[1] = spot_dir.y;
-            pp.spot_dir_cos[2] = spot_dir.z; pp.spot_dir_cos[3] = spot_cos_outer;
             pp.fx_params[0] = static_cast<float>(tonemap_op);
             pp.fx_params[1] = pp.fx_params[2] = pp.fx_params[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
@@ -2936,7 +2966,7 @@ int main()
             // but keep the push deterministic for SPIR-V validators.
             sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
             sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
-            sp.point_pos_range[3] = 0.0F;
+            sp.fx_params[0] = sp.fx_params[1] = sp.fx_params[2] = sp.fx_params[3] = 0.0F;
 
             // Entity casters.
             for (const auto& ent : entities)
@@ -4361,6 +4391,7 @@ int main()
     shadow_target.destroy(device);
     device.destroy_sampler(shadow_sampler);
     device.destroy_buffer(shadow_ubo);
+    device.destroy_buffer(lights_ubo);
     // Faz 1.7 RT resources — wait_idle so any in-flight cmd buffers
     // that referenced these structures are guaranteed done, then
     // tear down the TLAS queue + every BLAS.
