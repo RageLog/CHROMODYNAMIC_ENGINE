@@ -3791,6 +3791,67 @@ int main()
                         }
                     }
                 }
+                // Rotation (Euler XYZ in degrees). Converts to/from
+                // quaternion every frame so the underlying Transform
+                // stays canonical.
+                ImGui::SeparatorText("Rotation (deg)");
+                {
+                    static cd::math::Quatf pre {};
+                    const cd::math::Quatf& q = lt->value.rotation;
+                    // Quat to Euler XYZ (radians) — small approximation
+                    // works for inspector readout, gimbal-locked at
+                    // pitch == 90 (rare for editor poses).
+                    const float sinp = 2.0F * (q.w * q.x + q.y * q.z);
+                    const float cosp = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
+                    const float pitch = std::atan2(sinp, cosp);
+                    float t2 = 2.0F * (q.w * q.y - q.z * q.x);
+                    t2 = std::clamp(t2, -1.0F, 1.0F);
+                    const float yaw = std::asin(t2);
+                    const float siny = 2.0F * (q.w * q.z + q.x * q.y);
+                    const float cosy = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
+                    const float roll = std::atan2(siny, cosy);
+                    constexpr float kRad2Deg = 57.2957795F;
+                    float eul[3] { pitch * kRad2Deg, yaw * kRad2Deg, roll * kRad2Deg };
+                    bool changed = ImGui::DragFloat3("##rot", eul, 1.0F, -180.0F, 180.0F, "%.1f");
+                    if (ImGui::IsItemActivated()) pre = lt->value.rotation;
+                    if (changed)
+                    {
+                        constexpr float kDeg2Rad = 0.01745329F;
+                        // Rebuild quaternion from Euler XYZ (intrinsic).
+                        const float cx = std::cos(eul[0] * kDeg2Rad * 0.5F);
+                        const float sx = std::sin(eul[0] * kDeg2Rad * 0.5F);
+                        const float cy = std::cos(eul[1] * kDeg2Rad * 0.5F);
+                        const float sy = std::sin(eul[1] * kDeg2Rad * 0.5F);
+                        const float cz = std::cos(eul[2] * kDeg2Rad * 0.5F);
+                        const float sz = std::sin(eul[2] * kDeg2Rad * 0.5F);
+                        lt->value.rotation = {
+                            sx*cy*cz - cx*sy*sz,
+                            cx*sy*cz + sx*cy*sz,
+                            cx*cy*sz - sx*sy*cz,
+                            cx*cy*cz + sx*sy*sz };
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        // Compute delta-rotation = current * inverse(pre)
+                        cd::math::Quatf cur = lt->value.rotation;
+                        cd::math::Quatf inv_pre {
+                            -pre.x, -pre.y, -pre.z, pre.w };
+                        cd::math::Quatf delta {
+                            cur.w*inv_pre.x + cur.x*inv_pre.w + cur.y*inv_pre.z - cur.z*inv_pre.y,
+                            cur.w*inv_pre.y - cur.x*inv_pre.z + cur.y*inv_pre.w + cur.z*inv_pre.x,
+                            cur.w*inv_pre.z + cur.x*inv_pre.y - cur.y*inv_pre.x + cur.z*inv_pre.w,
+                            cur.w*inv_pre.w - cur.x*inv_pre.x - cur.y*inv_pre.y - cur.z*inv_pre.z };
+                        const float mag = std::abs(delta.x) + std::abs(delta.y) +
+                                          std::abs(delta.z) + std::abs(1.0F - delta.w);
+                        if (mag > 1e-4F)
+                        {
+                            lt->value.rotation = pre;
+                            history.push(std::make_unique<cd::editor::RotateCommand>(
+                                scene, ent.handle, delta));
+                            log_push("drag: Rotate " + ent.name);
+                        }
+                    }
+                }
                 // Scale
                 ImGui::SeparatorText("Scale");
                 {
@@ -3812,6 +3873,17 @@ int main()
                                 scene, ent.handle, factor));
                             log_push("drag: Scale " + ent.name);
                         }
+                    }
+                }
+                // Material tint (DragFloat3 RGB). No undo entry yet —
+                // ComponentEditCommand lands with the v1.7 ECS work.
+                ImGui::SeparatorText("Tint");
+                {
+                    float rgb[3] { ent.tint.x, ent.tint.y, ent.tint.z };
+                    if (ImGui::ColorEdit3("##tint", rgb,
+                                          ImGuiColorEditFlags_NoInputs))
+                    {
+                        ent.tint = { rgb[0], rgb[1], rgb[2] };
                     }
                 }
                 ImGui::PopItemWidth();
