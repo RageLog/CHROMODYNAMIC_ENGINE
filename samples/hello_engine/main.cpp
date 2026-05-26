@@ -315,8 +315,10 @@ layout(location = 0) out vec3 v_world_pos;
 layout(location = 1) out vec3 v_world_normal;
 layout(location = 2) out vec3 v_albedo;
 layout(location = 3) out vec4 v_shadow_pos;
+layout(location = 4) out vec2 v_uv;
 void main() {
   v_albedo = in_color * pc.tint.rgb;
+  v_uv     = in_uv;
   vec4 wp = pc.model * vec4(in_pos, 1.0);
   v_world_pos = wp.xyz;
   // Inverse-transpose-of-model would be more correct for non-uniform
@@ -374,6 +376,12 @@ layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
 layout(location = 3) in vec4 v_shadow_pos;
+layout(location = 4) in vec2 v_uv;
+// Optional baseColor texture (gap #1/#13). fx_params.y = 1.0
+// flags the draw as 'sample texture'; 0.0 = use vertex-coloured
+// albedo path. Single texture slot for hello_engine — production
+// editor needs a per-entity texture array (v1.6+).
+layout(set = 0, binding = 4) uniform sampler2D cd_albedo_tex;
 layout(location = 0) out vec4 out_color;
 
 // Frostbite windowed inverse-square attenuation.
@@ -473,7 +481,17 @@ void main() {
   // keeps grid lines properly z-occluded by other geometry (the user-
   // flagged "grid objects arasindan gozukmemeli" issue) for free.
   // Otherwise identical to a normal lit shading path.
+  // baseColor texture path — when the entity is flagged as
+  // textured (fx_params.y > 0.5), override v_albedo with the
+  // sampled albedo * tint. The default 1x1 white texture in the
+  // descriptor lets non-textured draws fall through harmlessly,
+  // but we short-circuit on the flag so the texture sample isn't
+  // wasted on primitives that don't use it.
   vec3 albedo = v_albedo;
+  if (pc.fx_params.y > 0.5) {
+    vec3 sampled = texture(cd_albedo_tex, v_uv).rgb;
+    albedo = sampled * pc.tint.rgb;
+  }
   bool is_floor = (pc.tint.w > 1.5);
   float floor_fade = 1.0;  // 1 = full body, 0 = fully faded (sky-coloured)
   if (is_floor) {
@@ -688,6 +706,84 @@ struct LightUboGpu
     LightSlotGpu  slots[8];
 };
 static_assert(sizeof(LightUboGpu) == 16 + 8 * 64, "LightUboGpu must be 528 B");
+
+// Upload an RGBA8 image to a freshly-created GPU texture. Returns
+// invalid handles on failure. Lifetime: caller owns the texture +
+// view + sampler; destroy at exit. Used by the default-white
+// fallback and the glTF baseColor path (#1/#13).
+struct GpuTexture2D
+{
+    cd::rhi::TextureHandle     image {};
+    cd::rhi::TextureViewHandle view  {};
+};
+
+[[nodiscard]] inline GpuTexture2D
+create_texture_rgba8(cd::rhi::IDevice& dev,
+                     const std::uint8_t* rgba,
+                     std::uint32_t w,
+                     std::uint32_t h)
+{
+    GpuTexture2D out {};
+    if (rgba == nullptr || w == 0 || h == 0) return out;
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::k2D;
+    td.format = cd::rhi::Format::kRGBA8Unorm;
+    td.extent = { w, h, 1 };
+    td.mip_levels = 1;
+    td.array_layers = 1;
+    td.usage = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return out;
+    out.image = *img;
+    // Staging buffer upload.
+    const std::size_t bytes = static_cast<std::size_t>(w) * h * 4;
+    cd::rhi::BufferDesc sd {};
+    sd.size = bytes;
+    sd.usage = cd::rhi::BufferUsage::kTransferSrc;
+    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto staging_r = dev.create_buffer(sd);
+    if (!staging_r.has_value()) return out;
+    const auto staging = *staging_r;
+    (void)dev.upload_buffer(staging, 0,
+        std::span<const std::byte>(reinterpret_cast<const std::byte*>(rgba), bytes));
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr) { dev.destroy_buffer(staging); return out; }
+    cmd->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tb_dst { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kUndefined,
+        .to   = cd::rhi::ResourceState::kTransferDst,
+        .range = { 0, 1, 0, 1 } } };
+    cmd->barrier({}, tb_dst);
+    std::array<cd::rhi::BufferImageCopyRegion, 1> regs { cd::rhi::BufferImageCopyRegion {
+        .buffer_offset = 0, .mip_level = 0, .base_layer = 0, .layer_count = 1,
+        .image_offset = { 0, 0, 0 }, .image_extent = { w, h, 1 } } };
+    cmd->copy_buffer_to_image(staging, out.image, regs);
+    std::array<cd::rhi::TextureBarrier, 1> tb_read { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kTransferDst,
+        .to   = cd::rhi::ResourceState::kShaderResource,
+        .range = { 0, 1, 0, 1 } } };
+    cmd->barrier({}, tb_read);
+    cmd->end();
+    cd::rhi::SubmitDesc sub {};
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
+    sub.command_buffers = cbs;
+    (void)dev.submit(sub);
+    dev.wait_idle();
+    dev.destroy_buffer(staging);
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = out.image;
+    vd.type = cd::rhi::TextureType::k2D;
+    vd.format = cd::rhi::Format::kRGBA8Unorm;
+    vd.base_mip = 0; vd.mip_count = 1;
+    vd.base_layer = 0; vd.layer_count = 1;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(out.image); out.image = {}; return out; }
+    out.view = *v;
+    return out;
+}
 
 // ----------------------------------------------------------------------------
 // Planar-shadow projection matrix.
@@ -965,7 +1061,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 5> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -979,12 +1075,13 @@ int main()
                                               .type    = cd::rhi::DescriptorType::kAccelerationStructure,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment },
-        // gap #2 — multi-light UBO. Up to 8 non-sun lights with
-        // full data (position, direction/right basis, color,
-        // intensity, type, cone cosines, area width/height) so
-        // the FS can shade every enabled light in one pass.
         cd::rhi::DescriptorSetLayoutBinding { .binding = 3,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // gap #1/#13 — baseColor texture slot for glTF entities.
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 4,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc prim_md {};
@@ -1094,11 +1191,33 @@ int main()
     if (!lights_ubo_r.has_value()) return 16;
     const auto lights_ubo = *lights_ubo_r;
 
+    // ---- glTF baseColor texture (#1/#13) ----
+    // Default fallback: 1x1 white texel. Replaced below if a glTF
+    // asset auto-load resolves AND has at least one texture in the
+    // first material's baseColor slot. Single-texture pipeline for
+    // hello_engine; per-entity texture array lands in v1.6 editor.
+    GpuTexture2D albedo_tex {};
+    bool         has_gltf_texture = false;
+    {
+        const std::uint8_t white[4] { 255, 255, 255, 255 };
+        albedo_tex = create_texture_rgba8(device, white, 1, 1);
+    }
+    cd::rhi::SamplerDesc albedo_sd {};
+    albedo_sd.mag_filter = cd::rhi::SamplerFilter::kLinear;
+    albedo_sd.min_filter = cd::rhi::SamplerFilter::kLinear;
+    albedo_sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
+    albedo_sd.address_u = cd::rhi::SamplerAddressMode::kRepeat;
+    albedo_sd.address_v = cd::rhi::SamplerAddressMode::kRepeat;
+    albedo_sd.address_w = cd::rhi::SamplerAddressMode::kRepeat;
+    auto albedo_samp_r = device.create_sampler(albedo_sd);
+    if (!albedo_samp_r.has_value()) return 19;
+    const auto albedo_sampler = *albedo_samp_r;
+
     auto prim_inst_r = cd::material::MaterialInstance::create(device, prim_material);
     if (!prim_inst_r.has_value()) return 14;
     auto& prim_inst = *prim_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 3> writes {
+        std::array<cd::rhi::DescriptorWrite, 4> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
@@ -1115,7 +1234,12 @@ int main()
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
                                        .buffer = lights_ubo,
                                        .buffer_offset = 0,
-                                       .buffer_range = kLightUboBytes } };
+                                       .buffer_range = kLightUboBytes },
+            cd::rhi::DescriptorWrite { .binding = 4,
+                                       .array_element = 0,
+                                       .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view = albedo_tex.view,
+                                       .sampler = albedo_sampler } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
@@ -1226,11 +1350,54 @@ int main()
             }
             gltf_mesh = upload_mesh(device, merged);
             gltf_loaded_name = p;
+            // gap #1/#13 — pull the first material's baseColor
+            // texture out of the glTF and upload it to the prim
+            // pipeline's binding 4 slot. Falls back silently if the
+            // asset has no textures.
+            if (!loaded->materials.empty() && !loaded->textures.empty())
+            {
+                const auto& mat = loaded->materials.front();
+                const int tex_idx = mat.base_color_texture;
+                if (tex_idx >= 0 &&
+                    tex_idx < static_cast<int>(loaded->textures.size()))
+                {
+                    const auto& gt = loaded->textures[static_cast<std::size_t>(tex_idx)];
+                    if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
+                    {
+                        GpuTexture2D tex = create_texture_rgba8(
+                            device, gt.rgba.data(), gt.width, gt.height);
+                        if (tex.image.is_valid())
+                        {
+                            // Replace the 1x1 white default.
+                            if (albedo_tex.view.is_valid())
+                                device.destroy_texture_view(albedo_tex.view);
+                            if (albedo_tex.image.is_valid())
+                                device.destroy_texture(albedo_tex.image);
+                            albedo_tex = tex;
+                            // Re-write descriptor binding 4 to point
+                            // at the new glTF texture.
+                            std::array<cd::rhi::DescriptorWrite, 1> tw {
+                                cd::rhi::DescriptorWrite {
+                                    .binding = 4,
+                                    .array_element = 0,
+                                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                    .view    = albedo_tex.view,
+                                    .sampler = albedo_sampler } };
+                            (void)prim_inst.update(tw);
+                            has_gltf_texture = true;
+                            std::fprintf(stderr,
+                                "[gltf] baseColor texture loaded (%ux%u)\n",
+                                gt.width, gt.height);
+                        }
+                    }
+                }
+            }
             std::fprintf(stderr,
-                "[gltf] loaded %s — %zu verts, %zu indices (untextured fallback)\n",
+                "[gltf] loaded %s — %zu verts, %zu indices (textured=%d)\n",
                 p.c_str(),
                 merged.vertices.size(),
-                merged.indices.size());
+                merged.indices.size(),
+                static_cast<int>(has_gltf_texture));
             break;
         }
         if (gltf_loaded_name.empty())
@@ -3034,7 +3201,13 @@ int main()
             pp.sun_color[0] = sun_col.x; pp.sun_color[1] = sun_col.y;
             pp.sun_color[2] = sun_col.z; pp.sun_color[3] = ambient_w;
             pp.fx_params[0] = static_cast<float>(tonemap_op);
-            pp.fx_params[1] = pp.fx_params[2] = pp.fx_params[3] = 0.0F;
+            // fx_params.y = 1.0 routes the FS through the baseColor
+            // texture path (binding 4). Only kGltf entities are
+            // actually textured today — primitives stay on the
+            // vertex-coloured albedo path.
+            pp.fx_params[1] = (ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
+                            ? 1.0F : 0.0F;
+            pp.fx_params[2] = pp.fx_params[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
@@ -4487,6 +4660,9 @@ int main()
     device.destroy_sampler(shadow_sampler);
     device.destroy_buffer(shadow_ubo);
     device.destroy_buffer(lights_ubo);
+    if (albedo_tex.view.is_valid())  device.destroy_texture_view(albedo_tex.view);
+    if (albedo_tex.image.is_valid()) device.destroy_texture(albedo_tex.image);
+    device.destroy_sampler(albedo_sampler);
     // Faz 1.7 RT resources — wait_idle so any in-flight cmd buffers
     // that referenced these structures are guaranteed done, then
     // tear down the TLAS queue + every BLAS.
