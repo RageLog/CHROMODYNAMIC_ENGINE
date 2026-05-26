@@ -307,6 +307,7 @@ layout(push_constant) uniform PC {
   vec4 sun_dir;          // xyz=directional dir, w=intensity
   vec4 sun_color;        // xyz=color, w=ambient
   vec4 fx_params;        // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
+  vec4 fx_params2;       // x=smaa, y=motion_blur, z=taa, w=dof (v1.4+)
 } pc;
 // Faz 1.6 CSM — light-space view-projection for shadow sampling.
 // Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
@@ -357,6 +358,7 @@ layout(push_constant) uniform PC {
   vec4 sun_dir;
   vec4 sun_color;
   vec4 fx_params;     // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
+  vec4 fx_params2;    // x=smaa, y=motion_blur, z=taa, w=dof (v1.4+)
 } pc;
 // Faz 1.6 CSM descriptors — match the VS layout.
 layout(set = 0, binding = 0) uniform Shadow {
@@ -684,6 +686,19 @@ void main() {
     c = clamp(c + vec3(halo), vec3(0.0), vec3(1.0));
   }
 
+  // Inline SMAA-feel approximation (v1.4 day-ship wire-in). True
+  // SMAA-2x requires edge / blend-weight / neighbourhood passes; here
+  // we use a luminance-derivative softening that visually reduces
+  // stairstep aliasing on high-contrast diagonals. Strength
+  // = pc.fx_params2.x.
+  float smaa_strength = clamp(pc.fx_params2.x, 0.0, 1.0);
+  if (smaa_strength > 0.001) {
+    float lum2 = dot(c, vec3(0.299, 0.587, 0.114));
+    float edge = clamp(fwidth(lum2) * 5.0, 0.0, 1.0);
+    float blur = edge * smaa_strength * 0.20;
+    c = mix(c, vec3(lum2), blur);
+  }
+
   c = pow(c, vec3(1.0/2.2));
   out_color = vec4(c, 1.0);
 }
@@ -716,12 +731,19 @@ struct PrimPush
     float           tint[4];
     float           sun_dir[4];
     float           sun_color[4];
-    // FX params — x = tonemap op (0=Narkowicz / 1=Hill ACES / 2=Hable
-    // / 3=AGX), yzw reserved for future post-FX selectors.
+    // FX params block 1 — x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
+    //                     y=albedo_tex_flag (1=sample cd_albedo_tex)
+    //                     z=gtao_strength (inline curvature darkening)
+    //                     w=bloom_strength (post-tonemap halo boost)
     float           fx_params[4];
+    // FX params block 2 — x=smaa_strength (inline FXAA-style luma blur)
+    //                     y=motion_blur_amount (queued for v1.7 frame-graph)
+    //                     z=taa_amount (queued for v1.7 frame-graph)
+    //                     w=dof_strength (queued for v1.7 frame-graph)
+    float           fx_params2[4];
 };
 
-static_assert(sizeof(PrimPush) == 192, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 208, "PrimPush layout drift");
 
 // Multi-light UBO slot — matches std140 layout in the FS.
 struct LightSlotGpu
@@ -1905,6 +1927,11 @@ int main()
     cd::post_smaa::Settings   fx_smaa {};
     float fx_gtao_strength  = 0.0F;   // 0 = off
     float fx_bloom_strength = 0.0F;
+    float fx_smaa_strength  = 0.0F;
+    float fx_motion_blur    = 0.0F;   // queued for v1.7 frame-graph
+    float fx_taa_amount     = 0.0F;   // queued for v1.7 frame-graph
+    float fx_dof_strength   = 0.0F;   // queued for v1.7 frame-graph
+    bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
         [&]{
             fx_gtao_strength = (fx_gtao_strength > 0.001F) ? 0.0F : 0.65F;
@@ -1926,6 +1953,39 @@ int main()
             fx_bloom.threshold = 1.0F;
             fx_bloom.intensity = 0.04F;
             log_push("[fx] Bloom settings reset to defaults");
+        });
+    palette.register_command(84, "FX: Toggle SMAA (inline luma-edge blur)",
+        [&]{
+            fx_smaa_strength = (fx_smaa_strength > 0.001F) ? 0.0F : 0.55F;
+            log_push(fx_smaa_strength > 0.001F ? "[fx] SMAA on" : "[fx] SMAA off");
+        });
+    palette.register_command(85, "FX: Toggle Motion Blur (queued v1.7)",
+        [&]{
+            fx_motion_blur = (fx_motion_blur > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx_motion_blur > 0.001F
+                       ? "[fx] MotionBlur queued (v1.7 frame-graph)"
+                       : "[fx] MotionBlur off");
+        });
+    palette.register_command(86, "FX: Toggle TAA (queued v1.7)",
+        [&]{
+            fx_taa_amount = (fx_taa_amount > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx_taa_amount > 0.001F
+                       ? "[fx] TAA queued (v1.7 frame-graph)"
+                       : "[fx] TAA off");
+        });
+    palette.register_command(87, "FX: Toggle DOF (queued v1.7)",
+        [&]{
+            fx_dof_strength = (fx_dof_strength > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx_dof_strength > 0.001F
+                       ? "[fx] DOF queued (v1.7 frame-graph)"
+                       : "[fx] DOF off");
+        });
+    palette.register_command(88, "FX: Toggle HDR10 (queued swapchain rework)",
+        [&]{
+            fx_hdr10_request = !fx_hdr10_request;
+            log_push(fx_hdr10_request
+                       ? "[fx] HDR10 request queued (swapchain rework)"
+                       : "[fx] HDR10 off");
         });
     // Silence -Wunused-variable on the not-yet-dispatched libs.
     (void)fx_ssr; (void)fx_dof; (void)fx_mblur; (void)fx_taa; (void)fx_smaa;
@@ -3294,6 +3354,10 @@ int main()
             // lines is a nice subtle highlight.
             fp.fx_params[2] = 0.0F;
             fp.fx_params[3] = fx_bloom_strength;
+            fp.fx_params2[0] = fx_smaa_strength;
+            fp.fx_params2[1] = fx_motion_blur;
+            fp.fx_params2[2] = fx_taa_amount;
+            fp.fx_params2[3] = fx_dof_strength;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -3328,6 +3392,10 @@ int main()
                             ? 1.0F : 0.0F;
             pp.fx_params[2] = fx_gtao_strength;
             pp.fx_params[3] = fx_bloom_strength;
+            pp.fx_params2[0] = fx_smaa_strength;
+            pp.fx_params2[1] = fx_motion_blur;
+            pp.fx_params2[2] = fx_taa_amount;
+            pp.fx_params2[3] = fx_dof_strength;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
@@ -3355,6 +3423,7 @@ int main()
             sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
             sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
             sp.fx_params[0] = sp.fx_params[1] = sp.fx_params[2] = sp.fx_params[3] = 0.0F;
+            sp.fx_params2[0] = sp.fx_params2[1] = sp.fx_params2[2] = sp.fx_params2[3] = 0.0F;
 
             // Entity casters.
             for (const auto& ent : entities)
