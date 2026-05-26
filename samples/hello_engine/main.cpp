@@ -946,9 +946,11 @@ layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(set = 0, binding = 2) uniform sampler2D cd_depth;
 layout(push_constant) uniform PC {
-  vec4 fx;   // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
-  vec4 ao;   // x=ao_strength, y=ao_radius_px, z=near, w=far
-  vec4 dof;  // x=dof_strength, y=focus_distance (m), z=focus_range (m), w=max_blur_px
+  vec4 fx;      // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+  vec4 ao;      // x=ao_strength, y=ao_radius_px, z=near, w=far
+  vec4 dof;     // x=dof_strength, y=focus_distance (m), z=focus_range (m), w=max_blur_px
+  vec4 shafts;  // x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
+  vec4 sun_col; // rgb=sun colour, a=reserved
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -1021,6 +1023,31 @@ void main() {
     }
   }
 
+  // Light shafts (volumetric god rays) — Mitchell 2007 screen-space
+  // occlusion shafts. March from current pixel toward the sun's
+  // screen-space UV; sample depth at each step and accumulate
+  // 'sky-through' density (depth == far). Add scaled sun colour to
+  // the HDR sum before bloom so bright rays bloom.
+  if (pc.shafts.z > 0.0) {
+    vec2 to_sun = pc.shafts.xy - v_uv;
+    float dist = length(to_sun);
+    float density = 0.0;
+    const int kShaftSteps = 16;
+    for (int i = 0; i < kShaftSteps; ++i) {
+      float t = float(i) / float(kShaftSteps - 1);
+      vec2 sp = v_uv + to_sun * t;
+      // Clamp to viewport to avoid sampling outside.
+      if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0) continue;
+      float sd = texture(cd_depth, sp).r;
+      // 'sky pass' contribution — far-plane depth means the ray
+      // travels through open sky at that step (no occluder).
+      density += smoothstep(0.995, 0.999, sd);
+    }
+    density *= (1.0 / float(kShaftSteps));
+    float falloff = exp(-dist * max(pc.shafts.w, 0.001));
+    c += pc.sun_col.rgb * density * falloff * pc.shafts.z;
+  }
+
   // Bloom: additive halo from the upsample chain's final mip0.
   // pc.fx.w is the user-facing strength dial (0 disables completely).
   vec3 bloom = texture(cd_bloom_mip0, v_uv).rgb;
@@ -1065,11 +1092,13 @@ void main() {
 
 struct CompositePush
 {
-    float fx[4];   // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
-    float ao[4];   // x=ao_strength, y=ao_radius_px, z=near, w=far
-    float dof[4];  // x=dof_strength, y=focus_distance, z=focus_range, w=max_blur_px
+    float fx[4];      // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+    float ao[4];      // x=ao_strength, y=ao_radius_px, z=near, w=far
+    float dof[4];     // x=dof_strength, y=focus_distance, z=focus_range, w=max_blur_px
+    float shafts[4];  // x=sun_uv_x, y=sun_uv_y, z=strength (neg = sun behind), w=decay
+    float sun_col[4]; // xyz=linear sun colour, w=reserved
 };
-static_assert(sizeof(CompositePush) == 48, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 80, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -6480,6 +6509,79 @@ int main()
         cp.dof[1] = focus_dist;
         cp.dof[2] = 4.0F;   // focus range (m) — pixels within ±range stay sharp
         cp.dof[3] = 8.0F;   // max blur radius (px)
+        // Light shafts — project the first enabled directional light's
+        // sun position to screen-space UV (sun lives at infinity in
+        // direction -L). If sun is behind camera (fwd_dot ≤ 0) we
+        // signal disabled via negative strength.
+        cp.shafts[0] = 0.5F;
+        cp.shafts[1] = 0.5F;
+        cp.shafts[2] = -1.0F;  // disabled until a directional light + visible sun
+        cp.shafts[3] = 1.0F;
+        cp.sun_col[0] = 0.0F; cp.sun_col[1] = 0.0F; cp.sun_col[2] = 0.0F; cp.sun_col[3] = 0.0F;
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+            const cd::math::Vec3f to_sun {
+                -lrow.light.direction.x,
+                -lrow.light.direction.y,
+                -lrow.light.direction.z };
+            // Compute camera basis (forward/right/up). Same construction
+            // as the sky/PBR push setup right above.
+            const cd::math::Vec3f cam_fwd_n {
+                cam.target.x - cam.eye.x,
+                cam.target.y - cam.eye.y,
+                cam.target.z - cam.eye.z };
+            const float cam_fwd_len = std::sqrt(
+                cam_fwd_n.x * cam_fwd_n.x +
+                cam_fwd_n.y * cam_fwd_n.y +
+                cam_fwd_n.z * cam_fwd_n.z);
+            if (cam_fwd_len < 1e-6F) break;
+            const cd::math::Vec3f f {
+                cam_fwd_n.x / cam_fwd_len,
+                cam_fwd_n.y / cam_fwd_len,
+                cam_fwd_n.z / cam_fwd_len };
+            const cd::math::Vec3f shaft_up_axis { 0.0F, 1.0F, 0.0F };
+            const cd::math::Vec3f r_raw {
+                f.y * shaft_up_axis.z - f.z * shaft_up_axis.y,
+                f.z * shaft_up_axis.x - f.x * shaft_up_axis.z,
+                f.x * shaft_up_axis.y - f.y * shaft_up_axis.x };
+            const float r_len = std::sqrt(r_raw.x * r_raw.x +
+                                          r_raw.y * r_raw.y +
+                                          r_raw.z * r_raw.z);
+            if (r_len < 1e-6F) break;
+            const cd::math::Vec3f r {
+                r_raw.x / r_len, r_raw.y / r_len, r_raw.z / r_len };
+            const cd::math::Vec3f u {
+                r.y * f.z - r.z * f.y,
+                r.z * f.x - r.x * f.z,
+                r.x * f.y - r.y * f.x };
+            const float fwd_dot = to_sun.x * f.x + to_sun.y * f.y + to_sun.z * f.z;
+            if (fwd_dot <= 0.0F) break;  // sun behind camera
+            const float r_dot = to_sun.x * r.x + to_sun.y * r.y + to_sun.z * r.z;
+            const float u_dot = to_sun.x * u.x + to_sun.y * u.y + to_sun.z * u.z;
+            const float aspect_l = static_cast<float>(frame.extent.width) /
+                                   static_cast<float>(frame.extent.height);
+            const float half_h_l = std::tan(cam.fov_y * 0.5F);
+            const float half_w_l = half_h_l * aspect_l;
+            const float sun_ndc_x = (r_dot / fwd_dot) / half_w_l;
+            const float sun_ndc_y = (u_dot / fwd_dot) / half_h_l;
+            cp.shafts[0] = 0.5F + 0.5F * sun_ndc_x;
+            cp.shafts[1] = 0.5F - 0.5F * sun_ndc_y;
+            // Fade strength near screen edges so shafts don't pop on
+            // sun exit. Linear taper outside [-1, 1] NDC.
+            float edge_fade = std::min(1.0F,
+                std::max(0.0F, 1.0F - std::max(std::abs(sun_ndc_x),
+                                               std::abs(sun_ndc_y)) - 0.0F));
+            edge_fade = std::clamp(edge_fade, 0.0F, 1.0F);
+            cp.shafts[2] = 0.35F * edge_fade;  // base shaft strength
+            cp.shafts[3] = 3.5F;               // decay (per UV distance)
+            cp.sun_col[0] = lrow.light.color.x;
+            cp.sun_col[1] = lrow.light.color.y;
+            cp.sun_col[2] = lrow.light.color.z;
+            cp.sun_col[3] = 0.0F;
+            break;
+        }
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
