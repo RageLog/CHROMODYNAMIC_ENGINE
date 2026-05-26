@@ -5077,21 +5077,31 @@ int main()
         }
         if (ImGui::CollapsingHeader("R7  Camera composition"))
         {
-            ImGui::SliderFloat("Vignette",       &fx_motion_blur, 0.0F, 1.0F);
-            ImGui::SliderFloat("ChromAberration",&fx_taa_amount,  0.0F, 1.0F);
-            ImGui::SliderFloat("Film grain",     &fx_dof_strength,0.0F, 1.0F);
+            ImGui::SliderFloat("Vignette",       &fx_vignette_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("ChromAberration",&fx_chromab_strength,  0.0F, 1.0F);
+            ImGui::SliderFloat("Film grain",     &fx_film_grain,        0.0F, 1.0F);
         }
-        if (ImGui::CollapsingHeader("R4-FX  Inline post-fx"))
+        if (ImGui::CollapsingHeader("R4-FX  Inline scene post-fx (legacy)"))
         {
+            ImGui::TextDisabled("inline fakes — composite owns the real versions");
             ImGui::SliderFloat("GTAO inline",  &fx_gtao_strength,        0.0F, 1.0F);
             ImGui::SliderFloat("Bloom inline", &fx_bloom_strength,       0.0F, 1.0F);
             ImGui::SliderFloat("SMAA inline",  &fx_smaa_strength,        0.0F, 1.0F);
             ImGui::SliderFloat("Height fog",   &fx_fog_density,          0.0F, 1.0F);
             ImGui::SliderFloat("Aerial persp", &fx_aerial_perspective,   0.0F, 1.0F);
         }
-        if (ImGui::CollapsingHeader("R3  Frame-graph + true post-fx"))
+        if (ImGui::CollapsingHeader("R3  Composite post-fx (live)",
+                                    ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::TextDisabled("queued v1.7 (off-screen RT + compute pipes)");
+            ImGui::TextDisabled("single composite pass — AO/DOF/shafts/bloom/atmo");
+            ImGui::SliderFloat("DOF strength",       &fx_dof_strength,    0.0F, 1.0F);
+            ImGui::SliderFloat("Motion blur",        &fx_motion_blur,     0.0F, 1.0F);
+            ImGui::SliderFloat("TAA amount",         &fx_taa_amount,      0.0F, 1.0F);
+            ImGui::TextDisabled("motion blur + TAA queued — need velocity buffer");
+        }
+        if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
+        {
+            ImGui::TextDisabled("composite-inline live; SSR/TAA/motion blur queued");
         }
         if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
         {
