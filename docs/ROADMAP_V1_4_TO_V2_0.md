@@ -33,6 +33,10 @@ missing. Order is by user pain × ship size.
 | 13 | **glTF texture support for prim shader**          | high    | M      | (same as #1, dup for visibility)      |
 | 14 | **Sound positional placement (world entity)**      | mid     | M      | cd::audio::SourceComponent + ECS     |
 | 15 | **Scene save / load with new entities + lights**  | low-mid | S      | extend cd::asset_json hello_engine.cdscene.json |
+| 16 | **Light rotation gizmo (R-mode)** — *user-flagged: "isiklara rotation veremiyorum"* | high | M | gizmo dispatches on selection.kind=Light + mode=Rotate → quaternion drives `light.direction` |
+| 17 | **Light scale gizmo → range / area-extent edit** — *"sacale ile etki alanini degistirmek isityorum"* | high | M | gizmo dispatches on selection.kind=Light + mode=Scale → `scale.x` drives `range` (point/spot) or `area_width` (rect/disk) |
+| 18 | **World + Level + Layer system (custom)** — *"world ve level yapilari eklenmeli chernonun bahsettigi layer yapisida yapilmali ama ordaki gibi degil kendimize uygun bicimde yapilmali"* | high | XL | new `engine/world/world` + `engine/world/level` + `engine/world/layer` libraries — sub-scene grouping, per-layer visibility/lock/colour, level-streaming chunks. See dedicated section below. |
+| 19 | **PBR + sky lights-off gate** (regression of #11 surface) | mid-high | S | ✅ shipped b86bd65 — IBL + sky gradient now obey sun_dir.w |
 
 S = ≤ 1 day, M = 1-3 days, L = ≥ 1 week, XL = ≥ 1 month.
 
@@ -209,6 +213,95 @@ These run continuously alongside the version milestones:
   GCC; tested in CI.
 - **Sanitizer matrix** — ASAN + UBSAN + TSAN on the debug preset
   rotation.
+
+---
+
+## World + Level + Layer system (custom — gap #18)
+
+User-flagged: *"world ve level yapilari eklenmeli chernonun
+bahsettigi layer yapisida yapilmali ama ordaki gibi degil
+kendimize uygun bicimde yapilmali"* — add world + level structures
+and a layer system, but custom-shaped rather than copying any
+specific reference.
+
+CHROMODYNAMIC-shaped data model (lands across v1.6 → v1.8):
+
+### Hierarchy
+
+```
+World                          // the running container, one per process
+  ├─ Project                   // user's editable artefact (game/app)
+  │   ├─ Settings              // rendering, networking, audio defaults
+  │   ├─ Asset Catalog         // typed asset registry (mesh / tex / audio / scene)
+  │   └─ Levels (1..N)         // top-level streaming units
+  │        └─ Level
+  │            ├─ Bounds       // world-space AABB / OBB for streaming
+  │            ├─ Layers (1..N)
+  │            │    └─ Layer   // visibility / lock / colour / draw-order
+  │            │        └─ Entities[]   // ECS entities pinned to this layer
+  │            ├─ Skybox / Sky settings
+  │            ├─ Light environment    // sun + atmosphere params
+  │            └─ Postfx stack         // tonemap / bloom / GTAO ... enable list
+  └─ Editor state              // selection, undo, dock layout (separate save)
+```
+
+### Library layout
+
+| Library                           | Type     | Purpose                                                                                |
+|-----------------------------------|----------|----------------------------------------------------------------------------------------|
+| `engine/world/world`              | NEW      | `cd::world::World` — container, project ref, level table.                              |
+| `engine/world/project`            | NEW      | `cd::world::Project` — settings + asset catalog + serialised state.                    |
+| `engine/world/level`              | NEW      | `cd::world::Level` — bounds + layers + sky/postfx selectors. Streaming-aware.          |
+| `engine/world/layer`              | NEW      | `cd::world::Layer` — visibility flag, lock flag, colour tag, draw-order, entity set.   |
+| `engine/world/scene` (existing)   | extend   | gains `Layer*` per node so the existing scene tree slots into the new model.           |
+| `engine/world/streaming`          | extend   | reuses `cd::asset_streaming::Scheduler` for level-chunk async load/unload.             |
+
+### Editor UX surface (v1.6 editor work)
+
+- **Outliner panel** — tree view: World → Project → Level → Layer →
+  Entities. Drag-reparent to move entities between layers. Right-
+  click on layer: lock/hide/colour-tag/rename/delete.
+- **Layer mask in viewport** — per-layer visibility toggles in a
+  compact toolbar. Locked layers gray out their entities in the
+  outliner + reject pick/gizmo.
+- **Active layer** — new entities spawn into the active layer
+  (palette drop destination). Default layer always exists.
+- **Per-layer overrides** — postfx enable list can be overridden
+  at layer scope (e.g. "this UI layer skips bloom").
+
+### Streaming + level chunks (v1.7 ship)
+
+- **Level chunks** — each Level's bounds are tiled into K×K chunks
+  (configurable). Chunks load when the camera enters a configurable
+  expansion radius; unload when it leaves the unload radius.
+- **Async via `cd::asset_streaming`** — chunk loads enter the
+  priority queue with priority = distance + projected screen size.
+- **Persistent layers** — flagged layers stay resident across all
+  chunks (player, UI, persistent NPCs).
+
+### Save / load extension
+
+Today's `hello_engine.cdscene.json` is a flat scene + lights dump.
+Extend to:
+- `<project>.cdproj.json` — project metadata, level list.
+- `<level>.cdlevel.json` — bounds, layer list, postfx, sky.
+- Each entity carries `"layer": "<name>"` so deserialise restores
+  correctly.
+
+### Why not just "copy Cherno's"
+
+Reference projects (Cherno's Hazel / Unity / UE) use a fixed
+"Scene = root container, layers = bitmask attached to camera"
+shape. Our world has:
+- Multiple concurrent levels (streaming) — needs explicit Level
+  type, not just Scene.
+- Per-layer postfx override — needs Layer to carry render
+  settings, not just entity set.
+- Locking + draw-order — fields most engines lack in their layer
+  primitive.
+
+Net: shape it around our streaming + multi-level renderer
+priorities, not any single competitor's data layout.
 
 ---
 
