@@ -43,6 +43,10 @@
 #include <cd/ddgi/Ddgi.hpp>
 #include <cd/decal/Decal.hpp>
 #include <cd/gpu_particles/GpuParticles.hpp>
+#include <cd/ibl/BrdfLut.hpp>
+#include <cd/ibl/Cubemap.hpp>
+#include <cd/ibl/IrradianceConvolution.hpp>
+#include <cd/ibl/PrefilteredSpecular.hpp>
 #include <cd/nrc/Nrc.hpp>
 #include <cd/restir_di/Reservoir.hpp>
 #include <cd/restir_gi/GiReservoir.hpp>
@@ -916,6 +920,392 @@ create_texture_rgba8(cd::rhi::IDevice& dev,
     return out;
 }
 
+// ============================================================================
+// R1 — True IBL helpers (HDR cubemap + diffuse irradiance + BRDF LUT).
+//
+// Generates a CPU environment cubemap by sampling the analytical sky
+// function (same palette as AnalyticalSkyMaterial::sample_env), runs
+// cd::ibl convolutions (irradiance + prefiltered specular + BRDF LUT),
+// and uploads to GPU as kCube + kCube-with-mips + k2D textures.
+// ============================================================================
+
+/// CPU equivalent of the GLSL sample_env() used in AnalyticalSkyFS +
+/// StandardPbrFS. Matches the 3-band atmospheric palette so the IBL
+/// stays consistent with what the sky shader paints behind the scene.
+[[nodiscard]] inline cd::math::Vec3f sample_sky_cpu(cd::math::Vec3f dir) noexcept
+{
+    const cd::math::Vec3f zenith  { 0.50F, 0.58F, 0.72F };
+    const cd::math::Vec3f horizon { 0.88F, 0.85F, 0.78F };
+    const cd::math::Vec3f ground  { 0.18F, 0.16F, 0.14F };
+    const float h = dir.y;
+    auto mix3 = [](cd::math::Vec3f a, cd::math::Vec3f b, float t) {
+        return cd::math::Vec3f { a.x + (b.x - a.x) * t,
+                                  a.y + (b.y - a.y) * t,
+                                  a.z + (b.z - a.z) * t };
+    };
+    if (h >= 0.0F)
+        return mix3(horizon, zenith,
+                    std::pow(std::clamp(h, 0.0F, 1.0F), 0.6F));
+    return mix3(horizon, ground,
+                std::pow(std::clamp(-h, 0.0F, 1.0F), 0.5F));
+}
+
+/// Build an environment cubemap by sampling sample_sky_cpu() at the
+/// world-direction of each cube texel. `face_size` 256 is the canonical
+/// IBL source resolution.
+[[nodiscard]] inline cd::ibl::CubeMapRgbF
+bake_analytical_sky_cube(std::uint32_t face_size)
+{
+    auto cm = cd::ibl::CubeMapRgbF::allocate(face_size);
+    for (std::uint8_t f = 0; f < cd::ibl::kCubeFaceCount; ++f)
+    {
+        const auto face = static_cast<cd::ibl::CubeFace>(f);
+        for (std::uint32_t y = 0; y < face_size; ++y)
+        {
+            for (std::uint32_t x = 0; x < face_size; ++x)
+            {
+                const float u = (static_cast<float>(x) + 0.5F) /
+                                static_cast<float>(face_size);
+                const float v = (static_cast<float>(y) + 0.5F) /
+                                static_cast<float>(face_size);
+                const auto dir = cd::ibl::cube_uv_to_world_dir(face, u, v);
+                cm.store(face, x, y, sample_sky_cpu(dir));
+            }
+        }
+    }
+    return cm;
+}
+
+struct GpuCubemap
+{
+    cd::rhi::TextureHandle image {};
+    cd::rhi::TextureViewHandle view {};
+    std::uint32_t mip_count { 1 };
+};
+
+/// Upload a CPU cubemap (single mip) to the GPU as a kCube texture
+/// with the RGBA16Float format (3 channels expanded to 4 with alpha=1).
+[[nodiscard]] inline GpuCubemap
+upload_cubemap_rgba16f(cd::rhi::IDevice& dev,
+                       const cd::ibl::CubeMapRgbF& src)
+{
+    GpuCubemap out {};
+    if (src.face_size == 0) return out;
+    const std::uint32_t size = src.face_size;
+
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::kCube;
+    td.format = cd::rhi::Format::kRGBA16Float;
+    td.extent = { size, size, 1 };
+    td.mip_levels = 1;
+    td.array_layers = 6;
+    td.usage = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return out;
+    out.image = *img;
+
+    // Pack each face's RGB floats into RGBA16Float (half-float).
+    // Use a small lambda for float -> half conversion (IEEE 754 16-bit).
+    auto float_to_half = [](float f) -> std::uint16_t {
+        union { float f; std::uint32_t u; } v { f };
+        const std::uint32_t s = (v.u >> 16) & 0x8000U;
+        std::int32_t e = static_cast<std::int32_t>((v.u >> 23) & 0xFF) - 112;
+        std::uint32_t m = v.u & 0x7FFFFFU;
+        if (e <= 0) return static_cast<std::uint16_t>(s);
+        if (e >= 31) return static_cast<std::uint16_t>(s | 0x7BFFU);
+        return static_cast<std::uint16_t>(s | (static_cast<std::uint32_t>(e) << 10) | (m >> 13));
+    };
+
+    const std::size_t face_pixels = static_cast<std::size_t>(size) * size;
+    const std::size_t face_bytes  = face_pixels * 4 * sizeof(std::uint16_t);
+    const std::size_t total_bytes = face_bytes * 6;
+    std::vector<std::uint16_t> staging_data(total_bytes / sizeof(std::uint16_t));
+
+    for (std::uint8_t f = 0; f < cd::ibl::kCubeFaceCount; ++f)
+    {
+        const auto& src_face = src.faces[f];
+        std::uint16_t* dst = staging_data.data() + (face_pixels * 4 * f);
+        for (std::size_t i = 0; i < face_pixels; ++i)
+        {
+            dst[i*4 + 0] = float_to_half(src_face[i*3 + 0]);
+            dst[i*4 + 1] = float_to_half(src_face[i*3 + 1]);
+            dst[i*4 + 2] = float_to_half(src_face[i*3 + 2]);
+            dst[i*4 + 3] = float_to_half(1.0F);
+        }
+    }
+
+    cd::rhi::BufferDesc sd {};
+    sd.size = total_bytes;
+    sd.usage = cd::rhi::BufferUsage::kTransferSrc;
+    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto staging_r = dev.create_buffer(sd);
+    if (!staging_r.has_value()) return out;
+    const auto staging = *staging_r;
+    (void)dev.upload_buffer(staging, 0,
+        std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(staging_data.data()), total_bytes));
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr) { dev.destroy_buffer(staging); return out; }
+    cmd->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tb_dst { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kUndefined,
+        .to   = cd::rhi::ResourceState::kTransferDst,
+        .range = { 0, 1, 0, 6 } } };
+    cmd->barrier({}, tb_dst);
+    std::array<cd::rhi::BufferImageCopyRegion, 6> regs {};
+    for (std::uint32_t f = 0; f < 6; ++f) {
+        regs[f] = cd::rhi::BufferImageCopyRegion {
+            .buffer_offset = face_bytes * f,
+            .mip_level = 0,
+            .base_layer = f,
+            .layer_count = 1,
+            .image_offset = { 0, 0, 0 },
+            .image_extent = { size, size, 1 } };
+    }
+    cmd->copy_buffer_to_image(staging, out.image, regs);
+    std::array<cd::rhi::TextureBarrier, 1> tb_read { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kTransferDst,
+        .to   = cd::rhi::ResourceState::kShaderResource,
+        .range = { 0, 1, 0, 6 } } };
+    cmd->barrier({}, tb_read);
+    cmd->end();
+    cd::rhi::SubmitDesc sub {};
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
+    sub.command_buffers = cbs;
+    (void)dev.submit(sub);
+    dev.wait_idle();
+    dev.destroy_buffer(staging);
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = out.image;
+    vd.type = cd::rhi::TextureType::kCube;
+    vd.format = cd::rhi::Format::kRGBA16Float;
+    vd.base_mip = 0; vd.mip_count = 1;
+    vd.base_layer = 0; vd.layer_count = 6;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(out.image); return {}; }
+    out.view = *v;
+    out.mip_count = 1;
+    return out;
+}
+
+/// Upload a prefiltered specular cube as a kCube with `mip_count` mips.
+[[nodiscard]] inline GpuCubemap
+upload_prefiltered_specular(cd::rhi::IDevice& dev,
+                            const cd::ibl::PrefilteredSpecularCube& src)
+{
+    GpuCubemap out {};
+    if (src.mip_count == 0) return out;
+    const std::uint32_t base = src.mips[0].face_size;
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::kCube;
+    td.format = cd::rhi::Format::kRGBA16Float;
+    td.extent = { base, base, 1 };
+    td.mip_levels = src.mip_count;
+    td.array_layers = 6;
+    td.usage = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return out;
+    out.image = *img;
+
+    auto float_to_half = [](float f) -> std::uint16_t {
+        union { float f; std::uint32_t u; } v { f };
+        const std::uint32_t s = (v.u >> 16) & 0x8000U;
+        std::int32_t e = static_cast<std::int32_t>((v.u >> 23) & 0xFF) - 112;
+        std::uint32_t m = v.u & 0x7FFFFFU;
+        if (e <= 0) return static_cast<std::uint16_t>(s);
+        if (e >= 31) return static_cast<std::uint16_t>(s | 0x7BFFU);
+        return static_cast<std::uint16_t>(s | (static_cast<std::uint32_t>(e) << 10) | (m >> 13));
+    };
+
+    // Compute total staging bytes across mips.
+    std::size_t total_bytes = 0;
+    std::array<std::size_t, cd::ibl::kMaxSpecularMips> mip_byte_offset {};
+    for (std::uint32_t m = 0; m < src.mip_count; ++m) {
+        mip_byte_offset[m] = total_bytes;
+        const std::uint32_t s = src.mips[m].face_size;
+        total_bytes += static_cast<std::size_t>(s) * s * 4 * sizeof(std::uint16_t) * 6;
+    }
+    std::vector<std::uint16_t> staging_data(total_bytes / sizeof(std::uint16_t));
+
+    // Pack per-mip per-face.
+    for (std::uint32_t m = 0; m < src.mip_count; ++m) {
+        const auto& cm = src.mips[m];
+        const std::uint32_t s = cm.face_size;
+        const std::size_t face_pixels = static_cast<std::size_t>(s) * s;
+        for (std::uint8_t f = 0; f < cd::ibl::kCubeFaceCount; ++f) {
+            const auto& src_face = cm.faces[f];
+            std::uint16_t* dst = staging_data.data() +
+                (mip_byte_offset[m] / sizeof(std::uint16_t)) +
+                (face_pixels * 4 * f);
+            for (std::size_t i = 0; i < face_pixels; ++i) {
+                dst[i*4 + 0] = float_to_half(src_face[i*3 + 0]);
+                dst[i*4 + 1] = float_to_half(src_face[i*3 + 1]);
+                dst[i*4 + 2] = float_to_half(src_face[i*3 + 2]);
+                dst[i*4 + 3] = float_to_half(1.0F);
+            }
+        }
+    }
+
+    cd::rhi::BufferDesc sd {};
+    sd.size = total_bytes;
+    sd.usage = cd::rhi::BufferUsage::kTransferSrc;
+    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto staging_r = dev.create_buffer(sd);
+    if (!staging_r.has_value()) { dev.destroy_texture(out.image); return {}; }
+    const auto staging = *staging_r;
+    (void)dev.upload_buffer(staging, 0,
+        std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(staging_data.data()), total_bytes));
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr) {
+        dev.destroy_buffer(staging);
+        dev.destroy_texture(out.image);
+        return {};
+    }
+    cmd->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tb_dst { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kUndefined,
+        .to   = cd::rhi::ResourceState::kTransferDst,
+        .range = { 0, src.mip_count, 0, 6 } } };
+    cmd->barrier({}, tb_dst);
+
+    // One copy region per (mip, face).
+    std::vector<cd::rhi::BufferImageCopyRegion> regs;
+    regs.reserve(src.mip_count * 6);
+    for (std::uint32_t m = 0; m < src.mip_count; ++m) {
+        const std::uint32_t s = src.mips[m].face_size;
+        const std::size_t face_pixels = static_cast<std::size_t>(s) * s;
+        const std::size_t face_bytes  = face_pixels * 4 * sizeof(std::uint16_t);
+        for (std::uint32_t f = 0; f < 6; ++f) {
+            regs.push_back(cd::rhi::BufferImageCopyRegion {
+                .buffer_offset = mip_byte_offset[m] + face_bytes * f,
+                .mip_level = m,
+                .base_layer = f,
+                .layer_count = 1,
+                .image_offset = { 0, 0, 0 },
+                .image_extent = { s, s, 1 } });
+        }
+    }
+    cmd->copy_buffer_to_image(staging, out.image, regs);
+    std::array<cd::rhi::TextureBarrier, 1> tb_read { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kTransferDst,
+        .to   = cd::rhi::ResourceState::kShaderResource,
+        .range = { 0, src.mip_count, 0, 6 } } };
+    cmd->barrier({}, tb_read);
+    cmd->end();
+    cd::rhi::SubmitDesc sub {};
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
+    sub.command_buffers = cbs;
+    (void)dev.submit(sub);
+    dev.wait_idle();
+    dev.destroy_buffer(staging);
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = out.image;
+    vd.type = cd::rhi::TextureType::kCube;
+    vd.format = cd::rhi::Format::kRGBA16Float;
+    vd.base_mip = 0; vd.mip_count = src.mip_count;
+    vd.base_layer = 0; vd.layer_count = 6;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(out.image); return {}; }
+    out.view = *v;
+    out.mip_count = src.mip_count;
+    return out;
+}
+
+/// Upload the BRDF LUT as a 2D RG16Float texture.
+[[nodiscard]] inline GpuTexture2D
+upload_brdf_lut(cd::rhi::IDevice& dev, const cd::ibl::BrdfLut& src)
+{
+    GpuTexture2D out {};
+    if (src.width == 0 || src.height == 0) return out;
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::k2D;
+    td.format = cd::rhi::Format::kRG16Float;
+    td.extent = { src.width, src.height, 1 };
+    td.mip_levels = 1;
+    td.array_layers = 1;
+    td.usage = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return out;
+    out.image = *img;
+
+    auto float_to_half = [](float f) -> std::uint16_t {
+        union { float f; std::uint32_t u; } v { f };
+        const std::uint32_t s = (v.u >> 16) & 0x8000U;
+        std::int32_t e = static_cast<std::int32_t>((v.u >> 23) & 0xFF) - 112;
+        std::uint32_t m = v.u & 0x7FFFFFU;
+        if (e <= 0) return static_cast<std::uint16_t>(s);
+        if (e >= 31) return static_cast<std::uint16_t>(s | 0x7BFFU);
+        return static_cast<std::uint16_t>(s | (static_cast<std::uint32_t>(e) << 10) | (m >> 13));
+    };
+    const std::size_t pixels = static_cast<std::size_t>(src.width) * src.height;
+    std::vector<std::uint16_t> staging_data(pixels * 2);
+    for (std::size_t i = 0; i < pixels; ++i) {
+        staging_data[i*2 + 0] = float_to_half(src.rg[i*2 + 0]);
+        staging_data[i*2 + 1] = float_to_half(src.rg[i*2 + 1]);
+    }
+    const std::size_t bytes = pixels * 2 * sizeof(std::uint16_t);
+
+    cd::rhi::BufferDesc sd {};
+    sd.size = bytes;
+    sd.usage = cd::rhi::BufferUsage::kTransferSrc;
+    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto staging_r = dev.create_buffer(sd);
+    if (!staging_r.has_value()) { dev.destroy_texture(out.image); return {}; }
+    const auto staging = *staging_r;
+    (void)dev.upload_buffer(staging, 0,
+        std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(staging_data.data()), bytes));
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr) { dev.destroy_buffer(staging); dev.destroy_texture(out.image); return {}; }
+    cmd->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tb_dst { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kUndefined,
+        .to   = cd::rhi::ResourceState::kTransferDst,
+        .range = { 0, 1, 0, 1 } } };
+    cmd->barrier({}, tb_dst);
+    std::array<cd::rhi::BufferImageCopyRegion, 1> regs { cd::rhi::BufferImageCopyRegion {
+        .buffer_offset = 0, .mip_level = 0, .base_layer = 0, .layer_count = 1,
+        .image_offset = { 0, 0, 0 }, .image_extent = { src.width, src.height, 1 } } };
+    cmd->copy_buffer_to_image(staging, out.image, regs);
+    std::array<cd::rhi::TextureBarrier, 1> tb_read { cd::rhi::TextureBarrier {
+        .texture = out.image,
+        .from = cd::rhi::ResourceState::kTransferDst,
+        .to   = cd::rhi::ResourceState::kShaderResource,
+        .range = { 0, 1, 0, 1 } } };
+    cmd->barrier({}, tb_read);
+    cmd->end();
+    cd::rhi::SubmitDesc sub {};
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
+    sub.command_buffers = cbs;
+    (void)dev.submit(sub);
+    dev.wait_idle();
+    dev.destroy_buffer(staging);
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = out.image;
+    vd.type = cd::rhi::TextureType::k2D;
+    vd.format = cd::rhi::Format::kRG16Float;
+    vd.base_mip = 0; vd.mip_count = 1;
+    vd.base_layer = 0; vd.layer_count = 1;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(out.image); return {}; }
+    out.view = *v;
+    return out;
+}
+
 // ----------------------------------------------------------------------------
 // Planar-shadow projection matrix.
 //
@@ -1131,12 +1521,26 @@ int main()
                                      .offset = 0,
                                      .size = static_cast<std::uint32_t>(
                                          sizeof(cd::material::StandardPbrPush)) } };
-    // PBR shader reads the same multi-light UBO at binding 0 so
-    // non-sun lights illuminate the sphere grid (#22). Layout
-    // matches prim's binding 3 — same LightUboGpu staging.
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kPbrDescBindings {
+    // PBR shader bindings (R1 IBL pipeline):
+    //   binding 0: multi-light UBO (LightUboGpu, 528 B std140)
+    //   binding 1: samplerCube — prefiltered specular IBL (mip chain)
+    //   binding 2: samplerCube — diffuse irradiance IBL
+    //   binding 3: sampler2D   — split-sum BRDF LUT (RG16Float)
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kPbrDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 1,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 2,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 3,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc pbr_md {};
@@ -1322,6 +1726,39 @@ int main()
     if (!lights_ubo_r.has_value()) return 16;
     const auto lights_ubo = *lights_ubo_r;
 
+    // ---- R1: IBL bake + GPU upload ----
+    // CPU-side bake at startup: analytical-sky env cube -> diffuse
+    // irradiance + prefiltered specular + BRDF LUT. Vulkan upload
+    // creates kCube/k2D textures + clamp-to-edge sampler.
+    // Resolutions chosen for first-ship balance (bake < 2 s on a
+    // desktop CPU): env 128, spec mips 64..2, diff 16, BRDF 64x64.
+    std::fprintf(stderr, "[ibl] baking environment cubemap...\n");
+    const auto env_cube_cpu = bake_analytical_sky_cube(128);
+    std::fprintf(stderr, "[ibl] convolving diffuse irradiance...\n");
+    const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 10.0F);
+    std::fprintf(stderr, "[ibl] prefiltering specular mip chain...\n");
+    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 64, 6, 32);
+    std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
+    const auto brdf_lut_cpu  = cd::ibl::bake_brdf_lut(64, 64, 256);
+    std::fprintf(stderr, "[ibl] uploading to GPU...\n");
+    const auto gpu_spec_cube = upload_prefiltered_specular(device, spec_cube_cpu);
+    const auto gpu_diff_cube = upload_cubemap_rgba16f(device, diff_cube_cpu);
+    const auto gpu_brdf_lut  = upload_brdf_lut(device, brdf_lut_cpu);
+    std::fprintf(stderr, "[ibl] done (spec %u mips, diff 16, brdf 64x64)\n",
+                 gpu_spec_cube.mip_count);
+
+    cd::rhi::SamplerDesc ibl_sd {};
+    ibl_sd.mag_filter = cd::rhi::SamplerFilter::kLinear;
+    ibl_sd.min_filter = cd::rhi::SamplerFilter::kLinear;
+    ibl_sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
+    ibl_sd.address_u = cd::rhi::SamplerAddressMode::kClampToEdge;
+    ibl_sd.address_v = cd::rhi::SamplerAddressMode::kClampToEdge;
+    ibl_sd.address_w = cd::rhi::SamplerAddressMode::kClampToEdge;
+    ibl_sd.max_lod  = static_cast<float>(gpu_spec_cube.mip_count);
+    auto ibl_samp_r = device.create_sampler(ibl_sd);
+    if (!ibl_samp_r.has_value()) return 23;
+    const auto ibl_sampler = *ibl_samp_r;
+
     // ---- glTF baseColor texture (#1/#13) ----
     // Default fallback: 1x1 white texel. Replaced below if a glTF
     // asset auto-load resolves AND has at least one texture in the
@@ -1374,18 +1811,34 @@ int main()
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
-    // PBR material instance — multi-light UBO at binding 0 (#22 fix).
+    // PBR material instance — bindings:
+    //   0 multi-light UBO (gap #22), 1 spec IBL, 2 diff IBL, 3 BRDF LUT.
     auto pbr_inst_r = cd::material::MaterialInstance::create(device, pbr_material);
     if (!pbr_inst_r.has_value()) return 17;
     auto& pbr_inst = *pbr_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 1> writes {
+        std::array<cd::rhi::DescriptorWrite, 4> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type  = cd::rhi::DescriptorType::kUniformBuffer,
                                        .buffer = lights_ubo,
                                        .buffer_offset = 0,
-                                       .buffer_range = kLightUboBytes } };
+                                       .buffer_range = kLightUboBytes },
+            cd::rhi::DescriptorWrite { .binding = 1,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = gpu_spec_cube.view,
+                                       .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 2,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = gpu_diff_cube.view,
+                                       .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 3,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = gpu_brdf_lut.view,
+                                       .sampler = ibl_sampler } };
         if (auto wr = pbr_inst.update(writes); !wr.has_value()) return 18;
     }
 

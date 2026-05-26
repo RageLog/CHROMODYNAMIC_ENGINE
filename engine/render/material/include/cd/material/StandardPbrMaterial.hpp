@@ -84,6 +84,14 @@ layout(set = 0, binding = 0) uniform CdLightArray {
   uint pad_c;
   CdLightSlot slots[8];
 } cd_lights;
+// R1: real IBL bindings — prefiltered specular cube (mip 0..N), diffuse
+// irradiance cube, and split-sum BRDF LUT. Replace the prior
+// analytical sample_env() with proper texture lookups so metallic F0
+// chroma reads through to the reflection authentically.
+layout(set = 0, binding = 1) uniform samplerCube cd_ibl_spec;
+layout(set = 0, binding = 2) uniform samplerCube cd_ibl_diff;
+layout(set = 0, binding = 3) uniform sampler2D   cd_brdf_lut;
+const float kIblMaxMipLod = 5.0;  // spec cube has 6 mips (0..5)
 layout(push_constant) uniform PC {
   mat4 mvp;
   vec4 albedo;
@@ -214,26 +222,29 @@ void main() {
     direct += direct_lobe(N, V, Lp, albedo, metallic, roughness, F0, col);
   }
 
-  // IBL ambient (split-sum without BRDF LUT). Gated by TOTAL scene
-  // light energy (sun + every enabled UBO light) so:
-  //   - sun off + other lights on  => IBL still contributes (was the
-  //     'sun off => black scene' bug)
-  //   - all lights off             => IBL ≈ 0 (was the 'spheres glow
-  //     with no light source' bug)
-  // The gate uses sun_i + sum(color_int.w) clamped to [0,1].
+  // R1: True split-sum IBL — uses bound cubemaps + LUT instead of the
+  // analytical sample_env(). Karis 2013:
+  //   IBL = kD * irradiance(N) * albedo +
+  //         prefiltered(R, roughness * maxMip) * (F0 * brdf.x + brdf.y)
+  // Gated by total scene-light energy so the IBL stays meaningfully
+  // tied to the lit state (sun off + other lights on => IBL still
+  // contributes; all lights off => IBL ≈ 0).
   float total_light_e = sun_i;
   for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
     if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
     total_light_e += cd_lights.slots[li2].color_int.w;
   }
   float ibl_gate = clamp(total_light_e * 0.6, 0.0, 1.0);
-  vec3 R = reflect(-V, N);
-  vec3 env_diffuse  = sample_env(N);
-  vec3 env_specular = mix(sample_env(R), env_diffuse, roughness);
-  vec3 ibl_F  = F_Schlick_roughness(NoV, F0, roughness);
-  vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
-  vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) *
-                ibl_gate * 0.22;
+  vec3  R           = reflect(-V, N);
+  float spec_lod    = roughness * kIblMaxMipLod;
+  vec3  prefiltered = textureLod(cd_ibl_spec, R, spec_lod).rgb;
+  vec3  irradiance  = texture(cd_ibl_diff, N).rgb;
+  vec2  brdf        = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
+                                                clamp(roughness, 0.0, 1.0))).rg;
+  vec3  ibl_F       = F0 * brdf.x + vec3(brdf.y);
+  vec3  ibl_kD      = (vec3(1.0) - ibl_F) * (1.0 - metallic);
+  vec3  ibl         = (ibl_kD * irradiance * albedo + prefiltered * ibl_F) *
+                      ibl_gate * 0.6;
 
   vec3 color = direct + ibl;
 
