@@ -654,7 +654,7 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      float vis_a = ray_visibility(v_world_pos, N, Lc, d_c - 0.01);
+      float vis_a = 1.0;  // see multi-light vis note below
       vec3  col   = cd_lights.slots[li].color_int.xyz;
       float ki    = cd_lights.slots[li].color_int.w;
       lit += albedo * col * (ki * E * vis_a);
@@ -678,7 +678,11 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    float vis = ray_visibility(v_world_pos, N, Lp, d - 0.01);
+    // RT visibility disabled for multi-light direct contribution.
+    // The character/primitives' BLAS self-occlusion was zeroing the
+    // spot's lit fragments. Proper shadow mapping for non-sun lights
+    // is a later ship; for now direct multi-light is unoccluded.
+    float vis = 1.0;
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
     lit += albedo * col * (ki * ndl * atten * vis * cone);
@@ -716,12 +720,17 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    // IBL = environment bounce; tied to the SUN only. Point/spot/rect
-    // lights are direct sources and shouldn't synthesise a global
-    // ambient lift on objects outside their reach. Closes the user-
-    // flagged 'spot isik object'in disinda olsa bile aydinlaniyor'
-    // bug. Real bounce light needs GI (R4 ReSTIR / DDGI ship).
-    float ibl_gate = clamp(pc.sun_dir.w * 0.6, 0.0, 1.0);
+    // IBL gate: sun is the primary driver (full IBL when sun on);
+    // non-sun lights contribute a tiny ambient fill (5%) so spot-only
+    // scenes don't go pitch-black on surfaces outside the cone.
+    // Closes 'aydinlaniyor isik disinda olsa' without overshooting
+    // into the 'her sey kapkaranlik' regression.
+    float non_sun = 0.0;
+    for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
+      if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
+      non_sun += cd_lights.slots[li2].color_int.w;
+    }
+    float ibl_gate = clamp(pc.sun_dir.w * 0.6 + non_sun * 0.05, 0.0, 1.0);
     ambient += ibl * ibl_gate * 0.55;
   }
 
