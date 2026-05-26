@@ -1251,6 +1251,12 @@ int main()
     cd::math::Vec3f gizmo_drag_world_start {};  // target position at begin_drag
     cd::math::Vec3f gizmo_drag_scale_start { 1.0F, 1.0F, 1.0F };  // scale at begin_drag
     cd::math::Quatf gizmo_drag_rot_start {};                       // rotation at begin_drag
+    // Light-specific drag state (gaps #16 + #17): rotation drives
+    // light.direction, scale drives light.range / area_width.
+    cd::math::Vec3f light_drag_dir_start  { 0.0F, -1.0F, 0.0F };
+    float           light_drag_range_start { 0.0F };
+    float           light_drag_area_w_start { 1.0F };
+    float           light_drag_area_h_start { 1.0F };
     // Faz 1.5 UX fix — ray-plane projection initial hit on the
     // active axis at begin_drag. delta = current_axis_offset -
     // initial_axis_offset, robust against grazing-camera angles.
@@ -4020,6 +4026,19 @@ int main()
                             gizmo_drag_scale_start = lt->value.scale;
                             gizmo_drag_rot_start   = lt->value.rotation;
                         }
+                        // Capture light start state for gaps #16/#17:
+                        // R-mode rotates light.direction; S-mode scales
+                        // light.range / area_width / area_height.
+                        if (selected_kind == SelKind::kLight &&
+                            selected >= 0 &&
+                            selected < static_cast<int>(lights.size()))
+                        {
+                            const auto& L = lights[static_cast<std::size_t>(selected)].light;
+                            light_drag_dir_start    = L.direction;
+                            light_drag_range_start  = L.range;
+                            light_drag_area_w_start = L.area_width;
+                            light_drag_area_h_start = L.area_height;
+                        }
                         // Capture the initial ray-plane axis offset
                         // so subsequent moves give delta = current -
                         // initial (no jump at click).
@@ -4095,29 +4114,65 @@ int main()
                                 }
                                 case GizmoMode::kScale:
                                 {
-                                    if (lt == nullptr) break;
-                                    cd::math::Vec3f cur = gizmo_drag_scale_start;
                                     const float factor = std::exp(delta_world * 0.5F);
-                                    switch (gizmo.active_axis())
+                                    if (lt != nullptr)
                                     {
-                                        case cd::editor::GizmoAxis::kX: cur.x *= factor; break;
-                                        case cd::editor::GizmoAxis::kY: cur.y *= factor; break;
-                                        case cd::editor::GizmoAxis::kZ: cur.z *= factor; break;
-                                        default: break;
+                                        cd::math::Vec3f cur = gizmo_drag_scale_start;
+                                        switch (gizmo.active_axis())
+                                        {
+                                            case cd::editor::GizmoAxis::kX: cur.x *= factor; break;
+                                            case cd::editor::GizmoAxis::kY: cur.y *= factor; break;
+                                            case cd::editor::GizmoAxis::kZ: cur.z *= factor; break;
+                                            default: break;
+                                        }
+                                        if (cur.x < 0.05F) cur.x = 0.05F;
+                                        if (cur.y < 0.05F) cur.y = 0.05F;
+                                        if (cur.z < 0.05F) cur.z = 0.05F;
+                                        lt->value.scale = cur;
                                     }
-                                    if (cur.x < 0.05F) cur.x = 0.05F;
-                                    if (cur.y < 0.05F) cur.y = 0.05F;
-                                    if (cur.z < 0.05F) cur.z = 0.05F;
-                                    lt->value.scale = cur;
+                                    else if (selected_kind == SelKind::kLight &&
+                                             selected >= 0 &&
+                                             selected < static_cast<int>(lights.size()))
+                                    {
+                                        // gap #17: scale-mode gizmo on a
+                                        // light edits its area-of-effect.
+                                        // Point/Spot: range. Rect-area:
+                                        // X=width, Y=height. Disk: width
+                                        // (= radius in our convention).
+                                        auto& L = lights[static_cast<std::size_t>(selected)].light;
+                                        const auto axis = gizmo.active_axis();
+                                        if (L.type == cd::light::LightType::kPoint ||
+                                            L.type == cd::light::LightType::kSpot)
+                                        {
+                                            float r = light_drag_range_start * factor;
+                                            if (r < 0.1F) r = 0.1F;
+                                            if (r > 200.0F) r = 200.0F;
+                                            L.range = r;
+                                        }
+                                        else if (L.type == cd::light::LightType::kRectArea)
+                                        {
+                                            float w = light_drag_area_w_start;
+                                            float h = light_drag_area_h_start;
+                                            if (axis == cd::editor::GizmoAxis::kX ||
+                                                axis == cd::editor::GizmoAxis::kZ) w *= factor;
+                                            if (axis == cd::editor::GizmoAxis::kY ||
+                                                axis == cd::editor::GizmoAxis::kZ) h *= factor;
+                                            L.area_width  = std::clamp(w, 0.05F, 50.0F);
+                                            L.area_height = std::clamp(h, 0.05F, 50.0F);
+                                        }
+                                        else if (L.type == cd::light::LightType::kDiskArea)
+                                        {
+                                            float w = light_drag_area_w_start * factor;
+                                            L.area_width  = std::clamp(w, 0.05F, 50.0F);
+                                            L.area_height = L.area_width;  // radius
+                                        }
+                                    }
                                     break;
                                 }
                                 case GizmoMode::kRotate:
                                 {
-                                    if (lt == nullptr) break;
                                     // Compute the angle the mouse has swept around the
                                     // gizmo center since drag start (atan2 difference).
-                                    // This is the natural rotation gizmo UX: dragging
-                                    // tangentially around the object rotates it.
                                     const float anchor_dx = gizmo_drag_anchor.x - p_org.x;
                                     const float anchor_dy = gizmo_drag_anchor.y - p_org.y;
                                     const float cur_dx    = mp.x - p_org.x;
@@ -4127,7 +4182,6 @@ int main()
                                     const float a_anchor = std::atan2(anchor_dy, anchor_dx);
                                     const float a_now    = std::atan2(cur_dy,    cur_dx);
                                     float ang = a_now - a_anchor;
-                                    // Wrap to (-π, π].
                                     while (ang >  3.1415926F) ang -= 6.2831853F;
                                     while (ang < -3.1415926F) ang += 6.2831853F;
                                     const float ca = std::cos(ang * 0.5F);
@@ -4140,15 +4194,48 @@ int main()
                                         case cd::editor::GizmoAxis::kZ: q = { 0, 0, sa, ca }; break;
                                         default: break;
                                     }
-                                    // new_rot = q * start (apply axis-rotation in
-                                    // world-space to the start orientation).
-                                    const auto& a = q;
-                                    const auto& b = gizmo_drag_rot_start;
-                                    lt->value.rotation = cd::math::Quatf {
-                                        a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
-                                        a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
-                                        a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
-                                        a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z };
+                                    if (lt != nullptr)
+                                    {
+                                        const auto& a = q;
+                                        const auto& b = gizmo_drag_rot_start;
+                                        lt->value.rotation = cd::math::Quatf {
+                                            a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y,
+                                            a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x,
+                                            a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
+                                            a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z };
+                                    }
+                                    else if (selected_kind == SelKind::kLight &&
+                                             selected >= 0 &&
+                                             selected < static_cast<int>(lights.size()))
+                                    {
+                                        // gap #16: rotate-mode gizmo
+                                        // rotates a light's direction.
+                                        // Apply q to light_drag_dir_start
+                                        // (which was captured at click)
+                                        // — pure vector rotation v' =
+                                        // q * v * q^-1.
+                                        const auto v = light_drag_dir_start;
+                                        // q*(0,v) = (-q.xyz . v, q.w*v + q.xyz × v)
+                                        const cd::math::Vec3f t {
+                                            q.w * v.x + q.y * v.z - q.z * v.y,
+                                            q.w * v.y + q.z * v.x - q.x * v.z,
+                                            q.w * v.z + q.x * v.y - q.y * v.x };
+                                        const float tw = -(q.x * v.x + q.y * v.y + q.z * v.z);
+                                        // (result) = (q*v) * q^-1, scalar-out
+                                        // ignored, vec-out = result.
+                                        const cd::math::Vec3f rotated {
+                                            tw * -q.x + t.x * q.w + t.y * -q.z - t.z * -q.y,
+                                            tw * -q.y - t.x * -q.z + t.y * q.w + t.z * -q.x,
+                                            tw * -q.z + t.x * -q.y - t.y * -q.x + t.z * q.w };
+                                        const float L = std::sqrt(rotated.x*rotated.x +
+                                                                  rotated.y*rotated.y +
+                                                                  rotated.z*rotated.z);
+                                        if (L > 1e-5F)
+                                        {
+                                            lights[static_cast<std::size_t>(selected)].light.direction =
+                                                { rotated.x / L, rotated.y / L, rotated.z / L };
+                                        }
+                                    }
                                     break;
                                 }
                             }
