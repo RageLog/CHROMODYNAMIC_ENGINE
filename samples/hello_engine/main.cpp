@@ -71,6 +71,13 @@
 #include <cd/net/SnapshotBuffer.hpp>
 #include <cd/net/Throttle.hpp>
 #include <cd/platform/Window.hpp>
+#include <cd/post_bloom/Bloom.hpp>
+#include <cd/post_dof/Dof.hpp>
+#include <cd/post_gtao/Gtao.hpp>
+#include <cd/post_motion_blur/MotionBlur.hpp>
+#include <cd/post_smaa/Smaa.hpp>
+#include <cd/post_ssr/Ssr.hpp>
+#include <cd/post_taa/Taa.hpp>
 #include <cd/render/Renderer.hpp>
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
@@ -616,6 +623,20 @@ void main() {
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
   vec3  ambient = albedo * hemi;
+
+  // Inline GTAO approximation (v1.4 day-ship wire-in). True multi-pass
+  // post_gtao::kGtaoMainCS dispatches land in v1.7 frame-graph rework;
+  // here we use a cheap normal-derivative curvature heuristic to
+  // darken convex creases. Strength = pc.fx_params.z (0..1).
+  float ao_strength = clamp(pc.fx_params.z, 0.0, 1.0);
+  if (ao_strength > 0.001) {
+    vec3 dn_dx = dFdx(v_world_normal);
+    vec3 dn_dy = dFdy(v_world_normal);
+    float curv = clamp(length(dn_dx) + length(dn_dy), 0.0, 1.0);
+    float ao   = 1.0 - ao_strength * curv * 0.85;
+    ambient   *= ao;
+  }
+
   vec3  c       = lit + ambient;
 
   // Runtime tonemap operator selector (pc.fx_params.x).
@@ -651,6 +672,18 @@ void main() {
              +  0.1191 * lg
              -  0.00232, vec3(0.0), vec3(1.0));
   }
+
+  // Inline bloom approximation (v1.4 day-ship wire-in). True multi-mip
+  // post_bloom::kDownsampleCS + kUpsampleCS lands in v1.7 frame-graph
+  // rework; here we emulate the visible 'highlight bleed' by boosting
+  // luminance over 0.75 into a soft halo. Strength = pc.fx_params.w.
+  float bloom_strength = clamp(pc.fx_params.w, 0.0, 1.0);
+  if (bloom_strength > 0.001) {
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    float halo = smoothstep(0.75, 1.0, lum) * bloom_strength * 0.35;
+    c = clamp(c + vec3(halo), vec3(0.0), vec3(1.0));
+  }
+
   c = pow(c, vec3(1.0/2.2));
   out_color = vec4(c, 1.0);
 }
@@ -1855,6 +1888,47 @@ int main()
         [&]{ tonemap_op = 2; log_push("[fx] tonemap = Hable"); });
     palette.register_command(73, "Tonemap: Narkowicz ACES",
         [&]{ tonemap_op = 0; log_push("[fx] tonemap = Narkowicz"); });
+    // v1.4 day-ship FX wire-in. The post_gtao / post_bloom / post_ssr
+    // libraries are linked (CMakeLists) and their Settings structs
+    // are reachable; the multi-pass GPU dispatch lands in v1.7
+    // frame-graph rework. Until then, the prim FS runs cheap inline
+    // approximations gated by fx_params.z (GTAO crease darkening)
+    // and fx_params.w (highlight bloom). The library settings live
+    // here so the editor UI work in v1.6 can bind sliders straight
+    // to these without renaming.
+    cd::post_gtao::Settings   fx_gtao {};
+    cd::post_bloom::Settings  fx_bloom {};
+    cd::post_ssr::Settings    fx_ssr {};
+    cd::post_dof::CameraSettings fx_dof {};
+    cd::post_motion_blur::Settings fx_mblur {};
+    cd::post_taa::Settings    fx_taa {};
+    cd::post_smaa::Settings   fx_smaa {};
+    float fx_gtao_strength  = 0.0F;   // 0 = off
+    float fx_bloom_strength = 0.0F;
+    palette.register_command(80, "FX: Toggle GTAO (inline approx)",
+        [&]{
+            fx_gtao_strength = (fx_gtao_strength > 0.001F) ? 0.0F : 0.65F;
+            log_push(fx_gtao_strength > 0.001F ? "[fx] GTAO on" : "[fx] GTAO off");
+        });
+    palette.register_command(81, "FX: Toggle Bloom (inline approx)",
+        [&]{
+            fx_bloom_strength = (fx_bloom_strength > 0.001F) ? 0.0F : 0.55F;
+            log_push(fx_bloom_strength > 0.001F ? "[fx] Bloom on" : "[fx] Bloom off");
+        });
+    palette.register_command(82, "FX: GTAO Settings (radius=1m, dirs=4)",
+        [&]{
+            fx_gtao.radius = 1.0F;
+            fx_gtao.direction_count = 4;
+            log_push("[fx] GTAO settings reset to defaults");
+        });
+    palette.register_command(83, "FX: Bloom Settings (threshold=1.0, intensity=0.04)",
+        [&]{
+            fx_bloom.threshold = 1.0F;
+            fx_bloom.intensity = 0.04F;
+            log_push("[fx] Bloom settings reset to defaults");
+        });
+    // Silence -Wunused-variable on the not-yet-dispatched libs.
+    (void)fx_ssr; (void)fx_dof; (void)fx_mblur; (void)fx_taa; (void)fx_smaa;
     palette.register_command(1, "Edit: Undo",
         [&]{ if (history.undo()) log_push("[palette] Undo"); });
     palette.register_command(2, "Edit: Redo",
@@ -3214,7 +3288,12 @@ int main()
             fp.sun_color[0] = sun_col.x; fp.sun_color[1] = sun_col.y;
             fp.sun_color[2] = sun_col.z; fp.sun_color[3] = ambient_w;
             fp.fx_params[0] = static_cast<float>(tonemap_op);
-            fp.fx_params[1] = fp.fx_params[2] = fp.fx_params[3] = 0.0F;
+            fp.fx_params[1] = 0.0F;
+            // Floor opts out of GTAO crease darkening — its normal is
+            // flat so dFdx/dFdy returns zero, but bloom on bright grid
+            // lines is a nice subtle highlight.
+            fp.fx_params[2] = 0.0F;
+            fp.fx_params[3] = fx_bloom_strength;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -3247,7 +3326,8 @@ int main()
             // vertex-coloured albedo path.
             pp.fx_params[1] = (ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
                             ? 1.0F : 0.0F;
-            pp.fx_params[2] = pp.fx_params[3] = 0.0F;
+            pp.fx_params[2] = fx_gtao_strength;
+            pp.fx_params[3] = fx_bloom_strength;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);

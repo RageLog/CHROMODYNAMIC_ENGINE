@@ -15,6 +15,13 @@ cd_add_sample(hello_engine
     cd::math
     cd::net
     cd::platform
+    cd::post_bloom
+    cd::post_dof
+    cd::post_gtao
+    cd::post_motion_blur
+    cd::post_smaa
+    cd::post_ssr
+    cd::post_taa
     cd::render
     cd::rhi
     cd::rhi_vulkan
