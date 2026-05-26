@@ -20,4 +20,5 @@ cd_add_sample(hello_engine
     cd::rhi_vulkan
     cd::scene
     cd::shader
+    cd::world_container
 )

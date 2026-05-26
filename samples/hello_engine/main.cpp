@@ -79,6 +79,7 @@
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/SceneCameraController.hpp>
 #include <cd/scene/Serializer.hpp>
+#include <cd/world_container/World.hpp>
 #include <cd/shader/Compiler.hpp>
 
 #include <imgui.h>
@@ -1500,6 +1501,22 @@ int main()
         log.emplace_back(std::move(s));
         while (log.size() > 64) log.pop_front();
     };
+
+    // ---- World / Project / Level / Layer container (gap #18) ----
+    // Passive editor outliner backing — shows the production
+    // hierarchy in the new Outliner panel. Entities still live in
+    // the ECS scene; the outliner groups them under layers by name.
+    cd::world_container::World cd_world;
+    cd_world.set_name("Sample World");
+    {
+        auto proj = std::make_unique<cd::world_container::Project>("Sample Project");
+        auto* lvl = proj->add_level("Main");
+        lvl->bounds().min = { -40.0F, -2.0F, -40.0F };
+        lvl->bounds().max = {  40.0F, 10.0F,  40.0F };
+        lvl->add_layer("Lights");
+        lvl->add_layer("UI");
+        cd_world.set_project(std::move(proj));
+    }
 
     std::vector<SceneEntity> entities;
     {
@@ -3334,6 +3351,7 @@ int main()
                 ImGuiID dock_right  = ImGui::DockBuilderSplitNode(m, ImGuiDir_Right, 0.25F, nullptr, &m);
                 ImGuiID dock_bot    = ImGui::DockBuilderSplitNode(m, ImGuiDir_Down,  0.30F, nullptr, &m);
                 ImGuiID dock_botR   = ImGui::DockBuilderSplitNode(dock_bot, ImGuiDir_Right, 0.50F, nullptr, &dock_bot);
+                ImGui::DockBuilderDockWindow("Outliner",  dock_left);
                 ImGui::DockBuilderDockWindow("Scene",     dock_left);
                 ImGui::DockBuilderDockWindow("Inspector", dock_right);
                 ImGui::DockBuilderDockWindow("Counters",  dock_right);
@@ -3611,6 +3629,70 @@ int main()
                                                           ImVec4(0.7F,0.7F,0.7F,1);
             ImGui::TextColored(col, "id %llu  %s",
                                static_cast<unsigned long long>(it->value()), lbl);
+        }
+        ImGui::End();
+
+        // ---- Outliner (gap #18 cd::world_container preview) ----
+        // Read-only view of the World > Project > Level > Layer tree.
+        // Entity grouping under layers is the editor-v1.6 follow-up;
+        // today this panel exists to surface the model + let the
+        // user inspect names/bounds/postfx overrides.
+        ImGui::Begin("Outliner");
+        if (ImGui::TreeNodeEx(cd_world.name().data(),
+                              ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            auto* proj = cd_world.project();
+            if (proj == nullptr)
+            {
+                ImGui::TextDisabled("(no project)");
+            }
+            else
+            {
+                std::string proj_lbl { proj->name() };
+                if (ImGui::TreeNodeEx((proj_lbl + "##proj").c_str(),
+                                      ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    for (std::size_t li = 0; li < proj->level_count(); ++li)
+                    {
+                        auto* lvl = proj->level(li);
+                        if (lvl == nullptr) continue;
+                        std::string lvl_lbl { lvl->name() };
+                        const auto& b = lvl->bounds();
+                        if (ImGui::TreeNodeEx(
+                                (lvl_lbl + "##l" + std::to_string(li)).c_str(),
+                                ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            ImGui::TextDisabled("bounds  [%.1f, %.1f, %.1f] -> [%.1f, %.1f, %.1f]",
+                                static_cast<double>(b.min.x),
+                                static_cast<double>(b.min.y),
+                                static_cast<double>(b.min.z),
+                                static_cast<double>(b.max.x),
+                                static_cast<double>(b.max.y),
+                                static_cast<double>(b.max.z));
+                            for (std::size_t yi = 0; yi < lvl->layer_count(); ++yi)
+                            {
+                                auto* ly = lvl->layer(yi);
+                                if (ly == nullptr) continue;
+                                std::string ly_lbl { ly->name() };
+                                const bool active = (yi == lvl->active_layer());
+                                if (active)
+                                    ImGui::PushStyleColor(ImGuiCol_Text,
+                                        ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
+                                ImGui::Bullet();
+                                ImGui::Text("%s%s%s%s",
+                                    ly_lbl.c_str(),
+                                    active        ? " (active)" : "",
+                                    ly->locked()  ? " [locked]" : "",
+                                    !ly->visible() ? " [hidden]" : "");
+                                if (active) ImGui::PopStyleColor();
+                            }
+                            ImGui::TreePop();
+                        }
+                    }
+                    ImGui::TreePop();
+                }
+            }
+            ImGui::TreePop();
         }
         ImGui::End();
 
