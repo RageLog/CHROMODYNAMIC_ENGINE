@@ -2995,13 +2995,32 @@ int main()
         // smaller than the bounding sphere).
         const auto frustum = cd::camera::extract_frustum(vp);
         constexpr float kSphereRadius = 0.5F;
+        // 5 distinct PBR materials, one per row, with column =
+        // roughness gradient. Replaces the prior all-copper-with-
+        // metallic-gradient layout that read as a uniform cream
+        // grid because polished metal reflections share the
+        // analytical-blue sky regardless of base F0.
+        //   row 0: copper      (1.0)  metal
+        //   row 1: gold        (1.0)  metal
+        //   row 2: silver      (1.0)  metal
+        //   row 3: aluminum    (1.0)  metal
+        //   row 4: white plastic (0.0) dielectric
+        struct PbrPalette { cd::math::Vec3f albedo; float metal; };
+        static constexpr std::array<PbrPalette, kGrid> kRowPalette {{
+            { { 0.95F, 0.64F, 0.32F }, 1.0F },  // copper
+            { { 1.00F, 0.86F, 0.57F }, 1.0F },  // gold
+            { { 0.95F, 0.93F, 0.88F }, 1.0F },  // silver
+            { { 0.91F, 0.92F, 0.92F }, 1.0F },  // aluminum
+            { { 0.95F, 0.95F, 0.95F }, 0.0F },  // white plastic
+        }};
         for (int row = 0; row < kGrid; ++row)
         {
             for (int col = 0; col < kGrid; ++col)
             {
-                const float metallic = static_cast<float>(col) / static_cast<float>(kGrid - 1);
+                const auto& mat = kRowPalette[static_cast<std::size_t>(row)];
+                const float metallic = mat.metal;
                 const float roughness = 0.05F + (1.0F - 0.05F) *
-                    (static_cast<float>(row) / static_cast<float>(kGrid - 1));
+                    (static_cast<float>(col) / static_cast<float>(kGrid - 1));
                 const float x = (static_cast<float>(col) - 2.0F) * kSpacing;
                 const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
                 const float z = -4.5F;
@@ -3059,9 +3078,9 @@ int main()
                 std::memcpy(pb.mvp, &mvp, sizeof(pb.mvp));
                 // Copper base albedo, tinted by light color so CCT slider
                 // produces a visible warm/cool shift on the spheres.
-                pb.albedo[0] = 0.95F * (0.4F + 0.6F * light_color.x) + point_color_contrib.x;
-                pb.albedo[1] = 0.64F * (0.4F + 0.6F * light_color.y) + point_color_contrib.y;
-                pb.albedo[2] = 0.32F * (0.4F + 0.6F * light_color.z) + point_color_contrib.z;
+                pb.albedo[0] = mat.albedo.x;
+                pb.albedo[1] = mat.albedo.y;
+                pb.albedo[2] = mat.albedo.z;
                 pb.albedo[3] = 1.0F;
                 pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness; pb.mr_amb[2] = 0.0F; pb.mr_amb[3] = 0.0F;
                 pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z; pb.camera_pos[3] = 0.0F;

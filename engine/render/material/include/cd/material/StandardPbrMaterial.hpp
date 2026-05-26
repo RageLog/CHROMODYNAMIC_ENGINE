@@ -115,9 +115,14 @@ vec3 F_Schlick_roughness(float cos_theta, vec3 F0, float roughness) {
 }
 
 vec3 sample_env(vec3 dir) {
-  vec3 zenith  = vec3(0.18, 0.42, 0.85);
-  vec3 horizon = vec3(0.78, 0.86, 0.96);
-  vec3 ground  = vec3(0.10, 0.10, 0.14);
+  // Warmer / less-saturated env palette so polished metallic
+  // spheres reflecting the sky preserve their base F0 chroma
+  // instead of looking uniformly blue-grey-cream. Saturated
+  // zenith was the prior cause of all 5 material rows reading
+  // identically.
+  vec3 zenith  = vec3(0.50, 0.58, 0.72);
+  vec3 horizon = vec3(0.88, 0.85, 0.78);
+  vec3 ground  = vec3(0.18, 0.16, 0.14);
   float h = dir.y;
   if (h >= 0.0) return mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.6));
   return mix(horizon, ground, pow(clamp(-h, 0.0, 1.0), 0.5));
@@ -153,12 +158,15 @@ void main() {
   vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
   // Direct lighting — warm key (push) + cool fill + warm back-rim.
+  // Intensities calibrated so HDR sum stays under the Hable shoulder
+  // and metallic spheres preserve F0 chroma before tonemap.
   vec3 L_key  = normalize(-pc.light_dir.xyz);
   vec3 L_fill = normalize(vec3( 0.6, 0.3,  0.7));
   vec3 L_rim  = normalize(vec3(-0.1, 0.2, -1.0));
-  vec3 C_key  = vec3(1.00, 0.93, 0.82) * pc.light_dir.w;
-  vec3 C_fill = vec3(0.55, 0.70, 0.95) * pc.light_dir.w * 0.30;
-  vec3 C_rim  = vec3(1.00, 0.88, 0.70) * pc.light_dir.w * 0.55;
+  float sun_i = pc.light_dir.w;
+  vec3 C_key  = vec3(1.00, 0.93, 0.82) * sun_i * 0.95;
+  vec3 C_fill = vec3(0.55, 0.70, 0.95) * sun_i * 0.28;
+  vec3 C_rim  = vec3(1.00, 0.88, 0.70) * sun_i * 0.45;
 
   vec3 direct  = direct_lobe(N, V, L_key,  albedo, metallic, roughness, F0, C_key);
        direct += direct_lobe(N, V, L_fill, albedo, metallic, roughness, F0, C_fill);
@@ -195,39 +203,34 @@ void main() {
     direct += direct_lobe(N, V, Lp, albedo, metallic, roughness, F0, col);
   }
 
-  // IBL ambient (split-sum without BRDF LUT). Gated by sun intensity:
-  // when the sun is disabled the analytic sky is dark, so the IBL
-  // ambient must follow. Closes the "PBR spheres stay bright when
-  // all lights are off" anomaly that surfaced after the prim-shader
-  // lights-off baseline fix.
+  // IBL ambient (split-sum without BRDF LUT). DECOUPLED from sun_gate
+  // so disabling the sun still leaves point/spot/rect lights with a
+  // physical reflection floor — fixes 'sun off => scene black'. IBL
+  // scaled to 0.15 so direct light dominates albedo chroma (metallic
+  // F0 stays visible instead of washing to env cream).
   vec3 R = reflect(-V, N);
   vec3 env_diffuse  = sample_env(N);
   vec3 env_specular = mix(sample_env(R), env_diffuse, roughness);
   vec3 ibl_F  = F_Schlick_roughness(NoV, F0, roughness);
   vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
-  float sky_gate = clamp(pc.light_dir.w, 0.0, 1.0);
-  vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) * sky_gate;
+  vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) * 0.25;
 
   vec3 color = direct + ibl;
 
-  // AGX tonemap (Sobotka 2022) — saturation-preserving on coloured
-  // highlights, matches the prim pipeline so PBR spheres + ECS
-  // primitives + sky read with the same chromaticity.
-  // Source matches cd::post_tonemap::kAgxGlsl.
-  const float kMinEv = -12.47393;
-  const float kMaxEv =   4.026069;
-  vec3 lg = clamp((log2(max(color, vec3(1e-10))) - vec3(kMinEv)) /
-                  (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
-  vec3 x2 = lg * lg;
-  vec3 x4 = x2 * x2;
-  color = clamp( 15.5  * x4 * x2
-              - 40.14 * x4 * lg
-              + 31.96 * x4
-              -  6.868 * x2 * lg
-              +  0.4298 * x2
-              +  0.1191 * lg
-              -  0.00232, vec3(0.0), vec3(1.0));
-  color = pow(color, vec3(1.0 / 2.2));
+  // Hable (Uncharted 2) tonemap — preserves colour saturation in LDR
+  // range better than AGX/Narkowicz. Matches prim pipeline so PBR
+  // spheres + ECS primitives read with the same chromaticity.
+  // F(x) = ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F)) - E/F
+  const float A_ = 0.15, B_ = 0.50, C_ = 0.10, D_ = 0.20, E_ = 0.02, F_ = 0.30;
+  const float W_ = 11.2;
+  vec3 num   = color * (A_*color + C_*B_) + D_*E_;
+  vec3 den   = color * (A_*color + B_)    + D_*F_;
+  color      = num / den - E_/F_;
+  float wnum = W_ * (A_*W_ + C_*B_) + D_*E_;
+  float wden = W_ * (A_*W_ + B_)    + D_*F_;
+  float wsc  = wnum / wden - E_/F_;
+  color      = clamp(color / wsc, vec3(0.0), vec3(1.0));
+  color      = pow(color, vec3(1.0 / 2.2));
   out_color = vec4(color, pc.albedo.a);
 }
 )glsl";
