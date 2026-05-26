@@ -943,15 +943,20 @@ void main() {
 constexpr const char* kCompositeFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
+layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(push_constant) uniform PC {
-  vec4 fx; // x=tonemap_op, y=exposure, z=sat_boost, w=reserved
+  vec4 fx; // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 void main() {
   vec3 c = texture(cd_hdr_color, v_uv).rgb;
-  // Pre-tonemap exposure boost.
+  // Bloom: additive halo from the upsample chain's final mip0.
+  // pc.fx.w is the user-facing strength dial (0 disables completely).
+  vec3 bloom = texture(cd_bloom_mip0, v_uv).rgb;
+  c += bloom * max(pc.fx.w, 0.0);
+  // Pre-tonemap exposure boost (applies to scene + bloom sum).
   c *= max(pc.fx.y, 0.001);
 
   int op = int(pc.fx.x + 0.5);
@@ -1004,7 +1009,7 @@ static_assert(sizeof(CompositePush) == 16, "CompositePush layout");
 // 0 with 9-tap tent filter + additive blend. Final mip0 contribution
 // added in the composite pass before tonemap.
 // ============================================================================
-[[maybe_unused]] constexpr std::uint32_t kBloomMipCount = 4;
+// Mip count canonicalised on BloomMipChain::kCount in the chain struct.
 
 constexpr const char* kBloomPrefilterFS = R"glsl(
 #version 450
@@ -1384,6 +1389,44 @@ create_color_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size,
 }
 
 // ============================================================================
+// R3 — Multi-mip bloom render-target chain.
+//
+// 4 progressively halving RGBA16Float ColorTargets. mip0 is full-screen
+// / 2; mip3 is /16. Each level acts both as a write destination
+// (downsample pass / upsample additive blend) and as a read source for
+// the next level in the chain. The composite pass samples mip0 and
+// adds it to the HDR scene before tonemap.
+// ============================================================================
+struct BloomMipChain
+{
+    static constexpr std::uint32_t kCount = 4;
+    std::array<ColorTarget, kCount> mips {};
+    void destroy(cd::rhi::IDevice& dev)
+    {
+        for (auto& m : mips) m.destroy(dev);
+    }
+};
+
+[[nodiscard]] inline bool
+create_bloom_chain(cd::rhi::IDevice& dev, cd::rhi::Extent2D base, BloomMipChain& out)
+{
+    out.destroy(dev);
+    cd::rhi::Extent2D s { std::max(1U, base.width / 2U),
+                          std::max(1U, base.height / 2U) };
+    for (std::uint32_t i = 0; i < BloomMipChain::kCount; ++i)
+    {
+        if (!create_color_target(dev, s, cd::rhi::Format::kRGBA16Float, out.mips[i]))
+        {
+            out.destroy(dev);
+            return false;
+        }
+        s.width  = std::max(1U, s.width  / 2U);
+        s.height = std::max(1U, s.height / 2U);
+    }
+    return true;
+}
+
+// ============================================================================
 // Mini histogram helper for the random viz panel.
 // ============================================================================
 struct Histogram
@@ -1506,9 +1549,14 @@ int main()
                                      .offset = 0,
                                      .size = sizeof(CompositePush) } };
     comp_md.push_constants = kCompositePush;
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kCompositeBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 2> kCompositeBindings {
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 0,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 1,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
             .count   = 1,
             .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -1553,7 +1601,7 @@ int main()
     bp_md.name = "hello_engine/bloom/prefilter";
     auto bp_r = cd::material::Material::create(device, compiler.get(), bp_md);
     if (!bp_r.has_value()) return 40;
-    [[maybe_unused]] auto& bloom_prefilter_material = *bp_r;
+    auto& bloom_prefilter_material = *bp_r;
 
     cd::material::MaterialDesc bd_md {};
     bd_md.vertex_glsl   = kCompositeVS;
@@ -1566,7 +1614,7 @@ int main()
     bd_md.name = "hello_engine/bloom/downsample";
     auto bd_r = cd::material::Material::create(device, compiler.get(), bd_md);
     if (!bd_r.has_value()) return 41;
-    [[maybe_unused]] auto& bloom_downsample_material = *bd_r;
+    auto& bloom_downsample_material = *bd_r;
 
     cd::material::MaterialDesc bu_md {};
     bu_md.vertex_glsl   = kCompositeVS;
@@ -1591,7 +1639,7 @@ int main()
     bu_md.name = "hello_engine/bloom/upsample";
     auto bu_r = cd::material::Material::create(device, compiler.get(), bu_md);
     if (!bu_r.has_value()) return 42;
-    [[maybe_unused]] auto& bloom_upsample_material = *bu_r;
+    auto& bloom_upsample_material = *bu_r;
 
     // Standard PBR material for the 5x5 sphere sweep.
     constexpr std::array<cd::rhi::VertexBinding, 1> kPbrBindings {
@@ -2012,13 +2060,76 @@ int main()
     auto comp_inst_r = cd::material::MaterialInstance::create(device, composite_material);
     if (!comp_inst_r.has_value()) return 33;
     auto& composite_inst = *comp_inst_r;
+
+    // R3 multi-mip bloom — physical mip chain + per-pass material instances.
+    //
+    // Allocation: 4 RGBA16F render targets at /2, /4, /8, /16 of the
+    // HDR target's size. Each instance binds exactly one source mip
+    // (or the HDR target for the prefilter inst).
+    BloomMipChain bloom_chain {};
+    if (!create_bloom_chain(device, { window.width(), window.height() }, bloom_chain))
+        return 43;
+
+    // 1 prefilter (reads HDR, writes mip0)
+    // 3 downsample insts: 0→1, 1→2, 2→3
+    // 3 upsample insts:   3→2 (additive), 2→1 (additive), 1→0 (additive)
+    auto bp_inst_r = cd::material::MaterialInstance::create(device, bloom_prefilter_material);
+    if (!bp_inst_r.has_value()) return 44;
+    auto& bloom_prefilter_inst = *bp_inst_r;
+
+    std::array<cd::material::MaterialInstance, 3> bloom_down_insts {};
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        auto r = cd::material::MaterialInstance::create(device, bloom_downsample_material);
+        if (!r.has_value()) return 45;
+        bloom_down_insts[i] = std::move(*r);
+    }
+    std::array<cd::material::MaterialInstance, 3> bloom_up_insts {};
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        auto r = cd::material::MaterialInstance::create(device, bloom_upsample_material);
+        if (!r.has_value()) return 46;
+        bloom_up_insts[i] = std::move(*r);
+    }
+
+    // Wire descriptors. All sample with the linear-clamp albedo_sampler
+    // (good enough — bloom doesn't need a mipmap-capable variant since
+    // each pass writes mip 0 of its respective dedicated target).
+    auto bind_bloom_descriptors = [&]() {
+        auto write_one = [&](cd::material::MaterialInstance& inst,
+                             cd::rhi::TextureViewHandle src_view) {
+            std::array<cd::rhi::DescriptorWrite, 1> w {
+                cd::rhi::DescriptorWrite {
+                    .binding = 0,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = src_view,
+                    .sampler = albedo_sampler } };
+            (void)inst.update(w);
+        };
+        write_one(bloom_prefilter_inst, hdr_target.view);
+        write_one(bloom_down_insts[0], bloom_chain.mips[0].view);
+        write_one(bloom_down_insts[1], bloom_chain.mips[1].view);
+        write_one(bloom_down_insts[2], bloom_chain.mips[2].view);
+        write_one(bloom_up_insts[0],   bloom_chain.mips[3].view);
+        write_one(bloom_up_insts[1],   bloom_chain.mips[2].view);
+        write_one(bloom_up_insts[2],   bloom_chain.mips[1].view);
+    };
+    bind_bloom_descriptors();
+
     auto bind_composite_hdr = [&]() {
-        std::array<cd::rhi::DescriptorWrite, 1> writes {
+        std::array<cd::rhi::DescriptorWrite, 2> writes {
             cd::rhi::DescriptorWrite {
                 .binding = 0,
                 .array_element = 0,
                 .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                 .view    = hdr_target.view,
+                .sampler = albedo_sampler },
+            cd::rhi::DescriptorWrite {
+                .binding = 1,
+                .array_element = 0,
+                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view    = bloom_chain.mips[0].view,
                 .sampler = albedo_sampler } };
         (void)composite_inst.update(writes);
     };
@@ -3457,6 +3568,9 @@ int main()
                 continue;
             if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
                 continue;
+            if (!create_bloom_chain(device, { window.width(), window.height() }, bloom_chain))
+                continue;
+            bind_bloom_descriptors();
             bind_composite_hdr();
             depth_initialised_on_gpu = false;
             needs_rebuild = false;
@@ -6122,6 +6236,107 @@ int main()
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, hb);
         }
+
+        // R3 — Bloom chain. 7 fullscreen-triangle passes against the
+        // dedicated bloom mip chain (each pass owns one render target,
+        // writes its full extent, and ends as kShaderResource so the
+        // next pass can sample it). All 7 share the composite VS.
+        auto run_bloom_pass = [&](cd::material::Material& mat,
+                                  cd::material::MaterialInstance& inst,
+                                  ColorTarget& dst,
+                                  cd::rhi::LoadOp load_op,
+                                  std::span<const std::byte> push_bytes,
+                                  bool first_frame) {
+            std::array<cd::rhi::TextureBarrier, 1> tb {
+                cd::rhi::TextureBarrier {
+                    .texture = dst.image,
+                    .from    = first_frame ? cd::rhi::ResourceState::kUndefined
+                                           : cd::rhi::ResourceState::kShaderResource,
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, tb);
+
+            std::array<cd::rhi::ColorAttachmentInfo, 1> ca {
+                cd::rhi::ColorAttachmentInfo {
+                    .view = dst.view,
+                    .load_op = load_op,
+                    .store_op = cd::rhi::StoreOp::kStore,
+                    .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } } };
+            cd::rhi::RenderPassBeginInfo rp {};
+            rp.render_area = cd::rhi::Rect2D { {0,0}, dst.extent };
+            rp.color_attachments = ca;
+            rp.depth_stencil = nullptr;
+            cmd.begin_render_pass(rp);
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(dst.extent.width),
+                static_cast<float>(dst.extent.height),
+                0.0F, 1.0F });
+            cmd.set_scissor(cd::rhi::Rect2D { {0,0}, dst.extent });
+            mat.apply(cmd);
+            inst.bind(cmd, 0);
+            if (!push_bytes.empty())
+            {
+                cmd.push_constants(mat.pipeline_layout(),
+                                   cd::rhi::ShaderStage::kFragment,
+                                   0,
+                                   static_cast<std::uint32_t>(push_bytes.size()),
+                                   push_bytes.data());
+            }
+            cmd.draw(3, 1, 0, 0);
+            cmd.end_render_pass();
+
+            std::array<cd::rhi::TextureBarrier, 1> tb2 {
+                cd::rhi::TextureBarrier {
+                    .texture = dst.image,
+                    .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, tb2);
+        };
+
+        const bool bloom_first_frame = (frame_idx == 0);
+        // 1) Prefilter: HDR -> mip0 (soft-knee threshold).
+        {
+            BloomPrefilterPush bpp {};
+            bpp.params[0] = 1.10F;  // threshold (linear HDR units)
+            bpp.params[1] = 0.50F;  // knee
+            bpp.params[2] = 0.0F;
+            bpp.params[3] = 0.0F;
+            std::span<const std::byte> bytes {
+                reinterpret_cast<const std::byte*>(&bpp), sizeof(bpp) };
+            run_bloom_pass(bloom_prefilter_material, bloom_prefilter_inst,
+                           bloom_chain.mips[0],
+                           cd::rhi::LoadOp::kClear, bytes,
+                           bloom_first_frame);
+        }
+        // 2) Downsample chain: mip0 -> 1, 1 -> 2, 2 -> 3.
+        for (std::uint32_t i = 0; i < 3; ++i)
+        {
+            run_bloom_pass(bloom_downsample_material, bloom_down_insts[i],
+                           bloom_chain.mips[i + 1],
+                           cd::rhi::LoadOp::kClear, {},
+                           bloom_first_frame);
+        }
+        // 3) Upsample chain: mip3 -> 2, 2 -> 1, 1 -> 0 (additive blend).
+        //    Load op must be Load to preserve the prior pass's output we're
+        //    adding onto. radius 1.0 / intensity 1.0 (full contribution).
+        for (std::uint32_t i = 0; i < 3; ++i)
+        {
+            const std::uint32_t dst_index = 3U - 1U - i;  // 2, 1, 0
+            BloomUpsamplePush bup {};
+            bup.params[0] = 1.0F;   // radius (px scale)
+            bup.params[1] = 1.0F;   // intensity per level
+            bup.params[2] = 0.0F;
+            bup.params[3] = 0.0F;
+            std::span<const std::byte> bytes {
+                reinterpret_cast<const std::byte*>(&bup), sizeof(bup) };
+            run_bloom_pass(bloom_upsample_material, bloom_up_insts[i],
+                           bloom_chain.mips[dst_index],
+                           cd::rhi::LoadOp::kLoad, bytes,
+                           bloom_first_frame);
+        }
+
         std::array<cd::rhi::ColorAttachmentInfo, 1> swap_attach {
             cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
                                           .load_op = cd::rhi::LoadOp::kClear,
@@ -6144,7 +6359,7 @@ int main()
         cp.fx[0] = static_cast<float>(tonemap_op);
         cp.fx[1] = 3.0F;   // exposure (matches old prim FS inline)
         cp.fx[2] = 1.50F;  // saturation pull-away
-        cp.fx[3] = 0.0F;
+        cp.fx[3] = 0.04F;  // bloom strength (final mip0 contribution)
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
@@ -6180,6 +6395,7 @@ int main()
     destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
     hdr_target.destroy(device);
+    bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.
     shadow_target.destroy(device);
     device.destroy_sampler(shadow_sampler);
