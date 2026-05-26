@@ -1760,15 +1760,100 @@ int main()
     const auto ibl_sampler = *ibl_samp_r;
 
     // ---- glTF baseColor texture (#1/#13) ----
-    // Default fallback: 1x1 white texel. Replaced below if a glTF
-    // asset auto-load resolves AND has at least one texture in the
-    // first material's baseColor slot. Single-texture pipeline for
-    // hello_engine; per-entity texture array lands in v1.6 editor.
+    // R1.5 showcase: generate a procedural Earth-like albedo texture
+    // at startup so hello_engine demonstrates the textured-PBR path
+    // even without an external glTF asset. The texture is replaced
+    // later if a glTF auto-load resolves an asset with a baseColor
+    // map. Procedural pattern: lat/lon-based ocean/continent mask +
+    // smooth value noise + warm continent tint + cool ocean tint.
     GpuTexture2D albedo_tex {};
     bool         has_gltf_texture = false;
     {
-        const std::uint8_t white[4] { 255, 255, 255, 255 };
-        albedo_tex = create_texture_rgba8(device, white, 1, 1);
+        constexpr std::uint32_t kTexSize = 512;
+        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(kTexSize) * kTexSize * 4);
+        // Cheap value-noise: hash + bilinear interp on a coarse grid.
+        auto hash21 = [](std::uint32_t x, std::uint32_t y) {
+            std::uint32_t h = x * 374761393U + y * 668265263U;
+            h = (h ^ (h >> 13)) * 1274126177U;
+            return static_cast<float>(h & 0xFFFFFFU) / 16777215.0F;
+        };
+        auto noise2 = [&](float u, float v, float freq) {
+            const float fx = u * freq;
+            const float fy = v * freq;
+            const auto x0 = static_cast<std::uint32_t>(std::floor(fx));
+            const auto y0 = static_cast<std::uint32_t>(std::floor(fy));
+            const float tx = fx - std::floor(fx);
+            const float ty = fy - std::floor(fy);
+            const float sx = tx * tx * (3.0F - 2.0F * tx);
+            const float sy = ty * ty * (3.0F - 2.0F * ty);
+            const float a = hash21(x0,     y0);
+            const float b = hash21(x0 + 1, y0);
+            const float c = hash21(x0,     y0 + 1);
+            const float d = hash21(x0 + 1, y0 + 1);
+            return (a * (1 - sx) + b * sx) * (1 - sy) +
+                   (c * (1 - sx) + d * sx) * sy;
+        };
+        for (std::uint32_t py = 0; py < kTexSize; ++py)
+        {
+            const float v = static_cast<float>(py) / static_cast<float>(kTexSize);
+            const float lat = (v - 0.5F) * 3.14159265F;     // ±π/2
+            const float pole_falloff = std::cos(lat);        // 1 equator, 0 pole
+            for (std::uint32_t px = 0; px < kTexSize; ++px)
+            {
+                const float u = static_cast<float>(px) / static_cast<float>(kTexSize);
+                // Three-octave fractal noise for landmass shape.
+                float n = noise2(u, v, 6.0F) * 0.50F
+                        + noise2(u, v, 12.0F) * 0.30F
+                        + noise2(u, v, 24.0F) * 0.20F;
+                // Bias by pole falloff so caps stay light (ice).
+                n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
+                const bool is_land = n > 0.48F;
+                cd::math::Vec3f col {};
+                if (is_land)
+                {
+                    // Continent palette: warm earth tones modulated
+                    // by altitude (n).
+                    const float t = std::clamp((n - 0.48F) / 0.52F, 0.0F, 1.0F);
+                    cd::math::Vec3f low  { 0.30F, 0.55F, 0.18F };  // green
+                    cd::math::Vec3f mid  { 0.55F, 0.45F, 0.20F };  // tan
+                    cd::math::Vec3f high { 0.90F, 0.88F, 0.82F };  // snow
+                    if (t < 0.5F) {
+                        const float k = t * 2.0F;
+                        col = { low.x + (mid.x - low.x) * k,
+                                low.y + (mid.y - low.y) * k,
+                                low.z + (mid.z - low.z) * k };
+                    } else {
+                        const float k = (t - 0.5F) * 2.0F;
+                        col = { mid.x + (high.x - mid.x) * k,
+                                mid.y + (high.y - mid.y) * k,
+                                mid.z + (high.z - mid.z) * k };
+                    }
+                }
+                else
+                {
+                    // Ocean depth: darker as n decreases.
+                    const float ocean_depth = std::clamp((0.48F - n) / 0.48F, 0.0F, 1.0F);
+                    col = { 0.08F + (0.20F - 0.08F) * (1 - ocean_depth),
+                            0.25F + (0.50F - 0.25F) * (1 - ocean_depth),
+                            0.50F + (0.78F - 0.50F) * (1 - ocean_depth) };
+                }
+                // Ice cap polar override.
+                if (pole_falloff < 0.18F)
+                {
+                    col = { 0.92F, 0.94F, 0.97F };
+                }
+                const std::size_t i = (static_cast<std::size_t>(py) * kTexSize + px) * 4;
+                rgba[i + 0] = static_cast<std::uint8_t>(std::clamp(col.x * 255.0F, 0.0F, 255.0F));
+                rgba[i + 1] = static_cast<std::uint8_t>(std::clamp(col.y * 255.0F, 0.0F, 255.0F));
+                rgba[i + 2] = static_cast<std::uint8_t>(std::clamp(col.z * 255.0F, 0.0F, 255.0F));
+                rgba[i + 3] = 255;
+            }
+        }
+        albedo_tex = create_texture_rgba8(device, rgba.data(), kTexSize, kTexSize);
+        has_gltf_texture = true;  // procedural showcase counts
+        std::fprintf(stderr, "[showcase] procedural Earth-like albedo "
+                              "(%ux%u) bound to albedo_tex\n",
+                     kTexSize, kTexSize);
     }
     cd::rhi::SamplerDesc albedo_sd {};
     albedo_sd.mag_filter = cd::rhi::SamplerFilter::kLinear;
@@ -2018,7 +2103,7 @@ int main()
             case PrimitiveKind::kCone:     return cone_mesh;
             case PrimitiveKind::kCylinder: return cyl_mesh;
             case PrimitiveKind::kTorus:    return torus_mesh;
-            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : cube_mesh;
+            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : sphere_mesh;
             default:                       return cube_mesh;
         }
     };
@@ -2143,18 +2228,31 @@ int main()
             scene.local(e.handle)->value.position = s.pos;
             entities.push_back(std::move(e));
         }
-        // glTF entity — only seeded when the auto-loader actually
-        // resolved an asset. Placed slightly behind the primitive row
-        // so it doesn't overlap.
-        if (gltf_mesh.vb.is_valid())
+        // glTF entity — seeded when auto-loader resolves an asset, OR
+        // (R1.5 showcase) a procedural Earth-like textured sphere.
+        // mesh_for(kGltf) returns gltf_mesh if valid else sphere_mesh.
+        // BLAS stays empty when no real glTF — the procedural Earth
+        // entity doesn't need its own BLAS for prim-shader rendering
+        // (RT shadows for it would just sample the existing sphere
+        // BLAS, but we accept the per-instance shadow gap as a small
+        // visual-only issue for the procedural showcase).
         {
             SceneEntity e;
             e.handle = scene.create_node();
-            e.name   = "glTF (" + gltf_loaded_name + ")";
+            if (gltf_mesh.vb.is_valid())
+            {
+                e.name = "glTF (" + gltf_loaded_name + ")";
+                scene.local(e.handle)->value.position = { 0.0F, 1.0F, -2.0F };
+                scene.local(e.handle)->value.scale    = { 0.8F, 0.8F, 0.8F };
+            }
+            else
+            {
+                e.name = "Earth (procedural showcase)";
+                scene.local(e.handle)->value.position = { 0.0F, 1.5F, 1.5F };
+                scene.local(e.handle)->value.scale    = { 1.5F, 1.5F, 1.5F };
+            }
             e.tint   = { 1.0F, 1.0F, 1.0F };
             e.kind   = PrimitiveKind::kGltf;
-            scene.local(e.handle)->value.position = { 0.0F, 1.0F, -2.0F };
-            scene.local(e.handle)->value.scale    = { 0.8F, 0.8F, 0.8F };
             entities.push_back(std::move(e));
         }
     }
