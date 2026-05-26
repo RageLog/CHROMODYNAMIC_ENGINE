@@ -171,10 +171,13 @@ void main() {
   vec3 L_key  = normalize(-pc.light_dir.xyz);
   vec3 L_fill = normalize(vec3( 0.6, 0.3,  0.7));
   vec3 L_rim  = normalize(vec3(-0.1, 0.2, -1.0));
+  // Reduced rig (was 0.95/0.28/0.45) so the warm-cream key+rim don't
+  // wash the metallic F0 chroma; multi-light UBO + IBL now carry the
+  // bulk of the energy and the rig only fills shadowed faces.
   float sun_i = pc.light_dir.w;
-  vec3 C_key  = vec3(1.00, 0.93, 0.82) * sun_i * 0.95;
-  vec3 C_fill = vec3(0.55, 0.70, 0.95) * sun_i * 0.28;
-  vec3 C_rim  = vec3(1.00, 0.88, 0.70) * sun_i * 0.45;
+  vec3 C_key  = vec3(1.00, 0.93, 0.82) * sun_i * 0.55;
+  vec3 C_fill = vec3(0.55, 0.70, 0.95) * sun_i * 0.15;
+  vec3 C_rim  = vec3(1.00, 0.88, 0.70) * sun_i * 0.25;
 
   vec3 direct  = direct_lobe(N, V, L_key,  albedo, metallic, roughness, F0, C_key);
        direct += direct_lobe(N, V, L_fill, albedo, metallic, roughness, F0, C_fill);
@@ -230,7 +233,7 @@ void main() {
   vec3 ibl_F  = F_Schlick_roughness(NoV, F0, roughness);
   vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
   vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) *
-                ibl_gate * 0.25;
+                ibl_gate * 0.15;
 
   vec3 color = direct + ibl;
 
@@ -247,6 +250,17 @@ void main() {
   float wden = W_ * (A_*W_ + B_)    + D_*F_;
   float wsc  = wnum / wden - E_/F_;
   color      = clamp(color / wsc, vec3(0.0), vec3(1.0));
+
+  // Saturation boost (70%) — counteracts tonemap chroma dampening so
+  // metallic F0 + light tints read vividly. Matches the prim FS so
+  // PBR sphere grid + ECS primitives + sky share the same vibrancy.
+  // Higher than prim's 1.40 because metallic IBL reflection drags
+  // toward env-cream more aggressively than diffuse prim shading.
+  {
+    float luma = dot(color, vec3(0.299, 0.587, 0.114));
+    color = clamp(mix(vec3(luma), color, 1.70), vec3(0.0), vec3(1.0));
+  }
+
   color      = pow(color, vec3(1.0 / 2.2));
   out_color = vec4(color, pc.albedo.a);
 }

@@ -713,6 +713,16 @@ void main() {
     c = clamp(c + vec3(halo), vec3(0.0), vec3(1.0));
   }
 
+  // Post-tonemap saturation boost so the tint pipeline reads as
+  // vivid as the source albedo intends. Tonemaps inherently dampen
+  // chroma at mid-tones; a 50% pull-away from luma restores the
+  // material colour without changing brightness. Closes the user-
+  // flagged 'beyaz boya atilmis gibi soluk renkler' regression.
+  {
+    float luma = dot(c, vec3(0.299, 0.587, 0.114));
+    c = clamp(mix(vec3(luma), c, 1.50), vec3(0.0), vec3(1.0));
+  }
+
   // Inline SMAA-feel approximation (v1.4 day-ship wire-in). True
   // SMAA-2x requires edge / blend-weight / neighbourhood passes; here
   // we use a luminance-derivative softening that visually reduces
