@@ -27,6 +27,10 @@
 #pragma once
 
 #include <cd/core/Defines.hpp>
+#include <cd/math/Vector.hpp>
+
+#include <algorithm>
+#include <cmath>
 
 namespace cd::material
 {
@@ -131,5 +135,29 @@ struct AnalyticalSkyPush
 
 static_assert(sizeof(AnalyticalSkyPush) == 80,
               "AnalyticalSkyPush must equal 80 B");
+
+// =============================================================================
+// CPU mirror of the GLSL sample_env() so offline IBL bakes (cd::ibl)
+// produce the same horizon/zenith/ground gradient the runtime sky
+// fragment shader draws. Match the 3-band palette exactly.
+// =============================================================================
+
+[[nodiscard]] inline cd::math::Vec3f sample_sky_cpu(cd::math::Vec3f dir) noexcept
+{
+    const cd::math::Vec3f zenith  { 0.50F, 0.58F, 0.72F };
+    const cd::math::Vec3f horizon { 0.88F, 0.85F, 0.78F };
+    const cd::math::Vec3f ground  { 0.18F, 0.16F, 0.14F };
+    auto mix3 = [](cd::math::Vec3f a, cd::math::Vec3f b, float t) {
+        return cd::math::Vec3f { a.x + (b.x - a.x) * t,
+                                  a.y + (b.y - a.y) * t,
+                                  a.z + (b.z - a.z) * t };
+    };
+    const float h = dir.y;
+    if (h >= 0.0F)
+        return mix3(horizon, zenith,
+                    std::pow(std::clamp(h, 0.0F, 1.0F), 0.6F));
+    return mix3(horizon, ground,
+                std::pow(std::clamp(-h, 0.0F, 1.0F), 0.5F));
+}
 
 }  // namespace cd::material

@@ -1100,53 +1100,6 @@ create_texture_rgba8(cd::rhi::IDevice& dev,
 // and uploads to GPU as kCube + kCube-with-mips + k2D textures.
 // ============================================================================
 
-/// CPU equivalent of the GLSL sample_env() used in AnalyticalSkyFS +
-/// StandardPbrFS. Matches the 3-band atmospheric palette so the IBL
-/// stays consistent with what the sky shader paints behind the scene.
-[[nodiscard]] inline cd::math::Vec3f sample_sky_cpu(cd::math::Vec3f dir) noexcept
-{
-    const cd::math::Vec3f zenith  { 0.50F, 0.58F, 0.72F };
-    const cd::math::Vec3f horizon { 0.88F, 0.85F, 0.78F };
-    const cd::math::Vec3f ground  { 0.18F, 0.16F, 0.14F };
-    const float h = dir.y;
-    auto mix3 = [](cd::math::Vec3f a, cd::math::Vec3f b, float t) {
-        return cd::math::Vec3f { a.x + (b.x - a.x) * t,
-                                  a.y + (b.y - a.y) * t,
-                                  a.z + (b.z - a.z) * t };
-    };
-    if (h >= 0.0F)
-        return mix3(horizon, zenith,
-                    std::pow(std::clamp(h, 0.0F, 1.0F), 0.6F));
-    return mix3(horizon, ground,
-                std::pow(std::clamp(-h, 0.0F, 1.0F), 0.5F));
-}
-
-/// Build an environment cubemap by sampling sample_sky_cpu() at the
-/// world-direction of each cube texel. `face_size` 256 is the canonical
-/// IBL source resolution.
-[[nodiscard]] inline cd::ibl::CubeMapRgbF
-bake_analytical_sky_cube(std::uint32_t face_size)
-{
-    auto cm = cd::ibl::CubeMapRgbF::allocate(face_size);
-    for (std::uint8_t f = 0; f < cd::ibl::kCubeFaceCount; ++f)
-    {
-        const auto face = static_cast<cd::ibl::CubeFace>(f);
-        for (std::uint32_t y = 0; y < face_size; ++y)
-        {
-            for (std::uint32_t x = 0; x < face_size; ++x)
-            {
-                const float u = (static_cast<float>(x) + 0.5F) /
-                                static_cast<float>(face_size);
-                const float v = (static_cast<float>(y) + 0.5F) /
-                                static_cast<float>(face_size);
-                const auto dir = cd::ibl::cube_uv_to_world_dir(face, u, v);
-                cm.store(face, x, y, sample_sky_cpu(dir));
-            }
-        }
-    }
-    return cm;
-}
-
 
 // ----------------------------------------------------------------------------
 // Planar-shadow projection matrix.
@@ -1599,7 +1552,7 @@ int main()
     // Resolutions chosen for first-ship balance (bake < 2 s on a
     // desktop CPU): env 128, spec mips 64..2, diff 16, BRDF 64x64.
     std::fprintf(stderr, "[ibl] baking environment cubemap...\n");
-    const auto env_cube_cpu = bake_analytical_sky_cube(128);
+    const auto env_cube_cpu = cd::ibl::bake_sky_cube(128, cd::material::sample_sky_cpu);
     std::fprintf(stderr, "[ibl] convolving diffuse irradiance...\n");
     const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 10.0F);
     std::fprintf(stderr, "[ibl] prefiltering specular mip chain...\n");

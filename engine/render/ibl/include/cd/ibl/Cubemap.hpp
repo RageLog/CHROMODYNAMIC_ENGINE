@@ -93,6 +93,35 @@ cube_uv_to_world_dir(CubeFace face, float u, float v) noexcept
     return d;
 }
 
+/// Build an environment cubemap by sampling an arbitrary sky function
+/// at every cube texel's world direction. Caller passes any
+/// `Vec3f -> Vec3f` callable; useful for materialising procedural
+/// skies (analytical hemisphere, Hosek-Wilkie, atmospheric scatter
+/// LUTs) into the IBL-ready CubeMapRgbF for prefilter + irradiance.
+template<typename SkySampler>
+[[nodiscard]] inline CubeMapRgbF
+bake_sky_cube(std::uint32_t face_size, SkySampler sample)
+{
+    auto cm = CubeMapRgbF::allocate(face_size);
+    for (std::uint8_t f = 0; f < kCubeFaceCount; ++f)
+    {
+        const auto face = static_cast<CubeFace>(f);
+        for (std::uint32_t y = 0; y < face_size; ++y)
+        {
+            for (std::uint32_t x = 0; x < face_size; ++x)
+            {
+                const float u = (static_cast<float>(x) + 0.5F) /
+                                static_cast<float>(face_size);
+                const float v = (static_cast<float>(y) + 0.5F) /
+                                static_cast<float>(face_size);
+                const auto dir = cube_uv_to_world_dir(face, u, v);
+                cm.store(face, x, y, sample(dir));
+            }
+        }
+    }
+    return cm;
+}
+
 /// Sample a unit direction with trilinear-ish lookup against the
 /// cubemap. Used by the irradiance + specular convolutions. Picks
 /// the dominant axis to choose a face, then maps the remaining two
