@@ -726,17 +726,16 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    // IBL gate: sun is the primary driver. Non-sun lights contribute a
-    // tiny per-light fixed fill (NOT scaled by light intensity, which
-    // is hundreds-of-units for any reasonable lumen value and would
-    // saturate the clamp to 1.0 — that was the user-flagged 'isik
-    // uzerinde olmamasina ragmen aydinlaniyor' bug). 3% per enabled
-    // non-sun light gives a faint baseline only.
-    float non_sun_n = 0.0;
-    for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
-      if (cd_lights.slots[li2].pos_range.w > 0.0) non_sun_n += 1.0;
-    }
-    float ibl_gate = clamp(pc.sun_dir.w * 0.6 + non_sun_n * 0.03, 0.0, 1.0);
+    // IBL gate: SUN ONLY. Non-sun lights are direct sources — they
+    // illuminate via their own contribution and shouldn't synthesise
+    // a global ambient lift. Closes 'spotda boyutu ve gucu dusurdum
+    // ama cism gozukur durumda kaldi' — when the only enabled light
+    // is a weak/small non-sun source, surfaces outside its reach now
+    // read as truly dark instead of getting an IBL freebie.
+    // Metallic surfaces under non-sun-only lighting will read black
+    // (no diffuse, no LTC-GGX specular yet); proper indirect light
+    // returns with the R4 GI ship.
+    float ibl_gate = clamp(pc.sun_dir.w * 0.6, 0.0, 1.0);
     ambient += ibl * ibl_gate * 0.55;
   }
 
@@ -5267,24 +5266,48 @@ int main()
                     case cd::light::LightType::kRectArea:
                     case cd::light::LightType::kDiskArea:
                     {
+                        // Derive tangent + bitangent from L.direction
+                        // exactly the way the FS does — so when the user
+                        // rotates the area light's direction via the
+                        // Inspector or gizmo, the visual rectangle
+                        // rotates with it. Closes 'area donunce gorseli
+                        // donmuyor' bug.
+                        cd::math::Vec3f ln = L.direction;
+                        const float lnl = std::sqrt(ln.x*ln.x + ln.y*ln.y + ln.z*ln.z);
+                        if (lnl > 1e-5F) { ln.x/=lnl; ln.y/=lnl; ln.z/=lnl; }
+                        else             { ln = { 0.0F, 0.0F, -1.0F }; }
+                        const cd::math::Vec3f up_ref =
+                            (std::abs(ln.y) > 0.95F)
+                            ? cd::math::Vec3f { 1.0F, 0.0F, 0.0F }
+                            : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
+                        cd::math::Vec3f t {
+                            up_ref.y*ln.z - up_ref.z*ln.y,
+                            up_ref.z*ln.x - up_ref.x*ln.z,
+                            up_ref.x*ln.y - up_ref.y*ln.x };
+                        const float tl = std::sqrt(t.x*t.x + t.y*t.y + t.z*t.z);
+                        if (tl > 1e-5F) { t.x/=tl; t.y/=tl; t.z/=tl; }
+                        cd::math::Vec3f b {
+                            ln.y*t.z - ln.z*t.y,
+                            ln.z*t.x - ln.x*t.z,
+                            ln.x*t.y - ln.y*t.x };
                         // Project 4 corners.
                         const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
                         cd::math::Vec3f c0 {
-                            L.position.x - L.area_tangent.x * hw - L.area_bitangent.x * hh,
-                            L.position.y - L.area_tangent.y * hw - L.area_bitangent.y * hh,
-                            L.position.z - L.area_tangent.z * hw - L.area_bitangent.z * hh };
+                            L.position.x - t.x * hw - b.x * hh,
+                            L.position.y - t.y * hw - b.y * hh,
+                            L.position.z - t.z * hw - b.z * hh };
                         cd::math::Vec3f c1 {
-                            L.position.x + L.area_tangent.x * hw - L.area_bitangent.x * hh,
-                            L.position.y + L.area_tangent.y * hw - L.area_bitangent.y * hh,
-                            L.position.z + L.area_tangent.z * hw - L.area_bitangent.z * hh };
+                            L.position.x + t.x * hw - b.x * hh,
+                            L.position.y + t.y * hw - b.y * hh,
+                            L.position.z + t.z * hw - b.z * hh };
                         cd::math::Vec3f c2 {
-                            L.position.x + L.area_tangent.x * hw + L.area_bitangent.x * hh,
-                            L.position.y + L.area_tangent.y * hw + L.area_bitangent.y * hh,
-                            L.position.z + L.area_tangent.z * hw + L.area_bitangent.z * hh };
+                            L.position.x + t.x * hw + b.x * hh,
+                            L.position.y + t.y * hw + b.y * hh,
+                            L.position.z + t.z * hw + b.z * hh };
                         cd::math::Vec3f c3 {
-                            L.position.x - L.area_tangent.x * hw + L.area_bitangent.x * hh,
-                            L.position.y - L.area_tangent.y * hw + L.area_bitangent.y * hh,
-                            L.position.z - L.area_tangent.z * hw + L.area_bitangent.z * hh };
+                            L.position.x - t.x * hw + b.x * hh,
+                            L.position.y - t.y * hw + b.y * hh,
+                            L.position.z - t.z * hw + b.z * hh };
                         const auto p0 = project(c0);
                         const auto p1 = project(c1);
                         const auto p2 = project(c2);
