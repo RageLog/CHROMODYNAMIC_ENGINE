@@ -525,10 +525,12 @@ void main() {
     // Distance fade — body + lines both attenuate as the camera
     // looks out toward the horizon, so the floor 'reaches into
     // infinity' rather than ending in a hard square edge.
-    // 30 m = full opacity, 60 m = fully transparent. Lines still
-    // visible to ~45 m via the line_a weight below.
+    // 60 m = full opacity, 200 m = fully transparent (faded to sky).
+    // The underlying plane is 1000 m so the camera will never reach
+    // its hard edge. v1.7 frame-graph swaps this for a true
+    // screen-space procedural grid (fullscreen plane intersection).
     float d_xz = length(v_world_pos.xz);
-    floor_fade = clamp(1.0 - (d_xz - 30.0) / 30.0, 0.0, 1.0);
+    floor_fade = clamp(1.0 - (d_xz - 60.0) / 140.0, 0.0, 1.0);
     // Minor cells every 1 m, major every 5 m. fwidth gives a
     // distance-aware line width so lines stay constant-thickness as
     // the camera moves, instead of aliasing into glitter.
@@ -1378,10 +1380,14 @@ int main()
     const auto cone_cpu     = cd::asset::make_cone(32);
     const auto cyl_cpu      = cd::asset::make_cylinder(32);
     const auto torus_cpu    = cd::asset::make_torus(0.45F, 0.18F, 16, 24);
-    // Floor quad — 80×80 m centred at origin, normal +Y. Faz 1.5: real
-    // geometry on which the planar shadow pass can project caster
-    // silhouettes (no actual floor previously, only an ImGui grid).
-    const auto floor_cpu    = cd::asset::make_plane(80.0F);
+    // Floor quad — 1000 m × 1000 m centred at origin, normal +Y. The
+    // size is far larger than the camera ever reaches; the FS
+    // distance-fade (30 m -> 60 m) handles the apparent infinite-grid
+    // feel. Faz 1.5: real geometry on which the planar shadow pass
+    // can project caster silhouettes. Procedural shader-space grid
+    // landing in v1.7 frame-graph rework replaces this with a single
+    // fullscreen plane intersection.
+    const auto floor_cpu    = cd::asset::make_plane(1000.0F);
 
     GpuMesh cube_mesh   = upload_mesh(device, cube_cpu);
     GpuMesh sphere_mesh = upload_mesh(device, sphere_cpu);
