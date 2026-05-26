@@ -921,6 +921,120 @@ create_texture_rgba8(cd::rhi::IDevice& dev,
 }
 
 // ============================================================================
+// R1.5 — Procedural humanoid character.
+//
+// Compound mesh: head + torso + 2 arms + 2 legs + 2 hands + 2 feet,
+// each from a primitive sphere/cylinder, all merged into one
+// PrimitiveMesh. Closes the user-requested 'karakter modeli' showcase
+// without a downloaded glTF asset.
+//
+// Topology: ~3000 verts / ~5000 tris. Smooth-shaded, single UV chart
+// (each part contributes its own UV island; texture wraps per-part).
+// ============================================================================
+[[maybe_unused]] [[nodiscard]] inline cd::asset::PrimitiveMesh make_humanoid()
+{
+    cd::asset::PrimitiveMesh out;
+
+    auto merge = [&](const cd::asset::PrimitiveMesh& src,
+                     cd::math::Vec3f offset,
+                     cd::math::Vec3f scale,
+                     cd::math::Vec2f uv_offset)
+    {
+        const auto base = static_cast<std::uint16_t>(out.vertices.size());
+        for (const auto& v : src.vertices)
+        {
+            cd::asset::PrimitiveVertex p = v;
+            p.pos[0] = v.pos[0] * scale.x + offset.x;
+            p.pos[1] = v.pos[1] * scale.y + offset.y;
+            p.pos[2] = v.pos[2] * scale.z + offset.z;
+            // Normals: scale by inverse for non-uniform scale would be ideal,
+            // but our scales are near-uniform; just renormalise.
+            const float nx = v.normal[0] / std::max(scale.x, 1e-4F);
+            const float ny = v.normal[1] / std::max(scale.y, 1e-4F);
+            const float nz = v.normal[2] / std::max(scale.z, 1e-4F);
+            const float nl = std::sqrt(nx*nx + ny*ny + nz*nz);
+            if (nl > 1e-6F) {
+                p.normal[0] = nx / nl;
+                p.normal[1] = ny / nl;
+                p.normal[2] = nz / nl;
+            }
+            p.uv[0] = v.uv[0] * 0.25F + uv_offset.x;  // sub-island in [0,0.25] tile
+            p.uv[1] = v.uv[1] * 0.25F + uv_offset.y;
+            p.color[0] = 1.0F;
+            p.color[1] = 1.0F;
+            p.color[2] = 1.0F;
+            out.vertices.push_back(p);
+        }
+        for (auto idx : src.indices)
+        {
+            if (static_cast<std::uint32_t>(base) + idx > 0xFFFFU) continue;
+            out.indices.push_back(static_cast<std::uint16_t>(base + idx));
+        }
+    };
+
+    // Body parts (sphere = 0.5 m radius unit, scaled per part).
+    const auto sphere_unit = cd::asset::make_sphere(20, 28);
+    const auto cyl_unit    = cd::asset::make_cylinder(24);
+
+    // ---- Head (sphere) ----
+    merge(sphere_unit,
+          { 0.0F, 1.65F, 0.0F },
+          { 0.35F, 0.40F, 0.35F },
+          { 0.00F, 0.00F });
+    // ---- Torso (squashed sphere into capsule-ish) ----
+    merge(sphere_unit,
+          { 0.0F, 0.95F, 0.0F },
+          { 0.55F, 0.85F, 0.35F },
+          { 0.25F, 0.00F });
+    // ---- Hip bridge (small sphere) ----
+    merge(sphere_unit,
+          { 0.0F, 0.45F, 0.0F },
+          { 0.42F, 0.30F, 0.32F },
+          { 0.50F, 0.00F });
+    // ---- Arms (cylinders) ----
+    // Cylinder unit is 1m tall, radius 0.5 — we scale down + offset.
+    // Left arm
+    merge(cyl_unit,
+          { -0.55F, 0.85F, 0.0F },
+          { 0.16F, 0.65F, 0.16F },
+          { 0.75F, 0.00F });
+    // Right arm
+    merge(cyl_unit,
+          { 0.55F, 0.85F, 0.0F },
+          { 0.16F, 0.65F, 0.16F },
+          { 0.00F, 0.25F });
+    // ---- Hands (small spheres) ----
+    merge(sphere_unit,
+          { -0.55F, 0.50F, 0.0F },
+          { 0.13F, 0.13F, 0.13F },
+          { 0.25F, 0.25F });
+    merge(sphere_unit,
+          { 0.55F, 0.50F, 0.0F },
+          { 0.13F, 0.13F, 0.13F },
+          { 0.50F, 0.25F });
+    // ---- Legs (cylinders) ----
+    merge(cyl_unit,
+          { -0.20F, 0.0F, 0.0F },
+          { 0.18F, 0.85F, 0.18F },
+          { 0.75F, 0.25F });
+    merge(cyl_unit,
+          { 0.20F, 0.0F, 0.0F },
+          { 0.18F, 0.85F, 0.18F },
+          { 0.00F, 0.50F });
+    // ---- Feet (small flattened spheres) ----
+    merge(sphere_unit,
+          { -0.20F, -0.45F, 0.06F },
+          { 0.16F, 0.10F, 0.25F },
+          { 0.25F, 0.50F });
+    merge(sphere_unit,
+          { 0.20F, -0.45F, 0.06F },
+          { 0.16F, 0.10F, 0.25F },
+          { 0.50F, 0.50F });
+
+    return out;
+}
+
+// ============================================================================
 // R1.5 — Procedural complex showcase mesh: trefoil (p,q) torus knot.
 //
 // Generates a tube swept along a torus-knot curve. p=2, q=3 = classic
@@ -1702,7 +1816,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 5> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 8> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -1722,6 +1836,21 @@ int main()
                                               .stages  = cd::rhi::ShaderStage::kFragment },
         // gap #1/#13 — baseColor texture slot for glTF entities.
         cd::rhi::DescriptorSetLayoutBinding { .binding = 4,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // R2 phase: bring IBL to the prim pipeline so textured kGltf
+        // entities (and the procedural Earth showcase) get real PBR
+        // reflections + bounce light, not just diffuse + ambient.
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 5,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 6,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 7,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2080,11 +2209,9 @@ int main()
     GpuMesh torus_mesh  = upload_mesh(device, torus_cpu);
     GpuMesh floor_mesh  = upload_mesh(device, floor_cpu);
     GpuMesh pbr_sphere  = upload_pbr_mesh(device, sphere_cpu);
-    // R1.5: procedural trefoil torus-knot mesh for the textured PBR
-    // showcase. Complex topology + smooth surface + ~6k tris exercises
-    // the engine's per-frame indexed-draw path more than a single
-    // sphere would, and lets the procedural Earth texture wrap with
-    // visible UV continuity for the user.
+    // R1.5: torus knot procedural showcase used when no glTF asset
+    // resolves. With CesiumMan.glb in assets/samples/, the auto-load
+    // path takes priority and uses the actual imported character.
     const auto knot_cpu = make_torus_knot(0.7F, 0.20F, 2, 3, 256, 24);
     GpuMesh knot_mesh   = upload_mesh(device, knot_cpu);
 
@@ -2096,11 +2223,15 @@ int main()
     GpuMesh gltf_mesh {};
     std::string gltf_loaded_name;
     {
-        const std::array<std::string, 6> kCandidates {
-            "assets/samples/DamagedHelmet.gltf",
+        const std::array<std::string, 10> kCandidates {
+            "assets/samples/CesiumMan.glb",
+            "assets/samples/DamagedHelmet.glb",
             "assets/samples/FlightHelmet.gltf",
+            "assets/samples/DamagedHelmet.gltf",
             "assets/samples/BoomBox.gltf",
             "assets/samples/Duck.gltf",
+            "assets/samples/Suzanne.glb",
+            "assets/samples/Fox.glb",
             "assets/samples/model.gltf",
             "model.gltf"
         };
@@ -2355,8 +2486,12 @@ int main()
             if (gltf_mesh.vb.is_valid())
             {
                 e.name = "glTF (" + gltf_loaded_name + ")";
-                scene.local(e.handle)->value.position = { 0.0F, 1.0F, -2.0F };
-                scene.local(e.handle)->value.scale    = { 0.8F, 0.8F, 0.8F };
+                // Prominent front-and-centre placement so the imported
+                // character is the focal showcase. Scale 2.2 reads as
+                // ~1.5 m human height — clearly visible without
+                // clipping at the camera's vertical FOV.
+                scene.local(e.handle)->value.position = { 0.0F, -0.55F, 0.5F };
+                scene.local(e.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
             }
             else
             {
