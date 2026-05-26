@@ -2113,6 +2113,18 @@ int main()
             log_push("[script] Lua 5.4 integration v1.9.5");
             log_push("[script] behaviour-tree nodes v1.9.5");
         });
+    palette.register_command(140, "v2.0: Production Milestone Status",
+        [&]{
+            log_push("[v2.0] cooker (assetc):     v2.0.1 — pending");
+            log_push("[v2.0] profiler:            cd::profile sinks ready (v2.0.2)");
+            log_push("[v2.0] crash reporter:      cd::diag::CrashReporter ready (v2.0.3)");
+            log_push("[v2.0] HRTF audio:          cd::audio core ready (v2.0.4)");
+            log_push("[v2.0] i18n + a11y:         ICU integration pending (v2.0.5)");
+            log_push("[v2.0] hot-reload:          vfs + shader Compiler ready (v2.0.6)");
+            log_push("[v2.0] 24h stress harness:  pending CI hardware (v2.0.7)");
+            log_push("[v2.0] ENGINE_GUIDE.md:     pending (v2.0.8)");
+            log_push("[v2.0] see docs/PRODUCTION_V20_PLAN.md");
+        });
     (void)fx_restir_di_on; (void)fx_restir_gi_on;
     (void)fx_ddgi_on; (void)fx_nrc_on;
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
