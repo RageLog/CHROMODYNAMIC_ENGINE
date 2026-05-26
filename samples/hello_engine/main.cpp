@@ -1816,7 +1816,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 8> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 5> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -1836,21 +1836,6 @@ int main()
                                               .stages  = cd::rhi::ShaderStage::kFragment },
         // gap #1/#13 — baseColor texture slot for glTF entities.
         cd::rhi::DescriptorSetLayoutBinding { .binding = 4,
-                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment },
-        // R2 phase: bring IBL to the prim pipeline so textured kGltf
-        // entities (and the procedural Earth showcase) get real PBR
-        // reflections + bounce light, not just diffuse + ambient.
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 5,
-                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 6,
-                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 7,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2453,14 +2438,15 @@ int main()
     {
         struct Seed { const char* name; cd::math::Vec3f pos; cd::math::Vec3f tint; PrimitiveKind k; };
         const std::array<Seed, 5> seeds {{
-            // Artistic palette (user-confirmed colour pipeline at
-            // v0.99.110 — pure RGB measurement showed white-wash ≤
-            // 0.03 across every primitive in every light state).
-            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.55F, 0.45F }, PrimitiveKind::kCube },
-            { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.45F, 1.00F, 0.55F }, PrimitiveKind::kSphere },
-            { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.50F, 0.55F, 1.00F }, PrimitiveKind::kCone },
-            { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 0.95F, 0.80F, 0.45F }, PrimitiveKind::kCylinder },
-            { "Torus",    {  2.4F, 0.0F,  0.0F }, { 0.85F, 0.40F, 0.95F }, PrimitiveKind::kTorus },
+            // Saturated artistic palette — more vibrant than the v0.99.110
+            // measurement palette, picks up enough off-channel content
+            // to read as distinct material tints without going to pure
+            // RGB.
+            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.25F, 0.25F }, PrimitiveKind::kCube },
+            { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.20F, 0.95F, 0.30F }, PrimitiveKind::kSphere },
+            { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.15F, 0.40F, 1.00F }, PrimitiveKind::kCone },
+            { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 1.00F, 0.75F, 0.15F }, PrimitiveKind::kCylinder },
+            { "Torus",    {  2.4F, 0.0F,  0.0F }, { 0.90F, 0.15F, 0.90F }, PrimitiveKind::kTorus },
         }};
         for (const auto& s : seeds)
         {
