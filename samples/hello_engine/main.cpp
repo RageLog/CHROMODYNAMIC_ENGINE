@@ -468,13 +468,19 @@ float distance_atten(float d, float range) {
 // closest one. Ray origin is biased by +1mm along the surface
 // normal to dodge self-intersection acne.
 float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
+  // Bias the origin away from the surface AND start the ray walk at
+  // tmin > 0 so the source instance's own triangles (very close to
+  // the shading point on merged meshes like CesiumMan) don't get
+  // false-hit as occluders. tmin 0.08 + N*0.05 bias clears
+  // typical compound-mesh self-intersection without losing real
+  // shadows from neighbouring objects.
   rayQueryEXT rq;
   rayQueryInitializeEXT(
       rq, cd_tlas,
       gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.001,
-      0.0, dir, tmax);
+      origin + N * 0.05,
+      0.08, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   return (rayQueryGetIntersectionTypeEXT(rq, true) ==
           gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -654,7 +660,7 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      float vis_a = 1.0;  // see multi-light vis note below
+      float vis_a = ray_visibility(v_world_pos, N, Lc, max(d_c - 0.10, 0.01));
       vec3  col   = cd_lights.slots[li].color_int.xyz;
       float ki    = cd_lights.slots[li].color_int.w;
       lit += albedo * col * (ki * E * vis_a);
@@ -678,11 +684,11 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // RT visibility disabled for multi-light direct contribution.
-    // The character/primitives' BLAS self-occlusion was zeroing the
-    // spot's lit fragments. Proper shadow mapping for non-sun lights
-    // is a later ship; for now direct multi-light is unoccluded.
-    float vis = 1.0;
+    // Inline RT shadow with aggressive self-bias (N*0.05 + tmin 0.08)
+    // baked into ray_visibility() — restores point/spot/area shadows
+    // without losing the character to false self-occlusion on merged
+    // meshes. Re-enables the user-requested 'point ve spotda golge'.
+    float vis = ray_visibility(v_world_pos, N, Lp, max(d - 0.10, 0.01));
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
     lit += albedo * col * (ki * ndl * atten * vis * cone);
@@ -2270,11 +2276,11 @@ int main()
                 // X to bring him upright in the engine's Y-up world.
                 scene.local(e.handle)->value.position = { 0.0F, -0.55F, 0.5F };
                 scene.local(e.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
-                // Compose: rotate -90° about X (Z-up -> Y-up) then 180°
-                // about Y so the character's face points toward the
-                // camera (+Z) instead of away. The composed quaternion
-                // = q_X * q_Y = (0, 0.7071, -0.7071, 0).
-                scene.local(e.handle)->value.rotation = { 0.0F, 0.7071068F, -0.7071068F, 0.0F };
+                // X -90° rotation (Z-up -> Y-up) only. CesiumMan's
+                // original model has -Y forward in Cesium space; after
+                // -90° about X, that -Y maps to +Z (toward camera). No
+                // extra Y flip needed; adding one inverts the character.
+                scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
             }
             else
             {
@@ -3564,7 +3570,12 @@ int main()
                 const float rdl = std::sqrt(ray_dir.x*ray_dir.x + ray_dir.y*ray_dir.y + ray_dir.z*ray_dir.z);
                 if (rdl > 1e-5F) { ray_dir.x/=rdl; ray_dir.y/=rdl; ray_dir.z/=rdl; }
 
-                // Sphere-test every entity. Radius = 0.55 (unit primitive + slack).
+                // Sphere-test every entity. Radius scales with the
+                // entity's transform scale so clicking anywhere on a
+                // big imported asset (e.g. CesiumMan at scale 2.2)
+                // still selects it — not just the central pivot.
+                // Closes user-flagged 'cisimler ve isiklar sadece
+                // pivottan secilebiliyor'.
                 float best_t = 1e30F;
                 int   best_i = -1;
                 for (std::size_t i = 0; i < entities.size(); ++i)
@@ -3574,10 +3585,17 @@ int main()
                     const cd::math::Vec3f c { lt->value.position.x,
                                               lt->value.position.y,
                                               lt->value.position.z };
+                    const float ms = std::max({ lt->value.scale.x,
+                                                 lt->value.scale.y,
+                                                 lt->value.scale.z });
+                    // Unit primitive half-extent ≈ 0.55; for compound
+                    // / oblong meshes (humanoid) bump by 1.6 along the
+                    // longest dimension.
+                    const float pick_r = 0.55F * std::max(1.0F, ms) * 1.6F;
                     const cd::math::Vec3f oc {
                         cam.eye.x - c.x, cam.eye.y - c.y, cam.eye.z - c.z };
                     const float b = oc.x*ray_dir.x + oc.y*ray_dir.y + oc.z*ray_dir.z;
-                    const float cc = oc.x*oc.x + oc.y*oc.y + oc.z*oc.z - 0.55F*0.55F;
+                    const float cc = oc.x*oc.x + oc.y*oc.y + oc.z*oc.z - pick_r*pick_r;
                     const float disc = b*b - cc;
                     if (disc < 0.0F) continue;
                     const float t = -b - std::sqrt(disc);
@@ -3594,7 +3612,10 @@ int main()
                     const cd::math::Vec3f c { Lt.position.x, Lt.position.y, Lt.position.z };
                     const cd::math::Vec3f oc {
                         cam.eye.x - c.x, cam.eye.y - c.y, cam.eye.z - c.z };
-                    constexpr float kLightPickR = 0.4F;
+                    // Big-pick light bulb hit-sphere so clicking near
+                    // the gizmo or anywhere around the visible bulb
+                    // selects the light, not just its centre dot.
+                    constexpr float kLightPickR = 0.9F;
                     const float b = oc.x*ray_dir.x + oc.y*ray_dir.y + oc.z*ray_dir.z;
                     const float cc = oc.x*oc.x + oc.y*oc.y + oc.z*oc.z - kLightPickR*kLightPickR;
                     const float disc = b*b - cc;
