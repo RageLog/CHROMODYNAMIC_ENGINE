@@ -946,8 +946,9 @@ layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(set = 0, binding = 2) uniform sampler2D cd_depth;
 layout(push_constant) uniform PC {
-  vec4 fx;  // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
-  vec4 ao;  // x=ao_strength, y=ao_radius_px, z=near, w=far
+  vec4 fx;   // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+  vec4 ao;   // x=ao_strength, y=ao_radius_px, z=near, w=far
+  vec4 dof;  // x=dof_strength, y=focus_distance (m), z=focus_range (m), w=max_blur_px
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -988,11 +989,37 @@ float depth_ao(vec2 uv, float center_d) {
 
 void main() {
   vec3 c = texture(cd_hdr_color, v_uv).rgb;
+  float center_d = texture(cd_depth, v_uv).r;
 
   // AO modulation — depth-only horizon scan. Applied to HDR before
   // bloom add so haloed pixels don't fight the darkening.
-  float ao = depth_ao(v_uv, texture(cd_depth, v_uv).r);
+  float ao = depth_ao(v_uv, center_d);
   c *= mix(1.0, ao, clamp(pc.ao.x, 0.0, 1.0));
+
+  // Depth-of-field — circle-of-confusion in linear-Z space. 8-tap
+  // golden-spiral bokeh blur around the centre pixel; CoC grows
+  // with abs(linear_z - focus) / range. Sky pixels skip (no blur).
+  if (pc.dof.x > 0.001 && center_d < 0.999) {
+    float lz = linearize_z(center_d);
+    float coc = clamp(abs(lz - pc.dof.y) / max(pc.dof.z, 0.001),
+                      0.0, 1.0);
+    if (coc > 0.05) {
+      vec2 px = 1.0 / vec2(textureSize(cd_hdr_color, 0));
+      float r = coc * pc.dof.w;
+      vec2 spiral[8] = vec2[8](
+        vec2( 0.866,  0.500), vec2( 0.000,  1.000),
+        vec2(-0.866,  0.500), vec2(-0.866, -0.500),
+        vec2( 0.000, -1.000), vec2( 0.866, -0.500),
+        vec2( 0.500,  0.000), vec2(-0.500,  0.000));
+      vec3 dof_sum = vec3(0.0);
+      for (int i = 0; i < 8; ++i) {
+        dof_sum += texture(cd_hdr_color, v_uv + spiral[i] * r * px).rgb;
+      }
+      dof_sum *= (1.0 / 8.0);
+      c = mix(c, dof_sum,
+              smoothstep(0.05, 0.30, coc) * clamp(pc.dof.x, 0.0, 1.0));
+    }
+  }
 
   // Bloom: additive halo from the upsample chain's final mip0.
   // pc.fx.w is the user-facing strength dial (0 disables completely).
@@ -1038,10 +1065,11 @@ void main() {
 
 struct CompositePush
 {
-    float fx[4];  // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
-    float ao[4];  // x=ao_strength, y=ao_radius_px, z=near, w=far
+    float fx[4];   // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+    float ao[4];   // x=ao_strength, y=ao_radius_px, z=near, w=far
+    float dof[4];  // x=dof_strength, y=focus_distance, z=focus_range, w=max_blur_px
 };
-static_assert(sizeof(CompositePush) == 32, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 48, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -6442,6 +6470,16 @@ int main()
         cp.ao[1] = 4.0F;   // ao_radius_px — 4 px ring radius
         cp.ao[2] = cam.near_z;
         cp.ao[3] = cam.far_z;
+        // DOF — wired from the existing UI slider. Focus on cam.target
+        // (length(eye - target)), default 4 m range, 8 px max blur.
+        const float focus_dist = cd::math::length(cd::math::Vec3f {
+            cam.eye.x - cam.target.x,
+            cam.eye.y - cam.target.y,
+            cam.eye.z - cam.target.z });
+        cp.dof[0] = fx_dof_strength;
+        cp.dof[1] = focus_dist;
+        cp.dof[2] = 4.0F;   // focus range (m) — pixels within ±range stay sharp
+        cp.dof[3] = 8.0F;   // max blur radius (px)
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
