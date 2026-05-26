@@ -894,6 +894,33 @@ void main() {
   }
 
   c = pow(c, vec3(1.0/2.2));
+
+  // Debug view modes (fx_params4.w):
+  //   1 albedo only, 2 world normal, 3 MR map, 4 AO, 5 perturbed
+  //   normal (post-normal-map), 6 UVs as RG.
+  int view_mode = int(pc.fx_params4.w + 0.5);
+  if (view_mode == 1) {
+    out_color = vec4(albedo, 1.0);
+    return;
+  } else if (view_mode == 2) {
+    out_color = vec4(normalize(v_world_normal) * 0.5 + 0.5, 1.0);
+    return;
+  } else if (view_mode == 3) {
+    vec4 mr_s = (pc.fx_params.y > 0.5) ? texture(cd_mr_tex, v_uv) : vec4(0,0.5,0.04,1);
+    out_color = vec4(0.0, mr_s.g, mr_s.b, 1.0);
+    return;
+  } else if (view_mode == 4) {
+    vec4 mr_s = (pc.fx_params.y > 0.5) ? texture(cd_mr_tex, v_uv) : vec4(0,0,0,1);
+    out_color = vec4(vec3(mr_s.a), 1.0);
+    return;
+  } else if (view_mode == 5) {
+    out_color = vec4(N * 0.5 + 0.5, 1.0);
+    return;
+  } else if (view_mode == 6) {
+    out_color = vec4(v_uv, 0.0, 1.0);
+    return;
+  }
+
   out_color = vec4(c, 1.0);
 }
 )glsl";
@@ -3141,6 +3168,9 @@ int main()
     float fx_sheen_strength     = 0.0F;
     float fx_clearcoat_strength = 0.0F;
     float fx_sss_strength       = 0.0F;
+    // Debug view modes: 0 final, 1 albedo, 2 world normal, 3 MR map,
+    // 4 AO, 5 normal-mapped surface normal, 6 vertex UVs.
+    int   fx_view_mode          = 0;
     float fx_decal_count        = 0.0F;   // count placeholder
     float fx_particle_emit_rate = 0.0F;   // /sec placeholder
     palette.register_command(100, "BRDF: Toggle LTC-GGX area-light specular (queued v1.7)",
@@ -4733,7 +4763,8 @@ int main()
             fp.fx_params3[3] = fx_light_shafts;
             fp.camera_pos[0] = cam.eye.x; fp.camera_pos[1] = cam.eye.y;
             fp.camera_pos[2] = cam.eye.z; fp.camera_pos[3] = 0.0F;
-            fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = fp.fx_params4[3] = 0.0F;
+            fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
+            fp.fx_params4[3] = static_cast<float>(fx_view_mode);
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -4781,7 +4812,7 @@ int main()
             pp.fx_params4[0] = fx_clearcoat_strength;
             pp.fx_params4[1] = fx_sheen_strength;
             pp.fx_params4[2] = fx_sss_strength;
-            pp.fx_params4[3] = 0.0F;
+            pp.fx_params4[3] = static_cast<float>(fx_view_mode);
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
@@ -5094,6 +5125,17 @@ int main()
         ImGui::SameLine(); ImGui::TextDisabled("(spec 6mip + diff 16 + brdf 64x64)");
         ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  Material textures");
         ImGui::SameLine(); ImGui::TextDisabled("(albedo + normal + MR + AO)");
+        if (ImGui::CollapsingHeader("R2-Debug  View modes (see each map)"))
+        {
+            const char* labels[] = { "Final", "Albedo", "World normal",
+                                      "MR (G=rough,B=metal)", "AO",
+                                      "Perturbed normal", "UVs" };
+            for (int i = 0; i < 7; ++i)
+            {
+                if (ImGui::RadioButton(labels[i], fx_view_mode == i))
+                    fx_view_mode = i;
+            }
+        }
         if (ImGui::CollapsingHeader("R6  Advanced BRDFs"))
         {
             ImGui::SliderFloat("Clearcoat",  &fx_clearcoat_strength, 0.0F, 1.0F);
