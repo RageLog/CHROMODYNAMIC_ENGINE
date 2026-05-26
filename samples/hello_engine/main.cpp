@@ -871,13 +871,13 @@ void main() {
     c += (g - 0.5) * grain * 0.05;
   }
 
-  // Inline atmospherics (v1.4 day-ship wire-in). True multi-scatter
-  // sky / froxel volumetric fog land in v1.7 when the frame-graph
-  // supplies the depth + occlusion targets these need.
-  //   x = exponential height fog density  -> blend to fog colour
-  //   y = aerial perspective strength     -> tint distant pixels blue
-  //   z = clouds coverage placeholder      -> needs noise sampler (v1.7)
-  //   w = light shafts strength placeholder -> needs depth probe (v1.7)
+  // Inline atmospherics (v1.4 day-ship wire-in).
+  //   x = exponential height fog density
+  //   y = aerial perspective strength
+  //   z = clouds coverage placeholder (needs noise sampler, v1.7)
+  //   w = light shafts strength  — R5 inline approximation here:
+  //       attenuate visibility radially from the on-screen sun
+  //       direction and brighten low-luma pixels in that cone.
   float dist = length(v_world_pos - pc.camera_pos.xyz);
   float fog_density = clamp(pc.fx_params3.x, 0.0, 1.0);
   if (fog_density > 0.001) {
@@ -891,6 +891,19 @@ void main() {
     float t = clamp(dist / 80.0, 0.0, 1.0);
     vec3 aerial_tint = vec3(0.55, 0.62, 0.78);
     c = mix(c, aerial_tint, t * aerial * 0.35);
+  }
+  // R5 inline god rays / light shafts. Approximation: a directional
+  // 'volumetric' brighten where the pixel sits near the sun ray's
+  // projection. No depth probe needed — uses world-space cone from
+  // the sun direction. Best visible at sunrise/sunset / low sun.
+  float shafts = clamp(pc.fx_params3.w, 0.0, 1.0);
+  if (shafts > 0.001 && pc.sun_dir.w > 0.001) {
+    vec3 cam_to_p = normalize(v_world_pos - pc.camera_pos.xyz);
+    vec3 sun_L    = normalize(-pc.sun_dir.xyz);
+    float align  = max(dot(cam_to_p, sun_L), 0.0);
+    float shaft  = pow(align, 32.0) * shafts;
+    vec3 shaft_col = pc.sun_color.rgb * pc.sun_dir.w;
+    c += shaft_col * shaft * 0.6;
   }
 
   c = pow(c, vec3(1.0/2.2));
