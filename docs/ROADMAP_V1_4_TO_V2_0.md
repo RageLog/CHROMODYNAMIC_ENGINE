@@ -37,6 +37,9 @@ missing. Order is by user pain × ship size.
 | 17 | **Light scale gizmo → range / area-extent edit** — *"sacale ile etki alanini degistirmek isityorum"* | high | M | gizmo dispatches on selection.kind=Light + mode=Scale → `scale.x` drives `range` (point/spot) or `area_width` (rect/disk) |
 | 18 | **World + Level + Layer system (custom)** — *"world ve level yapilari eklenmeli chernonun bahsettigi layer yapisida yapilmali ama ordaki gibi degil kendimize uygun bicimde yapilmali"* | high | XL | new `engine/world/world` + `engine/world/level` + `engine/world/layer` libraries — sub-scene grouping, per-layer visibility/lock/colour, level-streaming chunks. See dedicated section below. |
 | 19 | **PBR + sky lights-off gate** (regression of #11 surface) | mid-high | S | ✅ shipped b86bd65 — IBL + sky gradient now obey sun_dir.w |
+| 20 | **Editor grid as helper, not scene mesh** — *"grid gozukmuyor sanki oda 3 boyutli bir obje gibi yerde duruyor ama o bir sahne objesi degil yardimci ayni gizmo gibi ve sonsuza tekrar etmeli"* | high | M | drop floor mesh as the grid carrier; render an **infinite procedural XZ-grid overlay** (FS reads world-space xz, modulo + fwidth lines, depth-tested but no shadow receive); separate from any scene geometry |
+| 21 | **Shadow-catcher plane** — *"uzerine golge dusmemeli. golge dusmesi icin bir plane konmali"* | high | M | dedicated invisible-except-shadow ground plane (large quad, depth-test on, color = darken-by-shadow-factor); decouples shadow display from the editor grid |
+| 22 | **PBR sphere shading regression** — *"arkadaki metallerde yanlis gozukmneye basladi"* | mid | S | post-UBO refactor; investigate whether multi-light loop is over-attenuating metallic spheres' indirect light or whether AGX tonemap is clipping metallic-highlights — surface-level fix, no architecture change required |
 
 S = ≤ 1 day, M = 1-3 days, L = ≥ 1 week, XL = ≥ 1 month.
 
