@@ -446,7 +446,16 @@ void main() {
   // flagged "grid objects arasindan gozukmemeli" issue) for free.
   // Otherwise identical to a normal lit shading path.
   vec3 albedo = v_albedo;
-  if (pc.tint.w > 1.5) {
+  bool is_floor = (pc.tint.w > 1.5);
+  float floor_fade = 1.0;  // 1 = full body, 0 = fully faded (sky-coloured)
+  if (is_floor) {
+    // Distance fade — body + lines both attenuate as the camera
+    // looks out toward the horizon, so the floor 'reaches into
+    // infinity' rather than ending in a hard square edge.
+    // 30 m = full opacity, 60 m = fully transparent. Lines still
+    // visible to ~45 m via the line_a weight below.
+    float d_xz = length(v_world_pos.xz);
+    floor_fade = clamp(1.0 - (d_xz - 30.0) / 30.0, 0.0, 1.0);
     // Minor cells every 1 m, major every 5 m. fwidth gives a
     // distance-aware line width so lines stay constant-thickness as
     // the camera moves, instead of aliasing into glitter.
@@ -460,22 +469,24 @@ void main() {
     float dmajor = max(dp.x, dp.y) * 0.7 * 0.2;
     float a_minor = 1.0 - smoothstep(0.5 - dminor * 1.5, 0.5 - dminor * 0.5, lminor + 0.5 - dminor);
     float a_major = 1.0 - smoothstep(0.5 - dmajor * 2.0, 0.5 - dmajor * 0.5, lmajor + 0.5 - dmajor);
-    // Wrap minor/major into a single intensity. Minor lines are dim
-    // greyish; major every-5m and axis lines (x=0 / z=0) are brighter.
     float on_axis_x = step(abs(p.x), max(dp.x, 0.005));
     float on_axis_z = step(abs(p.y), max(dp.y, 0.005));
     vec3 minor_col = vec3(0.50, 0.52, 0.58);
     vec3 major_col = vec3(0.75, 0.78, 0.85);
-    vec3 ax_x_col  = vec3(0.95, 0.30, 0.25);   // red = X axis (in world.x)
-    vec3 ax_z_col  = vec3(0.25, 0.45, 0.95);   // blue = Z axis (in world.z)
+    vec3 ax_x_col  = vec3(0.95, 0.30, 0.25);
+    vec3 ax_z_col  = vec3(0.25, 0.45, 0.95);
     vec3 line_col  = minor_col;
     float line_a   = a_minor * 0.35;
     line_col = mix(line_col, major_col, smoothstep(0.0, 0.8, a_major));
     line_a   = max(line_a, a_major * 0.6);
-    line_col = mix(line_col, ax_x_col, on_axis_z * 0.85);  // axis X runs along z=0
-    line_col = mix(line_col, ax_z_col, on_axis_x * 0.85);  // axis Z runs along x=0
+    line_col = mix(line_col, ax_x_col, on_axis_z * 0.85);
+    line_col = mix(line_col, ax_z_col, on_axis_x * 0.85);
     line_a   = max(line_a, max(on_axis_x, on_axis_z));
-    albedo = mix(albedo, line_col, clamp(line_a, 0.0, 1.0));
+    // Apply fade to line intensity so lines also fade with distance.
+    line_a *= floor_fade;
+    albedo  = mix(albedo, line_col, clamp(line_a, 0.0, 1.0));
+    // Fade the body too (mix back to a faint sky-grey).
+    albedo  = mix(vec3(0.55, 0.60, 0.66) * 0.0, albedo, floor_fade);
   }
 
   vec3 N = normalize(v_world_normal);
@@ -2906,7 +2917,15 @@ int main()
             // tint[3] = 2.0 is the FS sentinel that enables the analytic
             // grid overlay (depth-tested via the floor geometry, so the
             // grid no longer shows through other objects).
-            fp.tint[0] = 0.45F; fp.tint[1] = 0.46F; fp.tint[2] = 0.50F; fp.tint[3] = 2.0F;
+            // Shadow-catcher + grid-helper combo (gaps #20 + #21).
+            // Floor body colour kept subtle so the plane reads more
+            // like an editor helper than a scene mesh — shadows
+            // (much darker, see planar-shadow tint below) and grid
+            // lines (much brighter) both stand out against it. FS
+            // also fades the floor with camera distance for a
+            // pseudo-infinite-grid feel pending the real procedural-
+            // grid helper in v1.6 editor.
+            fp.tint[0] = 0.15F; fp.tint[1] = 0.16F; fp.tint[2] = 0.18F; fp.tint[3] = 2.0F;
             fp.sun_dir[0] = sun_dir.x; fp.sun_dir[1] = sun_dir.y;
             fp.sun_dir[2] = sun_dir.z; fp.sun_dir[3] = sun_str;
             fp.sun_color[0] = sun_col.x; fp.sun_color[1] = sun_col.y;
