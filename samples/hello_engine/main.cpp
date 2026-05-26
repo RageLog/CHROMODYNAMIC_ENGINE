@@ -34,6 +34,7 @@
 #include <cd/asset/AsyncStreamer.hpp>
 #include <cd/asset/Primitives.hpp>
 #include <cd/asset/StreamRequest.hpp>
+#include <cd/asset_gltf/GltfLoader.hpp>
 #include <cd/asset_json/Json.hpp>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
@@ -141,6 +142,7 @@ enum class PrimitiveKind : std::uint8_t
     kCone,
     kCylinder,
     kTorus,
+    kGltf,   ///< user-supplied glTF asset auto-loaded at boot
 };
 
 struct SceneEntity
@@ -970,7 +972,17 @@ int main()
     }
 
     // ---- Meshes (one PBR sphere, five primitive entities) ----
-    const auto cube_cpu     = cd::asset::make_cube();
+    auto cube_cpu = cd::asset::make_cube();
+    // make_cube ships per-face axis-coloured vertices (red/green/blue
+    // debug viz). For the entity tint pipeline we want one uniform
+    // colour so the per-instance tint actually shows; flatten to a
+    // neutral 0.7 grey (matches make_sphere/cone/cyl).
+    for (auto& v : cube_cpu.vertices)
+    {
+        v.color[0] = 0.7F;
+        v.color[1] = 0.7F;
+        v.color[2] = 0.7F;
+    }
     const auto sphere_cpu   = cd::asset::make_sphere(18, 28);
     const auto cone_cpu     = cd::asset::make_cone(32);
     const auto cyl_cpu      = cd::asset::make_cylinder(32);
@@ -988,6 +1000,84 @@ int main()
     GpuMesh floor_mesh  = upload_mesh(device, floor_cpu);
     GpuMesh pbr_sphere  = upload_pbr_mesh(device, sphere_cpu);
 
+    // ---- glTF auto-load ----
+    // Try a small list of well-known sample paths so the user can drop
+    // any Khronos sample (DamagedHelmet.gltf, FlightHelmet.gltf …)
+    // into ./assets/samples/ and have hello_engine pick it up on next
+    // launch. Falls back gracefully if nothing is found.
+    GpuMesh gltf_mesh {};
+    std::string gltf_loaded_name;
+    {
+        const std::array<std::string, 6> kCandidates {
+            "assets/samples/DamagedHelmet.gltf",
+            "assets/samples/FlightHelmet.gltf",
+            "assets/samples/BoomBox.gltf",
+            "assets/samples/Duck.gltf",
+            "assets/samples/model.gltf",
+            "model.gltf"
+        };
+        for (const auto& p : kCandidates)
+        {
+            auto loaded = cd::asset_gltf::load_gltf(p);
+            if (!loaded.has_value()) continue;
+            // Merge every primitive of every mesh into one big
+            // PrimitiveVertex buffer so we can render with the
+            // existing prim pipeline. Texture sampling would need an
+            // extra descriptor binding — deferred to the next ship.
+            cd::asset::PrimitiveMesh merged;
+            for (const auto& m : loaded->meshes)
+            {
+                for (const auto& prim : m.primitives)
+                {
+                    const auto base = static_cast<std::uint16_t>(merged.vertices.size());
+                    for (const auto& v : prim.vertices)
+                    {
+                        cd::asset::PrimitiveVertex pv {};
+                        pv.pos[0] = v.position.x;
+                        pv.pos[1] = v.position.y;
+                        pv.pos[2] = v.position.z;
+                        pv.normal[0] = v.normal.x;
+                        pv.normal[1] = v.normal.y;
+                        pv.normal[2] = v.normal.z;
+                        pv.uv[0] = v.texcoord0.x;
+                        pv.uv[1] = v.texcoord0.y;
+                        pv.color[0] = 0.85F;
+                        pv.color[1] = 0.82F;
+                        pv.color[2] = 0.78F;
+                        merged.vertices.push_back(pv);
+                    }
+                    for (auto idx : prim.indices)
+                    {
+                        if (base + idx > 0xFFFFU)
+                            continue;  // skip overflow (sample uses 16-bit IB)
+                        merged.indices.push_back(static_cast<std::uint16_t>(base + idx));
+                    }
+                }
+            }
+            if (merged.vertices.empty() || merged.indices.empty())
+            {
+                std::fprintf(stderr,
+                    "[gltf] %s parsed but contained no renderable geometry\n",
+                    p.c_str());
+                continue;
+            }
+            gltf_mesh = upload_mesh(device, merged);
+            gltf_loaded_name = p;
+            std::fprintf(stderr,
+                "[gltf] loaded %s — %zu verts, %zu indices (untextured fallback)\n",
+                p.c_str(),
+                merged.vertices.size(),
+                merged.indices.size());
+            break;
+        }
+        if (gltf_loaded_name.empty())
+        {
+            std::fprintf(stderr,
+                "[gltf] no asset found; drop a .gltf into ./assets/samples/ "
+                "(e.g. Khronos DamagedHelmet) and re-launch.\n");
+        }
+    }
+
     auto mesh_for = [&](PrimitiveKind k) -> const GpuMesh& {
         switch (k)
         {
@@ -995,6 +1085,7 @@ int main()
             case PrimitiveKind::kCone:     return cone_mesh;
             case PrimitiveKind::kCylinder: return cyl_mesh;
             case PrimitiveKind::kTorus:    return torus_mesh;
+            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : cube_mesh;
             default:                       return cube_mesh;
         }
     };
@@ -1028,6 +1119,9 @@ int main()
     cd::rhi::AccelStructureHandle blas_cyl    = build_blas(cyl_mesh,    "blas_cyl");
     cd::rhi::AccelStructureHandle blas_torus  = build_blas(torus_mesh,  "blas_torus");
     cd::rhi::AccelStructureHandle blas_floor  = build_blas(floor_mesh,  "blas_floor");
+    cd::rhi::AccelStructureHandle blas_gltf   = gltf_mesh.vb.is_valid()
+                                                ? build_blas(gltf_mesh, "blas_gltf")
+                                                : cd::rhi::AccelStructureHandle {};
     auto blas_for_kind = [&](PrimitiveKind k) -> cd::rhi::AccelStructureHandle {
         switch (k)
         {
@@ -1035,6 +1129,7 @@ int main()
             case PrimitiveKind::kCone:     return blas_cone;
             case PrimitiveKind::kCylinder: return blas_cyl;
             case PrimitiveKind::kTorus:    return blas_torus;
+            case PrimitiveKind::kGltf:     return blas_gltf;
             default:                       return blas_cube;
         }
     };
@@ -1047,7 +1142,7 @@ int main()
         auto& bcmd = *bcmd_ptr;
         bcmd.begin();
         for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl,
-                        blas_torus, blas_floor })
+                        blas_torus, blas_floor, blas_gltf })
             if (h.is_valid()) bcmd.build_acceleration_structure(h);
         bcmd.end();
         cd::rhi::SubmitDesc bsd {};
@@ -1096,8 +1191,26 @@ int main()
             scene.local(e.handle)->value.position = s.pos;
             entities.push_back(std::move(e));
         }
+        // glTF entity — only seeded when the auto-loader actually
+        // resolved an asset. Placed slightly behind the primitive row
+        // so it doesn't overlap.
+        if (gltf_mesh.vb.is_valid())
+        {
+            SceneEntity e;
+            e.handle = scene.create_node();
+            e.name   = "glTF (" + gltf_loaded_name + ")";
+            e.tint   = { 1.0F, 1.0F, 1.0F };
+            e.kind   = PrimitiveKind::kGltf;
+            scene.local(e.handle)->value.position = { 0.0F, 1.0F, -2.0F };
+            scene.local(e.handle)->value.scale    = { 0.8F, 0.8F, 0.8F };
+            entities.push_back(std::move(e));
+        }
     }
-    log_push("[boot] 5 ECS entities spawned via cd::asset::Primitives.");
+    log_push(std::string { "[boot] " } +
+             std::to_string(entities.size()) +
+             " ECS entities spawned"
+             + (gltf_loaded_name.empty() ? "" :
+                std::string { " (incl. glTF: " } + gltf_loaded_name + ")"));
     int selected = 0;
     // Selection kind — entities and lights are both pickable.
     enum class SelKind : std::uint8_t { kEntity = 0, kLight = 1 };
@@ -1448,6 +1561,7 @@ int main()
             case PrimitiveKind::kCone:     return "Cone";
             case PrimitiveKind::kCylinder: return "Cylinder";
             case PrimitiveKind::kTorus:    return "Torus";
+            case PrimitiveKind::kGltf:     return "Gltf";
             case PrimitiveKind::kCube:     return "Cube";
         }
         return "Cube";
@@ -2514,32 +2628,57 @@ int main()
         // pass and pushed through PrimPush::spot_dir_cos.
         cd::math::Vec3f spot_dir { 0.0F, -1.0F, 0.0F };
         float           spot_cos_outer = 0.0F;
+        // Pick the first enabled non-sun light (point / spot / rect-
+        // area / disk-area) and drive the shader's single secondary
+        // light slot from it. Multi-light + proper LTC area shading
+        // needs the UBO+descriptor refactor documented in the lessons
+        // file; until then, area lights are evaluated as if they were
+        // point lights at the area's centre so they at least
+        // contribute (user-flagged: "area isikta etki etmiyor").
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
-            if (lrow.light.type != cd::light::LightType::kPoint &&
-                lrow.light.type != cd::light::LightType::kSpot) continue;
+            const auto k = lrow.light.type;
+            const bool is_point_like =
+                k == cd::light::LightType::kPoint    ||
+                k == cd::light::LightType::kSpot     ||
+                k == cd::light::LightType::kRectArea ||
+                k == cd::light::LightType::kDiskArea;
+            if (!is_point_like) continue;
             point_pos   = lrow.light.position;
             point_col   = lrow.light.color;
-            point_range = lrow.light.range;
-            // Map lumens → unit-ish intensity for the shader. Frostbite
-            // says I = Φ / (4π); divide further by ~5 so a 1200 lm bulb
-            // at 5m matches eye expectation.
-            point_str   = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
-            if (lrow.light.type == cd::light::LightType::kSpot)
+            // Range: point/spot already have it; area lights borrow
+            // (width + height) * 4 as a perceptually reasonable falloff
+            // for the point-approximation.
+            point_range = (k == cd::light::LightType::kPoint ||
+                           k == cd::light::LightType::kSpot)
+                        ? lrow.light.range
+                        : (lrow.light.area_width + lrow.light.area_height) * 4.0F;
+            // Lumens → unit-ish intensity. Frostbite says I = Φ/(4π);
+            // further /5 calibrates a 1200 lm bulb at 5 m to eye
+            // expectation in the sample.
+            point_str = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
+            if (k == cd::light::LightType::kSpot)
             {
                 spot_dir       = lrow.light.direction;
-                // cd::light::Light stores the precomputed cosines as
-                // cos_outer_cone / cos_inner_cone (factories set them).
                 spot_cos_outer = lrow.light.cos_outer_cone;
-                // Boost spot intensity so the beam is visible — spots
-                // concentrate flux into a small solid angle so the 4π
-                // divide above under-reads relative to the eye.
+                // Boost spot intensity so the beam reads — spots
+                // concentrate flux into a small solid angle so the
+                // 4π divide under-reads relative to the eye.
                 point_str *= 6.0F;
+            }
+            else if (k == cd::light::LightType::kRectArea ||
+                     k == cd::light::LightType::kDiskArea)
+            {
+                spot_cos_outer = 0.0F;  // no cone for the area-as-point fallback
+                // Area lights emit over a large surface — scale down
+                // the per-fragment intensity so 100K lumens doesn't
+                // wash everything.
+                point_str *= 0.05F;
             }
             else
             {
-                spot_cos_outer = 0.0F;  // sentinel: not a spot
+                spot_cos_outer = 0.0F;
             }
             break;
         }
@@ -3871,8 +4010,9 @@ int main()
         device.destroy_acceleration_structure(tlas_destroy_queue.front().h);
         tlas_destroy_queue.pop_front();
     }
-    for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl, blas_torus, blas_floor })
+    for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl, blas_torus, blas_floor, blas_gltf })
         if (h.is_valid()) device.destroy_acceleration_structure(h);
+    if (gltf_mesh.vb.is_valid()) destroy_mesh(device, gltf_mesh);
     std::printf("hello_engine: clean exit (%u frames).\n", frame_idx);
     return 0;
 }

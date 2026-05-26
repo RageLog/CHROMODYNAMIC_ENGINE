@@ -2,6 +2,7 @@ cd_add_sample(hello_engine
   SOURCES main.cpp
   DEPS
     cd::asset
+    cd::asset_gltf
     cd::asset_json
     cd::audio
     cd::camera
