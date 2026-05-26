@@ -1862,15 +1862,16 @@ int main()
         cd::light::directional({ -0.3F, -0.9F, -0.2F }, { 1, 1, 1 }, 100000.0F),
         true, 6500.0F });
     lights.push_back({ "Tungsten point (2700K)",
-        cd::light::point({ 2.0F, 2.0F, -2.0F }, { 1, 1, 1 }, 1200.0F, 8.0F),
+        cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
         true, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
-        cd::light::spot({ -2.0F, 3.0F, 1.0F }, { 0.4F, -1.0F, -0.2F },
-                        { 1, 1, 1 }, 1500.0F, 10.0F, 0.4F, 0.7F),
+        // Aim at the PBR sphere grid centre (0, 3.5, -4.5) from (-2, 3, 1).
+        cd::light::spot({ -2.0F, 3.0F, 1.0F }, { 0.34F, 0.09F, -0.94F },
+                        { 1, 1, 1 }, 3500.0F, 12.0F, 0.4F, 0.7F),
         true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
-        cd::light::rect_area({ 0.0F, 4.0F, 3.0F }, { 0, 0, -1 }, { 1, 0, 0 },
-                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 800.0F),
+        cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
+                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
         true, 8000.0F });
 
     // Per-frame ClusterGrid for stats. View-space Z range here is just
@@ -3306,9 +3307,12 @@ int main()
         // the first enabled directional light. CCT slider in the
         // Lights panel now affects the SKY tint too (sunset feel at
         // 2000-3000K, neutral at D65, cold blue at 10000K).
+        // Defaults must be ZERO so disabling every directional light
+        // leaves the sky truly dark — the prior 0.9 default caused
+        // the 'all-lights-off => bright white sky' bug.
         cd::math::Vec3f sky_sun_dir { -0.4F, -0.6F, -0.7F };
-        cd::math::Vec3f sky_sun_col { 1.0F, 0.93F, 0.82F };
-        float           sky_sun_strength = 0.9F;
+        cd::math::Vec3f sky_sun_col { 0.0F, 0.0F, 0.0F };
+        float           sky_sun_strength = 0.0F;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
@@ -3513,12 +3517,16 @@ int main()
                 s.color_int[0] = lrow.light.color.x;
                 s.color_int[1] = lrow.light.color.y;
                 s.color_int[2] = lrow.light.color.z;
-                // Lumens → unit intensity. Spot boost x6 (small solid
-                // angle), area dampen ×0.05 (large emitter surface).
-                float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 5.0F;
+                // Lumens → unit intensity. Scale calibrated so a 1200
+                // lumen point at ~3 m yields a visible (~0.5..1.0)
+                // direct contribution on metallic spheres even with
+                // the sun fully off. Spot boost x6 (small solid
+                // angle), area dampen ×0.2 (was 0.05 — too dim to
+                // illuminate dielectrics when sun off).
+                float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F;
                 if (k == cd::light::LightType::kSpot) ki *= 6.0F;
                 else if (k == cd::light::LightType::kRectArea ||
-                         k == cd::light::LightType::kDiskArea) ki *= 0.05F;
+                         k == cd::light::LightType::kDiskArea) ki *= 0.20F;
                 s.color_int[3] = ki;
                 s.extras[0] = lrow.light.cos_outer_cone;
                 s.extras[1] = lrow.light.area_width;

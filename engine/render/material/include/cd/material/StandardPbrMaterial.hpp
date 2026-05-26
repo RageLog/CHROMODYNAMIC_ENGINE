@@ -203,17 +203,26 @@ void main() {
     direct += direct_lobe(N, V, Lp, albedo, metallic, roughness, F0, col);
   }
 
-  // IBL ambient (split-sum without BRDF LUT). DECOUPLED from sun_gate
-  // so disabling the sun still leaves point/spot/rect lights with a
-  // physical reflection floor — fixes 'sun off => scene black'. IBL
-  // scaled to 0.15 so direct light dominates albedo chroma (metallic
-  // F0 stays visible instead of washing to env cream).
+  // IBL ambient (split-sum without BRDF LUT). Gated by TOTAL scene
+  // light energy (sun + every enabled UBO light) so:
+  //   - sun off + other lights on  => IBL still contributes (was the
+  //     'sun off => black scene' bug)
+  //   - all lights off             => IBL ≈ 0 (was the 'spheres glow
+  //     with no light source' bug)
+  // The gate uses sun_i + sum(color_int.w) clamped to [0,1].
+  float total_light_e = sun_i;
+  for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
+    if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
+    total_light_e += cd_lights.slots[li2].color_int.w;
+  }
+  float ibl_gate = clamp(total_light_e * 0.6, 0.0, 1.0);
   vec3 R = reflect(-V, N);
   vec3 env_diffuse  = sample_env(N);
   vec3 env_specular = mix(sample_env(R), env_diffuse, roughness);
   vec3 ibl_F  = F_Schlick_roughness(NoV, F0, roughness);
   vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
-  vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) * 0.25;
+  vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) *
+                ibl_gate * 0.25;
 
   vec3 color = direct + ibl;
 
