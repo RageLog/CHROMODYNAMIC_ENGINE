@@ -2091,6 +2091,15 @@ int main()
                        ? "[gi] NRC queued (v1.7 needs CUDA inference path)"
                        : "[gi] NRC off");
         });
+    palette.register_command(120, "RHI: Status (active backend + parity)",
+        [&]{
+            log_push("[rhi] active = Vulkan (production)");
+            log_push("[rhi] D3D12 partial — PSO/desc/shader stubs (v1.8.1)");
+            log_push("[rhi] OpenGL partial — no RT support (v1.8.2)");
+            log_push("[rhi] Metal skeleton — Apple-only stub (v1.8.3)");
+            log_push("[rhi] WebGPU not started (v1.8.4 via Dawn)");
+            log_push("[rhi] see docs/RHI_PARITY_STATUS.md");
+        });
     (void)fx_restir_di_on; (void)fx_restir_gi_on;
     (void)fx_ddgi_on; (void)fx_nrc_on;
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
