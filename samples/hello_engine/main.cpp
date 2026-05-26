@@ -1622,13 +1622,43 @@ int main()
                     tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.z) });
                     obj["tint"] = cd::asset_json::Value { std::move(tint) };
                 });
+            // Extend with a top-level "lights" array so the lights
+            // panel state round-trips through save/load too —
+            // priority gap #15.
+            {
+                cd::asset_json::Array light_arr;
+                for (const auto& l : lights)
+                {
+                    cd::asset_json::Object lo;
+                    lo["name"]      = cd::asset_json::Value { l.name };
+                    lo["enabled"]   = cd::asset_json::Value { l.enabled };
+                    lo["type"]      = cd::asset_json::Value { static_cast<int>(l.light.type) };
+                    lo["kelvin"]    = cd::asset_json::Value { static_cast<double>(l.kelvin) };
+                    lo["intensity"] = cd::asset_json::Value { static_cast<double>(l.light.intensity) };
+                    lo["range"]     = cd::asset_json::Value { static_cast<double>(l.light.range) };
+                    cd::asset_json::Array pos;
+                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.x) });
+                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.y) });
+                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.z) });
+                    lo["position"] = cd::asset_json::Value { std::move(pos) };
+                    cd::asset_json::Array dir;
+                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.x) });
+                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.y) });
+                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.z) });
+                    lo["direction"] = cd::asset_json::Value { std::move(dir) };
+                    light_arr.push_back(cd::asset_json::Value { std::move(lo) });
+                }
+                auto& obj = root.as_object_mut();
+                obj["lights"] = cd::asset_json::Value { std::move(light_arr) };
+            }
             const auto text = cd::asset_json::serialize(root, /*pretty=*/true);
             std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
             if (f)
             {
                 f.write(text.data(), static_cast<std::streamsize>(text.size()));
                 log_push(std::string { "[scene] Saved " } + std::to_string(entities.size()) +
-                         " entities to " + kSavePath);
+                         " entities + " + std::to_string(lights.size()) +
+                         " lights to " + kSavePath);
             }
             else
             {
@@ -1695,10 +1725,77 @@ int main()
                 return;
             }
             entities = std::move(loaded);
+            // Lights from the optional top-level "lights" array
+            // (priority gap #15). Missing or malformed is non-fatal:
+            // we keep the panel's current lights[] vector intact.
+            if (r->is_object())
+            {
+                const auto& root_obj = r->as_object();
+                if (auto it = root_obj.find("lights");
+                    it != root_obj.end() && it->second.is_array())
+                {
+                    const auto& la = it->second.as_array();
+                    std::vector<LightRow> new_lights;
+                    new_lights.reserve(la.size());
+                    for (const auto& lv : la)
+                    {
+                        if (!lv.is_object()) continue;
+                        const auto& lo = lv.as_object();
+                        LightRow row {};
+                        if (auto n = lo.find("name");
+                            n != lo.end() && n->second.is_string())
+                            row.name = n->second.as_string();
+                        if (auto en = lo.find("enabled");
+                            en != lo.end() && en->second.is_bool())
+                            row.enabled = en->second.as_bool();
+                        if (auto t = lo.find("type");
+                            t != lo.end() && t->second.is_number())
+                            row.light.type = static_cast<cd::light::LightType>(
+                                static_cast<int>(t->second.as_number()));
+                        if (auto k = lo.find("kelvin");
+                            k != lo.end() && k->second.is_number())
+                            row.kelvin = static_cast<float>(k->second.as_number());
+                        if (auto i = lo.find("intensity");
+                            i != lo.end() && i->second.is_number())
+                            row.light.intensity = static_cast<float>(i->second.as_number());
+                        if (auto rg = lo.find("range");
+                            rg != lo.end() && rg->second.is_number())
+                            row.light.range = static_cast<float>(rg->second.as_number());
+                        if (auto p = lo.find("position");
+                            p != lo.end() && p->second.is_array() &&
+                            p->second.as_array().size() == 3)
+                        {
+                            const auto& a = p->second.as_array();
+                            if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                                row.light.position = {
+                                    static_cast<float>(a[0].as_number()),
+                                    static_cast<float>(a[1].as_number()),
+                                    static_cast<float>(a[2].as_number()) };
+                        }
+                        if (auto d = lo.find("direction");
+                            d != lo.end() && d->second.is_array() &&
+                            d->second.as_array().size() == 3)
+                        {
+                            const auto& a = d->second.as_array();
+                            if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                                row.light.direction = {
+                                    static_cast<float>(a[0].as_number()),
+                                    static_cast<float>(a[1].as_number()),
+                                    static_cast<float>(a[2].as_number()) };
+                        }
+                        // Recompute CCT-driven colour from kelvin.
+                        row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+                        new_lights.push_back(std::move(row));
+                    }
+                    if (!new_lights.empty())
+                        lights = std::move(new_lights);
+                }
+            }
             selected = entities.empty() ? -1 : 0;
             history.clear();
             log_push(std::string { "[scene] Loaded " } + std::to_string(entities.size()) +
-                     " entities from " + kSavePath);
+                     " entities + " + std::to_string(lights.size()) +
+                     " lights from " + kSavePath);
         });
 
     // ---- Frame loop ----
