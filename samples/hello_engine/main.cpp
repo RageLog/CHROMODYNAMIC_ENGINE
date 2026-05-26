@@ -95,6 +95,7 @@
 #include <deque>
 #include <fstream>
 #include <ios>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -351,6 +352,7 @@ layout(push_constant) uniform PC {
   vec4 point_pos_range;
   vec4 point_color;
   vec4 spot_dir_cos;  // Faz 1.8: xyz=spot forward, w=cos(outer) (<=0 = point)
+  vec4 fx_params;     // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
 } pc;
 // Faz 1.6 CSM descriptors — match the VS layout.
 layout(set = 0, binding = 0) uniform Shadow {
@@ -1249,6 +1251,12 @@ int main()
     cd::math::Vec3f gizmo_drag_world_start {};  // target position at begin_drag
     cd::math::Vec3f gizmo_drag_scale_start { 1.0F, 1.0F, 1.0F };  // scale at begin_drag
     cd::math::Quatf gizmo_drag_rot_start {};                       // rotation at begin_drag
+    // Faz 1.5 UX fix — ray-plane projection initial hit on the
+    // active axis at begin_drag. delta = current_axis_offset -
+    // initial_axis_offset, robust against grazing-camera angles.
+    // 'inf' marker = no valid initial hit, fall back to screen-space.
+    float gizmo_drag_initial_offset = 0.0F;
+    bool  gizmo_drag_use_ray_plane  = false;
     // Cross-frame: was the mouse on an axis arrow LAST frame? Used so
     // the pick path (which runs earlier in the frame than the gizmo
     // overlay) can suppress entity-pick when the user is starting a
@@ -3816,6 +3824,88 @@ int main()
                     {
                         pending_pick = false;
                     }
+                    // Ray-plane projection of a screen pixel onto the
+                    // active axis. Returns the signed distance along
+                    // the axis from `world_start` to the hit point,
+                    // or std::optional() if the plane is too parallel
+                    // to the camera ray (caller falls back to the
+                    // screen-space dot method below). The plane is
+                    // the one containing the axis with normal
+                    // = normalize(cross(axis, cross(view, axis))) —
+                    // the most camera-facing orientation. Closes the
+                    // "gizmo ileri-geri yapinca objeler isinlaniyor"
+                    // teleport bug.
+                    auto ray_axis_offset = [&](cd::editor::GizmoAxis axis,
+                                               ImVec2 mouse_pixel,
+                                               cd::math::Vec3f world_start)
+                        -> std::optional<float>
+                    {
+                        const float vw = static_cast<float>(window.width());
+                        const float vh = static_cast<float>(window.height());
+                        if (vw < 1 || vh < 1) return std::nullopt;
+                        // Camera basis (same path as pick).
+                        cd::math::Vec3f fwd {
+                            cam.target.x - cam.eye.x,
+                            cam.target.y - cam.eye.y,
+                            cam.target.z - cam.eye.z };
+                        const float fl = std::sqrt(fwd.x*fwd.x + fwd.y*fwd.y + fwd.z*fwd.z);
+                        if (fl < 1e-5F) return std::nullopt;
+                        fwd.x/=fl; fwd.y/=fl; fwd.z/=fl;
+                        cd::math::Vec3f wup { 0, 1, 0 };
+                        cd::math::Vec3f rgt {
+                            fwd.y*wup.z - fwd.z*wup.y,
+                            fwd.z*wup.x - fwd.x*wup.z,
+                            fwd.x*wup.y - fwd.y*wup.x };
+                        const float rl = std::sqrt(rgt.x*rgt.x + rgt.y*rgt.y + rgt.z*rgt.z);
+                        if (rl < 1e-5F) return std::nullopt;
+                        rgt.x/=rl; rgt.y/=rl; rgt.z/=rl;
+                        cd::math::Vec3f up_v {
+                            rgt.y*fwd.z - rgt.z*fwd.y,
+                            rgt.z*fwd.x - rgt.x*fwd.z,
+                            rgt.x*fwd.y - rgt.y*fwd.x };
+                        const float ndc_x = (2.0F * mouse_pixel.x / vw) - 1.0F;
+                        const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh);
+                        const float tan_half = std::tan(cam.fov_y * 0.5F);
+                        const float sx = (vw / vh) * tan_half;
+                        const float sy = tan_half;
+                        cd::math::Vec3f rdir {
+                            fwd.x + rgt.x * ndc_x * sx + up_v.x * ndc_y * sy,
+                            fwd.y + rgt.y * ndc_x * sx + up_v.y * ndc_y * sy,
+                            fwd.z + rgt.z * ndc_x * sx + up_v.z * ndc_y * sy };
+                        const float rdl = std::sqrt(rdir.x*rdir.x + rdir.y*rdir.y + rdir.z*rdir.z);
+                        if (rdl < 1e-5F) return std::nullopt;
+                        rdir.x/=rdl; rdir.y/=rdl; rdir.z/=rdl;
+                        // Axis unit vector + plane normal.
+                        cd::math::Vec3f a { 0, 0, 0 };
+                        if (axis == cd::editor::GizmoAxis::kX) a = { 1, 0, 0 };
+                        else if (axis == cd::editor::GizmoAxis::kY) a = { 0, 1, 0 };
+                        else if (axis == cd::editor::GizmoAxis::kZ) a = { 0, 0, 1 };
+                        cd::math::Vec3f c1 {
+                            fwd.y*a.z - fwd.z*a.y,
+                            fwd.z*a.x - fwd.x*a.z,
+                            fwd.x*a.y - fwd.y*a.x };
+                        cd::math::Vec3f n {
+                            a.y*c1.z - a.z*c1.y,
+                            a.z*c1.x - a.x*c1.z,
+                            a.x*c1.y - a.y*c1.x };
+                        const float nl = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+                        if (nl < 1e-5F) return std::nullopt;
+                        n.x/=nl; n.y/=nl; n.z/=nl;
+                        const float denom = rdir.x*n.x + rdir.y*n.y + rdir.z*n.z;
+                        if (std::fabs(denom) < 1e-4F) return std::nullopt;
+                        const float t = ((world_start.x - cam.eye.x) * n.x +
+                                         (world_start.y - cam.eye.y) * n.y +
+                                         (world_start.z - cam.eye.z) * n.z) / denom;
+                        if (t < 0.0F) return std::nullopt;
+                        const cd::math::Vec3f hit {
+                            cam.eye.x + rdir.x * t,
+                            cam.eye.y + rdir.y * t,
+                            cam.eye.z + rdir.z * t };
+                        return (hit.x - world_start.x) * a.x +
+                               (hit.y - world_start.y) * a.y +
+                               (hit.z - world_start.z) * a.z;
+                    };
+
                     if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
                         ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
                     {
@@ -3827,25 +3917,60 @@ int main()
                             gizmo_drag_scale_start = lt->value.scale;
                             gizmo_drag_rot_start   = lt->value.rotation;
                         }
+                        // Capture the initial ray-plane axis offset
+                        // so subsequent moves give delta = current -
+                        // initial (no jump at click).
+                        if (auto off = ray_axis_offset(best, mp, *target_pos);
+                            off.has_value())
+                        {
+                            gizmo_drag_initial_offset = *off;
+                            gizmo_drag_use_ray_plane  = true;
+                        }
+                        else
+                        {
+                            gizmo_drag_use_ray_plane = false;
+                        }
                     }
                     if (gizmo.is_dragging())
                     {
-                        // Screen-space delta along the projected axis,
-                        // mapped to world delta by pixels_per_world_unit.
                         ImVec2 axis_screen_end = p_x;
                         if (gizmo.active_axis() == cd::editor::GizmoAxis::kY) axis_screen_end = p_y;
                         else if (gizmo.active_axis() == cd::editor::GizmoAxis::kZ) axis_screen_end = p_z;
                         const float ax_dx = axis_screen_end.x - p_org.x;
                         const float ax_dy = axis_screen_end.y - p_org.y;
                         const float ax_len_px = std::sqrt(ax_dx*ax_dx + ax_dy*ax_dy);
+                        // Two paths: ray-plane (preferred, robust) vs
+                        // screen-space dot (fallback for rotate/scale
+                        // which use angular / exponential math).
+                        float delta_world = 0.0F;
+                        if (gizmo_drag_use_ray_plane &&
+                            gizmo_mode == GizmoMode::kTranslate)
+                        {
+                            if (auto off = ray_axis_offset(gizmo.active_axis(),
+                                                           mp, gizmo_drag_world_start);
+                                off.has_value())
+                            {
+                                delta_world = *off - gizmo_drag_initial_offset;
+                            }
+                        }
                         if (ax_len_px > 1.0F)
                         {
+                            // Screen-space path (rotate/scale, or
+                            // ray-plane fallback). delta_world stays 0
+                            // for translate when ray-plane worked.
                             const float nx = ax_dx / ax_len_px, ny = ax_dy / ax_len_px;
                             const float mouse_dx = mp.x - gizmo_drag_anchor.x;
                             const float mouse_dy = mp.y - gizmo_drag_anchor.y;
                             const float dot_px = mouse_dx * nx + mouse_dy * ny;
                             const float world_per_px = kAxisLen / ax_len_px;
-                            const float delta_world = dot_px * world_per_px;
+                            if (!gizmo_drag_use_ray_plane ||
+                                gizmo_mode != GizmoMode::kTranslate)
+                            {
+                                delta_world = dot_px * world_per_px;
+                            }
+                        }
+                        if (ax_len_px > 1.0F || gizmo_drag_use_ray_plane)
+                        {
                             // Only translate works for both entities and
                             // lights; rotate/scale need a transform record
                             // and are gated on lt != nullptr.
