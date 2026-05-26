@@ -2973,6 +2973,13 @@ int main()
                     pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.y) });
                     pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.z) });
                     lo["position"] = cd::asset_json::Value { std::move(pos) };
+                    // Persist the linear RGB colour so the load path can
+                    // restore a user-picked tint (kelvin=0 mode).
+                    cd::asset_json::Array col;
+                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.x) });
+                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.y) });
+                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.z) });
+                    lo["color"] = cd::asset_json::Value { std::move(col) };
                     cd::asset_json::Array dir;
                     dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.x) });
                     dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.y) });
@@ -3115,8 +3122,23 @@ int main()
                                     static_cast<float>(a[1].as_number()),
                                     static_cast<float>(a[2].as_number()) };
                         }
-                        // Recompute CCT-driven colour from kelvin.
-                        row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+                        // Restore user-picked RGB if present (kelvin=0
+                        // mode), otherwise compute colour from CCT.
+                        if (auto c = lo.find("color");
+                            c != lo.end() && c->second.is_array() &&
+                            c->second.as_array().size() == 3)
+                        {
+                            const auto& a = c->second.as_array();
+                            if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                                row.light.color = {
+                                    static_cast<float>(a[0].as_number()),
+                                    static_cast<float>(a[1].as_number()),
+                                    static_cast<float>(a[2].as_number()) };
+                        }
+                        else if (row.kelvin > 0.0F)
+                        {
+                            row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+                        }
                         new_lights.push_back(std::move(row));
                     }
                     if (!new_lights.empty())
