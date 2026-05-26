@@ -921,6 +921,112 @@ create_texture_rgba8(cd::rhi::IDevice& dev,
 }
 
 // ============================================================================
+// R1.5 — Procedural complex showcase mesh: trefoil (p,q) torus knot.
+//
+// Generates a tube swept along a torus-knot curve. p=2, q=3 = classic
+// trefoil knot; (3,2)/(3,5)/(5,2) give other interesting topologies.
+// Output is a PrimitiveMesh ready for upload_mesh + the prim shader.
+// ============================================================================
+[[nodiscard]] inline cd::asset::PrimitiveMesh
+make_torus_knot(float radius = 0.6F,
+                float tube_radius = 0.18F,
+                int p = 2, int q = 3,
+                int curve_segments = 256,
+                int tube_segments = 24)
+{
+    cd::asset::PrimitiveMesh m;
+    if (curve_segments < 4 || tube_segments < 3) return m;
+    constexpr float kTau = 6.28318530717958647692F;
+    m.vertices.reserve(static_cast<std::size_t>(curve_segments) *
+                       static_cast<std::size_t>(tube_segments + 1));
+    m.indices.reserve(static_cast<std::size_t>(curve_segments) *
+                      static_cast<std::size_t>(tube_segments) * 6);
+
+    // Curve point and analytical tangent.
+    auto curve = [&](float t) {
+        const float ct = std::cos(t);
+        const float st = std::sin(t);
+        const float cpt = std::cos(static_cast<float>(p) * t);
+        const float spt = std::sin(static_cast<float>(p) * t);
+        const float cqt = std::cos(static_cast<float>(q) * t);
+        const float r = radius * (2.0F + cqt);
+        return cd::math::Vec3f {
+            0.5F * r * ct,
+            0.5F * r * st,
+            0.5F * radius * std::sin(static_cast<float>(q) * t)
+                - 0.0F * cpt * spt };
+    };
+
+    // Build per-segment frame via finite-difference tangent. Approx OK
+    // for visually-smooth knot.
+    for (int i = 0; i < curve_segments; ++i)
+    {
+        const float t  = (static_cast<float>(i) / static_cast<float>(curve_segments)) * kTau;
+        const float dt = kTau / static_cast<float>(curve_segments) * 0.5F;
+        const auto pt   = curve(t);
+        const auto next = curve(t + dt);
+        cd::math::Vec3f T { next.x - pt.x, next.y - pt.y, next.z - pt.z };
+        const float tlen = std::sqrt(T.x*T.x + T.y*T.y + T.z*T.z);
+        if (tlen > 1e-6F) { T.x/=tlen; T.y/=tlen; T.z/=tlen; }
+        // Up arbitrary; orthogonalise via cross.
+        cd::math::Vec3f up { 0.0F, 1.0F, 0.0F };
+        if (std::abs(T.y) > 0.95F) up = { 1.0F, 0.0F, 0.0F };
+        cd::math::Vec3f N {
+            up.y*T.z - up.z*T.y,
+            up.z*T.x - up.x*T.z,
+            up.x*T.y - up.y*T.x };
+        const float nlen = std::sqrt(N.x*N.x + N.y*N.y + N.z*N.z);
+        if (nlen > 1e-6F) { N.x/=nlen; N.y/=nlen; N.z/=nlen; }
+        cd::math::Vec3f B {
+            T.y*N.z - T.z*N.y,
+            T.z*N.x - T.x*N.z,
+            T.x*N.y - T.y*N.x };
+
+        for (int j = 0; j <= tube_segments; ++j)
+        {
+            const float v = static_cast<float>(j) / static_cast<float>(tube_segments);
+            const float a = v * kTau;
+            const float ca = std::cos(a);
+            const float sa = std::sin(a);
+            cd::math::Vec3f offset {
+                tube_radius * (ca * N.x + sa * B.x),
+                tube_radius * (ca * N.y + sa * B.y),
+                tube_radius * (ca * N.z + sa * B.z) };
+            cd::math::Vec3f vert {
+                pt.x + offset.x,
+                pt.y + offset.y,
+                pt.z + offset.z };
+            cd::math::Vec3f normal {
+                ca * N.x + sa * B.x,
+                ca * N.y + sa * B.y,
+                ca * N.z + sa * B.z };
+            const float u = static_cast<float>(i) / static_cast<float>(curve_segments);
+            m.vertices.push_back(cd::asset::primitives_detail::make_v(
+                vert.x, vert.y, vert.z,
+                normal.x, normal.y, normal.z,
+                u, v,
+                1.0F, 1.0F, 1.0F));  // white vertex colour
+        }
+    }
+
+    const auto ring = static_cast<std::uint16_t>(tube_segments + 1);
+    for (int i = 0; i < curve_segments; ++i)
+    {
+        const int i_next = (i + 1) % curve_segments;
+        for (int j = 0; j < tube_segments; ++j)
+        {
+            const std::uint16_t a = static_cast<std::uint16_t>(i      * ring + j);
+            const std::uint16_t b = static_cast<std::uint16_t>(i_next * ring + j);
+            const std::uint16_t c = static_cast<std::uint16_t>(i_next * ring + (j + 1));
+            const std::uint16_t d = static_cast<std::uint16_t>(i      * ring + (j + 1));
+            m.indices.push_back(a); m.indices.push_back(b); m.indices.push_back(c);
+            m.indices.push_back(a); m.indices.push_back(c); m.indices.push_back(d);
+        }
+    }
+    return m;
+}
+
+// ============================================================================
 // R1 — True IBL helpers (HDR cubemap + diffuse irradiance + BRDF LUT).
 //
 // Generates a CPU environment cubemap by sampling the analytical sky
@@ -1974,6 +2080,13 @@ int main()
     GpuMesh torus_mesh  = upload_mesh(device, torus_cpu);
     GpuMesh floor_mesh  = upload_mesh(device, floor_cpu);
     GpuMesh pbr_sphere  = upload_pbr_mesh(device, sphere_cpu);
+    // R1.5: procedural trefoil torus-knot mesh for the textured PBR
+    // showcase. Complex topology + smooth surface + ~6k tris exercises
+    // the engine's per-frame indexed-draw path more than a single
+    // sphere would, and lets the procedural Earth texture wrap with
+    // visible UV continuity for the user.
+    const auto knot_cpu = make_torus_knot(0.7F, 0.20F, 2, 3, 256, 24);
+    GpuMesh knot_mesh   = upload_mesh(device, knot_cpu);
 
     // ---- glTF auto-load ----
     // Try a small list of well-known sample paths so the user can drop
@@ -2103,7 +2216,7 @@ int main()
             case PrimitiveKind::kCone:     return cone_mesh;
             case PrimitiveKind::kCylinder: return cyl_mesh;
             case PrimitiveKind::kTorus:    return torus_mesh;
-            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : sphere_mesh;
+            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : knot_mesh;
             default:                       return cube_mesh;
         }
     };
@@ -5815,6 +5928,7 @@ int main()
     destroy_mesh(device, cone_mesh);
     destroy_mesh(device, cyl_mesh);
     destroy_mesh(device, torus_mesh);
+    destroy_mesh(device, knot_mesh);
     destroy_mesh(device, floor_mesh);
     destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
