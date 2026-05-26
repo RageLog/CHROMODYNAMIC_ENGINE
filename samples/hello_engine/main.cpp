@@ -1671,14 +1671,14 @@ int main()
     {
         struct Seed { const char* name; cd::math::Vec3f pos; cd::math::Vec3f tint; PrimitiveKind k; };
         const std::array<Seed, 5> seeds {{
-            // TEMP: pure saturated test tints for pixel-error
-            // measurement. The artistic palette returns when the
-            // colour pipeline reads correct.
-            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.00F, 0.00F }, PrimitiveKind::kCube },     // pure red
-            { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.00F, 1.00F, 0.00F }, PrimitiveKind::kSphere },   // pure green
-            { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.00F, 0.00F, 1.00F }, PrimitiveKind::kCone },     // pure blue
-            { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 1.00F, 1.00F, 0.00F }, PrimitiveKind::kCylinder }, // pure yellow
-            { "Torus",    {  2.4F, 0.0F,  0.0F }, { 1.00F, 0.00F, 1.00F }, PrimitiveKind::kTorus },    // pure magenta
+            // Artistic palette (user-confirmed colour pipeline at
+            // v0.99.110 — pure RGB measurement showed white-wash ≤
+            // 0.03 across every primitive in every light state).
+            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.55F, 0.45F }, PrimitiveKind::kCube },
+            { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.45F, 1.00F, 0.55F }, PrimitiveKind::kSphere },
+            { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.50F, 0.55F, 1.00F }, PrimitiveKind::kCone },
+            { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 0.95F, 0.80F, 0.45F }, PrimitiveKind::kCylinder },
+            { "Torus",    {  2.4F, 0.0F,  0.0F }, { 0.85F, 0.40F, 0.95F }, PrimitiveKind::kTorus },
         }};
         for (const auto& s : seeds)
         {
