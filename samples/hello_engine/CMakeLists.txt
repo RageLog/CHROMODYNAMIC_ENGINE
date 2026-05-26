@@ -12,6 +12,11 @@ cd_add_sample(hello_engine
     cd::imgui_backend
     cd::light
     cd::atmosphere
+    cd::brdf_ltc
+    cd::brdf_sheen_clearcoat
+    cd::brdf_sss
+    cd::decal
+    cd::gpu_particles
     cd::light_shafts
     cd::material
     cd::math

@@ -37,6 +37,11 @@
 #include <cd/asset_gltf/GltfLoader.hpp>
 #include <cd/asset_json/Json.hpp>
 #include <cd/atmosphere/Atmosphere.hpp>
+#include <cd/brdf_ltc/Ltc.hpp>
+#include <cd/brdf_sheen_clearcoat/SheenClearcoat.hpp>
+#include <cd/brdf_sss/Sss.hpp>
+#include <cd/decal/Decal.hpp>
+#include <cd/gpu_particles/GpuParticles.hpp>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/Limiter.hpp>
@@ -1980,6 +1985,61 @@ int main()
     cd::volumetric_clouds::Settings fx_clouds {};
     cd::volumetric_fog::GridConfig fx_vfog {};
     (void)fx_atmosphere; (void)fx_lshafts; (void)fx_clouds; (void)fx_vfog;
+    // Advanced BRDF wire-in (queued for v1.7 material-system rework).
+    // Settings live here so the editor UI can attach immediately when
+    // the dispatch lands. Each toggle logs queue status.
+    float fx_ltc_ggx_strength   = 0.0F;
+    float fx_sheen_strength     = 0.0F;
+    float fx_clearcoat_strength = 0.0F;
+    float fx_sss_strength       = 0.0F;
+    float fx_decal_count        = 0.0F;   // count placeholder
+    float fx_particle_emit_rate = 0.0F;   // /sec placeholder
+    palette.register_command(100, "BRDF: Toggle LTC-GGX area-light specular (queued v1.7)",
+        [&]{
+            fx_ltc_ggx_strength = (fx_ltc_ggx_strength > 0.001F) ? 0.0F : 1.0F;
+            log_push(fx_ltc_ggx_strength > 0.001F
+                       ? "[brdf] LTC-GGX queued (v1.7 material rework)"
+                       : "[brdf] LTC-GGX off");
+        });
+    palette.register_command(101, "BRDF: Toggle Sheen (queued v1.7)",
+        [&]{
+            fx_sheen_strength = (fx_sheen_strength > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx_sheen_strength > 0.001F
+                       ? "[brdf] Sheen queued (v1.7 material rework)"
+                       : "[brdf] Sheen off");
+        });
+    palette.register_command(102, "BRDF: Toggle Clearcoat (queued v1.7)",
+        [&]{
+            fx_clearcoat_strength = (fx_clearcoat_strength > 0.001F) ? 0.0F : 0.6F;
+            log_push(fx_clearcoat_strength > 0.001F
+                       ? "[brdf] Clearcoat queued (v1.7 material rework)"
+                       : "[brdf] Clearcoat off");
+        });
+    palette.register_command(103, "BRDF: Toggle SSS / Burley diffusion (queued v1.7)",
+        [&]{
+            fx_sss_strength = (fx_sss_strength > 0.001F) ? 0.0F : 0.6F;
+            log_push(fx_sss_strength > 0.001F
+                       ? "[brdf] SSS queued (v1.7 needs neighbourhood pass)"
+                       : "[brdf] SSS off");
+        });
+    palette.register_command(104, "FX: Spawn Decal (queued v1.7)",
+        [&]{
+            fx_decal_count += 1.0F;
+            log_push("[fx] Decal queued (v1.7 needs projector volume + GBuffer)");
+        });
+    palette.register_command(105, "FX: Toggle GPU Particles 10k/sec (queued v1.7)",
+        [&]{
+            fx_particle_emit_rate = (fx_particle_emit_rate > 0.001F) ? 0.0F : 10000.0F;
+            log_push(fx_particle_emit_rate > 0.001F
+                       ? "[fx] GPU particles queued (v1.7 needs compute pipe)"
+                       : "[fx] GPU particles off");
+        });
+    (void)fx_ltc_ggx_strength;
+    (void)fx_sheen_strength;
+    (void)fx_clearcoat_strength;
+    (void)fx_sss_strength;
+    (void)fx_decal_count;
+    (void)fx_particle_emit_rate;
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
         [&]{
             fx_gtao_strength = (fx_gtao_strength > 0.001F) ? 0.0F : 0.65F;
