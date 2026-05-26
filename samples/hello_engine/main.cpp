@@ -4668,9 +4668,22 @@ int main()
             if (!lights.empty())
             {
                 auto& sun = lights[0].light;
-                ImGui::SliderFloat("dir.x", &sun.direction.x, -1.0F, 1.0F);
-                ImGui::SliderFloat("dir.y", &sun.direction.y, -1.0F, 1.0F);
-                ImGui::SliderFloat("dir.z", &sun.direction.z, -1.0F, 1.0F);
+                bool d_changed = false;
+                d_changed |= ImGui::SliderFloat("dir.x", &sun.direction.x, -1.0F, 1.0F);
+                d_changed |= ImGui::SliderFloat("dir.y", &sun.direction.y, -1.0F, 1.0F);
+                d_changed |= ImGui::SliderFloat("dir.z", &sun.direction.z, -1.0F, 1.0F);
+                if (d_changed)
+                {
+                    const float dl = std::sqrt(sun.direction.x*sun.direction.x +
+                                                sun.direction.y*sun.direction.y +
+                                                sun.direction.z*sun.direction.z);
+                    if (dl > 1e-4F)
+                    {
+                        sun.direction.x /= dl;
+                        sun.direction.y /= dl;
+                        sun.direction.z /= dl;
+                    }
+                }
                 ImGui::SliderFloat("intensity (lx)", &sun.intensity, 0.0F, 200000.0F);
                 if (ImGui::Button("Reset sun"))
                 {
