@@ -22,8 +22,10 @@ cd_add_sample(hello_engine
     cd::gpu_particles
     cd::light_shafts
     cd::nrc
+    cd::physics
     cd::restir_di
     cd::restir_gi
+    cd::script
     cd::material
     cd::math
     cd::net

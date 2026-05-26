@@ -2100,6 +2100,19 @@ int main()
             log_push("[rhi] WebGPU not started (v1.8.4 via Dawn)");
             log_push("[rhi] see docs/RHI_PARITY_STATUS.md");
         });
+    palette.register_command(130, "Physics: Status (Jolt + cloth roadmap)",
+        [&]{
+            log_push("[phys] primitives: Aabb/Sphere/Capsule/Obb/Ray ready");
+            log_push("[phys] IPhysicsWorld interface ready; Jolt impl v1.9.1");
+            log_push("[phys] cloth (PBD) v1.9.3; character controller v1.9.4");
+            log_push("[phys] see docs/PHYSICS_V19_PLAN.md");
+        });
+    palette.register_command(131, "Script: Status (Lua 5.4 + AI BT roadmap)",
+        [&]{
+            log_push("[script] cd::script::Engine skeleton present");
+            log_push("[script] Lua 5.4 integration v1.9.5");
+            log_push("[script] behaviour-tree nodes v1.9.5");
+        });
     (void)fx_restir_di_on; (void)fx_restir_gi_on;
     (void)fx_ddgi_on; (void)fx_nrc_on;
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
