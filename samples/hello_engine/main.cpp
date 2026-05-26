@@ -853,6 +853,14 @@ int main()
                                      .offset = 0,
                                      .size = static_cast<std::uint32_t>(
                                          sizeof(cd::material::StandardPbrPush)) } };
+    // PBR shader reads the same multi-light UBO at binding 0 so
+    // non-sun lights illuminate the sphere grid (#22). Layout
+    // matches prim's binding 3 — same LightUboGpu staging.
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kPbrDescBindings {
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
+                                              .type    = cd::rhi::DescriptorType::kUniformBuffer,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc pbr_md {};
     pbr_md.vertex_glsl   = cd::material::kStandardPbrVS;
     pbr_md.fragment_glsl = cd::material::kStandardPbrFS;
@@ -861,6 +869,7 @@ int main()
     pbr_md.vertex_bindings = kPbrBindings;
     pbr_md.vertex_attributes = kPbrAttrs;
     pbr_md.push_constants = kPbrPush;
+    pbr_md.descriptor_bindings = kPbrDescBindings;
     pbr_md.raster.cull = cd::rhi::CullMode::kNone;
     pbr_md.depth_stencil.depth_test = true;
     pbr_md.depth_stencil.depth_write = true;
@@ -1057,6 +1066,21 @@ int main()
                                        .buffer_offset = 0,
                                        .buffer_range = kLightUboBytes } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
+    }
+
+    // PBR material instance — multi-light UBO at binding 0 (#22 fix).
+    auto pbr_inst_r = cd::material::MaterialInstance::create(device, pbr_material);
+    if (!pbr_inst_r.has_value()) return 17;
+    auto& pbr_inst = *pbr_inst_r;
+    {
+        std::array<cd::rhi::DescriptorWrite, 1> writes {
+            cd::rhi::DescriptorWrite { .binding = 0,
+                                       .array_element = 0,
+                                       .type  = cd::rhi::DescriptorType::kUniformBuffer,
+                                       .buffer = lights_ubo,
+                                       .buffer_offset = 0,
+                                       .buffer_range = kLightUboBytes } };
+        if (auto wr = pbr_inst.update(writes); !wr.has_value()) return 18;
     }
 
     // ---- Meshes (one PBR sphere, five primitive entities) ----
@@ -2716,6 +2740,7 @@ int main()
 
         // ---- 5x5 PBR sphere sweep (back row of the viewport) ----
         pbr_material.apply(cmd);
+        pbr_inst.bind(cmd, 0);  // multi-light UBO (#22)
         cmd.bind_vertex_buffer(0, pbr_sphere.vb, 0);
         cmd.bind_index_buffer(pbr_sphere.ib, 0, cd::rhi::IndexType::kUInt16);
         constexpr int kGrid = 5;

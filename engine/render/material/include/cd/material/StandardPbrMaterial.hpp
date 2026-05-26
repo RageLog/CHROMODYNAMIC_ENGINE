@@ -61,6 +61,21 @@ void main() {
 /// analytical-sky split-sum IBL ambient, ACES Narkowicz tonemap.
 constexpr const char* kStandardPbrFS = R"glsl(
 #version 450
+// Optional multi-light UBO — descriptor binding 0 (set 0). When the
+// material's caller doesn't bind a UBO, cd_lights.count stays 0 and
+// the loop is a no-op. Matches hello_engine's PrimFS LightSlot
+// layout so a single LightUboGpu instance can drive both shaders.
+struct CdLightSlot {
+  vec4 pos_range;
+  vec4 dir_type;
+  vec4 color_int;
+  vec4 extras;
+};
+layout(set = 0, binding = 0) uniform CdLightArray {
+  uint count;
+  uint pad[3];
+  CdLightSlot slots[8];
+} cd_lights;
 layout(push_constant) uniform PC {
   mat4 mvp;
   vec4 albedo;
@@ -148,6 +163,37 @@ void main() {
   vec3 direct  = direct_lobe(N, V, L_key,  albedo, metallic, roughness, F0, C_key);
        direct += direct_lobe(N, V, L_fill, albedo, metallic, roughness, F0, C_fill);
        direct += direct_lobe(N, V, L_rim,  albedo, metallic, roughness, F0, C_rim);
+
+  // Multi-light UBO contribution (#22 fix). Loops every enabled
+  // non-sun light from the shared LightSlot UBO and folds it into
+  // the direct term using the same physical lobe as the key/fill/
+  // rim. Without this, disabling the sun made the sphere grid go
+  // pitch-black even when point/spot lights were live.
+  for (uint li = 0; li < cd_lights.count; ++li) {
+    vec3 lp = cd_lights.slots[li].pos_range.xyz;
+    float rng = cd_lights.slots[li].pos_range.w;
+    if (rng <= 0.0) continue;
+    vec3 to_p = lp - v_world_pos;
+    float d  = length(to_p);
+    if (d < 1e-4) continue;
+    vec3 Lp = to_p / d;
+    // Frostbite windowed inverse-square attenuation.
+    float ratio = d / rng;
+    float w_ = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
+    float atten = (w_ * w_) / (d * d + 0.01);
+    int ltp = int(cd_lights.slots[li].dir_type.w);
+    float cone = 1.0;
+    if (ltp == 2) {  // Spot
+      vec3 axis = normalize(cd_lights.slots[li].dir_type.xyz);
+      float cos_b = dot(-Lp, axis);
+      float cos_out = cd_lights.slots[li].extras.x;
+      float cos_in  = clamp(cos_out + 0.05, cos_out, 0.9999);
+      cone = smoothstep(cos_out, cos_in, cos_b);
+    }
+    vec3 col = cd_lights.slots[li].color_int.xyz *
+               cd_lights.slots[li].color_int.w * atten * cone;
+    direct += direct_lobe(N, V, Lp, albedo, metallic, roughness, F0, col);
+  }
 
   // IBL ambient (split-sum without BRDF LUT). Gated by sun intensity:
   // when the sun is disabled the analytic sky is dark, so the IBL
