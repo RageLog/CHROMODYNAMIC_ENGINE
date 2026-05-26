@@ -11,12 +11,14 @@ cd_add_sample(hello_engine
     cd::editor
     cd::imgui_backend
     cd::light
+    cd::async_submit
     cd::atmosphere
     cd::brdf_ltc
     cd::brdf_sheen_clearcoat
     cd::brdf_sss
     cd::ddgi
     cd::decal
+    cd::framegraph
     cd::gpu_particles
     cd::light_shafts
     cd::nrc
