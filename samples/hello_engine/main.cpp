@@ -660,7 +660,9 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      float vis_a = ray_visibility(v_world_pos, N, Lc, max(d_c - 0.10, 0.01));
+      // Area light shadows disabled — same self-occlusion issue as
+      // multi-light point/spot. Returns with R3 per-instance ray mask.
+      float vis_a = 1.0;
       vec3  col   = cd_lights.slots[li].color_int.xyz;
       float ki    = cd_lights.slots[li].color_int.w;
       lit += albedo * col * (ki * E * vis_a);
@@ -684,11 +686,13 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // Inline RT shadow with aggressive self-bias (N*0.05 + tmin 0.08)
-    // baked into ray_visibility() — restores point/spot/area shadows
-    // without losing the character to false self-occlusion on merged
-    // meshes. Re-enables the user-requested 'point ve spotda golge'.
-    float vis = ray_visibility(v_world_pos, N, Lp, max(d - 0.10, 0.01));
+    // Non-sun shadows disabled until per-instance ray-mask lands
+    // with the R3 frame-graph rework. The bias-only approach
+    // false-occludes dense geometry (PBR sphere grid, merged
+    // character mesh) — closes 'isigin vurdugu cisimler hic
+    // gozukmuyor'. Trade-off: spot/point cast no shadows; objects
+    // stay visible where the cone reaches them.
+    float vis = 1.0;
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
     lit += albedo * col * (ki * ndl * atten * vis * cone);
@@ -2496,8 +2500,10 @@ int main()
         true, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
         // Aim at the PBR sphere grid centre (0, 3.5, -4.5) from (-2, 3, 1).
+        // Lumens lowered 3500 -> 1800 so default spot doesn't blow out
+        // the floor pool; user-tunable via Inspector slider regardless.
         cd::light::spot({ -2.0F, 3.0F, 1.0F }, { 0.34F, 0.09F, -0.94F },
-                        { 1, 1, 1 }, 3500.0F, 12.0F, 0.4F, 0.7F),
+                        { 1, 1, 1 }, 1800.0F, 12.0F, 0.4F, 0.7F),
         true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
         cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
@@ -5000,8 +5006,24 @@ int main()
             ImGui::SameLine();
             ImGui::TextDisabled("[%s]", type_str);
 
-            // CCT + intensity sliders.
-            ImGui::SliderFloat("CCT (K)", &row.kelvin, 1000.0F, 15000.0F, "%.0f K");
+            // CCT + intensity sliders. CCT-driven palette is the default,
+            // but a raw RGB picker is available when the user wants an
+            // arbitrary tint. Setting RGB sets kelvin to 0 so the per-
+            // frame CCT->RGB rebake won't overwrite the manual choice.
+            ImGui::SliderFloat("CCT (K)", &row.kelvin, 0.0F, 15000.0F, "%.0f K");
+            {
+                float rgb[3] {
+                    row.light.color.x,
+                    row.light.color.y,
+                    row.light.color.z };
+                if (ImGui::ColorEdit3("colour (RGB)", rgb,
+                                      ImGuiColorEditFlags_NoInputs |
+                                      ImGuiColorEditFlags_Float))
+                {
+                    row.light.color = { rgb[0], rgb[1], rgb[2] };
+                    row.kelvin      = 0.0F;
+                }
+            }
             const char* unit =
                 row.light.type == cd::light::LightType::kDirectional ? "lx" : "lm";
             ImGui::SliderFloat("intensity", &row.light.intensity,
