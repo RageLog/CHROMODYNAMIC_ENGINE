@@ -229,20 +229,16 @@ void main() {
   // Gated by total scene-light energy so the IBL stays meaningfully
   // tied to the lit state (sun off + other lights on => IBL still
   // contributes; all lights off => IBL ≈ 0).
-  // IBL gate: sun is the primary driver (full IBL when sun on); a
-  // small fraction (5%) of non-sun light energy keeps metallic
-  // spheres from collapsing to pure black when only point/spot/area
-  // lights are on — metallic surfaces have zero diffuse so an area
-  // light's Lambert-only path doesn't reach them. Closes the
-  // 'metaliklik gitti siyah' regression after the prior sun-only
-  // gate. True LTC-GGX area-light specular lands when the v1.7
-  // material-graph dispatches the proper kernels.
-  float non_sun_e = 0.0;
+  // IBL gate: sun primary; non-sun lights contribute a small per-light
+  // fixed fill (NOT scaled by intensity which is hundreds-of-units —
+  // that previously saturated the clamp and falsely lit objects out-
+  // side the cone). 3% per enabled non-sun light keeps metallic
+  // surfaces visible without falsely glowing.
+  float non_sun_n = 0.0;
   for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
-    if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
-    non_sun_e += cd_lights.slots[li2].color_int.w;
+    if (cd_lights.slots[li2].pos_range.w > 0.0) non_sun_n += 1.0;
   }
-  float ibl_gate = clamp(sun_i * 0.6 + non_sun_e * 0.05, 0.0, 1.0);
+  float ibl_gate = clamp(sun_i * 0.6 + non_sun_n * 0.03, 0.0, 1.0);
   vec3  R           = reflect(-V, N);
   float spec_lod    = roughness * kIblMaxMipLod;
   vec3  prefiltered = textureLod(cd_ibl_spec, R, spec_lod).rgb;

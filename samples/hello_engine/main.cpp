@@ -726,17 +726,17 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    // IBL gate: sun is the primary driver (full IBL when sun on);
-    // non-sun lights contribute a tiny ambient fill (5%) so spot-only
-    // scenes don't go pitch-black on surfaces outside the cone.
-    // Closes 'aydinlaniyor isik disinda olsa' without overshooting
-    // into the 'her sey kapkaranlik' regression.
-    float non_sun = 0.0;
+    // IBL gate: sun is the primary driver. Non-sun lights contribute a
+    // tiny per-light fixed fill (NOT scaled by light intensity, which
+    // is hundreds-of-units for any reasonable lumen value and would
+    // saturate the clamp to 1.0 — that was the user-flagged 'isik
+    // uzerinde olmamasina ragmen aydinlaniyor' bug). 3% per enabled
+    // non-sun light gives a faint baseline only.
+    float non_sun_n = 0.0;
     for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
-      if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
-      non_sun += cd_lights.slots[li2].color_int.w;
+      if (cd_lights.slots[li2].pos_range.w > 0.0) non_sun_n += 1.0;
     }
-    float ibl_gate = clamp(pc.sun_dir.w * 0.6 + non_sun * 0.05, 0.0, 1.0);
+    float ibl_gate = clamp(pc.sun_dir.w * 0.6 + non_sun_n * 0.03, 0.0, 1.0);
     ambient += ibl * ibl_gate * 0.55;
   }
 
