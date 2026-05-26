@@ -18,3 +18,4 @@ add_subdirectory(anim)
 add_subdirectory(audio)
 add_subdirectory(input)
 add_subdirectory(net)
+add_subdirectory(world_container)   # gap #18 — World / Project / Level / Layer foundation
