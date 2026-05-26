@@ -494,12 +494,15 @@ float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
 // by roughness/NoV). N is the surface normal at the shading
 // point; corners are in world-space, relative to the shading
 // point. Returns the form-factor of the polygon visible from N.
+// Edge integral with atan2 — robust at parallel and anti-parallel
+// configurations (the prior acos/sin form blew up near sin ~ 0 and
+// produced a thin black stripe at the area-light's equatorial plane).
 float cd_ltc_edge_integral(vec3 a, vec3 b) {
-  float ct = clamp(dot(a, b), -1.0, 1.0);
-  float th = acos(ct);
-  vec3  cr = cross(a, b);
-  float si = sin(th);
-  return (si < 1e-5) ? 0.0 : (th / si) * cr.z;
+  float d = clamp(dot(a, b), -1.0, 1.0);
+  vec3  c = cross(a, b);
+  float l = length(c);
+  float th = (l < 1e-6) ? 0.0 : atan(l, d);  // GLSL atan(y,x) = atan2
+  return (l < 1e-6) ? 0.0 : (th / l) * c.z;
 }
 float cd_ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
   vec3 up = abs(N.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
@@ -514,7 +517,9 @@ float cd_ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
             cd_ltc_edge_integral(p1, p2) +
             cd_ltc_edge_integral(p2, p3) +
             cd_ltc_edge_integral(p3, p0);
-  return abs(s) / 6.28318530;
+  // max-not-abs: negative values mean the polygon is back-facing.
+  // Closes the 'siyah serit' artifact at the rect's equatorial plane.
+  return max(s, 0.0) / 6.28318530;
 }
 
 float sample_shadow(vec4 sp, vec3 N, vec3 L) {
