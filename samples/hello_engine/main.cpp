@@ -668,6 +668,13 @@ void main() {
 
   vec3  c       = lit + ambient;
 
+  // Pre-tonemap exposure boost. Pixel-fidelity measurement showed
+  // pure-RGB tints landing at ~0.55 brightness when expected 1.0;
+  // 3x shift moves the operating point into the linear region of
+  // Hable's curve so saturated colours read at ~0.8-0.95 brightness.
+  // HDR headroom remains via the tonemap roll-off above ~3.
+  c *= 3.0;
+
   // Runtime tonemap operator selector (pc.fx_params.x).
   //   0 = Narkowicz ACES        (deep blacks, soft highlights)
   //   1 = Hill ACES             (production fit, Filament-style)
@@ -1664,11 +1671,14 @@ int main()
     {
         struct Seed { const char* name; cd::math::Vec3f pos; cd::math::Vec3f tint; PrimitiveKind k; };
         const std::array<Seed, 5> seeds {{
-            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.55F, 0.45F }, PrimitiveKind::kCube },
-            { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.45F, 1.00F, 0.55F }, PrimitiveKind::kSphere },
-            { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.50F, 0.55F, 1.00F }, PrimitiveKind::kCone },
-            { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 0.95F, 0.80F, 0.45F }, PrimitiveKind::kCylinder },
-            { "Torus",    {  2.4F, 0.0F,  0.0F }, { 0.85F, 0.40F, 0.95F }, PrimitiveKind::kTorus },
+            // TEMP: pure saturated test tints for pixel-error
+            // measurement. The artistic palette returns when the
+            // colour pipeline reads correct.
+            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.00F, 0.00F }, PrimitiveKind::kCube },     // pure red
+            { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.00F, 1.00F, 0.00F }, PrimitiveKind::kSphere },   // pure green
+            { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.00F, 0.00F, 1.00F }, PrimitiveKind::kCone },     // pure blue
+            { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 1.00F, 1.00F, 0.00F }, PrimitiveKind::kCylinder }, // pure yellow
+            { "Torus",    {  2.4F, 0.0F,  0.0F }, { 1.00F, 0.00F, 1.00F }, PrimitiveKind::kTorus },    // pure magenta
         }};
         for (const auto& s : seeds)
         {
