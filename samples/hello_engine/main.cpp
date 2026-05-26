@@ -327,6 +327,7 @@ layout(push_constant) uniform PC {
   vec4 fx_params2;       // x=smaa, y=motion_blur, z=taa, w=dof (v1.4+)
   vec4 fx_params3;       // x=fog, y=atmosphere, z=clouds, w=light_shafts
   vec4 camera_pos;       // xyz=world camera (atmospherics distance)
+  vec4 fx_params4;       // x=clearcoat, y=sheen, z=sss, w=reserved
 } pc;
 // Faz 1.6 CSM — light-space view-projection for shadow sampling.
 // Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
@@ -380,6 +381,7 @@ layout(push_constant) uniform PC {
   vec4 fx_params2;    // x=smaa, y=motion_blur, z=taa, w=dof (v1.4+)
   vec4 fx_params3;    // x=fog, y=atmosphere, z=clouds, w=light_shafts
   vec4 camera_pos;    // xyz=world camera (atmospherics distance)
+  vec4 fx_params4;    // x=clearcoat, y=sheen, z=sss, w=reserved (R6)
 } pc;
 // Faz 1.6 CSM descriptors — match the VS layout.
 layout(set = 0, binding = 0) uniform Shadow {
@@ -734,6 +736,41 @@ void main() {
     ambient   *= ao;
   }
 
+  // R6 advanced BRDF lobes — applied on top of the diffuse + IBL
+  // path for any entity (textured or not). Strengths are global
+  // toggles via palette commands; full per-material driving lands
+  // with the v1.7 material-graph rework.
+  float fx_cc    = clamp(pc.fx_params4.x, 0.0, 1.0);
+  float fx_sheen = clamp(pc.fx_params4.y, 0.0, 1.0);
+  float fx_sss   = clamp(pc.fx_params4.z, 0.0, 1.0);
+  if (fx_cc > 0.001 || fx_sheen > 0.001 || fx_sss > 0.001) {
+    vec3 V_b = normalize(pc.camera_pos.xyz - v_world_pos);
+    float NoV_b = max(dot(N, V_b), 0.0);
+    // Clearcoat: second Schlick Fresnel lobe with IOR ~ 1.5 (F0_cc =
+    // 0.04), tinted white, scales with view angle. Adds shiny lacquer.
+    if (fx_cc > 0.001) {
+      vec3 R_b = reflect(-V_b, N);
+      vec3 spec_cc = textureLod(cd_ibl_spec, R_b, 0.5 * kIblMaxMipLod).rgb;
+      float fres_cc = 0.04 + 0.96 * pow(1.0 - NoV_b, 5.0);
+      lit += spec_cc * fres_cc * fx_cc * 0.6;
+    }
+    // Sheen: Charlie distribution-inspired rim term. cos^n with high
+    // n + saturating boost gives a velvet edge brighten.
+    if (fx_sheen > 0.001) {
+      float rim = pow(1.0 - NoV_b, 4.0);
+      vec3 sheen_col = vec3(0.95, 0.92, 0.88);
+      lit += sheen_col * rim * fx_sheen * 1.2;
+    }
+    // SSS: Burley-inspired wrap diffusion — boost backlit pixels with
+    // a warm subsurface tint, simulating skin/wax light bleed.
+    if (fx_sss > 0.001) {
+      vec3 Ld_b = normalize(-pc.sun_dir.xyz);
+      float backlit = clamp(dot(-N, Ld_b), 0.0, 1.0);
+      vec3 sss_col = vec3(0.95, 0.55, 0.45);
+      lit += sss_col * pow(backlit, 1.5) * fx_sss * pc.sun_dir.w * 0.8;
+    }
+  }
+
   vec3  c       = lit + ambient;
 
   // Pre-tonemap exposure boost. Pixel-fidelity measurement showed
@@ -798,17 +835,40 @@ void main() {
     c = clamp(mix(vec3(luma), c, 1.50), vec3(0.0), vec3(1.0));
   }
 
-  // Inline SMAA-feel approximation (v1.4 day-ship wire-in). True
-  // SMAA-2x requires edge / blend-weight / neighbourhood passes; here
-  // we use a luminance-derivative softening that visually reduces
-  // stairstep aliasing on high-contrast diagonals. Strength
-  // = pc.fx_params2.x.
+  // Inline SMAA-feel approximation (v1.4 day-ship wire-in).
   float smaa_strength = clamp(pc.fx_params2.x, 0.0, 1.0);
   if (smaa_strength > 0.001) {
     float lum2 = dot(c, vec3(0.299, 0.587, 0.114));
     float edge = clamp(fwidth(lum2) * 5.0, 0.0, 1.0);
     float blur = edge * smaa_strength * 0.20;
     c = mix(c, vec3(lum2), blur);
+  }
+
+  // R7 camera composition: vignette + chromatic aberration + film
+  // grain. Drive via fx_params2.y (vignette), .z (CA), .w (grain)
+  // since the post-fx slots that previously occupied those have
+  // moved to fx_params4 for advanced BRDF. The 'inline approx'
+  // versions sit here; full off-screen pipeline comes with R3.
+  // Cheap radial coordinate from the camera-relative direction. Not
+  // a true screen-space UV but functionally maps to 0 (centre) -> 1+
+  // (edges) without needing the swapchain extent.
+  vec3 cam_dir = normalize(v_world_pos - pc.camera_pos.xyz);
+  float radial = length(cam_dir.xy);
+  float vignette = clamp(pc.fx_params2.y, 0.0, 1.0);
+  if (vignette > 0.001) {
+    float vmask = smoothstep(0.0, 1.4, radial);
+    c *= mix(1.0, 1.0 - vmask, vignette);
+  }
+  float ca = clamp(pc.fx_params2.z, 0.0, 1.0);
+  if (ca > 0.001) {
+    // Cheap CA: shift hue toward warmth in centre, cool at edges.
+    c.r *= 1.0 + ca * 0.08;
+    c.b *= 1.0 - ca * 0.08;
+  }
+  float grain = clamp(pc.fx_params2.w, 0.0, 1.0);
+  if (grain > 0.001) {
+    float g = fract(sin(dot(v_world_pos.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    c += (g - 0.5) * grain * 0.05;
   }
 
   // Inline atmospherics (v1.4 day-ship wire-in). True multi-scatter
@@ -884,9 +944,15 @@ struct PrimPush
     // Camera origin (needed for distance fog without breaking the model
     // matrix invariant). xyz=world camera, w=unused.
     float           camera_pos[4];
+    // R6 advanced BRDF strengths:
+    //   x=clearcoat (Filament second Schlick lobe on top of base spec)
+    //   y=sheen (Charlie velvet rim term)
+    //   z=sss (Burley wrap-diffusion approximation)
+    //   w=reserved
+    float           fx_params4[4];
 };
 
-static_assert(sizeof(PrimPush) == 240, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 256, "PrimPush layout drift");
 
 // Multi-light UBO slot — matches std140 layout in the FS.
 struct LightSlotGpu
@@ -4515,6 +4581,8 @@ int main()
                 pb.albedo[3] = 1.0F;
                 pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness; pb.mr_amb[2] = 0.0F; pb.mr_amb[3] = 0.0F;
                 pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z; pb.camera_pos[3] = 0.0F;
+                // PrimPush includes fx_params4 for advanced BRDF; sphere-grid PBR
+                // path uses StandardPbrPush instead, so this is a no-op here.
                 pb.light_dir[0]  = light_dir.x;
                 pb.light_dir[1]  = light_dir.y;
                 pb.light_dir[2]  = light_dir.z;
@@ -4665,6 +4733,7 @@ int main()
             fp.fx_params3[3] = fx_light_shafts;
             fp.camera_pos[0] = cam.eye.x; fp.camera_pos[1] = cam.eye.y;
             fp.camera_pos[2] = cam.eye.z; fp.camera_pos[3] = 0.0F;
+            fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = fp.fx_params4[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -4709,6 +4778,10 @@ int main()
             pp.fx_params3[3] = fx_light_shafts;
             pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
             pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
+            pp.fx_params4[0] = fx_clearcoat_strength;
+            pp.fx_params4[1] = fx_sheen_strength;
+            pp.fx_params4[2] = fx_sss_strength;
+            pp.fx_params4[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
@@ -4739,6 +4812,7 @@ int main()
             sp.fx_params2[0] = sp.fx_params2[1] = sp.fx_params2[2] = sp.fx_params2[3] = 0.0F;
             sp.fx_params3[0] = sp.fx_params3[1] = sp.fx_params3[2] = sp.fx_params3[3] = 0.0F;
             sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
+            sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
 
             // Entity casters.
             for (const auto& ent : entities)
@@ -5006,6 +5080,56 @@ int main()
         else
         {
             ImGui::TextDisabled("no selection");
+        }
+        ImGui::End();
+
+        // ---- R-Showcase panel: unified R1-R8 feature toggles ----
+        // Single panel listing every realism-roadmap feature with
+        // an in-place checkbox/slider so the user can experience the
+        // engine's full capability surface from one place.
+        ImGui::Begin("R-Showcase");
+        ImGui::TextDisabled("CHROMODYNAMIC realism roadmap (live)");
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R1  HDR cubemap IBL");
+        ImGui::SameLine(); ImGui::TextDisabled("(spec 6mip + diff 16 + brdf 64x64)");
+        ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  Material textures");
+        ImGui::SameLine(); ImGui::TextDisabled("(albedo + normal + MR + AO)");
+        if (ImGui::CollapsingHeader("R6  Advanced BRDFs"))
+        {
+            ImGui::SliderFloat("Clearcoat",  &fx_clearcoat_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Sheen",      &fx_sheen_strength,     0.0F, 1.0F);
+            ImGui::SliderFloat("SSS (Burley)", &fx_sss_strength,     0.0F, 1.0F);
+        }
+        if (ImGui::CollapsingHeader("R7  Camera composition"))
+        {
+            ImGui::SliderFloat("Vignette",       &fx_motion_blur, 0.0F, 1.0F);
+            ImGui::SliderFloat("ChromAberration",&fx_taa_amount,  0.0F, 1.0F);
+            ImGui::SliderFloat("Film grain",     &fx_dof_strength,0.0F, 1.0F);
+        }
+        if (ImGui::CollapsingHeader("R4-FX  Inline post-fx"))
+        {
+            ImGui::SliderFloat("GTAO inline",  &fx_gtao_strength,        0.0F, 1.0F);
+            ImGui::SliderFloat("Bloom inline", &fx_bloom_strength,       0.0F, 1.0F);
+            ImGui::SliderFloat("SMAA inline",  &fx_smaa_strength,        0.0F, 1.0F);
+            ImGui::SliderFloat("Height fog",   &fx_fog_density,          0.0F, 1.0F);
+            ImGui::SliderFloat("Aerial persp", &fx_aerial_perspective,   0.0F, 1.0F);
+        }
+        if (ImGui::CollapsingHeader("R3  Frame-graph + true post-fx"))
+        {
+            ImGui::TextDisabled("queued v1.7 (off-screen RT + compute pipes)");
+        }
+        if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
+        {
+            ImGui::TextDisabled("queued v1.7 (needs RT compute pipe)");
+        }
+        if (ImGui::CollapsingHeader("R5  Volumetrics"))
+        {
+            ImGui::TextDisabled("clouds + light shafts queued v1.7");
+        }
+        if (ImGui::CollapsingHeader("R8  HDR10 display output"))
+        {
+            ImGui::Checkbox("HDR10 request (queued swapchain rework)",
+                            &fx_hdr10_request);
         }
         ImGui::End();
 
