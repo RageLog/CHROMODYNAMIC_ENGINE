@@ -1006,7 +1006,7 @@ static_assert(sizeof(CompositePush) == 16, "CompositePush layout");
 // ============================================================================
 [[maybe_unused]] constexpr std::uint32_t kBloomMipCount = 4;
 
-[[maybe_unused]] constexpr const char* kBloomPrefilterFS = R"glsl(
+constexpr const char* kBloomPrefilterFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(push_constant) uniform PC {
@@ -1026,7 +1026,7 @@ void main() {
 }
 )glsl";
 
-[[maybe_unused]] constexpr const char* kBloomDownsampleFS = R"glsl(
+constexpr const char* kBloomDownsampleFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(location = 0) in  vec2 v_uv;
@@ -1055,7 +1055,7 @@ void main() {
 }
 )glsl";
 
-[[maybe_unused]] constexpr const char* kBloomUpsampleFS = R"glsl(
+constexpr const char* kBloomUpsampleFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(push_constant) uniform PC {
@@ -1520,6 +1520,78 @@ int main()
     auto comp_r = cd::material::Material::create(device, compiler.get(), comp_md);
     if (!comp_r.has_value()) return 32;
     auto& composite_material = *comp_r;
+
+    // R3 Multi-mip Bloom — Karis stable pipeline.
+    // 3 fullscreen-triangle materials sharing the composite VS.
+    // Color attachment format = RGBA16Float so HDR mip chain preserves
+    // overshoot through prefilter -> downsample -> upsample.
+    constexpr std::array<cd::rhi::Format, 1> kHdrFmts { kHdrFormat };
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kBloomBindings {
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 0,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment } };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kBloomPrefilterPushRange {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment,
+                                     .offset = 0,
+                                     .size = sizeof(BloomPrefilterPush) } };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kBloomUpsamplePushRange {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment,
+                                     .offset = 0,
+                                     .size = sizeof(BloomUpsamplePush) } };
+
+    cd::material::MaterialDesc bp_md {};
+    bp_md.vertex_glsl   = kCompositeVS;
+    bp_md.fragment_glsl = kBloomPrefilterFS;
+    bp_md.color_attachment_formats = kHdrFmts;
+    bp_md.push_constants    = kBloomPrefilterPushRange;
+    bp_md.descriptor_bindings = kBloomBindings;
+    bp_md.raster.cull = cd::rhi::CullMode::kNone;
+    bp_md.depth_stencil.depth_test = false;
+    bp_md.depth_stencil.depth_write = false;
+    bp_md.name = "hello_engine/bloom/prefilter";
+    auto bp_r = cd::material::Material::create(device, compiler.get(), bp_md);
+    if (!bp_r.has_value()) return 40;
+    [[maybe_unused]] auto& bloom_prefilter_material = *bp_r;
+
+    cd::material::MaterialDesc bd_md {};
+    bd_md.vertex_glsl   = kCompositeVS;
+    bd_md.fragment_glsl = kBloomDownsampleFS;
+    bd_md.color_attachment_formats = kHdrFmts;
+    bd_md.descriptor_bindings = kBloomBindings;
+    bd_md.raster.cull = cd::rhi::CullMode::kNone;
+    bd_md.depth_stencil.depth_test = false;
+    bd_md.depth_stencil.depth_write = false;
+    bd_md.name = "hello_engine/bloom/downsample";
+    auto bd_r = cd::material::Material::create(device, compiler.get(), bd_md);
+    if (!bd_r.has_value()) return 41;
+    [[maybe_unused]] auto& bloom_downsample_material = *bd_r;
+
+    cd::material::MaterialDesc bu_md {};
+    bu_md.vertex_glsl   = kCompositeVS;
+    bu_md.fragment_glsl = kBloomUpsampleFS;
+    bu_md.color_attachment_formats = kHdrFmts;
+    bu_md.push_constants    = kBloomUpsamplePushRange;
+    bu_md.descriptor_bindings = kBloomBindings;
+    bu_md.raster.cull = cd::rhi::CullMode::kNone;
+    // Additive blend so up-chain sum accumulates onto the previous mip.
+    constexpr std::array<cd::rhi::BlendAttachmentState, 1> kBloomUpsampleBlend {
+        cd::rhi::BlendAttachmentState {
+            .blend_enable = true,
+            .src_color = cd::rhi::BlendFactor::kOne,
+            .dst_color = cd::rhi::BlendFactor::kOne,
+            .color_op  = cd::rhi::BlendOp::kAdd,
+            .src_alpha = cd::rhi::BlendFactor::kOne,
+            .dst_alpha = cd::rhi::BlendFactor::kOne,
+            .alpha_op  = cd::rhi::BlendOp::kAdd } };
+    bu_md.blend_attachments = kBloomUpsampleBlend;
+    bu_md.depth_stencil.depth_test = false;
+    bu_md.depth_stencil.depth_write = false;
+    bu_md.name = "hello_engine/bloom/upsample";
+    auto bu_r = cd::material::Material::create(device, compiler.get(), bu_md);
+    if (!bu_r.has_value()) return 42;
+    [[maybe_unused]] auto& bloom_upsample_material = *bu_r;
 
     // Standard PBR material for the 5x5 sphere sweep.
     constexpr std::array<cd::rhi::VertexBinding, 1> kPbrBindings {

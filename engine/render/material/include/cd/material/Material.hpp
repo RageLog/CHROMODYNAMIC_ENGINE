@@ -116,6 +116,9 @@ struct MaterialDesc
     cd::rhi::PrimitiveTopology topology { cd::rhi::PrimitiveTopology::kTriangleList };
     cd::rhi::RasterState raster {};
     cd::rhi::DepthStencilState depth_stencil {};
+    /// Optional per-attachment blend state. Empty (default) leaves blend
+    /// disabled so writes overwrite. Bloom upsample uses additive blend.
+    std::span<const cd::rhi::BlendAttachmentState> blend_attachments {};
     cd::rhi::SampleCount samples { cd::rhi::SampleCount::k1 };
 
     /// Diagnostic label, surfaced in compiler error messages.

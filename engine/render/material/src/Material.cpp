@@ -278,6 +278,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     gpd.topology = desc.topology;
     gpd.raster = desc.raster;
     gpd.depth_stencil = desc.depth_stencil;
+    gpd.blend_attachments = desc.blend_attachments;
     gpd.samples = desc.samples;
     gpd.color_attachment_formats = desc.color_attachment_formats;
     gpd.depth_attachment_format = desc.depth_attachment_format;
