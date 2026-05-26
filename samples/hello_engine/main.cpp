@@ -417,6 +417,9 @@ layout(set = 0, binding = 6) uniform samplerCube cd_ibl_diff;
 layout(set = 0, binding = 7) uniform sampler2D   cd_brdf_lut;
 // R2 procedural normal map (tangent-space bump).
 layout(set = 0, binding = 8) uniform sampler2D   cd_normal_tex;
+// R2 metallic-roughness-AO map. glTF 2.0 packing:
+//   R unused, G roughness, B metallic, A AO
+layout(set = 0, binding = 9) uniform sampler2D   cd_mr_tex;
 const float kIblMaxMipLod = 5.0;
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
@@ -686,26 +689,29 @@ void main() {
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
   vec3  ambient = albedo * hemi;
 
-  // R2: True IBL contribution for textured prim entities. Karis split-
-  // sum: irradiance(N) drives diffuse, prefiltered(R, rough*maxMip)
-  // drives spec, BRDF LUT(NoV, rough) combines F0-Fresnel + visibility.
-  // Treats the textured surface as a dielectric (F0 ≈ 0.04) since the
-  // prim shader doesn't yet sample MR maps — that's the next R2 ship.
+  // R2: True IBL with MR map. Karis split-sum:
+  //   IBL = kD * irradiance(N) * albedo + prefiltered(R, rough*mipMax)
+  //         * (F0 * brdf.x + brdf.y)
+  // MR map gives per-pixel metallic + roughness + AO so the same
+  // material sweep covers ocean (rough water), continents (mid),
+  // and polar ice (matte snow).
   if (pc.fx_params.y > 0.5) {
-    vec3 V_v   = normalize(pc.camera_pos.xyz - v_world_pos);
-    vec3 R_v   = reflect(-V_v, N);
-    float NoV_v= max(dot(N, V_v), 0.0);
-    float rough_ibl = 0.55;   // dielectric default until MR map lands
-    vec3 F0_ibl = vec3(0.04);
-    float lod   = rough_ibl * kIblMaxMipLod;
+    vec4 mr_sample = texture(cd_mr_tex, v_uv);
+    float roughness = clamp(mr_sample.g, 0.04, 1.0);
+    float metallic  = clamp(mr_sample.b, 0.0, 1.0);
+    float ao_factor = mr_sample.a;
+    vec3 F0_ibl = mix(vec3(0.04), albedo, metallic);
+    vec3 V_v    = normalize(pc.camera_pos.xyz - v_world_pos);
+    vec3 R_v    = reflect(-V_v, N);
+    float NoV_v = max(dot(N, V_v), 0.0);
+    float lod   = roughness * kIblMaxMipLod;
     vec3 spec_e = textureLod(cd_ibl_spec, R_v, lod).rgb;
     vec3 diff_e = texture(cd_ibl_diff, N).rgb;
     vec2 brdf_v = texture(cd_brdf_lut, vec2(clamp(NoV_v, 0.0, 1.0),
-                                            clamp(rough_ibl, 0.0, 1.0))).rg;
+                                            clamp(roughness, 0.0, 1.0))).rg;
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
-    vec3 ibl_kD = (vec3(1.0) - ibl_F);  // metallic=0 dielectric
-    vec3 ibl    = ibl_kD * diff_e * albedo + spec_e * ibl_F;
-    // Gate by total scene light energy so all-lights-off => no IBL.
+    vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
+    vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
     float ibl_e = pc.sun_dir.w;
     for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
       if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
@@ -1874,7 +1880,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 9> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 10> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -1913,6 +1919,11 @@ int main()
                                               .stages  = cd::rhi::ShaderStage::kFragment },
         // R2: procedural normal map (tangent-space bump).
         cd::rhi::DescriptorSetLayoutBinding { .binding = 8,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // R2: metallic-roughness-AO map (glTF 2.0 packing).
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 9,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2214,6 +2225,66 @@ int main()
                               "(%ux%u) bound\n",
                      kNormalSize, kNormalSize);
     }
+
+    // R2: metallic-roughness texture. RGBA8 encoding:
+    //   R = (unused), G = roughness, B = metallic, A = AO
+    // Matches glTF 2.0 metallic-roughness convention so future-loaded
+    // glTF MR textures drop into the same slot unchanged.
+    GpuTexture2D mr_tex {};
+    {
+        constexpr std::uint32_t kMrSize = 256;
+        std::vector<std::uint8_t> mr(static_cast<std::size_t>(kMrSize) * kMrSize * 4);
+        auto hash21 = [](std::uint32_t x, std::uint32_t y) {
+            std::uint32_t h = x * 374761393U + y * 668265263U;
+            h = (h ^ (h >> 13)) * 1274126177U;
+            return static_cast<float>(h & 0xFFFFFFU) / 16777215.0F;
+        };
+        auto noise2 = [&](float u, float v, float freq) {
+            const float fx = u * freq, fy = v * freq;
+            const auto x0 = static_cast<std::uint32_t>(std::floor(fx));
+            const auto y0 = static_cast<std::uint32_t>(std::floor(fy));
+            const float tx = fx - std::floor(fx), ty = fy - std::floor(fy);
+            const float sx = tx * tx * (3.0F - 2.0F * tx);
+            const float sy = ty * ty * (3.0F - 2.0F * ty);
+            return ((hash21(x0,y0)*(1-sx) + hash21(x0+1,y0)*sx)*(1-sy) +
+                    (hash21(x0,y0+1)*(1-sx) + hash21(x0+1,y0+1)*sx)*sy);
+        };
+        for (std::uint32_t py = 0; py < kMrSize; ++py) {
+            const float v = static_cast<float>(py) / static_cast<float>(kMrSize);
+            const float lat = (v - 0.5F) * 3.14159265F;
+            const float pole_falloff = std::cos(lat);
+            for (std::uint32_t px = 0; px < kMrSize; ++px) {
+                const float u = static_cast<float>(px) / static_cast<float>(kMrSize);
+                float n = noise2(u, v, 6.0F) * 0.5F
+                        + noise2(u, v, 12.0F) * 0.30F
+                        + noise2(u, v, 24.0F) * 0.20F;
+                n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
+                const bool is_ocean = n <= 0.48F;
+                // Ocean: high roughness (rippled water), low metallic.
+                // Land : mid roughness, low metallic.
+                // Polar: high roughness (snow), zero metallic.
+                float roughness, metallic, ao;
+                if (pole_falloff < 0.18F) {
+                    roughness = 0.85F; metallic = 0.0F; ao = 0.95F;
+                } else if (is_ocean) {
+                    roughness = 0.45F; metallic = 0.05F; ao = 0.95F;
+                } else {
+                    const float t = std::clamp((n - 0.48F) / 0.52F, 0.0F, 1.0F);
+                    roughness = 0.65F + 0.25F * t;
+                    metallic  = 0.05F;
+                    ao        = 0.85F + 0.15F * (1.0F - t);
+                }
+                const std::size_t i = (static_cast<std::size_t>(py) * kMrSize + px) * 4;
+                mr[i + 0] = 0;
+                mr[i + 1] = static_cast<std::uint8_t>(roughness * 255.0F);
+                mr[i + 2] = static_cast<std::uint8_t>(metallic * 255.0F);
+                mr[i + 3] = static_cast<std::uint8_t>(ao * 255.0F);
+            }
+        }
+        mr_tex = create_texture_rgba8(device, mr.data(), kMrSize, kMrSize);
+        std::fprintf(stderr, "[showcase] procedural metallic-roughness "
+                              "(%ux%u) bound\n", kMrSize, kMrSize);
+    }
     cd::rhi::SamplerDesc albedo_sd {};
     albedo_sd.mag_filter = cd::rhi::SamplerFilter::kLinear;
     albedo_sd.min_filter = cd::rhi::SamplerFilter::kLinear;
@@ -2229,7 +2300,7 @@ int main()
     if (!prim_inst_r.has_value()) return 14;
     auto& prim_inst = *prim_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 8> writes {
+        std::array<cd::rhi::DescriptorWrite, 9> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
@@ -2275,6 +2346,12 @@ int main()
                                        .array_element = 0,
                                        .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                        .view    = normal_tex.view,
+                                       .sampler = albedo_sampler },
+            // R2: metallic-roughness-AO map.
+            cd::rhi::DescriptorWrite { .binding = 9,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = mr_tex.view,
                                        .sampler = albedo_sampler } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
