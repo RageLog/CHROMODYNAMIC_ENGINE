@@ -2683,9 +2683,15 @@ int main()
                 // full UBO + N-light iteration; until that ships with
                 // a descriptor set, this is the smallest visible
                 // wiring of cd::light data into the existing shader.)
-                cd::math::Vec3f light_dir { -0.4F, -0.6F, -0.7F };
-                cd::math::Vec3f light_color { 1.0F, 1.0F, 1.0F };
-                float           light_intensity = 0.9F;
+                // Lights-off baseline: PBR sphere grid was running with
+                // hard-coded defaults even when the sun was disabled,
+                // so the 5x5 array stayed lit while everything else
+                // went dark. Zero the defaults so 'no sun = no PBR
+                // contribution from the sun term' (same rule the prim
+                // shader path got in 764d3bf).
+                cd::math::Vec3f light_dir { 0.0F, -1.0F, 0.0F };
+                cd::math::Vec3f light_color { 0.0F, 0.0F, 0.0F };
+                float           light_intensity = 0.0F;
                 for (const auto& lrow : lights)
                 {
                     if (!lrow.enabled) continue;

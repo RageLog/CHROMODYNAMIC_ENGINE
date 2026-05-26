@@ -149,13 +149,18 @@ void main() {
        direct += direct_lobe(N, V, L_fill, albedo, metallic, roughness, F0, C_fill);
        direct += direct_lobe(N, V, L_rim,  albedo, metallic, roughness, F0, C_rim);
 
-  // IBL ambient (split-sum without BRDF LUT).
+  // IBL ambient (split-sum without BRDF LUT). Gated by sun intensity:
+  // when the sun is disabled the analytic sky is dark, so the IBL
+  // ambient must follow. Closes the "PBR spheres stay bright when
+  // all lights are off" anomaly that surfaced after the prim-shader
+  // lights-off baseline fix.
   vec3 R = reflect(-V, N);
   vec3 env_diffuse  = sample_env(N);
   vec3 env_specular = mix(sample_env(R), env_diffuse, roughness);
   vec3 ibl_F  = F_Schlick_roughness(NoV, F0, roughness);
   vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
-  vec3 ibl    = ibl_kD * env_diffuse * albedo + env_specular * ibl_F;
+  float sky_gate = clamp(pc.light_dir.w, 0.0, 1.0);
+  vec3 ibl    = (ibl_kD * env_diffuse * albedo + env_specular * ibl_F) * sky_gate;
 
   vec3 color = direct + ibl;
 

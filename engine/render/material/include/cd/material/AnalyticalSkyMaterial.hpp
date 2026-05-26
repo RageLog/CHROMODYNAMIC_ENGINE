@@ -79,7 +79,12 @@ vec3 sample_env(vec3 dir, vec3 sky_tint) {
 
 void main() {
   vec3 dir = ray_dir(v_ndc);
-  vec3 sky = sample_env(dir, pc.sun_color.rgb);
+  // Sky gradient is gated by sun intensity so a fully-disabled sun
+  // produces a near-black sky (no sky = no ambient = matches the
+  // PBR + prim shader lights-off baseline). Without this the sky
+  // stays bright blue regardless and the user reads it as 'lit'.
+  float sky_gate = clamp(pc.sun_dir.w, 0.0, 1.0);
+  vec3 sky = sample_env(dir, pc.sun_color.rgb) * sky_gate;
 
   // Sun disk + soft glow aligned with the caller's directional light.
   // The sun color (CCT-converted) drives both disk and glow.
