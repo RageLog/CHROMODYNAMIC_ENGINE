@@ -21,6 +21,7 @@ cd_add_sample(hello_engine
     cd::framegraph
     cd::ibl
     cd::ibl_gpu
+    cd::texture_synth
     cd::gpu_particles
     cd::light_shafts
     cd::nrc

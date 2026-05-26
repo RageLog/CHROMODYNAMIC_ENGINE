@@ -15,6 +15,7 @@
 
 add_subdirectory(foundation)
 add_subdirectory(asset)
+add_subdirectory(texture_synth)
 add_subdirectory(asset_image)
 add_subdirectory(asset_gltf)
 add_subdirectory(asset_obj)

@@ -48,6 +48,7 @@
 #include <cd/ibl/IrradianceConvolution.hpp>
 #include <cd/ibl/PrefilteredSpecular.hpp>
 #include <cd/ibl_gpu/Upload.hpp>
+#include <cd/texture_synth/Earth.hpp>
 #include <cd/nrc/Nrc.hpp>
 #include <cd/restir_di/Reservoir.hpp>
 #include <cd/restir_gi/GiReservoir.hpp>
@@ -1589,209 +1590,30 @@ int main()
     bool         has_gltf_texture = false;
     {
         constexpr std::uint32_t kTexSize = 512;
-        std::vector<std::uint8_t> rgba(static_cast<std::size_t>(kTexSize) * kTexSize * 4);
-        // Cheap value-noise: hash + bilinear interp on a coarse grid.
-        auto hash21 = [](std::uint32_t x, std::uint32_t y) {
-            std::uint32_t h = x * 374761393U + y * 668265263U;
-            h = (h ^ (h >> 13)) * 1274126177U;
-            return static_cast<float>(h & 0xFFFFFFU) / 16777215.0F;
-        };
-        auto noise2 = [&](float u, float v, float freq) {
-            const float fx = u * freq;
-            const float fy = v * freq;
-            const auto x0 = static_cast<std::uint32_t>(std::floor(fx));
-            const auto y0 = static_cast<std::uint32_t>(std::floor(fy));
-            const float tx = fx - std::floor(fx);
-            const float ty = fy - std::floor(fy);
-            const float sx = tx * tx * (3.0F - 2.0F * tx);
-            const float sy = ty * ty * (3.0F - 2.0F * ty);
-            const float a = hash21(x0,     y0);
-            const float b = hash21(x0 + 1, y0);
-            const float c = hash21(x0,     y0 + 1);
-            const float d = hash21(x0 + 1, y0 + 1);
-            return (a * (1 - sx) + b * sx) * (1 - sy) +
-                   (c * (1 - sx) + d * sx) * sy;
-        };
-        for (std::uint32_t py = 0; py < kTexSize; ++py)
-        {
-            const float v = static_cast<float>(py) / static_cast<float>(kTexSize);
-            const float lat = (v - 0.5F) * 3.14159265F;     // ±π/2
-            const float pole_falloff = std::cos(lat);        // 1 equator, 0 pole
-            for (std::uint32_t px = 0; px < kTexSize; ++px)
-            {
-                const float u = static_cast<float>(px) / static_cast<float>(kTexSize);
-                // Three-octave fractal noise for landmass shape.
-                float n = noise2(u, v, 6.0F) * 0.50F
-                        + noise2(u, v, 12.0F) * 0.30F
-                        + noise2(u, v, 24.0F) * 0.20F;
-                // Bias by pole falloff so caps stay light (ice).
-                n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
-                const bool is_land = n > 0.48F;
-                cd::math::Vec3f col {};
-                if (is_land)
-                {
-                    // Continent palette: warm earth tones modulated
-                    // by altitude (n).
-                    const float t = std::clamp((n - 0.48F) / 0.52F, 0.0F, 1.0F);
-                    cd::math::Vec3f low  { 0.30F, 0.55F, 0.18F };  // green
-                    cd::math::Vec3f mid  { 0.55F, 0.45F, 0.20F };  // tan
-                    cd::math::Vec3f high { 0.90F, 0.88F, 0.82F };  // snow
-                    if (t < 0.5F) {
-                        const float k = t * 2.0F;
-                        col = { low.x + (mid.x - low.x) * k,
-                                low.y + (mid.y - low.y) * k,
-                                low.z + (mid.z - low.z) * k };
-                    } else {
-                        const float k = (t - 0.5F) * 2.0F;
-                        col = { mid.x + (high.x - mid.x) * k,
-                                mid.y + (high.y - mid.y) * k,
-                                mid.z + (high.z - mid.z) * k };
-                    }
-                }
-                else
-                {
-                    // Ocean depth: darker as n decreases.
-                    const float ocean_depth = std::clamp((0.48F - n) / 0.48F, 0.0F, 1.0F);
-                    col = { 0.08F + (0.20F - 0.08F) * (1 - ocean_depth),
-                            0.25F + (0.50F - 0.25F) * (1 - ocean_depth),
-                            0.50F + (0.78F - 0.50F) * (1 - ocean_depth) };
-                }
-                // Ice cap polar override.
-                if (pole_falloff < 0.18F)
-                {
-                    col = { 0.92F, 0.94F, 0.97F };
-                }
-                const std::size_t i = (static_cast<std::size_t>(py) * kTexSize + px) * 4;
-                rgba[i + 0] = static_cast<std::uint8_t>(std::clamp(col.x * 255.0F, 0.0F, 255.0F));
-                rgba[i + 1] = static_cast<std::uint8_t>(std::clamp(col.y * 255.0F, 0.0F, 255.0F));
-                rgba[i + 2] = static_cast<std::uint8_t>(std::clamp(col.z * 255.0F, 0.0F, 255.0F));
-                rgba[i + 3] = 255;
-            }
-        }
+        const auto rgba = cd::texture_synth::bake_earth_albedo_rgba8(kTexSize);
         albedo_tex = create_texture_rgba8(device, rgba.data(), kTexSize, kTexSize);
-        has_gltf_texture = true;  // procedural showcase counts
+        has_gltf_texture = true;
         std::fprintf(stderr, "[showcase] procedural Earth-like albedo "
-                              "(%ux%u) bound to albedo_tex\n",
-                     kTexSize, kTexSize);
+                              "(%ux%u) bound\n", kTexSize, kTexSize);
     }
 
-    // R2: procedural normal map derived from a height field. Stores in
-    // RGBA8 tangent-space normals; samplers unpack via *2-1. Heights
-    // come from the same noise generator the albedo used so terrain
-    // detail aligns with continent geometry.
+    // R2: procedural normal map derived from a height field — same
+    // fBm Earth surface but stored as tangent-space normals.
     GpuTexture2D normal_tex {};
     {
         constexpr std::uint32_t kNormalSize = 512;
-        std::vector<std::uint8_t> nrm(static_cast<std::size_t>(kNormalSize) * kNormalSize * 4);
-        auto hash21 = [](std::uint32_t x, std::uint32_t y) {
-            std::uint32_t h = x * 374761393U + y * 668265263U;
-            h = (h ^ (h >> 13)) * 1274126177U;
-            return static_cast<float>(h & 0xFFFFFFU) / 16777215.0F;
-        };
-        auto noise2 = [&](float u, float v, float freq) {
-            const float fx = u * freq, fy = v * freq;
-            const auto x0 = static_cast<std::uint32_t>(std::floor(fx));
-            const auto y0 = static_cast<std::uint32_t>(std::floor(fy));
-            const float tx = fx - std::floor(fx), ty = fy - std::floor(fy);
-            const float sx = tx * tx * (3.0F - 2.0F * tx);
-            const float sy = ty * ty * (3.0F - 2.0F * ty);
-            const float a = hash21(x0,     y0);
-            const float b = hash21(x0 + 1, y0);
-            const float c = hash21(x0,     y0 + 1);
-            const float d = hash21(x0 + 1, y0 + 1);
-            return (a*(1-sx) + b*sx)*(1-sy) + (c*(1-sx) + d*sx)*sy;
-        };
-        auto height = [&](float u, float v) {
-            return noise2(u, v, 6.0F) * 0.5F
-                 + noise2(u, v, 12.0F) * 0.30F
-                 + noise2(u, v, 24.0F) * 0.20F;
-        };
-        const float eps = 1.0F / static_cast<float>(kNormalSize);
-        const float strength = 4.0F;
-        for (std::uint32_t py = 0; py < kNormalSize; ++py)
-        {
-            const float v = static_cast<float>(py) / static_cast<float>(kNormalSize);
-            for (std::uint32_t px = 0; px < kNormalSize; ++px)
-            {
-                const float u = static_cast<float>(px) / static_cast<float>(kNormalSize);
-                const float hL = height(u - eps, v);
-                const float hR = height(u + eps, v);
-                const float hU = height(u, v - eps);
-                const float hD = height(u, v + eps);
-                cd::math::Vec3f n {
-                    (hL - hR) * strength,
-                    (hU - hD) * strength,
-                    1.0F };
-                const float l = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
-                if (l > 1e-6F) { n.x/=l; n.y/=l; n.z/=l; }
-                const std::size_t i = (static_cast<std::size_t>(py) * kNormalSize + px) * 4;
-                nrm[i + 0] = static_cast<std::uint8_t>((n.x * 0.5F + 0.5F) * 255.0F);
-                nrm[i + 1] = static_cast<std::uint8_t>((n.y * 0.5F + 0.5F) * 255.0F);
-                nrm[i + 2] = static_cast<std::uint8_t>((n.z * 0.5F + 0.5F) * 255.0F);
-                nrm[i + 3] = 255;
-            }
-        }
+        const auto nrm = cd::texture_synth::bake_earth_normal_rgba8(kNormalSize);
         normal_tex = create_texture_rgba8(device, nrm.data(), kNormalSize, kNormalSize);
-        std::fprintf(stderr, "[showcase] procedural normal map "
-                              "(%ux%u) bound\n",
+        std::fprintf(stderr, "[showcase] procedural normal map (%ux%u) bound\n",
                      kNormalSize, kNormalSize);
     }
 
-    // R2: metallic-roughness texture. RGBA8 encoding:
-    //   R = (unused), G = roughness, B = metallic, A = AO
-    // Matches glTF 2.0 metallic-roughness convention so future-loaded
-    // glTF MR textures drop into the same slot unchanged.
+    // R2: metallic-roughness-AO map (glTF 2.0 packing — R unused,
+    // G roughness, B metallic, A AO).
     GpuTexture2D mr_tex {};
     {
         constexpr std::uint32_t kMrSize = 256;
-        std::vector<std::uint8_t> mr(static_cast<std::size_t>(kMrSize) * kMrSize * 4);
-        auto hash21 = [](std::uint32_t x, std::uint32_t y) {
-            std::uint32_t h = x * 374761393U + y * 668265263U;
-            h = (h ^ (h >> 13)) * 1274126177U;
-            return static_cast<float>(h & 0xFFFFFFU) / 16777215.0F;
-        };
-        auto noise2 = [&](float u, float v, float freq) {
-            const float fx = u * freq, fy = v * freq;
-            const auto x0 = static_cast<std::uint32_t>(std::floor(fx));
-            const auto y0 = static_cast<std::uint32_t>(std::floor(fy));
-            const float tx = fx - std::floor(fx), ty = fy - std::floor(fy);
-            const float sx = tx * tx * (3.0F - 2.0F * tx);
-            const float sy = ty * ty * (3.0F - 2.0F * ty);
-            return ((hash21(x0,y0)*(1-sx) + hash21(x0+1,y0)*sx)*(1-sy) +
-                    (hash21(x0,y0+1)*(1-sx) + hash21(x0+1,y0+1)*sx)*sy);
-        };
-        for (std::uint32_t py = 0; py < kMrSize; ++py) {
-            const float v = static_cast<float>(py) / static_cast<float>(kMrSize);
-            const float lat = (v - 0.5F) * 3.14159265F;
-            const float pole_falloff = std::cos(lat);
-            for (std::uint32_t px = 0; px < kMrSize; ++px) {
-                const float u = static_cast<float>(px) / static_cast<float>(kMrSize);
-                float n = noise2(u, v, 6.0F) * 0.5F
-                        + noise2(u, v, 12.0F) * 0.30F
-                        + noise2(u, v, 24.0F) * 0.20F;
-                n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
-                const bool is_ocean = n <= 0.48F;
-                // Ocean: high roughness (rippled water), low metallic.
-                // Land : mid roughness, low metallic.
-                // Polar: high roughness (snow), zero metallic.
-                float roughness, metallic, ao;
-                if (pole_falloff < 0.18F) {
-                    roughness = 0.85F; metallic = 0.0F; ao = 0.95F;
-                } else if (is_ocean) {
-                    roughness = 0.45F; metallic = 0.05F; ao = 0.95F;
-                } else {
-                    const float t = std::clamp((n - 0.48F) / 0.52F, 0.0F, 1.0F);
-                    roughness = 0.65F + 0.25F * t;
-                    metallic  = 0.05F;
-                    ao        = 0.85F + 0.15F * (1.0F - t);
-                }
-                const std::size_t i = (static_cast<std::size_t>(py) * kMrSize + px) * 4;
-                mr[i + 0] = 0;
-                mr[i + 1] = static_cast<std::uint8_t>(roughness * 255.0F);
-                mr[i + 2] = static_cast<std::uint8_t>(metallic * 255.0F);
-                mr[i + 3] = static_cast<std::uint8_t>(ao * 255.0F);
-            }
-        }
+        const auto mr = cd::texture_synth::bake_earth_mr_rgba8(kMrSize);
         mr_tex = create_texture_rgba8(device, mr.data(), kMrSize, kMrSize);
         std::fprintf(stderr, "[showcase] procedural metallic-roughness "
                               "(%ux%u) bound\n", kMrSize, kMrSize);
