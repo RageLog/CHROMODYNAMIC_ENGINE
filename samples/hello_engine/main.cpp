@@ -2270,9 +2270,11 @@ int main()
                 // X to bring him upright in the engine's Y-up world.
                 scene.local(e.handle)->value.position = { 0.0F, -0.55F, 0.5F };
                 scene.local(e.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
-                // Quaternion for -90° (-π/2) about X: (sin(-π/4), 0, 0, cos(-π/4))
-                //                                  = (-0.7071, 0, 0, 0.7071)
-                scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
+                // Compose: rotate -90° about X (Z-up -> Y-up) then 180°
+                // about Y so the character's face points toward the
+                // camera (+Z) instead of away. The composed quaternion
+                // = q_X * q_Y = (0, 0.7071, -0.7071, 0).
+                scene.local(e.handle)->value.rotation = { 0.0F, 0.7071068F, -0.7071068F, 0.0F };
             }
             else
             {
