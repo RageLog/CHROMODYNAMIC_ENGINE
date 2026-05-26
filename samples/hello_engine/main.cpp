@@ -6076,6 +6076,19 @@ int main()
     if (albedo_tex.view.is_valid())  device.destroy_texture_view(albedo_tex.view);
     if (albedo_tex.image.is_valid()) device.destroy_texture(albedo_tex.image);
     device.destroy_sampler(albedo_sampler);
+    device.destroy_sampler(ibl_sampler);  // bug-hunt: was leaked
+    // R1 IBL textures + views.
+    if (gpu_spec_cube.view.is_valid())  device.destroy_texture_view(gpu_spec_cube.view);
+    if (gpu_spec_cube.image.is_valid()) device.destroy_texture(gpu_spec_cube.image);
+    if (gpu_diff_cube.view.is_valid())  device.destroy_texture_view(gpu_diff_cube.view);
+    if (gpu_diff_cube.image.is_valid()) device.destroy_texture(gpu_diff_cube.image);
+    if (gpu_brdf_lut.view.is_valid())   device.destroy_texture_view(gpu_brdf_lut.view);
+    if (gpu_brdf_lut.image.is_valid())  device.destroy_texture(gpu_brdf_lut.image);
+    // R2 textures.
+    if (normal_tex.view.is_valid())  device.destroy_texture_view(normal_tex.view);
+    if (normal_tex.image.is_valid()) device.destroy_texture(normal_tex.image);
+    if (mr_tex.view.is_valid())  device.destroy_texture_view(mr_tex.view);
+    if (mr_tex.image.is_valid()) device.destroy_texture(mr_tex.image);
     // Faz 1.7 RT resources — wait_idle so any in-flight cmd buffers
     // that referenced these structures are guaranteed done, then
     // tear down the TLAS queue + every BLAS.
