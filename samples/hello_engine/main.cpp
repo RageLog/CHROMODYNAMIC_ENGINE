@@ -415,7 +415,24 @@ layout(set = 0, binding = 3) uniform LightArray {
 layout(set = 0, binding = 5) uniform samplerCube cd_ibl_spec;
 layout(set = 0, binding = 6) uniform samplerCube cd_ibl_diff;
 layout(set = 0, binding = 7) uniform sampler2D   cd_brdf_lut;
+// R2 procedural normal map (tangent-space bump).
+layout(set = 0, binding = 8) uniform sampler2D   cd_normal_tex;
 const float kIblMaxMipLod = 5.0;
+
+// Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
+// Avoids needing per-vertex tangents — works for any UV-mapped mesh.
+mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
+  vec3 dp1 = dFdx(p);
+  vec3 dp2 = dFdy(p);
+  vec2 duv1 = dFdx(uv);
+  vec2 duv2 = dFdy(uv);
+  vec3 dp2perp = cross(dp2, N);
+  vec3 dp1perp = cross(N, dp1);
+  vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+  vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+  float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+  return mat3(T * invmax, B * invmax, N);
+}
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
@@ -582,6 +599,14 @@ void main() {
   }
 
   vec3 N = normalize(v_world_normal);
+  // R2 normal mapping for textured entities — perturbs the surface
+  // normal with the tangent-space sample so the procedural Earth
+  // bumps register as real 3D relief.
+  if (pc.fx_params.y > 0.5) {
+    vec3 nm_sample = texture(cd_normal_tex, v_uv).xyz * 2.0 - 1.0;
+    mat3 TBN = cotangent_frame(N, v_world_pos, v_uv);
+    N = normalize(TBN * nm_sample);
+  }
   vec3 lit = vec3(0.0);
 
   // Directional sun + CSM shadow attenuation.
@@ -1849,7 +1874,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 8> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 9> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -1883,6 +1908,11 @@ int main()
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 7,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // R2: procedural normal map (tangent-space bump).
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 8,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2122,6 +2152,68 @@ int main()
                               "(%ux%u) bound to albedo_tex\n",
                      kTexSize, kTexSize);
     }
+
+    // R2: procedural normal map derived from a height field. Stores in
+    // RGBA8 tangent-space normals; samplers unpack via *2-1. Heights
+    // come from the same noise generator the albedo used so terrain
+    // detail aligns with continent geometry.
+    GpuTexture2D normal_tex {};
+    {
+        constexpr std::uint32_t kNormalSize = 512;
+        std::vector<std::uint8_t> nrm(static_cast<std::size_t>(kNormalSize) * kNormalSize * 4);
+        auto hash21 = [](std::uint32_t x, std::uint32_t y) {
+            std::uint32_t h = x * 374761393U + y * 668265263U;
+            h = (h ^ (h >> 13)) * 1274126177U;
+            return static_cast<float>(h & 0xFFFFFFU) / 16777215.0F;
+        };
+        auto noise2 = [&](float u, float v, float freq) {
+            const float fx = u * freq, fy = v * freq;
+            const auto x0 = static_cast<std::uint32_t>(std::floor(fx));
+            const auto y0 = static_cast<std::uint32_t>(std::floor(fy));
+            const float tx = fx - std::floor(fx), ty = fy - std::floor(fy);
+            const float sx = tx * tx * (3.0F - 2.0F * tx);
+            const float sy = ty * ty * (3.0F - 2.0F * ty);
+            const float a = hash21(x0,     y0);
+            const float b = hash21(x0 + 1, y0);
+            const float c = hash21(x0,     y0 + 1);
+            const float d = hash21(x0 + 1, y0 + 1);
+            return (a*(1-sx) + b*sx)*(1-sy) + (c*(1-sx) + d*sx)*sy;
+        };
+        auto height = [&](float u, float v) {
+            return noise2(u, v, 6.0F) * 0.5F
+                 + noise2(u, v, 12.0F) * 0.30F
+                 + noise2(u, v, 24.0F) * 0.20F;
+        };
+        const float eps = 1.0F / static_cast<float>(kNormalSize);
+        const float strength = 4.0F;
+        for (std::uint32_t py = 0; py < kNormalSize; ++py)
+        {
+            const float v = static_cast<float>(py) / static_cast<float>(kNormalSize);
+            for (std::uint32_t px = 0; px < kNormalSize; ++px)
+            {
+                const float u = static_cast<float>(px) / static_cast<float>(kNormalSize);
+                const float hL = height(u - eps, v);
+                const float hR = height(u + eps, v);
+                const float hU = height(u, v - eps);
+                const float hD = height(u, v + eps);
+                cd::math::Vec3f n {
+                    (hL - hR) * strength,
+                    (hU - hD) * strength,
+                    1.0F };
+                const float l = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+                if (l > 1e-6F) { n.x/=l; n.y/=l; n.z/=l; }
+                const std::size_t i = (static_cast<std::size_t>(py) * kNormalSize + px) * 4;
+                nrm[i + 0] = static_cast<std::uint8_t>((n.x * 0.5F + 0.5F) * 255.0F);
+                nrm[i + 1] = static_cast<std::uint8_t>((n.y * 0.5F + 0.5F) * 255.0F);
+                nrm[i + 2] = static_cast<std::uint8_t>((n.z * 0.5F + 0.5F) * 255.0F);
+                nrm[i + 3] = 255;
+            }
+        }
+        normal_tex = create_texture_rgba8(device, nrm.data(), kNormalSize, kNormalSize);
+        std::fprintf(stderr, "[showcase] procedural normal map "
+                              "(%ux%u) bound\n",
+                     kNormalSize, kNormalSize);
+    }
     cd::rhi::SamplerDesc albedo_sd {};
     albedo_sd.mag_filter = cd::rhi::SamplerFilter::kLinear;
     albedo_sd.min_filter = cd::rhi::SamplerFilter::kLinear;
@@ -2137,7 +2229,7 @@ int main()
     if (!prim_inst_r.has_value()) return 14;
     auto& prim_inst = *prim_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 7> writes {
+        std::array<cd::rhi::DescriptorWrite, 8> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
@@ -2177,7 +2269,13 @@ int main()
                                        .array_element = 0,
                                        .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                        .view    = gpu_brdf_lut.view,
-                                       .sampler = ibl_sampler } };
+                                       .sampler = ibl_sampler },
+            // R2: procedural normal map for textured entities.
+            cd::rhi::DescriptorWrite { .binding = 8,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = normal_tex.view,
+                                       .sampler = albedo_sampler } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
