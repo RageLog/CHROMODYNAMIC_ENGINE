@@ -411,6 +411,11 @@ layout(set = 0, binding = 3) uniform LightArray {
   uint pad_c;
   LightSlot slots[8];
 } cd_lights;
+// R2 IBL-on-prim — same cubemaps + LUT the PBR pipeline binds.
+layout(set = 0, binding = 5) uniform samplerCube cd_ibl_spec;
+layout(set = 0, binding = 6) uniform samplerCube cd_ibl_diff;
+layout(set = 0, binding = 7) uniform sampler2D   cd_brdf_lut;
+const float kIblMaxMipLod = 5.0;
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
@@ -647,15 +652,43 @@ void main() {
     lit += albedo * col * (ki * ndl * atten * vis * cone);
   }
 
-  // Hemisphere ambient (sky-up / ground-down). Top-facing fragments
-  // pick up cool sky bounce, bottom-facing pick up warm ground bounce.
-  // Cheap stand-in for indirect light until the IBL UBO+descriptor
-  // path lands (Faz E). Reference: Lagarde & de Rousiers 2014 §3.
+  // Hemisphere ambient (sky-up / ground-down) — cheap stand-in for
+  // non-textured prim entities. Textured entities (kGltf flagged via
+  // fx_params.y > 0.5) get real IBL below.
   float up_t   = N.y * 0.5 + 0.5;
   vec3  sky_c  = vec3(0.55, 0.65, 0.85);
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
   vec3  ambient = albedo * hemi;
+
+  // R2: True IBL contribution for textured prim entities. Karis split-
+  // sum: irradiance(N) drives diffuse, prefiltered(R, rough*maxMip)
+  // drives spec, BRDF LUT(NoV, rough) combines F0-Fresnel + visibility.
+  // Treats the textured surface as a dielectric (F0 ≈ 0.04) since the
+  // prim shader doesn't yet sample MR maps — that's the next R2 ship.
+  if (pc.fx_params.y > 0.5) {
+    vec3 V_v   = normalize(pc.camera_pos.xyz - v_world_pos);
+    vec3 R_v   = reflect(-V_v, N);
+    float NoV_v= max(dot(N, V_v), 0.0);
+    float rough_ibl = 0.55;   // dielectric default until MR map lands
+    vec3 F0_ibl = vec3(0.04);
+    float lod   = rough_ibl * kIblMaxMipLod;
+    vec3 spec_e = textureLod(cd_ibl_spec, R_v, lod).rgb;
+    vec3 diff_e = texture(cd_ibl_diff, N).rgb;
+    vec2 brdf_v = texture(cd_brdf_lut, vec2(clamp(NoV_v, 0.0, 1.0),
+                                            clamp(rough_ibl, 0.0, 1.0))).rg;
+    vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
+    vec3 ibl_kD = (vec3(1.0) - ibl_F);  // metallic=0 dielectric
+    vec3 ibl    = ibl_kD * diff_e * albedo + spec_e * ibl_F;
+    // Gate by total scene light energy so all-lights-off => no IBL.
+    float ibl_e = pc.sun_dir.w;
+    for (uint li2 = 0; li2 < cd_lights.count; ++li2) {
+      if (cd_lights.slots[li2].pos_range.w <= 0.0) continue;
+      ibl_e += cd_lights.slots[li2].color_int.w;
+    }
+    float ibl_gate = clamp(ibl_e * 0.6, 0.0, 1.0);
+    ambient += ibl * ibl_gate * 0.55;
+  }
 
   // Inline GTAO approximation (v1.4 day-ship wire-in). True multi-pass
   // post_gtao::kGtaoMainCS dispatches land in v1.7 frame-graph rework;
@@ -1816,7 +1849,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 5> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 8> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -1836,6 +1869,20 @@ int main()
                                               .stages  = cd::rhi::ShaderStage::kFragment },
         // gap #1/#13 — baseColor texture slot for glTF entities.
         cd::rhi::DescriptorSetLayoutBinding { .binding = 4,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // R2: IBL on the prim pipeline so textured kGltf entities
+        // (CesiumMan, procedural Earth, torus knot) get reflections.
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 5,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 6,
+                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 7,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2090,7 +2137,7 @@ int main()
     if (!prim_inst_r.has_value()) return 14;
     auto& prim_inst = *prim_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 4> writes {
+        std::array<cd::rhi::DescriptorWrite, 7> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
@@ -2112,7 +2159,25 @@ int main()
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kCombinedImageSampler,
                                        .view = albedo_tex.view,
-                                       .sampler = albedo_sampler } };
+                                       .sampler = albedo_sampler },
+            // R2: IBL (prefiltered spec + diffuse irradiance + BRDF LUT)
+            // shared with the PBR pipeline so textured prim entities
+            // (CesiumMan, Earth showcase) get true reflections.
+            cd::rhi::DescriptorWrite { .binding = 5,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = gpu_spec_cube.view,
+                                       .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 6,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = gpu_diff_cube.view,
+                                       .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 7,
+                                       .array_element = 0,
+                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                       .view    = gpu_brdf_lut.view,
+                                       .sampler = ibl_sampler } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
@@ -2442,7 +2507,7 @@ int main()
             // measurement palette, picks up enough off-channel content
             // to read as distinct material tints without going to pure
             // RGB.
-            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.25F, 0.25F }, PrimitiveKind::kCube },
+            { "Cube",     { -2.4F, 0.0F,  0.0F }, { 1.00F, 0.10F, 0.10F }, PrimitiveKind::kCube },
             { "Sphere",   { -1.2F, 0.0F,  0.0F }, { 0.20F, 0.95F, 0.30F }, PrimitiveKind::kSphere },
             { "Cone",     {  0.0F, 0.0F,  0.0F }, { 0.15F, 0.40F, 1.00F }, PrimitiveKind::kCone },
             { "Cylinder", {  1.2F, 0.0F,  0.0F }, { 1.00F, 0.75F, 0.15F }, PrimitiveKind::kCylinder },
@@ -2474,10 +2539,14 @@ int main()
                 e.name = "glTF (" + gltf_loaded_name + ")";
                 // Prominent front-and-centre placement so the imported
                 // character is the focal showcase. Scale 2.2 reads as
-                // ~1.5 m human height — clearly visible without
-                // clipping at the camera's vertical FOV.
+                // ~1.5 m human height. CesiumMan ships Z-up (most
+                // Khronos sample characters do); rotate -90° about
+                // X to bring him upright in the engine's Y-up world.
                 scene.local(e.handle)->value.position = { 0.0F, -0.55F, 0.5F };
                 scene.local(e.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
+                // Quaternion for -90° (-π/2) about X: (sin(-π/4), 0, 0, cos(-π/4))
+                //                                  = (-0.7071, 0, 0, 0.7071)
+                scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
             }
             else
             {
