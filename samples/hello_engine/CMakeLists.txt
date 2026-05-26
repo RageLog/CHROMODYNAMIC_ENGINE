@@ -11,6 +11,8 @@ cd_add_sample(hello_engine
     cd::editor
     cd::imgui_backend
     cd::light
+    cd::atmosphere
+    cd::light_shafts
     cd::material
     cd::math
     cd::net
@@ -23,6 +25,8 @@ cd_add_sample(hello_engine
     cd::post_ssr
     cd::post_taa
     cd::render
+    cd::volumetric_clouds
+    cd::volumetric_fog
     cd::rhi
     cd::rhi_vulkan
     cd::scene

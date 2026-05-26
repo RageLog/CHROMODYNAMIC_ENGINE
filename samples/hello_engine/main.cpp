@@ -36,6 +36,7 @@
 #include <cd/asset/StreamRequest.hpp>
 #include <cd/asset_gltf/GltfLoader.hpp>
 #include <cd/asset_json/Json.hpp>
+#include <cd/atmosphere/Atmosphere.hpp>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/Limiter.hpp>
@@ -56,6 +57,7 @@
 #include <cd/light/ClusterGrid.hpp>
 #include <cd/light/ColorTemperature.hpp>
 #include <cd/light/Light.hpp>
+#include <cd/light_shafts/LightShafts.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/material/AnalyticalSkyMaterial.hpp>
@@ -79,6 +81,8 @@
 #include <cd/post_ssr/Ssr.hpp>
 #include <cd/post_taa/Taa.hpp>
 #include <cd/render/Renderer.hpp>
+#include <cd/volumetric_clouds/Clouds.hpp>
+#include <cd/volumetric_fog/Fog.hpp>
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
@@ -308,6 +312,8 @@ layout(push_constant) uniform PC {
   vec4 sun_color;        // xyz=color, w=ambient
   vec4 fx_params;        // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
   vec4 fx_params2;       // x=smaa, y=motion_blur, z=taa, w=dof (v1.4+)
+  vec4 fx_params3;       // x=fog, y=atmosphere, z=clouds, w=light_shafts
+  vec4 camera_pos;       // xyz=world camera (atmospherics distance)
 } pc;
 // Faz 1.6 CSM — light-space view-projection for shadow sampling.
 // Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
@@ -359,6 +365,8 @@ layout(push_constant) uniform PC {
   vec4 sun_color;
   vec4 fx_params;     // x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
   vec4 fx_params2;    // x=smaa, y=motion_blur, z=taa, w=dof (v1.4+)
+  vec4 fx_params3;    // x=fog, y=atmosphere, z=clouds, w=light_shafts
+  vec4 camera_pos;    // xyz=world camera (atmospherics distance)
 } pc;
 // Faz 1.6 CSM descriptors — match the VS layout.
 layout(set = 0, binding = 0) uniform Shadow {
@@ -699,6 +707,28 @@ void main() {
     c = mix(c, vec3(lum2), blur);
   }
 
+  // Inline atmospherics (v1.4 day-ship wire-in). True multi-scatter
+  // sky / froxel volumetric fog land in v1.7 when the frame-graph
+  // supplies the depth + occlusion targets these need.
+  //   x = exponential height fog density  -> blend to fog colour
+  //   y = aerial perspective strength     -> tint distant pixels blue
+  //   z = clouds coverage placeholder      -> needs noise sampler (v1.7)
+  //   w = light shafts strength placeholder -> needs depth probe (v1.7)
+  float dist = length(v_world_pos - pc.camera_pos.xyz);
+  float fog_density = clamp(pc.fx_params3.x, 0.0, 1.0);
+  if (fog_density > 0.001) {
+    float h_falloff = exp(-max(v_world_pos.y, 0.0) * 0.10);
+    float f = 1.0 - exp(-dist * fog_density * 0.030 * h_falloff);
+    vec3  fog_col = vec3(0.62, 0.66, 0.74);
+    c = mix(c, fog_col, clamp(f, 0.0, 0.95));
+  }
+  float aerial = clamp(pc.fx_params3.y, 0.0, 1.0);
+  if (aerial > 0.001) {
+    float t = clamp(dist / 80.0, 0.0, 1.0);
+    vec3 aerial_tint = vec3(0.55, 0.62, 0.78);
+    c = mix(c, aerial_tint, t * aerial * 0.35);
+  }
+
   c = pow(c, vec3(1.0/2.2));
   out_color = vec4(c, 1.0);
 }
@@ -741,9 +771,18 @@ struct PrimPush
     //                     z=taa_amount (queued for v1.7 frame-graph)
     //                     w=dof_strength (queued for v1.7 frame-graph)
     float           fx_params2[4];
+    // FX params block 3 — atmospherics (v1.4 day-ship batch 3)
+    //                     x=fog_density (inline exp height fog)
+    //                     y=atmosphere_strength (inline aerial perspective)
+    //                     z=clouds_coverage (queued, needs noise sampler)
+    //                     w=light_shafts_strength (queued, needs occlusion buf)
+    float           fx_params3[4];
+    // Camera origin (needed for distance fog without breaking the model
+    // matrix invariant). xyz=world camera, w=unused.
+    float           camera_pos[4];
 };
 
-static_assert(sizeof(PrimPush) == 208, "PrimPush layout drift");
+static_assert(sizeof(PrimPush) == 240, "PrimPush layout drift");
 
 // Multi-light UBO slot — matches std140 layout in the FS.
 struct LightSlotGpu
@@ -1932,6 +1971,15 @@ int main()
     float fx_taa_amount     = 0.0F;   // queued for v1.7 frame-graph
     float fx_dof_strength   = 0.0F;   // queued for v1.7 frame-graph
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
+    float fx_fog_density    = 0.0F;
+    float fx_aerial_perspective = 0.0F;
+    float fx_clouds_coverage = 0.0F;  // queued for v1.7 (needs 3D noise)
+    float fx_light_shafts   = 0.0F;   // queued for v1.7 (needs depth probe)
+    cd::atmosphere::Parameters fx_atmosphere {};
+    cd::light_shafts::Settings fx_lshafts {};
+    cd::volumetric_clouds::Settings fx_clouds {};
+    cd::volumetric_fog::GridConfig fx_vfog {};
+    (void)fx_atmosphere; (void)fx_lshafts; (void)fx_clouds; (void)fx_vfog;
     palette.register_command(80, "FX: Toggle GTAO (inline approx)",
         [&]{
             fx_gtao_strength = (fx_gtao_strength > 0.001F) ? 0.0F : 0.65F;
@@ -1986,6 +2034,32 @@ int main()
             log_push(fx_hdr10_request
                        ? "[fx] HDR10 request queued (swapchain rework)"
                        : "[fx] HDR10 off");
+        });
+    palette.register_command(90, "FX: Toggle Height Fog (inline exp)",
+        [&]{
+            fx_fog_density = (fx_fog_density > 0.001F) ? 0.0F : 0.6F;
+            log_push(fx_fog_density > 0.001F ? "[fx] Height fog on" : "[fx] Height fog off");
+        });
+    palette.register_command(91, "FX: Toggle Aerial Perspective (inline)",
+        [&]{
+            fx_aerial_perspective = (fx_aerial_perspective > 0.001F) ? 0.0F : 0.7F;
+            log_push(fx_aerial_perspective > 0.001F
+                       ? "[fx] Aerial perspective on"
+                       : "[fx] Aerial perspective off");
+        });
+    palette.register_command(92, "FX: Toggle Clouds (queued v1.7)",
+        [&]{
+            fx_clouds_coverage = (fx_clouds_coverage > 0.001F) ? 0.0F : 0.55F;
+            log_push(fx_clouds_coverage > 0.001F
+                       ? "[fx] Volumetric clouds queued (v1.7)"
+                       : "[fx] Clouds off");
+        });
+    palette.register_command(93, "FX: Toggle Light Shafts (queued v1.7)",
+        [&]{
+            fx_light_shafts = (fx_light_shafts > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx_light_shafts > 0.001F
+                       ? "[fx] Light shafts queued (v1.7)"
+                       : "[fx] Light shafts off");
         });
     // Silence -Wunused-variable on the not-yet-dispatched libs.
     (void)fx_ssr; (void)fx_dof; (void)fx_mblur; (void)fx_taa; (void)fx_smaa;
@@ -3358,6 +3432,12 @@ int main()
             fp.fx_params2[1] = fx_motion_blur;
             fp.fx_params2[2] = fx_taa_amount;
             fp.fx_params2[3] = fx_dof_strength;
+            fp.fx_params3[0] = fx_fog_density;
+            fp.fx_params3[1] = fx_aerial_perspective;
+            fp.fx_params3[2] = fx_clouds_coverage;
+            fp.fx_params3[3] = fx_light_shafts;
+            fp.camera_pos[0] = cam.eye.x; fp.camera_pos[1] = cam.eye.y;
+            fp.camera_pos[2] = cam.eye.z; fp.camera_pos[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(fp), &fp);
@@ -3396,6 +3476,12 @@ int main()
             pp.fx_params2[1] = fx_motion_blur;
             pp.fx_params2[2] = fx_taa_amount;
             pp.fx_params2[3] = fx_dof_strength;
+            pp.fx_params3[0] = fx_fog_density;
+            pp.fx_params3[1] = fx_aerial_perspective;
+            pp.fx_params3[2] = fx_clouds_coverage;
+            pp.fx_params3[3] = fx_light_shafts;
+            pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
+            pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
                                0, sizeof(pp), &pp);
@@ -3424,6 +3510,8 @@ int main()
             sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
             sp.fx_params[0] = sp.fx_params[1] = sp.fx_params[2] = sp.fx_params[3] = 0.0F;
             sp.fx_params2[0] = sp.fx_params2[1] = sp.fx_params2[2] = sp.fx_params2[3] = 0.0F;
+            sp.fx_params3[0] = sp.fx_params3[1] = sp.fx_params3[2] = sp.fx_params3[3] = 0.0F;
+            sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
 
             // Entity casters.
             for (const auto& ent : entities)
