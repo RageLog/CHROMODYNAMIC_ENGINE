@@ -957,15 +957,54 @@ constexpr const char* kCompositeFS = R"glsl(
 layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(set = 0, binding = 2) uniform sampler2D cd_depth;
+layout(set = 0, binding = 3) uniform sampler2D cd_gbuf_normal;
 layout(push_constant) uniform PC {
-  vec4 fx;      // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
-  vec4 ao;      // x=ao_strength, y=ao_radius_px, z=near, w=far
-  vec4 dof;     // x=dof_strength, y=focus_distance (m), z=focus_range (m), w=max_blur_px
-  vec4 shafts;  // x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
-  vec4 sun_col; // rgb=sun colour, a=reserved
-  vec4 atmo;    // x=fog_density (1/m), y=aerial_perspective_strength, z=vignette, w=film_grain
-  vec4 lens;    // x=chromatic_aberration_px (radial growth), y/z/w=reserved
+  vec4 fx;        // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+  vec4 ao;        // x=ao_strength, y=ao_radius_px, z=near, w=far
+  vec4 dof;       // x=dof_strength, y=focus_distance (m), z=focus_range (m), w=max_blur_px
+  vec4 shafts;    // x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
+  vec4 sun_col;   // rgb=sun colour, a=reserved
+  vec4 atmo;      // x=fog_density (1/m), y=aerial_perspective_strength, z=vignette, w=film_grain
+  vec4 lens;      // x=chromatic_aberration_px (radial growth), y/z/w=reserved
+  vec4 cam_right; // xyz=world right basis, w=half_w (tan(fov/2)*aspect)
+  vec4 cam_up;    // xyz=world up    basis, w=half_h (tan(fov/2))
+  vec4 cam_fwd;   // xyz=world forward,     w=reserved
+  vec4 cam_pos;   // xyz=world camera origin, w=reserved
+  vec4 ssr;       // x=ssr_strength, y=max_distance_m, z=max_steps, w=fade_edge
 } pc;
+
+// Reconstruct world-space position from screen UV + non-linear depth.
+// Uses the camera basis vectors so we don't need a full inverse-view-
+// projection matrix in push.
+vec3 world_pos_from_uv(vec2 uv, float depth) {
+  // NDC [-1,1] from UV [0,1]. Vulkan: NDC.y down matches UV.y down,
+  // so direct mapping without flip is correct here (scene materials
+  // already flipped clip.y on the way out).
+  vec2 ndc = uv * 2.0 - 1.0;
+  float lz = pc.ao.z * pc.ao.w / max(pc.ao.w - depth * (pc.ao.w - pc.ao.z), 1e-4);
+  vec3 ray = pc.cam_fwd.xyz
+           + ndc.x * pc.cam_right.w * pc.cam_right.xyz
+           - ndc.y * pc.cam_up.w    * pc.cam_up.xyz;
+  return pc.cam_pos.xyz + ray * lz;
+}
+
+// Project world-space position back to screen UV. Returns vec3 where
+// .xy is UV [0,1] and .z is non-linear depth (matches cd_depth).
+vec3 world_to_uv(vec3 w) {
+  vec3 rel = w - pc.cam_pos.xyz;
+  float fwd_dot = dot(rel, pc.cam_fwd.xyz);
+  if (fwd_dot <= 0.0) return vec3(-1.0);  // behind camera
+  float right_dot = dot(rel, pc.cam_right.xyz);
+  float up_dot    = dot(rel, pc.cam_up.xyz);
+  float ndc_x = (right_dot / fwd_dot) / pc.cam_right.w;
+  float ndc_y = (up_dot    / fwd_dot) / pc.cam_up.w;
+  float uv_x  = ndc_x * 0.5 + 0.5;
+  float uv_y  = -ndc_y * 0.5 + 0.5;
+  // Encode non-linear depth from linear (matches linearize_z's inverse).
+  float lz = fwd_dot;
+  float d = (pc.ao.w - pc.ao.z * pc.ao.w / lz) / (pc.ao.w - pc.ao.z);
+  return vec3(uv_x, uv_y, clamp(d, 0.0, 1.0));
+}
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
@@ -975,13 +1014,18 @@ float linearize_z(float d) {
   return pc.ao.z * pc.ao.w / max(pc.ao.w - d * (pc.ao.w - pc.ao.z), 1e-4);
 }
 
-// Depth-only horizon-scan AO. 8 ring samples around the centre pixel;
-// each sample whose linear-Z is in front of the centre contributes
-// to occlusion, weighted by inverse depth distance. Not a true GTAO
-// (no normal reconstruction) but visibly closes creases between
-// nearby objects — the cheap "ambient darkening" pass.
+// G-Buffer-aware horizon-scan AO. Same 8 ring samples around the
+// centre as before, but now weights each occluder by the cosine
+// between the surface normal and the world-space vector to the
+// occluder. Samples in the back hemisphere of the surface (which
+// can't possibly occlude — they're behind the surface plane) get
+// zero weight. Closes the prior "AO darkens edges of sky" artifact.
 float depth_ao(vec2 uv, float center_d) {
   if (center_d >= 0.999) return 1.0;  // sky pixel
+  vec4 N_packed = texture(cd_gbuf_normal, uv);
+  if (N_packed.w < 0.5) return 1.0;   // not a surface (sky / cleared)
+  vec3 N = normalize(N_packed.xyz);
+  vec3 wc = world_pos_from_uv(uv, center_d);
   float lc = linearize_z(center_d);
   vec2 px = 1.0 / vec2(textureSize(cd_depth, 0));
   vec2 ring[8] = vec2[8](
@@ -990,17 +1034,66 @@ float depth_ao(vec2 uv, float center_d) {
     vec2(-1.0,  0.0), vec2(-0.707, -0.707),
     vec2( 0.0, -1.0), vec2( 0.707, -0.707));
   float occ = 0.0;
+  float weight_sum = 0.0;
   for (int i = 0; i < 8; ++i) {
     vec2 sp = uv + ring[i] * pc.ao.y * px;
     float nd = texture(cd_depth, sp).r;
     float ln = linearize_z(nd);
-    float dz = lc - ln;  // > 0 → neighbour closer
+    float dz = lc - ln;
     float bias = 0.02 * lc;
-    float falloff = 1.0 / (1.0 + abs(dz) * 4.0);
-    occ += clamp((dz - bias) / 0.5, 0.0, 1.0) * falloff;
+    if (dz <= bias) continue;  // occluder behind centre — skip
+    vec3 ws = world_pos_from_uv(sp, nd);
+    vec3 dir = ws - wc;
+    float dlen = length(dir);
+    if (dlen < 1e-4) continue;
+    dir /= dlen;
+    float n_dot = max(dot(dir, N), 0.0);  // hemisphere weight
+    float falloff = 1.0 / (1.0 + dlen * 2.0);
+    occ += clamp((dz - bias) / 0.5, 0.0, 1.0) * n_dot * falloff;
+    weight_sum += n_dot;
   }
-  occ *= 1.0 / 8.0;
+  if (weight_sum < 1e-4) return 1.0;
+  occ /= max(weight_sum, 1.0);
   return clamp(1.0 - occ, 0.0, 1.0);
+}
+
+// Screen-space ray-march reflection (Sousa 2011 SSR-lite). Given the
+// surface point and its normal, reflect the view ray and march in
+// 2D UV space (constant step) until either: a) depth at sample point
+// is in front of march ray (=hit), or b) max-distance/step budget
+// exhausted (=miss → 0 colour). Returns reflection HDR colour.
+vec3 ssr_color(vec2 uv, vec3 wp, vec3 N) {
+  if (pc.ssr.x <= 0.001) return vec3(0.0);
+  vec3 V = normalize(pc.cam_pos.xyz - wp);
+  vec3 R = reflect(-V, N);
+  // March in WORLD space, project to UV per step.
+  int max_steps = int(max(pc.ssr.z, 1.0));
+  float max_dist = max(pc.ssr.y, 0.1);
+  float step_size = max_dist / float(max_steps);
+  for (int i = 1; i <= max_steps; ++i) {
+    vec3 sample_wp = wp + R * step_size * float(i);
+    vec3 sp = world_to_uv(sample_wp);
+    if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0 || sp.z < 0.0)
+      return vec3(0.0);  // off-screen miss
+    float scene_d = texture(cd_depth, sp.xy).r;
+    float scene_lz = linearize_z(scene_d);
+    float march_lz = linearize_z(sp.z);
+    // Hit when march ray is past (deeper than) scene depth but within
+    // a thickness tolerance. The tolerance scales with march step so
+    // far samples don't miss high-frequency geometry.
+    float thickness = step_size * 1.5;
+    if (march_lz > scene_lz && (march_lz - scene_lz) < thickness) {
+      // Edge fade — taper as the sample approaches screen edge.
+      vec2 ec = abs(sp.xy - vec2(0.5)) * 2.0;
+      float ef = clamp(1.0 - max(ec.x, ec.y) * pc.ssr.w, 0.0, 1.0);
+      // Fresnel-ish boost at grazing angles.
+      float NoV = max(dot(N, V), 0.0);
+      float fresnel = pow(1.0 - NoV, 3.0);
+      vec3 hit = texture(cd_hdr_color, sp.xy).rgb;
+      return hit * pc.ssr.x * ef * (0.3 + fresnel * 0.7);
+    }
+  }
+  return vec3(0.0);
 }
 
 // Chromatic aberration — radial RGB split. Strength grows with
@@ -1068,6 +1161,16 @@ void main() {
       c = mix(c, dof_sum,
               smoothstep(0.05, 0.30, coc) * clamp(pc.dof.x, 0.0, 1.0));
     }
+  }
+
+  // Screen-space reflections — use G-Buffer normal at the centre
+  // pixel; only run on real surface pixels. Reflection colour is
+  // added to HDR before bloom so SSR-hit highlights can bloom.
+  vec4 ssr_N = texture(cd_gbuf_normal, v_uv);
+  if (pc.ssr.x > 0.001 && ssr_N.w > 0.5 && center_d < 0.999) {
+    vec3 wp = world_pos_from_uv(v_uv, center_d);
+    vec3 N  = normalize(ssr_N.xyz);
+    c += ssr_color(v_uv, wp, N);
   }
 
   // Light shafts (volumetric god rays) — Mitchell 2007 screen-space
@@ -1157,15 +1260,23 @@ void main() {
 
 struct CompositePush
 {
-    float fx[4];      // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
-    float ao[4];      // x=ao_strength, y=ao_radius_px, z=near, w=far
-    float dof[4];     // x=dof_strength, y=focus_distance, z=focus_range, w=max_blur_px
-    float shafts[4];  // x=sun_uv_x, y=sun_uv_y, z=strength (neg = sun behind), w=decay
-    float sun_col[4]; // xyz=linear sun colour, w=reserved
-    float atmo[4];    // x=fog_density, y=aerial_strength, z=vignette, w=film_grain
-    float lens[4];    // x=chromatic_aberration_px, y=reserved, z=reserved, w=reserved
+    float fx[4];        // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
+    float ao[4];        // x=ao_strength, y=ao_radius_px, z=near, w=far
+    float dof[4];       // x=dof_strength, y=focus_distance, z=focus_range, w=max_blur_px
+    float shafts[4];    // x=sun_uv_x, y=sun_uv_y, z=strength (neg = sun behind), w=decay
+    float sun_col[4];   // xyz=linear sun colour, w=reserved
+    float atmo[4];      // x=fog_density, y=aerial_strength, z=vignette, w=film_grain
+    float lens[4];      // x=chromatic_aberration_px, y=reserved, z=reserved, w=reserved
+    // R3 G-Buffer-aware ops — camera basis lets composite reconstruct
+    // world-space sample positions from screen UV + depth, enabling
+    // proper SSR + normal-aware AO + future motion blur.
+    float cam_right[4]; // xyz=world-space right basis, w=half_w (tan(fov/2)*aspect)
+    float cam_up[4];    // xyz=world-space up basis,    w=half_h (tan(fov/2))
+    float cam_fwd[4];   // xyz=world-space forward,     w=reserved
+    float cam_pos[4];   // xyz=world camera origin,     w=reserved
+    float ssr[4];       // x=ssr_strength, y=max_distance_m, z=max_steps, w=fade_edge
 };
-static_assert(sizeof(CompositePush) == 112, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 192, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -1732,7 +1843,7 @@ int main()
                                      .offset = 0,
                                      .size = sizeof(CompositePush) } };
     comp_md.push_constants = kCompositePush;
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 3> kCompositeBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kCompositeBindings {
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 0,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
@@ -1745,6 +1856,11 @@ int main()
             .stages  = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 2,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 3,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
             .count   = 1,
             .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2306,7 +2422,7 @@ int main()
     bind_bloom_descriptors();
 
     auto bind_composite_hdr = [&]() {
-        std::array<cd::rhi::DescriptorWrite, 3> writes {
+        std::array<cd::rhi::DescriptorWrite, 4> writes {
             cd::rhi::DescriptorWrite {
                 .binding = 0,
                 .array_element = 0,
@@ -2324,6 +2440,12 @@ int main()
                 .array_element = 0,
                 .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                 .view    = depth.view,
+                .sampler = albedo_sampler },
+            cd::rhi::DescriptorWrite {
+                .binding = 3,
+                .array_element = 0,
+                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view    = gbuf_normal.view,
                 .sampler = albedo_sampler } };
         (void)composite_inst.update(writes);
     };
@@ -3013,6 +3135,7 @@ int main()
     float fx_bloom_post       = 0.04F; // bloom mip0 contribution mixed into HDR
     float fx_ao_strength      = 0.55F; // composite AO crease darkening
     float fx_shafts_strength  = 0.35F; // light shafts radial intensity
+    float fx_ssr_strength     = 0.5F;  // SSR reflection contribution (default on)
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
@@ -5145,6 +5268,7 @@ int main()
             ImGui::SliderFloat("AO strength",        &fx_ao_strength,      0.0F, 1.0F);
             ImGui::SliderFloat("DOF strength",       &fx_dof_strength,     0.0F, 1.0F);
             ImGui::SliderFloat("Light shafts",       &fx_shafts_strength,  0.0F, 1.5F);
+            ImGui::SliderFloat("SSR strength",       &fx_ssr_strength,     0.0F, 1.0F);
             ImGui::Separator();
             ImGui::TextDisabled("Motion blur + TAA queued — need velocity buffer");
             ImGui::SliderFloat("Motion blur (off)",  &fx_motion_blur,      0.0F, 1.0F);
@@ -6718,6 +6842,55 @@ int main()
         cp.lens[1] = 0.0F;
         cp.lens[2] = 0.0F;
         cp.lens[3] = 0.0F;
+        // G-Buffer-aware ops: pack camera basis so the composite FS can
+        // reconstruct world-space positions per pixel for SSR + normal-
+        // aware AO. Match the same basis the sky shader uses (forward
+        // = (target-eye)/|...|, right = forward × +Y, up = right ×
+        // forward) so SSR rays project consistently.
+        {
+            const cd::math::Vec3f fwd_raw {
+                cam.target.x - cam.eye.x,
+                cam.target.y - cam.eye.y,
+                cam.target.z - cam.eye.z };
+            const float ssr_fl = std::sqrt(fwd_raw.x*fwd_raw.x +
+                                           fwd_raw.y*fwd_raw.y +
+                                           fwd_raw.z*fwd_raw.z);
+            const cd::math::Vec3f fwd = (ssr_fl > 1e-6F)
+                ? cd::math::Vec3f { fwd_raw.x / ssr_fl, fwd_raw.y / ssr_fl, fwd_raw.z / ssr_fl }
+                : cd::math::Vec3f { 0.0F, 0.0F, -1.0F };
+            constexpr cd::math::Vec3f cam_world_up { 0.0F, 1.0F, 0.0F };
+            const cd::math::Vec3f r_raw {
+                fwd.y * cam_world_up.z - fwd.z * cam_world_up.y,
+                fwd.z * cam_world_up.x - fwd.x * cam_world_up.z,
+                fwd.x * cam_world_up.y - fwd.y * cam_world_up.x };
+            const float ssr_rl = std::sqrt(r_raw.x*r_raw.x +
+                                           r_raw.y*r_raw.y +
+                                           r_raw.z*r_raw.z);
+            const cd::math::Vec3f right = (ssr_rl > 1e-6F)
+                ? cd::math::Vec3f { r_raw.x / ssr_rl, r_raw.y / ssr_rl, r_raw.z / ssr_rl }
+                : cd::math::Vec3f { 1.0F, 0.0F, 0.0F };
+            const cd::math::Vec3f up_cam {
+                right.y * fwd.z - right.z * fwd.y,
+                right.z * fwd.x - right.x * fwd.z,
+                right.x * fwd.y - right.y * fwd.x };
+            const float aspect_l = static_cast<float>(frame.extent.width) /
+                                   static_cast<float>(frame.extent.height);
+            const float half_h_l = std::tan(cam.fov_y * 0.5F);
+            const float half_w_l = half_h_l * aspect_l;
+            cp.cam_right[0] = right.x; cp.cam_right[1] = right.y;
+            cp.cam_right[2] = right.z; cp.cam_right[3] = half_w_l;
+            cp.cam_up[0]    = up_cam.x; cp.cam_up[1]    = up_cam.y;
+            cp.cam_up[2]    = up_cam.z; cp.cam_up[3]    = half_h_l;
+            cp.cam_fwd[0]   = fwd.x;   cp.cam_fwd[1]   = fwd.y;
+            cp.cam_fwd[2]   = fwd.z;   cp.cam_fwd[3]   = 0.0F;
+            cp.cam_pos[0]   = cam.eye.x; cp.cam_pos[1] = cam.eye.y;
+            cp.cam_pos[2]   = cam.eye.z; cp.cam_pos[3] = 0.0F;
+        }
+        // SSR — wired from the existing UI slider; defaults to 0 (off).
+        cp.ssr[0] = fx_ssr_strength;
+        cp.ssr[1] = 25.0F;   // max distance (m)
+        cp.ssr[2] = 24.0F;   // max steps
+        cp.ssr[3] = 1.5F;    // edge-fade aggressiveness
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
