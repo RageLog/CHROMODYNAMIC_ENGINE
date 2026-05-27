@@ -14,4 +14,5 @@ add_subdirectory(config)
 add_subdirectory(vfs)
 add_subdirectory(profile)
 add_subdirectory(bench)
+add_subdirectory(foundation_utils)   # Phase 234 — umbrella over 7 small foundation libs
 # Sprint S2.9+ adds: schema (still ahead)
