@@ -255,7 +255,52 @@ TEST(BrdfLut, SmoothLowAngleHasLowScaleHighBias)
 }
 
 // Phase 171 — LitPbrMaterial std140 packer
+#include <cd/material/AnalyticalSkyMaterial.hpp>
 #include <cd/material/LitPbrMaterial.hpp>
+#include <cd/material/StandardPbrMaterial.hpp>
+
+// W5-E: regression guards for the W4/W5 visual-bug fixes. The shader
+// sources are header-only string constants, so a textual contract test
+// catches accidental edits that revert the user-verified fixes.
+
+TEST(StandardPbr, FrontSidedAreaLightGate)
+{
+    // W4-B: rect-area path must filter back-side shading points so the
+    // panel only lights its emissive hemisphere.
+    const std::string fs { cd::material::kStandardPbrFS };
+    EXPECT_NE(fs.find("dot(to_pt_w, N_rect) <= 0.0"), std::string::npos);
+}
+
+TEST(StandardPbr, SpotConeReadsConfiguredInnerAngle)
+{
+    // W4-H: spot path reads CPU-configured cos_inner_cone from extras.w
+    // (was synthesising cos_out + 0.05).
+    const std::string fs { cd::material::kStandardPbrFS };
+    EXPECT_NE(fs.find("cos_in_cpu = cd_lights.slots[li].extras.w"),
+              std::string::npos);
+}
+
+TEST(StandardPbr, AreaExtrasHalvedForLtcCorners)
+{
+    // W4-A: extras.y / extras.z are FULL width/height; the FS halves
+    // them so the LTC polygon reconstruction uses half-extents.
+    const std::string fs { cd::material::kStandardPbrFS };
+    EXPECT_NE(fs.find("extras.y * 0.5"), std::string::npos);
+    EXPECT_NE(fs.find("extras.z * 0.5"), std::string::npos);
+}
+
+TEST(AnalyticalSky, CpuBakedPaletteMatchesGlslSky)
+{
+    // W5-A: CPU bake palette is daylight-saturated (matching the GLSL
+    // sky), not the previous beige overcast palette. A cheap probe at
+    // upward direction must lie in the deep-blue zenith band rather
+    // than the desaturated 0.50/0.58/0.72 it used before.
+    const auto zen = cd::material::sample_sky_cpu({ 0.0F, 1.0F, 0.0F });
+    EXPECT_LT(zen.x, 0.40F);  // red component below the old 0.50 mark
+    EXPECT_GT(zen.z, 0.70F);  // blue component above the old 0.72 mark
+}
+
+
 
 TEST(LitPbr, StdLayoutSizes)
 {
