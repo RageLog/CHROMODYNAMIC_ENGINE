@@ -341,12 +341,14 @@ void main() {
   // direct lobes. Tinted warm (skin-ish) so the terminator picks up
   // the SSS look. Only contributes when sss_s > 0.
   if (sss_s > 0.001) {
-    const vec3 sss_tint = vec3(0.98, 0.70, 0.55);  // warm skin profile
-    const float wrap    = 0.45;                    // diffusion radius proxy
+    const vec3 sss_tint = vec3(0.98, 0.55, 0.40);  // warmer skin tint
+    const float wrap    = 0.6;                     // wider diffusion proxy
     vec3 sss = wrap_diffuse(N, L_key,  albedo, wrap, sss_tint) * C_key
              + wrap_diffuse(N, L_fill, albedo, wrap, sss_tint) * C_fill
              + wrap_diffuse(N, L_rim,  albedo, wrap, sss_tint) * C_rim;
-    direct += sss * sss_s;
+    // B08: x3 scalar so sss_s=0.5 produces a visibly warm terminator
+    // on the PBR spheres (was barely distinguishable from base diffuse).
+    direct += sss * sss_s * 3.0;
   }
 
   // Multi-light UBO contribution (#22 fix). Loops every enabled

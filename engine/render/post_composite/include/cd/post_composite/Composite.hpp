@@ -328,7 +328,9 @@ vec3 sample_chromab(vec2 uv) {
   float r = length(vc);
   vec2 dir = (r > 1e-4) ? vc / r : vec2(0.0);
   vec2 px = 1.0 / vec2(textureSize(cd_hdr_color, 0));
-  float offs = pc.lens.x * r * r * 8.0;
+  // 8 px → 32 px multiplier — B07 user reported no visible effect at
+  // the previous setting; 0.5 strength now gives ~8 px corner offset.
+  float offs = pc.lens.x * r * r * 32.0;
   vec3 c;
   c.r = texture(cd_hdr_color, uv + dir * offs * px).r;
   c.g = texture(cd_hdr_color, uv).g;

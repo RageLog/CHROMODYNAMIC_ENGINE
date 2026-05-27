@@ -1,28 +1,28 @@
-﻿// =============================================================================
-// CHROMODYNAMIC â€” samples/hello_engine
+// =============================================================================
+// CHROMODYNAMIC - samples/hello_engine
 //
-// Phase 138 / v0.99.64 â€” mega-showcase: a single ImGui-docked window
+// Phase 138 / v0.99.64 - mega-showcase: a single ImGui-docked window
 // running every major marathon subsystem live so a fresh observer can
 // see "what does this engine do today?" in one place.
 //
 // Panels rendered (DockSpace, all visible at once):
-//   * 3D Viewport â€” analytical-sky skybox + 5x5 PBR sphere sweep +
+//   * 3D Viewport - analytical-sky skybox + 5x5 PBR sphere sweep +
 //     procedural primitive entities (cube / sphere / cone / cylinder /
 //     torus from cd::asset::Primitives) + ECS-driven orbit camera.
-//   * Scene tree â€” entity list, click to select.
-//   * Inspector â€” DragFloat3 live-edit transform; EditHistory
+//   * Scene tree - entity list, click to select.
+//   * Inspector - DragFloat3 live-edit transform; EditHistory
 //     captures drag-release as a single command.
-//   * Audio meter â€” Mixer â†’ Compressor â†’ SimpleReverb â†’ LowPass â†’
+//   * Audio meter - Mixer ??' Compressor ??' SimpleReverb ??' LowPass ??'
 //     Limiter chain running continuously on a synthetic source;
 //     panel shows comp gain reduction (dB), limiter activity, peak.
-//   * Net sim ticker â€” SnapshotBuffer + DeltaWriter + LatencyStats +
+//   * Net sim ticker - SnapshotBuffer + DeltaWriter + LatencyStats +
 //     Throttle simulating client/server traffic at 60 Hz, ASCII
 //     table per second of stats.
-//   * Random viz â€” PCG32 + Box-Muller histograms refreshed every
+//   * Random viz - PCG32 + Box-Muller histograms refreshed every
 //     ~2 s.
-//   * Counters â€” CounterTable snapshot (frames, draws, commands).
-//   * History log â€” EditHistory + palette + sample-side events.
-//   * Command Palette popup (Ctrl+Shift+P) â€” 15+ registered
+//   * Counters - CounterTable snapshot (frames, draws, commands).
+//   * History log - EditHistory + palette + sample-side events.
+//   * Command Palette popup (Ctrl+Shift+P) - 15+ registered
 //     commands including all four "Select primitive" entries,
 //     transform resets, history clear, audio mute, net sim toggle,
 //     random reseed, save/load.
@@ -184,7 +184,7 @@ struct SceneEntity
     float             metallic  { 0.0F };
     float             roughness { 0.5F };
     PrimitiveKind     kind { PrimitiveKind::kCube };
-    // R3 phase 226 — previous-frame model matrix, populated at the end
+    // R3 phase 226 - previous-frame model matrix, populated at the end
     // of each frame's main pass for the velocity pass to use next frame.
     // On the first frame this equals the curr model so the velocity
     // output is zero (no motion).
@@ -192,7 +192,7 @@ struct SceneEntity
     bool              prev_model_valid { false };
 };
 
-// Reserved for save/load round-trip â€” currently unused but documents
+// Reserved for save/load round-trip - currently unused but documents
 // the convention.
 [[maybe_unused]] [[nodiscard]] PrimitiveKind kind_from_name(std::string_view n) noexcept
 {
@@ -268,7 +268,7 @@ void destroy_mesh(cd::rhi::IDevice& dev, GpuMesh& m)
 // Convert PrimitiveVertex (44 B pos+normal+uv+color) to a 2-attribute
 // pos+normal layout that the StandardPbrMaterial vertex shader expects.
 // We do the copy CPU-side and upload as a separate stream because the
-// PBR shader signature is fixed (pos@loc0, normal@loc1 â€” no color/uv).
+// PBR shader signature is fixed (pos@loc0, normal@loc1 - no color/uv).
 // ============================================================================
 struct PbrVertex { float pos[3]; float normal[3]; };
 
@@ -323,7 +323,7 @@ to_pbr_vertices(const cd::asset::PrimitiveMesh& m)
 
 // ============================================================================
 // Wireframe-like simple shader that draws PrimitiveVertex meshes (color
-// from vertex.color). Used by the ECS entity panel â€” gives each
+// from vertex.color). Used by the ECS entity panel - gives each
 // primitive a recognisable shape via per-vertex normal-pastel colour.
 // ============================================================================
 constexpr const char* kPrimVS = R"glsl(
@@ -340,7 +340,7 @@ layout(push_constant) uniform PC {
   vec4 camera_pos;       // xyz=world camera (atmospherics distance)
   vec4 fx_params4;       // x=clearcoat, y=sheen, z=sss, w=reserved
 } pc;
-// Faz 1.6 CSM â€” light-space view-projection for shadow sampling.
+// Faz 1.6 CSM - light-space view-projection for shadow sampling.
 // Set 0 / binding 0 is a per-frame UBO updated each draw cycle by
 // the host with the current sun's ortho VP. Binding 1 (sampler) is
 // declared in the fragment shader.
@@ -364,8 +364,8 @@ void main() {
   // Inverse-transpose-of-model would be more correct for non-uniform
   // scale; for the sample we use model directly (scales are uniform).
   v_world_normal = normalize((pc.model * vec4(in_normal, 0.0)).xyz);
-  // Shadow-space position. light_vp is set up so x,y âˆˆ [-1,1] and
-  // z âˆˆ [0,1] for fragments inside the shadow ortho frustum. Vulkan
+  // Shadow-space position. light_vp is set up so x,y ??? [-1,1] and
+  // z ??? [0,1] for fragments inside the shadow ortho frustum. Vulkan
   // sample-side flips y to match texture v-down, done in the FS.
   v_shadow_pos = cd_shadow.light_vp * vec4(v_world_pos, 1.0);
   vec4 clip = pc.mvp * vec4(in_pos, 1.0);
@@ -376,7 +376,7 @@ void main() {
 
 constexpr const char* kPrimFS = R"glsl(
 #version 460
-// Faz 1.7 â€” inline RT shadows via ray queries inside the raster FS.
+// Faz 1.7 - inline RT shadows via ray queries inside the raster FS.
 // VK_KHR_ray_query is required at the device level; the material
 // creation gates on device.features().ray_query so this extension
 // guard never fires on unsupported hardware. GLSL 460 is required
@@ -394,16 +394,16 @@ layout(push_constant) uniform PC {
   vec4 camera_pos;    // xyz=world camera (atmospherics distance)
   vec4 fx_params4;    // x=clearcoat, y=sheen, z=sss, w=reserved (R6)
 } pc;
-// Faz 1.6 CSM descriptors â€” match the VS layout.
+// Faz 1.6 CSM descriptors - match the VS layout.
 layout(set = 0, binding = 0) uniform Shadow {
   mat4 light_vp;
 } cd_shadow;
 layout(set = 0, binding = 1) uniform sampler2D cd_shadow_map;
-// Faz 1.7 TLAS â€” rebuilt every frame on the host with the current
+// Faz 1.7 TLAS - rebuilt every frame on the host with the current
 // scene transforms. Used to shadow-test punctual / spot / area
 // lights that CSM can't cover (CSM is single-directional only).
 layout(set = 0, binding = 2) uniform accelerationStructureEXT cd_tlas;
-// Faz 1.9 multi-light UBO (gap #2 + #3 foundation) â€” 8 non-sun
+// Faz 1.9 multi-light UBO (gap #2 + #3 foundation) - 8 non-sun
 // lights with full type-specific data.
 struct LightSlot {
   vec4 pos_range;   // xyz=world pos, w=range
@@ -416,7 +416,7 @@ layout(set = 0, binding = 3) uniform LightArray {
   // slots[] to offset 64, but the C++ LightUboGpu uses packed
   // std::uint32_t pad[3] (12 B contiguous) with slots starting at
   // offset 16. Using 3 separate scalar uints matches the packed C++
-  // layout â€” fixes the entire multi-light contribution being read
+  // layout - fixes the entire multi-light contribution being read
   // from a wrong offset on the GPU side.
   uint count;
   uint pad_a;
@@ -424,7 +424,7 @@ layout(set = 0, binding = 3) uniform LightArray {
   uint pad_c;
   LightSlot slots[8];
 } cd_lights;
-// R2 IBL-on-prim â€” same cubemaps + LUT the PBR pipeline binds.
+// R2 IBL-on-prim - same cubemaps + LUT the PBR pipeline binds.
 layout(set = 0, binding = 5) uniform samplerCube cd_ibl_spec;
 layout(set = 0, binding = 6) uniform samplerCube cd_ibl_diff;
 layout(set = 0, binding = 7) uniform sampler2D   cd_brdf_lut;
@@ -436,7 +436,7 @@ layout(set = 0, binding = 9) uniform sampler2D   cd_mr_tex;
 const float kIblMaxMipLod = 5.0;
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
-// Avoids needing per-vertex tangents â€” works for any UV-mapped mesh.
+// Avoids needing per-vertex tangents - works for any UV-mapped mesh.
 mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
   vec3 dp1 = dFdx(p);
   vec3 dp2 = dFdy(p);
@@ -456,18 +456,18 @@ layout(location = 3) in vec4 v_shadow_pos;
 layout(location = 4) in vec2 v_uv;
 // Optional baseColor texture (gap #1/#13). fx_params.y = 1.0
 // flags the draw as 'sample texture'; 0.0 = use vertex-coloured
-// albedo path. Single texture slot for hello_engine â€” production
+// albedo path. Single texture slot for hello_engine - production
 // editor needs a per-entity texture array (v1.6+).
 layout(set = 0, binding = 4) uniform sampler2D cd_albedo_tex;
 layout(location = 0) out vec4 out_color;
-// G-Buffer normal MRT â€” world-space surface normal (xyz) + flag (w=1
+// G-Buffer normal MRT - world-space surface normal (xyz) + flag (w=1
 // surface, 0 = sky/transparent). Composite + post-fx pipeline samples
 // this for SSR, normal-aware AO, future reflections.
 layout(location = 1) out vec4 out_normal;
-// G-Buffer albedo MRT â€” base color (rgb) + material flag (a). Used by
+// G-Buffer albedo MRT - base color (rgb) + material flag (a). Used by
 // SSR tinting, GI prep, deferred shading downstream.
 layout(location = 2) out vec4 out_albedo;
-// G-Buffer metallic/roughness MRT â€” packed pair (xy) for SSR rough
+// G-Buffer metallic/roughness MRT - packed pair (xy) for SSR rough
 // blur + deferred BRDF + GI.
 layout(location = 3) out vec2 out_mr;
 
@@ -483,7 +483,7 @@ float distance_atten(float d, float range) {
 // surface point toward `dir` for at most `tmax` metres. Returns 1.0
 // when nothing blocks (lit) and 0.0 on any committed intersection
 // (shadowed). The kTerminateOnFirstHit ray flag lets us early-out as
-// soon as the first opaque triangle is hit â€” no need to find the
+// soon as the first opaque triangle is hit - no need to find the
 // closest one. Ray origin is biased by +1mm along the surface
 // normal to dodge self-intersection acne.
 float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
@@ -505,15 +505,15 @@ float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
           gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
 }
 
-// 3Ã—3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
-// occluded. Vulkan clip space x,y âˆˆ [-1,1], depth âˆˆ [0,1]; texture
+// 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
+// occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
 // uv has y down (matches Vulkan clip y after perspective divide).
 // LTC polygon irradiance for area lights (#3). Lambert-only fit
-// (identity inverse matrix â€” production wants a 64x64 LUT keyed
+// (identity inverse matrix - production wants a 64x64 LUT keyed
 // by roughness/NoV). N is the surface normal at the shading
 // point; corners are in world-space, relative to the shading
 // point. Returns the form-factor of the polygon visible from N.
-// Edge integral with atan2 â€” robust at parallel and anti-parallel
+// Edge integral with atan2 - robust at parallel and anti-parallel
 // configurations (the prior acos/sin form blew up near sin ~ 0 and
 // produced a thin black stripe at the area-light's equatorial plane).
 float cd_ltc_edge_integral(vec3 a, vec3 b) {
@@ -542,14 +542,14 @@ float cd_ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
 }
 
 float sample_shadow(vec4 sp, vec3 N, vec3 L) {
-  // Perspective divide â€” ortho gives w=1 but keep for generality.
+  // Perspective divide - ortho gives w=1 but keep for generality.
   vec3 p = sp.xyz / sp.w;
-  // Outside the shadow ortho frustum â†’ assume lit (sky / far away).
+  // Outside the shadow ortho frustum ??' assume lit (sky / far away).
   if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0 ||
       p.z < 0.0 || p.z > 1.0) return 1.0;
-  // Vulkan: NDC y down â†’ texture v down, same orientation, no flip.
+  // Vulkan: NDC y down ??' texture v down, same orientation, no flip.
   vec2 uv = p.xy * 0.5 + 0.5;
-  // Slope-scaled depth bias â€” fights shadow acne on grazing-angle
+  // Slope-scaled depth bias - fights shadow acne on grazing-angle
   // fragments. Coefficient picked empirically.
   float bias = max(0.0025 * (1.0 - max(dot(N, L), 0.0)), 0.0005);
   float ref  = p.z - bias;
@@ -572,14 +572,14 @@ void main() {
   // "surface" at sample time.
   out_normal = vec4(normalize(v_world_normal), 1.0);
 
-  // R3 G-Buffer phase 219 â€” albedo + MR. Sample the same textures
+  // R3 G-Buffer phase 219 - albedo + MR. Sample the same textures
   // the lit path uses so deferred / post-fx consumers see exactly
   // what the forward path drew. Defaults: 0 metallic, 0.5 roughness.
   vec4 mr_pre = (pc.fx_params.y > 0.5) ? texture(cd_mr_tex, v_uv) : vec4(0, 0.5, 0.04, 1);
   out_albedo = vec4(clamp(v_albedo * pc.tint.rgb, vec3(0.0), vec3(1.0)), 1.0);
   out_mr = vec2(clamp(mr_pre.b, 0.0, 1.0), clamp(mr_pre.g, 0.04, 1.0));
 
-  // tint.w sentinel: < 0.5 = "shadow-projection draw" â€” bypass lighting
+  // tint.w sentinel: < 0.5 = "shadow-projection draw" - bypass lighting
   // entirely and output a flat dark silhouette. Used by the planar-
   // shadow pass that re-draws each caster, projected onto the floor
   // plane along the sun direction. Alpha-blend would soften the result
@@ -589,12 +589,12 @@ void main() {
     return;
   }
 
-  // tint.w > 1.5 = "floor draw" â€” overlay an analytic grid in the
+  // tint.w > 1.5 = "floor draw" - overlay an analytic grid in the
   // fragment shader instead of via ImGui's foreground draw list. This
   // keeps grid lines properly z-occluded by other geometry (the user-
   // flagged "grid objects arasindan gozukmemeli" issue) for free.
   // Otherwise identical to a normal lit shading path.
-  // baseColor texture path â€” when the entity is flagged as
+  // baseColor texture path - when the entity is flagged as
   // textured (fx_params.y > 0.5), override v_albedo with the
   // sampled albedo * tint. The default 1x1 white texture in the
   // descriptor lets non-textured draws fall through harmlessly,
@@ -608,7 +608,7 @@ void main() {
   bool is_floor = (pc.tint.w > 1.5);
   float floor_fade = 1.0;  // 1 = full body, 0 = fully faded (sky-coloured)
   if (is_floor) {
-    // Distance fade â€” body + lines both attenuate as the camera
+    // Distance fade - body + lines both attenuate as the camera
     // looks out toward the horizon, so the floor 'reaches into
     // infinity' rather than ending in a hard square edge.
     // 60 m = full opacity, 200 m = fully transparent (faded to sky).
@@ -651,7 +651,7 @@ void main() {
   }
 
   vec3 N = normalize(v_world_normal);
-  // R2 normal mapping for textured entities â€” perturbs the surface
+  // R2 normal mapping for textured entities - perturbs the surface
   // normal with the tangent-space sample so the procedural Earth
   // bumps register as real 3D relief.
   if (pc.fx_params.y > 0.5) {
@@ -668,10 +668,10 @@ void main() {
   lit += albedo * pc.sun_color.rgb * (pc.sun_dir.w * ndl_sun * shade);
 
   // Multi-light loop (gap #2 + #3). Per type:
-  //   1 = Point  â€” Frostbite windowed inverse-square, RT shadow
-  //   2 = Spot   â€” same + smoothstep cone falloff
-  //   3 = Rect   â€” LTC polygon irradiance (Heitz 2016, Lambert fit)
-  //   4 = Disk   â€” LTC polygon irradiance with disk approximated by quad
+  //   1 = Point  - Frostbite windowed inverse-square, RT shadow
+  //   2 = Spot   - same + smoothstep cone falloff
+  //   3 = Rect   - LTC polygon irradiance (Heitz 2016, Lambert fit)
+  //   4 = Disk   - LTC polygon irradiance with disk approximated by quad
   // Each contribution gated by an inline RT shadow ray (Faz 1.7).
   for (uint li = 0; li < cd_lights.count; ++li) {
     vec3 lp_pos = cd_lights.slots[li].pos_range.xyz;
@@ -699,7 +699,7 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      // Area light shadows disabled â€” same self-occlusion issue as
+      // Area light shadows disabled - same self-occlusion issue as
       // multi-light point/spot. Returns with R3 per-instance ray mask.
       float vis_a = 1.0;
       vec3  col   = cd_lights.slots[li].color_int.xyz;
@@ -728,7 +728,7 @@ void main() {
     // Non-sun shadows disabled until per-instance ray-mask lands
     // with the R3 frame-graph rework. The bias-only approach
     // false-occludes dense geometry (PBR sphere grid, merged
-    // character mesh) â€” closes 'isigin vurdugu cisimler hic
+    // character mesh) - closes 'isigin vurdugu cisimler hic
     // gozukmuyor'. Trade-off: spot/point cast no shadows; objects
     // stay visible where the cone reaches them.
     float vis = 1.0;
@@ -737,7 +737,7 @@ void main() {
     lit += albedo * col * (ki * ndl * atten * vis * cone);
   }
 
-  // Hemisphere ambient (sky-up / ground-down) â€” cheap stand-in for
+  // Hemisphere ambient (sky-up / ground-down) - cheap stand-in for
   // non-textured prim entities. Textured entities (kGltf flagged via
   // fx_params.y > 0.5) get real IBL below.
   float up_t   = N.y * 0.5 + 0.5;
@@ -769,10 +769,10 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    // IBL gate: SUN ONLY. Non-sun lights are direct sources â€” they
+    // IBL gate: SUN ONLY. Non-sun lights are direct sources - they
     // illuminate via their own contribution and shouldn't synthesise
     // a global ambient lift. Closes 'spotda boyutu ve gucu dusurdum
-    // ama cism gozukur durumda kaldi' â€” when the only enabled light
+    // ama cism gozukur durumda kaldi' - when the only enabled light
     // is a weak/small non-sun source, surfaces outside its reach now
     // read as truly dark instead of getting an IBL freebie.
     // Metallic surfaces under non-sun-only lighting will read black
@@ -795,7 +795,7 @@ void main() {
     ambient   *= ao;
   }
 
-  // R6 advanced BRDF lobes â€” inline approximations matching:
+  // R6 advanced BRDF lobes - inline approximations matching:
   //   cd::brdf_sheen_clearcoat::kInlineRimApproxGlsl  (clearcoat + sheen)
   //   cd::brdf_sss::kInlineBurleyWrapGlsl             (wrap-diffusion SSS)
   // For the proper full BRDF kernels (Estevez Charlie + Filament
@@ -824,7 +824,7 @@ void main() {
       vec3 sheen_col = vec3(0.95, 0.92, 0.88);
       lit += sheen_col * rim * fx_sheen * 1.2;
     }
-    // SSS: Burley-inspired wrap diffusion â€” boost backlit pixels with
+    // SSS: Burley-inspired wrap diffusion - boost backlit pixels with
     // a warm subsurface tint, simulating skin/wax light bleed.
     if (fx_sss > 0.001) {
       vec3 Ld_b = normalize(-pc.sun_dir.xyz);
@@ -841,7 +841,7 @@ void main() {
   // space effects (vignette / CA / grain / fog / aerial / shafts)
   // that need scene data, then emit linear HDR.
 
-  // R7 camera composition â€” inline approximations matching
+  // R7 camera composition - inline approximations matching
   // cd::post_camera::kInlineCameraGlsl (vignette / chromatic / grain).
   // For the proper off-screen LUT/blur post pass see the v1.7 frame-
   // graph ship.
@@ -871,7 +871,7 @@ void main() {
   //   x = exponential height fog density
   //   y = aerial perspective strength
   //   z = clouds coverage placeholder (needs noise sampler, v1.7)
-  //   w = light shafts strength  â€” R5 inline approximation here:
+  //   w = light shafts strength  - R5 inline approximation here:
   //       attenuate visibility radially from the on-screen sun
   //       direction and brighten low-luma pixels in that cone.
   float dist = length(v_world_pos - pc.camera_pos.xyz);
@@ -888,7 +888,7 @@ void main() {
     vec3 aerial_tint = vec3(0.55, 0.62, 0.78);
     c = mix(c, aerial_tint, t * aerial * 0.35);
   }
-  // R5 inline god rays â€” matches cd::light_shafts::kInlineConeShaftGlsl.
+  // R5 inline god rays - matches cd::light_shafts::kInlineConeShaftGlsl.
   // Full screen-space radial blur lives at
   // cd::light_shafts::kRadialBlurCS and dispatches with the v1.7
   // frame-graph rework.
@@ -902,7 +902,7 @@ void main() {
     c += shaft_col * shaft * 0.6;
   }
 
-  // Linear HDR output â€” composite pass owns the gamma transform.
+  // Linear HDR output - composite pass owns the gamma transform.
 
   // Debug view modes (fx_params4.w):
   //   1 albedo only, 2 world normal, 3 MR map, 4 AO, 5 perturbed
@@ -938,7 +938,7 @@ void main() {
 // Shadow-map pipeline (Faz 1.6 CSM). Depth-only render pass: a single
 // 2K shadow map rendered from the sun's POV with an orthographic
 // projection sized to cover the entire scene. Vertex shader is
-// trivial â€” multiply by light_mvp. Fragment shader is empty (depth
+// trivial - multiply by light_mvp. Fragment shader is empty (depth
 // is the only output we need; Vulkan still requires a stage but the
 // validator accepts a no-op FS).
 // ============================================================================
@@ -954,7 +954,7 @@ constexpr const char* kShadowFS = R"glsl(
 void main() {}
 )glsl";
 
-// R3 â€” Composite pass â€” shader source + push struct extracted into
+// R3 - Composite pass - shader source + push struct extracted into
 // cd::post_composite. hello_engine just references the namespace via
 // the using-decls below.
 using cd::post_composite::kCompositeVS;
@@ -962,7 +962,7 @@ using cd::post_composite::kCompositeFS;
 using CompositePush = cd::post_composite::Push;
 
 
-// R3 â€” Multi-mip bloom (Karis 2013) â€” shader source + push struct
+// R3 - Multi-mip bloom (Karis 2013) - shader source + push struct
 // definitions are extracted into cd::post_bloom. hello_engine just
 // references them via the namespace.
 using cd::post_bloom::kPrefilterFS;
@@ -978,21 +978,21 @@ struct PrimPush
     float           tint[4];
     float           sun_dir[4];
     float           sun_color[4];
-    // FX params block 1 â€” x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
+    // FX params block 1 - x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
     //                     y=albedo_tex_flag (1=sample cd_albedo_tex)
     //                     z=gtao_strength (inline curvature darkening)
     //                     w=bloom_strength (post-tonemap halo boost)
     float           fx_params[4];
-    // FX params block 2 â€” x=smaa_strength (legacy inline FXAA blur)
-    //                     y=motion_blur_amount (LIVE in composite â€” phase 215)
-    //                     z=taa_amount (LIVE in composite â€” phase 216-217)
-    //                     w=dof_strength (LIVE in composite â€” phase 207)
+    // FX params block 2 - x=smaa_strength (legacy inline FXAA blur)
+    //                     y=motion_blur_amount (LIVE in composite - phase 215)
+    //                     z=taa_amount (LIVE in composite - phase 216-217)
+    //                     w=dof_strength (LIVE in composite - phase 207)
     float           fx_params2[4];
-    // FX params block 3 â€” atmospherics (LIVE in composite â€” phase 209)
+    // FX params block 3 - atmospherics (LIVE in composite - phase 209)
     //                     x=fog_density (legacy inline; composite owns now)
     //                     y=atmosphere_strength (legacy inline; composite owns)
-    //                     z=clouds_coverage (queued â€” needs 3D noise sampler)
-    //                     w=light_shafts_strength (LIVE in composite â€” phase 208)
+    //                     z=clouds_coverage (queued - needs 3D noise sampler)
+    //                     w=light_shafts_strength (LIVE in composite - phase 208)
     float           fx_params3[4];
     // Camera origin (needed for distance fog without breaking the model
     // matrix invariant). xyz=world camera, w=unused.
@@ -1007,7 +1007,7 @@ struct PrimPush
 
 static_assert(sizeof(PrimPush) == 256, "PrimPush layout drift");
 
-// Multi-light UBO slot â€” matches std140 layout in the FS.
+// Multi-light UBO slot - matches std140 layout in the FS.
 struct LightSlotGpu
 {
     float pos_range[4];   // xyz=world position, w=range
@@ -1104,7 +1104,7 @@ create_texture_rgba8(cd::rhi::IDevice& dev,
 }
 
 // ============================================================================
-// R1 â€” True IBL helpers (HDR cubemap + diffuse irradiance + BRDF LUT).
+// R1 - True IBL helpers (HDR cubemap + diffuse irradiance + BRDF LUT).
 //
 // Generates a CPU environment cubemap by sampling the analytical sky
 // function (same palette as AnalyticalSkyMaterial::sample_env), runs
@@ -1123,9 +1123,9 @@ create_texture_rgba8(cd::rhi::IDevice& dev,
 //
 // Derivation: for caster point P, projected point P' lies on the line
 //   P' = P + t * sun_dir,    requiring P'.y = plane_y
-//   â‡’ t = (plane_y - P.y) / sun_dir.y
-//   â‡’ P'.x = P.x + t * sun_dir.x
-//   â‡’ P'.z = P.z + t * sun_dir.z
+//   ??' t = (plane_y - P.y) / sun_dir.y
+//   ??' P'.x = P.x + t * sun_dir.x
+//   ??' P'.z = P.z + t * sun_dir.z
 //
 // In column-major Mat4f (cd::math convention, see ADR-017 P4):
 //   S[0] = ( 1,            0,       0,            0 )
@@ -1167,7 +1167,7 @@ make_planar_shadow_matrix(const cd::math::Vec3f& sun_dir,
 }
 
 // ============================================================================
-// Render-target helpers — extracted to cd::framegraph::Targets.
+// Render-target helpers - extracted to cd::framegraph::Targets.
 // BloomMipChain extracted to cd::post_bloom.
 // ============================================================================
 using ColorTarget   = cd::framegraph::ColorTarget;
@@ -1208,7 +1208,7 @@ int main()
 {
     // ---- Window + Vulkan device + Renderer + ImGui ----
     cd::platform::WindowDesc wd {};
-    wd.title = "CHROMODYNAMIC â€” hello_engine (mega-showcase)";
+    wd.title = "CHROMODYNAMIC - hello_engine (mega-showcase)";
     wd.width = 1600;
     wd.height = 900;
     auto window_r = cd::platform::create_window(wd);
@@ -1226,6 +1226,11 @@ int main()
     rd.swapchain.display_handle = window.native_display_handle();
     rd.swapchain.extent = { window.width(), window.height() };
     rd.swapchain.format = cd::rhi::Format::kBGRA8Unorm;
+    // B13: vsync off so the FPS counter reflects actual render cost.
+    // Wave-1 sample was capped at the display refresh (60 Hz ? 60 FPS
+    // even when GPU could push 760+). Mailbox present mode reduces
+    // tearing without locking to refresh rate.
+    rd.swapchain.vsync = false;
     rd.frames_in_flight = 2;
     auto renderer_r = cd::render::Renderer::create(rd);
     if (!renderer_r.has_value()) return 3;
@@ -1249,14 +1254,14 @@ int main()
 
     constexpr auto kDepthFormat = cd::rhi::Format::kD32Float;
     DepthTarget depth {};
-    // kSampled â€” needed for the composite-pass GTAO inline AO that
+    // kSampled - needed for the composite-pass GTAO inline AO that
     // samples the scene depth after the HDR pass ends.
     if (!create_depth_target(device, { window.width(), window.height() }, kDepthFormat, depth,
                              cd::rhi::TextureUsage::kSampled))
         return 6;
     bool depth_initialised_on_gpu = false;
 
-    // R3 â€” HDR offscreen color target. Scene + sky + UI overlay all
+    // R3 - HDR offscreen color target. Scene + sky + UI overlay all
     // draw into this RGBA16F target; a separate composite pass blits
     // it to the swapchain with tonemap + saturation correction.
     constexpr auto kHdrFormat = cd::rhi::Format::kRGBA16Float;
@@ -1264,7 +1269,7 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
         return 31;
 
-    // R3 G-Buffer foundation â€” world-space surface normal target.
+    // R3 G-Buffer foundation - world-space surface normal target.
     // Every scene FS (prim, PBR, sky) MRT-writes its world-space
     // normal here so downstream post-fx (SSR, GTAO with normals,
     // future reflections) can sample it. RGBA16F encodes the
@@ -1275,9 +1280,9 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
         return 47;
 
-    // R3 G-Buffer phase 219 â€” Albedo + MR (metallic / roughness).
+    // R3 G-Buffer phase 219 - Albedo + MR (metallic / roughness).
     // Unlocks proper deferred shading + SSR colour-tint by surface
-    // properties + future GI integration. Pixel cost â‰ˆ 5 B per pixel.
+    // properties + future GI integration. Pixel cost ??? 5 B per pixel.
     constexpr auto kAlbedoFormat = cd::rhi::Format::kRGBA8Unorm;
     constexpr auto kMrFormat     = cd::rhi::Format::kRG8Unorm;
     ColorTarget gbuf_albedo {};
@@ -1287,7 +1292,7 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
         return 50;
 
-    // R3 phase 226 — Velocity G-Buffer (RG16F = curr_uv - prev_uv).
+    // R3 phase 226 - Velocity G-Buffer (RG16F = curr_uv - prev_uv).
     // Written by a separate velocity pass after the HDR scene using
     // cd::velocity::kVelocityVS + kVelocityFS so the main scene
     // shaders stay unchanged (no MRT velocity in prim/PBR). Composite
@@ -1297,7 +1302,7 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kVelocityFormat, gbuf_velocity))
         return 51;
 
-    // R3 TAA history â€” ping-pong color targets at swapchain format.
+    // R3 TAA history - ping-pong color targets at swapchain format.
     // Each frame, composite reads history[frame & 1] (last frame's
     // post-tonemap blend) and writes to history[(frame & 1) ^ 1]
     // (this frame's blend, for next frame). MRT 2nd attachment in
@@ -1327,7 +1332,7 @@ int main()
     [[maybe_unused]] constexpr std::array<cd::rhi::Format, 1> kSwapchainFmts {
         cd::rhi::Format::kBGRA8Unorm };
 
-    // Sky material â€” no vertex buffer, depth off.
+    // Sky material - no vertex buffer, depth off.
     cd::material::MaterialDesc sky_md {};
     sky_md.vertex_glsl   = cd::material::kAnalyticalSkyVS;
     sky_md.fragment_glsl = cd::material::kAnalyticalSkyFS;
@@ -1347,14 +1352,14 @@ int main()
     if (!sky_r.has_value()) return 7;
     auto& sky_material = *sky_r;
 
-    // R3 composite material â€” full-screen triangle, samples HDR target,
+    // R3 composite material - full-screen triangle, samples HDR target,
     // writes to swapchain. Carries the tonemap + saturation pass that
     // previously lived inline in prim/PBR FS.
     // Composite writes BOTH to the swapchain (final tonemapped LDR
     // for display) AND to a 2nd target = next-frame TAA history.
     constexpr std::array<cd::rhi::Format, 2> kCompositeFmts {
-        cd::rhi::Format::kBGRA8Unorm,  // swapchain â€” visible output
-        cd::rhi::Format::kBGRA8Unorm   // history target â€” for TAA next frame
+        cd::rhi::Format::kBGRA8Unorm,  // swapchain - visible output
+        cd::rhi::Format::kBGRA8Unorm   // history target - for TAA next frame
     };
     cd::material::MaterialDesc comp_md {};
     comp_md.vertex_glsl   = kCompositeVS;
@@ -1405,7 +1410,7 @@ int main()
     if (!comp_r.has_value()) return 32;
     auto& composite_material = *comp_r;
 
-    // R3 Multi-mip Bloom â€” Karis stable pipeline.
+    // R3 Multi-mip Bloom - Karis stable pipeline.
     // 3 fullscreen-triangle materials sharing the composite VS.
     // Color attachment format = RGBA16Float so HDR mip chain preserves
     // overshoot through prefilter -> downsample -> upsample.
@@ -1491,9 +1496,9 @@ int main()
                                          sizeof(cd::material::StandardPbrPush)) } };
     // PBR shader bindings (R1 IBL pipeline):
     //   binding 0: multi-light UBO (LightUboGpu, 528 B std140)
-    //   binding 1: samplerCube â€” prefiltered specular IBL (mip chain)
-    //   binding 2: samplerCube â€” diffuse irradiance IBL
-    //   binding 3: sampler2D   â€” split-sum BRDF LUT (RG16Float)
+    //   binding 1: samplerCube - prefiltered specular IBL (mip chain)
+    //   binding 2: samplerCube - diffuse irradiance IBL
+    //   binding 3: sampler2D   - split-sum BRDF LUT (RG16Float)
     constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kPbrDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
@@ -1546,13 +1551,13 @@ int main()
                                                cd::rhi::ShaderStage::kFragment,
                                      .offset = 0,
                                      .size = static_cast<std::uint32_t>(sizeof(PrimPush)) } };
-    // Faz 1.6 CSM + Faz 1.7 inline RT â€” three descriptor bindings on
+    // Faz 1.6 CSM + Faz 1.7 inline RT - three descriptor bindings on
     // the prim pipeline:
     //   0: UBO  with the sun's light_vp matrix (vertex + fragment).
     //   1: sampler2D over the shadow depth map (fragment only).
     //   2: scene TLAS (acceleration structure) for ray queries
     //      against the punctual / spot / area lights' shadow tests.
-    // Faz 1.7 requires ray_query device support â€” gated below before
+    // Faz 1.7 requires ray_query device support - gated below before
     // we attempt prim_material creation. Without it the shader's
     // `#extension GL_EXT_ray_query : require` would fail to compile.
     if (!device.features().ray_query)
@@ -1582,7 +1587,7 @@ int main()
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment },
-        // gap #1/#13 â€” baseColor texture slot for glTF entities.
+        // gap #1/#13 - baseColor texture slot for glTF entities.
         cd::rhi::DescriptorSetLayoutBinding { .binding = 4,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                               .count   = 1,
@@ -1635,11 +1640,11 @@ int main()
     }
     auto& prim_material = *prim_r;
 
-    // R3 phase 226 — Velocity-pass material. Re-draws each entity's
+    // R3 phase 226 - Velocity-pass material. Re-draws each entity's
     // mesh with cd::velocity::kVelocityVS+kVelocityFS so the FS
     // writes (curr_uv - prev_uv) to gbuf_velocity. Push = 128 B
     // (prev_vp_model + curr_vp_model). Vertex layout matches kPrimBindings
-    // (FS reads only the position attribute — colour/normal/UV are
+    // (FS reads only the position attribute - colour/normal/UV are
     // ignored by the velocity shader).
     constexpr std::array<cd::rhi::Format, 1> kVelocityColorFmts {
         cd::rhi::Format::kRG16Float };
@@ -1670,7 +1675,7 @@ int main()
     }
     [[maybe_unused]] auto& velocity_material = *vel_r;
 
-    // Shadow material (Faz 1.6 CSM) â€” depth-only pipeline (no color
+    // Shadow material (Faz 1.6 CSM) - depth-only pipeline (no color
     // attachment) with a trivial mat4 push constant. Used in the
     // shadow pass to rasterize every caster from the sun's POV.
     constexpr std::array<cd::rhi::PushConstantRange, 1> kShadowPushRange {
@@ -1804,7 +1809,7 @@ int main()
                               "(%ux%u) bound\n", kTexSize, kTexSize);
     }
 
-    // R2: procedural normal map derived from a height field â€” same
+    // R2: procedural normal map derived from a height field - same
     // fBm Earth surface but stored as tangent-space normals.
     GpuTexture2D normal_tex {};
     {
@@ -1815,7 +1820,7 @@ int main()
                      kNormalSize, kNormalSize);
     }
 
-    // R2: metallic-roughness-AO map (glTF 2.0 packing â€” R unused,
+    // R2: metallic-roughness-AO map (glTF 2.0 packing - R unused,
     // G roughness, B metallic, A AO).
     GpuTexture2D mr_tex {};
     {
@@ -1896,7 +1901,7 @@ int main()
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
-    // PBR material instance â€” bindings:
+    // PBR material instance - bindings:
     //   0 multi-light UBO (gap #22), 1 spec IBL, 2 diff IBL, 3 BRDF LUT.
     auto pbr_inst_r = cd::material::MaterialInstance::create(device, pbr_material);
     if (!pbr_inst_r.has_value()) return 17;
@@ -1928,7 +1933,7 @@ int main()
     }
 
     // R3: composite material instance + HDR sampler binding. Two
-    // instances for TAA ping-pong â€” composite_insts[i] reads
+    // instances for TAA ping-pong - composite_insts[i] reads
     // history_targets[i] (= the OPPOSITE target from what it writes
     // this frame, so the read history was produced by the prior frame).
     std::array<cd::material::MaterialInstance, 2> composite_insts {};
@@ -1939,7 +1944,7 @@ int main()
         composite_insts[i] = std::move(*r);
     }
 
-    // R3 multi-mip bloom â€” physical mip chain + per-pass material instances.
+    // R3 multi-mip bloom - physical mip chain + per-pass material instances.
     //
     // Allocation: 4 RGBA16F render targets at /2, /4, /8, /16 of the
     // HDR target's size. Each instance binds exactly one source mip
@@ -1949,8 +1954,8 @@ int main()
         return 43;
 
     // 1 prefilter (reads HDR, writes mip0)
-    // 3 downsample insts: 0â†’1, 1â†’2, 2â†’3
-    // 3 upsample insts:   3â†’2 (additive), 2â†’1 (additive), 1â†’0 (additive)
+    // 3 downsample insts: 0??'1, 1??'2, 2??'3
+    // 3 upsample insts:   3??'2 (additive), 2??'1 (additive), 1??'0 (additive)
     auto bp_inst_r = cd::material::MaterialInstance::create(device, bloom_prefilter_material);
     if (!bp_inst_r.has_value()) return 44;
     auto& bloom_prefilter_inst = *bp_inst_r;
@@ -1971,7 +1976,7 @@ int main()
     }
 
     // Wire descriptors. All sample with the linear-clamp albedo_sampler
-    // (good enough â€” bloom doesn't need a mipmap-capable variant since
+    // (good enough - bloom doesn't need a mipmap-capable variant since
     // each pass writes mip 0 of its respective dedicated target).
     auto bind_bloom_descriptors = [&]() {
         auto write_one = [&](cd::material::MaterialInstance& inst,
@@ -2023,7 +2028,7 @@ int main()
                     .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                     .view    = gbuf_normal.view,
                     .sampler = albedo_sampler },
-                // TAA history — composite_insts[i] reads history[i],
+                // TAA history - composite_insts[i] reads history[i],
                 // and per-frame logic picks composite_insts[frame & 1]
                 // so the read history was written by the prior frame.
                 cd::rhi::DescriptorWrite {
@@ -2032,7 +2037,7 @@ int main()
                     .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                     .view    = history_targets[i].view,
                     .sampler = albedo_sampler },
-                // R3 phase 226 — velocity G-Buffer for per-mesh motion
+                // R3 phase 226 - velocity G-Buffer for per-mesh motion
                 // blur + TAA reprojection.
                 cd::rhi::DescriptorWrite {
                     .binding = 5,
@@ -2053,7 +2058,7 @@ int main()
     // (v_albedo = in_color * pc.tint.rgb), producing a muddy wash
     // where every entity looks similar regardless of its tint. Flat-
     // ten EVERY primitive to white (1,1,1) so the entity tint shows
-    // unmodified â€” closes the user-flagged 'proseduriel cisimlerin
+    // unmodified - closes the user-flagged 'proseduriel cisimlerin
     // renkleri ayni' regression.
     auto sphere_cpu_mut = cd::asset::make_sphere(18, 28);
     auto cone_cpu_mut   = cd::asset::make_cone(32);
@@ -2076,7 +2081,7 @@ int main()
     const auto& cone_cpu   = cone_cpu_mut;
     const auto& cyl_cpu    = cyl_cpu_mut;
     const auto& torus_cpu  = torus_cpu_mut;
-    // Floor quad â€” 1000 m Ã— 1000 m centred at origin, normal +Y. The
+    // Floor quad - 1000 m ?- 1000 m centred at origin, normal +Y. The
     // size is far larger than the camera ever reaches; the FS
     // distance-fade (30 m -> 60 m) handles the apparent infinite-grid
     // feel. Faz 1.5: real geometry on which the planar shadow pass
@@ -2100,13 +2105,13 @@ int main()
 
     // ---- glTF auto-load ----
     // Try a small list of well-known sample paths so the user can drop
-    // any Khronos sample (DamagedHelmet.gltf, FlightHelmet.gltf â€¦)
+    // any Khronos sample (DamagedHelmet.gltf, FlightHelmet.gltf ???)
     // into ./assets/samples/ and have hello_engine pick it up on next
     // launch. Falls back gracefully if nothing is found.
     GpuMesh gltf_mesh {};
     std::string gltf_loaded_name;
     {
-        // Search list — try the binary's CWD first, then walk up the
+        // Search list - try the binary's CWD first, then walk up the
         // build tree (binary lives at build/<preset>/bin/<config>/),
         // and finally try a few project-root anchors so the asset
         // resolves whether the user runs from project root or from
@@ -2125,14 +2130,14 @@ int main()
             "assets/samples/Suzanne.glb",
             "assets/samples/Fox.glb",
             "assets/samples/model.gltf",
-            // From build/<preset>/bin/<config>/ — walk up to project root.
+            // From build/<preset>/bin/<config>/ - walk up to project root.
             "../../../../assets/samples/CesiumMan.glb",
             "../../../../assets/samples/DamagedHelmet.glb",
             "../../../../assets/samples/DamagedHelmet.gltf",
             "../../../../assets/samples/Duck.gltf",
             "../../../../assets/samples/Suzanne.glb",
             "../../../../assets/samples/Fox.glb",
-            // From build/<preset>/ — one less up-level.
+            // From build/<preset>/ - one less up-level.
             "../../assets/samples/CesiumMan.glb",
             "../../assets/samples/DamagedHelmet.glb",
             "../../assets/samples/DamagedHelmet.gltf",
@@ -2151,7 +2156,7 @@ int main()
             // Merge every primitive of every mesh into one big
             // PrimitiveVertex buffer so we can render with the
             // existing prim pipeline. Texture sampling would need an
-            // extra descriptor binding â€” deferred to the next ship.
+            // extra descriptor binding - deferred to the next ship.
             cd::asset::PrimitiveMesh merged;
             for (const auto& m : loaded->meshes)
             {
@@ -2191,7 +2196,7 @@ int main()
             }
             gltf_mesh = upload_mesh(device, merged);
             gltf_loaded_name = p;
-            // gap #1/#13 â€” pull the first material's baseColor
+            // gap #1/#13 - pull the first material's baseColor
             // texture out of the glTF and upload it to the prim
             // pipeline's binding 4 slot. Falls back silently if the
             // asset has no textures.
@@ -2234,7 +2239,7 @@ int main()
                 }
             }
             std::fprintf(stderr,
-                "[gltf] loaded %s â€” %zu verts, %zu indices (textured=%d)\n",
+                "[gltf] loaded %s - %zu verts, %zu indices (textured=%d)\n",
                 p.c_str(),
                 merged.vertices.size(),
                 merged.indices.size(),
@@ -2261,7 +2266,7 @@ int main()
         }
     };
 
-    // ---- Faz 1.7 â€” per-mesh-kind BLAS ----
+    // ---- Faz 1.7 - per-mesh-kind BLAS ----
     // One BLAS per shape (cube / sphere / cone / cylinder / torus +
     // floor quad). Geometry is static, so we build these once at
     // boot and keep them for the lifetime of the program.
@@ -2326,7 +2331,7 @@ int main()
     // Per-frame TLAS scratch. `current_tlas` is what the descriptor
     // points at this frame; `tlas_destroy_queue` holds handles whose
     // destroy must wait until the renderer has cycled past the
-    // submission that referenced them (frames_in_flight=2 â†’ wait 3
+    // submission that referenced them (frames_in_flight=2 ??' wait 3
     // frames as a defensive margin).
     cd::rhi::AccelStructureHandle current_tlas {};
     struct DeferredTlas { cd::rhi::AccelStructureHandle h; std::uint32_t destroy_at_frame; };
@@ -2343,7 +2348,7 @@ int main()
     };
 
     // ---- World / Project / Level / Layer container (gap #18) ----
-    // Passive editor outliner backing â€” shows the production
+    // Passive editor outliner backing - shows the production
     // hierarchy in the new Outliner panel. Entities still live in
     // the ECS scene; the outliner groups them under layers by name.
     cd::world_container::World cd_world;
@@ -2362,7 +2367,7 @@ int main()
     {
         struct Seed { const char* name; cd::math::Vec3f pos; cd::math::Vec3f tint; PrimitiveKind k; };
         const std::array<Seed, 5> seeds {{
-            // Saturated artistic palette â€” more vibrant than the v0.99.110
+            // Saturated artistic palette - more vibrant than the v0.99.110
             // measurement palette, picks up enough off-channel content
             // to read as distinct material tints without going to pure
             // RGB.
@@ -2382,10 +2387,10 @@ int main()
             scene.local(e.handle)->value.position = s.pos;
             entities.push_back(std::move(e));
         }
-        // glTF entity â€” seeded when auto-loader resolves an asset, OR
+        // glTF entity - seeded when auto-loader resolves an asset, OR
         // (R1.5 showcase) a procedural Earth-like textured sphere.
         // mesh_for(kGltf) returns gltf_mesh if valid else sphere_mesh.
-        // BLAS stays empty when no real glTF â€” the procedural Earth
+        // BLAS stays empty when no real glTF - the procedural Earth
         // entity doesn't need its own BLAS for prim-shader rendering
         // (RT shadows for it would just sample the existing sphere
         // BLAS, but we accept the per-instance shadow gap as a small
@@ -2404,8 +2409,8 @@ int main()
                 // "lead actor" (user-reported B02 + missing-character).
                 scene.local(e.handle)->value.position = { -4.5F, -0.55F, 0.0F };
                 scene.local(e.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
-                // X -90° rotation (Z-up -> Y-up). CesiumMan's original
-                // model has -Y forward in Cesium space; after -90° about
+                // X -90? rotation (Z-up -> Y-up). CesiumMan's original
+                // model has -Y forward in Cesium space; after -90? about
                 // X, -Y maps to +Z (toward camera). No extra Y flip.
                 scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
             }
@@ -2428,17 +2433,17 @@ int main()
              + (gltf_loaded_name.empty() ? "" :
                 std::string { " (incl. glTF: " } + gltf_loaded_name + ")"));
     int selected = 0;
-    // Selection kind â€” entities and lights are both pickable.
+    // Selection kind - entities and lights are both pickable.
     enum class SelKind : std::uint8_t { kEntity = 0, kLight = 1 };
     SelKind selected_kind = SelKind::kEntity;
 
-    // Phase 151 â€” selection-outline state. Style defaults to
+    // Phase 151 - selection-outline state. Style defaults to
     // kWireframe (the cheapest of the three documented techniques
     // and the one we draw as an ImGui foreground overlay below).
     cd::editor::SelectionOutline outline;
     outline.style = cd::editor::OutlineStyle::kWireframe;
 
-    // Phase 152 â€” axis-translation gizmo state + UI bookkeeping.
+    // Phase 152 - axis-translation gizmo state + UI bookkeeping.
     cd::editor::AxisGizmo gizmo;
     bool gizmo_visible = true;       // toggle via palette
     enum class GizmoMode : std::uint8_t { kTranslate = 0, kRotate = 1, kScale = 2 };
@@ -2453,7 +2458,7 @@ int main()
     float           light_drag_range_start { 0.0F };
     float           light_drag_area_w_start { 1.0F };
     float           light_drag_area_h_start { 1.0F };
-    // Faz 1.5 UX fix â€” ray-plane projection initial hit on the
+    // Faz 1.5 UX fix - ray-plane projection initial hit on the
     // active axis at begin_drag. delta = current_axis_offset -
     // initial_axis_offset, robust against grazing-camera angles.
     // 'inf' marker = no valid initial hit, fall back to screen-space.
@@ -2500,7 +2505,7 @@ int main()
 
     // ---- Manual camera mode ----
     // Once the user touches WASD or right-mouse drag, the camera goes
-    // into "manual mode" and scene_cam stops updating cam.eye/target â€”
+    // into "manual mode" and scene_cam stops updating cam.eye/target -
     // otherwise the orbit camera snaps the eye back to its own pose on
     // every frame. Manual mode persists until palette "Camera: Toggle
     // Auto-Spin" is hit (which re-engages scene_cam orbit).
@@ -2529,7 +2534,7 @@ int main()
     float         audio_limiter_gain_min = 1.0F;
     std::deque<float> audio_meter_history;  // last ~120 ticks of peak
 
-    // Phase 139 â€” last-5-seconds ring buffer of DSP chain output (s16
+    // Phase 139 - last-5-seconds ring buffer of DSP chain output (s16
     // PCM). User clicks "Save WAV" in the Audio panel and the buffer
     // gets dumped to disk; play with any system audio player.
     constexpr std::size_t kAudioRingFrames = kAudioSampleRate * 5u;  // 5 s mono
@@ -2537,7 +2542,7 @@ int main()
     std::size_t   audio_ring_write = 0;
     std::uint64_t audio_total_written = 0;
 
-    // Phase 139 v2 â€” WASAPI live playback. Pre-render 2 seconds of the
+    // Phase 139 v2 - WASAPI live playback. Pre-render 2 seconds of the
     // DSP chain at startup, create a looping clip, play. The visual
     // panel keeps ticking against the same DSP for an in-sync meter,
     // but the audible output is the pre-rendered loop (WASAPI clip
@@ -2608,7 +2613,7 @@ int main()
 
     // ---- cd::light demo (Phase 171/172) ----
     // 4 lights representing the four common light types. Each has a
-    // CCT slider that drives the color via Krystek's CCTâ†’RGB; the
+    // CCT slider that drives the color via Krystek's CCT??'RGB; the
     // panel previews the resulting linear RGB.
     struct LightRow
     {
@@ -2619,7 +2624,12 @@ int main()
     };
     std::vector<LightRow> lights;
     lights.push_back({ "Sun (cool 6500K)",
-        cd::light::directional({ -0.3F, -0.9F, -0.2F }, { 1, 1, 1 }, 100000.0F),
+        // B06: sun direction tilted forward so default camera view
+        // (eye=(0,2.5,8) looking at (0,0.5,0), facing -Z) places the
+        // sun's screen-projection inside the viewport - light shafts
+        // visible without first having to orbit the camera. Sun comes
+        // from upper-left-back, light ray goes down-right-toward-cam.
+        cd::light::directional({ -0.35F, -0.65F, -0.7F }, { 1, 1, 1 }, 100000.0F),
         true, 6500.0F });
     lights.push_back({ "Tungsten point (2700K)",
         cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
@@ -2646,8 +2656,8 @@ int main()
 
     // ---- AsyncStreamer demo (Phase 150) ----
     // Drives a background worker thread that processes simulated load
-    // requests with a sleep so the streamer panel can show pending â†’
-    // in-flight â†’ complete transitions in real time.
+    // requests with a sleep so the streamer panel can show pending ??'
+    // in-flight ??' complete transitions in real time.
     std::atomic<std::uint32_t> streamer_completed { 0 };
     std::atomic<std::uint32_t> streamer_failed    { 0 };
     cd::asset::AsyncStreamer streamer {
@@ -2712,12 +2722,12 @@ int main()
     cd::editor::CommandPalette palette;
     bool        palette_visible = false;
     std::string palette_query;
-    // FX state â€” runtime-tweakable, pushed into PrimPush::fx_params
+    // FX state - runtime-tweakable, pushed into PrimPush::fx_params
     // each draw. tonemap_op: 0=Narkowicz, 1=Hill, 2=Hable, 3=AGX.
     // Default = Hable (Uncharted 2). AGX desaturates the LDR-range
     // shading the sample produces; Hable preserves tints on the
     // front primitives + back metallic spheres. AGX still wins on
-    // HDR-heavy frames â€” switch via palette ('Tonemap: AGX').
+    // HDR-heavy frames - switch via palette ('Tonemap: AGX').
     int tonemap_op = 2;  // 0=Narkowicz 1=Hill 2=Hable 3=AGX
     palette.register_command(70, "Tonemap: AGX (Sobotka 2022)",
         [&]{ tonemap_op = 3; log_push("[fx] tonemap = AGX"); });
@@ -2748,10 +2758,10 @@ int main()
     float fx_motion_blur    = 0.0F;   // LIVE: composite camera-velocity (phase 215)
     float fx_taa_amount     = 0.0F;   // LIVE: composite TAA ping-pong (phase 216-217)
     float fx_dof_strength   = 0.0F;   // wired to composite (phase207)
-    float fx_vignette_strength = 0.25F;  // soft default â€” readable cinematic edge
+    float fx_vignette_strength = 0.25F;  // soft default - readable cinematic edge
     float fx_film_grain     = 0.0F;   // 0 = off; 0.5 = visible filmic noise
     float fx_chromab_strength = 0.0F; // 0 = off; 0.5 = subtle radial RGB split
-    // Composite tonemap/HDR knobs â€” own the entire post-fx settle here.
+    // Composite tonemap/HDR knobs - own the entire post-fx settle here.
     float fx_exposure         = 3.0F;  // pre-tonemap exposure boost
     float fx_saturation_boost = 1.50F; // post-tonemap saturation pull-away
     float fx_bloom_post       = 0.04F; // bloom mip0 contribution mixed into HDR
@@ -2759,7 +2769,7 @@ int main()
     float fx_shafts_strength  = 0.35F; // light shafts radial intensity
     float fx_ssr_strength     = 0.5F;  // SSR reflection contribution (default on)
 
-    // Previous-frame camera basis snapshot â€” populated AFTER each
+    // Previous-frame camera basis snapshot - populated AFTER each
     // composite invoke so the next frame's reprojection sees t-1.
     // First frame: prev = current (zero velocity).
     struct PrevCamBasis
@@ -2773,14 +2783,14 @@ int main()
         bool  valid  { false };
     } prev_cam_basis {};
 
-    // R3 phase 227 — prev frame's UN-JITTERED VP matrix for the velocity
+    // R3 phase 227 - prev frame's UN-JITTERED VP matrix for the velocity
     // pass. UN-jittered so jitter doesn't pollute the velocity output.
     cd::math::Mat4f prev_vp_unjittered = cd::math::Mat4f::identity();
     bool            prev_vp_valid      = false;
     (void)prev_vp_valid;
 
-    // TAA history target state â€” both start kUndefined and we cycle
-    // them through ColorAttachment â†” ShaderResource as composite
+    // TAA history target state - both start kUndefined and we cycle
+    // them through ColorAttachment ??" ShaderResource as composite
     // ping-pongs which one it reads vs writes per frame.
     std::array<cd::rhi::ResourceState, 2> history_states {
         cd::rhi::ResourceState::kUndefined,
@@ -2788,8 +2798,8 @@ int main()
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
-    float fx_clouds_coverage = 0.0F;  // queued â€” needs 3D Worley/Perlin noise tex
-    float fx_light_shafts   = 0.0F;   // LIVE in composite (phase 208) â€” legacy var kept
+    float fx_clouds_coverage = 0.0F;  // queued - needs 3D Worley/Perlin noise tex
+    float fx_light_shafts   = 0.0F;   // LIVE in composite (phase 208) - legacy var kept
     cd::atmosphere::Parameters fx_atmosphere {};
     cd::light_shafts::Settings fx_lshafts {};
     cd::volumetric_clouds::Settings fx_clouds {};
@@ -2897,9 +2907,9 @@ int main()
     palette.register_command(120, "RHI: Status (active backend + parity)",
         [&]{
             log_push("[rhi] active = Vulkan (production)");
-            log_push("[rhi] D3D12 partial â€” PSO/desc/shader stubs (v1.8.1)");
-            log_push("[rhi] OpenGL partial â€” no RT support (v1.8.2)");
-            log_push("[rhi] Metal skeleton â€” Apple-only stub (v1.8.3)");
+            log_push("[rhi] D3D12 partial - PSO/desc/shader stubs (v1.8.1)");
+            log_push("[rhi] OpenGL partial - no RT support (v1.8.2)");
+            log_push("[rhi] Metal skeleton - Apple-only stub (v1.8.3)");
             log_push("[rhi] WebGPU not started (v1.8.4 via Dawn)");
             log_push("[rhi] see docs/RHI_PARITY_STATUS.md");
         });
@@ -2918,7 +2928,7 @@ int main()
         });
     palette.register_command(140, "v2.0: Production Milestone Status",
         [&]{
-            log_push("[v2.0] cooker (assetc):     v2.0.1 â€” pending");
+            log_push("[v2.0] cooker (assetc):     v2.0.1 - pending");
             log_push("[v2.0] profiler:            cd::profile sinks ready (v2.0.2)");
             log_push("[v2.0] crash reporter:      cd::diag::CrashReporter ready (v2.0.3)");
             log_push("[v2.0] HRTF audio:          cd::audio core ready (v2.0.4)");
@@ -3061,7 +3071,7 @@ int main()
     palette.register_command(40, "Audio: Toggle Mute",
         [&]{
             audio_muted = !audio_muted;
-            // Phase 139 v3 â€” drive WASAPI voice volume so mute is audible.
+            // Phase 139 v3 - drive WASAPI voice volume so mute is audible.
             if (audio_live_ok && audio_backend && live_voice.is_valid())
                 audio_backend->set_volume(live_voice, audio_muted ? 0.0F : 0.65F);
             log_push(std::string("[palette] Audio: ") + (audio_muted?"MUTED":"LIVE"));
@@ -3081,7 +3091,7 @@ int main()
              log_push("F: focus camera on selected");
              log_push("Space: cycle gizmo mode (Translate/Rotate/Scale)"); });
 
-    // Phase 154 â€” scene save/load round-trip. The serializer pulls
+    // Phase 154 - scene save/load round-trip. The serializer pulls
     // transforms out of cd::scene::Scene; per-entity metadata (name,
     // tint, primitive kind) rides the WriteExtras/ReadExtras callbacks
     // so the round-trip is lossless.
@@ -3118,7 +3128,7 @@ int main()
                     obj["tint"] = cd::asset_json::Value { std::move(tint) };
                 });
             // Extend with a top-level "lights" array so the lights
-            // panel state round-trips through save/load too â€”
+            // panel state round-trips through save/load too -
             // priority gap #15.
             {
                 cd::asset_json::Array light_arr;
@@ -3323,7 +3333,7 @@ int main()
     std::vector<cd::platform::OSEvent> events;
     events.reserve(64);
 
-    // Phase 139 v2 â€” platform-level modifier tracking. cd::imgui_backend
+    // Phase 139 v2 - platform-level modifier tracking. cd::imgui_backend
     // doesn't forward Ctrl/Shift state into ImGui's IO reliably, so we
     // track from the same OSEvent KeyDown/KeyUp pairs that drive the
     // rest of the sample.
@@ -3340,16 +3350,16 @@ int main()
             if (e.kind == cd::platform::OSEventKind::kKeyDown &&
                 e.key == cd::platform::KeyCode::kEscape)
             {
-                // ESC priority chain (lessons-learned Â§P3):
-                //   1) active gizmo drag â†’ cancel + revert
-                //   2) palette visible    â†’ close palette
-                //   3) selection active   â†’ clear selection
-                //   4) otherwise          â†’ no-op (NEVER quit)
+                // ESC priority chain (lessons-learned ??P3):
+                //   1) active gizmo drag ??' cancel + revert
+                //   2) palette visible    ??' close palette
+                //   3) selection active   ??' clear selection
+                //   4) otherwise          ??' no-op (NEVER quit)
                 //
                 // User feedback: ESC kept closing the window even with
                 // the priority chain, because empty editor state fell
                 // through to window.request_close(). Production editors
-                // (Unity, Blender, UE) never quit on ESC â€” quit is a
+                // (Unity, Blender, UE) never quit on ESC - quit is a
                 // menu / close-button action only. Match that.
                 if (gizmo.is_dragging())
                 {
@@ -3367,20 +3377,20 @@ int main()
                     selected = -1;
                     log_push("[esc] selection cleared");
                 }
-                // else: do nothing â€” ESC must never close the window.
+                // else: do nothing - ESC must never close the window.
             }
             else if (e.kind == cd::platform::OSEventKind::kResize)
             {
                 needs_rebuild = true;
             }
-            // F1 alternatif (focus-baÄŸÄ±msÄ±z, zero-modifier).
+            // F1 alternatif (focus-ba????ms??z, zero-modifier).
             else if (e.kind == cd::platform::OSEventKind::kKeyDown &&
                      e.key == cd::platform::KeyCode::kF1)
             {
                 palette_visible = !palette_visible;
                 if (palette_visible) palette_query.clear();
             }
-            // Phase 139 v2 â€” platform modifier tracking + Ctrl+Shift+P.
+            // Phase 139 v2 - platform modifier tracking + Ctrl+Shift+P.
             else if (e.kind == cd::platform::OSEventKind::kKeyDown)
             {
                 if (e.key == cd::platform::KeyCode::kLCtrl  ||
@@ -3438,7 +3448,7 @@ int main()
                     log_push("[cam] focus " + entities[static_cast<std::size_t>(selected)].name);
                 }
             }
-            // Space = cycle gizmo mode translate â†’ rotate â†’ scale â†’ translate.
+            // Space = cycle gizmo mode translate ??' rotate ??' scale ??' translate.
             if (key_dn && e.key == cd::platform::KeyCode::kSpace &&
                 !ImGui::GetIO().WantCaptureKeyboard)
             {
@@ -3474,7 +3484,7 @@ int main()
                 selected = -1;
             }
 
-            // ---- Right-mouse drag â†’ FPS look; left-click â†’ request pick ----
+            // ---- Right-mouse drag ??' FPS look; left-click ??' request pick ----
             if (e.kind == cd::platform::OSEventKind::kMouseButtonDown)
             {
                 if (e.mouse_button == cd::platform::MouseButton::kRight)
@@ -3515,9 +3525,9 @@ int main()
                 {
                     const float dx = e.mouse_x - last_mouse_x;
                     const float dy = e.mouse_y - last_mouse_y;
-                    // FPS convention: mouse right → camera yaws right (world
-                    // appears to drift left). User-reported B03 — sign on X
-                    // was inverted; Y stays as "mouse down → look down".
+                    // FPS convention: mouse right ? camera yaws right (world
+                    // appears to drift left). User-reported B03 - sign on X
+                    // was inverted; Y stays as "mouse down ? look down".
                     cam_yaw   += dx * kCamLookSpeed;
                     cam_pitch -= dy * kCamLookSpeed;
                     // Clamp pitch so we don't flip the camera over.
@@ -3596,7 +3606,7 @@ int main()
                 x = limiter.process(x);
                 if (limiter.current_gain() < lim_gain_min) lim_gain_min = limiter.current_gain();
                 if (std::fabs(x) > peak) peak = std::fabs(x);
-                // Phase 139 â€” capture to 5 s ring buffer.
+                // Phase 139 - capture to 5 s ring buffer.
                 if (x >  1.0F) x =  1.0F;
                 if (x < -1.0F) x = -1.0F;
                 audio_ring[audio_ring_write] =
@@ -3723,7 +3733,7 @@ int main()
         // Unproject the click pixel to a world ray, then sphere-test
         // each entity. The gizmo overlay (rendered later in this
         // frame) may set `pending_pick=false` if the click landed on
-        // an axis arrow â€” in that case it consumed the click and we
+        // an axis arrow - in that case it consumed the click and we
         // skip the pick. The frame here is one-late but for a UX
         // click the lag is invisible.
         if (pending_pick && gizmo_was_hovered)
@@ -3741,7 +3751,7 @@ int main()
             {
                 const float aspect_pick = vw / vh;
                 // Invert VP analytically would be ideal; we use unproject
-                // via two ray endpoints (NDC near + far) â†’ world.
+                // via two ray endpoints (NDC near + far) ??' world.
                 const float ndc_x = (2.0F * pick_x / vw) - 1.0F;
                 const float ndc_y = 1.0F - (2.0F * pick_y / vh);
                 // Build inverse VP by row-by-row 4x4 inversion. Use the
@@ -3787,7 +3797,7 @@ int main()
                 // Sphere-test every entity. Radius scales with the
                 // entity's transform scale so clicking anywhere on a
                 // big imported asset (e.g. CesiumMan at scale 2.2)
-                // still selects it â€” not just the central pivot.
+                // still selects it - not just the central pivot.
                 // Closes user-flagged 'cisimler ve isiklar sadece
                 // pivottan secilebiliyor'.
                 float best_t = 1e30F;
@@ -3802,7 +3812,7 @@ int main()
                     const float ms = std::max({ lt->value.scale.x,
                                                  lt->value.scale.y,
                                                  lt->value.scale.z });
-                    // Unit primitive half-extent â‰ˆ 0.55; for compound
+                    // Unit primitive half-extent ??? 0.55; for compound
                     // / oblong meshes (humanoid) bump by 1.6 along the
                     // longest dimension.
                     const float pick_r = 0.55F * std::max(1.0F, ms) * 1.6F;
@@ -3815,7 +3825,7 @@ int main()
                     const float t = -b - std::sqrt(disc);
                     if (t > 0.0F && t < best_t) { best_t = t; best_i = static_cast<int>(i); }
                 }
-                // Also try light positions (point/spot only â€” directional
+                // Also try light positions (point/spot only - directional
                 // has no world position, area is bigger but we use its center).
                 int   best_light = -1;
                 float best_light_t = best_t;
@@ -3852,7 +3862,7 @@ int main()
                 }
                 else
                 {
-                    // Empty-space click â†’ unselect.
+                    // Empty-space click ??' unselect.
                     if (selected >= 0)
                     {
                         log_push("[pick] cleared selection");
@@ -3874,7 +3884,7 @@ int main()
         auto& frame = *frame_r;
         auto& cmd = *frame.command_buffer;
 
-        // ---- Faz 1.7 â€” per-frame TLAS rebuild ----
+        // ---- Faz 1.7 - per-frame TLAS rebuild ----
         // 1) tick deferred destroy queue (TLAS handles older than 3
         //    frames are guaranteed past the in-flight window),
         // 2) collect instances (ECS entities + sphere grid + floor),
@@ -3895,7 +3905,7 @@ int main()
             {
                 if (!blas.is_valid()) return;
                 cd::rhi::AccelInstance inst {};
-                // 3Ã—4 row-major transform from column-major Mat4f.
+                // 3?-4 row-major transform from column-major Mat4f.
                 for (std::size_t r = 0; r < 3; ++r)
                 {
                     inst.transform[r*4 + 0] = m[0][r];
@@ -3979,7 +3989,7 @@ int main()
 
         // ---- Shadow map pass (Faz 1.6 CSM) ----
         // Pick the first enabled directional light for the shadow caster.
-        // No directional â†’ shadow map is cleared to white (no shadow).
+        // No directional ??' shadow map is cleared to white (no shadow).
         cd::math::Vec3f csm_sun_dir { -0.4F, -0.9F, -0.2F };
         bool            csm_has_sun = false;
         for (const auto& lrow : lights)
@@ -4033,7 +4043,7 @@ int main()
         }
         else
         {
-            // Subsequent frames: shader-resource â†’ depth-write.
+            // Subsequent frames: shader-resource ??' depth-write.
             std::array<cd::rhi::TextureBarrier, 1> sb {
                 cd::rhi::TextureBarrier {
                     .texture = shadow_target.image,
@@ -4063,7 +4073,7 @@ int main()
             if (csm_has_sun)
             {
                 shadow_material.apply(cmd);
-                // Rebuild light_vp into a local â€” we already uploaded but
+                // Rebuild light_vp into a local - we already uploaded but
                 // also need it as a CPU-side push for the per-caster
                 // light_mvp computation. Re-derive (cheap).
                 cd::math::Vec3f sd = csm_sun_dir;
@@ -4096,7 +4106,7 @@ int main()
                                        0, sizeof(light_mvp), &light_mvp);
                     cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
                 }
-                // Casters: 5Ã—5 PBR sphere grid (use PrimitiveVertex sphere mesh).
+                // Casters: 5?-5 PBR sphere grid (use PrimitiveVertex sphere mesh).
                 cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
                 cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
                 constexpr int kGSh = 5;
@@ -4204,7 +4214,7 @@ int main()
         cd::math::Mat4f vp_unjittered = cd::camera::view_projection(cam, aspect);
 
         // R3 Halton(2,3) sub-pixel jitter for proper TAA accumulation
-        // — only active when TAA is dialled in. cd::post_taa owns the
+        // - only active when TAA is dialled in. cd::post_taa owns the
         // Halton sequence; we just gate it on the TAA strength dial.
         const cd::math::Vec2f jitter_px = (fx_taa_amount > 0.001F)
             ? cd::post_taa::jitter_offset(frame_idx, 8U)
@@ -4212,7 +4222,7 @@ int main()
         const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(frame.extent.width);
         const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(frame.extent.height);
 
-        // T_jitter * vp â€” adds jx_ndc * w to clip.x so post-divide
+        // T_jitter * vp - adds jx_ndc * w to clip.x so post-divide
         // ndc.x shifts by jx_ndc. Column-major: for each column c,
         // add the bottom-row entry * jitter into rows 0/1.
         cd::math::Mat4f vp = vp_unjittered;
@@ -4245,12 +4255,12 @@ int main()
         spush.cam_right[0] = sky_right.x; spush.cam_right[1] = sky_right.y; spush.cam_right[2] = sky_right.z; spush.cam_right[3] = half_w;
         spush.cam_up[0]    = sky_up.x;    spush.cam_up[1]    = sky_up.y;    spush.cam_up[2]    = sky_up.z;    spush.cam_up[3]    = half_h;
         spush.cam_fwd[0]   = forward.x;   spush.cam_fwd[1]   = forward.y;   spush.cam_fwd[2]   = forward.z;   spush.cam_fwd[3]   = 0.0F;
-        // Phase G â€” sky pulls sun direction + intensity + color from
+        // Phase G - sky pulls sun direction + intensity + color from
         // the first enabled directional light. CCT slider in the
         // Lights panel now affects the SKY tint too (sunset feel at
         // 2000-3000K, neutral at D65, cold blue at 10000K).
         // Defaults must be ZERO so disabling every directional light
-        // leaves the sky truly dark â€” the prior 0.9 default caused
+        // leaves the sky truly dark - the prior 0.9 default caused
         // the 'all-lights-off => bright white sky' bug.
         cd::math::Vec3f sky_sun_dir { -0.4F, -0.6F, -0.7F };
         cd::math::Vec3f sky_sun_col { 0.0F, 0.0F, 0.0F };
@@ -4333,7 +4343,7 @@ int main()
                 cd::math::Mat4f model = cd::math::Mat4f::identity();
                 model[3][0] = x; model[3][1] = y; model[3][2] = z;
                 const auto mvp = vp * model;
-                // cd::light â†’ render bridge: use the first enabled
+                // cd::light ??' render bridge: use the first enabled
                 // directional light to drive the shader's key light.
                 // Modulate the copper albedo by the light's color so
                 // toggling the Sun OR changing CCT visibly affects
@@ -4361,7 +4371,7 @@ int main()
                     break;
                 }
                 // Find a single warm point light, fold its color * range
-                // into the ambient term (mr_amb.z) â€” gives the spheres a
+                // into the ambient term (mr_amb.z) - gives the spheres a
                 // visible "key + bounce" feel.
                 cd::math::Vec3f point_color_contrib { 0.0F, 0.0F, 0.0F };
                 for (const auto& lrow : lights)
@@ -4384,7 +4394,7 @@ int main()
                 pb.albedo[2] = mat.albedo.z;
                 pb.albedo[3] = 1.0F;
                 // R6: mr_amb.z/w now drive Charlie sheen + Filament clearcoat
-                // lobes inside StandardPbrFS — wired from existing UI sliders.
+                // lobes inside StandardPbrFS - wired from existing UI sliders.
                 pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness;
                 pb.mr_amb[2] = fx_sheen_strength;
                 pb.mr_amb[3] = fx_clearcoat_strength;
@@ -4414,7 +4424,7 @@ int main()
         // a light) updates its shading correctly.
         // Lights-off baseline: NOTHING contributes. Defaults are
         // intentionally zeroed so the scene goes to (near-)black when
-        // every light is disabled â€” user feedback: "isik yoksa golge
+        // every light is disabled - user feedback: "isik yoksa golge
         // yada isik beklemem". The for-loop below promotes the first
         // enabled directional to the sun slot; absent that, sun_str
         // stays 0 and the FS sun term contributes nothing.
@@ -4431,7 +4441,7 @@ int main()
             sun_col = lrow.light.color;
             sun_str = std::min(2.5F, lrow.light.intensity / 80000.0F);
             // Sky hemisphere tied to sun being enabled: no sun, no
-            // sky bounce â€” the universe is dark.
+            // sky bounce - the universe is dark.
             ambient_w = 0.18F;
             has_sun = true;
             break;
@@ -4467,11 +4477,11 @@ int main()
                 s.color_int[0] = lrow.light.color.x;
                 s.color_int[1] = lrow.light.color.y;
                 s.color_int[2] = lrow.light.color.z;
-                // Lumens â†’ unit intensity. Scale calibrated so a 1200
+                // Lumens ??' unit intensity. Scale calibrated so a 1200
                 // lumen point at ~3 m yields a visible (~0.5..1.0)
                 // direct contribution on metallic spheres even with
                 // the sun fully off. Spot boost x6 (small solid
-                // angle), area dampen Ã—0.2 (was 0.05 â€” too dim to
+                // angle), area dampen ?-0.2 (was 0.05 - too dim to
                 // illuminate dielectrics when sun off).
                 float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F;
                 if (k == cd::light::LightType::kSpot) ki *= 6.0F;
@@ -4494,9 +4504,9 @@ int main()
         prim_inst.bind(cmd, 0);  // Faz 1.6 CSM + Faz 1.9 light UBO
 
         // ---- Floor (large flat quad) ----
-        // Faz 1.5 â€” real geometry on which the planar-shadow pass can
+        // Faz 1.5 - real geometry on which the planar-shadow pass can
         // project caster silhouettes. Floor sits at y = kFloorY so the
-        // front-row primitives (which extend Â±0.5 m around y=0) just
+        // front-row primitives (which extend ??0.5 m around y=0) just
         // touch it.
         constexpr float kFloorY      = -0.55F;
         constexpr float kShadowLift  =  0.01F;
@@ -4509,13 +4519,13 @@ int main()
             PrimPush fp {};
             fp.mvp   = floor_mvp;
             fp.model = floor_model;
-            // Slightly cool neutral floor â€” receives lighting + hemisphere AO.
+            // Slightly cool neutral floor - receives lighting + hemisphere AO.
             // tint[3] = 2.0 is the FS sentinel that enables the analytic
             // grid overlay (depth-tested via the floor geometry, so the
             // grid no longer shows through other objects).
             // Shadow-catcher + grid-helper combo (gaps #20 + #21).
             // Floor body colour kept subtle so the plane reads more
-            // like an editor helper than a scene mesh â€” shadows
+            // like an editor helper than a scene mesh - shadows
             // (much darker, see planar-shadow tint below) and grid
             // lines (much brighter) both stand out against it. FS
             // also fades the floor with camera distance for a
@@ -4528,7 +4538,7 @@ int main()
             fp.sun_color[2] = sun_col.z; fp.sun_color[3] = ambient_w;
             fp.fx_params[0] = static_cast<float>(tonemap_op);
             fp.fx_params[1] = 0.0F;
-            // Floor opts out of GTAO crease darkening â€” its normal is
+            // Floor opts out of GTAO crease darkening - its normal is
             // flat so dFdx/dFdy returns zero, but bloom on bright grid
             // lines is a nice subtle highlight.
             fp.fx_params[2] = 0.0F;
@@ -4573,7 +4583,7 @@ int main()
             pp.fx_params[0] = static_cast<float>(tonemap_op);
             // fx_params.y = 1.0 routes the FS through the baseColor
             // texture path (binding 4). Only kGltf entities are
-            // actually textured today â€” primitives stay on the
+            // actually textured today - primitives stay on the
             // vertex-coloured albedo path.
             pp.fx_params[1] = (ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
                             ? 1.0F : 0.0F;
@@ -4601,11 +4611,11 @@ int main()
         }
 
         // ---- Planar projective shadows (Faz 1.5) ----
-        // For each caster (ECS entities + 5Ã—5 PBR sphere grid), build a
+        // For each caster (ECS entities + 5?-5 PBR sphere grid), build a
         // shadow projection matrix that flattens the geometry onto the
         // floor plane along the sun direction, then redraw with the
         // tint.w sentinel that triggers the shader's shadow-bypass
-        // (flat dark output, no lighting). Hard shadows â€” soft shadows
+        // (flat dark output, no lighting). Hard shadows - soft shadows
         // need alpha blending in MaterialDesc (Faz 1.6 / future work).
         // Skips when sun is disabled or pointing upward.
         if (sun_str > 1e-4F && sun_dir.y < -1e-3F)
@@ -4615,7 +4625,7 @@ int main()
             // Shadow tint: tint.w < 0.5 triggers shader bypass; rgb is the
             // shadow color (linear, post-tonemap output).
             sp.tint[0] = 0.04F; sp.tint[1] = 0.04F; sp.tint[2] = 0.05F; sp.tint[3] = 0.0F;
-            // Zero out lighting fields â€” shadow path doesn't read them
+            // Zero out lighting fields - shadow path doesn't read them
             // but keep the push deterministic for SPIR-V validators.
             sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
             sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
@@ -4646,7 +4656,7 @@ int main()
             }
 
             // PBR sphere grid casters (use the PrimitiveVertex sphere
-            // mesh â€” same shape, different vertex format. The prim
+            // mesh - same shape, different vertex format. The prim
             // shader expects PrimitiveVertex, so we bind sphere_mesh
             // not pbr_sphere even though the spheres are PBR-rendered.)
             cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
@@ -4679,7 +4689,7 @@ int main()
 
         // Palette hotkeys via ImGui (after new_frame so IO modifier
         // state is current). Multiple combos because user reported
-        // Ctrl+Shift+P sometimes not firing â€” IME / global keyboard
+        // Ctrl+Shift+P sometimes not firing - IME / global keyboard
         // hooks can intercept the chord. F2 + GraveAccent + the chord
         // all toggle, any one works.
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
@@ -4797,7 +4807,7 @@ int main()
                 {
                     static cd::math::Quatf pre {};
                     const cd::math::Quatf& q = lt->value.rotation;
-                    // Quat to Euler XYZ (radians) â€” small approximation
+                    // Quat to Euler XYZ (radians) - small approximation
                     // works for inspector readout, gimbal-locked at
                     // pitch == 90 (rare for editor poses).
                     const float sinp = 2.0F * (q.w * q.x + q.y * q.z);
@@ -4874,7 +4884,7 @@ int main()
                         }
                     }
                 }
-                // Material tint (DragFloat3 RGB). No undo entry yet â€”
+                // Material tint (DragFloat3 RGB). No undo entry yet -
                 // ComponentEditCommand lands with the v1.7 ECS work.
                 ImGui::SeparatorText("Tint");
                 {
@@ -4916,7 +4926,7 @@ int main()
                     fx_view_mode = i;
             }
         }
-        // Sun direction controller â€” drives the directional light + IBL
+        // Sun direction controller - drives the directional light + IBL
         // gate. Each axis [-1,1]; normalised before push fill.
         if (ImGui::CollapsingHeader("Sun direction"))
         {
@@ -4961,17 +4971,20 @@ int main()
         }
         if (ImGui::CollapsingHeader("R4-FX  Inline scene post-fx (legacy)"))
         {
-            ImGui::TextDisabled("inline fakes â€” composite owns the real versions");
+            ImGui::TextDisabled("DEPRECATED - composite owns the real versions.");
+            ImGui::TextDisabled("Sliders disabled. Use R3 Composite post-fx panel.");
+            ImGui::BeginDisabled();
             ImGui::SliderFloat("GTAO inline",  &fx_gtao_strength,        0.0F, 1.0F);
             ImGui::SliderFloat("Bloom inline", &fx_bloom_strength,       0.0F, 1.0F);
             ImGui::SliderFloat("SMAA inline",  &fx_smaa_strength,        0.0F, 1.0F);
             ImGui::SliderFloat("Height fog",   &fx_fog_density,          0.0F, 1.0F);
             ImGui::SliderFloat("Aerial persp", &fx_aerial_perspective,   0.0F, 1.0F);
+            ImGui::EndDisabled();
         }
         if (ImGui::CollapsingHeader("R3  Composite post-fx (live)",
                                     ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::TextDisabled("single composite pass â€” AO/DOF/shafts/bloom/atmo");
+            ImGui::TextDisabled("single composite pass - AO/DOF/shafts/bloom/atmo");
             ImGui::SliderFloat("Exposure",           &fx_exposure,         0.1F, 10.0F);
             ImGui::SliderFloat("Saturation boost",   &fx_saturation_boost, 0.5F, 2.5F);
             ImGui::SliderFloat("Bloom strength",     &fx_bloom_post,       0.0F, 0.30F);
@@ -4986,27 +4999,50 @@ int main()
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
         {
-            ImGui::TextDisabled("composite-inline live: AO/SSR/TAA/motion blur/DOF/shafts");
+            ImGui::TextDisabled("Live composite stack:");
+            ImGui::BulletText("AO  (depth + G-Buffer-normal 8-ring scan)");
+            ImGui::BulletText("SSR (24-step world-space ray-march)");
+            ImGui::BulletText("DOF (8-tap bokeh, focus = cam target)");
+            ImGui::BulletText("Light shafts (16-tap Mitchell god rays)");
+            ImGui::BulletText("Motion blur (velocity G-Buffer + camera fallback)");
+            ImGui::BulletText("TAA (history ping-pong + Halton(2,3) jitter)");
+            ImGui::BulletText("Atmo fog + aerial perspective + sun in-scatter");
+            ImGui::BulletText("Vignette + film grain + ChromAB");
+            ImGui::TextDisabled("All tunable via R3 Composite post-fx (live) panel.");
         }
         if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
         {
-            ImGui::TextDisabled("queued v1.7 (needs RT compute pipe)");
+            ImGui::TextDisabled("Library API live: parity smokes pass.");
+            ImGui::BulletText("hello_restir   - DI + GI reservoir math");
+            ImGui::BulletText("hello_ddgi     - probe-volume trilinear weights");
+            ImGui::BulletText("hello_nrc      - CpuReferenceMlp SGD convergence");
+            ImGui::TextDisabled("GPU pipeline wiring queued - needs RT compute pipe.");
+            ImGui::TextDisabled("Run samples/lib_smokes/hello_{restir,ddgi,nrc}.exe");
         }
         if (ImGui::CollapsingHeader("R5  Volumetrics"))
         {
-            ImGui::TextDisabled("clouds + light shafts queued v1.7");
+            ImGui::TextDisabled("Composite-inline (cheap) and lib-level (CPU smoke):");
+            ImGui::BulletText("Sun in-scatter fog (HG g=0.6) - live in composite");
+            ImGui::BulletText("fBm sky cloud overlay - live in composite");
+            ImGui::BulletText("hello_volumetric_fog - Wronski 2014 froxel grid (CPU)");
+            ImGui::BulletText("hello_volumetric_clouds - Schneider 2017 march (CPU)");
+            ImGui::TextDisabled("3D froxel GPU compute path queued.");
         }
         if (ImGui::CollapsingHeader("R8  HDR10 display output"))
         {
-            ImGui::Checkbox("HDR10 request (queued swapchain rework)",
+            ImGui::Checkbox("HDR10 request (composite op 4 ready; needs HDR display)",
                             &fx_hdr10_request);
+            ImGui::TextDisabled("Tonemap operator 4 = ST.2084 PQ encode (Rec.2020).");
+            ImGui::TextDisabled("Swapchain colour-space already exposed via");
+            ImGui::TextDisabled("rhi::ColorSpace::kHdr10St2084; activate by setting");
+            ImGui::TextDisabled("rd.swapchain.colour_space at startup + restarting.");
         }
         ImGui::End();
 
         // ---- Counters ----
         ImGui::Begin("Counters");
         const auto snap = counters.snapshot();
-        // Phase 139 â€” FPS / dt readout up top.
+        // Phase 139 - FPS / dt readout up top.
         const double fps = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
         ImGui::Text("FPS: %5.1f   dt: %.2f ms   frame: %u",
                     fps, static_cast<double>(dt) * 1000.0, frame_idx);
@@ -5064,13 +5100,13 @@ int main()
                              static_cast<int>(vv.size()), 0, "peak history",
                              0.0F, 1.0F, ImVec2(0, 60));
         }
-        // Phase 139 â€” last 5 s of DSP output dump.
+        // Phase 139 - last 5 s of DSP output dump.
         ImGui::Separator();
-        ImGui::TextDisabled("No live audio backend wired in this sample â€”");
+        ImGui::TextDisabled("No live audio backend wired in this sample -");
         ImGui::TextDisabled("DSP chain ticks in memory. Save WAV to hear it.");
         if (ImGui::Button("Save Last 5 s as hello_engine_out.wav"))
         {
-            // Compose contiguous buffer from ring (oldest â†’ newest).
+            // Compose contiguous buffer from ring (oldest ??' newest).
             std::vector<std::int16_t> samples;
             samples.reserve(kAudioRingFrames);
             std::size_t start = audio_ring_write;
@@ -5082,7 +5118,7 @@ int main()
             {
                 samples.push_back(audio_ring[(start + i) % kAudioRingFrames]);
             }
-            // Minimal WAV header (mono s16) â€” same encoder shape as
+            // Minimal WAV header (mono s16) - same encoder shape as
             // hello_audio_chain / hello_audio_synth.
             const std::uint32_t data_bytes =
                 static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
@@ -5149,6 +5185,10 @@ int main()
 
         // ---- Streamer (Phase 150) ----
         ImGui::Begin("Streamer");
+        ImGui::TextDisabled("Demo of cd::asset::AsyncStreamer - a background worker");
+        ImGui::TextDisabled("that processes async asset-load requests with priority");
+        ImGui::TextDisabled("and failure handling. Buttons enqueue simulated loads.");
+        ImGui::Separator();
         ImGui::Text("worker: %s   pending %zu",
                     streamer.is_running() ? "RUNNING" : "STOPPED",
                     streamer.pending_count());
@@ -5245,12 +5285,12 @@ int main()
         }
         ImGui::End();
 
-        // ---- Lights (Phase 171/172 â€” cd::light system) ----
+        // ---- Lights (Phase 171/172 - cd::light system) ----
         ImGui::Begin("Lights");
-        ImGui::TextDisabled("cd::light â€” Frostbite + Filament model");
+        ImGui::TextDisabled("cd::light - Frostbite + Filament model");
         ImGui::Separator();
 
-        // Per-frame: refresh CCTâ†’RGB, then assign every enabled light
+        // Per-frame: refresh CCT??'RGB, then assign every enabled light
         // into the cluster grid for the stats line.
         cluster_grid.clear();
         std::uint32_t enabled_count = 0;
@@ -5294,7 +5334,7 @@ int main()
             ImGui::SameLine();
             ImGui::Checkbox("##en", &row.enabled);
 
-            // Color preview swatch â€” what the CCT actually produces.
+            // Color preview swatch - what the CCT actually produces.
             const ImVec4 col {
                 row.light.color.x, row.light.color.y, row.light.color.z, 1.0F
             };
@@ -5349,7 +5389,7 @@ int main()
             }
             // Direction control for any light type that has a meaningful
             // forward axis (everything except omnidirectional point). User
-            // feedback: "isiklara yun veremiyorum" â€” give them a slider.
+            // feedback: "isiklara yun veremiyorum" - give them a slider.
             // Sliders are raw xyz in [-1, 1]; renormalized after edit so
             // |dir| == 1 holds for the shading + shadow code that reads it.
             if (row.light.type == cd::light::LightType::kDirectional ||
@@ -5395,7 +5435,7 @@ int main()
             ImGui::TextUnformatted(it->c_str());
         ImGui::End();
 
-        // ---- Phase 151 â€” selection outline (ImGui overlay) ----
+        // ---- Phase 151 - selection outline (ImGui overlay) ----
         // We use the kWireframe style: project the selected entity's
         // world position onto the screen, then draw a circle around it
         // via ImGui's foreground draw list. Cheap, no extra GPU pass,
@@ -5425,7 +5465,7 @@ int main()
                 auto* lt = scene.local(e);
                 if (lt == nullptr) continue;
                 const auto& p = lt->value.position;
-                // Project world â†’ NDC â†’ pixel.
+                // Project world ??' NDC ??' pixel.
                 const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
                 cd::math::Vec4f clip {};
                 for (std::size_t r = 0; r < 4; ++r)
@@ -5455,11 +5495,11 @@ int main()
         // ---- World grid (floor) ----
         // Moved into the floor fragment shader (analytic XZ grid with
         // fwidth-based line width). That respects the depth buffer so
-        // the grid no longer shows through entities â€” user-flagged
+        // the grid no longer shows through entities - user-flagged
         // "grid objeler arasindan gozukmemeli". The floor mesh draw
         // above sets tint[3] = 2.0 to enable that shader branch.
 
-        // ---- Phase D â€” Light source markers (world-space overlay) ----
+        // ---- Phase D - Light source markers (world-space overlay) ----
         // Each enabled light gets a small visual in the viewport so
         // the user can SEE where the lights are placed.
         // - Directional: a yellow line from sky toward target (sun ray)
@@ -5469,7 +5509,7 @@ int main()
         {
             const float vw = static_cast<float>(frame.extent.width);
             const float vh = static_cast<float>(frame.extent.height);
-            // Background draw-list — same fix as the outline drawlist
+            // Background draw-list - same fix as the outline drawlist
             // above. Light gizmos / cone edges / range rings no longer
             // bleed across the Lights/Inspector/Showcase panels.
             auto* dl_m = ImGui::GetBackgroundDrawList();
@@ -5528,7 +5568,7 @@ int main()
                             dl_m->AddCircleFilled(p, 10.0F, col);
                             dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
                             if (sel) dl_m->AddCircle(p, 18.0F, col_sel, 16, 3.0F);
-                            // Range ring — only draw when this light is selected
+                            // Range ring - only draw when this light is selected
                             // so unselected lights show just a dot/icon instead
                             // of a noisy 16-segment circle that cuts through
                             // every nearby mesh (user-reported B04 clutter).
@@ -5581,7 +5621,7 @@ int main()
                         // outer cone half-angle from cos_outer
                         const float outer_angle = std::acos(std::clamp(L.cos_outer_cone, -1.0F, 1.0F));
                         const float disk_r = L.range * std::tan(outer_angle);
-                        // Cone edges + far-disk circle — drawn only when the
+                        // Cone edges + far-disk circle - drawn only when the
                         // spot is selected. Unselected lights show just the
                         // apex icon so they don't clutter the scene with rays
                         // through every nearby mesh (user-reported B04).
@@ -5599,14 +5639,14 @@ int main()
                                     far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
                                     far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
                             }
-                            // Apex → 4 edge points.
+                            // Apex ? 4 edge points.
                             for (int i = 0; i < kEdges; ++i)
                             {
                                 const auto pe = project(rim[static_cast<std::size_t>(i)]);
                                 if (p_apex.x >= 0.0F && pe.x >= 0.0F)
                                     dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
                             }
-                            // Far-disk rim — close the cone visually.
+                            // Far-disk rim - close the cone visually.
                             for (int i = 0; i < kEdges; ++i)
                             {
                                 const auto pa = project(rim[static_cast<std::size_t>(i)]);
@@ -5628,7 +5668,7 @@ int main()
                     case cd::light::LightType::kDiskArea:
                     {
                         // Derive tangent + bitangent from L.direction
-                        // exactly the way the FS does â€” so when the user
+                        // exactly the way the FS does - so when the user
                         // rotates the area light's direction via the
                         // Inspector or gizmo, the visual rectangle
                         // rotates with it. Closes 'area donunce gorseli
@@ -5689,14 +5729,14 @@ int main()
             }
         }
 
-        // ---- Phase 152 â€” axis-translation gizmo (ImGui overlay) ----
+        // ---- Phase 152 - axis-translation gizmo (ImGui overlay) ----
         // Project the selected entity's world position to screen,
         // draw three colored axis arrows, do hover/click drag in
         // screen-space, map back into world delta along the active
         // axis, and push a TranslateCommand on release.
         // Gizmo target can be either an entity transform OR a light's
         // position. The lambda below makes the same draw + drag code
-        // path applicable to both â€” point/spot/area lights drag their
+        // path applicable to both - point/spot/area lights drag their
         // position; directional lights have no world position so they
         // skip the gizmo.
         auto gizmo_target_pos = [&]() -> cd::math::Vec3f* {
@@ -5787,9 +5827,9 @@ int main()
                         dl->AddTriangleFilled(a, b, c, col);
                     };
                     // Mode-specific tip decoration:
-                    //   translate â†’ arrowheads
-                    //   rotate    â†’ small circles at tips
-                    //   scale     â†’ small filled cubes at tips
+                    //   translate ??' arrowheads
+                    //   rotate    ??' small circles at tips
+                    //   scale     ??' small filled cubes at tips
                     if (gizmo_mode == GizmoMode::kTranslate)
                     {
                         arrowhead(p_org, p_x, cx);
@@ -5859,7 +5899,7 @@ int main()
                     // Hover test. Translate/Scale modes measure mouse-to-
                     // axis-line distance (arrows). Rotate mode measures
                     // mouse-to-ring polyline distance (so the user grabs a
-                    // ring, not an arrow â€” feedback "rotation islemini
+                    // ring, not an arrow - feedback "rotation islemini
                     // yeni koydugun cemberler userinden yapabilmek
                     // istiyorum").
                     const ImVec2 mp = ImGui::GetIO().MousePos;
@@ -5877,7 +5917,7 @@ int main()
                     {
                         // Sample each ring at the same resolution we draw
                         // it (48 segments); compute min distance from
-                        // mouse to the ring polyline. Cheap (3 Ã— 48 = 144
+                        // mouse to the ring polyline. Cheap (3 ?- 48 = 144
                         // segments per frame at hover-test time).
                         constexpr int   kHoverSeg = 48;
                         constexpr float kHoverRad = 1.5F;  // matches kRingRad above
@@ -5920,7 +5960,7 @@ int main()
                         if (dy < best_d) { best_d = dy; best = cd::editor::GizmoAxis::kY; }
                         if (dz < best_d) { best_d = dz; best = cd::editor::GizmoAxis::kZ; }
                     }
-                    else  // translate / scale â€” axis-arrow hover
+                    else  // translate / scale - axis-arrow hover
                     {
                         if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kX; }
                         if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d) { best_d = d; best = cd::editor::GizmoAxis::kY; }
@@ -5933,7 +5973,7 @@ int main()
                                                 ImGui::IsAnyItemHovered();
                     // If the mouse is hovering an axis arrow AND a left-
                     // click is pending from the OS event loop, the gizmo
-                    // wins over the 3D pick path â€” suppress the pick.
+                    // wins over the 3D pick path - suppress the pick.
                     if (pending_pick && best != cd::editor::GizmoAxis::kNone)
                     {
                         pending_pick = false;
@@ -5945,7 +5985,7 @@ int main()
                     // to the camera ray (caller falls back to the
                     // screen-space dot method below). The plane is
                     // the one containing the axis with normal
-                    // = normalize(cross(axis, cross(view, axis))) â€”
+                    // = normalize(cross(axis, cross(view, axis))) -
                     // the most camera-facing orientation. Closes the
                     // "gizmo ileri-geri yapinca objeler isinlaniyor"
                     // teleport bug.
@@ -6217,10 +6257,10 @@ int main()
                                         // rotates a light's direction.
                                         // Apply q to light_drag_dir_start
                                         // (which was captured at click)
-                                        // â€” pure vector rotation v' =
+                                        // - pure vector rotation v' =
                                         // q * v * q^-1.
                                         const auto v = light_drag_dir_start;
-                                        // q*(0,v) = (-q.xyz . v, q.w*v + q.xyz Ã— v)
+                                        // q*(0,v) = (-q.xyz . v, q.w*v + q.xyz ?- v)
                                         const cd::math::Vec3f t {
                                             q.w * v.x + q.y * v.z - q.z * v.y,
                                             q.w * v.y + q.z * v.x - q.x * v.z,
@@ -6268,7 +6308,7 @@ int main()
                                         }
                                         else
                                         {
-                                            // Light translate â€” apply directly (no history wire yet).
+                                            // Light translate - apply directly (no history wire yet).
                                             log_push("[gizmo] light translate applied");
                                         }
                                     }
@@ -6342,7 +6382,7 @@ int main()
         cmd.end_render_pass();
         {
             // Four barriers: HDR + 3 G-Buffer colour targets -> ShaderResource.
-            // Depth handled separately below — needs an intermediate
+            // Depth handled separately below - needs an intermediate
             // kDepthRead state for the velocity pass before flipping to
             // ShaderResource for composite.
             std::array<cd::rhi::TextureBarrier, 4> hb {
@@ -6369,7 +6409,7 @@ int main()
             cmd.barrier({}, hb);
         }
 
-        // R3 phase 227 — velocity G-Buffer pass. Re-draws every entity
+        // R3 phase 227 - velocity G-Buffer pass. Re-draws every entity
         // mesh using velocity_material; FS writes (curr_uv - prev_uv).
         // Depth attachment in kDepthRead so the velocity raster matches
         // the HDR pass's visible surface per pixel (no overdraw soup).
@@ -6461,7 +6501,7 @@ int main()
             cmd.barrier({}, vb2);
         }
 
-        // R3 â€” Bloom chain. 7 fullscreen-triangle passes against the
+        // R3 - Bloom chain. 7 fullscreen-triangle passes against the
         // dedicated bloom mip chain (each pass owns one render target,
         // writes its full extent, and ends as kShaderResource so the
         // next pass can sample it). All 7 share the composite VS.
@@ -6568,8 +6608,8 @@ int main()
         const std::uint32_t read_idx  = frame_idx & 1U;
         const std::uint32_t write_idx = 1U - read_idx;
 
-        // Barrier the two history targets: read side â†’ ShaderResource,
-        // write side â†’ ColorAttachment.
+        // Barrier the two history targets: read side ??' ShaderResource,
+        // write side ??' ColorAttachment.
         {
             std::array<cd::rhi::TextureBarrier, 2> hb {
                 cd::rhi::TextureBarrier {
@@ -6615,10 +6655,12 @@ int main()
         cp.fx[2] = fx_saturation_boost;
         cp.fx[3] = fx_bloom_post;
         cp.ao[0] = fx_ao_strength;
-        cp.ao[1] = 4.0F;   // ao_radius_px â€” 4 px ring radius
+        // B05: 4 px was nearly invisible at 1600?900. Bumped to 20 px
+        // so the crease darkening reads at typical viewport sizes.
+        cp.ao[1] = 20.0F;
         cp.ao[2] = cam.near_z;
         cp.ao[3] = cam.far_z;
-        // DOF â€” wired from the existing UI slider. Focus on cam.target
+        // DOF - wired from the existing UI slider. Focus on cam.target
         // (length(eye - target)), default 4 m range, 8 px max blur.
         const float focus_dist = cd::math::length(cd::math::Vec3f {
             cam.eye.x - cam.target.x,
@@ -6626,11 +6668,11 @@ int main()
             cam.eye.z - cam.target.z });
         cp.dof[0] = fx_dof_strength;
         cp.dof[1] = focus_dist;
-        cp.dof[2] = 4.0F;   // focus range (m) â€” pixels within Â±range stay sharp
+        cp.dof[2] = 4.0F;   // focus range (m) - pixels within ??range stay sharp
         cp.dof[3] = 8.0F;   // max blur radius (px)
-        // Light shafts â€” project the first enabled directional light's
+        // Light shafts - project the first enabled directional light's
         // sun position to screen-space UV (sun lives at infinity in
-        // direction -L). If sun is behind camera (fwd_dot â‰¤ 0) we
+        // direction -L). If sun is behind camera (fwd_dot ??? 0) we
         // signal disabled via negative strength.
         cp.shafts[0] = 0.5F;
         cp.shafts[1] = 0.5F;
@@ -6713,8 +6755,8 @@ int main()
         cp.atmo[2] = fx_vignette_strength;
         cp.atmo[3] = fx_film_grain;
         cp.lens[0] = fx_chromab_strength;
-        // R5 volumetric fog single-scatter — sun direction packed here.
-        // Composite uses (view · -sun) with Henyey-Greenstein phase to
+        // R5 volumetric fog single-scatter - sun direction packed here.
+        // Composite uses (view ? -sun) with Henyey-Greenstein phase to
         // colour the fog along the sun ray. Use first enabled directional
         // light, else neutral (0,-1,0) so no in-scatter shows up.
         cd::math::Vec3f sun_dir_world { 0.0F, -1.0F, 0.0F };
@@ -6731,7 +6773,7 @@ int main()
         // G-Buffer-aware ops: pack camera basis so the composite FS can
         // reconstruct world-space positions per pixel for SSR + normal-
         // aware AO. Match the same basis the sky shader uses (forward
-        // = (target-eye)/|...|, right = forward Ã— +Y, up = right Ã—
+        // = (target-eye)/|...|, right = forward ?- +Y, up = right ?-
         // forward) so SSR rays project consistently.
         {
             const cd::math::Vec3f fwd_raw {
@@ -6768,13 +6810,13 @@ int main()
             cp.cam_up[0]    = up_cam.x; cp.cam_up[1]    = up_cam.y;
             cp.cam_up[2]    = up_cam.z; cp.cam_up[3]    = half_h_l;
             cp.cam_fwd[0]   = fwd.x;   cp.cam_fwd[1]   = fwd.y;
-            // TAA alpha â€” first frame must blend 0 (history undefined).
+            // TAA alpha - first frame must blend 0 (history undefined).
             cp.cam_fwd[2]   = fwd.z;
             cp.cam_fwd[3]   = (frame_idx > 0) ? fx_taa_amount : 0.0F;
             cp.cam_pos[0]   = cam.eye.x; cp.cam_pos[1] = cam.eye.y;
             cp.cam_pos[2]   = cam.eye.z; cp.cam_pos[3] = 0.0F;
         }
-        // SSR â€” wired from the existing UI slider; defaults to 0 (off).
+        // SSR - wired from the existing UI slider; defaults to 0 (off).
         cp.ssr[0] = fx_ssr_strength;
         cp.ssr[1] = 25.0F;   // max distance (m)
         cp.ssr[2] = 24.0F;   // max steps
@@ -6877,7 +6919,7 @@ int main()
     if (normal_tex.image.is_valid()) device.destroy_texture(normal_tex.image);
     if (mr_tex.view.is_valid())  device.destroy_texture_view(mr_tex.view);
     if (mr_tex.image.is_valid()) device.destroy_texture(mr_tex.image);
-    // Faz 1.7 RT resources â€” wait_idle so any in-flight cmd buffers
+    // Faz 1.7 RT resources - wait_idle so any in-flight cmd buffers
     // that referenced these structures are guaranteed done, then
     // tear down the TLAS queue + every BLAS.
     device.wait_idle();
