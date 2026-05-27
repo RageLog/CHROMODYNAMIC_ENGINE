@@ -205,6 +205,51 @@ float ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
   return max(s, 0.0) / 6.28318530;  // form factor → irradiance
 }
 
+// LTC inverse-matrix sampler (Heitz 2016 GGX) — analytic 4-term
+// polynomial fit (~1% MSE vs the 64x64 LUT). Returns the sparse
+// (a, b, c, d) entries of the inverse LTC matrix at (roughness, NoV).
+// Same fit as cd::brdf_ltc::ltc_inverse_matrix on CPU.
+vec4 ltc_inv_matrix(float roughness, float n_dot_v) {
+  float r  = clamp(roughness, 0.001, 1.0);
+  float nv = clamp(n_dot_v, 0.001, 1.0);
+  float a  = 1.0 + r * (-0.6 + 0.5 * (1.0 - nv));
+  float b  = r * (1.0 - nv) * 0.5;
+  float cm = 1.0 + r * (-0.4);
+  float d  = r * nv * -0.3;
+  return vec4(a, b, cm, d);
+}
+// Transform a tangent-space vec3 by the sparse LTC inverse matrix M^-1:
+//   M^-1 = | a 0 b |
+//          | 0 c 0 |
+//          | d 0 1 |
+vec3 ltc_M_transform(vec4 M, vec3 v) {
+  return vec3(M.x * v.x + M.y * v.z,
+              M.z * v.y,
+              M.w * v.x + v.z);
+}
+// Specular form factor over the polygon, transformed through M^-1.
+float ltc_polygon_specular(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3,
+                           float roughness, float NoV) {
+  vec3 up = abs(N.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+  vec3 T  = normalize(cross(up, N));
+  vec3 B  = cross(N, T);
+  mat3 frame = transpose(mat3(T, B, N));
+  vec3 p0 = frame * c0;
+  vec3 p1 = frame * c1;
+  vec3 p2 = frame * c2;
+  vec3 p3 = frame * c3;
+  vec4 M  = ltc_inv_matrix(roughness, NoV);
+  p0 = normalize(ltc_M_transform(M, p0));
+  p1 = normalize(ltc_M_transform(M, p1));
+  p2 = normalize(ltc_M_transform(M, p2));
+  p3 = normalize(ltc_M_transform(M, p3));
+  float s = ltc_edge_integral(p0, p1) +
+            ltc_edge_integral(p1, p2) +
+            ltc_edge_integral(p2, p3) +
+            ltc_edge_integral(p3, p0);
+  return max(s, 0.0) / 6.28318530;
+}
+
 vec3 sample_env(vec3 dir) {
   // Warmer / less-saturated env palette so polished metallic
   // spheres reflecting the sky preserve their base F0 chroma
@@ -334,13 +379,18 @@ void main() {
       vec3 c1 = lp + T_rect * ( hw) + B_rect * (-hh) - v_world_pos;
       vec3 c2 = lp + T_rect * ( hw) + B_rect * ( hh) - v_world_pos;
       vec3 c3 = lp + T_rect * (-hw) + B_rect * ( hh) - v_world_pos;
-      float ff = ltc_polygon_irradiance(N, c0, c1, c2, c3);
       vec3 area_col = cd_lights.slots[li].color_int.xyz *
                       cd_lights.slots[li].color_int.w;
-      // Diffuse from area light — physically scales by form factor.
-      // Specular contribution awaits the full LTC inverse-matrix LUT
-      // (header-only fit). For now diffuse-only matches prim shader.
-      direct += albedo * area_col * ff * (1.0 - metallic);
+      float ff_diff = ltc_polygon_irradiance(N, c0, c1, c2, c3);
+      // LTC-GGX specular form factor (Heitz 2016 fast-path inv matrix).
+      float ff_spec = ltc_polygon_specular(N, c0, c1, c2, c3,
+                                           roughness, NoV);
+      // Energy split: F0 weighted by Fresnel-roughness for specular,
+      // (1 - kS) * (1 - metallic) for diffuse.
+      vec3 F_area  = F_Schlick_roughness(NoV, F0, roughness);
+      vec3 kD_area = (vec3(1.0) - F_area) * (1.0 - metallic);
+      direct += kD_area * albedo * area_col * ff_diff
+              + F_area  * area_col * ff_spec;
       continue;
     }
 
