@@ -45,6 +45,18 @@ add_subdirectory(hello_positional_audio)
 add_subdirectory(hello_clustered_lights)
 add_subdirectory(hello_compute_cluster)
 
+# Phase 232+ — lib-API parity smokes (CPU reference for libs that
+# normally drive GPU compute kernels — fog froxel grid, cloud
+# height-fraction, gpu_particles advance, decal OBB projector, DDGI
+# trilinear probe weights, ReSTIR reservoir WRS, meshlet builder).
+add_subdirectory(hello_volumetric_fog)
+add_subdirectory(hello_volumetric_clouds)
+add_subdirectory(hello_gpu_particles)
+add_subdirectory(hello_decals)
+add_subdirectory(hello_ddgi)
+add_subdirectory(hello_restir)
+add_subdirectory(hello_mesh_shader)
+
 # hello_d3d12_boot exercises the Phase 12.B D3D12 backend boot path.
 # Windows-only because cd::rhi_d3d12 only links on Windows; on other
 # platforms the engine ships the same library but its factory returns
