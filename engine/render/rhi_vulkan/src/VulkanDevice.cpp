@@ -2429,9 +2429,15 @@ public:
             }
         }
 
-        // 4) Pick present mode. FIFO is always supported; we upgrade to MAILBOX
-        //    when vsync is off, MAILBOX when vsync is on stays in FIFO. Tearing
-        //    (IMMEDIATE) is not requested in v1.
+        // 4) Pick present mode. FIFO is always supported. When vsync is
+        //    requested off we prefer IMMEDIATE for a truly uncapped frame
+        //    rate (tearing accepted) and fall back to MAILBOX when
+        //    IMMEDIATE isn't supported. With vsync on we stay on FIFO.
+        //    W5-C: previous build picked MAILBOX exclusively; on 60 Hz
+        //    monitors the application loop still capped at ~60 fps because
+        //    vkAcquireNextImageKHR blocks once MAILBOX's 3-image queue
+        //    fills. IMMEDIATE lifts that ceiling — the FPS-counter readout
+        //    is then driven by actual GPU + CPU cost, not display sync.
         std::uint32_t pm_count = 0;
         vkGetPhysicalDeviceSurfacePresentModesKHR(physical_, surface, &pm_count, nullptr);
         std::vector<VkPresentModeKHR> present_modes(pm_count);
@@ -2439,12 +2445,25 @@ public:
         VkPresentModeKHR chosen_pm = VK_PRESENT_MODE_FIFO_KHR;
         if (!desc.vsync)
         {
+            bool got_immediate = false;
             for (auto pm : present_modes)
             {
-                if (pm == VK_PRESENT_MODE_MAILBOX_KHR)
+                if (pm == VK_PRESENT_MODE_IMMEDIATE_KHR)
                 {
                     chosen_pm = pm;
+                    got_immediate = true;
                     break;
+                }
+            }
+            if (!got_immediate)
+            {
+                for (auto pm : present_modes)
+                {
+                    if (pm == VK_PRESENT_MODE_MAILBOX_KHR)
+                    {
+                        chosen_pm = pm;
+                        break;
+                    }
                 }
             }
         }
