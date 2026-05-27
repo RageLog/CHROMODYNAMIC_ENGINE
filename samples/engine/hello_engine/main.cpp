@@ -2106,7 +2106,16 @@ int main()
     GpuMesh gltf_mesh {};
     std::string gltf_loaded_name;
     {
-        const std::array<std::string, 10> kCandidates {
+        // Search list — try the binary's CWD first, then walk up the
+        // build tree (binary lives at build/<preset>/bin/<config>/),
+        // and finally try a few project-root anchors so the asset
+        // resolves whether the user runs from project root or from
+        // inside the binary directory.
+        const std::array<std::string, 30> kCandidates {
+            // Same-dir (rare but supports portable layout).
+            "CesiumMan.glb",
+            "model.gltf",
+            // From project root.
             "assets/samples/CesiumMan.glb",
             "assets/samples/DamagedHelmet.glb",
             "assets/samples/FlightHelmet.gltf",
@@ -2116,10 +2125,27 @@ int main()
             "assets/samples/Suzanne.glb",
             "assets/samples/Fox.glb",
             "assets/samples/model.gltf",
-            "model.gltf"
+            // From build/<preset>/bin/<config>/ — walk up to project root.
+            "../../../../assets/samples/CesiumMan.glb",
+            "../../../../assets/samples/DamagedHelmet.glb",
+            "../../../../assets/samples/DamagedHelmet.gltf",
+            "../../../../assets/samples/Duck.gltf",
+            "../../../../assets/samples/Suzanne.glb",
+            "../../../../assets/samples/Fox.glb",
+            // From build/<preset>/ — one less up-level.
+            "../../assets/samples/CesiumMan.glb",
+            "../../assets/samples/DamagedHelmet.glb",
+            "../../assets/samples/DamagedHelmet.gltf",
+            // Absolute path probe (project-tree fixed install layout).
+            "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/CesiumMan.glb",
+            "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/DamagedHelmet.glb",
+            // Misc.
+            "",  // placeholders so size stays at 30
+            "", "", "", "", "", "", ""
         };
         for (const auto& p : kCandidates)
         {
+            if (p.empty()) continue;
             auto loaded = cd::asset_gltf::load_gltf(p);
             if (!loaded.has_value()) continue;
             // Merge every primitive of every mesh into one big
@@ -2370,23 +2396,25 @@ int main()
             if (gltf_mesh.vb.is_valid())
             {
                 e.name = "glTF (" + gltf_loaded_name + ")";
-                // Prominent front-and-centre placement so the imported
-                // character is the focal showcase. Scale 2.2 reads as
-                // ~1.5 m human height. CesiumMan ships Z-up (most
-                // Khronos sample characters do); rotate -90Â° about
-                // X to bring him upright in the engine's Y-up world.
-                scene.local(e.handle)->value.position = { 0.0F, -0.55F, 0.5F };
+                // Place the imported character to the LEFT of the primitive
+                // row so it's clearly visible without overlapping the
+                // Cube/Sphere/Cone/Cylinder/Torus row (which occupies
+                // x = -2.4 .. +2.4 at y=0). Position at x=-4.5 keeps
+                // it within the showcase frame while reading as the
+                // "lead actor" (user-reported B02 + missing-character).
+                scene.local(e.handle)->value.position = { -4.5F, -0.55F, 0.0F };
                 scene.local(e.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
-                // X -90Â° rotation (Z-up -> Y-up) only. CesiumMan's
-                // original model has -Y forward in Cesium space; after
-                // -90Â° about X, that -Y maps to +Z (toward camera). No
-                // extra Y flip needed; adding one inverts the character.
+                // X -90° rotation (Z-up -> Y-up). CesiumMan's original
+                // model has -Y forward in Cesium space; after -90° about
+                // X, -Y maps to +Z (toward camera). No extra Y flip.
                 scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
             }
             else
             {
                 e.name = "Earth (procedural showcase)";
-                scene.local(e.handle)->value.position = { 0.0F, 1.5F, 1.5F };
+                // Same off-row placement when the glTF isn't found, so the
+                // procedural fallback doesn't clip into the Cone at origin.
+                scene.local(e.handle)->value.position = { -4.5F, 0.7F, 0.0F };
                 scene.local(e.handle)->value.scale    = { 1.5F, 1.5F, 1.5F };
             }
             e.tint   = { 1.0F, 1.0F, 1.0F };
@@ -3487,7 +3515,10 @@ int main()
                 {
                     const float dx = e.mouse_x - last_mouse_x;
                     const float dy = e.mouse_y - last_mouse_y;
-                    cam_yaw   -= dx * kCamLookSpeed;
+                    // FPS convention: mouse right → camera yaws right (world
+                    // appears to drift left). User-reported B03 — sign on X
+                    // was inverted; Y stays as "mouse down → look down".
+                    cam_yaw   += dx * kCamLookSpeed;
                     cam_pitch -= dy * kCamLookSpeed;
                     // Clamp pitch so we don't flip the camera over.
                     constexpr float kHalfPi = 1.5707963F;
@@ -5383,7 +5414,10 @@ int main()
         {
             const float vw = static_cast<float>(frame.extent.width);
             const float vh = static_cast<float>(frame.extent.height);
-            auto* dl = ImGui::GetForegroundDrawList();
+            // Background draw-list keeps gizmos BEHIND ImGui panels so
+            // the selection ring doesn't bleed through Lights / Inspector
+            // / Showcase windows (user-reported bug B01).
+            auto* dl = ImGui::GetBackgroundDrawList();
             const ImU32 col = ImGui::ColorConvertFloat4ToU32(
                 ImVec4(outline.color.x, outline.color.y, outline.color.z, outline.opacity));
             for (const auto& e : outline.entities())
@@ -5435,7 +5469,10 @@ int main()
         {
             const float vw = static_cast<float>(frame.extent.width);
             const float vh = static_cast<float>(frame.extent.height);
-            auto* dl_m = ImGui::GetForegroundDrawList();
+            // Background draw-list — same fix as the outline drawlist
+            // above. Light gizmos / cone edges / range rings no longer
+            // bleed across the Lights/Inspector/Showcase panels.
+            auto* dl_m = ImGui::GetBackgroundDrawList();
             auto project = [&](const cd::math::Vec3f& p) -> ImVec2 {
                 const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
                 cd::math::Vec4f c {};
@@ -5491,24 +5528,29 @@ int main()
                             dl_m->AddCircleFilled(p, 10.0F, col);
                             dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
                             if (sel) dl_m->AddCircle(p, 18.0F, col_sel, 16, 3.0F);
-                            // Render an approximate range ring by projecting 8
-                            // points on the world-space circle at light.range.
-                            for (int i = 0; i < 16; ++i)
+                            // Range ring — only draw when this light is selected
+                            // so unselected lights show just a dot/icon instead
+                            // of a noisy 16-segment circle that cuts through
+                            // every nearby mesh (user-reported B04 clutter).
+                            if (sel)
                             {
-                                const float t0 = static_cast<float>(i)     / 16.0F * 6.2831853F;
-                                const float t1 = static_cast<float>(i + 1) / 16.0F * 6.2831853F;
-                                cd::math::Vec3f a {
-                                    L.position.x + std::cos(t0) * L.range,
-                                    L.position.y,
-                                    L.position.z + std::sin(t0) * L.range };
-                                cd::math::Vec3f b {
-                                    L.position.x + std::cos(t1) * L.range,
-                                    L.position.y,
-                                    L.position.z + std::sin(t1) * L.range };
-                                const auto pa = project(a);
-                                const auto pb = project(b);
-                                if (pa.x >= 0.0F && pb.x >= 0.0F)
-                                    dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                                for (int i = 0; i < 24; ++i)
+                                {
+                                    const float t0 = static_cast<float>(i)     / 24.0F * 6.2831853F;
+                                    const float t1 = static_cast<float>(i + 1) / 24.0F * 6.2831853F;
+                                    cd::math::Vec3f a {
+                                        L.position.x + std::cos(t0) * L.range,
+                                        L.position.y,
+                                        L.position.z + std::sin(t0) * L.range };
+                                    cd::math::Vec3f b {
+                                        L.position.x + std::cos(t1) * L.range,
+                                        L.position.y,
+                                        L.position.z + std::sin(t1) * L.range };
+                                    const auto pa = project(a);
+                                    const auto pb = project(b);
+                                    if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                        dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                                }
                             }
                             dl_m->AddText(ImVec2(p.x + 14.0F, p.y - 8.0F),
                                           col, "POINT");
@@ -5539,18 +5581,39 @@ int main()
                         // outer cone half-angle from cos_outer
                         const float outer_angle = std::acos(std::clamp(L.cos_outer_cone, -1.0F, 1.0F));
                         const float disk_r = L.range * std::tan(outer_angle);
-                        // 4 cone "edges"
-                        for (int i = 0; i < 8; ++i)
+                        // Cone edges + far-disk circle — drawn only when the
+                        // spot is selected. Unselected lights show just the
+                        // apex icon so they don't clutter the scene with rays
+                        // through every nearby mesh (user-reported B04).
+                        if (sel)
                         {
-                            const float t = static_cast<float>(i) / 8.0F * 6.2831853F;
-                            const float ct = std::cos(t), st = std::sin(t);
-                            cd::math::Vec3f edge {
-                                far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
-                                far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
-                                far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
-                            const auto pe = project(edge);
-                            if (p_apex.x >= 0.0F && pe.x >= 0.0F)
-                                dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
+                            const int kEdges = 4;
+                            std::array<cd::math::Vec3f, kEdges + 1> rim {};
+                            for (int i = 0; i <= kEdges; ++i)
+                            {
+                                const float t = static_cast<float>(i) /
+                                                static_cast<float>(kEdges) * 6.2831853F;
+                                const float ct = std::cos(t), st = std::sin(t);
+                                rim[static_cast<std::size_t>(i)] = {
+                                    far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
+                                    far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
+                                    far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
+                            }
+                            // Apex → 4 edge points.
+                            for (int i = 0; i < kEdges; ++i)
+                            {
+                                const auto pe = project(rim[static_cast<std::size_t>(i)]);
+                                if (p_apex.x >= 0.0F && pe.x >= 0.0F)
+                                    dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
+                            }
+                            // Far-disk rim — close the cone visually.
+                            for (int i = 0; i < kEdges; ++i)
+                            {
+                                const auto pa = project(rim[static_cast<std::size_t>(i)]);
+                                const auto pb = project(rim[static_cast<std::size_t>(i + 1)]);
+                                if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                    dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                            }
                         }
                         if (p_apex.x >= 0.0F)
                         {
