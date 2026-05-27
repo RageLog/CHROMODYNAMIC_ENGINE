@@ -424,8 +424,14 @@ void main() {
   // Exposure
   c *= max(pc.fx.y, 0.001);
 
-  // Tonemap
+  // Tonemap. Operator IDs:
+  //   0 = Narkowicz ACES, 1 = Hill ACES, 2 = Hable / Uncharted 2,
+  //   3 = AGX (Sobotka 2022), 4 = HDR10 PQ encode (ST.2084).
+  // HDR10 path skips display-clamp + the post-tonemap gamma below
+  // (handled inline) so the colour reaches the swapchain in PQ space.
+  // Use only when the swapchain colour-space is HDR10_ST2084_PACKED.
   int op = int(pc.fx.x + 0.5);
+  bool hdr10 = (op == 4);
   if (op == 0) {
     const float a_ = 2.51, b_ = 0.03, c_ = 2.43, d_ = 0.59, e_ = 0.14;
     c = clamp((c * (a_*c + b_)) / (c * (c_*c + d_) + e_),
@@ -439,7 +445,7 @@ void main() {
     vec3 cf = ((c * (A*c + C*B) + D*E) / (c * (A*c + B) + D*F)) - E/F;
     vec3 wf = vec3(((W * (A*W + C*B) + D*E) / (W * (A*W + B) + D*F)) - E/F);
     c = clamp(cf / wf, vec3(0.0), vec3(1.0));
-  } else {
+  } else if (op == 3) {
     const float kMinEv = -12.47393, kMaxEv = 4.026069;
     vec3 lg = clamp((log2(max(c, vec3(1e-10))) - vec3(kMinEv)) /
                     (kMaxEv - kMinEv), vec3(0.0), vec3(1.0));
@@ -448,14 +454,29 @@ void main() {
     c = clamp( 15.5  * x4 * x2 - 40.14 * x4 * lg + 31.96 * x4
              -  6.868 * x2 * lg + 0.4298 * x2 + 0.1191 * lg - 0.00232,
              vec3(0.0), vec3(1.0));
+  } else {  // op == 4 → HDR10 PQ
+    // Linear-sRGB scene → Rec.2020 primaries → PQ encode.
+    // Assume a 1000 cd/m² peak white target (typical HDR10 monitor).
+    const mat3 srgb_to_2020 = mat3(0.6274, 0.0691, 0.0164,
+                                   0.3293, 0.9195, 0.0880,
+                                   0.0433, 0.0114, 0.8956);
+    vec3 rec2020_linear = srgb_to_2020 * max(c, vec3(0.0));
+    const float kPeakNits = 1000.0;
+    vec3 nits = rec2020_linear * kPeakNits;
+    const float kM1 = 0.1593017578125, kM2 = 78.84375;
+    const float kC1 = 0.8359375, kC2 = 18.8515625, kC3 = 18.6875;
+    vec3 Y  = clamp(nits / 10000.0, vec3(0.0), vec3(1.0));
+    vec3 Ym = pow(Y, vec3(kM1));
+    c = pow((kC1 + kC2 * Ym) / (1.0 + kC3 * Ym), vec3(kM2));
   }
-  // Saturation pull-away
+  // Saturation pull-away (SDR only — HDR10 PQ already perceptual).
+  if (!hdr10)
   {
     float luma = dot(c, vec3(0.299, 0.587, 0.114));
     float sb = max(pc.fx.z, 0.001);
     c = clamp(mix(vec3(luma), c, sb), vec3(0.0), vec3(1.0));
+    c = pow(c, vec3(1.0/2.2));
   }
-  c = pow(c, vec3(1.0/2.2));
 
   // Vignette
   if (pc.atmo.z > 0.001) {
