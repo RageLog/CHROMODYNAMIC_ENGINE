@@ -958,6 +958,7 @@ layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(set = 0, binding = 2) uniform sampler2D cd_depth;
 layout(set = 0, binding = 3) uniform sampler2D cd_gbuf_normal;
+layout(set = 0, binding = 4) uniform sampler2D cd_history_prev;
 layout(push_constant) uniform PC {
   vec4 fx;        // x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
   vec4 ao;        // x=ao_strength, y=ao_radius_px, z=near, w=far
@@ -1025,6 +1026,9 @@ vec2 prev_world_to_uv(vec3 w) {
 }
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
+// TAA history MRT — the next frame's read source. Composite always
+// writes here so the pipeline stays valid even when TAA blend is 0.
+layout(location = 1) out vec4 out_history;
 
 float linearize_z(float d) {
   // Reverse-Z aware: protect against d == 0 (far plane returns NaN).
@@ -1304,7 +1308,43 @@ void main() {
     c += (h - 0.5) * pc.atmo.w * 0.15;
   }
 
+  // Temporal anti-aliasing — post-tonemap LDR blend with the
+  // reprojected prior-frame LDR. Reprojection uses prev_world_to_uv
+  // against the centre pixel's reconstructed world position
+  // (camera-motion only; per-mesh motion needs the MRT velocity
+  // G-Buffer next phase). pc.cam_fwd.w packs the blend alpha
+  // (0 → no TAA, ~0.85 → strong accumulation). Disabled when alpha
+  // ≤ 0.001 OR centre pixel is sky.
+  float taa_alpha = clamp(pc.cam_fwd.w, 0.0, 0.97);
+  if (taa_alpha > 0.001 && center_d < 0.999) {
+    vec3 wp_taa = world_pos_from_uv(v_uv, center_d);
+    vec2 prev_uv = prev_world_to_uv(wp_taa);
+    if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 &&
+        prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
+      vec3 hist = texture(cd_history_prev, prev_uv).rgb;
+      // Neighborhood clamp — sample 3x3 around the centre to find
+      // the LDR colour cube; clamp history to that to prevent ghost
+      // ing of disoccluded pixels (rough YCgCo clamp via min/max).
+      vec2 px = 1.0 / vec2(textureSize(cd_history_prev, 0));
+      vec3 lo = c, hi = c;
+      for (int j = -1; j <= 1; ++j)
+      for (int i = -1; i <= 1; ++i) {
+        if (i == 0 && j == 0) continue;
+        // Re-sample our just-computed c via cd_hdr_color is wrong
+        // (raw HDR). Instead approximate neighbourhood with raw HDR
+        // tonemap-less, which is a soft approximation — sufficient
+        // for ghost suppression at this composite stage.
+        vec3 n = texture(cd_hdr_color, v_uv + vec2(i, j) * px).rgb;
+        lo = min(lo, n);
+        hi = max(hi, n);
+      }
+      hist = clamp(hist, lo, hi);
+      c = mix(c, hist, taa_alpha);
+    }
+  }
+
   out_color = vec4(c, 1.0);
+  out_history = vec4(c, 1.0);  // feed next frame's TAA read
 }
 )glsl";
 
@@ -1860,13 +1900,28 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
         return 47;
 
+    // R3 TAA history — ping-pong color targets at swapchain format.
+    // Each frame, composite reads history[frame & 1] (last frame's
+    // post-tonemap blend) and writes to history[(frame & 1) ^ 1]
+    // (this frame's blend, for next frame). MRT 2nd attachment in
+    // the composite render pass.
+    constexpr auto kHistoryFormat = cd::rhi::Format::kBGRA8Unorm;
+    std::array<ColorTarget, 2> history_targets {};
+    for (auto& h : history_targets)
+    {
+        if (!create_color_target(device, { window.width(), window.height() }, kHistoryFormat, h))
+            return 48;
+    }
+
     // R3: scene materials draw into BOTH HDR + G-Buffer normal now.
     // The 2-attachment array is shared by every scene pipeline so
     // they all match the HDR pass's attachment layout.
     constexpr std::array<cd::rhi::Format, 2> kColorFmts {
         cd::rhi::Format::kRGBA16Float,
         cd::rhi::Format::kRGBA16Float };
-    constexpr std::array<cd::rhi::Format, 1> kSwapchainFmts {
+    // (composite uses kCompositeFmts [swapchain + history] declared below;
+    //  this single-slot kSwapchainFmts is preserved for symmetry / docs.)
+    [[maybe_unused]] constexpr std::array<cd::rhi::Format, 1> kSwapchainFmts {
         cd::rhi::Format::kBGRA8Unorm };
 
     // Sky material — no vertex buffer, depth off.
@@ -1892,16 +1947,22 @@ int main()
     // R3 composite material — full-screen triangle, samples HDR target,
     // writes to swapchain. Carries the tonemap + saturation pass that
     // previously lived inline in prim/PBR FS.
+    // Composite writes BOTH to the swapchain (final tonemapped LDR
+    // for display) AND to a 2nd target = next-frame TAA history.
+    constexpr std::array<cd::rhi::Format, 2> kCompositeFmts {
+        cd::rhi::Format::kBGRA8Unorm,  // swapchain — visible output
+        cd::rhi::Format::kBGRA8Unorm   // history target — for TAA next frame
+    };
     cd::material::MaterialDesc comp_md {};
     comp_md.vertex_glsl   = kCompositeVS;
     comp_md.fragment_glsl = kCompositeFS;
-    comp_md.color_attachment_formats = kSwapchainFmts;
+    comp_md.color_attachment_formats = kCompositeFmts;
     constexpr std::array<cd::rhi::PushConstantRange, 1> kCompositePush {
         cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment,
                                      .offset = 0,
                                      .size = sizeof(CompositePush) } };
     comp_md.push_constants = kCompositePush;
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kCompositeBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 5> kCompositeBindings {
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 0,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
@@ -1919,6 +1980,11 @@ int main()
             .stages  = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 3,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 4,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
             .count   = 1,
             .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -2418,10 +2484,17 @@ int main()
         if (auto wr = pbr_inst.update(writes); !wr.has_value()) return 18;
     }
 
-    // R3: composite material instance + HDR sampler binding.
-    auto comp_inst_r = cd::material::MaterialInstance::create(device, composite_material);
-    if (!comp_inst_r.has_value()) return 33;
-    auto& composite_inst = *comp_inst_r;
+    // R3: composite material instance + HDR sampler binding. Two
+    // instances for TAA ping-pong — composite_insts[i] reads
+    // history_targets[i] (= the OPPOSITE target from what it writes
+    // this frame, so the read history was produced by the prior frame).
+    std::array<cd::material::MaterialInstance, 2> composite_insts {};
+    for (std::uint32_t i = 0; i < 2; ++i)
+    {
+        auto r = cd::material::MaterialInstance::create(device, composite_material);
+        if (!r.has_value()) return 33;
+        composite_insts[i] = std::move(*r);
+    }
 
     // R3 multi-mip bloom — physical mip chain + per-pass material instances.
     //
@@ -2480,32 +2553,44 @@ int main()
     bind_bloom_descriptors();
 
     auto bind_composite_hdr = [&]() {
-        std::array<cd::rhi::DescriptorWrite, 4> writes {
-            cd::rhi::DescriptorWrite {
-                .binding = 0,
-                .array_element = 0,
-                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                .view    = hdr_target.view,
-                .sampler = albedo_sampler },
-            cd::rhi::DescriptorWrite {
-                .binding = 1,
-                .array_element = 0,
-                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                .view    = bloom_chain.mips[0].view,
-                .sampler = albedo_sampler },
-            cd::rhi::DescriptorWrite {
-                .binding = 2,
-                .array_element = 0,
-                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                .view    = depth.view,
-                .sampler = albedo_sampler },
-            cd::rhi::DescriptorWrite {
-                .binding = 3,
-                .array_element = 0,
-                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                .view    = gbuf_normal.view,
-                .sampler = albedo_sampler } };
-        (void)composite_inst.update(writes);
+        for (std::uint32_t i = 0; i < 2; ++i)
+        {
+            std::array<cd::rhi::DescriptorWrite, 5> writes {
+                cd::rhi::DescriptorWrite {
+                    .binding = 0,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = hdr_target.view,
+                    .sampler = albedo_sampler },
+                cd::rhi::DescriptorWrite {
+                    .binding = 1,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = bloom_chain.mips[0].view,
+                    .sampler = albedo_sampler },
+                cd::rhi::DescriptorWrite {
+                    .binding = 2,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = depth.view,
+                    .sampler = albedo_sampler },
+                cd::rhi::DescriptorWrite {
+                    .binding = 3,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = gbuf_normal.view,
+                    .sampler = albedo_sampler },
+                // TAA history — composite_insts[i] reads history[i],
+                // and per-frame logic picks composite_insts[frame & 1]
+                // so the read history was written by the prior frame.
+                cd::rhi::DescriptorWrite {
+                    .binding = 4,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = history_targets[i].view,
+                    .sampler = albedo_sampler } };
+            (void)composite_insts[i].update(writes);
+        }
     };
     bind_composite_hdr();
 
@@ -3208,6 +3293,13 @@ int main()
         float half_h { 1.0F };
         bool  valid  { false };
     } prev_cam_basis {};
+
+    // TAA history target state — both start kUndefined and we cycle
+    // them through ColorAttachment ↔ ShaderResource as composite
+    // ping-pongs which one it reads vs writes per frame.
+    std::array<cd::rhi::ResourceState, 2> history_states {
+        cd::rhi::ResourceState::kUndefined,
+        cd::rhi::ResourceState::kUndefined };
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
@@ -3969,6 +4061,15 @@ int main()
                 continue;
             if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
                 continue;
+            bool history_ok = true;
+            for (auto& h : history_targets)
+            {
+                if (!create_color_target(device, { window.width(), window.height() }, kHistoryFormat, h))
+                { history_ok = false; break; }
+            }
+            if (!history_ok) continue;
+            history_states[0] = cd::rhi::ResourceState::kUndefined;
+            history_states[1] = cd::rhi::ResourceState::kUndefined;
             if (!create_bloom_chain(device, { window.width(), window.height() }, bloom_chain))
                 continue;
             bind_bloom_descriptors();
@@ -5342,9 +5443,8 @@ int main()
             ImGui::SliderFloat("Light shafts",       &fx_shafts_strength,  0.0F, 1.5F);
             ImGui::SliderFloat("SSR strength",       &fx_ssr_strength,     0.0F, 1.0F);
             ImGui::SliderFloat("Motion blur",        &fx_motion_blur,      0.0F, 1.0F);
-            ImGui::Separator();
-            ImGui::TextDisabled("TAA queued — needs history target + per-mesh velocity");
-            ImGui::SliderFloat("TAA amount (off)",   &fx_taa_amount,       0.0F, 1.0F);
+            ImGui::SliderFloat("TAA amount",         &fx_taa_amount,       0.0F, 0.97F);
+            ImGui::TextDisabled("TAA: camera-velocity reprojection + 3x3 neighbourhood clamp");
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
         {
@@ -6793,8 +6893,38 @@ int main()
                            bloom_first_frame);
         }
 
-        std::array<cd::rhi::ColorAttachmentInfo, 1> swap_attach {
+        // TAA ping-pong selection. composite_insts[read_idx] has its
+        // binding=4 wired to history_targets[read_idx]; we render into
+        // history_targets[write_idx] (= the OTHER one) as the 2nd
+        // color attachment so next frame can read it.
+        const std::uint32_t read_idx  = frame_idx & 1U;
+        const std::uint32_t write_idx = 1U - read_idx;
+
+        // Barrier the two history targets: read side → ShaderResource,
+        // write side → ColorAttachment.
+        {
+            std::array<cd::rhi::TextureBarrier, 2> hb {
+                cd::rhi::TextureBarrier {
+                    .texture = history_targets[read_idx].image,
+                    .from    = history_states[read_idx],
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = history_targets[write_idx].image,
+                    .from    = history_states[write_idx],
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, hb);
+            history_states[read_idx]  = cd::rhi::ResourceState::kShaderResource;
+            history_states[write_idx] = cd::rhi::ResourceState::kColorAttachment;
+        }
+
+        std::array<cd::rhi::ColorAttachmentInfo, 2> swap_attach {
             cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } },
+            cd::rhi::ColorAttachmentInfo { .view = history_targets[write_idx].view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
                                           .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } } };
@@ -6810,7 +6940,7 @@ int main()
             0.0F, 1.0F });
         cmd.set_scissor(cd::rhi::Rect2D { {0,0}, frame.extent });
         composite_material.apply(cmd);
-        composite_inst.bind(cmd, 0);
+        composite_insts[read_idx].bind(cmd, 0);
         CompositePush cp {};
         cp.fx[0] = static_cast<float>(tonemap_op);
         cp.fx[1] = fx_exposure;
@@ -6954,7 +7084,9 @@ int main()
             cp.cam_up[0]    = up_cam.x; cp.cam_up[1]    = up_cam.y;
             cp.cam_up[2]    = up_cam.z; cp.cam_up[3]    = half_h_l;
             cp.cam_fwd[0]   = fwd.x;   cp.cam_fwd[1]   = fwd.y;
-            cp.cam_fwd[2]   = fwd.z;   cp.cam_fwd[3]   = 0.0F;
+            // TAA alpha — first frame must blend 0 (history undefined).
+            cp.cam_fwd[2]   = fwd.z;
+            cp.cam_fwd[3]   = (frame_idx > 0) ? fx_taa_amount : 0.0F;
             cp.cam_pos[0]   = cam.eye.x; cp.cam_pos[1] = cam.eye.y;
             cp.cam_pos[2]   = cam.eye.z; cp.cam_pos[3] = 0.0F;
         }
@@ -7032,6 +7164,7 @@ int main()
     depth.destroy(device);
     hdr_target.destroy(device);
     gbuf_normal.destroy(device);
+    for (auto& h : history_targets) h.destroy(device);
     bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.
     shadow_target.destroy(device);
