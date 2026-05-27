@@ -161,6 +161,22 @@ float clearcoat_dv(float r, float nh, float nv, float nl) {
   return D * V;
 }
 
+// Burley wrap-diffusion (inline SSS approximation — Sztrajman/Filament
+// fast path). Real SSS needs a separable Jiménez blur post-pass; this
+// wrap-only version still produces the characteristic "lit-around-the-
+// edge" feel for skin / wax / leaves without the extra render target.
+//   wrap > 0 → light leaks beyond the geometric terminator (NoL < 0).
+//   sss_tint biases the wrap contribution toward warm (skin) tones.
+vec3 wrap_diffuse(vec3 N, vec3 L, vec3 albedo,
+                  float wrap, vec3 sss_tint) {
+  float NdL = dot(N, L);
+  float NoL_wrap = max(0.0, (NdL + wrap) / (1.0 + wrap));
+  // Mix base albedo with tint along the unlit-to-lit transition so
+  // the SSS hint only shows on the terminator.
+  vec3 col = mix(sss_tint, vec3(1.0), clamp(NdL, 0.0, 1.0));
+  return albedo * col * NoL_wrap / 3.14159265;
+}
+
 vec3 sample_env(vec3 dir) {
   // Warmer / less-saturated env palette so polished metallic
   // spheres reflecting the sky preserve their base F0 chroma
@@ -221,6 +237,10 @@ void main() {
   //   mr_amb.w = clearcoat strength (Filament 2-lobe)
   float sheen_s     = clamp(pc.mr_amb.z, 0.0, 1.0);
   float clearcoat_s = clamp(pc.mr_amb.w, 0.0, 1.0);
+  // R6 SSS strength packed into camera_pos.w (was reserved). Drives
+  // the inline Burley wrap-diffusion lobe — useful for skin / wax /
+  // thin leaves without a separable blur post-pass.
+  float sss_s       = clamp(pc.camera_pos.w, 0.0, 1.0);
 
   vec3 N = normalize(v_normal);
   vec3 V = normalize(pc.camera_pos.xyz - v_world_pos);
@@ -244,6 +264,17 @@ void main() {
   vec3 direct  = direct_lobe(N, V, L_key,  albedo, metallic, roughness, F0, C_key,  sheen_s, clearcoat_s);
        direct += direct_lobe(N, V, L_fill, albedo, metallic, roughness, F0, C_fill, sheen_s, clearcoat_s);
        direct += direct_lobe(N, V, L_rim,  albedo, metallic, roughness, F0, C_rim,  sheen_s, clearcoat_s);
+  // SSS wrap-diffusion contribution — added on top of the standard
+  // direct lobes. Tinted warm (skin-ish) so the terminator picks up
+  // the SSS look. Only contributes when sss_s > 0.
+  if (sss_s > 0.001) {
+    const vec3 sss_tint = vec3(0.98, 0.70, 0.55);  // warm skin profile
+    const float wrap    = 0.45;                    // diffusion radius proxy
+    vec3 sss = wrap_diffuse(N, L_key,  albedo, wrap, sss_tint) * C_key
+             + wrap_diffuse(N, L_fill, albedo, wrap, sss_tint) * C_fill
+             + wrap_diffuse(N, L_rim,  albedo, wrap, sss_tint) * C_rim;
+    direct += sss * sss_s;
+  }
 
   // Multi-light UBO contribution (#22 fix). Loops every enabled
   // non-sun light from the shared LightSlot UBO and folds it into
@@ -321,7 +352,7 @@ struct StandardPbrPush
     float mvp[16];
     float albedo[4];
     float mr_amb[4];     ///< x=metallic, y=roughness, z=sheen, w=clearcoat
-    float camera_pos[4]; ///< xyz; w unused
+    float camera_pos[4]; ///< xyz=world camera origin, w=SSS strength [0,1]
     float light_dir[4];  ///< xyz=direction (will be negated in shader to get L); w=intensity
 };
 

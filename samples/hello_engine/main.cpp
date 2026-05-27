@@ -4284,7 +4284,9 @@ int main()
                 pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness;
                 pb.mr_amb[2] = fx_sheen_strength;
                 pb.mr_amb[3] = fx_clearcoat_strength;
-                pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z; pb.camera_pos[3] = 0.0F;
+                pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z;
+                // R6 SSS strength now packed into camera_pos.w (was reserved).
+                pb.camera_pos[3] = fx_sss_strength;
                 // PrimPush includes fx_params4 for advanced BRDF; sphere-grid PBR
                 // path uses StandardPbrPush instead, so this is a no-op here.
                 pb.light_dir[0]  = light_dir.x;
