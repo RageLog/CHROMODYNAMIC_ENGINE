@@ -5159,6 +5159,22 @@ int main()
                     dt_mean * 1000.0,
                     static_cast<double>(dt_p99) * 1000.0,
                     frame_idx);
+        // W5-F: dt histogram so stutter spikes are visually obvious
+        // instead of only showing up in the p99 readout. PlotHistogram
+        // expects a contiguous float array; we feed it the ring buffer
+        // in linear order (modulo wrap is acceptable for a visual
+        // sanity plot, not a forensic trace).
+        {
+            float dt_plot[120];
+            for (std::size_t i = 0; i < 120; ++i)
+            {
+                dt_plot[i] = fps_ring[(fps_ring_idx + i) % 120] * 1000.0F;
+            }
+            ImGui::PlotHistogram("##dt_hist", dt_plot, 120, 0,
+                                 "frame time (ms)",
+                                 0.0F, std::max(40.0F, dt_p99 * 1000.0F * 1.2F),
+                                 ImVec2(0, 40));
+        }
         ImGui::Separator();
         for (const auto& [name, value] : snap)
         {
