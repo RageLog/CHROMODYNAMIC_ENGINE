@@ -971,6 +971,10 @@ layout(push_constant) uniform PC {
   vec4 cam_fwd;   // xyz=world forward,     w=reserved
   vec4 cam_pos;   // xyz=world camera origin, w=reserved
   vec4 ssr;       // x=ssr_strength, y=max_distance_m, z=max_steps, w=fade_edge
+  vec4 prev_cam_right; // xyz=prev right, w=prev_half_w
+  vec4 prev_cam_up;    // xyz=prev up,    w=prev_half_h
+  vec4 prev_cam_fwd;   // xyz=prev fwd,   w=mblur_strength
+  vec4 prev_cam_pos;   // xyz=prev pos,   w=mblur_samples
 } pc;
 
 // Reconstruct world-space position from screen UV + non-linear depth.
@@ -1004,6 +1008,20 @@ vec3 world_to_uv(vec3 w) {
   float lz = fwd_dot;
   float d = (pc.ao.w - pc.ao.z * pc.ao.w / lz) / (pc.ao.w - pc.ao.z);
   return vec3(uv_x, uv_y, clamp(d, 0.0, 1.0));
+}
+
+// Same as world_to_uv but uses the previous frame's camera basis —
+// for camera-velocity reprojection (TAA + motion blur). Returns
+// vec2(-1) when the world point is behind the previous camera.
+vec2 prev_world_to_uv(vec3 w) {
+  vec3 rel = w - pc.prev_cam_pos.xyz;
+  float fwd_dot = dot(rel, pc.prev_cam_fwd.xyz);
+  if (fwd_dot <= 0.0) return vec2(-1.0);
+  float right_dot = dot(rel, pc.prev_cam_right.xyz);
+  float up_dot    = dot(rel, pc.prev_cam_up.xyz);
+  float ndc_x = (right_dot / fwd_dot) / pc.prev_cam_right.w;
+  float ndc_y = (up_dot    / fwd_dot) / pc.prev_cam_up.w;
+  return vec2(ndc_x * 0.5 + 0.5, -ndc_y * 0.5 + 0.5);
 }
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -1173,6 +1191,38 @@ void main() {
     c += ssr_color(v_uv, wp, N);
   }
 
+  // Camera-velocity motion blur — reconstruct the pixel's world
+  // position, reproject through the prev-frame camera basis to find
+  // where it sat last frame, sample HDR along the screen-space
+  // velocity vector. Object-motion velocity awaits the MRT velocity
+  // G-Buffer (next phase); for now this captures every static-mesh
+  // camera-motion-induced blur which is the dominant case.
+  float mblur_strength = pc.prev_cam_fwd.w;
+  if (mblur_strength > 0.001 && center_d < 0.999) {
+    vec3 wp_now = world_pos_from_uv(v_uv, center_d);
+    vec2 prev_uv = prev_world_to_uv(wp_now);
+    if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 &&
+        prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
+      vec2 velocity = v_uv - prev_uv;
+      // Clamp to reasonable max so a snap-cut doesn't smear across
+      // the whole screen.
+      float vlen = length(velocity);
+      if (vlen > 0.001) {
+        float vmax = 0.1;  // 10% of viewport per frame max
+        if (vlen > vmax) velocity *= vmax / vlen;
+        int   nsamples = int(max(pc.prev_cam_pos.w, 1.0));
+        vec3  blur_sum = vec3(0.0);
+        for (int i = 0; i < nsamples; ++i) {
+          float t = float(i) / float(nsamples - 1) - 0.5;  // [-0.5, 0.5]
+          vec2 sp = v_uv + velocity * t;
+          blur_sum += texture(cd_hdr_color, clamp(sp, vec2(0.0), vec2(1.0))).rgb;
+        }
+        blur_sum *= (1.0 / float(nsamples));
+        c = mix(c, blur_sum, clamp(mblur_strength, 0.0, 1.0));
+      }
+    }
+  }
+
   // Light shafts (volumetric god rays) — Mitchell 2007 screen-space
   // occlusion shafts. March from current pixel toward the sun's
   // screen-space UV; sample depth at each step and accumulate
@@ -1275,8 +1325,16 @@ struct CompositePush
     float cam_fwd[4];   // xyz=world-space forward,     w=reserved
     float cam_pos[4];   // xyz=world camera origin,     w=reserved
     float ssr[4];       // x=ssr_strength, y=max_distance_m, z=max_steps, w=fade_edge
+    // R3 camera-velocity reprojection — previous frame's camera basis
+    // packed alongside motion-blur parameters. Used to compute per-
+    // pixel screen-space velocity from camera motion alone (object-
+    // motion velocity awaits the MRT velocity target).
+    float prev_cam_right[4]; // xyz=prev right, w=prev_half_w
+    float prev_cam_up[4];    // xyz=prev up,    w=prev_half_h
+    float prev_cam_fwd[4];   // xyz=prev fwd,   w=mblur_strength
+    float prev_cam_pos[4];   // xyz=prev pos,   w=mblur_samples (float, rounded)
 };
-static_assert(sizeof(CompositePush) == 192, "CompositePush layout");
+static_assert(sizeof(CompositePush) == 256, "CompositePush layout");
 
 // ============================================================================
 // R3 — Multi-mip bloom (Karis 2013 stable pipeline).
@@ -3136,6 +3194,20 @@ int main()
     float fx_ao_strength      = 0.55F; // composite AO crease darkening
     float fx_shafts_strength  = 0.35F; // light shafts radial intensity
     float fx_ssr_strength     = 0.5F;  // SSR reflection contribution (default on)
+
+    // Previous-frame camera basis snapshot — populated AFTER each
+    // composite invoke so the next frame's reprojection sees t-1.
+    // First frame: prev = current (zero velocity).
+    struct PrevCamBasis
+    {
+        cd::math::Vec3f right { 1.0F, 0.0F, 0.0F };
+        cd::math::Vec3f up    { 0.0F, 1.0F, 0.0F };
+        cd::math::Vec3f fwd   { 0.0F, 0.0F, -1.0F };
+        cd::math::Vec3f pos   { 0.0F, 0.0F, 0.0F };
+        float half_w { 1.0F };
+        float half_h { 1.0F };
+        bool  valid  { false };
+    } prev_cam_basis {};
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
@@ -5269,9 +5341,9 @@ int main()
             ImGui::SliderFloat("DOF strength",       &fx_dof_strength,     0.0F, 1.0F);
             ImGui::SliderFloat("Light shafts",       &fx_shafts_strength,  0.0F, 1.5F);
             ImGui::SliderFloat("SSR strength",       &fx_ssr_strength,     0.0F, 1.0F);
+            ImGui::SliderFloat("Motion blur",        &fx_motion_blur,      0.0F, 1.0F);
             ImGui::Separator();
-            ImGui::TextDisabled("Motion blur + TAA queued — need velocity buffer");
-            ImGui::SliderFloat("Motion blur (off)",  &fx_motion_blur,      0.0F, 1.0F);
+            ImGui::TextDisabled("TAA queued — needs history target + per-mesh velocity");
             ImGui::SliderFloat("TAA amount (off)",   &fx_taa_amount,       0.0F, 1.0F);
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
@@ -6891,10 +6963,43 @@ int main()
         cp.ssr[1] = 25.0F;   // max distance (m)
         cp.ssr[2] = 24.0F;   // max steps
         cp.ssr[3] = 1.5F;    // edge-fade aggressiveness
+
+        // Camera-velocity motion blur: pack the prev-frame basis. On
+        // the very first frame, mirror current basis (zero velocity).
+        {
+            const auto& pb = prev_cam_basis;
+            const bool first = !pb.valid;
+            const cd::math::Vec3f pr  = first ? cd::math::Vec3f { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] } : pb.right;
+            const cd::math::Vec3f pu  = first ? cd::math::Vec3f { cp.cam_up[0],    cp.cam_up[1],    cp.cam_up[2] }    : pb.up;
+            const cd::math::Vec3f pf  = first ? cd::math::Vec3f { cp.cam_fwd[0],   cp.cam_fwd[1],   cp.cam_fwd[2] }   : pb.fwd;
+            const cd::math::Vec3f pp  = first ? cd::math::Vec3f { cp.cam_pos[0],   cp.cam_pos[1],   cp.cam_pos[2] }   : pb.pos;
+            const float phw = first ? cp.cam_right[3] : pb.half_w;
+            const float phh = first ? cp.cam_up[3]    : pb.half_h;
+            cp.prev_cam_right[0] = pr.x; cp.prev_cam_right[1] = pr.y;
+            cp.prev_cam_right[2] = pr.z; cp.prev_cam_right[3] = phw;
+            cp.prev_cam_up[0]    = pu.x; cp.prev_cam_up[1]    = pu.y;
+            cp.prev_cam_up[2]    = pu.z; cp.prev_cam_up[3]    = phh;
+            cp.prev_cam_fwd[0]   = pf.x; cp.prev_cam_fwd[1]   = pf.y;
+            cp.prev_cam_fwd[2]   = pf.z; cp.prev_cam_fwd[3]   = fx_motion_blur;
+            cp.prev_cam_pos[0]   = pp.x; cp.prev_cam_pos[1]   = pp.y;
+            cp.prev_cam_pos[2]   = pp.z; cp.prev_cam_pos[3]   = 8.0F;  // sample count
+        }
+
         cmd.push_constants(composite_material.pipeline_layout(),
                            cd::rhi::ShaderStage::kFragment,
                            0, sizeof(cp), &cp);
         cmd.draw(3, 1, 0, 0);
+
+        // Snapshot current camera basis for next frame's velocity
+        // reprojection. Done AFTER the push so the next frame can
+        // reproject "where was this pixel one frame ago?".
+        prev_cam_basis.right = { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] };
+        prev_cam_basis.up    = { cp.cam_up[0],    cp.cam_up[1],    cp.cam_up[2] };
+        prev_cam_basis.fwd   = { cp.cam_fwd[0],   cp.cam_fwd[1],   cp.cam_fwd[2] };
+        prev_cam_basis.pos   = { cp.cam_pos[0],   cp.cam_pos[1],   cp.cam_pos[2] };
+        prev_cam_basis.half_w = cp.cam_right[3];
+        prev_cam_basis.half_h = cp.cam_up[3];
+        prev_cam_basis.valid  = true;
 
         // ---- ImGui pass (on swapchain, after composite) ----
         ctx.render(cmd);
