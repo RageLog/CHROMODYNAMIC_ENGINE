@@ -363,14 +363,23 @@ void main() {
     int ltp = int(cd_lights.slots[li].dir_type.w);
 
     // R6 phase 228 — Area light path (type 3) via LTC analytic
-    // polygon irradiance (Heitz 2016). Uses the same LightSlot
-    // format the prim shader does: dir_type.xyz = rect normal,
-    // extras.x = half_width, extras.y = half_height.
+    // polygon irradiance (Heitz 2016). LightSlot mapping from the
+    // CPU LightUboGpu: dir_type.xyz = rect normal, extras.y =
+    // FULL width, extras.z = FULL height. Halve to get the LTC
+    // half-extents the corner reconstruction needs.
     if (ltp == 3) {
       vec3 N_rect = normalize(cd_lights.slots[li].dir_type.xyz);
-      float hw = cd_lights.slots[li].extras.x;
-      float hh = cd_lights.slots[li].extras.y;
+      float hw = cd_lights.slots[li].extras.y * 0.5;
+      float hh = cd_lights.slots[li].extras.z * 0.5;
       if (hw <= 0.001 || hh <= 0.001) continue;
+      // W4-B: one-sided emission. Keep only shading points on the
+      // front (emissive) side of the rect plane; back-side points are
+      // dark like a real area light instead of lit through. UBO
+      // stores `dir_type.xyz` as the panel's emissive normal, so the
+      // shading-point vector (P - lp) projected onto +N_rect must be
+      // positive for the front hemisphere.
+      vec3 to_pt_w = v_world_pos - lp;
+      if (dot(to_pt_w, N_rect) <= 0.0) continue;
       // Build rect tangent basis. Pick a stable up reference.
       vec3 up_ref = abs(N_rect.y) > 0.95 ? vec3(1.0, 0.0, 0.0)
                                           : vec3(0.0, 1.0, 0.0);
@@ -409,7 +418,12 @@ void main() {
       vec3 axis = normalize(cd_lights.slots[li].dir_type.xyz);
       float cos_b = dot(-Lp, axis);
       float cos_out = cd_lights.slots[li].extras.x;
-      float cos_in  = clamp(cos_out + 0.05, cos_out, 0.9999);
+      // W4-H: use the configured inner cone (extras.w) instead of
+      // synthesising cos_out + 0.05 — keeps the visible hot-spot
+      // size aligned with the dialled-in angles.
+      float cos_in_cpu = cd_lights.slots[li].extras.w;
+      float cos_in     = clamp(max(cos_in_cpu, cos_out + 0.01),
+                               cos_out + 0.01, 0.9999);
       cone = smoothstep(cos_out, cos_in, cos_b);
     }
     vec3 col = cd_lights.slots[li].color_int.xyz *

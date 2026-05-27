@@ -688,6 +688,14 @@ void main() {
     if (ltp == 3 || ltp == 4) {
       // Area light: LTC polygon irradiance from 4 corners.
       vec3 ln = normalize(cd_lights.slots[li].dir_type.xyz);
+      // W4-B: one-sided emission. Keep only shading points on the
+      // front (emissive) side of the rect plane; back-side points are
+      // dark like a real area light instead of lit through. The UBO
+      // stores `dir_type.xyz` as the panel's emissive normal, so the
+      // shading-point vector (P - lp) projected onto +ln must be
+      // positive for the front hemisphere.
+      vec3 to_pt_w = v_world_pos - lp_pos;
+      if (dot(to_pt_w, ln) <= 0.0) continue;
       vec3 up_ref = (abs(ln.y) > 0.95) ? vec3(1.0,0.0,0.0) : vec3(0.0,1.0,0.0);
       vec3 right  = normalize(cross(up_ref, ln));
       vec3 up_v   = cross(ln, right);
@@ -727,7 +735,13 @@ void main() {
       vec3  axis    = normalize(cd_lights.slots[li].dir_type.xyz);
       float cos_b   = dot(-Lp, axis);
       float cos_out = cd_lights.slots[li].extras.x;
-      float cos_in  = clamp(cos_out + 0.05, cos_out, 0.9999);
+      // W4-H: read the *configured* inner cone (extras.w on CPU side)
+      // instead of synthesising cos_out + 0.05. The synthesised value
+      // produced a much narrower hot-spot than the CPU dialled in, so
+      // the spot 'didn't appear to work' for shallow-aperture rigs.
+      float cos_in_cpu = cd_lights.slots[li].extras.w;
+      float cos_in     = clamp(max(cos_in_cpu, cos_out + 0.01),
+                               cos_out + 0.01, 0.9999);
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
@@ -2785,7 +2799,10 @@ int main()
     float fx_saturation_boost = 1.50F; // post-tonemap saturation pull-away
     float fx_bloom_post       = 0.04F; // bloom mip0 contribution mixed into HDR
     float fx_ao_strength      = 0.55F; // composite AO crease darkening
-    float fx_shafts_strength  = 0.35F; // light shafts radial intensity
+    // W4-E: bumped default 0.35 -> 0.75 so light shafts are obviously
+    // visible on first run. User reported they were hard to read at the
+    // previous default.
+    float fx_shafts_strength  = 0.75F; // light shafts radial intensity
     float fx_ssr_strength     = 0.5F;  // SSR reflection contribution (default on)
 
     // Previous-frame camera basis snapshot - populated AFTER each
@@ -3693,6 +3710,38 @@ int main()
         {
             rebuild_random_viz();
             next_random_refresh = frame_idx + 120;  // ~2 s @ 60 fps
+        }
+
+        // ---- W4-F: CesiumMan turntable until proper skinning ships ----
+        // User reported the imported character looks static. Real
+        // skeletal animation will land with the cd::animation
+        // sampling/skinning pass (queued); meanwhile a slow turntable
+        // about world-Y makes the imported asset visibly live so it
+        // doesn't read as a frozen statue at the showcase entry.
+        // Compose Y-rotation (around world up) over the original X-90
+        // Z-up->Y-up reorientation: q_new = q_yaw * q_X90.
+        {
+            static float cesium_yaw_t = 0.0F;
+            cesium_yaw_t += dt * 0.5F;  // ~0.5 rad/s ?> 8 s full revolution
+            for (auto& ent : entities)
+            {
+                if (ent.kind != PrimitiveKind::kGltf) continue;
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) continue;
+                const float half = cesium_yaw_t * 0.5F;
+                const float sy = std::sin(half);
+                const float cy = std::cos(half);
+                // Y-axis rotation quaternion (x, y, z, w) = (0, sy, 0, cy).
+                const float qx1 = 0.0F, qy1 = sy, qz1 = 0.0F, qw1 = cy;
+                // Base X-(-90 deg) quaternion (x, y, z, w).
+                const float qx2 = -0.7071068F, qy2 = 0.0F, qz2 = 0.0F, qw2 = 0.7071068F;
+                // Hamilton product: q1 * q2.
+                lt->value.rotation.x = qw1 * qx2 + qx1 * qw2 + qy1 * qz2 - qz1 * qy2;
+                lt->value.rotation.y = qw1 * qy2 - qx1 * qz2 + qy1 * qw2 + qz1 * qx2;
+                lt->value.rotation.z = qw1 * qz2 + qx1 * qy2 - qy1 * qx2 + qz1 * qw2;
+                lt->value.rotation.w = qw1 * qw2 - qx1 * qx2 - qy1 * qy2 - qz1 * qz2;
+                break;
+            }
         }
 
         // ---- Update scene camera ----
@@ -5062,9 +5111,43 @@ int main()
         ImGui::Begin("Counters");
         const auto snap = counters.snapshot();
         // Phase 139 - FPS / dt readout up top.
-        const double fps = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
-        ImGui::Text("FPS: %5.1f   dt: %.2f ms   frame: %u",
-                    fps, static_cast<double>(dt) * 1000.0, frame_idx);
+        // W4-D: 120-frame ring + moving average so the FPS readout doesn't
+        // bounce per-frame; user reported "FPS varying wildly, want a
+        // mean". Median is shown alongside the rolling mean to make
+        // stutter spikes obvious without polluting the mean.
+        static float fps_ring[120] = {};
+        static std::size_t fps_ring_idx = 0;
+        static std::size_t fps_ring_filled = 0;
+        fps_ring[fps_ring_idx] = dt;
+        fps_ring_idx = (fps_ring_idx + 1) % 120;
+        if (fps_ring_filled < 120) ++fps_ring_filled;
+        double dt_sum = 0.0;
+        for (std::size_t i = 0; i < fps_ring_filled; ++i)
+            dt_sum += static_cast<double>(fps_ring[i]);
+        const double dt_mean =
+            (fps_ring_filled > 0) ? dt_sum / static_cast<double>(fps_ring_filled) : 0.0;
+        std::vector<float> dt_sorted(fps_ring, fps_ring + fps_ring_filled);
+        std::sort(dt_sorted.begin(), dt_sorted.end());
+        const float dt_median =
+            !dt_sorted.empty() ? dt_sorted[dt_sorted.size() / 2] : 0.0F;
+        const float dt_p99 =
+            !dt_sorted.empty()
+                ? dt_sorted[static_cast<std::size_t>(
+                    static_cast<float>(dt_sorted.size()) * 0.99F)
+                  >= dt_sorted.size() ? dt_sorted.size() - 1
+                                       : static_cast<std::size_t>(
+                                            static_cast<float>(dt_sorted.size()) * 0.99F)]
+                : 0.0F;
+        const double fps_avg = (dt_mean > 0.0) ? (1.0 / dt_mean) : 0.0;
+        const double fps_inst = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
+        const double fps_median =
+            (dt_median > 0.0F) ? (1.0 / static_cast<double>(dt_median)) : 0.0;
+        ImGui::Text("FPS avg: %5.1f  median: %5.1f  inst: %5.1f",
+                    fps_avg, fps_median, fps_inst);
+        ImGui::Text("dt: %.2f ms  p99: %.2f ms  frame: %u",
+                    dt_mean * 1000.0,
+                    static_cast<double>(dt_p99) * 1000.0,
+                    frame_idx);
         ImGui::Separator();
         for (const auto& [name, value] : snap)
         {
@@ -6779,14 +6862,26 @@ int main()
             const float sun_ndc_y = (u_dot / fwd_dot) / half_h_l;
             cp.shafts[0] = 0.5F + 0.5F * sun_ndc_x;
             cp.shafts[1] = 0.5F - 0.5F * sun_ndc_y;
-            // Fade strength near screen edges so shafts don't pop on
-            // sun exit. Linear taper outside [-1, 1] NDC.
-            float edge_fade = std::min(1.0F,
-                std::max(0.0F, 1.0F - std::max(std::abs(sun_ndc_x),
-                                               std::abs(sun_ndc_y)) - 0.0F));
-            edge_fade = std::clamp(edge_fade, 0.0F, 1.0F);
+            // W4-E: smoother edge fade. Old fade hit zero exactly at the
+            // [-1, 1] NDC boundary, so off-screen sun caused shafts to
+            // pop. New shape uses smoothstep with a half-NDC overshoot
+            // so shafts taper gracefully across the edge.
+            const float ndc_max = std::max(std::abs(sun_ndc_x),
+                                           std::abs(sun_ndc_y));
+            // 0 at ndc_max=1.5 (just off-screen), 1 at ndc_max<=0.5
+            // (well-inside). Smoothstep(1.5, 0.5, ndc_max) follows the
+            // requested orientation.
+            float edge_fade = 1.0F;
+            {
+                const float t = std::clamp(
+                    (1.5F - ndc_max) / 1.0F, 0.0F, 1.0F);
+                edge_fade = t * t * (3.0F - 2.0F * t);
+            }
             cp.shafts[2] = fx_shafts_strength * edge_fade;
-            cp.shafts[3] = 3.5F;               // decay (per UV distance)
+            // W4-E: gentler decay so shafts visibly reach across the
+            // frame instead of dying within ~25% of UV distance from
+            // sun. Was 3.5; 1.6 keeps shafts readable at the corners.
+            cp.shafts[3] = 1.6F;               // decay (per UV distance)
             cp.sun_col[0] = lrow.light.color.x;
             cp.sun_col[1] = lrow.light.color.y;
             cp.sun_col[2] = lrow.light.color.z;

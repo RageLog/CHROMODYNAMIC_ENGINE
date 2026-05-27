@@ -328,9 +328,12 @@ vec3 sample_chromab(vec2 uv) {
   float r = length(vc);
   vec2 dir = (r > 1e-4) ? vc / r : vec2(0.0);
   vec2 px = 1.0 / vec2(textureSize(cd_hdr_color, 0));
-  // 8 px → 32 px multiplier — B07 user reported no visible effect at
-  // the previous setting; 0.5 strength now gives ~8 px corner offset.
-  float offs = pc.lens.x * r * r * 32.0;
+  // W4-I: blend a small uniform-offset floor with the radial r^2 term
+  // so the RGB split shows on object silhouettes near screen-centre
+  // too (not just corners). Pure r^2 is physically correct lens
+  // chromab; the floor keeps the engine showcase visible everywhere.
+  // 4 px floor + 28 px peak at corners for strength = 1.0.
+  float offs = pc.lens.x * (4.0 + 28.0 * r * r);
   vec3 c;
   c.r = texture(cd_hdr_color, uv + dir * offs * px).r;
   c.g = texture(cd_hdr_color, uv).g;
@@ -345,6 +348,12 @@ void main() {
   // SVGF-lite A-trous spatial denoise. Gated by dof.w (when DOF is off).
   c = sample_atrous(v_uv, c);
 
+  // Sun-strength proxy from the linear sun colour magnitude. Drives
+  // every "sky / atmosphere" overlay so the scene reads as night when
+  // every light (sun included) is off — was the all-lights-off bright
+  // grey-sky bug from the W3 visual pass.
+  float sun_amt = clamp(length(pc.sun_col.rgb) * 0.50, 0.0, 1.0);
+
   // Volumetric cloud overlay — sky-only (depth far), fBm-noise based.
   // pc.sun_col.w is coverage; 0 disables, 1 is full overcast.
   if (center_d >= 0.999 && pc.sun_col.w > 0.001) {
@@ -356,11 +365,17 @@ void main() {
     vec2 sky_uv = v_uv * vec2(24.0, 12.0);
     float density = cd_fbm4(sky_uv);
     float cov = clamp(pc.sun_col.w, 0.0, 1.0);
-    float cloud = smoothstep(0.50 - cov * 0.40, 0.78, density);
+    // W4-G: widen the smoothstep band so cloud edges fade smoothly
+    // instead of stepping; combined with the 24x12 cell scale this
+    // removes the pixelated-block look the user reported.
+    float cloud = smoothstep(0.42 - cov * 0.36, 0.82, density);
     // Cloud colour — lit side toward sun_col, shaded base mid-grey.
     vec3 cloud_lit = mix(vec3(0.55, 0.55, 0.60),
                          pc.sun_col.rgb * 1.2 + vec3(0.05),
                          0.6);
+    // W4-C: dim clouds at night so a fully unlit scene doesn't bake
+    // grey overcast into the sky pixels.
+    cloud_lit *= mix(0.04, 1.0, sun_amt);
     c = mix(c, cloud_lit, cloud * 0.85);
   }
 
@@ -375,8 +390,12 @@ void main() {
   // phase, no froxel — composite-inline so no extra render target.
   if (center_d < 0.999 && (pc.atmo.x > 0.001 || pc.atmo.y > 0.001)) {
     float lz = linearize_z(center_d);
-    vec3 horizon_base = vec3(0.78, 0.86, 0.96);
-    vec3 horizon_lit  = mix(horizon_base, pc.sun_col.rgb, 0.35);
+    // W4-C: horizon base is daylight; at night fall back to a near-
+    // black sky so the all-lights-off scene doesn't keep a bright
+    // overcast painted over the whole frustum.
+    vec3 night_horizon = vec3(0.02, 0.025, 0.035);
+    vec3 horizon_base = mix(night_horizon, vec3(0.78, 0.86, 0.96), sun_amt);
+    vec3 horizon_lit  = mix(horizon_base, pc.sun_col.rgb, 0.35 * sun_amt);
 
     // Single-scatter sun in-scatter colour. Henyey-Greenstein phase
     // (g=0.6 — forward-scattering haze) modulates by view·-sun.
