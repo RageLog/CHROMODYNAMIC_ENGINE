@@ -4279,7 +4279,11 @@ int main()
                 pb.albedo[1] = mat.albedo.y;
                 pb.albedo[2] = mat.albedo.z;
                 pb.albedo[3] = 1.0F;
-                pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness; pb.mr_amb[2] = 0.0F; pb.mr_amb[3] = 0.0F;
+                // R6: mr_amb.z/w now drive Charlie sheen + Filament clearcoat
+                // lobes inside StandardPbrFS — wired from existing UI sliders.
+                pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness;
+                pb.mr_amb[2] = fx_sheen_strength;
+                pb.mr_amb[3] = fx_clearcoat_strength;
                 pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z; pb.camera_pos[3] = 0.0F;
                 // PrimPush includes fx_params4 for advanced BRDF; sphere-grid PBR
                 // path uses StandardPbrPush instead, so this is a no-op here.
