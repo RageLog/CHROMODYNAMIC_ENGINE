@@ -136,9 +136,16 @@ static_assert(sizeof(AnalyticalSkyPush) == 80,
 
 [[nodiscard]] inline cd::math::Vec3f sample_sky_cpu(cd::math::Vec3f dir) noexcept
 {
-    const cd::math::Vec3f zenith  { 0.50F, 0.58F, 0.72F };
-    const cd::math::Vec3f horizon { 0.88F, 0.85F, 0.78F };
-    const cd::math::Vec3f ground  { 0.18F, 0.16F, 0.14F };
+    // W5-A: palette aligned with the GLSL sample_env() above so the
+    // baked IBL cube matches the visible sky a frame draws. The
+    // previous CPU palette (zenith 0.50/0.58/0.72) baked a desaturated
+    // overcast cube while the runtime sky drew saturated daylight, so
+    // metallic reflections looked beige against a deep-blue sky.
+    // Numbers are slightly muted vs the live sky so metal spheres
+    // don't pick up an oversaturated blue tint on their dome.
+    const cd::math::Vec3f zenith  { 0.22F, 0.46F, 0.82F };
+    const cd::math::Vec3f horizon { 0.82F, 0.88F, 0.96F };
+    const cd::math::Vec3f ground  { 0.12F, 0.11F, 0.10F };
     auto mix3 = [](cd::math::Vec3f a, cd::math::Vec3f b, float t) {
         return cd::math::Vec3f { a.x + (b.x - a.x) * t,
                                   a.y + (b.y - a.y) * t,
