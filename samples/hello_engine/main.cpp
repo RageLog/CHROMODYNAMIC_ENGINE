@@ -1475,16 +1475,16 @@ struct PrimPush
     //                     z=gtao_strength (inline curvature darkening)
     //                     w=bloom_strength (post-tonemap halo boost)
     float           fx_params[4];
-    // FX params block 2 — x=smaa_strength (inline FXAA-style luma blur)
-    //                     y=motion_blur_amount (queued for v1.7 frame-graph)
-    //                     z=taa_amount (queued for v1.7 frame-graph)
-    //                     w=dof_strength (queued for v1.7 frame-graph)
+    // FX params block 2 — x=smaa_strength (legacy inline FXAA blur)
+    //                     y=motion_blur_amount (LIVE in composite — phase 215)
+    //                     z=taa_amount (LIVE in composite — phase 216-217)
+    //                     w=dof_strength (LIVE in composite — phase 207)
     float           fx_params2[4];
-    // FX params block 3 — atmospherics (v1.4 day-ship batch 3)
-    //                     x=fog_density (inline exp height fog)
-    //                     y=atmosphere_strength (inline aerial perspective)
-    //                     z=clouds_coverage (queued, needs noise sampler)
-    //                     w=light_shafts_strength (queued, needs occlusion buf)
+    // FX params block 3 — atmospherics (LIVE in composite — phase 209)
+    //                     x=fog_density (legacy inline; composite owns now)
+    //                     y=atmosphere_strength (legacy inline; composite owns)
+    //                     z=clouds_coverage (queued — needs 3D noise sampler)
+    //                     w=light_shafts_strength (LIVE in composite — phase 208)
     float           fx_params3[4];
     // Camera origin (needed for distance fog without breaking the model
     // matrix invariant). xyz=world camera, w=unused.
@@ -3266,8 +3266,8 @@ int main()
     float fx_gtao_strength  = 0.0F;   // 0 = off
     float fx_bloom_strength = 0.0F;
     float fx_smaa_strength  = 0.0F;
-    float fx_motion_blur    = 0.0F;   // queued for v1.7 frame-graph
-    float fx_taa_amount     = 0.0F;   // queued for v1.7 frame-graph
+    float fx_motion_blur    = 0.0F;   // LIVE: composite camera-velocity (phase 215)
+    float fx_taa_amount     = 0.0F;   // LIVE: composite TAA ping-pong (phase 216-217)
     float fx_dof_strength   = 0.0F;   // wired to composite (phase207)
     float fx_vignette_strength = 0.25F;  // soft default — readable cinematic edge
     float fx_film_grain     = 0.0F;   // 0 = off; 0.5 = visible filmic noise
@@ -3303,8 +3303,8 @@ int main()
     bool  fx_hdr10_request  = false;  // queued for swapchain-output rework
     float fx_fog_density    = 0.0F;
     float fx_aerial_perspective = 0.0F;
-    float fx_clouds_coverage = 0.0F;  // queued for v1.7 (needs 3D noise)
-    float fx_light_shafts   = 0.0F;   // queued for v1.7 (needs depth probe)
+    float fx_clouds_coverage = 0.0F;  // queued — needs 3D Worley/Perlin noise tex
+    float fx_light_shafts   = 0.0F;   // LIVE in composite (phase 208) — legacy var kept
     cd::atmosphere::Parameters fx_atmosphere {};
     cd::light_shafts::Settings fx_lshafts {};
     cd::volumetric_clouds::Settings fx_clouds {};
@@ -3472,28 +3472,28 @@ int main()
             fx_smaa_strength = (fx_smaa_strength > 0.001F) ? 0.0F : 0.55F;
             log_push(fx_smaa_strength > 0.001F ? "[fx] SMAA on" : "[fx] SMAA off");
         });
-    palette.register_command(85, "FX: Toggle Motion Blur (queued v1.7)",
+    palette.register_command(85, "FX: Toggle Motion Blur",
         [&]{
             fx_motion_blur = (fx_motion_blur > 0.001F) ? 0.0F : 0.5F;
             log_push(fx_motion_blur > 0.001F
-                       ? "[fx] MotionBlur queued (v1.7 frame-graph)"
+                       ? "[fx] MotionBlur on (composite camera-velocity)"
                        : "[fx] MotionBlur off");
         });
-    palette.register_command(86, "FX: Toggle TAA (queued v1.7)",
+    palette.register_command(86, "FX: Toggle TAA",
         [&]{
-            fx_taa_amount = (fx_taa_amount > 0.001F) ? 0.0F : 0.5F;
+            fx_taa_amount = (fx_taa_amount > 0.001F) ? 0.0F : 0.85F;
             log_push(fx_taa_amount > 0.001F
-                       ? "[fx] TAA queued (v1.7 frame-graph)"
+                       ? "[fx] TAA on (history + Halton jitter)"
                        : "[fx] TAA off");
         });
-    palette.register_command(87, "FX: Toggle DOF (queued v1.7)",
+    palette.register_command(87, "FX: Toggle DOF",
         [&]{
             fx_dof_strength = (fx_dof_strength > 0.001F) ? 0.0F : 0.5F;
             log_push(fx_dof_strength > 0.001F
-                       ? "[fx] DOF queued (v1.7 frame-graph)"
+                       ? "[fx] DOF on (composite bokeh)"
                        : "[fx] DOF off");
         });
-    palette.register_command(88, "FX: Toggle HDR10 (queued swapchain rework)",
+    palette.register_command(88, "FX: Toggle HDR10 (queued)",
         [&]{
             fx_hdr10_request = !fx_hdr10_request;
             log_push(fx_hdr10_request
@@ -3519,11 +3519,11 @@ int main()
                        ? "[fx] Volumetric clouds queued (v1.7)"
                        : "[fx] Clouds off");
         });
-    palette.register_command(93, "FX: Toggle Light Shafts (queued v1.7)",
+    palette.register_command(93, "FX: Toggle Light Shafts",
         [&]{
-            fx_light_shafts = (fx_light_shafts > 0.001F) ? 0.0F : 0.5F;
-            log_push(fx_light_shafts > 0.001F
-                       ? "[fx] Light shafts queued (v1.7)"
+            fx_shafts_strength = (fx_shafts_strength > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx_shafts_strength > 0.001F
+                       ? "[fx] Light shafts on (Mitchell 2007 god rays)"
                        : "[fx] Light shafts off");
         });
     // Silence -Wunused-variable on the not-yet-dispatched libs.
@@ -5480,7 +5480,7 @@ int main()
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
         {
-            ImGui::TextDisabled("composite-inline live; SSR/TAA/motion blur queued");
+            ImGui::TextDisabled("composite-inline live: AO/SSR/TAA/motion blur/DOF/shafts");
         }
         if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
         {
