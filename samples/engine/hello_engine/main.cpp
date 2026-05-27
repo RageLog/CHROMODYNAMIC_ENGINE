@@ -731,13 +731,21 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // Non-sun shadows disabled until per-instance ray-mask lands
-    // with the R3 frame-graph rework. The bias-only approach
-    // false-occludes dense geometry (PBR sphere grid, merged
-    // character mesh) - closes 'isigin vurdugu cisimler hic
-    // gozukmuyor'. Trade-off: spot/point cast no shadows; objects
-    // stay visible where the cone reaches them.
-    float vis = 1.0;
+    // B12: spot + point now cast RT shadows via a tight ray-query
+    // (tmin 0.15 + N*0.1 bias) and the ray is clamped to the actual
+    // light-to-surface distance so we don't probe past the light's
+    // reach. Earlier setting at N*0.05 + 0.08 false-occluded dense
+    // geometry (PBR sphere grid + merged-mesh CesiumMan) so we'd
+    // disabled it — these tightened constants close the gap.
+    float ray_tmax = min(d, rng);
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq, cd_tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFFu, v_world_pos + N * 0.1, 0.15, Lp, ray_tmax);
+    while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
+    float vis = (rayQueryGetIntersectionTypeEXT(rq, true) ==
+                 gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
     lit += albedo * col * (ki * ndl * atten * vis * cone);
@@ -2642,10 +2650,12 @@ int main()
         true, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
         // Aim at the PBR sphere grid centre (0, 3.5, -4.5) from (-2, 3, 1).
-        // Lumens lowered 3500 -> 1800 so default spot doesn't blow out
-        // the floor pool; user-tunable via Inspector slider regardless.
+        // B11: cone tightened (was inner 0.4 rad ~23 deg / outer 0.7 rad
+        // ~40 deg => 80 deg full cone; user reported it looked like the
+        // spot came from a wider source). Now inner 0.21 rad ~12 deg /
+        // outer 0.35 rad ~20 deg => 40 deg full cone, sharper falloff.
         cd::light::spot({ -2.0F, 3.0F, 1.0F }, { 0.34F, 0.09F, -0.94F },
-                        { 1, 1, 1 }, 1800.0F, 12.0F, 0.4F, 0.7F),
+                        { 1, 1, 1 }, 1800.0F, 12.0F, 0.21F, 0.35F),
         true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
         cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
