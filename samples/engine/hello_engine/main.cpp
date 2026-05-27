@@ -2675,6 +2675,17 @@ int main()
         cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
                              3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
         true, 8000.0F });
+    // W5-B: very bright magenta neon strip behind the sphere rig so
+    // metallic surfaces pick up a deeply saturated, HIGHLY DYNAMIC
+    // highlight. This is the showcase scene that reveals tonemap
+    // operator differences (Narkowicz crushes the magenta, Hable
+    // rolls it off, AGX preserves the chroma gradient toward the
+    // peak). Without an emitter that exceeds the SDR ceiling the
+    // tonemap palette has nothing distinctive to compress.
+    lights.push_back({ "Magenta HDR neon (25000K)",
+        cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
+                             4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 25000.0F),
+        true, 25000.0F });
 
     // Per-frame ClusterGrid for stats. View-space Z range here is just
     // for the panel's "lights per cluster" preview.
