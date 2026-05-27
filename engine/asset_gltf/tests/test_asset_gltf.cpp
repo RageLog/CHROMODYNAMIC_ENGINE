@@ -469,3 +469,103 @@ TEST(SkinnedMeshBridge, ToSkeletonTwoJointChain)
     EXPECT_EQ(skel.joint(0).parent, -1);
     EXPECT_EQ(skel.joint(1).parent, 0);
 }
+
+// =============================================================================
+// SK1/SK3 (phase 226/227) — animation parse + bridge sampling.
+// =============================================================================
+
+TEST(SkinnedMeshBridge, ToSkeletonBundleProducesNodeToJointMap)
+{
+    cd::asset_gltf::GltfScene scene;
+    scene.nodes.resize(2);
+    scene.nodes[0].name = "root";
+    scene.nodes[1].name = "child";
+    scene.nodes[0].children = { 1 };
+    scene.nodes[1].parent = 0;
+    cd::asset_gltf::GltfSkin skin;
+    skin.joints = { 0, 1 };
+    skin.inverse_bind_matrices = { cd::math::Mat4f::identity(),
+                                   cd::math::Mat4f::identity() };
+    scene.skins.push_back(std::move(skin));
+
+    auto bundle = cd::asset_gltf::to_skeleton_bundle(scene, 0);
+    EXPECT_EQ(bundle.skeleton.joint_count(), 2U);
+    ASSERT_TRUE(bundle.node_to_joint.contains(0));
+    ASSERT_TRUE(bundle.node_to_joint.contains(1));
+    // Root must map to joint index 0 after topo sort; child to joint 1.
+    EXPECT_EQ(bundle.node_to_joint[0], 0);
+    EXPECT_EQ(bundle.node_to_joint[1], 1);
+}
+
+TEST(SkinnedMeshBridge, SampleGltfAnimationLinearTranslation)
+{
+    cd::asset_gltf::GltfAnimation anim;
+    anim.name = "test";
+    cd::asset_gltf::GltfAnimSampler s;
+    s.times  = { 0.0F, 1.0F };
+    s.values = { 0.0F, 0.0F, 0.0F,    // pos at t=0
+                 2.0F, 4.0F, 6.0F };  // pos at t=1
+    s.interpolation = cd::asset_gltf::GltfInterpolation::kLinear;
+    anim.samplers.push_back(std::move(s));
+    cd::asset_gltf::GltfAnimChannel ch;
+    ch.sampler_index = 0;
+    ch.target_node = 7;
+    ch.path = cd::asset_gltf::GltfTargetPath::kTranslation;
+    anim.channels.push_back(ch);
+    anim.duration = 1.0F;
+
+    std::unordered_map<int, std::int32_t> node_to_joint;
+    node_to_joint[7] = 0;
+    cd::anim::Pose pose;
+    pose.joint_locals.resize(1);
+
+    cd::asset_gltf::sample_gltf_animation(anim, node_to_joint, 0.5F, pose);
+    EXPECT_FLOAT_EQ(pose.joint_locals[0].position.x, 1.0F);
+    EXPECT_FLOAT_EQ(pose.joint_locals[0].position.y, 2.0F);
+    EXPECT_FLOAT_EQ(pose.joint_locals[0].position.z, 3.0F);
+}
+
+TEST(SkinnedMeshBridge, SampleGltfAnimationStepHoldsLowerKey)
+{
+    cd::asset_gltf::GltfAnimation anim;
+    cd::asset_gltf::GltfAnimSampler s;
+    s.times  = { 0.0F, 1.0F };
+    s.values = { 0.0F, 0.0F, 0.0F, 10.0F, 10.0F, 10.0F };
+    s.interpolation = cd::asset_gltf::GltfInterpolation::kStep;
+    anim.samplers.push_back(std::move(s));
+    cd::asset_gltf::GltfAnimChannel ch { 0, 7, cd::asset_gltf::GltfTargetPath::kTranslation };
+    anim.channels.push_back(ch);
+
+    std::unordered_map<int, std::int32_t> node_to_joint { { 7, 0 } };
+    cd::anim::Pose pose;
+    pose.joint_locals.resize(1);
+
+    cd::asset_gltf::sample_gltf_animation(anim, node_to_joint, 0.5F, pose);
+    // STEP: holds the lower key value (0,0,0) until next key.
+    EXPECT_FLOAT_EQ(pose.joint_locals[0].position.x, 0.0F);
+}
+
+TEST(SkinnedMeshBridge, SampleGltfAnimationRotationSlerps)
+{
+    // Two keys: identity at t=0, 180° around Y at t=1. At t=0.5 we expect
+    // 90° around Y, i.e. (0, sin45, 0, cos45).
+    cd::asset_gltf::GltfAnimation anim;
+    cd::asset_gltf::GltfAnimSampler s;
+    s.times  = { 0.0F, 1.0F };
+    s.values = { 0.0F, 0.0F, 0.0F, 1.0F,  // identity quat (x, y, z, w)
+                 0.0F, 1.0F, 0.0F, 0.0F };// 180° about Y
+    s.interpolation = cd::asset_gltf::GltfInterpolation::kLinear;
+    anim.samplers.push_back(std::move(s));
+    cd::asset_gltf::GltfAnimChannel ch { 0, 7, cd::asset_gltf::GltfTargetPath::kRotation };
+    anim.channels.push_back(ch);
+
+    std::unordered_map<int, std::int32_t> node_to_joint { { 7, 0 } };
+    cd::anim::Pose pose;
+    pose.joint_locals.resize(1);
+
+    cd::asset_gltf::sample_gltf_animation(anim, node_to_joint, 0.5F, pose);
+    const float kEps = 1e-3F;
+    const float kSqrt2Half = 0.70710678F;
+    EXPECT_NEAR(pose.joint_locals[0].rotation.y, kSqrt2Half, kEps);
+    EXPECT_NEAR(pose.joint_locals[0].rotation.w, kSqrt2Half, kEps);
+}
