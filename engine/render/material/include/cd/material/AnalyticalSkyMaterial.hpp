@@ -59,6 +59,10 @@ layout(push_constant) uniform SkyPC {
 } pc;
 layout(location = 0) in  vec2 v_ndc;
 layout(location = 0) out vec4 out_color;
+// G-Buffer normal MRT — sky writes (0, 0, 0, 0) so downstream post-fx
+// can identify sky pixels via out_normal.w == 0. Pipelines with a
+// single color attachment drop this write silently (Vulkan spec).
+layout(location = 1) out vec4 out_normal;
 
 vec3 ray_dir(vec2 ndc) {
   vec3 forward = pc.cam_fwd.xyz;
@@ -100,6 +104,8 @@ void main() {
   vec3 result = sky + sun_color * (disk * 6.0 + glow * 0.5);
   // R3: output linear HDR. Composite pass owns the tonemap + gamma.
   out_color = vec4(result, 1.0);
+  // Sky: zero-flagged normal so SSR / proper GTAO can skip this pixel.
+  out_normal = vec4(0.0, 0.0, 0.0, 0.0);
 }
 )glsl";
 

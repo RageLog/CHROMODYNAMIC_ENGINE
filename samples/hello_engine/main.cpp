@@ -451,6 +451,10 @@ layout(location = 4) in vec2 v_uv;
 // editor needs a per-entity texture array (v1.6+).
 layout(set = 0, binding = 4) uniform sampler2D cd_albedo_tex;
 layout(location = 0) out vec4 out_color;
+// G-Buffer normal MRT — world-space surface normal (xyz) + flag (w=1
+// surface, 0 = sky/transparent). Composite + post-fx pipeline samples
+// this for SSR, normal-aware AO, future reflections.
+layout(location = 1) out vec4 out_normal;
 
 // Frostbite windowed inverse-square attenuation.
 float distance_atten(float d, float range) {
@@ -545,6 +549,14 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
 }
 
 void main() {
+  // R3 G-Buffer: world-space surface normal MRT-write. Done up-front
+  // so the every early-return path (shadow draw / view-mode debug /
+  // floor / lit path) emits a valid normal for downstream SSR + AO.
+  // Sky pixels are produced by a different shader (AnalyticalSkyFS)
+  // which writes w=0 so the composite can distinguish "sky" vs
+  // "surface" at sample time.
+  out_normal = vec4(normalize(v_world_normal), 1.0);
+
   // tint.w sentinel: < 0.5 = "shadow-projection draw" — bypass lighting
   // entirely and output a flat dark silhouette. Used by the planar-
   // shadow pass that re-draws each caster, projected onto the floor
@@ -1668,9 +1680,22 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
         return 31;
 
-    // R3: scene materials draw into the HDR off-screen target now.
-    // Composite reads HDR + applies tonemap + writes to swapchain.
-    constexpr std::array<cd::rhi::Format, 1> kColorFmts {
+    // R3 G-Buffer foundation — world-space surface normal target.
+    // Every scene FS (prim, PBR, sky) MRT-writes its world-space
+    // normal here so downstream post-fx (SSR, GTAO with normals,
+    // future reflections) can sample it. RGBA16F encodes the
+    // 3-component normal directly (xyz) + a flag in w (1 = surface,
+    // 0 = sky / no surface). Recreated on swapchain rebuild.
+    constexpr auto kNormalFormat = cd::rhi::Format::kRGBA16Float;
+    ColorTarget gbuf_normal {};
+    if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
+        return 47;
+
+    // R3: scene materials draw into BOTH HDR + G-Buffer normal now.
+    // The 2-attachment array is shared by every scene pipeline so
+    // they all match the HDR pass's attachment layout.
+    constexpr std::array<cd::rhi::Format, 2> kColorFmts {
+        cd::rhi::Format::kRGBA16Float,
         cd::rhi::Format::kRGBA16Float };
     constexpr std::array<cd::rhi::Format, 1> kSwapchainFmts {
         cd::rhi::Format::kBGRA8Unorm };
@@ -3747,6 +3772,8 @@ int main()
                 continue;
             if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
                 continue;
+            if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
+                continue;
             if (!create_bloom_chain(device, { window.width(), window.height() }, bloom_chain))
                 continue;
             bind_bloom_descriptors();
@@ -4315,25 +4342,37 @@ int main()
             cmd.barrier({}, sb);
         }
 
-        // R3: scene draws into the HDR offscreen target; composite +
-        // ImGui write to the swapchain in a follow-up render pass.
-        // Transition HDR to ColorAttachment on first use; subsequent
-        // frames re-enter from kShaderResource (sampled in composite).
+        // R3: scene draws into the HDR + G-Buffer normal off-screen
+        // targets; composite + ImGui write to the swapchain in a
+        // follow-up render pass. Transition both to ColorAttachment
+        // on first use; subsequent frames re-enter from kShaderResource
+        // (composite sampled them last frame).
         {
-            std::array<cd::rhi::TextureBarrier, 1> hb {
+            const cd::rhi::ResourceState prev_state = (frame_idx == 0)
+                ? cd::rhi::ResourceState::kUndefined
+                : cd::rhi::ResourceState::kShaderResource;
+            std::array<cd::rhi::TextureBarrier, 2> hb {
                 cd::rhi::TextureBarrier {
                     .texture = hdr_target.image,
-                    .from    = (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined
-                                                : cd::rhi::ResourceState::kShaderResource,
+                    .from    = prev_state,
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_normal.image,
+                    .from    = prev_state,
                     .to      = cd::rhi::ResourceState::kColorAttachment,
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, hb);
         }
-        std::array<cd::rhi::ColorAttachmentInfo, 1> color_attach {
+        std::array<cd::rhi::ColorAttachmentInfo, 2> color_attach {
             cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } } };
+                                          .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } },
+            cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } } };
         cd::rhi::DepthStencilAttachmentInfo depth_attach {};
         depth_attach.view = depth.view;
         depth_attach.depth_load = cd::rhi::LoadOp::kClear;
@@ -6436,11 +6475,17 @@ int main()
         // draw on top.
         cmd.end_render_pass();
         {
-            // Two barriers: HDR target -> ShaderResource (composite read),
-            // and the scene depth -> ShaderResource (composite-inline GTAO).
-            std::array<cd::rhi::TextureBarrier, 2> hb {
+            // Three barriers: HDR + gbuf_normal -> ShaderResource (read
+            // by bloom prefilter + composite); scene depth -> ShaderResource
+            // (composite-inline GTAO + future SSR).
+            std::array<cd::rhi::TextureBarrier, 3> hb {
                 cd::rhi::TextureBarrier {
                     .texture = hdr_target.image,
+                    .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_normal.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
                     .to      = cd::rhi::ResourceState::kShaderResource,
                     .range   = { 0, 1, 0, 1 } },
@@ -6708,6 +6753,7 @@ int main()
     destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
     hdr_target.destroy(device);
+    gbuf_normal.destroy(device);
     bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.
     shadow_target.destroy(device);
