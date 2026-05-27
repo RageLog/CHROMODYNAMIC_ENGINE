@@ -16,6 +16,8 @@
 #include <cd/events/EventBus.hpp>
 #include <cd/events/EventRecorder.hpp>
 #include <cd/events/ScopedConnection.hpp>
+// frame_timing (Phase 219)
+#include <cd/frame_timing/FrameTimeRing.hpp>
 // plugin
 #include <cd/plugin/FileWatcher.hpp>
 #include <cd/plugin/HotReload.hpp>
