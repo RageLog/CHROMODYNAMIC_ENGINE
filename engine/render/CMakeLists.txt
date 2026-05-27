@@ -29,6 +29,10 @@ add_subdirectory(volumetric)
 add_subdirectory(post_tonemap)        # Day 13 — AGX / Hill / Hable / Narkowicz
 add_subdirectory(post_bloom)          # Day  8 — Karis 2013 stable bloom
 add_subdirectory(post_composite)      # Day 28+— Forward composite (AO/SSR/TAA/DOF/...)
+add_subdirectory(post_fx)             # Phase 234 — umbrella aggregating the 11 post-fx libs
+add_subdirectory(brdf)                # Phase 234 — umbrella over the 3 BRDF lobe libs
+add_subdirectory(volumetric_fx)       # Phase 234 — umbrella over the 3 volumetric libs
+add_subdirectory(cluster_fx)          # Phase 234 — umbrella over the 3 cluster libs
 add_subdirectory(post_taa)            # Day 11 — Karis 2014 TAA
 add_subdirectory(post_gtao)           # Day  4 — Jimenez 2016 GTAO
 add_subdirectory(post_ssr)            # Day  5 — Stachowiak 2015 SSR
