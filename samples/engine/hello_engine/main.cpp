@@ -3375,7 +3375,8 @@ int main()
 
     // ---- Frame loop ----
     using clock = std::chrono::steady_clock;
-    auto last_tick = clock::now();
+    const auto frame_loop_start = clock::now();
+    auto last_tick = frame_loop_start;
     std::uint32_t frame_idx = 0;
     bool needs_rebuild = false;
     std::vector<cd::platform::OSEvent> events;
@@ -6959,7 +6960,15 @@ int main()
             cp.cam_fwd[2]   = fwd.z;
             cp.cam_fwd[3]   = (frame_idx > 0) ? fx_taa_amount : 0.0F;
             cp.cam_pos[0]   = cam.eye.x; cp.cam_pos[1] = cam.eye.y;
-            cp.cam_pos[2]   = cam.eye.z; cp.cam_pos[3] = 0.0F;
+            // W6-B: w slot carries the composite's anim-time (seconds
+            // since the frame loop started) so post-fx that need a
+            // monotonic clock — e.g. the volumetric-cloud drift — read
+            // it without an extra push-constant slot or a global state
+            // buffer. Use the frame-loop epoch instead of steady_clock
+            // since-epoch so the noise stays in a sane numeric range.
+            cp.cam_pos[2]   = cam.eye.z;
+            cp.cam_pos[3]   = std::chrono::duration<float>(
+                                  clock::now() - frame_loop_start).count();
         }
         // SSR - wired from the existing UI slider; defaults to 0 (off).
         cp.ssr[0] = fx_ssr_strength;

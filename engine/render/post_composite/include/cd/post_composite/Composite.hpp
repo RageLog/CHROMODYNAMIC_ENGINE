@@ -77,7 +77,7 @@ struct Push
     float cam_right[4]; ///< xyz=world-space right basis, w=half_w = tan(fov/2)*aspect
     float cam_up[4];    ///< xyz=world-space up basis,    w=half_h = tan(fov/2)
     float cam_fwd[4];   ///< xyz=world-space forward,     w=taa_alpha [0, 0.97]
-    float cam_pos[4];   ///< xyz=world camera origin,     w=reserved
+    float cam_pos[4];   ///< xyz=world camera origin,     w=anim_time (s)
     float ssr[4];       ///< x=ssr_strength, y=max_distance_m, z=max_steps, w=fade_edge
     float prev_cam_right[4]; ///< xyz=prev right, w=prev_half_w
     float prev_cam_up[4];    ///< xyz=prev up,    w=prev_half_h
@@ -365,6 +365,13 @@ void main() {
     vec2 sky_uv = v_uv * vec2(24.0, 12.0);
     float density = cd_fbm4(sky_uv);
     float cov = clamp(pc.sun_col.w, 0.0, 1.0);
+    // W6-B: slow cloud drift via the cam_pos.w anim-time slot. Domain-
+    // warp the sample plane so cells deform as they drift, masking the
+    // axis-aligned grid the fBm value-noise would otherwise expose.
+    float t = pc.cam_pos.w;
+    vec2 warp = vec2(cd_fbm4(sky_uv + vec2(0.0, t * 0.04)),
+                     cd_fbm4(sky_uv + vec2(t * 0.04, 0.0)));
+    density = cd_fbm4(sky_uv + warp * 0.6 + vec2(t * 0.07, t * 0.025));
     // W4-G: widen the smoothstep band so cloud edges fade smoothly
     // instead of stepping; combined with the 24x12 cell scale this
     // removes the pixelated-block look the user reported.
