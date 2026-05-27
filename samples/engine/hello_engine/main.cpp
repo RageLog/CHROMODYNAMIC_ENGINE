@@ -746,21 +746,15 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // B12: spot + point now cast RT shadows via a tight ray-query
-    // (tmin 0.15 + N*0.1 bias) and the ray is clamped to the actual
-    // light-to-surface distance so we don't probe past the light's
-    // reach. Earlier setting at N*0.05 + 0.08 false-occluded dense
-    // geometry (PBR sphere grid + merged-mesh CesiumMan) so we'd
-    // disabled it — these tightened constants close the gap.
-    float ray_tmax = min(d, rng);
-    rayQueryEXT rq;
-    rayQueryInitializeEXT(
-        rq, cd_tlas,
-        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-        0xFFu, v_world_pos + N * 0.1, 0.15, Lp, ray_tmax);
-    while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
-    float vis = (rayQueryGetIntersectionTypeEXT(rq, true) ==
-                 gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+    // W7-A: spot + point RT shadows were re-enabled in B12 with bias
+    // tmin 0.15 + N*0.1. The user's R7 visual pass (image 3) shows
+    // the 5x5 PBR sphere grid completely unlit when ONLY the spot is
+    // enabled — neighbour spheres in the dense grid intercept every
+    // shadow ray. Self-shadow + cross-occlusion is technically
+    // correct PBR but defeats the demo intent (visible spot light).
+    // Disabled until R3 per-instance ray mask ships so shading-mesh
+    // self/neighbour rays can be excluded selectively.
+    float vis = 1.0;
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
     lit += albedo * col * (ki * ndl * atten * vis * cone);
@@ -6451,7 +6445,14 @@ int main()
                                         break;  // too close to center, ignore
                                     const float a_anchor = std::atan2(anchor_dy, anchor_dx);
                                     const float a_now    = std::atan2(cur_dy,    cur_dx);
-                                    float ang = a_now - a_anchor;
+                                    // W7-C: mouse coords have Y-down so atan2
+                                    // gives a screen-CCW reading; world-space
+                                    // convention is right-hand (CCW about +axis
+                                    // looking from +axis toward origin). The
+                                    // sign was therefore inverted — drag CW in
+                                    // screen was producing positive (CCW)
+                                    // rotation. Negate to match user intent.
+                                    float ang = a_anchor - a_now;
                                     while (ang >  3.1415926F) ang -= 6.2831853F;
                                     while (ang < -3.1415926F) ang += 6.2831853F;
                                     const float ca = std::cos(ang * 0.5F);
