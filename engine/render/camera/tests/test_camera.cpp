@@ -5,6 +5,7 @@
 // state-machine round-trips, and the frustum AABB cull tester.
 // =============================================================================
 #include <cd/camera/Camera.hpp>
+#include <cd/camera/FirstPersonController.hpp>
 #include <cd/camera/Frustum.hpp>
 #include <cd/camera/OrbitController.hpp>
 #include <gtest/gtest.h>
@@ -291,4 +292,55 @@ TEST(ViewportInfo, RoundTrip)
     cd::camera::ndc_to_screen(v, xn, yn, px, py);
     EXPECT_NEAR(px, 500.0F, 1e-3F);
     EXPECT_NEAR(py, 400.0F, 1e-3F);
+}
+
+// =============================================================================
+// W6-A: FirstPersonController tests.
+// =============================================================================
+
+TEST(FirstPersonController, SyncFromCameraExtractsYawPitchDist)
+{
+    cd::camera::Camera c {};
+    c.eye    = { 0.0F, 0.0F, 5.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    cd::camera::FirstPersonController fp;
+    fp.sync_from_camera(c);
+    EXPECT_NEAR(fp.dist(),  5.0F, 1e-3F);
+    EXPECT_NEAR(fp.pitch(), 0.0F, 1e-3F);
+    EXPECT_NEAR(fp.yaw(),   0.0F, 1e-3F);
+}
+
+TEST(FirstPersonController, LookClampsPitchUnderHalfPi)
+{
+    cd::camera::FirstPersonController fp;
+    // Apply a huge downward mouse delta — pitch must clamp short of PI/2.
+    fp.look(0.0F, 100000.0F);
+    EXPECT_LT(fp.pitch(), 1.56F);
+    EXPECT_GT(fp.pitch(), 1.55F);
+}
+
+TEST(FirstPersonController, MoveAccumulatesIntoApply)
+{
+    cd::camera::Camera c {};
+    c.eye    = { 0.0F, 0.0F, 5.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    cd::camera::FirstPersonController fp;
+    fp.sync_from_camera(c);
+    fp.move(1.0F, { 1.0F, 0.0F, 0.0F });  // strafe right for 1 second
+    fp.apply(c);
+    // After a positive +X strafe the target should have moved along
+    // the camera's local right (~+X for a camera looking down -Z).
+    EXPECT_GT(c.target[0], 0.0F);
+}
+
+TEST(FirstPersonController, ZoomShrinksDist)
+{
+    cd::camera::FirstPersonController fp;
+    cd::camera::Camera c {};
+    c.eye = { 0.0F, 0.0F, 5.0F };
+    c.target = { 0.0F, 0.0F, 0.0F };
+    fp.sync_from_camera(c);
+    const float d0 = fp.dist();
+    fp.zoom(1.0F);
+    EXPECT_LT(fp.dist(), d0);
 }
