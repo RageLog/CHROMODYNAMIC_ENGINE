@@ -102,11 +102,14 @@ layout(push_constant) uniform PC {
 layout(location = 0) in  vec3 v_world_pos;
 layout(location = 1) in  vec3 v_normal;
 layout(location = 0) out vec4 out_color;
-// G-Buffer normal MRT (R3 foundation) — world-space surface normal.
-// Pipelines with a single color attachment silently drop this write
-// (Vulkan spec). Pipelines with 2 attachments populate the G-Buffer
-// normal target for downstream SSR / normal-aware AO / future GI.
+// G-Buffer MRT (R3 foundation, phase 213+219).
+// Pipelines with fewer color attachments silently drop the higher
+// location writes (Vulkan spec). Pipelines with 4 attachments
+// populate the full G-Buffer (normal/albedo/MR) for SSR, deferred
+// shading, GI prep.
 layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec4 out_albedo;
+layout(location = 3) out vec2 out_mr;
 
 const float PI = 3.14159265358979;
 
@@ -260,6 +263,8 @@ void main() {
 
   out_color = vec4(color, pc.albedo.a);
   out_normal = vec4(N, 1.0);
+  out_albedo = vec4(clamp(albedo, vec3(0.0), vec3(1.0)), 1.0);
+  out_mr = vec2(clamp(metallic, 0.0, 1.0), clamp(roughness, 0.04, 1.0));
 }
 )glsl";
 

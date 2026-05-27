@@ -59,10 +59,12 @@ layout(push_constant) uniform SkyPC {
 } pc;
 layout(location = 0) in  vec2 v_ndc;
 layout(location = 0) out vec4 out_color;
-// G-Buffer normal MRT — sky writes (0, 0, 0, 0) so downstream post-fx
-// can identify sky pixels via out_normal.w == 0. Pipelines with a
-// single color attachment drop this write silently (Vulkan spec).
+// G-Buffer MRT — sky writes zero so downstream post-fx can identify
+// sky pixels via out_normal.w == 0. Pipelines with fewer attachments
+// drop higher-location writes silently (Vulkan spec).
 layout(location = 1) out vec4 out_normal;
+layout(location = 2) out vec4 out_albedo;
+layout(location = 3) out vec2 out_mr;
 
 vec3 ray_dir(vec2 ndc) {
   vec3 forward = pc.cam_fwd.xyz;
@@ -106,6 +108,8 @@ void main() {
   out_color = vec4(result, 1.0);
   // Sky: zero-flagged normal so SSR / proper GTAO can skip this pixel.
   out_normal = vec4(0.0, 0.0, 0.0, 0.0);
+  out_albedo = vec4(0.0, 0.0, 0.0, 0.0);
+  out_mr     = vec2(0.0, 1.0);  // roughness=1 to discourage SSR taps
 }
 )glsl";
 

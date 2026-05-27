@@ -455,6 +455,12 @@ layout(location = 0) out vec4 out_color;
 // surface, 0 = sky/transparent). Composite + post-fx pipeline samples
 // this for SSR, normal-aware AO, future reflections.
 layout(location = 1) out vec4 out_normal;
+// G-Buffer albedo MRT — base color (rgb) + material flag (a). Used by
+// SSR tinting, GI prep, deferred shading downstream.
+layout(location = 2) out vec4 out_albedo;
+// G-Buffer metallic/roughness MRT — packed pair (xy) for SSR rough
+// blur + deferred BRDF + GI.
+layout(location = 3) out vec2 out_mr;
 
 // Frostbite windowed inverse-square attenuation.
 float distance_atten(float d, float range) {
@@ -556,6 +562,13 @@ void main() {
   // which writes w=0 so the composite can distinguish "sky" vs
   // "surface" at sample time.
   out_normal = vec4(normalize(v_world_normal), 1.0);
+
+  // R3 G-Buffer phase 219 — albedo + MR. Sample the same textures
+  // the lit path uses so deferred / post-fx consumers see exactly
+  // what the forward path drew. Defaults: 0 metallic, 0.5 roughness.
+  vec4 mr_pre = (pc.fx_params.y > 0.5) ? texture(cd_mr_tex, v_uv) : vec4(0, 0.5, 0.04, 1);
+  out_albedo = vec4(clamp(v_albedo * pc.tint.rgb, vec3(0.0), vec3(1.0)), 1.0);
+  out_mr = vec2(clamp(mr_pre.b, 0.0, 1.0), clamp(mr_pre.g, 0.04, 1.0));
 
   // tint.w sentinel: < 0.5 = "shadow-projection draw" — bypass lighting
   // entirely and output a flat dark silhouette. Used by the planar-
@@ -1900,6 +1913,18 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
         return 47;
 
+    // R3 G-Buffer phase 219 — Albedo + MR (metallic / roughness).
+    // Unlocks proper deferred shading + SSR colour-tint by surface
+    // properties + future GI integration. Pixel cost ≈ 5 B per pixel.
+    constexpr auto kAlbedoFormat = cd::rhi::Format::kRGBA8Unorm;
+    constexpr auto kMrFormat     = cd::rhi::Format::kRG8Unorm;
+    ColorTarget gbuf_albedo {};
+    if (!create_color_target(device, { window.width(), window.height() }, kAlbedoFormat, gbuf_albedo))
+        return 49;
+    ColorTarget gbuf_mr {};
+    if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
+        return 50;
+
     // R3 TAA history — ping-pong color targets at swapchain format.
     // Each frame, composite reads history[frame & 1] (last frame's
     // post-tonemap blend) and writes to history[(frame & 1) ^ 1]
@@ -1913,12 +1938,18 @@ int main()
             return 48;
     }
 
-    // R3: scene materials draw into BOTH HDR + G-Buffer normal now.
-    // The 2-attachment array is shared by every scene pipeline so
-    // they all match the HDR pass's attachment layout.
-    constexpr std::array<cd::rhi::Format, 2> kColorFmts {
+    // R3 phase 219: scene materials MRT-write 4 targets:
+    //   location 0: HDR colour (RGBA16F)
+    //   location 1: world-space normal + surface-flag (RGBA16F)
+    //   location 2: albedo + material-flag (RGBA8Unorm)
+    //   location 3: metallic + roughness (RG8Unorm)
+    // Every scene pipeline shares this layout so attachment layout
+    // matches the HDR pass's begin_render_pass.
+    constexpr std::array<cd::rhi::Format, 4> kColorFmts {
         cd::rhi::Format::kRGBA16Float,
-        cd::rhi::Format::kRGBA16Float };
+        cd::rhi::Format::kRGBA16Float,
+        cd::rhi::Format::kRGBA8Unorm,
+        cd::rhi::Format::kRG8Unorm };
     // (composite uses kCompositeFmts [swapchain + history] declared below;
     //  this single-slot kSwapchainFmts is preserved for symmetry / docs.)
     [[maybe_unused]] constexpr std::array<cd::rhi::Format, 1> kSwapchainFmts {
@@ -4061,6 +4092,10 @@ int main()
                 continue;
             if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
                 continue;
+            if (!create_color_target(device, { window.width(), window.height() }, kAlbedoFormat, gbuf_albedo))
+                continue;
+            if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
+                continue;
             bool history_ok = true;
             for (auto& h : history_targets)
             {
@@ -4647,7 +4682,7 @@ int main()
             const cd::rhi::ResourceState prev_state = (frame_idx == 0)
                 ? cd::rhi::ResourceState::kUndefined
                 : cd::rhi::ResourceState::kShaderResource;
-            std::array<cd::rhi::TextureBarrier, 2> hb {
+            std::array<cd::rhi::TextureBarrier, 4> hb {
                 cd::rhi::TextureBarrier {
                     .texture = hdr_target.image,
                     .from    = prev_state,
@@ -4657,10 +4692,20 @@ int main()
                     .texture = gbuf_normal.image,
                     .from    = prev_state,
                     .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_albedo.image,
+                    .from    = prev_state,
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_mr.image,
+                    .from    = prev_state,
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, hb);
         }
-        std::array<cd::rhi::ColorAttachmentInfo, 2> color_attach {
+        std::array<cd::rhi::ColorAttachmentInfo, 4> color_attach {
             cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
@@ -4668,7 +4713,15 @@ int main()
             cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
                                           .load_op = cd::rhi::LoadOp::kClear,
                                           .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } } };
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+            cd::rhi::ColorAttachmentInfo { .view = gbuf_albedo.view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+            cd::rhi::ColorAttachmentInfo { .view = gbuf_mr.view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 1.0F, 0.0F, 0.0F } } } };
         cd::rhi::DepthStencilAttachmentInfo depth_attach {};
         depth_attach.view = depth.view;
         depth_attach.depth_load = cd::rhi::LoadOp::kClear;
@@ -6803,10 +6856,10 @@ int main()
         // draw on top.
         cmd.end_render_pass();
         {
-            // Three barriers: HDR + gbuf_normal -> ShaderResource (read
-            // by bloom prefilter + composite); scene depth -> ShaderResource
-            // (composite-inline GTAO + future SSR).
-            std::array<cd::rhi::TextureBarrier, 3> hb {
+            // Five barriers: HDR + 3 G-Buffer targets -> ShaderResource
+            // (read by bloom prefilter + composite); scene depth ->
+            // ShaderResource (composite-inline GTAO + SSR).
+            std::array<cd::rhi::TextureBarrier, 5> hb {
                 cd::rhi::TextureBarrier {
                     .texture = hdr_target.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
@@ -6814,6 +6867,16 @@ int main()
                     .range   = { 0, 1, 0, 1 } },
                 cd::rhi::TextureBarrier {
                     .texture = gbuf_normal.image,
+                    .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_albedo.image,
+                    .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_mr.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
                     .to      = cd::rhi::ResourceState::kShaderResource,
                     .range   = { 0, 1, 0, 1 } },
@@ -7196,6 +7259,8 @@ int main()
     depth.destroy(device);
     hdr_target.destroy(device);
     gbuf_normal.destroy(device);
+    gbuf_albedo.destroy(device);
+    gbuf_mr.destroy(device);
     for (auto& h : history_targets) h.destroy(device);
     bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.
