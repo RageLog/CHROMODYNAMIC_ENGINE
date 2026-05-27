@@ -4689,7 +4689,39 @@ int main()
 
         const float aspect = static_cast<float>(frame.extent.width) /
                              static_cast<float>(frame.extent.height);
-        const cd::math::Mat4f vp = cd::camera::view_projection(cam, aspect);
+        cd::math::Mat4f vp_unjittered = cd::camera::view_projection(cam, aspect);
+
+        // R3 Halton(2,3) sub-pixel jitter for proper TAA accumulation
+        // — only active when TAA is dialled in. Without jitter, every
+        // frame samples the same fragment centre and TAA stagnates;
+        // with jitter the integration converges toward supersample.
+        auto halton = [](std::uint32_t i, std::uint32_t base) {
+            float r = 0.0F;
+            float f = 1.0F / static_cast<float>(base);
+            while (i > 0)
+            {
+                r += f * static_cast<float>(i % base);
+                i /= base;
+                f /= static_cast<float>(base);
+            }
+            return r;
+        };
+        const float jx_px = (fx_taa_amount > 0.001F)
+            ? (halton((frame_idx % 8U) + 1U, 2) - 0.5F) : 0.0F;
+        const float jy_px = (fx_taa_amount > 0.001F)
+            ? (halton((frame_idx % 8U) + 1U, 3) - 0.5F) : 0.0F;
+        const float jx_ndc = jx_px * 2.0F / static_cast<float>(frame.extent.width);
+        const float jy_ndc = jy_px * 2.0F / static_cast<float>(frame.extent.height);
+
+        // T_jitter * vp — adds jx_ndc * w to clip.x so post-divide
+        // ndc.x shifts by jx_ndc. Column-major: for each column c,
+        // add the bottom-row entry * jitter into rows 0/1.
+        cd::math::Mat4f vp = vp_unjittered;
+        for (std::size_t c = 0; c < 4; ++c)
+        {
+            vp[c][0] += jx_ndc * vp_unjittered[c][3];
+            vp[c][1] += jy_ndc * vp_unjittered[c][3];
+        }
 
         // ---- Sky pass ----
         cd::math::Vec3f forward {
