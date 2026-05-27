@@ -2372,16 +2372,60 @@ public:
         std::vector<VkSurfaceFormatKHR> available_formats(fmt_count);
         vkGetPhysicalDeviceSurfaceFormatsKHR(physical_, surface, &fmt_count, available_formats.data());
         const VkFormat hinted = map_format(desc.format);
+        // Translate the rhi::ColorSpace enum to a VkColorSpaceKHR. The
+        // surface enumeration may not advertise the requested space —
+        // we fall back to sRGB nonlinear which every surface supports.
+        VkColorSpaceKHR hinted_cs = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+        switch (desc.colour_space)
+        {
+            case cd::rhi::ColorSpace::kHdr10St2084:
+                hinted_cs = VK_COLOR_SPACE_HDR10_ST2084_EXT;
+                break;
+            case cd::rhi::ColorSpace::kScrgbLinear:
+                hinted_cs = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+                break;
+            case cd::rhi::ColorSpace::kSrgbNonlinear:
+            default:
+                hinted_cs = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+                break;
+        }
         VkSurfaceFormatKHR chosen_format =
             available_formats.empty()
                 ? VkSurfaceFormatKHR { VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR }
                 : available_formats.front();
+        // First pass: exact format + requested colour space.
+        bool matched_hdr = false;
         for (const auto& f : available_formats)
         {
-            if (f.format == hinted && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            if (f.format == hinted && f.colorSpace == hinted_cs)
             {
                 chosen_format = f;
+                matched_hdr = (hinted_cs != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
                 break;
+            }
+        }
+        // Second pass: any format with the requested colour space.
+        if (!matched_hdr && hinted_cs != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
+            for (const auto& f : available_formats)
+            {
+                if (f.colorSpace == hinted_cs)
+                {
+                    chosen_format = f;
+                    break;
+                }
+            }
+        }
+        // Third pass (SDR fallback) — exact format + sRGB nonlinear.
+        if (chosen_format.colorSpace != hinted_cs)
+        {
+            for (const auto& f : available_formats)
+            {
+                if (f.format == hinted && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+                {
+                    chosen_format = f;
+                    break;
+                }
             }
         }
 

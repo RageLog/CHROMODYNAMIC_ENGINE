@@ -352,6 +352,17 @@ struct DispatchRaysDesc
 
 // ---- Swapchain ------------------------------------------------------------
 
+/// Colour-space selector for the swapchain. SDR (sRGB) is the canonical
+/// default; HDR10 PQ + scRGB linear are opt-in and require the display +
+/// platform to support them. Backends fall back to kSrgbNonlinear when
+/// the requested colour space isn't available on the surface.
+enum class ColorSpace : std::uint8_t
+{
+    kSrgbNonlinear = 0,  ///< Standard SDR (VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+    kHdr10St2084   = 1,  ///< HDR10 PQ (VK_COLOR_SPACE_HDR10_ST2084_EXT)
+    kScrgbLinear   = 2,  ///< scRGB FP16 (VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)
+};
+
 struct SwapchainDesc
 {
     void* window_handle { nullptr };   // HWND on Windows, xcb_window_t on Linux, NSView* on macOS
@@ -359,6 +370,7 @@ struct SwapchainDesc
     Extent2D extent {};
     std::uint32_t image_count { 2 };
     Format format { Format::kBGRA8Srgb };
+    ColorSpace colour_space { ColorSpace::kSrgbNonlinear };
     bool vsync { true };
 };
 
