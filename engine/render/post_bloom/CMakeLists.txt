@@ -7,6 +7,8 @@ cd_add_library(post_bloom
   PUBLIC_DEPS
     cd::core
     cd::math
+    cd::framegraph
+    cd::rhi
 )
 
 if(CD_ENABLE_TESTING)

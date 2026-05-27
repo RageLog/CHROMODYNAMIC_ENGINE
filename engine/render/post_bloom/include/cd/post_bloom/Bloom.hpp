@@ -20,7 +20,11 @@
 // =============================================================================
 #pragma once
 
+#include <cd/framegraph/Targets.hpp>
 #include <cd/math/Vector.hpp>
+#include <cd/rhi/Enums.hpp>
+#include <cd/rhi/Format.hpp>
+#include <cd/rhi/IDevice.hpp>
 
 #include <algorithm>
 #include <array>
@@ -352,6 +356,50 @@ static_assert(sizeof(UpsamplePush) == 16, "UpsamplePush layout drift");
 /// Recommended default mip count for the FS-variant chain. 4 levels at
 /// /2 .. /16 produces a visibly soft halo without crushing detail.
 inline constexpr std::uint32_t kDefaultMipCount = 4;
+
+// ---- Bloom mip chain (RAII over `kDefaultMipCount` color targets) -----------
+//
+// Each level is half the previous one's extent (clamped to 1 px min).
+// mip0 = base/2, mip1 = base/4, ..., mip3 = base/16.
+// Pair with kPrefilterFS (HDR → mip0), kDownsampleFS (mip i → mip i+1),
+// and kUpsampleFS (mip i → mip i-1, additive blend).
+
+struct BloomMipChain
+{
+    static constexpr std::uint32_t kCount = kDefaultMipCount;
+    std::array<cd::framegraph::ColorTarget, kCount> mips {};
+
+    void destroy(cd::rhi::IDevice& dev) noexcept
+    {
+        for (auto& m : mips) m.destroy(dev);
+    }
+};
+
+/// Allocate the bloom mip chain at progressively halving extents from
+/// `base`. Returns true on success; on failure all already-allocated
+/// mips are destroyed and `out` is left empty.
+[[nodiscard]] inline bool
+create_bloom_chain(cd::rhi::IDevice& dev,
+                   cd::rhi::Extent2D base,
+                   BloomMipChain& out)
+{
+    out.destroy(dev);
+    cd::rhi::Extent2D s {
+        std::max(1U, base.width  / 2U),
+        std::max(1U, base.height / 2U) };
+    for (std::uint32_t i = 0; i < BloomMipChain::kCount; ++i)
+    {
+        if (!cd::framegraph::create_color_target(
+                dev, s, cd::rhi::Format::kRGBA16Float, out.mips[i]))
+        {
+            out.destroy(dev);
+            return false;
+        }
+        s.width  = std::max(1U, s.width  / 2U);
+        s.height = std::max(1U, s.height / 2U);
+    }
+    return true;
+}
 
 constexpr std::string_view kPrefilterCS = R"glsl(
 #version 460

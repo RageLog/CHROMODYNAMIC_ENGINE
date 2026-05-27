@@ -88,6 +88,7 @@
 #include <cd/net/SnapshotBuffer.hpp>
 #include <cd/net/Throttle.hpp>
 #include <cd/platform/Window.hpp>
+#include <cd/framegraph/Targets.hpp>
 #include <cd/post_bloom/Bloom.hpp>
 #include <cd/post_composite/Composite.hpp>
 #include <cd/post_dof/Dof.hpp>
@@ -1159,148 +1160,15 @@ make_planar_shadow_matrix(const cd::math::Vec3f& sun_dir,
 }
 
 // ============================================================================
-// Depth target helper.
+// Render-target helpers — extracted to cd::framegraph::Targets.
+// BloomMipChain extracted to cd::post_bloom.
 // ============================================================================
-struct DepthTarget
-{
-    cd::rhi::TextureHandle     image {};
-    cd::rhi::TextureViewHandle view  {};
-    cd::rhi::Extent2D          extent {};
-    void destroy(cd::rhi::IDevice& dev)
-    {
-        if (view.is_valid())  dev.destroy_texture_view(view);
-        if (image.is_valid()) dev.destroy_texture(image);
-        *this = {};
-    }
-};
-
-[[nodiscard]] bool create_depth_target(cd::rhi::IDevice&    dev,
-                                       cd::rhi::Extent2D    size,
-                                       cd::rhi::Format      format,
-                                       DepthTarget&         out,
-                                       cd::rhi::TextureUsage extra_usage =
-                                           cd::rhi::TextureUsage::kNone)
-{
-    out.destroy(dev);
-    cd::rhi::TextureDesc td {};
-    td.type = cd::rhi::TextureType::k2D;
-    td.format = format;
-    td.extent = { size.width, size.height, 1 };
-    td.mip_levels = 1;
-    td.array_layers = 1;
-    td.usage  = cd::rhi::TextureUsage::kDepthStencilAttachment | extra_usage;
-    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
-    auto img = dev.create_texture(td);
-    if (!img.has_value()) return false;
-    cd::rhi::TextureViewDesc vd {};
-    vd.texture = *img;
-    vd.type = cd::rhi::TextureType::k2D;
-    vd.format = format;
-    vd.base_mip = 0; vd.mip_count = 1;
-    vd.base_layer = 0; vd.layer_count = 1;
-    auto v = dev.create_texture_view(vd);
-    if (!v.has_value())
-    {
-        dev.destroy_texture(*img);
-        return false;
-    }
-    out.image = *img;
-    out.view = *v;
-    out.extent = size;
-    return true;
-}
-
-// ============================================================================
-// R3 â€” HDR off-screen color target.
-//
-// RGBA16F render target that the scene draws into instead of the swap-
-// chain. A separate composite pass samples it, applies bloom + tonemap
-// + post-fx, then writes to the swapchain. Foundation for the v1.7
-// frame-graph rework.
-// ============================================================================
-struct ColorTarget
-{
-    cd::rhi::TextureHandle     image {};
-    cd::rhi::TextureViewHandle view  {};
-    cd::rhi::Extent2D          extent {};
-    cd::rhi::Format            format { cd::rhi::Format::kRGBA16Float };
-    void destroy(cd::rhi::IDevice& dev)
-    {
-        if (view.is_valid())  dev.destroy_texture_view(view);
-        if (image.is_valid()) dev.destroy_texture(image);
-        *this = {};
-    }
-};
-
-[[nodiscard]] inline bool
-create_color_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size,
-                    cd::rhi::Format format, ColorTarget& out)
-{
-    out.destroy(dev);
-    cd::rhi::TextureDesc td {};
-    td.type = cd::rhi::TextureType::k2D;
-    td.format = format;
-    td.extent = { size.width, size.height, 1 };
-    td.mip_levels = 1;
-    td.array_layers = 1;
-    td.usage  = cd::rhi::TextureUsage::kColorAttachment |
-                cd::rhi::TextureUsage::kSampled |
-                cd::rhi::TextureUsage::kStorage;  // for compute bloom/AO
-    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
-    auto img = dev.create_texture(td);
-    if (!img.has_value()) return false;
-    cd::rhi::TextureViewDesc vd {};
-    vd.texture = *img;
-    vd.type = cd::rhi::TextureType::k2D;
-    vd.format = format;
-    vd.base_mip = 0; vd.mip_count = 1;
-    vd.base_layer = 0; vd.layer_count = 1;
-    auto v = dev.create_texture_view(vd);
-    if (!v.has_value()) { dev.destroy_texture(*img); return false; }
-    out.image  = *img;
-    out.view   = *v;
-    out.extent = size;
-    out.format = format;
-    return true;
-}
-
-// ============================================================================
-// R3 â€” Multi-mip bloom render-target chain.
-//
-// 4 progressively halving RGBA16Float ColorTargets. mip0 is full-screen
-// / 2; mip3 is /16. Each level acts both as a write destination
-// (downsample pass / upsample additive blend) and as a read source for
-// the next level in the chain. The composite pass samples mip0 and
-// adds it to the HDR scene before tonemap.
-// ============================================================================
-struct BloomMipChain
-{
-    static constexpr std::uint32_t kCount = 4;
-    std::array<ColorTarget, kCount> mips {};
-    void destroy(cd::rhi::IDevice& dev)
-    {
-        for (auto& m : mips) m.destroy(dev);
-    }
-};
-
-[[nodiscard]] inline bool
-create_bloom_chain(cd::rhi::IDevice& dev, cd::rhi::Extent2D base, BloomMipChain& out)
-{
-    out.destroy(dev);
-    cd::rhi::Extent2D s { std::max(1U, base.width / 2U),
-                          std::max(1U, base.height / 2U) };
-    for (std::uint32_t i = 0; i < BloomMipChain::kCount; ++i)
-    {
-        if (!create_color_target(dev, s, cd::rhi::Format::kRGBA16Float, out.mips[i]))
-        {
-            out.destroy(dev);
-            return false;
-        }
-        s.width  = std::max(1U, s.width  / 2U);
-        s.height = std::max(1U, s.height / 2U);
-    }
-    return true;
-}
+using ColorTarget   = cd::framegraph::ColorTarget;
+using DepthTarget   = cd::framegraph::DepthTarget;
+using BloomMipChain = cd::post_bloom::BloomMipChain;
+using cd::framegraph::create_color_target;
+using cd::framegraph::create_depth_target;
+using cd::post_bloom::create_bloom_chain;
 
 // ============================================================================
 // Mini histogram helper for the random viz panel.
