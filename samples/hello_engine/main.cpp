@@ -2745,6 +2745,12 @@ int main()
         bool  valid  { false };
     } prev_cam_basis {};
 
+    // R3 phase 227 — prev frame's UN-JITTERED VP matrix for the velocity
+    // pass. UN-jittered so jitter doesn't pollute the velocity output.
+    cd::math::Mat4f prev_vp_unjittered = cd::math::Mat4f::identity();
+    bool            prev_vp_valid      = false;
+    (void)prev_vp_valid;
+
     // TAA history target state â€” both start kUndefined and we cycle
     // them through ColorAttachment â†” ShaderResource as composite
     // ping-pongs which one it reads vs writes per frame.
@@ -6272,10 +6278,11 @@ int main()
         // draw on top.
         cmd.end_render_pass();
         {
-            // Five barriers: HDR + 3 G-Buffer targets -> ShaderResource
-            // (read by bloom prefilter + composite); scene depth ->
-            // ShaderResource (composite-inline GTAO + SSR).
-            std::array<cd::rhi::TextureBarrier, 5> hb {
+            // Four barriers: HDR + 3 G-Buffer colour targets -> ShaderResource.
+            // Depth handled separately below — needs an intermediate
+            // kDepthRead state for the velocity pass before flipping to
+            // ShaderResource for composite.
+            std::array<cd::rhi::TextureBarrier, 4> hb {
                 cd::rhi::TextureBarrier {
                     .texture = hdr_target.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
@@ -6295,29 +6302,28 @@ int main()
                     .texture = gbuf_mr.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
                     .to      = cd::rhi::ResourceState::kShaderResource,
-                    .range   = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier {
-                    .texture = depth.image,
-                    .from    = cd::rhi::ResourceState::kDepthWrite,
-                    .to      = cd::rhi::ResourceState::kShaderResource,
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, hb);
         }
 
-        // R3 phase 226 — velocity G-Buffer clear-only pass. Per-entity
-        // velocity draws are queued for the next phase; for now the
-        // clear-to-zero output triggers composite's camera-only fallback
-        // (== previous behaviour), but the barrier/binding plumbing is
-        // validated and the texture is in the expected state.
+        // R3 phase 227 — velocity G-Buffer pass. Re-draws every entity
+        // mesh using velocity_material; FS writes (curr_uv - prev_uv).
+        // Depth attachment in kDepthRead so the velocity raster matches
+        // the HDR pass's visible surface per pixel (no overdraw soup).
         {
             const cd::rhi::ResourceState vel_prev = (frame_idx == 0)
                 ? cd::rhi::ResourceState::kUndefined
                 : cd::rhi::ResourceState::kShaderResource;
-            std::array<cd::rhi::TextureBarrier, 1> vb {
+            std::array<cd::rhi::TextureBarrier, 2> vb {
                 cd::rhi::TextureBarrier {
                     .texture = gbuf_velocity.image,
                     .from    = vel_prev,
                     .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = depth.image,
+                    .from    = cd::rhi::ResourceState::kDepthWrite,
+                    .to      = cd::rhi::ResourceState::kDepthRead,
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, vb);
 
@@ -6327,20 +6333,66 @@ int main()
                     .load_op = cd::rhi::LoadOp::kClear,
                     .store_op = cd::rhi::StoreOp::kStore,
                     .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } } };
+            cd::rhi::DepthStencilAttachmentInfo vel_depth {};
+            vel_depth.view = depth.view;
+            vel_depth.depth_load  = cd::rhi::LoadOp::kLoad;
+            vel_depth.depth_store = cd::rhi::StoreOp::kStore;
             cd::rhi::RenderPassBeginInfo vel_rp {};
             vel_rp.render_area = cd::rhi::Rect2D { {0,0}, frame.extent };
             vel_rp.color_attachments = vel_ca;
-            vel_rp.depth_stencil = nullptr;
+            vel_rp.depth_stencil = &vel_depth;
             cmd.begin_render_pass(vel_rp);
-            // Per-entity velocity draws land in a follow-up phase
-            // (needs prev_world_transform tracking + iteration of
-            // every entity's mesh handle alongside its kPrim push).
+            cmd.set_viewport(cd::rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(frame.extent.width),
+                static_cast<float>(frame.extent.height),
+                0.0F, 1.0F });
+            cmd.set_scissor(cd::rhi::Rect2D { {0,0}, frame.extent });
+            velocity_material.apply(cmd);
+            // Per-entity draw: push prev/curr vp*model, draw the same
+            // mesh the HDR pass used. CesiumMan path: prim entities
+            // share kPrimBindings layout so the velocity VS reads
+            // their position attribute without a re-bind shape change.
+            for (auto& ent : entities)
+            {
+                const auto& mesh = mesh_for(ent.kind);
+                if (!mesh.vb.is_valid()) continue;
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) continue;
+                cmd.bind_vertex_buffer(0, mesh.vb, 0);
+                cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+
+                const auto curr_model_mat = cd::math::to_mat4(lt->value);
+                const auto& prev_model_mat = ent.prev_model_valid
+                    ? ent.prev_model
+                    : curr_model_mat;
+                struct VelocityPush
+                {
+                    cd::math::Mat4f prev_vp_model;
+                    cd::math::Mat4f curr_vp_model;
+                } vpush;
+                vpush.prev_vp_model = prev_vp_unjittered * prev_model_mat;
+                vpush.curr_vp_model = vp_unjittered     * curr_model_mat;
+                cmd.push_constants(velocity_material.pipeline_layout(),
+                                   cd::rhi::ShaderStage::kVertex,
+                                   0, sizeof(vpush), &vpush);
+                cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+
+                // Snapshot for next frame's velocity reprojection.
+                ent.prev_model = curr_model_mat;
+                ent.prev_model_valid = true;
+            }
             cmd.end_render_pass();
 
-            std::array<cd::rhi::TextureBarrier, 1> vb2 {
+            std::array<cd::rhi::TextureBarrier, 2> vb2 {
                 cd::rhi::TextureBarrier {
                     .texture = gbuf_velocity.image,
                     .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier {
+                    .texture = depth.image,
+                    .from    = cd::rhi::ResourceState::kDepthRead,
                     .to      = cd::rhi::ResourceState::kShaderResource,
                     .range   = { 0, 1, 0, 1 } } };
             cmd.barrier({}, vb2);
@@ -6701,6 +6753,9 @@ int main()
         prev_cam_basis.half_w = cp.cam_right[3];
         prev_cam_basis.half_h = cp.cam_up[3];
         prev_cam_basis.valid  = true;
+        // Snapshot the un-jittered VP for next frame's velocity pass.
+        prev_vp_unjittered = vp_unjittered;
+        prev_vp_valid      = true;
 
         // ---- ImGui pass (on swapchain, after composite) ----
         ctx.render(cmd);
