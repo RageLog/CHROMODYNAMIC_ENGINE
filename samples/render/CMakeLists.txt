@@ -1,0 +1,10 @@
+# samples/render — render-tier showcase samples (Vulkan-gated).
+add_subdirectory(hello_pbr)
+# hello_lit_pbr — orphan stub (CMakeLists without a main.cpp). Skipped.
+add_subdirectory(hello_skybox)
+add_subdirectory(hello_framegraph)
+add_subdirectory(hello_clustered_lights)
+add_subdirectory(hello_compute_cluster)
+add_subdirectory(hello_gpu_cluster)
+add_subdirectory(hello_imgui)
+add_subdirectory(hello_render_thread)

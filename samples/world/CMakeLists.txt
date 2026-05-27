@@ -1,0 +1,10 @@
+# samples/world — ECS / anim / events / replication / scene-graph samples.
+add_subdirectory(hello_ecs)
+add_subdirectory(hello_events)
+add_subdirectory(hello_replication)
+add_subdirectory(hello_particles)
+if(CD_ENABLE_VULKAN)
+  add_subdirectory(hello_anim)
+  add_subdirectory(hello_inspector)
+  add_subdirectory(hello_scene_graph)
+endif()

@@ -1,0 +1,12 @@
+# samples/foundation — headless foundation-tier samples (no Vulkan).
+add_subdirectory(hello_core)
+add_subdirectory(hello_handle)
+add_subdirectory(hello_foundation)
+add_subdirectory(hello_random)
+add_subdirectory(hello_watch)
+add_subdirectory(hello_bezier)
+add_subdirectory(hello_command_palette)
+add_subdirectory(hello_bench)
+add_subdirectory(hello_scheduler)
+add_subdirectory(hello_stress)
+add_subdirectory(hello_flip)
