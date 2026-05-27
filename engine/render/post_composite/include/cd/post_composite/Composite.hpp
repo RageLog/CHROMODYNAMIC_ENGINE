@@ -69,7 +69,7 @@ struct Push
 {
     float fx[4];        ///< x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
     float ao[4];        ///< x=ao_strength, y=ao_radius_px, z=near, w=far
-    float dof[4];       ///< x=dof_strength, y=focus_distance(m), z=focus_range(m), w=max_blur_px
+    float dof[4];       ///< x=dof_strength, y=focus_distance(m), z=focus_range(m), w=max_blur_px OR svgf_strength (when DOF off)
     float shafts[4];    ///< x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
     float sun_col[4];   ///< xyz=linear sun colour, w=clouds_coverage [0,1]
     float atmo[4];      ///< x=fog_density(1/m), y=aerial_strength, z=vignette, w=film_grain
@@ -283,6 +283,45 @@ float cd_fbm4(vec2 p) {
   return s;
 }
 
+// A-trous edge-aware spatial filter (Dammertz 2010 / SVGF spatial step).
+// Single-iteration 5x5 kernel; per-tap weight uses colour + normal +
+// depth edge-stopping functions. Strength packed into pc.dof.w when
+// pc.dof.x is 0 (DOF disabled) — repurposes the reserved slot. Useful
+// for smoothing RT-noisy specular highlights without crushing edges.
+vec3 sample_atrous(vec2 uv, vec3 centre_color) {
+  float atrous_s = pc.dof.w;
+  if (atrous_s <= 0.001 || pc.dof.x > 0.001) return centre_color;
+  vec2 px = 1.0 / vec2(textureSize(cd_hdr_color, 0));
+  vec4 N0_packed = texture(cd_gbuf_normal, uv);
+  if (N0_packed.w < 0.5) return centre_color;
+  vec3 N0 = normalize(N0_packed.xyz);
+  float d0 = linearize_z(texture(cd_depth, uv).r);
+  const float kKernel5[5] = float[5](0.0625, 0.25, 0.375, 0.25, 0.0625);
+  vec3 sum = vec3(0.0);
+  float wsum = 0.0;
+  for (int dy = -2; dy <= 2; ++dy)
+  for (int dx = -2; dx <= 2; ++dx) {
+    vec2 sp = uv + vec2(dx, dy) * px;
+    vec3 c1 = texture(cd_hdr_color, sp).rgb;
+    vec4 N1p = texture(cd_gbuf_normal, sp);
+    if (N1p.w < 0.5) continue;
+    vec3 N1 = normalize(N1p.xyz);
+    float d1 = linearize_z(texture(cd_depth, sp).r);
+    // Edge-stopping: colour (luma) + normal alignment + depth delta.
+    float lum0 = dot(centre_color, vec3(0.299, 0.587, 0.114));
+    float lum1 = dot(c1, vec3(0.299, 0.587, 0.114));
+    float w_l = exp(-abs(lum0 - lum1) * 8.0);
+    float w_n = pow(max(0.0, dot(N0, N1)), 32.0);
+    float w_d = exp(-abs(d0 - d1) * 2.0);
+    float kw  = kKernel5[dy + 2] * kKernel5[dx + 2];
+    float w   = w_l * w_n * w_d * kw;
+    sum += c1 * w;
+    wsum += w;
+  }
+  vec3 blurred = (wsum > 1e-5) ? sum / wsum : centre_color;
+  return mix(centre_color, blurred, clamp(atrous_s, 0.0, 1.0));
+}
+
 vec3 sample_chromab(vec2 uv) {
   if (pc.lens.x <= 0.001) return texture(cd_hdr_color, uv).rgb;
   vec2 vc = uv - vec2(0.5);
@@ -300,6 +339,9 @@ vec3 sample_chromab(vec2 uv) {
 void main() {
   vec3 c = sample_chromab(v_uv);
   float center_d = texture(cd_depth, v_uv).r;
+
+  // SVGF-lite A-trous spatial denoise. Gated by dof.w (when DOF is off).
+  c = sample_atrous(v_uv, c);
 
   // Volumetric cloud overlay — sky-only (depth far), fBm-noise based.
   // pc.sun_col.w is coverage; 0 disables, 1 is full overcast.
