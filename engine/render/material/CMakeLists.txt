@@ -18,6 +18,7 @@ cd_add_library(material
     cd::core
     cd::asset   # PbrParams.hpp references AssetId
     cd::light   # Phase 171 — LitPbrMaterial packs cd::light::Light
+    cd::anim    # Phase 228 / SK6 — SkinnedLitMaterial re-exports cd::anim VS
 )
 
 if(CD_ENABLE_TESTING)
