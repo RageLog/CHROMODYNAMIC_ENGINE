@@ -71,7 +71,7 @@ struct Push
     float ao[4];        ///< x=ao_strength, y=ao_radius_px, z=near, w=far
     float dof[4];       ///< x=dof_strength, y=focus_distance(m), z=focus_range(m), w=max_blur_px
     float shafts[4];    ///< x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
-    float sun_col[4];   ///< xyz=linear sun colour, w=reserved
+    float sun_col[4];   ///< xyz=linear sun colour, w=clouds_coverage [0,1]
     float atmo[4];      ///< x=fog_density(1/m), y=aerial_strength, z=vignette, w=film_grain
     float lens[4];      ///< x=chromatic_aberration_px, y/z/w = sun_dir.xyz (world-space, toward scene)
     float cam_right[4]; ///< xyz=world-space right basis, w=half_w = tan(fov/2)*aspect
@@ -249,6 +249,34 @@ vec3 ssr_color(vec2 uv, vec3 wp, vec3 N) {
   return vec3(0.0);
 }
 
+// Cheap 2D value-noise + 4-octave fBm for the sky cloud overlay.
+// True volumetric clouds require a 3D Worley/Perlin texture + a 64+
+// step ray-march; this fBm-on-sky version closes the visual gap with
+// a single tap budget. Inputs are screen-UV-derived "sky directions".
+float cd_hash21(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float cd_value_noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = cd_hash21(i);
+  float b = cd_hash21(i + vec2(1.0, 0.0));
+  float c = cd_hash21(i + vec2(0.0, 1.0));
+  float d = cd_hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float cd_fbm4(vec2 p) {
+  float s = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 4; ++i) {
+    s += a * cd_value_noise(p);
+    p *= 2.07;
+    a *= 0.5;
+  }
+  return s;
+}
+
 vec3 sample_chromab(vec2 uv) {
   if (pc.lens.x <= 0.001) return texture(cd_hdr_color, uv).rgb;
   vec2 vc = uv - vec2(0.5);
@@ -266,6 +294,23 @@ vec3 sample_chromab(vec2 uv) {
 void main() {
   vec3 c = sample_chromab(v_uv);
   float center_d = texture(cd_depth, v_uv).r;
+
+  // Volumetric cloud overlay — sky-only (depth far), fBm-noise based.
+  // pc.sun_col.w is coverage; 0 disables, 1 is full overcast.
+  if (center_d >= 0.999 && pc.sun_col.w > 0.001) {
+    // Map UV to a stable sky-projection plane. v_uv anchors per-pixel;
+    // small horizontal multiplier keeps cloud cells visually large.
+    vec2 sky_uv = v_uv * vec2(4.0, 2.0);
+    float density = cd_fbm4(sky_uv);
+    // Coverage shapes the threshold — lower coverage → sparser clouds.
+    float cov = clamp(pc.sun_col.w, 0.0, 1.0);
+    float cloud = smoothstep(0.55 - cov * 0.45, 0.85, density);
+    // Cloud colour — lit side toward sun_col, shaded base mid-grey.
+    vec3 cloud_lit = mix(vec3(0.55, 0.55, 0.60),
+                         pc.sun_col.rgb * 1.2 + vec3(0.05),
+                         0.6);
+    c = mix(c, cloud_lit, cloud * 0.85);
+  }
 
   // AO
   float ao = depth_ao(v_uv, center_d);

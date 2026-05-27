@@ -2898,11 +2898,11 @@ int main()
                        ? "[fx] Aerial perspective on"
                        : "[fx] Aerial perspective off");
         });
-    palette.register_command(92, "FX: Toggle Clouds (queued v1.7)",
+    palette.register_command(92, "FX: Toggle Clouds",
         [&]{
             fx_clouds_coverage = (fx_clouds_coverage > 0.001F) ? 0.0F : 0.55F;
             log_push(fx_clouds_coverage > 0.001F
-                       ? "[fx] Volumetric clouds queued (v1.7)"
+                       ? "[fx] Clouds on (composite fBm sky overlay)"
                        : "[fx] Clouds off");
         });
     palette.register_command(93, "FX: Toggle Light Shafts",
@@ -4877,6 +4877,7 @@ int main()
             ImGui::SliderFloat("SSR strength",       &fx_ssr_strength,     0.0F, 1.0F);
             ImGui::SliderFloat("Motion blur",        &fx_motion_blur,      0.0F, 1.0F);
             ImGui::SliderFloat("TAA amount",         &fx_taa_amount,       0.0F, 0.97F);
+            ImGui::SliderFloat("Clouds coverage",    &fx_clouds_coverage,  0.0F, 1.0F);
             ImGui::TextDisabled("TAA: camera-velocity reprojection + 3x3 neighbourhood clamp");
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
@@ -6411,7 +6412,11 @@ int main()
         cp.shafts[1] = 0.5F;
         cp.shafts[2] = -1.0F;  // disabled until a directional light + visible sun
         cp.shafts[3] = 1.0F;
-        cp.sun_col[0] = 0.0F; cp.sun_col[1] = 0.0F; cp.sun_col[2] = 0.0F; cp.sun_col[3] = 0.0F;
+        // sun_col.w packs the volumetric-clouds coverage (composite uses it
+        // for the sky-region fBm cloud overlay). RGB filled in the loop
+        // below from the first enabled directional light's colour.
+        cp.sun_col[0] = 0.0F; cp.sun_col[1] = 0.0F; cp.sun_col[2] = 0.0F;
+        cp.sun_col[3] = fx_clouds_coverage;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled) continue;
@@ -6473,7 +6478,7 @@ int main()
             cp.sun_col[0] = lrow.light.color.x;
             cp.sun_col[1] = lrow.light.color.y;
             cp.sun_col[2] = lrow.light.color.z;
-            cp.sun_col[3] = 0.0F;
+            // Preserve clouds_coverage (already set above before the loop).
             break;
         }
         // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
