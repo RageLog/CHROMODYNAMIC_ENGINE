@@ -2522,7 +2522,8 @@ int main()
     float  last_mouse_y      = 0.0F;
     bool   has_last_mouse    = false;
     bool   key_w = false, key_a = false, key_s = false, key_d = false;
-    bool   key_q = false, key_e = false;  // up/down
+    bool   key_q = false, key_e = false;       // up/down
+    bool   key_shift = false, key_ctrl = false; // W6-F speed modifiers
     constexpr float kCamMoveSpeed = 6.0F;     // m/s
     constexpr float kCamLookSpeed = 0.005F;   // rad/pixel
 
@@ -3472,6 +3473,12 @@ int main()
                 if (e.key == cd::platform::KeyCode::kD) key_d = v;
                 if (e.key == cd::platform::KeyCode::kQ) key_q = v;
                 if (e.key == cd::platform::KeyCode::kE) key_e = v;
+                // W6-F: shift = fast (x2.5), ctrl = slow (x0.25). Either
+                // L or R modifier engages the multiplier.
+                if (e.key == cd::platform::KeyCode::kLShift ||
+                    e.key == cd::platform::KeyCode::kRShift) key_shift = v;
+                if (e.key == cd::platform::KeyCode::kLCtrl  ||
+                    e.key == cd::platform::KeyCode::kRCtrl)  key_ctrl  = v;
                 // Engage manual mode on any WASD/QE press so scene_cam
                 // stops fighting the user.
                 if (key_dn && (e.key == cd::platform::KeyCode::kW ||
@@ -3789,7 +3796,13 @@ int main()
             cd::math::Vec3f right   { cy,      0.0F, sy };
 
             // WASD moves the camera *target* (and eye follows by cam_dist).
-            const float spd = kCamMoveSpeed * dt;
+            // W6-F: hold shift for fast (x2.5), hold ctrl for slow (x0.25);
+            // both held cancel and stay at 1x — useful for fine alignment
+            // while inspecting a specific shader / area light.
+            float spd_scale = 1.0F;
+            if (key_shift) spd_scale *= 2.5F;
+            if (key_ctrl)  spd_scale *= 0.25F;
+            const float spd = kCamMoveSpeed * dt * spd_scale;
             if (key_w) { cam.target.x += forward.x * spd; cam.target.y += forward.y * spd; cam.target.z += forward.z * spd; }
             if (key_s) { cam.target.x -= forward.x * spd; cam.target.y -= forward.y * spd; cam.target.z -= forward.z * spd; }
             if (key_d) { cam.target.x += right.x   * spd; cam.target.z += right.z   * spd; }
