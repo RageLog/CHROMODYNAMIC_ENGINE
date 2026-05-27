@@ -35,6 +35,7 @@ cd_add_sample(hello_engine
     cd::platform
     cd::post_bloom
     cd::post_camera
+    cd::post_composite
     cd::post_dof
     cd::post_gtao
     cd::post_motion_blur
