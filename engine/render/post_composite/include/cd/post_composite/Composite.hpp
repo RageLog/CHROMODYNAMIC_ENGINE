@@ -350,11 +350,13 @@ void main() {
   if (center_d >= 0.999 && pc.sun_col.w > 0.001) {
     // Map UV to a stable sky-projection plane. v_uv anchors per-pixel;
     // small horizontal multiplier keeps cloud cells visually large.
-    vec2 sky_uv = v_uv * vec2(4.0, 2.0);
+    // B09: scale 4x2 → 24x12 so cloud cells are detail-sized, not
+    // viewport-sized chunky blocks. Combined with a wider soft-step
+    // the result reads as broken cloud cover, not pixelated tiles.
+    vec2 sky_uv = v_uv * vec2(24.0, 12.0);
     float density = cd_fbm4(sky_uv);
-    // Coverage shapes the threshold — lower coverage → sparser clouds.
     float cov = clamp(pc.sun_col.w, 0.0, 1.0);
-    float cloud = smoothstep(0.55 - cov * 0.45, 0.85, density);
+    float cloud = smoothstep(0.50 - cov * 0.40, 0.78, density);
     // Cloud colour — lit side toward sun_col, shaded base mid-grey.
     vec3 cloud_lit = mix(vec3(0.55, 0.55, 0.60),
                          pc.sun_col.rgb * 1.2 + vec3(0.05),

@@ -2744,7 +2744,7 @@ int main()
     // shading the sample produces; Hable preserves tints on the
     // front primitives + back metallic spheres. AGX still wins on
     // HDR-heavy frames - switch via palette ('Tonemap: AGX').
-    int tonemap_op = 2;  // 0=Narkowicz 1=Hill 2=Hable 3=AGX
+    int tonemap_op = 2;  // 0=Narkowicz 1=Hill 2=Hable 3=AGX 4=HDR10 PQ
     palette.register_command(70, "Tonemap: AGX (Sobotka 2022)",
         [&]{ tonemap_op = 3; log_push("[fx] tonemap = AGX"); });
     palette.register_command(71, "Tonemap: Hill ACES (Filament fit)",
@@ -2753,6 +2753,9 @@ int main()
         [&]{ tonemap_op = 2; log_push("[fx] tonemap = Hable"); });
     palette.register_command(73, "Tonemap: Narkowicz ACES",
         [&]{ tonemap_op = 0; log_push("[fx] tonemap = Narkowicz"); });
+    palette.register_command(74, "Tonemap: HDR10 PQ (ST.2084, Rec.2020)",
+        [&]{ tonemap_op = 4;
+             log_push("[fx] tonemap = HDR10 PQ (use only on HDR display)"); });
     // v1.4 day-ship FX wire-in. The post_gtao / post_bloom / post_ssr
     // libraries are linked (CMakeLists) and their Settings structs
     // are reachable; the multi-pass GPU dispatch lands in v1.7
@@ -5238,11 +5241,38 @@ int main()
         ImGui::End();
 
         // ---- Outliner (gap #18 cd::world_container preview) ----
-        // Read-only view of the World > Project > Level > Layer tree.
-        // Entity grouping under layers is the editor-v1.6 follow-up;
-        // today this panel exists to surface the model + let the
-        // user inspect names/bounds/postfx overrides.
+        // Read-only world-container tree (top) + clickable entity +
+        // light list (bottom). B14 closes 'Outliner clicks don't
+        // select' — entries below are Selectable and now drive the
+        // selected/selected_kind/selected_light state.
         ImGui::Begin("Outliner");
+        ImGui::TextDisabled("Scene entities + lights (click to select):");
+        for (std::size_t i = 0; i < entities.size(); ++i)
+        {
+            const bool is_sel = (selected_kind == SelKind::kEntity &&
+                                 selected == static_cast<int>(i));
+            const std::string label =
+                entities[i].name + "##outl_e" + std::to_string(i);
+            if (ImGui::Selectable(label.c_str(), is_sel))
+            {
+                selected = static_cast<int>(i);
+                selected_kind = SelKind::kEntity;
+            }
+        }
+        for (std::size_t i = 0; i < lights.size(); ++i)
+        {
+            const bool is_sel = (selected_kind == SelKind::kLight &&
+                                 selected == static_cast<int>(i));
+            const std::string label =
+                "[light] " + lights[i].name + "##outl_l" + std::to_string(i);
+            if (ImGui::Selectable(label.c_str(), is_sel))
+            {
+                selected = static_cast<int>(i);
+                selected_kind = SelKind::kLight;
+            }
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("World container (read-only):");
         if (ImGui::TreeNodeEx(cd_world.name().data(),
                               ImGuiTreeNodeFlags_DefaultOpen))
         {
