@@ -68,6 +68,7 @@
 #include <cd/editor/CommandPalette.hpp>
 #include <cd/editor/SelectionOutline.hpp>
 #include <cd/editor/EditHistory.hpp>
+#include <cd/frame_timing/FrameTimeRing.hpp>
 #include <cd/light/Attenuation.hpp>
 #include <cd/light/ClusterGrid.hpp>
 #include <cd/light/ColorTemperature.hpp>
@@ -5122,58 +5123,34 @@ int main()
         ImGui::Begin("Counters");
         const auto snap = counters.snapshot();
         // Phase 139 - FPS / dt readout up top.
-        // W4-D: 120-frame ring + moving average so the FPS readout doesn't
-        // bounce per-frame; user reported "FPS varying wildly, want a
-        // mean". Median is shown alongside the rolling mean to make
-        // stutter spikes obvious without polluting the mean.
-        static float fps_ring[120] = {};
-        static std::size_t fps_ring_idx = 0;
-        static std::size_t fps_ring_filled = 0;
-        fps_ring[fps_ring_idx] = dt;
-        fps_ring_idx = (fps_ring_idx + 1) % 120;
-        if (fps_ring_filled < 120) ++fps_ring_filled;
-        double dt_sum = 0.0;
-        for (std::size_t i = 0; i < fps_ring_filled; ++i)
-            dt_sum += static_cast<double>(fps_ring[i]);
-        const double dt_mean =
-            (fps_ring_filled > 0) ? dt_sum / static_cast<double>(fps_ring_filled) : 0.0;
-        std::vector<float> dt_sorted(fps_ring, fps_ring + fps_ring_filled);
-        std::sort(dt_sorted.begin(), dt_sorted.end());
-        const float dt_median =
-            !dt_sorted.empty() ? dt_sorted[dt_sorted.size() / 2] : 0.0F;
-        const float dt_p99 =
-            !dt_sorted.empty()
-                ? dt_sorted[static_cast<std::size_t>(
-                    static_cast<float>(dt_sorted.size()) * 0.99F)
-                  >= dt_sorted.size() ? dt_sorted.size() - 1
-                                       : static_cast<std::size_t>(
-                                            static_cast<float>(dt_sorted.size()) * 0.99F)]
-                : 0.0F;
-        const double fps_avg = (dt_mean > 0.0) ? (1.0 / dt_mean) : 0.0;
-        const double fps_inst = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
-        const double fps_median =
-            (dt_median > 0.0F) ? (1.0 / static_cast<double>(dt_median)) : 0.0;
+        // W5-G: 120-frame ring + statistics extracted to cd::frame_timing
+        // (header-only foundation lib). Single source of truth for the
+        // mean / median / p99 math so future samples can reuse the same
+        // widget without re-deriving the ring logic.
+        static cd::frame_timing::FrameTimeRing<120> dt_ring;
+        dt_ring.push(dt);
+        const auto fts = dt_ring.stats();
+        const double fps_inst   = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
         ImGui::Text("FPS avg: %5.1f  median: %5.1f  inst: %5.1f",
-                    fps_avg, fps_median, fps_inst);
+                    fts.fps_mean(), fts.fps_median(), fps_inst);
         ImGui::Text("dt: %.2f ms  p99: %.2f ms  frame: %u",
-                    dt_mean * 1000.0,
-                    static_cast<double>(dt_p99) * 1000.0,
+                    fts.mean * 1000.0,
+                    static_cast<double>(fts.p99) * 1000.0,
                     frame_idx);
-        // W5-F: dt histogram so stutter spikes are visually obvious
-        // instead of only showing up in the p99 readout. PlotHistogram
-        // expects a contiguous float array; we feed it the ring buffer
-        // in linear order (modulo wrap is acceptable for a visual
-        // sanity plot, not a forensic trace).
         {
-            float dt_plot[120];
-            for (std::size_t i = 0; i < 120; ++i)
-            {
-                dt_plot[i] = fps_ring[(fps_ring_idx + i) % 120] * 1000.0F;
-            }
-            ImGui::PlotHistogram("##dt_hist", dt_plot, 120, 0,
-                                 "frame time (ms)",
-                                 0.0F, std::max(40.0F, dt_p99 * 1000.0F * 1.2F),
-                                 ImVec2(0, 40));
+            // dt histogram so stutter spikes are visually obvious — feed
+            // PlotHistogram the ring in oldest-first order so the X axis
+            // reads left-to-right as time.
+            static std::vector<float> dt_plot_buf;
+            dt_ring.copy_in_order(dt_plot_buf);
+            for (auto& v : dt_plot_buf) v *= 1000.0F;  // s -> ms
+            ImGui::PlotHistogram(
+                "##dt_hist",
+                dt_plot_buf.empty() ? nullptr : dt_plot_buf.data(),
+                static_cast<int>(dt_plot_buf.size()), 0,
+                "frame time (ms)",
+                0.0F, std::max(40.0F, fts.p99 * 1000.0F * 1.2F),
+                ImVec2(0, 40));
         }
         ImGui::Separator();
         for (const auto& [name, value] : snap)

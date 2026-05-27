@@ -9,6 +9,7 @@ cd_add_sample(hello_engine
     cd::core
     cd::ecs
     cd::editor
+    cd::frame_timing
     cd::imgui_backend
     cd::light
     cd::async_submit
