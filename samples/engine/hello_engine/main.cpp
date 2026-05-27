@@ -570,7 +570,13 @@ void main() {
   // Sky pixels are produced by a different shader (AnalyticalSkyFS)
   // which writes w=0 so the composite can distinguish "sky" vs
   // "surface" at sample time.
-  out_normal = vec4(normalize(v_world_normal), 1.0);
+  //
+  // B10: floor (tint.w == 2.0) + planar-shadow draws (tint.w < 0.5)
+  // also flag w=0 so composite skips SSR/AO. The grid floor is a
+  // virtual editor reference — it shouldn't kick reflections or AO
+  // crease from below at sample-time post-fx.
+  float surface_flag = (pc.tint.w < 0.5 || pc.tint.w > 1.5) ? 0.0 : 1.0;
+  out_normal = vec4(normalize(v_world_normal), surface_flag);
 
   // R3 G-Buffer phase 219 - albedo + MR. Sample the same textures
   // the lit path uses so deferred / post-fx consumers see exactly
