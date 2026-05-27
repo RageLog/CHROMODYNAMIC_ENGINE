@@ -4100,26 +4100,13 @@ int main()
         cd::math::Mat4f vp_unjittered = cd::camera::view_projection(cam, aspect);
 
         // R3 Halton(2,3) sub-pixel jitter for proper TAA accumulation
-        // â€” only active when TAA is dialled in. Without jitter, every
-        // frame samples the same fragment centre and TAA stagnates;
-        // with jitter the integration converges toward supersample.
-        auto halton = [](std::uint32_t i, std::uint32_t base) {
-            float r = 0.0F;
-            float f = 1.0F / static_cast<float>(base);
-            while (i > 0)
-            {
-                r += f * static_cast<float>(i % base);
-                i /= base;
-                f /= static_cast<float>(base);
-            }
-            return r;
-        };
-        const float jx_px = (fx_taa_amount > 0.001F)
-            ? (halton((frame_idx % 8U) + 1U, 2) - 0.5F) : 0.0F;
-        const float jy_px = (fx_taa_amount > 0.001F)
-            ? (halton((frame_idx % 8U) + 1U, 3) - 0.5F) : 0.0F;
-        const float jx_ndc = jx_px * 2.0F / static_cast<float>(frame.extent.width);
-        const float jy_ndc = jy_px * 2.0F / static_cast<float>(frame.extent.height);
+        // — only active when TAA is dialled in. cd::post_taa owns the
+        // Halton sequence; we just gate it on the TAA strength dial.
+        const cd::math::Vec2f jitter_px = (fx_taa_amount > 0.001F)
+            ? cd::post_taa::jitter_offset(frame_idx, 8U)
+            : cd::math::Vec2f { 0.0F, 0.0F };
+        const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(frame.extent.width);
+        const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(frame.extent.height);
 
         // T_jitter * vp â€” adds jx_ndc * w to clip.x so post-divide
         // ndc.x shifts by jx_ndc. Column-major: for each column c,
