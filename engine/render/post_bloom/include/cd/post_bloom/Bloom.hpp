@@ -256,6 +256,103 @@ void main() {
 }
 )glsl";
 
+// ---- Fragment-shader variants (forward composite pipeline) ------------------
+// These mirror the compute kernels above but render via a fullscreen-
+// triangle FS pass. Engines using a forward composite chain (vs the
+// compute path) pick these. Same Karis 13-tap math, same 9-tap tent.
+// Push-constants packed in 16-byte vec4s for trivial std140 layout.
+
+constexpr std::string_view kPrefilterFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(push_constant) uniform PC {
+  vec4 params; // x=threshold, y=knee, z=_, w=_
+} pc;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+  vec3 c = texture(src, v_uv).rgb;
+  float br = max(c.r, max(c.g, c.b));
+  float thr = max(pc.params.x, 1e-4);
+  float knee = max(pc.params.y, 1e-4);
+  float rq = clamp(br - thr + knee, 0.0, 2.0 * knee);
+  float scale = (rq * rq) / (4.0 * knee + 1e-4);
+  float factor = max(br - thr, scale) / max(br, 1e-4);
+  out_color = vec4(c * factor, 1.0);
+}
+)glsl";
+
+constexpr std::string_view kDownsampleFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+  vec2 px = 1.0 / vec2(textureSize(src, 0));
+  vec3 A = texture(src, v_uv + px * vec2(-1, -1)).rgb;
+  vec3 B = texture(src, v_uv + px * vec2( 0, -1)).rgb;
+  vec3 C = texture(src, v_uv + px * vec2( 1, -1)).rgb;
+  vec3 D = texture(src, v_uv + px * vec2(-1,  0)).rgb;
+  vec3 E = texture(src, v_uv                       ).rgb;
+  vec3 F = texture(src, v_uv + px * vec2( 1,  0)).rgb;
+  vec3 G = texture(src, v_uv + px * vec2(-1,  1)).rgb;
+  vec3 H = texture(src, v_uv + px * vec2( 0,  1)).rgb;
+  vec3 I = texture(src, v_uv + px * vec2( 1,  1)).rgb;
+  vec3 J = texture(src, v_uv + px * vec2(-0.5, -0.5)).rgb;
+  vec3 K = texture(src, v_uv + px * vec2( 0.5, -0.5)).rgb;
+  vec3 L = texture(src, v_uv + px * vec2(-0.5,  0.5)).rgb;
+  vec3 M = texture(src, v_uv + px * vec2( 0.5,  0.5)).rgb;
+  vec3 partial = (J + K + L + M) * (0.5  / 4.0)
+               + (A + B + D + E) * (0.125 / 4.0)
+               + (B + C + E + F) * (0.125 / 4.0)
+               + (D + E + G + H) * (0.125 / 4.0)
+               + (E + F + H + I) * (0.125 / 4.0);
+  out_color = vec4(partial, 1.0);
+}
+)glsl";
+
+constexpr std::string_view kUpsampleFS = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(push_constant) uniform PC {
+  vec4 params; // x=radius, y=intensity, z=_, w=_
+} pc;
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+void main() {
+  vec2 px = pc.params.x / vec2(textureSize(src, 0));
+  vec3 sum  = texture(src, v_uv + px * vec2(-1, -1)).rgb * 1.0;
+  sum      += texture(src, v_uv + px * vec2( 0, -1)).rgb * 2.0;
+  sum      += texture(src, v_uv + px * vec2( 1, -1)).rgb * 1.0;
+  sum      += texture(src, v_uv + px * vec2(-1,  0)).rgb * 2.0;
+  sum      += texture(src, v_uv                       ).rgb * 4.0;
+  sum      += texture(src, v_uv + px * vec2( 1,  0)).rgb * 2.0;
+  sum      += texture(src, v_uv + px * vec2(-1,  1)).rgb * 1.0;
+  sum      += texture(src, v_uv + px * vec2( 0,  1)).rgb * 2.0;
+  sum      += texture(src, v_uv + px * vec2( 1,  1)).rgb * 1.0;
+  sum *= (1.0 / 16.0);
+  out_color = vec4(sum * pc.params.y, 1.0);
+}
+)glsl";
+
+/// Push-constant block matching kPrefilterFS layout (16 bytes).
+struct PrefilterPush
+{
+    float params[4]; ///< x=threshold, y=knee, z/w reserved
+};
+static_assert(sizeof(PrefilterPush) == 16, "PrefilterPush layout drift");
+
+/// Push-constant block matching kUpsampleFS layout (16 bytes).
+struct UpsamplePush
+{
+    float params[4]; ///< x=radius, y=intensity, z/w reserved
+};
+static_assert(sizeof(UpsamplePush) == 16, "UpsamplePush layout drift");
+
+/// Recommended default mip count for the FS-variant chain. 4 levels at
+/// /2 .. /16 produces a visibly soft halo without crushing detail.
+inline constexpr std::uint32_t kDefaultMipCount = 4;
+
 constexpr std::string_view kPrefilterCS = R"glsl(
 #version 460
 layout(local_size_x = 8, local_size_y = 8) in;

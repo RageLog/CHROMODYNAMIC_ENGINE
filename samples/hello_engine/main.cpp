@@ -1389,92 +1389,14 @@ struct CompositePush
 };
 static_assert(sizeof(CompositePush) == 256, "CompositePush layout");
 
-// ============================================================================
-// R3 — Multi-mip bloom (Karis 2013 stable pipeline).
-//
-// 4 progressively halving render targets. Prefilter: HDR (soft-knee)
-// -> mip0. Downsample chain: mip0 -> 1 -> 2 -> 3 using a Karis 13-tap
-// fireflies-suppressing reduction. Upsample chain: mip3 -> 2 -> 1 ->
-// 0 with 9-tap tent filter + additive blend. Final mip0 contribution
-// added in the composite pass before tonemap.
-// ============================================================================
-// Mip count canonicalised on BloomMipChain::kCount in the chain struct.
-
-constexpr const char* kBloomPrefilterFS = R"glsl(
-#version 450
-layout(set = 0, binding = 0) uniform sampler2D src;
-layout(push_constant) uniform PC {
-  vec4 params; // x=threshold, y=knee, z=_, w=_
-} pc;
-layout(location = 0) in  vec2 v_uv;
-layout(location = 0) out vec4 out_color;
-void main() {
-  vec3 c = texture(src, v_uv).rgb;
-  float br = max(c.r, max(c.g, c.b));
-  float thr = max(pc.params.x, 1e-4);
-  float knee = max(pc.params.y, 1e-4);
-  float rq = clamp(br - thr + knee, 0.0, 2.0 * knee);
-  float scale = (rq * rq) / (4.0 * knee + 1e-4);
-  float factor = max(br - thr, scale) / max(br, 1e-4);
-  out_color = vec4(c * factor, 1.0);
-}
-)glsl";
-
-constexpr const char* kBloomDownsampleFS = R"glsl(
-#version 450
-layout(set = 0, binding = 0) uniform sampler2D src;
-layout(location = 0) in  vec2 v_uv;
-layout(location = 0) out vec4 out_color;
-void main() {
-  vec2 px = 1.0 / vec2(textureSize(src, 0));
-  vec3 A = texture(src, v_uv + px * vec2(-1, -1)).rgb;
-  vec3 B = texture(src, v_uv + px * vec2( 0, -1)).rgb;
-  vec3 C = texture(src, v_uv + px * vec2( 1, -1)).rgb;
-  vec3 D = texture(src, v_uv + px * vec2(-1,  0)).rgb;
-  vec3 E = texture(src, v_uv                       ).rgb;
-  vec3 F = texture(src, v_uv + px * vec2( 1,  0)).rgb;
-  vec3 G = texture(src, v_uv + px * vec2(-1,  1)).rgb;
-  vec3 H = texture(src, v_uv + px * vec2( 0,  1)).rgb;
-  vec3 I = texture(src, v_uv + px * vec2( 1,  1)).rgb;
-  vec3 J = texture(src, v_uv + px * vec2(-0.5, -0.5)).rgb;
-  vec3 K = texture(src, v_uv + px * vec2( 0.5, -0.5)).rgb;
-  vec3 L = texture(src, v_uv + px * vec2(-0.5,  0.5)).rgb;
-  vec3 M = texture(src, v_uv + px * vec2( 0.5,  0.5)).rgb;
-  vec3 partial = (J + K + L + M) * (0.5  / 4.0)
-               + (A + B + D + E) * (0.125 / 4.0)
-               + (B + C + E + F) * (0.125 / 4.0)
-               + (D + E + G + H) * (0.125 / 4.0)
-               + (E + F + H + I) * (0.125 / 4.0);
-  out_color = vec4(partial, 1.0);
-}
-)glsl";
-
-constexpr const char* kBloomUpsampleFS = R"glsl(
-#version 450
-layout(set = 0, binding = 0) uniform sampler2D src;
-layout(push_constant) uniform PC {
-  vec4 params; // x=radius, y=intensity, z=_, w=_
-} pc;
-layout(location = 0) in  vec2 v_uv;
-layout(location = 0) out vec4 out_color;
-void main() {
-  vec2 px = pc.params.x / vec2(textureSize(src, 0));
-  vec3 sum  = texture(src, v_uv + px * vec2(-1, -1)).rgb * 1.0;
-  sum      += texture(src, v_uv + px * vec2( 0, -1)).rgb * 2.0;
-  sum      += texture(src, v_uv + px * vec2( 1, -1)).rgb * 1.0;
-  sum      += texture(src, v_uv + px * vec2(-1,  0)).rgb * 2.0;
-  sum      += texture(src, v_uv                       ).rgb * 4.0;
-  sum      += texture(src, v_uv + px * vec2( 1,  0)).rgb * 2.0;
-  sum      += texture(src, v_uv + px * vec2(-1,  1)).rgb * 1.0;
-  sum      += texture(src, v_uv + px * vec2( 0,  1)).rgb * 2.0;
-  sum      += texture(src, v_uv + px * vec2( 1,  1)).rgb * 1.0;
-  sum *= (1.0 / 16.0);
-  out_color = vec4(sum * pc.params.y, 1.0);
-}
-)glsl";
-
-struct BloomPrefilterPush { float params[4]; };
-struct BloomUpsamplePush  { float params[4]; };
+// R3 — Multi-mip bloom (Karis 2013) — shader source + push struct
+// definitions are extracted into cd::post_bloom. hello_engine just
+// references them via the namespace.
+using cd::post_bloom::kPrefilterFS;
+using cd::post_bloom::kDownsampleFS;
+using cd::post_bloom::kUpsampleFS;
+using BloomPrefilterPush = cd::post_bloom::PrefilterPush;
+using BloomUpsamplePush  = cd::post_bloom::UpsamplePush;
 
 struct PrimPush
 {
@@ -2050,7 +1972,7 @@ int main()
 
     cd::material::MaterialDesc bp_md {};
     bp_md.vertex_glsl   = kCompositeVS;
-    bp_md.fragment_glsl = kBloomPrefilterFS;
+    bp_md.fragment_glsl = std::string_view { kPrefilterFS };
     bp_md.color_attachment_formats = kHdrFmts;
     bp_md.push_constants    = kBloomPrefilterPushRange;
     bp_md.descriptor_bindings = kBloomBindings;
@@ -2064,7 +1986,7 @@ int main()
 
     cd::material::MaterialDesc bd_md {};
     bd_md.vertex_glsl   = kCompositeVS;
-    bd_md.fragment_glsl = kBloomDownsampleFS;
+    bd_md.fragment_glsl = std::string_view { kDownsampleFS };
     bd_md.color_attachment_formats = kHdrFmts;
     bd_md.descriptor_bindings = kBloomBindings;
     bd_md.raster.cull = cd::rhi::CullMode::kNone;
@@ -2077,7 +1999,7 @@ int main()
 
     cd::material::MaterialDesc bu_md {};
     bu_md.vertex_glsl   = kCompositeVS;
-    bu_md.fragment_glsl = kBloomUpsampleFS;
+    bu_md.fragment_glsl = std::string_view { kUpsampleFS };
     bu_md.color_attachment_formats = kHdrFmts;
     bu_md.push_constants    = kBloomUpsamplePushRange;
     bu_md.descriptor_bindings = kBloomBindings;
