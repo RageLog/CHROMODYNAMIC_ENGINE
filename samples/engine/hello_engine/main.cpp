@@ -5066,6 +5066,84 @@ int main()
                                     ImGuiTreeNodeFlags_DefaultOpen))
         {
             ImGui::TextDisabled("single composite pass - AO/DOF/shafts/bloom/atmo");
+            // W6-E: preset buttons — quick A/B between known-good visual
+            // setups so the user doesn't have to remember every default.
+            if (ImGui::Button("Defaults"))
+            {
+                fx_exposure         = 3.0F;
+                fx_saturation_boost = 1.50F;
+                fx_bloom_post       = 0.04F;
+                fx_ao_strength      = 0.55F;
+                fx_dof_strength     = 0.0F;
+                fx_shafts_strength  = 0.75F;
+                fx_ssr_strength     = 0.5F;
+                fx_motion_blur      = 0.0F;
+                fx_taa_amount       = 0.0F;
+                fx_clouds_coverage  = 0.0F;
+                fx_fog_density      = 0.0F;
+                fx_aerial_perspective = 0.0F;
+                fx_chromab_strength = 0.0F;
+                fx_film_grain       = 0.0F;
+                fx_vignette_strength = 0.25F;
+                log_push("[fx] Reset all composite knobs to defaults");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cinematic"))
+            {
+                fx_exposure         = 2.5F;
+                fx_saturation_boost = 1.65F;
+                fx_bloom_post       = 0.08F;
+                fx_ao_strength      = 0.65F;
+                fx_dof_strength     = 0.35F;
+                fx_shafts_strength  = 0.85F;
+                fx_ssr_strength     = 0.55F;
+                fx_motion_blur      = 0.30F;
+                fx_taa_amount       = 0.80F;
+                fx_clouds_coverage  = 0.45F;
+                fx_fog_density      = 0.20F;
+                fx_aerial_perspective = 0.50F;
+                fx_chromab_strength = 0.25F;
+                fx_film_grain       = 0.15F;
+                fx_vignette_strength = 0.40F;
+                tonemap_op = 2;  // Hable
+                log_push("[fx] Cinematic preset");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Performance"))
+            {
+                fx_exposure         = 1.5F;
+                fx_saturation_boost = 1.20F;
+                fx_bloom_post       = 0.0F;
+                fx_ao_strength      = 0.0F;
+                fx_dof_strength     = 0.0F;
+                fx_shafts_strength  = 0.0F;
+                fx_ssr_strength     = 0.0F;
+                fx_motion_blur      = 0.0F;
+                fx_taa_amount       = 0.0F;
+                fx_clouds_coverage  = 0.0F;
+                fx_fog_density      = 0.0F;
+                fx_aerial_perspective = 0.0F;
+                fx_chromab_strength = 0.0F;
+                fx_film_grain       = 0.0F;
+                fx_vignette_strength = 0.0F;
+                tonemap_op = 0;  // Narkowicz (cheapest)
+                log_push("[fx] Performance preset (all post-fx off)");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("HDR Demo"))
+            {
+                fx_exposure         = 1.0F;
+                fx_saturation_boost = 1.40F;
+                fx_bloom_post       = 0.12F;
+                fx_ao_strength      = 0.55F;
+                fx_shafts_strength  = 0.90F;
+                fx_clouds_coverage  = 0.30F;
+                fx_fog_density      = 0.0F;
+                fx_chromab_strength = 0.15F;
+                fx_vignette_strength = 0.30F;
+                tonemap_op = 3;  // AGX — best for wide DR
+                log_push("[fx] HDR demo preset (AGX tonemap + wide DR)");
+            }
             ImGui::SliderFloat("Exposure",           &fx_exposure,         0.1F, 10.0F);
             ImGui::SliderFloat("Saturation boost",   &fx_saturation_boost, 0.5F, 2.5F);
             ImGui::SliderFloat("Bloom strength",     &fx_bloom_post,       0.0F, 0.30F);
