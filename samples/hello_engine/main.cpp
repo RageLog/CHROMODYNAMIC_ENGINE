@@ -97,6 +97,7 @@
 #include <cd/post_smaa/Smaa.hpp>
 #include <cd/post_ssr/Ssr.hpp>
 #include <cd/post_taa/Taa.hpp>
+#include <cd/velocity/Velocity.hpp>
 #include <cd/render/Renderer.hpp>
 #include <cd/volumetric_clouds/Clouds.hpp>
 #include <cd/volumetric_fog/Fog.hpp>
@@ -183,6 +184,12 @@ struct SceneEntity
     float             metallic  { 0.0F };
     float             roughness { 0.5F };
     PrimitiveKind     kind { PrimitiveKind::kCube };
+    // R3 phase 226 — previous-frame model matrix, populated at the end
+    // of each frame's main pass for the velocity pass to use next frame.
+    // On the first frame this equals the curr model so the velocity
+    // output is zero (no motion).
+    cd::math::Mat4f   prev_model { cd::math::Mat4f::identity() };
+    bool              prev_model_valid { false };
 };
 
 // Reserved for save/load round-trip â€” currently unused but documents
@@ -1280,6 +1287,16 @@ int main()
     if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
         return 50;
 
+    // R3 phase 226 — Velocity G-Buffer (RG16F = curr_uv - prev_uv).
+    // Written by a separate velocity pass after the HDR scene using
+    // cd::velocity::kVelocityVS + kVelocityFS so the main scene
+    // shaders stay unchanged (no MRT velocity in prim/PBR). Composite
+    // samples this for proper per-mesh motion blur + TAA reprojection.
+    constexpr auto kVelocityFormat = cd::rhi::Format::kRG16Float;
+    ColorTarget gbuf_velocity {};
+    if (!create_color_target(device, { window.width(), window.height() }, kVelocityFormat, gbuf_velocity))
+        return 51;
+
     // R3 TAA history â€” ping-pong color targets at swapchain format.
     // Each frame, composite reads history[frame & 1] (last frame's
     // post-tonemap blend) and writes to history[(frame & 1) ^ 1]
@@ -1348,7 +1365,7 @@ int main()
                                      .offset = 0,
                                      .size = sizeof(CompositePush) } };
     comp_md.push_constants = kCompositePush;
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 5> kCompositeBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 6> kCompositeBindings {
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 0,
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
@@ -1371,6 +1388,11 @@ int main()
             .stages  = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 4,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 5,  // gbuf_velocity (R3 phase 226)
             .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
             .count   = 1,
             .stages  = cd::rhi::ShaderStage::kFragment } };
@@ -1612,6 +1634,41 @@ int main()
         return 9;
     }
     auto& prim_material = *prim_r;
+
+    // R3 phase 226 — Velocity-pass material. Re-draws each entity's
+    // mesh with cd::velocity::kVelocityVS+kVelocityFS so the FS
+    // writes (curr_uv - prev_uv) to gbuf_velocity. Push = 128 B
+    // (prev_vp_model + curr_vp_model). Vertex layout matches kPrimBindings
+    // (FS reads only the position attribute — colour/normal/UV are
+    // ignored by the velocity shader).
+    constexpr std::array<cd::rhi::Format, 1> kVelocityColorFmts {
+        cd::rhi::Format::kRG16Float };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kVelocityPushRange {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
+                                     .offset = 0,
+                                     .size   = 128U } };
+    cd::material::MaterialDesc vel_md {};
+    vel_md.vertex_glsl   = std::string_view { cd::velocity::kVelocityVS };
+    vel_md.fragment_glsl = std::string_view { cd::velocity::kVelocityFS };
+    vel_md.color_attachment_formats = kVelocityColorFmts;
+    vel_md.depth_attachment_format = kDepthFormat;
+    vel_md.vertex_bindings = kPrimBindings;
+    vel_md.vertex_attributes = kPrimAttrs;
+    vel_md.push_constants = kVelocityPushRange;
+    vel_md.raster.cull = cd::rhi::CullMode::kNone;
+    vel_md.depth_stencil.depth_test = true;
+    vel_md.depth_stencil.depth_write = false;  // read-only depth
+    vel_md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLessEqual;
+    vel_md.name = "hello_engine/velocity";
+    auto vel_r = cd::material::Material::create(device, compiler.get(), vel_md);
+    if (!vel_r.has_value())
+    {
+        std::fprintf(stderr, "hello_engine: velocity_material create failed: %.*s\n",
+            static_cast<int>(vel_r.error().message.size()),
+            vel_r.error().message.data());
+        return 52;
+    }
+    [[maybe_unused]] auto& velocity_material = *vel_r;
 
     // Shadow material (Faz 1.6 CSM) â€” depth-only pipeline (no color
     // attachment) with a trivial mat4 push constant. Used in the
@@ -1941,7 +1998,7 @@ int main()
     auto bind_composite_hdr = [&]() {
         for (std::uint32_t i = 0; i < 2; ++i)
         {
-            std::array<cd::rhi::DescriptorWrite, 5> writes {
+            std::array<cd::rhi::DescriptorWrite, 6> writes {
                 cd::rhi::DescriptorWrite {
                     .binding = 0,
                     .array_element = 0,
@@ -1966,7 +2023,7 @@ int main()
                     .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                     .view    = gbuf_normal.view,
                     .sampler = albedo_sampler },
-                // TAA history â€” composite_insts[i] reads history[i],
+                // TAA history — composite_insts[i] reads history[i],
                 // and per-frame logic picks composite_insts[frame & 1]
                 // so the read history was written by the prior frame.
                 cd::rhi::DescriptorWrite {
@@ -1974,6 +2031,14 @@ int main()
                     .array_element = 0,
                     .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                     .view    = history_targets[i].view,
+                    .sampler = albedo_sampler },
+                // R3 phase 226 — velocity G-Buffer for per-mesh motion
+                // blur + TAA reprojection.
+                cd::rhi::DescriptorWrite {
+                    .binding = 5,
+                    .array_element = 0,
+                    .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view    = gbuf_velocity.view,
                     .sampler = albedo_sampler } };
             (void)composite_insts[i].update(writes);
         }
@@ -3450,6 +3515,8 @@ int main()
             if (!create_color_target(device, { window.width(), window.height() }, kAlbedoFormat, gbuf_albedo))
                 continue;
             if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
+                continue;
+            if (!create_color_target(device, { window.width(), window.height() }, kVelocityFormat, gbuf_velocity))
                 continue;
             bool history_ok = true;
             for (auto& h : history_targets)
@@ -6237,6 +6304,48 @@ int main()
             cmd.barrier({}, hb);
         }
 
+        // R3 phase 226 — velocity G-Buffer clear-only pass. Per-entity
+        // velocity draws are queued for the next phase; for now the
+        // clear-to-zero output triggers composite's camera-only fallback
+        // (== previous behaviour), but the barrier/binding plumbing is
+        // validated and the texture is in the expected state.
+        {
+            const cd::rhi::ResourceState vel_prev = (frame_idx == 0)
+                ? cd::rhi::ResourceState::kUndefined
+                : cd::rhi::ResourceState::kShaderResource;
+            std::array<cd::rhi::TextureBarrier, 1> vb {
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_velocity.image,
+                    .from    = vel_prev,
+                    .to      = cd::rhi::ResourceState::kColorAttachment,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, vb);
+
+            std::array<cd::rhi::ColorAttachmentInfo, 1> vel_ca {
+                cd::rhi::ColorAttachmentInfo {
+                    .view = gbuf_velocity.view,
+                    .load_op = cd::rhi::LoadOp::kClear,
+                    .store_op = cd::rhi::StoreOp::kStore,
+                    .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } } };
+            cd::rhi::RenderPassBeginInfo vel_rp {};
+            vel_rp.render_area = cd::rhi::Rect2D { {0,0}, frame.extent };
+            vel_rp.color_attachments = vel_ca;
+            vel_rp.depth_stencil = nullptr;
+            cmd.begin_render_pass(vel_rp);
+            // Per-entity velocity draws land in a follow-up phase
+            // (needs prev_world_transform tracking + iteration of
+            // every entity's mesh handle alongside its kPrim push).
+            cmd.end_render_pass();
+
+            std::array<cd::rhi::TextureBarrier, 1> vb2 {
+                cd::rhi::TextureBarrier {
+                    .texture = gbuf_velocity.image,
+                    .from    = cd::rhi::ResourceState::kColorAttachment,
+                    .to      = cd::rhi::ResourceState::kShaderResource,
+                    .range   = { 0, 1, 0, 1 } } };
+            cmd.barrier({}, vb2);
+        }
+
         // R3 â€” Bloom chain. 7 fullscreen-triangle passes against the
         // dedicated bloom mip chain (each pass owns one render target,
         // writes its full extent, and ends as kShaderResource so the
@@ -6626,6 +6735,7 @@ int main()
     gbuf_normal.destroy(device);
     gbuf_albedo.destroy(device);
     gbuf_mr.destroy(device);
+    gbuf_velocity.destroy(device);
     for (auto& h : history_targets) h.destroy(device);
     bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.

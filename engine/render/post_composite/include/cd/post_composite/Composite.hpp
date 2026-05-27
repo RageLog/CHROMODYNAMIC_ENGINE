@@ -91,14 +91,15 @@ static_assert(sizeof(Push) == 256, "post_composite::Push must equal 256 B");
 
 enum class BindingSlot : std::uint32_t
 {
-    kHdrColor    = 0,
-    kBloomMip0   = 1,
-    kDepth       = 2,
-    kGbufNormal  = 3,
-    kHistoryPrev = 4,
+    kHdrColor     = 0,
+    kBloomMip0    = 1,
+    kDepth        = 2,
+    kGbufNormal   = 3,
+    kHistoryPrev  = 4,
+    kGbufVelocity = 5,
 };
 
-inline constexpr std::uint32_t kBindingCount = 5;
+inline constexpr std::uint32_t kBindingCount = 6;
 
 // ---- GLSL — fullscreen-triangle VS -----------------------------------------
 
@@ -122,6 +123,11 @@ layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(set = 0, binding = 2) uniform sampler2D cd_depth;
 layout(set = 0, binding = 3) uniform sampler2D cd_gbuf_normal;
 layout(set = 0, binding = 4) uniform sampler2D cd_history_prev;
+// Velocity G-Buffer (RG16F = curr_uv - prev_uv). When the per-mesh
+// velocity pass hasn't written for a pixel (sky / cleared), the tap
+// is (0, 0) which the motion blur + TAA reprojection treat as "use
+// camera-only fallback".
+layout(set = 0, binding = 5) uniform sampler2D cd_gbuf_velocity;
 layout(push_constant) uniform PC {
   vec4 fx;
   vec4 ao;
@@ -375,28 +381,36 @@ void main() {
     c += ssr_color(v_uv, wp, N);
   }
 
-  // Camera-velocity motion blur
+  // Motion blur — prefer the velocity G-Buffer (per-mesh + camera
+  // motion), fall back to camera-only reprojection when the velocity
+  // tap is effectively zero (sky / cleared / static mesh + still
+  // camera). Both paths sample HDR along the screen-space velocity
+  // vector with a 10%-of-viewport cap to prevent snap-cut smear.
   float mblur_strength = pc.prev_cam_fwd.w;
   if (mblur_strength > 0.001 && center_d < 0.999) {
-    vec3 wp_now = world_pos_from_uv(v_uv, center_d);
-    vec2 prev_uv = prev_world_to_uv(wp_now);
-    if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 &&
-        prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
-      vec2 velocity = v_uv - prev_uv;
-      float vlen = length(velocity);
-      if (vlen > 0.001) {
-        float vmax = 0.1;
-        if (vlen > vmax) velocity *= vmax / vlen;
-        int   nsamples = int(max(pc.prev_cam_pos.w, 1.0));
-        vec3  blur_sum = vec3(0.0);
-        for (int i = 0; i < nsamples; ++i) {
-          float t = float(i) / float(nsamples - 1) - 0.5;
-          vec2 sp = v_uv + velocity * t;
-          blur_sum += texture(cd_hdr_color, clamp(sp, vec2(0.0), vec2(1.0))).rgb;
-        }
-        blur_sum *= (1.0 / float(nsamples));
-        c = mix(c, blur_sum, clamp(mblur_strength, 0.0, 1.0));
+    vec2 velocity = texture(cd_gbuf_velocity, v_uv).rg;
+    if (length(velocity) < 1e-5) {
+      // Velocity G-Buffer empty here — derive camera-only velocity.
+      vec3 wp_now = world_pos_from_uv(v_uv, center_d);
+      vec2 prev_uv = prev_world_to_uv(wp_now);
+      if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 &&
+          prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
+        velocity = v_uv - prev_uv;
       }
+    }
+    float vlen = length(velocity);
+    if (vlen > 0.001) {
+      float vmax = 0.1;
+      if (vlen > vmax) velocity *= vmax / vlen;
+      int   nsamples = int(max(pc.prev_cam_pos.w, 1.0));
+      vec3  blur_sum = vec3(0.0);
+      for (int i = 0; i < nsamples; ++i) {
+        float t = float(i) / float(nsamples - 1) - 0.5;
+        vec2 sp = v_uv + velocity * t;
+        blur_sum += texture(cd_hdr_color, clamp(sp, vec2(0.0), vec2(1.0))).rgb;
+      }
+      blur_sum *= (1.0 / float(nsamples));
+      c = mix(c, blur_sum, clamp(mblur_strength, 0.0, 1.0));
     }
   }
 
@@ -493,11 +507,19 @@ void main() {
     c += (h - 0.5) * pc.atmo.w * 0.15;
   }
 
-  // TAA neighbourhood-clamp blend
+  // TAA neighbourhood-clamp blend. Prefer the velocity G-Buffer for
+  // reprojection (captures per-mesh animation), fall back to camera-
+  // only via prev_world_to_uv when the velocity tap is empty.
   float taa_alpha = clamp(pc.cam_fwd.w, 0.0, 0.97);
   if (taa_alpha > 0.001 && center_d < 0.999) {
-    vec3 wp_taa = world_pos_from_uv(v_uv, center_d);
-    vec2 prev_uv = prev_world_to_uv(wp_taa);
+    vec2 vel = texture(cd_gbuf_velocity, v_uv).rg;
+    vec2 prev_uv;
+    if (length(vel) > 1e-5) {
+      prev_uv = v_uv - vel;
+    } else {
+      vec3 wp_taa = world_pos_from_uv(v_uv, center_d);
+      prev_uv = prev_world_to_uv(wp_taa);
+    }
     if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 &&
         prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
       vec3 hist = texture(cd_history_prev, prev_uv).rgb;

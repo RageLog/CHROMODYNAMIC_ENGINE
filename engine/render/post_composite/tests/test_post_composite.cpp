@@ -16,7 +16,7 @@ namespace
 
 [[nodiscard]] bool binding_count_matches() noexcept
 {
-    return cd::post_composite::kBindingCount == 5U;
+    return cd::post_composite::kBindingCount == 6U;
 }
 
 [[nodiscard]] bool vs_source_compiles_trivially() noexcept
@@ -35,7 +35,8 @@ namespace
            fs.find("cd_bloom_mip0") != std::string_view::npos &&
            fs.find("cd_depth") != std::string_view::npos &&
            fs.find("cd_gbuf_normal") != std::string_view::npos &&
-           fs.find("cd_history_prev") != std::string_view::npos;
+           fs.find("cd_history_prev") != std::string_view::npos &&
+           fs.find("cd_gbuf_velocity") != std::string_view::npos;
 }
 
 [[nodiscard]] bool fs_writes_dual_mrt() noexcept

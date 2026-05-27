@@ -42,6 +42,7 @@ cd_add_sample(hello_engine
     cd::post_smaa
     cd::post_ssr
     cd::post_taa
+    cd::velocity
     cd::render
     cd::volumetric_clouds
     cd::volumetric_fog
