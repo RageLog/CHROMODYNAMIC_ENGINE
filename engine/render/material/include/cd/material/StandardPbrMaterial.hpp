@@ -177,6 +177,34 @@ vec3 wrap_diffuse(vec3 N, vec3 L, vec3 albedo,
   return albedo * col * NoL_wrap / 3.14159265;
 }
 
+// ---- LTC area-light helpers (cd::brdf_ltc — Heitz 2016) --------------------
+// Drop-in helpers for rectangular area light integration. The math is
+// canonicalised in cd::brdf_ltc::kLtcGlsl; inlined here so the PBR FS
+// doesn't depend on a shader-include facility. atan2 form for stability
+// near parallel/anti-parallel edge configurations.
+float ltc_edge_integral(vec3 a, vec3 b) {
+  float d = clamp(dot(a, b), -1.0, 1.0);
+  vec3  c = cross(a, b);
+  float l = length(c);
+  float th = (l < 1e-6) ? 0.0 : atan(l, d);
+  return (l < 1e-6) ? 0.0 : (th / l) * c.z;
+}
+float ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
+  vec3 up = abs(N.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+  vec3 T  = normalize(cross(up, N));
+  vec3 B  = cross(N, T);
+  mat3 frame = transpose(mat3(T, B, N));
+  vec3 p0 = normalize(frame * c0);
+  vec3 p1 = normalize(frame * c1);
+  vec3 p2 = normalize(frame * c2);
+  vec3 p3 = normalize(frame * c3);
+  float s = ltc_edge_integral(p0, p1) +
+            ltc_edge_integral(p1, p2) +
+            ltc_edge_integral(p2, p3) +
+            ltc_edge_integral(p3, p0);
+  return max(s, 0.0) / 6.28318530;  // form factor → irradiance
+}
+
 vec3 sample_env(vec3 dir) {
   // Warmer / less-saturated env palette so polished metallic
   // spheres reflecting the sky preserve their base F0 chroma
@@ -285,6 +313,37 @@ void main() {
     vec3 lp = cd_lights.slots[li].pos_range.xyz;
     float rng = cd_lights.slots[li].pos_range.w;
     if (rng <= 0.0) continue;
+    int ltp = int(cd_lights.slots[li].dir_type.w);
+
+    // R6 phase 228 — Area light path (type 3) via LTC analytic
+    // polygon irradiance (Heitz 2016). Uses the same LightSlot
+    // format the prim shader does: dir_type.xyz = rect normal,
+    // extras.x = half_width, extras.y = half_height.
+    if (ltp == 3) {
+      vec3 N_rect = normalize(cd_lights.slots[li].dir_type.xyz);
+      float hw = cd_lights.slots[li].extras.x;
+      float hh = cd_lights.slots[li].extras.y;
+      if (hw <= 0.001 || hh <= 0.001) continue;
+      // Build rect tangent basis. Pick a stable up reference.
+      vec3 up_ref = abs(N_rect.y) > 0.95 ? vec3(1.0, 0.0, 0.0)
+                                          : vec3(0.0, 1.0, 0.0);
+      vec3 T_rect = normalize(cross(up_ref, N_rect));
+      vec3 B_rect = cross(N_rect, T_rect);
+      // Corners relative to the shading point.
+      vec3 c0 = lp + T_rect * (-hw) + B_rect * (-hh) - v_world_pos;
+      vec3 c1 = lp + T_rect * ( hw) + B_rect * (-hh) - v_world_pos;
+      vec3 c2 = lp + T_rect * ( hw) + B_rect * ( hh) - v_world_pos;
+      vec3 c3 = lp + T_rect * (-hw) + B_rect * ( hh) - v_world_pos;
+      float ff = ltc_polygon_irradiance(N, c0, c1, c2, c3);
+      vec3 area_col = cd_lights.slots[li].color_int.xyz *
+                      cd_lights.slots[li].color_int.w;
+      // Diffuse from area light — physically scales by form factor.
+      // Specular contribution awaits the full LTC inverse-matrix LUT
+      // (header-only fit). For now diffuse-only matches prim shader.
+      direct += albedo * area_col * ff * (1.0 - metallic);
+      continue;
+    }
+
     vec3 to_p = lp - v_world_pos;
     float d  = length(to_p);
     if (d < 1e-4) continue;
@@ -293,7 +352,6 @@ void main() {
     float ratio = d / rng;
     float w_ = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
     float atten = (w_ * w_) / (d * d + 0.01);
-    int ltp = int(cd_lights.slots[li].dir_type.w);
     float cone = 1.0;
     if (ltp == 2) {  // Spot
       vec3 axis = normalize(cd_lights.slots[li].dir_type.xyz);
