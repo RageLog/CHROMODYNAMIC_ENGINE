@@ -13,15 +13,19 @@
 namespace
 {
 
-// A body that does measurable but small work. Volatile prevents the
-// compiler from constant-folding the loop down to nothing under -O3.
+// A body that does measurable work. The compiler used to constant-fold
+// the 32-iteration `i * i` loop into a single store in release builds,
+// which dropped the bench-resolution stats to 0. Reading from the
+// volatile sink before the multiplication forces the compiler to
+// materialise a live data dependency and re-execute the loop every
+// invocation.
 volatile std::uint64_t g_sink = 0;
 
 void cheap_body()
 {
-    std::uint64_t acc = 0;
-    for (std::uint64_t i = 0; i < 32; ++i)
-        acc += i * i;
+    std::uint64_t acc = g_sink;
+    for (std::uint64_t i = 0; i < 256; ++i)
+        acc = acc * 6364136223846793005ull + (i | 1ull);  // LCG step
     g_sink = acc;
 }
 
