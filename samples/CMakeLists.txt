@@ -56,6 +56,9 @@ add_subdirectory(hello_decals)
 add_subdirectory(hello_ddgi)
 add_subdirectory(hello_restir)
 add_subdirectory(hello_mesh_shader)
+add_subdirectory(hello_nrc)
+add_subdirectory(hello_virtual_geometry)
+add_subdirectory(hello_virtual_textures)
 
 # hello_d3d12_boot exercises the Phase 12.B D3D12 backend boot path.
 # Windows-only because cd::rhi_d3d12 only links on Windows; on other
