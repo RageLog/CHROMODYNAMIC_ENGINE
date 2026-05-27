@@ -342,6 +342,72 @@ struct AccessorView
         scene.skins.push_back(std::move(sk));
     }
 
+    // ---- Animations (SK1, phase 226) ---------------------------------------
+    // glTF 2.0 §3.7.4: each animation has samplers (input=time, output=values)
+    // + channels (target node + property path = TRS / morph). We decode every
+    // sampler eagerly so the runtime never re-touches tinygltf for sampling.
+    scene.animations.reserve(model.animations.size());
+    for (const auto& src : model.animations)
+    {
+        GltfAnimation anim;
+        anim.name = src.name;
+        anim.samplers.reserve(src.samplers.size());
+        for (const auto& s : src.samplers)
+        {
+            GltfAnimSampler smp;
+            // Interpolation mode — default LINEAR per spec.
+            if (s.interpolation == "STEP")
+                smp.interpolation = GltfInterpolation::kStep;
+            else if (s.interpolation == "CUBICSPLINE")
+                smp.interpolation = GltfInterpolation::kCubicSpline;
+            else
+                smp.interpolation = GltfInterpolation::kLinear;
+
+            // Input accessor — N keyframe times (FLOAT scalar).
+            const AccessorView tv = access(model, s.input);
+            smp.times.resize(tv.count);
+            for (std::size_t i = 0; i < tv.count; ++i)
+            {
+                const auto* p = reinterpret_cast<const float*>(tv.data + i * tv.stride);
+                smp.times[i] = *p;
+            }
+            // Output accessor — N * stride floats. tinygltf's GetNumComponentsInType
+            // gives 3 (VEC3) or 4 (VEC4); for CUBICSPLINE the keyframe expands to
+            // 3 packed entries — we keep the buffer flat and let the bridge layer
+            // address it with stride knowledge.
+            const AccessorView vv = access(model, s.output);
+            const std::size_t comp = static_cast<std::size_t>(
+                tinygltf::GetNumComponentsInType(static_cast<std::uint32_t>(vv.type)));
+            smp.values.resize(vv.count * comp);
+            for (std::size_t i = 0; i < vv.count; ++i)
+            {
+                const auto* p = reinterpret_cast<const float*>(vv.data + i * vv.stride);
+                for (std::size_t c = 0; c < comp; ++c)
+                    smp.values[i * comp + c] = p[c];
+            }
+            if (!smp.times.empty())
+                anim.duration = std::max(anim.duration, smp.times.back());
+            anim.samplers.push_back(std::move(smp));
+        }
+        anim.channels.reserve(src.channels.size());
+        for (const auto& c : src.channels)
+        {
+            GltfAnimChannel ch;
+            ch.sampler_index = c.sampler;
+            ch.target_node = c.target_node;
+            if (c.target_path == "translation")
+                ch.path = GltfTargetPath::kTranslation;
+            else if (c.target_path == "rotation")
+                ch.path = GltfTargetPath::kRotation;
+            else if (c.target_path == "scale")
+                ch.path = GltfTargetPath::kScale;
+            else
+                ch.path = GltfTargetPath::kMorphWeights;
+            anim.channels.push_back(ch);
+        }
+        scene.animations.push_back(std::move(anim));
+    }
+
     // ---- Node hierarchy ----------------------------------------------------
     // glTF nodes either carry an explicit 4x4 matrix or T/R/S components.
     // We resolve to a single Mat4f per node and stash mesh refs + child IDs.

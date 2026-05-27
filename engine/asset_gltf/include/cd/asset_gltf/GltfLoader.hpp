@@ -6,11 +6,13 @@
 // (`GltfScene`) that the engine's render tier can hand to cd::rhi without
 // further parsing.
 //
-// Scope (v1):
+// Scope (v1, extended in SK1/SK2 phase 226):
 //   * Static meshes — POSITION (req) + NORMAL + TEXCOORD_0
 //   * Indexed primitives (uint16 / uint32)
 //   * Base-color factor + base-color texture per material (no PBR yet)
-//   * No skinning, no morph targets, no animations, no cameras
+//   * Skinning (joints/weights VB + GltfSkin) added in earlier phase
+//   * Animations (channels + samplers + per-node TRS curves) — SK1/SK2
+//   * No morph targets, no cameras
 //
 // Why a separate library from `cd::asset`:
 //   `cd::asset` is INTERFACE-only and stays dependency-free so foundation/
@@ -154,12 +156,65 @@ struct GltfInstance
     cd::math::Mat4f world_matrix { cd::math::Mat4f::identity() };
 };
 
+// ---- Animation (SK1, phase 226) ---------------------------------------------
+
+/// glTF interpolation modes. Per the spec each sampler picks one; the
+/// channel inherits it implicitly via its sampler.
+enum class GltfInterpolation : std::uint8_t
+{
+    kLinear      = 0,  ///< default — linear blend for TRS, slerp for rotation
+    kStep        = 1,  ///< hold-then-snap; "stair-step" pose change
+    kCubicSpline = 2,  ///< 3x output per keyframe (inTangent, value, outTangent)
+};
+
+/// glTF channel target paths. "weights" is morph-target weights, which the
+/// engine doesn't yet support (kMorphWeights is parsed but channels with
+/// this path are skipped at the bridge layer).
+enum class GltfTargetPath : std::uint8_t
+{
+    kTranslation  = 0,
+    kRotation     = 1,
+    kScale        = 2,
+    kMorphWeights = 3,
+};
+
+/// One sampler: a time axis (input) + per-time output values. Output stride
+/// depends on target path: translation/scale = 3 floats, rotation = 4, morph
+/// weights = N (number of morph targets). For kCubicSpline the output buffer
+/// holds three packed entries per keyframe — engine flattens them out at
+/// bridge time (SK3).
+struct GltfAnimSampler
+{
+    std::vector<float> times;          ///< Length = keyframe count.
+    std::vector<float> values;         ///< Length = times.size() * stride * (kCubicSpline ? 3 : 1).
+    GltfInterpolation interpolation { GltfInterpolation::kLinear };
+};
+
+/// One channel: connects a sampler to a target node + property path.
+struct GltfAnimChannel
+{
+    int sampler_index { -1 };          ///< Index into GltfAnimation::samplers.
+    int target_node { -1 };            ///< Index into GltfScene::nodes.
+    GltfTargetPath path { GltfTargetPath::kTranslation };
+};
+
+/// One animation = collection of channels driven by a shared sampler pool.
+/// `duration` is the max time observed across every sampler (clip length).
+struct GltfAnimation
+{
+    std::string name;
+    std::vector<GltfAnimSampler> samplers;
+    std::vector<GltfAnimChannel> channels;
+    float duration { 0.0F };
+};
+
 struct GltfScene
 {
     std::vector<GltfMesh> meshes;
     std::vector<GltfMaterial> materials;
     std::vector<GltfTexture> textures;
     std::vector<GltfSkin> skins;  ///< Optional skinning data; empty for non-skinned scenes.
+    std::vector<GltfAnimation> animations;  ///< SK1: TRS curves per channel; empty when the asset has none.
 
     /// Full node hierarchy. `roots` indexes into this list; each non-root
     /// node's `parent` field also points back here.
