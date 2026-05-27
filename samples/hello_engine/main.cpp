@@ -6484,9 +6484,21 @@ int main()
         cp.atmo[2] = fx_vignette_strength;
         cp.atmo[3] = fx_film_grain;
         cp.lens[0] = fx_chromab_strength;
-        cp.lens[1] = 0.0F;
-        cp.lens[2] = 0.0F;
-        cp.lens[3] = 0.0F;
+        // R5 volumetric fog single-scatter — sun direction packed here.
+        // Composite uses (view · -sun) with Henyey-Greenstein phase to
+        // colour the fog along the sun ray. Use first enabled directional
+        // light, else neutral (0,-1,0) so no in-scatter shows up.
+        cd::math::Vec3f sun_dir_world { 0.0F, -1.0F, 0.0F };
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+            sun_dir_world = lrow.light.direction;
+            break;
+        }
+        cp.lens[1] = sun_dir_world.x;
+        cp.lens[2] = sun_dir_world.y;
+        cp.lens[3] = sun_dir_world.z;
         // G-Buffer-aware ops: pack camera basis so the composite FS can
         // reconstruct world-space positions per pixel for SSR + normal-
         // aware AO. Match the same basis the sky shader uses (forward

@@ -73,7 +73,7 @@ struct Push
     float shafts[4];    ///< x=sun_uv.x, y=sun_uv.y, z=strength (<0 → off), w=decay
     float sun_col[4];   ///< xyz=linear sun colour, w=reserved
     float atmo[4];      ///< x=fog_density(1/m), y=aerial_strength, z=vignette, w=film_grain
-    float lens[4];      ///< x=chromatic_aberration_px (radial growth), y/z/w=reserved
+    float lens[4];      ///< x=chromatic_aberration_px, y/z/w = sun_dir.xyz (world-space, toward scene)
     float cam_right[4]; ///< xyz=world-space right basis, w=half_w = tan(fov/2)*aspect
     float cam_up[4];    ///< xyz=world-space up basis,    w=half_h = tan(fov/2)
     float cam_fwd[4];   ///< xyz=world-space forward,     w=taa_alpha [0, 0.97]
@@ -271,14 +271,33 @@ void main() {
   float ao = depth_ao(v_uv, center_d);
   c *= mix(1.0, ao, clamp(pc.ao.x, 0.0, 1.0));
 
-  // Aerial perspective + uniform exp fog
+  // Aerial perspective + uniform exp fog + volumetric sun in-scatter.
+  // pc.lens.yzw packs the world-space sun direction (toward scene);
+  // when the view ray faces back along it we get a bright forward-
+  // scattering glow through fog. Cheap single-scatter Henyey-Greenstein
+  // phase, no froxel — composite-inline so no extra render target.
   if (center_d < 0.999 && (pc.atmo.x > 0.001 || pc.atmo.y > 0.001)) {
     float lz = linearize_z(center_d);
     vec3 horizon_base = vec3(0.78, 0.86, 0.96);
     vec3 horizon_lit  = mix(horizon_base, pc.sun_col.rgb, 0.35);
+
+    // Single-scatter sun in-scatter colour. Henyey-Greenstein phase
+    // (g=0.6 — forward-scattering haze) modulates by view·-sun.
+    vec3 wp_end = world_pos_from_uv(v_uv, center_d);
+    vec3 view_dir = normalize(wp_end - pc.cam_pos.xyz);
+    vec3 sun_dir_world = pc.lens.yzw;
+    float cos_th = max(0.0, dot(view_dir, -normalize(sun_dir_world)));
+    const float g  = 0.6;
+    const float g2 = g * g;
+    float phase = (1.0 - g2) / (4.0 * 3.14159265 *
+                  pow(1.0 + g2 - 2.0 * g * cos_th, 1.5));
+    vec3 fog_colour = mix(horizon_lit,
+                          pc.sun_col.rgb * (phase * 6.0 + 0.5),
+                          clamp(cos_th * 0.8, 0.0, 1.0));
+
     float fog_t = 1.0 - exp(-lz * max(pc.atmo.x, 0.0));
     float aer_t = 1.0 - exp(-lz * 0.08);
-    c = mix(c, horizon_lit, clamp(fog_t, 0.0, 1.0));
+    c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
     c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
   }
 
