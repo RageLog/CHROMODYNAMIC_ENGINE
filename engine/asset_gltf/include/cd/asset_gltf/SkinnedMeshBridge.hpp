@@ -221,4 +221,250 @@ to_skeleton(const GltfScene& scene, std::size_t skin_index)
     return cd::anim::Skeleton { std::move(sorted_joints) };
 }
 
+// =============================================================================
+// SK3 (phase 227) — animation bridge.
+//
+// `to_skeleton` re-orders joints into topological depth-sorted order, which
+// means cd::anim::Skeleton joint indices DO NOT match GltfSkin.joints[]
+// indices. The bridge below exposes the remap so animation channels (which
+// target glTF *node* indices) can be resolved to the correct skeleton joint
+// index at sample time.
+// =============================================================================
+
+/// Skeleton + glTF-node->joint mapping. The mapping is exactly the inverse of
+/// the remap `to_skeleton` builds internally; `bundle.node_to_joint[gltf_node]`
+/// returns the skeleton joint index that drives that node.
+struct SkeletonBundle
+{
+    cd::anim::Skeleton skeleton;
+    std::unordered_map<int, std::int32_t> node_to_joint;  ///< glTF node index -> skeleton joint index
+};
+
+/// Sister of `to_skeleton` that also returns the glTF-node-index ->
+/// skeleton-joint-index map. Use this when you need to drive the skeleton
+/// from animation channels (each channel targets a glTF node, not a joint).
+[[nodiscard]] inline SkeletonBundle
+to_skeleton_bundle(const GltfScene& scene, std::size_t skin_index)
+{
+    SkeletonBundle out;
+    if (skin_index >= scene.skins.size()) return out;
+    const auto& gskin = scene.skins[skin_index];
+
+    std::unordered_map<int, std::int32_t> node_to_joint_orig;
+    node_to_joint_orig.reserve(gskin.joints.size());
+    for (std::size_t i = 0; i < gskin.joints.size(); ++i)
+        node_to_joint_orig[gskin.joints[i]] = static_cast<std::int32_t>(i);
+
+    auto parent_in_skin = [&](int node_idx) -> std::int32_t
+    {
+        int cursor = node_idx;
+        while (cursor >= 0 && cursor < static_cast<int>(scene.nodes.size()))
+        {
+            const int parent = scene.nodes[static_cast<std::size_t>(cursor)].parent;
+            if (parent < 0) return -1;
+            auto it = node_to_joint_orig.find(parent);
+            if (it != node_to_joint_orig.end()) return it->second;
+            cursor = parent;
+        }
+        return -1;
+    };
+
+    std::vector<cd::anim::Joint> joints;
+    joints.reserve(gskin.joints.size());
+    for (std::size_t i = 0; i < gskin.joints.size(); ++i)
+    {
+        const int node_idx = gskin.joints[i];
+        cd::anim::Joint j;
+        j.name = (node_idx >= 0 && node_idx < static_cast<int>(scene.nodes.size()))
+                     ? scene.nodes[static_cast<std::size_t>(node_idx)].name
+                     : std::string {};
+        j.parent = parent_in_skin(node_idx);
+        if (node_idx >= 0 && node_idx < static_cast<int>(scene.nodes.size()))
+            j.local_bind = decompose_local(scene.nodes[static_cast<std::size_t>(node_idx)].local_matrix);
+        if (i < gskin.inverse_bind_matrices.size())
+            j.inverse_bind_matrix = gskin.inverse_bind_matrices[i];
+        joints.push_back(std::move(j));
+    }
+
+    std::vector<std::int32_t> depths(joints.size(), 0);
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (std::size_t i = 0; i < joints.size(); ++i)
+        {
+            if (joints[i].parent < 0) continue;
+            const std::int32_t want = depths[static_cast<std::size_t>(joints[i].parent)] + 1;
+            if (depths[i] < want) { depths[i] = want; changed = true; }
+        }
+    }
+    std::vector<std::size_t> order(joints.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+        [&](std::size_t a, std::size_t b) { return depths[a] < depths[b]; });
+
+    std::vector<std::int32_t> remap(joints.size(), -1);
+    for (std::size_t new_i = 0; new_i < order.size(); ++new_i)
+        remap[order[new_i]] = static_cast<std::int32_t>(new_i);
+    std::vector<cd::anim::Joint> sorted_joints;
+    sorted_joints.reserve(joints.size());
+    for (auto old_i : order)
+    {
+        auto j = joints[old_i];
+        if (j.parent >= 0) j.parent = remap[static_cast<std::size_t>(j.parent)];
+        sorted_joints.push_back(std::move(j));
+    }
+
+    out.skeleton = cd::anim::Skeleton { std::move(sorted_joints) };
+    // Final glTF-node -> skeleton-joint mapping = compose original joint
+    // index with the topological-sort remap.
+    out.node_to_joint.reserve(node_to_joint_orig.size());
+    for (const auto& [node_idx, orig_joint] : node_to_joint_orig)
+    {
+        out.node_to_joint[node_idx] = remap[static_cast<std::size_t>(orig_joint)];
+    }
+    return out;
+}
+
+// =============================================================================
+// Per-channel sampling helpers (SK3 phase 227).
+// Inline because each one is a handful of lines and the bridge consumer is a
+// single end-to-end path (hello_engine).
+// =============================================================================
+
+namespace detail
+{
+
+[[nodiscard]] inline std::size_t find_keyframe_index(
+    const std::vector<float>& times, float t) noexcept
+{
+    // Linear scan is fine for short clips (<= a few hundred frames). For
+    // longer clips a binary search would help; CesiumMan has <50 frames so
+    // we stay simple.
+    if (times.empty()) return 0;
+    if (t <= times.front()) return 0;
+    if (t >= times.back())  return times.size() - 1;
+    for (std::size_t i = 1; i < times.size(); ++i)
+        if (t < times[i]) return i - 1;
+    return times.size() - 2;
+}
+
+[[nodiscard]] inline float interp_alpha(
+    const std::vector<float>& times, float t, std::size_t i0) noexcept
+{
+    if (i0 + 1 >= times.size()) return 0.0F;
+    const float t0 = times[i0];
+    const float t1 = times[i0 + 1];
+    const float dt = t1 - t0;
+    if (dt < 1e-6F) return 0.0F;
+    return std::clamp((t - t0) / dt, 0.0F, 1.0F);
+}
+
+[[nodiscard]] inline cd::math::Vec3f read_vec3(
+    const std::vector<float>& values, std::size_t key_idx) noexcept
+{
+    const std::size_t base = key_idx * 3;
+    return { values[base + 0], values[base + 1], values[base + 2] };
+}
+
+[[nodiscard]] inline cd::math::Quatf read_quat(
+    const std::vector<float>& values, std::size_t key_idx) noexcept
+{
+    const std::size_t base = key_idx * 4;
+    return { values[base + 0], values[base + 1], values[base + 2], values[base + 3] };
+}
+
+[[nodiscard]] inline cd::math::Quatf slerp_quat(
+    cd::math::Quatf a, cd::math::Quatf b, float t) noexcept
+{
+    // Standard 4D dot + sign-flip for short-arc slerp.
+    float d = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+    if (d < 0.0F) { b = { -b.x, -b.y, -b.z, -b.w }; d = -d; }
+    if (d > 0.9995F)
+    {
+        // Linear interpolation when nearly aligned, then normalise.
+        cd::math::Quatf r { a.x + (b.x - a.x) * t,
+                           a.y + (b.y - a.y) * t,
+                           a.z + (b.z - a.z) * t,
+                           a.w + (b.w - a.w) * t };
+        const float n = std::sqrt(r.x*r.x + r.y*r.y + r.z*r.z + r.w*r.w);
+        if (n > 1e-6F) { r.x /= n; r.y /= n; r.z /= n; r.w /= n; }
+        return r;
+    }
+    const float theta = std::acos(std::clamp(d, -1.0F, 1.0F));
+    const float st    = std::sin(theta);
+    const float wa    = std::sin((1.0F - t) * theta) / st;
+    const float wb    = std::sin(t * theta) / st;
+    return { wa * a.x + wb * b.x,
+             wa * a.y + wb * b.y,
+             wa * a.z + wb * b.z,
+             wa * a.w + wb * b.w };
+}
+
+}  // namespace detail
+
+/// Sample one glTF animation at time `t` (seconds, caller wraps for looping)
+/// and write the resulting per-joint Transforms into `pose`. Channels whose
+/// target node is outside the skin are silently skipped. Channels with the
+/// kMorphWeights path are skipped (morph targets not yet supported).
+inline void sample_gltf_animation(
+    const GltfAnimation& anim,
+    const std::unordered_map<int, std::int32_t>& node_to_joint,
+    float t,
+    cd::anim::Pose& pose)
+{
+    for (const auto& ch : anim.channels)
+    {
+        if (ch.path == GltfTargetPath::kMorphWeights) continue;
+        if (ch.sampler_index < 0 ||
+            ch.sampler_index >= static_cast<int>(anim.samplers.size())) continue;
+        auto it = node_to_joint.find(ch.target_node);
+        if (it == node_to_joint.end()) continue;
+        const std::int32_t joint = it->second;
+        if (joint < 0 ||
+            joint >= static_cast<std::int32_t>(pose.joint_locals.size())) continue;
+
+        const auto& s = anim.samplers[static_cast<std::size_t>(ch.sampler_index)];
+        if (s.times.empty()) continue;
+        const std::size_t i0 = detail::find_keyframe_index(s.times, t);
+        const float alpha = (s.interpolation == GltfInterpolation::kStep)
+                                ? 0.0F  // STEP holds the lower key
+                                : detail::interp_alpha(s.times, t, i0);
+        // CUBICSPLINE keyframes are 3 packed entries per time
+        // (inTangent, value, outTangent). We currently treat them as LINEAR
+        // by reading just the middle (value) entry — visually close, avoids
+        // tangent maths. Promote later if user assets need it.
+        const bool cubic = (s.interpolation == GltfInterpolation::kCubicSpline);
+        auto value_index = [&](std::size_t key) -> std::size_t {
+            return cubic ? (key * 3 + 1) : key;
+        };
+
+        auto& target = pose.joint_locals[static_cast<std::size_t>(joint)];
+        const std::size_t i1 = std::min(i0 + 1, s.times.size() - 1);
+
+        if (ch.path == GltfTargetPath::kTranslation)
+        {
+            const auto a = detail::read_vec3(s.values, value_index(i0));
+            const auto b = detail::read_vec3(s.values, value_index(i1));
+            target.position = { a.x + (b.x - a.x) * alpha,
+                                a.y + (b.y - a.y) * alpha,
+                                a.z + (b.z - a.z) * alpha };
+        }
+        else if (ch.path == GltfTargetPath::kRotation)
+        {
+            const auto a = detail::read_quat(s.values, value_index(i0));
+            const auto b = detail::read_quat(s.values, value_index(i1));
+            target.rotation = detail::slerp_quat(a, b, alpha);
+        }
+        else if (ch.path == GltfTargetPath::kScale)
+        {
+            const auto a = detail::read_vec3(s.values, value_index(i0));
+            const auto b = detail::read_vec3(s.values, value_index(i1));
+            target.scale = { a.x + (b.x - a.x) * alpha,
+                             a.y + (b.y - a.y) * alpha,
+                             a.z + (b.z - a.z) * alpha };
+        }
+    }
+}
+
 }  // namespace cd::asset_gltf
