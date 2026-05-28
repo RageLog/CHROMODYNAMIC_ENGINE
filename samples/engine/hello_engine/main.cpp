@@ -2794,14 +2794,15 @@ int main()
         // bias, the character casts a visible floor shadow without
         // the user having to rotate the gizmo at all. Position raised
         // slightly to clear the camera framing.
-        // W8-AG: lumens reverted 20000 -> 2500 (long-stable baseline).
-        // The 20000 lm + 1.5 multiplier combo saturated close
-        // geometry without lifting the far floor pixel, so reverting
-        // to the conservative pair {2500 lm, 0.20 multiplier} —
-        // visually OK, predictable, and the user can crank lumens via
-        // the intensity slider when they want more output.
-        cd::light::rect_area({ 0.0F, 5.5F, -2.0F }, { 0, -1, 0 }, { 1, 0, 0 },
-                             3.0F, 3.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
+        // W8-AI: restore the OLDER W5-B-era cyan rect placement —
+        // upright panel at front of the scene facing the sphere
+        // column (z=2, normal pointing -Z). User explicitly said the
+        // dual cyan+magenta tone where each side of the sphere column
+        // picks up a different colour was the "calisiyor" reference
+        // they remembered. Ceiling default (W8-Z) was the wrong
+        // direction for their mental model.
+        cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
+                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
         true, 8000.0F });
     // W5-B: very bright magenta neon strip behind the sphere rig so
     // metallic surfaces pick up a deeply saturated, HIGHLY DYNAMIC
