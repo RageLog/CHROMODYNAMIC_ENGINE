@@ -152,9 +152,20 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 
 1. ~~X2 vcpkg manifest~~ -> DONE (W8 phase282). ~~X1 Job system Phase 1~~ -> DONE (W8 phase283, ADR-20260528). Iki BLOCKER kapatildi.
 2. N4 + N3: W7/W8 wave kapat: MANIFEST.csv ilk yukleme + W7/W8 ADR + extract. Demir Kural pipeline ilk tetikleme.
-3. N1 + X5: hello_engine 7793 -> ~3000 satir extract + shader on-disk hot reload. Sample showcase guvenliginde tutmak icin (her wave +500 satir buyuyor).
+3. ~~N1 (extract pass)~~ -> DONE (W8 phase289-295, Marathon Run 7 sub-N1A..N1G). hello_engine main.cpp 7800 -> 7611 satir (-189; embedded GLSL ~3000 satir + PrimPush/light UBO + sky-with-sun + planar shadow + TLAS instance + PBR demo grid + 4 scene-bootstrap helper hepsi ilgili kutuphane/header dosyasina cekildi). main() body 7147 -> 7045 (-102). Hedef main()<300 tek sub-phase ile ulasilabilir degil (kalan render-loop + per-frame UI heavy ref capture); Marathon Run 8 N2A..N2x ile devam edilir. X5 (shader on-disk hot reload) hala acik; N1 extract on-disk relocation degil sadece dosya/lib disiplini.
 4. X4 + X6: D3D12 paritesi + Vulkan RT pipeline. Cross-API + gercek RT iddialarinin asgari odemesi.
 5. ~~X1 Phase 2 (X1B-X1E)~~ -> DONE (W8 phase284-287, Marathon Run 7). hello_engine TLAS instance + boot asset bake + ECS PrimPush prep + CSM/planar shadow caster prep all use cd::concurrency::parallel_for or JobGraph<WSL pool>. RHI secondary cmd buffer (true parallel cmd record) deferred to X1F follow-up (>500 line RHI rev). Detay: ADR-20260528 Sonuclar bolumu + this section follow-ups.
+
+### Marathon Run 7 N1 close-out (W8 phase289-295)
+
+- N1A (phase289): kPrimVS/kPrimFS/kShadowVS/kShadowFS GLSL stringleri PrimShader.hpp + PrimShader_kPrimFS.inl + PrimShader_kShadow.inl - main.cpp ~3000 satir azaldi.
+- N1B (phase290): PrimPush + LightSlotGpu + LightUboGpu + pack_light_slot HelloLighting.hpp icine alindi.
+- N1C (phase291): Sun-disk sky bake lambda cd::material::sky_with_sun_cpu altina alindi.
+- N1D (phase292): Planar shadow projection matrisi cd::render::PlanarShadow.hpp icine alindi.
+- N1E (phase293): InstanceMatGpu / kMaxInstMats / make_accel_instance / fill_inst_mat HelloRayQuery.hpp icine alindi; iki TLAS rebuild call-site helper kullaniyor.
+- N1F (phase294): 4x4 PBR demo-grid spawn data + math HelloPbrGrid.hpp icine alindi (build_pbr_demo_grid()).
+- N1G (phase295): setup_world_container / spawn_primitive_seeds / spawn_gltf_or_earth_entity / spawn_pbr_grid_entities anon namespace helper olarak ayrildi - main() -102 satir, boot region 4 named call site.
+- N1 follow-up (Marathon Run 8 N2 zinciri): render loop main pass + composite blit + ImGui panel handlers ayri named fonksiyonlara veya cd::sample_framework yeni libine ayristirma. main() body 7045 -> hedef <300. Sized: 1 marathon run.
 
 ### Yeni follow-up itemler (W8 phase282/283 sonrasi)
 
