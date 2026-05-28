@@ -5907,6 +5907,31 @@ int main()
                             ? "DOWN (casts shadow)"
                             : "UP (no shadow)");
                 }
+                // W8-R: one-click "flip normal" for area lights so the
+                // user doesn't have to fight the gizmo when the rect's
+                // emissive face points the wrong way. Inverts both the
+                // direction and the area_tangent so the basis stays
+                // consistent (tangent stays perpendicular to direction
+                // after the flip).
+                if (row.light.type == cd::light::LightType::kRectArea ||
+                    row.light.type == cd::light::LightType::kDiskArea)
+                {
+                    if (ImGui::Button("Flip normal"))
+                    {
+                        row.light.direction.x = -row.light.direction.x;
+                        row.light.direction.y = -row.light.direction.y;
+                        row.light.direction.z = -row.light.direction.z;
+                        // Tangent isn't strictly required to flip (any
+                        // perpendicular vector still spans the rect plane),
+                        // but matching the direction flip keeps the rect's
+                        // visual "up" stable across the flip.
+                        row.light.area_tangent.x = -row.light.area_tangent.x;
+                        row.light.area_tangent.y = -row.light.area_tangent.y;
+                        row.light.area_tangent.z = -row.light.area_tangent.z;
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(emit side = +normal)");
+                }
             }
             ImGui::PopID();
             if (i + 1 < lights.size()) ImGui::Separator();
@@ -6221,6 +6246,28 @@ int main()
                             dl_m->AddLine(p2, p3, use_col, thickness);
                             dl_m->AddLine(p3, p0, use_col, thickness);
                             dl_m->AddText(p0, col, "AREA");
+                            // W8-R: explicit normal arrow so the user can see
+                            // which side is emissive (one-sided rect lights
+                            // only illuminate +N hemisphere). Arrow shoots
+                            // from the rect centre along +ln by 1/3 of the
+                            // longer side length, big enough to be visible
+                            // but not overwhelming.
+                            const float arrow_len = std::max(L.area_width,
+                                                              L.area_height) * 0.6F + 0.3F;
+                            const cd::math::Vec3f arrow_tip {
+                                L.position.x + ln.x * arrow_len,
+                                L.position.y + ln.y * arrow_len,
+                                L.position.z + ln.z * arrow_len };
+                            const auto p_centre = project(L.position);
+                            const auto p_tip    = project(arrow_tip);
+                            if (p_centre.x >= 0.0F && p_tip.x >= 0.0F)
+                            {
+                                dl_m->AddLine(p_centre, p_tip, use_col,
+                                              sel ? 3.0F : 2.0F);
+                                // Tiny circle at tip = arrow head substitute.
+                                dl_m->AddCircleFilled(p_tip, sel ? 5.0F : 3.5F,
+                                                       use_col);
+                            }
                         }
                         break;
                     }
