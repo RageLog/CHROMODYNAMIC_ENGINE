@@ -399,6 +399,16 @@ layout(set = 0, binding = 8) uniform sampler2D   cd_normal_tex;
 // R2 metallic-roughness-AO map. glTF 2.0 packing:
 //   R unused, G roughness, B metallic, A AO
 layout(set = 0, binding = 9) uniform sampler2D   cd_mr_tex;
+// W8-BC per-frame TLAS-instance material table. Index matches the
+// position used by push_inst() on the host, so
+// rayQueryGetIntersectionInstanceIdEXT(rq,true) yields the right slot.
+// albedo.rgb = entity tint (Floor entity gets neutral 0.5 grey);
+// emissive.rgb reserved for self-lit reflections (0 today). Used by
+// the W8-BC colored reflection blend in the kPrimFS PBR branch.
+struct InstanceMat { vec4 albedo; vec4 emissive; };
+layout(set = 0, binding = 10) readonly buffer InstanceMats {
+  InstanceMat data[];
+} cd_instance_mats;
 const float kIblMaxMipLod = 5.0;
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
@@ -489,6 +499,32 @@ float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   return (rayQueryGetIntersectionTypeEXT(rq, true) ==
           gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
+}
+
+// W8-BC closest-hit reflection probe (Option B colored). Like
+// reflection_hit() but ALSO returns the TLAS instance index on hit
+// via out_inst so we can sample cd_instance_mats.data[inst].albedo
+// for a colored mirror. out_inst is -1 on miss (sky). The pseudo-
+// normal used by the sun-NoL shading at the hit point is just -dir
+// (the surface-outward direction for a convex hit), which is good
+// enough for v1 (spheres ~exact, cubes/CesiumMan approximate).
+float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
+                        out int out_inst) {
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(
+      rq, cd_tlas,
+      gl_RayFlagsOpaqueEXT,
+      0xFFu,
+      origin + N * 0.05,
+      0.08, dir, tmax);
+  while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
+  if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+      gl_RayQueryCommittedIntersectionNoneEXT) {
+    out_inst = -1;
+    return 0.0;
+  }
+  out_inst = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+  return 1.0;
 }
 
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
@@ -771,28 +807,34 @@ void main() {
     // surface through the direct lit_pbr accumulator above.
     float ibl_gate_p = clamp(pc.sun_dir.w, 0.0, 1.0);
 
-    // W8-BA: RT scene reflection probe. Cast a ray along the spec
-    // reflection direction Ripbr. On miss (sky), keep the full IBL
-    // spec sample. On hit (another scene object blocks the sky),
-    // attenuate the sky contribution so chrome darkens where the
-    // character / cube / cylinder / etc. occludes the sky. This is
-    // the cheap Option A proxy -- it produces correct GEOMETRIC
-    // occlusion (silhouettes of nearby objects in the chrome) but
-    // not yet colored reflections. Option B (per-instance albedo
-    // SSBO + colored hit shading) is queued for W8-BB once the
-    // ray path is validated visually.
-    //
-    // Roughness modulation: rough surfaces blur reflection toward
-    // the unoccluded IBL, so we lerp the occlusion factor toward
-    // 1.0 as roughness rises. Pure mirror (rough=0.04) gets the
-    // full occlusion; rough=1.0 gets none.
-    float rough_blur  = clamp(pbr_rough * pbr_rough, 0.0, 1.0);
-    float scene_hit   = reflection_hit(v_world_pos, Npbr, Ripbr, 80.0);
-    float occl_sharp  = 1.0 - scene_hit;     // 1=sky, 0=blocked
-    float occl_blend  = mix(occl_sharp, 1.0, rough_blur);
-    vec3  ibl_spec_occ = ibl_spec_p * occl_blend;
+    // W8-BC: Option B colored RT reflections. Cast a closest-hit ray
+    // along Ripbr; on miss (sky), keep the full IBL spec sample, on
+    // hit, sample the hit instance's albedo from the per-frame
+    // SSBO and shade it with a sun-NoL using -dir as a pseudo-normal
+    // (convex-hit approximation). The reflected colour is then
+    // weighted by the same BRDF term the IBL spec uses, and blended
+    // with the sky spec by sqrt(roughness): pure mirror (~0.2 weight
+    // toward IBL) yields almost full coloured reflection; matte
+    // (rough=1.0) keeps the IBL sky sample. NoL_hit is multiplied
+    // by pc.sun_dir.w so sun-off scenes leave only the 0.3 ambient
+    // floor, matching the W8-AZ env-spec gate philosophy.
+    int   hit_inst   = -1;
+    float scene_hit  = reflection_hit_id(v_world_pos, Npbr, Ripbr, 80.0, hit_inst);
+    vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y);
+    vec3  ibl_spec_blended = ibl_spec_p;
+    if (scene_hit > 0.5 && hit_inst >= 0) {
+      vec3 hit_alb   = cd_instance_mats.data[hit_inst].albedo.rgb;
+      // Pseudo-normal = surface-outward direction (-dir) on convex hits.
+      vec3 pseudo_N  = normalize(-Ripbr);
+      vec3 sun_L     = normalize(-pc.sun_dir.xyz);
+      float NoL_hit  = max(dot(pseudo_N, sun_L), 0.0) * pc.sun_dir.w;
+      vec3 refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * pc.sun_color.rgb;
+      // Roughness-weighted blend: mirror -> refl_color, matte -> sky.
+      float blend_t  = sqrt(clamp(pbr_rough, 0.0, 1.0));
+      ibl_spec_blended = mix(refl_color * brdf_term, ibl_spec_p, blend_t);
+    }
 
-    vec3  ibl_term_p = (ibl_spec_occ + ibl_kD * diff_e * pbr_albedo) * ibl_gate_p;
+    vec3  ibl_term_p = (ibl_spec_blended + ibl_kD * diff_e * pbr_albedo) * ibl_gate_p;
 
     out_color = vec4(lit_pbr + ibl_term_p, 1.0);
     return;
@@ -1020,11 +1062,21 @@ void main() {
   // W8-C: tied to pc.sun_color.w again. When sun is off, ambient = 0
   // so non-sun lights stay strictly local (spot only lights what's
   // inside its cone + RT shadow; nothing leaks as 'fill').
+  // W8-BD: ADD a sun-independent dielectric floor below the hemisphere
+  // (0.04 * albedo). User reported the CesiumMan character looked
+  // chrome-like in a tungsten-only (sun OFF) scene — the lit half was
+  // saturated warm yellow from the point light while the shadow half
+  // was pitch-black (hemi=0, IBL gate=0). The bright-on-black contrast
+  // reads as polished metal to the eye. A tiny constant albedo floor
+  // gives the shadow side a perceptible diffuse base so the surface
+  // looks dielectric (skin/cloth) instead of mirror-finish, without
+  // re-introducing the W8-A 'always bright' fill that ruined spot
+  // direction. 0.04 picked to stay well below the lit-side intensity.
   float up_t   = N.y * 0.5 + 0.5;
   vec3  sky_c  = vec3(0.55, 0.65, 0.85);
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
-  vec3  ambient = albedo * hemi;
+  vec3  ambient = albedo * (hemi + vec3(0.04));
 
   // R2: True IBL with MR map. Karis split-sum:
   //   IBL = kD * irradiance(N) * albedo + prefiltered(R, rough*mipMax)
@@ -1035,7 +1087,15 @@ void main() {
   if (pc.fx_params.y > 0.5) {
     vec4 mr_sample = texture(cd_mr_tex, v_uv);
     float roughness = clamp(mr_sample.g, 0.04, 1.0);
-    float metallic  = clamp(mr_sample.b, 0.0, 1.0);
+    // W8-BD: clamp the Lit-path metallic to <= 0.05. cd_mr_tex is the
+    // procedural Earth MR (binding 9 is never replaced per-entity), so
+    // CesiumMan currently samples Earth's metallic at its own UVs.
+    // Earth caps at 0.05 today, but a future glTF with a real MR
+    // texture would push F0 toward albedo and chrome the dielectric
+    // (skin/cloth) character — the very artefact W8-BD is fixing.
+    // Hard ceiling keeps the Lit-path strictly dielectric until the
+    // per-entity MR descriptor lands (v1.6+ texture array path).
+    float metallic  = clamp(mr_sample.b, 0.0, 0.05);
     float ao_factor = mr_sample.a;
     vec3 F0_ibl = mix(vec3(0.04), albedo, metallic);
     vec3 V_v    = normalize(pc.camera_pos.xyz - v_world_pos);
@@ -1803,7 +1863,7 @@ int main()
             "(pre-1.7 CSM-only ship).\n");
         return 9;
     }
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 10> kPrimDescBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 11> kPrimDescBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
                                               .type    = cd::rhi::DescriptorType::kUniformBuffer,
                                               .count   = 1,
@@ -1848,6 +1908,13 @@ int main()
         // R2: metallic-roughness-AO map (glTF 2.0 packing).
         cd::rhi::DescriptorSetLayoutBinding { .binding = 9,
                                               .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                              .count   = 1,
+                                              .stages  = cd::rhi::ShaderStage::kFragment },
+        // W8-BC per-frame TLAS instance materials SSBO. Index matches
+        // the push_inst order so the shader can look up the hit
+        // instance's albedo via rayQueryGetIntersectionInstanceIdEXT.
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 10,
+                                              .type    = cd::rhi::DescriptorType::kStorageBuffer,
                                               .count   = 1,
                                               .stages  = cd::rhi::ShaderStage::kFragment } };
     cd::material::MaterialDesc prim_md {};
@@ -1991,6 +2058,25 @@ int main()
     auto lights_ubo_r = device.create_buffer(lights_ubo_desc);
     if (!lights_ubo_r.has_value()) return 16;
     const auto lights_ubo = *lights_ubo_r;
+
+    // W8-BC per-frame TLAS-instance material table (SSBO, binding 10).
+    // 32 B per instance: vec4 albedo + vec4 emissive. 256-slot
+    // headroom comfortably covers the ECS entities (<40) + 25 PBR
+    // spheres + floor + future probes without ever needing a resize.
+    // Filled host-side in the same loop that pushes TLAS instances,
+    // so the GPU index from rayQueryGetIntersectionInstanceIdEXT
+    // lines up 1:1 with cd_instance_mats.data[i].
+    struct InstanceMatGpu { float albedo[4]; float emissive[4]; };
+    constexpr std::uint32_t kMaxInstMats    = 256;
+    constexpr std::uint32_t kInstMatBytes   = kMaxInstMats * sizeof(InstanceMatGpu);
+    cd::rhi::BufferDesc inst_mat_desc {};
+    inst_mat_desc.size   = kInstMatBytes;
+    inst_mat_desc.usage  = cd::rhi::BufferUsage::kStorage
+                         | cd::rhi::BufferUsage::kTransferDst;
+    inst_mat_desc.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto inst_mat_r = device.create_buffer(inst_mat_desc);
+    if (!inst_mat_r.has_value()) return 16;
+    const auto inst_mat_ssbo = *inst_mat_r;
 
     // ---- R1: IBL bake + GPU upload ----
     // CPU-side bake at startup: analytical-sky env cube -> diffuse
@@ -2141,7 +2227,7 @@ int main()
     if (!prim_inst_r.has_value()) return 14;
     auto& prim_inst = *prim_inst_r;
     {
-        std::array<cd::rhi::DescriptorWrite, 9> writes {
+        std::array<cd::rhi::DescriptorWrite, 10> writes {
             cd::rhi::DescriptorWrite { .binding = 0,
                                        .array_element = 0,
                                        .type = cd::rhi::DescriptorType::kUniformBuffer,
@@ -2193,7 +2279,17 @@ int main()
                                        .array_element = 0,
                                        .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                                        .view    = mr_tex.view,
-                                       .sampler = albedo_sampler } };
+                                       .sampler = albedo_sampler },
+            // W8-BC: per-frame TLAS-instance material SSBO. The buffer
+            // is then re-uploaded every frame inside the push_inst
+            // loop; this initial write just points the descriptor at
+            // the allocation so the layout is satisfied at first draw.
+            cd::rhi::DescriptorWrite { .binding = 10,
+                                       .array_element = 0,
+                                       .type   = cd::rhi::DescriptorType::kStorageBuffer,
+                                       .buffer = inst_mat_ssbo,
+                                       .buffer_offset = 0,
+                                       .buffer_range  = kInstMatBytes } };
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
@@ -4497,8 +4593,15 @@ int main()
         {
             std::vector<cd::rhi::AccelInstance> instances;
             instances.reserve(entities.size() + 25 + 1);
+            // W8-BC parallel material array - filled in lockstep with
+            //  so the GPU rayQueryGetIntersectionInstanceIdEXT
+            // result indexes the right slot. Floor and the skinned
+            // gltf BLAS land here too (gltf entity's tint).
+            std::vector<InstanceMatGpu> inst_mats;
+            inst_mats.reserve(entities.size() + 1);
             auto push_inst = [&](cd::rhi::AccelStructureHandle blas,
-                                 const cd::math::Mat4f& m)
+                                 const cd::math::Mat4f& m,
+                                 const cd::math::Vec3f& albedo)
             {
                 if (!blas.is_valid()) return;
                 cd::rhi::AccelInstance inst {};
@@ -4513,6 +4616,16 @@ int main()
                 inst.blas = blas;
                 inst.mask = 0xFFu;
                 instances.push_back(inst);
+                InstanceMatGpu im {};
+                im.albedo[0] = albedo.x;
+                im.albedo[1] = albedo.y;
+                im.albedo[2] = albedo.z;
+                im.albedo[3] = 1.0F;
+                im.emissive[0] = 0.0F;
+                im.emissive[1] = 0.0F;
+                im.emissive[2] = 0.0F;
+                im.emissive[3] = 0.0F;
+                inst_mats.push_back(im);
             };
             // W8-AV: PBR spheres back in TLAS as RT occluders too.
             // The W8-AU skip + the legacy hardcoded 5x5 push were two
@@ -4526,13 +4639,16 @@ int main()
             {
                 auto* lt = scene.local(ent.handle);
                 if (lt == nullptr) continue;
-                push_inst(blas_for_kind(ent.kind), cd::math::to_mat4(lt->value));
+                push_inst(blas_for_kind(ent.kind), cd::math::to_mat4(lt->value),
+                          ent.tint);
             }
             // Floor: identity scale, y = kFloorY (matches the floor draw).
+            // W8-BC: distinct neutral grey so chrome reflections show a
+            // proper grey floor, not garbage or a wrong entity tint.
             {
                 cd::math::Mat4f fm = cd::math::Mat4f::identity();
                 fm[3][1] = -0.55F;
-                push_inst(blas_floor, fm);
+                push_inst(blas_floor, fm, cd::math::Vec3f { 0.5F, 0.5F, 0.5F });
             }
             // Phase 251 — refresh the skinned BLAS so RT shadow rays
             // trace against the current animation pose instead of the
@@ -4572,6 +4688,33 @@ int main()
                         .type  = cd::rhi::DescriptorType::kAccelerationStructure,
                         .accel = current_tlas } };
                 (void)prim_inst.update(tlas_writes);
+            }
+            // W8-BC: upload the per-frame instance materials. Clamp to
+            // the SSBO capacity (defensive - kMaxInstMats = 256 dwarfs
+            // current entity count, but futureproof). Re-issue the
+            // binding-10 descriptor write each frame so the GPU sees
+            // the freshly uploaded contents even if the underlying
+            // buffer handle stays put.
+            if (!inst_mats.empty())
+            {
+                const std::uint32_t n = std::min<std::uint32_t>(
+                    static_cast<std::uint32_t>(inst_mats.size()),
+                    kMaxInstMats);
+                const std::size_t bytes = static_cast<std::size_t>(n) *
+                                          sizeof(InstanceMatGpu);
+                (void)device.upload_buffer(inst_mat_ssbo, 0,
+                    std::span<const std::byte>(
+                        reinterpret_cast<const std::byte*>(inst_mats.data()),
+                        bytes));
+                std::array<cd::rhi::DescriptorWrite, 1> ssbo_writes {
+                    cd::rhi::DescriptorWrite {
+                        .binding = 10,
+                        .array_element = 0,
+                        .type   = cd::rhi::DescriptorType::kStorageBuffer,
+                        .buffer = inst_mat_ssbo,
+                        .buffer_offset = 0,
+                        .buffer_range  = kInstMatBytes } };
+                (void)prim_inst.update(ssbo_writes);
             }
         }
 
@@ -7760,6 +7903,7 @@ int main()
     device.destroy_sampler(shadow_sampler);
     device.destroy_buffer(shadow_ubo);
     device.destroy_buffer(lights_ubo);
+    device.destroy_buffer(inst_mat_ssbo);  // W8-BC
     if (albedo_tex.view.is_valid())  device.destroy_texture_view(albedo_tex.view);
     if (albedo_tex.image.is_valid()) device.destroy_texture(albedo_tex.image);
     device.destroy_sampler(albedo_sampler);
