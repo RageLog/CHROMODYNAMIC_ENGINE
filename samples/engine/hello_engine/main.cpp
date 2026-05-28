@@ -3193,6 +3193,139 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
     }
 }
 
+// ---- velocity_gbuffer_pass ------------------------------------------------
+// R3 phase 227 velocity G-Buffer pass: re-draws every entity mesh into
+// gbuf_velocity with velocity_material; FS writes (curr_uv - prev_uv).
+// Depth attachment in kDepthRead so the velocity raster matches the HDR
+// pass visible surface per pixel (no overdraw soup).
+//
+// Per-entity push: prev_vp * prev_model and curr_vp * curr_model (vp is
+// always un-jittered so TAA jitter doesn't pollute the velocity output).
+// Snapshots ent.prev_model on the way out so next frame can re-project.
+//
+// Barriers in/out: gbuf_velocity Color->Shader (with Undefined seed on
+// first frame); depth DepthWrite->DepthRead before, DepthRead->Shader
+// after, so composite can sample both.
+template <typename MeshFor>
+inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
+                                  std::uint32_t frame_idx,
+                                  const cd::framegraph::ColorTarget& gbuf_velocity,
+                                  const cd::framegraph::DepthTarget& depth,
+                                  cd::rhi::Extent2D extent,
+                                  cd::material::Material& velocity_material,
+                                  std::vector<SceneEntity>& entities,
+                                  const cd::scene::Scene& scene,
+                                  const cd::math::Mat4f& prev_vp_unjittered,
+                                  const cd::math::Mat4f& vp_unjittered,
+                                  const MeshFor& mesh_for)
+{
+    // R3 phase 227 - velocity G-Buffer pass. Re-draws every entity
+    // mesh using velocity_material; FS writes (curr_uv - prev_uv).
+    // Depth attachment in kDepthRead so the velocity raster matches
+    // the HDR pass's visible surface per pixel (no overdraw soup).
+    {
+        const cd::rhi::ResourceState vel_prev =
+            (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
+        std::array<cd::rhi::TextureBarrier, 2> vb {
+            cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
+                                     .from = vel_prev,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = depth.image,
+                                     .from = cd::rhi::ResourceState::kDepthWrite,
+                                     .to = cd::rhi::ResourceState::kDepthRead,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, vb);
+
+        std::array<cd::rhi::ColorAttachmentInfo, 1> vel_ca {
+            cd::rhi::ColorAttachmentInfo { .view = gbuf_velocity.view,
+                                          .load_op = cd::rhi::LoadOp::kClear,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } }
+        };
+        cd::rhi::DepthStencilAttachmentInfo vel_depth {};
+        vel_depth.view = depth.view;
+        vel_depth.depth_load = cd::rhi::LoadOp::kLoad;
+        vel_depth.depth_store = cd::rhi::StoreOp::kStore;
+        cd::rhi::RenderPassBeginInfo vel_rp {};
+        vel_rp.render_area = cd::rhi::Rect2D {
+            { 0, 0 },
+            extent
+        };
+        vel_rp.color_attachments = vel_ca;
+        vel_rp.depth_stencil = &vel_depth;
+        cmd.begin_render_pass(vel_rp);
+        cmd.set_viewport(
+            cd::rhi::Viewport { 0.0F,
+                                0.0F,
+                                static_cast<float>(extent.width),
+                                static_cast<float>(extent.height),
+                                0.0F,
+                                1.0F }
+        );
+        cmd.set_scissor(
+            cd::rhi::Rect2D {
+                { 0, 0 },
+                extent
+        }
+        );
+        velocity_material.apply(cmd);
+        // Per-entity draw: push prev/curr vp*model, draw the same
+        // mesh the HDR pass used. CesiumMan path: prim entities
+        // share kPrimBindings layout so the velocity VS reads
+        // their position attribute without a re-bind shape change.
+        for (auto& ent : entities)
+        {
+            const auto& mesh = mesh_for(ent.kind);
+            if (!mesh.vb.is_valid())
+                continue;
+            auto* lt = scene.local(ent.handle);
+            if (lt == nullptr)
+                continue;
+            cmd.bind_vertex_buffer(0, mesh.vb, 0);
+            cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+
+            const auto curr_model_mat = cd::math::to_mat4(lt->value);
+            const auto& prev_model_mat = ent.prev_model_valid ? ent.prev_model : curr_model_mat;
+
+            struct VelocityPush
+            {
+                cd::math::Mat4f prev_vp_model;
+                cd::math::Mat4f curr_vp_model;
+            } vpush;
+
+            vpush.prev_vp_model = prev_vp_unjittered * prev_model_mat;
+            vpush.curr_vp_model = vp_unjittered * curr_model_mat;
+            cmd.push_constants(
+                velocity_material.pipeline_layout(),
+                cd::rhi::ShaderStage::kVertex,
+                0,
+                sizeof(vpush),
+                &vpush
+            );
+            cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+
+            // Snapshot for next frame's velocity reprojection.
+            ent.prev_model = curr_model_mat;
+            ent.prev_model_valid = true;
+        }
+        cmd.end_render_pass();
+
+        std::array<cd::rhi::TextureBarrier, 2> vb2 {
+            cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
+                                     .from = cd::rhi::ResourceState::kColorAttachment,
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = depth.image,
+                                     .from = cd::rhi::ResourceState::kDepthRead,
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, vb2);
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -7134,111 +7267,10 @@ int main()
             cmd.barrier({}, hb);
         }
 
-        // R3 phase 227 - velocity G-Buffer pass. Re-draws every entity
-        // mesh using velocity_material; FS writes (curr_uv - prev_uv).
-        // Depth attachment in kDepthRead so the velocity raster matches
-        // the HDR pass's visible surface per pixel (no overdraw soup).
-        {
-            const cd::rhi::ResourceState vel_prev =
-                (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
-            std::array<cd::rhi::TextureBarrier, 2> vb {
-                cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
-                                         .from = vel_prev,
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier { .texture = depth.image,
-                                         .from = cd::rhi::ResourceState::kDepthWrite,
-                                         .to = cd::rhi::ResourceState::kDepthRead,
-                                         .range = { 0, 1, 0, 1 } }
-            };
-            cmd.barrier({}, vb);
-
-            std::array<cd::rhi::ColorAttachmentInfo, 1> vel_ca {
-                cd::rhi::ColorAttachmentInfo { .view = gbuf_velocity.view,
-                                              .load_op = cd::rhi::LoadOp::kClear,
-                                              .store_op = cd::rhi::StoreOp::kStore,
-                                              .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } }
-            };
-            cd::rhi::DepthStencilAttachmentInfo vel_depth {};
-            vel_depth.view = depth.view;
-            vel_depth.depth_load = cd::rhi::LoadOp::kLoad;
-            vel_depth.depth_store = cd::rhi::StoreOp::kStore;
-            cd::rhi::RenderPassBeginInfo vel_rp {};
-            vel_rp.render_area = cd::rhi::Rect2D {
-                { 0, 0 },
-                frame.extent
-            };
-            vel_rp.color_attachments = vel_ca;
-            vel_rp.depth_stencil = &vel_depth;
-            cmd.begin_render_pass(vel_rp);
-            cmd.set_viewport(
-                cd::rhi::Viewport { 0.0F,
-                                    0.0F,
-                                    static_cast<float>(frame.extent.width),
-                                    static_cast<float>(frame.extent.height),
-                                    0.0F,
-                                    1.0F }
-            );
-            cmd.set_scissor(
-                cd::rhi::Rect2D {
-                    { 0, 0 },
-                    frame.extent
-            }
-            );
-            velocity_material.apply(cmd);
-            // Per-entity draw: push prev/curr vp*model, draw the same
-            // mesh the HDR pass used. CesiumMan path: prim entities
-            // share kPrimBindings layout so the velocity VS reads
-            // their position attribute without a re-bind shape change.
-            for (auto& ent : entities)
-            {
-                const auto& mesh = mesh_for(ent.kind);
-                if (!mesh.vb.is_valid())
-                    continue;
-                auto* lt = scene.local(ent.handle);
-                if (lt == nullptr)
-                    continue;
-                cmd.bind_vertex_buffer(0, mesh.vb, 0);
-                cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-
-                const auto curr_model_mat = cd::math::to_mat4(lt->value);
-                const auto& prev_model_mat = ent.prev_model_valid ? ent.prev_model : curr_model_mat;
-
-                struct VelocityPush
-                {
-                    cd::math::Mat4f prev_vp_model;
-                    cd::math::Mat4f curr_vp_model;
-                } vpush;
-
-                vpush.prev_vp_model = prev_vp_unjittered * prev_model_mat;
-                vpush.curr_vp_model = vp_unjittered * curr_model_mat;
-                cmd.push_constants(
-                    velocity_material.pipeline_layout(),
-                    cd::rhi::ShaderStage::kVertex,
-                    0,
-                    sizeof(vpush),
-                    &vpush
-                );
-                cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
-
-                // Snapshot for next frame's velocity reprojection.
-                ent.prev_model = curr_model_mat;
-                ent.prev_model_valid = true;
-            }
-            cmd.end_render_pass();
-
-            std::array<cd::rhi::TextureBarrier, 2> vb2 {
-                cd::rhi::TextureBarrier { .texture = gbuf_velocity.image,
-                                         .from = cd::rhi::ResourceState::kColorAttachment,
-                                         .to = cd::rhi::ResourceState::kShaderResource,
-                                         .range = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier { .texture = depth.image,
-                                         .from = cd::rhi::ResourceState::kDepthRead,
-                                         .to = cd::rhi::ResourceState::kShaderResource,
-                                         .range = { 0, 1, 0, 1 } }
-            };
-            cmd.barrier({}, vb2);
-        }
+        // R3 phase 227 - velocity G-Buffer pass.
+        velocity_gbuffer_pass(cmd, frame_idx, gbuf_velocity, depth, frame.extent,
+                              velocity_material, entities, scene,
+                              prev_vp_unjittered, vp_unjittered, mesh_for);
 
         // R3 - Bloom chain. 7 fullscreen-triangle passes against the
         // dedicated bloom mip chain (each pass owns one render target,
