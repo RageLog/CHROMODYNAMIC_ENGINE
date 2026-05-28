@@ -3867,6 +3867,157 @@ inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
     return out;
 }
 
+// ---- draw_floor_and_entities ----------------------------------------------
+// Draws the floor quad (with FS sentinel tint.w=2.0 -> analytic XZ grid)
+// and the ECS entity primitives row in one helper. Both use the same
+// prim_material + fill_prim_push_shared for the sun/fx/cam fields.
+//
+// X1D parallel-prep / serial-draw split (phase 286) preserved: per-entity
+// PrimPush is built via parallel_for into a pre-sized scratch vector, the
+// bind + push + draw pass stays serial (Vulkan cmd recording not
+// thread-safe per buffer, ADR-015 / Vulkan spec 5.1).
+//
+// kFloorY constant is owned by the caller because planar shadows need it
+// for the projection matrix; we accept it as an argument so the constant
+// stays a single source of truth.
+template <typename MeshFor>
+inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
+                                    const GpuMesh& floor_mesh,
+                                    float floor_y,
+                                    const cd::math::Mat4f& vp,
+                                    const cd_sample::HelloEngineFx& fx,
+                                    const SunLight& sun,
+                                    const cd::camera::Camera& cam,
+                                    std::vector<SceneEntity>& entities,
+                                    const cd::scene::Scene& scene,
+                                    bool has_gltf_texture,
+                                    cd::material::Material& prim_material,
+                                    cd::core::CounterTable& counters,
+                                    const MeshFor& mesh_for)
+{
+    // ---- Floor (large flat quad) ----
+    // Faz 1.5 - real geometry on which the planar-shadow pass can
+    // project caster silhouettes. Floor sits at y = floor_y so the
+    // front-row primitives (which extend ??0.5 m around y=0) just
+    // touch it.
+            {
+        cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
+        cmd.bind_index_buffer(floor_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+        cd::math::Mat4f floor_model = cd::math::Mat4f::identity();
+        floor_model[3][1] = floor_y;  // translate quad to y = floor_y
+        const auto floor_mvp = vp * floor_model;
+        PrimPush fp {};
+        fp.mvp = floor_mvp;
+        fp.model = floor_model;
+        // Slightly cool neutral floor - receives lighting + hemisphere AO.
+        // tint[3] = 2.0 is the FS sentinel that enables the analytic
+        // grid overlay (depth-tested via the floor geometry, so the
+        // grid no longer shows through other objects).
+        // Shadow-catcher + grid-helper combo (gaps #20 + #21).
+        // Floor body colour kept subtle so the plane reads more
+        // like an editor helper than a scene mesh - shadows
+        // (much darker, see planar-shadow tint below) and grid
+        // lines (much brighter) both stand out against it. FS
+        // also fades the floor with camera distance for a
+        // pseudo-infinite-grid feel pending the real procedural-
+        // grid helper in v1.6 editor.
+        fp.tint[0] = 0.15F;
+        fp.tint[1] = 0.16F;
+        fp.tint[2] = 0.18F;
+        fp.tint[3] = 2.0F;  // FS sentinel: enables analytic XZ grid overlay
+        fill_prim_push_shared(fp, fx, sun, cam);
+        // Floor overrides: opt out of texture path + GTAO crease darkening
+        // (flat normal -> dFdx/dFdy=0); keep bloom on bright grid lines.
+        fp.fx_params[1] = 0.0F;
+        fp.fx_params[2] = 0.0F;
+        fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
+        fp.fx_params4[3] = static_cast<float>(fx.view_mode);
+        cmd.push_constants(
+            prim_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            sizeof(fp),
+            &fp
+        );
+        cmd.draw_indexed(floor_mesh.index_count, 1, 0, 0, 0);
+        counters.increment("draws_prim");
+    }
+
+    // X1D (phase 286): parallel ECS PrimPush prep. The push-
+    // constant struct + valid flag is built per entity into a
+    // pre-sized scratch vector via cd::concurrency::parallel_for
+    // (write-by-index, no push_back), then the serial draw pass
+    // binds mesh + records push_constants + draw_indexed.
+    // Vulkan cmd buffer recording isn't thread-safe per buffer
+    // (ADR-015 / Vulkan spec 5.1) so submission stays serial; the
+    // win is the prep phase parallelizes and the scaling story
+    // unlocks when entity count grows past the worker count.
+    std::vector<PrimPush> ent_push_scratch(entities.size());
+    std::vector<std::uint8_t> ent_push_valid(entities.size(), 0u);
+    cd::concurrency::parallel_for(
+        std::size_t { 0 },
+        entities.size(),
+        [&](std::size_t i)
+        {
+            const auto& ent = entities[i];
+            const auto& mesh = mesh_for(ent.kind);
+            if (!mesh.vb.is_valid())
+                return;
+            auto* lt = scene.local(ent.handle);
+            if (lt == nullptr)
+                return;
+            const auto model = cd::math::to_mat4(lt->value);
+            const auto mvp = vp * model;
+            PrimPush& pp = ent_push_scratch[i];
+            pp.mvp = mvp;
+            pp.model = model;
+            // W8-AR sentinel routing (see pre-X1D comment for the
+            // full rationale): tint.w==3.0 routes through Cook-
+            // Torrance, 1.0 stays on the standard Lambert + textured
+            // path.
+            pp.tint[0] = ent.tint.x;
+            pp.tint[1] = ent.tint.y;
+            pp.tint[2] = ent.tint.z;
+            pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
+            fill_prim_push_shared(pp, fx, sun, cam);
+            // ECS override: per-entity texture-path flag in fx_params[1]
+            pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture) ? 1.0F : 0.0F;
+            if (ent.is_pbr)
+            {
+                pp.fx_params4[0] = ent.metallic;
+                pp.fx_params4[1] = ent.roughness;
+                pp.fx_params4[2] = 0.0F;
+            }
+            else
+            {
+                pp.fx_params4[0] = fx.clearcoat_strength;
+                pp.fx_params4[1] = fx.sheen_strength;
+                pp.fx_params4[2] = fx.sss_strength;
+            }
+            pp.fx_params4[3] = static_cast<float>(fx.view_mode);
+            ent_push_valid[i] = 1u;
+        }
+    );
+    for (std::size_t i = 0; i < entities.size(); ++i)
+    {
+        if (ent_push_valid[i] == 0u)
+            continue;
+        const auto& ent = entities[i];
+        const auto& mesh = mesh_for(ent.kind);
+        cmd.bind_vertex_buffer(0, mesh.vb, 0);
+        cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+        cmd.push_constants(
+            prim_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            sizeof(PrimPush),
+            &ent_push_scratch[i]
+        );
+        cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+        counters.increment("draws_prim");
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -7431,129 +7582,12 @@ int main()
         prim_material.apply(cmd);
         prim_inst.bind(cmd, 0);  // Faz 1.6 CSM + Faz 1.9 light UBO
 
-        // ---- Floor (large flat quad) ----
-        // Faz 1.5 - real geometry on which the planar-shadow pass can
-        // project caster silhouettes. Floor sits at y = kFloorY so the
-        // front-row primitives (which extend ??0.5 m around y=0) just
-        // touch it.
+        // ---- Floor + ECS entity primitives row ----
         constexpr float kFloorY = -0.55F;
         constexpr float kShadowLift = 0.01F;
-        {
-            cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
-            cmd.bind_index_buffer(floor_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-            cd::math::Mat4f floor_model = cd::math::Mat4f::identity();
-            floor_model[3][1] = kFloorY;  // translate quad to y = kFloorY
-            const auto floor_mvp = vp * floor_model;
-            PrimPush fp {};
-            fp.mvp = floor_mvp;
-            fp.model = floor_model;
-            // Slightly cool neutral floor - receives lighting + hemisphere AO.
-            // tint[3] = 2.0 is the FS sentinel that enables the analytic
-            // grid overlay (depth-tested via the floor geometry, so the
-            // grid no longer shows through other objects).
-            // Shadow-catcher + grid-helper combo (gaps #20 + #21).
-            // Floor body colour kept subtle so the plane reads more
-            // like an editor helper than a scene mesh - shadows
-            // (much darker, see planar-shadow tint below) and grid
-            // lines (much brighter) both stand out against it. FS
-            // also fades the floor with camera distance for a
-            // pseudo-infinite-grid feel pending the real procedural-
-            // grid helper in v1.6 editor.
-            fp.tint[0] = 0.15F;
-            fp.tint[1] = 0.16F;
-            fp.tint[2] = 0.18F;
-            fp.tint[3] = 2.0F;  // FS sentinel: enables analytic XZ grid overlay
-            fill_prim_push_shared(fp, fx, sun, cam);
-            // Floor overrides: opt out of texture path + GTAO crease darkening
-            // (flat normal -> dFdx/dFdy=0); keep bloom on bright grid lines.
-            fp.fx_params[1] = 0.0F;
-            fp.fx_params[2] = 0.0F;
-            fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
-            fp.fx_params4[3] = static_cast<float>(fx.view_mode);
-            cmd.push_constants(
-                prim_material.pipeline_layout(),
-                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                0,
-                sizeof(fp),
-                &fp
-            );
-            cmd.draw_indexed(floor_mesh.index_count, 1, 0, 0, 0);
-            counters.increment("draws_prim");
-        }
-
-        // X1D (phase 286): parallel ECS PrimPush prep. The push-
-        // constant struct + valid flag is built per entity into a
-        // pre-sized scratch vector via cd::concurrency::parallel_for
-        // (write-by-index, no push_back), then the serial draw pass
-        // binds mesh + records push_constants + draw_indexed.
-        // Vulkan cmd buffer recording isn't thread-safe per buffer
-        // (ADR-015 / Vulkan spec 5.1) so submission stays serial; the
-        // win is the prep phase parallelizes and the scaling story
-        // unlocks when entity count grows past the worker count.
-        std::vector<PrimPush> ent_push_scratch(entities.size());
-        std::vector<std::uint8_t> ent_push_valid(entities.size(), 0u);
-        cd::concurrency::parallel_for(
-            std::size_t { 0 },
-            entities.size(),
-            [&](std::size_t i)
-            {
-                const auto& ent = entities[i];
-                const auto& mesh = mesh_for(ent.kind);
-                if (!mesh.vb.is_valid())
-                    return;
-                auto* lt = scene.local(ent.handle);
-                if (lt == nullptr)
-                    return;
-                const auto model = cd::math::to_mat4(lt->value);
-                const auto mvp = vp * model;
-                PrimPush& pp = ent_push_scratch[i];
-                pp.mvp = mvp;
-                pp.model = model;
-                // W8-AR sentinel routing (see pre-X1D comment for the
-                // full rationale): tint.w==3.0 routes through Cook-
-                // Torrance, 1.0 stays on the standard Lambert + textured
-                // path.
-                pp.tint[0] = ent.tint.x;
-                pp.tint[1] = ent.tint.y;
-                pp.tint[2] = ent.tint.z;
-                pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
-                fill_prim_push_shared(pp, fx, sun, cam);
-                // ECS override: per-entity texture-path flag in fx_params[1]
-                pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture) ? 1.0F : 0.0F;
-                if (ent.is_pbr)
-                {
-                    pp.fx_params4[0] = ent.metallic;
-                    pp.fx_params4[1] = ent.roughness;
-                    pp.fx_params4[2] = 0.0F;
-                }
-                else
-                {
-                    pp.fx_params4[0] = fx.clearcoat_strength;
-                    pp.fx_params4[1] = fx.sheen_strength;
-                    pp.fx_params4[2] = fx.sss_strength;
-                }
-                pp.fx_params4[3] = static_cast<float>(fx.view_mode);
-                ent_push_valid[i] = 1u;
-            }
-        );
-        for (std::size_t i = 0; i < entities.size(); ++i)
-        {
-            if (ent_push_valid[i] == 0u)
-                continue;
-            const auto& ent = entities[i];
-            const auto& mesh = mesh_for(ent.kind);
-            cmd.bind_vertex_buffer(0, mesh.vb, 0);
-            cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-            cmd.push_constants(
-                prim_material.pipeline_layout(),
-                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                0,
-                sizeof(PrimPush),
-                &ent_push_scratch[i]
-            );
-            cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
-            counters.increment("draws_prim");
-        }
+        draw_floor_and_entities(cmd, floor_mesh, kFloorY, vp, fx, sun, cam,
+                                entities, scene, has_gltf_texture,
+                                prim_material, counters, mesh_for);
 
         // ---- Planar projective shadows (Faz 1.5) ----
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, entities,
