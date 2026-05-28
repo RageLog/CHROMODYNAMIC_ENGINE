@@ -731,12 +731,12 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      // W8-W: tightened bias (tmin 0.05 + N*0.05). W8-L's 0.30 + 0.20
-      // was inherited from the W8-C spot/point path but the floor +
-      // character casting case is far less self-occlusion-prone than
-      // the PBR sphere grid; the generous bias was making rays clear
-      // the character entirely instead of producing the expected
-      // floor shadow.
+      // W8-AF: restore area shadow ray (W8-AE diagnostic confirmed
+      // the shadow ray was NOT the cause — floor stayed dark even
+      // with vis_a forced to 1.0). LTC contribution itself is too
+      // small to lift the floor above the tonemap noise floor at
+      // current calibration. Restore W8-W bias so other receivers
+      // (sphere grid, foreground primitives) keep their shadows.
       float area_tmax = min(d_c, rng);
       rayQueryEXT rq_a;
       rayQueryInitializeEXT(
@@ -2794,15 +2794,14 @@ int main()
         // bias, the character casts a visible floor shadow without
         // the user having to rotate the gizmo at all. Position raised
         // slightly to clear the camera framing.
-        // W8-AD: lumens 2500 -> 20000. With W8-AB's ki = phi/(4 pi * 2) *
-        // 1.5 calibration and a 3 m ceiling clearance, 2500 lm produced
-        // a per-channel floor contribution that fell just below the
-        // tonemap noise floor — visible on the sphere column (closer)
-        // but not on the floor 6 m below. 20000 lm matches an actual
-        // ceiling-mounted soft panel (4x 5000 lm tubes) and pulls the
-        // floor + character into clearly-lit territory.
+        // W8-AG: lumens reverted 20000 -> 2500 (long-stable baseline).
+        // The 20000 lm + 1.5 multiplier combo saturated close
+        // geometry without lifting the far floor pixel, so reverting
+        // to the conservative pair {2500 lm, 0.20 multiplier} —
+        // visually OK, predictable, and the user can crank lumens via
+        // the intensity slider when they want more output.
         cd::light::rect_area({ 0.0F, 5.5F, -2.0F }, { 0, -1, 0 }, { 1, 0, 0 },
-                             3.0F, 3.0F, { 0.6F, 0.85F, 1.0F }, 20000.0F),
+                             3.0F, 3.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
         true, 8000.0F });
     // W5-B: very bright magenta neon strip behind the sphere rig so
     // metallic surfaces pick up a deeply saturated, HIGHLY DYNAMIC
@@ -4866,16 +4865,17 @@ int main()
                     const float w     = std::max(lrow.light.area_width,  0.05F);
                     const float h     = std::max(lrow.light.area_height, 0.05F);
                     const float area  = w * h;
-                    // W8-AB: simpler, less explosive formula. W8-AA's
-                    // physical "phi/(pi*A)*2.50" was correct for a 2500
-                    // lm cyan rect but at 25000 lm magenta with 1.6 m²
-                    // area it produced ki ≈ 12k, saturating the sphere
-                    // column to pure white. Fall back to lumens/(4 pi *
-                    // 2) with an area-light empirical multiplier of
-                    // 1.5 — keeps the cyan visibly bright without
-                    // letting HDR-showcase neons clip the tonemap.
+                    // W8-AG: revert area multiplier to long-stable 0.20
+                    // (W8-T baseline). The 1.5x bump in W8-AB blew out
+                    // close geometry while still not lifting far floor
+                    // pixels above the tonemap noise floor — symptom of
+                    // unavoidable distance falloff ratio (sphere @ 1 m
+                    // vs floor @ 6 m = 36x form factor delta). Returning
+                    // to 0.20 keeps "visible without saturating" the
+                    // demo intent; user dials individual lumens via the
+                    // intensity slider when they want a specific look.
                     (void)area;
-                    ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F * 1.5F;
+                    ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F * 0.20F;
                 }
                 else
                 {
