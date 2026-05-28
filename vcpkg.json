@@ -1,33 +1,58 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "chromodynamic",
-  "version": "0.1.0",
-  "description": "CHROMODYNAMIC — cross-platform, cross-API hybrid 2D+3D engine + framework",
+  "version": "0.99.93",
+  "description": "CHROMODYNAMIC - cross-platform, cross-API hybrid 2D+3D engine + framework",
   "homepage": "https://github.com/CRFLT/CHROMODYNAMIC",
   "license": "Apache-2.0",
   "supports": "(windows | linux | osx) & (x64 | arm64)",
+
+  "$x-policy-note": [
+    "vcpkg dependencies are ONLY listed here when an engine target actually calls",
+    "find_package(<name>) for them. The graphics stack (vulkan-headers, volk, VMA,",
+    "glslang, shaderc, glfw, glm, spdlog, ktx, meshoptimizer, basis-universal,",
+    "fastgltf, miniaudio, jolt-physics, etc.) is intentionally pulled via",
+    "FetchContent in each consuming subdirectory's CMakeLists.txt - this lets us",
+    "pin EXACT SDK / commit versions per-subsystem instead of inheriting whatever",
+    "vcpkg baseline shipped that week. See docs/BUILDING.md section 'Dependency",
+    "Resolution Tiers' for the full policy.",
+    "Promote a dep into this manifest only when you have ALSO wired",
+    "find_package(<name> CONFIG) into the consuming CMakeLists.txt and tested it",
+    "resolves from vcpkg."
+  ],
+
   "dependencies": [
     {
       "name": "gtest",
       "version>=": "1.14.0",
-      "$comment": "Unit testing — ADR-014 + ADR-005"
+      "$comment": "Unit testing - ADR-014 + ADR-005. Resolved via find_package(GTest CONFIG) in top-level CMakeLists.txt with FetchContent + vendored fallback tiers."
     },
     {
       "name": "fmt",
       "version>=": "10.0.0",
-      "$comment": "Logging format — ADR-005 §B + ADR-017 P1 (cd::log integration Sprint S2.2)"
+      "$comment": "Logging format - ADR-005 section B + ADR-017 P1. Resolved via find_package(fmt CONFIG QUIET) in top-level CMakeLists.txt; optional Phase 1."
     }
   ],
+
   "features": {
     "phase2-render": {
-      "description": "Phase 2 RHI Vulkan dependencies (enabled Sprint S2.8+)",
+      "description": "Phase 2 RHI Vulkan dependencies. Reserved - currently FetchContent-resolved in engine/render/rhi_vulkan/CMakeLists.txt. Promote here once find_package wiring lands.",
       "dependencies": []
     },
     "phase2-asset": {
-      "description": "Phase 2 asset pipeline (enabled Sprint S2.20+)",
+      "description": "Phase 2 asset pipeline (ktx, fastgltf, meshoptimizer, basis-universal). Reserved.",
+      "dependencies": []
+    },
+    "phase2-audio": {
+      "description": "Phase 2 audio backend extras (miniaudio cross-platform fallback). Reserved.",
+      "dependencies": []
+    },
+    "phase2-physics": {
+      "description": "Phase 2 physics backend (jolt-physics). Reserved until ADR-008 v2 + adapter pattern lands.",
       "dependencies": []
     }
   },
-  "builtin-baseline": "0000000000000000000000000000000000000000",
-  "$x-comment-baseline": "TODO Sprint S2.0+: replace with real vcpkg registry baseline SHA before first CI run"
+
+  "builtin-baseline": "56bb2411609227288b70117ead2c47585ba07713",
+  "$x-baseline-comment": "vcpkg release 2026.04.27 (tag dc8d75cfc..., points to commit 56bb2411...). Bump together with a clean-build verification."
 }
