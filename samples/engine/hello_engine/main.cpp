@@ -3765,6 +3765,108 @@ inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
     prev_vp_valid = true;
 }
 
+// ---- HdrSceneFrame + begin_hdr_scene_pass ---------------------------------
+// Open the R3 HDR + 3 G-Buffer (normal/albedo/MR) + depth attachment render
+// pass and return the per-frame VP matrices the downstream sky / floor /
+// entity passes need. cd::post_taa::jitter_offset(frame_idx, 8) is the
+// Halton(2,3) sequence; we only apply it when TAA is dialled in.
+//
+// Pass stays open across draw_sky_pass, fill + draw of floor/ECS/planar
+// shadow + gizmo overlay. The caller closes it explicitly via
+// cmd.end_render_pass() before the composite pass opens the swapchain pass.
+struct HdrSceneFrame
+{
+    cd::math::Mat4f vp;
+    cd::math::Mat4f vp_unjittered;
+    float aspect { 1.0F };
+};
+
+inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
+                                          std::uint32_t frame_idx,
+                                          const cd::framegraph::ColorTarget& hdr_target,
+                                          const cd::framegraph::ColorTarget& gbuf_normal,
+                                          const cd::framegraph::ColorTarget& gbuf_albedo,
+                                          const cd::framegraph::ColorTarget& gbuf_mr,
+                                          const cd::framegraph::DepthTarget& depth,
+                                          cd::rhi::Extent2D extent,
+                                          const cd::camera::Camera& cam,
+                                          float taa_amount)
+{
+    {
+        const cd::rhi::ResourceState prev_state =
+            (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
+        std::array<cd::rhi::TextureBarrier, 4> hb {
+            cd::rhi::TextureBarrier { .texture = hdr_target.image,
+                                     .from = prev_state,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = gbuf_normal.image,
+                                     .from = prev_state,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = gbuf_albedo.image,
+                                     .from = prev_state,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = gbuf_mr.image,
+                                     .from = prev_state,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, hb);
+    }
+    std::array<cd::rhi::ColorAttachmentInfo, 4> color_attach {
+        cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_albedo.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_mr.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 1.0F, 0.0F, 0.0F } } }
+    };
+    cd::rhi::DepthStencilAttachmentInfo depth_attach {};
+    depth_attach.view = depth.view;
+    depth_attach.depth_load = cd::rhi::LoadOp::kClear;
+    depth_attach.depth_store = cd::rhi::StoreOp::kStore;
+    depth_attach.clear.depth = 1.0F;
+
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, extent };
+    rp.color_attachments = color_attach;
+    rp.depth_stencil = &depth_attach;
+    cmd.begin_render_pass(rp);
+    cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                         static_cast<float>(extent.width),
+                                         static_cast<float>(extent.height),
+                                         0.0F, 1.0F });
+    cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+
+    HdrSceneFrame out {};
+    out.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+    out.vp_unjittered = cd::camera::view_projection(cam, out.aspect);
+
+    const cd::math::Vec2f jitter_px =
+        (taa_amount > 0.001F) ? cd::post_taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
+    const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(extent.width);
+    const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(extent.height);
+    out.vp = out.vp_unjittered;
+    for (std::size_t c = 0; c < 4; ++c)
+    {
+        out.vp[c][0] += jx_ndc * out.vp_unjittered[c][3];
+        out.vp[c][1] += jy_ndc * out.vp_unjittered[c][3];
+    }
+    return out;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -7306,101 +7408,13 @@ int main()
                              shadow_initialised_on_gpu, shadow_material,
                              kShadowMapSize, entities, scene, mesh_for);
 
-        // R3: scene draws into the HDR + G-Buffer normal off-screen
-        // targets; composite + ImGui write to the swapchain in a
-        // follow-up render pass. Transition both to ColorAttachment
-        // on first use; subsequent frames re-enter from kShaderResource
-        // (composite sampled them last frame).
-        {
-            const cd::rhi::ResourceState prev_state =
-                (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
-            std::array<cd::rhi::TextureBarrier, 4> hb {
-                cd::rhi::TextureBarrier { .texture = hdr_target.image,
-                                         .from = prev_state,
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier { .texture = gbuf_normal.image,
-                                         .from = prev_state,
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier { .texture = gbuf_albedo.image,
-                                         .from = prev_state,
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier { .texture = gbuf_mr.image,
-                                         .from = prev_state,
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } }
-            };
-            cmd.barrier({}, hb);
-        }
-        std::array<cd::rhi::ColorAttachmentInfo, 4> color_attach {
-            cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
-                                          .load_op = cd::rhi::LoadOp::kClear,
-                                          .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } },
-            cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
-                                          .load_op = cd::rhi::LoadOp::kClear,
-                                          .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
-            cd::rhi::ColorAttachmentInfo { .view = gbuf_albedo.view,
-                                          .load_op = cd::rhi::LoadOp::kClear,
-                                          .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
-            cd::rhi::ColorAttachmentInfo { .view = gbuf_mr.view,
-                                          .load_op = cd::rhi::LoadOp::kClear,
-                                          .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.0F, 1.0F, 0.0F, 0.0F } } }
-        };
-        cd::rhi::DepthStencilAttachmentInfo depth_attach {};
-        depth_attach.view = depth.view;
-        depth_attach.depth_load = cd::rhi::LoadOp::kClear;
-        depth_attach.depth_store = cd::rhi::StoreOp::kStore;
-        depth_attach.clear.depth = 1.0F;
-
-        cd::rhi::RenderPassBeginInfo rp {};
-        rp.render_area = cd::rhi::Rect2D {
-            { 0, 0 },
-            frame.extent
-        };
-        rp.color_attachments = color_attach;
-        rp.depth_stencil = &depth_attach;
-        cmd.begin_render_pass(rp);
-        cmd.set_viewport(
-            cd::rhi::Viewport { 0.0F,
-                                0.0F,
-                                static_cast<float>(frame.extent.width),
-                                static_cast<float>(frame.extent.height),
-                                0.0F,
-                                1.0F }
-        );
-        cmd.set_scissor(
-            cd::rhi::Rect2D {
-                { 0, 0 },
-                frame.extent
-        }
-        );
-
-        const float aspect = static_cast<float>(frame.extent.width) / static_cast<float>(frame.extent.height);
-        cd::math::Mat4f vp_unjittered = cd::camera::view_projection(cam, aspect);
-
-        // R3 Halton(2,3) sub-pixel jitter for proper TAA accumulation
-        // - only active when TAA is dialled in. cd::post_taa owns the
-        // Halton sequence; we just gate it on the TAA strength dial.
-        const cd::math::Vec2f jitter_px =
-            (fx.taa_amount > 0.001F) ? cd::post_taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
-        const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(frame.extent.width);
-        const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(frame.extent.height);
-
-        // T_jitter * vp - adds jx_ndc * w to clip.x so post-divide
-        // ndc.x shifts by jx_ndc. Column-major: for each column c,
-        // add the bottom-row entry * jitter into rows 0/1.
-        cd::math::Mat4f vp = vp_unjittered;
-        for (std::size_t c = 0; c < 4; ++c)
-        {
-            vp[c][0] += jx_ndc * vp_unjittered[c][3];
-            vp[c][1] += jy_ndc * vp_unjittered[c][3];
-        }
+        // R3 HDR + G-Buffer scene pass open + Halton jitter VP.
+        const auto hdr_frame = begin_hdr_scene_pass(cmd, frame_idx, hdr_target,
+                                                    gbuf_normal, gbuf_albedo, gbuf_mr,
+                                                    depth, frame.extent, cam, fx.taa_amount);
+        const float aspect = hdr_frame.aspect;
+        const cd::math::Mat4f vp_unjittered = hdr_frame.vp_unjittered;
+        const cd::math::Mat4f vp = hdr_frame.vp;
 
         // ---- Sky pass ----
         draw_sky_pass(cmd, cam, aspect, sun, sky_material);
