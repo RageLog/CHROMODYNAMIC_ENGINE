@@ -4789,16 +4789,16 @@ int main()
                 // factor doesn't need to be as aggressive.
                 float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F;
                 if (k == cd::light::LightType::kSpot) ki *= 2.5F;
-                // W8-S: area light multiplier 0.20 -> 0.80. The 0.20
-                // damping was calibrated against the W4-B period when
-                // the back hemisphere was lit; now that emission is
-                // one-sided the same input lumens spread across half
-                // the hemisphere, so the cyan rect at 2500 lm read as
-                // "dim" even with the camera right in front. 0.80
-                // brings the perceived brightness in line with what
-                // a 2500 lm soft panel does in a photometric capture.
+                // W8-T: area light multiplier reverted to 0.20 (was the
+                // pre-W8-S calibration). The W8-S speculative bump to
+                // 0.80 was an attempt to compensate for one-sided
+                // emission but it pushed area output into "too bright"
+                // territory for the user. User can still raise the
+                // per-light lumens via the slider when more output is
+                // wanted; the engine-wide multiplier returns to the
+                // long-stable baseline.
                 else if (k == cd::light::LightType::kRectArea ||
-                         k == cd::light::LightType::kDiskArea) ki *= 0.80F;
+                         k == cd::light::LightType::kDiskArea) ki *= 0.20F;
                 s.color_int[3] = ki;
                 s.extras[0] = lrow.light.cos_outer_cone;
                 s.extras[1] = lrow.light.area_width;
