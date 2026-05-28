@@ -2664,17 +2664,16 @@ int main()
         cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
         true, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
-        // W8-E: spot placed CLOSE to the PBR sphere grid centre and
-        // aimed directly at it so the cone visibly hits the spheres
-        // out-of-the-box. Previous setup at (-2, 3, 1) with a 0.35 rad
-        // outer angle (40 deg cone) was too narrow + too far to read
-        // as "spot lights the sphere column" without the user having
-        // to re-aim via gizmo.
-        // From (0, 5.5, -1.5) shoot toward sphere centre (0, 3.5, -4.5):
-        // dir = (0, -0.55, -0.83) (normalised).
+        // W8-H: spot now sits between camera and sphere grid (above +
+        // front of the grid relative to default camera position) so
+        // the cone lights the CAMERA-FACING side of every sphere.
+        // Previous (0, 5.5, -1.5) hit the BACK side of the spheres
+        // and the camera read them as dark even with a wide cone.
+        // From (0, 5.0, 4.0) aim at sphere grid centre (0, 3.5, -4.5):
+        // dir = (0, -0.174, -0.985) (normalised).
         // Cone: inner 0.35 rad (~20 deg) / outer 0.55 rad (~32 deg) =>
-        // 64 deg full cone; range 20 m so the cone reaches the floor.
-        cd::light::spot({ 0.0F, 5.5F, -1.5F }, { 0.0F, -0.55F, -0.83F },
+        // 64 deg full cone; range 20 m.
+        cd::light::spot({ 0.0F, 5.0F, 4.0F }, { 0.0F, -0.174F, -0.985F },
                         { 1, 1, 1 }, 1800.0F, 20.0F, 0.35F, 0.55F),
         true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
