@@ -165,7 +165,41 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 - N1E (phase293): InstanceMatGpu / kMaxInstMats / make_accel_instance / fill_inst_mat HelloRayQuery.hpp icine alindi; iki TLAS rebuild call-site helper kullaniyor.
 - N1F (phase294): 4x4 PBR demo-grid spawn data + math HelloPbrGrid.hpp icine alindi (build_pbr_demo_grid()).
 - N1G (phase295): setup_world_container / spawn_primitive_seeds / spawn_gltf_or_earth_entity / spawn_pbr_grid_entities anon namespace helper olarak ayrildi - main() -102 satir, boot region 4 named call site.
-- N1 follow-up (Marathon Run 8 N2 zinciri): render loop main pass + composite blit + ImGui panel handlers ayri named fonksiyonlara veya cd::sample_framework yeni libine ayristirma. main() body 7045 -> hedef <300. Sized: 1 marathon run.
+- N1 follow-up (Marathon Run 8 N2 zinciri): render loop main pass + composite blit + ImGui panel handlers ayri named fonksiyonlara veya cd::sample_framework yeni libine ayristirma. main() body 7045 -> hedef <300. Sized: 1 marathon run. -> DONE-IN-PART (W8 phase297-302, Marathon Run 8 N2A..N2F).
+
+### Marathon Run 8 N2 close-out (W8 phase297-302)
+
+Yeni hedef: main() body <500 - Run 8 sonu 5938; <300 hedefi Run 9 N3+N4 zincirine kaydirildi (R-Showcase + gizmo + render-pass extracts gerekiyor).
+
+Pratik revizyon (N2A sirasinda kararlasti): FrameContext aggregate Run 7 N1 close-out tavsiye etti, ancak ~150 main()-scope local'i mirror eden 50-alanli reference-bundle struct, helper-spesifik dar parametre listesinden ek deger getirmiyordu. **Once kucuk + bagimsiz UI panel + overlay extract'leri ship et; FrameContext'i ancak render-pass extract'i talep ettiginde tanit** (Run 9 territory).
+
+- N2A (phase297): Counters + Random viz + History panelleri (cd::frame_timing dt-ring static function-local'da kaliyor). main() body 7045 -> 6947 (-98).
+- N2B (phase298): Audio + Net Sim + Streamer panelleri. Audio + Streamer std::function<> callback aliyor (log_push + streamer_enqueue stateful lambda kaldigi icin). <functional> eklendi. main() body 6947 -> 6787 (-160).
+- N2C (phase299): Scene tree + Inspector panelleri. Inspector tek panel ekstraktinin en buyugu (~150 satir): drag-edit Transform with EditHistory drag-release semantics for Position / Rotation / Scale + tint. main() body 6787 -> 6637 (-150).
+- N2D (phase300): Outliner + Lights panelleri. Hazirlik adimi: SelKind enum + LightRow struct main() scope'tan anon namespace'e lift edildi (helper imzasinda type by name). Lights helper'in icine per-frame CCT->RGB rebuild + ClusterGrid::assign side-effect loop alindi. main() body 6637 -> 6312 (-325).
+- N2E (phase301): Selection outline overlay + light marker overlay (~330 satir kombine). Her ikisi de mevcut vp matrix + extent ile world->screen project ediyor, ImGui::GetBackgroundDrawList() ile cizim. **6000-satir esiği bu sub-phase'de gecildi.** main() body 6312 -> 5987 (-325).
+- N2F (phase302): Command Palette popup. Kucuk (50 satir) ama render loop'ta kalan son gercekten self-contained UI panel-style bolge. main() body 5987 -> 5938 (-49).
+
+**Run 8 sonuc:**
+- main.cpp: 7611 -> 7811 (+200; 14 yeni inline helper definition anon namespace'de).
+- **main() body: 7045 -> 5938 (-1107, 15.7% azalma)**.
+- 14 yeni anon-namespace helper: draw_{counters,random,history,audio,net_sim,streamer,scene_tree,inspector,outliner,lights,selection_outline_overlay,light_markers_overlay,command_palette_popup}_panel + 2 lifted type (SelKind, LightRow).
+- Yeni library header yok bu run'da - sample-local kaldi (SceneEntity / LightRow sample-spesifik).
+- Tests 96/96 PASS her checkpoint'te.
+- Engine boots clean (her commit sonrasi smoke launch dogruandi).
+- Pure mechanical extract; render davranisi degismedi.
+
+**Ship edilmedi (Run 9 territory):**
+- R-Showcase panel (~237 satir): 26 fx_* parametre yuzeyi. FxState struct refactor ayri scope (Run 9 N3-prep).
+- Gizmo overlay (~720 satir): drag-state lambda + EditHistory + multi-mode state machine derin coupling. Marathon-pace mekanik extract icin risk yuksek.
+- Per-render-pass extract (sky / shadow / floor / entity prim / planar shadow / composite / velocity): her pass ~10-30 local. FrameContext aggregate veya HelloEngineFrame header'i gerekiyor.
+
+**Run 9 onerilen oncelik sirasi:**
+1. **N3-prep**: fx_* (~26 float + 2 int + 2 bool) HelloEngineFx struct'ina lift et. ~150 satir mekanik degisim.
+2. **N3**: R-Showcase paneli HelloEngineFx kullanarak extract. ~237 satir main() dusus.
+3. **N4-prep**: HelloEngineFrame aggregate tanit (cmd, vp, view, sun_dir/col/str, ambient, cam, frame.extent, FxState ref bundle). Original N2A FrameContext plani burada justified - artik sonraki extract batch'i talep ediyor.
+4. **N4A..N4x**: render-pass extracts bagimsizlik sirasiyla: floor draw, sky pass, planar shadow pass, sky+IBL bake region (boot-side leftover), velocity G-buffer pass, composite pass, ImGui pass on swapchain. Hedef: main() body 5938 -> ~2500.
+5. **N5**: gizmo overlay extract once R-Showcase + render-pass extracts have shaken out helper-parameter shape.
 
 ### Yeni follow-up itemler (W8 phase282/283 sonrasi)
 
@@ -186,5 +220,5 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 - Bu plandaki her item icin subagent dispatch ayri brief ile baslatilir (CLAUDE.md Brief Sozlesmesi).
 - Bagimsiz itemler (N4 + N3 + N5; X1 + X2; L1 + L9) paralel dispatch edilir.
 - BLOCKING ajan zincirleri: safety-integration (concurrency icin zorunlu), citation-verifier (her academic atif), independent-auditor (kritik claim).
-- Tag yok (feedback_no_auto_tag). Phase numarasi devam: W9-A baslangic.
+- Tag yok (feedback_no_auto_tag). Phase numarasi devam: phase303 (Run 9 N3-prep oncelikli).
 - Marathon kurali: kullanici uzun maraton demedigi surece her wave kullanici onayi ile kapanir.
