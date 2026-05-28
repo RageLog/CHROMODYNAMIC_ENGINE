@@ -564,25 +564,30 @@ void main() {
   vec3  F_ibl       = F_Schlick_roughness(NoV, F0, roughness);
   vec3  ibl_kD      = (vec3(1.0) - F_ibl) * (1.0 - metallic);
   vec3  ibl_spec    = prefiltered * (F0 * brdf.x + vec3(brdf.y));
-  // W8-AL: gate both env-spec AND env-diffuse on "is there any light
-  // in the scene". W8-AK ungated env-spec so metallics show
-  // reflections when only non-sun lights are on, but the user
-  // reported "all lights off → spheres still visible" — clearly
-  // wrong (the sky is only "visible" because the sun lights it).
-  // Gate scales from 0 (no light) -> 1 (sun on) with a soft floor
-  // when a non-sun rect/spot/point is active so spheres stay
-  // reflective when the scene is lit at all.
-  // W8-AM: drop the any-non-sun floor from 0.45 -> 0.22. The earlier
-  // value let the sky cube reflection out-compete a 2500-lm cyan
-  // rect-area light, so metallic spheres looked like uniform horizon
-  // mirrors instead of cyan-tinted area-light reflections. At 0.22
-  // the sky still contributes a soft fill (~22% energy) when only
-  // local lights are active, but the LTC area term wins on metals.
-  // Sun-on scenes still hit gate = 0.6 + 0.22 = 0.82 (clamped at 1.0
-  // by the sun_i ramp), so daytime scenes lose no IBL brightness.
+  // W8-AP: ungate env-spec entirely; gate ONLY env-diffuse.
+  // User daylight verdict: "en metal olanda ayna gibi yansima
+  // beklerim" - for a chrome ball lit by IBL alone, env-spec IS the
+  // mirror reflection. The prior W8-AM 0.22 floor cut that to 22%
+  // energy, so polished metals looked dim/grey instead of chrome.
+  // Physical reasoning: env-spec is the reflection of a real cube
+  // (already prefiltered by roughness); attenuating it desaturates
+  // the metal F0 chroma and kills the "mirror" cue. Env-diffuse,
+  // however, is the sky's bounce contribution to a Lambertian surface
+  // - that one is legitimately gated by "is the scene lit", because
+  // an unlit room shouldn't get free ambient from a sky cube.
+  //
+  // Sun-off scenes the user iterates: env-spec now contributes 100%
+  // -> mirror chrome on the leftmost column reads as actual sky/area
+  // reflection. Env-diffuse stays gated by sun_i + any_non_sun so
+  // matte spheres still go dark when the scene goes dark.
+  // "All lights off -> spheres still visible" symptom from W8-AL only
+  // re-appears for high-metallic + low-roughness rows where the sky
+  // cube is reflected - which is physically correct (a mirror in a
+  // dark room still reflects whatever stray light hits it). The
+  // dielectric column will go fully dark because env-diffuse IS gated.
   float any_non_sun = (cd_lights.count > 0u) ? 1.0 : 0.0;
-  float ibl_gate    = clamp(sun_i * 0.6 + any_non_sun * 0.22, 0.0, 1.0);
-  vec3  ibl         = (ibl_spec + ibl_kD * irradiance * albedo) * ibl_gate;
+  float diff_gate   = clamp(sun_i * 0.6 + any_non_sun * 0.22, 0.0, 1.0);
+  vec3  ibl         = ibl_spec + ibl_kD * irradiance * albedo * diff_gate;
 
   vec3 color = direct + ibl;
 
