@@ -727,8 +727,11 @@ void main() {
     }
 
     // ---- IBL split-sum (Karis 2013) ----
-    // Env-spec always on (chrome mirrors sky regardless of sun); env-
-    // diffuse gated on sun + any-non-sun so unlit dielectrics go dark.
+    // W8-AY: env-spec ALSO gated on sun. User reported "gunes olmadigi
+    // yerde gokyuzu yansitiyolar" — chrome reflecting sky-without-sun
+    // breaks the lighting consistency. Gate both env-spec and env-
+    // diffuse on the same sun + any-non-sun ramp so dark scenes
+    // produce dark spheres.
     vec3  Ripbr   = reflect(-Vpbr, Npbr);
     float lod_p   = pbr_rough * kIblMaxMipLod;
     vec3  spec_e  = textureLod(cd_ibl_spec, Ripbr, lod_p).rgb;
@@ -739,8 +742,8 @@ void main() {
     vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - pbr_metal);
     vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y));
     float any_non_sun_p = (cd_lights.count > 0u) ? 1.0 : 0.0;
-    float diff_gate_p   = clamp(pc.sun_dir.w * 0.6 + any_non_sun_p * 0.22, 0.0, 1.0);
-    vec3  ibl_term_p    = ibl_spec_p + ibl_kD * diff_e * pbr_albedo * diff_gate_p;
+    float ibl_gate_p    = clamp(pc.sun_dir.w * 0.6 + any_non_sun_p * 0.30, 0.0, 1.0);
+    vec3  ibl_term_p    = (ibl_spec_p + ibl_kD * diff_e * pbr_albedo) * ibl_gate_p;
 
     out_color = vec4(lit_pbr + ibl_term_p, 1.0);
     return;
@@ -2004,14 +2007,16 @@ int main()
     // mips that the chrome row doesn't use anyway. Sun disk + 256
     // env base preserved so the sharp mip-0 lookup has high-frequency
     // features to reflect.
-    std::fprintf(stderr, "[ibl] baking environment cubemap (256, sun-disk)...\n");
-    const auto env_cube_cpu = cd::ibl::bake_sky_cube(256, bake_sky_with_sun);
-    std::fprintf(stderr, "[ibl] convolving diffuse irradiance (32, 32 samples)...\n");
-    const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 32, 32.0F);
-    // W8-AX: spec base 128 → 256 for SHARPER mip-0 chrome reflection.
-    // 64 samples per texel keeps total bake ~10-30s (acceptable boot).
-    std::fprintf(stderr, "[ibl] prefiltering specular mip chain (256 base, 6 mips, 64 samples)...\n");
-    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 256, 6, 64);
+    std::fprintf(stderr, "[ibl] baking environment cubemap (128, sun-disk)...\n");
+    const auto env_cube_cpu = cd::ibl::bake_sky_cube(128, bake_sky_with_sun);
+    std::fprintf(stderr, "[ibl] convolving diffuse irradiance (16, 16 samples)...\n");
+    const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 16.0F);
+    // W8-AY: revert spec base 256 → 128 (boot was uncomfortably long
+    // for marginal visual gain; the soft analytic sky has no high-
+    // frequency content to benefit from the 4x texel count). 32 sample
+    // count gets the bake under ~3 s.
+    std::fprintf(stderr, "[ibl] prefiltering specular mip chain (128 base, 6 mips, 32 samples)...\n");
+    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 128, 6, 32);
     std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
     const auto brdf_lut_cpu  = cd::ibl::bake_brdf_lut(64, 64, 256);
     std::fprintf(stderr, "[ibl] uploading to GPU...\n");
