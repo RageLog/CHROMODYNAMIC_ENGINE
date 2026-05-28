@@ -4656,41 +4656,31 @@ int main()
         // smaller than the bounding sphere).
         const auto frustum = cd::camera::extract_frustum(vp);
         constexpr float kSphereRadius = 0.5F;
-        // W8-F: metallic gradient instead of all-metal-then-plastic.
-        // Pure metallic (1.0) surfaces have kD = 0 and only the narrow
-        // GGX spec lobe — under a single spot they read as "pitch
-        // black except where the half-vector lines up", which the
-        // user reads as "spot isn't lighting the spheres". A
-        // metallic-along-Y palette keeps the showcase intent (artists
-        // can compare different F0 + metallic levels) while
-        // guaranteeing 4 out of 5 rows have a visible diffuse term.
-        //   row 0: white plastic (0.00) dielectric
-        //   row 1: brushed gold  (0.40) partial metal
-        //   row 2: silver        (0.70) mostly metal
-        //   row 3: aluminum      (0.90) almost mirror
-        //   row 4: copper        (1.00) full metal
-        struct PbrPalette { cd::math::Vec3f albedo; float metal; };
-        static constexpr std::array<PbrPalette, kGrid> kRowPalette {{
-            { { 0.95F, 0.95F, 0.95F }, 0.00F },  // white plastic
-            { { 1.00F, 0.86F, 0.57F }, 0.40F },  // brushed gold
-            { { 0.95F, 0.93F, 0.88F }, 0.70F },  // silver
-            { { 0.91F, 0.92F, 0.92F }, 0.90F },  // aluminum
-            { { 0.95F, 0.64F, 0.32F }, 1.00F },  // copper
-        }};
+        // W8-AO: transpose grid axes + drop W8-D roughness floor.
+        // User verdict (daylight): "left = en metalik, sag = en plastik;
+        // en metal olanda ayna gibi yansima ve puruzsuzluk beklerim".
+        //   COLUMN axis now drives metallic (col 0 = 1.0 chrome,
+        //   col kGrid-1 = 0.0 dielectric).
+        //   ROW axis drives roughness (row 0 = 0.04 mirror,
+        //   row kGrid-1 = 1.0 matte).
+        // Albedo is a constant neutral chrome white. Constant albedo is
+        // the standard PBR-showcase rig (learnopengl, Filament sphere
+        // chart) so the eye reads metallic-vs-roughness cleanly instead
+        // of "5 different materials".
+        // W8-D's 0.20 CPU-side roughness floor is removed; the fragment
+        // shader already clamps roughness to 0.04 (mr_amb.y clamp) which
+        // is the physical mirror floor used by Filament + Frostbite.
+        constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
         for (int row = 0; row < kGrid; ++row)
         {
             for (int col = 0; col < kGrid; ++col)
             {
-                const auto& mat = kRowPalette[static_cast<std::size_t>(row)];
-                const float metallic = mat.metal;
-                // W8-D: minimum roughness lifted 0.05 -> 0.20 so even the
-                // leftmost (rough-floor) column has a wide enough spec
-                // lobe to read as "visibly lit" under a spot. With
-                // metallic = 1.0 and roughness < 0.10, the spec cone is
-                // a near-pinpoint mirror reflection and the user reads
-                // the sphere as "unlit" outside the specular spike.
-                const float roughness = 0.20F + (1.0F - 0.20F) *
-                    (static_cast<float>(col) / static_cast<float>(kGrid - 1));
+                // Column 0 = full metal, column kGrid-1 = full dielectric.
+                const float metallic = 1.0F - static_cast<float>(col) /
+                                              static_cast<float>(kGrid - 1);
+                // Row 0 = mirror (0.04), row kGrid-1 = matte (1.0).
+                const float roughness = 0.04F + (1.0F - 0.04F) *
+                    (static_cast<float>(row) / static_cast<float>(kGrid - 1));
                 const float x = (static_cast<float>(col) - 2.0F) * kSpacing;
                 const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
                 const float z = -4.5F;
@@ -4748,9 +4738,9 @@ int main()
                 std::memcpy(pb.mvp, &mvp, sizeof(pb.mvp));
                 // Copper base albedo, tinted by light color so CCT slider
                 // produces a visible warm/cool shift on the spheres.
-                pb.albedo[0] = mat.albedo.x;
-                pb.albedo[1] = mat.albedo.y;
-                pb.albedo[2] = mat.albedo.z;
+                pb.albedo[0] = kChromeAlbedo.x;
+                pb.albedo[1] = kChromeAlbedo.y;
+                pb.albedo[2] = kChromeAlbedo.z;
                 pb.albedo[3] = 1.0F;
                 // R6: mr_amb.z/w now drive Charlie sheen + Filament clearcoat
                 // lobes inside StandardPbrFS - wired from existing UI sliders.
