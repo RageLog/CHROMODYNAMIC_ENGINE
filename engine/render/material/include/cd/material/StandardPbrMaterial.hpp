@@ -478,24 +478,36 @@ void main() {
     }
   }
 
-  // R1: True split-sum IBL — uses bound cubemaps + LUT instead of the
-  // analytical sample_env(). Karis 2013:
-  //   IBL = kD * irradiance(N) * albedo +
-  //         prefiltered(R, roughness * maxMip) * (F0 * brdf.x + brdf.y)
-  // W8-C: gate sun-only. Non-sun lights stay strictly local — user
-  // wants flashlight semantics (cone + shadows + dark outside cone).
-  // Genuine indirect bounce returns with the R4 GI ship.
-  float ibl_gate = clamp(sun_i * 0.6, 0.0, 1.0);
+  // R1 / W8-AK: True split-sum IBL — Karis 2013 / Filament §8.6.2.
+  //   spec_ibl = prefiltered(R, roughness * maxMip) *
+  //              (F0 * brdf.x + brdf.y)
+  //   diff_ibl = (1 - F_roughness(NoV, F0, r)) * (1 - metallic) *
+  //              irradiance(N) * albedo
+  // W8-AK ROOT-CAUSE FIX: the prior `ibl_gate = sun_i * 0.6` gate
+  // multiplied the WHOLE IBL term (env-reflection + sky-diffuse) by
+  // the directional sun intensity. With the sun off — the exact
+  // config the user runs while iterating area lights — every metallic
+  // sphere lost its environment reflection and rendered as the direct
+  // lobe alone (mostly black for high-metallic / low-roughness rows).
+  // Fix: env-specular reflections are ALWAYS visible (the sky is
+  // visible whether the artistic sun term is dialled in or not).
+  // Diffuse-indirect stays gated by sky visibility so we do not
+  // double-count bounce when the sun key is hot; the gate is a soft
+  // ceiling at 0.55 + 0.45 * sun_i so even sun-off scenes get a
+  // visible ambient diffuse fill from the sky cube. Karis kD now
+  // uses F_Schlick_roughness for the energy split (correct), and
+  // the BRDF LUT only scales the SPECULAR Fresnel as intended.
   vec3  R           = reflect(-V, N);
   float spec_lod    = roughness * kIblMaxMipLod;
   vec3  prefiltered = textureLod(cd_ibl_spec, R, spec_lod).rgb;
   vec3  irradiance  = texture(cd_ibl_diff, N).rgb;
   vec2  brdf        = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
                                                 clamp(roughness, 0.0, 1.0))).rg;
-  vec3  ibl_F       = F0 * brdf.x + vec3(brdf.y);
-  vec3  ibl_kD      = (vec3(1.0) - ibl_F) * (1.0 - metallic);
-  vec3  ibl         = (ibl_kD * irradiance * albedo + prefiltered * ibl_F) *
-                      ibl_gate * 0.6;
+  vec3  F_ibl       = F_Schlick_roughness(NoV, F0, roughness);
+  vec3  ibl_kD      = (vec3(1.0) - F_ibl) * (1.0 - metallic);
+  vec3  ibl_spec    = prefiltered * (F0 * brdf.x + vec3(brdf.y));
+  float diff_gate   = clamp(0.55 + 0.45 * sun_i, 0.0, 1.0);
+  vec3  ibl         = ibl_spec + ibl_kD * irradiance * albedo * diff_gate;
 
   vec3 color = direct + ibl;
 
