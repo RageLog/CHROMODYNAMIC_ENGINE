@@ -441,6 +441,124 @@ struct Histogram
     }
 };
 
+// =============================================================================
+// Phase 295 / Marathon Run 7 sub-N1G: scene-bootstrap helpers extracted
+// from main(). These are sample-local (operate on the anon-namespace
+// SceneEntity / PrimitiveKind) so they live in main.cpp rather than a
+// library header. main() shrinks and the boot region reads as four
+// named call sites instead of three nested initializer blocks.
+// =============================================================================
+
+// ---- setup_world_container ------------------------------------------------
+// Build the passive editor outliner backing: one Project, one Main
+// Level with stadium-sized bounds, two layers ("Lights", "UI"). The
+// resulting World is purely descriptive metadata for the Outliner
+// panel; entities still live in the ECS Scene.
+inline void setup_world_container(cd::world_container::World& w)
+{
+    w.set_name("Sample World");
+    auto proj = std::make_unique<cd::world_container::Project>("Sample Project");
+    auto* lvl = proj->add_level("Main");
+    lvl->bounds().min = { -40.0F, -2.0F, -40.0F };
+    lvl->bounds().max = { 40.0F, 10.0F, 40.0F };
+    lvl->add_layer("Lights");
+    lvl->add_layer("UI");
+    w.set_project(std::move(proj));
+}
+
+// ---- spawn_primitive_seeds -----------------------------------------------
+// Spawn the original 5-primitive showcase row (Cube/Sphere/Cone/
+// Cylinder/Torus) across x=-2.4..+2.4 at y=0. The saturated artistic
+// palette preserves enough off-channel content for each tint to read
+// distinctly without going to pure RGB.
+inline void spawn_primitive_seeds(cd::scene::Scene& scene,
+                                  std::vector<SceneEntity>& entities)
+{
+    struct Seed
+    {
+        const char* name;
+        cd::math::Vec3f pos;
+        cd::math::Vec3f tint;
+        PrimitiveKind k;
+    };
+    const std::array<Seed, 5> seeds {
+        {
+            { "Cube",     { -2.4F, 0.0F, 0.0F }, { 1.00F, 0.10F, 0.10F }, PrimitiveKind::kCube     },
+            { "Sphere",   { -1.2F, 0.0F, 0.0F }, { 0.20F, 0.95F, 0.30F }, PrimitiveKind::kSphere   },
+            { "Cone",     {  0.0F, 0.0F, 0.0F }, { 0.15F, 0.40F, 1.00F }, PrimitiveKind::kCone     },
+            { "Cylinder", {  1.2F, 0.0F, 0.0F }, { 1.00F, 0.75F, 0.15F }, PrimitiveKind::kCylinder },
+            { "Torus",    {  2.4F, 0.0F, 0.0F }, { 0.90F, 0.15F, 0.90F }, PrimitiveKind::kTorus    },
+        }
+    };
+    for (const auto& s : seeds)
+    {
+        SceneEntity e;
+        e.handle = scene.create_node();
+        e.name = s.name;
+        e.tint = s.tint;
+        e.kind = s.k;
+        scene.local(e.handle)->value.position = s.pos;
+        entities.push_back(std::move(e));
+    }
+}
+
+// ---- spawn_gltf_or_earth_entity ------------------------------------------
+// Spawn the "lead actor" entity at x=-4.5. When a real glTF mesh was
+// loaded at boot, place the imported character with the Z-up -> Y-up
+// (-90 deg about X) correction Cesium scenes need. Otherwise spawn
+// the procedural Earth-like showcase sphere at the same off-row
+// anchor so the procedural fallback does not clip into the Cone at
+// origin. Kind stays kGltf either way - mesh_for(kGltf) selects the
+// imported VB when valid, sphere VB otherwise.
+inline void spawn_gltf_or_earth_entity(cd::scene::Scene& scene,
+                                       const GpuMesh& gltf_mesh,
+                                       std::string_view gltf_loaded_name,
+                                       std::vector<SceneEntity>& entities)
+{
+    SceneEntity e;
+    e.handle = scene.create_node();
+    if (gltf_mesh.vb.is_valid())
+    {
+        e.name = std::string { "glTF (" } + std::string { gltf_loaded_name } + ")";
+        scene.local(e.handle)->value.position = { -4.5F, -0.55F, 0.0F };
+        scene.local(e.handle)->value.scale = { 2.2F, 2.2F, 2.2F };
+        // X -90 deg rotation (Z-up -> Y-up).
+        scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
+    }
+    else
+    {
+        e.name = "Earth (procedural showcase)";
+        scene.local(e.handle)->value.position = { -4.5F, 0.7F, 0.0F };
+        scene.local(e.handle)->value.scale = { 1.5F, 1.5F, 1.5F };
+    }
+    e.tint = { 1.0F, 1.0F, 1.0F };
+    e.kind = PrimitiveKind::kGltf;
+    entities.push_back(std::move(e));
+}
+
+// ---- spawn_pbr_grid_entities ---------------------------------------------
+// Consume the 4x4 PbrGridSlot array from HelloPbrGrid.hpp and assemble
+// one SceneEntity per slot. Sample-local SceneEntity / PrimitiveKind
+// assembly stays here; pure data + math lives in the header.
+inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
+                                    std::vector<SceneEntity>& entities)
+{
+    for (const auto& slot : cd::hello_engine::build_pbr_demo_grid())
+    {
+        SceneEntity e;
+        e.handle = scene.create_node();
+        e.name = slot.name;
+        e.kind = PrimitiveKind::kSphere;
+        e.tint = slot.tint;
+        e.is_pbr = true;
+        e.metallic = slot.metallic;
+        e.roughness = slot.roughness;
+        scene.local(e.handle)->value.position = slot.position;
+        scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
+        entities.push_back(std::move(e));
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -1800,130 +1918,28 @@ int main()
     };
 
     // ---- World / Project / Level / Layer container (gap #18) ----
-    // Passive editor outliner backing - shows the production
-    // hierarchy in the new Outliner panel. Entities still live in
-    // the ECS scene; the outliner groups them under layers by name.
+    // Phase 295 / Marathon Run 7 sub-N1G: assembly moved to
+    // setup_world_container() in the anon namespace above. Passive
+    // editor outliner backing - entities still live in the ECS scene;
+    // the outliner just groups them under layers by name.
     cd::world_container::World cd_world;
-    cd_world.set_name("Sample World");
-    {
-        auto proj = std::make_unique<cd::world_container::Project>("Sample Project");
-        auto* lvl = proj->add_level("Main");
-        lvl->bounds().min = { -40.0F, -2.0F, -40.0F };
-        lvl->bounds().max = { 40.0F, 10.0F, 40.0F };
-        lvl->add_layer("Lights");
-        lvl->add_layer("UI");
-        cd_world.set_project(std::move(proj));
-    }
+    setup_world_container(cd_world);
 
     std::vector<SceneEntity> entities;
     {
-        struct Seed
-        {
-            const char* name;
-            cd::math::Vec3f pos;
-            cd::math::Vec3f tint;
-            PrimitiveKind k;
-        };
-
-        const std::array<Seed, 5> seeds {
-            {
-             // Saturated artistic palette - more vibrant than the v0.99.110
-                // measurement palette, picks up enough off-channel content
-                // to read as distinct material tints without going to pure
-                // RGB.
-                { "Cube", { -2.4F, 0.0F, 0.0F }, { 1.00F, 0.10F, 0.10F }, PrimitiveKind::kCube },
-             { "Sphere", { -1.2F, 0.0F, 0.0F }, { 0.20F, 0.95F, 0.30F }, PrimitiveKind::kSphere },
-             { "Cone", { 0.0F, 0.0F, 0.0F }, { 0.15F, 0.40F, 1.00F }, PrimitiveKind::kCone },
-             { "Cylinder", { 1.2F, 0.0F, 0.0F }, { 1.00F, 0.75F, 0.15F }, PrimitiveKind::kCylinder },
-             { "Torus", { 2.4F, 0.0F, 0.0F }, { 0.90F, 0.15F, 0.90F }, PrimitiveKind::kTorus },
-             }
-        };
-        for (const auto& s : seeds)
-        {
-            SceneEntity e;
-            e.handle = scene.create_node();
-            e.name = s.name;
-            e.tint = s.tint;
-            e.kind = s.k;
-            scene.local(e.handle)->value.position = s.pos;
-            entities.push_back(std::move(e));
-        }
+        // Phase 295 / sub-N1G: primitive showcase row + gltf/earth +
+        // PBR-grid spawn extracted to three named helpers above.
+        spawn_primitive_seeds(scene, entities);
         // glTF entity - seeded when auto-loader resolves an asset, OR
         // (R1.5 showcase) a procedural Earth-like textured sphere.
-        // mesh_for(kGltf) returns gltf_mesh if valid else sphere_mesh.
-        // BLAS stays empty when no real glTF - the procedural Earth
-        // entity doesn't need its own BLAS for prim-shader rendering
-        // (RT shadows for it would just sample the existing sphere
-        // BLAS, but we accept the per-instance shadow gap as a small
-        // visual-only issue for the procedural showcase).
-        {
-            SceneEntity e;
-            e.handle = scene.create_node();
-            if (gltf_mesh.vb.is_valid())
-            {
-                e.name = "glTF (" + gltf_loaded_name + ")";
-                // Place the imported character to the LEFT of the primitive
-                // row so it's clearly visible without overlapping the
-                // Cube/Sphere/Cone/Cylinder/Torus row (which occupies
-                // x = -2.4 .. +2.4 at y=0). Position at x=-4.5 keeps
-                // it within the showcase frame while reading as the
-                // "lead actor" (user-reported B02 + missing-character).
-                scene.local(e.handle)->value.position = { -4.5F, -0.55F, 0.0F };
-                scene.local(e.handle)->value.scale = { 2.2F, 2.2F, 2.2F };
-                // X -90? rotation (Z-up -> Y-up). CesiumMan's original
-                // model has -Y forward in Cesium space; after -90? about
-                // X, -Y maps to +Z (toward camera). No extra Y flip.
-                scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
-            }
-            else
-            {
-                e.name = "Earth (procedural showcase)";
-                // Same off-row placement when the glTF isn't found, so the
-                // procedural fallback doesn't clip into the Cone at origin.
-                scene.local(e.handle)->value.position = { -4.5F, 0.7F, 0.0F };
-                scene.local(e.handle)->value.scale = { 1.5F, 1.5F, 1.5F };
-            }
-            e.tint = { 1.0F, 1.0F, 1.0F };
-            e.kind = PrimitiveKind::kGltf;
-            entities.push_back(std::move(e));
-        }
+        // Phase 295 / sub-N1G: assembly extracted to
+        // spawn_gltf_or_earth_entity() above.
+        spawn_gltf_or_earth_entity(scene, gltf_mesh, gltf_loaded_name, entities);
         // ---- W8-AR: 16 PBR sphere ECS entities (4x4 metallic/rough grid) ----
-        // Phase 294 / Marathon Run 7 sub-N1F: spawn data + grid math
-        // moved to HelloPbrGrid.hpp (cd::hello_engine::build_pbr_demo_grid).
-        // hello_engine still owns the SceneEntity assembly because
-        // SceneEntity / PrimitiveKind are sample-local types.
-        //
-        // Background (preserved for future readers):
-        //   User verdict on the W8-AQ dedicated grid: "arkdaki pbr grid kureler
-        //   komple sil onlar yanlis. gunes off oluncada gorunuyor. bastan
-        //   yazacagiz o kureleri ... ayni diger objeler gibi sahneye konmus
-        //   cisimler yapacagiz. yine 16 tane kure ve farkli ozellikleri olacak
-        //   ama sahnede bulunan ecs bagli objeler butunu olmalilar".
-        //   Translation: delete the dedicated grid; the spheres must be ECS
-        //   entities placed in the scene like every other object, 16 of them
-        //   with varied PBR properties — part of the same ECS entity set.
-        //   Implementation: each sphere is a SceneEntity with is_pbr=true.
-        //   The entity render loop detects is_pbr and pushes the tint.w==3.0
-        //   sentinel + metallic/roughness in fx_params4.xy, so exactly the
-        //   same shader/pipeline/shadow path handles them as every other
-        //   primitive. No separate grid loop, no separate material, no
-        //   separate planar-shadow caster. Gradient: column = metallic
-        //   (left=1 chrome → right=0 dielectric), row = roughness
-        //   (top=0.04 mirror → bottom=1.0 matte).
-        for (const auto& slot : cd::hello_engine::build_pbr_demo_grid())
-        {
-            SceneEntity e;
-            e.handle = scene.create_node();
-            e.name = slot.name;
-            e.kind = PrimitiveKind::kSphere;
-            e.tint = slot.tint;
-            e.is_pbr = true;
-            e.metallic = slot.metallic;
-            e.roughness = slot.roughness;
-            scene.local(e.handle)->value.position = slot.position;
-            scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
-            entities.push_back(std::move(e));
-        }
+        // Phase 295 / sub-N1G: SceneEntity assembly extracted to
+        // spawn_pbr_grid_entities() above; spawn data + grid math
+        // live in HelloPbrGrid.hpp (Phase 294 / sub-N1F).
+        spawn_pbr_grid_entities(scene, entities);
     }
     log_push(
         std::string { "[boot] " } + std::to_string(entities.size()) + " ECS entities spawned" +
