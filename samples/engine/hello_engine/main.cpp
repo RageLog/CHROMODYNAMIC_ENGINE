@@ -2191,6 +2191,71 @@ inline void fill_prim_push_shared(PrimPush& pp,
     pp.camera_pos[3] = 0.0F;
 }
 
+// ---- draw_sky_pass --------------------------------------------------------
+// Rebuild the camera-space basis (fwd / right / up + half-extents),
+// fill cd::material::AnalyticalSkyPush, then apply the sky material +
+// push constants + draw the fullscreen triangle. Tints the sky with the
+// directional sun_col at full sky-tint blend so the CCT slider in the
+// Lights panel propagates to the sky too.
+inline void draw_sky_pass(cd::rhi::ICommandBuffer& cmd,
+                          const cd::camera::Camera& cam,
+                          float aspect,
+                          const SunLight& sun,
+                          cd::material::Material& sky_material)
+{
+    cd::math::Vec3f forward { cam.target.x - cam.eye.x,
+                              cam.target.y - cam.eye.y,
+                              cam.target.z - cam.eye.z };
+    const float fl = std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+    forward.x /= fl;
+    forward.y /= fl;
+    forward.z /= fl;
+    constexpr cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+    cd::math::Vec3f sky_right { forward.y * world_up.z - forward.z * world_up.y,
+                                forward.z * world_up.x - forward.x * world_up.z,
+                                forward.x * world_up.y - forward.y * world_up.x };
+    const float rl = std::sqrt(sky_right.x * sky_right.x + sky_right.y * sky_right.y + sky_right.z * sky_right.z);
+    sky_right.x /= rl;
+    sky_right.y /= rl;
+    sky_right.z /= rl;
+    const cd::math::Vec3f sky_up { sky_right.y * forward.z - sky_right.z * forward.y,
+                                   sky_right.z * forward.x - sky_right.x * forward.z,
+                                   sky_right.x * forward.y - sky_right.y * forward.x };
+    const float half_h = std::tan(cam.fov_y * 0.5F);
+    const float half_w = half_h * aspect;
+
+    cd::material::AnalyticalSkyPush spush {};
+    spush.cam_right[0] = sky_right.x;
+    spush.cam_right[1] = sky_right.y;
+    spush.cam_right[2] = sky_right.z;
+    spush.cam_right[3] = half_w;
+    spush.cam_up[0] = sky_up.x;
+    spush.cam_up[1] = sky_up.y;
+    spush.cam_up[2] = sky_up.z;
+    spush.cam_up[3] = half_h;
+    spush.cam_fwd[0] = forward.x;
+    spush.cam_fwd[1] = forward.y;
+    spush.cam_fwd[2] = forward.z;
+    spush.cam_fwd[3] = 0.0F;
+    spush.sun_dir[0] = sun.dir.x;
+    spush.sun_dir[1] = sun.dir.y;
+    spush.sun_dir[2] = sun.dir.z;
+    spush.sun_dir[3] = sun.strength;
+    spush.sun_color[0] = sun.col.x;
+    spush.sun_color[1] = sun.col.y;
+    spush.sun_color[2] = sun.col.z;
+    spush.sun_color[3] = 1.0F;  // full sky-tint blend
+    sky_material.apply(cmd);
+    cmd.push_constants(
+        sky_material.pipeline_layout(),
+        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+        0,
+        sizeof(spush),
+        &spush
+    );
+    cmd.draw(3, 1, 0, 0);
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6057,77 +6122,11 @@ int main()
             vp[c][1] += jy_ndc * vp_unjittered[c][3];
         }
 
-        // ---- Sky pass ----
-        cd::math::Vec3f forward { cam.target.x - cam.eye.x, cam.target.y - cam.eye.y, cam.target.z - cam.eye.z };
-        const float fl = std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
-        forward.x /= fl;
-        forward.y /= fl;
-        forward.z /= fl;
-        constexpr cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
-        cd::math::Vec3f sky_right { forward.y * world_up.z - forward.z * world_up.y,
-                                    forward.z * world_up.x - forward.x * world_up.z,
-                                    forward.x * world_up.y - forward.y * world_up.x };
-        const float rl = std::sqrt(sky_right.x * sky_right.x + sky_right.y * sky_right.y + sky_right.z * sky_right.z);
-        sky_right.x /= rl;
-        sky_right.y /= rl;
-        sky_right.z /= rl;
-        const cd::math::Vec3f sky_up { sky_right.y * forward.z - sky_right.z * forward.y,
-                                       sky_right.z * forward.x - sky_right.x * forward.z,
-                                       sky_right.x * forward.y - sky_right.y * forward.x };
-        const float half_h = std::tan(cam.fov_y * 0.5F);
-        const float half_w = half_h * aspect;
+        // ---- Sun resolve (sky + floor + entity passes all need it) ----
+        const SunLight sun = resolve_sun_light(lights);
 
-        cd::material::AnalyticalSkyPush spush {};
-        spush.cam_right[0] = sky_right.x;
-        spush.cam_right[1] = sky_right.y;
-        spush.cam_right[2] = sky_right.z;
-        spush.cam_right[3] = half_w;
-        spush.cam_up[0] = sky_up.x;
-        spush.cam_up[1] = sky_up.y;
-        spush.cam_up[2] = sky_up.z;
-        spush.cam_up[3] = half_h;
-        spush.cam_fwd[0] = forward.x;
-        spush.cam_fwd[1] = forward.y;
-        spush.cam_fwd[2] = forward.z;
-        spush.cam_fwd[3] = 0.0F;
-        // Phase G - sky pulls sun direction + intensity + color from
-        // the first enabled directional light. CCT slider in the
-        // Lights panel now affects the SKY tint too (sunset feel at
-        // 2000-3000K, neutral at D65, cold blue at 10000K).
-        // Defaults must be ZERO so disabling every directional light
-        // leaves the sky truly dark - the prior 0.9 default caused
-        // the 'all-lights-off => bright white sky' bug.
-        cd::math::Vec3f sky_sun_dir { -0.4F, -0.6F, -0.7F };
-        cd::math::Vec3f sky_sun_col { 0.0F, 0.0F, 0.0F };
-        float sky_sun_strength = 0.0F;
-        for (const auto& lrow : lights)
-        {
-            if (!lrow.enabled)
-                continue;
-            if (lrow.light.type != cd::light::LightType::kDirectional)
-                continue;
-            sky_sun_dir = lrow.light.direction;
-            sky_sun_col = lrow.light.color;
-            sky_sun_strength = std::min(2.5F, lrow.light.intensity / 80000.0F);
-            break;
-        }
-        spush.sun_dir[0] = sky_sun_dir.x;
-        spush.sun_dir[1] = sky_sun_dir.y;
-        spush.sun_dir[2] = sky_sun_dir.z;
-        spush.sun_dir[3] = sky_sun_strength;
-        spush.sun_color[0] = sky_sun_col.x;
-        spush.sun_color[1] = sky_sun_col.y;
-        spush.sun_color[2] = sky_sun_col.z;
-        spush.sun_color[3] = 1.0F;  // full sky-tint blend
-        sky_material.apply(cmd);
-        cmd.push_constants(
-            sky_material.pipeline_layout(),
-            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-            0,
-            sizeof(spush),
-            &spush
-        );
-        cmd.draw(3, 1, 0, 0);
+        // ---- Sky pass ----
+        draw_sky_pass(cmd, cam, aspect, sun, sky_material);
 
         // W8-AR: dedicated PBR-grid draw block REMOVED. The 16 PBR demo
         // spheres are ECS entities now (boot block, search "is_pbr =
@@ -6135,11 +6134,6 @@ int main()
         // every other primitive. One render path, one shader, one shadow
         // pass — PBR is just a per-entity attribute (SceneEntity::is_pbr).
 
-        // ---- ECS entity primitives row (front of the viewport) ----
-        // Per-fragment lighting: sun + first enabled point light with distance
-        // attenuation. resolve_sun_light() returns zeroed defaults when no
-        // directional is enabled so the scene goes to (near-)black.
-        const SunLight sun = resolve_sun_light(lights);
         // ---- Multi-light UBO fill (gap #2) ----
         upload_multi_light_ubo(device, lights_ubo, lights, counters);
 
