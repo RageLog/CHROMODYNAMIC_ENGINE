@@ -146,6 +146,7 @@
 
 #include "PrimShader.hpp"
 #include "HelloLighting.hpp"
+#include "HelloRayQuery.hpp"
 
 
 namespace
@@ -981,14 +982,11 @@ int main()
     // Filled host-side in the same loop that pushes TLAS instances,
     // so the GPU index from rayQueryGetIntersectionInstanceIdEXT
     // lines up 1:1 with cd_instance_mats.data[i].
-    struct InstanceMatGpu
-    {
-        float albedo[4];
-        float emissive[4];
-    };
-
-    constexpr std::uint32_t kMaxInstMats = 256;
-    constexpr std::uint32_t kInstMatBytes = kMaxInstMats * sizeof(InstanceMatGpu);
+    // Phase 293 / Marathon Run 7 sub-N1E: InstanceMatGpu + kMaxInstMats +
+    // kInstMatBytes layouts moved to HelloRayQuery.hpp.
+    using cd::hello_engine::InstanceMatGpu;
+    using cd::hello_engine::kMaxInstMats;
+    using cd::hello_engine::kInstMatBytes;
     cd::rhi::BufferDesc inst_mat_desc {};
     inst_mat_desc.size = kInstMatBytes;
     inst_mat_desc.usage = cd::rhi::BufferUsage::kStorage | cd::rhi::BufferUsage::kTransferDst;
@@ -4040,27 +4038,9 @@ int main()
             {
                 if (!blas.is_valid())
                     return;
-                cd::rhi::AccelInstance inst {};
-                // 3?-4 row-major transform from column-major Mat4f.
-                for (std::size_t r = 0; r < 3; ++r)
-                {
-                    inst.transform[r * 4 + 0] = m[0][r];
-                    inst.transform[r * 4 + 1] = m[1][r];
-                    inst.transform[r * 4 + 2] = m[2][r];
-                    inst.transform[r * 4 + 3] = m[3][r];
-                }
-                inst.blas = blas;
-                inst.mask = 0xFFu;
-                instances.push_back(inst);
+                instances.push_back(cd::hello_engine::make_accel_instance(blas, m));
                 InstanceMatGpu im {};
-                im.albedo[0] = albedo.x;
-                im.albedo[1] = albedo.y;
-                im.albedo[2] = albedo.z;
-                im.albedo[3] = 1.0F;
-                im.emissive[0] = 0.0F;
-                im.emissive[1] = 0.0F;
-                im.emissive[2] = 0.0F;
-                im.emissive[3] = 0.0F;
+                cd::hello_engine::fill_inst_mat(im, albedo);
                 inst_mats.push_back(im);
             };
             // W8-AV: PBR spheres back in TLAS as RT occluders too.
@@ -4096,26 +4076,9 @@ int main()
                     if (!blas.is_valid())
                         return;
                     const auto m = cd::math::to_mat4(lt->value);
-                    cd::rhi::AccelInstance inst {};
-                    for (std::size_t r = 0; r < 3; ++r)
-                    {
-                        inst.transform[r * 4 + 0] = m[0][r];
-                        inst.transform[r * 4 + 1] = m[1][r];
-                        inst.transform[r * 4 + 2] = m[2][r];
-                        inst.transform[r * 4 + 3] = m[3][r];
-                    }
-                    inst.blas = blas;
-                    inst.mask = 0xFFu;
-                    ent_inst_scratch[i] = inst;
+                    ent_inst_scratch[i] = cd::hello_engine::make_accel_instance(blas, m);
                     InstanceMatGpu im {};
-                    im.albedo[0] = ent.tint.x;
-                    im.albedo[1] = ent.tint.y;
-                    im.albedo[2] = ent.tint.z;
-                    im.albedo[3] = 1.0F;
-                    im.emissive[0] = 0.0F;
-                    im.emissive[1] = 0.0F;
-                    im.emissive[2] = 0.0F;
-                    im.emissive[3] = 0.0F;
+                    cd::hello_engine::fill_inst_mat(im, ent.tint);
                     ent_mat_scratch[i] = im;
                     ent_valid[i] = 1u;
                 }
