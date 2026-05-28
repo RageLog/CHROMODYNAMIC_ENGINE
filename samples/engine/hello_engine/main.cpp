@@ -2119,6 +2119,42 @@ inline void upload_multi_light_ubo(cd::rhi::IDevice& device,
     counters.set("lights_active", ubo.count);
 }
 
+// ---- SunLight + resolve_sun_light -----------------------------------------
+// Per-frame extracted from main loop in phase 307 (N4B). The sun slot
+// (direction + linear RGB + clamped strength + ambient hemisphere weight)
+// is rebuilt every frame from the first enabled directional light. If no
+// directional light is enabled, every field stays at the dark default so
+// the scene fades to (near-)black -- user feedback: "isik yoksa golge
+// yada isik beklemem".
+struct SunLight
+{
+    cd::math::Vec3f dir { 0.0F, -1.0F, 0.0F };
+    cd::math::Vec3f col { 0.0F, 0.0F, 0.0F };
+    float strength { 0.0F };
+    float ambient_w { 0.0F };
+    bool has_sun { false };
+};
+
+inline SunLight resolve_sun_light(const std::vector<LightRow>& lights)
+{
+    SunLight s {};
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (lrow.light.type != cd::light::LightType::kDirectional)
+            continue;
+        s.dir = lrow.light.direction;
+        s.col = lrow.light.color;
+        s.strength = std::min(2.5F, lrow.light.intensity / 80000.0F);
+        // Sky hemisphere tied to sun being enabled: no sun, no sky bounce.
+        s.ambient_w = 0.18F;
+        s.has_sun = true;
+        break;
+    }
+    return s;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6064,36 +6100,10 @@ int main()
         // pass — PBR is just a per-entity attribute (SceneEntity::is_pbr).
 
         // ---- ECS entity primitives row (front of the viewport) ----
-        // Per-fragment lighting now: sun + first enabled point light with
-        // distance attenuation. So rotating/moving an entity (or moving
-        // a light) updates its shading correctly.
-        // Lights-off baseline: NOTHING contributes. Defaults are
-        // intentionally zeroed so the scene goes to (near-)black when
-        // every light is disabled - user feedback: "isik yoksa golge
-        // yada isik beklemem". The for-loop below promotes the first
-        // enabled directional to the sun slot; absent that, sun_str
-        // stays 0 and the FS sun term contributes nothing.
-        cd::math::Vec3f sun_dir { 0.0F, -1.0F, 0.0F };
-        cd::math::Vec3f sun_col { 0.0F, 0.0F, 0.0F };
-        float sun_str = 0.0F;
-        float ambient_w = 0.0F;
-        bool has_sun = false;
-        for (const auto& lrow : lights)
-        {
-            if (!lrow.enabled)
-                continue;
-            if (lrow.light.type != cd::light::LightType::kDirectional)
-                continue;
-            sun_dir = lrow.light.direction;
-            sun_col = lrow.light.color;
-            sun_str = std::min(2.5F, lrow.light.intensity / 80000.0F);
-            // Sky hemisphere tied to sun being enabled: no sun, no
-            // sky bounce - the universe is dark.
-            ambient_w = 0.18F;
-            has_sun = true;
-            break;
-        }
-        (void)has_sun;
+        // Per-fragment lighting: sun + first enabled point light with distance
+        // attenuation. resolve_sun_light() returns zeroed defaults when no
+        // directional is enabled so the scene goes to (near-)black.
+        const SunLight sun = resolve_sun_light(lights);
         // ---- Multi-light UBO fill (gap #2) ----
         upload_multi_light_ubo(device, lights_ubo, lights, counters);
 
@@ -6132,14 +6142,14 @@ int main()
             fp.tint[1] = 0.16F;
             fp.tint[2] = 0.18F;
             fp.tint[3] = 2.0F;
-            fp.sun_dir[0] = sun_dir.x;
-            fp.sun_dir[1] = sun_dir.y;
-            fp.sun_dir[2] = sun_dir.z;
-            fp.sun_dir[3] = sun_str;
-            fp.sun_color[0] = sun_col.x;
-            fp.sun_color[1] = sun_col.y;
-            fp.sun_color[2] = sun_col.z;
-            fp.sun_color[3] = ambient_w;
+            fp.sun_dir[0] = sun.dir.x;
+            fp.sun_dir[1] = sun.dir.y;
+            fp.sun_dir[2] = sun.dir.z;
+            fp.sun_dir[3] = sun.strength;
+            fp.sun_color[0] = sun.col.x;
+            fp.sun_color[1] = sun.col.y;
+            fp.sun_color[2] = sun.col.z;
+            fp.sun_color[3] = sun.ambient_w;
             fp.fx_params[0] = static_cast<float>(fx.tonemap_op);
             fp.fx_params[1] = 0.0F;
             // Floor opts out of GTAO crease darkening - its normal is
@@ -6208,14 +6218,14 @@ int main()
                 pp.tint[1] = ent.tint.y;
                 pp.tint[2] = ent.tint.z;
                 pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
-                pp.sun_dir[0] = sun_dir.x;
-                pp.sun_dir[1] = sun_dir.y;
-                pp.sun_dir[2] = sun_dir.z;
-                pp.sun_dir[3] = sun_str;
-                pp.sun_color[0] = sun_col.x;
-                pp.sun_color[1] = sun_col.y;
-                pp.sun_color[2] = sun_col.z;
-                pp.sun_color[3] = ambient_w;
+                pp.sun_dir[0] = sun.dir.x;
+                pp.sun_dir[1] = sun.dir.y;
+                pp.sun_dir[2] = sun.dir.z;
+                pp.sun_dir[3] = sun.strength;
+                pp.sun_color[0] = sun.col.x;
+                pp.sun_color[1] = sun.col.y;
+                pp.sun_color[2] = sun.col.z;
+                pp.sun_color[3] = sun.ambient_w;
                 pp.fx_params[0] = static_cast<float>(fx.tonemap_op);
                 pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture) ? 1.0F : 0.0F;
                 pp.fx_params[2] = fx.gtao_strength;
@@ -6275,9 +6285,9 @@ int main()
         // (flat dark output, no lighting). Hard shadows - soft shadows
         // need alpha blending in MaterialDesc (Faz 1.6 / future work).
         // Skips when sun is disabled or pointing upward.
-        if (sun_str > 1e-4F && sun_dir.y < -1e-3F)
+        if (sun.strength > 1e-4F && sun.dir.y < -1e-3F)
         {
-            const auto S = make_planar_shadow_matrix(sun_dir, kFloorY, kShadowLift);
+            const auto S = make_planar_shadow_matrix(sun.dir, kFloorY, kShadowLift);
             PrimPush sp {};
             // Shadow tint: tint.w < 0.5 triggers shader bypass; rgb is the
             // shadow color (linear, post-tonemap output).
