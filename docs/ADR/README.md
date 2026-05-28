@@ -50,3 +50,9 @@ Aşağıdaki konular henüz ADR olarak yazılmadı; Phase 1 sonrası beklemede:
 - **Implementation Plan**: [docs/PLAN.md](../PLAN.md) — Phase 2+ adım adım WBS + milestone
 - **CLAUDE.md** (proje kuralı): [/CLAUDE.md](../../CLAUDE.md)
 - **Subagent Suite**: [.claude/agents/](../../.claude/agents/) — 33 ajan
+
+## Implementation-status ADRs
+
+| Date | Subject | Trigger |
+|---|---|---|
+| 2026-05-28 | [Job System Implementation Status & Header-Inline Pattern](ADR-20260528-job-system-design.md) | W8/phase283 - close STATUS_AND_PLAN_W8.md X1 BLOCKER with audit + test gap closure |

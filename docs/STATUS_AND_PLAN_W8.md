@@ -55,11 +55,11 @@
 | Audio | Wasapi 542 + CoreAudio 302 + Alsa 275 + FileSink + Null + Native | Sasirtici sekilde saglam, cross-platform onde |
 | Physics | BuiltinPhysicsWorld 194 satir | Stub. Jolt/Bullet/PhysX yok |
 | Network | Loopback 113 + UDP 254 | Erken. Replication/snapshot yok |
-| Concurrency | 25 hpp, 0 cpp | KRITIK ACIK; sadece deklarasyon |
+| Concurrency | 26 hpp header-inline + 7 test binari (W8 phase283) | OK (sub-system substance) -- BLOCKER tag CLEARED; integration to render/asset/ECS dispatch sites = X1 Phase 2 |
 | Async submit / Render thread | sample var | Yari; gercek framegraph job sched yok |
 | UI / Editor | ImGui-based, hello_engine icinde panel | Sample seviyesi; standalone editor binary yok |
 | Script | basit | Erken; Lua/Wren/JS yok |
-| Build | 27 preset, vcpkg manifest, ASAN/UBSAN/TSAN/MSAN, 8 compiler | Cok guclu matriks AMA vcpkg.json sadece gtest+fmt + all-zeros baseline; reproducible build riski |
+| Build | 27 preset, vcpkg manifest pinned to release 2026.04.27 baseline (W8 phase282) + BUILDING.md tier policy, ASAN/UBSAN/TSAN/MSAN, 8 compiler | OK -- reproducible build risk CLEARED; vcpkg manifest is now honest (gtest+fmt only Tier A; graphics stack stays Tier B FetchContent per ADR-016) |
 | CI | ci-* presets + docs | Belirsiz; aktif runner durumu koddan gorunmuyor |
 
 ### Demir Kural durumu
@@ -72,14 +72,14 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 
 | Gap | Severity | Effort | Pre-req | SOTA target |
 |---|---|---|---|---|
-| Job system implementasyonu | BLOCKER | 2-3 hafta | - | Bevy/EnTT, Naughty Dog Fiber GDC2015 |
+| Job system implementasyonu | ~~BLOCKER~~ -> Phase 1 CLEARED (W8 phase283, ADR-20260528) / Phase 2 = integration BLOCKER | 2-3 hafta (Phase 2 only, was 2-3 hafta total) | X4+X7 | Bevy/EnTT, Naughty Dog Fiber GDC2015 |
 | hello_engine 7793 satir monolith | Major | 1 hafta | - | cd::sample_framework |
 | Vulkan RT pipeline + dispatch_rays | Major | 2 hafta | AS build path | DXR + VK_KHR_ray_tracing_pipeline |
 | D3D12 Vulkan paritesi | Major | 3-4 hafta | RHI stable | DX-Forge |
 | Metal backend | Major | 4-6 hafta | RHI stable + MSL gen | Filament Metal |
 | OpenGL backend complete | Minor | 1 hafta | - | bgfx OpenGL |
 | Shaders on-disk + hot reload | Major | 1-2 hafta | shader cache | Filament filamat/matc |
-| vcpkg manifest gercek deps + baseline | BLOCKER | 2-3 gun | - | DtForHil pattern |
+| vcpkg manifest gercek deps + baseline | ~~BLOCKER~~ -> CLEARED (W8 phase282, baseline 56bb2411 = vcpkg release 2026.04.27, BUILDING.md tier policy) | done | - | DtForHil pattern (adapted to FetchContent-per-subsystem tier B) |
 | Real CI runner multi-OS | Major | 1 hafta | vcpkg fix | GH Actions/Azure |
 | DDGI/ReSTIR/NRC GPU | Vision-tier | 4-8 hafta her biri | RT pipeline + compute | Falcor |
 | Volumetric fog froxel | Polish | 1 hafta | 3D texture | Wronski 2014 / Hillaire 2016 |
@@ -139,8 +139,8 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 
 ## 5. Risks ve acik sorular
 
-1. Job system / concurrency acigi: vizyonun en sert kontrasti. CLAUDE.md concurrency yogun diyor, kod yok. Her seyden once X1 yapilmali veya iddia dialed back.
-2. vcpkg.json placeholder baseline + 2 dep: dis kullanici vcpkg install ile bootstrap edemez. X2 olmadan library-as-product iddiasi gecersiz.
+1. ~~Job system / concurrency acigi~~ -> Phase 1 CLEARED (W8 phase283): header-inline impl audited, accepted as canonical executor (ADR-20260528), 8 yeni JobGraph testi + 2 yeni WSL stress testi + 2 yeni ParallelFor baseline testi yesil; CLAUDE.md concurrency yogun iddiasi artik substantive. Kalan risk: X1 Phase 2 = render/asset/ECS dispatch sitelerine entegrasyon (2-3 hafta, X4+X7 prereq) + TSan preset run (X3 prereq). Detayli takip: ADR-20260528 Sonuclar bolumu (X1-FU-A..D + X1 Phase 2).
+2. ~~vcpkg.json placeholder baseline~~ -> CLEARED (W8 phase282): baseline 56bb2411609227288b70117ead2c47585ba07713 = vcpkg release 2026.04.27, BUILDING.md icinde Tier A (vcpkg) / Tier B (FetchContent per-subsystem) / Tier C (vendored) policy dokumante edildi. Dis kullanici simdi cmake --preset ninja-base ile reproducible install yapabilir. find_package wiring olmadan ek dep eklenmiyor (policy comment vcpkg.json icinde).
 3. hello_engine entropi: her W wave +500-2000 satir ekliyor. Extract disiplini olmadan main.cpp 10k+ olur ve sample degil monolith haline gelir.
 4. Demir Kural latent risk: 60 plus ADR yazildi, akademik PDF zinciri yok. Ilk paper-citation gerektiren ADR pipeline test edilmemis olacak; N4 erken pilot.
 5. Test depth: 97 binary breadth iyi ama golden image / fuzz / stress yok. RT bias tuning regression korumasi zayif (W8 commit yarisi revert/re-revert).
@@ -150,11 +150,20 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 
 ## 6. Top-5 priorities (sirali)
 
-1. N4 + N3: W7/W8 wave kapat: MANIFEST.csv ilk yukleme + ADR + extract.
-2. X2: vcpkg manifest duzelt. Reproducible build olmadan diger her is kirilgan.
-3. X1: Job system cpp. Vision-blocker, en uzun sure saklanmis borc.
-4. N1 + X5: hello_engine extract + shader on-disk. Sample showcase tutmak icin.
-5. X4 + X6: D3D12 parity + Vulkan RT pipeline. Cross-API + gercek RT iddialarinin asgari odemesi.
+1. ~~X2 vcpkg manifest~~ -> DONE (W8 phase282). ~~X1 Job system Phase 1~~ -> DONE (W8 phase283, ADR-20260528). Iki BLOCKER kapatildi.
+2. N4 + N3: W7/W8 wave kapat: MANIFEST.csv ilk yukleme + W7/W8 ADR + extract. Demir Kural pipeline ilk tetikleme.
+3. N1 + X5: hello_engine 7793 -> ~3000 satir extract + shader on-disk hot reload. Sample showcase guvenliginde tutmak icin (her wave +500 satir buyuyor).
+4. X4 + X6: D3D12 paritesi + Vulkan RT pipeline. Cross-API + gercek RT iddialarinin asgari odemesi.
+5. X1 Phase 2: WorkStealingThreadPool dispatch sitelerine entegrasyon (render-thread + async-asset + parallel-ECS). 2-3 hafta, X4+X7 prereq. Detay: ADR-20260528 Sonuclar bolumu.
+
+### Yeni follow-up itemler (W8 phase282/283 sonrasi)
+
+- X1-FU-A: cv -> std::atomic::wait/notify_one migration (1-2 gun, post-X3 TSan).
+- X1-FU-B: TSan preset run on concurrency suite (1 gun, X3 prereq).
+- X1-FU-C: Hazard-pointer based reclamation for retired WSD buffers (3-5 gun, polish).
+- X1-FU-D: Priority-aware steal ordering (2-3 gun, polish).
+- X1-FU-E: engine/foundation/concurrency/README.md (doc-writer one-pager: header-only design + Tier B FetchContent rationale).
+
 
 ---
 

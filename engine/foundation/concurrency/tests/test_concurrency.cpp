@@ -681,3 +681,68 @@ TEST(Flag, WaitUnblocksFromOtherThread)
     EXPECT_TRUE(f.is_raised());
     raiser.join();
 }
+
+// ---------------------------------------------------------------------------
+// Phase 283 / W8 tail - ParallelFor vs std::for_each correctness baseline
+// (closes gap per ADR-20260528-job-system-design D4)
+// ---------------------------------------------------------------------------
+#include <algorithm>
+#include <numeric>
+
+TEST(ParallelFor, MatchesStdForEachBaseline)
+{
+    constexpr std::size_t kN = 4096;
+    std::vector<int> input(kN);
+    std::iota(input.begin(), input.end(), 1);  // 1, 2, 3, ..., kN
+
+    // Reference output via std::for_each (sequential).
+    std::vector<int> reference(kN);
+    std::for_each(
+        input.begin(), input.end(),
+        [&reference, &input](int v)
+        {
+            const auto idx = static_cast<std::size_t>(v - 1);
+            reference[idx] = input[idx] * 3 + 7;
+        }
+    );
+
+    // Parallel output via cd::concurrency::parallel_for.
+    std::vector<int> actual(kN);
+    cd::concurrency::parallel_for(
+        0, kN,
+        [&actual, &input](std::size_t i)
+        {
+            actual[i] = input[i] * 3 + 7;
+        }
+    );
+
+    // Element-wise equality - any chunk-boundary off-by-one would diverge here.
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        ASSERT_EQ(actual[i], reference[i]) << "divergence at index " << i;
+    }
+}
+
+TEST(ParallelFor, MatchesStdForEachWithOddSize)
+{
+    // Odd N intentionally not divisible by worker count to exercise the
+    // chunk-remainder branch.
+    constexpr std::size_t kN = 4097;
+    std::vector<int> reference(kN);
+    std::vector<int> actual(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        reference[i] = static_cast<int>(i * i + 1);
+    }
+    cd::concurrency::parallel_for(
+        0, kN,
+        [&actual](std::size_t i)
+        {
+            actual[i] = static_cast<int>(i * i + 1);
+        }
+    );
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        ASSERT_EQ(actual[i], reference[i]) << "odd-size divergence at index " << i;
+    }
+}

@@ -151,3 +151,73 @@ TEST(WorkStealingThreadPool, NestedSubmitFromWorker)
 }
 
 }  // namespace
+
+// =============================================================================
+// Phase 283 / W8 tail - augmentations per ADR-20260528-job-system-design D4
+// =============================================================================
+
+namespace
+{
+
+TEST(WorkStealingThreadPool, StressTenThousandJobsCompletes)
+{
+    cd::concurrency::WorkStealingThreadPool pool { 4 };
+    constexpr int kN = 10'000;
+    std::atomic<int> counter { 0 };
+    for (int i = 0; i < kN; ++i)
+    {
+        pool.submit_detached(
+            [&counter]
+            {
+                counter.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+    }
+    pool.wait_all();
+    EXPECT_EQ(counter.load(), kN);
+    EXPECT_EQ(pool.pending(), 0u);
+    EXPECT_EQ(pool.stats().tasks_submitted.load(), pool.stats().tasks_completed.load());
+    EXPECT_EQ(pool.stats().detached_exceptions.load(), 0u);
+}
+
+TEST(WorkStealingThreadPool, StealsActuallyFireWhenImbalanced)
+{
+    // With 4 workers and round-robin injection, a heavily front-loaded
+    // submission burst combined with one worker held briefly busy must drive
+    // the other workers to steal. We assert stats().steals > 0 to catch
+    // regressions where the steal path silently breaks (the existing
+    // ImbalancedWorkloadCompletes test only checks completion).
+    if (std::thread::hardware_concurrency() < 2)
+    {
+        GTEST_SKIP() << "single-core host cannot exercise stealing";
+    }
+    cd::concurrency::WorkStealingThreadPool pool { 4 };
+    std::atomic<bool> release { false };
+    pool.submit_detached(
+        [&release]
+        {
+            while (!release.load(std::memory_order_acquire))
+            {
+                std::this_thread::yield();
+            }
+        }
+    );
+    constexpr int kBurst = 2000;
+    std::atomic<int> ran { 0 };
+    for (int i = 0; i < kBurst; ++i)
+    {
+        pool.submit_detached(
+            [&ran]
+            {
+                ran.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+    }
+    release.store(true, std::memory_order_release);
+    pool.wait_all();
+    EXPECT_EQ(ran.load(), kBurst);
+    EXPECT_GT(pool.stats().steals.load(), 0u)
+        << "no steals fired under imbalanced workload - work-stealing path regression";
+}
+
+}  // namespace

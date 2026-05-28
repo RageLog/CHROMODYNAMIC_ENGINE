@@ -27,3 +27,8 @@ cd_add_test(hazard_ptr
   SOURCES test_hazard_ptr.cpp
   DEPS    cd::concurrency cd::core
 )
+
+cd_add_test(job_graph
+  SOURCES test_job_graph.cpp
+  DEPS    cd::concurrency cd::core
+)
