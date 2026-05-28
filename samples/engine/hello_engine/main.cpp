@@ -2478,6 +2478,721 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
     }
 }
 
+// ---- update_and_draw_gizmo --------------------------------------------------
+// Editor gizmo overlay - translate / rotate / scale modes against either an
+// ECS entity or a non-directional light. Heavy ImGui + cd::editor::AxisGizmo
+// + EditHistory plumbing extracted from the render loop in phase 314
+// (Marathon Run 10 N5, the largest single per-frame extraction in this
+// marathon: ~690 lines body).
+inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
+                                  GizmoState& gizmo_state,
+                                  bool& pending_pick,
+                                  int selected,
+                                  SelKind selected_kind,
+                                  std::vector<SceneEntity>& entities,
+                                  std::vector<LightRow>& lights,
+                                  cd::scene::Scene& scene,
+                                  cd::editor::EditHistory& history,
+                                  const std::function<void(std::string)>& log_push,
+                                  const cd::math::Mat4f& vp,
+                                  const cd::camera::Camera& cam,
+                                  cd::platform::IWindow& window,
+                                  cd::rhi::Extent2D extent)
+{
+    // ---- Phase 152 - axis-translation gizmo (ImGui overlay) ----
+    // Project the selected entity's world position to screen,
+    // draw three colored axis arrows, do hover/click drag in
+    // screen-space, map back into world delta along the active
+    // axis, and push a TranslateCommand on release.
+    // Gizmo target can be either an entity transform OR a light's
+    // position. The lambda below makes the same draw + drag code
+    // path applicable to both - point/spot/area lights drag their
+    // position; directional lights have no world position so they
+    // skip the gizmo.
+    auto gizmo_target_pos = [&]() -> cd::math::Vec3f*
+    {
+        if (selected < 0)
+            return nullptr;
+        if (selected_kind == SelKind::kEntity)
+        {
+            if (selected >= static_cast<int>(entities.size()))
+                return nullptr;
+            if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
+                return &lt->value.position;
+            return nullptr;
+        }
+        if (selected_kind == SelKind::kLight)
+        {
+            if (selected >= static_cast<int>(lights.size()))
+                return nullptr;
+            auto& L = lights[static_cast<std::size_t>(selected)].light;
+            if (L.type == cd::light::LightType::kDirectional)
+                return nullptr;
+            return &L.position;
+        }
+        return nullptr;
+    };
+
+    if (!gizmo_state.visible || gizmo_target_pos() == nullptr)
+    {
+        gizmo_state.was_hovered = false;
+    }
+    if (gizmo_state.visible && gizmo_target_pos() != nullptr)
+    {
+        cd::math::Vec3f* target_pos = gizmo_target_pos();
+        // For entity targets, also need transform record for full
+        // rotate/scale ops; for light targets, only position drag.
+        const bool target_is_entity = (selected_kind == SelKind::kEntity);
+        cd::ecs::Entity sel_ent =
+            target_is_entity ? entities[static_cast<std::size_t>(selected)].handle : cd::ecs::Entity {};
+        cd::scene::LocalTransform* lt = target_is_entity ? scene.local(sel_ent) : nullptr;
+        if (target_pos != nullptr)
+        {
+            gizmo.set_target(*target_pos);
+            const float vw = static_cast<float>(extent.width);
+            const float vh = static_cast<float>(extent.height);
+            auto project = [&](const cd::math::Vec3f& p) -> ImVec2
+            {
+                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+                cd::math::Vec4f c {};
+                for (std::size_t r = 0; r < 4; ++r)
+                    c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
+                if (c[3] <= 0.0F)
+                    return ImVec2(-1.0F, -1.0F);
+                return ImVec2((c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+            };
+            const auto& tgt = gizmo.target();
+            constexpr float kAxisLen = 1.5F;
+            const ImVec2 p_org = project(tgt);
+            const ImVec2 p_x = project({ tgt.x + kAxisLen, tgt.y, tgt.z });
+            const ImVec2 p_y = project({ tgt.x, tgt.y + kAxisLen, tgt.z });
+            const ImVec2 p_z = project({ tgt.x, tgt.y, tgt.z + kAxisLen });
+
+            if (p_org.x >= 0.0F)
+            {
+                auto* dl = ImGui::GetForegroundDrawList();
+                auto axis_color_imgui = [](cd::editor::GizmoAxis a)
+                {
+                    const auto c = cd::editor::axis_color(a);
+                    return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0F));
+                };
+                const ImU32 cx = axis_color_imgui(cd::editor::GizmoAxis::kX);
+                const ImU32 cy = axis_color_imgui(cd::editor::GizmoAxis::kY);
+                const ImU32 cz = axis_color_imgui(cd::editor::GizmoAxis::kZ);
+
+                auto thick = [&](cd::editor::GizmoAxis a) -> float
+                {
+                    return (gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
+                };
+
+                dl->AddLine(p_org, p_x, cx, thick(cd::editor::GizmoAxis::kX));
+                dl->AddLine(p_org, p_y, cy, thick(cd::editor::GizmoAxis::kY));
+                dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
+                // Arrowheads (filled triangles).
+                auto arrowhead = [&](ImVec2 from, ImVec2 to, ImU32 col)
+                {
+                    const float dx = to.x - from.x, dy = to.y - from.y;
+                    const float len = std::sqrt(dx * dx + dy * dy);
+                    if (len < 1e-3F)
+                        return;
+                    const float nx = dx / len, ny = dy / len;
+                    const float sx = -ny, sy = nx;
+                    constexpr float kHead = 10.0F;
+                    const ImVec2 a = to;
+                    const ImVec2 b { to.x - nx * kHead + sx * 5.0F, to.y - ny * kHead + sy * 5.0F };
+                    const ImVec2 c { to.x - nx * kHead - sx * 5.0F, to.y - ny * kHead - sy * 5.0F };
+                    dl->AddTriangleFilled(a, b, c, col);
+                };
+                // Mode-specific tip decoration:
+                //   translate ??' arrowheads
+                //   rotate    ??' small circles at tips
+                //   scale     ??' small filled cubes at tips
+                if (gizmo_state.mode == GizmoMode::kTranslate)
+                {
+                    arrowhead(p_org, p_x, cx);
+                    arrowhead(p_org, p_y, cy);
+                    arrowhead(p_org, p_z, cz);
+                }
+                else if (gizmo_state.mode == GizmoMode::kRotate)
+                {
+                    // Draw the standard 3 rotation rings on each
+                    // world-axis plane. Each ring is the projection
+                    // of a unit-radius circle (scaled by kAxisLen)
+                    // in the plane perpendicular to its color axis.
+                    constexpr int kRingSeg = 48;
+                    constexpr float kRingRad = 1.5F;
+                    auto draw_ring = [&](cd::math::Vec3f u, cd::math::Vec3f v, ImU32 c, float t)
+                    {
+                        for (int i = 0; i < kRingSeg; ++i)
+                        {
+                            const float a = static_cast<float>(i) / kRingSeg * 6.2831853F;
+                            const float b = static_cast<float>(i + 1) / kRingSeg * 6.2831853F;
+                            const float ca0 = std::cos(a), sa0 = std::sin(a);
+                            const float cb0 = std::cos(b), sb0 = std::sin(b);
+                            cd::math::Vec3f wa { tgt.x + (u.x * ca0 + v.x * sa0) * kRingRad,
+                                                 tgt.y + (u.y * ca0 + v.y * sa0) * kRingRad,
+                                                 tgt.z + (u.z * ca0 + v.z * sa0) * kRingRad };
+                            cd::math::Vec3f wb { tgt.x + (u.x * cb0 + v.x * sb0) * kRingRad,
+                                                 tgt.y + (u.y * cb0 + v.y * sb0) * kRingRad,
+                                                 tgt.z + (u.z * cb0 + v.z * sb0) * kRingRad };
+                            const auto pa = project(wa);
+                            const auto pb = project(wb);
+                            if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                dl->AddLine(pa, pb, c, t);
+                        }
+                    };
+                    const float th_x = (gizmo.hover() == cd::editor::GizmoAxis::kX) ? 4.0F : 2.0F;
+                    const float th_y = (gizmo.hover() == cd::editor::GizmoAxis::kY) ? 4.0F : 2.0F;
+                    const float th_z = (gizmo.hover() == cd::editor::GizmoAxis::kZ) ? 4.0F : 2.0F;
+                    // Ring around X axis lives in (Y, Z) plane.
+                    draw_ring({ 0, 1, 0 }, { 0, 0, 1 }, cx, th_x);
+                    // Ring around Y axis lives in (X, Z) plane.
+                    draw_ring({ 1, 0, 0 }, { 0, 0, 1 }, cy, th_y);
+                    // Ring around Z axis lives in (X, Y) plane.
+                    draw_ring({ 1, 0, 0 }, { 0, 1, 0 }, cz, th_z);
+                }
+                else  // kScale
+                {
+                    const auto cube_at = [&](ImVec2 c, ImU32 col)
+                    {
+                        const ImVec2 a { c.x - 5, c.y - 5 };
+                        const ImVec2 b { c.x + 5, c.y + 5 };
+                        dl->AddRectFilled(a, b, col);
+                    };
+                    cube_at(p_x, cx);
+                    cube_at(p_y, cy);
+                    cube_at(p_z, cz);
+                }
+                // Mode label.
+                const char* mode_lbl = gizmo_state.mode == GizmoMode::kTranslate ? "T"
+                                       : gizmo_state.mode == GizmoMode::kRotate  ? "R"
+                                                                           : "S";
+                dl->AddText(
+                    ImVec2(p_org.x + 8, p_org.y + 8),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 0.9F)),
+                    mode_lbl
+                );
+
+                // Hover test. Translate/Scale modes measure mouse-to-
+                // axis-line distance (arrows). Rotate mode measures
+                // mouse-to-ring polyline distance (so the user grabs a
+                // ring, not an arrow - feedback "rotation islemini
+                // yeni koydugun cemberler userinden yapabilmek
+                // istiyorum").
+                const ImVec2 mp = ImGui::GetIO().MousePos;
+                auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p)
+                {
+                    const float dx = b.x - a.x, dy = b.y - a.y;
+                    const float L2 = dx * dx + dy * dy;
+                    if (L2 < 1e-4F)
+                        return std::sqrt((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y));
+                    const float t = std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / L2, 0.0F, 1.0F);
+                    const float qx = a.x + t * dx, qy = a.y + t * dy;
+                    return std::sqrt((p.x - qx) * (p.x - qx) + (p.y - qy) * (p.y - qy));
+                };
+                cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
+                float best_d = gizmo.hover_tolerance_pixels;
+                if (gizmo_state.mode == GizmoMode::kRotate)
+                {
+                    // Sample each ring at the same resolution we draw
+                    // it (48 segments); compute min distance from
+                    // mouse to the ring polyline. Cheap (3 ?- 48 = 144
+                    // segments per frame at hover-test time).
+                    constexpr int kHoverSeg = 48;
+                    constexpr float kHoverRad = 1.5F;  // matches kRingRad above
+                    auto ring_dist = [&](cd::math::Vec3f u, cd::math::Vec3f v) -> float
+                    {
+                        float min_d = std::numeric_limits<float>::infinity();
+                        ImVec2 prev {};
+                        bool prev_ok = false;
+                        for (int i = 0; i <= kHoverSeg; ++i)
+                        {
+                            const float a = static_cast<float>(i) / kHoverSeg * 6.2831853F;
+                            const float ca = std::cos(a), sa = std::sin(a);
+                            const cd::math::Vec3f w { tgt.x + (u.x * ca + v.x * sa) * kHoverRad,
+                                                      tgt.y + (u.y * ca + v.y * sa) * kHoverRad,
+                                                      tgt.z + (u.z * ca + v.z * sa) * kHoverRad };
+                            const auto pw = project(w);
+                            if (pw.x >= 0.0F)
+                            {
+                                if (prev_ok)
+                                {
+                                    const float d = dist_to_seg(prev, pw, mp);
+                                    if (d < min_d)
+                                        min_d = d;
+                                }
+                                prev = pw;
+                                prev_ok = true;
+                            }
+                            else
+                            {
+                                prev_ok = false;
+                            }
+                        }
+                        return min_d;
+                    };
+                    const float dx = ring_dist({ 0, 1, 0 }, { 0, 0, 1 });  // X-axis ring lives in YZ
+                    const float dy = ring_dist({ 1, 0, 0 }, { 0, 0, 1 });  // Y-axis ring lives in XZ
+                    const float dz = ring_dist({ 1, 0, 0 }, { 0, 1, 0 });  // Z-axis ring lives in XY
+                    if (dx < best_d)
+                    {
+                        best_d = dx;
+                        best = cd::editor::GizmoAxis::kX;
+                    }
+                    if (dy < best_d)
+                    {
+                        best_d = dy;
+                        best = cd::editor::GizmoAxis::kY;
+                    }
+                    if (dz < best_d)
+                    {
+                        best_d = dz;
+                        best = cd::editor::GizmoAxis::kZ;
+                    }
+                }
+                else  // translate / scale - axis-arrow hover
+                {
+                    if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d)
+                    {
+                        best_d = d;
+                        best = cd::editor::GizmoAxis::kX;
+                    }
+                    if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d)
+                    {
+                        best_d = d;
+                        best = cd::editor::GizmoAxis::kY;
+                    }
+                    if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d)
+                    {
+                        best_d = d;
+                        best = cd::editor::GizmoAxis::kZ;
+                    }
+                }
+                gizmo.set_hover(best);
+                gizmo_state.was_hovered = (best != cd::editor::GizmoAxis::kNone);
+
+                const bool over_imgui_ui = ImGui::GetIO().WantCaptureMouse && ImGui::IsAnyItemHovered();
+                // If the mouse is hovering an axis arrow AND a left-
+                // click is pending from the OS event loop, the gizmo
+                // wins over the 3D pick path - suppress the pick.
+                if (pending_pick && best != cd::editor::GizmoAxis::kNone)
+                {
+                    pending_pick = false;
+                }
+                // Ray-plane projection of a screen pixel onto the
+                // active axis. Returns the signed distance along
+                // the axis from `world_start` to the hit point,
+                // or std::optional() if the plane is too parallel
+                // to the camera ray (caller falls back to the
+                // screen-space dot method below). The plane is
+                // the one containing the axis with normal
+                // = normalize(cross(axis, cross(view, axis))) -
+                // the most camera-facing orientation. Closes the
+                // "gizmo ileri-geri yapinca objeler isinlaniyor"
+                // teleport bug.
+                auto ray_axis_offset = [&](cd::editor::GizmoAxis axis,
+                                           ImVec2 mouse_pixel,
+                                           cd::math::Vec3f world_start) -> std::optional<float>
+                {
+                    const float vw = static_cast<float>(window.width());
+                    const float vh = static_cast<float>(window.height());
+                    if (vw < 1 || vh < 1)
+                        return std::nullopt;
+                    // Camera basis (same path as pick).
+                    cd::math::Vec3f fwd { cam.target.x - cam.eye.x,
+                                          cam.target.y - cam.eye.y,
+                                          cam.target.z - cam.eye.z };
+                    const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
+                    if (fl < 1e-5F)
+                        return std::nullopt;
+                    fwd.x /= fl;
+                    fwd.y /= fl;
+                    fwd.z /= fl;
+                    cd::math::Vec3f wup { 0, 1, 0 };
+                    cd::math::Vec3f rgt { fwd.y * wup.z - fwd.z * wup.y,
+                                          fwd.z * wup.x - fwd.x * wup.z,
+                                          fwd.x * wup.y - fwd.y * wup.x };
+                    const float rl = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
+                    if (rl < 1e-5F)
+                        return std::nullopt;
+                    rgt.x /= rl;
+                    rgt.y /= rl;
+                    rgt.z /= rl;
+                    cd::math::Vec3f up_v { rgt.y * fwd.z - rgt.z * fwd.y,
+                                           rgt.z * fwd.x - rgt.x * fwd.z,
+                                           rgt.x * fwd.y - rgt.y * fwd.x };
+                    const float ndc_x = (2.0F * mouse_pixel.x / vw) - 1.0F;
+                    const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh);
+                    const float tan_half = std::tan(cam.fov_y * 0.5F);
+                    const float sx = (vw / vh) * tan_half;
+                    const float sy = tan_half;
+                    cd::math::Vec3f rdir { fwd.x + rgt.x * ndc_x * sx + up_v.x * ndc_y * sy,
+                                           fwd.y + rgt.y * ndc_x * sx + up_v.y * ndc_y * sy,
+                                           fwd.z + rgt.z * ndc_x * sx + up_v.z * ndc_y * sy };
+                    const float rdl = std::sqrt(rdir.x * rdir.x + rdir.y * rdir.y + rdir.z * rdir.z);
+                    if (rdl < 1e-5F)
+                        return std::nullopt;
+                    rdir.x /= rdl;
+                    rdir.y /= rdl;
+                    rdir.z /= rdl;
+                    // Axis unit vector + plane normal.
+                    cd::math::Vec3f a { 0, 0, 0 };
+                    if (axis == cd::editor::GizmoAxis::kX)
+                        a = { 1, 0, 0 };
+                    else if (axis == cd::editor::GizmoAxis::kY)
+                        a = { 0, 1, 0 };
+                    else if (axis == cd::editor::GizmoAxis::kZ)
+                        a = { 0, 0, 1 };
+                    cd::math::Vec3f c1 { fwd.y * a.z - fwd.z * a.y,
+                                         fwd.z * a.x - fwd.x * a.z,
+                                         fwd.x * a.y - fwd.y * a.x };
+                    cd::math::Vec3f n { a.y * c1.z - a.z * c1.y, a.z * c1.x - a.x * c1.z, a.x * c1.y - a.y * c1.x };
+                    const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+                    if (nl < 1e-5F)
+                        return std::nullopt;
+                    n.x /= nl;
+                    n.y /= nl;
+                    n.z /= nl;
+                    const float denom = rdir.x * n.x + rdir.y * n.y + rdir.z * n.z;
+                    if (std::fabs(denom) < 1e-4F)
+                        return std::nullopt;
+                    const float t = ((world_start.x - cam.eye.x) * n.x + (world_start.y - cam.eye.y) * n.y +
+                                     (world_start.z - cam.eye.z) * n.z) /
+                                    denom;
+                    if (t < 0.0F)
+                        return std::nullopt;
+                    const cd::math::Vec3f hit { cam.eye.x + rdir.x * t,
+                                                cam.eye.y + rdir.y * t,
+                                                cam.eye.z + rdir.z * t };
+                    return (hit.x - world_start.x) * a.x + (hit.y - world_start.y) * a.y +
+                           (hit.z - world_start.z) * a.z;
+                };
+
+                if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
+                    ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
+                {
+                    gizmo.begin_drag(best, *target_pos);
+                    gizmo_state.drag_anchor = mp;
+                    gizmo_state.drag_world_start = *target_pos;
+                    if (lt != nullptr)
+                    {
+                        gizmo_state.drag_scale_start = lt->value.scale;
+                        gizmo_state.drag_rot_start = lt->value.rotation;
+                    }
+                    // Capture light start state for gaps #16/#17:
+                    // R-mode rotates light.direction; S-mode scales
+                    // light.range / area_width / area_height.
+                    if (selected_kind == SelKind::kLight && selected >= 0 &&
+                        selected < static_cast<int>(lights.size()))
+                    {
+                        const auto& L = lights[static_cast<std::size_t>(selected)].light;
+                        gizmo_state.light_drag_dir_start = L.direction;
+                        gizmo_state.light_drag_tangent_start = L.area_tangent;
+                        gizmo_state.light_drag_range_start = L.range;
+                        gizmo_state.light_drag_area_w_start = L.area_width;
+                        gizmo_state.light_drag_area_h_start = L.area_height;
+                    }
+                    // Capture the initial ray-plane axis offset
+                    // so subsequent moves give delta = current -
+                    // initial (no jump at click).
+                    if (auto off = ray_axis_offset(best, mp, *target_pos); off.has_value())
+                    {
+                        gizmo_state.drag_initial_offset = *off;
+                        gizmo_state.drag_use_ray_plane = true;
+                    }
+                    else
+                    {
+                        gizmo_state.drag_use_ray_plane = false;
+                    }
+                }
+                if (gizmo.is_dragging())
+                {
+                    ImVec2 axis_screen_end = p_x;
+                    if (gizmo.active_axis() == cd::editor::GizmoAxis::kY)
+                        axis_screen_end = p_y;
+                    else if (gizmo.active_axis() == cd::editor::GizmoAxis::kZ)
+                        axis_screen_end = p_z;
+                    const float ax_dx = axis_screen_end.x - p_org.x;
+                    const float ax_dy = axis_screen_end.y - p_org.y;
+                    const float ax_len_px = std::sqrt(ax_dx * ax_dx + ax_dy * ax_dy);
+                    // Two paths: ray-plane (preferred, robust) vs
+                    // screen-space dot (fallback for rotate/scale
+                    // which use angular / exponential math).
+                    float delta_world = 0.0F;
+                    if (gizmo_state.drag_use_ray_plane && gizmo_state.mode == GizmoMode::kTranslate)
+                    {
+                        if (auto off = ray_axis_offset(gizmo.active_axis(), mp, gizmo_state.drag_world_start);
+                            off.has_value())
+                        {
+                            delta_world = *off - gizmo_state.drag_initial_offset;
+                        }
+                    }
+                    if (ax_len_px > 1.0F)
+                    {
+                        // Screen-space path (rotate/scale, or
+                        // ray-plane fallback). delta_world stays 0
+                        // for translate when ray-plane worked.
+                        const float nx = ax_dx / ax_len_px, ny = ax_dy / ax_len_px;
+                        const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
+                        const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
+                        const float dot_px = mouse_dx * nx + mouse_dy * ny;
+                        const float world_per_px = kAxisLen / ax_len_px;
+                        if (!gizmo_state.drag_use_ray_plane || gizmo_state.mode != GizmoMode::kTranslate)
+                        {
+                            delta_world = dot_px * world_per_px;
+                        }
+                    }
+                    if (ax_len_px > 1.0F || gizmo_state.drag_use_ray_plane)
+                    {
+                        // Only translate works for both entities and
+                        // lights; rotate/scale need a transform record
+                        // and are gated on lt != nullptr.
+                        switch (gizmo_state.mode)
+                        {
+                            case GizmoMode::kTranslate:
+                            {
+                                cd::math::Vec3f cur = gizmo_state.drag_world_start;
+                                switch (gizmo.active_axis())
+                                {
+                                    case cd::editor::GizmoAxis::kX:
+                                        cur.x += delta_world;
+                                        break;
+                                    case cd::editor::GizmoAxis::kY:
+                                        cur.y += delta_world;
+                                        break;
+                                    case cd::editor::GizmoAxis::kZ:
+                                        cur.z += delta_world;
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                *target_pos = cur;
+                                gizmo.update_drag(cur);
+                                break;
+                            }
+                            case GizmoMode::kScale:
+                            {
+                                const float factor = std::exp(delta_world * 0.5F);
+                                if (lt != nullptr)
+                                {
+                                    cd::math::Vec3f cur = gizmo_state.drag_scale_start;
+                                    switch (gizmo.active_axis())
+                                    {
+                                        case cd::editor::GizmoAxis::kX:
+                                            cur.x *= factor;
+                                            break;
+                                        case cd::editor::GizmoAxis::kY:
+                                            cur.y *= factor;
+                                            break;
+                                        case cd::editor::GizmoAxis::kZ:
+                                            cur.z *= factor;
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                    if (cur.x < 0.05F)
+                                        cur.x = 0.05F;
+                                    if (cur.y < 0.05F)
+                                        cur.y = 0.05F;
+                                    if (cur.z < 0.05F)
+                                        cur.z = 0.05F;
+                                    lt->value.scale = cur;
+                                }
+                                else if (selected_kind == SelKind::kLight && selected >= 0 &&
+                                         selected < static_cast<int>(lights.size()))
+                                {
+                                    // gap #17: scale-mode gizmo on a
+                                    // light edits its area-of-effect.
+                                    // Point/Spot: range. Rect-area:
+                                    // X=width, Y=height. Disk: width
+                                    // (= radius in our convention).
+                                    auto& L = lights[static_cast<std::size_t>(selected)].light;
+                                    const auto axis = gizmo.active_axis();
+                                    if (L.type == cd::light::LightType::kPoint ||
+                                        L.type == cd::light::LightType::kSpot)
+                                    {
+                                        float r = gizmo_state.light_drag_range_start * factor;
+                                        if (r < 0.1F)
+                                            r = 0.1F;
+                                        if (r > 200.0F)
+                                            r = 200.0F;
+                                        L.range = r;
+                                    }
+                                    else if (L.type == cd::light::LightType::kRectArea)
+                                    {
+                                        float w = gizmo_state.light_drag_area_w_start;
+                                        float h = gizmo_state.light_drag_area_h_start;
+                                        if (axis == cd::editor::GizmoAxis::kX || axis == cd::editor::GizmoAxis::kZ)
+                                            w *= factor;
+                                        if (axis == cd::editor::GizmoAxis::kY || axis == cd::editor::GizmoAxis::kZ)
+                                            h *= factor;
+                                        L.area_width = std::clamp(w, 0.05F, 50.0F);
+                                        L.area_height = std::clamp(h, 0.05F, 50.0F);
+                                    }
+                                    else if (L.type == cd::light::LightType::kDiskArea)
+                                    {
+                                        float w = gizmo_state.light_drag_area_w_start * factor;
+                                        L.area_width = std::clamp(w, 0.05F, 50.0F);
+                                        L.area_height = L.area_width;  // radius
+                                    }
+                                }
+                                break;
+                            }
+                            case GizmoMode::kRotate:
+                            {
+                                // Compute the angle the mouse has swept around the
+                                // gizmo center since drag start (atan2 difference).
+                                const float anchor_dx = gizmo_state.drag_anchor.x - p_org.x;
+                                const float anchor_dy = gizmo_state.drag_anchor.y - p_org.y;
+                                const float cur_dx = mp.x - p_org.x;
+                                const float cur_dy = mp.y - p_org.y;
+                                if (std::sqrt(anchor_dx * anchor_dx + anchor_dy * anchor_dy) < 5.0F)
+                                    break;  // too close to center, ignore
+                                const float a_anchor = std::atan2(anchor_dy, anchor_dx);
+                                const float a_now = std::atan2(cur_dy, cur_dx);
+                                // W7-C: mouse coords have Y-down so atan2
+                                // gives a screen-CCW reading; world-space
+                                // convention is right-hand (CCW about +axis
+                                // looking from +axis toward origin). The
+                                // sign was therefore inverted — drag CW in
+                                // screen was producing positive (CCW)
+                                // rotation. Negate to match user intent.
+                                float ang = a_anchor - a_now;
+                                while (ang > 3.1415926F)
+                                    ang -= 6.2831853F;
+                                while (ang < -3.1415926F)
+                                    ang += 6.2831853F;
+                                const float ca = std::cos(ang * 0.5F);
+                                const float sa = std::sin(ang * 0.5F);
+                                cd::math::Quatf q { 0, 0, 0, 1 };
+                                switch (gizmo.active_axis())
+                                {
+                                    case cd::editor::GizmoAxis::kX:
+                                        q = { sa, 0, 0, ca };
+                                        break;
+                                    case cd::editor::GizmoAxis::kY:
+                                        q = { 0, sa, 0, ca };
+                                        break;
+                                    case cd::editor::GizmoAxis::kZ:
+                                        q = { 0, 0, sa, ca };
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                if (lt != nullptr)
+                                {
+                                    const auto& a = q;
+                                    const auto& b = gizmo_state.drag_rot_start;
+                                    lt->value.rotation =
+                                        cd::math::Quatf { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                                                          a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                                                          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+                                                          a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
+                                }
+                                else if (selected_kind == SelKind::kLight && selected >= 0 &&
+                                         selected < static_cast<int>(lights.size()))
+                                {
+                                    // gap #16: rotate-mode gizmo rotates
+                                    // a light's direction. W8-N: also
+                                    // rotates area_tangent so the rect's
+                                    // local +X (uploaded to GPU as
+                                    // slot.tangent.xyz) stays in sync —
+                                    // each gizmo axis now drives an
+                                    // independent rotation of the full
+                                    // basis instead of just the normal.
+                                    auto rotate_v = [&](cd::math::Vec3f v)
+                                    {
+                                        const cd::math::Vec3f t { q.w * v.x + q.y * v.z - q.z * v.y,
+                                                                  q.w * v.y + q.z * v.x - q.x * v.z,
+                                                                  q.w * v.z + q.x * v.y - q.y * v.x };
+                                        const float tw = -(q.x * v.x + q.y * v.y + q.z * v.z);
+                                        return cd::math::Vec3f { tw * -q.x + t.x * q.w + t.y * -q.z - t.z * -q.y,
+                                                                 tw * -q.y - t.x * -q.z + t.y * q.w + t.z * -q.x,
+                                                                 tw * -q.z + t.x * -q.y - t.y * -q.x + t.z * q.w };
+                                    };
+                                    auto norm_v = [](cd::math::Vec3f v)
+                                    {
+                                        const float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+                                        return (l > 1e-5F) ? cd::math::Vec3f { v.x / l, v.y / l, v.z / l } : v;
+                                    };
+                                    auto& Lr = lights[static_cast<std::size_t>(selected)].light;
+                                    const auto rd_dir = rotate_v(gizmo_state.light_drag_dir_start);
+                                    Lr.direction = norm_v(rd_dir);
+                                    // Tangent rotates too (only meaningful
+                                    // for area lights; harmless for spot /
+                                    // point — direction-derived rendering
+                                    // ignores tangent there).
+                                    auto rt = rotate_v(gizmo_state.light_drag_tangent_start);
+                                    // Re-orthogonalize tangent against new
+                                    // direction to stay perpendicular.
+                                    const auto dn = Lr.direction;
+                                    const float pr = rt.x * dn.x + rt.y * dn.y + rt.z * dn.z;
+                                    rt.x -= pr * dn.x;
+                                    rt.y -= pr * dn.y;
+                                    rt.z -= pr * dn.z;
+                                    Lr.area_tangent = norm_v(rt);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+                    {
+                        const auto delta = gizmo.end_drag();
+                        (void)delta;
+                        switch (gizmo_state.mode)
+                        {
+                            case GizmoMode::kTranslate:
+                            {
+                                const float dx = target_pos->x - gizmo_state.drag_world_start.x;
+                                const float dy = target_pos->y - gizmo_state.drag_world_start.y;
+                                const float dz = target_pos->z - gizmo_state.drag_world_start.z;
+                                if (std::abs(dx) + std::abs(dy) + std::abs(dz) > 1e-4F)
+                                {
+                                    if (target_is_entity && lt != nullptr)
+                                    {
+                                        // Roll back live mutation + push undoable command.
+                                        *target_pos = gizmo_state.drag_world_start;
+                                        history.push(
+                                            std::make_unique<cd::editor::TranslateCommand>(
+                                                scene,
+                                                sel_ent,
+                                                cd::math::Vec3f { dx, dy, dz }
+                                            )
+                                        );
+                                        log_push("[gizmo] entity translate (undoable)");
+                                    }
+                                    else
+                                    {
+                                        // Light translate - apply directly (no history wire yet).
+                                        // W8-AL: removed W8-X auto-aim-at-origin after
+                                        // translate. User reported "otomatik merkeze
+                                        // odaklaniyor" — the magic auto-rotation was
+                                        // annoying because it overrode their manual
+                                        // rotation immediately after a move. The
+                                        // "Aim at origin" panel button (W8-V) is still
+                                        // available for one-click manual re-aim.
+                                        log_push("[gizmo] light translate applied");
+                                    }
+                                }
+                                break;
+                            }
+                            case GizmoMode::kScale:
+                                if (lt != nullptr)
+                                    log_push("[gizmo] scale applied");
+                                break;
+                            case GizmoMode::kRotate:
+                                if (lt != nullptr)
+                                    log_push("[gizmo] rotate applied");
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6380,697 +7095,9 @@ int main()
         draw_light_markers_overlay(lights, selected, selected_kind, vp, frame.extent);
 
         // ---- Phase 152 - axis-translation gizmo (ImGui overlay) ----
-        // Project the selected entity's world position to screen,
-        // draw three colored axis arrows, do hover/click drag in
-        // screen-space, map back into world delta along the active
-        // axis, and push a TranslateCommand on release.
-        // Gizmo target can be either an entity transform OR a light's
-        // position. The lambda below makes the same draw + drag code
-        // path applicable to both - point/spot/area lights drag their
-        // position; directional lights have no world position so they
-        // skip the gizmo.
-        auto gizmo_target_pos = [&]() -> cd::math::Vec3f*
-        {
-            if (selected < 0)
-                return nullptr;
-            if (selected_kind == SelKind::kEntity)
-            {
-                if (selected >= static_cast<int>(entities.size()))
-                    return nullptr;
-                if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
-                    return &lt->value.position;
-                return nullptr;
-            }
-            if (selected_kind == SelKind::kLight)
-            {
-                if (selected >= static_cast<int>(lights.size()))
-                    return nullptr;
-                auto& L = lights[static_cast<std::size_t>(selected)].light;
-                if (L.type == cd::light::LightType::kDirectional)
-                    return nullptr;
-                return &L.position;
-            }
-            return nullptr;
-        };
-
-        if (!gizmo_state.visible || gizmo_target_pos() == nullptr)
-        {
-            gizmo_state.was_hovered = false;
-        }
-        if (gizmo_state.visible && gizmo_target_pos() != nullptr)
-        {
-            cd::math::Vec3f* target_pos = gizmo_target_pos();
-            // For entity targets, also need transform record for full
-            // rotate/scale ops; for light targets, only position drag.
-            const bool target_is_entity = (selected_kind == SelKind::kEntity);
-            cd::ecs::Entity sel_ent =
-                target_is_entity ? entities[static_cast<std::size_t>(selected)].handle : cd::ecs::Entity {};
-            cd::scene::LocalTransform* lt = target_is_entity ? scene.local(sel_ent) : nullptr;
-            if (target_pos != nullptr)
-            {
-                gizmo.set_target(*target_pos);
-                const float vw = static_cast<float>(frame.extent.width);
-                const float vh = static_cast<float>(frame.extent.height);
-                auto project = [&](const cd::math::Vec3f& p) -> ImVec2
-                {
-                    const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
-                    cd::math::Vec4f c {};
-                    for (std::size_t r = 0; r < 4; ++r)
-                        c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
-                    if (c[3] <= 0.0F)
-                        return ImVec2(-1.0F, -1.0F);
-                    return ImVec2((c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
-                };
-                const auto& tgt = gizmo.target();
-                constexpr float kAxisLen = 1.5F;
-                const ImVec2 p_org = project(tgt);
-                const ImVec2 p_x = project({ tgt.x + kAxisLen, tgt.y, tgt.z });
-                const ImVec2 p_y = project({ tgt.x, tgt.y + kAxisLen, tgt.z });
-                const ImVec2 p_z = project({ tgt.x, tgt.y, tgt.z + kAxisLen });
-
-                if (p_org.x >= 0.0F)
-                {
-                    auto* dl = ImGui::GetForegroundDrawList();
-                    auto axis_color_imgui = [](cd::editor::GizmoAxis a)
-                    {
-                        const auto c = cd::editor::axis_color(a);
-                        return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 1.0F));
-                    };
-                    const ImU32 cx = axis_color_imgui(cd::editor::GizmoAxis::kX);
-                    const ImU32 cy = axis_color_imgui(cd::editor::GizmoAxis::kY);
-                    const ImU32 cz = axis_color_imgui(cd::editor::GizmoAxis::kZ);
-
-                    auto thick = [&](cd::editor::GizmoAxis a) -> float
-                    {
-                        return (gizmo.hover() == a || gizmo.active_axis() == a) ? 5.0F : 3.0F;
-                    };
-
-                    dl->AddLine(p_org, p_x, cx, thick(cd::editor::GizmoAxis::kX));
-                    dl->AddLine(p_org, p_y, cy, thick(cd::editor::GizmoAxis::kY));
-                    dl->AddLine(p_org, p_z, cz, thick(cd::editor::GizmoAxis::kZ));
-                    // Arrowheads (filled triangles).
-                    auto arrowhead = [&](ImVec2 from, ImVec2 to, ImU32 col)
-                    {
-                        const float dx = to.x - from.x, dy = to.y - from.y;
-                        const float len = std::sqrt(dx * dx + dy * dy);
-                        if (len < 1e-3F)
-                            return;
-                        const float nx = dx / len, ny = dy / len;
-                        const float sx = -ny, sy = nx;
-                        constexpr float kHead = 10.0F;
-                        const ImVec2 a = to;
-                        const ImVec2 b { to.x - nx * kHead + sx * 5.0F, to.y - ny * kHead + sy * 5.0F };
-                        const ImVec2 c { to.x - nx * kHead - sx * 5.0F, to.y - ny * kHead - sy * 5.0F };
-                        dl->AddTriangleFilled(a, b, c, col);
-                    };
-                    // Mode-specific tip decoration:
-                    //   translate ??' arrowheads
-                    //   rotate    ??' small circles at tips
-                    //   scale     ??' small filled cubes at tips
-                    if (gizmo_state.mode == GizmoMode::kTranslate)
-                    {
-                        arrowhead(p_org, p_x, cx);
-                        arrowhead(p_org, p_y, cy);
-                        arrowhead(p_org, p_z, cz);
-                    }
-                    else if (gizmo_state.mode == GizmoMode::kRotate)
-                    {
-                        // Draw the standard 3 rotation rings on each
-                        // world-axis plane. Each ring is the projection
-                        // of a unit-radius circle (scaled by kAxisLen)
-                        // in the plane perpendicular to its color axis.
-                        constexpr int kRingSeg = 48;
-                        constexpr float kRingRad = 1.5F;
-                        auto draw_ring = [&](cd::math::Vec3f u, cd::math::Vec3f v, ImU32 c, float t)
-                        {
-                            for (int i = 0; i < kRingSeg; ++i)
-                            {
-                                const float a = static_cast<float>(i) / kRingSeg * 6.2831853F;
-                                const float b = static_cast<float>(i + 1) / kRingSeg * 6.2831853F;
-                                const float ca0 = std::cos(a), sa0 = std::sin(a);
-                                const float cb0 = std::cos(b), sb0 = std::sin(b);
-                                cd::math::Vec3f wa { tgt.x + (u.x * ca0 + v.x * sa0) * kRingRad,
-                                                     tgt.y + (u.y * ca0 + v.y * sa0) * kRingRad,
-                                                     tgt.z + (u.z * ca0 + v.z * sa0) * kRingRad };
-                                cd::math::Vec3f wb { tgt.x + (u.x * cb0 + v.x * sb0) * kRingRad,
-                                                     tgt.y + (u.y * cb0 + v.y * sb0) * kRingRad,
-                                                     tgt.z + (u.z * cb0 + v.z * sb0) * kRingRad };
-                                const auto pa = project(wa);
-                                const auto pb = project(wb);
-                                if (pa.x >= 0.0F && pb.x >= 0.0F)
-                                    dl->AddLine(pa, pb, c, t);
-                            }
-                        };
-                        const float th_x = (gizmo.hover() == cd::editor::GizmoAxis::kX) ? 4.0F : 2.0F;
-                        const float th_y = (gizmo.hover() == cd::editor::GizmoAxis::kY) ? 4.0F : 2.0F;
-                        const float th_z = (gizmo.hover() == cd::editor::GizmoAxis::kZ) ? 4.0F : 2.0F;
-                        // Ring around X axis lives in (Y, Z) plane.
-                        draw_ring({ 0, 1, 0 }, { 0, 0, 1 }, cx, th_x);
-                        // Ring around Y axis lives in (X, Z) plane.
-                        draw_ring({ 1, 0, 0 }, { 0, 0, 1 }, cy, th_y);
-                        // Ring around Z axis lives in (X, Y) plane.
-                        draw_ring({ 1, 0, 0 }, { 0, 1, 0 }, cz, th_z);
-                    }
-                    else  // kScale
-                    {
-                        const auto cube_at = [&](ImVec2 c, ImU32 col)
-                        {
-                            const ImVec2 a { c.x - 5, c.y - 5 };
-                            const ImVec2 b { c.x + 5, c.y + 5 };
-                            dl->AddRectFilled(a, b, col);
-                        };
-                        cube_at(p_x, cx);
-                        cube_at(p_y, cy);
-                        cube_at(p_z, cz);
-                    }
-                    // Mode label.
-                    const char* mode_lbl = gizmo_state.mode == GizmoMode::kTranslate ? "T"
-                                           : gizmo_state.mode == GizmoMode::kRotate  ? "R"
-                                                                               : "S";
-                    dl->AddText(
-                        ImVec2(p_org.x + 8, p_org.y + 8),
-                        ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 0.9F)),
-                        mode_lbl
-                    );
-
-                    // Hover test. Translate/Scale modes measure mouse-to-
-                    // axis-line distance (arrows). Rotate mode measures
-                    // mouse-to-ring polyline distance (so the user grabs a
-                    // ring, not an arrow - feedback "rotation islemini
-                    // yeni koydugun cemberler userinden yapabilmek
-                    // istiyorum").
-                    const ImVec2 mp = ImGui::GetIO().MousePos;
-                    auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p)
-                    {
-                        const float dx = b.x - a.x, dy = b.y - a.y;
-                        const float L2 = dx * dx + dy * dy;
-                        if (L2 < 1e-4F)
-                            return std::sqrt((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y));
-                        const float t = std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / L2, 0.0F, 1.0F);
-                        const float qx = a.x + t * dx, qy = a.y + t * dy;
-                        return std::sqrt((p.x - qx) * (p.x - qx) + (p.y - qy) * (p.y - qy));
-                    };
-                    cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
-                    float best_d = gizmo.hover_tolerance_pixels;
-                    if (gizmo_state.mode == GizmoMode::kRotate)
-                    {
-                        // Sample each ring at the same resolution we draw
-                        // it (48 segments); compute min distance from
-                        // mouse to the ring polyline. Cheap (3 ?- 48 = 144
-                        // segments per frame at hover-test time).
-                        constexpr int kHoverSeg = 48;
-                        constexpr float kHoverRad = 1.5F;  // matches kRingRad above
-                        auto ring_dist = [&](cd::math::Vec3f u, cd::math::Vec3f v) -> float
-                        {
-                            float min_d = std::numeric_limits<float>::infinity();
-                            ImVec2 prev {};
-                            bool prev_ok = false;
-                            for (int i = 0; i <= kHoverSeg; ++i)
-                            {
-                                const float a = static_cast<float>(i) / kHoverSeg * 6.2831853F;
-                                const float ca = std::cos(a), sa = std::sin(a);
-                                const cd::math::Vec3f w { tgt.x + (u.x * ca + v.x * sa) * kHoverRad,
-                                                          tgt.y + (u.y * ca + v.y * sa) * kHoverRad,
-                                                          tgt.z + (u.z * ca + v.z * sa) * kHoverRad };
-                                const auto pw = project(w);
-                                if (pw.x >= 0.0F)
-                                {
-                                    if (prev_ok)
-                                    {
-                                        const float d = dist_to_seg(prev, pw, mp);
-                                        if (d < min_d)
-                                            min_d = d;
-                                    }
-                                    prev = pw;
-                                    prev_ok = true;
-                                }
-                                else
-                                {
-                                    prev_ok = false;
-                                }
-                            }
-                            return min_d;
-                        };
-                        const float dx = ring_dist({ 0, 1, 0 }, { 0, 0, 1 });  // X-axis ring lives in YZ
-                        const float dy = ring_dist({ 1, 0, 0 }, { 0, 0, 1 });  // Y-axis ring lives in XZ
-                        const float dz = ring_dist({ 1, 0, 0 }, { 0, 1, 0 });  // Z-axis ring lives in XY
-                        if (dx < best_d)
-                        {
-                            best_d = dx;
-                            best = cd::editor::GizmoAxis::kX;
-                        }
-                        if (dy < best_d)
-                        {
-                            best_d = dy;
-                            best = cd::editor::GizmoAxis::kY;
-                        }
-                        if (dz < best_d)
-                        {
-                            best_d = dz;
-                            best = cd::editor::GizmoAxis::kZ;
-                        }
-                    }
-                    else  // translate / scale - axis-arrow hover
-                    {
-                        if (auto d = dist_to_seg(p_org, p_x, mp); d < best_d)
-                        {
-                            best_d = d;
-                            best = cd::editor::GizmoAxis::kX;
-                        }
-                        if (auto d = dist_to_seg(p_org, p_y, mp); d < best_d)
-                        {
-                            best_d = d;
-                            best = cd::editor::GizmoAxis::kY;
-                        }
-                        if (auto d = dist_to_seg(p_org, p_z, mp); d < best_d)
-                        {
-                            best_d = d;
-                            best = cd::editor::GizmoAxis::kZ;
-                        }
-                    }
-                    gizmo.set_hover(best);
-                    gizmo_state.was_hovered = (best != cd::editor::GizmoAxis::kNone);
-
-                    const bool over_imgui_ui = ImGui::GetIO().WantCaptureMouse && ImGui::IsAnyItemHovered();
-                    // If the mouse is hovering an axis arrow AND a left-
-                    // click is pending from the OS event loop, the gizmo
-                    // wins over the 3D pick path - suppress the pick.
-                    if (pending_pick && best != cd::editor::GizmoAxis::kNone)
-                    {
-                        pending_pick = false;
-                    }
-                    // Ray-plane projection of a screen pixel onto the
-                    // active axis. Returns the signed distance along
-                    // the axis from `world_start` to the hit point,
-                    // or std::optional() if the plane is too parallel
-                    // to the camera ray (caller falls back to the
-                    // screen-space dot method below). The plane is
-                    // the one containing the axis with normal
-                    // = normalize(cross(axis, cross(view, axis))) -
-                    // the most camera-facing orientation. Closes the
-                    // "gizmo ileri-geri yapinca objeler isinlaniyor"
-                    // teleport bug.
-                    auto ray_axis_offset = [&](cd::editor::GizmoAxis axis,
-                                               ImVec2 mouse_pixel,
-                                               cd::math::Vec3f world_start) -> std::optional<float>
-                    {
-                        const float vw = static_cast<float>(window.width());
-                        const float vh = static_cast<float>(window.height());
-                        if (vw < 1 || vh < 1)
-                            return std::nullopt;
-                        // Camera basis (same path as pick).
-                        cd::math::Vec3f fwd { cam.target.x - cam.eye.x,
-                                              cam.target.y - cam.eye.y,
-                                              cam.target.z - cam.eye.z };
-                        const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
-                        if (fl < 1e-5F)
-                            return std::nullopt;
-                        fwd.x /= fl;
-                        fwd.y /= fl;
-                        fwd.z /= fl;
-                        cd::math::Vec3f wup { 0, 1, 0 };
-                        cd::math::Vec3f rgt { fwd.y * wup.z - fwd.z * wup.y,
-                                              fwd.z * wup.x - fwd.x * wup.z,
-                                              fwd.x * wup.y - fwd.y * wup.x };
-                        const float rl = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
-                        if (rl < 1e-5F)
-                            return std::nullopt;
-                        rgt.x /= rl;
-                        rgt.y /= rl;
-                        rgt.z /= rl;
-                        cd::math::Vec3f up_v { rgt.y * fwd.z - rgt.z * fwd.y,
-                                               rgt.z * fwd.x - rgt.x * fwd.z,
-                                               rgt.x * fwd.y - rgt.y * fwd.x };
-                        const float ndc_x = (2.0F * mouse_pixel.x / vw) - 1.0F;
-                        const float ndc_y = 1.0F - (2.0F * mouse_pixel.y / vh);
-                        const float tan_half = std::tan(cam.fov_y * 0.5F);
-                        const float sx = (vw / vh) * tan_half;
-                        const float sy = tan_half;
-                        cd::math::Vec3f rdir { fwd.x + rgt.x * ndc_x * sx + up_v.x * ndc_y * sy,
-                                               fwd.y + rgt.y * ndc_x * sx + up_v.y * ndc_y * sy,
-                                               fwd.z + rgt.z * ndc_x * sx + up_v.z * ndc_y * sy };
-                        const float rdl = std::sqrt(rdir.x * rdir.x + rdir.y * rdir.y + rdir.z * rdir.z);
-                        if (rdl < 1e-5F)
-                            return std::nullopt;
-                        rdir.x /= rdl;
-                        rdir.y /= rdl;
-                        rdir.z /= rdl;
-                        // Axis unit vector + plane normal.
-                        cd::math::Vec3f a { 0, 0, 0 };
-                        if (axis == cd::editor::GizmoAxis::kX)
-                            a = { 1, 0, 0 };
-                        else if (axis == cd::editor::GizmoAxis::kY)
-                            a = { 0, 1, 0 };
-                        else if (axis == cd::editor::GizmoAxis::kZ)
-                            a = { 0, 0, 1 };
-                        cd::math::Vec3f c1 { fwd.y * a.z - fwd.z * a.y,
-                                             fwd.z * a.x - fwd.x * a.z,
-                                             fwd.x * a.y - fwd.y * a.x };
-                        cd::math::Vec3f n { a.y * c1.z - a.z * c1.y, a.z * c1.x - a.x * c1.z, a.x * c1.y - a.y * c1.x };
-                        const float nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
-                        if (nl < 1e-5F)
-                            return std::nullopt;
-                        n.x /= nl;
-                        n.y /= nl;
-                        n.z /= nl;
-                        const float denom = rdir.x * n.x + rdir.y * n.y + rdir.z * n.z;
-                        if (std::fabs(denom) < 1e-4F)
-                            return std::nullopt;
-                        const float t = ((world_start.x - cam.eye.x) * n.x + (world_start.y - cam.eye.y) * n.y +
-                                         (world_start.z - cam.eye.z) * n.z) /
-                                        denom;
-                        if (t < 0.0F)
-                            return std::nullopt;
-                        const cd::math::Vec3f hit { cam.eye.x + rdir.x * t,
-                                                    cam.eye.y + rdir.y * t,
-                                                    cam.eye.z + rdir.z * t };
-                        return (hit.x - world_start.x) * a.x + (hit.y - world_start.y) * a.y +
-                               (hit.z - world_start.z) * a.z;
-                    };
-
-                    if (!gizmo.is_dragging() && best != cd::editor::GizmoAxis::kNone &&
-                        ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !over_imgui_ui)
-                    {
-                        gizmo.begin_drag(best, *target_pos);
-                        gizmo_state.drag_anchor = mp;
-                        gizmo_state.drag_world_start = *target_pos;
-                        if (lt != nullptr)
-                        {
-                            gizmo_state.drag_scale_start = lt->value.scale;
-                            gizmo_state.drag_rot_start = lt->value.rotation;
-                        }
-                        // Capture light start state for gaps #16/#17:
-                        // R-mode rotates light.direction; S-mode scales
-                        // light.range / area_width / area_height.
-                        if (selected_kind == SelKind::kLight && selected >= 0 &&
-                            selected < static_cast<int>(lights.size()))
-                        {
-                            const auto& L = lights[static_cast<std::size_t>(selected)].light;
-                            gizmo_state.light_drag_dir_start = L.direction;
-                            gizmo_state.light_drag_tangent_start = L.area_tangent;
-                            gizmo_state.light_drag_range_start = L.range;
-                            gizmo_state.light_drag_area_w_start = L.area_width;
-                            gizmo_state.light_drag_area_h_start = L.area_height;
-                        }
-                        // Capture the initial ray-plane axis offset
-                        // so subsequent moves give delta = current -
-                        // initial (no jump at click).
-                        if (auto off = ray_axis_offset(best, mp, *target_pos); off.has_value())
-                        {
-                            gizmo_state.drag_initial_offset = *off;
-                            gizmo_state.drag_use_ray_plane = true;
-                        }
-                        else
-                        {
-                            gizmo_state.drag_use_ray_plane = false;
-                        }
-                    }
-                    if (gizmo.is_dragging())
-                    {
-                        ImVec2 axis_screen_end = p_x;
-                        if (gizmo.active_axis() == cd::editor::GizmoAxis::kY)
-                            axis_screen_end = p_y;
-                        else if (gizmo.active_axis() == cd::editor::GizmoAxis::kZ)
-                            axis_screen_end = p_z;
-                        const float ax_dx = axis_screen_end.x - p_org.x;
-                        const float ax_dy = axis_screen_end.y - p_org.y;
-                        const float ax_len_px = std::sqrt(ax_dx * ax_dx + ax_dy * ax_dy);
-                        // Two paths: ray-plane (preferred, robust) vs
-                        // screen-space dot (fallback for rotate/scale
-                        // which use angular / exponential math).
-                        float delta_world = 0.0F;
-                        if (gizmo_state.drag_use_ray_plane && gizmo_state.mode == GizmoMode::kTranslate)
-                        {
-                            if (auto off = ray_axis_offset(gizmo.active_axis(), mp, gizmo_state.drag_world_start);
-                                off.has_value())
-                            {
-                                delta_world = *off - gizmo_state.drag_initial_offset;
-                            }
-                        }
-                        if (ax_len_px > 1.0F)
-                        {
-                            // Screen-space path (rotate/scale, or
-                            // ray-plane fallback). delta_world stays 0
-                            // for translate when ray-plane worked.
-                            const float nx = ax_dx / ax_len_px, ny = ax_dy / ax_len_px;
-                            const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
-                            const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
-                            const float dot_px = mouse_dx * nx + mouse_dy * ny;
-                            const float world_per_px = kAxisLen / ax_len_px;
-                            if (!gizmo_state.drag_use_ray_plane || gizmo_state.mode != GizmoMode::kTranslate)
-                            {
-                                delta_world = dot_px * world_per_px;
-                            }
-                        }
-                        if (ax_len_px > 1.0F || gizmo_state.drag_use_ray_plane)
-                        {
-                            // Only translate works for both entities and
-                            // lights; rotate/scale need a transform record
-                            // and are gated on lt != nullptr.
-                            switch (gizmo_state.mode)
-                            {
-                                case GizmoMode::kTranslate:
-                                {
-                                    cd::math::Vec3f cur = gizmo_state.drag_world_start;
-                                    switch (gizmo.active_axis())
-                                    {
-                                        case cd::editor::GizmoAxis::kX:
-                                            cur.x += delta_world;
-                                            break;
-                                        case cd::editor::GizmoAxis::kY:
-                                            cur.y += delta_world;
-                                            break;
-                                        case cd::editor::GizmoAxis::kZ:
-                                            cur.z += delta_world;
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                    *target_pos = cur;
-                                    gizmo.update_drag(cur);
-                                    break;
-                                }
-                                case GizmoMode::kScale:
-                                {
-                                    const float factor = std::exp(delta_world * 0.5F);
-                                    if (lt != nullptr)
-                                    {
-                                        cd::math::Vec3f cur = gizmo_state.drag_scale_start;
-                                        switch (gizmo.active_axis())
-                                        {
-                                            case cd::editor::GizmoAxis::kX:
-                                                cur.x *= factor;
-                                                break;
-                                            case cd::editor::GizmoAxis::kY:
-                                                cur.y *= factor;
-                                                break;
-                                            case cd::editor::GizmoAxis::kZ:
-                                                cur.z *= factor;
-                                                break;
-                                            default:
-                                                break;
-                                        }
-                                        if (cur.x < 0.05F)
-                                            cur.x = 0.05F;
-                                        if (cur.y < 0.05F)
-                                            cur.y = 0.05F;
-                                        if (cur.z < 0.05F)
-                                            cur.z = 0.05F;
-                                        lt->value.scale = cur;
-                                    }
-                                    else if (selected_kind == SelKind::kLight && selected >= 0 &&
-                                             selected < static_cast<int>(lights.size()))
-                                    {
-                                        // gap #17: scale-mode gizmo on a
-                                        // light edits its area-of-effect.
-                                        // Point/Spot: range. Rect-area:
-                                        // X=width, Y=height. Disk: width
-                                        // (= radius in our convention).
-                                        auto& L = lights[static_cast<std::size_t>(selected)].light;
-                                        const auto axis = gizmo.active_axis();
-                                        if (L.type == cd::light::LightType::kPoint ||
-                                            L.type == cd::light::LightType::kSpot)
-                                        {
-                                            float r = gizmo_state.light_drag_range_start * factor;
-                                            if (r < 0.1F)
-                                                r = 0.1F;
-                                            if (r > 200.0F)
-                                                r = 200.0F;
-                                            L.range = r;
-                                        }
-                                        else if (L.type == cd::light::LightType::kRectArea)
-                                        {
-                                            float w = gizmo_state.light_drag_area_w_start;
-                                            float h = gizmo_state.light_drag_area_h_start;
-                                            if (axis == cd::editor::GizmoAxis::kX || axis == cd::editor::GizmoAxis::kZ)
-                                                w *= factor;
-                                            if (axis == cd::editor::GizmoAxis::kY || axis == cd::editor::GizmoAxis::kZ)
-                                                h *= factor;
-                                            L.area_width = std::clamp(w, 0.05F, 50.0F);
-                                            L.area_height = std::clamp(h, 0.05F, 50.0F);
-                                        }
-                                        else if (L.type == cd::light::LightType::kDiskArea)
-                                        {
-                                            float w = gizmo_state.light_drag_area_w_start * factor;
-                                            L.area_width = std::clamp(w, 0.05F, 50.0F);
-                                            L.area_height = L.area_width;  // radius
-                                        }
-                                    }
-                                    break;
-                                }
-                                case GizmoMode::kRotate:
-                                {
-                                    // Compute the angle the mouse has swept around the
-                                    // gizmo center since drag start (atan2 difference).
-                                    const float anchor_dx = gizmo_state.drag_anchor.x - p_org.x;
-                                    const float anchor_dy = gizmo_state.drag_anchor.y - p_org.y;
-                                    const float cur_dx = mp.x - p_org.x;
-                                    const float cur_dy = mp.y - p_org.y;
-                                    if (std::sqrt(anchor_dx * anchor_dx + anchor_dy * anchor_dy) < 5.0F)
-                                        break;  // too close to center, ignore
-                                    const float a_anchor = std::atan2(anchor_dy, anchor_dx);
-                                    const float a_now = std::atan2(cur_dy, cur_dx);
-                                    // W7-C: mouse coords have Y-down so atan2
-                                    // gives a screen-CCW reading; world-space
-                                    // convention is right-hand (CCW about +axis
-                                    // looking from +axis toward origin). The
-                                    // sign was therefore inverted — drag CW in
-                                    // screen was producing positive (CCW)
-                                    // rotation. Negate to match user intent.
-                                    float ang = a_anchor - a_now;
-                                    while (ang > 3.1415926F)
-                                        ang -= 6.2831853F;
-                                    while (ang < -3.1415926F)
-                                        ang += 6.2831853F;
-                                    const float ca = std::cos(ang * 0.5F);
-                                    const float sa = std::sin(ang * 0.5F);
-                                    cd::math::Quatf q { 0, 0, 0, 1 };
-                                    switch (gizmo.active_axis())
-                                    {
-                                        case cd::editor::GizmoAxis::kX:
-                                            q = { sa, 0, 0, ca };
-                                            break;
-                                        case cd::editor::GizmoAxis::kY:
-                                            q = { 0, sa, 0, ca };
-                                            break;
-                                        case cd::editor::GizmoAxis::kZ:
-                                            q = { 0, 0, sa, ca };
-                                            break;
-                                        default:
-                                            break;
-                                    }
-                                    if (lt != nullptr)
-                                    {
-                                        const auto& a = q;
-                                        const auto& b = gizmo_state.drag_rot_start;
-                                        lt->value.rotation =
-                                            cd::math::Quatf { a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-                                                              a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-                                                              a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-                                                              a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
-                                    }
-                                    else if (selected_kind == SelKind::kLight && selected >= 0 &&
-                                             selected < static_cast<int>(lights.size()))
-                                    {
-                                        // gap #16: rotate-mode gizmo rotates
-                                        // a light's direction. W8-N: also
-                                        // rotates area_tangent so the rect's
-                                        // local +X (uploaded to GPU as
-                                        // slot.tangent.xyz) stays in sync —
-                                        // each gizmo axis now drives an
-                                        // independent rotation of the full
-                                        // basis instead of just the normal.
-                                        auto rotate_v = [&](cd::math::Vec3f v)
-                                        {
-                                            const cd::math::Vec3f t { q.w * v.x + q.y * v.z - q.z * v.y,
-                                                                      q.w * v.y + q.z * v.x - q.x * v.z,
-                                                                      q.w * v.z + q.x * v.y - q.y * v.x };
-                                            const float tw = -(q.x * v.x + q.y * v.y + q.z * v.z);
-                                            return cd::math::Vec3f { tw * -q.x + t.x * q.w + t.y * -q.z - t.z * -q.y,
-                                                                     tw * -q.y - t.x * -q.z + t.y * q.w + t.z * -q.x,
-                                                                     tw * -q.z + t.x * -q.y - t.y * -q.x + t.z * q.w };
-                                        };
-                                        auto norm_v = [](cd::math::Vec3f v)
-                                        {
-                                            const float l = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-                                            return (l > 1e-5F) ? cd::math::Vec3f { v.x / l, v.y / l, v.z / l } : v;
-                                        };
-                                        auto& Lr = lights[static_cast<std::size_t>(selected)].light;
-                                        const auto rd_dir = rotate_v(gizmo_state.light_drag_dir_start);
-                                        Lr.direction = norm_v(rd_dir);
-                                        // Tangent rotates too (only meaningful
-                                        // for area lights; harmless for spot /
-                                        // point — direction-derived rendering
-                                        // ignores tangent there).
-                                        auto rt = rotate_v(gizmo_state.light_drag_tangent_start);
-                                        // Re-orthogonalize tangent against new
-                                        // direction to stay perpendicular.
-                                        const auto dn = Lr.direction;
-                                        const float pr = rt.x * dn.x + rt.y * dn.y + rt.z * dn.z;
-                                        rt.x -= pr * dn.x;
-                                        rt.y -= pr * dn.y;
-                                        rt.z -= pr * dn.z;
-                                        Lr.area_tangent = norm_v(rt);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
-                        {
-                            const auto delta = gizmo.end_drag();
-                            (void)delta;
-                            switch (gizmo_state.mode)
-                            {
-                                case GizmoMode::kTranslate:
-                                {
-                                    const float dx = target_pos->x - gizmo_state.drag_world_start.x;
-                                    const float dy = target_pos->y - gizmo_state.drag_world_start.y;
-                                    const float dz = target_pos->z - gizmo_state.drag_world_start.z;
-                                    if (std::abs(dx) + std::abs(dy) + std::abs(dz) > 1e-4F)
-                                    {
-                                        if (target_is_entity && lt != nullptr)
-                                        {
-                                            // Roll back live mutation + push undoable command.
-                                            *target_pos = gizmo_state.drag_world_start;
-                                            history.push(
-                                                std::make_unique<cd::editor::TranslateCommand>(
-                                                    scene,
-                                                    sel_ent,
-                                                    cd::math::Vec3f { dx, dy, dz }
-                                                )
-                                            );
-                                            log_push("[gizmo] entity translate (undoable)");
-                                        }
-                                        else
-                                        {
-                                            // Light translate - apply directly (no history wire yet).
-                                            // W8-AL: removed W8-X auto-aim-at-origin after
-                                            // translate. User reported "otomatik merkeze
-                                            // odaklaniyor" — the magic auto-rotation was
-                                            // annoying because it overrode their manual
-                                            // rotation immediately after a move. The
-                                            // "Aim at origin" panel button (W8-V) is still
-                                            // available for one-click manual re-aim.
-                                            log_push("[gizmo] light translate applied");
-                                        }
-                                    }
-                                    break;
-                                }
-                                case GizmoMode::kScale:
-                                    if (lt != nullptr)
-                                        log_push("[gizmo] scale applied");
-                                    break;
-                                case GizmoMode::kRotate:
-                                    if (lt != nullptr)
-                                        log_push("[gizmo] rotate applied");
-                                    break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        update_and_draw_gizmo(gizmo, gizmo_state, pending_pick, selected, selected_kind,
+                              entities, lights, scene, history, log_push,
+                              vp, cam, window, frame.extent);
 
         // ---- Palette popup ----
         draw_command_palette_popup(palette, palette_visible, palette_query, frame.extent);
