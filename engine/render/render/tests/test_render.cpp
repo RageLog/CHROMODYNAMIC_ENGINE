@@ -630,3 +630,74 @@ TEST(DrawBucket, StableSortPreservesInsertionOrderOnEqualKeys)
     EXPECT_EQ(b.size(), 3u);
 }
 
+
+// =============================================================================
+// Phase 292 / Marathon Run 7 sub-N1D: PlanarShadow.hpp.
+// Header-only math; no device required.
+// =============================================================================
+
+namespace
+{
+
+constexpr float kEps = 1e-4F;
+
+}  // anonymous namespace
+
+#include <cd/render/PlanarShadow.hpp>
+
+TEST(PlanarShadow, ProjectsPointOntoYPlaneAlongSun)
+{
+    // Sun pointing straight down: sun_dir = (0, -1, 0). Any caster point
+    // should project to (P.x, plane_y+lift, P.z).
+    const cd::math::Vec3f sun { 0.0F, -1.0F, 0.0F };
+    const float plane_y = -0.5F;
+    const float lift    = 0.01F;
+    const auto S = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+
+    // Caster point (3, 5, -2) -> projected (3, -0.49, -2).
+    const cd::math::Vec4f p { 3.0F, 5.0F, -2.0F, 1.0F };
+    const auto p_proj = S * p;
+    EXPECT_NEAR(p_proj.x, 3.0F, kEps);
+    EXPECT_NEAR(p_proj.y, plane_y + lift, kEps);
+    EXPECT_NEAR(p_proj.z, -2.0F, kEps);
+    EXPECT_NEAR(p_proj.w, 1.0F, kEps);
+}
+
+TEST(PlanarShadow, OffAxisSunFlattensYAndShearsXZ)
+{
+    // Sun pointing down-forward: (0.5, -0.5, 0.5) — normalises to a
+    // diagonal ray with Ly=-0.5. Caster point (0, 1, 0):
+    //   t = (plane_y - 1) / -0.5 = 2*(1 - plane_y)
+    //   x' = 0 + t * 0.5 = (1 - plane_y)
+    //   z' = 0 + t * 0.5 = (1 - plane_y)
+    const cd::math::Vec3f sun { 0.5F, -0.5F, 0.5F };
+    const float plane_y = -0.5F;
+    const float lift    = 0.0F;
+    const auto S = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const cd::math::Vec4f p { 0.0F, 1.0F, 0.0F, 1.0F };
+    const auto p_proj = S * p;
+    EXPECT_NEAR(p_proj.x, 1.0F - plane_y, kEps);   // = 1.5
+    EXPECT_NEAR(p_proj.y, plane_y, kEps);
+    EXPECT_NEAR(p_proj.z, 1.0F - plane_y, kEps);
+    EXPECT_NEAR(p_proj.w, 1.0F, kEps);
+}
+
+TEST(PlanarShadow, NearHorizontalSunClampsToFiniteShadow)
+{
+    // Sun nearly horizontal: Ly = -0.01 (well below kMinAbs = 0.10). The
+    // matrix should clamp Ly to -0.10 so the projected X offset stays
+    // bounded. Caster point (0, 1, 0):
+    //   without clamp: x_offset = (plane_y - 1) / -0.01 * sun.x = 100 m+
+    //   with clamp (Ly=-0.10): x_offset = (plane_y - 1) / -0.10 * sun.x = ~10
+    const cd::math::Vec3f sun { 1.0F, -0.01F, 0.0F };
+    const float plane_y = -0.5F;
+    const float lift    = 0.0F;
+    const auto S = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const cd::math::Vec4f p { 0.0F, 1.0F, 0.0F, 1.0F };
+    const auto p_proj = S * p;
+    // Projected y still pinned to plane_y.
+    EXPECT_NEAR(p_proj.y, plane_y, kEps);
+    // X offset bounded under 20 (would be 150+ without clamp).
+    EXPECT_LT(p_proj.x, 20.0F);
+    EXPECT_GT(p_proj.x, 1.0F);
+}
