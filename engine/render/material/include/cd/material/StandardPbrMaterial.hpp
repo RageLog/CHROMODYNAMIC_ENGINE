@@ -506,8 +506,17 @@ void main() {
   vec3  F_ibl       = F_Schlick_roughness(NoV, F0, roughness);
   vec3  ibl_kD      = (vec3(1.0) - F_ibl) * (1.0 - metallic);
   vec3  ibl_spec    = prefiltered * (F0 * brdf.x + vec3(brdf.y));
-  float diff_gate   = clamp(0.55 + 0.45 * sun_i, 0.0, 1.0);
-  vec3  ibl         = ibl_spec + ibl_kD * irradiance * albedo * diff_gate;
+  // W8-AL: gate both env-spec AND env-diffuse on "is there any light
+  // in the scene". W8-AK ungated env-spec so metallics show
+  // reflections when only non-sun lights are on, but the user
+  // reported "all lights off → spheres still visible" — clearly
+  // wrong (the sky is only "visible" because the sun lights it).
+  // Gate scales from 0 (no light) -> 1 (sun on) with a soft floor
+  // when a non-sun rect/spot/point is active so spheres stay
+  // reflective when the scene is lit at all.
+  float any_non_sun = (cd_lights.count > 0u) ? 1.0 : 0.0;
+  float ibl_gate    = clamp(sun_i * 0.6 + any_non_sun * 0.45, 0.0, 1.0);
+  vec3  ibl         = (ibl_spec + ibl_kD * irradiance * albedo) * ibl_gate;
 
   vec3 color = direct + ibl;
 

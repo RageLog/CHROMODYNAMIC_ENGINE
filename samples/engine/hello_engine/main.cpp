@@ -7026,54 +7026,14 @@ int main()
                                         else
                                         {
                                             // Light translate - apply directly (no history wire yet).
+                                            // W8-AL: removed W8-X auto-aim-at-origin after
+                                            // translate. User reported "otomatik merkeze
+                                            // odaklaniyor" — the magic auto-rotation was
+                                            // annoying because it overrode their manual
+                                            // rotation immediately after a move. The
+                                            // "Aim at origin" panel button (W8-V) is still
+                                            // available for one-click manual re-aim.
                                             log_push("[gizmo] light translate applied");
-                                            // W8-X: for area lights, also auto-aim at origin
-                                            // after a translate. Without this the emit
-                                            // normal stays stale and the user sees objects
-                                            // "lit from the opposite side" because the rect
-                                            // ends up facing away from the scene. Rotate
-                                            // gizmo still lets the user override the
-                                            // direction independently.
-                                            if (selected_kind == SelKind::kLight &&
-                                                selected >= 0 &&
-                                                selected < static_cast<int>(lights.size()))
-                                            {
-                                                auto& La = lights[static_cast<std::size_t>(selected)].light;
-                                                if (La.type == cd::light::LightType::kRectArea ||
-                                                    La.type == cd::light::LightType::kDiskArea)
-                                                {
-                                                    cd::math::Vec3f nn {
-                                                        -La.position.x,
-                                                        -La.position.y,
-                                                        -La.position.z };
-                                                    const float nl = std::sqrt(
-                                                        nn.x*nn.x + nn.y*nn.y + nn.z*nn.z);
-                                                    if (nl > 1e-5F)
-                                                    {
-                                                        nn.x /= nl; nn.y /= nl; nn.z /= nl;
-                                                        La.direction = nn;
-                                                        cd::math::Vec3f tt;
-                                                        if (nn.z < -0.9999F)
-                                                        {
-                                                            tt = { 0.0F, -1.0F, 0.0F };
-                                                        }
-                                                        else
-                                                        {
-                                                            const float fa = 1.0F / (1.0F + nn.z);
-                                                            tt = { 1.0F - nn.x * nn.x * fa,
-                                                                   -nn.x * nn.y * fa,
-                                                                   -nn.x };
-                                                        }
-                                                        const float tl = std::sqrt(
-                                                            tt.x*tt.x + tt.y*tt.y + tt.z*tt.z);
-                                                        if (tl > 1e-5F)
-                                                        {
-                                                            tt.x /= tl; tt.y /= tl; tt.z /= tl;
-                                                            La.area_tangent = tt;
-                                                        }
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                     break;
