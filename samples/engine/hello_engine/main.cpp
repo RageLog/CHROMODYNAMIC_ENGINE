@@ -1321,6 +1321,361 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
 }
 
 // =============================================================================
+// Phase 301 / Marathon Run 8 sub-N2E: world-space overlay helpers extracted.
+// Selection outline (entity-pick ring) + light source markers (per-light
+// gizmos in the viewport: sun ray / point dot / spot cone / area rect with
+// emit-normal arrow) both lift cleanly because they only project world to
+// screen using the existing vp matrix + the renderer FrameContext extent,
+// touch the SelKind/entities/lights state we already lifted in N2D, and
+// draw via ImGui's GetBackgroundDrawList(). No shader/RHI side effects.
+// =============================================================================
+
+// ---- draw_selection_outline_overlay ---------------------------------------
+inline void draw_selection_outline_overlay(const std::vector<SceneEntity>& entities,
+                                           int selected,
+                                           SelKind selected_kind,
+                                           cd::editor::SelectionOutline& outline,
+                                           cd::scene::Scene& scene,
+                                           const cd::math::Mat4f& vp,
+                                           cd::rhi::Extent2D extent)
+{
+    // We use the kWireframe style: project the selected entity's
+    // world position onto the screen, then draw a circle around it
+    // via ImGui's foreground draw list. Cheap, no extra GPU pass,
+    // and demonstrates SelectionOutline state end-to-end.
+    if (selected_kind == SelKind::kEntity && selected >= 0 && selected < static_cast<int>(entities.size()))
+    {
+        outline.set(entities[static_cast<std::size_t>(selected)].handle);
+    }
+    else
+    {
+        outline.clear();
+    }
+    outline.clamp_params();
+    if (outline.style != cd::editor::OutlineStyle::kNone && !outline.empty())
+    {
+        const float vw = static_cast<float>(extent.width);
+        const float vh = static_cast<float>(extent.height);
+        // Background draw-list keeps gizmos BEHIND ImGui panels so
+        // the selection ring doesn't bleed through Lights / Inspector
+        // / Showcase windows (user-reported bug B01).
+        auto* dl = ImGui::GetBackgroundDrawList();
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(
+            ImVec4(outline.color.x, outline.color.y, outline.color.z, outline.opacity)
+        );
+        for (const auto& e : outline.entities())
+        {
+            auto* lt = scene.local(e);
+            if (lt == nullptr)
+                continue;
+            const auto& p = lt->value.position;
+            // Project world ??' NDC ??' pixel.
+            const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+            cd::math::Vec4f clip {};
+            for (std::size_t r = 0; r < 4; ++r)
+            {
+                clip[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
+            }
+            if (clip[3] <= 0.0F)
+                continue;  // behind camera
+            const float ndc_x = clip[0] / clip[3];
+            const float ndc_y = clip[1] / clip[3];
+            const float sx = (ndc_x * 0.5F + 0.5F) * vw;
+            const float sy = (1.0F - (ndc_y * 0.5F + 0.5F)) * vh;
+            // Radius shrinks with distance.
+            const float radius = std::max(8.0F, 60.0F / std::max(0.5F, clip[3] * 0.25F));
+            dl->AddCircle(ImVec2(sx, sy), radius, col, 32, outline.thickness * 1.5F);
+            // Crosshair tick marks for emphasis.
+            dl->AddLine(ImVec2(sx - radius - 6.0F, sy), ImVec2(sx - radius + 6.0F, sy), col, outline.thickness);
+            dl->AddLine(ImVec2(sx + radius - 6.0F, sy), ImVec2(sx + radius + 6.0F, sy), col, outline.thickness);
+            dl->AddLine(ImVec2(sx, sy - radius - 6.0F), ImVec2(sx, sy - radius + 6.0F), col, outline.thickness);
+            dl->AddLine(ImVec2(sx, sy + radius - 6.0F), ImVec2(sx, sy + radius + 6.0F), col, outline.thickness);
+        }
+    }
+}
+
+// ---- draw_light_markers_overlay -------------------------------------------
+// Each enabled light gets a small visual in the viewport so the user can
+// SEE where the lights are placed.
+//   Directional: a yellow line from sky toward target (sun ray)
+//   Point:       filled circle in light color + range ring
+//   Spot:        filled circle at apex + cone wireframe (4 lines to far disk)
+//   Rect area:   4 corners outlined in light color + emit-normal arrow
+inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
+                                       int selected,
+                                       SelKind selected_kind,
+                                       const cd::math::Mat4f& vp,
+                                       cd::rhi::Extent2D extent)
+{
+    const float vw = static_cast<float>(extent.width);
+    const float vh = static_cast<float>(extent.height);
+    // Background draw-list - same fix as the outline drawlist
+    // above. Light gizmos / cone edges / range rings no longer
+    // bleed across the Lights/Inspector/Showcase panels.
+    auto* dl_m = ImGui::GetBackgroundDrawList();
+    auto project = [&](const cd::math::Vec3f& p) -> ImVec2
+    {
+        const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
+        cd::math::Vec4f c {};
+        for (std::size_t r = 0; r < 4; ++r)
+            c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
+        if (c[3] <= 0.0F)
+            return ImVec2(-1.0F, -1.0F);
+        return ImVec2((c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+    };
+    for (std::size_t li = 0; li < lights.size(); ++li)
+    {
+        const auto& lrow = lights[li];
+        if (!lrow.enabled)
+            continue;
+        const auto& L = lrow.light;
+        const bool sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(li));
+        const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
+        const ImU32 col_dim =
+            ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
+        const ImU32 col_sel =
+            ImGui::ColorConvertFloat4ToU32(ImVec4(1.0F, 0.85F, 0.0F, 1.0F));  // golden hover-style for selected
+        switch (L.type)
+        {
+            case cd::light::LightType::kDirectional:
+            {
+                // Render an arrow from sky position toward scene center.
+                cd::math::Vec3f sky_origin { -L.direction.x * 15.0F,
+                                             -L.direction.y * 15.0F,
+                                             -L.direction.z * 15.0F };
+                cd::math::Vec3f tip { sky_origin.x + L.direction.x * 8.0F,
+                                      sky_origin.y + L.direction.y * 8.0F,
+                                      sky_origin.z + L.direction.z * 8.0F };
+                const auto p0 = project(sky_origin);
+                const auto p1 = project(tip);
+                if (p0.x >= 0.0F && p1.x >= 0.0F)
+                {
+                    dl_m->AddLine(p0, p1, col, 3.0F);
+                    dl_m->AddCircleFilled(p0, 8.0F, col);
+                    if (sel)
+                        dl_m->AddCircle(p0, 16.0F, col_sel, 16, 3.0F);
+                    dl_m->AddText(ImVec2(p0.x + 10.0F, p0.y - 8.0F), col, "SUN");
+                }
+                break;
+            }
+            case cd::light::LightType::kPoint:
+            {
+                const auto p = project(L.position);
+                if (p.x >= 0.0F)
+                {
+                    dl_m->AddCircleFilled(p, 10.0F, col);
+                    dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
+                    if (sel)
+                        dl_m->AddCircle(p, 18.0F, col_sel, 16, 3.0F);
+                    // Range ring - only draw when this light is selected
+                    // so unselected lights show just a dot/icon instead
+                    // of a noisy 16-segment circle that cuts through
+                    // every nearby mesh (user-reported B04 clutter).
+                    if (sel)
+                    {
+                        for (int i = 0; i < 24; ++i)
+                        {
+                            const float t0 = static_cast<float>(i) / 24.0F * 6.2831853F;
+                            const float t1 = static_cast<float>(i + 1) / 24.0F * 6.2831853F;
+                            cd::math::Vec3f a { L.position.x + std::cos(t0) * L.range,
+                                                L.position.y,
+                                                L.position.z + std::sin(t0) * L.range };
+                            cd::math::Vec3f b { L.position.x + std::cos(t1) * L.range,
+                                                L.position.y,
+                                                L.position.z + std::sin(t1) * L.range };
+                            const auto pa = project(a);
+                            const auto pb = project(b);
+                            if (pa.x >= 0.0F && pb.x >= 0.0F)
+                                dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                        }
+                    }
+                    dl_m->AddText(ImVec2(p.x + 14.0F, p.y - 8.0F), col, "POINT");
+                }
+                break;
+            }
+            case cd::light::LightType::kSpot:
+            {
+                const auto p_apex = project(L.position);
+                // Far disk at range along direction.
+                cd::math::Vec3f far_center { L.position.x + L.direction.x * L.range,
+                                             L.position.y + L.direction.y * L.range,
+                                             L.position.z + L.direction.z * L.range };
+                // Use a tangent basis on the cone axis.
+                cd::math::Vec3f up { 0, 1, 0 };
+                if (std::abs(L.direction.y) > 0.95F)
+                    up = { 1, 0, 0 };
+                cd::math::Vec3f rgt { L.direction.y * up.z - L.direction.z * up.y,
+                                      L.direction.z * up.x - L.direction.x * up.z,
+                                      L.direction.x * up.y - L.direction.y * up.x };
+                const float rgt_len = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
+                if (rgt_len > 1e-5F)
+                {
+                    rgt.x /= rgt_len;
+                    rgt.y /= rgt_len;
+                    rgt.z /= rgt_len;
+                }
+                cd::math::Vec3f bt { L.direction.y * rgt.z - L.direction.z * rgt.y,
+                                     L.direction.z * rgt.x - L.direction.x * rgt.z,
+                                     L.direction.x * rgt.y - L.direction.y * rgt.x };
+                // outer cone half-angle from cos_outer
+                const float outer_angle = std::acos(std::clamp(L.cos_outer_cone, -1.0F, 1.0F));
+                const float disk_r = L.range * std::tan(outer_angle);
+                // Cone edges + far-disk circle - drawn only when the
+                // spot is selected. Unselected lights show just the
+                // apex icon so they don't clutter the scene with rays
+                // through every nearby mesh (user-reported B04).
+                if (sel)
+                {
+                    const int kEdges = 4;
+                    std::array<cd::math::Vec3f, kEdges + 1> rim {};
+                    for (int i = 0; i <= kEdges; ++i)
+                    {
+                        const float t = static_cast<float>(i) / static_cast<float>(kEdges) * 6.2831853F;
+                        const float ct = std::cos(t), st = std::sin(t);
+                        rim[static_cast<std::size_t>(i)] = { far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
+                                                             far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
+                                                             far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
+                    }
+                    // Apex ? 4 edge points.
+                    for (int i = 0; i < kEdges; ++i)
+                    {
+                        const auto pe = project(rim[static_cast<std::size_t>(i)]);
+                        if (p_apex.x >= 0.0F && pe.x >= 0.0F)
+                            dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
+                    }
+                    // Far-disk rim - close the cone visually.
+                    for (int i = 0; i < kEdges; ++i)
+                    {
+                        const auto pa = project(rim[static_cast<std::size_t>(i)]);
+                        const auto pb = project(rim[static_cast<std::size_t>(i + 1)]);
+                        if (pa.x >= 0.0F && pb.x >= 0.0F)
+                            dl_m->AddLine(pa, pb, col_dim, 1.5F);
+                    }
+                }
+                if (p_apex.x >= 0.0F)
+                {
+                    dl_m->AddCircleFilled(p_apex, 8.0F, col);
+                    if (sel)
+                        dl_m->AddCircle(p_apex, 16.0F, col_sel, 16, 3.0F);
+                    dl_m->AddText(ImVec2(p_apex.x + 10.0F, p_apex.y - 8.0F), col, "SPOT");
+                }
+                break;
+            }
+            case cd::light::LightType::kRectArea:
+            case cd::light::LightType::kDiskArea:
+            {
+                // Derive tangent + bitangent from L.direction
+                // exactly the way the FS does - so when the user
+                // rotates the area light's direction via the
+                // Inspector or gizmo, the visual rectangle
+                // rotates with it. Closes 'area donunce gorseli
+                // donmuyor' bug.
+                cd::math::Vec3f ln = L.direction;
+                const float lnl = std::sqrt(ln.x * ln.x + ln.y * ln.y + ln.z * ln.z);
+                if (lnl > 1e-5F)
+                {
+                    ln.x /= lnl;
+                    ln.y /= lnl;
+                    ln.z /= lnl;
+                }
+                else
+                {
+                    ln = { 0.0F, 0.0F, -1.0F };
+                }
+                // W8-O: read the SAME area_tangent the shader uses.
+                // Earlier wireframe derived its tangent via Frisvad
+                // while the shader read the uploaded tangent — when
+                // the user rotated the rect via the gizmo, the
+                // wireframe rotated by Frisvad's smooth derivation
+                // and the actual lit polygon rotated by the
+                // user-controlled tangent, so the two visibly
+                // disagreed. Use light.area_tangent for both.
+                cd::math::Vec3f t = L.area_tangent;
+                const float tll = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+                if (tll > 1e-5F)
+                {
+                    t.x /= tll;
+                    t.y /= tll;
+                    t.z /= tll;
+                }
+                else
+                {
+                    t = { 1.0F, 0.0F, 0.0F };
+                }
+                // Re-orthogonalise tangent against the (possibly
+                // dragged) normal — same trick the rotate gizmo
+                // applies after rotating both.
+                const float pr = t.x * ln.x + t.y * ln.y + t.z * ln.z;
+                t.x -= pr * ln.x;
+                t.y -= pr * ln.y;
+                t.z -= pr * ln.z;
+                const float tnl = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+                if (tnl > 1e-5F)
+                {
+                    t.x /= tnl;
+                    t.y /= tnl;
+                    t.z /= tnl;
+                }
+                else
+                {
+                    t = { 1.0F, 0.0F, 0.0F };
+                }
+                // bitangent = normal x tangent (matches the shader's
+                // cross(N, T) for B_rect).
+                cd::math::Vec3f b { ln.y * t.z - ln.z * t.y, ln.z * t.x - ln.x * t.z, ln.x * t.y - ln.y * t.x };
+                // Project 4 corners.
+                const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
+                cd::math::Vec3f c0 { L.position.x - t.x * hw - b.x * hh,
+                                     L.position.y - t.y * hw - b.y * hh,
+                                     L.position.z - t.z * hw - b.z * hh };
+                cd::math::Vec3f c1 { L.position.x + t.x * hw - b.x * hh,
+                                     L.position.y + t.y * hw - b.y * hh,
+                                     L.position.z + t.z * hw - b.z * hh };
+                cd::math::Vec3f c2 { L.position.x + t.x * hw + b.x * hh,
+                                     L.position.y + t.y * hw + b.y * hh,
+                                     L.position.z + t.z * hw + b.z * hh };
+                cd::math::Vec3f c3 { L.position.x - t.x * hw + b.x * hh,
+                                     L.position.y - t.y * hw + b.y * hh,
+                                     L.position.z - t.z * hw + b.z * hh };
+                const auto p0 = project(c0);
+                const auto p1 = project(c1);
+                const auto p2 = project(c2);
+                const auto p3 = project(c3);
+                if (p0.x >= 0.0F && p1.x >= 0.0F && p2.x >= 0.0F && p3.x >= 0.0F)
+                {
+                    const float thickness = sel ? 4.0F : 2.0F;
+                    const ImU32 use_col = sel ? col_sel : col;
+                    dl_m->AddLine(p0, p1, use_col, thickness);
+                    dl_m->AddLine(p1, p2, use_col, thickness);
+                    dl_m->AddLine(p2, p3, use_col, thickness);
+                    dl_m->AddLine(p3, p0, use_col, thickness);
+                    dl_m->AddText(p0, col, "AREA");
+                    // W8-R: explicit normal arrow so the user can see
+                    // which side is emissive (one-sided rect lights
+                    // only illuminate +N hemisphere). Arrow shoots
+                    // from the rect centre along +ln by 1/3 of the
+                    // longer side length, big enough to be visible
+                    // but not overwhelming.
+                    const float arrow_len = std::max(L.area_width, L.area_height) * 0.6F + 0.3F;
+                    const cd::math::Vec3f arrow_tip { L.position.x + ln.x * arrow_len,
+                                                      L.position.y + ln.y * arrow_len,
+                                                      L.position.z + ln.z * arrow_len };
+                    const auto p_centre = project(L.position);
+                    const auto p_tip = project(arrow_tip);
+                    if (p_centre.x >= 0.0F && p_tip.x >= 0.0F)
+                    {
+                        dl_m->AddLine(p_centre, p_tip, use_col, sel ? 3.0F : 2.0F);
+                        // Tiny circle at tip = arrow head substitute.
+                        dl_m->AddCircleFilled(p_tip, sel ? 5.0F : 3.5F, use_col);
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
+// =============================================================================
 // Phase 295 / Marathon Run 7 sub-N1G: scene-bootstrap helpers extracted
 // from main(). These are sample-local (operate on the anon-namespace
 // SceneEntity / PrimitiveKind) so they live in main.cpp rather than a
@@ -6037,59 +6392,7 @@ int main()
         draw_history_panel(history, log);
 
         // ---- Phase 151 - selection outline (ImGui overlay) ----
-        // We use the kWireframe style: project the selected entity's
-        // world position onto the screen, then draw a circle around it
-        // via ImGui's foreground draw list. Cheap, no extra GPU pass,
-        // and demonstrates SelectionOutline state end-to-end.
-        if (selected_kind == SelKind::kEntity && selected >= 0 && selected < static_cast<int>(entities.size()))
-        {
-            outline.set(entities[static_cast<std::size_t>(selected)].handle);
-        }
-        else
-        {
-            outline.clear();
-        }
-        outline.clamp_params();
-        if (outline.style != cd::editor::OutlineStyle::kNone && !outline.empty())
-        {
-            const float vw = static_cast<float>(frame.extent.width);
-            const float vh = static_cast<float>(frame.extent.height);
-            // Background draw-list keeps gizmos BEHIND ImGui panels so
-            // the selection ring doesn't bleed through Lights / Inspector
-            // / Showcase windows (user-reported bug B01).
-            auto* dl = ImGui::GetBackgroundDrawList();
-            const ImU32 col = ImGui::ColorConvertFloat4ToU32(
-                ImVec4(outline.color.x, outline.color.y, outline.color.z, outline.opacity)
-            );
-            for (const auto& e : outline.entities())
-            {
-                auto* lt = scene.local(e);
-                if (lt == nullptr)
-                    continue;
-                const auto& p = lt->value.position;
-                // Project world ??' NDC ??' pixel.
-                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
-                cd::math::Vec4f clip {};
-                for (std::size_t r = 0; r < 4; ++r)
-                {
-                    clip[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
-                }
-                if (clip[3] <= 0.0F)
-                    continue;  // behind camera
-                const float ndc_x = clip[0] / clip[3];
-                const float ndc_y = clip[1] / clip[3];
-                const float sx = (ndc_x * 0.5F + 0.5F) * vw;
-                const float sy = (1.0F - (ndc_y * 0.5F + 0.5F)) * vh;
-                // Radius shrinks with distance.
-                const float radius = std::max(8.0F, 60.0F / std::max(0.5F, clip[3] * 0.25F));
-                dl->AddCircle(ImVec2(sx, sy), radius, col, 32, outline.thickness * 1.5F);
-                // Crosshair tick marks for emphasis.
-                dl->AddLine(ImVec2(sx - radius - 6.0F, sy), ImVec2(sx - radius + 6.0F, sy), col, outline.thickness);
-                dl->AddLine(ImVec2(sx + radius - 6.0F, sy), ImVec2(sx + radius + 6.0F, sy), col, outline.thickness);
-                dl->AddLine(ImVec2(sx, sy - radius - 6.0F), ImVec2(sx, sy - radius + 6.0F), col, outline.thickness);
-                dl->AddLine(ImVec2(sx, sy + radius - 6.0F), ImVec2(sx, sy + radius + 6.0F), col, outline.thickness);
-            }
-        }
+        draw_selection_outline_overlay(entities, selected, selected_kind, outline, scene, vp, frame.extent);
 
         // ---- World grid (floor) ----
         // Moved into the floor fragment shader (analytic XZ grid with
@@ -6099,280 +6402,7 @@ int main()
         // above sets tint[3] = 2.0 to enable that shader branch.
 
         // ---- Phase D - Light source markers (world-space overlay) ----
-        // Each enabled light gets a small visual in the viewport so
-        // the user can SEE where the lights are placed.
-        // - Directional: a yellow line from sky toward target (sun ray)
-        // - Point: filled circle in light color + range ring
-        // - Spot:  filled circle at apex + cone wireframe (4 lines to far disk)
-        // - Rect area: 4 corners outlined in light color
-        {
-            const float vw = static_cast<float>(frame.extent.width);
-            const float vh = static_cast<float>(frame.extent.height);
-            // Background draw-list - same fix as the outline drawlist
-            // above. Light gizmos / cone edges / range rings no longer
-            // bleed across the Lights/Inspector/Showcase panels.
-            auto* dl_m = ImGui::GetBackgroundDrawList();
-            auto project = [&](const cd::math::Vec3f& p) -> ImVec2
-            {
-                const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
-                cd::math::Vec4f c {};
-                for (std::size_t r = 0; r < 4; ++r)
-                    c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
-                if (c[3] <= 0.0F)
-                    return ImVec2(-1.0F, -1.0F);
-                return ImVec2((c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
-            };
-            for (std::size_t li = 0; li < lights.size(); ++li)
-            {
-                const auto& lrow = lights[li];
-                if (!lrow.enabled)
-                    continue;
-                const auto& L = lrow.light;
-                const bool sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(li));
-                const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
-                const ImU32 col_dim =
-                    ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
-                const ImU32 col_sel =
-                    ImGui::ColorConvertFloat4ToU32(ImVec4(1.0F, 0.85F, 0.0F, 1.0F));  // golden hover-style for selected
-                switch (L.type)
-                {
-                    case cd::light::LightType::kDirectional:
-                    {
-                        // Render an arrow from sky position toward scene center.
-                        cd::math::Vec3f sky_origin { -L.direction.x * 15.0F,
-                                                     -L.direction.y * 15.0F,
-                                                     -L.direction.z * 15.0F };
-                        cd::math::Vec3f tip { sky_origin.x + L.direction.x * 8.0F,
-                                              sky_origin.y + L.direction.y * 8.0F,
-                                              sky_origin.z + L.direction.z * 8.0F };
-                        const auto p0 = project(sky_origin);
-                        const auto p1 = project(tip);
-                        if (p0.x >= 0.0F && p1.x >= 0.0F)
-                        {
-                            dl_m->AddLine(p0, p1, col, 3.0F);
-                            dl_m->AddCircleFilled(p0, 8.0F, col);
-                            if (sel)
-                                dl_m->AddCircle(p0, 16.0F, col_sel, 16, 3.0F);
-                            dl_m->AddText(ImVec2(p0.x + 10.0F, p0.y - 8.0F), col, "SUN");
-                        }
-                        break;
-                    }
-                    case cd::light::LightType::kPoint:
-                    {
-                        const auto p = project(L.position);
-                        if (p.x >= 0.0F)
-                        {
-                            dl_m->AddCircleFilled(p, 10.0F, col);
-                            dl_m->AddCircle(p, 14.0F, col_dim, 12, 2.0F);
-                            if (sel)
-                                dl_m->AddCircle(p, 18.0F, col_sel, 16, 3.0F);
-                            // Range ring - only draw when this light is selected
-                            // so unselected lights show just a dot/icon instead
-                            // of a noisy 16-segment circle that cuts through
-                            // every nearby mesh (user-reported B04 clutter).
-                            if (sel)
-                            {
-                                for (int i = 0; i < 24; ++i)
-                                {
-                                    const float t0 = static_cast<float>(i) / 24.0F * 6.2831853F;
-                                    const float t1 = static_cast<float>(i + 1) / 24.0F * 6.2831853F;
-                                    cd::math::Vec3f a { L.position.x + std::cos(t0) * L.range,
-                                                        L.position.y,
-                                                        L.position.z + std::sin(t0) * L.range };
-                                    cd::math::Vec3f b { L.position.x + std::cos(t1) * L.range,
-                                                        L.position.y,
-                                                        L.position.z + std::sin(t1) * L.range };
-                                    const auto pa = project(a);
-                                    const auto pb = project(b);
-                                    if (pa.x >= 0.0F && pb.x >= 0.0F)
-                                        dl_m->AddLine(pa, pb, col_dim, 1.5F);
-                                }
-                            }
-                            dl_m->AddText(ImVec2(p.x + 14.0F, p.y - 8.0F), col, "POINT");
-                        }
-                        break;
-                    }
-                    case cd::light::LightType::kSpot:
-                    {
-                        const auto p_apex = project(L.position);
-                        // Far disk at range along direction.
-                        cd::math::Vec3f far_center { L.position.x + L.direction.x * L.range,
-                                                     L.position.y + L.direction.y * L.range,
-                                                     L.position.z + L.direction.z * L.range };
-                        // Use a tangent basis on the cone axis.
-                        cd::math::Vec3f up { 0, 1, 0 };
-                        if (std::abs(L.direction.y) > 0.95F)
-                            up = { 1, 0, 0 };
-                        cd::math::Vec3f rgt { L.direction.y * up.z - L.direction.z * up.y,
-                                              L.direction.z * up.x - L.direction.x * up.z,
-                                              L.direction.x * up.y - L.direction.y * up.x };
-                        const float rgt_len = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
-                        if (rgt_len > 1e-5F)
-                        {
-                            rgt.x /= rgt_len;
-                            rgt.y /= rgt_len;
-                            rgt.z /= rgt_len;
-                        }
-                        cd::math::Vec3f bt { L.direction.y * rgt.z - L.direction.z * rgt.y,
-                                             L.direction.z * rgt.x - L.direction.x * rgt.z,
-                                             L.direction.x * rgt.y - L.direction.y * rgt.x };
-                        // outer cone half-angle from cos_outer
-                        const float outer_angle = std::acos(std::clamp(L.cos_outer_cone, -1.0F, 1.0F));
-                        const float disk_r = L.range * std::tan(outer_angle);
-                        // Cone edges + far-disk circle - drawn only when the
-                        // spot is selected. Unselected lights show just the
-                        // apex icon so they don't clutter the scene with rays
-                        // through every nearby mesh (user-reported B04).
-                        if (sel)
-                        {
-                            const int kEdges = 4;
-                            std::array<cd::math::Vec3f, kEdges + 1> rim {};
-                            for (int i = 0; i <= kEdges; ++i)
-                            {
-                                const float t = static_cast<float>(i) / static_cast<float>(kEdges) * 6.2831853F;
-                                const float ct = std::cos(t), st = std::sin(t);
-                                rim[static_cast<std::size_t>(i)] = { far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
-                                                                     far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
-                                                                     far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
-                            }
-                            // Apex ? 4 edge points.
-                            for (int i = 0; i < kEdges; ++i)
-                            {
-                                const auto pe = project(rim[static_cast<std::size_t>(i)]);
-                                if (p_apex.x >= 0.0F && pe.x >= 0.0F)
-                                    dl_m->AddLine(p_apex, pe, col_dim, 1.5F);
-                            }
-                            // Far-disk rim - close the cone visually.
-                            for (int i = 0; i < kEdges; ++i)
-                            {
-                                const auto pa = project(rim[static_cast<std::size_t>(i)]);
-                                const auto pb = project(rim[static_cast<std::size_t>(i + 1)]);
-                                if (pa.x >= 0.0F && pb.x >= 0.0F)
-                                    dl_m->AddLine(pa, pb, col_dim, 1.5F);
-                            }
-                        }
-                        if (p_apex.x >= 0.0F)
-                        {
-                            dl_m->AddCircleFilled(p_apex, 8.0F, col);
-                            if (sel)
-                                dl_m->AddCircle(p_apex, 16.0F, col_sel, 16, 3.0F);
-                            dl_m->AddText(ImVec2(p_apex.x + 10.0F, p_apex.y - 8.0F), col, "SPOT");
-                        }
-                        break;
-                    }
-                    case cd::light::LightType::kRectArea:
-                    case cd::light::LightType::kDiskArea:
-                    {
-                        // Derive tangent + bitangent from L.direction
-                        // exactly the way the FS does - so when the user
-                        // rotates the area light's direction via the
-                        // Inspector or gizmo, the visual rectangle
-                        // rotates with it. Closes 'area donunce gorseli
-                        // donmuyor' bug.
-                        cd::math::Vec3f ln = L.direction;
-                        const float lnl = std::sqrt(ln.x * ln.x + ln.y * ln.y + ln.z * ln.z);
-                        if (lnl > 1e-5F)
-                        {
-                            ln.x /= lnl;
-                            ln.y /= lnl;
-                            ln.z /= lnl;
-                        }
-                        else
-                        {
-                            ln = { 0.0F, 0.0F, -1.0F };
-                        }
-                        // W8-O: read the SAME area_tangent the shader uses.
-                        // Earlier wireframe derived its tangent via Frisvad
-                        // while the shader read the uploaded tangent — when
-                        // the user rotated the rect via the gizmo, the
-                        // wireframe rotated by Frisvad's smooth derivation
-                        // and the actual lit polygon rotated by the
-                        // user-controlled tangent, so the two visibly
-                        // disagreed. Use light.area_tangent for both.
-                        cd::math::Vec3f t = L.area_tangent;
-                        const float tll = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
-                        if (tll > 1e-5F)
-                        {
-                            t.x /= tll;
-                            t.y /= tll;
-                            t.z /= tll;
-                        }
-                        else
-                        {
-                            t = { 1.0F, 0.0F, 0.0F };
-                        }
-                        // Re-orthogonalise tangent against the (possibly
-                        // dragged) normal — same trick the rotate gizmo
-                        // applies after rotating both.
-                        const float pr = t.x * ln.x + t.y * ln.y + t.z * ln.z;
-                        t.x -= pr * ln.x;
-                        t.y -= pr * ln.y;
-                        t.z -= pr * ln.z;
-                        const float tnl = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
-                        if (tnl > 1e-5F)
-                        {
-                            t.x /= tnl;
-                            t.y /= tnl;
-                            t.z /= tnl;
-                        }
-                        else
-                        {
-                            t = { 1.0F, 0.0F, 0.0F };
-                        }
-                        // bitangent = normal x tangent (matches the shader's
-                        // cross(N, T) for B_rect).
-                        cd::math::Vec3f b { ln.y * t.z - ln.z * t.y, ln.z * t.x - ln.x * t.z, ln.x * t.y - ln.y * t.x };
-                        // Project 4 corners.
-                        const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
-                        cd::math::Vec3f c0 { L.position.x - t.x * hw - b.x * hh,
-                                             L.position.y - t.y * hw - b.y * hh,
-                                             L.position.z - t.z * hw - b.z * hh };
-                        cd::math::Vec3f c1 { L.position.x + t.x * hw - b.x * hh,
-                                             L.position.y + t.y * hw - b.y * hh,
-                                             L.position.z + t.z * hw - b.z * hh };
-                        cd::math::Vec3f c2 { L.position.x + t.x * hw + b.x * hh,
-                                             L.position.y + t.y * hw + b.y * hh,
-                                             L.position.z + t.z * hw + b.z * hh };
-                        cd::math::Vec3f c3 { L.position.x - t.x * hw + b.x * hh,
-                                             L.position.y - t.y * hw + b.y * hh,
-                                             L.position.z - t.z * hw + b.z * hh };
-                        const auto p0 = project(c0);
-                        const auto p1 = project(c1);
-                        const auto p2 = project(c2);
-                        const auto p3 = project(c3);
-                        if (p0.x >= 0.0F && p1.x >= 0.0F && p2.x >= 0.0F && p3.x >= 0.0F)
-                        {
-                            const float thickness = sel ? 4.0F : 2.0F;
-                            const ImU32 use_col = sel ? col_sel : col;
-                            dl_m->AddLine(p0, p1, use_col, thickness);
-                            dl_m->AddLine(p1, p2, use_col, thickness);
-                            dl_m->AddLine(p2, p3, use_col, thickness);
-                            dl_m->AddLine(p3, p0, use_col, thickness);
-                            dl_m->AddText(p0, col, "AREA");
-                            // W8-R: explicit normal arrow so the user can see
-                            // which side is emissive (one-sided rect lights
-                            // only illuminate +N hemisphere). Arrow shoots
-                            // from the rect centre along +ln by 1/3 of the
-                            // longer side length, big enough to be visible
-                            // but not overwhelming.
-                            const float arrow_len = std::max(L.area_width, L.area_height) * 0.6F + 0.3F;
-                            const cd::math::Vec3f arrow_tip { L.position.x + ln.x * arrow_len,
-                                                              L.position.y + ln.y * arrow_len,
-                                                              L.position.z + ln.z * arrow_len };
-                            const auto p_centre = project(L.position);
-                            const auto p_tip = project(arrow_tip);
-                            if (p_centre.x >= 0.0F && p_tip.x >= 0.0F)
-                            {
-                                dl_m->AddLine(p_centre, p_tip, use_col, sel ? 3.0F : 2.0F);
-                                // Tiny circle at tip = arrow head substitute.
-                                dl_m->AddCircleFilled(p_tip, sel ? 5.0F : 3.5F, use_col);
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        }
+        draw_light_markers_overlay(lights, selected, selected_kind, vp, frame.extent);
 
         // ---- Phase 152 - axis-translation gizmo (ImGui overlay) ----
         // Project the selected entity's world position to screen,
