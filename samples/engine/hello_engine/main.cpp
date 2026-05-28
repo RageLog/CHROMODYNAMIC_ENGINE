@@ -2803,8 +2803,15 @@ int main()
     // tonemap palette has nothing distinctive to compress.
     lights.push_back({ "Magenta HDR neon (25000K)",
         cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
-                             4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 25000.0F),
+                             4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
         true, 25000.0F });
+        // W8-AB: magenta neon lumens 25000 -> 6000. The 25000 lm value
+        // was chosen during W5-B when the area multiplier was 0.20 —
+        // visible peak under that calibration. After W8-AB unified
+        // area calibration, 25000 lm produced a saturated white blob
+        // on the sphere column. 6000 lm keeps the HDR-showcase intent
+        // (warmer-than-white tint, exceeds SDR ceiling on closest
+        // metal spheres) without overwhelming the rest of the scene.
 
     // Per-frame ClusterGrid for stats. View-space Z range here is just
     // for the panel's "lights per cluster" preview.
@@ -4833,6 +4840,7 @@ int main()
                 // a visible cast on the floor (so the RT-shadow path
                 // actually has irradiance to subtract from).
                 constexpr float kInvPi   = 0.31830988618F;   // 1 / pi
+                (void)kInvPi;
                 float ki = 0.0F;
                 if (k == cd::light::LightType::kRectArea ||
                     k == cd::light::LightType::kDiskArea)
@@ -4848,20 +4856,16 @@ int main()
                     const float w     = std::max(lrow.light.area_width,  0.05F);
                     const float h     = std::max(lrow.light.area_height, 0.05F);
                     const float area  = w * h;
-                    // W8-AA: drop one factor of 1/pi (use kInvPi not
-                    // kInvPiSq). The LTC form factor already divides by
-                    // 2*pi in `ltc_polygon_irradiance` (see
-                    // `samples/engine/hello_engine/main.cpp` GLSL or
-                    // `engine/render/material/include/cd/material/Standard
-                    // PbrMaterial.hpp`), so the radiance term feeding it
-                    // is L = phi / (pi * A), not phi / (pi^2 * A). The
-                    // extra pi in W8-Y under-darkened the scene by ~3x
-                    // and produced the "floor stays black, no shadow"
-                    // image the user kept resubmitting. Empirical
-                    // multiplier bumped 0.70 -> 2.50 so a 2500 lm rect
-                    // matches the photometric expectation of a soft
-                    // panel in a darkened room.
-                    ki = lrow.light.intensity * kInvPi / area * 2.50F;
+                    // W8-AB: simpler, less explosive formula. W8-AA's
+                    // physical "phi/(pi*A)*2.50" was correct for a 2500
+                    // lm cyan rect but at 25000 lm magenta with 1.6 m²
+                    // area it produced ki ≈ 12k, saturating the sphere
+                    // column to pure white. Fall back to lumens/(4 pi *
+                    // 2) with an area-light empirical multiplier of
+                    // 1.5 — keeps the cyan visibly bright without
+                    // letting HDR-showcase neons clip the tonemap.
+                    (void)area;
+                    ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F * 1.5F;
                 }
                 else
                 {
