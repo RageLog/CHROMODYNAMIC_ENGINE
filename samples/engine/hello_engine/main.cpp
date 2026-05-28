@@ -82,7 +82,10 @@
 #include <cd/imgui/Context.hpp>
 #include <cd/material/AnalyticalSkyMaterial.hpp>
 #include <cd/material/Material.hpp>
-#include <cd/material/StandardPbrMaterial.hpp>
+// W8-AR: <cd/material/StandardPbrMaterial.hpp> include REMOVED.
+// hello_engine no longer uses the dedicated StandardPbr pipeline;
+// the PBR demo spheres are unified into the kPrimFS path. The
+// library header stays available for hello_pbr and external samples.
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Quaternion.hpp>
 #include <cd/math/Random.hpp>
@@ -189,6 +192,14 @@ struct SceneEntity
     float             metallic  { 0.0F };
     float             roughness { 0.5F };
     PrimitiveKind     kind { PrimitiveKind::kCube };
+    // W8-AR: ECS-driven PBR sphere flag. When true the entity renders
+    // through kPrimFS's tint.w==3.0 PBR branch (Cook-Torrance + GGX +
+    // multi-light + Karis IBL), reading metallic/roughness from the
+    // SceneEntity fields above. When false the standard primitive
+    // path runs (vertex-coloured or textured albedo, hemisphere +
+    // Lambert + cd_lights). One render loop, one shader, one shadow
+    // pass — PBR is just a per-entity attribute now.
+    bool              is_pbr { false };
     // R3 phase 226 - previous-frame model matrix, populated at the end
     // of each frame's main pass for the velocity pass to use next frame.
     // On the first frame this equals the curr model so the velocity
@@ -269,62 +280,11 @@ void destroy_mesh(cd::rhi::IDevice& dev, GpuMesh& m)
     m = {};
 }
 
-// ============================================================================
-// Convert PrimitiveVertex (44 B pos+normal+uv+color) to a 2-attribute
-// pos+normal layout that the StandardPbrMaterial vertex shader expects.
-// We do the copy CPU-side and upload as a separate stream because the
-// PBR shader signature is fixed (pos@loc0, normal@loc1 - no color/uv).
-// ============================================================================
-struct PbrVertex { float pos[3]; float normal[3]; };
-
-[[nodiscard]] std::vector<PbrVertex>
-to_pbr_vertices(const cd::asset::PrimitiveMesh& m)
-{
-    std::vector<PbrVertex> out;
-    out.reserve(m.vertices.size());
-    for (const auto& v : m.vertices)
-    {
-        PbrVertex pv;
-        pv.pos[0]    = v.pos[0];    pv.pos[1]    = v.pos[1];    pv.pos[2]    = v.pos[2];
-        pv.normal[0] = v.normal[0]; pv.normal[1] = v.normal[1]; pv.normal[2] = v.normal[2];
-        out.push_back(pv);
-    }
-    return out;
-}
-
-[[nodiscard]] GpuMesh upload_pbr_mesh(cd::rhi::IDevice& dev, const cd::asset::PrimitiveMesh& m)
-{
-    GpuMesh out {};
-    const auto verts = to_pbr_vertices(m);
-    cd::rhi::BufferDesc vbd {};
-    vbd.size = verts.size() * sizeof(PbrVertex);
-    vbd.usage = cd::rhi::BufferUsage::kVertex;
-    vbd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    auto vb_r = dev.create_buffer(vbd);
-    if (!vb_r.has_value()) return out;
-    (void)dev.upload_buffer(*vb_r, 0,
-        std::span<const std::byte>(reinterpret_cast<const std::byte*>(verts.data()), vbd.size));
-
-    cd::rhi::BufferDesc ibd {};
-    ibd.size = m.indices.size() * sizeof(std::uint16_t);
-    ibd.usage = cd::rhi::BufferUsage::kIndex;
-    ibd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    auto ib_r = dev.create_buffer(ibd);
-    if (!ib_r.has_value())
-    {
-        dev.destroy_buffer(*vb_r);
-        return out;
-    }
-    (void)dev.upload_buffer(*ib_r, 0,
-        std::span<const std::byte>(
-            reinterpret_cast<const std::byte*>(m.indices.data()), ibd.size));
-
-    out.vb = *vb_r;
-    out.ib = *ib_r;
-    out.vertex_count = static_cast<std::uint32_t>(verts.size());
-    out.index_count  = static_cast<std::uint32_t>(m.indices.size());
-    return out;
-}
+// W8-AR: PbrVertex / to_pbr_vertices / upload_pbr_mesh REMOVED.
+// They existed to feed the dedicated StandardPbrMaterial pipeline
+// with a pos+normal-only stream. After W8-AR the PBR demo spheres
+// are ECS entities rendered through the same PrimitiveVertex
+// (pos+normal+uv+color) stream every other primitive uses.
 
 // ============================================================================
 // Wireframe-like simple shader that draws PrimitiveVertex meshes (color
@@ -1752,57 +1712,9 @@ int main()
     if (!bu_r.has_value()) return 42;
     auto& bloom_upsample_material = *bu_r;
 
-    // Standard PBR material for the 5x5 sphere sweep.
-    constexpr std::array<cd::rhi::VertexBinding, 1> kPbrBindings {
-        cd::rhi::VertexBinding { 0, sizeof(PbrVertex), false } };
-    constexpr std::array<cd::rhi::VertexAttribute, 2> kPbrAttrs {
-        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(PbrVertex, pos) },
-        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(PbrVertex, normal) } };
-    constexpr std::array<cd::rhi::PushConstantRange, 1> kPbrPush {
-        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex |
-                                               cd::rhi::ShaderStage::kFragment,
-                                     .offset = 0,
-                                     .size = static_cast<std::uint32_t>(
-                                         sizeof(cd::material::StandardPbrPush)) } };
-    // PBR shader bindings (R1 IBL pipeline):
-    //   binding 0: multi-light UBO (LightUboGpu, 528 B std140)
-    //   binding 1: samplerCube - prefiltered specular IBL (mip chain)
-    //   binding 2: samplerCube - diffuse irradiance IBL
-    //   binding 3: sampler2D   - split-sum BRDF LUT (RG16Float)
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 4> kPbrDescBindings {
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 0,
-                                              .type    = cd::rhi::DescriptorType::kUniformBuffer,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 1,
-                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 2,
-                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 3,
-                                              .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                              .count   = 1,
-                                              .stages  = cd::rhi::ShaderStage::kFragment } };
-    cd::material::MaterialDesc pbr_md {};
-    pbr_md.vertex_glsl   = cd::material::kStandardPbrVS;
-    pbr_md.fragment_glsl = cd::material::kStandardPbrFS;
-    pbr_md.color_attachment_formats = kColorFmts;
-    pbr_md.depth_attachment_format = kDepthFormat;
-    pbr_md.vertex_bindings = kPbrBindings;
-    pbr_md.vertex_attributes = kPbrAttrs;
-    pbr_md.push_constants = kPbrPush;
-    pbr_md.descriptor_bindings = kPbrDescBindings;
-    pbr_md.raster.cull = cd::rhi::CullMode::kNone;
-    pbr_md.depth_stencil.depth_test = true;
-    pbr_md.depth_stencil.depth_write = true;
-    pbr_md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
-    pbr_md.name = "hello_engine/pbr";
-    auto pbr_r = cd::material::Material::create(device, compiler.get(), pbr_md);
-    if (!pbr_r.has_value()) return 8;
-    auto& pbr_material = *pbr_r;
+    // W8-AR: pbr_material (StandardPbrMaterial pipeline) REMOVED.
+    // The 5x5 sphere sweep is now ECS-driven and renders through the
+    // unified prim_material pipeline below (kPrimFS tint.w==3.0 branch).
 
     // Primitive shader (PrimitiveVertex layout, simple Lambert + tint).
     constexpr std::array<cd::rhi::VertexBinding, 1> kPrimBindings {
@@ -2171,36 +2083,9 @@ int main()
         if (auto wr = prim_inst.update(writes); !wr.has_value()) return 15;
     }
 
-    // PBR material instance - bindings:
-    //   0 multi-light UBO (gap #22), 1 spec IBL, 2 diff IBL, 3 BRDF LUT.
-    auto pbr_inst_r = cd::material::MaterialInstance::create(device, pbr_material);
-    if (!pbr_inst_r.has_value()) return 17;
-    auto& pbr_inst = *pbr_inst_r;
-    {
-        std::array<cd::rhi::DescriptorWrite, 4> writes {
-            cd::rhi::DescriptorWrite { .binding = 0,
-                                       .array_element = 0,
-                                       .type  = cd::rhi::DescriptorType::kUniformBuffer,
-                                       .buffer = lights_ubo,
-                                       .buffer_offset = 0,
-                                       .buffer_range = kLightUboBytes },
-            cd::rhi::DescriptorWrite { .binding = 1,
-                                       .array_element = 0,
-                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                       .view    = gpu_spec_cube.view,
-                                       .sampler = ibl_sampler },
-            cd::rhi::DescriptorWrite { .binding = 2,
-                                       .array_element = 0,
-                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                       .view    = gpu_diff_cube.view,
-                                       .sampler = ibl_sampler },
-            cd::rhi::DescriptorWrite { .binding = 3,
-                                       .array_element = 0,
-                                       .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                       .view    = gpu_brdf_lut.view,
-                                       .sampler = ibl_sampler } };
-        if (auto wr = pbr_inst.update(writes); !wr.has_value()) return 18;
-    }
+    // W8-AR: pbr_inst (StandardPbrMaterial descriptor set) REMOVED.
+    // Multi-light UBO + IBL descriptors are bound on prim_inst already
+    // (bindings 0, 5, 6, 7 on the unified prim pipeline).
 
     // R3: composite material instance + HDR sampler binding. Two
     // instances for TAA ping-pong - composite_insts[i] reads
@@ -2366,7 +2251,7 @@ int main()
     GpuMesh cyl_mesh    = upload_mesh(device, cyl_cpu);
     GpuMesh torus_mesh  = upload_mesh(device, torus_cpu);
     GpuMesh floor_mesh  = upload_mesh(device, floor_cpu);
-    GpuMesh pbr_sphere  = upload_pbr_mesh(device, sphere_cpu);
+    // W8-AR: pbr_sphere REMOVED. PBR sphere entities reuse sphere_mesh.
     // R1.5: torus knot procedural showcase used when no glTF asset
     // resolves. With CesiumMan.glb in assets/samples/, the auto-load
     // path takes priority and uses the actual imported character.
@@ -2764,6 +2649,58 @@ int main()
             e.tint   = { 1.0F, 1.0F, 1.0F };
             e.kind   = PrimitiveKind::kGltf;
             entities.push_back(std::move(e));
+        }
+        // ---- W8-AR: 16 PBR sphere ECS entities (4x4 metallic/rough grid) ----
+        // User verdict on the W8-AQ dedicated grid: "arkdaki pbr grid kureler
+        // komple sil onlar yanlis. gunes off oluncada gorunuyor. bastan
+        // yazacagiz o kureleri. bagimsiz bir kureler degil ayni diger objeler
+        // gibi sahneye konmus cisimler yapacagiz. yine 16 tane kure ve farkli
+        // ozellikleri olacak ama sahnede bulunan ecs bagli objeler butunu
+        // olmalilar".
+        // Translation: delete the dedicated grid; the spheres must be ECS
+        // entities placed in the scene like every other object, 16 of them
+        // with varied PBR properties — part of the same ECS entity set.
+        // Implementation: each sphere is a SceneEntity with is_pbr=true.
+        // The entity render loop (~line 5170) detects is_pbr and pushes the
+        // tint.w==3.0 sentinel + metallic/roughness in fx_params4.xy, so
+        // exactly the same shader/pipeline/shadow path handles them as
+        // every other primitive. No separate grid loop, no separate
+        // material, no separate planar-shadow caster. Gradient: column =
+        // metallic (left=1 chrome to right=0 dielectric), row = roughness
+        // (top=0.04 mirror to bottom=1.0 matte).
+        {
+            constexpr int kPbrCols = 4;
+            constexpr int kPbrRows = 4;
+            constexpr float kPbrSpacing = 1.1F;
+            constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
+            for (int row = 0; row < kPbrRows; ++row)
+            {
+                for (int col = 0; col < kPbrCols; ++col)
+                {
+                    SceneEntity e;
+                    e.handle = scene.create_node();
+                    e.name = std::string { "PBR " }
+                           + "M" + std::to_string(col)
+                           + "R" + std::to_string(row);
+                    e.kind = PrimitiveKind::kSphere;
+                    e.tint = kChromeAlbedo;
+                    e.is_pbr = true;
+                    e.metallic = 1.0F - static_cast<float>(col) /
+                                        static_cast<float>(kPbrCols - 1);
+                    e.roughness = 0.04F + (1.0F - 0.04F) *
+                                  (static_cast<float>(row) /
+                                   static_cast<float>(kPbrRows - 1));
+                    const float x = (static_cast<float>(col) -
+                                     (static_cast<float>(kPbrCols - 1) * 0.5F)) * kPbrSpacing;
+                    const float y = 0.8F + static_cast<float>(row) * kPbrSpacing;
+                    const float z = -3.5F;
+                    scene.local(e.handle)->value.position = { x, y, z };
+                    // Half-radius scale so 16 spheres fit between the
+                    // procedural row (y=0) and the area-light panel (~y=4).
+                    scene.local(e.handle)->value.scale    = { 0.45F, 0.45F, 0.45F };
+                    entities.push_back(std::move(e));
+                }
+            }
         }
     }
     log_push(std::string { "[boot] " } +
@@ -4833,120 +4770,11 @@ int main()
                            0, sizeof(spush), &spush);
         cmd.draw(3, 1, 0, 0);
 
-        // ---- 5x5 PBR sphere sweep (W8-AQ unified prim_material path) ----
-        // W8-AQ pivot: the dedicated StandardPbrMaterial grid (now dead,
-        // pruned in W8-AR) used a baked 3-light artist rig disconnected
-        // from cd_lights and the per-frame sun. User verdict (after
-        // multiple iterations W8-AJ..W8-AP): "kureler harici kizil ton
-        // aldi onlar almadi ... bence bunlari kaldir bastan ayni karakter
-        // gibi yada prosedurel cisimler gibi ayni kategoriden bir obje
-        // olarak pbr cisim olsunlar". Fix: route the grid through
-        // prim_material with tint.w == 3.0 sentinel. The kPrimFS W8-AQ
-        // branch reads metallic from fx_params4.x, roughness from
-        // fx_params4.y, albedo from tint.rgb, and runs the SAME Cook-
-        // Torrance + cd_lights + Karis split-sum IBL the rest of the
-        // scene (cube/cone/cylinder/torus/character) uses. Sun tint
-        // propagates automatically; sun-off leaves only env-spec
-        // (chrome still mirrors the sky as physics dictates).
-        // Reuse the existing sphere_mesh (PrimitiveVertex layout) so we
-        // don't need pbr_sphere's separate vertex format. The shadow
-        // casters loop at ~line 5084 already binds sphere_mesh for the
-        // planar-shadow projection of the grid; lit pass now matches.
-        prim_material.apply(cmd);
-        prim_inst.bind(cmd, 0);
-        cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
-        cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-        constexpr int kGrid = 5;
-        constexpr float kSpacing = 1.2F;
-        std::uint32_t culled = 0;
-        std::uint32_t intersecting = 0;
-        std::uint32_t fully_inside = 0;
-        const auto frustum = cd::camera::extract_frustum(vp);
-        constexpr float kSphereRadius = 0.5F;
-        // W8-AO gradient preserved: col=metallic (left chrome, right
-        // dielectric), row=roughness (top mirror, bottom matte).
-        constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
-        // Resolve sun once for the whole grid (same selection rule as
-        // entity loop: first enabled directional light).
-        cd::math::Vec3f s_dir { 0.0F, -1.0F, 0.0F };
-        cd::math::Vec3f s_col { 0.0F, 0.0F, 0.0F };
-        float           s_str = 0.0F;
-        float           amb_w = 0.0F;
-        for (const auto& lrow : lights)
-        {
-            if (!lrow.enabled) continue;
-            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
-            s_dir = lrow.light.direction;
-            s_col = lrow.light.color;
-            s_str = std::min(2.5F, lrow.light.intensity / 80000.0F);
-            amb_w = 0.18F;
-            break;
-        }
-        for (int row = 0; row < kGrid; ++row)
-        {
-            for (int col = 0; col < kGrid; ++col)
-            {
-                const float metallic = 1.0F - static_cast<float>(col) /
-                                              static_cast<float>(kGrid - 1);
-                const float roughness = 0.04F + (1.0F - 0.04F) *
-                    (static_cast<float>(row) / static_cast<float>(kGrid - 1));
-                const float x = (static_cast<float>(col) - 2.0F) * kSpacing;
-                const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
-                const float z = -4.5F;
-                const cd::math::Vec3f center { x, y, z };
-                const auto cull = cd::camera::test_sphere(frustum, center, kSphereRadius);
-                if (cull == cd::camera::CullResult::kOutside) { ++culled; continue; }
-                if (cull == cd::camera::CullResult::kIntersecting) ++intersecting;
-                else ++fully_inside;
-                cd::math::Mat4f model = cd::math::Mat4f::identity();
-                model[3][0] = x; model[3][1] = y; model[3][2] = z;
-                const auto mvp_pbr = vp * model;
-
-                PrimPush pp {};
-                pp.mvp   = mvp_pbr;
-                pp.model = model;
-                pp.tint[0] = kChromeAlbedo.x;
-                pp.tint[1] = kChromeAlbedo.y;
-                pp.tint[2] = kChromeAlbedo.z;
-                pp.tint[3] = 3.0F;  // W8-AQ PBR-sphere sentinel
-                pp.sun_dir[0] = s_dir.x; pp.sun_dir[1] = s_dir.y;
-                pp.sun_dir[2] = s_dir.z; pp.sun_dir[3] = s_str;
-                pp.sun_color[0] = s_col.x; pp.sun_color[1] = s_col.y;
-                pp.sun_color[2] = s_col.z; pp.sun_color[3] = amb_w;
-                // fx_params.y = 0.0 keeps the textured-MR branch off
-                // (W8-AQ branch reads metallic/roughness from push).
-                pp.fx_params[0] = static_cast<float>(tonemap_op);
-                pp.fx_params[1] = 0.0F;
-                pp.fx_params[2] = fx_gtao_strength;
-                pp.fx_params[3] = fx_bloom_strength;
-                pp.fx_params2[0] = fx_smaa_strength;
-                pp.fx_params2[1] = fx_motion_blur;
-                pp.fx_params2[2] = fx_taa_amount;
-                pp.fx_params2[3] = fx_dof_strength;
-                pp.fx_params3[0] = fx_fog_density;
-                pp.fx_params3[1] = fx_aerial_perspective;
-                pp.fx_params3[2] = fx_clouds_coverage;
-                pp.fx_params3[3] = fx_light_shafts;
-                pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
-                pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
-                // W8-AQ overload: fx_params4.x = metallic (was clearcoat),
-                //                 fx_params4.y = roughness (was sheen).
-                // Sphere grid never applies clearcoat / sheen R6 lobes,
-                // so the slot overload is safe.
-                pp.fx_params4[0] = metallic;
-                pp.fx_params4[1] = roughness;
-                pp.fx_params4[2] = 0.0F;
-                pp.fx_params4[3] = static_cast<float>(fx_view_mode);
-                cmd.push_constants(prim_material.pipeline_layout(),
-                                   cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                                   0, sizeof(pp), &pp);
-                cmd.draw_indexed(sphere_mesh.index_count, 1, 0, 0, 0);
-                counters.increment("draws_pbr");
-            }
-        }
-        counters.set("culled_pbr", culled);
-        counters.set("intersecting_pbr", intersecting);
-        counters.set("inside_pbr", fully_inside);
+        // W8-AR: dedicated PBR-grid draw block REMOVED. The 16 PBR demo
+        // spheres are ECS entities now (boot block, search "is_pbr =
+        // true") and are drawn by the unified entity loop below alongside
+        // every other primitive. One render path, one shader, one shadow
+        // pass — PBR is just a per-entity attribute (SceneEntity::is_pbr).
 
         // ---- ECS entity primitives row (front of the viewport) ----
         // Per-fragment lighting now: sun + first enabled point light with
@@ -5182,7 +5010,14 @@ int main()
             PrimPush pp {};
             pp.mvp = mvp;
             pp.model = model;
-            pp.tint[0] = ent.tint.x; pp.tint[1] = ent.tint.y; pp.tint[2] = ent.tint.z; pp.tint[3] = 1.0F;
+            // W8-AR: PBR-sphere entities use tint.w==3.0 sentinel so the
+            // shader routes them through the Cook-Torrance + GGX + Karis
+            // IBL branch. fx_params4.x/y overloaded to metallic/roughness
+            // for that branch (clearcoat/sheen never apply to PBR demo
+            // spheres). All other entities keep tint.w=1.0 and the
+            // standard Lambert + cd_lights + textured/vertex-colour path.
+            pp.tint[0] = ent.tint.x; pp.tint[1] = ent.tint.y; pp.tint[2] = ent.tint.z;
+            pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
             pp.sun_dir[0] = sun_dir.x; pp.sun_dir[1] = sun_dir.y;
             pp.sun_dir[2] = sun_dir.z; pp.sun_dir[3] = sun_str;
             pp.sun_color[0] = sun_col.x; pp.sun_color[1] = sun_col.y;
@@ -5191,8 +5026,9 @@ int main()
             // fx_params.y = 1.0 routes the FS through the baseColor
             // texture path (binding 4). Only kGltf entities are
             // actually textured today - primitives stay on the
-            // vertex-coloured albedo path.
-            pp.fx_params[1] = (ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
+            // vertex-coloured albedo path. PBR entities don't sample
+            // the texture either (they read albedo from pc.tint).
+            pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
                             ? 1.0F : 0.0F;
             pp.fx_params[2] = fx_gtao_strength;
             pp.fx_params[3] = fx_bloom_strength;
@@ -5206,9 +5042,18 @@ int main()
             pp.fx_params3[3] = fx_light_shafts;
             pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
             pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
-            pp.fx_params4[0] = fx_clearcoat_strength;
-            pp.fx_params4[1] = fx_sheen_strength;
-            pp.fx_params4[2] = fx_sss_strength;
+            if (ent.is_pbr)
+            {
+                pp.fx_params4[0] = ent.metallic;
+                pp.fx_params4[1] = ent.roughness;
+                pp.fx_params4[2] = 0.0F;
+            }
+            else
+            {
+                pp.fx_params4[0] = fx_clearcoat_strength;
+                pp.fx_params4[1] = fx_sheen_strength;
+                pp.fx_params4[2] = fx_sss_strength;
+            }
             pp.fx_params4[3] = static_cast<float>(fx_view_mode);
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
@@ -5262,33 +5107,9 @@ int main()
                 counters.increment("draws_shadow");
             }
 
-            // PBR sphere grid casters (use the PrimitiveVertex sphere
-            // mesh - same shape, different vertex format. The prim
-            // shader expects PrimitiveVertex, so we bind sphere_mesh
-            // not pbr_sphere even though the spheres are PBR-rendered.)
-            cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
-            cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-            constexpr int kGS = 5;
-            constexpr float kSp = 1.2F;
-            for (int row = 0; row < kGS; ++row)
-            {
-                for (int col = 0; col < kGS; ++col)
-                {
-                    const float x = (static_cast<float>(col) - 2.0F) * kSp;
-                    const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
-                    const float z = -4.5F;
-                    cd::math::Mat4f model = cd::math::Mat4f::identity();
-                    model[3][0] = x; model[3][1] = y; model[3][2] = z;
-                    const auto shadow_model = S * model;
-                    sp.mvp   = vp * shadow_model;
-                    sp.model = shadow_model;
-                    cmd.push_constants(prim_material.pipeline_layout(),
-                                       cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                                       0, sizeof(sp), &sp);
-                    cmd.draw_indexed(sphere_mesh.index_count, 1, 0, 0, 0);
-                    counters.increment("draws_shadow");
-                }
-            }
+            // W8-AR: dedicated PBR-grid shadow caster loop REMOVED.
+            // The 16 PBR sphere entities now cast shadows through the
+            // entity-casters loop above (they're regular ECS entities).
         }
 
         // ---- ImGui frame ----
@@ -7804,7 +7625,6 @@ int main()
     destroy_mesh(device, torus_mesh);
     destroy_mesh(device, knot_mesh);
     destroy_mesh(device, floor_mesh);
-    destroy_mesh(device, pbr_sphere);
     depth.destroy(device);
     hdr_target.destroy(device);
     gbuf_normal.destroy(device);
