@@ -1676,6 +1676,77 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
 }
 
 // =============================================================================
+// Phase 302 / Marathon Run 8 sub-N2F: Command Palette popup extracted. Small
+// (~50 lines) but the last of the genuinely self-contained UI panel-style
+// regions in the main render loop. Gizmo + R-Showcase remain and need a
+// dedicated phase each (gizmo carries deep drag-state coupling, R-Showcase
+// needs an FxState struct refactor for its 26-knob parameter surface).
+// =============================================================================
+
+// ---- draw_command_palette_popup -------------------------------------------
+// Modal-ish floating popup centred horizontally near the top of the
+// viewport. Shows filtered command labels from cd::editor::CommandPalette;
+// Enter or Selectable click invokes the highlighted entry and dismisses
+// the popup. Caller manages palette_visible + palette_query through key
+// events; this helper only handles the per-frame draw + invoke.
+inline void draw_command_palette_popup(cd::editor::CommandPalette& palette,
+                                       bool& palette_visible,
+                                       std::string& palette_query,
+                                       cd::rhi::Extent2D extent)
+{
+    if (palette_visible)
+    {
+        const float vw_p = static_cast<float>(extent.width);
+        const float pw = 520.0F, ph = 360.0F;
+        ImGui::SetNextWindowPos(ImVec2((vw_p - pw) * 0.5F, 80.0F), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
+        if (ImGui::Begin(
+                "Command Palette",
+                &palette_visible,
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiWindowFlags_NoDocking
+            ))
+        {
+            if (ImGui::IsWindowAppearing())
+                ImGui::SetKeyboardFocusHere();
+            char buf[128] {};
+            std::snprintf(buf, sizeof(buf), "%s", palette_query.c_str());
+            if (ImGui::InputText("##q", buf, sizeof(buf)))
+                palette_query = buf;
+            ImGui::Separator();
+            const auto hits = palette.filter(palette_query);
+            if (hits.empty())
+            {
+                ImGui::TextDisabled("no match (%zu commands)", palette.size());
+            }
+            else
+            {
+                for (std::size_t i = 0; i < hits.size() && i < 24; ++i)
+                {
+                    const auto& e = palette.at(hits[i]);
+                    char row[160] {};
+                    std::snprintf(row, sizeof(row), "  %s", e.label.c_str());
+                    if (ImGui::Selectable(row))
+                    {
+                        (void)palette.invoke(hits[i]);
+                        palette_visible = false;
+                        palette_query.clear();
+                        break;
+                    }
+                }
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) && !hits.empty())
+            {
+                (void)palette.invoke(hits.front());
+                palette_visible = false;
+                palette_query.clear();
+            }
+        }
+        ImGui::End();
+    }
+}
+
+// =============================================================================
 // Phase 295 / Marathon Run 7 sub-N1G: scene-bootstrap helpers extracted
 // from main(). These are sample-local (operate on the anon-namespace
 // SceneEntity / PrimitiveKind) so they live in main.cpp rather than a
@@ -7098,56 +7169,7 @@ int main()
         }
 
         // ---- Palette popup ----
-        if (palette_visible)
-        {
-            const float vw_p = static_cast<float>(frame.extent.width);
-            const float pw = 520.0F, ph = 360.0F;
-            ImGui::SetNextWindowPos(ImVec2((vw_p - pw) * 0.5F, 80.0F), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
-            if (ImGui::Begin(
-                    "Command Palette",
-                    &palette_visible,
-                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
-                        ImGuiWindowFlags_NoDocking
-                ))
-            {
-                if (ImGui::IsWindowAppearing())
-                    ImGui::SetKeyboardFocusHere();
-                char buf[128] {};
-                std::snprintf(buf, sizeof(buf), "%s", palette_query.c_str());
-                if (ImGui::InputText("##q", buf, sizeof(buf)))
-                    palette_query = buf;
-                ImGui::Separator();
-                const auto hits = palette.filter(palette_query);
-                if (hits.empty())
-                {
-                    ImGui::TextDisabled("no match (%zu commands)", palette.size());
-                }
-                else
-                {
-                    for (std::size_t i = 0; i < hits.size() && i < 24; ++i)
-                    {
-                        const auto& e = palette.at(hits[i]);
-                        char row[160] {};
-                        std::snprintf(row, sizeof(row), "  %s", e.label.c_str());
-                        if (ImGui::Selectable(row))
-                        {
-                            (void)palette.invoke(hits[i]);
-                            palette_visible = false;
-                            palette_query.clear();
-                            break;
-                        }
-                    }
-                }
-                if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) && !hits.empty())
-                {
-                    (void)palette.invoke(hits.front());
-                    palette_visible = false;
-                    palette_query.clear();
-                }
-            }
-            ImGui::End();
-        }
+        draw_command_palette_popup(palette, palette_visible, palette_query, frame.extent);
 
         // R3: end the HDR scene pass, transition HDR -> ShaderResource,
         // begin the composite render pass on the swapchain, draw the
