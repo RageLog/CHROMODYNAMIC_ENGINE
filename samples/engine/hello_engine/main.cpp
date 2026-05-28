@@ -2346,6 +2346,99 @@ inline void draw_planar_shadows(cd::rhi::ICommandBuffer& cmd,
     }
 }
 
+// ---- draw_shadow_map_pass --------------------------------------------------
+// Faz 1.6 CSM (single-cascade variant): each enabled directional-light
+// sun position drives an orthographic light_vp; entities are re-drawn
+// into the depth-only shadow_target via shadow_material; main pass
+// later samples this depth attachment with PCF + bias.
+// shadow_initialised_on_gpu tracks the once-per-process first-frame
+// transition; main owns the bool so re-creating the renderer or window
+// can reset it cleanly.
+template <typename MeshFor>
+inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
+                                 const SunLight& sun,
+                                 cd::rhi::IDevice& device,
+                                 cd::rhi::BufferHandle shadow_ubo,
+                                 const cd::framegraph::DepthTarget& shadow_target,
+                                 bool& shadow_initialised_on_gpu,
+                                 cd::material::Material& shadow_material,
+                                 cd::rhi::Extent2D shadow_map_size,
+                                 const std::vector<SceneEntity>& entities,
+                                 const cd::scene::Scene& scene,
+                                 const MeshFor& mesh_for)
+{
+    cd::math::Vec3f sd = sun.has_sun ? sun.dir : cd::math::Vec3f { -0.4F, -0.9F, -0.2F };
+    {
+        const float sd_len = std::sqrt(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
+        if (sd_len > 1e-4F) { sd.x /= sd_len; sd.y /= sd_len; sd.z /= sd_len; }
+        else { sd = { 0.0F, -1.0F, 0.0F }; }
+    }
+    const cd::math::Vec3f eye { -sd.x * 30.0F, -sd.y * 30.0F, -sd.z * 30.0F };
+    const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
+    const cd::math::Vec3f up =
+        (std::fabs(sd.y) > 0.99F) ? cd::math::Vec3f { 0.0F, 0.0F, 1.0F } : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
+    const auto light_view = cd::math::look_at(eye, tgt, up);
+    const auto light_proj = cd::math::ortho(-25.0F, 25.0F, -25.0F, 25.0F, 0.1F, 60.0F);
+    const cd::math::Mat4f light_vp = light_proj * light_view;
+    (void)device.upload_buffer(shadow_ubo, 0, std::span<const std::byte>(reinterpret_cast<const std::byte*>(&light_vp), sizeof(light_vp)));
+    if (!shadow_initialised_on_gpu)
+    {
+        std::array<cd::rhi::TextureBarrier, 1> sb { cd::rhi::TextureBarrier { .texture = shadow_target.image, .from = cd::rhi::ResourceState::kUndefined, .to = cd::rhi::ResourceState::kDepthWrite, .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+        cmd.barrier({}, sb);
+        shadow_initialised_on_gpu = true;
+    }
+    else
+    {
+        std::array<cd::rhi::TextureBarrier, 1> sb { cd::rhi::TextureBarrier { .texture = shadow_target.image, .from = cd::rhi::ResourceState::kShaderResource, .to = cd::rhi::ResourceState::kDepthWrite, .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+        cmd.barrier({}, sb);
+    }
+    {
+        cd::rhi::DepthStencilAttachmentInfo sda {};
+        sda.view = shadow_target.view;
+        sda.depth_load = cd::rhi::LoadOp::kClear;
+        sda.depth_store = cd::rhi::StoreOp::kStore;
+        sda.clear.depth = 1.0F;
+        cd::rhi::RenderPassBeginInfo srp {};
+        srp.render_area = cd::rhi::Rect2D { { 0, 0 }, shadow_map_size };
+        srp.color_attachments = {};
+        srp.depth_stencil = &sda;
+        cmd.begin_render_pass(srp);
+        cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F, static_cast<float>(shadow_map_size.width), static_cast<float>(shadow_map_size.height), 0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, shadow_map_size });
+        if (sun.has_sun)
+        {
+            shadow_material.apply(cmd);
+            std::vector<cd::math::Mat4f> csm_light_mvp(entities.size());
+            std::vector<std::uint8_t> csm_valid(entities.size(), 0u);
+            cd::concurrency::parallel_for(std::size_t { 0 }, entities.size(), [&](std::size_t i) {
+                const auto& ent = entities[i];
+                const auto& mesh = mesh_for(ent.kind);
+                if (!mesh.vb.is_valid()) return;
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) return;
+                const auto model = cd::math::to_mat4(lt->value);
+                csm_light_mvp[i] = light_vp * model;
+                csm_valid[i] = 1u;
+            });
+            for (std::size_t i = 0; i < entities.size(); ++i)
+            {
+                if (csm_valid[i] == 0u) continue;
+                const auto& ent = entities[i];
+                const auto& mesh = mesh_for(ent.kind);
+                cmd.bind_vertex_buffer(0, mesh.vb, 0);
+                cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+                cmd.push_constants(shadow_material.pipeline_layout(), cd::rhi::ShaderStage::kVertex, 0, sizeof(cd::math::Mat4f), &csm_light_mvp[i]);
+                cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+            }
+        }
+        cmd.end_render_pass();
+    }
+    {
+        std::array<cd::rhi::TextureBarrier, 1> sb { cd::rhi::TextureBarrier { .texture = shadow_target.image, .from = cd::rhi::ResourceState::kDepthWrite, .to = cd::rhi::ResourceState::kShaderResource, .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } } };
+        cmd.barrier({}, sb);
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -5922,199 +6015,13 @@ int main()
             cmd.barrier({}, db);
         }
 
-        // ---- Shadow map pass (Faz 1.6 CSM) ----
-        // Pick the first enabled directional light for the shadow caster.
-        // No directional ??' shadow map is cleared to white (no shadow).
-        cd::math::Vec3f csm_sun_dir { -0.4F, -0.9F, -0.2F };
-        bool csm_has_sun = false;
-        for (const auto& lrow : lights)
-        {
-            if (!lrow.enabled)
-                continue;
-            if (lrow.light.type != cd::light::LightType::kDirectional)
-                continue;
-            csm_sun_dir = lrow.light.direction;
-            csm_has_sun = true;
-            break;
-        }
-        // Build the sun's view + ortho. Eye placed -30 m along the
-        // ray, looking at origin. Up vector flips to +Z when the sun
-        // is nearly vertical to avoid the look_at degeneracy.
-        {
-            cd::math::Vec3f sd = csm_sun_dir;
-            // Normalize defensively in case the slider produced a tiny
-            // vector before renormalize fired.
-            const float sd_len = std::sqrt(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
-            if (sd_len > 1e-4F)
-            {
-                sd.x /= sd_len;
-                sd.y /= sd_len;
-                sd.z /= sd_len;
-            }
-            else
-            {
-                sd = { 0.0F, -1.0F, 0.0F };
-            }
-            const cd::math::Vec3f eye { -sd.x * 30.0F, -sd.y * 30.0F, -sd.z * 30.0F };
-            const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
-            const cd::math::Vec3f up =
-                (std::fabs(sd.y) > 0.99F) ? cd::math::Vec3f { 0.0F, 0.0F, 1.0F } : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
-            const auto light_view = cd::math::look_at(eye, tgt, up);
-            const auto light_proj = cd::math::ortho(-25.0F, 25.0F, -25.0F, 25.0F, 0.1F, 60.0F);
-            const cd::math::Mat4f light_vp = light_proj * light_view;
-            // Upload to UBO (kCpuToGpu, no staging).
-            (void)device.upload_buffer(
-                shadow_ubo,
-                0,
-                std::span<const std::byte>(reinterpret_cast<const std::byte*>(&light_vp), sizeof(light_vp))
-            );
-        }
+        // ---- Sun resolve (shadow + sky + floor + entity passes need it) ----
+        const SunLight sun = resolve_sun_light(lights);
 
-        // First-frame transition for the shadow target.
-        if (!shadow_initialised_on_gpu)
-        {
-            std::array<cd::rhi::TextureBarrier, 1> sb {
-                cd::rhi::TextureBarrier {
-                                         .texture = shadow_target.image,
-                                         .from = cd::rhi::ResourceState::kUndefined,
-                                         .to = cd::rhi::ResourceState::kDepthWrite,
-                                         .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } }
-            };
-            cmd.barrier({}, sb);
-            shadow_initialised_on_gpu = true;
-        }
-        else
-        {
-            // Subsequent frames: shader-resource ??' depth-write.
-            std::array<cd::rhi::TextureBarrier, 1> sb {
-                cd::rhi::TextureBarrier {
-                                         .texture = shadow_target.image,
-                                         .from = cd::rhi::ResourceState::kShaderResource,
-                                         .to = cd::rhi::ResourceState::kDepthWrite,
-                                         .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } }
-            };
-            cmd.barrier({}, sb);
-        }
-        {
-            cd::rhi::DepthStencilAttachmentInfo sda {};
-            sda.view = shadow_target.view;
-            sda.depth_load = cd::rhi::LoadOp::kClear;
-            sda.depth_store = cd::rhi::StoreOp::kStore;
-            sda.clear.depth = 1.0F;
-            cd::rhi::RenderPassBeginInfo srp {};
-            srp.render_area = cd::rhi::Rect2D {
-                { 0, 0 },
-                kShadowMapSize
-            };
-            srp.color_attachments = {};
-            srp.depth_stencil = &sda;
-            cmd.begin_render_pass(srp);
-            cmd.set_viewport(
-                cd::rhi::Viewport { 0.0F,
-                                    0.0F,
-                                    static_cast<float>(kShadowMapSize.width),
-                                    static_cast<float>(kShadowMapSize.height),
-                                    0.0F,
-                                    1.0F }
-            );
-            cmd.set_scissor(
-                cd::rhi::Rect2D {
-                    { 0, 0 },
-                    kShadowMapSize
-            }
-            );
-            if (csm_has_sun)
-            {
-                shadow_material.apply(cmd);
-                // Rebuild light_vp into a local - we already uploaded but
-                // also need it as a CPU-side push for the per-caster
-                // light_mvp computation. Re-derive (cheap).
-                cd::math::Vec3f sd = csm_sun_dir;
-                const float sl = std::sqrt(sd.x * sd.x + sd.y * sd.y + sd.z * sd.z);
-                if (sl > 1e-4F)
-                {
-                    sd.x /= sl;
-                    sd.y /= sl;
-                    sd.z /= sl;
-                }
-                else
-                {
-                    sd = { 0.0F, -1.0F, 0.0F };
-                }
-                const cd::math::Vec3f eye { -sd.x * 30.0F, -sd.y * 30.0F, -sd.z * 30.0F };
-                const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
-                const cd::math::Vec3f up = (std::fabs(sd.y) > 0.99F) ? cd::math::Vec3f { 0.0F, 0.0F, 1.0F }
-                                                                     : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
-                const auto light_view2 = cd::math::look_at(eye, tgt, up);
-                const auto light_proj2 = cd::math::ortho(-25.0F, 25.0F, -25.0F, 25.0F, 0.1F, 60.0F);
-                const cd::math::Mat4f light_vp2 = light_proj2 * light_view2;
-                // Casters: each ECS entity (using its mesh+transform).
-                // W8-AV: re-enable PBR sphere CSM casting. The "huge
-                // black blobs" the user saw before W8-AT were caused
-                // by the W8-AS altitude bump (y up to 5.75) producing
-                // very long shadow-map texel projections. With the
-                // W8-AV altitude reset (y up to 3.05) shadows are
-                // normal-sized again.
-                // X1E (phase 287): parallel CSM caster prep. The
-                // light_mvp per entity is computed via parallel_for
-                // into a pre-sized scratch vector; draw pass binds +
-                // pushes + draws serially (Vulkan cmd recording is not
-                // thread-safe per buffer).
-                std::vector<cd::math::Mat4f> csm_light_mvp(entities.size());
-                std::vector<std::uint8_t> csm_valid(entities.size(), 0u);
-                cd::concurrency::parallel_for(
-                    std::size_t { 0 },
-                    entities.size(),
-                    [&](std::size_t i)
-                    {
-                        const auto& ent = entities[i];
-                        const auto& mesh = mesh_for(ent.kind);
-                        if (!mesh.vb.is_valid())
-                            return;
-                        auto* lt = scene.local(ent.handle);
-                        if (lt == nullptr)
-                            return;
-                        const auto model = cd::math::to_mat4(lt->value);
-                        csm_light_mvp[i] = light_vp2 * model;
-                        csm_valid[i] = 1u;
-                    }
-                );
-                for (std::size_t i = 0; i < entities.size(); ++i)
-                {
-                    if (csm_valid[i] == 0u)
-                        continue;
-                    const auto& ent = entities[i];
-                    const auto& mesh = mesh_for(ent.kind);
-                    cmd.bind_vertex_buffer(0, mesh.vb, 0);
-                    cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-                    cmd.push_constants(
-                        shadow_material.pipeline_layout(),
-                        cd::rhi::ShaderStage::kVertex,
-                        0,
-                        sizeof(cd::math::Mat4f),
-                        &csm_light_mvp[i]
-                    );
-                    cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
-                }
-                // W8-AS: leftover 5x5 PBR-grid CSM caster loop REMOVED.
-                // The entity caster loop above already drew the 16 PBR
-                // sphere ECS entities into the shadow map — drawing the
-                // legacy hardcoded grid again created the ghost shadow
-                // the user reported ("eski pbrlarin gölgesi gozukuyor").
-            }
-            cmd.end_render_pass();
-        }
-        // Transition back to shader-resource for main pass sampling.
-        {
-            std::array<cd::rhi::TextureBarrier, 1> sb {
-                cd::rhi::TextureBarrier {
-                                         .texture = shadow_target.image,
-                                         .from = cd::rhi::ResourceState::kDepthWrite,
-                                         .to = cd::rhi::ResourceState::kShaderResource,
-                                         .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } }
-            };
-            cmd.barrier({}, sb);
-        }
+        // ---- Shadow map pass (Faz 1.6 CSM) ----
+        draw_shadow_map_pass(cmd, sun, device, shadow_ubo, shadow_target,
+                             shadow_initialised_on_gpu, shadow_material,
+                             kShadowMapSize, entities, scene, mesh_for);
 
         // R3: scene draws into the HDR + G-Buffer normal off-screen
         // targets; composite + ImGui write to the swapchain in a
@@ -6211,9 +6118,6 @@ int main()
             vp[c][0] += jx_ndc * vp_unjittered[c][3];
             vp[c][1] += jy_ndc * vp_unjittered[c][3];
         }
-
-        // ---- Sun resolve (sky + floor + entity passes all need it) ----
-        const SunLight sun = resolve_sun_light(lights);
 
         // ---- Sky pass ----
         draw_sky_pass(cmd, cam, aspect, sun, sky_material);
