@@ -2794,8 +2794,15 @@ int main()
         // bias, the character casts a visible floor shadow without
         // the user having to rotate the gizmo at all. Position raised
         // slightly to clear the camera framing.
+        // W8-AD: lumens 2500 -> 20000. With W8-AB's ki = phi/(4 pi * 2) *
+        // 1.5 calibration and a 3 m ceiling clearance, 2500 lm produced
+        // a per-channel floor contribution that fell just below the
+        // tonemap noise floor — visible on the sphere column (closer)
+        // but not on the floor 6 m below. 20000 lm matches an actual
+        // ceiling-mounted soft panel (4x 5000 lm tubes) and pulls the
+        // floor + character into clearly-lit territory.
         cd::light::rect_area({ 0.0F, 5.5F, -2.0F }, { 0, -1, 0 }, { 1, 0, 0 },
-                             3.0F, 3.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
+                             3.0F, 3.0F, { 0.6F, 0.85F, 1.0F }, 20000.0F),
         true, 8000.0F });
     // W5-B: very bright magenta neon strip behind the sphere rig so
     // metallic surfaces pick up a deeply saturated, HIGHLY DYNAMIC
