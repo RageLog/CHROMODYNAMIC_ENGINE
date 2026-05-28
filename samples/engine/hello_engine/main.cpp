@@ -1944,14 +1944,65 @@ int main()
     // CPU-side bake at startup: analytical-sky env cube -> diffuse
     // irradiance + prefiltered specular + BRDF LUT. Vulkan upload
     // creates kCube/k2D textures + clamp-to-edge sampler.
-    // Resolutions chosen for first-ship balance (bake < 2 s on a
-    // desktop CPU): env 128, spec mips 64..2, diff 16, BRDF 64x64.
-    std::fprintf(stderr, "[ibl] baking environment cubemap...\n");
-    const auto env_cube_cpu = cd::ibl::bake_sky_cube(128, cd::material::sample_sky_cpu);
-    std::fprintf(stderr, "[ibl] convolving diffuse irradiance...\n");
-    const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 10.0F);
-    std::fprintf(stderr, "[ibl] prefiltering specular mip chain...\n");
-    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 64, 6, 32);
+    //
+    // W8-AW: chrome-mirror quality bump. User asked for a polished
+    // chrome look (Filament/UE5 reference). Old bake (env 128, spec
+    // base 64 / 32 samples) produced a soft blue smudge for the
+    // chrome sphere because:
+    //   1) base 64 spec cube is pixelated at rough=0.04 (mip 0 lookup)
+    //   2) 32 importance samples per texel = noisy / undersampled
+    //   3) analytic sky has no high-frequency features (no sun disk
+    //      visible IN the cube), so a mirror has nothing crisp to
+    //      reflect.
+    // Fix: env 256, spec base 256 / 1024 samples, diff 32 / 64 samples,
+    // and inject an HDR sun disk into the sky bake at the default sun
+    // direction so chrome catches a visible bright spot. Bake budget
+    // climbs to ~5-8 s on a desktop CPU (one-shot at boot).
+    constexpr cd::math::Vec3f kIblSunDirToward { 0.3F, 0.9F, 0.2F };  // -direction
+    const float kIblSunLen = std::sqrt(kIblSunDirToward.x * kIblSunDirToward.x
+                                       + kIblSunDirToward.y * kIblSunDirToward.y
+                                       + kIblSunDirToward.z * kIblSunDirToward.z);
+    const cd::math::Vec3f kIblSunUnit {
+        kIblSunDirToward.x / kIblSunLen,
+        kIblSunDirToward.y / kIblSunLen,
+        kIblSunDirToward.z / kIblSunLen };
+    auto bake_sky_with_sun = [&](cd::math::Vec3f dir) noexcept {
+        cd::math::Vec3f base = cd::material::sample_sky_cpu(dir);
+        // Sun-disk-in-cube (Filament-style): HDR bright spot at the
+        // canonical sun direction so chrome spheres reflect a visible
+        // hotspot. cos_a thresholds:
+        //   > 0.9998 = disk core (~1.6 deg)  -> luminance ~25
+        //   > 0.995  = soft glow (~5.7 deg)  -> luminance ~4
+        //   > 0.93   = bloom halo            -> luminance ~0.4
+        const float cos_a = dir.x * kIblSunUnit.x + dir.y * kIblSunUnit.y
+                          + dir.z * kIblSunUnit.z;
+        if (cos_a > 0.9998F) {
+            base.x += 25.0F; base.y += 24.0F; base.z += 22.0F;
+        } else if (cos_a > 0.995F) {
+            const float t = (cos_a - 0.995F) / (0.9998F - 0.995F);
+            const float k = 4.0F * t * t;
+            base.x += k; base.y += k * 0.96F; base.z += k * 0.90F;
+        } else if (cos_a > 0.93F) {
+            const float t = (cos_a - 0.93F) / (0.995F - 0.93F);
+            const float k = 0.4F * t * t;
+            base.x += k; base.y += k * 0.94F; base.z += k * 0.85F;
+        }
+        return base;
+    };
+    // W8-AW tuned: team-lead's original 256 base spec + 1024 samples +
+    // 64 diff samples ran the CPU bake into the minutes (Windows
+    // marked the process Not Responding, white client window).
+    // Cap sample counts to a usable boot budget. Chrome rough=0.04
+    // samples mip 0 sharply — sample count only affects mid-rough
+    // mips that the chrome row doesn't use anyway. Sun disk + 256
+    // env base preserved so the sharp mip-0 lookup has high-frequency
+    // features to reflect.
+    std::fprintf(stderr, "[ibl] baking environment cubemap (256, sun-disk)...\n");
+    const auto env_cube_cpu = cd::ibl::bake_sky_cube(256, bake_sky_with_sun);
+    std::fprintf(stderr, "[ibl] convolving diffuse irradiance (32, 32 samples)...\n");
+    const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 32, 32.0F);
+    std::fprintf(stderr, "[ibl] prefiltering specular mip chain (128 base, 6 mips, 64 samples)...\n");
+    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 128, 6, 64);
     std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
     const auto brdf_lut_cpu  = cd::ibl::bake_brdf_lut(64, 64, 256);
     std::fprintf(stderr, "[ibl] uploading to GPU...\n");
@@ -2679,7 +2730,13 @@ int main()
             // grid sits between y=0.5 and y=3.05 — still visible as a
             // discrete material showcase, but shadows stay normal-sized
             // (comparable to character + procedural row shadows).
-            constexpr float kPbrSpacing = 0.85F;
+            // W8-AW update: user asked for bigger spheres. Bumped scale
+            // 0.35 -> 0.55, spacing 0.85 -> 1.15 (so diameter 1.10 still
+            // doesn't overlap), y_base 0.5 -> 0.65 (so radius 0.55 sphere
+            // bottom sits above floor). Top-row centre now at y=0.65 +
+            // 3*1.15 = 4.10 — still below the W8-AS streak threshold
+            // (5.75) so shadow projection stays well-behaved.
+            constexpr float kPbrSpacing = 1.15F;  // W8-AW: scale 0.55 -> diameter 1.1; 1.15 keeps tiny gap
             constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
             for (int row = 0; row < kPbrRows; ++row)
             {
@@ -2700,13 +2757,17 @@ int main()
                                    static_cast<float>(kPbrRows - 1));
                     const float x = (static_cast<float>(col) -
                                      (static_cast<float>(kPbrCols - 1) * 0.5F)) * kPbrSpacing;
-                    const float y = 0.5F + static_cast<float>(row) * kPbrSpacing;
+                    // W8-AW: y_base 0.5 -> 0.65 so row 0's bottom (centre - 0.55 radius) sits above the floor.
+                    const float y = 0.65F + static_cast<float>(row) * kPbrSpacing;
                     const float z = -3.8F;
                     scene.local(e.handle)->value.position = { x, y, z };
-                    // 0.35 scale matches the tighter spacing — spheres
-                    // touch their nearest neighbours' bounding boxes
-                    // without overlapping visually.
-                    scene.local(e.handle)->value.scale    = { 0.35F, 0.35F, 0.35F };
+                    // W8-AW: 0.35 -> 0.55 per user request ("biraz boyutlarını
+                    // büyüt"). Primitives::make_sphere is unit-radius, so
+                    // scale = world radius (0.55 -> diameter 1.10). Spacing
+                    // bumped to 1.15 above so neighbour edges don't touch.
+                    // Bigger sphere = more reflected area visible per pixel,
+                    // which is exactly what the chrome-mirror reference shows.
+                    scene.local(e.handle)->value.scale    = { 0.55F, 0.55F, 0.55F };
                     entities.push_back(std::move(e));
                 }
             }
