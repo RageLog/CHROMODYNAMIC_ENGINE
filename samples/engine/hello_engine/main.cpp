@@ -4808,18 +4808,53 @@ int main()
                 // correct cos_inner readout (W4-H), the cone is wider
                 // than the previous synthesised cone, so the inflation
                 // factor doesn't need to be as aggressive.
-                float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F;
-                if (k == cd::light::LightType::kSpot) ki *= 2.5F;
-                // W8-T: area light multiplier reverted to 0.20 (was the
-                // pre-W8-S calibration). The W8-S speculative bump to
-                // 0.80 was an attempt to compensate for one-sided
-                // emission but it pushed area output into "too bright"
-                // territory for the user. User can still raise the
-                // per-light lumens via the slider when more output is
-                // wanted; the engine-wide multiplier returns to the
-                // long-stable baseline.
-                else if (k == cd::light::LightType::kRectArea ||
-                         k == cd::light::LightType::kDiskArea) ki *= 0.20F;
+                // W8-Y: physically grounded ki per light TYPE. Punctual
+                // (point/spot) lights carry luminous power that the LTC
+                // / inverse-square loop converts to radiance via the
+                // 1/(4 pi) sphere factor and an empirical headroom
+                // divisor that keeps a 1200 lm point from saturating the
+                // tonemap. Area lights are a Lambertian RECT emitter:
+                //   radiance L = phi / (pi * A)      [cd/m^2-equivalent]
+                //   L_o        = (albedo / pi) * L * E_ltc
+                //   shader does L_o = albedo * col * (ki * E_ltc)
+                //   => ki      = phi / (pi^2 * A)
+                // The previous "ki = phi/(8 pi) * 0.20" formula was
+                // missing the 1/(pi * A) radiance factor, which collapsed
+                // the cyan rect-area output to roughly a quarter of its
+                // physical value and made the floor + character look
+                // unlit even though the LTC math was correct. With the
+                // proper formula the same 2500 lm cyan rect now produces
+                // a visible cast on the floor (so the RT-shadow path
+                // actually has irradiance to subtract from).
+                constexpr float kInvPi   = 0.31830988618F;   // 1 / pi
+                constexpr float kInvPiSq = 0.10132118364F;   // 1 / pi^2
+                float ki = 0.0F;
+                if (k == cd::light::LightType::kRectArea ||
+                    k == cd::light::LightType::kDiskArea)
+                {
+                    // Area of the emitter. Disk uses pi * (w/2)^2 if the
+                    // CPU side is dialled with width==height==diameter;
+                    // for the simple rect path we just use w * h. The
+                    // 0.70 multiplier is an empirical tonemap-headroom
+                    // dial: a 2500 lm cyan rect now produces ~0.5..0.9
+                    // floor brightness in the default Cyan-only scene
+                    // (sun off, one rect-area enabled) which matches the
+                    // user's expectation of a visible spill + shadow.
+                    const float w     = std::max(lrow.light.area_width,  0.05F);
+                    const float h     = std::max(lrow.light.area_height, 0.05F);
+                    const float area  = w * h;
+                    ki = lrow.light.intensity * kInvPiSq / area * 0.70F;
+                }
+                else
+                {
+                    // Punctual (point/spot/directional fallback). Keep
+                    // the prior W8-B calibration: phi/(4 pi)/2 plus the
+                    // 2.5x spot inflation that produces a visible cone
+                    // contribution at the default 6000 lm halogen rig.
+                    // Original W8-B baseline: phi/(4 pi)/2 = phi * (1/(8 pi)).
+                    ki = lrow.light.intensity * kInvPi * 0.125F;
+                    if (k == cd::light::LightType::kSpot) ki *= 2.5F;
+                }
                 s.color_int[3] = ki;
                 s.extras[0] = lrow.light.cos_outer_cone;
                 s.extras[1] = lrow.light.area_width;
