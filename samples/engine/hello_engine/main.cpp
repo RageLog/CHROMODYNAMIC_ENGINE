@@ -763,10 +763,16 @@ void main() {
   // Hemisphere ambient (sky-up / ground-down) - cheap stand-in for
   // non-textured prim entities. Textured entities (kGltf flagged via
   // fx_params.y > 0.5) get real IBL below.
-  float up_t   = N.y * 0.5 + 0.5;
-  vec3  sky_c  = vec3(0.55, 0.65, 0.85);
-  vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
-  vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
+  // W8-A: previously tied to pc.sun_color.w (=0 when sun off), which
+  // made non-textured prims pitch black under spot/area-only lighting.
+  // Now adds a floor of 0.10 when ANY non-sun light is in the UBO so
+  // the back hemisphere still reads as scene-present, not vanished.
+  float up_t        = N.y * 0.5 + 0.5;
+  vec3  sky_c       = vec3(0.55, 0.65, 0.85);
+  vec3  gnd_c       = vec3(0.18, 0.16, 0.14);
+  float non_sun_fill = (cd_lights.count > 0u) ? 0.10 : 0.0;
+  float hemi_scale   = max(pc.sun_color.w, non_sun_fill);
+  vec3  hemi    = mix(gnd_c, sky_c, up_t) * hemi_scale;
   vec3  ambient = albedo * hemi;
 
   // R2: True IBL with MR map. Karis split-sum:
@@ -792,16 +798,15 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    // IBL gate: SUN ONLY. Non-sun lights are direct sources - they
-    // illuminate via their own contribution and shouldn't synthesise
-    // a global ambient lift. Closes 'spotda boyutu ve gucu dusurdum
-    // ama cism gozukur durumda kaldi' - when the only enabled light
-    // is a weak/small non-sun source, surfaces outside its reach now
-    // read as truly dark instead of getting an IBL freebie.
-    // Metallic surfaces under non-sun-only lighting will read black
-    // (no diffuse, no LTC-GGX specular yet); proper indirect light
-    // returns with the R4 GI ship.
-    float ibl_gate = clamp(pc.sun_dir.w * 0.6, 0.0, 1.0);
+    // W8-A: gate sun-only previously; user reported PBR spheres go
+    // pitch-black on the far hemisphere when ONLY a spot/area is on.
+    // Now lets non-sun lights leak a small ambient fill so the back-
+    // facing hemisphere still reads as 'present in the scene' rather
+    // than disappearing. Scales with light presence (count > 0), not
+    // summed energy, so the fill never dominates direct contribution.
+    float non_sun_presence = (cd_lights.count > 0u) ? 1.0 : 0.0;
+    float ibl_gate = clamp(pc.sun_dir.w * 0.6 + non_sun_presence * 0.15,
+                           0.0, 1.0);
     ambient += ibl * ibl_gate * 0.55;
   }
 
