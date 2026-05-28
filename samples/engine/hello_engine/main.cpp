@@ -5629,6 +5629,38 @@ int main()
                 ImGui::TextDisabled("atten 1m=%.3f  5m=%.4f  r/2=%.3f",
                     static_cast<double>(a1), static_cast<double>(a5), static_cast<double>(ah));
             }
+            // W8-G: spot cone angles (inner = full bright, outer = falloff
+            // edge). Stored on the Light as cos(angle); we display as
+            // degrees for artist readability and clamp inner <= outer.
+            if (row.light.type == cd::light::LightType::kSpot)
+            {
+                float inner_deg = std::acos(std::clamp(row.light.cos_inner_cone,
+                                                       -1.0F, 1.0F)) *
+                                  (180.0F / 3.14159265F);
+                float outer_deg = std::acos(std::clamp(row.light.cos_outer_cone,
+                                                       -1.0F, 1.0F)) *
+                                  (180.0F / 3.14159265F);
+                bool changed = false;
+                if (ImGui::SliderFloat("inner cone (deg)", &inner_deg,
+                                       0.5F, 89.0F, "%.1f")) changed = true;
+                if (ImGui::SliderFloat("outer cone (deg)", &outer_deg,
+                                       0.5F, 89.5F, "%.1f")) changed = true;
+                if (changed)
+                {
+                    if (inner_deg > outer_deg - 0.5F) inner_deg = outer_deg - 0.5F;
+                    if (inner_deg < 0.5F) inner_deg = 0.5F;
+                    row.light.cos_inner_cone = std::cos(inner_deg *
+                                                        (3.14159265F / 180.0F));
+                    row.light.cos_outer_cone = std::cos(outer_deg *
+                                                        (3.14159265F / 180.0F));
+                    const float denom = row.light.cos_inner_cone -
+                                        row.light.cos_outer_cone;
+                    row.light.inv_cone_range =
+                        denom > 1e-5F ? 1.0F / denom : 0.0F;
+                }
+                ImGui::TextDisabled("full cone = 2x outer = %.0f deg",
+                                    static_cast<double>(outer_deg * 2.0F));
+            }
             // Direction control for any light type that has a meaningful
             // forward axis (everything except omnidirectional point). User
             // feedback: "isiklara yun veremiyorum" - give them a slider.
