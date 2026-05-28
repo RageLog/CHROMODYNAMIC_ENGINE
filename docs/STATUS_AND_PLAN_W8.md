@@ -194,12 +194,47 @@ Pratik revizyon (N2A sirasinda kararlasti): FrameContext aggregate Run 7 N1 clos
 - Gizmo overlay (~720 satir): drag-state lambda + EditHistory + multi-mode state machine derin coupling. Marathon-pace mekanik extract icin risk yuksek.
 - Per-render-pass extract (sky / shadow / floor / entity prim / planar shadow / composite / velocity): her pass ~10-30 local. FrameContext aggregate veya HelloEngineFrame header'i gerekiyor.
 
-**Run 9 onerilen oncelik sirasi:**
-1. **N3-prep**: fx_* (~26 float + 2 int + 2 bool) HelloEngineFx struct'ina lift et. ~150 satir mekanik degisim.
-2. **N3**: R-Showcase paneli HelloEngineFx kullanarak extract. ~237 satir main() dusus.
-3. **N4-prep**: HelloEngineFrame aggregate tanit (cmd, vp, view, sun_dir/col/str, ambient, cam, frame.extent, FxState ref bundle). Original N2A FrameContext plani burada justified - artik sonraki extract batch'i talep ediyor.
-4. **N4A..N4x**: render-pass extracts bagimsizlik sirasiyla: floor draw, sky pass, planar shadow pass, sky+IBL bake region (boot-side leftover), velocity G-buffer pass, composite pass, ImGui pass on swapchain. Hedef: main() body 5938 -> ~2500.
-5. **N5**: gizmo overlay extract once R-Showcase + render-pass extracts have shaken out helper-parameter shape.
+### Marathon Run 9 N3+N4 close-out (W8 phase304-311)
+
+Yeni hedef: main() body <500 - Run 9 sonu 5261; <300 hedefi Run 10 N5 (gizmo) + N6 (composite) zincirine kaydirildi.
+
+Pratik revizyon (N4 sirasinda kararlasti): HelloEngineFrame aggregate Run 8 N2Z tavsiye etti, fakat her render pass helper'i kucuk + odakli imza ile dogal cikti (sun + cmd + sample-spesifik state). Aggregate gerekmedi; SunLight + HelloEngineFx + fill_prim_push_shared 3'lusu yeterli soyutlama saglar.
+
+- N3-prep (phase304): HelloEngineFx flat POD (~26 float + 2 int + 5 bool) aggregate HelloEngineFx.hpp icine alindi. main() 31 stack vars -> 1 fx struct, ~230 fx_xxx -> fx.xxx mekanik rewrite. main() body 5938 -> 5900 (-38).
+- N3 (phase305): R-Showcase paneli draw_r_showcase_panel(fx, lights, log_push) helper'ina cikarildi (~210 satir body). main() body 5900 -> 5691 (-210).
+- N4A (phase306): Multi-light UBO fill upload_multi_light_ubo(device, lights_ubo, lights, counters) helper'ina cikarildi. main() body 5691 -> 5669 (-22).
+- N4B (phase307): SunLight + resolve_sun_light(lights) helper'i tanitildi. main()'in 21-satir per-frame sun walk + sun_dir/col/str/ambient_w/has_sun lokali POD'a tasindi; downstream callsiteler sun.dir / sun.strength / sun.col / sun.ambient_w okuyor. main() body 5669 -> 5644 (-25).
+- N4C (phase308): fill_prim_push_shared(pp, fx, sun, cam) helper'i floor + ECS PrimPush yazimini ortak 17-satir bloga aldi. Floor + ECS callsiteleri sirasiyla 35 -> 9 ve 28 -> 6 satira indi. main() body 5644 -> 5602 (-42).
+- N4D (phase309): Sky pass draw_sky_pass(cmd, cam, aspect, sun, sky_material) helper'ina cikarildi. Onemli mimari kazanc: sky pass'in kendi inline directional-light walk'i kaldirildi, SunLight resolve sky'dan once tasinarak ECS-row'daki dup sun resolve da dustu. main() body 5602 -> 5527 (-75).
+- N4E (phase310): Planar projective shadows draw_planar_shadows<MeshFor> template helper'ina cikarildi (~80 satir). MeshFor template parametre main()'in mesh_for lambda'sini headerless aldi. main() body 5527 -> 5450 (-77).
+- N4F (phase311): Faz 1.6 CSM shadow map pass draw_shadow_map_pass<MeshFor> template helper'ina cikarildi (~193 satir - Run 9'un en buyuk tek extracti). Texture-barrier choreography (Undefined/ShaderResource -> DepthWrite -> ShaderResource) artik tamamen internal. SunLight resolve shadow pass'den once tasindi -> 4 pass (shadow + sky + floor + entity + planar shadow) tek directional-light walk paylasiyor. main() body 5450 -> 5261 (-189).
+
+**Run 9 sonuc:**
+- main.cpp: 7811 -> 7707 (-104; 7 yeni anon-namespace helper + HelloEngineFx.hpp aggregate header).
+- **main() body: 5938 -> 5261 (-677, 11.4% azalma)**.
+- 7 yeni anon-namespace helper: draw_r_showcase_panel, upload_multi_light_ubo, resolve_sun_light (+ SunLight POD), fill_prim_push_shared, draw_sky_pass, draw_planar_shadows<>, draw_shadow_map_pass<>.
+- 1 yeni sample-local header: HelloEngineFx.hpp (POD aggregate). Library promotion tetiklenmedi - hellow_engine ozelinde knob surface.
+- 4 per-frame directional-light walk -> 1 walk (SunLight ortak resolve).
+- Tests 96/96 PASS her checkpoint'te.
+- Engine boots clean (her commit sonrasi smoke launch dogruandi). Renderer davranisi degismedi (Hable tonemap + 0.55 AO + 0.75 shafts visual baseline korundu).
+
+**Ship edilmedi (Run 10 territory):**
+- Gizmo overlay (~693 satir, line ~6313): drag-state lambda + EditHistory + multi-mode state machine derin coupling. Marathon-pace mekanik extract icin yuksek risk - Run 10'da once kucuk on-step (gizmo_target_pos lambda + per-axis hit-test math hellper'a cek), sonra body extract.
+- Composite + frame feedback pass (~549 satir, line ~7067): TAA history ping-pong + PrevCamBasis + prev_vp_unjittered feedback state. Aggregate tasinabilir ama once gizmo'yu temizleyince composite imzasi netlesir.
+- HDR + G-Buffer render pass scaffold (~107 satir, line ~6107 sonrasi): begin_render_pass + viewport/scissor + Halton jitter math. Kucuk + bagimsiz, Run 10 N5/N6 araliginda dahil edilebilir.
+
+**Run 10 onerilen oncelik sirasi:**
+1. **N5-prep** (opsiyonel): gizmo_target_pos lambda + axis-hit-test math helper'a cek. Drag-state mutable lambdalar zor.
+2. **N5**: gizmo overlay'i draw_translate_gizmo helper'ina extract. ~693 satir main() dusus. Marathon-pace mekanik risk gerceklestiyse scope-down ship + N5-followup.
+3. **N6-prep**: FrameFeedback aggregate (prev_cam_basis + prev_vp_unjittered + history_states) tanit - composite imzasini kuculur.
+4. **N6**: Composite pass + post-frame snapshot draw_composite_pass / capture_frame_feedback helper'larina extract. ~549 satir main() dusus.
+5. **N7**: HDR + G-Buffer render pass scaffold extract (begin_render_pass setup + Halton jitter + vp_unjittered). Kucuk (~107 satir) ama main()'in son render-loop kabugu bunlar.
+6. Hedef: main() body 5261 -> <500. Eger N5+N6+N7 toplami <300'e gotururse Run 10 close-out + tag bekleme.
+
+**Library promotion candidates (Run 10 close-out trigger)**:
+- cd::sample_framework: hello_engine bootstrap (Vulkan device + window + swapchain + dockspace setup) - second consumer ortaya cikinca (yeni full-engine sample yazildiginda).
+- cd::editor::gizmo: translate/rotate/scale axis gizmo - editor UI consumer geldikten sonra.
+- cd::ui::editor_ui: ImGui dockspace + menu bar + toolbar scaffold - second consumer trigger.
 
 ### Yeni follow-up itemler (W8 phase282/283 sonrasi)
 
