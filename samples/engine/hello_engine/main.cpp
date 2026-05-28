@@ -700,16 +700,16 @@ void main() {
       // stores `dir_type.xyz` as the panel's emissive normal, so the
       // shading-point vector (P - lp) projected onto +ln must be
       // positive for the front hemisphere.
-      // W8-P: area light is now TWO-SIDED. W4-B clipped the back
-      // hemisphere ("real area light doesn't leak through the panel")
-      // but in the hello_engine showcase the user repeatedly moved
-      // the rect around expecting visible neighbours to light up on
-      // both sides — the strict one-sided cut left the off-normal
-      // hemisphere pitch black and produced "the area is lighting
-      // the wrong side" reports. Two-sided emission matches the
-      // mental model of "area = soft point light with a shape".
-      // (Real one-sided emission stays available via a future
-      // per-light bool the panel can expose.)
+      // W8-Q: revert to one-sided emission (W4-B behaviour). Earlier
+      // W8-P went two-sided based on a complaint that "diger
+      // cisimleri aydinlanmiyor"; the real fix turned out to be
+      // user-rotating the gizmo (now possible per-axis via W8-N),
+      // and W8-P's two-sided variant produced visibly-wrong back-
+      // hemisphere illumination once the user had the right
+      // rotation. Cull shading points behind the rect normal so the
+      // panel only lights its emissive front face.
+      vec3 to_pt_w = v_world_pos - lp_pos;
+      if (dot(to_pt_w, ln) <= 0.0) continue;
       // W8-N: use uploaded tangent directly. CPU stores the user-
       // controlled area_tangent in slot.tangent.xyz so the gizmo's
       // per-axis rotation can independently spin the rect around

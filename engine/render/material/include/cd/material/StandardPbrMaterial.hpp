@@ -379,14 +379,15 @@ void main() {
       // stores `dir_type.xyz` as the panel's emissive normal, so the
       // shading-point vector (P - lp) projected onto +N_rect must be
       // positive for the front hemisphere.
-      // W8-P: two-sided area emission. W4-B used to cull the back
-      // hemisphere; the hello_engine user reported the strict cut
-      // produced "area lights the wrong side" friction whenever the
-      // rect was repositioned. LTC's polygon integral already clamps
-      // to >= 0 for the shading surface normal, so removing the rect-
-      // normal cull just lets the back hemisphere participate when it
-      // physically can (mirror-image of the same rect projected on
-      // the hemisphere).
+      // W8-Q: revert to one-sided emission (W4-B behaviour). The
+      // earlier W8-P two-sided variant was the wrong fix — turned
+      // out the user's "area lights the wrong side" complaint was
+      // a rotation-axis-coupling bug that W8-N solved, and once the
+      // rotation worked the two-sided emission visibly leaked light
+      // through the back of the panel. Cull back-side shading points
+      // so the rect only lights its emissive front hemisphere.
+      vec3 to_pt_w = v_world_pos - lp;
+      if (dot(to_pt_w, N_rect) <= 0.0) continue;
       // W8-N: use uploaded tangent directly so the gizmo's per-axis
       // rotation can spin the rect around its normal without the
       // shader re-deriving the basis on every frame.

@@ -263,16 +263,15 @@ TEST(BrdfLut, SmoothLowAngleHasLowScaleHighBias)
 // sources are header-only string constants, so a textual contract test
 // catches accidental edits that revert the user-verified fixes.
 
-TEST(StandardPbr, TwoSidedAreaEmission)
+TEST(StandardPbr, OneSidedAreaEmission)
 {
-    // W8-P: rect-area path no longer culls the back hemisphere — the
-    // W4-B `dot(to_pt_w, N_rect) <= 0` cut was reverted because the
-    // hello_engine showcase user wanted moving the rect across the
-    // scene to keep both sides lit. The marker comment must stay so
-    // a future edit doesn't silently re-add the cull.
+    // W8-Q: rect-area is one-sided again (back hemisphere culled).
+    // The earlier W8-P two-sided variant was the wrong fix — the
+    // visible bug turned out to be a rotation-axis coupling that
+    // W8-N solved, and W8-P leaked light through the back of the
+    // panel once the rotation worked correctly.
     const std::string fs { cd::material::kStandardPbrFS };
-    EXPECT_NE(fs.find("W8-P: two-sided area emission"), std::string::npos);
-    EXPECT_EQ(fs.find("dot(to_pt_w, N_rect) <= 0.0"), std::string::npos);
+    EXPECT_NE(fs.find("dot(to_pt_w, N_rect) <= 0.0"), std::string::npos);
 }
 
 TEST(StandardPbr, SpotConeReadsConfiguredInnerAngle)
