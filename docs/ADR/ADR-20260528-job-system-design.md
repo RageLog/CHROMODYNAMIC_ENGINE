@@ -251,3 +251,46 @@ inception (pre-Demir-Kural). They are *engineering* SOTA citations (papers
 informed the impl), not academic claims requiring \cite{} in a manuscript.
 N4 (MANIFEST.csv pilot) is the wave that retroactively legitimises them if
 we decide to surface those refs in an academic write-up.
+
+---
+
+## Addendum: X1 Phase 2 marathon (Marathon Run 7, W8 phase284-287)
+
+Marathon dispatched by user mandate "x1 faz 2 yapalim ve bunu araliksiz basla ve maraton olarak bitir / maraton sonu commitle". Four sub-phases shipped end-to-end without interactive checkpoints. Each sub-phase is one commit:
+
+- **phase284-X1B** (commit 3789db8): Parallel TLAS instance build. hello_engine per-frame entity loop builds `cd::rhi::AccelInstance` + `InstanceMatGpu` into pre-sized scratch arrays via `cd::concurrency::parallel_for`. Valid-flag compaction preserves entity ordering so GPU `instanceCustomIndex` lookup stays aligned. Floor instance + skinned-glTF BLAS in-place rebuild stay serial. +1 test (`ParallelFor.TlasInstanceBuildPattern_MatchesSerial`, 4096 entities, ~10% invalid, parallel vs serial element-wise equal).
+
+- **phase285-X1C** (commit 62f9a11): Async asset bake at boot. 7-node `cd::concurrency::JobGraph` on boot-scoped `WorkStealingThreadPool`: A env_cube -> { B diff_irradiance, C spec_prefilter }; D brdf_lut, E earth_albedo, F earth_normal, G earth_mr (D-G independent roots). Boot pool joins via RAII, serial GPU uploads consume populated buffers. **JobGraph::run was templated on PoolT** so both `cd::concurrency::ThreadPool` and `cd::concurrency::WorkStealingThreadPool` drive a graph — minimal-friction enabler for D1's canonical-executor claim. +2 tests (`JobGraph.BootBakeTopologyOnWorkStealingPool`, `JobGraph.TemplatedRunWorksOnBothPoolTypes`). Runtime smoke confirmed the parallel ordering at boot: log order shows BRDF LUT firing while env_cube + diff + spec run.
+
+- **phase286-X1D** (commit ad81eef): Parallel ECS PrimPush prep. hello_engine main entity draw loop split prep / submit: parallel_for writes each `PrimPush` + valid flag into pre-sized scratch vector; serial draw pass binds mesh, calls `push_constants`, calls `draw_indexed`. Vulkan cmd recording stays serial (per Vulkan spec 5.1 cmd buffers are not thread-safe). +1 test (`ParallelFor.PrimPushPrepPattern_MatchesSerial`, 4096 entities, memcmp asserts per-byte identity).
+
+- **phase287-X1E** (commit 5088265): Parallel CSM + planar shadow caster prep. Same prep/submit pattern applied to the CSM caster loop (`light_mvp = light_vp2 * model` per entity) and the planar projective shadow caster loop (`shadow_model = S * model`; `sp.mvp = vp * shadow_model`). The **original X1E** scope (Vulkan secondary command buffers + threaded cmd record per render pass) is **deferred to X1-FU-F** because the current `cd::rhi::ICommandBuffer` surface has no secondary-buffer concept and adding `ISecondaryCommandBuffer` + Vulkan/D3D12/OpenGL/Metal/Null impls + inheritance state propagation is past the >500-line stop condition in the marathon mandate.
+
+### Marathon-end test totals
+
+ctest --preset ninja-debug: **96/96 PASS** (`Total Test time (real) = 20.65 sec`). New tests added: 3 (ParallelFor TLAS pattern, ParallelFor PrimPush pattern, JobGraph templated bake topology + dual-pool resolve). cd_test_concurrency and cd_test_job_graph carry the new sub-tests inside their existing ctest entries; numeric ctest total stays 96 because gtest binaries are one ctest entry each.
+
+### Integration sites parallelized today
+
+| Site | Pattern | Concurrency primitive |
+|---|---|---|
+| hello_engine per-frame TLAS instance build | prep-then-compact | `parallel_for` |
+| hello_engine boot IBL+Earth bake | DAG | `JobGraph<WorkStealingThreadPool>` |
+| hello_engine main ECS draw (PrimPush) | prep-then-draw | `parallel_for` |
+| hello_engine CSM caster loop | prep-then-draw | `parallel_for` |
+| hello_engine planar shadow caster loop | prep-then-draw | `parallel_for` |
+
+### Why TSan was not run
+
+X1-FU-B (TSan preset run) remains a follow-up. The TSan preset requires a clang Linux toolchain or a CI runner; the marathon ran on the local Windows + Clang-cl + Vulkan path which doesn't ship TSan. ASan baseline was not regressed (ninja-debug-asan preset exists, ran clean in W8 phase282). When X3 (CI multi-runner matrix) lands, X1-FU-B is unblocked.
+
+### Out-of-scope (still open)
+
+- X1-FU-F: Vulkan secondary cmd buffer pipeline (true parallel cmd record).
+- X1-FU-G: `cd::rhi::IDevice::upload_buffer` thread-safety review.
+- X1-FU-H: Per-frame parallel ECS scaling re-measurement once X7 ECS v2 archetype lands and entity counts grow past worker count.
+- X1-FU-B: TSan preset run on concurrency suite (X3 prereq).
+- X1-FU-A: `cv` -> `std::atomic::wait/notify_one` migration.
+- X1-FU-C: Hazard-pointer reclamation for retired WSD buffers.
+- X1-FU-D: Priority-aware steal ordering.
+- X1-FU-E: `engine/foundation/concurrency/README.md` (header-only design rationale).

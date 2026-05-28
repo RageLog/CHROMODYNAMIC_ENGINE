@@ -154,11 +154,14 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 2. N4 + N3: W7/W8 wave kapat: MANIFEST.csv ilk yukleme + W7/W8 ADR + extract. Demir Kural pipeline ilk tetikleme.
 3. N1 + X5: hello_engine 7793 -> ~3000 satir extract + shader on-disk hot reload. Sample showcase guvenliginde tutmak icin (her wave +500 satir buyuyor).
 4. X4 + X6: D3D12 paritesi + Vulkan RT pipeline. Cross-API + gercek RT iddialarinin asgari odemesi.
-5. X1 Phase 2: WorkStealingThreadPool dispatch sitelerine entegrasyon (render-thread + async-asset + parallel-ECS). 2-3 hafta, X4+X7 prereq. Detay: ADR-20260528 Sonuclar bolumu.
+5. ~~X1 Phase 2 (X1B-X1E)~~ -> DONE (W8 phase284-287, Marathon Run 7). hello_engine TLAS instance + boot asset bake + ECS PrimPush prep + CSM/planar shadow caster prep all use cd::concurrency::parallel_for or JobGraph<WSL pool>. RHI secondary cmd buffer (true parallel cmd record) deferred to X1F follow-up (>500 line RHI rev). Detay: ADR-20260528 Sonuclar bolumu + this section follow-ups.
 
 ### Yeni follow-up itemler (W8 phase282/283 sonrasi)
 
 - X1-FU-A: cv -> std::atomic::wait/notify_one migration (1-2 gun, post-X3 TSan).
+- X1-FU-F: Vulkan secondary cmd buffer pipeline (ISecondaryCommandBuffer + VulkanSecondaryCommandBuffer; X1E original RHI plumbing). True parallel cmd record per render pass. Sized: 1 week. Pre-req: ICommandBuffer surface review + 4 backend impl (Vulkan, D3D12 bundles, OpenGL no-op, Metal indirect cmd encoder, Null no-op). Filed against ADR-20260528.
+- X1-FU-G: upload_buffer thread safety review (cd::rhi::IDevice spec). Current X1C boot graph serializes uploads after the CPU bake join because the device API is not documented as thread-safe; if uploads can move parallel that cuts boot wall-time further.
+- X1-FU-H: per-frame parallel ECS scaling: re-measure once entity count grows past worker count (X7 ECS v2 archetype trajectory). Today 22 entities = pattern-only win.
 - X1-FU-B: TSan preset run on concurrency suite (1 gun, X3 prereq).
 - X1-FU-C: Hazard-pointer based reclamation for retired WSD buffers (3-5 gun, polish).
 - X1-FU-D: Priority-aware steal ordering (2-3 gun, polish).
