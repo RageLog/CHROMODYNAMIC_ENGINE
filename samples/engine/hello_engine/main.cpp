@@ -442,6 +442,134 @@ struct Histogram
 };
 
 // =============================================================================
+// Phase 297 / Marathon Run 8 sub-N2A: small self-contained UI panel draw
+// helpers extracted from main(). These touch a narrow, well-defined slice
+// of frame state (counters table, random-viz histograms, history + log)
+// and have no shared draw-order coupling with the rest of the UI loop, so
+// they extract cleanly with explicit parameter lists - no FrameContext
+// aggregate required yet. The dt-ring static inside draw_counters_panel
+// keeps the same single-instance lifetime as before (one named function,
+// one static).
+// =============================================================================
+
+// ---- draw_counters_panel --------------------------------------------------
+inline void draw_counters_panel(const cd::core::CounterTable& counters,
+                                float dt,
+                                std::uint32_t frame_idx)
+{
+    ImGui::Begin("Counters");
+    const auto snap = counters.snapshot();
+    // Phase 139 - FPS / dt readout up top.
+    // W5-G: 120-frame ring + statistics extracted to cd::frame_timing
+    // (header-only foundation lib). Single source of truth for the
+    // mean / median / p99 math so future samples can reuse the same
+    // widget without re-deriving the ring logic.
+    static cd::frame_timing::FrameTimeRing<120> dt_ring;
+    dt_ring.push(dt);
+    const auto fts = dt_ring.stats();
+    const double fps_inst = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
+    ImGui::Text("FPS avg: %5.1f  median: %5.1f  inst: %5.1f", fts.fps_mean(), fts.fps_median(), fps_inst);
+    ImGui::Text(
+        "dt: %.2f ms  p99: %.2f ms  frame: %u",
+        fts.mean * 1000.0,
+        static_cast<double>(fts.p99) * 1000.0,
+        frame_idx
+    );
+    {
+        // dt histogram so stutter spikes are visually obvious — feed
+        // PlotHistogram the ring in oldest-first order so the X axis
+        // reads left-to-right as time.
+        static std::vector<float> dt_plot_buf;
+        dt_ring.copy_in_order(dt_plot_buf);
+        for (auto& v : dt_plot_buf)
+            v *= 1000.0F;  // s -> ms
+        ImGui::PlotHistogram(
+            "##dt_hist",
+            dt_plot_buf.empty() ? nullptr : dt_plot_buf.data(),
+            static_cast<int>(dt_plot_buf.size()),
+            0,
+            "frame time (ms)",
+            0.0F,
+            std::max(40.0F, fts.p99 * 1000.0F * 1.2F),
+            ImVec2(0, 40)
+        );
+    }
+    ImGui::Separator();
+    for (const auto& [name, value] : snap)
+    {
+        ImGui::Text("%-20s %lld", name.c_str(), static_cast<long long>(value));
+    }
+    ImGui::End();
+}
+
+// ---- draw_random_panel ----------------------------------------------------
+inline void draw_random_panel(const Histogram& hist_uniform, const Histogram& hist_normal)
+{
+    ImGui::Begin("Random");
+    ImGui::TextDisabled("PCG32 + Box-Muller (auto-refresh ~2s)");
+    ImGui::SeparatorText("Uniform [0,1)");
+    if (!hist_uniform.bins.empty())
+    {
+        std::vector<float> bars(hist_uniform.bins.size());
+        std::size_t peak = 1;
+        for (auto b : hist_uniform.bins)
+            if (b > peak)
+                peak = b;
+        for (std::size_t i = 0; i < hist_uniform.bins.size(); ++i)
+            bars[i] = static_cast<float>(hist_uniform.bins[i]) / static_cast<float>(peak);
+        ImGui::PlotHistogram(
+            "##uniform",
+            bars.data(),
+            static_cast<int>(bars.size()),
+            0,
+            nullptr,
+            0.0F,
+            1.0F,
+            ImVec2(0, 60)
+        );
+    }
+    ImGui::SeparatorText("N(0,1) Box-Muller");
+    if (!hist_normal.bins.empty())
+    {
+        std::vector<float> bars(hist_normal.bins.size());
+        std::size_t peak = 1;
+        for (auto b : hist_normal.bins)
+            if (b > peak)
+                peak = b;
+        for (std::size_t i = 0; i < hist_normal.bins.size(); ++i)
+            bars[i] = static_cast<float>(hist_normal.bins[i]) / static_cast<float>(peak);
+        ImGui::PlotHistogram(
+            "##normal",
+            bars.data(),
+            static_cast<int>(bars.size()),
+            0,
+            nullptr,
+            0.0F,
+            1.0F,
+            ImVec2(0, 60)
+        );
+    }
+    ImGui::End();
+}
+
+// ---- draw_history_panel ---------------------------------------------------
+inline void draw_history_panel(const cd::editor::EditHistory& history,
+                               const std::deque<std::string>& log)
+{
+    ImGui::Begin("History");
+    ImGui::Text(
+        "undo depth %zu  redo depth %zu  (bytes %zu)",
+        history.undo_depth(),
+        history.redo_depth(),
+        history.bytes_in_use()
+    );
+    ImGui::Separator();
+    for (auto it = log.rbegin(); it != log.rend(); ++it)
+        ImGui::TextUnformatted(it->c_str());
+    ImGui::End();
+}
+
+// =============================================================================
 // Phase 295 / Marathon Run 7 sub-N1G: scene-bootstrap helpers extracted
 // from main(). These are sample-local (operate on the anon-namespace
 // SceneEntity / PrimitiveKind) so they live in main.cpp rather than a
@@ -5297,96 +5425,10 @@ int main()
         ImGui::End();
 
         // ---- Counters ----
-        ImGui::Begin("Counters");
-        const auto snap = counters.snapshot();
-        // Phase 139 - FPS / dt readout up top.
-        // W5-G: 120-frame ring + statistics extracted to cd::frame_timing
-        // (header-only foundation lib). Single source of truth for the
-        // mean / median / p99 math so future samples can reuse the same
-        // widget without re-deriving the ring logic.
-        static cd::frame_timing::FrameTimeRing<120> dt_ring;
-        dt_ring.push(dt);
-        const auto fts = dt_ring.stats();
-        const double fps_inst = (dt > 0.0F) ? (1.0 / static_cast<double>(dt)) : 0.0;
-        ImGui::Text("FPS avg: %5.1f  median: %5.1f  inst: %5.1f", fts.fps_mean(), fts.fps_median(), fps_inst);
-        ImGui::Text(
-            "dt: %.2f ms  p99: %.2f ms  frame: %u",
-            fts.mean * 1000.0,
-            static_cast<double>(fts.p99) * 1000.0,
-            frame_idx
-        );
-        {
-            // dt histogram so stutter spikes are visually obvious — feed
-            // PlotHistogram the ring in oldest-first order so the X axis
-            // reads left-to-right as time.
-            static std::vector<float> dt_plot_buf;
-            dt_ring.copy_in_order(dt_plot_buf);
-            for (auto& v : dt_plot_buf)
-                v *= 1000.0F;  // s -> ms
-            ImGui::PlotHistogram(
-                "##dt_hist",
-                dt_plot_buf.empty() ? nullptr : dt_plot_buf.data(),
-                static_cast<int>(dt_plot_buf.size()),
-                0,
-                "frame time (ms)",
-                0.0F,
-                std::max(40.0F, fts.p99 * 1000.0F * 1.2F),
-                ImVec2(0, 40)
-            );
-        }
-        ImGui::Separator();
-        for (const auto& [name, value] : snap)
-        {
-            ImGui::Text("%-20s %lld", name.c_str(), static_cast<long long>(value));
-        }
-        ImGui::End();
+        draw_counters_panel(counters, dt, frame_idx);
 
         // ---- Random viz ----
-        ImGui::Begin("Random");
-        ImGui::TextDisabled("PCG32 + Box-Muller (auto-refresh ~2s)");
-        ImGui::SeparatorText("Uniform [0,1)");
-        if (!hist_uniform.bins.empty())
-        {
-            std::vector<float> bars(hist_uniform.bins.size());
-            std::size_t peak = 1;
-            for (auto b : hist_uniform.bins)
-                if (b > peak)
-                    peak = b;
-            for (std::size_t i = 0; i < hist_uniform.bins.size(); ++i)
-                bars[i] = static_cast<float>(hist_uniform.bins[i]) / static_cast<float>(peak);
-            ImGui::PlotHistogram(
-                "##uniform",
-                bars.data(),
-                static_cast<int>(bars.size()),
-                0,
-                nullptr,
-                0.0F,
-                1.0F,
-                ImVec2(0, 60)
-            );
-        }
-        ImGui::SeparatorText("N(0,1) Box-Muller");
-        if (!hist_normal.bins.empty())
-        {
-            std::vector<float> bars(hist_normal.bins.size());
-            std::size_t peak = 1;
-            for (auto b : hist_normal.bins)
-                if (b > peak)
-                    peak = b;
-            for (std::size_t i = 0; i < hist_normal.bins.size(); ++i)
-                bars[i] = static_cast<float>(hist_normal.bins[i]) / static_cast<float>(peak);
-            ImGui::PlotHistogram(
-                "##normal",
-                bars.data(),
-                static_cast<int>(bars.size()),
-                0,
-                nullptr,
-                0.0F,
-                1.0F,
-                ImVec2(0, 60)
-            );
-        }
-        ImGui::End();
+        draw_random_panel(hist_uniform, hist_normal);
 
         // ---- Audio ----
         ImGui::Begin("Audio");
@@ -5876,17 +5918,7 @@ int main()
         ImGui::End();
 
         // ---- History ----
-        ImGui::Begin("History");
-        ImGui::Text(
-            "undo depth %zu  redo depth %zu  (bytes %zu)",
-            history.undo_depth(),
-            history.redo_depth(),
-            history.bytes_in_use()
-        );
-        ImGui::Separator();
-        for (auto it = log.rbegin(); it != log.rend(); ++it)
-            ImGui::TextUnformatted(it->c_str());
-        ImGui::End();
+        draw_history_panel(history, log);
 
         // ---- Phase 151 - selection outline (ImGui overlay) ----
         // We use the kWireframe style: project the selected entity's
