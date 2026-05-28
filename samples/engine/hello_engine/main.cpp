@@ -2175,6 +2175,11 @@ int main()
         bool                                 valid { false };
         cd::anim::Skeleton                   skeleton {};
         std::unordered_map<int, std::int32_t> node_to_joint {};
+        // SK-fix: vertex JOINTS_0 hold skin-joint indices, NOT
+        // skeleton-joint indices. Skin joint i -> skeleton joint
+        // skin_joint_remap[i]. Without this remap CPU-LBS reads the
+        // wrong matrix and the character renders as a twisted mess.
+        std::vector<std::int32_t>            skin_joint_remap;
         cd::asset_gltf::GltfAnimation        animation {};
         // Per-vertex source data (bind-pose positions + normals + uvs
         // + bone influences). Parallel arrays — same length.
@@ -2290,9 +2295,10 @@ int main()
             {
                 auto bundle = cd::asset_gltf::to_skeleton_bundle(
                     *loaded, 0);
-                skinned.skeleton      = std::move(bundle.skeleton);
-                skinned.node_to_joint = std::move(bundle.node_to_joint);
-                skinned.animation     = loaded->animations[0];
+                skinned.skeleton         = std::move(bundle.skeleton);
+                skinned.node_to_joint    = std::move(bundle.node_to_joint);
+                skinned.skin_joint_remap = std::move(bundle.skin_joint_remap);
+                skinned.animation        = loaded->animations[0];
                 const auto& prim_src  = loaded->meshes[0].primitives[0];
                 skinned.base_positions.reserve(prim_src.vertices.size());
                 skinned.base_normals.reserve(prim_src.vertices.size());
@@ -3875,11 +3881,19 @@ int main()
                 cd::math::Mat4f skin_mat {};  // zero
                 for (std::size_t k = 0; k < 4; ++k)
                 {
-                    const std::uint16_t joint = inf.joints[k];
+                    const std::uint16_t skin_joint = inf.joints[k];
                     const float w = inf.weights[k] * inv_w;
                     if (w <= 0.0F) continue;
-                    if (joint >= bone_palette.size()) continue;
-                    const auto& m = bone_palette[joint];
+                    // SK-fix: translate skin-joint index to skeleton-
+                    // joint index. Vertex JOINTS_0 attributes hold the
+                    // position within gskin.joints[], not the topo-
+                    // sorted skeleton index — wrong palette lookup
+                    // produced the twisted-limb render the user saw.
+                    if (skin_joint >= skinned.skin_joint_remap.size()) continue;
+                    const std::int32_t sj = skinned.skin_joint_remap[skin_joint];
+                    if (sj < 0 ||
+                        sj >= static_cast<std::int32_t>(bone_palette.size())) continue;
+                    const auto& m = bone_palette[static_cast<std::size_t>(sj)];
                     for (std::size_t c = 0; c < 4; ++c)
                         for (std::size_t r = 0; r < 4; ++r)
                             skin_mat[c][r] += w * m[c][r];

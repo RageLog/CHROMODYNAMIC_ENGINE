@@ -238,6 +238,11 @@ struct SkeletonBundle
 {
     cd::anim::Skeleton skeleton;
     std::unordered_map<int, std::int32_t> node_to_joint;  ///< glTF node index -> skeleton joint index
+    /// glTF skin joint index (position within gskin.joints[]) -> skeleton joint index.
+    /// Critical for CPU/GPU skinning: vertex JOINTS_0 attributes use skin-joint
+    /// indices, not node indices or skeleton joint indices, so this remap turns
+    /// a vertex influence into the right slot of the matrix palette.
+    std::vector<std::int32_t> skin_joint_remap;
 };
 
 /// Sister of `to_skeleton` that also returns the glTF-node-index ->
@@ -323,6 +328,11 @@ to_skeleton_bundle(const GltfScene& scene, std::size_t skin_index)
     {
         out.node_to_joint[node_idx] = remap[static_cast<std::size_t>(orig_joint)];
     }
+    // skin_joint_remap[i] = sorted skeleton joint index for the i-th
+    // entry of gskin.joints[]. Used by callers to translate vertex
+    // JOINTS_0 attributes (which are skin-joint indices) into matrix-
+    // palette indices.
+    out.skin_joint_remap = std::move(remap);
     return out;
 }
 
