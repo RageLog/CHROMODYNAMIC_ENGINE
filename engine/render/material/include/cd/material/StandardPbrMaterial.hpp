@@ -428,7 +428,46 @@ void main() {
     }
     vec3 col = cd_lights.slots[li].color_int.xyz *
                cd_lights.slots[li].color_int.w * atten * cone;
-    direct += direct_lobe(N, V, Lp, albedo, metallic, roughness, F0, col, sheen_s, clearcoat_s);
+    // W8-J (hypothesis F): when the sun is effectively off the only
+    // direct light source the PBR grid sees is the multi-light loop.
+    // With a flashlight-style narrow spot (W8-G defaults: 0.35/0.55
+    // rad inner/outer) most spheres of the 5x5 sweep fall outside the
+    // cone => cone -> 0 and only the central column gets a visible
+    // key contribution. POINT lights have no cone gate so they read
+    // as 'lighting the whole grid', which is the user's reference for
+    // 'spot should light the spheres too'. Fix: each non-sun light
+    // also drives a soft fill + back-rim lobe (same fixed directions
+    // the sun rig uses) whose magnitude follows the light's already-
+    // attenuated radiance. With sun on (sun_i > ~0), the gate weight
+    // drops to 0 so we don't double-up the artistic rig; with sun off
+    // it ramps to 1 so the spot/point/area light becomes its own
+    // 3-light rig - same artistic readability the sun gives, scaled
+    // by physical attenuation + cone. Preserves W8-C 'non-sun lights
+    // stay strictly local in IBL' (IBL is still sun-gated) - the rig
+    // here is direct only, attenuated and cone-gated.
+    vec3 key_contrib = direct_lobe(N, V, Lp, albedo, metallic,
+                                   roughness, F0, col,
+                                   sheen_s, clearcoat_s);
+    direct += key_contrib;
+    float rig_gate = 1.0 - clamp(sun_i * 4.0, 0.0, 1.0);
+    if (rig_gate > 0.001) {
+      // Fixed fill + rim directions match the sun rig's L_fill /
+      // L_rim so the visual signature of 'soft 3-point rig' is
+      // identical whether driven by the sun or by a punctual light.
+      // Magnitudes (0.25 fill, 0.40 rim) also match the sun rig so
+      // a 6000 lm spot at ~5 m maps to the same artistic intensity
+      // as a 200000 lux sun pointed straight down on the grid.
+      vec3 L_fill_ml = normalize(vec3( 0.6, 0.3,  0.7));
+      vec3 L_rim_ml  = normalize(vec3(-0.1, 0.2, -1.0));
+      vec3 col_fill = col * vec3(0.55, 0.70, 0.95) * (0.25 * rig_gate);
+      vec3 col_rim  = col * vec3(1.00, 0.88, 0.70) * (0.40 * rig_gate);
+      direct += direct_lobe(N, V, L_fill_ml, albedo, metallic,
+                            roughness, F0, col_fill,
+                            sheen_s, clearcoat_s);
+      direct += direct_lobe(N, V, L_rim_ml,  albedo, metallic,
+                            roughness, F0, col_rim,
+                            sheen_s, clearcoat_s);
+    }
   }
 
   // R1: True split-sum IBL — uses bound cubemaps + LUT instead of the

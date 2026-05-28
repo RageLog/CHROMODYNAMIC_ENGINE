@@ -2664,17 +2664,17 @@ int main()
         cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
         true, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
-        // W8-H: spot now sits between camera and sphere grid (above +
-        // front of the grid relative to default camera position) so
-        // the cone lights the CAMERA-FACING side of every sphere.
-        // Previous (0, 5.5, -1.5) hit the BACK side of the spheres
-        // and the camera read them as dark even with a wide cone.
-        // From (0, 5.0, 4.0) aim at sphere grid centre (0, 3.5, -4.5):
-        // dir = (0, -0.174, -0.985) (normalised).
-        // Cone: inner 0.35 rad (~20 deg) / outer 0.55 rad (~32 deg) =>
-        // 64 deg full cone; range 20 m.
-        cd::light::spot({ 0.0F, 5.0F, 4.0F }, { 0.0F, -0.174F, -0.985F },
-                        { 1, 1, 1 }, 1800.0F, 20.0F, 0.35F, 0.55F),
+        // W8-I: spot pulled CLOSER to the sphere grid + bumped lumens.
+        // W8-H placement (0, 5, 4) was camera-side (good for hitting
+        // the +Z face of spheres) but ~10 m away — inverse-square
+        // attenuation crushed the per-pixel contribution to ~0.01,
+        // visibly black after tonemap. Moving to (0, 5, 0) brings
+        // distance down to ~4.7 m and lumens 1800 -> 6000 raises the
+        // peak so the spot reads as a real flashlight on the grid.
+        // From (0, 5, 0) aim at grid centre (0, 3.5, -4.5):
+        // dir = (0, -0.316, -0.949) (normalised).
+        cd::light::spot({ 0.0F, 5.0F, 0.0F }, { 0.0F, -0.316F, -0.949F },
+                        { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
         true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
         cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
