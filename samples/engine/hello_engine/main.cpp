@@ -2256,6 +2256,96 @@ inline void draw_sky_pass(cd::rhi::ICommandBuffer& cmd,
     cmd.draw(3, 1, 0, 0);
 }
 
+// ---- draw_planar_shadows ---------------------------------------------------
+// Faz 1.5 planar projective shadows: each enabled caster ECS entity is
+// flattened onto the floor (y = floor_y) via make_planar_shadow_matrix
+// (taken from cd::render::PlanarShadow, Run 7 N1D) and re-drawn with
+// the tint.w=0 sentinel that triggers the prim FS shadow-bypass path
+// (flat dark output, no lighting).
+//
+// Parallel-prep / serial-draw split (X1E pattern, phase 287): each
+// shadow PrimPush is built in parallel into a pre-sized scratch
+// vector; the draw pass remains serial because Vulkan command-buffer
+// recording is not thread-safe per buffer (ADR-015).
+//
+// The MeshFor template lets the helper accept main()'s `mesh_for`
+// lambda without dragging the GpuMesh registry into a public header.
+template <typename MeshFor>
+inline void draw_planar_shadows(cd::rhi::ICommandBuffer& cmd,
+                                const SunLight& sun,
+                                float floor_y,
+                                float shadow_lift,
+                                const std::vector<SceneEntity>& entities,
+                                const cd::scene::Scene& scene,
+                                const cd::math::Mat4f& vp,
+                                cd::material::Material& prim_material,
+                                cd::core::CounterTable& counters,
+                                const MeshFor& mesh_for)
+{
+    // Skip when sun is disabled or pointing upward.
+    if (!(sun.strength > 1e-4F && sun.dir.y < -1e-3F))
+        return;
+    const auto S = make_planar_shadow_matrix(sun.dir, floor_y, shadow_lift);
+    PrimPush sp {};
+    // Shadow tint: tint.w < 0.5 triggers shader bypass; rgb is the shadow
+    // color (linear, post-tonemap output).
+    sp.tint[0] = 0.04F;
+    sp.tint[1] = 0.04F;
+    sp.tint[2] = 0.05F;
+    sp.tint[3] = 0.0F;
+    // Zero out lighting fields - shadow path doesn't read them but keep the
+    // push deterministic for SPIR-V validators.
+    sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
+    sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
+    sp.fx_params[0] = sp.fx_params[1] = sp.fx_params[2] = sp.fx_params[3] = 0.0F;
+    sp.fx_params2[0] = sp.fx_params2[1] = sp.fx_params2[2] = sp.fx_params2[3] = 0.0F;
+    sp.fx_params3[0] = sp.fx_params3[1] = sp.fx_params3[2] = sp.fx_params3[3] = 0.0F;
+    sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
+    sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
+
+    std::vector<PrimPush> plan_push(entities.size());
+    std::vector<std::uint8_t> plan_valid(entities.size(), 0u);
+    cd::concurrency::parallel_for(
+        std::size_t { 0 },
+        entities.size(),
+        [&](std::size_t i)
+        {
+            const auto& ent = entities[i];
+            const auto& mesh = mesh_for(ent.kind);
+            if (!mesh.vb.is_valid())
+                return;
+            auto* lt = scene.local(ent.handle);
+            if (lt == nullptr)
+                return;
+            const auto model = cd::math::to_mat4(lt->value);
+            const auto shadow_model = S * model;
+            PrimPush& dst = plan_push[i];
+            dst = sp;
+            dst.mvp = vp * shadow_model;
+            dst.model = shadow_model;
+            plan_valid[i] = 1u;
+        }
+    );
+    for (std::size_t i = 0; i < entities.size(); ++i)
+    {
+        if (plan_valid[i] == 0u)
+            continue;
+        const auto& ent = entities[i];
+        const auto& mesh = mesh_for(ent.kind);
+        cmd.bind_vertex_buffer(0, mesh.vb, 0);
+        cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+        cmd.push_constants(
+            prim_material.pipeline_layout(),
+            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            0,
+            sizeof(PrimPush),
+            &plan_push[i]
+        );
+        cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+        counters.increment("draws_shadow");
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6265,85 +6355,8 @@ int main()
         }
 
         // ---- Planar projective shadows (Faz 1.5) ----
-        // For each caster (ECS entities + 5?-5 PBR sphere grid), build a
-        // shadow projection matrix that flattens the geometry onto the
-        // floor plane along the sun direction, then redraw with the
-        // tint.w sentinel that triggers the shader's shadow-bypass
-        // (flat dark output, no lighting). Hard shadows - soft shadows
-        // need alpha blending in MaterialDesc (Faz 1.6 / future work).
-        // Skips when sun is disabled or pointing upward.
-        if (sun.strength > 1e-4F && sun.dir.y < -1e-3F)
-        {
-            const auto S = make_planar_shadow_matrix(sun.dir, kFloorY, kShadowLift);
-            PrimPush sp {};
-            // Shadow tint: tint.w < 0.5 triggers shader bypass; rgb is the
-            // shadow color (linear, post-tonemap output).
-            sp.tint[0] = 0.04F;
-            sp.tint[1] = 0.04F;
-            sp.tint[2] = 0.05F;
-            sp.tint[3] = 0.0F;
-            // Zero out lighting fields - shadow path doesn't read them
-            // but keep the push deterministic for SPIR-V validators.
-            sp.sun_dir[0] = sp.sun_dir[1] = sp.sun_dir[2] = sp.sun_dir[3] = 0.0F;
-            sp.sun_color[0] = sp.sun_color[1] = sp.sun_color[2] = sp.sun_color[3] = 0.0F;
-            sp.fx_params[0] = sp.fx_params[1] = sp.fx_params[2] = sp.fx_params[3] = 0.0F;
-            sp.fx_params2[0] = sp.fx_params2[1] = sp.fx_params2[2] = sp.fx_params2[3] = 0.0F;
-            sp.fx_params3[0] = sp.fx_params3[1] = sp.fx_params3[2] = sp.fx_params3[3] = 0.0F;
-            sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
-            sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
-
-            // X1E (phase 287): parallel planar shadow caster prep.
-            // Each entity's shadow_model + mvp is computed via
-            // parallel_for; sp stays a constant template per entity
-            // (only mvp/model vary), the draw pass uploads per-entity
-            // sp through push_constants. W8-AV: PBR sphere planar
-            // shadows re-enabled, see CSM caster comment for rationale.
-            std::vector<PrimPush> plan_push(entities.size());
-            std::vector<std::uint8_t> plan_valid(entities.size(), 0u);
-            cd::concurrency::parallel_for(
-                std::size_t { 0 },
-                entities.size(),
-                [&](std::size_t i)
-                {
-                    const auto& ent = entities[i];
-                    const auto& mesh = mesh_for(ent.kind);
-                    if (!mesh.vb.is_valid())
-                        return;
-                    auto* lt = scene.local(ent.handle);
-                    if (lt == nullptr)
-                        return;
-                    const auto model = cd::math::to_mat4(lt->value);
-                    const auto shadow_model = S * model;
-                    PrimPush& dst = plan_push[i];
-                    dst = sp;
-                    dst.mvp = vp * shadow_model;
-                    dst.model = shadow_model;
-                    plan_valid[i] = 1u;
-                }
-            );
-            for (std::size_t i = 0; i < entities.size(); ++i)
-            {
-                if (plan_valid[i] == 0u)
-                    continue;
-                const auto& ent = entities[i];
-                const auto& mesh = mesh_for(ent.kind);
-                cmd.bind_vertex_buffer(0, mesh.vb, 0);
-                cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-                cmd.push_constants(
-                    prim_material.pipeline_layout(),
-                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                    0,
-                    sizeof(PrimPush),
-                    &plan_push[i]
-                );
-                cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
-                counters.increment("draws_shadow");
-            }
-
-            // W8-AR: dedicated PBR-grid shadow caster loop REMOVED.
-            // The 16 PBR sphere entities now cast shadows through the
-            // entity-casters loop above (they're regular ECS entities).
-        }
+        draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, entities,
+                            scene, vp, prim_material, counters, mesh_for);
 
         // ---- ImGui frame ----
         ctx.new_frame();
