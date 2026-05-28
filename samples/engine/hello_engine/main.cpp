@@ -2759,18 +2759,21 @@ int main()
         bool                enabled { true };
         float               kelvin  { 6500.0F };  // mirrors light.color_kelvin
     };
+    // W8-AC: defaults — only the cyan ceiling rect-area is enabled on
+    // boot. Earlier defaults had sun + point + spot + area all enabled
+    // simultaneously; the user kept testing area light changes while
+    // the warm point/spot contribution dominated the visible result,
+    // so every area-light fix looked like a no-op even when it
+    // worked. Forcing area-only on boot makes the area calibration
+    // immediately verifiable; the user can re-check the other lights
+    // via the Lights panel.
     std::vector<LightRow> lights;
     lights.push_back({ "Sun (cool 6500K)",
-        // B06: sun direction tilted forward so default camera view
-        // (eye=(0,2.5,8) looking at (0,0.5,0), facing -Z) places the
-        // sun's screen-projection inside the viewport - light shafts
-        // visible without first having to orbit the camera. Sun comes
-        // from upper-left-back, light ray goes down-right-toward-cam.
         cd::light::directional({ -0.35F, -0.65F, -0.7F }, { 1, 1, 1 }, 100000.0F),
-        true, 6500.0F });
+        false, 6500.0F });
     lights.push_back({ "Tungsten point (2700K)",
         cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
-        true, 2700.0F });
+        false, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
         // W8-I: spot pulled CLOSER to the sphere grid + bumped lumens.
         // W8-H placement (0, 5, 4) was camera-side (good for hitting
@@ -2783,7 +2786,7 @@ int main()
         // dir = (0, -0.316, -0.949) (normalised).
         cd::light::spot({ 0.0F, 5.0F, 0.0F }, { 0.0F, -0.316F, -0.949F },
                         { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
-        true, 3200.0F });
+        false, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
         // W8-Z: default to a CEILING PANEL (normal pointing straight
         // down) so the floor is in the +N hemisphere and gets lit out
@@ -2804,7 +2807,7 @@ int main()
     lights.push_back({ "Magenta HDR neon (25000K)",
         cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
                              4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
-        true, 25000.0F });
+        false, 25000.0F });
         // W8-AB: magenta neon lumens 25000 -> 6000. The 25000 lm value
         // was chosen during W5-B when the area multiplier was 0.20 —
         // visible peak under that calibration. After W8-AB unified
