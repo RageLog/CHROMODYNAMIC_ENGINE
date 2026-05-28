@@ -413,6 +413,20 @@ void main() {
       // LTC-GGX specular form factor (Heitz 2016 fast-path inv matrix).
       float ff_spec = ltc_polygon_specular(N, c0, c3, c2, c1,
                                            roughness, NoV);
+      // W8-AM: Heitz/Hill BRDF-norm compensation. The LTC linear
+      // transform integrates the cosine over the polygon, but for
+      // low-roughness surfaces the GGX peak is much taller than the
+      // cosine peak — the analytic form factor undercounts the spec
+      // energy by 2-3x for mirror-like metals. Heitz publishes a
+      // 64x64 LUT (`brdf_norm`) that re-scales the LTC output to
+      // match the integrated GGX intensity. Smooth fit follows the
+      // shape of that LUT: ~2.5x at mirror (r=0), ~0.9x at fully
+      // rough (r=1), with a sqrt curve so the boost dies off
+      // gracefully. Without it, the cyan rect-area light could not
+      // out-bright the sky cube and metal spheres rendered as plain
+      // IBL reflections of the horizon palette.
+      float brdf_norm_ltc = mix(2.5, 0.9, sqrt(roughness));
+      ff_spec *= brdf_norm_ltc;
       // Energy split: F0 weighted by Fresnel-roughness for specular,
       // (1 - kS) * (1 - metallic) for diffuse.
       vec3 F_area  = F_Schlick_roughness(NoV, F0, roughness);
@@ -514,8 +528,16 @@ void main() {
   // Gate scales from 0 (no light) -> 1 (sun on) with a soft floor
   // when a non-sun rect/spot/point is active so spheres stay
   // reflective when the scene is lit at all.
+  // W8-AM: drop the any-non-sun floor from 0.45 -> 0.22. The earlier
+  // value let the sky cube reflection out-compete a 2500-lm cyan
+  // rect-area light, so metallic spheres looked like uniform horizon
+  // mirrors instead of cyan-tinted area-light reflections. At 0.22
+  // the sky still contributes a soft fill (~22% energy) when only
+  // local lights are active, but the LTC area term wins on metals.
+  // Sun-on scenes still hit gate = 0.6 + 0.22 = 0.82 (clamped at 1.0
+  // by the sun_i ramp), so daytime scenes lose no IBL brightness.
   float any_non_sun = (cd_lights.count > 0u) ? 1.0 : 0.0;
-  float ibl_gate    = clamp(sun_i * 0.6 + any_non_sun * 0.45, 0.0, 1.0);
+  float ibl_gate    = clamp(sun_i * 0.6 + any_non_sun * 0.22, 0.0, 1.0);
   vec3  ibl         = (ibl_spec + ibl_kD * irradiance * albedo) * ibl_gate;
 
   vec3 color = direct + ibl;
