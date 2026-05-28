@@ -5377,67 +5377,81 @@ int main()
             counters.increment("draws_prim");
         }
 
-        for (const auto& ent : entities)
+        // X1D (phase 286): parallel ECS PrimPush prep. The push-
+        // constant struct + valid flag is built per entity into a
+        // pre-sized scratch vector via cd::concurrency::parallel_for
+        // (write-by-index, no push_back), then the serial draw pass
+        // binds mesh + records push_constants + draw_indexed.
+        // Vulkan cmd buffer recording isn't thread-safe per buffer
+        // (ADR-015 / Vulkan spec 5.1) so submission stays serial; the
+        // win is the prep phase parallelizes and the scaling story
+        // unlocks when entity count grows past the worker count.
+        std::vector<PrimPush>     ent_push_scratch(entities.size());
+        std::vector<std::uint8_t> ent_push_valid(entities.size(), 0u);
+        cd::concurrency::parallel_for(
+            std::size_t { 0 }, entities.size(),
+            [&](std::size_t i)
+            {
+                const auto& ent = entities[i];
+                const auto& mesh = mesh_for(ent.kind);
+                if (!mesh.vb.is_valid()) return;
+                auto* lt = scene.local(ent.handle);
+                if (lt == nullptr) return;
+                const auto model = cd::math::to_mat4(lt->value);
+                const auto mvp   = vp * model;
+                PrimPush& pp = ent_push_scratch[i];
+                pp.mvp = mvp;
+                pp.model = model;
+                // W8-AR sentinel routing (see pre-X1D comment for the
+                // full rationale): tint.w==3.0 routes through Cook-
+                // Torrance, 1.0 stays on the standard Lambert + textured
+                // path.
+                pp.tint[0] = ent.tint.x; pp.tint[1] = ent.tint.y; pp.tint[2] = ent.tint.z;
+                pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
+                pp.sun_dir[0] = sun_dir.x; pp.sun_dir[1] = sun_dir.y;
+                pp.sun_dir[2] = sun_dir.z; pp.sun_dir[3] = sun_str;
+                pp.sun_color[0] = sun_col.x; pp.sun_color[1] = sun_col.y;
+                pp.sun_color[2] = sun_col.z; pp.sun_color[3] = ambient_w;
+                pp.fx_params[0] = static_cast<float>(tonemap_op);
+                pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
+                                ? 1.0F : 0.0F;
+                pp.fx_params[2] = fx_gtao_strength;
+                pp.fx_params[3] = fx_bloom_strength;
+                pp.fx_params2[0] = fx_smaa_strength;
+                pp.fx_params2[1] = fx_motion_blur;
+                pp.fx_params2[2] = fx_taa_amount;
+                pp.fx_params2[3] = fx_dof_strength;
+                pp.fx_params3[0] = fx_fog_density;
+                pp.fx_params3[1] = fx_aerial_perspective;
+                pp.fx_params3[2] = fx_clouds_coverage;
+                pp.fx_params3[3] = fx_light_shafts;
+                pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
+                pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
+                if (ent.is_pbr)
+                {
+                    pp.fx_params4[0] = ent.metallic;
+                    pp.fx_params4[1] = ent.roughness;
+                    pp.fx_params4[2] = 0.0F;
+                }
+                else
+                {
+                    pp.fx_params4[0] = fx_clearcoat_strength;
+                    pp.fx_params4[1] = fx_sheen_strength;
+                    pp.fx_params4[2] = fx_sss_strength;
+                }
+                pp.fx_params4[3] = static_cast<float>(fx_view_mode);
+                ent_push_valid[i] = 1u;
+            });
+        for (std::size_t i = 0; i < entities.size(); ++i)
         {
+            if (ent_push_valid[i] == 0u) continue;
+            const auto& ent  = entities[i];
             const auto& mesh = mesh_for(ent.kind);
-            if (!mesh.vb.is_valid()) continue;
             cmd.bind_vertex_buffer(0, mesh.vb, 0);
             cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-            auto* lt = scene.local(ent.handle);
-            if (lt == nullptr) continue;
-            const auto model = cd::math::to_mat4(lt->value);
-            const auto mvp = vp * model;
-            PrimPush pp {};
-            pp.mvp = mvp;
-            pp.model = model;
-            // W8-AR: PBR-sphere entities use tint.w==3.0 sentinel so the
-            // shader routes them through the Cook-Torrance + GGX + Karis
-            // IBL branch. fx_params4.x/y overloaded to metallic/roughness
-            // for that branch (clearcoat/sheen never apply to PBR demo
-            // spheres). All other entities keep tint.w=1.0 and the
-            // standard Lambert + cd_lights + textured/vertex-colour path.
-            pp.tint[0] = ent.tint.x; pp.tint[1] = ent.tint.y; pp.tint[2] = ent.tint.z;
-            pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
-            pp.sun_dir[0] = sun_dir.x; pp.sun_dir[1] = sun_dir.y;
-            pp.sun_dir[2] = sun_dir.z; pp.sun_dir[3] = sun_str;
-            pp.sun_color[0] = sun_col.x; pp.sun_color[1] = sun_col.y;
-            pp.sun_color[2] = sun_col.z; pp.sun_color[3] = ambient_w;
-            pp.fx_params[0] = static_cast<float>(tonemap_op);
-            // fx_params.y = 1.0 routes the FS through the baseColor
-            // texture path (binding 4). Only kGltf entities are
-            // actually textured today - primitives stay on the
-            // vertex-coloured albedo path. PBR entities don't sample
-            // the texture either (they read albedo from pc.tint).
-            pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture)
-                            ? 1.0F : 0.0F;
-            pp.fx_params[2] = fx_gtao_strength;
-            pp.fx_params[3] = fx_bloom_strength;
-            pp.fx_params2[0] = fx_smaa_strength;
-            pp.fx_params2[1] = fx_motion_blur;
-            pp.fx_params2[2] = fx_taa_amount;
-            pp.fx_params2[3] = fx_dof_strength;
-            pp.fx_params3[0] = fx_fog_density;
-            pp.fx_params3[1] = fx_aerial_perspective;
-            pp.fx_params3[2] = fx_clouds_coverage;
-            pp.fx_params3[3] = fx_light_shafts;
-            pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
-            pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
-            if (ent.is_pbr)
-            {
-                pp.fx_params4[0] = ent.metallic;
-                pp.fx_params4[1] = ent.roughness;
-                pp.fx_params4[2] = 0.0F;
-            }
-            else
-            {
-                pp.fx_params4[0] = fx_clearcoat_strength;
-                pp.fx_params4[1] = fx_sheen_strength;
-                pp.fx_params4[2] = fx_sss_strength;
-            }
-            pp.fx_params4[3] = static_cast<float>(fx_view_mode);
             cmd.push_constants(prim_material.pipeline_layout(),
                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                               0, sizeof(pp), &pp);
+                               0, sizeof(PrimPush), &ent_push_scratch[i]);
             cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
             counters.increment("draws_prim");
         }

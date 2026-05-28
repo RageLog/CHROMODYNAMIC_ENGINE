@@ -7,6 +7,8 @@
 #include <cd/concurrency/SpinLock.hpp>
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -851,5 +853,118 @@ TEST(ParallelFor, TlasInstanceBuildPattern_MatchesSerial)
             ASSERT_FLOAT_EQ(par_mat[i].albedo[k], ref_mat[i].albedo[k])
                 << "mat " << i << " channel " << k;
         }
+    }
+}
+
+// ============================================================================
+// X1D integration pattern test (phase 286 / W8-X1D):
+// Mirrors the hello_engine ECS draw loop PrimPush prep:
+//   pre-sized scratch vector + ParallelFor index-write + valid flag,
+//   serial pass consumes the scratch for cmd recording. Assert per-byte
+//   identity vs the pre-X1D serial reference so the GPU sees the same
+//   push-constant payload regardless of prep strategy.
+// ============================================================================
+TEST(ParallelFor, PrimPushPrepPattern_MatchesSerial)
+{
+    struct FakePush
+    {
+        float mvp[16] {};
+        float model[16] {};
+        float tint[4] {};
+        float sun_dir[4] {};
+        float sun_color[4] {};
+        float fx_params[4] {};
+        float fx_params2[4] {};
+        float fx_params3[4] {};
+        float camera_pos[4] {};
+        float fx_params4[4] {};
+    };
+    static_assert(sizeof(FakePush) == 256, "FakePush layout drift");
+
+    struct FakeEnt
+    {
+        float    tint[3] {};
+        bool     is_pbr  { false };
+        float    metallic { 0.0F };
+        float    roughness { 0.0F };
+        bool     valid    { true };
+    };
+
+    constexpr std::size_t kN = 4096;
+    std::vector<FakeEnt> ents(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        ents[i].tint[0]   = static_cast<float>(i % 7)  * 0.1F;
+        ents[i].tint[1]   = static_cast<float>(i % 11) * 0.05F;
+        ents[i].tint[2]   = static_cast<float>(i % 13) * 0.02F;
+        ents[i].is_pbr    = (i % 3) == 0;
+        ents[i].metallic  = ents[i].is_pbr ? static_cast<float>(i % 5) * 0.2F : 0.0F;
+        ents[i].roughness = ents[i].is_pbr ? static_cast<float>(i % 7) * 0.14F : 0.0F;
+        ents[i].valid     = (i % 17) != 5;  // ~6% invalid slots
+    }
+
+    const float sun_str = 1.5F;
+    const float sun_x = 0.3F, sun_y = -0.7F, sun_z = 0.2F;
+
+    auto build = [&](std::size_t i, FakePush& pp)
+    {
+        const auto& e = ents[i];
+        pp.tint[0] = e.tint[0];
+        pp.tint[1] = e.tint[1];
+        pp.tint[2] = e.tint[2];
+        pp.tint[3] = e.is_pbr ? 3.0F : 1.0F;
+        pp.sun_dir[0] = sun_x;
+        pp.sun_dir[1] = sun_y;
+        pp.sun_dir[2] = sun_z;
+        pp.sun_dir[3] = sun_str;
+        // mvp / model encoded deterministically so any reorder is caught.
+        for (std::size_t k = 0; k < 16; ++k)
+        {
+            pp.mvp[k]   = static_cast<float>((i + k * 7) % 19);
+            pp.model[k] = static_cast<float>((i + k * 11) % 23);
+        }
+        if (e.is_pbr)
+        {
+            pp.fx_params4[0] = e.metallic;
+            pp.fx_params4[1] = e.roughness;
+        }
+    };
+
+    // --- Serial reference (pre-X1D path) ---
+    std::vector<FakePush> ref_push;
+    ref_push.reserve(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        if (!ents[i].valid) continue;
+        FakePush pp {};
+        build(i, pp);
+        ref_push.push_back(pp);
+    }
+
+    // --- Parallel build (X1D path) ---
+    std::vector<FakePush>     scratch(kN);
+    std::vector<std::uint8_t> valid(kN, 0U);
+    cd::concurrency::parallel_for(
+        std::size_t { 0 }, kN,
+        [&](std::size_t i)
+        {
+            if (!ents[i].valid) return;
+            build(i, scratch[i]);
+            valid[i] = 1U;
+        });
+    std::vector<FakePush> par_push;
+    par_push.reserve(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        if (valid[i] == 0U) continue;
+        par_push.push_back(scratch[i]);
+    }
+
+    ASSERT_EQ(par_push.size(), ref_push.size());
+    for (std::size_t i = 0; i < ref_push.size(); ++i)
+    {
+        // memcmp catches any byte-level divergence (mvp, model, tint, ...).
+        ASSERT_EQ(std::memcmp(&par_push[i], &ref_push[i], sizeof(FakePush)), 0)
+            << "entity " << i << " push-constant bytes diverged";
     }
 }
