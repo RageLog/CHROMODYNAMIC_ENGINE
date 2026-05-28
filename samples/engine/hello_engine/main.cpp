@@ -471,6 +471,26 @@ float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
           gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
 }
 
+// W8-BA RT scene reflection probe. Casts a closest-hit ray along the
+// reflection direction. Returns 1.0 if the ray hit scene geometry
+// within tmax (chrome would mirror that object) and 0.0 on miss
+// (chrome shows the sky cube). We use OpaqueEXT but NOT
+// TerminateOnFirstHit so the result is consistent regardless of
+// BLAS walk order. tmin matches ray_visibility to avoid self-hit on
+// merged meshes (CesiumMan, GLB samples).
+float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(
+      rq, cd_tlas,
+      gl_RayFlagsOpaqueEXT,
+      0xFFu,
+      origin + N * 0.05,
+      0.08, dir, tmax);
+  while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
+  return (rayQueryGetIntersectionTypeEXT(rq, true) ==
+          gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
+}
+
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
 // occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
 // uv has y down (matches Vulkan clip y after perspective divide).
@@ -741,9 +761,38 @@ void main() {
     vec3  F_ibl   = F_Schlick_roughness_pbr(NoVpbr, F0pbr, pbr_rough);
     vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - pbr_metal);
     vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y));
-    float any_non_sun_p = (cd_lights.count > 0u) ? 1.0 : 0.0;
-    float ibl_gate_p    = clamp(pc.sun_dir.w * 0.6 + any_non_sun_p * 0.30, 0.0, 1.0);
-    vec3  ibl_term_p    = (ibl_spec_p + ibl_kD * diff_e * pbr_albedo) * ibl_gate_p;
+
+    // W8-AZ: env-spec gate is now PURELY sun-driven. The previous
+    // any_non_sun*0.30 floor caused chrome spheres to keep showing
+    // sky reflections in sun-off scenes lit only by area / point
+    // lights -- the "olmayan gunes ve gokyuzu yansiyor" bug. Sky
+    // comes from the sun-baked cubemap; if there is no sun, there
+    // is no sky to reflect. Area / point lights still light the
+    // surface through the direct lit_pbr accumulator above.
+    float ibl_gate_p = clamp(pc.sun_dir.w, 0.0, 1.0);
+
+    // W8-BA: RT scene reflection probe. Cast a ray along the spec
+    // reflection direction Ripbr. On miss (sky), keep the full IBL
+    // spec sample. On hit (another scene object blocks the sky),
+    // attenuate the sky contribution so chrome darkens where the
+    // character / cube / cylinder / etc. occludes the sky. This is
+    // the cheap Option A proxy -- it produces correct GEOMETRIC
+    // occlusion (silhouettes of nearby objects in the chrome) but
+    // not yet colored reflections. Option B (per-instance albedo
+    // SSBO + colored hit shading) is queued for W8-BB once the
+    // ray path is validated visually.
+    //
+    // Roughness modulation: rough surfaces blur reflection toward
+    // the unoccluded IBL, so we lerp the occlusion factor toward
+    // 1.0 as roughness rises. Pure mirror (rough=0.04) gets the
+    // full occlusion; rough=1.0 gets none.
+    float rough_blur  = clamp(pbr_rough * pbr_rough, 0.0, 1.0);
+    float scene_hit   = reflection_hit(v_world_pos, Npbr, Ripbr, 80.0);
+    float occl_sharp  = 1.0 - scene_hit;     // 1=sky, 0=blocked
+    float occl_blend  = mix(occl_sharp, 1.0, rough_blur);
+    vec3  ibl_spec_occ = ibl_spec_p * occl_blend;
+
+    vec3  ibl_term_p = (ibl_spec_occ + ibl_kD * diff_e * pbr_albedo) * ibl_gate_p;
 
     out_color = vec4(lit_pbr + ibl_term_p, 1.0);
     return;
