@@ -236,6 +236,55 @@ Pratik revizyon (N4 sirasinda kararlasti): HelloEngineFrame aggregate Run 8 N2Z 
 - cd::editor::gizmo: translate/rotate/scale axis gizmo - editor UI consumer geldikten sonra.
 - cd::ui::editor_ui: ImGui dockspace + menu bar + toolbar scaffold - second consumer trigger.
 
+### Marathon Run 10 N5+N6+N7+N8 close-out (W8 phase313-319)
+
+Yeni hedef: main() body <500 - Run 10 sonu 3829; <500 hedefi structural wall'a takildi (TLAS rebuild + command palette setup + material creation chain icin inline-tanimli tip lift + 50+ ref capture aggregate gerekiyor).
+
+Pratik revizyon (N5+N6+N7+N8 sirasinda kararlasti): FrameFeedback aggregate Run 9 N4Z tavsiye etti, fakat begin_composite_pass'in iki ref parametresi (prev_cam_basis + prev_vp_unjittered) + bir bool ref (prev_vp_valid) ile yeterince netti; PrevCamBasis sadece file-scope POD'a tasindi, ayri aggregate gereksizdi. Ayni desen yine: kucuk POD'lar (GizmoState, SunLight, HelloEngineFx, PrevCamBasis, HdrSceneFrame) tek bir mega-aggregate yerine.
+
+- N5-prep (phase313): GizmoState aggregate (14 alan: visible + GizmoMode mode + 6 drag-bookkeeping + 5 light-drag-start + 2 cross-frame) main() locallerinden anon namespace'e lift edildi. cd::editor::AxisGizmo ayri main() lokali kaldi (kendi published state surface'i var). main() body 5261 -> 5247 (-14).
+- N5 (phase314): Phase 152 gizmo overlay update_and_draw_gizmo(gizmo, gizmo_state, pending_pick, selected, selected_kind, entities, lights, scene, history, log_push, vp, cam, window, frame.extent) helper'ina cikarildi. Run 9+10 marathonunun en buyuk tek extracti (~690 satir body). Imza 13 parametre ile genis ama callsite tek satir. main() body 5247 -> 4542 (-705).
+- N6A (phase315): R3 phase 227 velocity G-Buffer pass velocity_gbuffer_pass<MeshFor> helper'ina cikarildi (~104 satir body). main() body 4542 -> 4443 (-99).
+- N6B (phase316): R3 bloom chain run_bloom_chain helper'ina cikarildi (~123 satir body, ic run_bloom_pass lambda dahil). W4 visual baseline korundu (1.10 threshold + 0.50 knee, radius/intensity 1.0). main() body 4443 -> 4323 (-120).
+- N6C (phase317): Composite + frame-feedback snapshot begin_composite_pass helper'ina cikarildi (~285 satir body). TAA history ping-pong barriers + CompositePush fill (tonemap + AO + DOF + light shafts + atmospheric fog + camera basis for SSR + prev-cam motion blur) + prev_cam_basis/prev_vp snapshot. Helper render pass'i ACAR ama KAPATMAZ - caller ImGui'yi ayni pass icinde cizip sonra cmd.end_render_pass() cagiriyor. PrevCamBasis struct lift dahil. main() body 4323 -> 4043 (-280).
+- N7 (phase318): R3 HDR + 3 G-Buffer (normal/albedo/MR) + depth render pass open + Halton(2,3) jitter VP math begin_hdr_scene_pass helper'ina cikarildi (~95 satir body). HdrSceneFrame POD geri donduruyor (vp + vp_unjittered + aspect). main() body 4043 -> 3946 (-97).
+- N8 (phase319): Floor quad + ECS entity primitives row (X1D parallel-prep + serial-draw) draw_floor_and_entities<MeshFor> helper'ina cikarildi (~124 satir body). kFloorY constant caller'da kalir cunku planar shadow pass de gerek duyuyor. main() body 3946 -> 3829 (-117).
+
+**Run 10 sonuc:**
+- main.cpp: 7707 -> 7854 (+147; 9 yeni anon-namespace helper + GizmoState + PrevCamBasis + HdrSceneFrame POD + GizmoMode enum).
+- **main() body: 5261 -> 3829 (-1432, 27.2% azalma)**.
+- 9 yeni anon-namespace helper: update_and_draw_gizmo, velocity_gbuffer_pass<>, run_bloom_chain, begin_composite_pass, begin_hdr_scene_pass, draw_floor_and_entities<>, + 3 POD/enum.
+- Yeni library promotion yok (henuz second consumer yok).
+- Tests 96/96 PASS her checkpoint'te.
+- Engine boots clean (her commit sonrasi smoke launch dogruandi). Renderer davranisi degismedi (visual baseline korundu).
+
+**Combined Run 9 + Run 10 sonuc (Double Marathon):**
+- main.cpp: 7811 -> 7854 (+43 toplam; 16 yeni anon-namespace helper + 5 POD + 1 enum + 1 sample-local header).
+- **main() body: 5938 -> 3829 (-2109, 35.5% azalma combined)**.
+- 16 yeni anon-namespace helper toplamda: draw_r_showcase_panel, upload_multi_light_ubo, resolve_sun_light, fill_prim_push_shared, draw_sky_pass, draw_planar_shadows<>, draw_shadow_map_pass<>, update_and_draw_gizmo, velocity_gbuffer_pass<>, run_bloom_chain, begin_composite_pass, begin_hdr_scene_pass, draw_floor_and_entities<>.
+- 1 yeni sample-local header (HelloEngineFx.hpp).
+- Tests 96/96 PASS her checkpoint'te (combined 16 commits).
+- Engine boots clean tum sub-phase'lerde.
+
+**Ship edilmedi (Run 11 territory) - structural wall:**
+- Command palette setup (~846 satir, line ~5753): 52 register_command lambda'si herbiri [&] capture-list ile main()-locallarini yakaliyor. Tek helper'a cikarmak icin tum captures'i state aggregate'ine lift gerekiyor (~50 ref bundle). Bu Run 11 N10-prep + N10.
+- Per-frame TLAS rebuild (~182 satir, line ~7371): SkinnedRuntime + DeferredTlas struct lift gerekiyor (su anda main()-inline). N9-prep + N9.
+- Material creation chain (boot, ~430 satir line ~3923): prim + velocity + shadow + sky + composite + 7 bloom material'leri art arda yaratiyor; her birinin MaterialDesc fill + create + error check var. Yine inline-tanimli formats/bindings/attrs sabit'leri lift gerek.
+- glTF auto-load (~245 satir) + glTF baseColor (~250 satir): asset_streamer / asset_gltf API'leri ile entegrasyon, kucuk parca degil tek 500-satir block.
+
+**Run 11 onerilen oncelik sirasi:**
+1. **N9-prep**: SkinnedRuntime + DeferredTlas struct'larini main()-scope'tan anon namespace'e lift et.
+2. **N9**: TLAS rebuild + depth ring barrier rebuild_tlas_and_transition_depth<BlasForKind> helper'ina cikar (~180 satir).
+3. **N10-prep**: cd_sample::SampleAppState aggregate tanit (palette + history + log + entities + lights + scene + selected/_kind + camera + audio_state + net_state + streamer_state). Bu Run 9'da kacindigimiz HelloEngineFrame'in motive olmus hali - command palette'in 52 ref'i bunu zorunlu kiliyor.
+4. **N10**: Command palette setup register_commands(palette, app_state) helper'ina cikar (~846 satir).
+5. **N11**: Material creation chain spawn_materials(device, compiler, kPrimBindings, ...) -> MaterialBundle helper'ina cikar (~430 satir).
+6. Hedef: main() body 3829 -> <500.
+
+**Library promotion candidates (refreshed)**:
+- cd::sample_framework: hello_engine bootstrap (Vulkan device + window + swapchain + dockspace + IBL bake + material creation) - Run 11 N11 sonrasi when MaterialBundle abstraction is settled.
+- cd::editor::command_palette_registry: SampleAppState referansi alan register_commands templated callable kabul eden helper - Run 11 N10 sonrasi.
+- cd::editor::gizmo (zaten kismen var, AxisGizmo): update_and_draw_gizmo signature stabilise olunca ECS-light dual-mode varyantini kutuphaneye terfi et.
+
 ### Yeni follow-up itemler (W8 phase282/283 sonrasi)
 
 - X1-FU-A: cv -> std::atomic::wait/notify_one migration (1-2 gun, post-X3 TSan).
