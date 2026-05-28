@@ -4404,23 +4404,26 @@ int main()
         // smaller than the bounding sphere).
         const auto frustum = cd::camera::extract_frustum(vp);
         constexpr float kSphereRadius = 0.5F;
-        // 5 distinct PBR materials, one per row, with column =
-        // roughness gradient. Replaces the prior all-copper-with-
-        // metallic-gradient layout that read as a uniform cream
-        // grid because polished metal reflections share the
-        // analytical-blue sky regardless of base F0.
-        //   row 0: copper      (1.0)  metal
-        //   row 1: gold        (1.0)  metal
-        //   row 2: silver      (1.0)  metal
-        //   row 3: aluminum    (1.0)  metal
-        //   row 4: white plastic (0.0) dielectric
+        // W8-F: metallic gradient instead of all-metal-then-plastic.
+        // Pure metallic (1.0) surfaces have kD = 0 and only the narrow
+        // GGX spec lobe — under a single spot they read as "pitch
+        // black except where the half-vector lines up", which the
+        // user reads as "spot isn't lighting the spheres". A
+        // metallic-along-Y palette keeps the showcase intent (artists
+        // can compare different F0 + metallic levels) while
+        // guaranteeing 4 out of 5 rows have a visible diffuse term.
+        //   row 0: white plastic (0.00) dielectric
+        //   row 1: brushed gold  (0.40) partial metal
+        //   row 2: silver        (0.70) mostly metal
+        //   row 3: aluminum      (0.90) almost mirror
+        //   row 4: copper        (1.00) full metal
         struct PbrPalette { cd::math::Vec3f albedo; float metal; };
         static constexpr std::array<PbrPalette, kGrid> kRowPalette {{
-            { { 0.95F, 0.64F, 0.32F }, 1.0F },  // copper
-            { { 1.00F, 0.86F, 0.57F }, 1.0F },  // gold
-            { { 0.95F, 0.93F, 0.88F }, 1.0F },  // silver
-            { { 0.91F, 0.92F, 0.92F }, 1.0F },  // aluminum
-            { { 0.95F, 0.95F, 0.95F }, 0.0F },  // white plastic
+            { { 0.95F, 0.95F, 0.95F }, 0.00F },  // white plastic
+            { { 1.00F, 0.86F, 0.57F }, 0.40F },  // brushed gold
+            { { 0.95F, 0.93F, 0.88F }, 0.70F },  // silver
+            { { 0.91F, 0.92F, 0.92F }, 0.90F },  // aluminum
+            { { 0.95F, 0.64F, 0.32F }, 1.00F },  // copper
         }};
         for (int row = 0; row < kGrid; ++row)
         {
