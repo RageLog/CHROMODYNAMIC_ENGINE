@@ -147,6 +147,7 @@
 #include "PrimShader.hpp"
 #include "HelloLighting.hpp"
 #include "HelloRayQuery.hpp"
+#include "HelloPbrGrid.hpp"
 
 
 namespace
@@ -1887,66 +1888,41 @@ int main()
             entities.push_back(std::move(e));
         }
         // ---- W8-AR: 16 PBR sphere ECS entities (4x4 metallic/rough grid) ----
-        // User verdict on the W8-AQ dedicated grid: "arkdaki pbr grid kureler
-        // komple sil onlar yanlis. gunes off oluncada gorunuyor. bastan
-        // yazacagiz o kureleri. bagimsiz bir kureler degil ayni diger objeler
-        // gibi sahneye konmus cisimler yapacagiz. yine 16 tane kure ve farkli
-        // ozellikleri olacak ama sahnede bulunan ecs bagli objeler butunu
-        // olmalilar".
-        // Translation: delete the dedicated grid; the spheres must be ECS
-        // entities placed in the scene like every other object, 16 of them
-        // with varied PBR properties — part of the same ECS entity set.
-        // Implementation: each sphere is a SceneEntity with is_pbr=true.
-        // The entity render loop (~line 5170) detects is_pbr and pushes the
-        // tint.w==3.0 sentinel + metallic/roughness in fx_params4.xy, so
-        // exactly the same shader/pipeline/shadow path handles them as
-        // every other primitive. No separate grid loop, no separate
-        // material, no separate planar-shadow caster. Gradient: column =
-        // metallic (left=1 chrome to right=0 dielectric), row = roughness
-        // (top=0.04 mirror to bottom=1.0 matte).
+        // Phase 294 / Marathon Run 7 sub-N1F: spawn data + grid math
+        // moved to HelloPbrGrid.hpp (cd::hello_engine::build_pbr_demo_grid).
+        // hello_engine still owns the SceneEntity assembly because
+        // SceneEntity / PrimitiveKind are sample-local types.
+        //
+        // Background (preserved for future readers):
+        //   User verdict on the W8-AQ dedicated grid: "arkdaki pbr grid kureler
+        //   komple sil onlar yanlis. gunes off oluncada gorunuyor. bastan
+        //   yazacagiz o kureleri ... ayni diger objeler gibi sahneye konmus
+        //   cisimler yapacagiz. yine 16 tane kure ve farkli ozellikleri olacak
+        //   ama sahnede bulunan ecs bagli objeler butunu olmalilar".
+        //   Translation: delete the dedicated grid; the spheres must be ECS
+        //   entities placed in the scene like every other object, 16 of them
+        //   with varied PBR properties — part of the same ECS entity set.
+        //   Implementation: each sphere is a SceneEntity with is_pbr=true.
+        //   The entity render loop detects is_pbr and pushes the tint.w==3.0
+        //   sentinel + metallic/roughness in fx_params4.xy, so exactly the
+        //   same shader/pipeline/shadow path handles them as every other
+        //   primitive. No separate grid loop, no separate material, no
+        //   separate planar-shadow caster. Gradient: column = metallic
+        //   (left=1 chrome → right=0 dielectric), row = roughness
+        //   (top=0.04 mirror → bottom=1.0 matte).
+        for (const auto& slot : cd::hello_engine::build_pbr_demo_grid())
         {
-            constexpr int kPbrCols = 4;
-            constexpr int kPbrRows = 4;
-            // W8-AV: altitude reset. W8-AS pushed the grid up to y=5.75
-            // for visibility, but at that height the planar shadow
-            // projection (and shadow-map texel projection at low sun
-            // angles) stretched into the screen-wide black streaks the
-            // user reported. With kSpacing 0.85 and y_base 0.5, the
-            // grid sits between y=0.5 and y=3.05 — still visible as a
-            // discrete material showcase, but shadows stay normal-sized
-            // (comparable to character + procedural row shadows).
-            // W8-AX bump: user still wants bigger ("kureler hala boyutu
-            // kucuk kalmis"). 0.55 → 0.80 scale (diameter 1.6). Spacing
-            // 1.15 → 1.70 (≥ diameter + 0.1 gap). y_base 0.65 → 0.95 so
-            // the 0.80 radius bottom sphere clears the floor. Top centre
-            // y = 0.95 + 3*1.70 = 6.05 — slightly above the W8-AS streak
-            // threshold (5.75) but visual scale + presence > shadow
-            // length tradeoff; user can move grid via gizmo if needed.
-            constexpr float kPbrSpacing = 1.70F;
-            constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
-            for (int row = 0; row < kPbrRows; ++row)
-            {
-                for (int col = 0; col < kPbrCols; ++col)
-                {
-                    SceneEntity e;
-                    e.handle = scene.create_node();
-                    e.name = std::string { "PBR " } + "M" + std::to_string(col) + "R" + std::to_string(row);
-                    e.kind = PrimitiveKind::kSphere;
-                    e.tint = kChromeAlbedo;
-                    e.is_pbr = true;
-                    e.metallic = 1.0F - static_cast<float>(col) / static_cast<float>(kPbrCols - 1);
-                    e.roughness = 0.04F + (1.0F - 0.04F) * (static_cast<float>(row) / static_cast<float>(kPbrRows - 1));
-                    const float x = (static_cast<float>(col) - (static_cast<float>(kPbrCols - 1) * 0.5F)) * kPbrSpacing;
-                    // W8-AX: y_base 0.65 → 0.95 so 0.80-radius bottom sphere clears floor.
-                    const float y = 0.95F + static_cast<float>(row) * kPbrSpacing;
-                    const float z = -4.5F;  // W8-AX: push back so the bigger grid still fits in the default camera FOV.
-                    scene.local(e.handle)->value.position = { x, y, z };
-                    // W8-AX: 0.55 → 0.80 (diameter 1.6, comparable to
-                    // procedural cube/cone size).
-                    scene.local(e.handle)->value.scale = { 0.80F, 0.80F, 0.80F };
-                    entities.push_back(std::move(e));
-                }
-            }
+            SceneEntity e;
+            e.handle = scene.create_node();
+            e.name = slot.name;
+            e.kind = PrimitiveKind::kSphere;
+            e.tint = slot.tint;
+            e.is_pbr = true;
+            e.metallic = slot.metallic;
+            e.roughness = slot.roughness;
+            scene.local(e.handle)->value.position = slot.position;
+            scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
+            entities.push_back(std::move(e));
         }
     }
     log_push(
