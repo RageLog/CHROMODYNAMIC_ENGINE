@@ -149,6 +149,7 @@
 #include "HelloLighting.hpp"
 #include "HelloRayQuery.hpp"
 #include "HelloPbrGrid.hpp"
+#include "HelloEngineFx.hpp"
 
 
 namespace
@@ -3632,18 +3633,20 @@ int main()
     bool palette_visible = false;
     std::string palette_query;
     // FX state - runtime-tweakable, pushed into PrimPush::fx_params
-    // each draw. tonemap_op: 0=Narkowicz, 1=Hill, 2=Hable, 3=AGX.
+    // each draw. fx.tonemap_op: 0=Narkowicz, 1=Hill, 2=Hable, 3=AGX.
     // Default = Hable (Uncharted 2). AGX desaturates the LDR-range
     // shading the sample produces; Hable preserves tints on the
     // front primitives + back metallic spheres. AGX still wins on
     // HDR-heavy frames - switch via palette ('Tonemap: AGX').
-    int tonemap_op = 2;  // 0=Narkowicz 1=Hill 2=Hable 3=AGX 4=HDR10 PQ
+    cd_sample::HelloEngineFx fx {};
+    // Defaults documented in HelloEngineFx.hpp (Hable tonemap, 0.55 AO,
+    // 0.75 light shafts — matches Marathon Run 5..8 visual baseline).
     palette.register_command(
         70,
         "Tonemap: AGX (Sobotka 2022)",
         [&]
         {
-            tonemap_op = 3;
+            fx.tonemap_op = 3;
             log_push("[fx] tonemap = AGX");
         }
     );
@@ -3652,7 +3655,7 @@ int main()
         "Tonemap: Hill ACES (Filament fit)",
         [&]
         {
-            tonemap_op = 1;
+            fx.tonemap_op = 1;
             log_push("[fx] tonemap = Hill ACES");
         }
     );
@@ -3661,7 +3664,7 @@ int main()
         "Tonemap: Hable / Uncharted 2",
         [&]
         {
-            tonemap_op = 2;
+            fx.tonemap_op = 2;
             log_push("[fx] tonemap = Hable");
         }
     );
@@ -3670,7 +3673,7 @@ int main()
         "Tonemap: Narkowicz ACES",
         [&]
         {
-            tonemap_op = 0;
+            fx.tonemap_op = 0;
             log_push("[fx] tonemap = Narkowicz");
         }
     );
@@ -3679,7 +3682,7 @@ int main()
         "Tonemap: HDR10 PQ (ST.2084, Rec.2020)",
         [&]
         {
-            tonemap_op = 4;
+            fx.tonemap_op = 4;
             log_push("[fx] tonemap = HDR10 PQ (use only on HDR display)");
         }
     );
@@ -3698,25 +3701,10 @@ int main()
     cd::post_motion_blur::Settings fx_mblur {};
     cd::post_taa::Settings fx_taa {};
     cd::post_smaa::Settings fx_smaa {};
-    float fx_gtao_strength = 0.0F;  // 0 = off
-    float fx_bloom_strength = 0.0F;
-    float fx_smaa_strength = 0.0F;
-    float fx_motion_blur = 0.0F;         // LIVE: composite camera-velocity (phase 215)
-    float fx_taa_amount = 0.0F;          // LIVE: composite TAA ping-pong (phase 216-217)
-    float fx_dof_strength = 0.0F;        // wired to composite (phase207)
-    float fx_vignette_strength = 0.25F;  // soft default - readable cinematic edge
-    float fx_film_grain = 0.0F;          // 0 = off; 0.5 = visible filmic noise
-    float fx_chromab_strength = 0.0F;    // 0 = off; 0.5 = subtle radial RGB split
     // Composite tonemap/HDR knobs - own the entire post-fx settle here.
-    float fx_exposure = 3.0F;           // pre-tonemap exposure boost
-    float fx_saturation_boost = 1.50F;  // post-tonemap saturation pull-away
-    float fx_bloom_post = 0.04F;        // bloom mip0 contribution mixed into HDR
-    float fx_ao_strength = 0.55F;       // composite AO crease darkening
     // W4-E: bumped default 0.35 -> 0.75 so light shafts are obviously
     // visible on first run. User reported they were hard to read at the
     // previous default.
-    float fx_shafts_strength = 0.75F;  // light shafts radial intensity
-    float fx_ssr_strength = 0.5F;      // SSR reflection contribution (default on)
 
     // Previous-frame camera basis snapshot - populated AFTER each
     // composite invoke so the next frame's reprojection sees t-1.
@@ -3743,11 +3731,6 @@ int main()
     // ping-pongs which one it reads vs writes per frame.
     std::array<cd::rhi::ResourceState, 2> history_states { cd::rhi::ResourceState::kUndefined,
                                                            cd::rhi::ResourceState::kUndefined };
-    bool fx_hdr10_request = false;  // queued for swapchain-output rework
-    float fx_fog_density = 0.0F;
-    float fx_aerial_perspective = 0.0F;
-    float fx_clouds_coverage = 0.0F;  // queued - needs 3D Worley/Perlin noise tex
-    float fx_light_shafts = 0.0F;     // LIVE in composite (phase 208) - legacy var kept
     cd::atmosphere::Parameters fx_atmosphere {};
     cd::light_shafts::Settings fx_lshafts {};
     cd::volumetric_clouds::Settings fx_clouds {};
@@ -3759,23 +3742,16 @@ int main()
     // Advanced BRDF wire-in (queued for v1.7 material-system rework).
     // Settings live here so the editor UI can attach immediately when
     // the dispatch lands. Each toggle logs queue status.
-    float fx_ltc_ggx_strength = 0.0F;
-    float fx_sheen_strength = 0.0F;
-    float fx_clearcoat_strength = 0.0F;
-    float fx_sss_strength = 0.0F;
     // Debug view modes: 0 final, 1 albedo, 2 world normal, 3 MR map,
     // 4 AO, 5 normal-mapped surface normal, 6 vertex UVs.
-    int fx_view_mode = 0;
-    float fx_decal_count = 0.0F;         // count placeholder
-    float fx_particle_emit_rate = 0.0F;  // /sec placeholder
     palette.register_command(
         100,
         "BRDF: Toggle LTC-GGX area-light specular (queued v1.7)",
         [&]
         {
-            fx_ltc_ggx_strength = (fx_ltc_ggx_strength > 0.001F) ? 0.0F : 1.0F;
+            fx.ltc_ggx_strength = (fx.ltc_ggx_strength > 0.001F) ? 0.0F : 1.0F;
             log_push(
-                fx_ltc_ggx_strength > 0.001F ? "[brdf] LTC-GGX queued (v1.7 material rework)" : "[brdf] LTC-GGX off"
+                fx.ltc_ggx_strength > 0.001F ? "[brdf] LTC-GGX queued (v1.7 material rework)" : "[brdf] LTC-GGX off"
             );
         }
     );
@@ -3784,8 +3760,8 @@ int main()
         "BRDF: Toggle Sheen (queued v1.7)",
         [&]
         {
-            fx_sheen_strength = (fx_sheen_strength > 0.001F) ? 0.0F : 0.5F;
-            log_push(fx_sheen_strength > 0.001F ? "[brdf] Sheen queued (v1.7 material rework)" : "[brdf] Sheen off");
+            fx.sheen_strength = (fx.sheen_strength > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx.sheen_strength > 0.001F ? "[brdf] Sheen queued (v1.7 material rework)" : "[brdf] Sheen off");
         }
     );
     palette.register_command(
@@ -3793,9 +3769,9 @@ int main()
         "BRDF: Toggle Clearcoat (queued v1.7)",
         [&]
         {
-            fx_clearcoat_strength = (fx_clearcoat_strength > 0.001F) ? 0.0F : 0.6F;
+            fx.clearcoat_strength = (fx.clearcoat_strength > 0.001F) ? 0.0F : 0.6F;
             log_push(
-                fx_clearcoat_strength > 0.001F ? "[brdf] Clearcoat queued (v1.7 material rework)"
+                fx.clearcoat_strength > 0.001F ? "[brdf] Clearcoat queued (v1.7 material rework)"
                                                : "[brdf] Clearcoat off"
             );
         }
@@ -3805,8 +3781,8 @@ int main()
         "BRDF: Toggle SSS / Burley diffusion (queued v1.7)",
         [&]
         {
-            fx_sss_strength = (fx_sss_strength > 0.001F) ? 0.0F : 0.6F;
-            log_push(fx_sss_strength > 0.001F ? "[brdf] SSS queued (v1.7 needs neighbourhood pass)" : "[brdf] SSS off");
+            fx.sss_strength = (fx.sss_strength > 0.001F) ? 0.0F : 0.6F;
+            log_push(fx.sss_strength > 0.001F ? "[brdf] SSS queued (v1.7 needs neighbourhood pass)" : "[brdf] SSS off");
         }
     );
     palette.register_command(
@@ -3814,7 +3790,7 @@ int main()
         "FX: Spawn Decal (queued v1.7)",
         [&]
         {
-            fx_decal_count += 1.0F;
+            fx.decal_count += 1.0F;
             log_push("[fx] Decal queued (v1.7 needs projector volume + GBuffer)");
         }
     );
@@ -3823,19 +3799,13 @@ int main()
         "FX: Toggle GPU Particles 10k/sec (queued v1.7)",
         [&]
         {
-            fx_particle_emit_rate = (fx_particle_emit_rate > 0.001F) ? 0.0F : 10000.0F;
+            fx.particle_emit_rate = (fx.particle_emit_rate > 0.001F) ? 0.0F : 10000.0F;
             log_push(
-                fx_particle_emit_rate > 0.001F ? "[fx] GPU particles queued (v1.7 needs compute pipe)"
+                fx.particle_emit_rate > 0.001F ? "[fx] GPU particles queued (v1.7 needs compute pipe)"
                                                : "[fx] GPU particles off"
             );
         }
     );
-    (void)fx_ltc_ggx_strength;
-    (void)fx_sheen_strength;
-    (void)fx_clearcoat_strength;
-    (void)fx_sss_strength;
-    (void)fx_decal_count;
-    (void)fx_particle_emit_rate;
     // v1.5 GI wire-in (queued for v1.7 frame-graph + acceleration
     // structure dispatch). Settings + reservoirs instantiated so the
     // editor UI binds without renaming.
@@ -3847,17 +3817,13 @@ int main()
     (void)fx_restir_gi_reservoir;
     (void)fx_ddgi_grid;
     (void)fx_nrc_cfg;
-    bool fx_restir_di_on = false;
-    bool fx_restir_gi_on = false;
-    bool fx_ddgi_on = false;
-    bool fx_nrc_on = false;
     palette.register_command(
         110,
         "GI: Toggle ReSTIR DI (queued v1.7)",
         [&]
         {
-            fx_restir_di_on = !fx_restir_di_on;
-            log_push(fx_restir_di_on ? "[gi] ReSTIR DI queued (v1.7 needs RT compute pipe)" : "[gi] ReSTIR DI off");
+            fx.restir_di_on = !fx.restir_di_on;
+            log_push(fx.restir_di_on ? "[gi] ReSTIR DI queued (v1.7 needs RT compute pipe)" : "[gi] ReSTIR DI off");
         }
     );
     palette.register_command(
@@ -3865,8 +3831,8 @@ int main()
         "GI: Toggle ReSTIR GI (queued v1.7)",
         [&]
         {
-            fx_restir_gi_on = !fx_restir_gi_on;
-            log_push(fx_restir_gi_on ? "[gi] ReSTIR GI queued (v1.7 needs RT compute pipe)" : "[gi] ReSTIR GI off");
+            fx.restir_gi_on = !fx.restir_gi_on;
+            log_push(fx.restir_gi_on ? "[gi] ReSTIR GI queued (v1.7 needs RT compute pipe)" : "[gi] ReSTIR GI off");
         }
     );
     palette.register_command(
@@ -3874,8 +3840,8 @@ int main()
         "GI: Toggle DDGI probe update (queued v1.7)",
         [&]
         {
-            fx_ddgi_on = !fx_ddgi_on;
-            log_push(fx_ddgi_on ? "[gi] DDGI queued (v1.7 needs probe-volume RT)" : "[gi] DDGI off");
+            fx.ddgi_on = !fx.ddgi_on;
+            log_push(fx.ddgi_on ? "[gi] DDGI queued (v1.7 needs probe-volume RT)" : "[gi] DDGI off");
         }
     );
     palette.register_command(
@@ -3883,8 +3849,8 @@ int main()
         "GI: Toggle NRC (TinyCudaNN backend, queued v1.7)",
         [&]
         {
-            fx_nrc_on = !fx_nrc_on;
-            log_push(fx_nrc_on ? "[gi] NRC queued (v1.7 needs CUDA inference path)" : "[gi] NRC off");
+            fx.nrc_on = !fx.nrc_on;
+            log_push(fx.nrc_on ? "[gi] NRC queued (v1.7 needs CUDA inference path)" : "[gi] NRC off");
         }
     );
     palette.register_command(
@@ -3937,17 +3903,13 @@ int main()
             log_push("[v2.0] see docs/PRODUCTION_V20_PLAN.md");
         }
     );
-    (void)fx_restir_di_on;
-    (void)fx_restir_gi_on;
-    (void)fx_ddgi_on;
-    (void)fx_nrc_on;
     palette.register_command(
         80,
         "FX: Toggle GTAO (inline approx)",
         [&]
         {
-            fx_gtao_strength = (fx_gtao_strength > 0.001F) ? 0.0F : 0.65F;
-            log_push(fx_gtao_strength > 0.001F ? "[fx] GTAO on" : "[fx] GTAO off");
+            fx.gtao_strength = (fx.gtao_strength > 0.001F) ? 0.0F : 0.65F;
+            log_push(fx.gtao_strength > 0.001F ? "[fx] GTAO on" : "[fx] GTAO off");
         }
     );
     palette.register_command(
@@ -3955,8 +3917,8 @@ int main()
         "FX: Toggle Bloom (inline approx)",
         [&]
         {
-            fx_bloom_strength = (fx_bloom_strength > 0.001F) ? 0.0F : 0.55F;
-            log_push(fx_bloom_strength > 0.001F ? "[fx] Bloom on" : "[fx] Bloom off");
+            fx.bloom_strength = (fx.bloom_strength > 0.001F) ? 0.0F : 0.55F;
+            log_push(fx.bloom_strength > 0.001F ? "[fx] Bloom on" : "[fx] Bloom off");
         }
     );
     palette.register_command(
@@ -3984,8 +3946,8 @@ int main()
         "FX: Toggle SMAA (inline luma-edge blur)",
         [&]
         {
-            fx_smaa_strength = (fx_smaa_strength > 0.001F) ? 0.0F : 0.55F;
-            log_push(fx_smaa_strength > 0.001F ? "[fx] SMAA on" : "[fx] SMAA off");
+            fx.smaa_strength = (fx.smaa_strength > 0.001F) ? 0.0F : 0.55F;
+            log_push(fx.smaa_strength > 0.001F ? "[fx] SMAA on" : "[fx] SMAA off");
         }
     );
     palette.register_command(
@@ -3993,9 +3955,9 @@ int main()
         "FX: Toggle Motion Blur",
         [&]
         {
-            fx_motion_blur = (fx_motion_blur > 0.001F) ? 0.0F : 0.5F;
+            fx.motion_blur = (fx.motion_blur > 0.001F) ? 0.0F : 0.5F;
             log_push(
-                fx_motion_blur > 0.001F ? "[fx] MotionBlur on (composite camera-velocity)" : "[fx] MotionBlur off"
+                fx.motion_blur > 0.001F ? "[fx] MotionBlur on (composite camera-velocity)" : "[fx] MotionBlur off"
             );
         }
     );
@@ -4004,8 +3966,8 @@ int main()
         "FX: Toggle TAA",
         [&]
         {
-            fx_taa_amount = (fx_taa_amount > 0.001F) ? 0.0F : 0.85F;
-            log_push(fx_taa_amount > 0.001F ? "[fx] TAA on (history + Halton jitter)" : "[fx] TAA off");
+            fx.taa_amount = (fx.taa_amount > 0.001F) ? 0.0F : 0.85F;
+            log_push(fx.taa_amount > 0.001F ? "[fx] TAA on (history + Halton jitter)" : "[fx] TAA off");
         }
     );
     palette.register_command(
@@ -4013,8 +3975,8 @@ int main()
         "FX: Toggle DOF",
         [&]
         {
-            fx_dof_strength = (fx_dof_strength > 0.001F) ? 0.0F : 0.5F;
-            log_push(fx_dof_strength > 0.001F ? "[fx] DOF on (composite bokeh)" : "[fx] DOF off");
+            fx.dof_strength = (fx.dof_strength > 0.001F) ? 0.0F : 0.5F;
+            log_push(fx.dof_strength > 0.001F ? "[fx] DOF on (composite bokeh)" : "[fx] DOF off");
         }
     );
     palette.register_command(
@@ -4022,8 +3984,8 @@ int main()
         "FX: Toggle HDR10 (queued)",
         [&]
         {
-            fx_hdr10_request = !fx_hdr10_request;
-            log_push(fx_hdr10_request ? "[fx] HDR10 request queued (swapchain rework)" : "[fx] HDR10 off");
+            fx.hdr10_request = !fx.hdr10_request;
+            log_push(fx.hdr10_request ? "[fx] HDR10 request queued (swapchain rework)" : "[fx] HDR10 off");
         }
     );
     palette.register_command(
@@ -4031,8 +3993,8 @@ int main()
         "FX: Toggle Height Fog (inline exp)",
         [&]
         {
-            fx_fog_density = (fx_fog_density > 0.001F) ? 0.0F : 0.6F;
-            log_push(fx_fog_density > 0.001F ? "[fx] Height fog on" : "[fx] Height fog off");
+            fx.fog_density = (fx.fog_density > 0.001F) ? 0.0F : 0.6F;
+            log_push(fx.fog_density > 0.001F ? "[fx] Height fog on" : "[fx] Height fog off");
         }
     );
     palette.register_command(
@@ -4040,8 +4002,8 @@ int main()
         "FX: Toggle Aerial Perspective (inline)",
         [&]
         {
-            fx_aerial_perspective = (fx_aerial_perspective > 0.001F) ? 0.0F : 0.7F;
-            log_push(fx_aerial_perspective > 0.001F ? "[fx] Aerial perspective on" : "[fx] Aerial perspective off");
+            fx.aerial_perspective = (fx.aerial_perspective > 0.001F) ? 0.0F : 0.7F;
+            log_push(fx.aerial_perspective > 0.001F ? "[fx] Aerial perspective on" : "[fx] Aerial perspective off");
         }
     );
     palette.register_command(
@@ -4049,8 +4011,8 @@ int main()
         "FX: Toggle Clouds",
         [&]
         {
-            fx_clouds_coverage = (fx_clouds_coverage > 0.001F) ? 0.0F : 0.55F;
-            log_push(fx_clouds_coverage > 0.001F ? "[fx] Clouds on (composite fBm sky overlay)" : "[fx] Clouds off");
+            fx.clouds_coverage = (fx.clouds_coverage > 0.001F) ? 0.0F : 0.55F;
+            log_push(fx.clouds_coverage > 0.001F ? "[fx] Clouds on (composite fBm sky overlay)" : "[fx] Clouds off");
         }
     );
     palette.register_command(
@@ -4058,9 +4020,9 @@ int main()
         "FX: Toggle Light Shafts",
         [&]
         {
-            fx_shafts_strength = (fx_shafts_strength > 0.001F) ? 0.0F : 0.5F;
+            fx.shafts_strength = (fx.shafts_strength > 0.001F) ? 0.0F : 0.5F;
             log_push(
-                fx_shafts_strength > 0.001F ? "[fx] Light shafts on (Mitchell 2007 god rays)" : "[fx] Light shafts off"
+                fx.shafts_strength > 0.001F ? "[fx] Light shafts on (Mitchell 2007 god rays)" : "[fx] Light shafts off"
             );
         }
     );
@@ -5755,7 +5717,7 @@ int main()
         // - only active when TAA is dialled in. cd::post_taa owns the
         // Halton sequence; we just gate it on the TAA strength dial.
         const cd::math::Vec2f jitter_px =
-            (fx_taa_amount > 0.001F) ? cd::post_taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
+            (fx.taa_amount > 0.001F) ? cd::post_taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
         const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(frame.extent.width);
         const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(frame.extent.height);
 
@@ -5948,27 +5910,27 @@ int main()
             fp.sun_color[1] = sun_col.y;
             fp.sun_color[2] = sun_col.z;
             fp.sun_color[3] = ambient_w;
-            fp.fx_params[0] = static_cast<float>(tonemap_op);
+            fp.fx_params[0] = static_cast<float>(fx.tonemap_op);
             fp.fx_params[1] = 0.0F;
             // Floor opts out of GTAO crease darkening - its normal is
             // flat so dFdx/dFdy returns zero, but bloom on bright grid
             // lines is a nice subtle highlight.
             fp.fx_params[2] = 0.0F;
-            fp.fx_params[3] = fx_bloom_strength;
-            fp.fx_params2[0] = fx_smaa_strength;
-            fp.fx_params2[1] = fx_motion_blur;
-            fp.fx_params2[2] = fx_taa_amount;
-            fp.fx_params2[3] = fx_dof_strength;
-            fp.fx_params3[0] = fx_fog_density;
-            fp.fx_params3[1] = fx_aerial_perspective;
-            fp.fx_params3[2] = fx_clouds_coverage;
-            fp.fx_params3[3] = fx_light_shafts;
+            fp.fx_params[3] = fx.bloom_strength;
+            fp.fx_params2[0] = fx.smaa_strength;
+            fp.fx_params2[1] = fx.motion_blur;
+            fp.fx_params2[2] = fx.taa_amount;
+            fp.fx_params2[3] = fx.dof_strength;
+            fp.fx_params3[0] = fx.fog_density;
+            fp.fx_params3[1] = fx.aerial_perspective;
+            fp.fx_params3[2] = fx.clouds_coverage;
+            fp.fx_params3[3] = fx.light_shafts;
             fp.camera_pos[0] = cam.eye.x;
             fp.camera_pos[1] = cam.eye.y;
             fp.camera_pos[2] = cam.eye.z;
             fp.camera_pos[3] = 0.0F;
             fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
-            fp.fx_params4[3] = static_cast<float>(fx_view_mode);
+            fp.fx_params4[3] = static_cast<float>(fx.view_mode);
             cmd.push_constants(
                 prim_material.pipeline_layout(),
                 cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
@@ -6024,18 +5986,18 @@ int main()
                 pp.sun_color[1] = sun_col.y;
                 pp.sun_color[2] = sun_col.z;
                 pp.sun_color[3] = ambient_w;
-                pp.fx_params[0] = static_cast<float>(tonemap_op);
+                pp.fx_params[0] = static_cast<float>(fx.tonemap_op);
                 pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture) ? 1.0F : 0.0F;
-                pp.fx_params[2] = fx_gtao_strength;
-                pp.fx_params[3] = fx_bloom_strength;
-                pp.fx_params2[0] = fx_smaa_strength;
-                pp.fx_params2[1] = fx_motion_blur;
-                pp.fx_params2[2] = fx_taa_amount;
-                pp.fx_params2[3] = fx_dof_strength;
-                pp.fx_params3[0] = fx_fog_density;
-                pp.fx_params3[1] = fx_aerial_perspective;
-                pp.fx_params3[2] = fx_clouds_coverage;
-                pp.fx_params3[3] = fx_light_shafts;
+                pp.fx_params[2] = fx.gtao_strength;
+                pp.fx_params[3] = fx.bloom_strength;
+                pp.fx_params2[0] = fx.smaa_strength;
+                pp.fx_params2[1] = fx.motion_blur;
+                pp.fx_params2[2] = fx.taa_amount;
+                pp.fx_params2[3] = fx.dof_strength;
+                pp.fx_params3[0] = fx.fog_density;
+                pp.fx_params3[1] = fx.aerial_perspective;
+                pp.fx_params3[2] = fx.clouds_coverage;
+                pp.fx_params3[3] = fx.light_shafts;
                 pp.camera_pos[0] = cam.eye.x;
                 pp.camera_pos[1] = cam.eye.y;
                 pp.camera_pos[2] = cam.eye.z;
@@ -6048,11 +6010,11 @@ int main()
                 }
                 else
                 {
-                    pp.fx_params4[0] = fx_clearcoat_strength;
-                    pp.fx_params4[1] = fx_sheen_strength;
-                    pp.fx_params4[2] = fx_sss_strength;
+                    pp.fx_params4[0] = fx.clearcoat_strength;
+                    pp.fx_params4[1] = fx.sheen_strength;
+                    pp.fx_params4[2] = fx.sss_strength;
                 }
-                pp.fx_params4[3] = static_cast<float>(fx_view_mode);
+                pp.fx_params4[3] = static_cast<float>(fx.view_mode);
                 ent_push_valid[i] = 1u;
             }
         );
@@ -6244,8 +6206,8 @@ int main()
                                      "AO",    "Perturbed normal", "UVs" };
             for (int i = 0; i < 7; ++i)
             {
-                if (ImGui::RadioButton(labels[i], fx_view_mode == i))
-                    fx_view_mode = i;
+                if (ImGui::RadioButton(labels[i], fx.view_mode == i))
+                    fx.view_mode = i;
             }
         }
         // Sun direction controller - drives the directional light + IBL
@@ -6282,26 +6244,26 @@ int main()
         }
         if (ImGui::CollapsingHeader("R6  Advanced BRDFs"))
         {
-            ImGui::SliderFloat("Clearcoat", &fx_clearcoat_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Sheen", &fx_sheen_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("SSS (Burley)", &fx_sss_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Clearcoat", &fx.clearcoat_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Sheen", &fx.sheen_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("SSS (Burley)", &fx.sss_strength, 0.0F, 1.0F);
         }
         if (ImGui::CollapsingHeader("R7  Camera composition"))
         {
-            ImGui::SliderFloat("Vignette", &fx_vignette_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("ChromAberration", &fx_chromab_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Film grain", &fx_film_grain, 0.0F, 1.0F);
+            ImGui::SliderFloat("Vignette", &fx.vignette_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("ChromAberration", &fx.chromab_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Film grain", &fx.film_grain, 0.0F, 1.0F);
         }
         if (ImGui::CollapsingHeader("R4-FX  Inline scene post-fx (legacy)"))
         {
             ImGui::TextDisabled("DEPRECATED - composite owns the real versions.");
             ImGui::TextDisabled("Sliders disabled. Use R3 Composite post-fx panel.");
             ImGui::BeginDisabled();
-            ImGui::SliderFloat("GTAO inline", &fx_gtao_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Bloom inline", &fx_bloom_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("SMAA inline", &fx_smaa_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Height fog", &fx_fog_density, 0.0F, 1.0F);
-            ImGui::SliderFloat("Aerial persp", &fx_aerial_perspective, 0.0F, 1.0F);
+            ImGui::SliderFloat("GTAO inline", &fx.gtao_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Bloom inline", &fx.bloom_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("SMAA inline", &fx.smaa_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Height fog", &fx.fog_density, 0.0F, 1.0F);
+            ImGui::SliderFloat("Aerial persp", &fx.aerial_perspective, 0.0F, 1.0F);
             ImGui::EndDisabled();
         }
         if (ImGui::CollapsingHeader("R3  Composite post-fx (live)", ImGuiTreeNodeFlags_DefaultOpen))
@@ -6311,90 +6273,90 @@ int main()
             // setups so the user doesn't have to remember every default.
             if (ImGui::Button("Defaults"))
             {
-                fx_exposure = 3.0F;
-                fx_saturation_boost = 1.50F;
-                fx_bloom_post = 0.04F;
-                fx_ao_strength = 0.55F;
-                fx_dof_strength = 0.0F;
-                fx_shafts_strength = 0.75F;
-                fx_ssr_strength = 0.5F;
-                fx_motion_blur = 0.0F;
-                fx_taa_amount = 0.0F;
-                fx_clouds_coverage = 0.0F;
-                fx_fog_density = 0.0F;
-                fx_aerial_perspective = 0.0F;
-                fx_chromab_strength = 0.0F;
-                fx_film_grain = 0.0F;
-                fx_vignette_strength = 0.25F;
+                fx.exposure = 3.0F;
+                fx.saturation_boost = 1.50F;
+                fx.bloom_post = 0.04F;
+                fx.ao_strength = 0.55F;
+                fx.dof_strength = 0.0F;
+                fx.shafts_strength = 0.75F;
+                fx.ssr_strength = 0.5F;
+                fx.motion_blur = 0.0F;
+                fx.taa_amount = 0.0F;
+                fx.clouds_coverage = 0.0F;
+                fx.fog_density = 0.0F;
+                fx.aerial_perspective = 0.0F;
+                fx.chromab_strength = 0.0F;
+                fx.film_grain = 0.0F;
+                fx.vignette_strength = 0.25F;
                 log_push("[fx] Reset all composite knobs to defaults");
             }
             ImGui::SameLine();
             if (ImGui::Button("Cinematic"))
             {
-                fx_exposure = 2.5F;
-                fx_saturation_boost = 1.65F;
-                fx_bloom_post = 0.08F;
-                fx_ao_strength = 0.65F;
-                fx_dof_strength = 0.35F;
-                fx_shafts_strength = 0.85F;
-                fx_ssr_strength = 0.55F;
-                fx_motion_blur = 0.30F;
-                fx_taa_amount = 0.80F;
-                fx_clouds_coverage = 0.45F;
-                fx_fog_density = 0.20F;
-                fx_aerial_perspective = 0.50F;
-                fx_chromab_strength = 0.25F;
-                fx_film_grain = 0.15F;
-                fx_vignette_strength = 0.40F;
-                tonemap_op = 2;  // Hable
+                fx.exposure = 2.5F;
+                fx.saturation_boost = 1.65F;
+                fx.bloom_post = 0.08F;
+                fx.ao_strength = 0.65F;
+                fx.dof_strength = 0.35F;
+                fx.shafts_strength = 0.85F;
+                fx.ssr_strength = 0.55F;
+                fx.motion_blur = 0.30F;
+                fx.taa_amount = 0.80F;
+                fx.clouds_coverage = 0.45F;
+                fx.fog_density = 0.20F;
+                fx.aerial_perspective = 0.50F;
+                fx.chromab_strength = 0.25F;
+                fx.film_grain = 0.15F;
+                fx.vignette_strength = 0.40F;
+                fx.tonemap_op = 2;  // Hable
                 log_push("[fx] Cinematic preset");
             }
             ImGui::SameLine();
             if (ImGui::Button("Performance"))
             {
-                fx_exposure = 1.5F;
-                fx_saturation_boost = 1.20F;
-                fx_bloom_post = 0.0F;
-                fx_ao_strength = 0.0F;
-                fx_dof_strength = 0.0F;
-                fx_shafts_strength = 0.0F;
-                fx_ssr_strength = 0.0F;
-                fx_motion_blur = 0.0F;
-                fx_taa_amount = 0.0F;
-                fx_clouds_coverage = 0.0F;
-                fx_fog_density = 0.0F;
-                fx_aerial_perspective = 0.0F;
-                fx_chromab_strength = 0.0F;
-                fx_film_grain = 0.0F;
-                fx_vignette_strength = 0.0F;
-                tonemap_op = 0;  // Narkowicz (cheapest)
+                fx.exposure = 1.5F;
+                fx.saturation_boost = 1.20F;
+                fx.bloom_post = 0.0F;
+                fx.ao_strength = 0.0F;
+                fx.dof_strength = 0.0F;
+                fx.shafts_strength = 0.0F;
+                fx.ssr_strength = 0.0F;
+                fx.motion_blur = 0.0F;
+                fx.taa_amount = 0.0F;
+                fx.clouds_coverage = 0.0F;
+                fx.fog_density = 0.0F;
+                fx.aerial_perspective = 0.0F;
+                fx.chromab_strength = 0.0F;
+                fx.film_grain = 0.0F;
+                fx.vignette_strength = 0.0F;
+                fx.tonemap_op = 0;  // Narkowicz (cheapest)
                 log_push("[fx] Performance preset (all post-fx off)");
             }
             ImGui::SameLine();
             if (ImGui::Button("HDR Demo"))
             {
-                fx_exposure = 1.0F;
-                fx_saturation_boost = 1.40F;
-                fx_bloom_post = 0.12F;
-                fx_ao_strength = 0.55F;
-                fx_shafts_strength = 0.90F;
-                fx_clouds_coverage = 0.30F;
-                fx_fog_density = 0.0F;
-                fx_chromab_strength = 0.15F;
-                fx_vignette_strength = 0.30F;
-                tonemap_op = 3;  // AGX — best for wide DR
+                fx.exposure = 1.0F;
+                fx.saturation_boost = 1.40F;
+                fx.bloom_post = 0.12F;
+                fx.ao_strength = 0.55F;
+                fx.shafts_strength = 0.90F;
+                fx.clouds_coverage = 0.30F;
+                fx.fog_density = 0.0F;
+                fx.chromab_strength = 0.15F;
+                fx.vignette_strength = 0.30F;
+                fx.tonemap_op = 3;  // AGX — best for wide DR
                 log_push("[fx] HDR demo preset (AGX tonemap + wide DR)");
             }
-            ImGui::SliderFloat("Exposure", &fx_exposure, 0.1F, 10.0F);
-            ImGui::SliderFloat("Saturation boost", &fx_saturation_boost, 0.5F, 2.5F);
-            ImGui::SliderFloat("Bloom strength", &fx_bloom_post, 0.0F, 0.30F);
-            ImGui::SliderFloat("AO strength", &fx_ao_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("DOF strength", &fx_dof_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Light shafts", &fx_shafts_strength, 0.0F, 1.5F);
-            ImGui::SliderFloat("SSR strength", &fx_ssr_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Motion blur", &fx_motion_blur, 0.0F, 1.0F);
-            ImGui::SliderFloat("TAA amount", &fx_taa_amount, 0.0F, 0.97F);
-            ImGui::SliderFloat("Clouds coverage", &fx_clouds_coverage, 0.0F, 1.0F);
+            ImGui::SliderFloat("Exposure", &fx.exposure, 0.1F, 10.0F);
+            ImGui::SliderFloat("Saturation boost", &fx.saturation_boost, 0.5F, 2.5F);
+            ImGui::SliderFloat("Bloom strength", &fx.bloom_post, 0.0F, 0.30F);
+            ImGui::SliderFloat("AO strength", &fx.ao_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("DOF strength", &fx.dof_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Light shafts", &fx.shafts_strength, 0.0F, 1.5F);
+            ImGui::SliderFloat("SSR strength", &fx.ssr_strength, 0.0F, 1.0F);
+            ImGui::SliderFloat("Motion blur", &fx.motion_blur, 0.0F, 1.0F);
+            ImGui::SliderFloat("TAA amount", &fx.taa_amount, 0.0F, 0.97F);
+            ImGui::SliderFloat("Clouds coverage", &fx.clouds_coverage, 0.0F, 1.0F);
             ImGui::TextDisabled("TAA: camera-velocity reprojection + 3x3 neighbourhood clamp");
         }
         if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
@@ -6430,7 +6392,7 @@ int main()
         }
         if (ImGui::CollapsingHeader("R8  HDR10 display output"))
         {
-            ImGui::Checkbox("HDR10 request (composite op 4 ready; needs HDR display)", &fx_hdr10_request);
+            ImGui::Checkbox("HDR10 request (composite op 4 ready; needs HDR display)", &fx.hdr10_request);
             ImGui::TextDisabled("Tonemap operator 4 = ST.2084 PQ encode (Rec.2020).");
             ImGui::TextDisabled("Swapchain colour-space already exposed via");
             ImGui::TextDisabled("rhi::ColorSpace::kHdr10St2084; activate by setting");
@@ -7493,11 +7455,11 @@ int main()
         composite_material.apply(cmd);
         composite_insts[read_idx].bind(cmd, 0);
         CompositePush cp {};
-        cp.fx[0] = static_cast<float>(tonemap_op);
-        cp.fx[1] = fx_exposure;
-        cp.fx[2] = fx_saturation_boost;
-        cp.fx[3] = fx_bloom_post;
-        cp.ao[0] = fx_ao_strength;
+        cp.fx[0] = static_cast<float>(fx.tonemap_op);
+        cp.fx[1] = fx.exposure;
+        cp.fx[2] = fx.saturation_boost;
+        cp.fx[3] = fx.bloom_post;
+        cp.ao[0] = fx.ao_strength;
         // B05: 4 px was nearly invisible at 1600?900. Bumped to 20 px
         // so the crease darkening reads at typical viewport sizes.
         cp.ao[1] = 20.0F;
@@ -7508,7 +7470,7 @@ int main()
         const float focus_dist = cd::math::length(
             cd::math::Vec3f { cam.eye.x - cam.target.x, cam.eye.y - cam.target.y, cam.eye.z - cam.target.z }
         );
-        cp.dof[0] = fx_dof_strength;
+        cp.dof[0] = fx.dof_strength;
         cp.dof[1] = focus_dist;
         cp.dof[2] = 4.0F;  // focus range (m) - pixels within ??range stay sharp
         cp.dof[3] = 8.0F;  // max blur radius (px)
@@ -7526,7 +7488,7 @@ int main()
         cp.sun_col[0] = 0.0F;
         cp.sun_col[1] = 0.0F;
         cp.sun_col[2] = 0.0F;
-        cp.sun_col[3] = fx_clouds_coverage;
+        cp.sun_col[3] = fx.clouds_coverage;
         for (const auto& lrow : lights)
         {
             if (!lrow.enabled)
@@ -7578,7 +7540,7 @@ int main()
                 const float t = std::clamp((1.5F - ndc_max) / 1.0F, 0.0F, 1.0F);
                 edge_fade = t * t * (3.0F - 2.0F * t);
             }
-            cp.shafts[2] = fx_shafts_strength * edge_fade;
+            cp.shafts[2] = fx.shafts_strength * edge_fade;
             // W4-E: gentler decay so shafts visibly reach across the
             // frame instead of dying within ~25% of UV distance from
             // sun. Was 3.5; 1.6 keeps shafts readable at the corners.
@@ -7592,11 +7554,11 @@ int main()
         // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
         // horizon tint with distance). Reuses the existing UI sliders
         // so the composite is now the *one* home for these effects.
-        cp.atmo[0] = fx_fog_density;
-        cp.atmo[1] = fx_aerial_perspective;
-        cp.atmo[2] = fx_vignette_strength;
-        cp.atmo[3] = fx_film_grain;
-        cp.lens[0] = fx_chromab_strength;
+        cp.atmo[0] = fx.fog_density;
+        cp.atmo[1] = fx.aerial_perspective;
+        cp.atmo[2] = fx.vignette_strength;
+        cp.atmo[3] = fx.film_grain;
+        cp.lens[0] = fx.chromab_strength;
         // R5 volumetric fog single-scatter - sun direction packed here.
         // Composite uses (view ? -sun) with Henyey-Greenstein phase to
         // colour the fog along the sun ray. Use first enabled directional
@@ -7653,7 +7615,7 @@ int main()
             cp.cam_fwd[1] = fwd.y;
             // TAA alpha - first frame must blend 0 (history undefined).
             cp.cam_fwd[2] = fwd.z;
-            cp.cam_fwd[3] = (frame_idx > 0) ? fx_taa_amount : 0.0F;
+            cp.cam_fwd[3] = (frame_idx > 0) ? fx.taa_amount : 0.0F;
             cp.cam_pos[0] = cam.eye.x;
             cp.cam_pos[1] = cam.eye.y;
             // W6-B: w slot carries the composite's anim-time (seconds
@@ -7666,7 +7628,7 @@ int main()
             cp.cam_pos[3] = std::chrono::duration<float>(clock::now() - frame_loop_start).count();
         }
         // SSR - wired from the existing UI slider; defaults to 0 (off).
-        cp.ssr[0] = fx_ssr_strength;
+        cp.ssr[0] = fx.ssr_strength;
         cp.ssr[1] = 25.0F;  // max distance (m)
         cp.ssr[2] = 24.0F;  // max steps
         cp.ssr[3] = 1.5F;   // edge-fade aggressiveness
@@ -7694,7 +7656,7 @@ int main()
             cp.prev_cam_fwd[0] = pf.x;
             cp.prev_cam_fwd[1] = pf.y;
             cp.prev_cam_fwd[2] = pf.z;
-            cp.prev_cam_fwd[3] = fx_motion_blur;
+            cp.prev_cam_fwd[3] = fx.motion_blur;
             cp.prev_cam_pos[0] = pp.x;
             cp.prev_cam_pos[1] = pp.y;
             cp.prev_cam_pos[2] = pp.z;
