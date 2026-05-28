@@ -70,6 +70,7 @@ struct CdLightSlot {
   vec4 dir_type;
   vec4 color_int;
   vec4 extras;
+  vec4 tangent;  // W8-N: xyz=unit tangent (area rect local +X), w=reserved
 };
 layout(set = 0, binding = 0) uniform CdLightArray {
   // std140 packing: 'uint pad[3]' would be stride-16 (48 B) and push
@@ -380,19 +381,11 @@ void main() {
       // positive for the front hemisphere.
       vec3 to_pt_w = v_world_pos - lp;
       if (dot(to_pt_w, N_rect) <= 0.0) continue;
-      // W8-M: Frisvad 2012 robust orthonormal basis — smooth
-      // everywhere except the n.z=-1 antipole, removing the gimbal-
-      // lock flip the previous abs(N.y) > 0.95 switch produced.
-      vec3 T_rect; vec3 B_rect;
-      if (N_rect.z < -0.9999) {
-        T_rect = vec3(0.0, -1.0, 0.0);
-        B_rect = vec3(-1.0, 0.0, 0.0);
-      } else {
-        float fa = 1.0 / (1.0 + N_rect.z);
-        float fb = -N_rect.x * N_rect.y * fa;
-        T_rect = vec3(1.0 - N_rect.x * N_rect.x * fa, fb, -N_rect.x);
-        B_rect = vec3(fb, 1.0 - N_rect.y * N_rect.y * fa, -N_rect.y);
-      }
+      // W8-N: use uploaded tangent directly so the gizmo's per-axis
+      // rotation can spin the rect around its normal without the
+      // shader re-deriving the basis on every frame.
+      vec3 T_rect = normalize(cd_lights.slots[li].tangent.xyz);
+      vec3 B_rect = cross(N_rect, T_rect);
       // Corners relative to the shading point.
       vec3 c0 = lp + T_rect * (-hw) + B_rect * (-hh) - v_world_pos;
       vec3 c1 = lp + T_rect * ( hw) + B_rect * (-hh) - v_world_pos;

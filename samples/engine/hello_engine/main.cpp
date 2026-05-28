@@ -411,6 +411,7 @@ struct LightSlot {
   vec4 dir_type;    // xyz=direction or right-basis, w=type (0=Dir,1=Point,2=Spot,3=Rect,4=Disk)
   vec4 color_int;   // xyz=linear colour, w=intensity (scaled)
   vec4 extras;      // x=cos_outer, y=area_w, z=area_h, w=cos_inner
+  vec4 tangent;     // W8-N: xyz=unit tangent (area-light rect local +X), w=reserved
 };
 layout(set = 0, binding = 3) uniform LightArray {
   // std140 packing: 'uint pad[3]' would be stride-16 (48 B) and push
@@ -697,21 +698,13 @@ void main() {
       // positive for the front hemisphere.
       vec3 to_pt_w = v_world_pos - lp_pos;
       if (dot(to_pt_w, ln) <= 0.0) continue;
-      // W8-M: Frisvad 2012 robust orthonormal basis from a unit
-      // normal. The previous `abs(ln.y) > 0.95` switch produced a
-      // visible gimbal-lock-style flip in the area rectangle when
-      // the user rotated the gizmo across the threshold. Frisvad
-      // is smooth everywhere except the n.z=-1 antipole.
-      vec3 right; vec3 up_v;
-      if (ln.z < -0.9999) {
-        right = vec3(0.0, -1.0, 0.0);
-        up_v  = vec3(-1.0, 0.0, 0.0);
-      } else {
-        float fa = 1.0 / (1.0 + ln.z);
-        float fb = -ln.x * ln.y * fa;
-        right = vec3(1.0 - ln.x * ln.x * fa, fb, -ln.x);
-        up_v  = vec3(fb, 1.0 - ln.y * ln.y * fa, -ln.y);
-      }
+      // W8-N: use uploaded tangent directly. CPU stores the user-
+      // controlled area_tangent in slot.tangent.xyz so the gizmo's
+      // per-axis rotation can independently spin the rect around
+      // its own normal without the Frisvad derivation overriding
+      // the twist on every frame.
+      vec3 right = normalize(cd_lights.slots[li].tangent.xyz);
+      vec3 up_v  = cross(ln, right);
       float w = cd_lights.slots[li].extras.y * 0.5;
       float h = cd_lights.slots[li].extras.z * 0.5;
       // Corners as world-space positions, then made relative to the
@@ -1065,8 +1058,14 @@ struct LightSlotGpu
     float dir_type[4];    // xyz=direction or right-basis, w=type as float
     float color_int[4];   // xyz=colour, w=intensity (scaled, ready for FS)
     float extras[4];      // x=cos_outer, y=area_w, z=area_h, w=cos_inner
+    // W8-N: explicit tangent vec for area lights so the rect's local
+    // X axis is not derived in the shader (Frisvad produced a smooth
+    // basis but the gizmo's per-axis rotation couldn't independently
+    // control the rect's twist around its normal). Layout: xyz=unit
+    // tangent direction (world space), w=reserved.
+    float tangent[4];
 };
-static_assert(sizeof(LightSlotGpu) == 64, "LightSlotGpu must be 64 B");
+static_assert(sizeof(LightSlotGpu) == 80, "LightSlotGpu must be 80 B");
 
 struct LightUboGpu
 {
@@ -1074,7 +1073,7 @@ struct LightUboGpu
     std::uint32_t pad[3];
     LightSlotGpu  slots[8];
 };
-static_assert(sizeof(LightUboGpu) == 16 + 8 * 64, "LightUboGpu must be 528 B");
+static_assert(sizeof(LightUboGpu) == 16 + 8 * 80, "LightUboGpu must be 656 B");
 
 // Upload an RGBA8 image to a freshly-created GPU texture. Returns
 // invalid handles on failure. Lifetime: caller owns the texture +
@@ -1799,8 +1798,8 @@ int main()
     //           vec4 color_int    (xyz=linear colour, w=intensity)
     //           vec4 extras       (x=cos_outer for spot, y=area_w, z=area_h, w=cos_inner)
     constexpr std::uint32_t kMaxLights      = 8;
-    constexpr std::uint32_t kLightSlotBytes = 64;
-    constexpr std::uint32_t kLightUboBytes  = 16 + kMaxLights * kLightSlotBytes;  // 528
+    constexpr std::uint32_t kLightSlotBytes = 80;  // W8-N: added tangent vec4
+    constexpr std::uint32_t kLightUboBytes  = 16 + kMaxLights * kLightSlotBytes;  // 656
     cd::rhi::BufferDesc lights_ubo_desc {};
     lights_ubo_desc.size   = kLightUboBytes;
     lights_ubo_desc.usage  = cd::rhi::BufferUsage::kUniform;
@@ -2505,7 +2504,11 @@ int main()
     cd::math::Quatf gizmo_drag_rot_start {};                       // rotation at begin_drag
     // Light-specific drag state (gaps #16 + #17): rotation drives
     // light.direction, scale drives light.range / area_width.
-    cd::math::Vec3f light_drag_dir_start  { 0.0F, -1.0F, 0.0F };
+    cd::math::Vec3f light_drag_dir_start     { 0.0F, -1.0F, 0.0F };
+    // W8-N: capture area tangent at drag begin so the rotate gizmo
+    // can rotate BOTH direction and tangent by the same quaternion,
+    // keeping the rect's local +X axis in sync with the normal.
+    cd::math::Vec3f light_drag_tangent_start { 1.0F,  0.0F, 0.0F };
     float           light_drag_range_start { 0.0F };
     float           light_drag_area_w_start { 1.0F };
     float           light_drag_area_h_start { 1.0F };
@@ -4625,6 +4628,26 @@ int main()
                 s.extras[1] = lrow.light.area_width;
                 s.extras[2] = lrow.light.area_height;
                 s.extras[3] = lrow.light.cos_inner_cone;
+                // W8-N: explicit area tangent so the shader doesn't need
+                // to derive a basis from the normal (Frisvad worked but
+                // could not honour an artist-defined twist). cd::light's
+                // rect_area() already normalises area_tangent; for non-
+                // area lights we just write the bookkeeping vector +X
+                // (unused but keeps the UBO sane).
+                if (k == cd::light::LightType::kRectArea ||
+                    k == cd::light::LightType::kDiskArea)
+                {
+                    s.tangent[0] = lrow.light.area_tangent.x;
+                    s.tangent[1] = lrow.light.area_tangent.y;
+                    s.tangent[2] = lrow.light.area_tangent.z;
+                }
+                else
+                {
+                    s.tangent[0] = 1.0F;
+                    s.tangent[1] = 0.0F;
+                    s.tangent[2] = 0.0F;
+                }
+                s.tangent[3] = 0.0F;
                 ubo.count++;
             }
             (void)device.upload_buffer(lights_ubo, 0,
@@ -6378,10 +6401,11 @@ int main()
                             selected < static_cast<int>(lights.size()))
                         {
                             const auto& L = lights[static_cast<std::size_t>(selected)].light;
-                            light_drag_dir_start    = L.direction;
-                            light_drag_range_start  = L.range;
-                            light_drag_area_w_start = L.area_width;
-                            light_drag_area_h_start = L.area_height;
+                            light_drag_dir_start     = L.direction;
+                            light_drag_tangent_start = L.area_tangent;
+                            light_drag_range_start   = L.range;
+                            light_drag_area_w_start  = L.area_width;
+                            light_drag_area_h_start  = L.area_height;
                         }
                         // Capture the initial ray-plane axis offset
                         // so subsequent moves give delta = current -
@@ -6559,33 +6583,48 @@ int main()
                                              selected >= 0 &&
                                              selected < static_cast<int>(lights.size()))
                                     {
-                                        // gap #16: rotate-mode gizmo
-                                        // rotates a light's direction.
-                                        // Apply q to light_drag_dir_start
-                                        // (which was captured at click)
-                                        // - pure vector rotation v' =
-                                        // q * v * q^-1.
-                                        const auto v = light_drag_dir_start;
-                                        // q*(0,v) = (-q.xyz . v, q.w*v + q.xyz ?- v)
-                                        const cd::math::Vec3f t {
-                                            q.w * v.x + q.y * v.z - q.z * v.y,
-                                            q.w * v.y + q.z * v.x - q.x * v.z,
-                                            q.w * v.z + q.x * v.y - q.y * v.x };
-                                        const float tw = -(q.x * v.x + q.y * v.y + q.z * v.z);
-                                        // (result) = (q*v) * q^-1, scalar-out
-                                        // ignored, vec-out = result.
-                                        const cd::math::Vec3f rotated {
-                                            tw * -q.x + t.x * q.w + t.y * -q.z - t.z * -q.y,
-                                            tw * -q.y - t.x * -q.z + t.y * q.w + t.z * -q.x,
-                                            tw * -q.z + t.x * -q.y - t.y * -q.x + t.z * q.w };
-                                        const float L = std::sqrt(rotated.x*rotated.x +
-                                                                  rotated.y*rotated.y +
-                                                                  rotated.z*rotated.z);
-                                        if (L > 1e-5F)
-                                        {
-                                            lights[static_cast<std::size_t>(selected)].light.direction =
-                                                { rotated.x / L, rotated.y / L, rotated.z / L };
-                                        }
+                                        // gap #16: rotate-mode gizmo rotates
+                                        // a light's direction. W8-N: also
+                                        // rotates area_tangent so the rect's
+                                        // local +X (uploaded to GPU as
+                                        // slot.tangent.xyz) stays in sync —
+                                        // each gizmo axis now drives an
+                                        // independent rotation of the full
+                                        // basis instead of just the normal.
+                                        auto rotate_v = [&](cd::math::Vec3f v) {
+                                            const cd::math::Vec3f t {
+                                                q.w * v.x + q.y * v.z - q.z * v.y,
+                                                q.w * v.y + q.z * v.x - q.x * v.z,
+                                                q.w * v.z + q.x * v.y - q.y * v.x };
+                                            const float tw = -(q.x * v.x + q.y * v.y + q.z * v.z);
+                                            return cd::math::Vec3f {
+                                                tw * -q.x + t.x * q.w + t.y * -q.z - t.z * -q.y,
+                                                tw * -q.y - t.x * -q.z + t.y * q.w + t.z * -q.x,
+                                                tw * -q.z + t.x * -q.y - t.y * -q.x + t.z * q.w };
+                                        };
+                                        auto norm_v = [](cd::math::Vec3f v) {
+                                            const float l = std::sqrt(
+                                                v.x*v.x + v.y*v.y + v.z*v.z);
+                                            return (l > 1e-5F)
+                                                ? cd::math::Vec3f { v.x/l, v.y/l, v.z/l }
+                                                : v;
+                                        };
+                                        auto& Lr = lights[static_cast<std::size_t>(selected)].light;
+                                        const auto rd_dir = rotate_v(light_drag_dir_start);
+                                        Lr.direction = norm_v(rd_dir);
+                                        // Tangent rotates too (only meaningful
+                                        // for area lights; harmless for spot /
+                                        // point — direction-derived rendering
+                                        // ignores tangent there).
+                                        auto rt = rotate_v(light_drag_tangent_start);
+                                        // Re-orthogonalize tangent against new
+                                        // direction to stay perpendicular.
+                                        const auto dn = Lr.direction;
+                                        const float pr = rt.x*dn.x + rt.y*dn.y + rt.z*dn.z;
+                                        rt.x -= pr * dn.x;
+                                        rt.y -= pr * dn.y;
+                                        rt.z -= pr * dn.z;
+                                        Lr.area_tangent = norm_v(rt);
                                     }
                                     break;
                                 }
