@@ -725,7 +725,19 @@ void main() {
       vec3 c1 = lp_pos + right*w - up_v*h - v_world_pos;
       vec3 c2 = lp_pos + right*w + up_v*h - v_world_pos;
       vec3 c3 = lp_pos - right*w + up_v*h - v_world_pos;
-      float E = cd_ltc_polygon_irradiance(N, c0, c1, c2, c3);
+      // W8-AJ: pass corners in REVERSED order (c0,c3,c2,c1).
+      // The corner basis (-r,-u),(+r,-u),(+r,+u),(-r,+u) with
+      // up_v = cross(ln, right) is CCW *as viewed from -ln*
+      // (the back of the panel). Receivers culled by the
+      // dot(P-lp, ln) > 0 test live on the +ln half-space and
+      // see the polygon as CW, producing a negative LTC sum
+      // that max(s,0) clamps to zero — that's why every prior
+      // calibration step (W8-S/Y/AA/AB/AG) had no effect: E
+      // was identically 0 for the LIT side. Reversing the
+      // traversal order flips the winding without disturbing
+      // the gizmo geometry or cd::light::area_bitangent
+      // convention.
+      float E = cd_ltc_polygon_irradiance(N, c0, c3, c2, c1);
       // Visibility test from area-light centre (one ray; full
       // many-sample area shadow needs a denoiser).
       vec3 to_c   = lp_pos - v_world_pos;

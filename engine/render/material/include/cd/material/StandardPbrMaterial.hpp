@@ -400,9 +400,18 @@ void main() {
       vec3 c3 = lp + T_rect * (-hw) + B_rect * ( hh) - v_world_pos;
       vec3 area_col = cd_lights.slots[li].color_int.xyz *
                       cd_lights.slots[li].color_int.w;
-      float ff_diff = ltc_polygon_irradiance(N, c0, c1, c2, c3);
+      // W8-AJ: pass corners in REVERSED order (c0,c3,c2,c1).
+      // Corner basis (-T,-B),(+T,-B),(+T,+B),(-T,+B) with
+      // B = cross(N_rect, T_rect) is CCW as viewed from -N_rect
+      // (back of the panel). The cull keeps only +N_rect-side
+      // receivers, which see the same sequence as CW, so the
+      // raw LTC sum is negative and max(s,0) clamps the form
+      // factor to 0. Reversing the traversal order yields a
+      // CCW polygon from the lit side and unblocks both the
+      // diffuse + GGX-specular LTC contributions.
+      float ff_diff = ltc_polygon_irradiance(N, c0, c3, c2, c1);
       // LTC-GGX specular form factor (Heitz 2016 fast-path inv matrix).
-      float ff_spec = ltc_polygon_specular(N, c0, c1, c2, c3,
+      float ff_spec = ltc_polygon_specular(N, c0, c3, c2, c1,
                                            roughness, NoV);
       // Energy split: F0 weighted by Fresnel-roughness for specular,
       // (1 - kS) * (1 - metallic) for diffuse.
