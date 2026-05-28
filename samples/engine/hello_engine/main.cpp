@@ -144,6 +144,7 @@
 #include <vector>
 
 #include "PrimShader.hpp"
+#include "HelloLighting.hpp"
 
 
 namespace
@@ -278,67 +279,15 @@ using cd::post_bloom::kUpsampleFS;
 using BloomPrefilterPush = cd::post_bloom::PrefilterPush;
 using BloomUpsamplePush = cd::post_bloom::UpsamplePush;
 
-struct PrimPush
-{
-    cd::math::Mat4f mvp;
-    cd::math::Mat4f model;
-    float tint[4];
-    float sun_dir[4];
-    float sun_color[4];
-    // FX params block 1 - x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
-    //                     y=albedo_tex_flag (1=sample cd_albedo_tex)
-    //                     z=gtao_strength (inline curvature darkening)
-    //                     w=bloom_strength (post-tonemap halo boost)
-    float fx_params[4];
-    // FX params block 2 - x=smaa_strength (legacy inline FXAA blur)
-    //                     y=motion_blur_amount (LIVE in composite - phase 215)
-    //                     z=taa_amount (LIVE in composite - phase 216-217)
-    //                     w=dof_strength (LIVE in composite - phase 207)
-    float fx_params2[4];
-    // FX params block 3 - atmospherics (LIVE in composite - phase 209)
-    //                     x=fog_density (legacy inline; composite owns now)
-    //                     y=atmosphere_strength (legacy inline; composite owns)
-    //                     z=clouds_coverage (queued - needs 3D noise sampler)
-    //                     w=light_shafts_strength (LIVE in composite - phase 208)
-    float fx_params3[4];
-    // Camera origin (needed for distance fog without breaking the model
-    // matrix invariant). xyz=world camera, w=unused.
-    float camera_pos[4];
-    // R6 advanced BRDF strengths:
-    //   x=clearcoat (Filament second Schlick lobe on top of base spec)
-    //   y=sheen (Charlie velvet rim term)
-    //   z=sss (Burley wrap-diffusion approximation)
-    //   w=reserved
-    float fx_params4[4];
-};
-
-static_assert(sizeof(PrimPush) == 256, "PrimPush layout drift");
-
-// Multi-light UBO slot - matches std140 layout in the FS.
-struct LightSlotGpu
-{
-    float pos_range[4];  // xyz=world position, w=range
-    float dir_type[4];   // xyz=direction or right-basis, w=type as float
-    float color_int[4];  // xyz=colour, w=intensity (scaled, ready for FS)
-    float extras[4];     // x=cos_outer, y=area_w, z=area_h, w=cos_inner
-    // W8-N: explicit tangent vec for area lights so the rect's local
-    // X axis is not derived in the shader (Frisvad produced a smooth
-    // basis but the gizmo's per-axis rotation couldn't independently
-    // control the rect's twist around its normal). Layout: xyz=unit
-    // tangent direction (world space), w=reserved.
-    float tangent[4];
-};
-
-static_assert(sizeof(LightSlotGpu) == 80, "LightSlotGpu must be 80 B");
-
-struct LightUboGpu
-{
-    std::uint32_t count;
-    std::uint32_t pad[3];
-    LightSlotGpu slots[8];
-};
-
-static_assert(sizeof(LightUboGpu) == 16 + 8 * 80, "LightUboGpu must be 656 B");
+// =============================================================================
+// Phase 290 / Marathon Run 7 sub-N1B: PrimPush + LightSlotGpu + LightUboGpu
+// layouts + the pack_light_slot() helper live in HelloLighting.hpp. main.cpp
+// re-imports the names so existing call sites stay identical.
+// =============================================================================
+using cd::hello_engine::PrimPush;
+using cd::hello_engine::LightSlotGpu;
+using cd::hello_engine::LightUboGpu;
+using cd::hello_engine::pack_light_slot;
 
 // Upload an RGBA8 image to a freshly-created GPU texture. Returns
 // invalid handles on failure. Lifetime: caller owns the texture +
@@ -1065,7 +1014,7 @@ int main()
     //           vec4 dir_type     (xyz=dir for spot/dir / right-basis for area; w=type as float)
     //           vec4 color_int    (xyz=linear colour, w=intensity)
     //           vec4 extras       (x=cos_outer for spot, y=area_w, z=area_h, w=cos_inner)
-    constexpr std::uint32_t kMaxLights = 8;
+    constexpr std::uint32_t kMaxLights = cd::hello_engine::kMaxLights;
     constexpr std::uint32_t kLightSlotBytes = 80;                                // W8-N: added tangent vec4
     constexpr std::uint32_t kLightUboBytes = 16 + kMaxLights * kLightSlotBytes;  // 656
     cd::rhi::BufferDesc lights_ubo_desc {};
@@ -4778,119 +4727,13 @@ int main()
             {
                 if (!lrow.enabled)
                     continue;
-                const auto k = lrow.light.type;
-                if (k == cd::light::LightType::kDirectional)
-                    continue;
-                if (ubo.count >= kMaxLights)
+                if (ubo.count >= cd::hello_engine::kMaxLights)
                     break;
-                auto& s = ubo.slots[ubo.count];
-                s.pos_range[0] = lrow.light.position.x;
-                s.pos_range[1] = lrow.light.position.y;
-                s.pos_range[2] = lrow.light.position.z;
-                // Range: point/spot already have it; area lights derive
-                // a sensible falloff from area extents.
-                s.pos_range[3] = (k == cd::light::LightType::kPoint || k == cd::light::LightType::kSpot)
-                                     ? lrow.light.range
-                                     : (lrow.light.area_width + lrow.light.area_height) * 4.0F;
-                s.dir_type[0] = lrow.light.direction.x;
-                s.dir_type[1] = lrow.light.direction.y;
-                s.dir_type[2] = lrow.light.direction.z;
-                s.dir_type[3] = static_cast<float>(static_cast<int>(k));
-                s.color_int[0] = lrow.light.color.x;
-                s.color_int[1] = lrow.light.color.y;
-                s.color_int[2] = lrow.light.color.z;
-                // Lumens ??' unit intensity. Scale calibrated so a 1200
-                // lumen point at ~3 m yields a visible (~0.5..1.0)
-                // direct contribution on metallic spheres even with
-                // the sun fully off. W8-B: spot boost reduced 6x->2.5x
-                // — user's R7 image showed the 6x multiplier saturating
-                // the tonemap and spilling via bloom across the entire
-                // sphere grid even when the cone was narrow. With the
-                // correct cos_inner readout (W4-H), the cone is wider
-                // than the previous synthesised cone, so the inflation
-                // factor doesn't need to be as aggressive.
-                // W8-Y: physically grounded ki per light TYPE. Punctual
-                // (point/spot) lights carry luminous power that the LTC
-                // / inverse-square loop converts to radiance via the
-                // 1/(4 pi) sphere factor and an empirical headroom
-                // divisor that keeps a 1200 lm point from saturating the
-                // tonemap. Area lights are a Lambertian RECT emitter:
-                //   radiance L = phi / (pi * A)      [cd/m^2-equivalent]
-                //   L_o        = (albedo / pi) * L * E_ltc
-                //   shader does L_o = albedo * col * (ki * E_ltc)
-                //   => ki      = phi / (pi^2 * A)
-                // The previous "ki = phi/(8 pi) * 0.20" formula was
-                // missing the 1/(pi * A) radiance factor, which collapsed
-                // the cyan rect-area output to roughly a quarter of its
-                // physical value and made the floor + character look
-                // unlit even though the LTC math was correct. With the
-                // proper formula the same 2500 lm cyan rect now produces
-                // a visible cast on the floor (so the RT-shadow path
-                // actually has irradiance to subtract from).
-                constexpr float kInvPi = 0.31830988618F;  // 1 / pi
-                (void)kInvPi;
-                float ki = 0.0F;
-                if (k == cd::light::LightType::kRectArea || k == cd::light::LightType::kDiskArea)
-                {
-                    // Area of the emitter. Disk uses pi * (w/2)^2 if the
-                    // CPU side is dialled with width==height==diameter;
-                    // for the simple rect path we just use w * h. The
-                    // 0.70 multiplier is an empirical tonemap-headroom
-                    // dial: a 2500 lm cyan rect now produces ~0.5..0.9
-                    // floor brightness in the default Cyan-only scene
-                    // (sun off, one rect-area enabled) which matches the
-                    // user's expectation of a visible spill + shadow.
-                    const float w = std::max(lrow.light.area_width, 0.05F);
-                    const float h = std::max(lrow.light.area_height, 0.05F);
-                    const float area = w * h;
-                    // W8-AG: revert area multiplier to long-stable 0.20
-                    // (W8-T baseline). The 1.5x bump in W8-AB blew out
-                    // close geometry while still not lifting far floor
-                    // pixels above the tonemap noise floor — symptom of
-                    // unavoidable distance falloff ratio (sphere @ 1 m
-                    // vs floor @ 6 m = 36x form factor delta). Returning
-                    // to 0.20 keeps "visible without saturating" the
-                    // demo intent; user dials individual lumens via the
-                    // intensity slider when they want a specific look.
-                    (void)area;
-                    ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F * 0.20F;
-                }
-                else
-                {
-                    // Punctual (point/spot/directional fallback). Keep
-                    // the prior W8-B calibration: phi/(4 pi)/2 plus the
-                    // 2.5x spot inflation that produces a visible cone
-                    // contribution at the default 6000 lm halogen rig.
-                    // Original W8-B baseline: phi/(4 pi)/2 = phi * (1/(8 pi)).
-                    ki = lrow.light.intensity * kInvPi * 0.125F;
-                    if (k == cd::light::LightType::kSpot)
-                        ki *= 2.5F;
-                }
-                s.color_int[3] = ki;
-                s.extras[0] = lrow.light.cos_outer_cone;
-                s.extras[1] = lrow.light.area_width;
-                s.extras[2] = lrow.light.area_height;
-                s.extras[3] = lrow.light.cos_inner_cone;
-                // W8-N: explicit area tangent so the shader doesn't need
-                // to derive a basis from the normal (Frisvad worked but
-                // could not honour an artist-defined twist). cd::light's
-                // rect_area() already normalises area_tangent; for non-
-                // area lights we just write the bookkeeping vector +X
-                // (unused but keeps the UBO sane).
-                if (k == cd::light::LightType::kRectArea || k == cd::light::LightType::kDiskArea)
-                {
-                    s.tangent[0] = lrow.light.area_tangent.x;
-                    s.tangent[1] = lrow.light.area_tangent.y;
-                    s.tangent[2] = lrow.light.area_tangent.z;
-                }
-                else
-                {
-                    s.tangent[0] = 1.0F;
-                    s.tangent[1] = 0.0F;
-                    s.tangent[2] = 0.0F;
-                }
-                s.tangent[3] = 0.0F;
-                ubo.count++;
+                // pack_light_slot returns false for directional lights
+                // (sun is driven by PrimPush.sun_dir, not the multi-light UBO).
+                if (!pack_light_slot(ubo.slots[ubo.count], lrow.light))
+                    continue;
+                ++ubo.count;
             }
             (void)device.upload_buffer(
                 lights_ubo,
