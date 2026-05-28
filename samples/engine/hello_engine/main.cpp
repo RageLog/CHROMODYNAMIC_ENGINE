@@ -4833,7 +4833,6 @@ int main()
                 // a visible cast on the floor (so the RT-shadow path
                 // actually has irradiance to subtract from).
                 constexpr float kInvPi   = 0.31830988618F;   // 1 / pi
-                constexpr float kInvPiSq = 0.10132118364F;   // 1 / pi^2
                 float ki = 0.0F;
                 if (k == cd::light::LightType::kRectArea ||
                     k == cd::light::LightType::kDiskArea)
@@ -4849,7 +4848,20 @@ int main()
                     const float w     = std::max(lrow.light.area_width,  0.05F);
                     const float h     = std::max(lrow.light.area_height, 0.05F);
                     const float area  = w * h;
-                    ki = lrow.light.intensity * kInvPiSq / area * 0.70F;
+                    // W8-AA: drop one factor of 1/pi (use kInvPi not
+                    // kInvPiSq). The LTC form factor already divides by
+                    // 2*pi in `ltc_polygon_irradiance` (see
+                    // `samples/engine/hello_engine/main.cpp` GLSL or
+                    // `engine/render/material/include/cd/material/Standard
+                    // PbrMaterial.hpp`), so the radiance term feeding it
+                    // is L = phi / (pi * A), not phi / (pi^2 * A). The
+                    // extra pi in W8-Y under-darkened the scene by ~3x
+                    // and produced the "floor stays black, no shadow"
+                    // image the user kept resubmitting. Empirical
+                    // multiplier bumped 0.70 -> 2.50 so a 2500 lm rect
+                    // matches the photometric expectation of a soft
+                    // panel in a darkened room.
+                    ki = lrow.light.intensity * kInvPi / area * 2.50F;
                 }
                 else
                 {
