@@ -780,6 +780,180 @@ inline void draw_streamer_panel(cd::asset::AsyncStreamer& streamer,
 }
 
 // =============================================================================
+// Phase 299 / Marathon Run 8 sub-N2C: Scene tree + Inspector UI panels
+// extracted. Inspector is the largest single panel (drag-edit Transform with
+// EditHistory drag-release commit semantics for Position / Rotation / Scale,
+// plus material tint). The static drag-pre captures inside each
+// DragFloat3 stay function-local, preserving original lifetime.
+// =============================================================================
+
+// ---- draw_scene_tree_panel ------------------------------------------------
+inline void draw_scene_tree_panel(const std::vector<SceneEntity>& entities, int& selected)
+{
+    ImGui::Begin("Scene");
+    ImGui::Text("Entities (%zu)", entities.size());
+    ImGui::Separator();
+    for (std::size_t i = 0; i < entities.size(); ++i)
+    {
+        const bool sel = (selected == static_cast<int>(i));
+        char row[128] {};
+        std::snprintf(row, sizeof(row), "%s##e%zu", entities[i].name.c_str(), i);
+        if (ImGui::Selectable(row, sel))
+            selected = static_cast<int>(i);
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Ctrl+Shift+P = command palette");
+    ImGui::TextDisabled("Esc closes palette / quits");
+    ImGui::End();
+}
+
+// ---- draw_inspector_panel -------------------------------------------------
+inline void draw_inspector_panel(std::vector<SceneEntity>& entities,
+                                 int selected,
+                                 cd::scene::Scene& scene,
+                                 cd::editor::EditHistory& history,
+                                 const std::function<void(std::string)>& log_push)
+{
+    ImGui::Begin("Inspector");
+    if (selected >= 0 && selected < static_cast<int>(entities.size()))
+    {
+        auto& ent = entities[static_cast<std::size_t>(selected)];
+        auto* lt = scene.local(ent.handle);
+        if (lt != nullptr)
+        {
+            ImGui::Text("Entity: %s", ent.name.c_str());
+            ImGui::TextColored(ImVec4(ent.tint.x, ent.tint.y, ent.tint.z, 1.0F), "tint preview");
+            ImGui::Separator();
+
+            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.62F);
+
+            // Position
+            ImGui::SeparatorText("Position");
+            {
+                static cd::math::Vec3f pre {};
+                float xyz[3] { lt->value.position.x, lt->value.position.y, lt->value.position.z };
+                bool changed = ImGui::DragFloat3("##pos", xyz, 0.05F, -10.0F, 10.0F, "%.3f");
+                if (ImGui::IsItemActivated())
+                    pre = lt->value.position;
+                if (changed)
+                    lt->value.position = { xyz[0], xyz[1], xyz[2] };
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    cd::math::Vec3f delta { lt->value.position.x - pre.x,
+                                            lt->value.position.y - pre.y,
+                                            lt->value.position.z - pre.z };
+                    if (delta.x != 0 || delta.y != 0 || delta.z != 0)
+                    {
+                        lt->value.position = pre;
+                        history.push(std::make_unique<cd::editor::TranslateCommand>(scene, ent.handle, delta));
+                        log_push("drag: Translate " + ent.name);
+                    }
+                }
+            }
+            // Rotation (Euler XYZ in degrees). Converts to/from
+            // quaternion every frame so the underlying Transform
+            // stays canonical.
+            ImGui::SeparatorText("Rotation (deg)");
+            {
+                static cd::math::Quatf pre {};
+                const cd::math::Quatf& q = lt->value.rotation;
+                // Quat to Euler XYZ (radians) - small approximation
+                // works for inspector readout, gimbal-locked at
+                // pitch == 90 (rare for editor poses).
+                const float sinp = 2.0F * (q.w * q.x + q.y * q.z);
+                const float cosp = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
+                const float pitch = std::atan2(sinp, cosp);
+                float t2 = 2.0F * (q.w * q.y - q.z * q.x);
+                t2 = std::clamp(t2, -1.0F, 1.0F);
+                const float yaw = std::asin(t2);
+                const float siny = 2.0F * (q.w * q.z + q.x * q.y);
+                const float cosy = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
+                const float roll = std::atan2(siny, cosy);
+                constexpr float kRad2Deg = 57.2957795F;
+                float eul[3] { pitch * kRad2Deg, yaw * kRad2Deg, roll * kRad2Deg };
+                bool changed = ImGui::DragFloat3("##rot", eul, 1.0F, -180.0F, 180.0F, "%.1f");
+                if (ImGui::IsItemActivated())
+                    pre = lt->value.rotation;
+                if (changed)
+                {
+                    constexpr float kDeg2Rad = 0.01745329F;
+                    // Rebuild quaternion from Euler XYZ (intrinsic).
+                    const float cx = std::cos(eul[0] * kDeg2Rad * 0.5F);
+                    const float sx = std::sin(eul[0] * kDeg2Rad * 0.5F);
+                    const float cy = std::cos(eul[1] * kDeg2Rad * 0.5F);
+                    const float sy = std::sin(eul[1] * kDeg2Rad * 0.5F);
+                    const float cz = std::cos(eul[2] * kDeg2Rad * 0.5F);
+                    const float sz = std::sin(eul[2] * kDeg2Rad * 0.5F);
+                    lt->value.rotation = { sx * cy * cz - cx * sy * sz,
+                                           cx * sy * cz + sx * cy * sz,
+                                           cx * cy * sz - sx * sy * cz,
+                                           cx * cy * cz + sx * sy * sz };
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    // Compute delta-rotation = current * inverse(pre)
+                    cd::math::Quatf cur = lt->value.rotation;
+                    cd::math::Quatf inv_pre { -pre.x, -pre.y, -pre.z, pre.w };
+                    cd::math::Quatf delta {
+                        cur.w * inv_pre.x + cur.x * inv_pre.w + cur.y * inv_pre.z - cur.z * inv_pre.y,
+                        cur.w * inv_pre.y - cur.x * inv_pre.z + cur.y * inv_pre.w + cur.z * inv_pre.x,
+                        cur.w * inv_pre.z + cur.x * inv_pre.y - cur.y * inv_pre.x + cur.z * inv_pre.w,
+                        cur.w * inv_pre.w - cur.x * inv_pre.x - cur.y * inv_pre.y - cur.z * inv_pre.z
+                    };
+                    const float mag =
+                        std::abs(delta.x) + std::abs(delta.y) + std::abs(delta.z) + std::abs(1.0F - delta.w);
+                    if (mag > 1e-4F)
+                    {
+                        lt->value.rotation = pre;
+                        history.push(std::make_unique<cd::editor::RotateCommand>(scene, ent.handle, delta));
+                        log_push("drag: Rotate " + ent.name);
+                    }
+                }
+            }
+            // Scale
+            ImGui::SeparatorText("Scale");
+            {
+                static cd::math::Vec3f pre { 1, 1, 1 };
+                float xyz[3] { lt->value.scale.x, lt->value.scale.y, lt->value.scale.z };
+                bool changed = ImGui::DragFloat3("##sca", xyz, 0.02F, 0.05F, 5.0F, "%.3f");
+                if (ImGui::IsItemActivated())
+                    pre = lt->value.scale;
+                if (changed)
+                    lt->value.scale = { xyz[0], xyz[1], xyz[2] };
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    cd::math::Vec3f factor { pre.x != 0 ? lt->value.scale.x / pre.x : 1,
+                                             pre.y != 0 ? lt->value.scale.y / pre.y : 1,
+                                             pre.z != 0 ? lt->value.scale.z / pre.z : 1 };
+                    if (factor.x != 1 || factor.y != 1 || factor.z != 1)
+                    {
+                        lt->value.scale = pre;
+                        history.push(std::make_unique<cd::editor::ScaleCommand>(scene, ent.handle, factor));
+                        log_push("drag: Scale " + ent.name);
+                    }
+                }
+            }
+            // Material tint (DragFloat3 RGB). No undo entry yet -
+            // ComponentEditCommand lands with the v1.7 ECS work.
+            ImGui::SeparatorText("Tint");
+            {
+                float rgb[3] { ent.tint.x, ent.tint.y, ent.tint.z };
+                if (ImGui::ColorEdit3("##tint", rgb, ImGuiColorEditFlags_NoInputs))
+                {
+                    ent.tint = { rgb[0], rgb[1], rgb[2] };
+                }
+            }
+            ImGui::PopItemWidth();
+        }
+    }
+    else
+    {
+        ImGui::TextDisabled("no selection");
+    }
+    ImGui::End();
+}
+
+// =============================================================================
 // Phase 295 / Marathon Run 7 sub-N1G: scene-bootstrap helpers extracted
 // from main(). These are sample-local (operate on the anon-namespace
 // SceneEntity / PrimitiveKind) so they live in main.cpp rather than a
@@ -5266,160 +5440,10 @@ int main()
         }
 
         // ---- Scene tree ----
-        ImGui::Begin("Scene");
-        ImGui::Text("Entities (%zu)", entities.size());
-        ImGui::Separator();
-        for (std::size_t i = 0; i < entities.size(); ++i)
-        {
-            const bool sel = (selected == static_cast<int>(i));
-            char row[128] {};
-            std::snprintf(row, sizeof(row), "%s##e%zu", entities[i].name.c_str(), i);
-            if (ImGui::Selectable(row, sel))
-                selected = static_cast<int>(i);
-        }
-        ImGui::Separator();
-        ImGui::TextDisabled("Ctrl+Shift+P = command palette");
-        ImGui::TextDisabled("Esc closes palette / quits");
-        ImGui::End();
+        draw_scene_tree_panel(entities, selected);
 
         // ---- Inspector ----
-        ImGui::Begin("Inspector");
-        if (selected >= 0 && selected < static_cast<int>(entities.size()))
-        {
-            auto& ent = entities[static_cast<std::size_t>(selected)];
-            auto* lt = scene.local(ent.handle);
-            if (lt != nullptr)
-            {
-                ImGui::Text("Entity: %s", ent.name.c_str());
-                ImGui::TextColored(ImVec4(ent.tint.x, ent.tint.y, ent.tint.z, 1.0F), "tint preview");
-                ImGui::Separator();
-
-                ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.62F);
-
-                // Position
-                ImGui::SeparatorText("Position");
-                {
-                    static cd::math::Vec3f pre {};
-                    float xyz[3] { lt->value.position.x, lt->value.position.y, lt->value.position.z };
-                    bool changed = ImGui::DragFloat3("##pos", xyz, 0.05F, -10.0F, 10.0F, "%.3f");
-                    if (ImGui::IsItemActivated())
-                        pre = lt->value.position;
-                    if (changed)
-                        lt->value.position = { xyz[0], xyz[1], xyz[2] };
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        cd::math::Vec3f delta { lt->value.position.x - pre.x,
-                                                lt->value.position.y - pre.y,
-                                                lt->value.position.z - pre.z };
-                        if (delta.x != 0 || delta.y != 0 || delta.z != 0)
-                        {
-                            lt->value.position = pre;
-                            history.push(std::make_unique<cd::editor::TranslateCommand>(scene, ent.handle, delta));
-                            log_push("drag: Translate " + ent.name);
-                        }
-                    }
-                }
-                // Rotation (Euler XYZ in degrees). Converts to/from
-                // quaternion every frame so the underlying Transform
-                // stays canonical.
-                ImGui::SeparatorText("Rotation (deg)");
-                {
-                    static cd::math::Quatf pre {};
-                    const cd::math::Quatf& q = lt->value.rotation;
-                    // Quat to Euler XYZ (radians) - small approximation
-                    // works for inspector readout, gimbal-locked at
-                    // pitch == 90 (rare for editor poses).
-                    const float sinp = 2.0F * (q.w * q.x + q.y * q.z);
-                    const float cosp = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
-                    const float pitch = std::atan2(sinp, cosp);
-                    float t2 = 2.0F * (q.w * q.y - q.z * q.x);
-                    t2 = std::clamp(t2, -1.0F, 1.0F);
-                    const float yaw = std::asin(t2);
-                    const float siny = 2.0F * (q.w * q.z + q.x * q.y);
-                    const float cosy = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
-                    const float roll = std::atan2(siny, cosy);
-                    constexpr float kRad2Deg = 57.2957795F;
-                    float eul[3] { pitch * kRad2Deg, yaw * kRad2Deg, roll * kRad2Deg };
-                    bool changed = ImGui::DragFloat3("##rot", eul, 1.0F, -180.0F, 180.0F, "%.1f");
-                    if (ImGui::IsItemActivated())
-                        pre = lt->value.rotation;
-                    if (changed)
-                    {
-                        constexpr float kDeg2Rad = 0.01745329F;
-                        // Rebuild quaternion from Euler XYZ (intrinsic).
-                        const float cx = std::cos(eul[0] * kDeg2Rad * 0.5F);
-                        const float sx = std::sin(eul[0] * kDeg2Rad * 0.5F);
-                        const float cy = std::cos(eul[1] * kDeg2Rad * 0.5F);
-                        const float sy = std::sin(eul[1] * kDeg2Rad * 0.5F);
-                        const float cz = std::cos(eul[2] * kDeg2Rad * 0.5F);
-                        const float sz = std::sin(eul[2] * kDeg2Rad * 0.5F);
-                        lt->value.rotation = { sx * cy * cz - cx * sy * sz,
-                                               cx * sy * cz + sx * cy * sz,
-                                               cx * cy * sz - sx * sy * cz,
-                                               cx * cy * cz + sx * sy * sz };
-                    }
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        // Compute delta-rotation = current * inverse(pre)
-                        cd::math::Quatf cur = lt->value.rotation;
-                        cd::math::Quatf inv_pre { -pre.x, -pre.y, -pre.z, pre.w };
-                        cd::math::Quatf delta {
-                            cur.w * inv_pre.x + cur.x * inv_pre.w + cur.y * inv_pre.z - cur.z * inv_pre.y,
-                            cur.w * inv_pre.y - cur.x * inv_pre.z + cur.y * inv_pre.w + cur.z * inv_pre.x,
-                            cur.w * inv_pre.z + cur.x * inv_pre.y - cur.y * inv_pre.x + cur.z * inv_pre.w,
-                            cur.w * inv_pre.w - cur.x * inv_pre.x - cur.y * inv_pre.y - cur.z * inv_pre.z
-                        };
-                        const float mag =
-                            std::abs(delta.x) + std::abs(delta.y) + std::abs(delta.z) + std::abs(1.0F - delta.w);
-                        if (mag > 1e-4F)
-                        {
-                            lt->value.rotation = pre;
-                            history.push(std::make_unique<cd::editor::RotateCommand>(scene, ent.handle, delta));
-                            log_push("drag: Rotate " + ent.name);
-                        }
-                    }
-                }
-                // Scale
-                ImGui::SeparatorText("Scale");
-                {
-                    static cd::math::Vec3f pre { 1, 1, 1 };
-                    float xyz[3] { lt->value.scale.x, lt->value.scale.y, lt->value.scale.z };
-                    bool changed = ImGui::DragFloat3("##sca", xyz, 0.02F, 0.05F, 5.0F, "%.3f");
-                    if (ImGui::IsItemActivated())
-                        pre = lt->value.scale;
-                    if (changed)
-                        lt->value.scale = { xyz[0], xyz[1], xyz[2] };
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        cd::math::Vec3f factor { pre.x != 0 ? lt->value.scale.x / pre.x : 1,
-                                                 pre.y != 0 ? lt->value.scale.y / pre.y : 1,
-                                                 pre.z != 0 ? lt->value.scale.z / pre.z : 1 };
-                        if (factor.x != 1 || factor.y != 1 || factor.z != 1)
-                        {
-                            lt->value.scale = pre;
-                            history.push(std::make_unique<cd::editor::ScaleCommand>(scene, ent.handle, factor));
-                            log_push("drag: Scale " + ent.name);
-                        }
-                    }
-                }
-                // Material tint (DragFloat3 RGB). No undo entry yet -
-                // ComponentEditCommand lands with the v1.7 ECS work.
-                ImGui::SeparatorText("Tint");
-                {
-                    float rgb[3] { ent.tint.x, ent.tint.y, ent.tint.z };
-                    if (ImGui::ColorEdit3("##tint", rgb, ImGuiColorEditFlags_NoInputs))
-                    {
-                        ent.tint = { rgb[0], rgb[1], rgb[2] };
-                    }
-                }
-                ImGui::PopItemWidth();
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("no selection");
-        }
-        ImGui::End();
+        draw_inspector_panel(entities, selected, scene, history, log_push);
 
         // ---- R-Showcase panel: unified R1-R8 feature toggles ----
         // Single panel listing every realism-roadmap feature with
