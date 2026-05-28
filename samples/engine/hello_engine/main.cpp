@@ -4577,8 +4577,15 @@ int main()
                                                          0.1F, 60.0F);
                 const cd::math::Mat4f light_vp2 = light_proj2 * light_view2;
                 // Casters: each ECS entity (using its mesh+transform).
+                // W8-AT: skip PBR demo spheres — they're a material
+                // showcase grid, not part of the scene narrative. Their
+                // large CSM shadows stamped huge dark blobs that ate
+                // the whole floor ("tum objelro solsemde ekranda golge
+                // kaldı"). They still receive shadows (sample the CSM
+                // map in kPrimFS) — they just don't cast.
                 for (const auto& ent : entities)
                 {
+                    if (ent.is_pbr) continue;
                     const auto& mesh = mesh_for(ent.kind);
                     if (!mesh.vb.is_valid()) continue;
                     auto* lt = scene.local(ent.handle);
@@ -5075,9 +5082,11 @@ int main()
             sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
             sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
 
-            // Entity casters.
+            // Entity casters. W8-AT: skip PBR demo spheres — see CSM
+            // caster loop above for the rationale.
             for (const auto& ent : entities)
             {
+                if (ent.is_pbr) continue;
                 const auto& mesh = mesh_for(ent.kind);
                 if (!mesh.vb.is_valid()) continue;
                 auto* lt = scene.local(ent.handle);
