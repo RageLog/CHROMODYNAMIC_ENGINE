@@ -2088,6 +2088,37 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
 
 }
 
+// ---- upload_multi_light_ubo ------------------------------------------------
+// Walks every enabled non-sun light and packs into the descriptor-bound UBO.
+// Up to kMaxLights (8) slots; extras drop silently (caller can read the
+// "lights_active" counter to see how many landed). Directional lights are
+// driven through PrimPush.sun_dir, not the multi-light UBO -- pack_light_slot
+// returns false for them so they're skipped automatically here.
+inline void upload_multi_light_ubo(cd::rhi::IDevice& device,
+                                   cd::rhi::BufferHandle lights_ubo,
+                                   const std::vector<LightRow>& lights,
+                                   cd::core::CounterTable& counters)
+{
+    LightUboGpu ubo {};
+    ubo.count = 0;
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (ubo.count >= cd::hello_engine::kMaxLights)
+            break;
+        if (!pack_light_slot(ubo.slots[ubo.count], lrow.light))
+            continue;
+        ++ubo.count;
+    }
+    (void)device.upload_buffer(
+        lights_ubo,
+        0,
+        std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo))
+    );
+    counters.set("lights_active", ubo.count);
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6064,31 +6095,7 @@ int main()
         }
         (void)has_sun;
         // ---- Multi-light UBO fill (gap #2) ----
-        // Walk every enabled non-sun light and pack into the
-        // descriptor-bound UBO. Up to kMaxLights (8) slots; extras
-        // drop silently (logged once via the counter).
-        {
-            LightUboGpu ubo {};
-            ubo.count = 0;
-            for (const auto& lrow : lights)
-            {
-                if (!lrow.enabled)
-                    continue;
-                if (ubo.count >= cd::hello_engine::kMaxLights)
-                    break;
-                // pack_light_slot returns false for directional lights
-                // (sun is driven by PrimPush.sun_dir, not the multi-light UBO).
-                if (!pack_light_slot(ubo.slots[ubo.count], lrow.light))
-                    continue;
-                ++ubo.count;
-            }
-            (void)device.upload_buffer(
-                lights_ubo,
-                0,
-                std::span<const std::byte>(reinterpret_cast<const std::byte*>(&ubo), sizeof(ubo))
-            );
-            counters.set("lights_active", ubo.count);
-        }
+        upload_multi_light_ubo(device, lights_ubo, lights, counters);
 
         prim_material.apply(cmd);
         prim_inst.bind(cmd, 0);  // Faz 1.6 CSM + Faz 1.9 light UBO
