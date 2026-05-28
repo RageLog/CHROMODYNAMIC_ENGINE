@@ -2813,7 +2813,10 @@ int main()
     lights.push_back({ "Magenta HDR neon (25000K)",
         cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
                              4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
-        false, 25000.0F });
+        true, 25000.0F });
+        // W8-AH: magenta re-enabled by default alongside cyan so the
+        // user sees the dual blue+magenta scene they remembered as
+        // "working" (before W8-AC isolated just the cyan ceiling).
         // W8-AB: magenta neon lumens 25000 -> 6000. The 25000 lm value
         // was chosen during W5-B when the area multiplier was 0.20 —
         // visible peak under that calibration. After W8-AB unified
