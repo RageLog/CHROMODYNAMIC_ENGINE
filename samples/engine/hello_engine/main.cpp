@@ -6156,23 +6156,32 @@ int main()
                         const float lnl = std::sqrt(ln.x*ln.x + ln.y*ln.y + ln.z*ln.z);
                         if (lnl > 1e-5F) { ln.x/=lnl; ln.y/=lnl; ln.z/=lnl; }
                         else             { ln = { 0.0F, 0.0F, -1.0F }; }
-                        // W8-M: Frisvad 2012 robust orthonormal basis — matches
-                        // the GLSL area path so the gizmo wireframe and the
-                        // actual lit polygon agree. Previous abs(ln.y)>0.95
-                        // switch produced a visible gimbal-lock flip.
-                        cd::math::Vec3f t, b;
-                        if (ln.z < -0.9999F)
-                        {
-                            t = { 0.0F, -1.0F, 0.0F };
-                            b = { -1.0F, 0.0F, 0.0F };
-                        }
-                        else
-                        {
-                            const float fa = 1.0F / (1.0F + ln.z);
-                            const float fb = -ln.x * ln.y * fa;
-                            t = { 1.0F - ln.x * ln.x * fa, fb, -ln.x };
-                            b = { fb, 1.0F - ln.y * ln.y * fa, -ln.y };
-                        }
+                        // W8-O: read the SAME area_tangent the shader uses.
+                        // Earlier wireframe derived its tangent via Frisvad
+                        // while the shader read the uploaded tangent — when
+                        // the user rotated the rect via the gizmo, the
+                        // wireframe rotated by Frisvad's smooth derivation
+                        // and the actual lit polygon rotated by the
+                        // user-controlled tangent, so the two visibly
+                        // disagreed. Use light.area_tangent for both.
+                        cd::math::Vec3f t = L.area_tangent;
+                        const float tll = std::sqrt(t.x*t.x + t.y*t.y + t.z*t.z);
+                        if (tll > 1e-5F) { t.x/=tll; t.y/=tll; t.z/=tll; }
+                        else             { t = { 1.0F, 0.0F, 0.0F }; }
+                        // Re-orthogonalise tangent against the (possibly
+                        // dragged) normal — same trick the rotate gizmo
+                        // applies after rotating both.
+                        const float pr = t.x*ln.x + t.y*ln.y + t.z*ln.z;
+                        t.x -= pr * ln.x; t.y -= pr * ln.y; t.z -= pr * ln.z;
+                        const float tnl = std::sqrt(t.x*t.x + t.y*t.y + t.z*t.z);
+                        if (tnl > 1e-5F) { t.x/=tnl; t.y/=tnl; t.z/=tnl; }
+                        else             { t = { 1.0F, 0.0F, 0.0F }; }
+                        // bitangent = normal x tangent (matches the shader's
+                        // cross(N, T) for B_rect).
+                        cd::math::Vec3f b {
+                            ln.y*t.z - ln.z*t.y,
+                            ln.z*t.x - ln.x*t.z,
+                            ln.x*t.y - ln.y*t.x };
                         // Project 4 corners.
                         const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
                         cd::math::Vec3f c0 {
