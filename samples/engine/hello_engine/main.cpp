@@ -2155,6 +2155,42 @@ inline SunLight resolve_sun_light(const std::vector<LightRow>& lights)
     return s;
 }
 
+// ---- fill_prim_push_shared --------------------------------------------------
+// Floor + ECS entity draws each push a PrimPush, and the fx + sun + camera
+// fields are identical between them (R-Showcase knobs + sun frame state +
+// camera-pos for parallax). Pulled out in phase 308 (N4C-prep) so the
+// downstream floor/ECS helpers only have to set the per-mesh fields
+// (mvp / model / tint / per-entity fx_params4 [PBR vs BRDF]).
+inline void fill_prim_push_shared(PrimPush& pp,
+                                  const cd_sample::HelloEngineFx& fx,
+                                  const SunLight& sun,
+                                  const cd::camera::Camera& cam)
+{
+    pp.sun_dir[0] = sun.dir.x;
+    pp.sun_dir[1] = sun.dir.y;
+    pp.sun_dir[2] = sun.dir.z;
+    pp.sun_dir[3] = sun.strength;
+    pp.sun_color[0] = sun.col.x;
+    pp.sun_color[1] = sun.col.y;
+    pp.sun_color[2] = sun.col.z;
+    pp.sun_color[3] = sun.ambient_w;
+    pp.fx_params[0] = static_cast<float>(fx.tonemap_op);
+    pp.fx_params[2] = fx.gtao_strength;
+    pp.fx_params[3] = fx.bloom_strength;
+    pp.fx_params2[0] = fx.smaa_strength;
+    pp.fx_params2[1] = fx.motion_blur;
+    pp.fx_params2[2] = fx.taa_amount;
+    pp.fx_params2[3] = fx.dof_strength;
+    pp.fx_params3[0] = fx.fog_density;
+    pp.fx_params3[1] = fx.aerial_perspective;
+    pp.fx_params3[2] = fx.clouds_coverage;
+    pp.fx_params3[3] = fx.light_shafts;
+    pp.camera_pos[0] = cam.eye.x;
+    pp.camera_pos[1] = cam.eye.y;
+    pp.camera_pos[2] = cam.eye.z;
+    pp.camera_pos[3] = 0.0F;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6141,34 +6177,12 @@ int main()
             fp.tint[0] = 0.15F;
             fp.tint[1] = 0.16F;
             fp.tint[2] = 0.18F;
-            fp.tint[3] = 2.0F;
-            fp.sun_dir[0] = sun.dir.x;
-            fp.sun_dir[1] = sun.dir.y;
-            fp.sun_dir[2] = sun.dir.z;
-            fp.sun_dir[3] = sun.strength;
-            fp.sun_color[0] = sun.col.x;
-            fp.sun_color[1] = sun.col.y;
-            fp.sun_color[2] = sun.col.z;
-            fp.sun_color[3] = sun.ambient_w;
-            fp.fx_params[0] = static_cast<float>(fx.tonemap_op);
+            fp.tint[3] = 2.0F;  // FS sentinel: enables analytic XZ grid overlay
+            fill_prim_push_shared(fp, fx, sun, cam);
+            // Floor overrides: opt out of texture path + GTAO crease darkening
+            // (flat normal -> dFdx/dFdy=0); keep bloom on bright grid lines.
             fp.fx_params[1] = 0.0F;
-            // Floor opts out of GTAO crease darkening - its normal is
-            // flat so dFdx/dFdy returns zero, but bloom on bright grid
-            // lines is a nice subtle highlight.
             fp.fx_params[2] = 0.0F;
-            fp.fx_params[3] = fx.bloom_strength;
-            fp.fx_params2[0] = fx.smaa_strength;
-            fp.fx_params2[1] = fx.motion_blur;
-            fp.fx_params2[2] = fx.taa_amount;
-            fp.fx_params2[3] = fx.dof_strength;
-            fp.fx_params3[0] = fx.fog_density;
-            fp.fx_params3[1] = fx.aerial_perspective;
-            fp.fx_params3[2] = fx.clouds_coverage;
-            fp.fx_params3[3] = fx.light_shafts;
-            fp.camera_pos[0] = cam.eye.x;
-            fp.camera_pos[1] = cam.eye.y;
-            fp.camera_pos[2] = cam.eye.z;
-            fp.camera_pos[3] = 0.0F;
             fp.fx_params4[0] = fp.fx_params4[1] = fp.fx_params4[2] = 0.0F;
             fp.fx_params4[3] = static_cast<float>(fx.view_mode);
             cmd.push_constants(
@@ -6218,30 +6232,9 @@ int main()
                 pp.tint[1] = ent.tint.y;
                 pp.tint[2] = ent.tint.z;
                 pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
-                pp.sun_dir[0] = sun.dir.x;
-                pp.sun_dir[1] = sun.dir.y;
-                pp.sun_dir[2] = sun.dir.z;
-                pp.sun_dir[3] = sun.strength;
-                pp.sun_color[0] = sun.col.x;
-                pp.sun_color[1] = sun.col.y;
-                pp.sun_color[2] = sun.col.z;
-                pp.sun_color[3] = sun.ambient_w;
-                pp.fx_params[0] = static_cast<float>(fx.tonemap_op);
+                fill_prim_push_shared(pp, fx, sun, cam);
+                // ECS override: per-entity texture-path flag in fx_params[1]
                 pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture) ? 1.0F : 0.0F;
-                pp.fx_params[2] = fx.gtao_strength;
-                pp.fx_params[3] = fx.bloom_strength;
-                pp.fx_params2[0] = fx.smaa_strength;
-                pp.fx_params2[1] = fx.motion_blur;
-                pp.fx_params2[2] = fx.taa_amount;
-                pp.fx_params2[3] = fx.dof_strength;
-                pp.fx_params3[0] = fx.fog_density;
-                pp.fx_params3[1] = fx.aerial_perspective;
-                pp.fx_params3[2] = fx.clouds_coverage;
-                pp.fx_params3[3] = fx.light_shafts;
-                pp.camera_pos[0] = cam.eye.x;
-                pp.camera_pos[1] = cam.eye.y;
-                pp.camera_pos[2] = cam.eye.z;
-                pp.camera_pos[3] = 0.0F;
                 if (ent.is_pbr)
                 {
                     pp.fx_params4[0] = ent.metallic;
