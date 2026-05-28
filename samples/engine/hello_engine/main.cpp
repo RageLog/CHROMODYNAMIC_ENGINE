@@ -4423,7 +4423,13 @@ int main()
             {
                 const auto& mat = kRowPalette[static_cast<std::size_t>(row)];
                 const float metallic = mat.metal;
-                const float roughness = 0.05F + (1.0F - 0.05F) *
+                // W8-D: minimum roughness lifted 0.05 -> 0.20 so even the
+                // leftmost (rough-floor) column has a wide enough spec
+                // lobe to read as "visibly lit" under a spot. With
+                // metallic = 1.0 and roughness < 0.10, the spec cone is
+                // a near-pinpoint mirror reflection and the user reads
+                // the sphere as "unlit" outside the specular spike.
+                const float roughness = 0.20F + (1.0F - 0.20F) *
                     (static_cast<float>(col) / static_cast<float>(kGrid - 1));
                 const float x = (static_cast<float>(col) - 2.0F) * kSpacing;
                 const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
