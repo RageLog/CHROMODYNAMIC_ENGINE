@@ -251,6 +251,55 @@ float ltc_polygon_specular(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3,
   return max(s, 0.0) / 6.28318530;
 }
 
+// ---- Representative-point area-light specular (Karis 2013 / UE4) ----
+// W8-AN: the LTC inverse-matrix fit above is a 4-coefficient polynomial
+// that collapses to ~identity at low roughness, so the GGX peak never
+// aligns with the reflection direction and metals reflect the rect as
+// diffuse rather than a sharp panel-shaped highlight. The Heitz 2016
+// paper requires a 64x64 baked LUT to reproduce the matrix anisotropy
+// at mirror conditions; lacking that LUT, switch to the Karis 2013
+// "Representative Point" approximation (Real Shading in Unreal
+// Engine 4, sec 3.2). Project the BRDF mean-reflection direction onto
+// the rect plane; clamp that intersection to the rect's bounds; use
+// the resulting closest point as a punctual light direction modulated
+// by the rect's analytic solid angle. Same technique as Frostbite's
+// "Moving Frostbite to PBR" sec 4.9 — produces a sharp, rect-shaped
+// specular highlight on mirror-like metals.
+//
+// Returns the punctual L direction and a solid-angle attenuation
+// scalar; the caller folds these into the standard Cook-Torrance lobe
+// so all existing F0/D/G correctness carries over to the area light.
+struct RectRepPoint { vec3 L; float atten; };
+RectRepPoint rect_representative_point(vec3 P, vec3 N, vec3 V,
+                                       vec3 light_pos, vec3 light_n,
+                                       vec3 light_t, float hw, float hh) {
+  vec3 R = reflect(-V, N);
+  vec3 d = light_pos - P;
+  float denom = dot(R, light_n);
+  vec3 plane_hit;
+  if (abs(denom) > 1e-4) {
+    float t = dot(d, light_n) / denom;
+    plane_hit = (t > 0.0) ? (P + R * t) : light_pos;
+  } else {
+    plane_hit = light_pos;
+  }
+  vec3 light_b = cross(light_n, light_t);
+  vec3 local   = plane_hit - light_pos;
+  float u = clamp(dot(local, light_t), -hw, hw);
+  float v = clamp(dot(local, light_b), -hh, hh);
+  vec3 closest = light_pos + light_t * u + light_b * v;
+  vec3 to_L = closest - P;
+  float dist2 = max(dot(to_L, to_L), 1e-4);
+  vec3 L = to_L * inversesqrt(dist2);
+  float area = 4.0 * hw * hh;
+  float cos_panel = max(dot(-L, light_n), 0.0);
+  float omega = clamp(area * cos_panel / dist2, 0.0, 6.28318530);
+  RectRepPoint o;
+  o.L = L;
+  o.atten = omega * 0.07957747;  // omega / (4 * PI)
+  return o;
+}
+
 vec3 sample_env(vec3 dir) {
   // Warmer / less-saturated env palette so polished metallic
   // spheres reflecting the sky preserve their base F0 chroma
@@ -410,29 +459,24 @@ void main() {
       // CCW polygon from the lit side and unblocks both the
       // diffuse + GGX-specular LTC contributions.
       float ff_diff = ltc_polygon_irradiance(N, c0, c3, c2, c1);
-      // LTC-GGX specular form factor (Heitz 2016 fast-path inv matrix).
-      float ff_spec = ltc_polygon_specular(N, c0, c3, c2, c1,
-                                           roughness, NoV);
-      // W8-AM: Heitz/Hill BRDF-norm compensation. The LTC linear
-      // transform integrates the cosine over the polygon, but for
-      // low-roughness surfaces the GGX peak is much taller than the
-      // cosine peak — the analytic form factor undercounts the spec
-      // energy by 2-3x for mirror-like metals. Heitz publishes a
-      // 64x64 LUT (`brdf_norm`) that re-scales the LTC output to
-      // match the integrated GGX intensity. Smooth fit follows the
-      // shape of that LUT: ~2.5x at mirror (r=0), ~0.9x at fully
-      // rough (r=1), with a sqrt curve so the boost dies off
-      // gracefully. Without it, the cyan rect-area light could not
-      // out-bright the sky cube and metal spheres rendered as plain
-      // IBL reflections of the horizon palette.
-      float brdf_norm_ltc = mix(2.5, 0.9, sqrt(roughness));
-      ff_spec *= brdf_norm_ltc;
-      // Energy split: F0 weighted by Fresnel-roughness for specular,
-      // (1 - kS) * (1 - metallic) for diffuse.
+      // W8-AN: rect-specular via Karis 2013 representative-point.
+      // The LTC inv-matrix fit is too sparse to reproduce mirror-like
+      // peak alignment, so the prior LTC-specular path produced a
+      // brown/grey blob instead of a panel-shaped highlight on
+      // polished metals. Representative-point gives the correct sharp
+      // reflection geometry; chromatic F0 still drives metal hue.
+      RectRepPoint rp = rect_representative_point(v_world_pos, N, V,
+                                                  lp, N_rect, T_rect,
+                                                  hw, hh);
+      vec3 spec_area = direct_lobe(N, V, rp.L, albedo, metallic,
+                                   roughness, F0, area_col * rp.atten,
+                                   0.0, 0.0);
+      // Diffuse stays on the analytic LTC form factor (Heitz 2016) —
+      // the cosine-integral path is correct for the diffuse lobe.
       vec3 F_area  = F_Schlick_roughness(NoV, F0, roughness);
       vec3 kD_area = (vec3(1.0) - F_area) * (1.0 - metallic);
       direct += kD_area * albedo * area_col * ff_diff
-              + F_area  * area_col * ff_spec;
+              + spec_area;
       continue;
     }
 
