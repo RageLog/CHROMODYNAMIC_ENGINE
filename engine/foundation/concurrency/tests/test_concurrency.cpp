@@ -746,3 +746,110 @@ TEST(ParallelFor, MatchesStdForEachWithOddSize)
         ASSERT_EQ(actual[i], reference[i]) << "odd-size divergence at index " << i;
     }
 }
+
+// ============================================================================
+// X1B integration pattern test (phase 284 / W8-X1B):
+// Mirrors the hello_engine TLAS instance loop:
+//   pre-sized scratch arrays + ParallelFor index-write + serial valid-flag
+//   compaction. Asserts the parallel result matches the serial reference
+//   element-for-element so the GPU instance-id correspondence is preserved.
+// ============================================================================
+TEST(ParallelFor, TlasInstanceBuildPattern_MatchesSerial)
+{
+    struct FakeMat4   { float m[16] {}; };
+    struct FakeInst   { float xform[12] {}; std::uint32_t blas_id { 0 }; std::uint32_t mask { 0 }; };
+    struct FakeMat    { float albedo[4] {}; };
+    struct FakeEnt    { FakeMat4 m; float tint[3] {}; bool valid { true }; };
+
+    constexpr std::size_t kN = 4096;
+    std::vector<FakeEnt> ents(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        for (std::size_t k = 0; k < 16; ++k)
+        {
+            ents[i].m.m[k] = static_cast<float>((i + k) % 31);
+        }
+        ents[i].tint[0] = static_cast<float>(i % 7) * 0.1F;
+        ents[i].tint[1] = static_cast<float>(i % 11) * 0.05F;
+        ents[i].tint[2] = static_cast<float>(i % 13) * 0.02F;
+        ents[i].valid   = (i % 10) != 7;  // ~10% invalid to exercise compaction
+    }
+
+    auto build_inst = [](const FakeEnt& e) -> FakeInst
+    {
+        FakeInst inst {};
+        for (std::size_t r = 0; r < 3; ++r)
+        {
+            inst.xform[r * 4 + 0] = e.m.m[0 * 4 + r];
+            inst.xform[r * 4 + 1] = e.m.m[1 * 4 + r];
+            inst.xform[r * 4 + 2] = e.m.m[2 * 4 + r];
+            inst.xform[r * 4 + 3] = e.m.m[3 * 4 + r];
+        }
+        inst.blas_id = 0xFEEDU;
+        inst.mask    = 0xFFU;
+        return inst;
+    };
+    auto build_mat = [](const FakeEnt& e) -> FakeMat
+    {
+        FakeMat fm {};
+        fm.albedo[0] = e.tint[0];
+        fm.albedo[1] = e.tint[1];
+        fm.albedo[2] = e.tint[2];
+        fm.albedo[3] = 1.0F;
+        return fm;
+    };
+
+    // --- Serial reference (pre-X1B code path) ---
+    std::vector<FakeInst> ref_inst;
+    std::vector<FakeMat>  ref_mat;
+    ref_inst.reserve(kN);
+    ref_mat.reserve(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        if (!ents[i].valid) continue;
+        ref_inst.push_back(build_inst(ents[i]));
+        ref_mat.push_back(build_mat(ents[i]));
+    }
+
+    // --- Parallel build (X1B code path) ---
+    std::vector<FakeInst>     scratch_inst(kN);
+    std::vector<FakeMat>      scratch_mat(kN);
+    std::vector<std::uint8_t> valid(kN, 0U);
+    cd::concurrency::parallel_for(
+        std::size_t { 0 }, kN,
+        [&](std::size_t i)
+        {
+            if (!ents[i].valid) return;
+            scratch_inst[i] = build_inst(ents[i]);
+            scratch_mat[i]  = build_mat(ents[i]);
+            valid[i]        = 1U;
+        });
+    std::vector<FakeInst> par_inst;
+    std::vector<FakeMat>  par_mat;
+    par_inst.reserve(kN);
+    par_mat.reserve(kN);
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        if (valid[i] == 0U) continue;
+        par_inst.push_back(scratch_inst[i]);
+        par_mat.push_back(scratch_mat[i]);
+    }
+
+    ASSERT_EQ(par_inst.size(), ref_inst.size());
+    ASSERT_EQ(par_mat.size(),  ref_mat.size());
+    for (std::size_t i = 0; i < ref_inst.size(); ++i)
+    {
+        for (std::size_t k = 0; k < 12; ++k)
+        {
+            ASSERT_FLOAT_EQ(par_inst[i].xform[k], ref_inst[i].xform[k])
+                << "instance " << i << " column " << k;
+        }
+        EXPECT_EQ(par_inst[i].blas_id, ref_inst[i].blas_id);
+        EXPECT_EQ(par_inst[i].mask,    ref_inst[i].mask);
+        for (std::size_t k = 0; k < 4; ++k)
+        {
+            ASSERT_FLOAT_EQ(par_mat[i].albedo[k], ref_mat[i].albedo[k])
+                << "mat " << i << " channel " << k;
+        }
+    }
+}

@@ -6,6 +6,7 @@ cd_add_sample(hello_engine
     cd::asset_json
     cd::audio
     cd::camera
+    cd::concurrency
     cd::core
     cd::ecs
     cd::editor

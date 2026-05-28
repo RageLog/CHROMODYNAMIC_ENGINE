@@ -65,6 +65,9 @@
 #include <cd/audio/WasapiBackend.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/Frustum.hpp>
+#include <cd/concurrency/JobGraph.hpp>
+#include <cd/concurrency/ParallelFor.hpp>
+#include <cd/concurrency/WorkStealingThreadPool.hpp>
 #include <cd/core/CounterTable.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/ecs/World.hpp>
@@ -4635,12 +4638,59 @@ int main()
             // light), so undo the skip. The legacy hardcoded grid
             // stays removed (it was duplicate occluder geometry at
             // pre-W8-AR coordinates).
-            for (const auto& ent : entities)
+            //
+            // X1B (phase 284): parallel TLAS instance build via
+            // cd::concurrency::parallel_for. Per-entity slot is written
+            // by index into pre-sized scratch arrays (no push_back from
+            // worker threads); a serial compaction step collects valid
+            // slots into the final instances/inst_mats arrays so the
+            // floor and skinned glTF tail stays in deterministic order
+            // and the GPU instance-index correspondence is preserved.
+            const std::size_t kEntCount = entities.size();
+            std::vector<cd::rhi::AccelInstance> ent_inst_scratch(kEntCount);
+            std::vector<InstanceMatGpu>          ent_mat_scratch(kEntCount);
+            std::vector<std::uint8_t>            ent_valid(kEntCount, 0u);
+            cd::concurrency::parallel_for(
+                std::size_t { 0 }, kEntCount,
+                [&](std::size_t i)
+                {
+                    const auto& ent = entities[i];
+                    auto* lt = scene.local(ent.handle);
+                    if (lt == nullptr) return;
+                    const auto blas = blas_for_kind(ent.kind);
+                    if (!blas.is_valid()) return;
+                    const auto m = cd::math::to_mat4(lt->value);
+                    cd::rhi::AccelInstance inst {};
+                    for (std::size_t r = 0; r < 3; ++r)
+                    {
+                        inst.transform[r*4 + 0] = m[0][r];
+                        inst.transform[r*4 + 1] = m[1][r];
+                        inst.transform[r*4 + 2] = m[2][r];
+                        inst.transform[r*4 + 3] = m[3][r];
+                    }
+                    inst.blas = blas;
+                    inst.mask = 0xFFu;
+                    ent_inst_scratch[i] = inst;
+                    InstanceMatGpu im {};
+                    im.albedo[0] = ent.tint.x;
+                    im.albedo[1] = ent.tint.y;
+                    im.albedo[2] = ent.tint.z;
+                    im.albedo[3] = 1.0F;
+                    im.emissive[0] = 0.0F;
+                    im.emissive[1] = 0.0F;
+                    im.emissive[2] = 0.0F;
+                    im.emissive[3] = 0.0F;
+                    ent_mat_scratch[i] = im;
+                    ent_valid[i] = 1u;
+                });
+            // Serial compaction preserves entity ordering so the GPU
+            // instanceCustomIndex lookup into inst_mat_ssbo stays aligned
+            // with the TLAS hit's instance id.
+            for (std::size_t i = 0; i < kEntCount; ++i)
             {
-                auto* lt = scene.local(ent.handle);
-                if (lt == nullptr) continue;
-                push_inst(blas_for_kind(ent.kind), cd::math::to_mat4(lt->value),
-                          ent.tint);
+                if (ent_valid[i] == 0u) continue;
+                instances.push_back(ent_inst_scratch[i]);
+                inst_mats.push_back(ent_mat_scratch[i]);
             }
             // Floor: identity scale, y = kFloorY (matches the floor draw).
             // W8-BC: distinct neutral grey so chrome reflections show a
