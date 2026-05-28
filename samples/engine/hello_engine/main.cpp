@@ -1076,7 +1076,7 @@ void main() {
   vec3  sky_c  = vec3(0.55, 0.65, 0.85);
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
-  vec3  ambient = albedo * (hemi + vec3(0.04));
+  vec3  ambient = albedo * (hemi + vec3(0.020));  // W8-BE: floor 0.04 -> 0.020 per user "biraz daha koyu olsun"
 
   // R2: True IBL with MR map. Karis split-sum:
   //   IBL = kD * irradiance(N) * albedo + prefiltered(R, rough*mipMax)
