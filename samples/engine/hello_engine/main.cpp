@@ -4969,19 +4969,37 @@ int main()
                 // very long shadow-map texel projections. With the
                 // W8-AV altitude reset (y up to 3.05) shadows are
                 // normal-sized again.
-                for (const auto& ent : entities)
+                // X1E (phase 287): parallel CSM caster prep. The
+                // light_mvp per entity is computed via parallel_for
+                // into a pre-sized scratch vector; draw pass binds +
+                // pushes + draws serially (Vulkan cmd recording is not
+                // thread-safe per buffer).
+                std::vector<cd::math::Mat4f> csm_light_mvp(entities.size());
+                std::vector<std::uint8_t>    csm_valid(entities.size(), 0u);
+                cd::concurrency::parallel_for(
+                    std::size_t { 0 }, entities.size(),
+                    [&](std::size_t i)
+                    {
+                        const auto& ent = entities[i];
+                        const auto& mesh = mesh_for(ent.kind);
+                        if (!mesh.vb.is_valid()) return;
+                        auto* lt = scene.local(ent.handle);
+                        if (lt == nullptr) return;
+                        const auto model = cd::math::to_mat4(lt->value);
+                        csm_light_mvp[i] = light_vp2 * model;
+                        csm_valid[i]     = 1u;
+                    });
+                for (std::size_t i = 0; i < entities.size(); ++i)
                 {
+                    if (csm_valid[i] == 0u) continue;
+                    const auto& ent  = entities[i];
                     const auto& mesh = mesh_for(ent.kind);
-                    if (!mesh.vb.is_valid()) continue;
-                    auto* lt = scene.local(ent.handle);
-                    if (lt == nullptr) continue;
                     cmd.bind_vertex_buffer(0, mesh.vb, 0);
                     cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-                    const auto model     = cd::math::to_mat4(lt->value);
-                    const auto light_mvp = light_vp2 * model;
                     cmd.push_constants(shadow_material.pipeline_layout(),
                                        cd::rhi::ShaderStage::kVertex,
-                                       0, sizeof(light_mvp), &light_mvp);
+                                       0, sizeof(cd::math::Mat4f),
+                                       &csm_light_mvp[i]);
                     cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
                 }
                 // W8-AS: leftover 5x5 PBR-grid CSM caster loop REMOVED.
@@ -5481,23 +5499,41 @@ int main()
             sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
             sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
 
-            // Entity casters. W8-AV: PBR sphere planar shadows re-
-            // enabled, see CSM caster loop above for rationale.
-            for (const auto& ent : entities)
+            // X1E (phase 287): parallel planar shadow caster prep.
+            // Each entity's shadow_model + mvp is computed via
+            // parallel_for; sp stays a constant template per entity
+            // (only mvp/model vary), the draw pass uploads per-entity
+            // sp through push_constants. W8-AV: PBR sphere planar
+            // shadows re-enabled, see CSM caster comment for rationale.
+            std::vector<PrimPush>     plan_push(entities.size());
+            std::vector<std::uint8_t> plan_valid(entities.size(), 0u);
+            cd::concurrency::parallel_for(
+                std::size_t { 0 }, entities.size(),
+                [&](std::size_t i)
+                {
+                    const auto& ent  = entities[i];
+                    const auto& mesh = mesh_for(ent.kind);
+                    if (!mesh.vb.is_valid()) return;
+                    auto* lt = scene.local(ent.handle);
+                    if (lt == nullptr) return;
+                    const auto model        = cd::math::to_mat4(lt->value);
+                    const auto shadow_model = S * model;
+                    PrimPush& dst = plan_push[i];
+                    dst = sp;
+                    dst.mvp   = vp * shadow_model;
+                    dst.model = shadow_model;
+                    plan_valid[i] = 1u;
+                });
+            for (std::size_t i = 0; i < entities.size(); ++i)
             {
+                if (plan_valid[i] == 0u) continue;
+                const auto& ent  = entities[i];
                 const auto& mesh = mesh_for(ent.kind);
-                if (!mesh.vb.is_valid()) continue;
-                auto* lt = scene.local(ent.handle);
-                if (lt == nullptr) continue;
                 cmd.bind_vertex_buffer(0, mesh.vb, 0);
                 cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-                const auto model        = cd::math::to_mat4(lt->value);
-                const auto shadow_model = S * model;
-                sp.mvp   = vp * shadow_model;
-                sp.model = shadow_model;
                 cmd.push_constants(prim_material.pipeline_layout(),
                                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                                   0, sizeof(sp), &sp);
+                                   0, sizeof(PrimPush), &plan_push[i]);
                 cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
                 counters.increment("draws_shadow");
             }
