@@ -153,6 +153,9 @@ public:
     // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
     void build_acceleration_structure(cd::rhi::AccelStructureHandle as) override;
 
+    // Phase 251 — vkCmdPipelineBarrier2 AS-build → AS-build memory barrier.
+    void acceleration_structure_barrier() override;
+
     // Phase 135 — RT pipeline bind + vkCmdTraceRaysKHR dispatch.
     void bind_rt_pipeline(cd::rhi::RtPipelineHandle pipeline) override;
     void dispatch_rays(const cd::rhi::DispatchRaysDesc& desc) override;

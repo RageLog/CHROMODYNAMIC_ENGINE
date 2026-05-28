@@ -4232,6 +4232,26 @@ int main()
                 fm[3][1] = -0.55F;
                 push_inst(blas_floor, fm);
             }
+            // Phase 251 — refresh the skinned BLAS so RT shadow rays
+            // trace against the current animation pose instead of the
+            // bind pose. CPU-LBS already re-uploaded gltf_mesh.vb
+            // earlier in this frame; the BLAS storage + scratch were
+            // sized for the original triangle count (unchanged), so
+            // an in-place rebuild via vkCmdBuildAccelerationStructuresKHR
+            // (MODE_BUILD_KHR with the same dst handle) overwrites the
+            // BLAS contents from the freshly-skinned vertex data. We
+            // then issue an AS-build → AS-build memory barrier so the
+            // TLAS build (which dereferences blas device addresses)
+            // observes the updated BLAS rather than racing the write.
+            // Static-geometry BLAS (cube/sphere/etc.) stay at bind
+            // build from boot — only the animated gltf BLAS needs the
+            // refresh.
+            if (skinned.valid && blas_gltf.is_valid())
+            {
+                cmd.build_acceleration_structure(blas_gltf);
+                cmd.acceleration_structure_barrier();
+            }
+
             cd::rhi::AccelStructureDesc tld {};
             tld.kind       = cd::rhi::AccelStructureKind::kTopLevel;
             tld.instances  = std::span<const cd::rhi::AccelInstance>(instances);

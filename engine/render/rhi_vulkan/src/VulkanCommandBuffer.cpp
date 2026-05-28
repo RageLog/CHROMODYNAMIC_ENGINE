@@ -762,4 +762,36 @@ void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHa
     vkCmdBuildAccelerationStructuresKHR(cmd_, 1, &bgi, range_ptrs);
 }
 
+// Phase 251 — AS-build → AS-build memory barrier. Required when a BLAS
+// is rebuilt in-place every frame (skinned mesh) and the TLAS that
+// references it is rebuilt later in the same submission: without this
+// barrier the TLAS build can race the BLAS write. Vulkan spec requires
+// the same stage on both sides of an AS-build dependency.
+void VulkanCommandBuffer::acceleration_structure_barrier()
+{
+    if (vkCmdPipelineBarrier2 == nullptr)
+        return;
+    const VkMemoryBarrier2 mb {
+        .sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .pNext         = nullptr,
+        .srcStageMask  = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstStageMask  = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                         VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+    };
+    const VkDependencyInfo dep {
+        .sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .pNext                    = nullptr,
+        .dependencyFlags          = 0,
+        .memoryBarrierCount       = 1,
+        .pMemoryBarriers          = &mb,
+        .bufferMemoryBarrierCount = 0,
+        .pBufferMemoryBarriers    = nullptr,
+        .imageMemoryBarrierCount  = 0,
+        .pImageMemoryBarriers     = nullptr,
+    };
+    vkCmdPipelineBarrier2(cmd_, &dep);
+}
+
 }  // namespace cd::rhi_vulkan

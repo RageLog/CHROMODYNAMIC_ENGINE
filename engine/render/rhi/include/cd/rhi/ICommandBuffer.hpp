@@ -184,6 +184,18 @@ public:
 
     virtual void build_acceleration_structure(AccelStructureHandle /*as*/) {}
 
+    /// Phase 251 — pipeline barrier between an AS build (BLAS or TLAS)
+    /// and a subsequent AS build/use on the same command buffer. Required
+    /// when a BLAS is rebuilt in-place every frame (e.g. CPU-LBS skinning
+    /// updates the vertex buffer that backs a BLAS) and the TLAS that
+    /// references it is rebuilt later in the same submission. Maps to
+    /// `vkCmdPipelineBarrier2` with
+    /// `srcStageMask = dstStageMask = ACCELERATION_STRUCTURE_BUILD_KHR`
+    /// and `srcAccessMask = ACCELERATION_STRUCTURE_WRITE_KHR`,
+    /// `dstAccessMask = ACCELERATION_STRUCTURE_READ_KHR |
+    /// ACCELERATION_STRUCTURE_WRITE_KHR`. Backends without RT no-op.
+    virtual void acceleration_structure_barrier() {}
+
     virtual void dispatch_rays(const DispatchRaysDesc& /*desc*/) {}
 };
 
