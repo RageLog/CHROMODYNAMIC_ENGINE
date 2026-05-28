@@ -2158,6 +2158,20 @@ struct GizmoState
     bool was_hovered { false };
 };
 
+// PrevCamBasis - camera basis snapshot used by composite for motion-blur
+// reprojection. Populated AFTER each composite invoke so the next frame's
+// reprojection sees t-1. First frame: prev = current (zero velocity).
+struct PrevCamBasis
+{
+    cd::math::Vec3f right { 1.0F, 0.0F, 0.0F };
+    cd::math::Vec3f up { 0.0F, 1.0F, 0.0F };
+    cd::math::Vec3f fwd { 0.0F, 0.0F, -1.0F };
+    cd::math::Vec3f pos { 0.0F, 0.0F, 0.0F };
+    float half_w { 1.0F };
+    float half_h { 1.0F };
+    bool valid { false };
+};
+
 // ---- SunLight + resolve_sun_light -----------------------------------------
 // Per-frame extracted from main loop in phase 307 (N4B). The sun slot
 // (direction + linear RGB + clamped strength + ambient hemisphere weight)
@@ -3433,6 +3447,322 @@ inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
         run_bloom_pass(bloom_upsample_material, bloom_up_insts[i],
                        bloom_chain.mips[dst_index], cd::rhi::LoadOp::kLoad, bytes, bloom_first_frame);
     }
+}
+
+// ---- begin_composite_pass --------------------------------------------------
+// Heavy composite-pass extraction (phase 317 / Marathon Run 10 N6C, ~285
+// lines body): TAA history ping-pong barrier, swapchain + history render
+// pass open, composite_material apply, CompositePush fill (tonemap + AO +
+// DOF + light shafts + atmospheric fog + camera basis for SSR + prev-cam
+// motion blur), draw, prev_cam_basis snapshot for next frame, prev_vp
+// snapshot for next frame's velocity pass.
+//
+// IMPORTANT: this helper OPENS the swapchain render pass but does NOT
+// close it. The caller draws ImGui inside the same pass after this
+// returns and then calls cmd.end_render_pass(). That keeps the swapchain
+// + history dual-attachment configuration consistent across composite
+// + ImGui without recreating the pass.
+inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
+                                 std::uint32_t frame_idx,
+                                 cd::rhi::TextureViewHandle swapchain_view,
+                                 cd::rhi::Extent2D extent,
+                                 std::array<ColorTarget, 2>& history_targets,
+                                 std::array<cd::rhi::ResourceState, 2>& history_states,
+                                 cd::material::Material& composite_material,
+                                 std::array<cd::material::MaterialInstance, 2>& composite_insts,
+                                 const cd_sample::HelloEngineFx& fx,
+                                 const std::vector<LightRow>& lights,
+                                 const cd::camera::Camera& cam,
+                                 std::chrono::steady_clock::time_point frame_loop_start,
+                                 PrevCamBasis& prev_cam_basis,
+                                 cd::math::Mat4f& prev_vp_unjittered,
+                                 bool& prev_vp_valid,
+                                 const cd::math::Mat4f& vp_unjittered)
+{
+    // TAA ping-pong selection. composite_insts[read_idx] has its
+    // binding=4 wired to history_targets[read_idx]; we render into
+    // history_targets[write_idx] (= the OTHER one) as the 2nd
+    // color attachment so next frame can read it.
+    const std::uint32_t read_idx = frame_idx & 1U;
+    const std::uint32_t write_idx = 1U - read_idx;
+
+    // Barrier the two history targets: read side ??' ShaderResource,
+    // write side ??' ColorAttachment.
+    {
+        std::array<cd::rhi::TextureBarrier, 2> hb {
+            cd::rhi::TextureBarrier { .texture = history_targets[read_idx].image,
+                                     .from = history_states[read_idx],
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } },
+            cd::rhi::TextureBarrier { .texture = history_targets[write_idx].image,
+                                     .from = history_states[write_idx],
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, hb);
+        history_states[read_idx] = cd::rhi::ResourceState::kShaderResource;
+        history_states[write_idx] = cd::rhi::ResourceState::kColorAttachment;
+    }
+
+    std::array<cd::rhi::ColorAttachmentInfo, 2> swap_attach {
+        cd::rhi::ColorAttachmentInfo { .view = swapchain_view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = history_targets[write_idx].view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
+    };
+    cd::rhi::RenderPassBeginInfo swap_rp {};
+    swap_rp.render_area = cd::rhi::Rect2D {
+        { 0, 0 },
+        extent
+    };
+    swap_rp.color_attachments = swap_attach;
+    swap_rp.depth_stencil = nullptr;
+    cmd.begin_render_pass(swap_rp);
+    cmd.set_viewport(
+        cd::rhi::Viewport { 0.0F,
+                            0.0F,
+                            static_cast<float>(extent.width),
+                            static_cast<float>(extent.height),
+                            0.0F,
+                            1.0F }
+    );
+    cmd.set_scissor(
+        cd::rhi::Rect2D {
+            { 0, 0 },
+            extent
+    }
+    );
+    composite_material.apply(cmd);
+    composite_insts[read_idx].bind(cmd, 0);
+    CompositePush cp {};
+    cp.fx[0] = static_cast<float>(fx.tonemap_op);
+    cp.fx[1] = fx.exposure;
+    cp.fx[2] = fx.saturation_boost;
+    cp.fx[3] = fx.bloom_post;
+    cp.ao[0] = fx.ao_strength;
+    // B05: 4 px was nearly invisible at 1600?900. Bumped to 20 px
+    // so the crease darkening reads at typical viewport sizes.
+    cp.ao[1] = 20.0F;
+    cp.ao[2] = cam.near_z;
+    cp.ao[3] = cam.far_z;
+    // DOF - wired from the existing UI slider. Focus on cam.target
+    // (length(eye - target)), default 4 m range, 8 px max blur.
+    const float focus_dist = cd::math::length(
+        cd::math::Vec3f { cam.eye.x - cam.target.x, cam.eye.y - cam.target.y, cam.eye.z - cam.target.z }
+    );
+    cp.dof[0] = fx.dof_strength;
+    cp.dof[1] = focus_dist;
+    cp.dof[2] = 4.0F;  // focus range (m) - pixels within ??range stay sharp
+    cp.dof[3] = 8.0F;  // max blur radius (px)
+    // Light shafts - project the first enabled directional light's
+    // sun position to screen-space UV (sun lives at infinity in
+    // direction -L). If sun is behind camera (fwd_dot ??? 0) we
+    // signal disabled via negative strength.
+    cp.shafts[0] = 0.5F;
+    cp.shafts[1] = 0.5F;
+    cp.shafts[2] = -1.0F;  // disabled until a directional light + visible sun
+    cp.shafts[3] = 1.0F;
+    // sun_col.w packs the volumetric-clouds coverage (composite uses it
+    // for the sky-region fBm cloud overlay). RGB filled in the loop
+    // below from the first enabled directional light's colour.
+    cp.sun_col[0] = 0.0F;
+    cp.sun_col[1] = 0.0F;
+    cp.sun_col[2] = 0.0F;
+    cp.sun_col[3] = fx.clouds_coverage;
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (lrow.light.type != cd::light::LightType::kDirectional)
+            continue;
+        const cd::math::Vec3f to_sun { -lrow.light.direction.x, -lrow.light.direction.y, -lrow.light.direction.z };
+        // Compute camera basis (forward/right/up). Same construction
+        // as the sky/PBR push setup right above.
+        const cd::math::Vec3f cam_fwd_n { cam.target.x - cam.eye.x,
+                                          cam.target.y - cam.eye.y,
+                                          cam.target.z - cam.eye.z };
+        const float cam_fwd_len =
+            std::sqrt(cam_fwd_n.x * cam_fwd_n.x + cam_fwd_n.y * cam_fwd_n.y + cam_fwd_n.z * cam_fwd_n.z);
+        if (cam_fwd_len < 1e-6F)
+            break;
+        const cd::math::Vec3f f { cam_fwd_n.x / cam_fwd_len, cam_fwd_n.y / cam_fwd_len, cam_fwd_n.z / cam_fwd_len };
+        const cd::math::Vec3f shaft_up_axis { 0.0F, 1.0F, 0.0F };
+        const cd::math::Vec3f r_raw { f.y * shaft_up_axis.z - f.z * shaft_up_axis.y,
+                                      f.z * shaft_up_axis.x - f.x * shaft_up_axis.z,
+                                      f.x * shaft_up_axis.y - f.y * shaft_up_axis.x };
+        const float r_len = std::sqrt(r_raw.x * r_raw.x + r_raw.y * r_raw.y + r_raw.z * r_raw.z);
+        if (r_len < 1e-6F)
+            break;
+        const cd::math::Vec3f r { r_raw.x / r_len, r_raw.y / r_len, r_raw.z / r_len };
+        const cd::math::Vec3f u { r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x };
+        const float fwd_dot = to_sun.x * f.x + to_sun.y * f.y + to_sun.z * f.z;
+        if (fwd_dot <= 0.0F)
+            break;  // sun behind camera
+        const float r_dot = to_sun.x * r.x + to_sun.y * r.y + to_sun.z * r.z;
+        const float u_dot = to_sun.x * u.x + to_sun.y * u.y + to_sun.z * u.z;
+        const float aspect_l = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        const float half_h_l = std::tan(cam.fov_y * 0.5F);
+        const float half_w_l = half_h_l * aspect_l;
+        const float sun_ndc_x = (r_dot / fwd_dot) / half_w_l;
+        const float sun_ndc_y = (u_dot / fwd_dot) / half_h_l;
+        cp.shafts[0] = 0.5F + 0.5F * sun_ndc_x;
+        cp.shafts[1] = 0.5F - 0.5F * sun_ndc_y;
+        // W4-E: smoother edge fade. Old fade hit zero exactly at the
+        // [-1, 1] NDC boundary, so off-screen sun caused shafts to
+        // pop. New shape uses smoothstep with a half-NDC overshoot
+        // so shafts taper gracefully across the edge.
+        const float ndc_max = std::max(std::abs(sun_ndc_x), std::abs(sun_ndc_y));
+        // 0 at ndc_max=1.5 (just off-screen), 1 at ndc_max<=0.5
+        // (well-inside). Smoothstep(1.5, 0.5, ndc_max) follows the
+        // requested orientation.
+        float edge_fade = 1.0F;
+        {
+            const float t = std::clamp((1.5F - ndc_max) / 1.0F, 0.0F, 1.0F);
+            edge_fade = t * t * (3.0F - 2.0F * t);
+        }
+        cp.shafts[2] = fx.shafts_strength * edge_fade;
+        // W4-E: gentler decay so shafts visibly reach across the
+        // frame instead of dying within ~25% of UV distance from
+        // sun. Was 3.5; 1.6 keeps shafts readable at the corners.
+        cp.shafts[3] = 1.6F;  // decay (per UV distance)
+        cp.sun_col[0] = lrow.light.color.x;
+        cp.sun_col[1] = lrow.light.color.y;
+        cp.sun_col[2] = lrow.light.color.z;
+        // Preserve clouds_coverage (already set above before the loop).
+        break;
+    }
+    // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
+    // horizon tint with distance). Reuses the existing UI sliders
+    // so the composite is now the *one* home for these effects.
+    cp.atmo[0] = fx.fog_density;
+    cp.atmo[1] = fx.aerial_perspective;
+    cp.atmo[2] = fx.vignette_strength;
+    cp.atmo[3] = fx.film_grain;
+    cp.lens[0] = fx.chromab_strength;
+    // R5 volumetric fog single-scatter - sun direction packed here.
+    // Composite uses (view ? -sun) with Henyey-Greenstein phase to
+    // colour the fog along the sun ray. Use first enabled directional
+    // light, else neutral (0,-1,0) so no in-scatter shows up.
+    cd::math::Vec3f sun_dir_world { 0.0F, -1.0F, 0.0F };
+    for (const auto& lrow : lights)
+    {
+        if (!lrow.enabled)
+            continue;
+        if (lrow.light.type != cd::light::LightType::kDirectional)
+            continue;
+        sun_dir_world = lrow.light.direction;
+        break;
+    }
+    cp.lens[1] = sun_dir_world.x;
+    cp.lens[2] = sun_dir_world.y;
+    cp.lens[3] = sun_dir_world.z;
+    // G-Buffer-aware ops: pack camera basis so the composite FS can
+    // reconstruct world-space positions per pixel for SSR + normal-
+    // aware AO. Match the same basis the sky shader uses (forward
+    // = (target-eye)/|...|, right = forward ?- +Y, up = right ?-
+    // forward) so SSR rays project consistently.
+    {
+        const cd::math::Vec3f fwd_raw { cam.target.x - cam.eye.x,
+                                        cam.target.y - cam.eye.y,
+                                        cam.target.z - cam.eye.z };
+        const float ssr_fl = std::sqrt(fwd_raw.x * fwd_raw.x + fwd_raw.y * fwd_raw.y + fwd_raw.z * fwd_raw.z);
+        const cd::math::Vec3f fwd =
+            (ssr_fl > 1e-6F) ? cd::math::Vec3f { fwd_raw.x / ssr_fl, fwd_raw.y / ssr_fl, fwd_raw.z / ssr_fl }
+                             : cd::math::Vec3f { 0.0F, 0.0F, -1.0F };
+        constexpr cd::math::Vec3f cam_world_up { 0.0F, 1.0F, 0.0F };
+        const cd::math::Vec3f r_raw { fwd.y * cam_world_up.z - fwd.z * cam_world_up.y,
+                                      fwd.z * cam_world_up.x - fwd.x * cam_world_up.z,
+                                      fwd.x * cam_world_up.y - fwd.y * cam_world_up.x };
+        const float ssr_rl = std::sqrt(r_raw.x * r_raw.x + r_raw.y * r_raw.y + r_raw.z * r_raw.z);
+        const cd::math::Vec3f right = (ssr_rl > 1e-6F)
+                                          ? cd::math::Vec3f { r_raw.x / ssr_rl, r_raw.y / ssr_rl, r_raw.z / ssr_rl }
+                                          : cd::math::Vec3f { 1.0F, 0.0F, 0.0F };
+        const cd::math::Vec3f up_cam { right.y * fwd.z - right.z * fwd.y,
+                                       right.z * fwd.x - right.x * fwd.z,
+                                       right.x * fwd.y - right.y * fwd.x };
+        const float aspect_l = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        const float half_h_l = std::tan(cam.fov_y * 0.5F);
+        const float half_w_l = half_h_l * aspect_l;
+        cp.cam_right[0] = right.x;
+        cp.cam_right[1] = right.y;
+        cp.cam_right[2] = right.z;
+        cp.cam_right[3] = half_w_l;
+        cp.cam_up[0] = up_cam.x;
+        cp.cam_up[1] = up_cam.y;
+        cp.cam_up[2] = up_cam.z;
+        cp.cam_up[3] = half_h_l;
+        cp.cam_fwd[0] = fwd.x;
+        cp.cam_fwd[1] = fwd.y;
+        // TAA alpha - first frame must blend 0 (history undefined).
+        cp.cam_fwd[2] = fwd.z;
+        cp.cam_fwd[3] = (frame_idx > 0) ? fx.taa_amount : 0.0F;
+        cp.cam_pos[0] = cam.eye.x;
+        cp.cam_pos[1] = cam.eye.y;
+        // W6-B: w slot carries the composite's anim-time (seconds
+        // since the frame loop started) so post-fx that need a
+        // monotonic clock — e.g. the volumetric-cloud drift — read
+        // it without an extra push-constant slot or a global state
+        // buffer. Use the frame-loop epoch instead of steady_clock
+        // since-epoch so the noise stays in a sane numeric range.
+        cp.cam_pos[2] = cam.eye.z;
+        cp.cam_pos[3] = std::chrono::duration<float>(std::chrono::steady_clock::now() - frame_loop_start).count();
+    }
+    // SSR - wired from the existing UI slider; defaults to 0 (off).
+    cp.ssr[0] = fx.ssr_strength;
+    cp.ssr[1] = 25.0F;  // max distance (m)
+    cp.ssr[2] = 24.0F;  // max steps
+    cp.ssr[3] = 1.5F;   // edge-fade aggressiveness
+
+    // Camera-velocity motion blur: pack the prev-frame basis. On
+    // the very first frame, mirror current basis (zero velocity).
+    {
+        const auto& pb = prev_cam_basis;
+        const bool first = !pb.valid;
+        const cd::math::Vec3f pr =
+            first ? cd::math::Vec3f { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] } : pb.right;
+        const cd::math::Vec3f pu = first ? cd::math::Vec3f { cp.cam_up[0], cp.cam_up[1], cp.cam_up[2] } : pb.up;
+        const cd::math::Vec3f pf = first ? cd::math::Vec3f { cp.cam_fwd[0], cp.cam_fwd[1], cp.cam_fwd[2] } : pb.fwd;
+        const cd::math::Vec3f pp = first ? cd::math::Vec3f { cp.cam_pos[0], cp.cam_pos[1], cp.cam_pos[2] } : pb.pos;
+        const float phw = first ? cp.cam_right[3] : pb.half_w;
+        const float phh = first ? cp.cam_up[3] : pb.half_h;
+        cp.prev_cam_right[0] = pr.x;
+        cp.prev_cam_right[1] = pr.y;
+        cp.prev_cam_right[2] = pr.z;
+        cp.prev_cam_right[3] = phw;
+        cp.prev_cam_up[0] = pu.x;
+        cp.prev_cam_up[1] = pu.y;
+        cp.prev_cam_up[2] = pu.z;
+        cp.prev_cam_up[3] = phh;
+        cp.prev_cam_fwd[0] = pf.x;
+        cp.prev_cam_fwd[1] = pf.y;
+        cp.prev_cam_fwd[2] = pf.z;
+        cp.prev_cam_fwd[3] = fx.motion_blur;
+        cp.prev_cam_pos[0] = pp.x;
+        cp.prev_cam_pos[1] = pp.y;
+        cp.prev_cam_pos[2] = pp.z;
+        cp.prev_cam_pos[3] = 8.0F;  // sample count
+    }
+
+    cmd.push_constants(composite_material.pipeline_layout(), cd::rhi::ShaderStage::kFragment, 0, sizeof(cp), &cp);
+    cmd.draw(3, 1, 0, 0);
+
+    // Snapshot current camera basis for next frame's velocity
+    // reprojection. Done AFTER the push so the next frame can
+    // reproject "where was this pixel one frame ago?".
+    prev_cam_basis.right = { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] };
+    prev_cam_basis.up = { cp.cam_up[0], cp.cam_up[1], cp.cam_up[2] };
+    prev_cam_basis.fwd = { cp.cam_fwd[0], cp.cam_fwd[1], cp.cam_fwd[2] };
+    prev_cam_basis.pos = { cp.cam_pos[0], cp.cam_pos[1], cp.cam_pos[2] };
+    prev_cam_basis.half_w = cp.cam_right[3];
+    prev_cam_basis.half_h = cp.cam_up[3];
+    prev_cam_basis.valid = true;
+    // Snapshot the un-jittered VP for next frame's velocity pass.
+    prev_vp_unjittered = vp_unjittered;
+    prev_vp_valid = true;
 }
 
 }  // namespace
@@ -5245,19 +5575,7 @@ int main()
     // visible on first run. User reported they were hard to read at the
     // previous default.
 
-    // Previous-frame camera basis snapshot - populated AFTER each
-    // composite invoke so the next frame's reprojection sees t-1.
-    // First frame: prev = current (zero velocity).
-    struct PrevCamBasis
-    {
-        cd::math::Vec3f right { 1.0F, 0.0F, 0.0F };
-        cd::math::Vec3f up { 0.0F, 1.0F, 0.0F };
-        cd::math::Vec3f fwd { 0.0F, 0.0F, -1.0F };
-        cd::math::Vec3f pos { 0.0F, 0.0F, 0.0F };
-        float half_w { 1.0F };
-        float half_h { 1.0F };
-        bool valid { false };
-    } prev_cam_basis {};
+    PrevCamBasis prev_cam_basis {};
 
     // R3 phase 227 - prev frame's UN-JITTERED VP matrix for the velocity
     // pass. UN-jittered so jitter doesn't pollute the velocity output.
@@ -7387,290 +7705,13 @@ int main()
                         bloom_downsample_material, bloom_down_insts,
                         bloom_upsample_material, bloom_up_insts);
 
-        // TAA ping-pong selection. composite_insts[read_idx] has its
-        // binding=4 wired to history_targets[read_idx]; we render into
-        // history_targets[write_idx] (= the OTHER one) as the 2nd
-        // color attachment so next frame can read it.
-        const std::uint32_t read_idx = frame_idx & 1U;
-        const std::uint32_t write_idx = 1U - read_idx;
-
-        // Barrier the two history targets: read side ??' ShaderResource,
-        // write side ??' ColorAttachment.
-        {
-            std::array<cd::rhi::TextureBarrier, 2> hb {
-                cd::rhi::TextureBarrier { .texture = history_targets[read_idx].image,
-                                         .from = history_states[read_idx],
-                                         .to = cd::rhi::ResourceState::kShaderResource,
-                                         .range = { 0, 1, 0, 1 } },
-                cd::rhi::TextureBarrier { .texture = history_targets[write_idx].image,
-                                         .from = history_states[write_idx],
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } }
-            };
-            cmd.barrier({}, hb);
-            history_states[read_idx] = cd::rhi::ResourceState::kShaderResource;
-            history_states[write_idx] = cd::rhi::ResourceState::kColorAttachment;
-        }
-
-        std::array<cd::rhi::ColorAttachmentInfo, 2> swap_attach {
-            cd::rhi::ColorAttachmentInfo { .view = frame.swapchain_image_view,
-                                          .load_op = cd::rhi::LoadOp::kClear,
-                                          .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } },
-            cd::rhi::ColorAttachmentInfo { .view = history_targets[write_idx].view,
-                                          .load_op = cd::rhi::LoadOp::kClear,
-                                          .store_op = cd::rhi::StoreOp::kStore,
-                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
-        };
-        cd::rhi::RenderPassBeginInfo swap_rp {};
-        swap_rp.render_area = cd::rhi::Rect2D {
-            { 0, 0 },
-            frame.extent
-        };
-        swap_rp.color_attachments = swap_attach;
-        swap_rp.depth_stencil = nullptr;
-        cmd.begin_render_pass(swap_rp);
-        cmd.set_viewport(
-            cd::rhi::Viewport { 0.0F,
-                                0.0F,
-                                static_cast<float>(frame.extent.width),
-                                static_cast<float>(frame.extent.height),
-                                0.0F,
-                                1.0F }
-        );
-        cmd.set_scissor(
-            cd::rhi::Rect2D {
-                { 0, 0 },
-                frame.extent
-        }
-        );
-        composite_material.apply(cmd);
-        composite_insts[read_idx].bind(cmd, 0);
-        CompositePush cp {};
-        cp.fx[0] = static_cast<float>(fx.tonemap_op);
-        cp.fx[1] = fx.exposure;
-        cp.fx[2] = fx.saturation_boost;
-        cp.fx[3] = fx.bloom_post;
-        cp.ao[0] = fx.ao_strength;
-        // B05: 4 px was nearly invisible at 1600?900. Bumped to 20 px
-        // so the crease darkening reads at typical viewport sizes.
-        cp.ao[1] = 20.0F;
-        cp.ao[2] = cam.near_z;
-        cp.ao[3] = cam.far_z;
-        // DOF - wired from the existing UI slider. Focus on cam.target
-        // (length(eye - target)), default 4 m range, 8 px max blur.
-        const float focus_dist = cd::math::length(
-            cd::math::Vec3f { cam.eye.x - cam.target.x, cam.eye.y - cam.target.y, cam.eye.z - cam.target.z }
-        );
-        cp.dof[0] = fx.dof_strength;
-        cp.dof[1] = focus_dist;
-        cp.dof[2] = 4.0F;  // focus range (m) - pixels within ??range stay sharp
-        cp.dof[3] = 8.0F;  // max blur radius (px)
-        // Light shafts - project the first enabled directional light's
-        // sun position to screen-space UV (sun lives at infinity in
-        // direction -L). If sun is behind camera (fwd_dot ??? 0) we
-        // signal disabled via negative strength.
-        cp.shafts[0] = 0.5F;
-        cp.shafts[1] = 0.5F;
-        cp.shafts[2] = -1.0F;  // disabled until a directional light + visible sun
-        cp.shafts[3] = 1.0F;
-        // sun_col.w packs the volumetric-clouds coverage (composite uses it
-        // for the sky-region fBm cloud overlay). RGB filled in the loop
-        // below from the first enabled directional light's colour.
-        cp.sun_col[0] = 0.0F;
-        cp.sun_col[1] = 0.0F;
-        cp.sun_col[2] = 0.0F;
-        cp.sun_col[3] = fx.clouds_coverage;
-        for (const auto& lrow : lights)
-        {
-            if (!lrow.enabled)
-                continue;
-            if (lrow.light.type != cd::light::LightType::kDirectional)
-                continue;
-            const cd::math::Vec3f to_sun { -lrow.light.direction.x, -lrow.light.direction.y, -lrow.light.direction.z };
-            // Compute camera basis (forward/right/up). Same construction
-            // as the sky/PBR push setup right above.
-            const cd::math::Vec3f cam_fwd_n { cam.target.x - cam.eye.x,
-                                              cam.target.y - cam.eye.y,
-                                              cam.target.z - cam.eye.z };
-            const float cam_fwd_len =
-                std::sqrt(cam_fwd_n.x * cam_fwd_n.x + cam_fwd_n.y * cam_fwd_n.y + cam_fwd_n.z * cam_fwd_n.z);
-            if (cam_fwd_len < 1e-6F)
-                break;
-            const cd::math::Vec3f f { cam_fwd_n.x / cam_fwd_len, cam_fwd_n.y / cam_fwd_len, cam_fwd_n.z / cam_fwd_len };
-            const cd::math::Vec3f shaft_up_axis { 0.0F, 1.0F, 0.0F };
-            const cd::math::Vec3f r_raw { f.y * shaft_up_axis.z - f.z * shaft_up_axis.y,
-                                          f.z * shaft_up_axis.x - f.x * shaft_up_axis.z,
-                                          f.x * shaft_up_axis.y - f.y * shaft_up_axis.x };
-            const float r_len = std::sqrt(r_raw.x * r_raw.x + r_raw.y * r_raw.y + r_raw.z * r_raw.z);
-            if (r_len < 1e-6F)
-                break;
-            const cd::math::Vec3f r { r_raw.x / r_len, r_raw.y / r_len, r_raw.z / r_len };
-            const cd::math::Vec3f u { r.y * f.z - r.z * f.y, r.z * f.x - r.x * f.z, r.x * f.y - r.y * f.x };
-            const float fwd_dot = to_sun.x * f.x + to_sun.y * f.y + to_sun.z * f.z;
-            if (fwd_dot <= 0.0F)
-                break;  // sun behind camera
-            const float r_dot = to_sun.x * r.x + to_sun.y * r.y + to_sun.z * r.z;
-            const float u_dot = to_sun.x * u.x + to_sun.y * u.y + to_sun.z * u.z;
-            const float aspect_l = static_cast<float>(frame.extent.width) / static_cast<float>(frame.extent.height);
-            const float half_h_l = std::tan(cam.fov_y * 0.5F);
-            const float half_w_l = half_h_l * aspect_l;
-            const float sun_ndc_x = (r_dot / fwd_dot) / half_w_l;
-            const float sun_ndc_y = (u_dot / fwd_dot) / half_h_l;
-            cp.shafts[0] = 0.5F + 0.5F * sun_ndc_x;
-            cp.shafts[1] = 0.5F - 0.5F * sun_ndc_y;
-            // W4-E: smoother edge fade. Old fade hit zero exactly at the
-            // [-1, 1] NDC boundary, so off-screen sun caused shafts to
-            // pop. New shape uses smoothstep with a half-NDC overshoot
-            // so shafts taper gracefully across the edge.
-            const float ndc_max = std::max(std::abs(sun_ndc_x), std::abs(sun_ndc_y));
-            // 0 at ndc_max=1.5 (just off-screen), 1 at ndc_max<=0.5
-            // (well-inside). Smoothstep(1.5, 0.5, ndc_max) follows the
-            // requested orientation.
-            float edge_fade = 1.0F;
-            {
-                const float t = std::clamp((1.5F - ndc_max) / 1.0F, 0.0F, 1.0F);
-                edge_fade = t * t * (3.0F - 2.0F * t);
-            }
-            cp.shafts[2] = fx.shafts_strength * edge_fade;
-            // W4-E: gentler decay so shafts visibly reach across the
-            // frame instead of dying within ~25% of UV distance from
-            // sun. Was 3.5; 1.6 keeps shafts readable at the corners.
-            cp.shafts[3] = 1.6F;  // decay (per UV distance)
-            cp.sun_col[0] = lrow.light.color.x;
-            cp.sun_col[1] = lrow.light.color.y;
-            cp.sun_col[2] = lrow.light.color.z;
-            // Preserve clouds_coverage (already set above before the loop).
-            break;
-        }
-        // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
-        // horizon tint with distance). Reuses the existing UI sliders
-        // so the composite is now the *one* home for these effects.
-        cp.atmo[0] = fx.fog_density;
-        cp.atmo[1] = fx.aerial_perspective;
-        cp.atmo[2] = fx.vignette_strength;
-        cp.atmo[3] = fx.film_grain;
-        cp.lens[0] = fx.chromab_strength;
-        // R5 volumetric fog single-scatter - sun direction packed here.
-        // Composite uses (view ? -sun) with Henyey-Greenstein phase to
-        // colour the fog along the sun ray. Use first enabled directional
-        // light, else neutral (0,-1,0) so no in-scatter shows up.
-        cd::math::Vec3f sun_dir_world { 0.0F, -1.0F, 0.0F };
-        for (const auto& lrow : lights)
-        {
-            if (!lrow.enabled)
-                continue;
-            if (lrow.light.type != cd::light::LightType::kDirectional)
-                continue;
-            sun_dir_world = lrow.light.direction;
-            break;
-        }
-        cp.lens[1] = sun_dir_world.x;
-        cp.lens[2] = sun_dir_world.y;
-        cp.lens[3] = sun_dir_world.z;
-        // G-Buffer-aware ops: pack camera basis so the composite FS can
-        // reconstruct world-space positions per pixel for SSR + normal-
-        // aware AO. Match the same basis the sky shader uses (forward
-        // = (target-eye)/|...|, right = forward ?- +Y, up = right ?-
-        // forward) so SSR rays project consistently.
-        {
-            const cd::math::Vec3f fwd_raw { cam.target.x - cam.eye.x,
-                                            cam.target.y - cam.eye.y,
-                                            cam.target.z - cam.eye.z };
-            const float ssr_fl = std::sqrt(fwd_raw.x * fwd_raw.x + fwd_raw.y * fwd_raw.y + fwd_raw.z * fwd_raw.z);
-            const cd::math::Vec3f fwd =
-                (ssr_fl > 1e-6F) ? cd::math::Vec3f { fwd_raw.x / ssr_fl, fwd_raw.y / ssr_fl, fwd_raw.z / ssr_fl }
-                                 : cd::math::Vec3f { 0.0F, 0.0F, -1.0F };
-            constexpr cd::math::Vec3f cam_world_up { 0.0F, 1.0F, 0.0F };
-            const cd::math::Vec3f r_raw { fwd.y * cam_world_up.z - fwd.z * cam_world_up.y,
-                                          fwd.z * cam_world_up.x - fwd.x * cam_world_up.z,
-                                          fwd.x * cam_world_up.y - fwd.y * cam_world_up.x };
-            const float ssr_rl = std::sqrt(r_raw.x * r_raw.x + r_raw.y * r_raw.y + r_raw.z * r_raw.z);
-            const cd::math::Vec3f right = (ssr_rl > 1e-6F)
-                                              ? cd::math::Vec3f { r_raw.x / ssr_rl, r_raw.y / ssr_rl, r_raw.z / ssr_rl }
-                                              : cd::math::Vec3f { 1.0F, 0.0F, 0.0F };
-            const cd::math::Vec3f up_cam { right.y * fwd.z - right.z * fwd.y,
-                                           right.z * fwd.x - right.x * fwd.z,
-                                           right.x * fwd.y - right.y * fwd.x };
-            const float aspect_l = static_cast<float>(frame.extent.width) / static_cast<float>(frame.extent.height);
-            const float half_h_l = std::tan(cam.fov_y * 0.5F);
-            const float half_w_l = half_h_l * aspect_l;
-            cp.cam_right[0] = right.x;
-            cp.cam_right[1] = right.y;
-            cp.cam_right[2] = right.z;
-            cp.cam_right[3] = half_w_l;
-            cp.cam_up[0] = up_cam.x;
-            cp.cam_up[1] = up_cam.y;
-            cp.cam_up[2] = up_cam.z;
-            cp.cam_up[3] = half_h_l;
-            cp.cam_fwd[0] = fwd.x;
-            cp.cam_fwd[1] = fwd.y;
-            // TAA alpha - first frame must blend 0 (history undefined).
-            cp.cam_fwd[2] = fwd.z;
-            cp.cam_fwd[3] = (frame_idx > 0) ? fx.taa_amount : 0.0F;
-            cp.cam_pos[0] = cam.eye.x;
-            cp.cam_pos[1] = cam.eye.y;
-            // W6-B: w slot carries the composite's anim-time (seconds
-            // since the frame loop started) so post-fx that need a
-            // monotonic clock — e.g. the volumetric-cloud drift — read
-            // it without an extra push-constant slot or a global state
-            // buffer. Use the frame-loop epoch instead of steady_clock
-            // since-epoch so the noise stays in a sane numeric range.
-            cp.cam_pos[2] = cam.eye.z;
-            cp.cam_pos[3] = std::chrono::duration<float>(clock::now() - frame_loop_start).count();
-        }
-        // SSR - wired from the existing UI slider; defaults to 0 (off).
-        cp.ssr[0] = fx.ssr_strength;
-        cp.ssr[1] = 25.0F;  // max distance (m)
-        cp.ssr[2] = 24.0F;  // max steps
-        cp.ssr[3] = 1.5F;   // edge-fade aggressiveness
-
-        // Camera-velocity motion blur: pack the prev-frame basis. On
-        // the very first frame, mirror current basis (zero velocity).
-        {
-            const auto& pb = prev_cam_basis;
-            const bool first = !pb.valid;
-            const cd::math::Vec3f pr =
-                first ? cd::math::Vec3f { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] } : pb.right;
-            const cd::math::Vec3f pu = first ? cd::math::Vec3f { cp.cam_up[0], cp.cam_up[1], cp.cam_up[2] } : pb.up;
-            const cd::math::Vec3f pf = first ? cd::math::Vec3f { cp.cam_fwd[0], cp.cam_fwd[1], cp.cam_fwd[2] } : pb.fwd;
-            const cd::math::Vec3f pp = first ? cd::math::Vec3f { cp.cam_pos[0], cp.cam_pos[1], cp.cam_pos[2] } : pb.pos;
-            const float phw = first ? cp.cam_right[3] : pb.half_w;
-            const float phh = first ? cp.cam_up[3] : pb.half_h;
-            cp.prev_cam_right[0] = pr.x;
-            cp.prev_cam_right[1] = pr.y;
-            cp.prev_cam_right[2] = pr.z;
-            cp.prev_cam_right[3] = phw;
-            cp.prev_cam_up[0] = pu.x;
-            cp.prev_cam_up[1] = pu.y;
-            cp.prev_cam_up[2] = pu.z;
-            cp.prev_cam_up[3] = phh;
-            cp.prev_cam_fwd[0] = pf.x;
-            cp.prev_cam_fwd[1] = pf.y;
-            cp.prev_cam_fwd[2] = pf.z;
-            cp.prev_cam_fwd[3] = fx.motion_blur;
-            cp.prev_cam_pos[0] = pp.x;
-            cp.prev_cam_pos[1] = pp.y;
-            cp.prev_cam_pos[2] = pp.z;
-            cp.prev_cam_pos[3] = 8.0F;  // sample count
-        }
-
-        cmd.push_constants(composite_material.pipeline_layout(), cd::rhi::ShaderStage::kFragment, 0, sizeof(cp), &cp);
-        cmd.draw(3, 1, 0, 0);
-
-        // Snapshot current camera basis for next frame's velocity
-        // reprojection. Done AFTER the push so the next frame can
-        // reproject "where was this pixel one frame ago?".
-        prev_cam_basis.right = { cp.cam_right[0], cp.cam_right[1], cp.cam_right[2] };
-        prev_cam_basis.up = { cp.cam_up[0], cp.cam_up[1], cp.cam_up[2] };
-        prev_cam_basis.fwd = { cp.cam_fwd[0], cp.cam_fwd[1], cp.cam_fwd[2] };
-        prev_cam_basis.pos = { cp.cam_pos[0], cp.cam_pos[1], cp.cam_pos[2] };
-        prev_cam_basis.half_w = cp.cam_right[3];
-        prev_cam_basis.half_h = cp.cam_up[3];
-        prev_cam_basis.valid = true;
-        // Snapshot the un-jittered VP for next frame's velocity pass.
-        prev_vp_unjittered = vp_unjittered;
-        prev_vp_valid = true;
+        // ---- Composite + frame-feedback snapshot (R3) ----
+        begin_composite_pass(cmd, frame_idx, frame.swapchain_image_view, frame.extent,
+                             history_targets, history_states,
+                             composite_material, composite_insts,
+                             fx, lights, cam, frame_loop_start,
+                             prev_cam_basis, prev_vp_unjittered, prev_vp_valid,
+                             vp_unjittered);
 
         // ---- ImGui pass (on swapchain, after composite) ----
         ctx.render(cmd);
