@@ -137,6 +137,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <ios>
 #include <optional>
 #include <span>
@@ -566,6 +567,215 @@ inline void draw_history_panel(const cd::editor::EditHistory& history,
     ImGui::Separator();
     for (auto it = log.rbegin(); it != log.rend(); ++it)
         ImGui::TextUnformatted(it->c_str());
+    ImGui::End();
+}
+
+// =============================================================================
+// Phase 298 / Marathon Run 8 sub-N2B: Audio / Net Sim / Streamer UI panel
+// helpers extracted from main(). Audio + Streamer take a std::function<>
+// callback for log_push / streamer_enqueue because the main()-scope
+// originals are stateful lambdas closing over locals (log deque, streamer
+// + tracked vector). std::function adds one virtual call per panel-frame -
+// negligible against ImGui draw cost - and avoids restructuring the
+// closures into namespace-level free helpers, which would force a larger
+// refactor for marginal gain.
+// =============================================================================
+
+// ---- draw_audio_panel -----------------------------------------------------
+inline void draw_audio_panel(bool audio_muted,
+                             float audio_peak_window,
+                             float audio_comp_db_window,
+                             float audio_limiter_gain_min,
+                             const std::deque<float>& audio_meter_history,
+                             const std::vector<std::int16_t>& audio_ring,
+                             std::size_t audio_ring_write,
+                             std::uint64_t audio_total_written,
+                             std::size_t kAudioRingFrames,
+                             const std::function<void(std::string)>& log_push)
+{
+    ImGui::Begin("Audio");
+    if (audio_muted)
+        ImGui::TextColored(ImVec4(1, 0.5F, 0.3F, 1), "MUTED");
+    else
+        ImGui::TextColored(ImVec4(0.4F, 1, 0.4F, 1), "LIVE");
+    ImGui::Text("Mixer -> Comp -> Reverb -> LowPass -> Limiter");
+    ImGui::Separator();
+    ImGui::Text("peak (last buf)      %.3f", static_cast<double>(audio_peak_window));
+    ImGui::Text("comp gain reduction  %.2f dB", static_cast<double>(audio_comp_db_window));
+    ImGui::Text("limiter min gain     %.4f", static_cast<double>(audio_limiter_gain_min));
+    if (!audio_meter_history.empty())
+    {
+        std::vector<float> vv(audio_meter_history.begin(), audio_meter_history.end());
+        ImGui::PlotLines(
+            "##peak_hist",
+            vv.data(),
+            static_cast<int>(vv.size()),
+            0,
+            "peak history",
+            0.0F,
+            1.0F,
+            ImVec2(0, 60)
+        );
+    }
+    // Phase 139 - last 5 s of DSP output dump.
+    ImGui::Separator();
+    ImGui::TextDisabled("No live audio backend wired in this sample -");
+    ImGui::TextDisabled("DSP chain ticks in memory. Save WAV to hear it.");
+    if (ImGui::Button("Save Last 5 s as hello_engine_out.wav"))
+    {
+        // Compose contiguous buffer from ring (oldest ??' newest).
+        std::vector<std::int16_t> samples;
+        samples.reserve(kAudioRingFrames);
+        std::size_t start = audio_ring_write;
+        std::size_t n = (audio_total_written < kAudioRingFrames) ? static_cast<std::size_t>(audio_total_written)
+                                                                 : kAudioRingFrames;
+        if (audio_total_written < kAudioRingFrames)
+            start = 0;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            samples.push_back(audio_ring[(start + i) % kAudioRingFrames]);
+        }
+        // Minimal WAV header (mono s16) - same encoder shape as
+        // hello_audio_chain / hello_audio_synth.
+        const std::uint32_t data_bytes = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+        const std::uint32_t fmt_size = 16;
+        const std::uint32_t riff_size = 4u + 8u + fmt_size + 8u + data_bytes;
+        std::vector<std::byte> bytes;
+        bytes.reserve(8u + riff_size);
+        auto push_tag = [&](const char (&t)[5])
+        {
+            for (int i = 0; i < 4; ++i)
+                bytes.push_back(static_cast<std::byte>(t[i]));
+        };
+        auto push_le = [&](std::uint64_t v, int n_bytes)
+        {
+            for (int i = 0; i < n_bytes; ++i)
+            {
+                const auto shift = static_cast<unsigned>(i) * 8u;
+                bytes.push_back(std::byte { static_cast<unsigned char>((v >> shift) & 0xFFu) });
+            }
+        };
+        push_tag("RIFF");
+        push_le(riff_size, 4);
+        push_tag("WAVE");
+        push_tag("fmt ");
+        push_le(fmt_size, 4);
+        push_le(1u, 2);                          // PCM
+        push_le(1u, 2);                          // mono
+        push_le(kAudioSampleRate, 4);
+        push_le(kAudioSampleRate * 1u * 2u, 4);  // byte rate
+        push_le(2u, 2);                          // block align
+        push_le(16u, 2);                         // bits per sample
+        push_tag("data");
+        push_le(data_bytes, 4);
+        bytes.insert(
+            bytes.end(),
+            reinterpret_cast<const std::byte*>(samples.data()),
+            reinterpret_cast<const std::byte*>(samples.data() + samples.size())
+        );
+        std::ofstream f { "hello_engine_out.wav", std::ios::binary | std::ios::trunc };
+        if (f)
+        {
+            f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            log_push("[audio] wrote hello_engine_out.wav (" + std::to_string(bytes.size()) + " B)");
+        }
+        else
+        {
+            log_push("[audio] WAV write failed (ofstream)");
+        }
+    }
+    ImGui::End();
+}
+
+// ---- draw_net_sim_panel ---------------------------------------------------
+inline void draw_net_sim_panel(bool net_enabled,
+                               std::uint32_t net_sent,
+                               std::uint32_t net_recv,
+                               std::uint32_t net_drop,
+                               std::uint64_t net_raw_bytes,
+                               std::uint64_t net_wire_bytes,
+                               const cd::net::LatencyStats& net_rtt,
+                               const cd::net::SnapshotBuffer<float>& net_snapbuf)
+{
+    ImGui::Begin("Net Sim");
+    ImGui::TextColored(
+        net_enabled ? ImVec4(0.4F, 1, 0.4F, 1) : ImVec4(1, 0.5F, 0.3F, 1),
+        "%s",
+        net_enabled ? "RUNNING" : "PAUSED"
+    );
+    ImGui::Text("server tick 60 Hz | throttle 30 pkt/s | 10%% loss | 30-90 ms latency");
+    ImGui::Separator();
+    ImGui::Text("sent    %u", net_sent);
+    ImGui::Text(
+        "recv    %u   (delivery %.1f%%)",
+        net_recv,
+        net_sent == 0 ? 0.0 : 100.0 * static_cast<double>(net_recv) / static_cast<double>(net_sent)
+    );
+    ImGui::Text("drop    %u", net_drop);
+    ImGui::Text(
+        "raw     %llu B  /  wire %llu B   (%.1f%% wire/raw)",
+        static_cast<unsigned long long>(net_raw_bytes),
+        static_cast<unsigned long long>(net_wire_bytes),
+        net_raw_bytes == 0 ? 0.0 : 100.0 * static_cast<double>(net_wire_bytes) / static_cast<double>(net_raw_bytes)
+    );
+    ImGui::Text(
+        "RTT     %.2f ms   jitter %.2f ms",
+        static_cast<double>(net_rtt.current_rtt_us()) / 1000.0,
+        static_cast<double>(net_rtt.jitter_us()) / 1000.0
+    );
+    ImGui::Text("snapshots buffered: %zu", net_snapbuf.size());
+    ImGui::End();
+}
+
+// ---- draw_streamer_panel --------------------------------------------------
+inline void draw_streamer_panel(cd::asset::AsyncStreamer& streamer,
+                                const std::atomic<std::uint32_t>& streamer_completed,
+                                const std::atomic<std::uint32_t>& streamer_failed,
+                                const std::vector<cd::asset::AssetId>& streamer_tracked,
+                                const std::function<void(std::int32_t)>& streamer_enqueue)
+{
+    ImGui::Begin("Streamer");
+    ImGui::TextDisabled("Demo of cd::asset::AsyncStreamer - a background worker");
+    ImGui::TextDisabled("that processes async asset-load requests with priority");
+    ImGui::TextDisabled("and failure handling. Buttons enqueue simulated loads.");
+    ImGui::Separator();
+    ImGui::Text(
+        "worker: %s   pending %zu",
+        streamer.is_running() ? "RUNNING" : "STOPPED",
+        streamer.pending_count()
+    );
+    ImGui::Text(
+        "completed %u   failed %u",
+        streamer_completed.load(std::memory_order_relaxed),
+        streamer_failed.load(std::memory_order_relaxed)
+    );
+    ImGui::Separator();
+    if (ImGui::Button("Enqueue (low prio)"))
+        streamer_enqueue(0);
+    ImGui::SameLine();
+    if (ImGui::Button("Enqueue (high prio)"))
+        streamer_enqueue(100);
+    ImGui::SameLine();
+    if (ImGui::Button("Enqueue 8 burst"))
+    {
+        for (int i = 0; i < 8; ++i)
+            streamer_enqueue(i * 10);
+    }
+    ImGui::Separator();
+    // Recent-tracked rows: id, state.
+    for (auto it = streamer_tracked.rbegin(); it != streamer_tracked.rend(); ++it)
+    {
+        const auto st = streamer.state_of(*it);
+        const char* lbl = st == cd::asset::StreamState::kComplete   ? "COMPLETE"
+                          : st == cd::asset::StreamState::kInflight ? "INFLIGHT"
+                          : st == cd::asset::StreamState::kFailed   ? "FAILED"
+                                                                    : "PENDING";
+        const ImVec4 col = st == cd::asset::StreamState::kComplete   ? ImVec4(0.4F, 1.0F, 0.4F, 1)
+                           : st == cd::asset::StreamState::kInflight ? ImVec4(1.0F, 0.85F, 0.3F, 1)
+                           : st == cd::asset::StreamState::kFailed   ? ImVec4(1.0F, 0.4F, 0.4F, 1)
+                                                                     : ImVec4(0.7F, 0.7F, 0.7F, 1);
+        ImGui::TextColored(col, "id %llu  %s", static_cast<unsigned long long>(it->value()), lbl);
+    }
     ImGui::End();
 }
 
@@ -5431,173 +5641,13 @@ int main()
         draw_random_panel(hist_uniform, hist_normal);
 
         // ---- Audio ----
-        ImGui::Begin("Audio");
-        if (audio_muted)
-            ImGui::TextColored(ImVec4(1, 0.5F, 0.3F, 1), "MUTED");
-        else
-            ImGui::TextColored(ImVec4(0.4F, 1, 0.4F, 1), "LIVE");
-        ImGui::Text("Mixer -> Comp -> Reverb -> LowPass -> Limiter");
-        ImGui::Separator();
-        ImGui::Text("peak (last buf)      %.3f", static_cast<double>(audio_peak_window));
-        ImGui::Text("comp gain reduction  %.2f dB", static_cast<double>(audio_comp_db_window));
-        ImGui::Text("limiter min gain     %.4f", static_cast<double>(audio_limiter_gain_min));
-        if (!audio_meter_history.empty())
-        {
-            std::vector<float> vv(audio_meter_history.begin(), audio_meter_history.end());
-            ImGui::PlotLines(
-                "##peak_hist",
-                vv.data(),
-                static_cast<int>(vv.size()),
-                0,
-                "peak history",
-                0.0F,
-                1.0F,
-                ImVec2(0, 60)
-            );
-        }
-        // Phase 139 - last 5 s of DSP output dump.
-        ImGui::Separator();
-        ImGui::TextDisabled("No live audio backend wired in this sample -");
-        ImGui::TextDisabled("DSP chain ticks in memory. Save WAV to hear it.");
-        if (ImGui::Button("Save Last 5 s as hello_engine_out.wav"))
-        {
-            // Compose contiguous buffer from ring (oldest ??' newest).
-            std::vector<std::int16_t> samples;
-            samples.reserve(kAudioRingFrames);
-            std::size_t start = audio_ring_write;
-            std::size_t n = (audio_total_written < kAudioRingFrames) ? static_cast<std::size_t>(audio_total_written)
-                                                                     : kAudioRingFrames;
-            if (audio_total_written < kAudioRingFrames)
-                start = 0;
-            for (std::size_t i = 0; i < n; ++i)
-            {
-                samples.push_back(audio_ring[(start + i) % kAudioRingFrames]);
-            }
-            // Minimal WAV header (mono s16) - same encoder shape as
-            // hello_audio_chain / hello_audio_synth.
-            const std::uint32_t data_bytes = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
-            const std::uint32_t fmt_size = 16;
-            const std::uint32_t riff_size = 4u + 8u + fmt_size + 8u + data_bytes;
-            std::vector<std::byte> bytes;
-            bytes.reserve(8u + riff_size);
-            auto push_tag = [&](const char (&t)[5])
-            {
-                for (int i = 0; i < 4; ++i)
-                    bytes.push_back(static_cast<std::byte>(t[i]));
-            };
-            auto push_le = [&](std::uint64_t v, int n_bytes)
-            {
-                for (int i = 0; i < n_bytes; ++i)
-                {
-                    const auto shift = static_cast<unsigned>(i) * 8u;
-                    bytes.push_back(std::byte { static_cast<unsigned char>((v >> shift) & 0xFFu) });
-                }
-            };
-            push_tag("RIFF");
-            push_le(riff_size, 4);
-            push_tag("WAVE");
-            push_tag("fmt ");
-            push_le(fmt_size, 4);
-            push_le(1u, 2);                          // PCM
-            push_le(1u, 2);                          // mono
-            push_le(kAudioSampleRate, 4);
-            push_le(kAudioSampleRate * 1u * 2u, 4);  // byte rate
-            push_le(2u, 2);                          // block align
-            push_le(16u, 2);                         // bits per sample
-            push_tag("data");
-            push_le(data_bytes, 4);
-            bytes.insert(
-                bytes.end(),
-                reinterpret_cast<const std::byte*>(samples.data()),
-                reinterpret_cast<const std::byte*>(samples.data() + samples.size())
-            );
-            std::ofstream f { "hello_engine_out.wav", std::ios::binary | std::ios::trunc };
-            if (f)
-            {
-                f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-                log_push("[audio] wrote hello_engine_out.wav (" + std::to_string(bytes.size()) + " B)");
-            }
-            else
-            {
-                log_push("[audio] WAV write failed (ofstream)");
-            }
-        }
-        ImGui::End();
+        draw_audio_panel(audio_muted, audio_peak_window, audio_comp_db_window, audio_limiter_gain_min, audio_meter_history, audio_ring, audio_ring_write, audio_total_written, kAudioRingFrames, log_push);
 
         // ---- Net Sim ----
-        ImGui::Begin("Net Sim");
-        ImGui::TextColored(
-            net_enabled ? ImVec4(0.4F, 1, 0.4F, 1) : ImVec4(1, 0.5F, 0.3F, 1),
-            "%s",
-            net_enabled ? "RUNNING" : "PAUSED"
-        );
-        ImGui::Text("server tick 60 Hz | throttle 30 pkt/s | 10%% loss | 30-90 ms latency");
-        ImGui::Separator();
-        ImGui::Text("sent    %u", net_sent);
-        ImGui::Text(
-            "recv    %u   (delivery %.1f%%)",
-            net_recv,
-            net_sent == 0 ? 0.0 : 100.0 * static_cast<double>(net_recv) / static_cast<double>(net_sent)
-        );
-        ImGui::Text("drop    %u", net_drop);
-        ImGui::Text(
-            "raw     %llu B  /  wire %llu B   (%.1f%% wire/raw)",
-            static_cast<unsigned long long>(net_raw_bytes),
-            static_cast<unsigned long long>(net_wire_bytes),
-            net_raw_bytes == 0 ? 0.0 : 100.0 * static_cast<double>(net_wire_bytes) / static_cast<double>(net_raw_bytes)
-        );
-        ImGui::Text(
-            "RTT     %.2f ms   jitter %.2f ms",
-            static_cast<double>(net_rtt.current_rtt_us()) / 1000.0,
-            static_cast<double>(net_rtt.jitter_us()) / 1000.0
-        );
-        ImGui::Text("snapshots buffered: %zu", net_snapbuf.size());
-        ImGui::End();
+        draw_net_sim_panel(net_enabled, net_sent, net_recv, net_drop, net_raw_bytes, net_wire_bytes, net_rtt, net_snapbuf);
 
         // ---- Streamer (Phase 150) ----
-        ImGui::Begin("Streamer");
-        ImGui::TextDisabled("Demo of cd::asset::AsyncStreamer - a background worker");
-        ImGui::TextDisabled("that processes async asset-load requests with priority");
-        ImGui::TextDisabled("and failure handling. Buttons enqueue simulated loads.");
-        ImGui::Separator();
-        ImGui::Text(
-            "worker: %s   pending %zu",
-            streamer.is_running() ? "RUNNING" : "STOPPED",
-            streamer.pending_count()
-        );
-        ImGui::Text(
-            "completed %u   failed %u",
-            streamer_completed.load(std::memory_order_relaxed),
-            streamer_failed.load(std::memory_order_relaxed)
-        );
-        ImGui::Separator();
-        if (ImGui::Button("Enqueue (low prio)"))
-            streamer_enqueue(0);
-        ImGui::SameLine();
-        if (ImGui::Button("Enqueue (high prio)"))
-            streamer_enqueue(100);
-        ImGui::SameLine();
-        if (ImGui::Button("Enqueue 8 burst"))
-        {
-            for (int i = 0; i < 8; ++i)
-                streamer_enqueue(i * 10);
-        }
-        ImGui::Separator();
-        // Recent-tracked rows: id, state.
-        for (auto it = streamer_tracked.rbegin(); it != streamer_tracked.rend(); ++it)
-        {
-            const auto st = streamer.state_of(*it);
-            const char* lbl = st == cd::asset::StreamState::kComplete   ? "COMPLETE"
-                              : st == cd::asset::StreamState::kInflight ? "INFLIGHT"
-                              : st == cd::asset::StreamState::kFailed   ? "FAILED"
-                                                                        : "PENDING";
-            const ImVec4 col = st == cd::asset::StreamState::kComplete   ? ImVec4(0.4F, 1.0F, 0.4F, 1)
-                               : st == cd::asset::StreamState::kInflight ? ImVec4(1.0F, 0.85F, 0.3F, 1)
-                               : st == cd::asset::StreamState::kFailed   ? ImVec4(1.0F, 0.4F, 0.4F, 1)
-                                                                         : ImVec4(0.7F, 0.7F, 0.7F, 1);
-            ImGui::TextColored(col, "id %llu  %s", static_cast<unsigned long long>(it->value()), lbl);
-        }
-        ImGui::End();
+        draw_streamer_panel(streamer, streamer_completed, streamer_failed, streamer_tracked, streamer_enqueue);
 
         // ---- Outliner (gap #18 cd::world_container preview) ----
         // Read-only world-container tree (top) + clickable entity +
