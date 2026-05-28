@@ -2671,11 +2671,15 @@ int main()
         {
             constexpr int kPbrCols = 4;
             constexpr int kPbrRows = 4;
-            // W8-AS: spacing + scale bumped after user verdict — the
-            // 0.45 scale at 1.1 spacing read as a flat grey grid; bigger
-            // spheres with more breathing room make the metallic/rough
-            // contrast actually visible.
-            constexpr float kPbrSpacing = 1.55F;
+            // W8-AV: altitude reset. W8-AS pushed the grid up to y=5.75
+            // for visibility, but at that height the planar shadow
+            // projection (and shadow-map texel projection at low sun
+            // angles) stretched into the screen-wide black streaks the
+            // user reported. With kSpacing 0.85 and y_base 0.5, the
+            // grid sits between y=0.5 and y=3.05 — still visible as a
+            // discrete material showcase, but shadows stay normal-sized
+            // (comparable to character + procedural row shadows).
+            constexpr float kPbrSpacing = 0.85F;
             constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
             for (int row = 0; row < kPbrRows; ++row)
             {
@@ -2696,12 +2700,13 @@ int main()
                                    static_cast<float>(kPbrRows - 1));
                     const float x = (static_cast<float>(col) -
                                      (static_cast<float>(kPbrCols - 1) * 0.5F)) * kPbrSpacing;
-                    const float y = 1.1F + static_cast<float>(row) * kPbrSpacing;
-                    const float z = -4.0F;
+                    const float y = 0.5F + static_cast<float>(row) * kPbrSpacing;
+                    const float z = -3.8F;
                     scene.local(e.handle)->value.position = { x, y, z };
-                    // 0.65 scale (was 0.45) so chrome reflections + plastic
-                    // diffuse are both legible from the default camera.
-                    scene.local(e.handle)->value.scale    = { 0.65F, 0.65F, 0.65F };
+                    // 0.35 scale matches the tighter spacing — spheres
+                    // touch their nearest neighbours' bounding boxes
+                    // without overlapping visually.
+                    scene.local(e.handle)->value.scale    = { 0.35F, 0.35F, 0.35F };
                     entities.push_back(std::move(e));
                 }
             }
@@ -4383,23 +4388,20 @@ int main()
                 inst.mask = 0xFFu;
                 instances.push_back(inst);
             };
-            // W8-AU: skip PBR demo spheres in TLAS — they're a material
-            // showcase, not scene geometry. Including them as RT ray
-            // occluders made area-light shadow rays hit the spheres
-            // and stamp shadow on every floor pixel under the grid,
-            // which the user saw as a wall of stretched black blobs.
-            // PBR spheres still render (entity draw loop) and still
-            // SAMPLE shadows from CSM + RT — they just don't occlude
-            // anything (matches the W8-AT shadow-caster decision).
+            // W8-AV: PBR spheres back in TLAS as RT occluders too.
+            // The W8-AU skip + the legacy hardcoded 5x5 push were two
+            // separate problems — the W8-AU skip turned out to also
+            // disable the legit RT shadows the user wanted (chrome
+            // sphere casting shadow on the floor under the area
+            // light), so undo the skip. The legacy hardcoded grid
+            // stays removed (it was duplicate occluder geometry at
+            // pre-W8-AR coordinates).
             for (const auto& ent : entities)
             {
-                if (ent.is_pbr) continue;
                 auto* lt = scene.local(ent.handle);
                 if (lt == nullptr) continue;
                 push_inst(blas_for_kind(ent.kind), cd::math::to_mat4(lt->value));
             }
-            // W8-AU: leftover 5x5 hardcoded sphere-grid TLAS instances
-            // REMOVED (legacy from the pre-W8-AR dedicated grid path).
             // Floor: identity scale, y = kFloorY (matches the floor draw).
             {
                 cd::math::Mat4f fm = cd::math::Mat4f::identity();
@@ -4576,15 +4578,14 @@ int main()
                                                          0.1F, 60.0F);
                 const cd::math::Mat4f light_vp2 = light_proj2 * light_view2;
                 // Casters: each ECS entity (using its mesh+transform).
-                // W8-AT: skip PBR demo spheres — they're a material
-                // showcase grid, not part of the scene narrative. Their
-                // large CSM shadows stamped huge dark blobs that ate
-                // the whole floor ("tum objelro solsemde ekranda golge
-                // kaldı"). They still receive shadows (sample the CSM
-                // map in kPrimFS) — they just don't cast.
+                // W8-AV: re-enable PBR sphere CSM casting. The "huge
+                // black blobs" the user saw before W8-AT were caused
+                // by the W8-AS altitude bump (y up to 5.75) producing
+                // very long shadow-map texel projections. With the
+                // W8-AV altitude reset (y up to 3.05) shadows are
+                // normal-sized again.
                 for (const auto& ent : entities)
                 {
-                    if (ent.is_pbr) continue;
                     const auto& mesh = mesh_for(ent.kind);
                     if (!mesh.vb.is_valid()) continue;
                     auto* lt = scene.local(ent.handle);
@@ -5081,11 +5082,10 @@ int main()
             sp.camera_pos[0] = sp.camera_pos[1] = sp.camera_pos[2] = sp.camera_pos[3] = 0.0F;
             sp.fx_params4[0] = sp.fx_params4[1] = sp.fx_params4[2] = sp.fx_params4[3] = 0.0F;
 
-            // Entity casters. W8-AT: skip PBR demo spheres — see CSM
-            // caster loop above for the rationale.
+            // Entity casters. W8-AV: PBR sphere planar shadows re-
+            // enabled, see CSM caster loop above for rationale.
             for (const auto& ent : entities)
             {
-                if (ent.is_pbr) continue;
                 const auto& mesh = mesh_for(ent.kind);
                 if (!mesh.vb.is_valid()) continue;
                 auto* lt = scene.local(ent.handle);
