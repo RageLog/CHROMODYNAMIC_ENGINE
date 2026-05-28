@@ -159,4 +159,56 @@ static_assert(sizeof(AnalyticalSkyPush) == 80,
                 std::pow(std::clamp(-h, 0.0F, 1.0F), 0.5F));
 }
 
+
+// =============================================================================
+// sky_with_sun_cpu — analytical sky + sun-disk hotspot for offline IBL bakes.
+//
+// Phase 291 / Marathon Run 7 sub-N1C: extracted from samples/engine/
+// hello_engine/main.cpp's `bake_sky_with_sun` lambda. Adds an HDR
+// sun disk (Filament-style three-band hotspot) on top of sample_sky_cpu()
+// so cd::ibl::bake_sky_cube produces an environment cube with a
+// visible bright spot at the sun direction. Chrome / low-rough spheres
+// reflect this hotspot through the prefiltered specular cube's mip-0.
+//
+// Thresholds (matched to W8-AX calibration):
+//   cos(dir, sun_unit) > 0.9998  -> disk core (~1.6 deg, +120 R)
+//   cos > 0.995                  -> soft glow (~5.7 deg, smooth ramp)
+//   cos > 0.93                   -> bloom halo               (smooth ramp)
+//
+// Caller supplies a pre-normalised `sun_unit` direction TOWARD the
+// sun (NOT the directional-light "from-sun" vector); convert via
+// `sun_unit = -normalize(light.direction)` at the call site.
+// =============================================================================
+[[nodiscard]] inline cd::math::Vec3f sky_with_sun_cpu(cd::math::Vec3f dir,
+                                                      cd::math::Vec3f sun_unit) noexcept
+{
+    cd::math::Vec3f base = sample_sky_cpu(dir);
+    const float cos_a = dir.x * sun_unit.x + dir.y * sun_unit.y + dir.z * sun_unit.z;
+    if (cos_a > 0.9998F)
+    {
+        // W8-AX disk core: +120/116/108 RGB so the post-tonemap
+        // perceptual brightness is ~0.95 (a punchy hotspot).
+        base.x += 120.0F;
+        base.y += 116.0F;
+        base.z += 108.0F;
+    }
+    else if (cos_a > 0.995F)
+    {
+        const float t = (cos_a - 0.995F) / (0.9998F - 0.995F);
+        const float k = 20.0F * t * t;
+        base.x += k;
+        base.y += k * 0.96F;
+        base.z += k * 0.90F;
+    }
+    else if (cos_a > 0.93F)
+    {
+        const float t = (cos_a - 0.93F) / (0.995F - 0.93F);
+        const float k = 1.5F * t * t;
+        base.x += k;
+        base.y += k * 0.94F;
+        base.z += k * 0.85F;
+    }
+    return base;
+}
+
 }  // namespace cd::material

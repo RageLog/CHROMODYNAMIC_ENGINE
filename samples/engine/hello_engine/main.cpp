@@ -1076,46 +1076,13 @@ int main()
     const cd::math::Vec3f kIblSunUnit { kIblSunDirToward.x / kIblSunLen,
                                         kIblSunDirToward.y / kIblSunLen,
                                         kIblSunDirToward.z / kIblSunLen };
+    // Phase 291 / Marathon Run 7 sub-N1C: the sky+sun-disk CPU sampler
+    // lives in cd::material::sky_with_sun_cpu() now. A small lambda
+    // binds the sample's kIblSunUnit direction for cd::ibl::bake_sky_cube,
+    // which expects a unary functor `Vec3f(dir)`.
     auto bake_sky_with_sun = [&](cd::math::Vec3f dir) noexcept
     {
-        cd::math::Vec3f base = cd::material::sample_sky_cpu(dir);
-        // Sun-disk-in-cube (Filament-style): HDR bright spot at the
-        // canonical sun direction so chrome spheres reflect a visible
-        // hotspot. cos_a thresholds:
-        //   > 0.9998 = disk core (~1.6 deg)  -> luminance ~25
-        //   > 0.995  = soft glow (~5.7 deg)  -> luminance ~4
-        //   > 0.93   = bloom halo            -> luminance ~0.4
-        const float cos_a = dir.x * kIblSunUnit.x + dir.y * kIblSunUnit.y + dir.z * kIblSunUnit.z;
-        // W8-AX: HDR sun disk hotter (was +25 core / +4 glow / +0.4
-        // halo). After tonemap compression the previous values read
-        // as "slightly bright spot"; chrome reference shows a punchy
-        // hotspot that survives ACES shoulder. Bump core to +120,
-        // glow to +20, halo to +1.5 — total post-tonemap perceptual
-        // brightness becomes ~0.95 (clearly bright disc) instead of
-        // ~0.7 (subtle highlight blending with sky).
-        if (cos_a > 0.9998F)
-        {
-            base.x += 120.0F;
-            base.y += 116.0F;
-            base.z += 108.0F;
-        }
-        else if (cos_a > 0.995F)
-        {
-            const float t = (cos_a - 0.995F) / (0.9998F - 0.995F);
-            const float k = 20.0F * t * t;
-            base.x += k;
-            base.y += k * 0.96F;
-            base.z += k * 0.90F;
-        }
-        else if (cos_a > 0.93F)
-        {
-            const float t = (cos_a - 0.93F) / (0.995F - 0.93F);
-            const float k = 1.5F * t * t;
-            base.x += k;
-            base.y += k * 0.94F;
-            base.z += k * 0.85F;
-        }
-        return base;
+        return cd::material::sky_with_sun_cpu(dir, kIblSunUnit);
     };
     // W8-AW tuned: team-lead's original 256 base spec + 1024 samples +
     // 64 diff samples ran the CPU bake into the minutes (Windows
