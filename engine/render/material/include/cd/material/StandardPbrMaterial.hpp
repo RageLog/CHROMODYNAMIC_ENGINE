@@ -435,13 +435,10 @@ void main() {
   // analytical sample_env(). Karis 2013:
   //   IBL = kD * irradiance(N) * albedo +
   //         prefiltered(R, roughness * maxMip) * (F0 * brdf.x + brdf.y)
-  // W8-A: gate previously sun-only. Now also lets non-sun lights leak a
-  // tiny ambient fill so PBR spheres aren't pitch-black on the far
-  // hemisphere when ONLY a spot/area is on. The fill scales with total
-  // non-sun light "presence" (count > 0) instead of summed energy so
-  // we don't accidentally turn the IBL into the dominant source.
-  float non_sun_presence = (cd_lights.count > 0u) ? 1.0 : 0.0;
-  float ibl_gate = clamp(sun_i * 0.6 + non_sun_presence * 0.15, 0.0, 1.0);
+  // W8-C: gate sun-only. Non-sun lights stay strictly local — user
+  // wants flashlight semantics (cone + shadows + dark outside cone).
+  // Genuine indirect bounce returns with the R4 GI ship.
+  float ibl_gate = clamp(sun_i * 0.6, 0.0, 1.0);
   vec3  R           = reflect(-V, N);
   float spec_lod    = roughness * kIblMaxMipLod;
   vec3  prefiltered = textureLod(cd_ibl_spec, R, spec_lod).rgb;

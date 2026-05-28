@@ -746,15 +746,21 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // W7-A: spot + point RT shadows were re-enabled in B12 with bias
-    // tmin 0.15 + N*0.1. The user's R7 visual pass (image 3) shows
-    // the 5x5 PBR sphere grid completely unlit when ONLY the spot is
-    // enabled — neighbour spheres in the dense grid intercept every
-    // shadow ray. Self-shadow + cross-occlusion is technically
-    // correct PBR but defeats the demo intent (visible spot light).
-    // Disabled until R3 per-instance ray mask ships so shading-mesh
-    // self/neighbour rays can be excluded selectively.
-    float vis = 1.0;
+    // W8-C: RT shadow re-enabled. User wants flashlight semantics —
+    // crisp cone of direct light + visible shadows on what's behind.
+    // Bias tightened (tmin 0.30 + N*0.20) so self-hit and immediate-
+    // neighbour false occlusion in the dense PBR sphere grid is
+    // avoided while still letting genuinely-occluded shading points
+    // fall into shadow.
+    float ray_tmax = min(d, rng);
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq, cd_tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFFu, v_world_pos + N * 0.20, 0.30, Lp, ray_tmax);
+    while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
+    float vis = (rayQueryGetIntersectionTypeEXT(rq, true) ==
+                 gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
     vec3  col = cd_lights.slots[li].color_int.xyz;
     float ki  = cd_lights.slots[li].color_int.w;
     lit += albedo * col * (ki * ndl * atten * vis * cone);
@@ -763,16 +769,13 @@ void main() {
   // Hemisphere ambient (sky-up / ground-down) - cheap stand-in for
   // non-textured prim entities. Textured entities (kGltf flagged via
   // fx_params.y > 0.5) get real IBL below.
-  // W8-A: previously tied to pc.sun_color.w (=0 when sun off), which
-  // made non-textured prims pitch black under spot/area-only lighting.
-  // Now adds a floor of 0.10 when ANY non-sun light is in the UBO so
-  // the back hemisphere still reads as scene-present, not vanished.
-  float up_t        = N.y * 0.5 + 0.5;
-  vec3  sky_c       = vec3(0.55, 0.65, 0.85);
-  vec3  gnd_c       = vec3(0.18, 0.16, 0.14);
-  float non_sun_fill = (cd_lights.count > 0u) ? 0.10 : 0.0;
-  float hemi_scale   = max(pc.sun_color.w, non_sun_fill);
-  vec3  hemi    = mix(gnd_c, sky_c, up_t) * hemi_scale;
+  // W8-C: tied to pc.sun_color.w again. When sun is off, ambient = 0
+  // so non-sun lights stay strictly local (spot only lights what's
+  // inside its cone + RT shadow; nothing leaks as 'fill').
+  float up_t   = N.y * 0.5 + 0.5;
+  vec3  sky_c  = vec3(0.55, 0.65, 0.85);
+  vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
+  vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
   vec3  ambient = albedo * hemi;
 
   // R2: True IBL with MR map. Karis split-sum:
@@ -798,15 +801,12 @@ void main() {
     vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
-    // W8-A: gate sun-only previously; user reported PBR spheres go
-    // pitch-black on the far hemisphere when ONLY a spot/area is on.
-    // Now lets non-sun lights leak a small ambient fill so the back-
-    // facing hemisphere still reads as 'present in the scene' rather
-    // than disappearing. Scales with light presence (count > 0), not
-    // summed energy, so the fill never dominates direct contribution.
-    float non_sun_presence = (cd_lights.count > 0u) ? 1.0 : 0.0;
-    float ibl_gate = clamp(pc.sun_dir.w * 0.6 + non_sun_presence * 0.15,
-                           0.0, 1.0);
+    // W8-C: revert to sun-only IBL gate. User explicitly wants
+    // spot/point/area to act as crisp local emitters with shadows on
+    // their occluders — the W8-A non-sun "fill" produced an "always
+    // bright" feel that ruined the spot's directional identity.
+    // Genuine indirect bounce will return with the R4 GI pass.
+    float ibl_gate = clamp(pc.sun_dir.w * 0.6, 0.0, 1.0);
     ambient += ibl * ibl_gate * 0.55;
   }
 
