@@ -152,6 +152,7 @@
 #include "HelloEngineFx.hpp"
 #include "HelloSkinned.hpp"
 #include "HelloTlasRing.hpp"
+#include "HelloTlasRebuild.hpp"
 
 
 namespace
@@ -7344,188 +7345,38 @@ int main()
         auto& frame = *frame_r;
         auto& cmd = *frame.command_buffer;
 
-        // ---- Faz 1.7 - per-frame TLAS rebuild ----
-        // 1) tick deferred destroy queue (TLAS handles older than 3
-        //    frames are guaranteed past the in-flight window),
-        // 2) collect instances (ECS entities + sphere grid + floor),
-        // 3) create + build the TLAS on this frame's cmd buffer,
-        // 4) defer destroy of the previous frame's TLAS,
-        // 5) update the prim_inst descriptor binding 2 to the new TLAS.
-        while (!tlas_destroy_queue.empty() && tlas_destroy_queue.front().destroy_at_frame <= frame_idx)
-        {
-            device.destroy_acceleration_structure(tlas_destroy_queue.front().h);
-            tlas_destroy_queue.pop_front();
-        }
-        {
-            std::vector<cd::rhi::AccelInstance> instances;
-            instances.reserve(entities.size() + 25 + 1);
-            // W8-BC parallel material array - filled in lockstep with
-            //  so the GPU rayQueryGetIntersectionInstanceIdEXT
-            // result indexes the right slot. Floor and the skinned
-            // gltf BLAS land here too (gltf entity's tint).
-            std::vector<InstanceMatGpu> inst_mats;
-            inst_mats.reserve(entities.size() + 1);
-            auto push_inst =
-                [&](cd::rhi::AccelStructureHandle blas, const cd::math::Mat4f& m, const cd::math::Vec3f& albedo)
+        // ---- Faz 1.7 per-frame TLAS rebuild + depth ring barrier ----
+        // Extracted to cd_sample::rebuild_tlas_and_transition_depth in
+        // HelloTlasRebuild.hpp (Marathon Run 11 phase N9). Same descriptor
+        // writes, same destroy-queue 3-frame margin, same parallel_for
+        // entity scatter + serial compaction, same boot vs resume depth
+        // transition. The five callables thread the EntityT / PrimitiveKind
+        // anonymous-namespace types into the template without dragging
+        // them out of main.cpp.
+        cd_sample::rebuild_tlas_and_transition_depth(
+            device,
+            cmd,
+            frame_idx,
+            tlas_destroy_queue,
+            current_tlas,
+            prim_inst,
+            std::span<const SceneEntity>(entities),
+            blas_for_kind,
+            [](const SceneEntity& e) -> cd::math::Vec3f { return e.tint; },
+            [](const SceneEntity& e) -> PrimitiveKind { return e.kind; },
+            [&](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
             {
-                if (!blas.is_valid())
-                    return;
-                instances.push_back(cd::hello_engine::make_accel_instance(blas, m));
-                InstanceMatGpu im {};
-                cd::hello_engine::fill_inst_mat(im, albedo);
-                inst_mats.push_back(im);
-            };
-            // W8-AV: PBR spheres back in TLAS as RT occluders too.
-            // The W8-AU skip + the legacy hardcoded 5x5 push were two
-            // separate problems — the W8-AU skip turned out to also
-            // disable the legit RT shadows the user wanted (chrome
-            // sphere casting shadow on the floor under the area
-            // light), so undo the skip. The legacy hardcoded grid
-            // stays removed (it was duplicate occluder geometry at
-            // pre-W8-AR coordinates).
-            //
-            // X1B (phase 284): parallel TLAS instance build via
-            // cd::concurrency::parallel_for. Per-entity slot is written
-            // by index into pre-sized scratch arrays (no push_back from
-            // worker threads); a serial compaction step collects valid
-            // slots into the final instances/inst_mats arrays so the
-            // floor and skinned glTF tail stays in deterministic order
-            // and the GPU instance-index correspondence is preserved.
-            const std::size_t kEntCount = entities.size();
-            std::vector<cd::rhi::AccelInstance> ent_inst_scratch(kEntCount);
-            std::vector<InstanceMatGpu> ent_mat_scratch(kEntCount);
-            std::vector<std::uint8_t> ent_valid(kEntCount, 0u);
-            cd::concurrency::parallel_for(
-                std::size_t { 0 },
-                kEntCount,
-                [&](std::size_t i)
-                {
-                    const auto& ent = entities[i];
-                    auto* lt = scene.local(ent.handle);
-                    if (lt == nullptr)
-                        return;
-                    const auto blas = blas_for_kind(ent.kind);
-                    if (!blas.is_valid())
-                        return;
-                    const auto m = cd::math::to_mat4(lt->value);
-                    ent_inst_scratch[i] = cd::hello_engine::make_accel_instance(blas, m);
-                    InstanceMatGpu im {};
-                    cd::hello_engine::fill_inst_mat(im, ent.tint);
-                    ent_mat_scratch[i] = im;
-                    ent_valid[i] = 1u;
-                }
-            );
-            // Serial compaction preserves entity ordering so the GPU
-            // instanceCustomIndex lookup into inst_mat_ssbo stays aligned
-            // with the TLAS hit's instance id.
-            for (std::size_t i = 0; i < kEntCount; ++i)
-            {
-                if (ent_valid[i] == 0u)
-                    continue;
-                instances.push_back(ent_inst_scratch[i]);
-                inst_mats.push_back(ent_mat_scratch[i]);
-            }
-            // Floor: identity scale, y = kFloorY (matches the floor draw).
-            // W8-BC: distinct neutral grey so chrome reflections show a
-            // proper grey floor, not garbage or a wrong entity tint.
-            {
-                cd::math::Mat4f fm = cd::math::Mat4f::identity();
-                fm[3][1] = -0.55F;
-                push_inst(blas_floor, fm, cd::math::Vec3f { 0.5F, 0.5F, 0.5F });
-            }
-            // Phase 251 — refresh the skinned BLAS so RT shadow rays
-            // trace against the current animation pose instead of the
-            // bind pose. CPU-LBS already re-uploaded gltf_mesh.vb
-            // earlier in this frame; the BLAS storage + scratch were
-            // sized for the original triangle count (unchanged), so
-            // an in-place rebuild via vkCmdBuildAccelerationStructuresKHR
-            // (MODE_BUILD_KHR with the same dst handle) overwrites the
-            // BLAS contents from the freshly-skinned vertex data. We
-            // then issue an AS-build → AS-build memory barrier so the
-            // TLAS build (which dereferences blas device addresses)
-            // observes the updated BLAS rather than racing the write.
-            // Static-geometry BLAS (cube/sphere/etc.) stay at bind
-            // build from boot — only the animated gltf BLAS needs the
-            // refresh.
-            if (skinned.valid && blas_gltf.is_valid())
-            {
-                cmd.build_acceleration_structure(blas_gltf);
-                cmd.acceleration_structure_barrier();
-            }
-
-            cd::rhi::AccelStructureDesc tld {};
-            tld.kind = cd::rhi::AccelStructureKind::kTopLevel;
-            tld.instances = std::span<const cd::rhi::AccelInstance>(instances);
-            tld.debug_name = "tlas_frame";
-            auto new_r = device.create_acceleration_structure(tld);
-            if (new_r.has_value())
-            {
-                cmd.build_acceleration_structure(*new_r);
-                if (current_tlas.is_valid())
-                    tlas_destroy_queue.push_back({ current_tlas, frame_idx + 3 });
-                current_tlas = *new_r;
-                std::array<cd::rhi::DescriptorWrite, 1> tlas_writes {
-                    cd::rhi::DescriptorWrite { .binding = 2,
-                                              .array_element = 0,
-                                              .type = cd::rhi::DescriptorType::kAccelerationStructure,
-                                              .accel = current_tlas }
-                };
-                (void)prim_inst.update(tlas_writes);
-            }
-            // W8-BC: upload the per-frame instance materials. Clamp to
-            // the SSBO capacity (defensive - kMaxInstMats = 256 dwarfs
-            // current entity count, but futureproof). Re-issue the
-            // binding-10 descriptor write each frame so the GPU sees
-            // the freshly uploaded contents even if the underlying
-            // buffer handle stays put.
-            if (!inst_mats.empty())
-            {
-                const std::uint32_t n =
-                    std::min<std::uint32_t>(static_cast<std::uint32_t>(inst_mats.size()), kMaxInstMats);
-                const std::size_t bytes = static_cast<std::size_t>(n) * sizeof(InstanceMatGpu);
-                (void)device.upload_buffer(
-                    inst_mat_ssbo,
-                    0,
-                    std::span<const std::byte>(reinterpret_cast<const std::byte*>(inst_mats.data()), bytes)
-                );
-                std::array<cd::rhi::DescriptorWrite, 1> ssbo_writes {
-                    cd::rhi::DescriptorWrite { .binding = 10,
-                                              .array_element = 0,
-                                              .type = cd::rhi::DescriptorType::kStorageBuffer,
-                                              .buffer = inst_mat_ssbo,
-                                              .buffer_offset = 0,
-                                              .buffer_range = kInstMatBytes }
-                };
-                (void)prim_inst.update(ssbo_writes);
-            }
-        }
-
-        if (!depth_initialised_on_gpu)
-        {
-            std::array<cd::rhi::TextureBarrier, 1> db {
-                cd::rhi::TextureBarrier {
-                                         .texture = depth.image,
-                                         .from = cd::rhi::ResourceState::kUndefined,
-                                         .to = cd::rhi::ResourceState::kDepthWrite,
-                                         .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } }
-            };
-            cmd.barrier({}, db);
-            depth_initialised_on_gpu = true;
-        }
-        else
-        {
-            // Subsequent frames: composite-pass GTAO sampled the depth
-            // target as ShaderResource at the end of the prior frame;
-            // bring it back to kDepthWrite before the HDR scene pass.
-            std::array<cd::rhi::TextureBarrier, 1> db {
-                cd::rhi::TextureBarrier {
-                                         .texture = depth.image,
-                                         .from = cd::rhi::ResourceState::kShaderResource,
-                                         .to = cd::rhi::ResourceState::kDepthWrite,
-                                         .range = { .base_mip = 0, .mip_count = 1, .base_layer = 0, .layer_count = 1 } }
-            };
-            cmd.barrier({}, db);
-        }
+                auto* lt = scene.local(e.handle);
+                if (lt == nullptr)
+                    return std::nullopt;
+                return cd::math::to_mat4(lt->value);
+            },
+            blas_floor,
+            blas_gltf,
+            skinned.valid,
+            inst_mat_ssbo,
+            depth.image,
+            depth_initialised_on_gpu);
 
         // ---- Sun resolve (shadow + sky + floor + entity passes need it) ----
         const SunLight sun = resolve_sun_light(lights);
