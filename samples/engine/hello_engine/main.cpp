@@ -150,6 +150,8 @@
 #include "HelloRayQuery.hpp"
 #include "HelloPbrGrid.hpp"
 #include "HelloEngineFx.hpp"
+#include "HelloSkinned.hpp"
+#include "HelloTlasRing.hpp"
 
 
 namespace
@@ -5049,31 +5051,9 @@ int main()
     // LBS and re-uploads them to gltf_mesh.vb so the existing prim
     // pipeline draws the deformed character without needing a
     // separate skinned-vertex pipeline.
-    struct SkinnedRuntime
-    {
-        bool valid { false };
-        cd::anim::Skeleton skeleton {};
-        std::unordered_map<int, std::int32_t> node_to_joint {};
-        // SK-fix: vertex JOINTS_0 hold skin-joint indices, NOT
-        // skeleton-joint indices. Skin joint i -> skeleton joint
-        // skin_joint_remap[i]. Without this remap CPU-LBS reads the
-        // wrong matrix and the character renders as a twisted mess.
-        std::vector<std::int32_t> skin_joint_remap;
-        cd::asset_gltf::GltfAnimation animation {};
-        // Per-vertex source data (bind-pose positions + normals + uvs
-        // + bone influences). Parallel arrays — same length.
-        std::vector<cd::math::Vec3f> base_positions;
-        std::vector<cd::math::Vec3f> base_normals;
-        std::vector<cd::math::Vec2f> base_uvs;
-        std::vector<cd::asset_gltf::GltfSkinVertex> influences;
-        // Scratch buffers reused per frame.
-        std::vector<cd::math::Mat4f> palette_scratch;
-        std::vector<cd::asset::PrimitiveVertex> deformed_scratch;
-        cd::anim::Pose pose {};
-        float anim_t { 0.0F };
-    };
-
-    SkinnedRuntime skinned;
+    // SkinnedRuntime type definition moved to HelloSkinned.hpp
+    // (Marathon Run 11 phase N9-prep).
+    cd_sample::SkinnedRuntime skinned;
     {
         // Search list - try the binary's CWD first, then walk up the
         // build tree (binary lives at build/<preset>/bin/<config>/),
@@ -5356,13 +5336,9 @@ int main()
     // frames as a defensive margin).
     cd::rhi::AccelStructureHandle current_tlas {};
 
-    struct DeferredTlas
-    {
-        cd::rhi::AccelStructureHandle h;
-        std::uint32_t destroy_at_frame;
-    };
-
-    std::deque<DeferredTlas> tlas_destroy_queue;
+    // DeferredTlas type definition moved to HelloTlasRing.hpp
+    // (Marathon Run 11 phase N9-prep).
+    std::deque<cd_sample::DeferredTlas> tlas_destroy_queue;
 
     // ---- World / Scene / EditHistory ----
     cd::ecs::World world;
