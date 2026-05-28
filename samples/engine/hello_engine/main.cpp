@@ -731,17 +731,18 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      // W8-L: area light single-sample RT shadow ray (cast from
-      // shading point toward the area centre). Same bias as the W8-C
-      // spot/point path (tmin 0.30 + N*0.20) so dense PBR sphere
-      // self/neighbour rays don't false-occlude. User explicitly
-      // asked for area lights to cast shadow like point + spot do.
+      // W8-W: tightened bias (tmin 0.05 + N*0.05). W8-L's 0.30 + 0.20
+      // was inherited from the W8-C spot/point path but the floor +
+      // character casting case is far less self-occlusion-prone than
+      // the PBR sphere grid; the generous bias was making rays clear
+      // the character entirely instead of producing the expected
+      // floor shadow.
       float area_tmax = min(d_c, rng);
       rayQueryEXT rq_a;
       rayQueryInitializeEXT(
           rq_a, cd_tlas,
           gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-          0xFFu, v_world_pos + N * 0.20, 0.30, Lc, area_tmax);
+          0xFFu, v_world_pos + N * 0.05, 0.05, Lc, area_tmax);
       while (rayQueryProceedEXT(rq_a)) { /* opaque-only walk */ }
       float vis_a = (rayQueryGetIntersectionTypeEXT(rq_a, true) ==
                      gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -5949,13 +5950,49 @@ int main()
                         row.light.direction.x = -row.light.direction.x;
                         row.light.direction.y = -row.light.direction.y;
                         row.light.direction.z = -row.light.direction.z;
-                        // Tangent isn't strictly required to flip (any
-                        // perpendicular vector still spans the rect plane),
-                        // but matching the direction flip keeps the rect's
-                        // visual "up" stable across the flip.
                         row.light.area_tangent.x = -row.light.area_tangent.x;
                         row.light.area_tangent.y = -row.light.area_tangent.y;
                         row.light.area_tangent.z = -row.light.area_tangent.z;
+                    }
+                    ImGui::SameLine();
+                    // W8-V: one-click aim-at-origin so translating the
+                    // rect doesn't leave its emit normal stale. After
+                    // moving the rect via the gizmo the user usually
+                    // wants it to face the scene; this button does the
+                    // rotation in one click and re-derives a tangent
+                    // perpendicular to the new normal.
+                    if (ImGui::Button("Aim at origin"))
+                    {
+                        cd::math::Vec3f nn {
+                            -row.light.position.x,
+                            -row.light.position.y,
+                            -row.light.position.z };
+                        const float nl = std::sqrt(
+                            nn.x*nn.x + nn.y*nn.y + nn.z*nn.z);
+                        if (nl > 1e-5F)
+                        {
+                            nn.x /= nl; nn.y /= nl; nn.z /= nl;
+                            row.light.direction = nn;
+                            cd::math::Vec3f tt;
+                            if (nn.z < -0.9999F)
+                            {
+                                tt = { 0.0F, -1.0F, 0.0F };
+                            }
+                            else
+                            {
+                                const float fa = 1.0F / (1.0F + nn.z);
+                                tt = { 1.0F - nn.x * nn.x * fa,
+                                       -nn.x * nn.y * fa,
+                                       -nn.x };
+                            }
+                            const float tl = std::sqrt(
+                                tt.x*tt.x + tt.y*tt.y + tt.z*tt.z);
+                            if (tl > 1e-5F)
+                            {
+                                tt.x /= tl; tt.y /= tl; tt.z /= tl;
+                                row.light.area_tangent = tt;
+                            }
+                        }
                     }
                     ImGui::SameLine();
                     ImGui::TextDisabled("(emit side = +normal)");
