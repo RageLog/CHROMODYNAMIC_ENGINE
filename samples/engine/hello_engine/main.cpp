@@ -3326,6 +3326,115 @@ inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
     }
 }
 
+// ---- run_bloom_chain ------------------------------------------------------
+// R3 bloom: 7 fullscreen-triangle passes against the dedicated bloom mip
+// chain - 1 prefilter (HDR -> mip0 with soft-knee threshold), 3 downsamples
+// (mip0->1, 1->2, 2->3), 3 upsamples (mip3->2, 2->1, 1->0 with additive
+// blend via LoadOp::kLoad). Each sub-pass barriers its target into
+// ColorAttachment (or Undefined seed on first frame) then back to
+// ShaderResource so the next pass can sample.
+//
+// All 7 invocations share the inner run_bloom_pass lambda; thresholds
+// stay hardcoded as W4 visual baseline (1.10 threshold, 0.50 knee, radius
+// 1.0 / intensity 1.0 per upsample level).
+inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
+                            std::uint32_t frame_idx,
+                            BloomMipChain& bloom_chain,
+                            cd::material::Material& bloom_prefilter_material,
+                            cd::material::MaterialInstance& bloom_prefilter_inst,
+                            cd::material::Material& bloom_downsample_material,
+                            std::array<cd::material::MaterialInstance, 3>& bloom_down_insts,
+                            cd::material::Material& bloom_upsample_material,
+                            std::array<cd::material::MaterialInstance, 3>& bloom_up_insts)
+{
+    auto run_bloom_pass = [&](cd::material::Material& mat,
+                              cd::material::MaterialInstance& inst,
+                              ColorTarget& dst,
+                              cd::rhi::LoadOp load_op,
+                              std::span<const std::byte> push_bytes,
+                              bool first_frame)
+    {
+        std::array<cd::rhi::TextureBarrier, 1> tb {
+            cd::rhi::TextureBarrier { .texture = dst.image,
+                                     .from = first_frame ? cd::rhi::ResourceState::kUndefined
+                                                          : cd::rhi::ResourceState::kShaderResource,
+                                     .to = cd::rhi::ResourceState::kColorAttachment,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, tb);
+
+        std::array<cd::rhi::ColorAttachmentInfo, 1> ca {
+            cd::rhi::ColorAttachmentInfo { .view = dst.view,
+                                          .load_op = load_op,
+                                          .store_op = cd::rhi::StoreOp::kStore,
+                                          .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
+        };
+        cd::rhi::RenderPassBeginInfo rp {};
+        rp.render_area = cd::rhi::Rect2D { { 0, 0 }, dst.extent };
+        rp.color_attachments = ca;
+        rp.depth_stencil = nullptr;
+        cmd.begin_render_pass(rp);
+        cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                             static_cast<float>(dst.extent.width),
+                                             static_cast<float>(dst.extent.height),
+                                             0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, dst.extent });
+        mat.apply(cmd);
+        inst.bind(cmd, 0);
+        if (!push_bytes.empty())
+        {
+            cmd.push_constants(mat.pipeline_layout(),
+                               cd::rhi::ShaderStage::kFragment,
+                               0,
+                               static_cast<std::uint32_t>(push_bytes.size()),
+                               push_bytes.data());
+        }
+        cmd.draw(3, 1, 0, 0);
+        cmd.end_render_pass();
+
+        std::array<cd::rhi::TextureBarrier, 1> tb2 {
+            cd::rhi::TextureBarrier { .texture = dst.image,
+                                     .from = cd::rhi::ResourceState::kColorAttachment,
+                                     .to = cd::rhi::ResourceState::kShaderResource,
+                                     .range = { 0, 1, 0, 1 } }
+        };
+        cmd.barrier({}, tb2);
+    };
+
+    const bool bloom_first_frame = (frame_idx == 0);
+    // 1) Prefilter: HDR -> mip0 (soft-knee threshold).
+    {
+        BloomPrefilterPush bpp {};
+        bpp.params[0] = 1.10F;  // threshold (linear HDR units)
+        bpp.params[1] = 0.50F;  // knee
+        bpp.params[2] = 0.0F;
+        bpp.params[3] = 0.0F;
+        std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bpp), sizeof(bpp) };
+        run_bloom_pass(bloom_prefilter_material, bloom_prefilter_inst,
+                       bloom_chain.mips[0], cd::rhi::LoadOp::kClear, bytes, bloom_first_frame);
+    }
+    // 2) Downsample chain: mip0 -> 1, 1 -> 2, 2 -> 3.
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        run_bloom_pass(bloom_downsample_material, bloom_down_insts[i],
+                       bloom_chain.mips[i + 1], cd::rhi::LoadOp::kClear, {}, bloom_first_frame);
+    }
+    // 3) Upsample chain: mip3 -> 2, 2 -> 1, 1 -> 0 (additive blend).
+    //    LoadOp::kLoad preserves the prior pass output we are adding onto.
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        const std::uint32_t dst_index = 3U - 1U - i;  // 2, 1, 0
+        BloomUpsamplePush bup {};
+        bup.params[0] = 1.0F;  // radius (px scale)
+        bup.params[1] = 1.0F;  // intensity per level
+        bup.params[2] = 0.0F;
+        bup.params[3] = 0.0F;
+        std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bup), sizeof(bup) };
+        run_bloom_pass(bloom_upsample_material, bloom_up_insts[i],
+                       bloom_chain.mips[dst_index], cd::rhi::LoadOp::kLoad, bytes, bloom_first_frame);
+    }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -7272,129 +7381,11 @@ int main()
                               velocity_material, entities, scene,
                               prev_vp_unjittered, vp_unjittered, mesh_for);
 
-        // R3 - Bloom chain. 7 fullscreen-triangle passes against the
-        // dedicated bloom mip chain (each pass owns one render target,
-        // writes its full extent, and ends as kShaderResource so the
-        // next pass can sample it). All 7 share the composite VS.
-        auto run_bloom_pass = [&](cd::material::Material& mat,
-                                  cd::material::MaterialInstance& inst,
-                                  ColorTarget& dst,
-                                  cd::rhi::LoadOp load_op,
-                                  std::span<const std::byte> push_bytes,
-                                  bool first_frame)
-        {
-            std::array<cd::rhi::TextureBarrier, 1> tb {
-                cd::rhi::TextureBarrier { .texture = dst.image,
-                                         .from = first_frame ? cd::rhi::ResourceState::kUndefined
-                                                              : cd::rhi::ResourceState::kShaderResource,
-                                         .to = cd::rhi::ResourceState::kColorAttachment,
-                                         .range = { 0, 1, 0, 1 } }
-            };
-            cmd.barrier({}, tb);
-
-            std::array<cd::rhi::ColorAttachmentInfo, 1> ca {
-                cd::rhi::ColorAttachmentInfo { .view = dst.view,
-                                              .load_op = load_op,
-                                              .store_op = cd::rhi::StoreOp::kStore,
-                                              .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 1.0F } } }
-            };
-            cd::rhi::RenderPassBeginInfo rp {};
-            rp.render_area = cd::rhi::Rect2D {
-                { 0, 0 },
-                dst.extent
-            };
-            rp.color_attachments = ca;
-            rp.depth_stencil = nullptr;
-            cmd.begin_render_pass(rp);
-            cmd.set_viewport(
-                cd::rhi::Viewport { 0.0F,
-                                    0.0F,
-                                    static_cast<float>(dst.extent.width),
-                                    static_cast<float>(dst.extent.height),
-                                    0.0F,
-                                    1.0F }
-            );
-            cmd.set_scissor(
-                cd::rhi::Rect2D {
-                    { 0, 0 },
-                    dst.extent
-            }
-            );
-            mat.apply(cmd);
-            inst.bind(cmd, 0);
-            if (!push_bytes.empty())
-            {
-                cmd.push_constants(
-                    mat.pipeline_layout(),
-                    cd::rhi::ShaderStage::kFragment,
-                    0,
-                    static_cast<std::uint32_t>(push_bytes.size()),
-                    push_bytes.data()
-                );
-            }
-            cmd.draw(3, 1, 0, 0);
-            cmd.end_render_pass();
-
-            std::array<cd::rhi::TextureBarrier, 1> tb2 {
-                cd::rhi::TextureBarrier { .texture = dst.image,
-                                         .from = cd::rhi::ResourceState::kColorAttachment,
-                                         .to = cd::rhi::ResourceState::kShaderResource,
-                                         .range = { 0, 1, 0, 1 } }
-            };
-            cmd.barrier({}, tb2);
-        };
-
-        const bool bloom_first_frame = (frame_idx == 0);
-        // 1) Prefilter: HDR -> mip0 (soft-knee threshold).
-        {
-            BloomPrefilterPush bpp {};
-            bpp.params[0] = 1.10F;  // threshold (linear HDR units)
-            bpp.params[1] = 0.50F;  // knee
-            bpp.params[2] = 0.0F;
-            bpp.params[3] = 0.0F;
-            std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bpp), sizeof(bpp) };
-            run_bloom_pass(
-                bloom_prefilter_material,
-                bloom_prefilter_inst,
-                bloom_chain.mips[0],
-                cd::rhi::LoadOp::kClear,
-                bytes,
-                bloom_first_frame
-            );
-        }
-        // 2) Downsample chain: mip0 -> 1, 1 -> 2, 2 -> 3.
-        for (std::uint32_t i = 0; i < 3; ++i)
-        {
-            run_bloom_pass(
-                bloom_downsample_material,
-                bloom_down_insts[i],
-                bloom_chain.mips[i + 1],
-                cd::rhi::LoadOp::kClear,
-                {},
-                bloom_first_frame
-            );
-        }
-        // 3) Upsample chain: mip3 -> 2, 2 -> 1, 1 -> 0 (additive blend).
-        //    Load op must be Load to preserve the prior pass's output we're
-        //    adding onto. radius 1.0 / intensity 1.0 (full contribution).
-        for (std::uint32_t i = 0; i < 3; ++i)
-        {
-            const std::uint32_t dst_index = 3U - 1U - i;  // 2, 1, 0
-            BloomUpsamplePush bup {};
-            bup.params[0] = 1.0F;                         // radius (px scale)
-            bup.params[1] = 1.0F;                         // intensity per level
-            bup.params[2] = 0.0F;
-            bup.params[3] = 0.0F;
-            std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bup), sizeof(bup) };
-            run_bloom_pass(
-                bloom_upsample_material,
-                bloom_up_insts[i],
-                bloom_chain.mips[dst_index],
-                cd::rhi::LoadOp::kLoad,
-                bytes,
-                bloom_first_frame
-            );
-        }
+        // R3 - Bloom chain (7 passes: 1 prefilter + 3 down + 3 up).
+        run_bloom_chain(cmd, frame_idx, bloom_chain,
+                        bloom_prefilter_material, bloom_prefilter_inst,
+                        bloom_downsample_material, bloom_down_insts,
+                        bloom_upsample_material, bloom_up_insts);
 
         // TAA ping-pong selection. composite_insts[read_idx] has its
         // binding=4 wired to history_targets[read_idx]; we render into
