@@ -2785,8 +2785,14 @@ int main()
                         { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
         true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
-        cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
-                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
+        // W8-Z: default to a CEILING PANEL (normal pointing straight
+        // down) so the floor is in the +N hemisphere and gets lit out
+        // of the box. With a downward-facing area light + W8-W shadow
+        // bias, the character casts a visible floor shadow without
+        // the user having to rotate the gizmo at all. Position raised
+        // slightly to clear the camera framing.
+        cd::light::rect_area({ 0.0F, 5.5F, -2.0F }, { 0, -1, 0 }, { 1, 0, 0 },
+                             3.0F, 3.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
         true, 8000.0F });
     // W5-B: very bright magenta neon strip behind the sphere rig so
     // metallic surfaces pick up a deeply saturated, HIGHLY DYNAMIC
