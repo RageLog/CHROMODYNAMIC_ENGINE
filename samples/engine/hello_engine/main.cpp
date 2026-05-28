@@ -1976,15 +1976,22 @@ int main()
         //   > 0.93   = bloom halo            -> luminance ~0.4
         const float cos_a = dir.x * kIblSunUnit.x + dir.y * kIblSunUnit.y
                           + dir.z * kIblSunUnit.z;
+        // W8-AX: HDR sun disk hotter (was +25 core / +4 glow / +0.4
+        // halo). After tonemap compression the previous values read
+        // as "slightly bright spot"; chrome reference shows a punchy
+        // hotspot that survives ACES shoulder. Bump core to +120,
+        // glow to +20, halo to +1.5 — total post-tonemap perceptual
+        // brightness becomes ~0.95 (clearly bright disc) instead of
+        // ~0.7 (subtle highlight blending with sky).
         if (cos_a > 0.9998F) {
-            base.x += 25.0F; base.y += 24.0F; base.z += 22.0F;
+            base.x += 120.0F; base.y += 116.0F; base.z += 108.0F;
         } else if (cos_a > 0.995F) {
             const float t = (cos_a - 0.995F) / (0.9998F - 0.995F);
-            const float k = 4.0F * t * t;
+            const float k = 20.0F * t * t;
             base.x += k; base.y += k * 0.96F; base.z += k * 0.90F;
         } else if (cos_a > 0.93F) {
             const float t = (cos_a - 0.93F) / (0.995F - 0.93F);
-            const float k = 0.4F * t * t;
+            const float k = 1.5F * t * t;
             base.x += k; base.y += k * 0.94F; base.z += k * 0.85F;
         }
         return base;
@@ -2001,8 +2008,10 @@ int main()
     const auto env_cube_cpu = cd::ibl::bake_sky_cube(256, bake_sky_with_sun);
     std::fprintf(stderr, "[ibl] convolving diffuse irradiance (32, 32 samples)...\n");
     const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 32, 32.0F);
-    std::fprintf(stderr, "[ibl] prefiltering specular mip chain (128 base, 6 mips, 64 samples)...\n");
-    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 128, 6, 64);
+    // W8-AX: spec base 128 → 256 for SHARPER mip-0 chrome reflection.
+    // 64 samples per texel keeps total bake ~10-30s (acceptable boot).
+    std::fprintf(stderr, "[ibl] prefiltering specular mip chain (256 base, 6 mips, 64 samples)...\n");
+    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 256, 6, 64);
     std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
     const auto brdf_lut_cpu  = cd::ibl::bake_brdf_lut(64, 64, 256);
     std::fprintf(stderr, "[ibl] uploading to GPU...\n");
@@ -2730,13 +2739,14 @@ int main()
             // grid sits between y=0.5 and y=3.05 — still visible as a
             // discrete material showcase, but shadows stay normal-sized
             // (comparable to character + procedural row shadows).
-            // W8-AW update: user asked for bigger spheres. Bumped scale
-            // 0.35 -> 0.55, spacing 0.85 -> 1.15 (so diameter 1.10 still
-            // doesn't overlap), y_base 0.5 -> 0.65 (so radius 0.55 sphere
-            // bottom sits above floor). Top-row centre now at y=0.65 +
-            // 3*1.15 = 4.10 — still below the W8-AS streak threshold
-            // (5.75) so shadow projection stays well-behaved.
-            constexpr float kPbrSpacing = 1.15F;  // W8-AW: scale 0.55 -> diameter 1.1; 1.15 keeps tiny gap
+            // W8-AX bump: user still wants bigger ("kureler hala boyutu
+            // kucuk kalmis"). 0.55 → 0.80 scale (diameter 1.6). Spacing
+            // 1.15 → 1.70 (≥ diameter + 0.1 gap). y_base 0.65 → 0.95 so
+            // the 0.80 radius bottom sphere clears the floor. Top centre
+            // y = 0.95 + 3*1.70 = 6.05 — slightly above the W8-AS streak
+            // threshold (5.75) but visual scale + presence > shadow
+            // length tradeoff; user can move grid via gizmo if needed.
+            constexpr float kPbrSpacing = 1.70F;
             constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
             for (int row = 0; row < kPbrRows; ++row)
             {
@@ -2757,17 +2767,13 @@ int main()
                                    static_cast<float>(kPbrRows - 1));
                     const float x = (static_cast<float>(col) -
                                      (static_cast<float>(kPbrCols - 1) * 0.5F)) * kPbrSpacing;
-                    // W8-AW: y_base 0.5 -> 0.65 so row 0's bottom (centre - 0.55 radius) sits above the floor.
-                    const float y = 0.65F + static_cast<float>(row) * kPbrSpacing;
-                    const float z = -3.8F;
+                    // W8-AX: y_base 0.65 → 0.95 so 0.80-radius bottom sphere clears floor.
+                    const float y = 0.95F + static_cast<float>(row) * kPbrSpacing;
+                    const float z = -4.5F;  // W8-AX: push back so the bigger grid still fits in the default camera FOV.
                     scene.local(e.handle)->value.position = { x, y, z };
-                    // W8-AW: 0.35 -> 0.55 per user request ("biraz boyutlarını
-                    // büyüt"). Primitives::make_sphere is unit-radius, so
-                    // scale = world radius (0.55 -> diameter 1.10). Spacing
-                    // bumped to 1.15 above so neighbour edges don't touch.
-                    // Bigger sphere = more reflected area visible per pixel,
-                    // which is exactly what the chrome-mirror reference shows.
-                    scene.local(e.handle)->value.scale    = { 0.55F, 0.55F, 0.55F };
+                    // W8-AX: 0.55 → 0.80 (diameter 1.6, comparable to
+                    // procedural cube/cone size).
+                    scene.local(e.handle)->value.scale    = { 0.80F, 0.80F, 0.80F };
                     entities.push_back(std::move(e));
                 }
             }
