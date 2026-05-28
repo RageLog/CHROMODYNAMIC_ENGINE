@@ -697,9 +697,21 @@ void main() {
       // positive for the front hemisphere.
       vec3 to_pt_w = v_world_pos - lp_pos;
       if (dot(to_pt_w, ln) <= 0.0) continue;
-      vec3 up_ref = (abs(ln.y) > 0.95) ? vec3(1.0,0.0,0.0) : vec3(0.0,1.0,0.0);
-      vec3 right  = normalize(cross(up_ref, ln));
-      vec3 up_v   = cross(ln, right);
+      // W8-M: Frisvad 2012 robust orthonormal basis from a unit
+      // normal. The previous `abs(ln.y) > 0.95` switch produced a
+      // visible gimbal-lock-style flip in the area rectangle when
+      // the user rotated the gizmo across the threshold. Frisvad
+      // is smooth everywhere except the n.z=-1 antipole.
+      vec3 right; vec3 up_v;
+      if (ln.z < -0.9999) {
+        right = vec3(0.0, -1.0, 0.0);
+        up_v  = vec3(-1.0, 0.0, 0.0);
+      } else {
+        float fa = 1.0 / (1.0 + ln.z);
+        float fb = -ln.x * ln.y * fa;
+        right = vec3(1.0 - ln.x * ln.x * fa, fb, -ln.x);
+        up_v  = vec3(fb, 1.0 - ln.y * ln.y * fa, -ln.y);
+      }
       float w = cd_lights.slots[li].extras.y * 0.5;
       float h = cd_lights.slots[li].extras.z * 0.5;
       // Corners as world-space positions, then made relative to the
@@ -5961,20 +5973,23 @@ int main()
                         const float lnl = std::sqrt(ln.x*ln.x + ln.y*ln.y + ln.z*ln.z);
                         if (lnl > 1e-5F) { ln.x/=lnl; ln.y/=lnl; ln.z/=lnl; }
                         else             { ln = { 0.0F, 0.0F, -1.0F }; }
-                        const cd::math::Vec3f up_ref =
-                            (std::abs(ln.y) > 0.95F)
-                            ? cd::math::Vec3f { 1.0F, 0.0F, 0.0F }
-                            : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
-                        cd::math::Vec3f t {
-                            up_ref.y*ln.z - up_ref.z*ln.y,
-                            up_ref.z*ln.x - up_ref.x*ln.z,
-                            up_ref.x*ln.y - up_ref.y*ln.x };
-                        const float tl = std::sqrt(t.x*t.x + t.y*t.y + t.z*t.z);
-                        if (tl > 1e-5F) { t.x/=tl; t.y/=tl; t.z/=tl; }
-                        cd::math::Vec3f b {
-                            ln.y*t.z - ln.z*t.y,
-                            ln.z*t.x - ln.x*t.z,
-                            ln.x*t.y - ln.y*t.x };
+                        // W8-M: Frisvad 2012 robust orthonormal basis — matches
+                        // the GLSL area path so the gizmo wireframe and the
+                        // actual lit polygon agree. Previous abs(ln.y)>0.95
+                        // switch produced a visible gimbal-lock flip.
+                        cd::math::Vec3f t, b;
+                        if (ln.z < -0.9999F)
+                        {
+                            t = { 0.0F, -1.0F, 0.0F };
+                            b = { -1.0F, 0.0F, 0.0F };
+                        }
+                        else
+                        {
+                            const float fa = 1.0F / (1.0F + ln.z);
+                            const float fb = -ln.x * ln.y * fa;
+                            t = { 1.0F - ln.x * ln.x * fa, fb, -ln.x };
+                            b = { fb, 1.0F - ln.y * ln.y * fa, -ln.y };
+                        }
                         // Project 4 corners.
                         const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
                         cd::math::Vec3f c0 {
