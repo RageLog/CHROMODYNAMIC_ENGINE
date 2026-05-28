@@ -4383,24 +4383,23 @@ int main()
                 inst.mask = 0xFFu;
                 instances.push_back(inst);
             };
+            // W8-AU: skip PBR demo spheres in TLAS — they're a material
+            // showcase, not scene geometry. Including them as RT ray
+            // occluders made area-light shadow rays hit the spheres
+            // and stamp shadow on every floor pixel under the grid,
+            // which the user saw as a wall of stretched black blobs.
+            // PBR spheres still render (entity draw loop) and still
+            // SAMPLE shadows from CSM + RT — they just don't occlude
+            // anything (matches the W8-AT shadow-caster decision).
             for (const auto& ent : entities)
             {
+                if (ent.is_pbr) continue;
                 auto* lt = scene.local(ent.handle);
                 if (lt == nullptr) continue;
                 push_inst(blas_for_kind(ent.kind), cd::math::to_mat4(lt->value));
             }
-            constexpr int kRtGS = 5;
-            constexpr float kRtSp = 1.2F;
-            for (int row = 0; row < kRtGS; ++row)
-                for (int col = 0; col < kRtGS; ++col)
-                {
-                    const float x = (static_cast<float>(col) - 2.0F) * kRtSp;
-                    const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
-                    const float z = -4.5F;
-                    cd::math::Mat4f m = cd::math::Mat4f::identity();
-                    m[3][0] = x; m[3][1] = y; m[3][2] = z;
-                    push_inst(blas_sphere, m);
-                }
+            // W8-AU: leftover 5x5 hardcoded sphere-grid TLAS instances
+            // REMOVED (legacy from the pre-W8-AR dedicated grid path).
             // Floor: identity scale, y = kFloorY (matches the floor draw).
             {
                 cd::math::Mat4f fm = cd::math::Mat4f::identity();
