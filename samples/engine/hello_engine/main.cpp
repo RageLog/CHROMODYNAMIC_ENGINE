@@ -4573,11 +4573,15 @@ int main()
                 // Lumens ??' unit intensity. Scale calibrated so a 1200
                 // lumen point at ~3 m yields a visible (~0.5..1.0)
                 // direct contribution on metallic spheres even with
-                // the sun fully off. Spot boost x6 (small solid
-                // angle), area dampen ?-0.2 (was 0.05 - too dim to
-                // illuminate dielectrics when sun off).
+                // the sun fully off. W8-B: spot boost reduced 6x->2.5x
+                // — user's R7 image showed the 6x multiplier saturating
+                // the tonemap and spilling via bloom across the entire
+                // sphere grid even when the cone was narrow. With the
+                // correct cos_inner readout (W4-H), the cone is wider
+                // than the previous synthesised cone, so the inflation
+                // factor doesn't need to be as aggressive.
                 float ki = lrow.light.intensity / (4.0F * 3.14159265F) / 2.0F;
-                if (k == cd::light::LightType::kSpot) ki *= 6.0F;
+                if (k == cd::light::LightType::kSpot) ki *= 2.5F;
                 else if (k == cd::light::LightType::kRectArea ||
                          k == cd::light::LightType::kDiskArea) ki *= 0.20F;
                 s.color_int[3] = ki;
