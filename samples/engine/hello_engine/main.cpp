@@ -3041,13 +3041,18 @@ int main()
     // worked. Forcing area-only on boot makes the area calibration
     // immediately verifiable; the user can re-check the other lights
     // via the Lights panel.
+    // W8-BB: every light enabled by default. User saw the W8-BA
+    // result with sun+point+spot+two area panels all on and called
+    // it "cok iyi oldu bunu referans kabul edebiliriz" — that's
+    // the boot baseline now. Individual rows can still be toggled
+    // off in the Lights panel.
     std::vector<LightRow> lights;
     lights.push_back({ "Sun (cool 6500K)",
         cd::light::directional({ -0.35F, -0.65F, -0.7F }, { 1, 1, 1 }, 100000.0F),
-        false, 6500.0F });
+        true, 6500.0F });
     lights.push_back({ "Tungsten point (2700K)",
         cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
-        false, 2700.0F });
+        true, 2700.0F });
     lights.push_back({ "Halogen spot (3200K)",
         // W8-I: spot pulled CLOSER to the sphere grid + bumped lumens.
         // W8-H placement (0, 5, 4) was camera-side (good for hitting
@@ -3060,7 +3065,7 @@ int main()
         // dir = (0, -0.316, -0.949) (normalised).
         cd::light::spot({ 0.0F, 5.0F, 0.0F }, { 0.0F, -0.316F, -0.949F },
                         { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
-        false, 3200.0F });
+        true, 3200.0F });
     lights.push_back({ "Cyan rect-area (8000K)",
         // W8-Z: default to a CEILING PANEL (normal pointing straight
         // down) so the floor is in the +N hemisphere and gets lit out
