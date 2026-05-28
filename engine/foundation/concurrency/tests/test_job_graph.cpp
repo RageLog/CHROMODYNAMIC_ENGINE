@@ -8,6 +8,7 @@
 // =============================================================================
 #include <cd/concurrency/JobGraph.hpp>
 #include <cd/concurrency/ThreadPool.hpp>
+#include <cd/concurrency/WorkStealingThreadPool.hpp>
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -210,6 +211,83 @@ TEST(JobGraph, DisjointChainsAllComplete)
 
     ASSERT_TRUE(g.run(pool));
     EXPECT_EQ(completed.load(), kChains * kLen);
+}
+
+// ============================================================================
+// X1C (phase 285) integration test: hello_engine boot DAG topology.
+// Mirrors the 7-node bake graph:
+//   A env_cube -> { B diff_irradiance, C spec_prefilter }
+//   D brdf_lut, E earth_albedo, F earth_normal, G earth_mr   (independent roots)
+// Uses cd::concurrency::WorkStealingThreadPool to exercise the templated
+// JobGraph::run<PoolT> path introduced by X1C (was hard-bound to ThreadPool).
+// ============================================================================
+TEST(JobGraph, BootBakeTopologyOnWorkStealingPool)
+{
+    cd::concurrency::WorkStealingThreadPool pool { 4 };
+    cd::concurrency::JobGraph               g;
+
+    std::atomic<int>  env_done { 0 };
+    std::atomic<int>  ran_b_after_env { 0 };
+    std::atomic<int>  ran_c_after_env { 0 };
+    std::atomic<int>  d_count { 0 };
+    std::atomic<int>  e_count { 0 };
+    std::atomic<int>  f_count { 0 };
+    std::atomic<int>  g_count { 0 };
+
+    const auto a = g.add(
+        [&]
+        {
+            // Simulate env_cube bake.
+            std::this_thread::sleep_for(std::chrono::milliseconds { 4 });
+            env_done.store(1, std::memory_order_release);
+        });
+    const auto b = g.add(
+        [&]
+        {
+            // Diff must observe env_done==1.
+            ran_b_after_env.store(env_done.load(std::memory_order_acquire),
+                                  std::memory_order_release);
+        },
+        { a });
+    const auto c = g.add(
+        [&]
+        {
+            ran_c_after_env.store(env_done.load(std::memory_order_acquire),
+                                  std::memory_order_release);
+        },
+        { a });
+    const auto d = g.add([&] { d_count.fetch_add(1, std::memory_order_relaxed); });
+    const auto e = g.add([&] { e_count.fetch_add(1, std::memory_order_relaxed); });
+    const auto fnode = g.add([&] { f_count.fetch_add(1, std::memory_order_relaxed); });
+    const auto gn = g.add([&] { g_count.fetch_add(1, std::memory_order_relaxed); });
+    (void)b; (void)c; (void)d; (void)e; (void)fnode; (void)gn;
+
+    ASSERT_TRUE(g.run(pool));
+    EXPECT_EQ(g.failed_nodes(), 0U);
+    EXPECT_EQ(ran_b_after_env.load(), 1);
+    EXPECT_EQ(ran_c_after_env.load(), 1);
+    EXPECT_EQ(d_count.load(), 1);
+    EXPECT_EQ(e_count.load(), 1);
+    EXPECT_EQ(f_count.load(), 1);
+    EXPECT_EQ(g_count.load(), 1);
+}
+
+TEST(JobGraph, TemplatedRunWorksOnBothPoolTypes)
+{
+    // Compile-time validation that the templated run<PoolT> resolves
+    // for both pool types added in X1C (phase 285).
+    cd::concurrency::ThreadPool                 tp { 2 };
+    cd::concurrency::WorkStealingThreadPool     wsp { 2 };
+    cd::concurrency::JobGraph                   g1;
+    cd::concurrency::JobGraph                   g2;
+    std::atomic<int> tp_ran { 0 };
+    std::atomic<int> wsp_ran { 0 };
+    (void)g1.add([&] { tp_ran.fetch_add(1, std::memory_order_relaxed); });
+    (void)g2.add([&] { wsp_ran.fetch_add(1, std::memory_order_relaxed); });
+    ASSERT_TRUE(g1.run(tp));
+    ASSERT_TRUE(g2.run(wsp));
+    EXPECT_EQ(tp_ran.load(), 1);
+    EXPECT_EQ(wsp_ran.load(), 1);
 }
 
 }  // namespace

@@ -2145,18 +2145,86 @@ int main()
     // mips that the chrome row doesn't use anyway. Sun disk + 256
     // env base preserved so the sharp mip-0 lookup has high-frequency
     // features to reflect.
-    std::fprintf(stderr, "[ibl] baking environment cubemap (128, sun-disk)...\n");
-    const auto env_cube_cpu = cd::ibl::bake_sky_cube(128, bake_sky_with_sun);
-    std::fprintf(stderr, "[ibl] convolving diffuse irradiance (16, 16 samples)...\n");
-    const auto diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 16.0F);
-    // W8-AY: revert spec base 256 → 128 (boot was uncomfortably long
-    // for marginal visual gain; the soft analytic sky has no high-
-    // frequency content to benefit from the 4x texel count). 32 sample
-    // count gets the bake under ~3 s.
-    std::fprintf(stderr, "[ibl] prefiltering specular mip chain (128 base, 6 mips, 32 samples)...\n");
-    const auto spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 128, 6, 32);
-    std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
-    const auto brdf_lut_cpu  = cd::ibl::bake_brdf_lut(64, 64, 256);
+    // X1C (phase 285): parallel boot bake graph. The CPU-bound IBL +
+    // procedural Earth texture bakes share zero state (env-cube is the
+    // only shared input, fed into diff + spec), so they run as a small
+    // JobGraph on a boot-scoped WorkStealingThreadPool. GPU uploads
+    // stay serial after the join because cd::rhi::IDevice is not
+    // documented as thread-safe today (see ADR-20260528 X1-FU-* TODO
+    // on upload_buffer thread safety).
+    //
+    // DAG:
+    //   A env_cube -> { B diff_irradiance, C spec_prefilter }
+    //   D brdf_lut, E earth_albedo, F earth_normal, G earth_mr
+    //     (D-G are independent roots, share boot_pool with A)
+    cd::ibl::CubeMapRgbF                 env_cube_cpu;
+    cd::ibl::CubeMapRgbF                 diff_cube_cpu;
+    cd::ibl::PrefilteredSpecularCube     spec_cube_cpu;
+    cd::ibl::BrdfLut                     brdf_lut_cpu;
+    std::vector<std::uint8_t>            earth_albedo_cpu;
+    std::vector<std::uint8_t>            earth_normal_cpu;
+    std::vector<std::uint8_t>            earth_mr_cpu;
+    constexpr std::uint32_t              kTexSize       = 512;
+    constexpr std::uint32_t              kNormalSize    = 512;
+    constexpr std::uint32_t              kMrSize        = 256;
+    std::fprintf(stderr, "[boot] dispatching parallel asset bake graph...\n");
+    {
+        cd::concurrency::WorkStealingThreadPool boot_pool { 0 };
+        cd::concurrency::JobGraph              boot_graph;
+        const auto a = boot_graph.add(
+            [&]
+            {
+                std::fprintf(stderr, "[ibl] baking environment cubemap (128, sun-disk)...\n");
+                env_cube_cpu = cd::ibl::bake_sky_cube(128, bake_sky_with_sun);
+            });
+        const auto b = boot_graph.add(
+            [&]
+            {
+                std::fprintf(stderr, "[ibl] convolving diffuse irradiance (16, 16 samples)...\n");
+                diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 16.0F);
+            },
+            { a });
+        const auto c = boot_graph.add(
+            [&]
+            {
+                // W8-AY: spec base 128 / 32 samples -- see ADR-20260528.
+                std::fprintf(stderr, "[ibl] prefiltering specular mip chain (128 base, 6 mips, 32 samples)...\n");
+                spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 128, 6, 32);
+            },
+            { a });
+        const auto d = boot_graph.add(
+            [&]
+            {
+                std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
+                brdf_lut_cpu = cd::ibl::bake_brdf_lut(64, 64, 256);
+            });
+        const auto e = boot_graph.add(
+            [&]
+            {
+                earth_albedo_cpu = cd::texture_synth::bake_earth_albedo_rgba8(kTexSize);
+            });
+        const auto fnode = boot_graph.add(
+            [&]
+            {
+                earth_normal_cpu = cd::texture_synth::bake_earth_normal_rgba8(kNormalSize);
+            });
+        const auto g = boot_graph.add(
+            [&]
+            {
+                earth_mr_cpu = cd::texture_synth::bake_earth_mr_rgba8(kMrSize);
+            });
+        (void)a; (void)b; (void)c; (void)d; (void)e; (void)fnode; (void)g;
+        const bool ok = boot_graph.run(boot_pool);
+        if (!ok || boot_graph.failed_nodes() != 0)
+        {
+            std::fprintf(stderr,
+                "[boot] FATAL: bake graph run failed (ok=%d, failed_nodes=%llu)\n",
+                ok ? 1 : 0,
+                static_cast<unsigned long long>(boot_graph.failed_nodes()));
+            return 23;
+        }
+        // boot_pool joins via dtor as we leave the scope.
+    }
     std::fprintf(stderr, "[ibl] uploading to GPU...\n");
     const auto gpu_spec_cube = cd::ibl_gpu::upload_prefiltered_specular(device, spec_cube_cpu);
     const auto gpu_diff_cube = cd::ibl_gpu::upload_cubemap_rgba16f(device, diff_cube_cpu);
@@ -2177,41 +2245,39 @@ int main()
     const auto ibl_sampler = *ibl_samp_r;
 
     // ---- glTF baseColor texture (#1/#13) ----
-    // R1.5 showcase: generate a procedural Earth-like albedo texture
-    // at startup so hello_engine demonstrates the textured-PBR path
-    // even without an external glTF asset. The texture is replaced
-    // later if a glTF auto-load resolves an asset with a baseColor
-    // map. Procedural pattern: lat/lon-based ocean/continent mask +
-    // smooth value noise + warm continent tint + cool ocean tint.
+    // R1.5 showcase: procedural Earth-like albedo (CPU bake hoisted
+    // into the X1C boot JobGraph above; this block consumes the
+    // already-baked buffer and uploads it serially to the GPU). The
+    // texture is replaced later if a glTF auto-load resolves an
+    // asset with a baseColor map.
     GpuTexture2D albedo_tex {};
     bool         has_gltf_texture = false;
     {
-        constexpr std::uint32_t kTexSize = 512;
-        const auto rgba = cd::texture_synth::bake_earth_albedo_rgba8(kTexSize);
-        albedo_tex = create_texture_rgba8(device, rgba.data(), kTexSize, kTexSize);
+        albedo_tex = create_texture_rgba8(device, earth_albedo_cpu.data(),
+                                          kTexSize, kTexSize);
         has_gltf_texture = true;
         std::fprintf(stderr, "[showcase] procedural Earth-like albedo "
                               "(%ux%u) bound\n", kTexSize, kTexSize);
     }
 
     // R2: procedural normal map derived from a height field - same
-    // fBm Earth surface but stored as tangent-space normals.
+    // fBm Earth surface but stored as tangent-space normals (X1C: CPU
+    // bake hoisted to the boot graph).
     GpuTexture2D normal_tex {};
     {
-        constexpr std::uint32_t kNormalSize = 512;
-        const auto nrm = cd::texture_synth::bake_earth_normal_rgba8(kNormalSize);
-        normal_tex = create_texture_rgba8(device, nrm.data(), kNormalSize, kNormalSize);
+        normal_tex = create_texture_rgba8(device, earth_normal_cpu.data(),
+                                          kNormalSize, kNormalSize);
         std::fprintf(stderr, "[showcase] procedural normal map (%ux%u) bound\n",
                      kNormalSize, kNormalSize);
     }
 
     // R2: metallic-roughness-AO map (glTF 2.0 packing - R unused,
-    // G roughness, B metallic, A AO).
+    // G roughness, B metallic, A AO; X1C: CPU bake hoisted to the boot
+    // graph).
     GpuTexture2D mr_tex {};
     {
-        constexpr std::uint32_t kMrSize = 256;
-        const auto mr = cd::texture_synth::bake_earth_mr_rgba8(kMrSize);
-        mr_tex = create_texture_rgba8(device, mr.data(), kMrSize, kMrSize);
+        mr_tex = create_texture_rgba8(device, earth_mr_cpu.data(),
+                                      kMrSize, kMrSize);
         std::fprintf(stderr, "[showcase] procedural metallic-roughness "
                               "(%ux%u) bound\n", kMrSize, kMrSize);
     }

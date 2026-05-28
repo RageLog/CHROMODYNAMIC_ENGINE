@@ -45,7 +45,12 @@ public:
 
     /// Execute the graph on `pool`. Returns true on success, false if a cycle
     /// or invalid dep is detected. Blocks until completion.
-    [[nodiscard]] bool run(ThreadPool& pool)
+    ///
+    /// X1C (phase 285): templated on PoolT so both cd::concurrency::ThreadPool
+    /// and cd::concurrency::WorkStealingThreadPool drive the graph. Both expose
+    /// submit_detached_with_priority(priority, callable) with matching semantics.
+    template <class PoolT>
+    [[nodiscard]] bool run(PoolT& pool)
     {
         const std::size_t n = nodes_.size();
         failed_nodes_.store(0, std::memory_order_release);
