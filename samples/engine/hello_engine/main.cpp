@@ -569,6 +569,31 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   return s / 9.0;
 }
 
+// W8-AQ Cook-Torrance helpers (used by tint.w == 3.0 PBR-sphere branch).
+// Same equations as cd::material::StandardPbrMaterial so unified prim
+// path renders metallic spheres physically identical to the dedicated
+// PBR pipeline used by hello_pbr.
+float D_GGX_pbr(float NoH, float a) {
+  float a2 = a * a;
+  float d  = (NoH * NoH) * (a2 - 1.0) + 1.0;
+  return a2 / (3.14159265 * d * d + 1e-7);
+}
+float G_SchlickGGX_pbr(float NoV, float k) {
+  return NoV / (NoV * (1.0 - k) + k + 1e-7);
+}
+float G_Smith_pbr(float NoV, float NoL, float roughness) {
+  float r = roughness + 1.0;
+  float k = (r * r) / 8.0;
+  return G_SchlickGGX_pbr(NoV, k) * G_SchlickGGX_pbr(NoL, k);
+}
+vec3 F_Schlick_pbr(float HoV, vec3 F0) {
+  return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
+}
+vec3 F_Schlick_roughness_pbr(float NoV, vec3 F0, float roughness) {
+  vec3 ceiling = max(vec3(1.0 - roughness), F0);
+  return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
+}
+
 void main() {
   // R3 G-Buffer: world-space surface normal MRT-write. Done up-front
   // so the every early-return path (shadow draw / view-mode debug /
@@ -581,7 +606,12 @@ void main() {
   // also flag w=0 so composite skips SSR/AO. The grid floor is a
   // virtual editor reference — it shouldn't kick reflections or AO
   // crease from below at sample-time post-fx.
-  float surface_flag = (pc.tint.w < 0.5 || pc.tint.w > 1.5) ? 0.0 : 1.0;
+  // W8-AQ: tint.w sentinels — <0.5 shadow-projection (no surface),
+  // ==1.0 normal entity, ==2.0 floor (no surface), ==3.0 PBR sphere
+  // (real surface, goes through the W8-AQ Cook-Torrance branch).
+  bool is_shadow_w   = (pc.tint.w < 0.5);
+  bool is_floor_w    = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
+  float surface_flag = (is_shadow_w || is_floor_w) ? 0.0 : 1.0;
   out_normal = vec4(normalize(v_world_normal), surface_flag);
 
   // R3 G-Buffer phase 219 - albedo + MR. Sample the same textures
@@ -590,6 +620,171 @@ void main() {
   vec4 mr_pre = (pc.fx_params.y > 0.5) ? texture(cd_mr_tex, v_uv) : vec4(0, 0.5, 0.04, 1);
   out_albedo = vec4(clamp(v_albedo * pc.tint.rgb, vec3(0.0), vec3(1.0)), 1.0);
   out_mr = vec2(clamp(mr_pre.b, 0.0, 1.0), clamp(mr_pre.g, 0.04, 1.0));
+
+  // ==========================================================================
+  // W8-AQ PBR-sphere unified path (tint.w == 3.0).
+  // Routes the 5x5 metallic/roughness sphere grid through THIS shader so
+  // the spheres share lighting state with every other primitive in the
+  // scene: sun_dir, sun_color, cd_lights UBO, IBL bindings, RT shadows.
+  //   pc.tint.rgb       = albedo
+  //   pc.fx_params4.x   = metallic  (was clearcoat — sphere grid never
+  //                                   applies clearcoat lobe, safe overload)
+  //   pc.fx_params4.y   = roughness (was sheen — same rationale)
+  // Cook-Torrance + GGX + Smith + Schlick; multi-light loop matches the
+  // textured-entity path below. Output is linear HDR; composite owns
+  // tonemap + saturation + gamma like everything else.
+  if (pc.tint.w > 2.5 && pc.tint.w < 3.5) {
+    vec3  pbr_albedo  = pc.tint.rgb;
+    float pbr_metal   = clamp(pc.fx_params4.x, 0.0, 1.0);
+    float pbr_rough   = clamp(pc.fx_params4.y, 0.04, 1.0);
+    out_albedo = vec4(clamp(pbr_albedo, vec3(0.0), vec3(1.0)), 1.0);
+    out_mr     = vec2(pbr_metal, pbr_rough);
+
+    vec3  Npbr = normalize(v_world_normal);
+    vec3  Vpbr = normalize(pc.camera_pos.xyz - v_world_pos);
+    float NoVpbr = max(dot(Npbr, Vpbr), 0.0);
+    vec3  F0pbr  = mix(vec3(0.04), pbr_albedo, pbr_metal);
+
+    vec3 lit_pbr = vec3(0.0);
+
+    // ---- Directional sun (Cook-Torrance + CSM shadow) ----
+    {
+      vec3 L = normalize(-pc.sun_dir.xyz);
+      vec3 H = normalize(L + Vpbr);
+      float NoL = max(dot(Npbr, L), 0.0);
+      float NoH = max(dot(Npbr, H), 0.0);
+      float HoV = max(dot(H, Vpbr), 0.0);
+      float D = D_GGX_pbr(NoH, pbr_rough * pbr_rough);
+      float G = G_Smith_pbr(NoVpbr, NoL, pbr_rough);
+      vec3  F = F_Schlick_pbr(HoV, F0pbr);
+      vec3 specular = (D * G) * F / (4.0 * NoVpbr * NoL + 1e-7);
+      vec3 kD = (vec3(1.0) - F) * (1.0 - pbr_metal);
+      vec3 diffuse = kD * pbr_albedo / 3.14159265;
+      float shade = sample_shadow(v_shadow_pos, Npbr, L);
+      lit_pbr += (diffuse + specular) * NoL * pc.sun_color.rgb *
+                 (pc.sun_dir.w * shade);
+    }
+
+    // ---- Multi-light loop (point / spot / area) ----
+    for (uint li = 0u; li < cd_lights.count; ++li) {
+      vec3  lp_pos = cd_lights.slots[li].pos_range.xyz;
+      float rng    = cd_lights.slots[li].pos_range.w;
+      int   ltp    = int(cd_lights.slots[li].dir_type.w);
+      if (rng <= 0.0) continue;
+
+      if (ltp == 3) {
+        // Area rect (W4-B one-sided + W8-N tangent + W8-AJ winding
+        // + W8-AN Karis rep-point specular).
+        vec3 ln = normalize(cd_lights.slots[li].dir_type.xyz);
+        vec3 to_pt_w = v_world_pos - lp_pos;
+        if (dot(to_pt_w, ln) <= 0.0) continue;
+        vec3 right_a = normalize(cd_lights.slots[li].tangent.xyz);
+        vec3 up_a    = cross(ln, right_a);
+        float hw = cd_lights.slots[li].extras.y * 0.5;
+        float hh = cd_lights.slots[li].extras.z * 0.5;
+        // LTC diffuse form factor.
+        vec3 c0 = lp_pos - right_a*hw - up_a*hh - v_world_pos;
+        vec3 c1 = lp_pos + right_a*hw - up_a*hh - v_world_pos;
+        vec3 c2 = lp_pos + right_a*hw + up_a*hh - v_world_pos;
+        vec3 c3 = lp_pos - right_a*hw + up_a*hh - v_world_pos;
+        float ff_diff = cd_ltc_polygon_irradiance(Npbr, c0, c3, c2, c1);
+        // Karis 2013 rep-point: reflect view, intersect rect plane,
+        // clamp to (T,B) bounds, use as punctual L with solid-angle atten.
+        vec3 Rpbr = reflect(-Vpbr, Npbr);
+        vec3 d_r  = lp_pos - v_world_pos;
+        float denom = dot(Rpbr, ln);
+        vec3 plane_hit = (abs(denom) > 1e-4)
+            ? (v_world_pos + Rpbr * (dot(d_r, ln) / denom))
+            : lp_pos;
+        vec3 local = plane_hit - lp_pos;
+        float u_clamp = clamp(dot(local, right_a), -hw, hw);
+        float v_clamp = clamp(dot(local, up_a),    -hh, hh);
+        vec3 closest  = lp_pos + right_a * u_clamp + up_a * v_clamp;
+        vec3 to_L     = closest - v_world_pos;
+        float dist2   = max(dot(to_L, to_L), 1e-4);
+        vec3 Lrp      = to_L * inversesqrt(dist2);
+        float area_p  = 4.0 * hw * hh;
+        float cos_pan = max(dot(-Lrp, ln), 0.0);
+        float omega   = clamp(area_p * cos_pan / dist2, 0.0, 6.28318530);
+        float atten_rp = omega * 0.07957747;  // omega / (4*PI)
+        // RT-shadow ray toward rect centre.
+        vec3 to_c = lp_pos - v_world_pos;
+        float d_c = max(length(to_c), 1e-4);
+        vec3 Lc   = to_c / d_c;
+        float vis_a = ray_visibility(v_world_pos, Npbr, Lc, min(d_c, rng));
+        vec3  acol = cd_lights.slots[li].color_int.xyz *
+                     cd_lights.slots[li].color_int.w;
+        // Cook-Torrance at Lrp.
+        vec3 Hrp = normalize(Lrp + Vpbr);
+        float NoLrp = max(dot(Npbr, Lrp), 0.0);
+        float NoHrp = max(dot(Npbr, Hrp), 0.0);
+        float HoVrp = max(dot(Hrp, Vpbr), 0.0);
+        float D_a = D_GGX_pbr(NoHrp, pbr_rough * pbr_rough);
+        float G_a = G_Smith_pbr(NoVpbr, NoLrp, pbr_rough);
+        vec3  F_a = F_Schlick_pbr(HoVrp, F0pbr);
+        vec3 spec_rect = (D_a * G_a) * F_a /
+                         (4.0 * NoVpbr * NoLrp + 1e-7) * NoLrp *
+                         acol * atten_rp;
+        vec3 F_diff = F_Schlick_roughness_pbr(NoVpbr, F0pbr, pbr_rough);
+        vec3 kD_a   = (vec3(1.0) - F_diff) * (1.0 - pbr_metal);
+        lit_pbr += vis_a * (kD_a * pbr_albedo * acol * ff_diff + spec_rect);
+        continue;
+      }
+
+      // Point / spot.
+      vec3  to_p = lp_pos - v_world_pos;
+      float d    = length(to_p);
+      if (d < 1e-4) continue;
+      vec3  L    = to_p / d;
+      float NoL  = max(dot(Npbr, L), 0.0);
+      if (NoL <= 0.0) continue;
+      float atten = distance_atten(d, rng);
+      float cone  = 1.0;
+      if (ltp == 2) {
+        vec3  axis      = normalize(cd_lights.slots[li].dir_type.xyz);
+        float cos_b     = dot(-L, axis);
+        float cos_out   = cd_lights.slots[li].extras.x;
+        float cos_in_cpu= cd_lights.slots[li].extras.w;
+        float cos_in    = clamp(max(cos_in_cpu, cos_out + 0.01),
+                                cos_out + 0.01, 0.9999);
+        cone = smoothstep(cos_out, cos_in, cos_b);
+        if (cone <= 0.0) continue;
+      }
+      float vis = ray_visibility(v_world_pos, Npbr, L, min(d, rng));
+      vec3 H = normalize(L + Vpbr);
+      float NoH = max(dot(Npbr, H), 0.0);
+      float HoV = max(dot(H, Vpbr), 0.0);
+      float D = D_GGX_pbr(NoH, pbr_rough * pbr_rough);
+      float G = G_Smith_pbr(NoVpbr, NoL, pbr_rough);
+      vec3  F = F_Schlick_pbr(HoV, F0pbr);
+      vec3 specular = (D * G) * F / (4.0 * NoVpbr * NoL + 1e-7);
+      vec3 kD = (vec3(1.0) - F) * (1.0 - pbr_metal);
+      vec3 diffuse = kD * pbr_albedo / 3.14159265;
+      vec3 lcol = cd_lights.slots[li].color_int.xyz *
+                  cd_lights.slots[li].color_int.w;
+      lit_pbr += (diffuse + specular) * NoL * lcol *
+                 (atten * cone * vis);
+    }
+
+    // ---- IBL split-sum (Karis 2013) ----
+    // Env-spec always on (chrome mirrors sky regardless of sun); env-
+    // diffuse gated on sun + any-non-sun so unlit dielectrics go dark.
+    vec3  Ripbr   = reflect(-Vpbr, Npbr);
+    float lod_p   = pbr_rough * kIblMaxMipLod;
+    vec3  spec_e  = textureLod(cd_ibl_spec, Ripbr, lod_p).rgb;
+    vec3  diff_e  = texture(cd_ibl_diff, Npbr).rgb;
+    vec2  brdf_v  = texture(cd_brdf_lut, vec2(clamp(NoVpbr, 0.0, 1.0),
+                                              clamp(pbr_rough, 0.0, 1.0))).rg;
+    vec3  F_ibl   = F_Schlick_roughness_pbr(NoVpbr, F0pbr, pbr_rough);
+    vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - pbr_metal);
+    vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y));
+    float any_non_sun_p = (cd_lights.count > 0u) ? 1.0 : 0.0;
+    float diff_gate_p   = clamp(pc.sun_dir.w * 0.6 + any_non_sun_p * 0.22, 0.0, 1.0);
+    vec3  ibl_term_p    = ibl_spec_p + ibl_kD * diff_e * pbr_albedo * diff_gate_p;
+
+    out_color = vec4(lit_pbr + ibl_term_p, 1.0);
+    return;
+  }
 
   // tint.w sentinel: < 0.5 = "shadow-projection draw" - bypass lighting
   // entirely and output a flat dark silhouette. Used by the planar-
@@ -4638,47 +4833,61 @@ int main()
                            0, sizeof(spush), &spush);
         cmd.draw(3, 1, 0, 0);
 
-        // ---- 5x5 PBR sphere sweep (back row of the viewport) ----
-        pbr_material.apply(cmd);
-        pbr_inst.bind(cmd, 0);  // multi-light UBO (#22)
-        cmd.bind_vertex_buffer(0, pbr_sphere.vb, 0);
-        cmd.bind_index_buffer(pbr_sphere.ib, 0, cd::rhi::IndexType::kUInt16);
+        // ---- 5x5 PBR sphere sweep (W8-AQ unified prim_material path) ----
+        // W8-AQ pivot: the dedicated StandardPbrMaterial grid (now dead,
+        // pruned in W8-AR) used a baked 3-light artist rig disconnected
+        // from cd_lights and the per-frame sun. User verdict (after
+        // multiple iterations W8-AJ..W8-AP): "kureler harici kizil ton
+        // aldi onlar almadi ... bence bunlari kaldir bastan ayni karakter
+        // gibi yada prosedurel cisimler gibi ayni kategoriden bir obje
+        // olarak pbr cisim olsunlar". Fix: route the grid through
+        // prim_material with tint.w == 3.0 sentinel. The kPrimFS W8-AQ
+        // branch reads metallic from fx_params4.x, roughness from
+        // fx_params4.y, albedo from tint.rgb, and runs the SAME Cook-
+        // Torrance + cd_lights + Karis split-sum IBL the rest of the
+        // scene (cube/cone/cylinder/torus/character) uses. Sun tint
+        // propagates automatically; sun-off leaves only env-spec
+        // (chrome still mirrors the sky as physics dictates).
+        // Reuse the existing sphere_mesh (PrimitiveVertex layout) so we
+        // don't need pbr_sphere's separate vertex format. The shadow
+        // casters loop at ~line 5084 already binds sphere_mesh for the
+        // planar-shadow projection of the grid; lit pass now matches.
+        prim_material.apply(cmd);
+        prim_inst.bind(cmd, 0);
+        cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
+        cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
         constexpr int kGrid = 5;
         constexpr float kSpacing = 1.2F;
         std::uint32_t culled = 0;
         std::uint32_t intersecting = 0;
         std::uint32_t fully_inside = 0;
-        // Phase 153: extract frustum from the current VP each frame and
-        // use sphere-vs-frustum to drive cull stats. Bounding-sphere
-        // radius is the diagonal of the unit-sphere mesh AABB scaled by
-        // its world position; the mesh in pbr_sphere has unit radius so
-        // we use 0.5F as the cull radius (visual radius is slightly
-        // smaller than the bounding sphere).
         const auto frustum = cd::camera::extract_frustum(vp);
         constexpr float kSphereRadius = 0.5F;
-        // W8-AO: transpose grid axes + drop W8-D roughness floor.
-        // User verdict (daylight): "left = en metalik, sag = en plastik;
-        // en metal olanda ayna gibi yansima ve puruzsuzluk beklerim".
-        //   COLUMN axis now drives metallic (col 0 = 1.0 chrome,
-        //   col kGrid-1 = 0.0 dielectric).
-        //   ROW axis drives roughness (row 0 = 0.04 mirror,
-        //   row kGrid-1 = 1.0 matte).
-        // Albedo is a constant neutral chrome white. Constant albedo is
-        // the standard PBR-showcase rig (learnopengl, Filament sphere
-        // chart) so the eye reads metallic-vs-roughness cleanly instead
-        // of "5 different materials".
-        // W8-D's 0.20 CPU-side roughness floor is removed; the fragment
-        // shader already clamps roughness to 0.04 (mr_amb.y clamp) which
-        // is the physical mirror floor used by Filament + Frostbite.
+        // W8-AO gradient preserved: col=metallic (left chrome, right
+        // dielectric), row=roughness (top mirror, bottom matte).
         constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
+        // Resolve sun once for the whole grid (same selection rule as
+        // entity loop: first enabled directional light).
+        cd::math::Vec3f s_dir { 0.0F, -1.0F, 0.0F };
+        cd::math::Vec3f s_col { 0.0F, 0.0F, 0.0F };
+        float           s_str = 0.0F;
+        float           amb_w = 0.0F;
+        for (const auto& lrow : lights)
+        {
+            if (!lrow.enabled) continue;
+            if (lrow.light.type != cd::light::LightType::kDirectional) continue;
+            s_dir = lrow.light.direction;
+            s_col = lrow.light.color;
+            s_str = std::min(2.5F, lrow.light.intensity / 80000.0F);
+            amb_w = 0.18F;
+            break;
+        }
         for (int row = 0; row < kGrid; ++row)
         {
             for (int col = 0; col < kGrid; ++col)
             {
-                // Column 0 = full metal, column kGrid-1 = full dielectric.
                 const float metallic = 1.0F - static_cast<float>(col) /
                                               static_cast<float>(kGrid - 1);
-                // Row 0 = mirror (0.04), row kGrid-1 = matte (1.0).
                 const float roughness = 0.04F + (1.0F - 0.04F) *
                     (static_cast<float>(row) / static_cast<float>(kGrid - 1));
                 const float x = (static_cast<float>(col) - 2.0F) * kSpacing;
@@ -4691,75 +4900,47 @@ int main()
                 else ++fully_inside;
                 cd::math::Mat4f model = cd::math::Mat4f::identity();
                 model[3][0] = x; model[3][1] = y; model[3][2] = z;
-                const auto mvp = vp * model;
-                // cd::light ??' render bridge: use the first enabled
-                // directional light to drive the shader's key light.
-                // Modulate the copper albedo by the light's color so
-                // toggling the Sun OR changing CCT visibly affects
-                // the spheres. (Phase 171's LitPbrMaterial does the
-                // full UBO + N-light iteration; until that ships with
-                // a descriptor set, this is the smallest visible
-                // wiring of cd::light data into the existing shader.)
-                // Lights-off baseline: PBR sphere grid was running with
-                // hard-coded defaults even when the sun was disabled,
-                // so the 5x5 array stayed lit while everything else
-                // went dark. Zero the defaults so 'no sun = no PBR
-                // contribution from the sun term' (same rule the prim
-                // shader path got in 764d3bf).
-                cd::math::Vec3f light_dir { 0.0F, -1.0F, 0.0F };
-                cd::math::Vec3f light_color { 0.0F, 0.0F, 0.0F };
-                float           light_intensity = 0.0F;
-                for (const auto& lrow : lights)
-                {
-                    if (!lrow.enabled) continue;
-                    if (lrow.light.type != cd::light::LightType::kDirectional) continue;
-                    light_dir   = lrow.light.direction;
-                    light_color = lrow.light.color;  // already CCT-converted in Lights panel
-                    // Map 0..200000 lux slider to ~0..2.5 shader intensity.
-                    light_intensity = std::min(2.5F, lrow.light.intensity / 80000.0F);
-                    break;
-                }
-                // Find a single warm point light, fold its color * range
-                // into the ambient term (mr_amb.z) - gives the spheres a
-                // visible "key + bounce" feel.
-                cd::math::Vec3f point_color_contrib { 0.0F, 0.0F, 0.0F };
-                for (const auto& lrow : lights)
-                {
-                    if (!lrow.enabled) continue;
-                    if (lrow.light.type != cd::light::LightType::kPoint) continue;
-                    const float k = std::min(1.0F, lrow.light.intensity / 2000.0F) * 0.15F;
-                    point_color_contrib.x = lrow.light.color.x * k;
-                    point_color_contrib.y = lrow.light.color.y * k;
-                    point_color_contrib.z = lrow.light.color.z * k;
-                    break;
-                }
+                const auto mvp_pbr = vp * model;
 
-                cd::material::StandardPbrPush pb {};
-                std::memcpy(pb.mvp, &mvp, sizeof(pb.mvp));
-                // Copper base albedo, tinted by light color so CCT slider
-                // produces a visible warm/cool shift on the spheres.
-                pb.albedo[0] = kChromeAlbedo.x;
-                pb.albedo[1] = kChromeAlbedo.y;
-                pb.albedo[2] = kChromeAlbedo.z;
-                pb.albedo[3] = 1.0F;
-                // R6: mr_amb.z/w now drive Charlie sheen + Filament clearcoat
-                // lobes inside StandardPbrFS - wired from existing UI sliders.
-                pb.mr_amb[0] = metallic; pb.mr_amb[1] = roughness;
-                pb.mr_amb[2] = fx_sheen_strength;
-                pb.mr_amb[3] = fx_clearcoat_strength;
-                pb.camera_pos[0] = cam.eye.x; pb.camera_pos[1] = cam.eye.y; pb.camera_pos[2] = cam.eye.z;
-                // R6 SSS strength now packed into camera_pos.w (was reserved).
-                pb.camera_pos[3] = fx_sss_strength;
-                // PrimPush includes fx_params4 for advanced BRDF; sphere-grid PBR
-                // path uses StandardPbrPush instead, so this is a no-op here.
-                pb.light_dir[0]  = light_dir.x;
-                pb.light_dir[1]  = light_dir.y;
-                pb.light_dir[2]  = light_dir.z;
-                pb.light_dir[3]  = light_intensity;
-                cmd.push_constants(pbr_material.pipeline_layout(),
+                PrimPush pp {};
+                pp.mvp   = mvp_pbr;
+                pp.model = model;
+                pp.tint[0] = kChromeAlbedo.x;
+                pp.tint[1] = kChromeAlbedo.y;
+                pp.tint[2] = kChromeAlbedo.z;
+                pp.tint[3] = 3.0F;  // W8-AQ PBR-sphere sentinel
+                pp.sun_dir[0] = s_dir.x; pp.sun_dir[1] = s_dir.y;
+                pp.sun_dir[2] = s_dir.z; pp.sun_dir[3] = s_str;
+                pp.sun_color[0] = s_col.x; pp.sun_color[1] = s_col.y;
+                pp.sun_color[2] = s_col.z; pp.sun_color[3] = amb_w;
+                // fx_params.y = 0.0 keeps the textured-MR branch off
+                // (W8-AQ branch reads metallic/roughness from push).
+                pp.fx_params[0] = static_cast<float>(tonemap_op);
+                pp.fx_params[1] = 0.0F;
+                pp.fx_params[2] = fx_gtao_strength;
+                pp.fx_params[3] = fx_bloom_strength;
+                pp.fx_params2[0] = fx_smaa_strength;
+                pp.fx_params2[1] = fx_motion_blur;
+                pp.fx_params2[2] = fx_taa_amount;
+                pp.fx_params2[3] = fx_dof_strength;
+                pp.fx_params3[0] = fx_fog_density;
+                pp.fx_params3[1] = fx_aerial_perspective;
+                pp.fx_params3[2] = fx_clouds_coverage;
+                pp.fx_params3[3] = fx_light_shafts;
+                pp.camera_pos[0] = cam.eye.x; pp.camera_pos[1] = cam.eye.y;
+                pp.camera_pos[2] = cam.eye.z; pp.camera_pos[3] = 0.0F;
+                // W8-AQ overload: fx_params4.x = metallic (was clearcoat),
+                //                 fx_params4.y = roughness (was sheen).
+                // Sphere grid never applies clearcoat / sheen R6 lobes,
+                // so the slot overload is safe.
+                pp.fx_params4[0] = metallic;
+                pp.fx_params4[1] = roughness;
+                pp.fx_params4[2] = 0.0F;
+                pp.fx_params4[3] = static_cast<float>(fx_view_mode);
+                cmd.push_constants(prim_material.pipeline_layout(),
                                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                                   0, sizeof(pb), &pb);
-                cmd.draw_indexed(pbr_sphere.index_count, 1, 0, 0, 0);
+                                   0, sizeof(pp), &pp);
+                cmd.draw_indexed(sphere_mesh.index_count, 1, 0, 0, 0);
                 counters.increment("draws_pbr");
             }
         }
