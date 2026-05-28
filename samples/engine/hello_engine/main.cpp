@@ -2671,7 +2671,11 @@ int main()
         {
             constexpr int kPbrCols = 4;
             constexpr int kPbrRows = 4;
-            constexpr float kPbrSpacing = 1.1F;
+            // W8-AS: spacing + scale bumped after user verdict — the
+            // 0.45 scale at 1.1 spacing read as a flat grey grid; bigger
+            // spheres with more breathing room make the metallic/rough
+            // contrast actually visible.
+            constexpr float kPbrSpacing = 1.55F;
             constexpr cd::math::Vec3f kChromeAlbedo { 0.95F, 0.93F, 0.88F };
             for (int row = 0; row < kPbrRows; ++row)
             {
@@ -2692,12 +2696,12 @@ int main()
                                    static_cast<float>(kPbrRows - 1));
                     const float x = (static_cast<float>(col) -
                                      (static_cast<float>(kPbrCols - 1) * 0.5F)) * kPbrSpacing;
-                    const float y = 0.8F + static_cast<float>(row) * kPbrSpacing;
-                    const float z = -3.5F;
+                    const float y = 1.1F + static_cast<float>(row) * kPbrSpacing;
+                    const float z = -4.0F;
                     scene.local(e.handle)->value.position = { x, y, z };
-                    // Half-radius scale so 16 spheres fit between the
-                    // procedural row (y=0) and the area-light panel (~y=4).
-                    scene.local(e.handle)->value.scale    = { 0.45F, 0.45F, 0.45F };
+                    // 0.65 scale (was 0.45) so chrome reflections + plastic
+                    // diffuse are both legible from the default camera.
+                    scene.local(e.handle)->value.scale    = { 0.65F, 0.65F, 0.65F };
                     entities.push_back(std::move(e));
                 }
             }
@@ -4588,27 +4592,11 @@ int main()
                                        0, sizeof(light_mvp), &light_mvp);
                     cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
                 }
-                // Casters: 5?-5 PBR sphere grid (use PrimitiveVertex sphere mesh).
-                cmd.bind_vertex_buffer(0, sphere_mesh.vb, 0);
-                cmd.bind_index_buffer(sphere_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
-                constexpr int kGSh = 5;
-                constexpr float kSph = 1.2F;
-                for (int row = 0; row < kGSh; ++row)
-                {
-                    for (int col = 0; col < kGSh; ++col)
-                    {
-                        const float x = (static_cast<float>(col) - 2.0F) * kSph;
-                        const float y = 2.2F + (static_cast<float>(row) - 2.0F) * 0.9F;
-                        const float z = -4.5F;
-                        cd::math::Mat4f model = cd::math::Mat4f::identity();
-                        model[3][0] = x; model[3][1] = y; model[3][2] = z;
-                        const auto light_mvp = light_vp2 * model;
-                        cmd.push_constants(shadow_material.pipeline_layout(),
-                                           cd::rhi::ShaderStage::kVertex,
-                                           0, sizeof(light_mvp), &light_mvp);
-                        cmd.draw_indexed(sphere_mesh.index_count, 1, 0, 0, 0);
-                    }
-                }
+                // W8-AS: leftover 5x5 PBR-grid CSM caster loop REMOVED.
+                // The entity caster loop above already drew the 16 PBR
+                // sphere ECS entities into the shadow map — drawing the
+                // legacy hardcoded grid again created the ghost shadow
+                // the user reported ("eski pbrlarin gölgesi gozukuyor").
             }
             cmd.end_render_pass();
         }
