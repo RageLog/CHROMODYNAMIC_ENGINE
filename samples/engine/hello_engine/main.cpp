@@ -714,9 +714,20 @@ void main() {
       vec3 to_c   = lp_pos - v_world_pos;
       float d_c   = max(length(to_c), 1e-4);
       vec3 Lc     = to_c / d_c;
-      // Area light shadows disabled - same self-occlusion issue as
-      // multi-light point/spot. Returns with R3 per-instance ray mask.
-      float vis_a = 1.0;
+      // W8-L: area light single-sample RT shadow ray (cast from
+      // shading point toward the area centre). Same bias as the W8-C
+      // spot/point path (tmin 0.30 + N*0.20) so dense PBR sphere
+      // self/neighbour rays don't false-occlude. User explicitly
+      // asked for area lights to cast shadow like point + spot do.
+      float area_tmax = min(d_c, rng);
+      rayQueryEXT rq_a;
+      rayQueryInitializeEXT(
+          rq_a, cd_tlas,
+          gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+          0xFFu, v_world_pos + N * 0.20, 0.30, Lc, area_tmax);
+      while (rayQueryProceedEXT(rq_a)) { /* opaque-only walk */ }
+      float vis_a = (rayQueryGetIntersectionTypeEXT(rq_a, true) ==
+                     gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
       vec3  col   = cd_lights.slots[li].color_int.xyz;
       float ki    = cd_lights.slots[li].color_int.w;
       lit += albedo * col * (ki * E * vis_a);
