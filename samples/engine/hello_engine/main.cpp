@@ -1865,6 +1865,229 @@ inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
     }
 }
 
+// ---- draw_r_showcase_panel ------------------------------------------------
+// Unified R1..R8 realism-roadmap toggle / slider surface. Lifted out of
+// the main render loop in phase 305 (Marathon Run 9 sub-N3); all 26 fx
+// floats + 2 ints + 5 bools now live behind a single HelloEngineFx ref
+// instead of being stack vars in main(). The sun-direction sub-panel
+// also needs the lights vector (first entry = directional sun) so we
+// can renormalise + push intensity. log_push echoes preset clicks into
+// the Edit History panel.
+inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
+                                  std::vector<LightRow>& lights,
+                                  const std::function<void(std::string)>& log_push)
+{
+    ImGui::Begin("R-Showcase");
+    ImGui::TextDisabled("CHROMODYNAMIC realism roadmap (live)");
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R1  HDR cubemap IBL");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(spec 6mip + diff 16 + brdf 64x64)");
+    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  Material textures");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(albedo + normal + MR + AO)");
+    if (ImGui::CollapsingHeader("R2-Debug  View modes (see each map)"))
+    {
+        const char* labels[] = { "Final", "Albedo",           "World normal", "MR (G=rough,B=metal)",
+                                 "AO",    "Perturbed normal", "UVs" };
+        for (int i = 0; i < 7; ++i)
+        {
+            if (ImGui::RadioButton(labels[i], fx.view_mode == i))
+                fx.view_mode = i;
+        }
+    }
+    // Sun direction controller - drives the directional light + IBL
+    // gate. Each axis [-1,1]; normalised before push fill.
+    if (ImGui::CollapsingHeader("Sun direction"))
+    {
+        if (!lights.empty())
+        {
+            auto& sun = lights[0].light;
+            bool d_changed = false;
+            d_changed |= ImGui::SliderFloat("dir.x", &sun.direction.x, -1.0F, 1.0F);
+            d_changed |= ImGui::SliderFloat("dir.y", &sun.direction.y, -1.0F, 1.0F);
+            d_changed |= ImGui::SliderFloat("dir.z", &sun.direction.z, -1.0F, 1.0F);
+            if (d_changed)
+            {
+                const float dl = std::sqrt(
+                    sun.direction.x * sun.direction.x + sun.direction.y * sun.direction.y +
+                    sun.direction.z * sun.direction.z
+                );
+                if (dl > 1e-4F)
+                {
+                    sun.direction.x /= dl;
+                    sun.direction.y /= dl;
+                    sun.direction.z /= dl;
+                }
+            }
+            ImGui::SliderFloat("intensity (lx)", &sun.intensity, 0.0F, 200000.0F);
+            if (ImGui::Button("Reset sun"))
+            {
+                sun.direction = { -0.3F, -0.9F, -0.2F };
+                sun.intensity = 100000.0F;
+            }
+        }
+    }
+    if (ImGui::CollapsingHeader("R6  Advanced BRDFs"))
+    {
+        ImGui::SliderFloat("Clearcoat", &fx.clearcoat_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("Sheen", &fx.sheen_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("SSS (Burley)", &fx.sss_strength, 0.0F, 1.0F);
+    }
+    if (ImGui::CollapsingHeader("R7  Camera composition"))
+    {
+        ImGui::SliderFloat("Vignette", &fx.vignette_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("ChromAberration", &fx.chromab_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("Film grain", &fx.film_grain, 0.0F, 1.0F);
+    }
+    if (ImGui::CollapsingHeader("R4-FX  Inline scene post-fx (legacy)"))
+    {
+        ImGui::TextDisabled("DEPRECATED - composite owns the real versions.");
+        ImGui::TextDisabled("Sliders disabled. Use R3 Composite post-fx panel.");
+        ImGui::BeginDisabled();
+        ImGui::SliderFloat("GTAO inline", &fx.gtao_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("Bloom inline", &fx.bloom_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("SMAA inline", &fx.smaa_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("Height fog", &fx.fog_density, 0.0F, 1.0F);
+        ImGui::SliderFloat("Aerial persp", &fx.aerial_perspective, 0.0F, 1.0F);
+        ImGui::EndDisabled();
+    }
+    if (ImGui::CollapsingHeader("R3  Composite post-fx (live)", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        ImGui::TextDisabled("single composite pass - AO/DOF/shafts/bloom/atmo");
+        // W6-E: preset buttons — quick A/B between known-good visual
+        // setups so the user doesn't have to remember every default.
+        if (ImGui::Button("Defaults"))
+        {
+            fx.exposure = 3.0F;
+            fx.saturation_boost = 1.50F;
+            fx.bloom_post = 0.04F;
+            fx.ao_strength = 0.55F;
+            fx.dof_strength = 0.0F;
+            fx.shafts_strength = 0.75F;
+            fx.ssr_strength = 0.5F;
+            fx.motion_blur = 0.0F;
+            fx.taa_amount = 0.0F;
+            fx.clouds_coverage = 0.0F;
+            fx.fog_density = 0.0F;
+            fx.aerial_perspective = 0.0F;
+            fx.chromab_strength = 0.0F;
+            fx.film_grain = 0.0F;
+            fx.vignette_strength = 0.25F;
+            log_push("[fx] Reset all composite knobs to defaults");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cinematic"))
+        {
+            fx.exposure = 2.5F;
+            fx.saturation_boost = 1.65F;
+            fx.bloom_post = 0.08F;
+            fx.ao_strength = 0.65F;
+            fx.dof_strength = 0.35F;
+            fx.shafts_strength = 0.85F;
+            fx.ssr_strength = 0.55F;
+            fx.motion_blur = 0.30F;
+            fx.taa_amount = 0.80F;
+            fx.clouds_coverage = 0.45F;
+            fx.fog_density = 0.20F;
+            fx.aerial_perspective = 0.50F;
+            fx.chromab_strength = 0.25F;
+            fx.film_grain = 0.15F;
+            fx.vignette_strength = 0.40F;
+            fx.tonemap_op = 2;  // Hable
+            log_push("[fx] Cinematic preset");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Performance"))
+        {
+            fx.exposure = 1.5F;
+            fx.saturation_boost = 1.20F;
+            fx.bloom_post = 0.0F;
+            fx.ao_strength = 0.0F;
+            fx.dof_strength = 0.0F;
+            fx.shafts_strength = 0.0F;
+            fx.ssr_strength = 0.0F;
+            fx.motion_blur = 0.0F;
+            fx.taa_amount = 0.0F;
+            fx.clouds_coverage = 0.0F;
+            fx.fog_density = 0.0F;
+            fx.aerial_perspective = 0.0F;
+            fx.chromab_strength = 0.0F;
+            fx.film_grain = 0.0F;
+            fx.vignette_strength = 0.0F;
+            fx.tonemap_op = 0;  // Narkowicz (cheapest)
+            log_push("[fx] Performance preset (all post-fx off)");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("HDR Demo"))
+        {
+            fx.exposure = 1.0F;
+            fx.saturation_boost = 1.40F;
+            fx.bloom_post = 0.12F;
+            fx.ao_strength = 0.55F;
+            fx.shafts_strength = 0.90F;
+            fx.clouds_coverage = 0.30F;
+            fx.fog_density = 0.0F;
+            fx.chromab_strength = 0.15F;
+            fx.vignette_strength = 0.30F;
+            fx.tonemap_op = 3;  // AGX — best for wide DR
+            log_push("[fx] HDR demo preset (AGX tonemap + wide DR)");
+        }
+        ImGui::SliderFloat("Exposure", &fx.exposure, 0.1F, 10.0F);
+        ImGui::SliderFloat("Saturation boost", &fx.saturation_boost, 0.5F, 2.5F);
+        ImGui::SliderFloat("Bloom strength", &fx.bloom_post, 0.0F, 0.30F);
+        ImGui::SliderFloat("AO strength", &fx.ao_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("DOF strength", &fx.dof_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("Light shafts", &fx.shafts_strength, 0.0F, 1.5F);
+        ImGui::SliderFloat("SSR strength", &fx.ssr_strength, 0.0F, 1.0F);
+        ImGui::SliderFloat("Motion blur", &fx.motion_blur, 0.0F, 1.0F);
+        ImGui::SliderFloat("TAA amount", &fx.taa_amount, 0.0F, 0.97F);
+        ImGui::SliderFloat("Clouds coverage", &fx.clouds_coverage, 0.0F, 1.0F);
+        ImGui::TextDisabled("TAA: camera-velocity reprojection + 3x3 neighbourhood clamp");
+    }
+    if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
+    {
+        ImGui::TextDisabled("Live composite stack:");
+        ImGui::BulletText("AO  (depth + G-Buffer-normal 8-ring scan)");
+        ImGui::BulletText("SSR (24-step world-space ray-march)");
+        ImGui::BulletText("DOF (8-tap bokeh, focus = cam target)");
+        ImGui::BulletText("Light shafts (16-tap Mitchell god rays)");
+        ImGui::BulletText("Motion blur (velocity G-Buffer + camera fallback)");
+        ImGui::BulletText("TAA (history ping-pong + Halton(2,3) jitter)");
+        ImGui::BulletText("Atmo fog + aerial perspective + sun in-scatter");
+        ImGui::BulletText("Vignette + film grain + ChromAB");
+        ImGui::TextDisabled("All tunable via R3 Composite post-fx (live) panel.");
+    }
+    if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
+    {
+        ImGui::TextDisabled("Library API live: parity smokes pass.");
+        ImGui::BulletText("hello_restir   - DI + GI reservoir math");
+        ImGui::BulletText("hello_ddgi     - probe-volume trilinear weights");
+        ImGui::BulletText("hello_nrc      - CpuReferenceMlp SGD convergence");
+        ImGui::TextDisabled("GPU pipeline wiring queued - needs RT compute pipe.");
+        ImGui::TextDisabled("Run samples/lib_smokes/hello_{restir,ddgi,nrc}.exe");
+    }
+    if (ImGui::CollapsingHeader("R5  Volumetrics"))
+    {
+        ImGui::TextDisabled("Composite-inline (cheap) and lib-level (CPU smoke):");
+        ImGui::BulletText("Sun in-scatter fog (HG g=0.6) - live in composite");
+        ImGui::BulletText("fBm sky cloud overlay - live in composite");
+        ImGui::BulletText("hello_volumetric_fog - Wronski 2014 froxel grid (CPU)");
+        ImGui::BulletText("hello_volumetric_clouds - Schneider 2017 march (CPU)");
+        ImGui::TextDisabled("3D froxel GPU compute path queued.");
+    }
+    if (ImGui::CollapsingHeader("R8  HDR10 display output"))
+    {
+        ImGui::Checkbox("HDR10 request (composite op 4 ready; needs HDR display)", &fx.hdr10_request);
+        ImGui::TextDisabled("Tonemap operator 4 = ST.2084 PQ encode (Rec.2020).");
+        ImGui::TextDisabled("Swapchain colour-space already exposed via");
+        ImGui::TextDisabled("rhi::ColorSpace::kHdr10St2084; activate by setting");
+        ImGui::TextDisabled("rd.swapchain.colour_space at startup + restarting.");
+    }
+    ImGui::End();
+
+}
+
 }  // namespace
 
 // ============================================================================
@@ -6187,218 +6410,8 @@ int main()
         // ---- Inspector ----
         draw_inspector_panel(entities, selected, scene, history, log_push);
 
-        // ---- R-Showcase panel: unified R1-R8 feature toggles ----
-        // Single panel listing every realism-roadmap feature with
-        // an in-place checkbox/slider so the user can experience the
-        // engine's full capability surface from one place.
-        ImGui::Begin("R-Showcase");
-        ImGui::TextDisabled("CHROMODYNAMIC realism roadmap (live)");
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R1  HDR cubemap IBL");
-        ImGui::SameLine();
-        ImGui::TextDisabled("(spec 6mip + diff 16 + brdf 64x64)");
-        ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  Material textures");
-        ImGui::SameLine();
-        ImGui::TextDisabled("(albedo + normal + MR + AO)");
-        if (ImGui::CollapsingHeader("R2-Debug  View modes (see each map)"))
-        {
-            const char* labels[] = { "Final", "Albedo",           "World normal", "MR (G=rough,B=metal)",
-                                     "AO",    "Perturbed normal", "UVs" };
-            for (int i = 0; i < 7; ++i)
-            {
-                if (ImGui::RadioButton(labels[i], fx.view_mode == i))
-                    fx.view_mode = i;
-            }
-        }
-        // Sun direction controller - drives the directional light + IBL
-        // gate. Each axis [-1,1]; normalised before push fill.
-        if (ImGui::CollapsingHeader("Sun direction"))
-        {
-            if (!lights.empty())
-            {
-                auto& sun = lights[0].light;
-                bool d_changed = false;
-                d_changed |= ImGui::SliderFloat("dir.x", &sun.direction.x, -1.0F, 1.0F);
-                d_changed |= ImGui::SliderFloat("dir.y", &sun.direction.y, -1.0F, 1.0F);
-                d_changed |= ImGui::SliderFloat("dir.z", &sun.direction.z, -1.0F, 1.0F);
-                if (d_changed)
-                {
-                    const float dl = std::sqrt(
-                        sun.direction.x * sun.direction.x + sun.direction.y * sun.direction.y +
-                        sun.direction.z * sun.direction.z
-                    );
-                    if (dl > 1e-4F)
-                    {
-                        sun.direction.x /= dl;
-                        sun.direction.y /= dl;
-                        sun.direction.z /= dl;
-                    }
-                }
-                ImGui::SliderFloat("intensity (lx)", &sun.intensity, 0.0F, 200000.0F);
-                if (ImGui::Button("Reset sun"))
-                {
-                    sun.direction = { -0.3F, -0.9F, -0.2F };
-                    sun.intensity = 100000.0F;
-                }
-            }
-        }
-        if (ImGui::CollapsingHeader("R6  Advanced BRDFs"))
-        {
-            ImGui::SliderFloat("Clearcoat", &fx.clearcoat_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Sheen", &fx.sheen_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("SSS (Burley)", &fx.sss_strength, 0.0F, 1.0F);
-        }
-        if (ImGui::CollapsingHeader("R7  Camera composition"))
-        {
-            ImGui::SliderFloat("Vignette", &fx.vignette_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("ChromAberration", &fx.chromab_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Film grain", &fx.film_grain, 0.0F, 1.0F);
-        }
-        if (ImGui::CollapsingHeader("R4-FX  Inline scene post-fx (legacy)"))
-        {
-            ImGui::TextDisabled("DEPRECATED - composite owns the real versions.");
-            ImGui::TextDisabled("Sliders disabled. Use R3 Composite post-fx panel.");
-            ImGui::BeginDisabled();
-            ImGui::SliderFloat("GTAO inline", &fx.gtao_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Bloom inline", &fx.bloom_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("SMAA inline", &fx.smaa_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Height fog", &fx.fog_density, 0.0F, 1.0F);
-            ImGui::SliderFloat("Aerial persp", &fx.aerial_perspective, 0.0F, 1.0F);
-            ImGui::EndDisabled();
-        }
-        if (ImGui::CollapsingHeader("R3  Composite post-fx (live)", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::TextDisabled("single composite pass - AO/DOF/shafts/bloom/atmo");
-            // W6-E: preset buttons — quick A/B between known-good visual
-            // setups so the user doesn't have to remember every default.
-            if (ImGui::Button("Defaults"))
-            {
-                fx.exposure = 3.0F;
-                fx.saturation_boost = 1.50F;
-                fx.bloom_post = 0.04F;
-                fx.ao_strength = 0.55F;
-                fx.dof_strength = 0.0F;
-                fx.shafts_strength = 0.75F;
-                fx.ssr_strength = 0.5F;
-                fx.motion_blur = 0.0F;
-                fx.taa_amount = 0.0F;
-                fx.clouds_coverage = 0.0F;
-                fx.fog_density = 0.0F;
-                fx.aerial_perspective = 0.0F;
-                fx.chromab_strength = 0.0F;
-                fx.film_grain = 0.0F;
-                fx.vignette_strength = 0.25F;
-                log_push("[fx] Reset all composite knobs to defaults");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cinematic"))
-            {
-                fx.exposure = 2.5F;
-                fx.saturation_boost = 1.65F;
-                fx.bloom_post = 0.08F;
-                fx.ao_strength = 0.65F;
-                fx.dof_strength = 0.35F;
-                fx.shafts_strength = 0.85F;
-                fx.ssr_strength = 0.55F;
-                fx.motion_blur = 0.30F;
-                fx.taa_amount = 0.80F;
-                fx.clouds_coverage = 0.45F;
-                fx.fog_density = 0.20F;
-                fx.aerial_perspective = 0.50F;
-                fx.chromab_strength = 0.25F;
-                fx.film_grain = 0.15F;
-                fx.vignette_strength = 0.40F;
-                fx.tonemap_op = 2;  // Hable
-                log_push("[fx] Cinematic preset");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Performance"))
-            {
-                fx.exposure = 1.5F;
-                fx.saturation_boost = 1.20F;
-                fx.bloom_post = 0.0F;
-                fx.ao_strength = 0.0F;
-                fx.dof_strength = 0.0F;
-                fx.shafts_strength = 0.0F;
-                fx.ssr_strength = 0.0F;
-                fx.motion_blur = 0.0F;
-                fx.taa_amount = 0.0F;
-                fx.clouds_coverage = 0.0F;
-                fx.fog_density = 0.0F;
-                fx.aerial_perspective = 0.0F;
-                fx.chromab_strength = 0.0F;
-                fx.film_grain = 0.0F;
-                fx.vignette_strength = 0.0F;
-                fx.tonemap_op = 0;  // Narkowicz (cheapest)
-                log_push("[fx] Performance preset (all post-fx off)");
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("HDR Demo"))
-            {
-                fx.exposure = 1.0F;
-                fx.saturation_boost = 1.40F;
-                fx.bloom_post = 0.12F;
-                fx.ao_strength = 0.55F;
-                fx.shafts_strength = 0.90F;
-                fx.clouds_coverage = 0.30F;
-                fx.fog_density = 0.0F;
-                fx.chromab_strength = 0.15F;
-                fx.vignette_strength = 0.30F;
-                fx.tonemap_op = 3;  // AGX — best for wide DR
-                log_push("[fx] HDR demo preset (AGX tonemap + wide DR)");
-            }
-            ImGui::SliderFloat("Exposure", &fx.exposure, 0.1F, 10.0F);
-            ImGui::SliderFloat("Saturation boost", &fx.saturation_boost, 0.5F, 2.5F);
-            ImGui::SliderFloat("Bloom strength", &fx.bloom_post, 0.0F, 0.30F);
-            ImGui::SliderFloat("AO strength", &fx.ao_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("DOF strength", &fx.dof_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Light shafts", &fx.shafts_strength, 0.0F, 1.5F);
-            ImGui::SliderFloat("SSR strength", &fx.ssr_strength, 0.0F, 1.0F);
-            ImGui::SliderFloat("Motion blur", &fx.motion_blur, 0.0F, 1.0F);
-            ImGui::SliderFloat("TAA amount", &fx.taa_amount, 0.0F, 0.97F);
-            ImGui::SliderFloat("Clouds coverage", &fx.clouds_coverage, 0.0F, 1.0F);
-            ImGui::TextDisabled("TAA: camera-velocity reprojection + 3x3 neighbourhood clamp");
-        }
-        if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
-        {
-            ImGui::TextDisabled("Live composite stack:");
-            ImGui::BulletText("AO  (depth + G-Buffer-normal 8-ring scan)");
-            ImGui::BulletText("SSR (24-step world-space ray-march)");
-            ImGui::BulletText("DOF (8-tap bokeh, focus = cam target)");
-            ImGui::BulletText("Light shafts (16-tap Mitchell god rays)");
-            ImGui::BulletText("Motion blur (velocity G-Buffer + camera fallback)");
-            ImGui::BulletText("TAA (history ping-pong + Halton(2,3) jitter)");
-            ImGui::BulletText("Atmo fog + aerial perspective + sun in-scatter");
-            ImGui::BulletText("Vignette + film grain + ChromAB");
-            ImGui::TextDisabled("All tunable via R3 Composite post-fx (live) panel.");
-        }
-        if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
-        {
-            ImGui::TextDisabled("Library API live: parity smokes pass.");
-            ImGui::BulletText("hello_restir   - DI + GI reservoir math");
-            ImGui::BulletText("hello_ddgi     - probe-volume trilinear weights");
-            ImGui::BulletText("hello_nrc      - CpuReferenceMlp SGD convergence");
-            ImGui::TextDisabled("GPU pipeline wiring queued - needs RT compute pipe.");
-            ImGui::TextDisabled("Run samples/lib_smokes/hello_{restir,ddgi,nrc}.exe");
-        }
-        if (ImGui::CollapsingHeader("R5  Volumetrics"))
-        {
-            ImGui::TextDisabled("Composite-inline (cheap) and lib-level (CPU smoke):");
-            ImGui::BulletText("Sun in-scatter fog (HG g=0.6) - live in composite");
-            ImGui::BulletText("fBm sky cloud overlay - live in composite");
-            ImGui::BulletText("hello_volumetric_fog - Wronski 2014 froxel grid (CPU)");
-            ImGui::BulletText("hello_volumetric_clouds - Schneider 2017 march (CPU)");
-            ImGui::TextDisabled("3D froxel GPU compute path queued.");
-        }
-        if (ImGui::CollapsingHeader("R8  HDR10 display output"))
-        {
-            ImGui::Checkbox("HDR10 request (composite op 4 ready; needs HDR display)", &fx.hdr10_request);
-            ImGui::TextDisabled("Tonemap operator 4 = ST.2084 PQ encode (Rec.2020).");
-            ImGui::TextDisabled("Swapchain colour-space already exposed via");
-            ImGui::TextDisabled("rhi::ColorSpace::kHdr10St2084; activate by setting");
-            ImGui::TextDisabled("rd.swapchain.colour_space at startup + restarting.");
-        }
-        ImGui::End();
+        // ---- R-Showcase panel (unified R1..R8 toggles) ----
+        draw_r_showcase_panel(fx, lights, log_push);
 
         // ---- Counters ----
         draw_counters_panel(counters, dt, frame_idx);
