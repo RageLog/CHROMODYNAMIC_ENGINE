@@ -443,6 +443,31 @@ struct Histogram
 };
 
 // =============================================================================
+// Phase 300 / Marathon Run 8 sub-N2D: SelKind + LightRow lifted from main()
+// scope to anon namespace so the Outliner / Lights / selection-overlay
+// helpers can take them in their signatures. No semantic change - these
+// are pure data types and were already aggregate-style; moving them up
+// just lets the extracted UI helpers reference them by type name.
+// =============================================================================
+
+// Selection kind - entities and lights are both pickable.
+enum class SelKind : std::uint8_t
+{
+    kEntity = 0,
+    kLight = 1
+};
+
+// One row of the Lights panel: a Light record plus the inspector-side
+// metadata (display name, enable bit, CCT slider value).
+struct LightRow
+{
+    std::string name;
+    cd::light::Light light;
+    bool enabled { true };
+    float kelvin { 6500.0F };  // mirrors light.color_kelvin
+};
+
+// =============================================================================
 // Phase 297 / Marathon Run 8 sub-N2A: small self-contained UI panel draw
 // helpers extracted from main(). These touch a narrow, well-defined slice
 // of frame state (counters table, random-viz histograms, history + log)
@@ -949,6 +974,348 @@ inline void draw_inspector_panel(std::vector<SceneEntity>& entities,
     else
     {
         ImGui::TextDisabled("no selection");
+    }
+    ImGui::End();
+}
+
+// =============================================================================
+// Phase 300 / Marathon Run 8 sub-N2D: Outliner + Lights UI panels extracted.
+// Lights is the largest single-panel extract in the marathon so far (~225
+// lines). The per-frame CCT->RGB rebuild + ClusterGrid::assign side-effect
+// loop moves into the helper alongside the UI itself - that loop is the
+// data path the Lights panel exposes and decoupling them would just push
+// shared state into the parameter list. SelKind + LightRow lifted to anon
+// namespace in step 1 so the helpers can take them by type name.
+// =============================================================================
+
+// ---- draw_outliner_panel --------------------------------------------------
+inline void draw_outliner_panel(const std::vector<SceneEntity>& entities,
+                                const std::vector<LightRow>& lights,
+                                int& selected,
+                                SelKind& selected_kind,
+                                const cd::world_container::World& cd_world)
+{
+    // Read-only world-container tree (top) + clickable entity +
+    // light list (bottom). B14 closes 'Outliner clicks don't
+    // select' — entries below are Selectable and now drive the
+    // selected/selected_kind/selected_light state.
+    ImGui::Begin("Outliner");
+    ImGui::TextDisabled("Scene entities + lights (click to select):");
+    for (std::size_t i = 0; i < entities.size(); ++i)
+    {
+        const bool is_sel = (selected_kind == SelKind::kEntity && selected == static_cast<int>(i));
+        const std::string label = entities[i].name + "##outl_e" + std::to_string(i);
+        if (ImGui::Selectable(label.c_str(), is_sel))
+        {
+            selected = static_cast<int>(i);
+            selected_kind = SelKind::kEntity;
+        }
+    }
+    for (std::size_t i = 0; i < lights.size(); ++i)
+    {
+        const bool is_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
+        const std::string label = "[light] " + lights[i].name + "##outl_l" + std::to_string(i);
+        if (ImGui::Selectable(label.c_str(), is_sel))
+        {
+            selected = static_cast<int>(i);
+            selected_kind = SelKind::kLight;
+        }
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("World container (read-only):");
+    if (ImGui::TreeNodeEx(cd_world.name().data(), ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        auto* proj = cd_world.project();
+        if (proj == nullptr)
+        {
+            ImGui::TextDisabled("(no project)");
+        }
+        else
+        {
+            std::string proj_lbl { proj->name() };
+            if (ImGui::TreeNodeEx((proj_lbl + "##proj").c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                for (std::size_t li = 0; li < proj->level_count(); ++li)
+                {
+                    auto* lvl = proj->level(li);
+                    if (lvl == nullptr)
+                        continue;
+                    std::string lvl_lbl { lvl->name() };
+                    const auto& b = lvl->bounds();
+                    if (ImGui::TreeNodeEx(
+                            (lvl_lbl + "##l" + std::to_string(li)).c_str(),
+                            ImGuiTreeNodeFlags_DefaultOpen
+                        ))
+                    {
+                        ImGui::TextDisabled(
+                            "bounds  [%.1f, %.1f, %.1f] -> [%.1f, %.1f, %.1f]",
+                            static_cast<double>(b.min.x),
+                            static_cast<double>(b.min.y),
+                            static_cast<double>(b.min.z),
+                            static_cast<double>(b.max.x),
+                            static_cast<double>(b.max.y),
+                            static_cast<double>(b.max.z)
+                        );
+                        for (std::size_t yi = 0; yi < lvl->layer_count(); ++yi)
+                        {
+                            auto* ly = lvl->layer(yi);
+                            if (ly == nullptr)
+                                continue;
+                            std::string ly_lbl { ly->name() };
+                            const bool active = (yi == lvl->active_layer());
+                            if (active)
+                                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
+                            ImGui::Bullet();
+                            ImGui::Text(
+                                "%s%s%s%s",
+                                ly_lbl.c_str(),
+                                active ? " (active)" : "",
+                                ly->locked() ? " [locked]" : "",
+                                !ly->visible() ? " [hidden]" : ""
+                            );
+                            if (active)
+                                ImGui::PopStyleColor();
+                        }
+                        ImGui::TreePop();
+                    }
+                }
+                ImGui::TreePop();
+            }
+        }
+        ImGui::TreePop();
+    }
+    ImGui::End();
+}
+
+// ---- draw_lights_panel ----------------------------------------------------
+inline void draw_lights_panel(std::vector<LightRow>& lights,
+                              int& selected,
+                              SelKind& selected_kind,
+                              cd::light::ClusterGrid& cluster_grid,
+                              const cd::light::ClusterGridDesc& cluster_desc)
+{
+    ImGui::Begin("Lights");
+    ImGui::TextDisabled("cd::light - Frostbite + Filament model");
+    ImGui::Separator();
+
+    // Per-frame: refresh CCT??'RGB, then assign every enabled light
+    // into the cluster grid for the stats line.
+    cluster_grid.clear();
+    std::uint32_t enabled_count = 0;
+    std::uint32_t cluster_hits = 0;
+    for (std::size_t i = 0; i < lights.size(); ++i)
+    {
+        auto& row = lights[i];
+        if (row.kelvin > 0.0F)
+            row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+        if (row.enabled)
+        {
+            ++enabled_count;
+            cluster_hits += cluster_grid.assign(static_cast<std::uint32_t>(i), row.light, row.light.position);
+        }
+    }
+
+    ImGui::Text("enabled %u / %zu     cluster assignments %u", enabled_count, lights.size(), cluster_hits);
+    ImGui::Text(
+        "grid: %ux%ux%u  near %.1f  far %.1f",
+        cluster_desc.tiles_x,
+        cluster_desc.tiles_y,
+        cluster_desc.slices_z,
+        static_cast<double>(cluster_desc.near_z),
+        static_cast<double>(cluster_desc.far_z)
+    );
+    ImGui::Separator();
+
+    for (std::size_t i = 0; i < lights.size(); ++i)
+    {
+        auto& row = lights[i];
+        ImGui::PushID(static_cast<int>(i));
+        // Click on row name selects the light (so Inspector + gizmo see it).
+        const bool row_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
+        if (row_sel)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
+        if (ImGui::Selectable(
+                (row_sel ? std::string { "> " } + row.name : row.name).c_str(),
+                row_sel,
+                ImGuiSelectableFlags_AllowOverlap
+            ))
+        {
+            selected = static_cast<int>(i);
+            selected_kind = SelKind::kLight;
+        }
+        if (row_sel)
+            ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::Checkbox("##en", &row.enabled);
+
+        // Color preview swatch - what the CCT actually produces.
+        const ImVec4 col { row.light.color.x, row.light.color.y, row.light.color.z, 1.0F };
+        ImGui::SameLine();
+        ImGui::ColorButton(
+            "##swatch",
+            col,
+            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
+            ImVec2(24, 14)
+        );
+
+        // Type badge.
+        const char* type_str = row.light.type == cd::light::LightType::kDirectional ? "DIR "
+                               : row.light.type == cd::light::LightType::kPoint     ? "POINT"
+                               : row.light.type == cd::light::LightType::kSpot      ? "SPOT"
+                               : row.light.type == cd::light::LightType::kRectArea  ? "RECT"
+                                                                                    : "DISK";
+        ImGui::SameLine();
+        ImGui::TextDisabled("[%s]", type_str);
+
+        // CCT + intensity sliders. CCT-driven palette is the default,
+        // but a raw RGB picker is available when the user wants an
+        // arbitrary tint. Setting RGB sets kelvin to 0 so the per-
+        // frame CCT->RGB rebake won't overwrite the manual choice.
+        ImGui::SliderFloat("CCT (K)", &row.kelvin, 0.0F, 15000.0F, "%.0f K");
+        {
+            float rgb[3] { row.light.color.x, row.light.color.y, row.light.color.z };
+            if (ImGui::ColorEdit3("colour (RGB)", rgb, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float))
+            {
+                row.light.color = { rgb[0], rgb[1], rgb[2] };
+                row.kelvin = 0.0F;
+            }
+        }
+        const char* unit = row.light.type == cd::light::LightType::kDirectional ? "lx" : "lm";
+        ImGui::SliderFloat(
+            "intensity",
+            &row.light.intensity,
+            0.0F,
+            200000.0F,
+            ("%.0f " + std::string { unit }).c_str()
+        );
+        if (row.light.type == cd::light::LightType::kPoint || row.light.type == cd::light::LightType::kSpot)
+        {
+            ImGui::SliderFloat("range", &row.light.range, 0.5F, 50.0F, "%.1f m");
+
+            // Live attenuation preview at 1m, 5m, range/2.
+            const float a1 = cd::light::distance_attenuation(1.0F, row.light.range);
+            const float a5 = cd::light::distance_attenuation(5.0F, row.light.range);
+            const float ah = cd::light::distance_attenuation(row.light.range * 0.5F, row.light.range);
+            ImGui::TextDisabled(
+                "atten 1m=%.3f  5m=%.4f  r/2=%.3f",
+                static_cast<double>(a1),
+                static_cast<double>(a5),
+                static_cast<double>(ah)
+            );
+        }
+        // W8-G: spot cone angles (inner = full bright, outer = falloff
+        // edge). Stored on the Light as cos(angle); we display as
+        // degrees for artist readability and clamp inner <= outer.
+        if (row.light.type == cd::light::LightType::kSpot)
+        {
+            float inner_deg = std::acos(std::clamp(row.light.cos_inner_cone, -1.0F, 1.0F)) * (180.0F / 3.14159265F);
+            float outer_deg = std::acos(std::clamp(row.light.cos_outer_cone, -1.0F, 1.0F)) * (180.0F / 3.14159265F);
+            bool changed = false;
+            if (ImGui::SliderFloat("inner cone (deg)", &inner_deg, 0.5F, 89.0F, "%.1f"))
+                changed = true;
+            if (ImGui::SliderFloat("outer cone (deg)", &outer_deg, 0.5F, 89.5F, "%.1f"))
+                changed = true;
+            if (changed)
+            {
+                if (inner_deg > outer_deg - 0.5F)
+                    inner_deg = outer_deg - 0.5F;
+                if (inner_deg < 0.5F)
+                    inner_deg = 0.5F;
+                row.light.cos_inner_cone = std::cos(inner_deg * (3.14159265F / 180.0F));
+                row.light.cos_outer_cone = std::cos(outer_deg * (3.14159265F / 180.0F));
+                const float denom = row.light.cos_inner_cone - row.light.cos_outer_cone;
+                row.light.inv_cone_range = denom > 1e-5F ? 1.0F / denom : 0.0F;
+            }
+            ImGui::TextDisabled("full cone = 2x outer = %.0f deg", static_cast<double>(outer_deg * 2.0F));
+        }
+        // Direction control for any light type that has a meaningful
+        // forward axis (everything except omnidirectional point). User
+        // feedback: "isiklara yun veremiyorum" - give them a slider.
+        // Sliders are raw xyz in [-1, 1]; renormalized after edit so
+        // |dir| == 1 holds for the shading + shadow code that reads it.
+        if (row.light.type == cd::light::LightType::kDirectional || row.light.type == cd::light::LightType::kSpot ||
+            row.light.type == cd::light::LightType::kRectArea || row.light.type == cd::light::LightType::kDiskArea)
+        {
+            float dir[3] { row.light.direction.x, row.light.direction.y, row.light.direction.z };
+            if (ImGui::SliderFloat3("dir xyz", dir, -1.0F, 1.0F, "%.2f"))
+            {
+                const float L = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+                if (L > 1e-4F)
+                {
+                    row.light.direction.x = dir[0] / L;
+                    row.light.direction.y = dir[1] / L;
+                    row.light.direction.z = dir[2] / L;
+                }
+            }
+            if (row.light.type == cd::light::LightType::kDirectional)
+            {
+                ImGui::TextDisabled(
+                    "sun pointing %s",
+                    row.light.direction.y < 0.0F ? "DOWN (casts shadow)" : "UP (no shadow)"
+                );
+            }
+            // W8-R: one-click "flip normal" for area lights so the
+            // user doesn't have to fight the gizmo when the rect's
+            // emissive face points the wrong way. Inverts both the
+            // direction and the area_tangent so the basis stays
+            // consistent (tangent stays perpendicular to direction
+            // after the flip).
+            if (row.light.type == cd::light::LightType::kRectArea ||
+                row.light.type == cd::light::LightType::kDiskArea)
+            {
+                if (ImGui::Button("Flip normal"))
+                {
+                    row.light.direction.x = -row.light.direction.x;
+                    row.light.direction.y = -row.light.direction.y;
+                    row.light.direction.z = -row.light.direction.z;
+                    row.light.area_tangent.x = -row.light.area_tangent.x;
+                    row.light.area_tangent.y = -row.light.area_tangent.y;
+                    row.light.area_tangent.z = -row.light.area_tangent.z;
+                }
+                ImGui::SameLine();
+                // W8-V: one-click aim-at-origin so translating the
+                // rect doesn't leave its emit normal stale. After
+                // moving the rect via the gizmo the user usually
+                // wants it to face the scene; this button does the
+                // rotation in one click and re-derives a tangent
+                // perpendicular to the new normal.
+                if (ImGui::Button("Aim at origin"))
+                {
+                    cd::math::Vec3f nn { -row.light.position.x, -row.light.position.y, -row.light.position.z };
+                    const float nl = std::sqrt(nn.x * nn.x + nn.y * nn.y + nn.z * nn.z);
+                    if (nl > 1e-5F)
+                    {
+                        nn.x /= nl;
+                        nn.y /= nl;
+                        nn.z /= nl;
+                        row.light.direction = nn;
+                        cd::math::Vec3f tt;
+                        if (nn.z < -0.9999F)
+                        {
+                            tt = { 0.0F, -1.0F, 0.0F };
+                        }
+                        else
+                        {
+                            const float fa = 1.0F / (1.0F + nn.z);
+                            tt = { 1.0F - nn.x * nn.x * fa, -nn.x * nn.y * fa, -nn.x };
+                        }
+                        const float tl = std::sqrt(tt.x * tt.x + tt.y * tt.y + tt.z * tt.z);
+                        if (tl > 1e-5F)
+                        {
+                            tt.x /= tl;
+                            tt.y /= tl;
+                            tt.z /= tl;
+                            row.light.area_tangent = tt;
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(emit side = +normal)");
+            }
+        }
+        ImGui::PopID();
+        if (i + 1 < lights.size())
+            ImGui::Separator();
     }
     ImGui::End();
 }
@@ -2458,12 +2825,6 @@ int main()
         (gltf_loaded_name.empty() ? "" : std::string { " (incl. glTF: " } + gltf_loaded_name + ")")
     );
     int selected = 0;
-    // Selection kind - entities and lights are both pickable.
-    enum class SelKind : std::uint8_t
-    {
-        kEntity = 0,
-        kLight = 1
-    };
     SelKind selected_kind = SelKind::kEntity;
 
     // Phase 151 - selection-outline state. Style defaults to
@@ -2672,13 +3033,6 @@ int main()
     // 4 lights representing the four common light types. Each has a
     // CCT slider that drives the color via Krystek's CCT??'RGB; the
     // panel previews the resulting linear RGB.
-    struct LightRow
-    {
-        std::string name;
-        cd::light::Light light;
-        bool enabled { true };
-        float kelvin { 6500.0F };  // mirrors light.color_kelvin
-    };
 
     // W8-AC: defaults — only the cyan ceiling rect-area is enabled on
     // boot. Earlier defaults had sun + point + spot + area all enabled
@@ -5674,322 +6028,10 @@ int main()
         draw_streamer_panel(streamer, streamer_completed, streamer_failed, streamer_tracked, streamer_enqueue);
 
         // ---- Outliner (gap #18 cd::world_container preview) ----
-        // Read-only world-container tree (top) + clickable entity +
-        // light list (bottom). B14 closes 'Outliner clicks don't
-        // select' — entries below are Selectable and now drive the
-        // selected/selected_kind/selected_light state.
-        ImGui::Begin("Outliner");
-        ImGui::TextDisabled("Scene entities + lights (click to select):");
-        for (std::size_t i = 0; i < entities.size(); ++i)
-        {
-            const bool is_sel = (selected_kind == SelKind::kEntity && selected == static_cast<int>(i));
-            const std::string label = entities[i].name + "##outl_e" + std::to_string(i);
-            if (ImGui::Selectable(label.c_str(), is_sel))
-            {
-                selected = static_cast<int>(i);
-                selected_kind = SelKind::kEntity;
-            }
-        }
-        for (std::size_t i = 0; i < lights.size(); ++i)
-        {
-            const bool is_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
-            const std::string label = "[light] " + lights[i].name + "##outl_l" + std::to_string(i);
-            if (ImGui::Selectable(label.c_str(), is_sel))
-            {
-                selected = static_cast<int>(i);
-                selected_kind = SelKind::kLight;
-            }
-        }
-        ImGui::Separator();
-        ImGui::TextDisabled("World container (read-only):");
-        if (ImGui::TreeNodeEx(cd_world.name().data(), ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            auto* proj = cd_world.project();
-            if (proj == nullptr)
-            {
-                ImGui::TextDisabled("(no project)");
-            }
-            else
-            {
-                std::string proj_lbl { proj->name() };
-                if (ImGui::TreeNodeEx((proj_lbl + "##proj").c_str(), ImGuiTreeNodeFlags_DefaultOpen))
-                {
-                    for (std::size_t li = 0; li < proj->level_count(); ++li)
-                    {
-                        auto* lvl = proj->level(li);
-                        if (lvl == nullptr)
-                            continue;
-                        std::string lvl_lbl { lvl->name() };
-                        const auto& b = lvl->bounds();
-                        if (ImGui::TreeNodeEx(
-                                (lvl_lbl + "##l" + std::to_string(li)).c_str(),
-                                ImGuiTreeNodeFlags_DefaultOpen
-                            ))
-                        {
-                            ImGui::TextDisabled(
-                                "bounds  [%.1f, %.1f, %.1f] -> [%.1f, %.1f, %.1f]",
-                                static_cast<double>(b.min.x),
-                                static_cast<double>(b.min.y),
-                                static_cast<double>(b.min.z),
-                                static_cast<double>(b.max.x),
-                                static_cast<double>(b.max.y),
-                                static_cast<double>(b.max.z)
-                            );
-                            for (std::size_t yi = 0; yi < lvl->layer_count(); ++yi)
-                            {
-                                auto* ly = lvl->layer(yi);
-                                if (ly == nullptr)
-                                    continue;
-                                std::string ly_lbl { ly->name() };
-                                const bool active = (yi == lvl->active_layer());
-                                if (active)
-                                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
-                                ImGui::Bullet();
-                                ImGui::Text(
-                                    "%s%s%s%s",
-                                    ly_lbl.c_str(),
-                                    active ? " (active)" : "",
-                                    ly->locked() ? " [locked]" : "",
-                                    !ly->visible() ? " [hidden]" : ""
-                                );
-                                if (active)
-                                    ImGui::PopStyleColor();
-                            }
-                            ImGui::TreePop();
-                        }
-                    }
-                    ImGui::TreePop();
-                }
-            }
-            ImGui::TreePop();
-        }
-        ImGui::End();
+        draw_outliner_panel(entities, lights, selected, selected_kind, cd_world);
 
         // ---- Lights (Phase 171/172 - cd::light system) ----
-        ImGui::Begin("Lights");
-        ImGui::TextDisabled("cd::light - Frostbite + Filament model");
-        ImGui::Separator();
-
-        // Per-frame: refresh CCT??'RGB, then assign every enabled light
-        // into the cluster grid for the stats line.
-        cluster_grid.clear();
-        std::uint32_t enabled_count = 0;
-        std::uint32_t cluster_hits = 0;
-        for (std::size_t i = 0; i < lights.size(); ++i)
-        {
-            auto& row = lights[i];
-            if (row.kelvin > 0.0F)
-                row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
-            if (row.enabled)
-            {
-                ++enabled_count;
-                cluster_hits += cluster_grid.assign(static_cast<std::uint32_t>(i), row.light, row.light.position);
-            }
-        }
-
-        ImGui::Text("enabled %u / %zu     cluster assignments %u", enabled_count, lights.size(), cluster_hits);
-        ImGui::Text(
-            "grid: %ux%ux%u  near %.1f  far %.1f",
-            cluster_desc.tiles_x,
-            cluster_desc.tiles_y,
-            cluster_desc.slices_z,
-            static_cast<double>(cluster_desc.near_z),
-            static_cast<double>(cluster_desc.far_z)
-        );
-        ImGui::Separator();
-
-        for (std::size_t i = 0; i < lights.size(); ++i)
-        {
-            auto& row = lights[i];
-            ImGui::PushID(static_cast<int>(i));
-            // Click on row name selects the light (so Inspector + gizmo see it).
-            const bool row_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
-            if (row_sel)
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
-            if (ImGui::Selectable(
-                    (row_sel ? std::string { "> " } + row.name : row.name).c_str(),
-                    row_sel,
-                    ImGuiSelectableFlags_AllowOverlap
-                ))
-            {
-                selected = static_cast<int>(i);
-                selected_kind = SelKind::kLight;
-            }
-            if (row_sel)
-                ImGui::PopStyleColor();
-            ImGui::SameLine();
-            ImGui::Checkbox("##en", &row.enabled);
-
-            // Color preview swatch - what the CCT actually produces.
-            const ImVec4 col { row.light.color.x, row.light.color.y, row.light.color.z, 1.0F };
-            ImGui::SameLine();
-            ImGui::ColorButton(
-                "##swatch",
-                col,
-                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
-                ImVec2(24, 14)
-            );
-
-            // Type badge.
-            const char* type_str = row.light.type == cd::light::LightType::kDirectional ? "DIR "
-                                   : row.light.type == cd::light::LightType::kPoint     ? "POINT"
-                                   : row.light.type == cd::light::LightType::kSpot      ? "SPOT"
-                                   : row.light.type == cd::light::LightType::kRectArea  ? "RECT"
-                                                                                        : "DISK";
-            ImGui::SameLine();
-            ImGui::TextDisabled("[%s]", type_str);
-
-            // CCT + intensity sliders. CCT-driven palette is the default,
-            // but a raw RGB picker is available when the user wants an
-            // arbitrary tint. Setting RGB sets kelvin to 0 so the per-
-            // frame CCT->RGB rebake won't overwrite the manual choice.
-            ImGui::SliderFloat("CCT (K)", &row.kelvin, 0.0F, 15000.0F, "%.0f K");
-            {
-                float rgb[3] { row.light.color.x, row.light.color.y, row.light.color.z };
-                if (ImGui::ColorEdit3("colour (RGB)", rgb, ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_Float))
-                {
-                    row.light.color = { rgb[0], rgb[1], rgb[2] };
-                    row.kelvin = 0.0F;
-                }
-            }
-            const char* unit = row.light.type == cd::light::LightType::kDirectional ? "lx" : "lm";
-            ImGui::SliderFloat(
-                "intensity",
-                &row.light.intensity,
-                0.0F,
-                200000.0F,
-                ("%.0f " + std::string { unit }).c_str()
-            );
-            if (row.light.type == cd::light::LightType::kPoint || row.light.type == cd::light::LightType::kSpot)
-            {
-                ImGui::SliderFloat("range", &row.light.range, 0.5F, 50.0F, "%.1f m");
-
-                // Live attenuation preview at 1m, 5m, range/2.
-                const float a1 = cd::light::distance_attenuation(1.0F, row.light.range);
-                const float a5 = cd::light::distance_attenuation(5.0F, row.light.range);
-                const float ah = cd::light::distance_attenuation(row.light.range * 0.5F, row.light.range);
-                ImGui::TextDisabled(
-                    "atten 1m=%.3f  5m=%.4f  r/2=%.3f",
-                    static_cast<double>(a1),
-                    static_cast<double>(a5),
-                    static_cast<double>(ah)
-                );
-            }
-            // W8-G: spot cone angles (inner = full bright, outer = falloff
-            // edge). Stored on the Light as cos(angle); we display as
-            // degrees for artist readability and clamp inner <= outer.
-            if (row.light.type == cd::light::LightType::kSpot)
-            {
-                float inner_deg = std::acos(std::clamp(row.light.cos_inner_cone, -1.0F, 1.0F)) * (180.0F / 3.14159265F);
-                float outer_deg = std::acos(std::clamp(row.light.cos_outer_cone, -1.0F, 1.0F)) * (180.0F / 3.14159265F);
-                bool changed = false;
-                if (ImGui::SliderFloat("inner cone (deg)", &inner_deg, 0.5F, 89.0F, "%.1f"))
-                    changed = true;
-                if (ImGui::SliderFloat("outer cone (deg)", &outer_deg, 0.5F, 89.5F, "%.1f"))
-                    changed = true;
-                if (changed)
-                {
-                    if (inner_deg > outer_deg - 0.5F)
-                        inner_deg = outer_deg - 0.5F;
-                    if (inner_deg < 0.5F)
-                        inner_deg = 0.5F;
-                    row.light.cos_inner_cone = std::cos(inner_deg * (3.14159265F / 180.0F));
-                    row.light.cos_outer_cone = std::cos(outer_deg * (3.14159265F / 180.0F));
-                    const float denom = row.light.cos_inner_cone - row.light.cos_outer_cone;
-                    row.light.inv_cone_range = denom > 1e-5F ? 1.0F / denom : 0.0F;
-                }
-                ImGui::TextDisabled("full cone = 2x outer = %.0f deg", static_cast<double>(outer_deg * 2.0F));
-            }
-            // Direction control for any light type that has a meaningful
-            // forward axis (everything except omnidirectional point). User
-            // feedback: "isiklara yun veremiyorum" - give them a slider.
-            // Sliders are raw xyz in [-1, 1]; renormalized after edit so
-            // |dir| == 1 holds for the shading + shadow code that reads it.
-            if (row.light.type == cd::light::LightType::kDirectional || row.light.type == cd::light::LightType::kSpot ||
-                row.light.type == cd::light::LightType::kRectArea || row.light.type == cd::light::LightType::kDiskArea)
-            {
-                float dir[3] { row.light.direction.x, row.light.direction.y, row.light.direction.z };
-                if (ImGui::SliderFloat3("dir xyz", dir, -1.0F, 1.0F, "%.2f"))
-                {
-                    const float L = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
-                    if (L > 1e-4F)
-                    {
-                        row.light.direction.x = dir[0] / L;
-                        row.light.direction.y = dir[1] / L;
-                        row.light.direction.z = dir[2] / L;
-                    }
-                }
-                if (row.light.type == cd::light::LightType::kDirectional)
-                {
-                    ImGui::TextDisabled(
-                        "sun pointing %s",
-                        row.light.direction.y < 0.0F ? "DOWN (casts shadow)" : "UP (no shadow)"
-                    );
-                }
-                // W8-R: one-click "flip normal" for area lights so the
-                // user doesn't have to fight the gizmo when the rect's
-                // emissive face points the wrong way. Inverts both the
-                // direction and the area_tangent so the basis stays
-                // consistent (tangent stays perpendicular to direction
-                // after the flip).
-                if (row.light.type == cd::light::LightType::kRectArea ||
-                    row.light.type == cd::light::LightType::kDiskArea)
-                {
-                    if (ImGui::Button("Flip normal"))
-                    {
-                        row.light.direction.x = -row.light.direction.x;
-                        row.light.direction.y = -row.light.direction.y;
-                        row.light.direction.z = -row.light.direction.z;
-                        row.light.area_tangent.x = -row.light.area_tangent.x;
-                        row.light.area_tangent.y = -row.light.area_tangent.y;
-                        row.light.area_tangent.z = -row.light.area_tangent.z;
-                    }
-                    ImGui::SameLine();
-                    // W8-V: one-click aim-at-origin so translating the
-                    // rect doesn't leave its emit normal stale. After
-                    // moving the rect via the gizmo the user usually
-                    // wants it to face the scene; this button does the
-                    // rotation in one click and re-derives a tangent
-                    // perpendicular to the new normal.
-                    if (ImGui::Button("Aim at origin"))
-                    {
-                        cd::math::Vec3f nn { -row.light.position.x, -row.light.position.y, -row.light.position.z };
-                        const float nl = std::sqrt(nn.x * nn.x + nn.y * nn.y + nn.z * nn.z);
-                        if (nl > 1e-5F)
-                        {
-                            nn.x /= nl;
-                            nn.y /= nl;
-                            nn.z /= nl;
-                            row.light.direction = nn;
-                            cd::math::Vec3f tt;
-                            if (nn.z < -0.9999F)
-                            {
-                                tt = { 0.0F, -1.0F, 0.0F };
-                            }
-                            else
-                            {
-                                const float fa = 1.0F / (1.0F + nn.z);
-                                tt = { 1.0F - nn.x * nn.x * fa, -nn.x * nn.y * fa, -nn.x };
-                            }
-                            const float tl = std::sqrt(tt.x * tt.x + tt.y * tt.y + tt.z * tt.z);
-                            if (tl > 1e-5F)
-                            {
-                                tt.x /= tl;
-                                tt.y /= tl;
-                                tt.z /= tl;
-                                row.light.area_tangent = tt;
-                            }
-                        }
-                    }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(emit side = +normal)");
-                }
-            }
-            ImGui::PopID();
-            if (i + 1 < lights.size())
-                ImGui::Separator();
-        }
-        ImGui::End();
+        draw_lights_panel(lights, selected, selected_kind, cluster_grid, cluster_desc);
 
         // ---- History ----
         draw_history_panel(history, log);
