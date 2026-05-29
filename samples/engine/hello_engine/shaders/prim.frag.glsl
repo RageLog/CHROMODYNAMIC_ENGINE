@@ -440,7 +440,7 @@ void main() {
                  (atten * cone * vis);
     }
 
-    // ---- IBL split-sum (Karis 2013) ----
+    // ---- IBL split-sum (Karis 2013) + Fdez-Aguera 2019 multi-scatter ----
     // W8-AY: env-spec ALSO gated on sun. User reported "gunes olmadigi
     // yerde gokyuzu yansitiyolar" — chrome reflecting sky-without-sun
     // breaks the lighting consistency. Gate both env-spec and env-
@@ -454,7 +454,16 @@ void main() {
                                               clamp(pbr_rough, 0.0, 1.0))).rg;
     vec3  F_ibl   = F_Schlick_roughness_pbr(NoVpbr, F0pbr, pbr_rough);
     vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - pbr_metal);
-    vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y));
+    // Fdez-Aguera 2019 "A Multiple-Scattering Microfacet Model for Real-Time IBL"
+    // (JCGT 8:1) — multi-scatter compensation (Eq. 12-13, §3.4).
+    // Recovers the ~10-15% energy lost to inter-microfacet bounces in the
+    // Karis 2013 single-scatter approximation; most visible on polished metals.
+    float Ess_p   = brdf_v.x + brdf_v.y;           // single-scatter integral
+    float Ems_p   = 1.0 - Ess_p;                   // missing (multi-scatter) energy
+    vec3  Favg_p  = F0pbr + (1.0 - F0pbr) * (1.0 / 21.0); // average Fresnel
+    vec3  Fms_p   = (Favg_p * Ess_p) / (vec3(1.0) - Favg_p * Ems_p); // multi-scatter Fresnel
+    vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y)
+                                 + Fms_p * Ems_p);
 
     // W8-AZ: env-spec gate is now PURELY sun-driven. The previous
     // any_non_sun*0.30 floor caused chrome spheres to keep showing
@@ -478,7 +487,7 @@ void main() {
     // floor, matching the W8-AZ env-spec gate philosophy.
     int   hit_inst   = -1;
     float scene_hit  = reflection_hit_id(v_world_pos, Npbr, Ripbr, 80.0, hit_inst);
-    vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y);
+    vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
     vec3  ibl_spec_blended = ibl_spec_p;
     if (scene_hit > 0.5 && hit_inst >= 0) {
       vec3 hit_alb   = cd_instance_mats.data[hit_inst].albedo.rgb;
@@ -774,7 +783,13 @@ void main() {
     vec3 diff_e = texture(cd_ibl_diff, N).rgb;
     vec2 brdf_v = texture(cd_brdf_lut, vec2(clamp(NoV_v, 0.0, 1.0),
                                             clamp(roughness, 0.0, 1.0))).rg;
-    vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
+    // Fdez-Aguera 2019 "A Multiple-Scattering Microfacet Model for Real-Time IBL"
+    // (JCGT 8:1) — multi-scatter compensation (Eq. 12-13, §3.4).
+    float Ess_v  = brdf_v.x + brdf_v.y;
+    float Ems_v  = 1.0 - Ess_v;
+    vec3  Favg_v = F0_ibl + (1.0 - F0_ibl) * (1.0 / 21.0);
+    vec3  Fms_v  = (Favg_v * Ess_v) / (vec3(1.0) - Favg_v * Ems_v);
+    vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y) + Fms_v * Ems_v;
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
     // W8-C: revert to sun-only IBL gate. User explicitly wants

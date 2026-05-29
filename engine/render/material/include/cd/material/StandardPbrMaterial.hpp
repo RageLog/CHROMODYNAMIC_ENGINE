@@ -563,7 +563,15 @@ void main() {
                                                 clamp(roughness, 0.0, 1.0))).rg;
   vec3  F_ibl       = F_Schlick_roughness(NoV, F0, roughness);
   vec3  ibl_kD      = (vec3(1.0) - F_ibl) * (1.0 - metallic);
-  vec3  ibl_spec    = prefiltered * (F0 * brdf.x + vec3(brdf.y));
+  // Fdez-Aguera 2019 "A Multiple-Scattering Microfacet Model for Real-Time IBL"
+  // (JCGT 8:1) — multi-scatter compensation (Eq. 12-13, §3.4).
+  // Recovers the ~10-15% energy lost to inter-microfacet bounces in the
+  // Karis 2013 single-scatter approximation; most visible on polished metals.
+  float Ess      = brdf.x + brdf.y;                    // single-scatter integral
+  float Ems      = 1.0 - Ess;                          // missing (multi-scatter) energy
+  vec3  Favg     = F0 + (1.0 - F0) * (1.0 / 21.0);   // average Fresnel
+  vec3  Fms      = (Favg * Ess) / (vec3(1.0) - Favg * Ems); // multi-scatter Fresnel
+  vec3  ibl_spec = prefiltered * (F0 * brdf.x + vec3(brdf.y) + Fms * Ems);
   // W8-AP: ungate env-spec entirely; gate ONLY env-diffuse.
   // User daylight verdict: "en metal olanda ayna gibi yansima
   // beklerim" - for a chrome ball lit by IBL alone, env-spec IS the

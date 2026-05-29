@@ -19,4 +19,16 @@ URL: https://jcgt.org/published/0008/01/03/
 
 ## Implementation status
 
-`cd_ibl` library — shader-side only change. BRDF LUT bake unchanged; one extra `texture2D(brdfLut, vec2(NdotV, roughness))` call with `F0 = vec3(1.0)` to compute `E_avg`. Estimated effort: half-day (2 shader edits + smoke-test comparison against reference).
+DONE — phase403-D-F12. Shader-side only; BRDF LUT bake unchanged.
+
+Three sites patched:
+
+1. `samples/engine/hello_engine/shaders/prim.frag.glsl` — W8-AQ PBR branch (tint.w==3.0):
+   Ess/Ems/Favg/Fms computed after brdf_v lookup; `ibl_spec_p` and RT `brdf_term`
+   both include the `+ Fms_p * Ems_p` multi-scatter term.
+2. `samples/engine/hello_engine/shaders/prim.frag.glsl` — R2 MR-textured Lit branch:
+   Same Ess/Ems/Favg/Fms pattern; `ibl_F` corrected before kD energy split.
+3. `engine/render/material/include/cd/material/StandardPbrMaterial.hpp` — `kStandardPbrFS`:
+   `ibl_spec` corrected with `+ Fms * Ems` multi-scatter term.
+
+W8-AY/AZ env-spec gate preserved on all three sites (no gating logic touched).
