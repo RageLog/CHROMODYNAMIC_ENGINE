@@ -169,9 +169,194 @@
 #include "HelloEnginePalette.hpp"
 #include "HelloPicker.hpp"
 #include "HelloPalette.hpp"
-#include "HelloEngineApp.hpp"
 
 #include <cd/sample/run.hpp>
+
+// ============================================================================
+// File-scope types needed by HelloEngineApp::EngineState + the three lifecycle
+// overrides.  They were previously in the anonymous namespace; moving them
+// here makes them visible to HelloEngineApp.hpp (included above) and to the
+// post-namespace implementation block (on_boot / on_frame / on_shutdown).
+// ============================================================================
+
+// ---- Per-entity 3D draw data -----------------------------------------------
+enum class PrimitiveKind : std::uint8_t
+{
+    kCube,
+    kSphere,
+    kCone,
+    kCylinder,
+    kTorus,
+    kGltf,
+};
+
+struct SceneEntity
+{
+    cd::ecs::Entity handle {};
+    std::string name;
+    cd::math::Vec3f tint { 1.0F, 1.0F, 1.0F };
+    float metallic { 0.0F };
+    float roughness { 0.5F };
+    PrimitiveKind kind { PrimitiveKind::kCube };
+    bool is_pbr { false };
+    cd::math::Mat4f prev_model { cd::math::Mat4f::identity() };
+    bool prev_model_valid { false };
+};
+
+[[maybe_unused]] [[nodiscard]] inline PrimitiveKind kind_from_name(std::string_view n) noexcept
+{
+    if (n == "Sphere")   return PrimitiveKind::kSphere;
+    if (n == "Cone")     return PrimitiveKind::kCone;
+    if (n == "Cylinder") return PrimitiveKind::kCylinder;
+    if (n == "Torus")    return PrimitiveKind::kTorus;
+    return PrimitiveKind::kCube;
+}
+
+// ---- GPU texture 2D --------------------------------------------------------
+struct GpuTexture2D
+{
+    cd::rhi::TextureHandle     image {};
+    cd::rhi::TextureViewHandle view  {};
+};
+
+[[nodiscard]] inline GpuTexture2D
+create_texture_rgba8(cd::rhi::IDevice& dev, const std::uint8_t* rgba,
+                     std::uint32_t w, std::uint32_t h)
+{
+    GpuTexture2D out {};
+    if (rgba == nullptr || w == 0 || h == 0) return out;
+    cd::rhi::TextureDesc td {};
+    td.type         = cd::rhi::TextureType::k2D;
+    td.format       = cd::rhi::Format::kRGBA8Unorm;
+    td.extent       = { w, h, 1 };
+    td.mip_levels   = 1;
+    td.array_layers = 1;
+    td.usage        = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return out;
+    out.image = *img;
+    const std::size_t bytes = static_cast<std::size_t>(w) * h * 4;
+    cd::rhi::BufferDesc sd {};
+    sd.size   = bytes;
+    sd.usage  = cd::rhi::BufferUsage::kTransferSrc;
+    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto staging_r = dev.create_buffer(sd);
+    if (!staging_r.has_value()) return out;
+    const auto staging = *staging_r;
+    (void)dev.upload_buffer(staging, 0,
+        std::span<const std::byte>(reinterpret_cast<const std::byte*>(rgba), bytes));
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr) { dev.destroy_buffer(staging); return out; }
+    cmd->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tb_dst {
+        cd::rhi::TextureBarrier { .texture = out.image,
+            .from = cd::rhi::ResourceState::kUndefined,
+            .to   = cd::rhi::ResourceState::kTransferDst, .range = { 0,1,0,1 } }
+    };
+    cmd->barrier({}, tb_dst);
+    std::array<cd::rhi::BufferImageCopyRegion, 1> regs {
+        cd::rhi::BufferImageCopyRegion { .buffer_offset = 0, .mip_level = 0,
+            .base_layer = 0, .layer_count = 1,
+            .image_offset = { 0,0,0 }, .image_extent = { w,h,1 } }
+    };
+    cmd->copy_buffer_to_image(staging, out.image, regs);
+    std::array<cd::rhi::TextureBarrier, 1> tb_read {
+        cd::rhi::TextureBarrier { .texture = out.image,
+            .from = cd::rhi::ResourceState::kTransferDst,
+            .to   = cd::rhi::ResourceState::kShaderResource, .range = { 0,1,0,1 } }
+    };
+    cmd->barrier({}, tb_read);
+    cmd->end();
+    cd::rhi::SubmitDesc sub {};
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
+    sub.command_buffers = cbs;
+    (void)dev.submit(sub);
+    dev.wait_idle();
+    dev.destroy_buffer(staging);
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture     = out.image;
+    vd.type        = cd::rhi::TextureType::k2D;
+    vd.format      = cd::rhi::Format::kRGBA8Unorm;
+    vd.base_mip    = 0; vd.mip_count   = 1;
+    vd.base_layer  = 0; vd.layer_count = 1;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(out.image); out.image = {}; return out; }
+    out.view = *v;
+    return out;
+}
+
+// ---- Random viz histogram --------------------------------------------------
+struct Histogram
+{
+    std::vector<std::size_t> bins;
+    float lo { 0 };
+    float hi { 1 };
+
+    void rebuild(std::span<const float> samples, float lo_, float hi_, int n_bins)
+    {
+        lo = lo_; hi = hi_;
+        bins.assign(static_cast<std::size_t>(n_bins), 0);
+        const float inv = static_cast<float>(n_bins) / (hi - lo);
+        for (float s : samples)
+        {
+            if (s < lo || s >= hi) continue;
+            int idx = static_cast<int>((s - lo) * inv);
+            if (idx >= 0 && idx < n_bins) ++bins[static_cast<std::size_t>(idx)];
+        }
+    }
+};
+
+// ---- Selection + light row -------------------------------------------------
+enum class SelKind : std::uint8_t { kEntity = 0, kLight = 1 };
+
+struct LightRow
+{
+    std::string name;
+    cd::light::Light light;
+    bool  enabled { true };
+    float kelvin  { 6500.0F };
+};
+
+// ---- Editor gizmo state ----------------------------------------------------
+enum class GizmoMode : std::uint8_t { kTranslate = 0, kRotate = 1, kScale = 2 };
+
+struct GizmoState
+{
+    bool      visible                   { true };
+    GizmoMode mode                      { GizmoMode::kTranslate };
+    ImVec2    drag_anchor               { 0, 0 };
+    cd::math::Vec3f drag_world_start    {};
+    cd::math::Vec3f drag_scale_start    { 1.0F, 1.0F, 1.0F };
+    cd::math::Quatf drag_rot_start      {};
+    cd::math::Vec3f light_drag_dir_start     { 0.0F, -1.0F, 0.0F };
+    cd::math::Vec3f light_drag_tangent_start { 1.0F,  0.0F, 0.0F };
+    float light_drag_range_start  { 0.0F };
+    float light_drag_area_w_start { 1.0F };
+    float light_drag_area_h_start { 1.0F };
+    float drag_initial_offset     { 0.0F };
+    bool  drag_use_ray_plane      { false };
+    bool  was_hovered             { false };
+};
+
+// ---- Camera motion-blur basis snapshot -------------------------------------
+struct PrevCamBasis
+{
+    cd::math::Vec3f right { 1.0F, 0.0F,  0.0F };
+    cd::math::Vec3f up    { 0.0F, 1.0F,  0.0F };
+    cd::math::Vec3f fwd   { 0.0F, 0.0F, -1.0F };
+    cd::math::Vec3f pos   { 0.0F, 0.0F,  0.0F };
+    float half_w { 1.0F };
+    float half_h { 1.0F };
+    bool  valid  { false };
+};
+
+// ============================================================================
+// HelloEngineApp class + EngineState + lifecycle implementations.
+// Included HERE (after file-scope types above) so the implementations have
+// access to PrimitiveKind, SceneEntity, GizmoState, SelKind, LightRow, etc.
+// ============================================================================
+#include "HelloEngineApp.hpp"
 
 namespace
 {
@@ -204,58 +389,7 @@ constexpr std::size_t kAudioBufferLen = 512;  // samples per tick
     return n * 0.7F;
 }
 
-// ============================================================================
-// Per-entity 3D draw data.
-// ============================================================================
-
-enum class PrimitiveKind : std::uint8_t
-{
-    kCube,
-    kSphere,
-    kCone,
-    kCylinder,
-    kTorus,
-    kGltf,  ///< user-supplied glTF asset auto-loaded at boot
-};
-
-struct SceneEntity
-{
-    cd::ecs::Entity handle {};
-    std::string name;
-    cd::math::Vec3f tint { 1.0F, 1.0F, 1.0F };
-    float metallic { 0.0F };
-    float roughness { 0.5F };
-    PrimitiveKind kind { PrimitiveKind::kCube };
-    // W8-AR: ECS-driven PBR sphere flag. When true the entity renders
-    // through kPrimFS's tint.w==3.0 PBR branch (Cook-Torrance + GGX +
-    // multi-light + Karis IBL), reading metallic/roughness from the
-    // SceneEntity fields above. When false the standard primitive
-    // path runs (vertex-coloured or textured albedo, hemisphere +
-    // Lambert + cd_lights). One render loop, one shader, one shadow
-    // pass — PBR is just a per-entity attribute now.
-    bool is_pbr { false };
-    // R3 phase 226 - previous-frame model matrix, populated at the end
-    // of each frame's main pass for the velocity pass to use next frame.
-    // On the first frame this equals the curr model so the velocity
-    // output is zero (no motion).
-    cd::math::Mat4f prev_model { cd::math::Mat4f::identity() };
-    bool prev_model_valid { false };
-};
-
-// Reserved for save/load round-trip - currently unused but documents
-// the convention.
-[[maybe_unused]] [[nodiscard]] PrimitiveKind kind_from_name(std::string_view n) noexcept
-{
-    if (n == "Sphere")
-        return PrimitiveKind::kSphere;
-    if (n == "Cone")
-        return PrimitiveKind::kCone;
-    if (n == "Cylinder")
-        return PrimitiveKind::kCylinder;
-    if (n == "Torus")
-        return PrimitiveKind::kTorus;
-    return PrimitiveKind::kCube;
-}
+// PrimitiveKind, SceneEntity, kind_from_name moved to file scope (before namespace {}).
 
 // ============================================================================
 // GPU mesh holder.
@@ -315,100 +449,7 @@ using cd::hello_engine::LightSlotGpu;
 using cd::hello_engine::LightUboGpu;
 using cd::hello_engine::pack_light_slot;
 
-// Upload an RGBA8 image to a freshly-created GPU texture. Returns
-// invalid handles on failure. Lifetime: caller owns the texture +
-// view + sampler; destroy at exit. Used by the default-white
-// fallback and the glTF baseColor path (#1/#13).
-struct GpuTexture2D
-{
-    cd::rhi::TextureHandle image {};
-    cd::rhi::TextureViewHandle view {};
-};
-
-[[nodiscard]] inline GpuTexture2D
-create_texture_rgba8(cd::rhi::IDevice& dev, const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
-{
-    GpuTexture2D out {};
-    if (rgba == nullptr || w == 0 || h == 0)
-        return out;
-    cd::rhi::TextureDesc td {};
-    td.type = cd::rhi::TextureType::k2D;
-    td.format = cd::rhi::Format::kRGBA8Unorm;
-    td.extent = { w, h, 1 };
-    td.mip_levels = 1;
-    td.array_layers = 1;
-    td.usage = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
-    td.memory = cd::rhi::MemoryUsage::kGpuOnly;
-    auto img = dev.create_texture(td);
-    if (!img.has_value())
-        return out;
-    out.image = *img;
-    // Staging buffer upload.
-    const std::size_t bytes = static_cast<std::size_t>(w) * h * 4;
-    cd::rhi::BufferDesc sd {};
-    sd.size = bytes;
-    sd.usage = cd::rhi::BufferUsage::kTransferSrc;
-    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    auto staging_r = dev.create_buffer(sd);
-    if (!staging_r.has_value())
-        return out;
-    const auto staging = *staging_r;
-    (void)dev.upload_buffer(staging, 0, std::span<const std::byte>(reinterpret_cast<const std::byte*>(rgba), bytes));
-    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
-    if (cmd == nullptr)
-    {
-        dev.destroy_buffer(staging);
-        return out;
-    }
-    cmd->begin();
-    std::array<cd::rhi::TextureBarrier, 1> tb_dst {
-        cd::rhi::TextureBarrier { .texture = out.image,
-                                 .from = cd::rhi::ResourceState::kUndefined,
-                                 .to = cd::rhi::ResourceState::kTransferDst,
-                                 .range = { 0, 1, 0, 1 } }
-    };
-    cmd->barrier({}, tb_dst);
-    std::array<cd::rhi::BufferImageCopyRegion, 1> regs {
-        cd::rhi::BufferImageCopyRegion { .buffer_offset = 0,
-                                        .mip_level = 0,
-                                        .base_layer = 0,
-                                        .layer_count = 1,
-                                        .image_offset = { 0, 0, 0 },
-                                        .image_extent = { w, h, 1 } }
-    };
-    cmd->copy_buffer_to_image(staging, out.image, regs);
-    std::array<cd::rhi::TextureBarrier, 1> tb_read {
-        cd::rhi::TextureBarrier { .texture = out.image,
-                                 .from = cd::rhi::ResourceState::kTransferDst,
-                                 .to = cd::rhi::ResourceState::kShaderResource,
-                                 .range = { 0, 1, 0, 1 } }
-    };
-    cmd->barrier({}, tb_read);
-    cmd->end();
-    cd::rhi::SubmitDesc sub {};
-    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
-    sub.command_buffers = cbs;
-    (void)dev.submit(sub);
-    dev.wait_idle();
-    dev.destroy_buffer(staging);
-    cd::rhi::TextureViewDesc vd {};
-    vd.texture = out.image;
-    vd.type = cd::rhi::TextureType::k2D;
-    vd.format = cd::rhi::Format::kRGBA8Unorm;
-    vd.base_mip = 0;
-    vd.mip_count = 1;
-    vd.base_layer = 0;
-    vd.layer_count = 1;
-    auto v = dev.create_texture_view(vd);
-    if (!v.has_value())
-    {
-        dev.destroy_texture(out.image);
-        out.image = {};
-        return out;
-    }
-    out.view = *v;
-    return out;
-}
+// GpuTexture2D, create_texture_rgba8 moved to file scope (before namespace {}).
 
 // ============================================================================
 // R1 - True IBL helpers (HDR cubemap + diffuse irradiance + BRDF LUT).
@@ -438,56 +479,7 @@ using cd::framegraph::create_color_target;
 using cd::framegraph::create_depth_target;
 using cd::post_bloom::create_bloom_chain;
 
-// ============================================================================
-// Mini histogram helper for the random viz panel.
-// ============================================================================
-struct Histogram
-{
-    std::vector<std::size_t> bins;
-    float lo { 0 };
-    float hi { 1 };
-
-    void rebuild(std::span<const float> samples, float lo_, float hi_, int n_bins)
-    {
-        lo = lo_;
-        hi = hi_;
-        bins.assign(static_cast<std::size_t>(n_bins), 0);
-        const float inv = static_cast<float>(n_bins) / (hi - lo);
-        for (float s : samples)
-        {
-            if (s < lo || s >= hi)
-                continue;
-            int idx = static_cast<int>((s - lo) * inv);
-            if (idx >= 0 && idx < n_bins)
-                ++bins[static_cast<std::size_t>(idx)];
-        }
-    }
-};
-
-// =============================================================================
-// Phase 300 / Marathon Run 8 sub-N2D: SelKind + LightRow lifted from main()
-// scope to anon namespace so the Outliner / Lights / selection-overlay
-// helpers can take them in their signatures. No semantic change - these
-// are pure data types and were already aggregate-style; moving them up
-// just lets the extracted UI helpers reference them by type name.
-// =============================================================================
-
-// Selection kind - entities and lights are both pickable.
-enum class SelKind : std::uint8_t
-{
-    kEntity = 0,
-    kLight = 1
-};
-
-// One row of the Lights panel: a Light record plus the inspector-side
-// metadata (display name, enable bit, CCT slider value).
-struct LightRow
-{
-    std::string name;
-    cd::light::Light light;
-    bool enabled { true };
-    float kelvin { 6500.0F };  // mirrors light.color_kelvin
-};
+// Histogram, SelKind, LightRow moved to file scope (before namespace {}).
 
 // =============================================================================
 // Phase 297 / Marathon Run 8 sub-N2A: small self-contained UI panel draw
@@ -2093,58 +2085,7 @@ inline void upload_multi_light_ubo(cd::rhi::IDevice& device,
     counters.set("lights_active", ubo.count);
 }
 
-// ---- GizmoState ------------------------------------------------------------
-// hello_engine-local state for the editor gizmo overlay (axis-translation
-// + W8 rotate/scale modes + light-specific drag-start capture). Lifted out
-// of main() in phase 313 (Marathon Run 10 N5-prep) so the overlay extract
-// in N5 only needs one GizmoState& argument instead of 12+ refs.
-//
-// cd::editor::AxisGizmo is a separate object kept in main() because it owns
-// its own published state surface (hover / active_axis / set_target / etc.)
-// and we don't want to wrap it.
-//
-// gizmo_state.was_hovered crosses frames - the pick path runs earlier in the
-// frame than this overlay so the previous frame's hover memo gates
-// entity-pick when the user is starting a gizmo drag. One-frame lag is
-// invisible at 60+ FPS.
-enum class GizmoMode : std::uint8_t
-{
-    kTranslate = 0,
-    kRotate = 1,
-    kScale = 2
-};
-
-struct GizmoState
-{
-    bool visible { true };
-    GizmoMode mode { GizmoMode::kTranslate };
-    ImVec2 drag_anchor { 0, 0 };
-    cd::math::Vec3f drag_world_start {};
-    cd::math::Vec3f drag_scale_start { 1.0F, 1.0F, 1.0F };
-    cd::math::Quatf drag_rot_start {};
-    cd::math::Vec3f light_drag_dir_start { 0.0F, -1.0F, 0.0F };
-    cd::math::Vec3f light_drag_tangent_start { 1.0F, 0.0F, 0.0F };
-    float light_drag_range_start { 0.0F };
-    float light_drag_area_w_start { 1.0F };
-    float light_drag_area_h_start { 1.0F };
-    float drag_initial_offset { 0.0F };
-    bool drag_use_ray_plane { false };
-    bool was_hovered { false };
-};
-
-// PrevCamBasis - camera basis snapshot used by composite for motion-blur
-// reprojection. Populated AFTER each composite invoke so the next frame's
-// reprojection sees t-1. First frame: prev = current (zero velocity).
-struct PrevCamBasis
-{
-    cd::math::Vec3f right { 1.0F, 0.0F, 0.0F };
-    cd::math::Vec3f up { 0.0F, 1.0F, 0.0F };
-    cd::math::Vec3f fwd { 0.0F, 0.0F, -1.0F };
-    cd::math::Vec3f pos { 0.0F, 0.0F, 0.0F };
-    float half_w { 1.0F };
-    float half_h { 1.0F };
-    bool valid { false };
-};
+// GizmoMode, GizmoState, PrevCamBasis moved to file scope (before namespace {}).
 
 // ---- SunLight + resolve_sun_light -----------------------------------------
 // Per-frame extracted from main loop in phase 307 (N4B). The sun slot
@@ -4045,12 +3986,1666 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
 }  // namespace
 
 // ============================================================================
-// Legacy main — preserved intact during M2B scaffolding.
-// M2C/M2D/M2E will migrate boot / frame / shutdown into HelloEngineApp
-// member functions.  main_legacy() is NOT called by the new entry point
-// below; it exists so the code is never lost between commits.
+// M2C/M2D/M2E: HelloEngineApp full implementation.
+//
+// EngineState is defined here (not in HelloEngineApp.hpp) so it can
+// reference the anonymous-namespace types declared above
+// (SceneEntity, GizmoState, SelKind, LightRow, GpuTexture2D, etc.).
 // ============================================================================
-[[maybe_unused]] static int main_legacy()
+
+// ---- EngineState definition ------------------------------------------------
+struct HelloEngineApp::EngineState
+{
+    // Window / device / renderer / imgui
+    std::unique_ptr<cd::platform::IWindow>   window;
+    std::unique_ptr<cd::rhi::IDevice>        device_owner;
+    cd::render::Renderer                     renderer;
+    std::unique_ptr<cd::imgui::Context>      imgui_ctx;
+
+    // Shader compiler
+    std::unique_ptr<cd::shader::ICompiler>   compiler;
+
+    // Render targets
+    cd_sample::RenderTargets                 rts;
+    bool                                     depth_initialised_on_gpu  { false };
+    bool                                     shadow_initialised_on_gpu { false };
+
+    // Materials
+    cd_sample::MaterialBundle                materials;
+    cd_sample::HelloShaderWatch              shader_watch;
+
+    // Shadow-map resources
+    cd::framegraph::DepthTarget              shadow_target;
+    cd::rhi::SamplerHandle                   shadow_sampler  {};
+    cd::rhi::BufferHandle                    shadow_ubo      {};
+
+    // Multi-light UBO + inst-mat SSBO
+    cd::rhi::BufferHandle                    lights_ubo      {};
+    cd::rhi::BufferHandle                    inst_mat_ssbo   {};
+
+    // IBL
+    cd_sample::IblBakeCpu                    ibl_cpu;
+    cd_sample::IblBakeGpu                    ibl_gpu;
+
+    // Procedural textures
+    GpuTexture2D                             albedo_tex;
+    GpuTexture2D                             normal_tex;
+    GpuTexture2D                             mr_tex;
+    cd::rhi::SamplerHandle                   albedo_sampler  {};
+    bool                                     has_gltf_texture { false };
+
+    // Material instances
+    cd::material::MaterialInstance           prim_inst;
+    std::array<cd::material::MaterialInstance, 2> composite_insts;
+    cd::material::MaterialInstance           bloom_prefilter_inst;
+    std::array<cd::material::MaterialInstance, 3> bloom_down_insts;
+    std::array<cd::material::MaterialInstance, 3> bloom_up_insts;
+
+    // Bloom mip chain
+    cd::post_bloom::BloomMipChain            bloom_chain;
+
+    // Meshes + BLAS / TLAS
+    cd_sample::HelloMeshes                   meshes;
+    cd::rhi::AccelStructureHandle            current_tlas    {};
+    std::deque<cd_sample::DeferredTlas>      tlas_destroy_queue;
+
+    // World / scene / history
+    cd::ecs::World                           ecs_world;
+    cd::scene::Scene                         scene           { ecs_world };
+    cd::editor::EditHistory                  history;
+    std::deque<std::string>                  log;
+    cd::world_container::World               cd_world;
+    std::vector<SceneEntity>                 entities;
+    int                                      selected        { 0 };
+    SelKind                                  selected_kind   { SelKind::kEntity };
+
+    // Selection outline + gizmo
+    cd::editor::SelectionOutline             outline;
+    cd::editor::AxisGizmo                    gizmo;
+    GizmoState                               gizmo_state;
+
+    // Camera
+    cd::camera::Camera                       cam;
+    cd::scene::SceneCameraController         scene_cam;
+    cd_sample::SampleAppState                app_state;
+
+    // Audio
+    cd_sample::AudioState                    audio_state;
+
+    // Net sim
+    cd::net::Throttle                        net_throttle    { 4.0F, 30.0F };
+    cd::net::SnapshotBuffer<float>           net_snapbuf;
+    cd::net::LatencyStats                    net_rtt;
+    bool                                     net_enabled     { true };
+    std::uint32_t                            net_sent        { 0 };
+    std::uint32_t                            net_recv        { 0 };
+    std::uint32_t                            net_drop        { 0 };
+    std::uint64_t                            net_raw_bytes   { 0 };
+    std::uint64_t                            net_wire_bytes  { 0 };
+    cd::math::Random                         net_rng         { 0xC0FFEE42u };
+    float                                    net_baseline    { 0.0F };
+    double                                   net_t           { 0.0 };
+    double                                   next_net_tick   { 0.0 };
+
+    // Lights
+    std::vector<LightRow>                    lights;
+    cd::light::ClusterGrid                   cluster_grid;
+    cd::light::ClusterGridDesc               cluster_desc;
+
+    // AsyncStreamer (lambda captures streamer_completed/failed by reference;
+    // EngineState is always heap-allocated so references are stable).
+    std::atomic<std::uint32_t>               streamer_completed { 0 };
+    std::atomic<std::uint32_t>               streamer_failed    { 0 };
+    cd::asset::AsyncStreamer                 streamer;
+    std::vector<cd::asset::AssetId>          streamer_tracked;
+    std::uint64_t                            streamer_next_id   { 1 };
+
+    // Random viz
+    cd::math::Random                         rand_rng           { 0xA1B2C3D4u };
+    Histogram                                hist_uniform;
+    Histogram                                hist_normal;
+    std::uint64_t                            next_random_refresh{ 0 };
+
+    // Counter table / command palette / FX
+    cd::core::CounterTable                   counters;
+    cd::editor::CommandPalette               palette;
+    bool                                     palette_visible    { false };
+    std::string                              palette_query;
+    cd_sample::HelloEngineFx                 fx;
+
+    // Post-fx settings (wired; dispatch queued)
+    cd::post_gtao::Settings                  fx_gtao;
+    cd::post_bloom::Settings                 fx_bloom;
+    cd::post_ssr::Settings                   fx_ssr;
+    cd::post_dof::CameraSettings             fx_dof;
+    cd::post_motion_blur::Settings           fx_mblur;
+    cd::post_taa::Settings                   fx_taa;
+    cd::post_smaa::Settings                  fx_smaa;
+
+    // GI wire-in (dispatch queued)
+    cd::restir_di::Reservoir                 fx_restir_di_reservoir;
+    cd::restir_gi::Reservoir                 fx_restir_gi_reservoir;
+    cd::ddgi::GridConfig                     fx_ddgi_grid;
+
+    // Camera feedback / TAA state
+    PrevCamBasis                             prev_cam_basis;
+    cd::math::Mat4f                          prev_vp_unjittered  { cd::math::Mat4f::identity() };
+    bool                                     prev_vp_valid       { false };
+    std::array<cd::rhi::ResourceState, 2>    history_states
+        { cd::rhi::ResourceState::kUndefined, cd::rhi::ResourceState::kUndefined };
+
+    // Queued libs (silenced via (void))
+    cd::atmosphere::Parameters               fx_atmosphere;
+    cd::light_shafts::Settings               fx_lshafts;
+    cd::volumetric_clouds::Settings          fx_clouds;
+    cd::volumetric_fog::GridConfig           fx_vfog;
+
+    // Frame-loop misc
+    bool                                     dock_initialised   { false };
+    bool                                     mod_ctrl           { false };
+    bool                                     mod_shift          { false };
+    bool                                     needs_rebuild      { false };
+    std::uint32_t                            frame_idx          { 0 };
+
+    explicit EngineState()
+        : streamer(
+            [this](cd::asset::AssetId id) -> bool
+            {
+                const auto v = id.value();
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(
+                        120 + static_cast<long long>(v % 5) * 80));
+                const bool ok = (v % 17 != 0);
+                if (ok) streamer_completed.fetch_add(1, std::memory_order_relaxed);
+                else    streamer_failed.fetch_add(1, std::memory_order_relaxed);
+                return ok;
+            })
+    {}
+
+    EngineState(const EngineState&)            = delete;
+    EngineState& operator=(const EngineState&) = delete;
+    EngineState(EngineState&&)                 = delete;
+    EngineState& operator=(EngineState&&)      = delete;
+};
+
+// ---- Ctor / Dtor -----------------------------------------------------------
+HelloEngineApp::HelloEngineApp() noexcept
+    : cd::sample::App(cd::sample::AppConfig {
+          .title             = "CHROMODYNAMIC - hello_engine (mega-showcase)",
+          .window_width      = 1600,
+          .window_height     = 900,
+          .start_maximized   = false,
+          .enable_validation = true,
+          .max_frames        = 0u,
+      })
+{
+}
+
+HelloEngineApp::~HelloEngineApp() = default;
+
+// ---- M2C: on_boot -----------------------------------------------------------
+cd::core::Result<void> HelloEngineApp::on_boot()
+{
+    state_ = std::make_unique<EngineState>();
+    auto& s = *state_;
+
+    // Window + Vulkan device + Renderer + ImGui
+    cd::platform::WindowDesc wd {};
+    wd.title  = "CHROMODYNAMIC - hello_engine (mega-showcase)";
+    wd.width  = 1600;
+    wd.height = 900;
+    auto window_r = cd::platform::create_window(wd);
+    if (!window_r.has_value()) return std::unexpected(window_r.error());
+    s.window = std::move(*window_r);
+    auto& window = *s.window;
+
+    cd::rhi_vulkan::VulkanCreateInfo vci {};
+    auto dev_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    if (!dev_r.has_value()) return std::unexpected(dev_r.error());
+    s.device_owner = std::move(*dev_r);
+    auto& device = *s.device_owner;
+
+    cd::render::RendererDesc rd {};
+    rd.device                    = &device;
+    rd.swapchain.window_handle   = window.native_window_handle();
+    rd.swapchain.display_handle  = window.native_display_handle();
+    rd.swapchain.extent          = { window.width(), window.height() };
+    rd.swapchain.format          = cd::rhi::Format::kBGRA8Unorm;
+    rd.swapchain.vsync           = false;
+    rd.frames_in_flight          = 2;
+    auto renderer_r = cd::render::Renderer::create(rd);
+    if (!renderer_r.has_value()) return std::unexpected(renderer_r.error());
+    s.renderer = std::move(*renderer_r);
+
+    cd::imgui::InitDesc imgui_id {};
+    imgui_id.window           = &window;
+    imgui_id.device           = &device;
+    imgui_id.color_format     = cd::rhi::Format::kBGRA8Unorm;
+    imgui_id.frames_in_flight = 2;
+    auto ctx_r = cd::imgui::Context::create(imgui_id);
+    if (!ctx_r.has_value()) return std::unexpected(ctx_r.error());
+    s.imgui_ctx = std::move(*ctx_r);
+
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    // Shader compiler
+    s.compiler = cd::shader::make_glslang_compiler();
+    if (!s.compiler)
+        return std::unexpected(cd::core::ErrorCode { 0, 5, "shader compiler" });
+
+    // Render targets
+    using cd_sample::kDepthFormat;
+    if (int rc = cd_sample::create_render_targets(
+            device, { window.width(), window.height() }, s.rts); rc != 0)
+        return std::unexpected(
+            cd::core::ErrorCode { 0, static_cast<std::uint32_t>(rc), "render targets" });
+
+    // Materials
+    auto mat_r = cd_sample::spawn_materials(device, s.compiler.get());
+    if (!mat_r.has_value())
+        return std::unexpected(
+            cd::core::ErrorCode { 0,
+                static_cast<std::uint32_t>(mat_r.error().exit_code), "materials" });
+    s.materials = std::move(*mat_r);
+
+    // Shader hot-reload entries
+    s.shader_watch.add_entry(
+        &s.materials.prim,
+        std::vector<std::string> { std::string { cd_sample::kPrimVertGlslPath },
+                                   std::string { cd_sample::kPrimFragGlslPath } },
+        [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
+        { return cd_sample::prim_recreate(d, c, &state_->materials.prim); },
+        "prim");
+    s.shader_watch.add_entry(
+        &s.materials.shadow,
+        std::vector<std::string> { std::string { cd_sample::kShadowVertGlslPath },
+                                   std::string { cd_sample::kShadowFragGlslPath } },
+        [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
+        { return cd_sample::shadow_recreate(d, c, &state_->materials.shadow); },
+        "shadow");
+
+    // Shadow-map resources
+    constexpr cd::rhi::Extent2D kShadowMapSize { 2048, 2048 };
+    if (!create_depth_target(device, kShadowMapSize, kDepthFormat, s.shadow_target,
+                             cd::rhi::TextureUsage::kSampled))
+        return std::unexpected(cd::core::ErrorCode { 0, 11, "shadow target" });
+
+    cd::rhi::SamplerDesc shad_sd {};
+    shad_sd.mag_filter   = cd::rhi::SamplerFilter::kLinear;
+    shad_sd.min_filter   = cd::rhi::SamplerFilter::kLinear;
+    shad_sd.mipmap_mode  = cd::rhi::SamplerMipmapMode::kNearest;
+    shad_sd.address_u    = cd::rhi::SamplerAddressMode::kClampToBorder;
+    shad_sd.address_v    = cd::rhi::SamplerAddressMode::kClampToBorder;
+    shad_sd.address_w    = cd::rhi::SamplerAddressMode::kClampToBorder;
+    shad_sd.border_color = cd::rhi::BorderColor::kFloatOpaqueWhite;
+    shad_sd.max_lod      = 1.0F;
+    if (auto r = device.create_sampler(shad_sd); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 12, "shadow sampler" });
+    else s.shadow_sampler = *r;
+
+    cd::rhi::BufferDesc shad_ubo_d {};
+    shad_ubo_d.size   = sizeof(cd::math::Mat4f);
+    shad_ubo_d.usage  = cd::rhi::BufferUsage::kUniform;
+    shad_ubo_d.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    if (auto r = device.create_buffer(shad_ubo_d); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 13, "shadow ubo" });
+    else s.shadow_ubo = *r;
+
+    // Multi-light UBO
+    constexpr std::uint32_t kMaxLights_     = cd::hello_engine::kMaxLights;
+    constexpr std::uint32_t kLightSlotBytes = 80;
+    constexpr std::uint32_t kLightUboBytes  = 16 + kMaxLights_ * kLightSlotBytes;
+    cd::rhi::BufferDesc lights_d {};
+    lights_d.size   = kLightUboBytes;
+    lights_d.usage  = cd::rhi::BufferUsage::kUniform;
+    lights_d.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    if (auto r = device.create_buffer(lights_d); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 16, "lights ubo" });
+    else s.lights_ubo = *r;
+
+    // Instance-material SSBO (W8-BC)
+    using cd::hello_engine::kInstMatBytes;
+    cd::rhi::BufferDesc inst_d {};
+    inst_d.size   = kInstMatBytes;
+    inst_d.usage  = cd::rhi::BufferUsage::kStorage | cd::rhi::BufferUsage::kTransferDst;
+    inst_d.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    if (auto r = device.create_buffer(inst_d); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 16, "inst mat ssbo" });
+    else s.inst_mat_ssbo = *r;
+
+    // IBL bake
+    constexpr cd::math::Vec3f kIblSunDirToward { 0.3F, 0.9F, 0.2F };
+    s.ibl_cpu = cd_sample::bake_ibl_cpu(cd_sample::normalize_dir(kIblSunDirToward));
+    if (!s.ibl_cpu.ok)
+        return std::unexpected(cd::core::ErrorCode { 0, 23, "ibl bake" });
+    if (auto r = cd_sample::upload_ibl_gpu(device, s.ibl_cpu); !r.has_value())
+        return std::unexpected(
+            cd::core::ErrorCode { 0, static_cast<std::uint32_t>(r.error()), "ibl gpu" });
+    else s.ibl_gpu = *r;
+
+    constexpr std::uint32_t kTexSize    = cd_sample::kHelloIblEarthAlbedoSize;
+    constexpr std::uint32_t kNormalSize = cd_sample::kHelloIblEarthNormalSize;
+    constexpr std::uint32_t kMrSize     = cd_sample::kHelloIblEarthMrSize;
+
+    // Procedural textures
+    s.albedo_tex = create_texture_rgba8(device, s.ibl_cpu.earth_albedo.data(),
+                                        kTexSize, kTexSize);
+    s.has_gltf_texture = true;
+    std::fprintf(stderr, "[showcase] procedural Earth-like albedo (%ux%u) bound\n",
+                 kTexSize, kTexSize);
+    s.normal_tex = create_texture_rgba8(device, s.ibl_cpu.earth_normal.data(),
+                                        kNormalSize, kNormalSize);
+    std::fprintf(stderr, "[showcase] procedural normal map (%ux%u) bound\n",
+                 kNormalSize, kNormalSize);
+    s.mr_tex = create_texture_rgba8(device, s.ibl_cpu.earth_mr.data(), kMrSize, kMrSize);
+    std::fprintf(stderr, "[showcase] procedural metallic-roughness (%ux%u) bound\n",
+                 kMrSize, kMrSize);
+
+    cd::rhi::SamplerDesc alb_sd {};
+    alb_sd.mag_filter  = cd::rhi::SamplerFilter::kLinear;
+    alb_sd.min_filter  = cd::rhi::SamplerFilter::kLinear;
+    alb_sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
+    alb_sd.address_u   = cd::rhi::SamplerAddressMode::kRepeat;
+    alb_sd.address_v   = cd::rhi::SamplerAddressMode::kRepeat;
+    alb_sd.address_w   = cd::rhi::SamplerAddressMode::kRepeat;
+    if (auto r = device.create_sampler(alb_sd); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 19, "albedo sampler" });
+    else s.albedo_sampler = *r;
+
+    // Prim material instance
+    if (auto r = cd::material::MaterialInstance::create(device, s.materials.prim); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 14, "prim inst" });
+    else s.prim_inst = std::move(*r);
+    {
+        const auto& gspec = s.ibl_gpu.gpu_spec_cube;
+        const auto& gdiff = s.ibl_gpu.gpu_diff_cube;
+        const auto& gbrdf = s.ibl_gpu.gpu_brdf_lut;
+        std::array<cd::rhi::DescriptorWrite, 10> dw {
+            cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer = s.shadow_ubo, .buffer_offset = 0,
+                .buffer_range = sizeof(cd::math::Mat4f) },
+            cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.shadow_target.view, .sampler = s.shadow_sampler },
+            cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer = s.lights_ubo, .buffer_offset = 0,
+                .buffer_range = kLightUboBytes },
+            cd::rhi::DescriptorWrite { .binding = 4, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.albedo_tex.view, .sampler = s.albedo_sampler },
+            cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = gspec.view, .sampler = s.ibl_gpu.ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 6, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = gdiff.view, .sampler = s.ibl_gpu.ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 7, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = gbrdf.view, .sampler = s.ibl_gpu.ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 8, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.normal_tex.view, .sampler = s.albedo_sampler },
+            cd::rhi::DescriptorWrite { .binding = 9, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.mr_tex.view, .sampler = s.albedo_sampler },
+            cd::rhi::DescriptorWrite { .binding = 10, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = s.inst_mat_ssbo, .buffer_offset = 0,
+                .buffer_range = kInstMatBytes }
+        };
+        if (auto wr = s.prim_inst.update(dw); !wr.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 15, "prim inst update" });
+    }
+
+    // Composite material instances
+    for (std::uint32_t i = 0; i < 2; ++i)
+    {
+        auto r = cd::material::MaterialInstance::create(device, s.materials.composite);
+        if (!r.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 33, "composite inst" });
+        s.composite_insts[i] = std::move(*r);
+    }
+
+    // Bloom mip chain
+    if (!create_bloom_chain(device, { window.width(), window.height() }, s.bloom_chain))
+        return std::unexpected(cd::core::ErrorCode { 0, 43, "bloom chain" });
+    {
+        auto r = cd::material::MaterialInstance::create(
+            device, s.materials.bloom_prefilter);
+        if (!r.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 44, "bloom prefilter inst" });
+        s.bloom_prefilter_inst = std::move(*r);
+    }
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        auto r = cd::material::MaterialInstance::create(
+            device, s.materials.bloom_downsample);
+        if (!r.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 45, "bloom down inst" });
+        s.bloom_down_insts[i] = std::move(*r);
+    }
+    for (std::uint32_t i = 0; i < 3; ++i)
+    {
+        auto r = cd::material::MaterialInstance::create(
+            device, s.materials.bloom_upsample);
+        if (!r.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 46, "bloom up inst" });
+        s.bloom_up_insts[i] = std::move(*r);
+    }
+
+    // Bind bloom descriptors helper (also used by on_frame resize path)
+    auto bind_bloom_desc_fn = [&s]()
+    {
+        auto wone = [&s](cd::material::MaterialInstance& inst,
+                          cd::rhi::TextureViewHandle src)
+        {
+            std::array<cd::rhi::DescriptorWrite, 1> w {
+                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = src, .sampler = s.albedo_sampler }
+            };
+            (void)inst.update(w);
+        };
+        wone(s.bloom_prefilter_inst, s.rts.hdr.view);
+        wone(s.bloom_down_insts[0],  s.bloom_chain.mips[0].view);
+        wone(s.bloom_down_insts[1],  s.bloom_chain.mips[1].view);
+        wone(s.bloom_down_insts[2],  s.bloom_chain.mips[2].view);
+        wone(s.bloom_up_insts[0],    s.bloom_chain.mips[3].view);
+        wone(s.bloom_up_insts[1],    s.bloom_chain.mips[2].view);
+        wone(s.bloom_up_insts[2],    s.bloom_chain.mips[1].view);
+    };
+    bind_bloom_desc_fn();
+
+    auto bind_composite_hdr_fn = [&s]()
+    {
+        for (std::uint32_t i = 0; i < 2; ++i)
+        {
+            std::array<cd::rhi::DescriptorWrite, 6> ws {
+                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.hdr.view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.bloom_chain.mips[0].view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 2, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.depth.view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.gbuf_normal.view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 4, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.history[i].view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.gbuf_velocity.view, .sampler = s.albedo_sampler }
+            };
+            (void)s.composite_insts[i].update(ws);
+        }
+    };
+    bind_composite_hdr_fn();
+
+    // Meshes + glTF + BLAS
+    auto upload_alb_fn = [&device_ref = device](
+        const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
+        -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
+    {
+        auto t = create_texture_rgba8(device_ref, rgba, w, h);
+        return { t.image, t.view };
+    };
+    cd_sample::AlbedoSlot alb_slot {
+        .image_io = &s.albedo_tex.image,
+        .view_io  = &s.albedo_tex.view,
+        .sampler  = s.albedo_sampler,
+        .upload   = upload_alb_fn,
+    };
+    s.meshes = cd_sample::boot_meshes(device, alb_slot, s.prim_inst);
+    if (s.meshes.build_exit_code != 0)
+        return std::unexpected(
+            cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
+    if (s.meshes.has_gltf_texture) s.has_gltf_texture = true;
+
+    // World / scene / ECS
+    setup_world_container(s.cd_world);
+    spawn_primitive_seeds(s.scene, s.entities);
+    spawn_gltf_or_earth_entity(s.scene, s.meshes.gltf, s.meshes.gltf_loaded_name, s.entities);
+    spawn_pbr_grid_entities(s.scene, s.entities);
+
+    auto log_push_fn = [&s](std::string msg)
+    {
+        s.log.emplace_back(std::move(msg));
+        while (s.log.size() > 64) s.log.pop_front();
+    };
+    log_push_fn(
+        std::string { "[boot] " } + std::to_string(s.entities.size()) +
+        " ECS entities spawned" +
+        (s.meshes.gltf_loaded_name.empty() ? ""
+            : std::string { " (incl. glTF: " } + s.meshes.gltf_loaded_name + ")"));
+
+    // Selection + gizmo
+    s.outline.style = cd::editor::OutlineStyle::kWireframe;
+
+    // Camera
+    s.cam.eye    = { 0.0F, 2.5F, 8.0F };
+    s.cam.target = { 0.0F, 0.5F, 0.0F };
+    s.cam.fov_y  = 0.9F;
+    s.cam.near_z = 0.05F;
+    s.cam.far_z  = 200.0F;
+    s.scene_cam.attach(s.cam, s.scene, {});
+    s.scene_cam.set_auto_spin(false);
+    s.scene_cam.orbit().auto_spin_rate = 0.25F;
+
+    // Audio
+    cd_sample::init_audio(s.audio_state, square_wave, burst_noise);
+
+    // Lights (W8-BB: all enabled)
+    s.lights.push_back({ "Sun (cool 6500K)",
+        cd::light::directional({ -0.35F, -0.65F, -0.7F }, { 1, 1, 1 }, 100000.0F),
+        true, 6500.0F });
+    s.lights.push_back({ "Tungsten point (2700K)",
+        cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
+        true, 2700.0F });
+    s.lights.push_back({ "Halogen spot (3200K)",
+        cd::light::spot({ 0.0F, 5.0F, 0.0F }, { 0.0F, -0.316F, -0.949F },
+                        { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
+        true, 3200.0F });
+    s.lights.push_back({ "Cyan rect-area (8000K)",
+        cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
+                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
+        true, 8000.0F });
+    s.lights.push_back({ "Magenta HDR neon (25000K)",
+        cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
+                             4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
+        true, 25000.0F });
+
+    s.cluster_desc.tiles_x  = 8; s.cluster_desc.tiles_y  = 4;
+    s.cluster_desc.slices_z = 8; s.cluster_desc.near_z = 0.1F;
+    s.cluster_desc.far_z    = 100.0F;
+    s.cluster_grid.configure(s.cluster_desc);
+
+    // AsyncStreamer
+    s.streamer.start();
+
+    // Random viz initial fill
+    {
+        auto do_rv = [&s]()
+        {
+            std::vector<float> u; u.reserve(8192);
+            for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
+            s.hist_uniform.rebuild(u, 0.0F, 1.0F, 24);
+            std::vector<float> n; n.reserve(8192);
+            bool cv_ok = false; float cv = 0.0F;
+            for (int i = 0; i < 8192; ++i)
+            {
+                if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
+                float u1 = s.rand_rng.next_float();
+                if (u1 < 1e-7F) u1 = 1e-7F;
+                float u2 = s.rand_rng.next_float();
+                float rr = std::sqrt(-2.0F * std::log(u1));
+                float t  = 6.28318530717958F * u2;
+                cv = rr * std::sin(t); cv_ok = true;
+                n.push_back(rr * std::cos(t));
+            }
+            s.hist_normal.rebuild(n, -3.0F, 3.0F, 24);
+        };
+        do_rv();
+    }
+
+    // Command palette
+    cd_sample::register_fx_palette_commands(s.palette, s.fx, log_push_fn);
+    cd_sample::register_engine_gi_rhi_fx_palette_commands(
+        s.palette, s.fx, log_push_fn, s.fx_gtao, s.fx_bloom);
+
+    (void)s.fx_ssr; (void)s.fx_dof; (void)s.fx_mblur; (void)s.fx_taa;
+    (void)s.fx_smaa; (void)s.fx_restir_di_reservoir;
+    (void)s.fx_restir_gi_reservoir; (void)s.fx_ddgi_grid;
+    (void)s.fx_atmosphere; (void)s.fx_lshafts;
+    (void)s.fx_clouds; (void)s.fx_vfog; (void)s.prev_vp_valid;
+
+    s.palette.register_command(1,  "Edit: Undo",
+        [&s, log_push_fn]() mutable { if (s.history.undo()) log_push_fn("[palette] Undo"); });
+    s.palette.register_command(2,  "Edit: Redo",
+        [&s, log_push_fn]() mutable { if (s.history.redo()) log_push_fn("[palette] Redo"); });
+    s.palette.register_command(3,  "Edit: Clear History",
+        [&s, log_push_fn]() mutable { s.history.clear(); log_push_fn("[palette] History cleared"); });
+
+    auto sel_cmd = [&s, log_push_fn](std::string name, std::uint32_t id) mutable
+    {
+        s.palette.register_command(id, "Select: " + name,
+            [&s, nm = name, log_push_fn]() mutable
+            {
+                for (std::size_t i = 0; i < s.entities.size(); ++i)
+                    if (s.entities[i].name == nm)
+                    {
+                        s.selected = static_cast<int>(i);
+                        log_push_fn("[palette] Select " + nm);
+                        break;
+                    }
+            });
+    };
+    sel_cmd("Cube",     10);
+    sel_cmd("Sphere",   11);
+    sel_cmd("Cone",     12);
+    sel_cmd("Cylinder", 13);
+    sel_cmd("Torus",    14);
+
+    s.palette.register_command(20, "Transform: Reset Selected",
+        [&s, log_push_fn]() mutable
+        {
+            if (s.selected >= 0 && s.selected < static_cast<int>(s.entities.size()))
+            {
+                auto& ent = s.entities[static_cast<std::size_t>(s.selected)];
+                if (auto* lt = s.scene.local(ent.handle); lt)
+                {
+                    lt->value.position = {}; lt->value.scale = { 1,1,1 };
+                    lt->value.rotation = { 0,0,0,1 };
+                    log_push_fn("[palette] Reset selected transform");
+                }
+            }
+        });
+    s.palette.register_command(30, "Camera: Toggle Auto-Spin",
+        [&s, log_push_fn]() mutable
+        {
+            s.scene_cam.set_auto_spin(!s.scene_cam.auto_spin());
+            if (s.scene_cam.auto_spin()) s.app_state.free_look.manual_mode = false;
+            log_push_fn(std::string("[palette] Auto-spin: ") +
+                (s.scene_cam.auto_spin() ? "ON" : "OFF"));
+        });
+    s.palette.register_command(31, "Camera: Follow Selected",
+        [&s, log_push_fn]() mutable
+        {
+            if (s.selected >= 0 && s.selected < static_cast<int>(s.entities.size()))
+            {
+                s.scene_cam.attach(s.cam, s.scene,
+                    s.entities[static_cast<std::size_t>(s.selected)].handle);
+                log_push_fn("[palette] Camera following: " +
+                    s.entities[static_cast<std::size_t>(s.selected)].name);
+            }
+        });
+    s.palette.register_command(40, "Audio: Toggle Mute",
+        [&s, log_push_fn]() mutable
+        {
+            s.audio_state.muted = !s.audio_state.muted;
+            if (s.audio_state.live_ok && s.audio_state.backend &&
+                s.audio_state.live_voice.is_valid())
+                s.audio_state.backend->set_volume(s.audio_state.live_voice,
+                    s.audio_state.muted ? 0.0F : 0.65F);
+            log_push_fn(std::string("[palette] Audio: ") +
+                (s.audio_state.muted ? "MUTED" : "LIVE"));
+        });
+    s.palette.register_command(50, "Net: Toggle Sim",
+        [&s, log_push_fn]() mutable
+        {
+            s.net_enabled = !s.net_enabled;
+            log_push_fn(std::string("[palette] Net sim: ") +
+                (s.net_enabled ? "RUNNING" : "PAUSED"));
+        });
+    s.palette.register_command(60, "Random: Reseed + Refresh",
+        [&s, log_push_fn]() mutable
+        {
+            thread_local std::mt19937_64 tl_rng(std::random_device{}());
+            std::uniform_int_distribution<std::uint64_t> dist;
+            s.rand_rng = cd::math::Random { dist(tl_rng) };
+            std::vector<float> u; u.reserve(8192);
+            for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
+            s.hist_uniform.rebuild(u, 0.0F, 1.0F, 24);
+            std::vector<float> n; n.reserve(8192);
+            bool cv_ok = false; float cv = 0.0F;
+            for (int i = 0; i < 8192; ++i)
+            {
+                if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
+                float u1 = s.rand_rng.next_float(); if (u1 < 1e-7F) u1 = 1e-7F;
+                float u2 = s.rand_rng.next_float();
+                float rr = std::sqrt(-2.0F * std::log(u1));
+                float t  = 6.28318530717958F * u2;
+                cv = rr * std::sin(t); cv_ok = true;
+                n.push_back(rr * std::cos(t));
+            }
+            s.hist_normal.rebuild(n, -3.0F, 3.0F, 24);
+            log_push_fn("[palette] Random reseeded");
+        });
+    s.palette.register_command(70, "Help: Print Shortcuts",
+        [log_push_fn]() mutable
+        {
+            log_push_fn("Ctrl+Shift+P / F1: command palette");
+            log_push_fn("Esc: close palette / quit");
+            log_push_fn("WASD: move camera | Q/E: down/up");
+            log_push_fn("Right-mouse drag: FPS look | wheel: zoom");
+            log_push_fn("Left-click entity: select | empty space: unselect");
+            log_push_fn("F: focus | Space: cycle gizmo mode");
+        });
+
+    constexpr const char* kSavePath = "hello_engine.cdscene.json";
+    auto kind_name_fn = [](PrimitiveKind k) -> const char*
+    {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return "Sphere";
+            case PrimitiveKind::kCone:     return "Cone";
+            case PrimitiveKind::kCylinder: return "Cylinder";
+            case PrimitiveKind::kTorus:    return "Torus";
+            case PrimitiveKind::kGltf:     return "Gltf";
+            case PrimitiveKind::kCube:     return "Cube";
+        }
+        return "Cube";
+    };
+    s.palette.register_command(80, "Scene: Save",
+        [&s, log_push_fn, kind_name_fn]() mutable
+        {
+            auto fe = [&s](cd::ecs::Entity e) -> const SceneEntity*
+            {
+                for (const auto& en : s.entities) if (en.handle.id == e.id) return &en;
+                return nullptr;
+            };
+            auto root = cd::scene::serialize_scene_with(s.scene,
+                [&](cd::ecs::Entity e, cd::asset_json::Object& obj)
+                {
+                    const auto* en = fe(e); if (!en) return;
+                    obj["name"] = cd::asset_json::Value { en->name };
+                    obj["kind"] = cd::asset_json::Value { std::string { kind_name_fn(en->kind) } };
+                    cd::asset_json::Array tint;
+                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.x) });
+                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.y) });
+                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.z) });
+                    obj["tint"] = cd::asset_json::Value { std::move(tint) };
+                });
+            {
+                cd::asset_json::Array la;
+                for (const auto& l : s.lights)
+                {
+                    cd::asset_json::Object lo;
+                    lo["name"]      = cd::asset_json::Value { l.name };
+                    lo["enabled"]   = cd::asset_json::Value { l.enabled };
+                    lo["type"]      = cd::asset_json::Value { static_cast<int>(l.light.type) };
+                    lo["kelvin"]    = cd::asset_json::Value { static_cast<double>(l.kelvin) };
+                    lo["intensity"] = cd::asset_json::Value { static_cast<double>(l.light.intensity) };
+                    lo["range"]     = cd::asset_json::Value { static_cast<double>(l.light.range) };
+                    cd::asset_json::Array pos, col, dir;
+                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.x) });
+                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.y) });
+                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.z) });
+                    lo["position"] = cd::asset_json::Value { std::move(pos) };
+                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.x) });
+                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.y) });
+                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.z) });
+                    lo["color"]    = cd::asset_json::Value { std::move(col) };
+                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.x) });
+                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.y) });
+                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.z) });
+                    lo["direction"] = cd::asset_json::Value { std::move(dir) };
+                    la.push_back(cd::asset_json::Value { std::move(lo) });
+                }
+                root.as_object_mut()["lights"] = cd::asset_json::Value { std::move(la) };
+            }
+            const auto txt = cd::asset_json::serialize(root, true);
+            std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
+            if (f)
+            {
+                f.write(txt.data(), static_cast<std::streamsize>(txt.size()));
+                log_push_fn("[scene] Saved " + std::to_string(s.entities.size()) +
+                    " entities + " + std::to_string(s.lights.size()) + " lights to " + kSavePath);
+            }
+            else log_push_fn("[scene] Save failed (ofstream)");
+        });
+    s.palette.register_command(95, "Gizmo: Toggle Visibility",
+        [&s, log_push_fn]() mutable
+        {
+            s.gizmo_state.visible = !s.gizmo_state.visible;
+            log_push_fn("[gizmo] visible=" + std::string(s.gizmo_state.visible ? "true" : "false"));
+        });
+    s.palette.register_command(90, "Streamer: Enqueue 8 burst",
+        [&s, log_push_fn]() mutable
+        {
+            for (int i = 0; i < 8; ++i)
+            {
+                cd::asset::AssetId id { s.streamer_next_id++ };
+                cd::asset::StreamRequest req; req.id = id; req.priority = i * 10;
+                s.streamer.enqueue(req); s.streamer_tracked.push_back(id);
+                if (s.streamer_tracked.size() > 32)
+                    s.streamer_tracked.erase(s.streamer_tracked.begin(),
+                                             s.streamer_tracked.begin() + 8);
+            }
+            log_push_fn("[palette] Streamer +8 burst");
+        });
+    s.palette.register_command(91, "Streamer: Enqueue 32 burst",
+        [&s, log_push_fn]() mutable
+        {
+            for (int i = 0; i < 32; ++i)
+            {
+                cd::asset::AssetId id { s.streamer_next_id++ };
+                cd::asset::StreamRequest req; req.id = id; req.priority = i % 4;
+                s.streamer.enqueue(req); s.streamer_tracked.push_back(id);
+                if (s.streamer_tracked.size() > 32)
+                    s.streamer_tracked.erase(s.streamer_tracked.begin(),
+                                             s.streamer_tracked.begin() + 8);
+            }
+            log_push_fn("[palette] Streamer +32 burst");
+        });
+    s.palette.register_command(81, "Scene: Load (replace world)",
+        [&s, log_push_fn]() mutable
+        {
+            auto r = cd::asset_json::load(kSavePath);
+            if (!r.has_value())
+            {
+                log_push_fn("[scene] Load failed: " + std::string { r.error().message });
+                return;
+            }
+            for (auto& en : s.entities) if (en.handle.is_valid()) s.scene.destroy_node(en.handle);
+            s.entities.clear();
+            std::vector<SceneEntity> loaded;
+            (void)cd::scene::deserialize_scene_with(s.scene, *r,
+                [&](cd::ecs::Entity e, const cd::asset_json::Object& obj)
+                {
+                    SceneEntity en; en.handle = e;
+                    en.kind = PrimitiveKind::kCube; en.tint = { 1,1,1 };
+                    if (auto it = obj.find("name"); it != obj.end() && it->second.is_string())
+                        en.name = it->second.as_string();
+                    if (auto it = obj.find("kind"); it != obj.end() && it->second.is_string())
+                        en.kind = kind_from_name(it->second.as_string());
+                    if (auto it = obj.find("tint"); it != obj.end() && it->second.is_array()
+                        && it->second.as_array().size() == 3)
+                    {
+                        const auto& a = it->second.as_array();
+                        if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                            en.tint = { static_cast<float>(a[0].as_number()),
+                                        static_cast<float>(a[1].as_number()),
+                                        static_cast<float>(a[2].as_number()) };
+                    }
+                    loaded.push_back(std::move(en));
+                });
+            s.entities = std::move(loaded);
+            if (r->is_object())
+            {
+                const auto& ro = r->as_object();
+                if (auto it = ro.find("lights");
+                    it != ro.end() && it->second.is_array())
+                {
+                    std::vector<LightRow> nl;
+                    for (const auto& lv : it->second.as_array())
+                    {
+                        if (!lv.is_object()) continue;
+                        const auto& lo = lv.as_object();
+                        LightRow row {};
+                        if (auto n = lo.find("name"); n != lo.end() && n->second.is_string())
+                            row.name = n->second.as_string();
+                        if (auto en2 = lo.find("enabled"); en2 != lo.end() && en2->second.is_bool())
+                            row.enabled = en2->second.as_bool();
+                        if (auto t = lo.find("type"); t != lo.end() && t->second.is_number())
+                            row.light.type = static_cast<cd::light::LightType>(
+                                static_cast<int>(t->second.as_number()));
+                        if (auto k = lo.find("kelvin"); k != lo.end() && k->second.is_number())
+                            row.kelvin = static_cast<float>(k->second.as_number());
+                        if (auto in = lo.find("intensity"); in != lo.end() && in->second.is_number())
+                            row.light.intensity = static_cast<float>(in->second.as_number());
+                        if (auto rg = lo.find("range"); rg != lo.end() && rg->second.is_number())
+                            row.light.range = static_cast<float>(rg->second.as_number());
+                        auto load3 = [&lo](const char* key, cd::math::Vec3f& out)
+                        {
+                            if (auto it2 = lo.find(key); it2 != lo.end() && it2->second.is_array()
+                                && it2->second.as_array().size() == 3)
+                            {
+                                const auto& a = it2->second.as_array();
+                                if (a[0].is_number() && a[1].is_number() && a[2].is_number())
+                                    out = { static_cast<float>(a[0].as_number()),
+                                            static_cast<float>(a[1].as_number()),
+                                            static_cast<float>(a[2].as_number()) };
+                            }
+                        };
+                        load3("position",  row.light.position);
+                        load3("direction", row.light.direction);
+                        load3("color",     row.light.color);
+                        if (row.light.color.x == 0 && row.light.color.y == 0 &&
+                            row.light.color.z == 0 && row.kelvin > 0.0F)
+                            row.light.color = cd::light::cct_to_linear_rgb(row.kelvin);
+                        nl.push_back(std::move(row));
+                    }
+                    if (!nl.empty()) s.lights = std::move(nl);
+                }
+            }
+            s.selected = s.entities.empty() ? -1 : 0;
+            s.history.clear();
+            log_push_fn("[scene] Loaded " + std::to_string(s.entities.size()) +
+                " entities + " + std::to_string(s.lights.size()) + " lights from " + kSavePath);
+        });
+
+    return {};
+}
+
+// ---- M2D: on_frame ----------------------------------------------------------
+void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
+{
+    auto& s      = *state_;
+    auto& window = *s.window;
+    auto& device = *s.device_owner;
+    auto& ctx    = *s.imgui_ctx;
+
+    constexpr cd::rhi::Extent2D kShadowMapSize { 2048, 2048 };
+    constexpr float kFloorY    = -0.55F;
+    constexpr float kShadowLift = 0.01F;
+    using cd_sample::kDepthFormat;
+    using cd_sample::kAudioRingFrames;
+    using cd::hello_engine::kInstMatBytes;
+
+    auto log_push_fn = [&s](std::string msg)
+    {
+        s.log.emplace_back(std::move(msg));
+        while (s.log.size() > 64) s.log.pop_front();
+    };
+
+    auto mesh_for = [&s](PrimitiveKind k) -> const GpuMesh&
+    {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return s.meshes.sphere;
+            case PrimitiveKind::kCone:     return s.meshes.cone;
+            case PrimitiveKind::kCylinder: return s.meshes.cyl;
+            case PrimitiveKind::kTorus:    return s.meshes.torus;
+            case PrimitiveKind::kGltf:
+                return s.meshes.gltf.vb.is_valid() ? s.meshes.gltf : s.meshes.knot;
+            default:                       return s.meshes.cube;
+        }
+    };
+    auto blas_for_kind = [&s](PrimitiveKind k) -> cd::rhi::AccelStructureHandle
+    {
+        switch (k)
+        {
+            case PrimitiveKind::kSphere:   return s.meshes.blas_sphere;
+            case PrimitiveKind::kCone:     return s.meshes.blas_cone;
+            case PrimitiveKind::kCylinder: return s.meshes.blas_cyl;
+            case PrimitiveKind::kTorus:    return s.meshes.blas_torus;
+            case PrimitiveKind::kGltf:     return s.meshes.blas_gltf;
+            default:                       return s.meshes.blas_cube;
+        }
+    };
+
+    auto bind_bloom_desc_fn = [&s]()
+    {
+        auto wone = [&s](cd::material::MaterialInstance& inst,
+                          cd::rhi::TextureViewHandle src)
+        {
+            std::array<cd::rhi::DescriptorWrite, 1> w {
+                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = src, .sampler = s.albedo_sampler }
+            };
+            (void)inst.update(w);
+        };
+        wone(s.bloom_prefilter_inst, s.rts.hdr.view);
+        wone(s.bloom_down_insts[0],  s.bloom_chain.mips[0].view);
+        wone(s.bloom_down_insts[1],  s.bloom_chain.mips[1].view);
+        wone(s.bloom_down_insts[2],  s.bloom_chain.mips[2].view);
+        wone(s.bloom_up_insts[0],    s.bloom_chain.mips[3].view);
+        wone(s.bloom_up_insts[1],    s.bloom_chain.mips[2].view);
+        wone(s.bloom_up_insts[2],    s.bloom_chain.mips[1].view);
+    };
+    auto bind_composite_hdr_fn = [&s]()
+    {
+        for (std::uint32_t i = 0; i < 2; ++i)
+        {
+            std::array<cd::rhi::DescriptorWrite, 6> ws {
+                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.hdr.view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.bloom_chain.mips[0].view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 2, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.depth.view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.gbuf_normal.view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 4, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.history[i].view, .sampler = s.albedo_sampler },
+                cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = s.rts.gbuf_velocity.view, .sampler = s.albedo_sampler }
+            };
+            (void)s.composite_insts[i].update(ws);
+        }
+    };
+
+    using clock = std::chrono::steady_clock;
+    const auto frame_loop_start = clock::now();
+    auto last_tick = frame_loop_start;
+    std::vector<cd::platform::OSEvent> events;
+    events.reserve(64);
+
+    while (true)
+    {
+        events.clear();
+        if (!window.pump_events(events)) break;
+
+        (void)s.shader_watch.poll_and_reload(device, s.compiler.get());
+
+        for (const auto& ev : events)
+        {
+            ctx.handle_event(ev);
+            if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
+                ev.key == cd::platform::KeyCode::kEscape)
+            {
+                if (s.gizmo.is_dragging())
+                { (void)s.gizmo.end_drag(); log_push_fn("[esc] gizmo drag cancelled"); }
+                else if (s.palette_visible)
+                { s.palette_visible = false; s.palette_query.clear();
+                  log_push_fn("[esc] palette closed"); }
+                else if (s.selected >= 0)
+                { s.selected = -1; log_push_fn("[esc] selection cleared"); }
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kResize)
+            { s.needs_rebuild = true; }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyDown &&
+                     ev.key == cd::platform::KeyCode::kF1)
+            {
+                s.palette_visible = !s.palette_visible;
+                if (s.palette_visible) s.palette_query.clear();
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyDown)
+            {
+                if (ev.key == cd::platform::KeyCode::kLCtrl ||
+                    ev.key == cd::platform::KeyCode::kRCtrl)  s.mod_ctrl  = true;
+                if (ev.key == cd::platform::KeyCode::kLShift ||
+                    ev.key == cd::platform::KeyCode::kRShift) s.mod_shift = true;
+                if (ev.key == cd::platform::KeyCode::kP && s.mod_ctrl && s.mod_shift)
+                { s.palette_visible = !s.palette_visible;
+                  if (s.palette_visible) s.palette_query.clear(); }
+            }
+            else if (ev.kind == cd::platform::OSEventKind::kKeyUp)
+            {
+                if (ev.key == cd::platform::KeyCode::kLCtrl ||
+                    ev.key == cd::platform::KeyCode::kRCtrl)  s.mod_ctrl  = false;
+                if (ev.key == cd::platform::KeyCode::kLShift ||
+                    ev.key == cd::platform::KeyCode::kRShift) s.mod_shift = false;
+            }
+
+            const bool key_dn = (ev.kind == cd::platform::OSEventKind::kKeyDown);
+            const bool key_up = (ev.kind == cd::platform::OSEventKind::kKeyUp);
+            auto& fl = s.app_state.free_look;
+            if (key_dn || key_up)
+            {
+                const bool v = key_dn;
+                if (ev.key == cd::platform::KeyCode::kW)  fl.key_w = v;
+                if (ev.key == cd::platform::KeyCode::kA)  fl.key_a = v;
+                if (ev.key == cd::platform::KeyCode::kS)  fl.key_s = v;
+                if (ev.key == cd::platform::KeyCode::kD)  fl.key_d = v;
+                if (ev.key == cd::platform::KeyCode::kQ)  fl.key_q = v;
+                if (ev.key == cd::platform::KeyCode::kE)  fl.key_e = v;
+                if (ev.key == cd::platform::KeyCode::kLShift ||
+                    ev.key == cd::platform::KeyCode::kRShift) fl.key_shift = v;
+                if (ev.key == cd::platform::KeyCode::kLCtrl ||
+                    ev.key == cd::platform::KeyCode::kRCtrl)  fl.key_ctrl  = v;
+                if (key_dn && (ev.key == cd::platform::KeyCode::kW ||
+                               ev.key == cd::platform::KeyCode::kA ||
+                               ev.key == cd::platform::KeyCode::kS ||
+                               ev.key == cd::platform::KeyCode::kD ||
+                               ev.key == cd::platform::KeyCode::kQ ||
+                               ev.key == cd::platform::KeyCode::kE))
+                { fl.manual_mode = true; s.scene_cam.set_auto_spin(false); }
+            }
+            if (key_dn && ev.key == cd::platform::KeyCode::kF &&
+                s.selected >= 0 && s.selected < static_cast<int>(s.entities.size()))
+            {
+                if (auto* lt = s.scene.local(
+                        s.entities[static_cast<std::size_t>(s.selected)].handle))
+                {
+                    s.cam.target = { lt->value.position.x, lt->value.position.y,
+                                     lt->value.position.z };
+                    log_push_fn("[cam] focus " +
+                        s.entities[static_cast<std::size_t>(s.selected)].name);
+                }
+            }
+            if (key_dn && ev.key == cd::platform::KeyCode::kSpace &&
+                !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                s.gizmo_state.mode = static_cast<GizmoMode>(
+                    (static_cast<std::uint8_t>(s.gizmo_state.mode) + 1u) % 3u);
+                const char* ms =
+                    s.gizmo_state.mode == GizmoMode::kTranslate ? "TRANSLATE"
+                    : s.gizmo_state.mode == GizmoMode::kRotate  ? "ROTATE" : "SCALE";
+                log_push_fn(std::string { "[gizmo] mode: " } + ms);
+            }
+            if (key_dn && ev.key == cd::platform::KeyCode::kDelete &&
+                !ImGui::GetIO().WantCaptureKeyboard && s.selected >= 0)
+            {
+                if (s.selected_kind == SelKind::kEntity &&
+                    s.selected < static_cast<int>(s.entities.size()))
+                {
+                    const std::string nm =
+                        s.entities[static_cast<std::size_t>(s.selected)].name;
+                    s.scene.destroy_node(
+                        s.entities[static_cast<std::size_t>(s.selected)].handle);
+                    s.entities.erase(s.entities.begin() + s.selected);
+                    log_push_fn("[edit] entity deleted: " + nm);
+                }
+                else if (s.selected_kind == SelKind::kLight &&
+                         s.selected < static_cast<int>(s.lights.size()))
+                {
+                    const std::string nm =
+                        s.lights[static_cast<std::size_t>(s.selected)].name;
+                    s.lights.erase(s.lights.begin() + s.selected);
+                    log_push_fn("[edit] light deleted: " + nm);
+                }
+                s.selected = -1;
+            }
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonDown)
+            {
+                if (ev.mouse_button == cd::platform::MouseButton::kRight)
+                {
+                    fl.right_drag = true; fl.manual_mode = true;
+                    fl.has_last_mouse = false;
+                    s.scene_cam.set_auto_spin(false);
+                    const float dx = s.cam.target.x - s.cam.eye.x;
+                    const float dy = s.cam.target.y - s.cam.eye.y;
+                    const float dz = s.cam.target.z - s.cam.eye.z;
+                    const float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                    if (dist > 1e-3F)
+                    {
+                        fl.dist  = dist;
+                        fl.pitch = std::asin(dy / dist);
+                        fl.yaw   = std::atan2(dx, -dz);
+                    }
+                }
+                else if (ev.mouse_button == cd::platform::MouseButton::kLeft &&
+                         !ImGui::GetIO().WantCaptureMouse)
+                {
+                    s.app_state.pick.pending = true;
+                    s.app_state.pick.x = ev.mouse_x;
+                    s.app_state.pick.y = ev.mouse_y;
+                }
+            }
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
+                ev.mouse_button == cd::platform::MouseButton::kRight)
+                fl.right_drag = false;
+            if (ev.kind == cd::platform::OSEventKind::kMouseMove)
+            {
+                if (fl.right_drag && fl.has_last_mouse)
+                {
+                    const float ddx = ev.mouse_x - fl.last_mouse_x;
+                    const float ddy = ev.mouse_y - fl.last_mouse_y;
+                    fl.yaw   += ddx * cd_sample::kCamLookSpeed;
+                    fl.pitch -= ddy * cd_sample::kCamLookSpeed;
+                    constexpr float kHalfPi = 1.5707963F;
+                    if (fl.pitch >  kHalfPi - 0.05F) fl.pitch =  kHalfPi - 0.05F;
+                    if (fl.pitch < -kHalfPi + 0.05F) fl.pitch = -kHalfPi + 0.05F;
+                }
+                fl.last_mouse_x = ev.mouse_x; fl.last_mouse_y = ev.mouse_y;
+                fl.has_last_mouse = true;
+            }
+            if (ev.kind == cd::platform::OSEventKind::kMouseWheel &&
+                !ImGui::GetIO().WantCaptureMouse)
+            {
+                fl.dist *= (ev.wheel > 0.0F) ? 0.9F : 1.1F;
+                if (fl.dist < 1.0F)   fl.dist = 1.0F;
+                if (fl.dist > 100.0F) fl.dist = 100.0F;
+            }
+        }  // end event loop
+
+        if (s.needs_rebuild)
+        {
+            if (window.width() == 0 || window.height() == 0) continue;
+            if (!s.renderer.recreate_swapchain({ window.width(), window.height() }).has_value())
+                continue;
+            s.rts.destroy(device);
+            if (cd_sample::create_render_targets(
+                    device, { window.width(), window.height() }, s.rts) != 0)
+                continue;
+            s.history_states[0] = cd::rhi::ResourceState::kUndefined;
+            s.history_states[1] = cd::rhi::ResourceState::kUndefined;
+            if (!create_bloom_chain(device, { window.width(), window.height() }, s.bloom_chain))
+                continue;
+            bind_bloom_desc_fn();
+            bind_composite_hdr_fn();
+            s.depth_initialised_on_gpu = false;
+            s.needs_rebuild = false;
+        }
+
+        const auto now = clock::now();
+        const float dt = std::chrono::duration<float>(now - last_tick).count();
+        last_tick = now;
+
+        // Tick audio
+        auto& as = s.audio_state;
+        if (!as.muted)
+        {
+            float peak = 0.0F, comp_db_min = 0.0F, lim_gain_min = 1.0F;
+            for (std::size_t si = 0; si < kAudioBufferLen; ++si, ++as.sample_t)
+            {
+                as.bus.mix(0, square_wave(as.sample_t, 440.0F));
+                as.bus.mix(1, burst_noise(as.sample_t));
+                float x = as.bus.pull();
+                x = as.comp.process(x);
+                if (as.comp.gain_db() < comp_db_min) comp_db_min = as.comp.gain_db();
+                const float wet = as.reverb.process(x);
+                x = 0.75F * x + 0.20F * wet;
+                x = as.lowpass.process(x);
+                x = as.limiter.process(x);
+                if (as.limiter.current_gain() < lim_gain_min)
+                    lim_gain_min = as.limiter.current_gain();
+                if (std::fabs(x) > peak) peak = std::fabs(x);
+                if (x >  1.0F) x =  1.0F;
+                if (x < -1.0F) x = -1.0F;
+                as.ring[as.ring_write] = static_cast<std::int16_t>(x * 32760.0F);
+                if (++as.ring_write >= kAudioRingFrames) as.ring_write = 0;
+                ++as.total_written;
+            }
+            as.peak_window = peak; as.comp_db_window = comp_db_min;
+            as.limiter_gain_min = lim_gain_min;
+            as.meter_history.push_back(peak);
+            while (as.meter_history.size() > 120) as.meter_history.pop_front();
+            s.counters.increment("audio_ticks");
+        }
+
+        // Tick net sim
+        if (s.net_enabled)
+        {
+            s.net_t += static_cast<double>(dt);
+            s.net_throttle.update(dt);
+            while (s.net_t >= s.next_net_tick)
+            {
+                s.next_net_tick += 1.0 / 60.0;
+                if (s.net_throttle.try_consume(1.0F))
+                {
+                    const float v = std::sin(static_cast<float>(s.net_t) * 1.2F);
+                    const std::byte cb[4] = {
+                        std::byte((std::uint32_t(v * 1e6F) >> 0)  & 0xFFu),
+                        std::byte((std::uint32_t(v * 1e6F) >> 8)  & 0xFFu),
+                        std::byte((std::uint32_t(v * 1e6F) >> 16) & 0xFFu),
+                        std::byte((std::uint32_t(v * 1e6F) >> 24) & 0xFFu) };
+                    const std::byte bb[4] = {
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 0)  & 0xFFu),
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 8)  & 0xFFu),
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 16) & 0xFFu),
+                        std::byte((std::uint32_t(s.net_baseline * 1e6F) >> 24) & 0xFFu) };
+                    const auto delta = cd::net::write_delta(
+                        std::span<const std::byte>(bb),
+                        std::span<const std::byte>(cb));
+                    s.net_raw_bytes += 4; s.net_wire_bytes += delta.size();
+                    s.net_baseline = v; ++s.net_sent;
+                    if (s.net_rng.next_float() < 0.10F)
+                    { ++s.net_drop; }
+                    else
+                    {
+                        const double lat = 0.03 + 0.06 * static_cast<double>(
+                            s.net_rng.next_float());
+                        s.net_rtt.record(static_cast<std::uint32_t>(lat * 2.0 * 1e6));
+                        s.net_snapbuf.push(s.net_t + lat, v);
+                        ++s.net_recv;
+                    }
+                }
+            }
+            (void)s.net_snapbuf.sample(s.net_t - 0.10);
+            s.net_snapbuf.drop_older_than(s.net_t - 0.5);
+            s.counters.increment("net_ticks");
+        }
+
+        // Random viz refresh
+        if (s.frame_idx >= s.next_random_refresh)
+        {
+            std::vector<float> u; u.reserve(8192);
+            for (int i = 0; i < 8192; ++i) u.push_back(s.rand_rng.next_float());
+            s.hist_uniform.rebuild(u, 0.0F, 1.0F, 24);
+            std::vector<float> n; n.reserve(8192);
+            bool cv_ok = false; float cv = 0.0F;
+            for (int i = 0; i < 8192; ++i)
+            {
+                if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
+                float u1 = s.rand_rng.next_float(); if (u1 < 1e-7F) u1 = 1e-7F;
+                float u2 = s.rand_rng.next_float();
+                float rr = std::sqrt(-2.0F * std::log(u1));
+                float t  = 6.28318530717958F * u2;
+                cv = rr * std::sin(t); cv_ok = true;
+                n.push_back(rr * std::cos(t));
+            }
+            s.hist_normal.rebuild(n, -3.0F, 3.0F, 24);
+            s.next_random_refresh = s.frame_idx + 120;
+        }
+
+        // CPU-LBS skinning
+        if (!cd_sample::update_skinned_animation(s.meshes.skinned, device,
+                                                  s.meshes.gltf.vb, dt))
+        {
+            static float cesium_yaw_t = 0.0F;
+            cesium_yaw_t += dt * 0.5F;
+            for (auto& ent : s.entities)
+            {
+                if (ent.kind != PrimitiveKind::kGltf) continue;
+                auto* lt = s.scene.local(ent.handle);
+                if (!lt) continue;
+                const float half = cesium_yaw_t * 0.5F;
+                const float sy = std::sin(half), cy = std::cos(half);
+                const float qx1=0,qy1=sy,qz1=0,qw1=cy;
+                const float qx2=-0.7071068F,qy2=0,qz2=0,qw2=0.7071068F;
+                lt->value.rotation = {
+                    qw1*qx2+qx1*qw2+qy1*qz2-qz1*qy2,
+                    qw1*qy2-qx1*qz2+qy1*qw2+qz1*qx2,
+                    qw1*qz2+qx1*qy2-qy1*qx2+qz1*qw2,
+                    qw1*qw2-qx1*qx2-qy1*qy2-qz1*qz2 };
+                break;
+            }
+        }
+
+        cd_sample::update_free_look_camera(s.app_state.free_look, s.cam, s.scene_cam, dt);
+
+        if (s.app_state.pick.pending && s.gizmo_state.was_hovered)
+            s.app_state.pick.pending = false;
+        if (s.app_state.pick.pending)
+        {
+            s.app_state.pick.pending = false;
+            const float vw = static_cast<float>(window.width());
+            const float vh = static_cast<float>(window.height());
+            if (vw > 0 && vh > 0)
+            {
+                const bool wasd_active =
+                    s.app_state.free_look.key_w || s.app_state.free_look.key_a ||
+                    s.app_state.free_look.key_s || s.app_state.free_look.key_d ||
+                    s.app_state.free_look.key_q || s.app_state.free_look.key_e;
+                std::vector<cd_sample::EntityHit> ehits;
+                ehits.reserve(s.entities.size());
+                for (const auto& ent : s.entities) ehits.push_back({ ent.handle, ent.name });
+                std::vector<cd_sample::LightHit> lhits;
+                lhits.reserve(s.lights.size());
+                for (const auto& l : s.lights)
+                    lhits.push_back({ l.light.position, l.light.type, l.name });
+                cd_sample::PickInputs pin {
+                    .ndc_x          = (2.0F * s.app_state.pick.x / vw) - 1.0F,
+                    .ndc_y          = 1.0F - (2.0F * s.app_state.pick.y / vh),
+                    .aspect         = vw / vh,
+                    .cam            = s.cam,
+                    .cam_pitch      = s.app_state.free_look.pitch,
+                    .cam_yaw        = s.app_state.free_look.yaw,
+                    .wasd_active    = wasd_active,
+                    .cam_right_drag = s.app_state.free_look.right_drag,
+                    .gizmo_hovered  = false,
+                };
+                const auto pr = cd_sample::pick_entity_or_light(pin, ehits, lhits, s.scene);
+                if (pr.kind == cd_sample::PickKind::kLight)
+                { s.selected = pr.index; s.selected_kind = SelKind::kLight; log_push_fn(pr.log); }
+                else if (pr.kind == cd_sample::PickKind::kEntity)
+                { s.selected = pr.index; s.selected_kind = SelKind::kEntity; log_push_fn(pr.log); }
+                else if (s.selected >= 0)
+                { log_push_fn("[pick] cleared selection"); s.selected = -1; }
+            }
+        }
+
+        auto frame_r = s.renderer.begin_frame();
+        if (!frame_r.has_value())
+        {
+            if (frame_r.error().code ==
+                static_cast<std::uint32_t>(
+                    cd::render::render_errors::Code::kSwapchainOutOfDate))
+            { s.needs_rebuild = true; continue; }
+            break;
+        }
+        auto& frame = *frame_r;
+        auto& cmd   = *frame.command_buffer;
+
+        cd_sample::rebuild_tlas_and_transition_depth(
+            device, cmd, s.frame_idx, s.tlas_destroy_queue, s.current_tlas,
+            s.prim_inst, std::span<const SceneEntity>(s.entities),
+            blas_for_kind,
+            [](const SceneEntity& e) -> cd::math::Vec3f { return e.tint; },
+            [](const SceneEntity& e) -> PrimitiveKind    { return e.kind; },
+            [&s](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
+            {
+                auto* lt = s.scene.local(e.handle);
+                if (!lt) return std::nullopt;
+                return cd::math::to_mat4(lt->value);
+            },
+            s.meshes.blas_floor, s.meshes.blas_gltf,
+            s.meshes.skinned.valid, s.inst_mat_ssbo,
+            s.rts.depth.image, s.depth_initialised_on_gpu);
+
+        const SunLight sun = resolve_sun_light(s.lights);
+
+        draw_shadow_map_pass(cmd, sun, device, s.shadow_ubo, s.shadow_target,
+                             s.shadow_initialised_on_gpu, s.materials.shadow,
+                             kShadowMapSize, s.entities, s.scene, mesh_for);
+
+        const auto hdr_frame = begin_hdr_scene_pass(
+            cmd, s.frame_idx, s.rts.hdr, s.rts.gbuf_normal, s.rts.gbuf_albedo,
+            s.rts.gbuf_mr, s.rts.depth, frame.extent, s.cam, s.fx.taa_amount);
+        const float aspect           = hdr_frame.aspect;
+        const cd::math::Mat4f vp_unj = hdr_frame.vp_unjittered;
+        const cd::math::Mat4f vp     = hdr_frame.vp;
+
+        draw_sky_pass(cmd, s.cam, aspect, sun, s.materials.sky);
+        upload_multi_light_ubo(device, s.lights_ubo, s.lights, s.counters);
+        s.materials.prim.apply(cmd);
+        s.prim_inst.bind(cmd, 0);
+
+        draw_floor_and_entities(cmd, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
+                                s.entities, s.scene, s.has_gltf_texture,
+                                s.materials.prim, s.counters, mesh_for,
+                                s.meshes.gltf_prim_ranges, s.prim_inst,
+                                s.albedo_sampler, device);
+        draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, s.entities,
+                            s.scene, vp, s.materials.prim, s.counters, mesh_for);
+
+        ctx.new_frame();
+
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
+            ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
+            ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent))
+        {
+            s.palette_visible = !s.palette_visible;
+            if (s.palette_visible) s.palette_query.clear();
+        }
+
+        // DockSpace
+        {
+            const ImGuiViewport* mv = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(mv->WorkPos);
+            ImGui::SetNextWindowSize(mv->WorkSize);
+            ImGui::SetNextWindowViewport(mv->ID);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2 { 0, 0 });
+            ImGui::Begin("##cd_dockhost", nullptr,
+                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground);
+            ImGui::PopStyleVar(3);
+            const ImGuiID dock_id = ImGui::GetID("cd_engine_dock");
+            if (!s.dock_initialised && ImGui::DockBuilderGetNode(dock_id) == nullptr)
+            {
+                ImGui::DockBuilderRemoveNode(dock_id);
+                const int flags =
+                    static_cast<int>(ImGuiDockNodeFlags_DockSpace) |
+                    static_cast<int>(ImGuiDockNodeFlags_PassthruCentralNode);
+                ImGui::DockBuilderAddNode(dock_id, static_cast<ImGuiDockNodeFlags>(flags));
+                ImGui::DockBuilderSetNodeSize(dock_id, mv->WorkSize);
+                ImGuiID m = dock_id;
+                ImGuiID dl  = ImGui::DockBuilderSplitNode(m, ImGuiDir_Left,  0.16F, nullptr, &m);
+                ImGuiID dr  = ImGui::DockBuilderSplitNode(m, ImGuiDir_Right, 0.25F, nullptr, &m);
+                ImGuiID db  = ImGui::DockBuilderSplitNode(m, ImGuiDir_Down,  0.30F, nullptr, &m);
+                ImGuiID dbr = ImGui::DockBuilderSplitNode(db, ImGuiDir_Right, 0.50F, nullptr, &db);
+                ImGui::DockBuilderDockWindow("Outliner",  dl);
+                ImGui::DockBuilderDockWindow("Scene",     dl);
+                ImGui::DockBuilderDockWindow("Inspector", dr);
+                ImGui::DockBuilderDockWindow("Counters",  dr);
+                ImGui::DockBuilderDockWindow("Random",    dr);
+                ImGui::DockBuilderDockWindow("Audio",     db);
+                ImGui::DockBuilderDockWindow("Net Sim",   db);
+                ImGui::DockBuilderDockWindow("Streamer",  db);
+                ImGui::DockBuilderDockWindow("Lights",    dr);
+                ImGui::DockBuilderDockWindow("History",   dbr);
+                ImGui::DockBuilderFinish(dock_id);
+                s.dock_initialised = true;
+            }
+            ImGui::DockSpace(dock_id, ImVec2 { 0, 0 },
+                             ImGuiDockNodeFlags_PassthruCentralNode);
+            ImGui::End();
+        }
+
+        draw_scene_tree_panel(s.entities, s.selected);
+        draw_inspector_panel(s.entities, s.selected, s.scene, s.history, log_push_fn);
+        draw_r_showcase_panel(s.fx, s.lights, log_push_fn);
+        draw_counters_panel(s.counters, dt, s.frame_idx);
+        draw_random_panel(s.hist_uniform, s.hist_normal);
+        draw_audio_panel(as.muted, as.peak_window, as.comp_db_window,
+                         as.limiter_gain_min, as.meter_history, as.ring,
+                         as.ring_write, as.total_written, kAudioRingFrames, log_push_fn);
+        draw_net_sim_panel(s.net_enabled, s.net_sent, s.net_recv, s.net_drop,
+                           s.net_raw_bytes, s.net_wire_bytes, s.net_rtt, s.net_snapbuf);
+        draw_streamer_panel(s.streamer, s.streamer_completed, s.streamer_failed,
+                            s.streamer_tracked,
+                            [&s](std::int32_t priority)
+                            {
+                                cd::asset::AssetId id { s.streamer_next_id++ };
+                                cd::asset::StreamRequest req;
+                                req.id = id; req.priority = priority;
+                                s.streamer.enqueue(req);
+                                s.streamer_tracked.push_back(id);
+                                if (s.streamer_tracked.size() > 32)
+                                    s.streamer_tracked.erase(s.streamer_tracked.begin(),
+                                                             s.streamer_tracked.begin() + 8);
+                            });
+        draw_outliner_panel(s.entities, s.lights, s.selected, s.selected_kind, s.cd_world);
+        draw_lights_panel(s.lights, s.selected, s.selected_kind,
+                          s.cluster_grid, s.cluster_desc);
+        draw_history_panel(s.history, s.log);
+        draw_selection_outline_overlay(s.entities, s.selected, s.selected_kind,
+                                       s.outline, s.scene, vp, frame.extent);
+        draw_light_markers_overlay(s.lights, s.selected, s.selected_kind, vp, frame.extent);
+        update_and_draw_gizmo(s.gizmo, s.gizmo_state,
+                              s.app_state.pick.pending, s.selected, s.selected_kind,
+                              s.entities, s.lights, s.scene, s.history, log_push_fn,
+                              vp, s.cam, window, frame.extent);
+        draw_command_palette_popup(s.palette, s.palette_visible, s.palette_query,
+                                   frame.extent);
+
+        cmd.end_render_pass();
+        {
+            std::array<cd::rhi::TextureBarrier, 4> hb {
+                cd::rhi::TextureBarrier { .texture = s.rts.hdr.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier { .texture = s.rts.gbuf_normal.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier { .texture = s.rts.gbuf_albedo.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } },
+                cd::rhi::TextureBarrier { .texture = s.rts.gbuf_mr.image,
+                    .from = cd::rhi::ResourceState::kColorAttachment,
+                    .to   = cd::rhi::ResourceState::kShaderResource,
+                    .range = { 0, 1, 0, 1 } }
+            };
+            cmd.barrier({}, hb);
+        }
+
+        velocity_gbuffer_pass(cmd, s.frame_idx, s.rts.gbuf_velocity, s.rts.depth,
+                              frame.extent, s.materials.velocity,
+                              s.entities, s.scene, s.prev_vp_unjittered, vp_unj, mesh_for);
+
+        run_bloom_chain(cmd, s.frame_idx, s.bloom_chain,
+                        s.materials.bloom_prefilter, s.bloom_prefilter_inst,
+                        s.materials.bloom_downsample, s.bloom_down_insts,
+                        s.materials.bloom_upsample, s.bloom_up_insts);
+
+        begin_composite_pass(cmd, s.frame_idx, frame.swapchain_image_view,
+                             frame.extent, s.rts.history, s.history_states,
+                             s.materials.composite, s.composite_insts,
+                             s.fx, s.lights, s.cam, frame_loop_start,
+                             s.prev_cam_basis, s.prev_vp_unjittered, s.prev_vp_valid,
+                             vp_unj);
+
+        ctx.render(cmd);
+        cmd.end_render_pass();
+
+        auto end_r = s.renderer.end_frame();
+        if (!end_r.has_value())
+        {
+            if (end_r.error().code ==
+                static_cast<std::uint32_t>(
+                    cd::render::render_errors::Code::kSwapchainOutOfDate))
+            { s.needs_rebuild = true; continue; }
+            break;
+        }
+
+        ++s.frame_idx;
+        s.counters.set("frame", s.frame_idx);
+    }  // while(true)
+
+    request_shutdown();
+}
+
+// ---- M2E: on_shutdown -------------------------------------------------------
+void HelloEngineApp::on_shutdown() noexcept
+{
+    if (!state_) return;
+    auto& s      = *state_;
+    auto& device = *s.device_owner;
+
+    s.renderer.wait_idle();
+    s.streamer.stop();
+
+    destroy_mesh(device, s.meshes.floor);
+    s.rts.destroy(device);
+    s.bloom_chain.destroy(device);
+    s.shadow_target.destroy(device);
+    device.destroy_sampler(s.shadow_sampler);
+    device.destroy_buffer(s.shadow_ubo);
+    device.destroy_buffer(s.lights_ubo);
+    device.destroy_buffer(s.inst_mat_ssbo);
+
+    if (s.albedo_tex.view.is_valid())  device.destroy_texture_view(s.albedo_tex.view);
+    if (s.albedo_tex.image.is_valid()) device.destroy_texture(s.albedo_tex.image);
+    device.destroy_sampler(s.albedo_sampler);
+    device.destroy_sampler(s.ibl_gpu.ibl_sampler);
+
+    if (s.ibl_gpu.gpu_spec_cube.view.is_valid())
+        device.destroy_texture_view(s.ibl_gpu.gpu_spec_cube.view);
+    if (s.ibl_gpu.gpu_spec_cube.image.is_valid())
+        device.destroy_texture(s.ibl_gpu.gpu_spec_cube.image);
+    if (s.ibl_gpu.gpu_diff_cube.view.is_valid())
+        device.destroy_texture_view(s.ibl_gpu.gpu_diff_cube.view);
+    if (s.ibl_gpu.gpu_diff_cube.image.is_valid())
+        device.destroy_texture(s.ibl_gpu.gpu_diff_cube.image);
+    if (s.ibl_gpu.gpu_brdf_lut.view.is_valid())
+        device.destroy_texture_view(s.ibl_gpu.gpu_brdf_lut.view);
+    if (s.ibl_gpu.gpu_brdf_lut.image.is_valid())
+        device.destroy_texture(s.ibl_gpu.gpu_brdf_lut.image);
+
+    if (s.normal_tex.view.is_valid())  device.destroy_texture_view(s.normal_tex.view);
+    if (s.normal_tex.image.is_valid()) device.destroy_texture(s.normal_tex.image);
+    if (s.mr_tex.view.is_valid())      device.destroy_texture_view(s.mr_tex.view);
+    if (s.mr_tex.image.is_valid())     device.destroy_texture(s.mr_tex.image);
+
+    device.wait_idle();
+    if (s.current_tlas.is_valid())
+        device.destroy_acceleration_structure(s.current_tlas);
+    while (!s.tlas_destroy_queue.empty())
+    {
+        device.destroy_acceleration_structure(s.tlas_destroy_queue.front().h);
+        s.tlas_destroy_queue.pop_front();
+    }
+    cd_sample::destroy_meshes(device, s.meshes);
+
+    std::printf("hello_engine: clean exit (%u frames).\n", s.frame_idx);
+    state_.reset();
+}
+
+// ============================================================================
+// M2E entry point.
+// main_legacy() removed (M2E complete).
+// ============================================================================
+int main(int argc, char** argv)
+{
+    return cd::sample::run<HelloEngineApp>(argc, argv);
+}
+// ============================================================================
+// M2E: main_legacy() removed. Migration complete. (end of file)
+// ============================================================================
+#if 0  // BEGIN: removed main_legacy body (M2E)
+[[maybe_unused]] static int main_legacy_deleted_m2e()
 {
     // ---- Window + Vulkan device + Renderer + ImGui ----
     cd::platform::WindowDesc wd {};
@@ -6250,14 +7845,4 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
     return 0;
 }
 
-// ============================================================================
-// M2B entry point — HelloEngineApp scaffolding (phase383).
-//
-// Replaces the 2143-line main() body with cd::sample::run<HelloEngineApp>.
-// The App overrides are stubs in M2B; they become real in M2C/M2D/M2E as
-// boot / frame / shutdown code migrates out of main_legacy() above.
-// ============================================================================
-int main(int argc, char** argv)
-{
-    return cd::sample::run<HelloEngineApp>(argc, argv);
-}
+#endif  // END: removed main_legacy body (M2E)

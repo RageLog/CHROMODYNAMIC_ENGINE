@@ -1,48 +1,47 @@
 // =============================================================================
 // CHROMODYNAMIC -- samples/engine/hello_engine/HelloEngineApp.hpp
-// M2B scaffolding (phase383).
+// M2C/M2D/M2E migration (phases 390-392).
 //
-// HelloEngineApp derives from cd::sample::App and declares the three pure-
-// virtual overrides.  M2B ships these as no-ops; M2C/M2D/M2E progressively
-// migrate boot / frame / shutdown from main_legacy() into the class.
+// HelloEngineApp derives from cd::sample::App.  The three lifecycle overrides
+// are declared here (non-inline); their bodies and the full EngineState
+// definition live in main.cpp, defined after the anonymous-namespace types
+// (SceneEntity, GizmoState, SelKind, LightRow, …) are visible.
+//
+// PIMPL note: EngineState is a forward-declared private nested struct.
+// unique_ptr<EngineState> requires only an incomplete type at declaration
+// time, but needs the complete type when the destructor is instantiated.
+// The explicit out-of-line dtor (~HelloEngineApp() override) ensures the
+// dtor is only instantiated in main.cpp where EngineState is complete.
 // =============================================================================
 #pragma once
 
 #include <cd/core/Result.hpp>
 #include <cd/sample/App.hpp>
 
-/// Sample application that will own the full hello_engine lifecycle once
-/// the M2B->M2E migration completes.
+#include <memory>
+
+/// Sample application that owns the full hello_engine lifecycle.
 class HelloEngineApp : public cd::sample::App
 {
 public:
-    explicit HelloEngineApp() noexcept
-        : cd::sample::App(cd::sample::AppConfig {
-              .title          = "CHROMODYNAMIC - hello_engine (mega-showcase)",
-              .window_width   = 1600,
-              .window_height  = 900,
-              .start_maximized = false,
-              .enable_validation = true,
-              .max_frames     = 0u,  // run until window closes (M2C wires the real loop)
-          })
-    {
-    }
+    // Ctor + dtor both out-of-line so unique_ptr<EngineState> destructor
+    // is only instantiated in main.cpp where EngineState is fully defined.
+    explicit HelloEngineApp() noexcept;
+    ~HelloEngineApp() override;
 
 protected:
-    [[nodiscard]] cd::core::Result<void> on_boot() override
-    {
-        // M2B stub — boot code migrates here in M2C.
-        return {};
-    }
+    // M2C: allocates all GPU + scene resources. Defined in main.cpp.
+    [[nodiscard]] cd::core::Result<void> on_boot() override;
 
-    void on_frame(const cd::sample::FrameContext& /*fc*/) override
-    {
-        // M2B stub — frame loop migrates here in M2D.
-        request_shutdown();  // one synthetic frame then done (M2A semantics until M2D wires the real loop)
-    }
+    // M2D: runs the real window event + GPU render loop; calls
+    // request_shutdown() when the window closes. Defined in main.cpp.
+    void on_frame(const cd::sample::FrameContext& fc) override;
 
-    void on_shutdown() noexcept override
-    {
-        // M2B stub — cleanup migrates here in M2E.
-    }
+    // M2E: releases all GPU resources. Defined in main.cpp.
+    void on_shutdown() noexcept override;
+
+private:
+    // Complete definition in main.cpp (after anon-namespace types).
+    struct EngineState;
+    std::unique_ptr<EngineState> state_;
 };
