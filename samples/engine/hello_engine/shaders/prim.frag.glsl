@@ -80,7 +80,13 @@ mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
   vec3 dp1perp = cross(N, dp1);
   vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
   vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-  float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+  // phase437-black: guard against degenerate UV (identical UVs on a
+  // Sponza primitive / collapsed triangle → dFdx/dFdy == 0 →
+  // max(dot(T,T), dot(B,B)) == 0 → inversesqrt(0) = +Inf →
+  // TBN * nm_sample = NaN). Fall back to identity TBN (N unchanged).
+  float denom = max(dot(T, T), dot(B, B));
+  if (denom < 1e-10) return mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), N);
+  float invmax = inversesqrt(denom);
   return mat3(T * invmax, B * invmax, N);
 }
 layout(location = 0) in vec3 v_world_pos;
@@ -292,7 +298,17 @@ void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
   bool is_floor_w    = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
   float surface_flag = (is_shadow_w || is_floor_w) ? 0.0 : 1.0;
-  out_normal = vec4(normalize(v_world_normal), surface_flag);
+  // phase437-black: NaN guard on out_normal. Degenerate geometry (zero-
+  // length v_world_normal from collapsed triangles in Sponza vegetation
+  // or skinned CesiumMan at extreme poses) causes normalize() to return
+  // NaN. That NaN propagates into the G-Buffer and then into the
+  // composite pass AO depth_ao() which normalises the G-Buffer normal
+  // again — producing NaN AO → c *= NaN → black fragment even when
+  // out_color was valid. Safe fallback: use the geometric up vector so
+  // the fragment still participates in AO with a neutral contribution.
+  vec3 raw_N = v_world_normal;
+  vec3 safe_N = (dot(raw_N, raw_N) > 1e-10) ? normalize(raw_N) : vec3(0.0, 1.0, 0.0);
+  out_normal = vec4(safe_N, surface_flag);
 
   // R3 G-Buffer phase 219 - albedo + MR. Sample the same textures
   // the lit path uses so deferred / post-fx consumers see exactly
@@ -320,7 +336,9 @@ void main() {
     out_albedo = vec4(clamp(pbr_albedo, vec3(0.0), vec3(1.0)), 1.0);
     out_mr     = vec2(pbr_metal, pbr_rough);
 
-    vec3  Npbr = normalize(v_world_normal);
+    // phase437-black: reuse safe_N for the PBR path too (consistent with
+    // the Lit path below; avoids a second normalize of potentially-zero normal).
+    vec3  Npbr = safe_N;
     vec3  Vpbr = normalize(pc.camera_pos.xyz - v_world_pos);
     float NoVpbr = max(dot(Npbr, Vpbr), 0.0);
     vec3  F0pbr  = mix(vec3(0.04), pbr_albedo, pbr_metal);
@@ -598,14 +616,20 @@ void main() {
     albedo  = mix(vec3(0.55, 0.60, 0.66) * 0.0, albedo, floor_fade);
   }
 
-  vec3 N = normalize(v_world_normal);
+  // phase437-black: reuse safe_N (computed at top of main() to guard
+  // out_normal) so the lighting path also starts from a NaN-free normal.
+  vec3 N = safe_N;
   // R2 normal mapping for textured entities - perturbs the surface
   // normal with the tangent-space sample so the procedural Earth
   // bumps register as real 3D relief.
   if (pc.fx_params.y > 0.5) {
     vec3 nm_sample = texture(cd_normal_tex, v_uv).xyz * 2.0 - 1.0;
     mat3 TBN = cotangent_frame(N, v_world_pos, v_uv);
-    N = normalize(TBN * nm_sample);
+    vec3 N_mapped = TBN * nm_sample;
+    // phase437-black: guard normalize of perturbed normal. A black normal-
+    // map pixel gives nm_sample = -1,-1,-1 → TBN * (-1,-1,-1) could be
+    // near-zero depending on TBN. Safe fallback: keep the geometric normal.
+    N = (dot(N_mapped, N_mapped) > 1e-10) ? normalize(N_mapped) : N;
   }
   vec3 lit = vec3(0.0);
 

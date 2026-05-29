@@ -6268,7 +6268,10 @@ int main(int argc, char** argv)
     auto meshes = cd_sample::boot_meshes(device, meshes_albedo_slot, prim_inst);
     if (meshes.build_exit_code != 0)
         return meshes.build_exit_code;
-    if (meshes.has_gltf_texture)
+    // phase437-black: also gate on CesiumMan texture (has_cesium_texture)
+    // so the kGltf entity gets fx_params[1]=1 for its own albedo path.
+    // The EngineApp path (line ~4586) already checks both; sync here.
+    if (meshes.has_gltf_texture || meshes.has_cesium_texture)
         has_gltf_texture = true;
     auto& cube_mesh        = meshes.cube;
     auto& sphere_mesh      = meshes.sphere;

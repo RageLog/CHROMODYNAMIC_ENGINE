@@ -194,6 +194,13 @@ float depth_ao(vec2 uv, float center_d) {
   if (center_d >= 0.999) return 1.0;
   vec4 N_packed = texture(cd_gbuf_normal, uv);
   if (N_packed.w < 0.5) return 1.0;
+  // phase437-black: guard against NaN normals written by degenerate geometry
+  // (zero-length interpolated normals on collapsed triangles). NaN in the
+  // G-Buffer normal causes normalize() here to return NaN, which propagates
+  // through the AO accumulator into c *= ao, killing the entire fragment to
+  // black even though the HDR scene pass produced a valid colour. Return no
+  // occlusion (fully lit) for degenerate pixels — they are rare edge cases.
+  if (any(isnan(N_packed.xyz)) || dot(N_packed.xyz, N_packed.xyz) < 1e-10) return 1.0;
   vec3 N = normalize(N_packed.xyz);
   vec3 wc = world_pos_from_uv(uv, center_d);
   float lc = linearize_z(center_d);
@@ -294,6 +301,8 @@ vec3 sample_atrous(vec2 uv, vec3 centre_color) {
   vec2 px = 1.0 / vec2(textureSize(cd_hdr_color, 0));
   vec4 N0_packed = texture(cd_gbuf_normal, uv);
   if (N0_packed.w < 0.5) return centre_color;
+  // phase437-black: NaN guard matching depth_ao defensive check.
+  if (any(isnan(N0_packed.xyz)) || dot(N0_packed.xyz, N0_packed.xyz) < 1e-10) return centre_color;
   vec3 N0 = normalize(N0_packed.xyz);
   float d0 = linearize_z(texture(cd_depth, uv).r);
   const float kKernel5[5] = float[5](0.0625, 0.25, 0.375, 0.25, 0.0625);
@@ -305,6 +314,7 @@ vec3 sample_atrous(vec2 uv, vec3 centre_color) {
     vec3 c1 = texture(cd_hdr_color, sp).rgb;
     vec4 N1p = texture(cd_gbuf_normal, sp);
     if (N1p.w < 0.5) continue;
+    if (any(isnan(N1p.xyz)) || dot(N1p.xyz, N1p.xyz) < 1e-10) continue;
     vec3 N1 = normalize(N1p.xyz);
     float d1 = linearize_z(texture(cd_depth, sp).r);
     // Edge-stopping: colour (luma) + normal alignment + depth delta.
