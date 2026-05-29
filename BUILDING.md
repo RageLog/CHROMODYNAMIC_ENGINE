@@ -144,10 +144,57 @@ air-gapped CI and for first-time contributors on systems without vcpkg.
 | Preset | Sanitizer | Compiler restriction |
 |---|---|---|
 | `ninja-base-asan` | AddressSanitizer + UBSan | any |
-| `ninja-base-tsan` | ThreadSanitizer | clang / gcc on Linux |
-| `ninja-base-msan` | MemorySanitizer | clang only |
+| `ninja-base-tsan` | ThreadSanitizer | clang / gcc — **Linux only** |
+| `ninja-base-msan` | MemorySanitizer | clang only — Linux only |
 
-Run, for example: `cmake --preset ninja-base-asan && cmake --build --preset ninja-debug-asan && ctest --preset ninja-debug-asan`.
+### ASan / UBSan (cross-platform)
+
+```bash
+cmake --preset ninja-base-asan
+cmake --build --preset ninja-debug-asan
+ctest --preset ninja-debug-asan --output-on-failure
+```
+
+### TSan (ThreadSanitizer) — Linux / clang or gcc only
+
+TSan instruments the concurrency suite to detect data races and
+lock-order violations in `cd::concurrency` (WorkStealingThreadPool,
+JobGraph, ParallelFor, Latch, Channel, etc.).
+
+```bash
+# Linux only — requires clang or gcc (not clang-cl, not MSVC)
+cmake --preset ninja-base-tsan \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build --preset ninja-debug-tsan
+
+# Run only the concurrency suite (the preset filter applies automatically)
+ctest --preset ninja-debug-tsan --output-on-failure
+
+# Manual equivalent with an explicit -R filter:
+ctest --preset ninja-debug-tsan --output-on-failure \
+  -R "cd_test_(concurrency|threadpool|deterministic_executor|work_stealing_deque|work_stealing_pool|hazard_ptr|job_graph)"
+```
+
+The `ninja-debug-tsan` test preset already embeds the concurrency-suite
+`-R` filter so `ctest --preset ninja-debug-tsan` alone is sufficient.
+
+#### Windows / clang-cl limitation
+
+TSan is **not supported on Windows with clang-cl**. `lld-link` refuses
+to mix TSan-instrumented TUs with non-instrumented vendored libraries
+(tinygltf, glslang, volk, vma), producing:
+
+```text
+lld-link: error: /failifmismatch: mismatch detected for 'annotate_string'
+```
+
+The TSan preset is therefore targeted at the Linux CI lane
+(`sanitizers` job in `.github/workflows/ci.yml`, `ubuntu-24.04`,
+clang). The NVIDIA Windows self-hosted lane (`ci-nvidia-windows.yml`)
+also lists the TSan preset for future use once a Linux runner is
+registered under that workflow or the linker restriction is resolved.
+
+See `ADR-20260528-job-system-design.md` §X1-FU-B for background.
 
 ## Common configure-time pitfalls
 

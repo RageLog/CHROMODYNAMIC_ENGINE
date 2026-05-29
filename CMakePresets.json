@@ -372,7 +372,17 @@
     { "name": "ninja-debug",            "inherits": "test-base", "configurePreset": "ninja-base",       "configuration": "Debug" },
     { "name": "ninja-release",          "inherits": "test-base", "configurePreset": "ninja-base",       "configuration": "Release" },
     { "name": "ninja-debug-asan",       "inherits": "test-base", "configurePreset": "ninja-base-asan",  "configuration": "Debug" },
-    { "name": "ninja-debug-tsan",       "inherits": "test-base", "configurePreset": "ninja-base-tsan",  "configuration": "Debug" },
+    {
+      "name": "ninja-debug-tsan",
+      "inherits": "test-base",
+      "configurePreset": "ninja-base-tsan",
+      "configuration": "Debug",
+      "filter": {
+        "include": {
+          "name": "cd_test_(concurrency|threadpool|deterministic_executor|work_stealing_deque|work_stealing_pool|hazard_ptr|job_graph)"
+        }
+      }
+    },
     { "name": "ninja-debug-msan",       "inherits": "test-base", "configurePreset": "ninja-base-msan",  "configuration": "Debug" },
 
     { "name": "ide-debug",              "inherits": "test-base", "configurePreset": "ide-base" },

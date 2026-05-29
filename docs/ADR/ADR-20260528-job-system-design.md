@@ -221,9 +221,16 @@ be ceremony. CLAUDE.md section 3 + user feedback
 - **X1-FU-A**: Migrate worker wake from std::condition_variable to
   std::atomic<T>::wait/notify_one (futex / WaitOnAddress) per ADR-015 Sync
   Primitives. Sized: 1-2 days. Requires re-running TSan preset.
-- **X1-FU-B**: TSan preset run on the concurrency test suite. Not run this
-  wave (TSan preset requires clang on Windows or Linux toolchain - needs CI
-  runner). Sized: 1 day after X3 lands.
+- **X1-FU-B**: TSan preset run on the concurrency test suite. **DONE (PARTIAL)**
+  — phase409-D-F2. `ninja-base-tsan` configure preset, `ninja-debug-tsan`
+  build + test presets exist and are wired; `CDSanitizers.cmake` emits
+  `-fsanitize=thread` for Clang/GCC. The `sanitizers` job in `ci.yml` runs
+  TSan on `ubuntu-24.04` (Clang, Linux) against the full concurrency suite.
+  The `ninja-debug-tsan` test preset carries a `-R` filter scoping ctest to
+  the 7 concurrency targets only. BUILDING.md documents usage + Windows
+  limitation. PARTIAL because a Linux self-hosted runner is not yet
+  registered under `ci-nvidia-windows.yml`; the TSan matrix row there is
+  marked `allow_failure: true` until that runner lands (X3 follow-up).
 - **X1-FU-C**: Hazard-pointer based reclamation for retired WSD buffers
   (currently bounded retention until pool destruction). Header file has a
   TODO; not a correctness bug, just an unbounded growth path under massive
@@ -289,7 +296,7 @@ X1-FU-B (TSan preset run) remains a follow-up. The TSan preset requires a clang 
 - X1-FU-F: Vulkan secondary cmd buffer pipeline (true parallel cmd record).
 - X1-FU-G: `cd::rhi::IDevice::upload_buffer` thread-safety review.
 - X1-FU-H: Per-frame parallel ECS scaling re-measurement once X7 ECS v2 archetype lands and entity counts grow past worker count.
-- X1-FU-B: TSan preset run on concurrency suite (X3 prereq).
+- X1-FU-B: TSan preset wired (phase409-D-F2); Linux self-hosted runner for nvidia-windows lane still pending.
 - X1-FU-A: `cv` -> `std::atomic::wait/notify_one` migration.
 - X1-FU-C: Hazard-pointer reclamation for retired WSD buffers.
 - X1-FU-D: Priority-aware steal ordering.

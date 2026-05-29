@@ -460,4 +460,7 @@ jobs:
             -DCD_DISABLE_VCPKG=ON \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           cmake --build --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }}
-          ctest --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }}
+          # TSan preset embeds -R concurrency-suite filter via CMakePresets.json;
+          # ASan runs the full suite.  Both share the same ctest invocation.
+          ctest --preset ${{ matrix.preset == 'ninja-base-asan' && 'ninja-debug-asan' || 'ninja-debug-tsan' }} \
+            --output-on-failure
