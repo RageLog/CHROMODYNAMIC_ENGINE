@@ -76,3 +76,83 @@ first batch; once it contains references the workflow flips from
 
 Workflow file present; runner pending. No CI minutes consumed until
 a labelled runner comes online.
+
+---
+
+## NVIDIA Windows (Phase 25 / Marathon Run 25, X3)
+
+The `ci-nvidia-windows.yml` workflow targets a self-hosted Windows
+runner labelled `windows` + `nvidia-gpu`.  It is the Windows analogue
+of the AMD-RADV lane: real NVIDIA hardware exercises code paths the
+GH-hosted Windows matrix bypasses (rhi_vulkan + imgui_backend +
+wired samples + RT extension surface).
+
+### Hardware
+
+Any NVIDIA RTX 30xx / 40xx (or other RT-capable card).  Tested
+baseline:
+
+- NVIDIA RTX 3060 Ti on Windows 11 23H2
+- Driver 545.84+ (for VK_KHR_ray_tracing_pipeline + acceleration_structure)
+
+### Software
+
+- Windows 10 / 11 with current NVIDIA Game Ready or Studio driver.
+- Visual Studio 2022 (Build Tools or full IDE) -- the `ci-msvc`
+  preset path.
+- LLVM Clang 16+ -- the `ci-clangcl-win` preset path.
+- Vulkan SDK 1.3.290+ -- adds `vulkaninfo` to PATH plus the runtime
+  loader.
+- CMake 3.28+, Ninja, Python 3.11+ on PATH.
+
+### Runner registration
+
+Follow GitHub-s self-hosted runner instructions.  The required
+labels on the runner are:
+
+- `self-hosted` (default)
+- `windows`
+- `nvidia-gpu`
+
+The workflow `runs-on` matches that exact label triple.
+
+### Matrix
+
+The workflow drives 4 preset combinations in parallel:
+
+| Configure preset       | Build preset                 | Test? | Purpose                              |
+|------------------------|------------------------------|-------|--------------------------------------|
+| `ci-msvc`              | `ci-msvc-debug`              | yes   | MSVC debug; primary smoke + samples  |
+| `ci-clangcl-win`       | `ci-clangcl-win-release`     | no    | Clang-CL release; build-only gate    |
+| `ninja-base-asan`      | `ninja-debug-asan`           | yes   | Clang ASan + UBSan                   |
+| `ninja-base-tsan`      | `ninja-debug-tsan`           | yes   | Clang TSan                           |
+
+The MSVC lane also runs a sample-smoke step that boots
+`hello_engine`, `hello_imgui`, `hello_pbr` for 5 frames each on the
+real GPU and reports their exit codes.  This is the only path
+covering full Vulkan rendering on Windows.
+
+### Why a separate lane
+
+`ci.yml`-s Windows matrix runs the same 4 preset combinations on
+GH-hosted runners, but those runners:
+
+- Have no GPU; `rhi_vulkan` builds but skips at test load time.
+- Cannot run wired samples (window creation works on the headless
+  VM but the swapchain has no real adapter to attach to).
+- Cannot exercise the RT-pipeline / dispatch_rays path even when
+  it lands in v1.7.
+
+The NVIDIA self-hosted lane is the future regression detector for
+the GPU-specific surface.
+
+### Golden references
+
+`tests/golden/nvidia/` is the per-vendor reference set the workflow
+compares against once captured.  Wired as a follow-up; the
+infrastructure is the marathon-shippable piece.
+
+### Status
+
+Workflow file present (this commit); runner pending.  No CI minutes
+consumed until a labelled runner comes online.

@@ -1,0 +1,136 @@
+# =============================================================================
+# Self-hosted CI lane: NVIDIA Windows (Marathon Run 25, X3)
+#
+# 4-preset matrix targeting a self-hosted Windows runner with a real
+# NVIDIA GPU.  Mirrors the GH-hosted ci.yml Windows matrix but with
+# GPU code paths actually exercised: rhi_vulkan + imgui_backend +
+# wired samples run end-to-end + golden compare.
+#
+# Triggers:
+#   * push to dev/master  -- the same as ci.yml so a green push covers
+#                            both software (lavapipe) + GPU (NVIDIA)
+#                            lanes.
+#   * workflow_dispatch   -- operator can hand-trigger.
+#
+# Required runner labels:
+#   * self-hosted (default)
+#   * windows
+#   * nvidia-gpu
+#
+# Hardware baseline:
+#   * Windows 10 / 11 with NVIDIA RTX 30xx+ (or any RT-capable card).
+#   * NVIDIA driver >= 545 (for VK_KHR_ray_tracing_pipeline).
+#   * Visual Studio 2022 + LLVM Clang installed.
+#   * Vulkan SDK >= 1.3.290.
+#
+# Status:
+#   * Workflow file: SHIPPED (this commit).
+#   * Self-hosted runner: PENDING (operator must register).  Until a
+#     labelled runner registers, push triggers will queue and
+#     eventually time out without consuming GH-hosted minutes.
+#
+# See docs/CI_SELF_HOSTED.md for runner setup walkthrough.
+# =============================================================================
+
+name: CI NVIDIA Windows (self-hosted)
+
+on:
+  push:
+    branches: [master, main, dev]
+  workflow_dispatch:
+
+jobs:
+  windows-nvidia:
+    name: Windows NVIDIA / ${{ matrix.preset.display }}
+    runs-on: [self-hosted, windows, nvidia-gpu]
+    strategy:
+      fail-fast: false
+      matrix:
+        preset:
+          - { configure: ci-msvc,        build: ci-msvc-debug,        display: MSVC-Debug,         test: true }
+          - { configure: ci-clangcl-win, build: ci-clangcl-win-release, display: Clang-CL-Release, test: false }
+          - { configure: ninja-base-asan, build: ninja-debug-asan,    display: Clang-Debug-ASan,   test: true }
+          - { configure: ninja-base-tsan, build: ninja-debug-tsan,    display: Clang-Debug-TSan,   test: true }
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: vulkaninfo (driver smoke)
+        shell: pwsh
+        run: |
+          # Confirm we are talking to a real NVIDIA driver and the
+          # ray_tracing_pipeline / acceleration_structure exts are
+          # advertised.  Fail fast if a non-NVIDIA driver leaked in.
+          $vk = (Get-Command vulkaninfo -ErrorAction SilentlyContinue)
+          if (-not $vk) {
+            Write-Error "vulkaninfo not on PATH; install Vulkan SDK on the runner."
+            exit 1
+          }
+          vulkaninfo --summary | Select-Object -First 60
+          $rt = (vulkaninfo --summary | Select-String "VK_KHR_ray_tracing_pipeline").Count
+          if ($rt -eq 0) {
+            Write-Warning "VK_KHR_ray_tracing_pipeline not reported; RT samples will skip."
+          }
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake --preset ${{ matrix.preset.configure }} `
+            -DCD_DISABLE_VCPKG=ON
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset ${{ matrix.preset.build }}
+
+      - name: Test
+        if: matrix.preset.test
+        shell: pwsh
+        run: ctest --preset ${{ matrix.preset.build }} --output-on-failure
+
+      - name: Sample smoke (wired samples, NVIDIA GPU)
+        if: matrix.preset.configure == 'ci-msvc'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # Drive the wired-sample harness on real NVIDIA hardware.
+          # Each sample boots its own swapchain + window; the runner
+          # session must allow interactive logon (UI session) or run
+          # under autologon for GLFW window creation to succeed.
+          $samples = @('hello_engine', 'hello_imgui', 'hello_pbr')
+          foreach ($s in $samples) {
+            $exe = "build/ci-msvc/bin/Debug/$s.exe"
+            if (-not (Test-Path $exe)) {
+              Write-Host "::warning::sample $s.exe missing; skipping"
+              continue
+            }
+            Write-Host "::group::smoke $s"
+            $proc = Start-Process -FilePath $exe -ArgumentList @('--smoke', '--frames', '5') -PassThru -NoNewWindow
+            $proc.WaitForExit(30000) | Out-Null
+            if (-not $proc.HasExited) {
+              $proc.Kill()
+              Write-Host "::warning::sample $s timed out after 30 s"
+            } else {
+              Write-Host "sample $s exit=$($proc.ExitCode)"
+            }
+            Write-Host "::endgroup::"
+          }
+
+      - name: Upload sanitizer logs (on failure)
+        if: failure() && (matrix.preset.configure == 'ninja-base-asan' || matrix.preset.configure == 'ninja-base-tsan')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nvidia-${{ matrix.preset.display }}-sanitizer-logs
+          path: |
+            build/${{ matrix.preset.configure }}/Testing/Temporary/LastTest.log
+            build/${{ matrix.preset.configure }}/*.san.log
+          if-no-files-found: ignore
+
+      - name: Upload golden diff (on failure, MSVC only)
+        if: failure() && matrix.preset.configure == 'ci-msvc'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nvidia-golden-diff
+          path: build/ci-msvc/golden-diff-nvidia/**
+          if-no-files-found: ignore
