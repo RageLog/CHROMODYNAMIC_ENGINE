@@ -3904,8 +3904,10 @@ namespace
 #endif
     if (env_index != nullptr)
     {
-        const int idx = std::atoi(env_index);
-        if (idx >= 0 && static_cast<std::uint32_t>(idx) < devs.size())
+        char* end = nullptr;
+        const long idx_long = std::strtol(env_index, &end, 10);
+        const int idx = static_cast<int>(idx_long);
+        if (end != env_index && idx >= 0 && static_cast<std::uint32_t>(idx) < devs.size())
         {
             VkPhysicalDeviceProperties p {};
             vkGetPhysicalDeviceProperties(devs[static_cast<std::size_t>(idx)], &p);

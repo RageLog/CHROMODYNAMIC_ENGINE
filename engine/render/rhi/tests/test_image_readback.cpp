@@ -79,7 +79,7 @@ TEST(ImageReadback, NullDeviceWritesZerosOnSuccess)
     constexpr std::uint32_t kW = 4;
     constexpr std::uint32_t kH = 4;
     // RGBA8Unorm: 4 bytes per texel.
-    constexpr std::uint64_t kBytes = kW * kH * 4;
+    constexpr std::uint64_t kBytes = static_cast<std::uint64_t>(kW) * kH * 4;
     constexpr std::uint64_t kOffset = 8;
 
     auto tex = make_texture(dev, kW, kH, cd::rhi::Format::kRGBA8Unorm);
