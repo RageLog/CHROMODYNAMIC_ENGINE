@@ -16,7 +16,7 @@
 - 97 test binary. Breadth iyi; depth (golden image, fuzz, stress) sample bazinda.
 - 60 plus ADR. Karar disiplini guclu.
 - Marathon Run 3-6: v0.99.33 to v0.99.58 (26 tag), Phase 204 to 279.
-- hello_engine: 6908 satir (W8-BB 7854 -> Run 9 7793 -> Run 10 7854 -> Run 11 7381 -> Run 12 7313 -> Run 13 6908; main() body 3275 -> 2870 via Run 13 phase334-335 N15a HelloRenderTargets + N15b HelloMaterials extracts; Run 14-15 target main() body < 500).
+- hello_engine: 6625 satir (W8-BB 7854 -> Run 9 7793 -> Run 10 7854 -> Run 11 7381 -> Run 12 7313 -> Run 13 6908 -> Run 14 6625; main() body 3275 -> 2585 via Run 13 phase334-335 N15a/N15b + Run 14 phase339-340 N16 HelloGltf + N18 HelloPicker extracts; Run 15 target main() body < 500).
 - MANIFEST.csv yok / 0 PDF: Demir Kural pipeline henuz tetiklenmedi.
 
 ### Bottom line
