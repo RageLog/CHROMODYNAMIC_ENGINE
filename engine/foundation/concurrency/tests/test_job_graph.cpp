@@ -90,17 +90,17 @@ TEST(JobGraph, LinearChainPreservesOrder)
     std::vector<int>       order;
 
     const auto a = g.add(
-        [&] { std::lock_guard k { order_mutex }; order.push_back(0); }
+        [&] { std::scoped_lock k { order_mutex }; order.push_back(0); }
     );
     const auto b = g.add(
-        [&] { std::lock_guard k { order_mutex }; order.push_back(1); },
+        [&] { std::scoped_lock k { order_mutex }; order.push_back(1); },
         { a }
     );
     const auto c = g.add(
-        [&] { std::lock_guard k { order_mutex }; order.push_back(2); },
+        [&] { std::scoped_lock k { order_mutex }; order.push_back(2); },
         { b }
     );
-    g.add([&] { std::lock_guard k { order_mutex }; order.push_back(3); }, { c });
+    g.add([&] { std::scoped_lock k { order_mutex }; order.push_back(3); }, { c });
 
     ASSERT_TRUE(g.run(pool));
 

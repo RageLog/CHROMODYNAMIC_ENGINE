@@ -191,7 +191,7 @@ TEST(JobGraph, LinearChainRunsInOrder)
     {
         return [&, id]
         {
-            std::lock_guard guard { order_m };
+            std::scoped_lock guard { order_m };
             order.push_back(id);
         };
     };
