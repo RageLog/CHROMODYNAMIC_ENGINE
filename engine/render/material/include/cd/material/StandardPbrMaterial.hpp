@@ -180,7 +180,7 @@ vec3 wrap_diffuse(vec3 N, vec3 L, vec3 albedo,
 
 // ---- LTC area-light helpers (cd::brdf_ltc — Heitz 2016) --------------------
 // Drop-in helpers for rectangular area light integration. The math is
-// canonicalised in cd::brdf_ltc::kLtcGlsl; inlined here so the PBR FS
+// canonicalised in cd::brdf::ltc::kLtcGlsl; inlined here so the PBR FS
 // doesn't depend on a shader-include facility. atan2 form for stability
 // near parallel/anti-parallel edge configurations.
 float ltc_edge_integral(vec3 a, vec3 b) {
@@ -209,7 +209,7 @@ float ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
 // LTC inverse-matrix sampler (Heitz 2016 GGX) — analytic 4-term
 // polynomial fit (~1% MSE vs the 64x64 LUT). Returns the sparse
 // (a, b, c, d) entries of the inverse LTC matrix at (roughness, NoV).
-// Same fit as cd::brdf_ltc::ltc_inverse_matrix on CPU.
+// Same fit as cd::brdf::ltc::ltc_inverse_matrix on CPU.
 vec4 ltc_inv_matrix(float roughness, float n_dot_v) {
   float r  = clamp(roughness, 0.001, 1.0);
   float nv = clamp(n_dot_v, 0.001, 1.0);

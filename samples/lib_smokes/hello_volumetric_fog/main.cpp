@@ -16,7 +16,7 @@
 // =============================================================================
 #include <cd/core/Version.hpp>
 #include <cd/math/Vector.hpp>
-#include <cd/volumetric_fog/Fog.hpp>
+#include <cd/volumetric/fog/Fog.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +30,7 @@ int main()
                 static_cast<unsigned>(cd::core::kEngineVersion.minor),
                 static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    namespace vf = cd::volumetric_fog;
+    namespace vf = cd::volumetric::fog;
 
     // 1) Build a small 16x9x32 froxel grid (downsized from Wronski's
     //    160x90x128 — same math, faster smoke).

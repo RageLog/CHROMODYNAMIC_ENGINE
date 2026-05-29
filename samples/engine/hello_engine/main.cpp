@@ -48,9 +48,9 @@
 #include <cd/audio/Mixer.hpp>
 #include <cd/audio/SimpleReverb.hpp>
 #include <cd/audio/WasapiBackend.hpp>
-#include <cd/brdf_ltc/Ltc.hpp>
-#include <cd/brdf_sheen_clearcoat/SheenClearcoat.hpp>
-#include <cd/brdf_sss/Sss.hpp>
+#include <cd/brdf/ltc/Ltc.hpp>
+#include <cd/brdf/sheen_clearcoat/SheenClearcoat.hpp>
+#include <cd/brdf/sss/Sss.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/Frustum.hpp>
 #include <cd/concurrency/JobGraph.hpp>
@@ -66,8 +66,8 @@
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/SelectionOutline.hpp>
 #include <cd/editor/TransformCommands.hpp>
-#include <cd/editor_panel/CompositeFxBinding.hpp>
-#include <cd/editor_panel/CompositePresetButtonsImGui.hpp>
+#include <cd/editor/panel/CompositeFxBinding.hpp>
+#include <cd/editor/panel/CompositePresetButtonsImGui.hpp>
 #include <cd/frame_timing/FrameTimeRing.hpp>
 #include <cd/gpu_particles/GpuParticles.hpp>
 #include <cd/ibl/BrdfLut.hpp>
@@ -103,14 +103,14 @@
 #include <cd/net/SnapshotBuffer.hpp>
 #include <cd/net/Throttle.hpp>
 #include <cd/platform/Window.hpp>
-#include <cd/post_bloom/Bloom.hpp>
-#include <cd/post_composite/Composite.hpp>
-#include <cd/post_dof/Dof.hpp>
-#include <cd/post_gtao/Gtao.hpp>
-#include <cd/post_motion_blur/MotionBlur.hpp>
-#include <cd/post_smaa/Smaa.hpp>
-#include <cd/post_ssr/Ssr.hpp>
-#include <cd/post_taa/Taa.hpp>
+#include <cd/post/bloom/Bloom.hpp>
+#include <cd/post/composite/Composite.hpp>
+#include <cd/post/dof/Dof.hpp>
+#include <cd/post/gtao/Gtao.hpp>
+#include <cd/post/motion_blur/MotionBlur.hpp>
+#include <cd/post/smaa/Smaa.hpp>
+#include <cd/post/ssr/Ssr.hpp>
+#include <cd/post/taa/Taa.hpp>
 #include <cd/render/MeshUpload.hpp>
 #include <cd/render/PlanarShadow.hpp>
 #include <cd/render/Renderer.hpp>
@@ -123,8 +123,8 @@
 #include <cd/scene/Serializer.hpp>
 #include <cd/shader/Compiler.hpp>
 #include <cd/velocity/Velocity.hpp>
-#include <cd/volumetric_clouds/Clouds.hpp>
-#include <cd/volumetric_fog/Fog.hpp>
+#include <cd/volumetric/clouds/Clouds.hpp>
+#include <cd/volumetric/fog/Fog.hpp>
 #include <cd/world_container/World.hpp>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -426,18 +426,18 @@ using cd::hello_engine::kShadowFS;
 // R3 - Composite pass - shader source + push struct extracted into
 // cd::post_composite. hello_engine just references the namespace via
 // the using-decls below.
-using cd::post_composite::kCompositeFS;
-using cd::post_composite::kCompositeVS;
-using CompositePush = cd::post_composite::Push;
+using cd::post::composite::kCompositeFS;
+using cd::post::composite::kCompositeVS;
+using CompositePush = cd::post::composite::Push;
 
 // R3 - Multi-mip bloom (Karis 2013) - shader source + push struct
 // definitions are extracted into cd::post_bloom. hello_engine just
 // references them via the namespace.
-using cd::post_bloom::kDownsampleFS;
-using cd::post_bloom::kPrefilterFS;
-using cd::post_bloom::kUpsampleFS;
-using BloomPrefilterPush = cd::post_bloom::PrefilterPush;
-using BloomUpsamplePush = cd::post_bloom::UpsamplePush;
+using cd::post::bloom::kDownsampleFS;
+using cd::post::bloom::kPrefilterFS;
+using cd::post::bloom::kUpsampleFS;
+using BloomPrefilterPush = cd::post::bloom::PrefilterPush;
+using BloomUpsamplePush = cd::post::bloom::UpsamplePush;
 
 // =============================================================================
 // Phase 290 / Marathon Run 7 sub-N1B: PrimPush + LightSlotGpu + LightUboGpu
@@ -474,10 +474,10 @@ using cd::render::make_planar_shadow_matrix;
 // ============================================================================
 using ColorTarget = cd::framegraph::ColorTarget;
 using DepthTarget = cd::framegraph::DepthTarget;
-using BloomMipChain = cd::post_bloom::BloomMipChain;
+using BloomMipChain = cd::post::bloom::BloomMipChain;
 using cd::framegraph::create_color_target;
 using cd::framegraph::create_depth_target;
-using cd::post_bloom::create_bloom_chain;
+using cd::post::bloom::create_bloom_chain;
 
 // Histogram, SelKind, LightRow moved to file scope (before namespace {}).
 
@@ -1980,7 +1980,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         // preserves the original W6-E semantics (Defaults keeps user
         // tonemap, HDR Demo keeps user dof/ssr/motion_blur/taa/aerial/
         // film_grain) via std::optional preset fields.
-        const cd::editor_panel::CompositeFxBinding fx_binding {
+        const cd::editor::panel::CompositeFxBinding fx_binding {
             .exposure           = &fx.exposure,
             .saturation_boost   = &fx.saturation_boost,
             .bloom_post         = &fx.bloom_post,
@@ -1998,7 +1998,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             .vignette_strength  = &fx.vignette_strength,
             .tonemap_op         = &fx.tonemap_op,
         };
-        cd::editor_panel::draw_composite_preset_buttons(fx_binding, log_push);
+        cd::editor::panel::draw_composite_preset_buttons(fx_binding, log_push);
         ImGui::SliderFloat("Exposure", &fx.exposure, 0.1F, 10.0F);
         ImGui::SliderFloat("Saturation boost", &fx.saturation_boost, 0.5F, 2.5F);
         ImGui::SliderFloat("Bloom strength", &fx.bloom_post, 0.0F, 0.30F);
@@ -3683,7 +3683,7 @@ inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
 // ---- HdrSceneFrame + begin_hdr_scene_pass ---------------------------------
 // Open the R3 HDR + 3 G-Buffer (normal/albedo/MR) + depth attachment render
 // pass and return the per-frame VP matrices the downstream sky / floor /
-// entity passes need. cd::post_taa::jitter_offset(frame_idx, 8) is the
+// entity passes need. cd::post::taa::jitter_offset(frame_idx, 8) is the
 // Halton(2,3) sequence; we only apply it when TAA is dialled in.
 //
 // Pass stays open across draw_sky_pass, fill + draw of floor/ECS/planar
@@ -3770,7 +3770,7 @@ inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
     out.vp_unjittered = cd::camera::view_projection(cam, out.aspect);
 
     const cd::math::Vec2f jitter_px =
-        (taa_amount > 0.001F) ? cd::post_taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
+        (taa_amount > 0.001F) ? cd::post::taa::jitter_offset(frame_idx, 8U) : cd::math::Vec2f { 0.0F, 0.0F };
     const float jx_ndc = jitter_px.x * 2.0F / static_cast<float>(extent.width);
     const float jy_ndc = jitter_px.y * 2.0F / static_cast<float>(extent.height);
     out.vp = out.vp_unjittered;
@@ -4042,7 +4042,7 @@ struct HelloEngineApp::EngineState
     std::array<cd::material::MaterialInstance, 3> bloom_up_insts;
 
     // Bloom mip chain
-    cd::post_bloom::BloomMipChain            bloom_chain;
+    cd::post::bloom::BloomMipChain            bloom_chain;
 
     // Meshes + BLAS / TLAS
     cd_sample::HelloMeshes                   meshes;
@@ -4114,13 +4114,13 @@ struct HelloEngineApp::EngineState
     cd_sample::HelloEngineFx                 fx;
 
     // Post-fx settings (wired; dispatch queued)
-    cd::post_gtao::Settings                  fx_gtao;
-    cd::post_bloom::Settings                 fx_bloom;
-    cd::post_ssr::Settings                   fx_ssr;
-    cd::post_dof::CameraSettings             fx_dof;
-    cd::post_motion_blur::Settings           fx_mblur;
-    cd::post_taa::Settings                   fx_taa;
-    cd::post_smaa::Settings                  fx_smaa;
+    cd::post::gtao::Settings                  fx_gtao;
+    cd::post::bloom::Settings                 fx_bloom;
+    cd::post::ssr::Settings                   fx_ssr;
+    cd::post::dof::CameraSettings             fx_dof;
+    cd::post::motion_blur::Settings           fx_mblur;
+    cd::post::taa::Settings                   fx_taa;
+    cd::post::smaa::Settings                  fx_smaa;
 
     // GI wire-in (dispatch queued)
     cd::restir_di::Reservoir                 fx_restir_di_reservoir;
@@ -4137,8 +4137,8 @@ struct HelloEngineApp::EngineState
     // Queued libs (silenced via (void))
     cd::atmosphere::Parameters               fx_atmosphere;
     cd::light_shafts::Settings               fx_lshafts;
-    cd::volumetric_clouds::Settings          fx_clouds;
-    cd::volumetric_fog::GridConfig           fx_vfog;
+    cd::volumetric::clouds::Settings          fx_clouds;
+    cd::volumetric::fog::GridConfig           fx_vfog;
 
     // Frame-loop misc
     bool                                     dock_initialised   { false };
@@ -6541,13 +6541,13 @@ int main(int argc, char** argv)
     // and fx_params.w (highlight bloom). The library settings live
     // here so the editor UI work in v1.6 can bind sliders straight
     // to these without renaming.
-    cd::post_gtao::Settings fx_gtao {};
-    cd::post_bloom::Settings fx_bloom {};
-    cd::post_ssr::Settings fx_ssr {};
-    cd::post_dof::CameraSettings fx_dof {};
-    cd::post_motion_blur::Settings fx_mblur {};
-    cd::post_taa::Settings fx_taa {};
-    cd::post_smaa::Settings fx_smaa {};
+    cd::post::gtao::Settings fx_gtao {};
+    cd::post::bloom::Settings fx_bloom {};
+    cd::post::ssr::Settings fx_ssr {};
+    cd::post::dof::CameraSettings fx_dof {};
+    cd::post::motion_blur::Settings fx_mblur {};
+    cd::post::taa::Settings fx_taa {};
+    cd::post::smaa::Settings fx_smaa {};
     // Composite tonemap/HDR knobs - own the entire post-fx settle here.
     // W4-E: bumped default 0.35 -> 0.75 so light shafts are obviously
     // visible on first run. User reported they were hard to read at the
@@ -6568,8 +6568,8 @@ int main(int argc, char** argv)
                                                            cd::rhi::ResourceState::kUndefined };
     cd::atmosphere::Parameters fx_atmosphere {};
     cd::light_shafts::Settings fx_lshafts {};
-    cd::volumetric_clouds::Settings fx_clouds {};
-    cd::volumetric_fog::GridConfig fx_vfog {};
+    cd::volumetric::clouds::Settings fx_clouds {};
+    cd::volumetric::fog::GridConfig fx_vfog {};
     (void)fx_atmosphere;
     (void)fx_lshafts;
     (void)fx_clouds;

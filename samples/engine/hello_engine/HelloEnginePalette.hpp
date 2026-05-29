@@ -26,8 +26,8 @@
 #include "HelloEngineFx.hpp"
 
 #include <cd/editor/CommandPalette.hpp>
-#include <cd/post_bloom/Bloom.hpp>
-#include <cd/post_gtao/Gtao.hpp>
+#include <cd/post/bloom/Bloom.hpp>
+#include <cd/post/gtao/Gtao.hpp>
 
 #include <functional>
 #include <string>
@@ -41,8 +41,8 @@ inline void
 register_engine_gi_rhi_fx_palette_commands(cd::editor::CommandPalette&             palette,
                                            HelloEngineFx&                          fx,
                                            const std::function<void(std::string)>& log_push,
-                                           cd::post_gtao::Settings&                fx_gtao,
-                                           cd::post_bloom::Settings&               fx_bloom)
+                                           cd::post::gtao::Settings&                fx_gtao,
+                                           cd::post::bloom::Settings&               fx_bloom)
 {
     palette.register_command(
         110,

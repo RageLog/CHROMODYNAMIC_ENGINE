@@ -22,7 +22,7 @@
 
 #include <cd/core/Defines.hpp>
 #include <cd/ecs/World.hpp>
-#include <cd/editor_ui/EditorWidgets.hpp>
+#include <cd/editor/ui/EditorWidgets.hpp>
 #include <cd/input/Input.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/ui/Widget.hpp>
@@ -97,17 +97,17 @@ public:
         return root_;
     }
 
-    [[nodiscard]] const cd::editor_ui::PropertyInspector& inspector() const noexcept
+    [[nodiscard]] const cd::editor::ui::PropertyInspector& inspector() const noexcept
     {
         return *inspector_;
     }
 
-    [[nodiscard]] const cd::editor_ui::TransformGizmo& gizmo() const noexcept
+    [[nodiscard]] const cd::editor::ui::TransformGizmo& gizmo() const noexcept
     {
         return *gizmo_;
     }
 
-    [[nodiscard]] const cd::editor_ui::SceneTreeView& tree_view() const noexcept
+    [[nodiscard]] const cd::editor::ui::SceneTreeView& tree_view() const noexcept
     {
         return *tree_;
     }
@@ -123,9 +123,9 @@ private:
     cd::input::InputContext input_ {};
 
     cd::ui::Panel root_ {};
-    cd::editor_ui::PropertyInspector* inspector_ { nullptr };
-    cd::editor_ui::TransformGizmo* gizmo_ { nullptr };
-    cd::editor_ui::SceneTreeView* tree_ { nullptr };
+    cd::editor::ui::PropertyInspector* inspector_ { nullptr };
+    cd::editor::ui::TransformGizmo* gizmo_ { nullptr };
+    cd::editor::ui::SceneTreeView* tree_ { nullptr };
 };
 
 }  // namespace cd::editor

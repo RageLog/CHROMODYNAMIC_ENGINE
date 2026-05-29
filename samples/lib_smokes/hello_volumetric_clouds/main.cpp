@@ -9,7 +9,7 @@
 // kernel uses to march per-pixel.
 // =============================================================================
 #include <cd/core/Version.hpp>
-#include <cd/volumetric_clouds/Clouds.hpp>
+#include <cd/volumetric/clouds/Clouds.hpp>
 
 #include <cmath>
 #include <cstdio>
@@ -21,7 +21,7 @@ int main()
                 static_cast<unsigned>(cd::core::kEngineVersion.minor),
                 static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    namespace vc = cd::volumetric_clouds;
+    namespace vc = cd::volumetric::clouds;
 
     vc::Settings s {};
     s.layer_bottom_km = 1.5F;

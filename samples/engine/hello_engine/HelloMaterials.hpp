@@ -27,8 +27,8 @@
 #include <cd/material/AnalyticalSkyMaterial.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
-#include <cd/post_bloom/Bloom.hpp>
-#include <cd/post_composite/Composite.hpp>
+#include <cd/post/bloom/Bloom.hpp>
+#include <cd/post/composite/Composite.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/shader/Compiler.hpp>
@@ -270,14 +270,14 @@ spawn_materials(cd::rhi::IDevice&             device,
             cd::rhi::Format::kBGRA8Unorm
         };
         cd::material::MaterialDesc md {};
-        md.vertex_glsl = cd::post_composite::kCompositeVS;
-        md.fragment_glsl = cd::post_composite::kCompositeFS;
+        md.vertex_glsl = cd::post::composite::kCompositeVS;
+        md.fragment_glsl = cd::post::composite::kCompositeFS;
         md.color_attachment_formats = kCompFmts;
         constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
             cd::rhi::PushConstantRange {
                 .stages = cd::rhi::ShaderStage::kFragment,
                 .offset = 0,
-                .size = sizeof(cd::post_composite::Push) }
+                .size = sizeof(cd::post::composite::Push) }
         };
         md.push_constants = kPush;
         constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 6> kBindings {
@@ -306,16 +306,16 @@ spawn_materials(cd::rhi::IDevice&             device,
             cd::rhi::DescriptorSetLayoutBinding { .binding = 0, .type = cd::rhi::DescriptorType::kCombinedImageSampler, .count = 1, .stages = cd::rhi::ShaderStage::kFragment }
         };
         constexpr std::array<cd::rhi::PushConstantRange, 1> kPrefilterPush {
-            cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment, .offset = 0, .size = sizeof(cd::post_bloom::PrefilterPush) }
+            cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment, .offset = 0, .size = sizeof(cd::post::bloom::PrefilterPush) }
         };
         constexpr std::array<cd::rhi::PushConstantRange, 1> kUpsamplePush {
-            cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment, .offset = 0, .size = sizeof(cd::post_bloom::UpsamplePush) }
+            cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kFragment, .offset = 0, .size = sizeof(cd::post::bloom::UpsamplePush) }
         };
 
         {
             cd::material::MaterialDesc md {};
-            md.vertex_glsl = cd::post_composite::kCompositeVS;
-            md.fragment_glsl = std::string_view { cd::post_bloom::kPrefilterFS };
+            md.vertex_glsl = cd::post::composite::kCompositeVS;
+            md.fragment_glsl = std::string_view { cd::post::bloom::kPrefilterFS };
             md.color_attachment_formats = kHdrFmts;
             md.push_constants = kPrefilterPush;
             md.descriptor_bindings = kBindings;
@@ -331,8 +331,8 @@ spawn_materials(cd::rhi::IDevice&             device,
 
         {
             cd::material::MaterialDesc md {};
-            md.vertex_glsl = cd::post_composite::kCompositeVS;
-            md.fragment_glsl = std::string_view { cd::post_bloom::kDownsampleFS };
+            md.vertex_glsl = cd::post::composite::kCompositeVS;
+            md.fragment_glsl = std::string_view { cd::post::bloom::kDownsampleFS };
             md.color_attachment_formats = kHdrFmts;
             md.descriptor_bindings = kBindings;
             md.raster.cull = cd::rhi::CullMode::kNone;
@@ -347,8 +347,8 @@ spawn_materials(cd::rhi::IDevice&             device,
 
         {
             cd::material::MaterialDesc md {};
-            md.vertex_glsl = cd::post_composite::kCompositeVS;
-            md.fragment_glsl = std::string_view { cd::post_bloom::kUpsampleFS };
+            md.vertex_glsl = cd::post::composite::kCompositeVS;
+            md.fragment_glsl = std::string_view { cd::post::bloom::kUpsampleFS };
             md.color_attachment_formats = kHdrFmts;
             md.push_constants = kUpsamplePush;
             md.descriptor_bindings = kBindings;

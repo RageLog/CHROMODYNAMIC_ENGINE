@@ -4,6 +4,6 @@
 // =============================================================================
 #pragma once
 
-#include <cd/brdf_ltc/Ltc.hpp>
-#include <cd/brdf_sheen_clearcoat/SheenClearcoat.hpp>
-#include <cd/brdf_sss/Sss.hpp>
+#include <cd/brdf/ltc/Ltc.hpp>
+#include <cd/brdf/sheen_clearcoat/SheenClearcoat.hpp>
+#include <cd/brdf/sss/Sss.hpp>

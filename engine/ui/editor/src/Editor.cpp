@@ -24,13 +24,13 @@ Editor::Editor(const EditorDesc& desc)
     constexpr float kLeftPaneW = 256.0F;
     constexpr float kRightPaneW = 320.0F;
 
-    tree_ = root_.add_child<cd::editor_ui::SceneTreeView>();
+    tree_ = root_.add_child<cd::editor::ui::SceneTreeView>();
     tree_->set_bounds({ 0.0F, 0.0F, kLeftPaneW, desc.height });
 
-    inspector_ = root_.add_child<cd::editor_ui::PropertyInspector>();
+    inspector_ = root_.add_child<cd::editor::ui::PropertyInspector>();
     inspector_->set_bounds({ desc.width - kRightPaneW, 0.0F, kRightPaneW, desc.height });
 
-    gizmo_ = root_.add_child<cd::editor_ui::TransformGizmo>(1.0F);
+    gizmo_ = root_.add_child<cd::editor::ui::TransformGizmo>(1.0F);
     gizmo_->set_bounds({ (desc.width - 84.0F) * 0.5F, 8.0F, 84.0F, 24.0F });
 
     // Default scene: a single root node that the user grows by attaching

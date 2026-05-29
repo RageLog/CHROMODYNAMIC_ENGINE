@@ -2,7 +2,7 @@
 // CHROMODYNAMIC — samples/hello_gpu_cluster
 //
 // End-to-end Forward+ light culling on the GPU: dispatches the
-// cluster_assign.comp compute shader via cd::cluster_gpu::GpuPipeline,
+// cluster_assign.comp compute shader via cd::cluster::gpu::GpuPipeline,
 // then compares the GPU output bit-for-bit against the CPU reference
 // simulator (cd::render::cluster::run_reference_compute, Wave 88).
 //
@@ -19,7 +19,7 @@
 //   2 — Vulkan device creation failed (no ICD / headless host) — skip
 //   3 — GpuPipeline creation or dispatch failed
 // =============================================================================
-#include <cd/cluster_gpu/GpuPipeline.hpp>
+#include <cd/cluster/gpu/GpuPipeline.hpp>
 #include <cd/render/cluster/ClusterGrid.hpp>
 #include <cd/render/cluster/ReferenceCompute.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
@@ -59,7 +59,7 @@ int main()
     cd::render::cluster::ClusterConfig cfg {
         16, 9, 24, 1.0472F, 16.0F / 9.0F, 0.1F, 100.0F
     };
-    auto pipeline_r = cd::cluster_gpu::GpuPipeline::create(device, cfg, kLights);
+    auto pipeline_r = cd::cluster::gpu::GpuPipeline::create(device, cfg, kLights);
     if (!pipeline_r.has_value())
     {
         std::printf("[hello_gpu_cluster] GpuPipeline::create failed: code=%u\n",
