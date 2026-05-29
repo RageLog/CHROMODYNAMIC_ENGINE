@@ -24,6 +24,7 @@
 #pragma once
 
 #include "HelloRayQuery.hpp"
+#include "HelloTlasCompaction.hpp"
 #include "HelloTlasRing.hpp"
 
 #include <cd/concurrency/ParallelFor.hpp>
@@ -78,12 +79,17 @@ rebuild_tlas_and_transition_depth(
     }
 
     // 2) collect instances (ECS entities + floor + skinned gltf).
-    std::vector<cd::rhi::AccelInstance> instances;
-    instances.reserve(entities.size() + 25 + 1);
-    // Parallel material array; kept in lockstep with instances so the
-    // GPU rayQueryGetIntersectionInstanceIdEXT indexes the right slot.
-    std::vector<cd::hello_engine::InstanceMatGpu> inst_mats;
-    inst_mats.reserve(entities.size() + 1);
+    //
+    // Phase N2A (Marathon Run 23): the parallel scatter + serial
+    // compaction step is delegated to compact_tlas_entity_instances --
+    // a pure-CPU helper that is regression-tested in
+    // tests/test_tlas_compaction.cpp for the ghost-shadow exclusion
+    // invariant (model_for() == nullopt => zero TLAS instances) and
+    // the GPU instanceCustomIndex / inst_mat SSBO slot alignment.
+    auto compact = compact_tlas_entity_instances<EntityT>(
+        entities, blas_for_kind, tint_for, kind_for, model_for);
+    std::vector<cd::rhi::AccelInstance>&           instances = compact.instances;
+    std::vector<cd::hello_engine::InstanceMatGpu>& inst_mats = compact.inst_mats;
 
     auto push_inst = [&](cd::rhi::AccelStructureHandle blas,
                          const cd::math::Mat4f& m,
@@ -96,46 +102,6 @@ rebuild_tlas_and_transition_depth(
         cd::hello_engine::fill_inst_mat(im, albedo);
         inst_mats.push_back(im);
     };
-
-    // X1B parallel TLAS instance build via cd::concurrency::parallel_for.
-    // Per-entity slot written by index into pre-sized scratch arrays
-    // (no push_back from worker threads); a serial compaction step
-    // collects valid slots into the final instances/inst_mats arrays so
-    // the floor and skinned gltf tail stays in deterministic order and
-    // the GPU instance-index correspondence is preserved.
-    const std::size_t kEntCount = entities.size();
-    std::vector<cd::rhi::AccelInstance>           ent_inst_scratch(kEntCount);
-    std::vector<cd::hello_engine::InstanceMatGpu> ent_mat_scratch(kEntCount);
-    std::vector<std::uint8_t>                     ent_valid(kEntCount, 0u);
-    cd::concurrency::parallel_for(
-        std::size_t { 0 },
-        kEntCount,
-        [&](std::size_t i)
-        {
-            const auto& ent = entities[i];
-            auto model_opt = model_for(ent);
-            if (!model_opt.has_value())
-                return;
-            const auto blas = blas_for_kind(kind_for(ent));
-            if (!blas.is_valid())
-                return;
-            ent_inst_scratch[i] = cd::hello_engine::make_accel_instance(
-                blas, *model_opt);
-            cd::hello_engine::InstanceMatGpu im {};
-            cd::hello_engine::fill_inst_mat(im, tint_for(ent));
-            ent_mat_scratch[i] = im;
-            ent_valid[i] = 1u;
-        });
-    // Serial compaction preserves entity ordering so the GPU
-    // instanceCustomIndex lookup into inst_mat_ssbo stays aligned with
-    // the TLAS hit instance id.
-    for (std::size_t i = 0; i < kEntCount; ++i)
-    {
-        if (ent_valid[i] == 0u)
-            continue;
-        instances.push_back(ent_inst_scratch[i]);
-        inst_mats.push_back(ent_mat_scratch[i]);
-    }
 
     // Floor: identity scale, y = kFloorY (matches the floor draw).
     // W8-BC: distinct neutral grey so chrome reflections show a proper
