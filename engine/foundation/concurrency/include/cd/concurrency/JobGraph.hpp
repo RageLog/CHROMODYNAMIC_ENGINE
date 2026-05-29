@@ -120,7 +120,7 @@ public:
                     }
                     if (remaining.fetch_sub(1, std::memory_order_acq_rel) == 1)
                     {
-                        std::lock_guard guard { done_mutex };
+                        std::scoped_lock guard { done_mutex };
                         done_cond.notify_all();
                     }
                 }

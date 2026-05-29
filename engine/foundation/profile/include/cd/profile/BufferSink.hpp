@@ -29,7 +29,7 @@ public:
 
     void submit(const Sample& s) noexcept override
     {
-        const std::lock_guard<std::mutex> lock { mutex_ };
+        const std::scoped_lock lock { mutex_ };
         if (samples_.size() < capacity_)
         {
             samples_.push_back(s);
@@ -46,7 +46,7 @@ public:
     /// consistent point-in-time view.
     [[nodiscard]] std::vector<Sample> snapshot() const
     {
-        const std::lock_guard<std::mutex> lock { mutex_ };
+        const std::scoped_lock lock { mutex_ };
         if (samples_.size() < capacity_)
             return samples_;
         // Ring is full; rotate so the oldest sample comes first.
@@ -60,14 +60,14 @@ public:
     /// Drop all buffered samples without resetting capacity.
     void clear()
     {
-        const std::lock_guard<std::mutex> lock { mutex_ };
+        const std::scoped_lock lock { mutex_ };
         samples_.clear();
         next_ = 0;
     }
 
     [[nodiscard]] std::size_t size() const
     {
-        const std::lock_guard<std::mutex> lock { mutex_ };
+        const std::scoped_lock lock { mutex_ };
         return samples_.size();
     }
 

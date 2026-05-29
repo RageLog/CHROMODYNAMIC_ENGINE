@@ -143,8 +143,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     if (slices < 3) slices = 3;
 
     PrimitiveMesh m;
-    m.vertices.reserve(static_cast<std::size_t>((stacks + 1) * (slices + 1)));
-    m.indices.reserve(static_cast<std::size_t>(stacks * slices * 6));
+    m.vertices.reserve((static_cast<std::size_t>(stacks) + 1U) * (static_cast<std::size_t>(slices) + 1U));
+    m.indices.reserve(static_cast<std::size_t>(stacks) * static_cast<std::size_t>(slices) * 6U);
 
     for (int i = 0; i <= stacks; ++i)
     {
@@ -197,8 +197,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
 
     if (slices < 3) slices = 3;
     PrimitiveMesh m;
-    m.vertices.reserve(static_cast<std::size_t>(2 + 2 * slices));
-    m.indices.reserve(static_cast<std::size_t>(slices * 6));
+    m.vertices.reserve(2U + 2U * static_cast<std::size_t>(slices));
+    m.indices.reserve(static_cast<std::size_t>(slices) * 6U);
 
     const float slant = std::sqrt(0.25F + 1.0F);  // sqrt(r² + h²) with r=0.5, h=1
     const float ny = 0.5F / slant;                // side-normal Y component
@@ -266,8 +266,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
 
     if (slices < 3) slices = 3;
     PrimitiveMesh m;
-    m.vertices.reserve(static_cast<std::size_t>(2 + 4 * slices));
-    m.indices.reserve(static_cast<std::size_t>(slices * 12));
+    m.vertices.reserve(2U + 4U * static_cast<std::size_t>(slices));
+    m.indices.reserve(static_cast<std::size_t>(slices) * 12U);
 
     // Top + bottom centre vertices — indices 0, 1.
     m.vertices.push_back(make_v(0.0F,  0.5F, 0.0F, 0.0F, 1.0F, 0.0F,
@@ -373,8 +373,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     if (rings < 3) rings = 3;
     if (sides < 3) sides = 3;
     PrimitiveMesh m;
-    m.vertices.reserve(static_cast<std::size_t>((rings + 1) * (sides + 1)));
-    m.indices.reserve(static_cast<std::size_t>(rings * sides * 6));
+    m.vertices.reserve((static_cast<std::size_t>(rings) + 1U) * (static_cast<std::size_t>(sides) + 1U));
+    m.indices.reserve(static_cast<std::size_t>(rings) * static_cast<std::size_t>(sides) * 6U);
 
     for (int i = 0; i <= rings; ++i)
     {
@@ -431,8 +431,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     if (slices < 3) slices = 3;
     const float half_h = 0.5F * height;
     PrimitiveMesh m;
-    m.vertices.reserve(static_cast<std::size_t>((2 * rings + 2) * (slices + 1)));
-    m.indices.reserve(static_cast<std::size_t>((2 * rings + 1) * slices * 6));
+    m.vertices.reserve((2U * static_cast<std::size_t>(rings) + 2U) * (static_cast<std::size_t>(slices) + 1U));
+    m.indices.reserve((2U * static_cast<std::size_t>(rings) + 1U) * static_cast<std::size_t>(slices) * 6U);
 
     // Top hemisphere: phi ∈ [0, π/2], rings+1 latitude lines.
     for (int i = 0; i <= rings; ++i)

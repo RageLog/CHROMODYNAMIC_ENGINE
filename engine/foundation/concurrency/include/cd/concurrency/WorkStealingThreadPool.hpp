@@ -111,7 +111,7 @@ public:
         if (!was)
             return;
         {
-            std::lock_guard guard { idle_mutex_ };
+            std::scoped_lock guard { idle_mutex_ };
         }
         wake_condition_.notify_all();
         idle_condition_.notify_all();
@@ -128,7 +128,7 @@ public:
         {
             while (auto v = queues_[i]->pop())
                 delete *v;
-            std::lock_guard guard { *inject_mutexes_[i] };
+            std::scoped_lock guard { *inject_mutexes_[i] };
             for (auto* j : inject_buffers_[i])
                 delete j;
             inject_buffers_[i].clear();
@@ -246,7 +246,7 @@ private:
         const auto n = queues_.size();
         const auto idx = next_inject_.fetch_add(1, std::memory_order_relaxed) % n;
         {
-            std::lock_guard guard { *inject_mutexes_[idx] };
+            std::scoped_lock guard { *inject_mutexes_[idx] };
             inject_buffers_[idx].push_back(job);
         }
         queued_.fetch_add(1, std::memory_order_release);
@@ -259,7 +259,7 @@ private:
     {
         std::vector<Job*> local;
         {
-            std::lock_guard guard { *inject_mutexes_[self] };
+            std::scoped_lock guard { *inject_mutexes_[self] };
             local.swap(inject_buffers_[self]);
         }
         for (auto* j : local)
@@ -302,7 +302,7 @@ private:
         in_flight_.fetch_sub(1, std::memory_order_acq_rel);
         queued_.fetch_sub(1, std::memory_order_acq_rel);
         {
-            std::lock_guard guard { idle_mutex_ };
+            std::scoped_lock guard { idle_mutex_ };
         }
         idle_condition_.notify_all();
     }
@@ -364,7 +364,7 @@ private:
                         return true;
                     // Wake if MY injection buffer has work or if any peer queue is non-empty.
                     {
-                        std::lock_guard sg { *inject_mutexes_[self] };
+                        std::scoped_lock sg { *inject_mutexes_[self] };
                         if (!inject_buffers_[self].empty())
                             return true;
                     }

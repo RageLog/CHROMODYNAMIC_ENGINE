@@ -63,7 +63,7 @@ public:
     {
         try
         {
-            const std::lock_guard<std::mutex> lock { mutex_ };
+            const std::scoped_lock lock { mutex_ };
             if (!out_.is_open())
                 return;
             if (!header_written_)

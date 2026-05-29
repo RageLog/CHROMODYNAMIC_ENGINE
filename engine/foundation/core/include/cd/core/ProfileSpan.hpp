@@ -48,7 +48,7 @@ public:
 
     void record(const char* name, std::uint64_t elapsed_ns) noexcept
     {
-        std::lock_guard<std::mutex> lock { mu_ };
+        std::scoped_lock lock { mu_ };
         auto& s = entries_[name];
         s.total_ns += elapsed_ns;
         ++s.count;
@@ -56,20 +56,20 @@ public:
 
     [[nodiscard]] ProfileStats stats(const char* name) const
     {
-        std::lock_guard<std::mutex> lock { mu_ };
+        std::scoped_lock lock { mu_ };
         const auto it = entries_.find(name);
         return (it != entries_.end()) ? it->second : ProfileStats {};
     }
 
     void clear() noexcept
     {
-        std::lock_guard<std::mutex> lock { mu_ };
+        std::scoped_lock lock { mu_ };
         entries_.clear();
     }
 
     [[nodiscard]] std::size_t size() const
     {
-        std::lock_guard<std::mutex> lock { mu_ };
+        std::scoped_lock lock { mu_ };
         return entries_.size();
     }
 

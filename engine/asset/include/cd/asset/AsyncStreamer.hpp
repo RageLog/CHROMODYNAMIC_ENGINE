@@ -70,7 +70,7 @@ public:
     {
         if (!running_.load(std::memory_order_acquire)) return;
         {
-            std::lock_guard<std::mutex> lk { mutex_ };
+            std::scoped_lock lk { mutex_ };
             stopping_.store(true, std::memory_order_release);
         }
         cv_.notify_all();
@@ -82,7 +82,7 @@ public:
     void enqueue(StreamRequest r)
     {
         {
-            std::lock_guard<std::mutex> lk { mutex_ };
+            std::scoped_lock lk { mutex_ };
             queue_.push(r);
         }
         cv_.notify_one();
@@ -91,14 +91,14 @@ public:
     /// Inspect a request's current state.
     [[nodiscard]] StreamState state_of(AssetId id) const
     {
-        std::lock_guard<std::mutex> lk { mutex_ };
+        std::scoped_lock lk { mutex_ };
         return queue_.state_of(id);
     }
 
     /// Pending heap size (not counting in-flight / complete entries).
     [[nodiscard]] std::size_t pending_count() const
     {
-        std::lock_guard<std::mutex> lk { mutex_ };
+        std::scoped_lock lk { mutex_ };
         return queue_.size();
     }
 
@@ -129,7 +129,7 @@ private:
             const bool ok = load_fn_ ? load_fn_(r.id) : false;
 
             {
-                std::lock_guard<std::mutex> lk { mutex_ };
+                std::scoped_lock lk { mutex_ };
                 if (ok) queue_.mark_complete(r.id);
                 else    queue_.mark_failed(r.id);
             }

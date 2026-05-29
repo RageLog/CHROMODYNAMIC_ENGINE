@@ -82,7 +82,7 @@ public:
     void set(T value) const
     {
         {
-            std::lock_guard<std::mutex> lock { state_->mu };
+            std::scoped_lock lock { state_->mu };
             state_->value = std::move(value);
             state_->ready.store(true, std::memory_order_release);
         }

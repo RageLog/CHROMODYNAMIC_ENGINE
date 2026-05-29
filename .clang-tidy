@@ -46,6 +46,7 @@ Checks: >
   -cppcoreguidelines-rvalue-reference-param-not-moved,
   -cppcoreguidelines-missing-std-forward,
   -cppcoreguidelines-narrowing-conversions,
+  -cppcoreguidelines-avoid-c-arrays,  # PoD layouts mirror GLSL/Vulkan structs; ADR pending
   hicpp-*,
   -hicpp-avoid-c-arrays,
   -hicpp-no-array-decay,
@@ -65,12 +66,14 @@ Checks: >
   -modernize-avoid-c-arrays,
   -modernize-pass-by-value,
   -modernize-use-designated-initializers,
+  -modernize-use-std-print,  # <print> not universally available across the 8-compiler matrix yet
   performance-*,
   -performance-enum-size,
   -performance-no-int-to-ptr,
   -performance-unnecessary-value-param,
   -performance-avoid-endl,
   portability-*,
+  -portability-avoid-pragma-once,  # we use #pragma once project-wide; deliberate per CLAUDE.md
   readability-*,
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
@@ -85,10 +88,17 @@ Checks: >
   -readability-static-accessed-through-instance,
   -readability-make-member-function-const,
   -readability-qualified-auto,
-  -readability-redundant-inline-specifier
+  -readability-redundant-inline-specifier,
+  -readability-redundant-member-init  # explicit-init documents intent; less risk on add-field
 
 # Warnings stay warnings locally. CI promotes to errors via -warnings-as-errors.
-WarningsAsErrors: ''
+# Marathon Run 11 phase B4: promote the FULLY-cleaned rules to error status. Bug-class
+# rules (bugprone-misplaced-widening-cast / implicit-widening-of-multiplication-result /
+# integer-division / suspicious-stringview-data-usage / unhandled-exception-at-new,
+# readability-misleading-indentation, cert-flp30-c) stay as warnings until Run 12 lands
+# the site-by-site fixes; promotion to error happens then. See
+# docs/CLANG_TIDY_AUDIT_RUN11.md for the full rule audit + verdict matrix.
+WarningsAsErrors: 'modernize-use-scoped-lock'
 
 # Analyse only OUR code. Engine + samples; never third-party headers via
 # FetchContent (those live under build/*/_deps/) and never legacy code

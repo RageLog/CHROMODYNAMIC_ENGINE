@@ -39,7 +39,7 @@ public:
     void cancel() const noexcept
     {
         {
-            std::lock_guard<std::mutex> lock { state_->mu };
+            std::scoped_lock lock { state_->mu };
             state_->cancelled.store(true, std::memory_order_release);
         }
         state_->cv.notify_all();
@@ -48,7 +48,7 @@ public:
     void complete() const noexcept
     {
         {
-            std::lock_guard<std::mutex> lock { state_->mu };
+            std::scoped_lock lock { state_->mu };
             state_->completed.store(true, std::memory_order_release);
         }
         state_->cv.notify_all();

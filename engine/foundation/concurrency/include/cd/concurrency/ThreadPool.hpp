@@ -82,7 +82,7 @@ public:
             return;
         }
         {
-            std::lock_guard guard { mutex_ };
+            std::scoped_lock guard { mutex_ };
             // Workers see running_=false; nothing else to flip.
         }
         condition_.notify_all();
@@ -234,7 +234,7 @@ private:
             return;
         }
         {
-            std::lock_guard guard { mutex_ };
+            std::scoped_lock guard { mutex_ };
             Entry e;
             e.job = std::move(task);
             e.sequence = ++next_sequence_;
@@ -281,7 +281,7 @@ private:
             }
             in_flight_.fetch_sub(1, std::memory_order_acq_rel);
             {
-                std::lock_guard guard { idle_mutex_ };
+                std::scoped_lock guard { idle_mutex_ };
                 idle_condition_.notify_all();
             }
         }
