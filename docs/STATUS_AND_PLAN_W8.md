@@ -16,7 +16,7 @@
 - 97 test binary. Breadth iyi; depth (golden image, fuzz, stress) sample bazinda.
 - 60 plus ADR. Karar disiplini guclu.
 - Marathon Run 3-6: v0.99.33 to v0.99.58 (26 tag), Phase 204 to 279.
-- hello_engine: 7793 satir (Run 4 sonu 6100 idi; W7/W8 ile +1700 buyudu, extraction borcu).
+- hello_engine: 7381 satir (W8-BB 7854 -> Run 9 7793 -> Run 10 7854 -> Run 11 7381; main() body 3829 -> 3360 via Run 11 phase321-325 five extractions; Run 12 target main() body < 500).
 - MANIFEST.csv yok / 0 PDF: Demir Kural pipeline henuz tetiklenmedi.
 
 ### Bottom line
@@ -296,6 +296,48 @@ Pratik revizyon (N5+N6+N7+N8 sirasinda kararlasti): FrameFeedback aggregate Run 
 - X1-FU-D: Priority-aware steal ordering (2-3 gun, polish).
 - X1-FU-E: engine/foundation/concurrency/README.md (doc-writer one-pager: header-only design + Tier B FetchContent rationale).
 
+
+---
+
+
+### Marathon Run 11 N9-N12 close-out (W8 phase321-325 + Strands B/C)
+
+Run 11 was a triple-strand marathon (Strand A extraction, Strand B clang-tidy quality, Strand C docs quality).
+
+**Strand A extraction (phase321-325)**:
+
+- N9-prep (phase321): SkinnedRuntime + DeferredTlas types lifted from main()-scope to cd_sample namespace in HelloSkinned.hpp + HelloTlasRing.hpp. -24 lines.
+- N9 (phase322): per-frame TLAS rebuild + depth ring barrier extracted to cd_sample::rebuild_tlas_and_transition_depth (HelloTlasRebuild.hpp) as a 5-callable template so SceneEntity / PrimitiveKind / MaterialInstance never escape main.cpp anon namespace. -149 lines.
+- N10 (phase323): CPU-LBS skinned-animation per-frame step (advance, sample animation, build palette, 4-weight LBS, upload deformed verts) extracted to cd_sample::update_skinned_animation (HelloSkinnedAnim.hpp). Returns bool; false drops into the W4-F fallback turntable. -100 lines.
+- N11 (phase324): audio chain boot (DSP nodes prepare + meter scoreboard + 5 s WAV ring + WASAPI pre-render + voice spin-up) bundled into cd_sample::AudioState aggregate + cd_sample::init_audio (HelloAudio.hpp). 17 reference aliases preserve main()-side call sites. -74 lines.
+- N12 (phase325): R1 IBL bake graph + GPU upload (X1C boot JobGraph + IBL sampler creation) extracted to cd_sample::bake_ibl_cpu + cd_sample::upload_ibl_gpu (HelloIbl.hpp). W8-AW chrome-mirror quality parameters preserved verbatim. -122 lines.
+
+main() body progression: 3829 -> 3805 -> 3656 -> 3556 -> 3482 -> 3360.
+hello_engine total: 7854 -> 7830 -> 7681 -> 7581 -> 7507 -> 7385 -> 7381.
+
+Strand A extractions queued for Run 12: glTF auto-load (~223 lines), glTF baseColor texture (~251 lines), click-to-pick + camera-ray helpers (~161 lines), right-mouse FPS look (~110 lines), SampleAppState aggregate + command palette setup (~846 lines), material creation chain (~430 lines). Each requires aggregate-state introduction (>10 captures); per marathon scope-down rule deferred to keep Run 11 ship-able.
+
+**Strand B clang-tidy quality (phase326-327)**:
+
+- B1 (phase326): full clang-tidy 21.1.0 audit against samples/engine/hello_engine/main.cpp deepest-TU sweep. Categorized 38 distinct rule violations (~2150 total instances). Top rules: readability-math-missing-parentheses 910, cppcoreguidelines-macro-usage 294, hicpp-uppercase-literal-suffix 185, portability-avoid-pragma-once 122 (deliberate project policy), readability-identifier-naming 113. Bug-class signals isolated and tagged. docs/CLANG_TIDY_AUDIT_RUN11.md captures the verdict matrix.
+- B2 (phase327):
+  - modernize-use-scoped-lock cleaned globally (15 lock_guard sites in 9 files: AsyncStreamer, JobGraph, JobToken, Future, ThreadPool, WorkStealingThreadPool, ProfileSpan, BufferSink, ChromeTraceSink, CsvSink). Rule promoted to WarningsAsErrors in .clang-tidy.
+  - bugprone-misplaced-widening-cast cleaned in cd::asset::Primitives.hpp (10 reserve sites for sphere / cone / cylinder / torus / hemisphere; widens to size_t BEFORE multiply, defending against int*int overflow).
+  - .clang-tidy policy hardened: disabled portability-avoid-pragma-once + modernize-use-std-print + cppcoreguidelines-avoid-c-arrays + readability-redundant-member-init with rationale comments.
+
+Strand B remaining bug-class rules (bugprone-implicit-widening-of-multiplication-result, bugprone-integer-division false positive, bugprone-suspicious-stringview-data-usage, bugprone-unhandled-exception-at-new, readability-misleading-indentation, cert-flp30-c float-loop) tracked as warnings; site-by-site fixes queued for Run 12. Once cleaned the rules promote to error-status too.
+
+**Strand C docs quality (phase328+)**:
+
+- C1: docs audit doc docs/DOC_AUDIT_RUN11.md identifying missing ADRs (W8-AJ / W8-AN / W8-AR / W8-BA / W8-BC / W8-AY / W8-AZ), zero per-library READMEs across 188 CMakeLists.txt.
+- C2: 3 highest-priority W7/W8 ADRs backfilled: ADR-20260529-W8-AJ-LTC-corner-winding.md, ADR-20260529-W8-AN-Karis-MRP.md, ADR-20260529-W8-AR-ECS-attribute-PBR.md.
+- C3: 6 Tier-1 READMEs shipped: engine/README.md index + foundation/{core,math,concurrency,frame_timing,log}/README.md. Run 12 queued for the remaining ~92 libraries.
+- C4: this section (STATUS Section 6 refresh).
+- C5: CLAUDE.md unchanged this run (Run 11 surfaced no new project-wide patterns that warrant codification beyond what already lives in CLAUDE.md). Will revisit in Run 12.
+
+**Tests**: 96/96 PASS across every checkpoint. Zero rendering-behaviour regressions.
+
+**Phase numbering**: 321 (N9-prep) -> 322 (N9) -> 323 (N10) -> 324 (N11) -> 325 (N12) -> 326 (B1) -> 327 (B2) -> 328 (C-batch close-out tagged as NXZ-RUN11).
 
 ---
 
