@@ -1,3 +1,9 @@
+# D-F7: toggle between on-disk GLSL paths (dev iteration, default ON) and
+# embedded strings only (release-friendly, no file deps).
+option(HELLO_ENGINE_USE_ON_DISK_SHADERS
+       "When ON: read shaders from <repo>/samples/engine/hello_engine/shaders/*.glsl at runtime (dev iteration). When OFF: use embedded GLSL strings (release-friendly, no file deps)."
+       ON)
+
 cd_add_sample(hello_engine
   SOURCES main.cpp
   DEPS
@@ -55,6 +61,11 @@ cd_add_sample(hello_engine
     cd::shader
     cd::world_container
 )
+
+# D-F7: propagate the toggle to the compiled binary as a preprocessor define.
+# $<BOOL:...> maps the CMake boolean to 1/0 so C++ #if works directly.
+target_compile_definitions(cd_sample_hello_engine PRIVATE
+  HELLO_ENGINE_USE_ON_DISK_SHADERS=$<BOOL:${HELLO_ENGINE_USE_ON_DISK_SHADERS}>)
 
 # Marathon Run 23 phase N2B: ghost-shadow / TLAS-exclusion regression
 # test (pure-CPU, no RHI device needed).

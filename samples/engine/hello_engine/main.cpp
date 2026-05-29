@@ -4108,6 +4108,16 @@ int main()
             return cd_sample::prim_recreate(d, c, &materials.prim);
         },
         "prim");
+    // D-F6: hot-reload for the shadow depth-only shader pair.
+    hello_shader_watch.add_entry(
+        &materials.shadow,
+        std::vector<std::string> {
+            std::string { cd_sample::kShadowVertGlslPath },
+            std::string { cd_sample::kShadowFragGlslPath } },
+        [&materials](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool {
+            return cd_sample::shadow_recreate(d, c, &materials.shadow);
+        },
+        "shadow");
 
     // ---- Shadow-map resources (Faz 1.6 CSM) ----
     // 2K depth texture + sampler + UBO holding light_vp. The

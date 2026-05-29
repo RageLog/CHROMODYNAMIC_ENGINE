@@ -62,16 +62,23 @@ struct MaterialSpawnError
 };
 
 // -- X5 / M1 hot-reload integration -----------------------------------
-// On-disk source paths for the prim material's vertex + fragment
-// shaders. Resolved relative to the process's working directory; the
-// hello_engine launcher is expected to run from the repo root (where
-// `samples/engine/hello_engine/shaders/` lives). If a path fails to
-// open at runtime, Material::create returns kInvalidArgument and the
-// initial spawn falls back through MaterialSpawnError {9, "prim"}.
+// On-disk source paths for the prim and shadow materials' vertex +
+// fragment shaders. Resolved relative to the process's working
+// directory; the hello_engine launcher is expected to run from the
+// repo root (where `samples/engine/hello_engine/shaders/` lives).
+// If a path fails to open at runtime, Material::create returns
+// kInvalidArgument and the initial spawn falls back through
+// MaterialSpawnError {9, "prim"} / {10, "shadow"}.
 inline constexpr std::string_view kPrimVertGlslPath =
     "samples/engine/hello_engine/shaders/prim.vert.glsl";
 inline constexpr std::string_view kPrimFragGlslPath =
     "samples/engine/hello_engine/shaders/prim.frag.glsl";
+
+// D-F6: on-disk paths for the shadow depth-only material.
+inline constexpr std::string_view kShadowVertGlslPath =
+    "samples/engine/hello_engine/shaders/shadow.vert.glsl";
+inline constexpr std::string_view kShadowFragGlslPath =
+    "samples/engine/hello_engine/shaders/shadow.frag.glsl";
 
 /// Build the full prim MaterialDesc and call Material::create. Shared
 /// between initial spawn (spawn_materials) and hot-reload (HelloShaderWatch).
@@ -122,8 +129,13 @@ prim_recreate(cd::rhi::IDevice&         device,
     // _glsl_path wins over _glsl per ADR-20260529-X5. The embedded
     // strings remain as a documented fallback for shipped binaries
     // launched without the on-disk shaders folder.
+    // D-F7: guarded by the HELLO_ENGINE_USE_ON_DISK_SHADERS CMake option
+    // (default ON). When OFF the on-disk paths are not set and the
+    // embedded strings are used directly.
+#if HELLO_ENGINE_USE_ON_DISK_SHADERS
     md.vertex_glsl_path   = kPrimVertGlslPath;
     md.fragment_glsl_path = kPrimFragGlslPath;
+#endif
     md.vertex_glsl        = cd::hello_engine::kPrimVS;
     md.fragment_glsl      = cd::hello_engine::kPrimFS;
     md.color_attachment_formats = kColorFmts;
@@ -149,6 +161,69 @@ prim_recreate(cd::rhi::IDevice&         device,
         return false;
     }
     *prim_material = std::move(*r);
+    return true;
+}
+
+
+/// Build the shadow MaterialDesc and call Material::create. Shared
+/// between initial spawn (spawn_materials) and hot-reload (HelloShaderWatch).
+/// On success overwrites *shadow_material and returns true; on failure
+/// leaves *shadow_material untouched and returns false so the previous
+/// pipeline keeps rendering. Mirrors prim_recreate() — see D-F6.
+[[nodiscard]] inline bool
+shadow_recreate(cd::rhi::IDevice&       device,
+                cd::shader::ICompiler* compiler,
+                cd::material::Material* shadow_material)
+{
+    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings {
+        cd::rhi::VertexBinding { 0, sizeof(cd::asset::PrimitiveVertex), false }
+    };
+    constexpr std::array<cd::rhi::VertexAttribute, 4> kAttrs {
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, pos)    },
+        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, normal) },
+        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(cd::asset::PrimitiveVertex, uv)     },
+        cd::rhi::VertexAttribute { 3, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, color)  }
+    };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
+                                     .offset = 0,
+                                     .size   = static_cast<std::uint32_t>(sizeof(cd::math::Mat4f)) }
+    };
+    cd::material::MaterialDesc md {};
+#if HELLO_ENGINE_USE_ON_DISK_SHADERS
+    // D-F6: on-disk paths win over embedded strings per ADR-20260529-X5
+    // precedence rule (_glsl_path > _glsl). Embedded strings stay as
+    // the fallback for shipped binaries without the shaders folder.
+    md.vertex_glsl_path   = kShadowVertGlslPath;
+    md.fragment_glsl_path = kShadowFragGlslPath;
+#endif
+    md.vertex_glsl   = cd::hello_engine::kShadowVS;
+    md.fragment_glsl = cd::hello_engine::kShadowFS;
+    md.color_attachment_formats = {};
+    md.depth_attachment_format  = cd::rhi::Format::kD32Float;
+    md.vertex_bindings   = kBindings;
+    md.vertex_attributes = kAttrs;
+    md.push_constants = kPush;
+    md.raster.cull = cd::rhi::CullMode::kBack;
+    md.raster.depth_bias_enable   = true;
+    md.raster.depth_bias_constant = 1.25F;
+    md.raster.depth_bias_slope    = 1.75F;
+    md.depth_stencil.depth_test    = true;
+    md.depth_stencil.depth_write   = true;
+    md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
+    md.name = "hello_engine/shadow";
+    auto r = cd::material::Material::create(device, compiler, md);
+    if (!r.has_value())
+    {
+        std::fprintf(
+            stderr,
+            "hello_engine: shadow_material create failed: %.*s\n",
+            static_cast<int>(r.error().message.size()),
+            r.error().message.data()
+        );
+        return false;
+    }
+    *shadow_material = std::move(*r);
     return true;
 }
 
@@ -362,33 +437,10 @@ spawn_materials(cd::rhi::IDevice&             device,
     }
 
     // ---- Shadow material (Faz 1.6 CSM, depth-only) -------------------------
-    {
-        constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
-            cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
-                                         .offset = 0,
-                                         .size   = static_cast<std::uint32_t>(sizeof(cd::math::Mat4f)) }
-        };
-        cd::material::MaterialDesc md {};
-        md.vertex_glsl = cd::hello_engine::kShadowVS;
-        md.fragment_glsl = cd::hello_engine::kShadowFS;
-        md.color_attachment_formats = {};
-        md.depth_attachment_format = cd::rhi::Format::kD32Float;
-        md.vertex_bindings = kPrimBindings;
-        md.vertex_attributes = kPrimAttrs;
-        md.push_constants = kPush;
-        md.raster.cull = cd::rhi::CullMode::kBack;
-        md.raster.depth_bias_enable = true;
-        md.raster.depth_bias_constant = 1.25F;
-        md.raster.depth_bias_slope = 1.75F;
-        md.depth_stencil.depth_test = true;
-        md.depth_stencil.depth_write = true;
-        md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
-        md.name = "hello_engine/shadow";
-        auto r = cd::material::Material::create(device, compiler, md);
-        if (!r.has_value())
-            return std::unexpected(MaterialSpawnError { 10, "shadow" });
-        out.shadow = std::move(*r);
-    }
+    // D-F6: single source of truth lives in shadow_recreate() so the
+    // hot-reload path rebuilds the pipeline identically.
+    if (!shadow_recreate(device, compiler, &out.shadow))
+        return std::unexpected(MaterialSpawnError { 10, "shadow" });
 
     return out;
 }
