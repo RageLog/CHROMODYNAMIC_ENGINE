@@ -749,11 +749,22 @@ void main() {
   // looks dielectric (skin/cloth) instead of mirror-finish, without
   // re-introducing the W8-A 'always bright' fill that ruined spot
   // direction. 0.04 picked to stay well below the lit-side intensity.
+  // phase425-vis2: gate the 0.020 ambient floor on at least one light
+  // being active. When sun_dir.w == 0 AND cd_lights.count == 0 the
+  // scene should be completely dark (user: "ışık yoksa hiç bir şey
+  // görmem gerekir"). The hemi term is already gated on sun_color.w;
+  // the constant floor must follow the same gate so the all-off state
+  // produces lit=0, ambient=0, out_color=vec4(0).
+  // any_light > 0 when sun is on OR at least one non-sun light is
+  // enabled in the UBO.
+  float any_light = clamp(pc.sun_dir.w + float(cd_lights.count) * 0.5, 0.0, 1.0);
   float up_t   = N.y * 0.5 + 0.5;
   vec3  sky_c  = vec3(0.55, 0.65, 0.85);
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
-  vec3  ambient = albedo * (hemi + vec3(0.020));  // W8-BE: floor 0.04 -> 0.020 per user "biraz daha koyu olsun"
+  // W8-BE: floor 0.04 -> 0.020 per user "biraz daha koyu olsun".
+  // phase425-vis2: multiply by any_light so all-off -> pitch black.
+  vec3  ambient = albedo * (hemi + vec3(0.020) * any_light);
 
   // R2: True IBL with MR map. Karis split-sum:
   //   IBL = kD * irradiance(N) * albedo + prefiltered(R, rough*mipMax)
