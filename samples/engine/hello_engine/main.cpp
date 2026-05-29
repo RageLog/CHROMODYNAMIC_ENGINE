@@ -2383,12 +2383,19 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
         if (sd_len > 1e-4F) { sd.x /= sd_len; sd.y /= sd_len; sd.z /= sd_len; }
         else { sd = { 0.0F, -1.0F, 0.0F }; }
     }
-    const cd::math::Vec3f eye { -sd.x * 30.0F, -sd.y * 30.0F, -sd.z * 30.0F };
+    // phase424-vis1: eye distance bumped 30->40 m so the ortho near/far
+    // (0.1..100) covers all shadow casters regardless of sun elevation.
+    // Ortho half-extents expanded 25->40 m to cover the Sponza atrium
+    // (~12 m radius at 0.01 scale) and the surrounding entity cluster.
+    // Far 60->100 m preserves the original depth range ratio while giving
+    // headroom for Sponza geometry at steep sun angles where casters can
+    // project far along the light-view Z axis.
+    const cd::math::Vec3f eye { -sd.x * 40.0F, -sd.y * 40.0F, -sd.z * 40.0F };
     const cd::math::Vec3f tgt { 0.0F, 0.0F, 0.0F };
     const cd::math::Vec3f up =
         (std::fabs(sd.y) > 0.99F) ? cd::math::Vec3f { 0.0F, 0.0F, 1.0F } : cd::math::Vec3f { 0.0F, 1.0F, 0.0F };
     const auto light_view = cd::math::look_at(eye, tgt, up);
-    const auto light_proj = cd::math::ortho(-25.0F, 25.0F, -25.0F, 25.0F, 0.1F, 60.0F);
+    const auto light_proj = cd::math::ortho(-40.0F, 40.0F, -40.0F, 40.0F, 0.1F, 100.0F);
     const cd::math::Mat4f light_vp = light_proj * light_view;
     (void)device.upload_buffer(shadow_ubo, 0, std::span<const std::byte>(reinterpret_cast<const std::byte*>(&light_vp), sizeof(light_vp)));
     if (!shadow_initialised_on_gpu)
@@ -4581,7 +4588,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.cam.target = { 0.0F, 1.0F, 0.0F };
     s.cam.fov_y  = 0.9F;
     s.cam.near_z = 0.05F;
-    s.cam.far_z  = 300.0F;
+    s.cam.far_z  = 500.0F;  // phase424-vis1: 300->500 m; matches inline-main Sponza override
     s.scene_cam.attach(s.cam, s.scene, {});
     s.scene_cam.set_auto_spin(false);
     s.scene_cam.orbit().auto_spin_rate = 0.25F;
@@ -6304,7 +6311,7 @@ int main(int argc, char** argv)
     cam.target = { 0.0F, 0.5F, 0.0F };
     cam.fov_y = 0.9F;
     cam.near_z = 0.05F;
-    cam.far_z = 200.0F;
+    cam.far_z = 500.0F;  // phase424-vis1: 200->500 m; orbit-far without clipping
 
     // Canonical Sponza nave camera preset (phase389-sponza-fix4).
     // When Sponza.gltf is loaded, override the default orbit-sphere view
