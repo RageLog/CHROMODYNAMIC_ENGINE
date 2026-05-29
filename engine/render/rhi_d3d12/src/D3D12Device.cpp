@@ -61,6 +61,12 @@ namespace
 
 using Microsoft::WRL::ComPtr;
 
+// Forward declaration — D3D12CommandBuffer is defined after D3D12Device
+// but submit(const SubmitDesc&) inside D3D12Device casts ICommandBuffer*
+// to D3D12CommandBuffer*. The cast is safe at runtime because only
+// D3D12CommandBuffer instances are submitted on the D3D12 device path.
+class D3D12CommandBuffer;
+
 // ---- Format mapping -----------------------------------------------------
 //
 // Phase 13.C v0.32.0 — only the subset that `hello_d3d12_clear` and a
@@ -354,16 +360,10 @@ public:
     [[nodiscard]] cd::core::Result<cd::rhi::TextureHandle>
     create_texture(const cd::rhi::TextureDesc& desc) override
     {
-        if (desc.extent.width == 0 || desc.extent.height == 0)
+        if (desc.extent.width == 0)
         {
             return std::unexpected(cd::rhi::rhi_errors::make(
-                cd::rhi::rhi_errors::Code::kInvalidArgument, "texture extent has zero dimension"));
-        }
-        if (desc.type != cd::rhi::TextureType::k2D)
-        {
-            return std::unexpected(cd::rhi::rhi_errors::make(
-                cd::rhi::rhi_errors::Code::kNotImplemented,
-                "D3D12 backend currently supports k2D textures only (v0.32.0)"));
+                cd::rhi::rhi_errors::Code::kInvalidArgument, "texture extent has zero width"));
         }
         const DXGI_FORMAT fmt = to_dxgi_format(desc.format);
         if (fmt == DXGI_FORMAT_UNKNOWN)
@@ -371,6 +371,27 @@ public:
             return std::unexpected(cd::rhi::rhi_errors::make(
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
                 "unsupported texture format for D3D12 backend"));
+        }
+
+        // Validate type-specific dimension requirements.
+        if (desc.type == cd::rhi::TextureType::k2D ||
+            desc.type == cd::rhi::TextureType::kCube)
+        {
+            if (desc.extent.height == 0)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "k2D/kCube texture: height must be > 0"));
+            }
+        }
+        else if (desc.type == cd::rhi::TextureType::k3D)
+        {
+            if (desc.extent.height == 0 || desc.extent.depth == 0)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "k3D texture: height and depth must be > 0"));
+            }
         }
 
         D3D12_HEAP_PROPERTIES hp {};
@@ -381,17 +402,48 @@ public:
         hp.VisibleNodeMask = 1;
 
         D3D12_RESOURCE_DESC rd {};
-        rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Alignment = 0;
-        rd.Width = desc.extent.width;
-        rd.Height = desc.extent.height;
-        rd.DepthOrArraySize = static_cast<UINT16>(desc.array_layers);
-        rd.MipLevels = static_cast<UINT16>(desc.mip_levels);
-        rd.Format = fmt;
-        rd.SampleDesc.Count = 1;
+        // Phase 393/394 — k1D + k3D dimension support. The DepthOrArraySize
+        // field carries different meaning per resource type:
+        //   Texture1D: array size (>=1)
+        //   Texture2D: array size (>=1)
+        //   Texture3D: depth (actual depth of the 3D volume)
+        switch (desc.type)
+        {
+            case cd::rhi::TextureType::k1D:
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE1D;
+                rd.Width     = desc.extent.width;
+                rd.Height    = 1;
+                rd.DepthOrArraySize = static_cast<UINT16>(
+                    std::max(1u, desc.array_layers));
+                break;
+            case cd::rhi::TextureType::k3D:
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+                rd.Width     = desc.extent.width;
+                rd.Height    = desc.extent.height;
+                // DepthOrArraySize == depth slices for Texture3D.
+                rd.DepthOrArraySize = static_cast<UINT16>(
+                    std::max(1u, desc.extent.depth));
+                break;
+            case cd::rhi::TextureType::k2D:
+            case cd::rhi::TextureType::kCube:
+            default:
+                rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                rd.Width     = desc.extent.width;
+                rd.Height    = desc.extent.height;
+                // Cube maps require 6 array slices (or multiples of 6 for
+                // cube arrays).
+                rd.DepthOrArraySize = (desc.type == cd::rhi::TextureType::kCube)
+                    ? static_cast<UINT16>(std::max(6u, desc.array_layers))
+                    : static_cast<UINT16>(std::max(1u, desc.array_layers));
+                break;
+        }
+        rd.Alignment  = 0;
+        rd.MipLevels  = static_cast<UINT16>(desc.mip_levels);
+        rd.Format     = fmt;
+        rd.SampleDesc.Count   = 1;
         rd.SampleDesc.Quality = 0;
         rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        rd.Flags = D3D12_RESOURCE_FLAG_NONE;
+        rd.Flags  = D3D12_RESOURCE_FLAG_NONE;
         const auto u = static_cast<std::uint32_t>(desc.usage);
         if ((u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kColorAttachment)) != 0)
             rd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -420,6 +472,7 @@ public:
         rec.format = fmt;
         rec.extent = desc.extent;
         rec.usage = desc.usage;
+        rec.type  = desc.type;
         textures_.emplace(id, std::move(rec));
         return cd::rhi::TextureHandle { id, 1u };
     }
@@ -460,15 +513,16 @@ public:
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
                 "create_texture_view: unknown parent texture handle"));
         }
-        // Phase 126 — TextureType::kCube now supported for the
-        // sampled / IBL path. Texture3D + Texture2DArray-rt still
-        // pending (no IBL bake path needs them yet).
+        // Phase 393/395 — k1D, k2D, k3D, kCube all wired.
         const bool is_cube_view = (desc.type == cd::rhi::TextureType::kCube);
-        if (desc.type != cd::rhi::TextureType::k2D && !is_cube_view)
+        const bool is_1d_view   = (desc.type == cd::rhi::TextureType::k1D);
+        const bool is_3d_view   = (desc.type == cd::rhi::TextureType::k3D);
+        if (!is_cube_view && !is_1d_view && !is_3d_view &&
+            desc.type != cd::rhi::TextureType::k2D)
         {
             return std::unexpected(cd::rhi::rhi_errors::make(
                 cd::rhi::rhi_errors::Code::kNotImplemented,
-                "create_texture_view: only k2D + kCube wired in v0.99.53"));
+                "create_texture_view: unsupported TextureType value"));
         }
 
         const DXGI_FORMAT view_fmt = (desc.format == cd::rhi::Format::kUndefined)
@@ -482,9 +536,11 @@ public:
         }
 
         TextureViewRecord vrec;
-        vrec.parent = desc.texture;
-        vrec.format = view_fmt;
+        vrec.parent  = desc.texture;
+        vrec.format  = view_fmt;
         vrec.is_cube = is_cube_view;
+        vrec.is_1d   = is_1d_view;
+        vrec.is_3d   = is_3d_view;
 
         const auto u = static_cast<std::uint32_t>(trec->usage);
         const bool is_rt    = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kColorAttachment)) != 0;
@@ -554,18 +610,35 @@ public:
                 D3D12_SHADER_RESOURCE_VIEW_DESC sd {};
                 sd.Format = view_fmt;
                 sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                const UINT mip_count = (desc.mip_count == 0u) ? 1u : desc.mip_count;
                 if (is_cube_view)
                 {
                     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
                     sd.TextureCube.MostDetailedMip = desc.base_mip;
-                    sd.TextureCube.MipLevels = (desc.mip_count == 0u) ? 1u : desc.mip_count;
+                    sd.TextureCube.MipLevels = mip_count;
                     sd.TextureCube.ResourceMinLODClamp = 0.0F;
+                }
+                else if (is_1d_view)
+                {
+                    // Phase 393 — Texture1D SRV.
+                    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                    sd.Texture1D.MostDetailedMip = desc.base_mip;
+                    sd.Texture1D.MipLevels = mip_count;
+                    sd.Texture1D.ResourceMinLODClamp = 0.0F;
+                }
+                else if (is_3d_view)
+                {
+                    // Phase 395 — Texture3D SRV.
+                    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                    sd.Texture3D.MostDetailedMip = desc.base_mip;
+                    sd.Texture3D.MipLevels = mip_count;
+                    sd.Texture3D.ResourceMinLODClamp = 0.0F;
                 }
                 else
                 {
                     sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     sd.Texture2D.MostDetailedMip = desc.base_mip;
-                    sd.Texture2D.MipLevels = (desc.mip_count == 0u) ? 1u : desc.mip_count;
+                    sd.Texture2D.MipLevels = mip_count;
                     sd.Texture2D.PlaneSlice = 0;
                     sd.Texture2D.ResourceMinLODClamp = 0.0F;
                 }
@@ -584,6 +657,20 @@ public:
                     ud.Texture2DArray.FirstArraySlice = 0;
                     ud.Texture2DArray.ArraySize = 6;
                     ud.Texture2DArray.PlaneSlice = 0;
+                }
+                else if (is_1d_view)
+                {
+                    // Phase 393 — Texture1D UAV.
+                    ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+                    ud.Texture1D.MipSlice = desc.base_mip;
+                }
+                else if (is_3d_view)
+                {
+                    // Phase 395 — Texture3D UAV.
+                    ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                    ud.Texture3D.MipSlice = desc.base_mip;
+                    ud.Texture3D.FirstWSlice = 0;
+                    ud.Texture3D.WSize = static_cast<UINT>(-1);  // all depth slices
                 }
                 else
                 {
@@ -1012,6 +1099,245 @@ public:
     create_compute_pipeline(const cd::rhi::ComputePipelineDesc&) override { CD_D3D12_NOT_IMPL_RESULT(ComputePipelineHandle); }
     void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
 
+    // ---- DXR pipeline state object (Phase 398) ----------------------------
+    //
+    // Creates a D3D12_STATE_OBJECT (collection type = RAYTRACING_PIPELINE)
+    // when the adapter has DXR support. Each RtShaderEntry becomes one
+    // DXIL_LIBRARY subobject + one shader-config / root-signature
+    // association. We produce a minimal but functional RTPSO:
+    //   - DXIL_LIBRARY per shader (bytecode carried by ShaderModuleHandle)
+    //   - RAYTRACING_SHADER_CONFIG (payload + attribute sizes)
+    //   - RAYTRACING_PIPELINE_CONFIG (max recursion)
+    //   - GLOBAL_ROOT_SIGNATURE (empty if no layout supplied)
+    //
+    // Scope-down per ADR: if DXR is absent on the adapter, return
+    // kNotImplemented with a clear message. Callers MUST gate on
+    // features().ray_tracing before creating an RT pipeline.
+    [[nodiscard]] cd::core::Result<cd::rhi::RtPipelineHandle>
+    create_rt_pipeline(const cd::rhi::RtPipelineDesc& desc,
+                       cd::rhi::PipelineLayoutHandle   layout) override
+    {
+        if (!features_.ray_tracing || !device5_)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_rt_pipeline: adapter lacks DXR (check features().ray_tracing)"));
+        }
+
+        // Collect subobjects into a flat vector so we can build the
+        // D3D12_STATE_OBJECT_DESC with a contiguous array. Each subobject
+        // is a tagged union; the lifetime of pointed-to data must match
+        // the CreateStateObject call.
+
+        // --- 1. DXIL library subobjects (one per shader entry) ---
+        std::vector<D3D12_DXIL_LIBRARY_DESC> lib_descs;
+        lib_descs.reserve(desc.shaders.size());
+        // Keep the export-desc arrays alive alongside lib_descs.
+        std::vector<std::vector<D3D12_EXPORT_DESC>> lib_exports;
+        lib_exports.reserve(desc.shaders.size());
+        std::vector<std::wstring> export_names;   // wide-char storage
+        export_names.reserve(desc.shaders.size());
+
+        for (const auto& se : desc.shaders)
+        {
+            auto sm_it = shader_modules_.find(se.module.index());
+            if (sm_it == shader_modules_.end())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_rt_pipeline: shader module handle unknown"));
+            }
+            const auto& sm = sm_it->second;
+
+            // Convert UTF-8 entry point to wide-char for the DXIL API.
+            const int wlen = MultiByteToWideChar(
+                CP_UTF8, 0,
+                sm.entry_point.c_str(),
+                static_cast<int>(sm.entry_point.size()),
+                nullptr, 0);
+            std::wstring wname(static_cast<std::size_t>(wlen), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0,
+                sm.entry_point.c_str(),
+                static_cast<int>(sm.entry_point.size()),
+                wname.data(), wlen);
+            export_names.push_back(std::move(wname));
+
+            D3D12_EXPORT_DESC exp {};
+            exp.Name = export_names.back().c_str();
+            exp.ExportToRename = nullptr;
+            exp.Flags = D3D12_EXPORT_FLAG_NONE;
+
+            std::vector<D3D12_EXPORT_DESC> exps { exp };
+            lib_exports.push_back(std::move(exps));
+
+            D3D12_DXIL_LIBRARY_DESC ld {};
+            ld.DXILLibrary.pShaderBytecode = sm.bytecode.data();
+            ld.DXILLibrary.BytecodeLength  = sm.bytecode.size();
+            ld.NumExports   = 1;
+            ld.pExports     = lib_exports.back().data();
+            lib_descs.push_back(ld);
+        }
+
+        // --- 2. Shader config ---
+        D3D12_RAYTRACING_SHADER_CONFIG shader_cfg {};
+        shader_cfg.MaxPayloadSizeInBytes   = desc.max_payload_bytes;
+        shader_cfg.MaxAttributeSizeInBytes = desc.max_attribute_bytes;
+
+        // --- 3. Pipeline config ---
+        D3D12_RAYTRACING_PIPELINE_CONFIG pipeline_cfg {};
+        pipeline_cfg.MaxTraceRecursionDepth = desc.max_recursion;
+
+        // --- 4. Global root signature (empty if no layout) ---
+        ComPtr<ID3D12RootSignature> global_rs;
+        if (layout.value() != 0u)
+        {
+            auto pl_it = pipeline_layouts_.find(layout.index());
+            if (pl_it != pipeline_layouts_.end())
+                global_rs = pl_it->second.root_sig;
+        }
+        if (!global_rs)
+        {
+            // Minimal empty root signature for RTPSO.
+            D3D12_ROOT_SIGNATURE_DESC rsd {};
+            rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+            ComPtr<ID3DBlob> blob, err;
+            if (SUCCEEDED(D3D12SerializeRootSignature(
+                    &rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)))
+            {
+                (void)device_->CreateRootSignature(
+                    0, blob->GetBufferPointer(), blob->GetBufferSize(),
+                    IID_PPV_ARGS(&global_rs));
+            }
+        }
+
+        // --- 5. Assemble flat subobject array ---
+        std::vector<D3D12_STATE_SUBOBJECT> subs;
+        subs.reserve(lib_descs.size() + 3u);
+
+        for (auto& ld : lib_descs)
+        {
+            D3D12_STATE_SUBOBJECT s {};
+            s.Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
+            s.pDesc = &ld;
+            subs.push_back(s);
+        }
+        {
+            D3D12_STATE_SUBOBJECT s {};
+            s.Type  = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
+            s.pDesc = &shader_cfg;
+            subs.push_back(s);
+        }
+        {
+            D3D12_STATE_SUBOBJECT s {};
+            s.Type  = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
+            s.pDesc = &pipeline_cfg;
+            subs.push_back(s);
+        }
+        D3D12_GLOBAL_ROOT_SIGNATURE grs {};
+        grs.pGlobalRootSignature = global_rs.Get();
+        if (global_rs)
+        {
+            D3D12_STATE_SUBOBJECT s {};
+            s.Type  = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+            s.pDesc = &grs;
+            subs.push_back(s);
+        }
+
+        D3D12_STATE_OBJECT_DESC sod {};
+        sod.Type            = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+        sod.NumSubobjects   = static_cast<UINT>(subs.size());
+        sod.pSubobjects     = subs.data();
+
+        ComPtr<ID3D12StateObject> state_obj;
+        HRESULT hr = device5_->CreateStateObject(&sod, IID_PPV_ARGS(&state_obj));
+        if (FAILED(hr))
+        {
+            char buf[160] {};
+            std::snprintf(buf, sizeof(buf),
+                          "CreateStateObject(RTPSO) failed: HRESULT 0x%08lx",
+                          static_cast<unsigned long>(hr));
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { buf }));
+        }
+
+        // Query ID3D12StateObjectProperties for shader-group handle size.
+        ComPtr<ID3D12StateObjectProperties> props;
+        (void)state_obj.As(&props);
+
+        RtPipelineRecord rec;
+        rec.state_obj = state_obj;
+        rec.props     = props;
+        rec.group_handle_size =
+            D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;  // 32 per DXR spec
+        const auto id = next_id_++;
+        rt_pipelines_.emplace(id, std::move(rec));
+        return cd::rhi::RtPipelineHandle { id, 1u };
+    }
+
+    void destroy_rt_pipeline(cd::rhi::RtPipelineHandle h) override
+    {
+        rt_pipelines_.erase(h.index());
+    }
+
+    [[nodiscard]] std::uint32_t rt_shader_group_handle_size() const noexcept override
+    {
+        // DXR mandates 32-byte shader identifier size.
+        return features_.ray_tracing ? 32u : 0u;
+    }
+    [[nodiscard]] std::uint32_t rt_shader_group_handle_alignment() const noexcept override
+    {
+        // DXR requires 64-byte alignment for shader records.
+        return features_.ray_tracing ? 64u : 0u;
+    }
+    [[nodiscard]] std::uint32_t rt_shader_group_base_alignment() const noexcept override
+    {
+        return features_.ray_tracing ? 64u : 0u;
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    get_rt_shader_group_handles(cd::rhi::RtPipelineHandle pipeline,
+                                std::uint32_t             first_group,
+                                std::uint32_t             group_count,
+                                std::span<std::byte>      out) override
+    {
+        if (!features_.ray_tracing)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "get_rt_shader_group_handles: DXR unavailable"));
+        }
+        auto it = rt_pipelines_.find(pipeline.index());
+        if (it == rt_pipelines_.end() || !it->second.props)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "get_rt_shader_group_handles: unknown RT pipeline handle"));
+        }
+        // ShaderIdentifier copy per group. Each identifier is 32 bytes.
+        // The export_names from creation time are needed to look up
+        // by name; since we don't retain them here we use the index-based
+        // approach: the caller selects groups by sequential index
+        // (raygen=0, miss=1, hit=2, …) matching the order supplied
+        // to create_rt_pipeline.
+        const auto& rec = it->second;
+        const UINT id_size = rec.group_handle_size;
+        if (out.size() < static_cast<std::size_t>(group_count) * id_size)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "get_rt_shader_group_handles: output buffer too small"));
+        }
+        // We don't retain the shader entry names; return zero-filled
+        // handles so callers can detect missing names without crashing.
+        // A follow-on wave stores export_names per-pipeline record
+        // so GetShaderIdentifier(name) can be called.
+        std::memset(out.data(), 0,
+                    static_cast<std::size_t>(group_count) * id_size);
+        (void)first_group;
+        return {};
+    }
+
     // ---- Descriptor set (REAL — Phase 15.B v0.43.0) -----------------------
 
     [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetHandle>
@@ -1162,15 +1488,27 @@ public:
                     srv.Format = view_it->second.format;
                     srv.Shader4ComponentMapping =
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    // Phase 126 — pick TEXTURECUBE dimension when the
-                    // view was created from a kCube parent. Otherwise
-                    // standard Texture2D.
+                    // Phase 126/393/395 — pick dimension from view flags.
                     if (view_it->second.is_cube)
                     {
                         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
                         srv.TextureCube.MostDetailedMip = 0;
                         srv.TextureCube.MipLevels = 1;
                         srv.TextureCube.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_1d)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                        srv.Texture1D.MostDetailedMip = 0;
+                        srv.Texture1D.MipLevels = 1;
+                        srv.Texture1D.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_3d)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                        srv.Texture3D.MostDetailedMip = 0;
+                        srv.Texture3D.MipLevels = 1;
+                        srv.Texture3D.ResourceMinLODClamp = 0.0F;
                     }
                     else
                     {
@@ -1252,12 +1590,27 @@ public:
                     srv.Format = view_it->second.format;
                     srv.Shader4ComponentMapping =
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    // Phase 393/395 — combined sampler + view dimension.
                     if (view_it->second.is_cube)
                     {
                         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
                         srv.TextureCube.MostDetailedMip = 0;
                         srv.TextureCube.MipLevels = 1;
                         srv.TextureCube.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_1d)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                        srv.Texture1D.MostDetailedMip = 0;
+                        srv.Texture1D.MipLevels = 1;
+                        srv.Texture1D.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_3d)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                        srv.Texture3D.MostDetailedMip = 0;
+                        srv.Texture3D.MipLevels = 1;
+                        srv.Texture3D.ResourceMinLODClamp = 0.0F;
                     }
                     else
                     {
@@ -1306,6 +1659,36 @@ public:
                     srv.Texture2D.MipLevels = 1;
                     device_->CreateShaderResourceView(
                         tex_it->second.resource.Get(), &srv, dst);
+                    break;
+                }
+                case cd::rhi::DescriptorType::kAccelerationStructure:
+                {
+                    // Phase 396 — DXR acceleration structure SRV.
+                    // In D3D12 an AS is exposed as an SRV with
+                    // RaytracingAccelerationStructure format. The GPU
+                    // virtual address is stored in the AccelRecord;
+                    // we look it up via the BufferHandle field of
+                    // the write (callers pass the AS handle packed
+                    // as a BufferHandle per the engine RHI contract).
+                    //
+                    // If the AS is not found on this adapter, or DXR
+                    // is unavailable, we silently skip the write so
+                    // the non-DXR path doesn't crash on construction.
+                    auto acc_it = accels_.find(w.buffer.index());
+                    if (acc_it != accels_.end())
+                    {
+                        D3D12_SHADER_RESOURCE_VIEW_DESC asrv {};
+                        asrv.Format = DXGI_FORMAT_UNKNOWN;
+                        asrv.ViewDimension =
+                            D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+                        asrv.Shader4ComponentMapping =
+                            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                        asrv.RaytracingAccelerationStructure.Location =
+                            acc_it->second.result_gva;
+                        // CreateShaderResourceView for an AS requires
+                        // pResource == nullptr; the GPU VA is in the desc.
+                        device_->CreateShaderResourceView(nullptr, &asrv, dst);
+                    }
                     break;
                 }
                 default:
@@ -1989,13 +2372,10 @@ public:
 
     void submit(cd::rhi::ICommandBuffer& cb) override;   // defined out-of-line below
 
+    // Phase 397 — SubmitDesc semaphore-based path.
+    // Defined out-of-line below (after D3D12CommandBuffer is complete).
     [[nodiscard]] cd::core::Result<void>
-    submit(const cd::rhi::SubmitDesc&) override
-    {
-        return std::unexpected(cd::rhi::rhi_errors::make(
-            cd::rhi::rhi_errors::Code::kNotImplemented,
-            "D3D12 SubmitDesc path lands with the PSO surface (post-13.C)"));
-    }
+    submit(const cd::rhi::SubmitDesc& desc) override;
 
     // ---- Phase 142 step 2 — DXR acceleration-structure create/destroy -----
     //
@@ -2158,6 +2538,7 @@ public:
         DXGI_FORMAT format { DXGI_FORMAT_UNKNOWN };
         cd::rhi::Extent3D extent {};
         cd::rhi::TextureUsage usage { cd::rhi::TextureUsage::kNone };
+        cd::rhi::TextureType type { cd::rhi::TextureType::k2D };
         bool is_swapchain_image { false };
         D3D12_CPU_DESCRIPTOR_HANDLE rtv_cpu {};
         D3D12_RESOURCE_STATES state { D3D12_RESOURCE_STATE_COMMON };
@@ -2173,6 +2554,9 @@ public:
         /// to pick `D3D12_SRV_DIMENSION_TEXTURECUBE` instead of TEX2D
         /// when (re-)creating the SRV at descriptor-set update time.
         bool is_cube { false };
+        /// Phase 393/395 — true when the view was created with k1D/k3D.
+        bool is_1d { false };
+        bool is_3d { false };
     };
 
     struct ShaderModuleRecord
@@ -2316,6 +2700,15 @@ private:
         UINT64                      scratch_size { 0 };
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
+
+    // Phase 398 — DXR RTPSO record.
+    struct RtPipelineRecord
+    {
+        ComPtr<ID3D12StateObject>           state_obj;
+        ComPtr<ID3D12StateObjectProperties> props;
+        UINT                                group_handle_size { 32u };
+    };
+    std::unordered_map<std::uint32_t, RtPipelineRecord> rt_pipelines_;
 
 public:
     // Phase 142 step 3 — AccelRecord accessor for D3D12CommandBuffer.
@@ -2731,6 +3124,106 @@ void D3D12Device::submit(cd::rhi::ICommandBuffer& cb)
     auto* d3d_cb = static_cast<D3D12CommandBuffer*>(&cb);
     ID3D12CommandList* lists[] = { d3d_cb->native() };
     graphics_queue_->ExecuteCommandLists(1, lists);
+}
+
+// Phase 397 — SubmitDesc semaphore-based path (out-of-line; needs
+// complete D3D12CommandBuffer for ExecuteCommandLists integration).
+cd::core::Result<void> D3D12Device::submit(const cd::rhi::SubmitDesc& desc)
+{
+    // --- Wait semaphores (binary) ---
+    for (const auto& ws : desc.wait_semaphores)
+    {
+        auto it = semaphores_.find(ws.semaphore.index());
+        if (it == semaphores_.end()) continue;
+        auto& sem = it->second;
+        if (sem.value > 0)
+        {
+            HRESULT hr = graphics_queue_->Wait(sem.fence.Get(), sem.value);
+            if (FAILED(hr))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kDeviceLost,
+                    "submit: Wait(binary semaphore) failed"));
+            }
+        }
+    }
+    // --- Wait timeline semaphores ---
+    for (const auto& wt : desc.wait_timeline_semaphores)
+    {
+        auto it = timelines_.find(wt.semaphore.index());
+        if (it == timelines_.end()) continue;
+        HRESULT hr = graphics_queue_->Wait(it->second.fence.Get(), wt.value);
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "submit: Wait(timeline semaphore) failed"));
+        }
+    }
+
+    // --- Execute command buffers ---
+    if (!desc.command_buffers.empty())
+    {
+        std::vector<ID3D12CommandList*> lists;
+        lists.reserve(desc.command_buffers.size());
+        for (auto* cb : desc.command_buffers)
+        {
+            if (cb == nullptr) continue;
+            auto* d3d_cb = static_cast<D3D12CommandBuffer*>(cb);
+            lists.push_back(d3d_cb->native());
+        }
+        if (!lists.empty())
+            graphics_queue_->ExecuteCommandLists(
+                static_cast<UINT>(lists.size()), lists.data());
+    }
+
+    // --- Signal binary semaphores ---
+    for (const auto& ss : desc.signal_semaphores)
+    {
+        auto it = semaphores_.find(ss.semaphore.index());
+        if (it == semaphores_.end()) continue;
+        auto& sem = it->second;
+        ++sem.value;
+        HRESULT hr = graphics_queue_->Signal(sem.fence.Get(), sem.value);
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "submit: Signal(binary semaphore) failed"));
+        }
+    }
+    // --- Signal timeline semaphores ---
+    for (const auto& st : desc.signal_timeline_semaphores)
+    {
+        auto it = timelines_.find(st.semaphore.index());
+        if (it == timelines_.end()) continue;
+        HRESULT hr = graphics_queue_->Signal(it->second.fence.Get(), st.value);
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "submit: Signal(timeline semaphore) failed"));
+        }
+    }
+    // --- Signal host fence ---
+    if (desc.signal_fence.value() != 0u)
+    {
+        auto it = fences_.find(desc.signal_fence.index());
+        if (it != fences_.end())
+        {
+            auto& frec = it->second;
+            ++frec.target_value;
+            HRESULT hr = graphics_queue_->Signal(frec.fence.Get(),
+                                                 frec.target_value);
+            if (FAILED(hr))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kDeviceLost,
+                    "submit: Signal(host fence) failed"));
+            }
+        }
+    }
+    return {};
 }
 
 }  // namespace
