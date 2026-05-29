@@ -1779,6 +1779,140 @@ public:
         return it->second.image_handles[i];
     }
 
+    // ---- Image readback (phase377-B-infra2) ---------------------------------
+    //
+    // One-shot CommandAllocator + GraphicsCommandList: transition src_image
+    // to COPY_SOURCE state (using its tracked state), issue
+    // CopyTextureRegion into the readback buffer, transition back, execute,
+    // wait_idle. dst_buffer must be READBACK heap (kGpuToCpu).
+    [[nodiscard]] cd::core::Result<void> copy_image_to_buffer(
+        cd::rhi::TextureHandle      src_image,
+        cd::rhi::BufferHandle       dst_buffer,
+        std::uint64_t               dst_offset,
+        const cd::rhi::IDevice::ImageRegion& region
+    ) override
+    {
+        auto* trec = find_texture(src_image);
+        if (trec == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: unknown src_image handle"));
+        }
+        auto buf_it = buffers_.find(dst_buffer.index());
+        if (buf_it == buffers_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: unknown dst_buffer handle"));
+        }
+        const auto& brec = buf_it->second;
+        if (brec.heap_type != D3D12_HEAP_TYPE_READBACK)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: dst_buffer is not READBACK heap (use kGpuToCpu)"));
+        }
+
+        // One-shot allocator + command list.
+        ComPtr<ID3D12CommandAllocator> alloc;
+        HRESULT hr = device_->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc));
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: CreateCommandAllocator failed"));
+        }
+        ComPtr<ID3D12GraphicsCommandList> list;
+        hr = device_->CreateCommandList(
+            0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+            alloc.Get(), nullptr, IID_PPV_ARGS(&list));
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: CreateCommandList failed"));
+        }
+
+        // Transition to COPY_SOURCE if not already there.
+        if (trec->state != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        {
+            D3D12_RESOURCE_BARRIER bar {};
+            bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            bar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            bar.Transition.pResource = trec->resource.Get();
+            bar.Transition.StateBefore = trec->state;
+            bar.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &bar);
+        }
+
+        // Query the row pitch for the subresource (D3D12 aligns rows to 256 B).
+        D3D12_RESOURCE_DESC src_desc = trec->resource->GetDesc();
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+        UINT64 total_bytes = 0;
+        device_->GetCopyableFootprints(
+            &src_desc, region.mip_level, 1, dst_offset,
+            &footprint, nullptr, nullptr, &total_bytes);
+
+        // Adjust the footprint region to match the requested rectangle.
+        footprint.Footprint.Width  = region.width;
+        footprint.Footprint.Height = region.height;
+        footprint.Footprint.Depth  = 1;
+
+        D3D12_TEXTURE_COPY_LOCATION src_loc {};
+        src_loc.pResource        = trec->resource.Get();
+        src_loc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        src_loc.SubresourceIndex = region.mip_level +
+            (region.base_layer * static_cast<UINT>(src_desc.MipLevels));
+
+        D3D12_TEXTURE_COPY_LOCATION dst_loc {};
+        dst_loc.pResource       = brec.resource.Get();
+        dst_loc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        dst_loc.PlacedFootprint = footprint;
+
+        const D3D12_BOX src_box {
+            .left   = region.x,
+            .top    = region.y,
+            .front  = 0u,
+            .right  = region.x + region.width,
+            .bottom = region.y + region.height,
+            .back   = 1u,
+        };
+        list->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, &src_box);
+
+        // Transition back to COMMON so the texture remains usable afterwards.
+        {
+            D3D12_RESOURCE_BARRIER bar {};
+            bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            bar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            bar.Transition.pResource = trec->resource.Get();
+            bar.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            bar.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+            bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list->ResourceBarrier(1, &bar);
+        }
+        trec->state = D3D12_RESOURCE_STATE_COMMON;
+
+        hr = list->Close();
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: Close() failed"));
+        }
+        ID3D12CommandList* lists[] = { list.Get() };
+        graphics_queue_->ExecuteCommandLists(1, lists);
+        if (FAILED(wait_idle_internal()))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "copy_image_to_buffer: wait_idle_internal failed"));
+        }
+        return {};
+    }
+
     // ---- Buffer upload / download (REAL — Phase 13.C v0.32.0) -------------
 
     [[nodiscard]] cd::core::Result<void>

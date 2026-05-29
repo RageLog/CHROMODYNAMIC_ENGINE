@@ -14,3 +14,9 @@ cd_add_test(backend_parity
   SOURCES test_backend_parity.cpp
   DEPS    cd::rhi cd::core
 )
+
+# phase377-B-infra2: IDevice::copy_image_to_buffer smoke tests (NullDevice).
+cd_add_test(image_readback
+  SOURCES test_image_readback.cpp
+  DEPS    cd::rhi cd::core
+)

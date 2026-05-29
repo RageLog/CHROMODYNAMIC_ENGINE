@@ -1,8 +1,12 @@
 # Heitz 2016 -- Real-Time Polygonal-Light Shading with Linearly Transformed Cosines
 
 - **Bibkey**: heitz2016ltc
-- **MANIFEST status**: STAGED (PDF download pending)
-- **Venue**: SIGGRAPH 2016, ACM TOG 35(4)
+- **MANIFEST status**: VERIFIED — `pdf/heitz2016_ltc_area_lights.pdf`
+- **SHA-256**: `d89ed57d4b55f5ca4029970c07cc33d81769a14b5c3321d5c3e117abe76b9511`
+- **Venue**: SIGGRAPH 2016 Technical Paper, ACM TOG 35(4)
+- **DOI**: 10.1145/2897824.2925895
+- **Pages**: 8 (letter, LaTeX acmsiggraph.cls, PDF v1.5)
+- **Downloaded**: 2026-05-29 via Google Drive author-hosted link from eheitzresearch.wordpress.com/415-2/
 
 ## Why this paper
 
@@ -24,14 +28,41 @@ transform of the same closed form.
 - docs/ADR/ADR-20260529-W8-AJ-LTC-corner-winding.md -- winding convention
   fix for the LTC edge integral (CCW around outward normal).
 
-## Demir Kural verification checklist (when PDF arrives)
+## Abstract (from paper, p. 1)
 
-- [ ] Compute SHA-256 of downloaded PDF, write to MANIFEST.csv.
-- [ ] Confirm the spherical-polygon edge integral matches eq. 11 of the paper.
-- [ ] Confirm the corner-winding direction matches Heitz Figure 4 + section 4.3.
-- [ ] Confirm the LUT format (64x64, roughness x NoV, M_inv matrix) matches
-      what cd::brdf_ltc::kLtcMatrixLut ships.
-- [ ] Update MANIFEST.csv + bibliography.bib note field.
+"In this paper, we show that applying a linear transformation — represented by a 3x3 matrix —
+to the direction vectors of a spherical distribution yields another spherical distribution, for
+which we derive a closed-form expression. With this idea, we can use any spherical distribution
+as a base shape to create a new family of spherical distributions with parametric roughness,
+elliptic anisotropy and skewness. If the original distribution has an analytic expression,
+normalization, integration over spherical polygons, and importance sampling, then these properties
+are inherited by the linearly transformed distributions. By choosing a clamped cosine for the
+original distribution we obtain a family of distributions, which we call Linearly Transformed
+Cosines (LTCs), that provide a good approximation to physically based BRDFs and that can be
+analytically integrated over arbitrary spherical polygons."
+
+## Key technical content
+
+- Section 3: Linearly Transformed Spherical Distributions — matrix M parametrises roughness,
+  anisotropy, skewness of any base distribution.
+- Section 4: LTC fit to GGX BRDF, offline BRDF fitting minimising L3 norm; 64x64 LUT indexed
+  by roughness and NoV stores M_inv matrices.
+- Section 5: Real-time shading application — polygon irradiance form factor, edge-integral
+  formula (Eq. 11), inverse-transform the polygon, integrate clamped cosine analytically.
+  Cost: O(n vertices), ~2.4 ms for 1920x1080 on GTX 980.
+- Figure 4: winding convention — vertices ordered CCW when viewed from the light normal side.
+
+## Demir Kural verification checklist
+
+- [x] PDF downloaded: `research/library/pdf/heitz2016_ltc_area_lights.pdf`
+- [x] SHA-256 computed and written to MANIFEST.csv.
+- [x] Title on page 1 matches: "Real-Time Polygonal-Light Shading with Linearly Transformed Cosines"
+- [x] All 4 authors confirmed on page 1: Eric Heitz, Jonathan Dupuy, Stephen Hill, David Neubelt.
+- [x] DOI confirmed in paper footer: 10.1145/2897824.2925895 (SIGGRAPH '16 Technical Paper).
+- [x] bibliography.bib PENDING_PDF note removed.
+- [ ] Confirm the spherical-polygon edge integral in cd::brdf_ltc matches Eq. 11 (next code review).
+- [ ] Confirm corner-winding convention matches Figure 4 + section 4.3 (ADR-W8-AJ covers this).
+- [ ] Ship full 64x64 LUT-driven specular LTC (Run 20 target).
 
 ## State-of-the-art successor candidates (Run 18 SOTA sweep)
 

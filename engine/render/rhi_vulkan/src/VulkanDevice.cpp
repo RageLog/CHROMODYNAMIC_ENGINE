@@ -2715,6 +2715,229 @@ public:
         return true;
     }
 
+    // ---- Image readback (phase377-B-infra2) ---------------------------------
+    //
+    // One-shot command buffer: transition src_image to TRANSFER_SRC_OPTIMAL,
+    // issue vkCmdCopyImageToBuffer, transition back to SHADER_READ_ONLY_OPTIMAL,
+    // submit, fence-wait. Caller does not need to pre-transition the image.
+    //
+    // Scope-down: no per-image layout tracking exists in VulkanDevice; the
+    // transition from UNDEFINED is conservative and safe for textures that have
+    // been written to at least once. Textures still in UNDEFINED state on entry
+    // (i.e. freshly created and never written) will trigger a validation warning
+    // but will not crash — the driver treats UNDEFINED as "I don't care".
+    [[nodiscard]] cd::core::Result<void> copy_image_to_buffer(
+        cd::rhi::TextureHandle      src_image,
+        cd::rhi::BufferHandle       dst_buffer,
+        std::uint64_t               dst_offset,
+        const cd::rhi::IDevice::ImageRegion& region
+    ) override
+    {
+        const auto img_it  = images_.find(src_image.index());
+        const auto meta_it = image_meta_.find(src_image.index());
+        const auto buf_it  = buffers_.find(dst_buffer.index());
+        const auto met_it  = buffer_meta_.find(dst_buffer.index());
+
+        if (img_it == images_.end() || meta_it == image_meta_.end())
+        {
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: unknown src_image handle"));
+        }
+        if (buf_it == buffers_.end() || met_it == buffer_meta_.end())
+        {
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: unknown dst_buffer handle"));
+        }
+        if (!met_it->second.host_visible)
+        {
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: dst_buffer is not host-visible (use kGpuToCpu)"));
+        }
+
+        // Ensure the command pool exists (create_command_buffer may not have
+        // been called yet in this device's lifetime).
+        if (graphics_pool_ == VK_NULL_HANDLE)
+        {
+            const VkCommandPoolCreateInfo pi {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                .queueFamilyIndex = graphics_family_,
+            };
+            if (vkCreateCommandPool(device_, &pi, nullptr, &graphics_pool_) != VK_SUCCESS)
+            {
+                return std::unexpected(make_err(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "copy_image_to_buffer: vkCreateCommandPool failed"));
+            }
+        }
+
+        // Allocate a one-shot command buffer.
+        VkCommandBuffer cmd { VK_NULL_HANDLE };
+        const VkCommandBufferAllocateInfo ai {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = graphics_pool_,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        if (vkAllocateCommandBuffers(device_, &ai, &cmd) != VK_SUCCESS)
+        {
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: vkAllocateCommandBuffers failed"));
+        }
+
+        const VkCommandBufferBeginInfo bi {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = nullptr,
+        };
+        vkBeginCommandBuffer(cmd, &bi);
+
+        // Transition: UNDEFINED → TRANSFER_SRC_OPTIMAL
+        const VkImageMemoryBarrier2 to_src {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = img_it->second,
+            .subresourceRange = {
+                .aspectMask = aspect_for_format(meta_it->second.format),
+                .baseMipLevel = region.mip_level,
+                .levelCount = 1,
+                .baseArrayLayer = region.base_layer,
+                .layerCount = 1,
+            },
+        };
+        const VkDependencyInfo dep_to_src {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &to_src,
+        };
+        vkCmdPipelineBarrier2(cmd, &dep_to_src);
+
+        const VkBufferImageCopy copy_region {
+            .bufferOffset = dst_offset,
+            .bufferRowLength = 0,    // tightly packed
+            .bufferImageHeight = 0,  // tightly packed
+            .imageSubresource = {
+                .aspectMask = aspect_for_format(meta_it->second.format),
+                .mipLevel = region.mip_level,
+                .baseArrayLayer = region.base_layer,
+                .layerCount = 1,
+            },
+            .imageOffset = { static_cast<std::int32_t>(region.x),
+                             static_cast<std::int32_t>(region.y), 0 },
+            .imageExtent = { region.width, region.height, 1 },
+        };
+        vkCmdCopyImageToBuffer(
+            cmd,
+            img_it->second,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            buf_it->second,
+            1,
+            &copy_region
+        );
+
+        // Transition back: TRANSFER_SRC_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+        const VkImageMemoryBarrier2 to_read {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = nullptr,
+            .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = img_it->second,
+            .subresourceRange = {
+                .aspectMask = aspect_for_format(meta_it->second.format),
+                .baseMipLevel = region.mip_level,
+                .levelCount = 1,
+                .baseArrayLayer = region.base_layer,
+                .layerCount = 1,
+            },
+        };
+        const VkDependencyInfo dep_to_read {
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .pNext = nullptr,
+            .dependencyFlags = 0,
+            .memoryBarrierCount = 0,
+            .pMemoryBarriers = nullptr,
+            .bufferMemoryBarrierCount = 0,
+            .pBufferMemoryBarriers = nullptr,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &to_read,
+        };
+        vkCmdPipelineBarrier2(cmd, &dep_to_read);
+
+        vkEndCommandBuffer(cmd);
+
+        // Create a fence, submit, wait, clean up.
+        VkFenceCreateInfo fci {};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fci.pNext = nullptr;
+        fci.flags = 0;
+        VkFence fence { VK_NULL_HANDLE };
+        if (vkCreateFence(device_, &fci, nullptr, &fence) != VK_SUCCESS)
+        {
+            vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd);
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: vkCreateFence failed"));
+        }
+
+        const VkCommandBufferSubmitInfo cb_info {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .pNext = nullptr,
+            .commandBuffer = cmd,
+            .deviceMask = 0,
+        };
+        const VkSubmitInfo2 si {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .pNext = nullptr,
+            .flags = 0,
+            .waitSemaphoreInfoCount = 0,
+            .pWaitSemaphoreInfos = nullptr,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &cb_info,
+            .signalSemaphoreInfoCount = 0,
+            .pSignalSemaphoreInfos = nullptr,
+        };
+        const VkResult submit_res = vkQueueSubmit2(graphics_queue_, 1, &si, fence);
+        if (submit_res != VK_SUCCESS)
+        {
+            vkDestroyFence(device_, fence, nullptr);
+            vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd);
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "copy_image_to_buffer: vkQueueSubmit2 failed"));
+        }
+        vkWaitForFences(device_, 1, &fence, VK_TRUE, ~std::uint64_t { 0 });
+        vkDestroyFence(device_, fence, nullptr);
+        vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd);
+        return {};
+    }
+
     void submit(cd::rhi::ICommandBuffer& cmd) override
     {
         // Single-command shorthand. Forward to the full submit() so the queue

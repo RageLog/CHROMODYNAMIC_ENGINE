@@ -62,3 +62,4 @@ add_subdirectory(rhi_metal)
 add_subdirectory(rhi_d3d12)
 add_subdirectory(rhi_opengl)  # Phase 18.B — 3rd API priority (boot-only)
 add_subdirectory(rhi_native)
+add_subdirectory(spirv_cross_glue)  # B-infra1 — SPIR-V → HLSL/MSL/GLSL cross-compilation

@@ -7,7 +7,7 @@ the failed-fetch trail for the papers that did NOT verify in this run.
 
 Timestamp: 2026-05-29T15:33Z
 
-## VERIFIED (3 / 5)
+## VERIFIED (4 / 5) — updated Run 30 / phase375 (2026-05-29)
 
 - `karis2013_real_shading_ue4` — direct fetch from
   `cdn2.unrealengine.com`, 2.95 MB, PDF v1.6 zip-deflate. SHA-256
@@ -20,64 +20,84 @@ Timestamp: 2026-05-29T15:33Z
   `bartwronski.files.wordpress.com`, 5.78 MB, PDF v1.5,
   67 pages. SHA-256
   `93d46671eee4b51c2c6efe8d7919d22b47c5e5eb41ef19c8e2fe37d7f63201f9`.
+- `heitz2016_ltc_area_lights` — RESOLVED in Run 30 (2026-05-29). See
+  RESOLVED section below. SHA-256
+  `d89ed57d4b55f5ca4029970c07cc33d81769a14b5c3321d5c3e117abe76b9511`.
 
-## STAGED — fetch failed in this run (2 / 5)
+## RESOLVED — Run 30 (phase375)
 
-### heitz2016_ltc_area_lights
+### heitz2016_ltc_area_lights — VERIFIED 2026-05-29T17:45Z
 
-Listed source URL `https://eheitzresearch.wordpress.com/415-2/`. Issues:
+**Run 29 failure trail:**
 
-1. The wordpress page renders but contains no direct PDF link in the
-   parsed HTML. The page links to a code archive
-   `http://blog.selfshadow.com/publications/ltc/ltc_demo.zip` and an
-   interactive demo, but not the paper PDF.
-2. Tried `eheitzresearch.files.wordpress.com/2016/07/ltc_paper.pdf`
-   and `/2017/07/ltc_paper.pdf` — both return 404 (1377 B HTML body).
-3. Tried `hal.science/hal-02155101/document` — returns login wall
-   (12.5 KB HTML).
-4. The wordpress page is JavaScript-rendered; the actual PDF download
-   button likely sits behind a JS handler that curl cannot exercise.
+1. The wordpress page `https://eheitzresearch.wordpress.com/415-2/` renders
+   but the PDF link is a Google Drive link (JavaScript-driven), not a direct
+   PDF URL. curl cannot exercise JS handlers.
+2. `eheitzresearch.files.wordpress.com/2016/07/ltc_paper.pdf` and
+   `/2017/07/ltc_paper.pdf` — both 404.
+3. `hal.science/hal-02155101/document` — login wall.
+4. Semantic Scholar cache (`pdfs.semanticscholar.org/1531/...pdf`) —
+   fetched successfully but was a 43-page slides PDF (16:9 format,
+   "Eric Heitz at al. 2016 SIGGRAPH" cover), not the 8-page journal paper.
+   Deleted immediately per Demir Kural sanity check.
 
-**Next-session resolution path**: dispatch academic-researcher with
-explicit fallback list — (a) re-render page via headless Chromium,
-(b) try `eheitzresearch.files.wordpress.com/2017/07/heitz-real-time-polygonal-light.pdf`
-or similar variants observed in CDN logs, (c) request via Eric Heitz's
-current employer page if reachable.
+**Run 30 resolution:**
 
-### eberly_lbs_skinning
+WebFetch on the author page extracted the Google Drive file IDs directly
+from page HTML. Paper file ID: `0BzvWIdpUpRx_d09ndGVjNVJzZjA`. Direct
+download URL: `https://drive.google.com/uc?export=download&id=0BzvWIdpUpRx_d09ndGVjNVJzZjA`.
 
-Listed source URL `https://www.geometrictools.com/Documentation/Skinning.pdf`.
-The page returns a 2094 B HTML "File Not Found" page — the
-geometrictools.com site was reorganised for GTE (Geometric Tools
-Engine) versions 4-6 and the older `Documentation/` path is dead.
+Downloaded 32.8 MB (large due to high-res figures). Verified:
+
+- `file`: `PDF document, version 1.5`
+- `pdfinfo` Title: "Real-Time Polygonal-Light Shading with Linearly Transformed Cosines"
+- `pdfinfo` Author: "Eric Heitz, Jonathan Dupuy, Stephen Hill, David Neubelt"
+- `pdfinfo` Creator: "LaTeX acmsiggraph.cls (11/2015)" — confirms it is the actual paper, not slides
+- `pdfinfo` Pages: 8
+- DOI footer on page 1: `http://dx.doi.org/10.1145/2897824.2925895`
+- MANIFEST.csv updated to VERIFIED; bibliography.bib PENDING\_PDF note removed.
+
+## STAGED — fetch failed, final verdict (1 / 5)
+
+### eberly\_lbs\_skinning -- FINAL: NOT RECOVERABLE
+
+**Run 29 failure:** The original URL `https://www.geometrictools.com/Documentation/Skinning.pdf`
+returns a 2094 B HTML "File Not Found" page. The geometrictools.com site was reorganised for GTE
+(Geometric Tools Engine) versions 4-6 and the older `Documentation/` path is dead.
 The parent directory listing returns 403 Forbidden.
 
-**Next-session resolution path**: dispatch academic-researcher with
-explicit fallback list — (a) crawl `geometrictools.com` for the new
-LBS document URL (likely under `/Books/` or `/Samples/`), (b) try the
-Wayback Machine snapshot `web.archive.org/web/*/geometrictools.com/Documentation/Skinning.pdf`
-(historically reachable), (c) substitute a peer-reviewed LBS reference
-such as Magnenat-Thalmann et al. 1988 if Eberly's note is unrecoverable.
+**Run 30 exhaustive retry** -- all of the following returned 404 or HTML:
 
-## Demir Kural status
+- `geometrictools.com/Documentation/Skinning.pdf`
+- `geometrictools.com/Documentation/SkinDecomposition.pdf`
+- `geometrictools.com/Documentation/LinearBlendSkinning.pdf`
+- `geometrictools.com/Documentation/SkinMeshes.pdf`
+- `geometrictools.com/Documentation/SkinningAnimation.pdf`
+- `geometrictools.com/Documentation/SkinnedMesh.pdf`
+- `geometrictools.com/Documentation/SkinningWithDualQuaternions.pdf`
+- `geometrictools.com/Samples/Graphics/Skinning/Skinning.pdf`
+- GitHub raw: `davideberly/GeometricTools/master/Documentation/Skinning.pdf` -- 404
+- Wayback Machine CDX API: connection timeout (web.archive.org unreachable from this shell)
+- Wayback direct snapshots (2015, 2018): both returned 142 KB HTML shell -- document was never
+  archived as a live PDF at that URL.
 
-Per CLAUDE.md §2 and the Demir Kural rule: no ADR, shader comment, or
-TeX source may cite `heitz2016ltc` or `eberlylbs` until those rows
-move to status=VERIFIED with non-empty `pdf_relpath` + `sha256`.
+**Conclusion:** The Eberly "Skinning" engineering note is not recoverable via open-access means.
+`eberly_lbs_skinning` remains STAGED / PENDING\_PDF. The bibkey `eberlylbs` is blocked from
+citation. Recommended substitute: Kavan et al. 2007 "Skinning with Dual Quaternions" -- free
+access, peer-reviewed, covers LBS as its explicit baseline. Acquire that PDF via a fresh
+`academic-researcher` session before citing LBS theory in any ADR or shader comment.
 
-Until that happens the LTC area-light commentary in
-`engine/render/brdf_ltc/` and the LBS reference in
-`engine/world/anim/` must carry inline derivations or cite the
-peer-reviewed alternates (Heitz et al. 2016 ACM TOG, Magnenat-Thalmann
-1988 Eurographics) WITH MANIFEST.csv update first.
+## Demir Kural status -- updated Run 30
 
-## Citation-verifier handoff
+`heitz2016ltc` -- VERIFIED as of 2026-05-29. May be cited freely in ADRs and shader comments.
 
-When the next session re-attempts these two papers, the verifier must
-re-confirm:
+`eberlylbs` -- STAGED / PENDING\_PDF. Citation still blocked. Substitute needed.
 
-1. PDF magic bytes (`file pdf/<bibkey>.pdf` reports `PDF document`).
+## Citation-verifier handoff -- eberlylbs only
+
+When a future session re-attempts this paper or its substitute, the verifier must confirm:
+
+1. PDF magic bytes (`file pdf/BIBKEY.pdf` reports `PDF document`).
 2. SHA-256 matches a recomputed digest.
-3. The notes/<bibkey>.md claim text quotes appear in the PDF body.
-4. BibTeX `note = {DEMIR_KURAL_PENDING_PDF ...}` is removed and the
-   entry is left clean.
+3. The notes/BIBKEY.md claim text quotes appear in the PDF body.
+4. BibTeX `note = {DEMIR_KURAL_PENDING_PDF ...}` is removed and the entry is left clean.

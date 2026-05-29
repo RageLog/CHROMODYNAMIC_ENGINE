@@ -1,15 +1,13 @@
 % =============================================================================
 % CHROMODYNAMIC Engine - Demir Kural verified-citation BibTeX file.
 %
-% Mega-Marathon A1 (Run 29 / phase372): 3 of 5 pilot entries VERIFIED with
-% PDFs on disk + SHA-256 recorded in MANIFEST.csv. 2 of 5 remain
-% PENDING_PDF (heitz2016ltc + eberlylbs); see research/library/ATTEMPTS.md
-% for the resolution log.
+% Run 29 (phase372) + Run 30 (phase375): 4 of 5 pilot entries VERIFIED.
+% Run 30 resolved heitz2016ltc (author Google Drive link).
+% 1 of 5 remain PENDING_PDF (eberlylbs — upstream URL dead, Wayback exhausted).
 %
 % Demir Kural rule: an ADR or shader comment may not cite a bibkey from
-% this file until the matching MANIFEST.csv row has a verified PDF
-% (pdf_relpath populated + sha256 populated + status=VERIFIED). Entries
-% still PENDING carry an explicit `note = {DEMIR_KURAL_PENDING_PDF}`
+% this file until the matching MANIFEST.csv row has status=VERIFIED.
+% Entries still PENDING carry an explicit `note = {DEMIR_KURAL_PENDING_PDF}`
 % field so citation-verifier rejects them in any draft until the gap
 % closes.
 % =============================================================================
@@ -23,16 +21,19 @@
   url       = {https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf}
 }
 
+% Verified 2026-05-29 via DOI: 10.1145/2897824.2925895
+% PDF: research/library/pdf/heitz2016_ltc_area_lights.pdf  sha256: d89ed57d4b55
 @inproceedings{heitz2016ltc,
   author    = {Heitz, Eric and Dupuy, Jonathan and Hill, Stephen and Neubelt, David},
-  title     = {Real-Time Polygonal-Light Shading with Linearly Transformed Cosines},
+  title     = {{Real-Time Polygonal-Light Shading with Linearly Transformed Cosines}},
   booktitle = {{ACM} Transactions on Graphics ({SIGGRAPH} 2016)},
   year      = {2016},
   volume    = {35},
   number    = {4},
+  pages     = {41:1--41:8},
   publisher = {ACM},
-  url       = {https://eheitzresearch.wordpress.com/415-2/},
-  note      = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv, A1 fetch failed, see ATTEMPTS.md}
+  doi       = {10.1145/2897824.2925895},
+  url       = {https://eheitzresearch.wordpress.com/415-2/}
 }
 
 @article{frisvad2012onb,

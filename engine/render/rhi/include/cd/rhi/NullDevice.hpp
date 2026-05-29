@@ -195,6 +195,59 @@ public:
 
     /// Read-back hook (test-only). Returns a span over the buffer's CPU storage,
     /// or empty if the buffer is GPU-only / unknown.
+    // ---- Image readback (phase377-B-infra2) --------------------------------
+    /// Null backend: writes `region.width * region.height * bytes_per_texel`
+    /// zeros into `dst_buffer` at `dst_offset`. Always succeeds as long as
+    /// the handles exist and the destination range fits in the buffer.
+    [[nodiscard]] cd::core::Result<void> copy_image_to_buffer(
+        TextureHandle     src_image,
+        BufferHandle      dst_buffer,
+        std::uint64_t     dst_offset,
+        const ImageRegion& region
+    ) override
+    {
+        if (textures_.find(src_image.index()) == textures_.end())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: unknown src_image handle"));
+        }
+        auto bit = buffers_.find(dst_buffer.index());
+        if (bit == buffers_.end())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: unknown dst_buffer handle"));
+        }
+        auto& rec = bit->second;
+        if (rec.cpu_storage.empty())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: dst_buffer is GPU-only"));
+        }
+        // Determine bytes to zero from the src texture's format.
+        const auto tex_it = textures_.find(src_image.index());
+        const auto& tex_desc = tex_it->second;
+        const auto& fmt_info = info_of(tex_desc.format);
+        // For non-compressed formats bytes_per_block == bytes_per_texel.
+        const std::uint64_t bytes =
+            static_cast<std::uint64_t>(region.width) *
+            static_cast<std::uint64_t>(region.height) *
+            fmt_info.bytes_per_block;
+        if (dst_offset + bytes > rec.cpu_storage.size())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "copy_image_to_buffer: dst range out of bounds"));
+        }
+        // Null backend: no real GPU data — write zeros so callers get a
+        // deterministic buffer (tests can distinguish "touched" from
+        // "untouched" by comparing zero-filled vs uninitialised memory).
+        std::memset(rec.cpu_storage.data() + dst_offset, 0, static_cast<std::size_t>(bytes));
+        return {};
+    }
+
     [[nodiscard]] std::span<const std::byte> peek_buffer(BufferHandle h) const noexcept
     {
         auto it = buffers_.find(h.index());

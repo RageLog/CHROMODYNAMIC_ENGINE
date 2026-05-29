@@ -301,6 +301,50 @@ public:
     /// Returns kInvalidArgument when any referenced handle is unknown.
     [[nodiscard]] virtual cd::core::Result<void> submit(const SubmitDesc& desc) = 0;
 
+    // ---- Image readback (phase377-B-infra2) --------------------------------
+
+    /// Pixel region within a single mip/layer of a texture.
+    /// All coordinates are in texels relative to the top-left corner.
+    struct ImageRegion
+    {
+        std::uint32_t x { 0 };
+        std::uint32_t y { 0 };
+        std::uint32_t width { 0 };
+        std::uint32_t height { 0 };
+        std::uint32_t mip_level { 0 };
+        std::uint32_t base_layer { 0 };
+    };
+
+    /// Copy a rectangular region of `src_image` into `dst_buffer` at
+    /// `dst_offset`. `dst_buffer` must have been created with
+    /// MemoryUsage::kGpuToCpu (readback heap).
+    ///
+    /// **Layout responsibility (Vulkan):** the Vulkan backend issues its own
+    /// pipeline barriers to transition `src_image` from UNDEFINED to
+    /// TRANSFER_SRC_OPTIMAL and back to SHADER_READ_ONLY_OPTIMAL inside a
+    /// one-shot command buffer. Callers do NOT need to pre-transition the image.
+    /// The D3D12 backend uses the per-resource state tracked in TextureRecord.
+    ///
+    /// The call blocks until the copy completes (one-shot submit + wait_idle).
+    /// For non-blocking readback, use the command-buffer-level copy API (future).
+    /// Backends that do not implement readback return kNotImplemented;
+    /// callers should gate on feature availability or backend type.
+    [[nodiscard]] virtual cd::core::Result<void> copy_image_to_buffer(
+        TextureHandle    src_image,
+        BufferHandle     dst_buffer,
+        std::uint64_t    dst_offset,
+        const ImageRegion& region
+    )
+    {
+        (void)src_image;
+        (void)dst_buffer;
+        (void)dst_offset;
+        (void)region;
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "copy_image_to_buffer: not implemented by this backend"));
+    }
+
     // ---- Ray tracing (Phase 14.G — API shape only at v0.40.0) -------------
     //
     // Backends that don't yet implement RT return kNotImplemented from

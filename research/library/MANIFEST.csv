@@ -1,11 +1,10 @@
 bibkey,title,year,first_author,venue,pdf_relpath,sha256,url,downloaded_at,verified_by,status,notes_relpath,bibtex_anchor,demir_kural_status
-# Mega-Marathon A1 (Run 29 / phase372) — Demir Kural pilot.
-# 3 of 5 PDFs VERIFIED via direct fetch in the team-lead orchestrator turn.
-# 2 of 5 entries STAGED (Heitz LTC + Eberly LBS) — see ATTEMPTS.md for the
-# resolution log. Demir Kural still blocks new citations of those 2 bibkeys
-# until a future session resolves the upstream URL change.
+# Mega-Marathon A1 (Run 29 / phase372) + Run 30 (phase375) — Demir Kural pilot.
+# 4 of 5 PDFs VERIFIED. Run 30 retry resolved Heitz LTC (Google Drive author link).
+# 1 of 5 entry STAGED (Eberly LBS) — all URL variants + Wayback Machine exhausted,
+# see ATTEMPTS.md FINAL verdict. Demir Kural blocks eberlylbs citation until resolved.
 karis2013_real_shading_ue4,Real Shading in Unreal Engine 4,2013,Karis B.,SIGGRAPH 2013 Physically Based Shading Course,pdf/karis2013_real_shading_ue4.pdf,5af943f7f978a03a15c234cef623c05d9c0b62d44292511619b762b0436751e6,https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf,2026-05-29T15:32Z,team-lead-Run29-phase372,VERIFIED,notes/karis2013_real_shading_ue4.md,karis2013realshading,VERIFIED
-heitz2016_ltc_area_lights,Real-Time Polygonal-Light Shading with Linearly Transformed Cosines,2016,Heitz E.,SIGGRAPH 2016,,,https://eheitzresearch.wordpress.com/415-2/,,,STAGED,notes/heitz2016_ltc_area_lights.md,heitz2016ltc,PENDING_PDF
+heitz2016_ltc_area_lights,Real-Time Polygonal-Light Shading with Linearly Transformed Cosines,2016,Heitz E.,SIGGRAPH 2016 ACM TOG 35(4),pdf/heitz2016_ltc_area_lights.pdf,d89ed57d4b55f5ca4029970c07cc33d81769a14b5c3321d5c3e117abe76b9511,https://drive.google.com/uc?export=download&id=0BzvWIdpUpRx_d09ndGVjNVJzZjA,2026-05-29T17:45Z,academic-researcher(Run30-phase375),VERIFIED,notes/heitz2016_ltc_area_lights.md,heitz2016ltc,VERIFIED
 frisvad2012_onb_no_normalization,Building an Orthonormal Basis from a 3D Unit Vector Without Normalization,2012,Frisvad J. R.,Journal of Graphics Tools 16(3),pdf/frisvad2012_onb_no_normalization.pdf,ff84deadf8fa4a249f8db16906e484eec902fac671bfadceba0a57bc7823f2ea,https://backend.orbit.dtu.dk/ws/portalfiles/portal/126824972/onb_frisvad_jgt2012_v2.pdf,2026-05-29T15:32Z,team-lead-Run29-phase372,VERIFIED,notes/frisvad2012_onb_no_normalization.md,frisvad2012onb,VERIFIED
 eberly_lbs_skinning,Geometric Tools — Skinning (Linear Blend Skinning),2008,Eberly D.,Geometric Tools Engineering Notes,,,https://www.geometrictools.com/Documentation/Skinning.pdf,,,STAGED,notes/eberly_lbs_skinning.md,eberlylbs,PENDING_PDF
 wronski2014_volumetric_fog,Volumetric Fog: Unified Compute Shader Based Solution to Atmospheric Scattering,2014,Wronski B.,SIGGRAPH 2014 Advances in Real-Time Rendering Course,pdf/wronski2014_volumetric_fog.pdf,93d46671eee4b51c2c6efe8d7919d22b47c5e5eb41ef19c8e2fe37d7f63201f9,https://bartwronski.files.wordpress.com/2014/08/bwronski_volumetric_fog_siggraph2014.pdf,2026-05-29T15:32Z,team-lead-Run29-phase372,VERIFIED,notes/wronski2014_volumetric_fog.md,wronski2014volfog,VERIFIED
