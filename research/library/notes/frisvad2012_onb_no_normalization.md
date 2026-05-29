@@ -35,6 +35,13 @@ practically every modern path tracer (PBRT v4, Mitsuba) for ONB construction.
       paper) matches the implementation.
 - [ ] Update MANIFEST.csv + bibliography.bib note field.
 
+## Deprecation notice (phase402-D-F11, 2026-05-29)
+
+Superseded by Duff et al. 2017. `cd::math::frisvad_branchless_onb` now
+redirects to `cd::math::duff_branchless_onb` and carries a `[[deprecated]]`
+attribute. The Frisvad formula is preserved only for historical reference;
+all production code should call `duff_branchless_onb` directly.
+
 ## State-of-the-art successor candidates (Run 18 SOTA sweep)
 
 - **Duff et al. 2017 "Building an Orthonormal Basis, Revisited"** -- Pixar

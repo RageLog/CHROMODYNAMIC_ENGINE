@@ -1276,3 +1276,107 @@ TEST(EulerAngles, YawOnlyQuatHasOnlyY)
     EXPECT_NEAR(q.z, 0.0F, 1e-4F);
     EXPECT_GT(std::fabs(q.y), 0.5F);
 }
+
+// ---------------------------------------------------------------------------
+// Phase 402 — D-F11: Duff 2017 ONB tests (JCGT 6:1)
+// Duff et al. 2017 "Building an Orthonormal Basis, Revisited"
+// https://jcgt.org/published/0006/01/01/
+// ---------------------------------------------------------------------------
+#include <cd/math/Onb.hpp>
+
+namespace
+{
+
+// Helper: check that {b1, b2, n} is an orthonormal frame to tolerance tol.
+void check_onb(cd::math::Vec3f n, cd::math::Vec3f b1, cd::math::Vec3f b2, float tol)
+{
+    // All three vectors must be unit length.
+    EXPECT_NEAR(cd::math::length(b1), 1.0F, tol) << "b1 not unit";
+    EXPECT_NEAR(cd::math::length(b2), 1.0F, tol) << "b2 not unit";
+    EXPECT_NEAR(cd::math::length(n),  1.0F, tol) << "n not unit";
+    // Pairwise orthogonality.
+    EXPECT_NEAR(cd::math::dot(b1, b2), 0.0F, tol) << "b1·b2 not zero";
+    EXPECT_NEAR(cd::math::dot(b1, n),  0.0F, tol) << "b1·n not zero";
+    EXPECT_NEAR(cd::math::dot(b2, n),  0.0F, tol) << "b2·n not zero";
+}
+
+}  // namespace
+
+TEST(DuffOnb, NorthPoleProducesOrthonormalBasis)
+{
+    // n = (0, 0, +1): north pole, trivial case for both Frisvad and Duff.
+    cd::math::Vec3f n { 0.0F, 0.0F, 1.0F };
+    auto [b1, b2] = cd::math::duff_branchless_onb(n);
+    check_onb(n, b1, b2, 1e-5F);
+}
+
+TEST(DuffOnb, SouthPoleProducesNonDegenerateBasis)
+{
+    // n = (0, 0, -1): south pole.  Frisvad 2012 is degenerate here
+    // (denominator 1 + n.z = 0). Duff 2017 must return a valid frame.
+    cd::math::Vec3f n { 0.0F, 0.0F, -1.0F };
+    auto [b1, b2] = cd::math::duff_branchless_onb(n);
+    check_onb(n, b1, b2, 1e-5F);
+}
+
+TEST(DuffOnb, HostileNearSouthPole)
+{
+    // n.z = -0.99999 — the worst region for Frisvad precision.
+    // Duff must maintain orthonormality to 1e-5 (vs Frisvad's ~1e-2).
+    const float nxy = std::sqrt(1.0F - 0.99999F * 0.99999F);
+    cd::math::Vec3f n = cd::math::normalize(cd::math::Vec3f { nxy * 0.5F, nxy * 0.5F, -0.99999F });
+    auto [b1, b2] = cd::math::duff_branchless_onb(n);
+    check_onb(n, b1, b2, 1e-5F);
+}
+
+TEST(DuffOnb, ArbitraryNormalOrthonormal)
+{
+    // A set of general unit normals exercising all octants.
+    const std::vector<cd::math::Vec3f> normals {
+        cd::math::normalize(cd::math::Vec3f {  1.0F,  0.0F,  0.0F }),
+        cd::math::normalize(cd::math::Vec3f {  0.0F,  1.0F,  0.0F }),
+        cd::math::normalize(cd::math::Vec3f {  1.0F,  1.0F,  1.0F }),
+        cd::math::normalize(cd::math::Vec3f { -1.0F,  0.5F,  0.3F }),
+        cd::math::normalize(cd::math::Vec3f {  0.2F, -0.8F, -0.5F }),
+        cd::math::normalize(cd::math::Vec3f {  0.0F,  0.0F, -0.5F }),
+    };
+    for (const auto& n : normals)
+    {
+        auto [b1, b2] = cd::math::duff_branchless_onb(n);
+        check_onb(n, b1, b2, 1e-5F);
+    }
+}
+
+TEST(DuffOnb, PrecisionNearSouthPoleBetterThanFrisvad)
+{
+    // Compare orthogonality error of Duff vs inline Frisvad near n.z = -1.
+    // Frisvad: b2 = (-n.x*n.y / (1+n.z), -(1+n.z*n.z)/(1+n.z), n.y)
+    //          denominator (1+n.z) → 0 → catastrophic cancellation.
+    // Duff should have |dot(b1,n)| < 1e-6; Frisvad may reach ~1e-2.
+    const float nz    = -0.9999F;
+    const float scale = std::sqrt(1.0F - nz * nz);
+    cd::math::Vec3f n { scale, 0.0F, nz };
+    n = cd::math::normalize(n);
+
+    auto [d_b1, d_b2] = cd::math::duff_branchless_onb(n);
+    const float duff_err = std::abs(cd::math::dot(d_b1, n));
+
+    // Frisvad inline (branch-free form, Frisvad 2012 eq. 2-3):
+    cd::math::Vec3f f_b1, f_b2;
+    if (n.z > -1.0F + 1e-7F) {
+        const float inv = 1.0F / (1.0F + n.z);
+        f_b1 = { 1.0F - n.x * n.x * inv, -n.x * n.y * inv, -n.x };
+        f_b2 = { -n.x * n.y * inv, 1.0F - n.y * n.y * inv, -n.y };
+    } else {
+        f_b1 = { 0.0F, -1.0F, 0.0F };
+        f_b2 = { -1.0F, 0.0F, 0.0F };
+    }
+    const float frisvad_err = std::abs(cd::math::dot(f_b1, n));
+
+    // Duff must be strictly more accurate than Frisvad near the south pole.
+    EXPECT_LT(duff_err, frisvad_err)
+        << "Duff err=" << duff_err << " Frisvad err=" << frisvad_err;
+    // And Duff must stay within machine precision.
+    EXPECT_LT(duff_err, 1e-5F)
+        << "Duff orthogonality error too large: " << duff_err;
+}

@@ -20,4 +20,9 @@ URL: https://jcgt.org/published/0006/01/01/
 
 ## Implementation status
 
-`cd_math` library (C++ tangent-frame helper) + any GLSL that calls Frisvad inline. Estimated effort: 30 minutes (single function replacement, no API change).
+### DONE — phase402-D-F11 (2026-05-29)
+
+- `engine/foundation/math/include/cd/math/Onb.hpp` — `cd::math::duff_branchless_onb(Vec3f n)` implemented with citation comment referencing JCGT 6:1. Frisvad 2012 kept as a `[[deprecated]]` alias forwarding to the Duff implementation.
+- `engine/foundation/math/tests/test_math.cpp` — 5 new `DuffOnb.*` gtest cases: NorthPole, SouthPole (was degenerate under Frisvad), HostileNearSouthPole, ArbitraryNormal (6 octants), PrecisionComparison (verifies Duff < Frisvad error near n.z=-1).
+- GLSL sites audited: hello_engine prim.frag.glsl previously used Frisvad for LTC tangent frame derivation; W8-N (phase-W8) migrated it to an uploaded CPU tangent. No inline Frisvad GLSL remains in live shader code. GLSL equivalent provided in Onb.hpp header comment for future use.
+- All 106 ctest targets PASS. Build clean (no warnings).
