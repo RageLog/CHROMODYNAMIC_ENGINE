@@ -1,7 +1,7 @@
 # Eberly -- Geometric Tools Skinning (Linear Blend Skinning)
 
 - **Bibkey**: eberlylbs
-- **MANIFEST status**: STAGED (PDF download pending)
+- **MANIFEST status**: STAGED (PDF download pending). RESOLVED via Kavan 2008 citation (covers LBS as §2 baseline; see notes/kavan2008\_dqs.md)
 - **Venue**: Geometric Tools, LLC Engineering Notes (2008)
 
 ## Why this paper

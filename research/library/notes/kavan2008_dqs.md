@@ -20,4 +20,12 @@ DOI: 10.1145/1409625.1409627
 
 ## Implementation status
 
-`cd_anim` library + `HelloSkinnedAnim` aggregate. The CPU side (bone palette compute) is unchanged; only the UBO layout and vertex shader change. Estimated effort: 1-2 days (UBO type swap + shader rewrite + visual regression check against existing CesiumMan reference frame).
+**DONE** — Phase D-F10 (phase405).
+
+Files:
+
+- `engine/world/anim/include/cd/anim/DualQuat.hpp` — `DualQuat<T>` struct + `from_rigid`, `from_mat4`, `to_mat4`, `blend` (antipodality-corrected weighted sum + normalise).
+- `samples/engine/hello_engine/HelloSkinnedAnim.hpp` — DQS path replaces CPU-LBS in `update_skinned_animation`; LBS kept as `#if CD_ANIM_USE_LBS` compile-time fallback for A/B.
+- `engine/world/anim/tests/test_dual_quat.cpp` — 6 tests: round-trip, antipodality, endpoints, volume preservation vs LBS at 90° elbow.
+
+Test result: 108/108 PASS. CesiumMan elbow/wrist bends use DQS; candy-wrapper collapse eliminated.
