@@ -155,6 +155,7 @@
 #include "HelloTlasRebuild.hpp"
 #include "HelloSkinnedAnim.hpp"
 #include "HelloAudio.hpp"
+#include "HelloIbl.hpp"
 
 
 namespace
@@ -4580,160 +4581,33 @@ int main()
     const auto inst_mat_ssbo = *inst_mat_r;
 
     // ---- R1: IBL bake + GPU upload ----
-    // CPU-side bake at startup: analytical-sky env cube -> diffuse
-    // irradiance + prefiltered specular + BRDF LUT. Vulkan upload
-    // creates kCube/k2D textures + clamp-to-edge sampler.
-    //
-    // W8-AW: chrome-mirror quality bump. User asked for a polished
-    // chrome look (Filament/UE5 reference). Old bake (env 128, spec
-    // base 64 / 32 samples) produced a soft blue smudge for the
-    // chrome sphere because:
-    //   1) base 64 spec cube is pixelated at rough=0.04 (mip 0 lookup)
-    //   2) 32 importance samples per texel = noisy / undersampled
-    //   3) analytic sky has no high-frequency features (no sun disk
-    //      visible IN the cube), so a mirror has nothing crisp to
-    //      reflect.
-    // Fix: env 256, spec base 256 / 1024 samples, diff 32 / 64 samples,
-    // and inject an HDR sun disk into the sky bake at the default sun
-    // direction so chrome catches a visible bright spot. Bake budget
-    // climbs to ~5-8 s on a desktop CPU (one-shot at boot).
-    constexpr cd::math::Vec3f kIblSunDirToward { 0.3F, 0.9F, 0.2F };  // -direction
-    const float kIblSunLen = std::sqrt(
-        kIblSunDirToward.x * kIblSunDirToward.x + kIblSunDirToward.y * kIblSunDirToward.y +
-        kIblSunDirToward.z * kIblSunDirToward.z
-    );
-    const cd::math::Vec3f kIblSunUnit { kIblSunDirToward.x / kIblSunLen,
-                                        kIblSunDirToward.y / kIblSunLen,
-                                        kIblSunDirToward.z / kIblSunLen };
-    // Phase 291 / Marathon Run 7 sub-N1C: the sky+sun-disk CPU sampler
-    // lives in cd::material::sky_with_sun_cpu() now. A small lambda
-    // binds the sample's kIblSunUnit direction for cd::ibl::bake_sky_cube,
-    // which expects a unary functor `Vec3f(dir)`.
-    auto bake_sky_with_sun = [&](cd::math::Vec3f dir) noexcept
-    {
-        return cd::material::sky_with_sun_cpu(dir, kIblSunUnit);
-    };
-    // W8-AW tuned: team-lead's original 256 base spec + 1024 samples +
-    // 64 diff samples ran the CPU bake into the minutes (Windows
-    // marked the process Not Responding, white client window).
-    // Cap sample counts to a usable boot budget. Chrome rough=0.04
-    // samples mip 0 sharply — sample count only affects mid-rough
-    // mips that the chrome row doesn't use anyway. Sun disk + 256
-    // env base preserved so the sharp mip-0 lookup has high-frequency
-    // features to reflect.
-    // X1C (phase 285): parallel boot bake graph. The CPU-bound IBL +
-    // procedural Earth texture bakes share zero state (env-cube is the
-    // only shared input, fed into diff + spec), so they run as a small
-    // JobGraph on a boot-scoped WorkStealingThreadPool. GPU uploads
-    // stay serial after the join because cd::rhi::IDevice is not
-    // documented as thread-safe today (see ADR-20260528 X1-FU-* TODO
-    // on upload_buffer thread safety).
-    //
-    // DAG:
-    //   A env_cube -> { B diff_irradiance, C spec_prefilter }
-    //   D brdf_lut, E earth_albedo, F earth_normal, G earth_mr
-    //     (D-G are independent roots, share boot_pool with A)
-    cd::ibl::CubeMapRgbF env_cube_cpu;
-    cd::ibl::CubeMapRgbF diff_cube_cpu;
-    cd::ibl::PrefilteredSpecularCube spec_cube_cpu;
-    cd::ibl::BrdfLut brdf_lut_cpu;
-    std::vector<std::uint8_t> earth_albedo_cpu;
-    std::vector<std::uint8_t> earth_normal_cpu;
-    std::vector<std::uint8_t> earth_mr_cpu;
-    constexpr std::uint32_t kTexSize = 512;
-    constexpr std::uint32_t kNormalSize = 512;
-    constexpr std::uint32_t kMrSize = 256;
-    std::fprintf(stderr, "[boot] dispatching parallel asset bake graph...\n");
-    {
-        cd::concurrency::WorkStealingThreadPool boot_pool { 0 };
-        cd::concurrency::JobGraph boot_graph;
-        const auto a = boot_graph.add(
-            [&]
-            {
-                std::fprintf(stderr, "[ibl] baking environment cubemap (128, sun-disk)...\n");
-                env_cube_cpu = cd::ibl::bake_sky_cube(128, bake_sky_with_sun);
-            }
-        );
-        const auto b = boot_graph.add(
-            [&]
-            {
-                std::fprintf(stderr, "[ibl] convolving diffuse irradiance (16, 16 samples)...\n");
-                diff_cube_cpu = cd::ibl::convolve_irradiance(env_cube_cpu, 16, 16.0F);
-            },
-            { a }
-        );
-        const auto c = boot_graph.add(
-            [&]
-            {
-                // W8-AY: spec base 128 / 32 samples -- see ADR-20260528.
-                std::fprintf(stderr, "[ibl] prefiltering specular mip chain (128 base, 6 mips, 32 samples)...\n");
-                spec_cube_cpu = cd::ibl::prefilter_specular(env_cube_cpu, 128, 6, 32);
-            },
-            { a }
-        );
-        const auto d = boot_graph.add(
-            [&]
-            {
-                std::fprintf(stderr, "[ibl] baking BRDF LUT...\n");
-                brdf_lut_cpu = cd::ibl::bake_brdf_lut(64, 64, 256);
-            }
-        );
-        const auto e = boot_graph.add(
-            [&]
-            {
-                earth_albedo_cpu = cd::texture_synth::bake_earth_albedo_rgba8(kTexSize);
-            }
-        );
-        const auto fnode = boot_graph.add(
-            [&]
-            {
-                earth_normal_cpu = cd::texture_synth::bake_earth_normal_rgba8(kNormalSize);
-            }
-        );
-        const auto g = boot_graph.add(
-            [&]
-            {
-                earth_mr_cpu = cd::texture_synth::bake_earth_mr_rgba8(kMrSize);
-            }
-        );
-        (void)a;
-        (void)b;
-        (void)c;
-        (void)d;
-        (void)e;
-        (void)fnode;
-        (void)g;
-        const bool ok = boot_graph.run(boot_pool);
-        if (!ok || boot_graph.failed_nodes() != 0)
-        {
-            std::fprintf(
-                stderr,
-                "[boot] FATAL: bake graph run failed (ok=%d, failed_nodes=%llu)\n",
-                ok ? 1 : 0,
-                static_cast<unsigned long long>(boot_graph.failed_nodes())
-            );
-            return 23;
-        }
-        // boot_pool joins via dtor as we leave the scope.
-    }
-    std::fprintf(stderr, "[ibl] uploading to GPU...\n");
-    const auto gpu_spec_cube = cd::ibl_gpu::upload_prefiltered_specular(device, spec_cube_cpu);
-    const auto gpu_diff_cube = cd::ibl_gpu::upload_cubemap_rgba16f(device, diff_cube_cpu);
-    const auto gpu_brdf_lut = cd::ibl_gpu::upload_brdf_lut(device, brdf_lut_cpu);
-    std::fprintf(stderr, "[ibl] done (spec %u mips, diff 16, brdf 64x64)\n", gpu_spec_cube.mip_count);
-
-    cd::rhi::SamplerDesc ibl_sd {};
-    ibl_sd.mag_filter = cd::rhi::SamplerFilter::kLinear;
-    ibl_sd.min_filter = cd::rhi::SamplerFilter::kLinear;
-    ibl_sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
-    ibl_sd.address_u = cd::rhi::SamplerAddressMode::kClampToEdge;
-    ibl_sd.address_v = cd::rhi::SamplerAddressMode::kClampToEdge;
-    ibl_sd.address_w = cd::rhi::SamplerAddressMode::kClampToEdge;
-    ibl_sd.max_lod = static_cast<float>(gpu_spec_cube.mip_count);
-    auto ibl_samp_r = device.create_sampler(ibl_sd);
-    if (!ibl_samp_r.has_value())
+    // X1C boot JobGraph + the GPU upload + sampler creation moved to
+    // cd_sample::bake_ibl_cpu + cd_sample::upload_ibl_gpu in
+    // HelloIbl.hpp (Marathon Run 11 phase N12). Same W8-AW chrome-
+    // mirror quality parameters (env 128, spec base 128 / 6 mips /
+    // 32 samples, diff 16 / 16 samples, BRDF 64x64 / 256 samples) and
+    // same X1C parallelism. The sun unit vector defaults match the
+    // pre-extract kIblSunDirToward = (0.3, 0.9, 0.2) value.
+    constexpr cd::math::Vec3f kIblSunDirToward { 0.3F, 0.9F, 0.2F };
+    const cd::math::Vec3f kIblSunUnit =
+        cd_sample::normalize_dir(kIblSunDirToward);
+    auto ibl_cpu = cd_sample::bake_ibl_cpu(kIblSunUnit);
+    if (!ibl_cpu.ok)
         return 23;
-    const auto ibl_sampler = *ibl_samp_r;
+    auto ibl_gpu_r = cd_sample::upload_ibl_gpu(device, ibl_cpu);
+    if (!ibl_gpu_r.has_value())
+        return ibl_gpu_r.error();
+    auto ibl_gpu = *ibl_gpu_r;
+    auto& earth_albedo_cpu  = ibl_cpu.earth_albedo;
+    auto& earth_normal_cpu  = ibl_cpu.earth_normal;
+    auto& earth_mr_cpu      = ibl_cpu.earth_mr;
+    constexpr std::uint32_t kTexSize    = cd_sample::kHelloIblEarthAlbedoSize;
+    constexpr std::uint32_t kNormalSize = cd_sample::kHelloIblEarthNormalSize;
+    constexpr std::uint32_t kMrSize     = cd_sample::kHelloIblEarthMrSize;
+    const auto& gpu_spec_cube = ibl_gpu.gpu_spec_cube;
+    const auto& gpu_diff_cube = ibl_gpu.gpu_diff_cube;
+    const auto& gpu_brdf_lut  = ibl_gpu.gpu_brdf_lut;
+    const auto ibl_sampler    = ibl_gpu.ibl_sampler;
 
     // ---- glTF baseColor texture (#1/#13) ----
     // R1.5 showcase: procedural Earth-like albedo (CPU bake hoisted
