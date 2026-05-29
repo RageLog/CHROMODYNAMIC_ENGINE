@@ -20,3 +20,10 @@ cd_add_test(image_readback
   SOURCES test_image_readback.cpp
   DEPS    cd::rhi cd::core
 )
+
+# phase400-M4H: D3D12 M4A-M4F surface contract parity test (CPU-only;
+# no device instantiation — runnable in every CI lane).
+cd_add_test(d3d12_parity_m4
+  SOURCES test_d3d12_parity_m4.cpp
+  DEPS    cd::rhi cd::core
+)
