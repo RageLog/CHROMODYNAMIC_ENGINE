@@ -1,9 +1,14 @@
 # engine/render — render tier (Phase 3)
+# phase431: engine/render/render/ flattened into this umbrella.
+#
+# cd::render — Sprint S3.4: high-level renderer that orchestrates per-frame
+#   command buffers, sync primitives, swapchain acquire/present, and implicit
+#   image-layout transitions. Sits on top of cd::rhi only.
+#
 # Sub-libraries:
 #   rhi       — RHI abstraction (header types in S3.0, Vulkan backend in S3.1)
 #   shader    — (S3.2+) shader compilation / reflection
 #   material  — (S3.3+) material system
-#   render    — (S3.4+) high-level renderer
 
 add_subdirectory(rhi)
 add_subdirectory(shader)
@@ -12,7 +17,19 @@ add_subdirectory(material)
 add_subdirectory(light)        # Phase 165 — SOTA light primitives + clustered + CSM
 add_subdirectory(camera)
 add_subdirectory(framegraph)
-add_subdirectory(render)
+
+cd_add_library(render
+  TYPE STATIC
+  SOURCES
+    src/Renderer.cpp
+  PUBLIC_DEPS
+    cd::rhi
+    cd::core
+)
+
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()
 add_subdirectory(async_submit)
 add_subdirectory(ibl)
 add_subdirectory(ibl_gpu)
