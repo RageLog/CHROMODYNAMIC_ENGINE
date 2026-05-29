@@ -113,10 +113,15 @@ build_mesh_blas(cd::rhi::IDevice&         device,
 /// Build every primitive mesh (CPU + GPU upload), run the glTF auto-load
 /// chain, build one BLAS per mesh, and submit a transient one-shot
 /// command buffer that triggers the actual AS builds.
+/// prim_material is used to allocate per-prim descriptor sets for Sponza
+/// so each textured primitive owns its own binding-4 slot and avoids
+/// the Vulkan descriptor-aliasing hazard that caused all Sponza prims to
+/// sample the last-written texture (vegetation/curtains showed wrong colors).
 [[nodiscard]] inline HelloMeshes
 boot_meshes(cd::rhi::IDevice&                device,
             AlbedoSlot                       albedo,
-            cd::material::MaterialInstance&  prim_inst)
+            cd::material::MaterialInstance&  prim_inst,
+            cd::material::Material&          prim_material)
 {
     HelloMeshes out {};
 
@@ -161,6 +166,38 @@ boot_meshes(cd::rhi::IDevice&                device,
         out.gltf_prim_ranges = std::move(loaded.prim_ranges);
         if (loaded.has_texture)
             out.has_gltf_texture = true;
+
+        // Per-prim descriptor sets: allocate one MaterialInstance per textured
+        // prim so each draw binds its OWN descriptor set rather than sharing the
+        // global prim_inst.  Sharing one VkDescriptorSet and calling
+        // vkUpdateDescriptorSets between recorded draw calls is technically
+        // undefined behaviour in Vulkan — the GPU sees only the last update for
+        // ALL draws, defeating per-prim texture switching (vegetation/curtains
+        // show wrong texture / no alpha discard).
+        for (auto& pr : out.gltf_prim_ranges)
+        {
+            if (!pr.has_texture || !pr.albedo_view.is_valid())
+                continue;
+            auto inst_r = cd::material::MaterialInstance::create(device, prim_material);
+            if (!inst_r.has_value())
+            {
+                std::fprintf(stderr,
+                    "[gltf] per-prim MaterialInstance create failed — "
+                    "falling back to shared descriptor (vegetation may be wrong)\n");
+                continue;
+            }
+            // Write binding 4 with this prim's own albedo texture + the shared sampler.
+            const std::array<cd::rhi::DescriptorWrite, 1> tw {
+                cd::rhi::DescriptorWrite {
+                    .binding       = 4,
+                    .array_element = 0,
+                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view          = pr.albedo_view,
+                    .sampler       = albedo.sampler }
+            };
+            (void)inst_r->update(tw);
+            pr.prim_inst = std::move(*inst_r);
+        }
     }
 
     // Load CesiumMan animated character (kGltf entity).

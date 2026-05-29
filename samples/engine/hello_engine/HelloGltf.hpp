@@ -36,7 +36,13 @@ struct GltfPrimRange
     cd::rhi::TextureHandle     albedo_tex    {};        ///< uploaded RGBA8 texture (may be invalid)
     cd::rhi::TextureViewHandle albedo_view   {};        ///< view for albedo_tex
     bool                       has_texture   { false };
+    bool                       double_sided  { false }; ///< glTF material doubleSided flag (info only; pipeline uses kNone cull)
     float                      alpha_cutoff  { 0.0F }; ///< >0 enables alpha-test discard in shader
+    /// Per-prim descriptor set (valid when has_texture=true + prim_recreate called).
+    /// Fixes Vulkan descriptor aliasing: each textured prim owns its own
+    /// descriptor set with binding 4 pointing at its albedo texture,
+    /// so all prim draws see the correct texture at GPU execution time.
+    cd::material::MaterialInstance prim_inst {};
 };
 
 struct GltfLoadResult
@@ -142,13 +148,16 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                         }
                     }
                 }
+                range.double_sided = mat.double_sided;
                 using AM = cd::asset::gltf::GltfAlphaMode;
                 if (mat.alpha_mode == AM::kMask)
                     range.alpha_cutoff = mat.alpha_cutoff;
                 else if (mat.alpha_mode == AM::kBlend)
-                    range.alpha_cutoff = 0.5F;
+                    // BLEND treated as MASK with a permissive cutoff so thin
+                    // semi-transparent areas (alpha 0.1-0.49) survive the test.
+                    range.alpha_cutoff = 0.1F;
             }
-            prim_ranges.push_back(range);
+            prim_ranges.push_back(std::move(range));
         }
     }
     const bool indices_ok = use_u32_indices ? !merged.indices_u32.empty() : !merged.indices.empty();

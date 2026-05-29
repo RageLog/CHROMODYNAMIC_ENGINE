@@ -4003,16 +4003,28 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                     continue;
                 if (pr.has_texture && pr.albedo_view.is_valid())
                 {
-                    // Switch binding=4 to this primitive's own texture.
-                    const std::array<cd::rhi::DescriptorWrite, 1> tw {
-                        cd::rhi::DescriptorWrite { .binding = 4,
-                                                   .array_element = 0,
-                                                   .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                                   .view = pr.albedo_view,
-                                                   .sampler = albedo_sampler }
-                    };
-                    (void)prim_inst.update(tw);
-                    prim_inst.bind(cmd, 0);
+                    if (pr.prim_inst.is_valid())
+                    {
+                        // Per-prim descriptor set (pre-built at boot by boot_meshes).
+                        // Avoids Vulkan descriptor-aliasing: each textured prim owns
+                        // its own VkDescriptorSet with the correct albedo in binding 4,
+                        // so the GPU sees the right texture for EVERY draw rather than
+                        // the last-written shared descriptor state.
+                        pr.prim_inst.bind(cmd, 0);
+                    }
+                    else
+                    {
+                        // Fallback: update the shared descriptor (legacy path, may alias).
+                        const std::array<cd::rhi::DescriptorWrite, 1> tw {
+                            cd::rhi::DescriptorWrite { .binding = 4,
+                                                       .array_element = 0,
+                                                       .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                                       .view = pr.albedo_view,
+                                                       .sampler = albedo_sampler }
+                        };
+                        (void)prim_inst.update(tw);
+                        prim_inst.bind(cmd, 0);
+                    }
                 }
                 // PrimPush fx_params[1] = 1.0 when this prim has a texture.
                 // fx_params[3] = alpha_cutoff (> 0 enables GLSL discard).
@@ -4579,7 +4591,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         .sampler  = s.albedo_sampler,
         .upload   = upload_alb_fn,
     };
-    s.meshes = cd_sample::boot_meshes(device, alb_slot, s.prim_inst);
+    s.meshes = cd_sample::boot_meshes(device, alb_slot, s.prim_inst, s.materials.prim);
     if (s.meshes.build_exit_code != 0)
         return std::unexpected(
             cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
@@ -6265,7 +6277,7 @@ int main(int argc, char** argv)
         .sampler  = albedo_sampler,
         .upload   = upload_albedo_fn,
     };
-    auto meshes = cd_sample::boot_meshes(device, meshes_albedo_slot, prim_inst);
+    auto meshes = cd_sample::boot_meshes(device, meshes_albedo_slot, prim_inst, prim_material);
     if (meshes.build_exit_code != 0)
         return meshes.build_exit_code;
     // phase437-black: also gate on CesiumMan texture (has_cesium_texture)
