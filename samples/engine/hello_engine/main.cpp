@@ -160,6 +160,7 @@
 #include "HelloRenderTargets.hpp"
 #include "HelloMaterials.hpp"
 #include "HelloGltf.hpp"
+#include "HelloMeshes.hpp"
 #include "HelloPicker.hpp"
 #include "HelloPalette.hpp"
 
@@ -4493,183 +4494,66 @@ int main()
     };
     bind_composite_hdr();
 
-    // ---- Meshes (one PBR sphere, five primitive entities) ----
-    auto cube_cpu = cd::asset::make_cube();
-    // make_cube ships per-face axis-coloured (red/green/blue) and
-    // make_sphere/cone/cyl/torus ship pos-based rainbow vertex
-    // colours. Both patterns FIGHT the per-instance tint multiply
-    // (v_albedo = in_color * pc.tint.rgb), producing a muddy wash
-    // where every entity looks similar regardless of its tint. Flat-
-    // ten EVERY primitive to white (1,1,1) so the entity tint shows
-    // unmodified - closes the user-flagged 'proseduriel cisimlerin
-    // renkleri ayni' regression.
-    auto sphere_cpu_mut = cd::asset::make_sphere(18, 28);
-    auto cone_cpu_mut = cd::asset::make_cone(32);
-    auto cyl_cpu_mut = cd::asset::make_cylinder(32);
-    auto torus_cpu_mut = cd::asset::make_torus(0.45F, 0.18F, 16, 24);
-    auto flatten_white = [](auto& mesh)
+    // ---- Meshes + glTF + per-mesh BLAS (Marathon Run 16 phase NF1 -> HelloMeshes.hpp) ----
+    auto upload_albedo_fn = [&device](const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
+        -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
     {
-        for (auto& v : mesh.vertices)
-        {
-            v.color[0] = 1.0F;
-            v.color[1] = 1.0F;
-            v.color[2] = 1.0F;
-        }
+        auto tex = create_texture_rgba8(device, rgba, w, h);
+        return { tex.image, tex.view };
     };
-    flatten_white(cube_cpu);
-    flatten_white(sphere_cpu_mut);
-    flatten_white(cone_cpu_mut);
-    flatten_white(cyl_cpu_mut);
-    flatten_white(torus_cpu_mut);
-    const auto& sphere_cpu = sphere_cpu_mut;
-    const auto& cone_cpu = cone_cpu_mut;
-    const auto& cyl_cpu = cyl_cpu_mut;
-    const auto& torus_cpu = torus_cpu_mut;
-    // Floor quad - 1000 m ?- 1000 m centred at origin, normal +Y. The
-    // size is far larger than the camera ever reaches; the FS
-    // distance-fade (30 m -> 60 m) handles the apparent infinite-grid
-    // feel. Faz 1.5: real geometry on which the planar shadow pass
-    // can project caster silhouettes. Procedural shader-space grid
-    // landing in v1.7 frame-graph rework replaces this with a single
-    // fullscreen plane intersection.
-    const auto floor_cpu = cd::asset::make_plane(1000.0F);
-
-    GpuMesh cube_mesh = upload_mesh(device, cube_cpu);
-    GpuMesh sphere_mesh = upload_mesh(device, sphere_cpu);
-    GpuMesh cone_mesh = upload_mesh(device, cone_cpu);
-    GpuMesh cyl_mesh = upload_mesh(device, cyl_cpu);
-    GpuMesh torus_mesh = upload_mesh(device, torus_cpu);
-    GpuMesh floor_mesh = upload_mesh(device, floor_cpu);
-    // W8-AR: pbr_sphere REMOVED. PBR sphere entities reuse sphere_mesh.
-    // R1.5: torus knot procedural showcase used when no glTF asset
-    // resolves. With CesiumMan.glb in assets/samples/, the auto-load
-    // path takes priority and uses the actual imported character.
-    const auto knot_cpu = cd::asset::make_torus_knot(0.7F, 0.20F, 2, 3, 256, 24);
-    GpuMesh knot_mesh = upload_mesh(device, knot_cpu);
-
-    // ---- glTF auto-load (Marathon Run 14 phase N16, lifted to HelloGltf.hpp) ----
-    // Wraps create_texture_rgba8 in a functor so the helper stays free of the
-    // sample-local GpuTexture2D type.  Same probe list, same baseColor swap,
-    // same skinned-runtime capture as pre-extract.
-    GpuMesh gltf_mesh {};
-    std::string gltf_loaded_name;
-    cd_sample::SkinnedRuntime skinned;
-    {
-        auto upload_albedo = [&device](const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
-            -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
-        {
-            auto tex = create_texture_rgba8(device, rgba, w, h);
-            return { tex.image, tex.view };
-        };
-        cd_sample::AlbedoSlot slot { .image_io = &albedo_tex.image,
-                                     .view_io  = &albedo_tex.view,
-                                     .sampler  = albedo_sampler,
-                                     .upload   = upload_albedo };
-        auto loaded = cd_sample::try_auto_load_gltf(device, slot, prim_inst);
-        gltf_mesh        = std::move(loaded.mesh);
-        gltf_loaded_name = std::move(loaded.loaded_name);
-        skinned          = std::move(loaded.skinned);
-        if (loaded.has_texture)
-            has_gltf_texture = true;
-    }
-
+    cd_sample::AlbedoSlot meshes_albedo_slot {
+        .image_io = &albedo_tex.image,
+        .view_io  = &albedo_tex.view,
+        .sampler  = albedo_sampler,
+        .upload   = upload_albedo_fn,
+    };
+    auto meshes = cd_sample::boot_meshes(device, meshes_albedo_slot, prim_inst);
+    if (meshes.build_exit_code != 0)
+        return meshes.build_exit_code;
+    if (meshes.has_gltf_texture)
+        has_gltf_texture = true;
+    auto& cube_mesh        = meshes.cube;
+    auto& sphere_mesh      = meshes.sphere;
+    auto& cone_mesh        = meshes.cone;
+    auto& cyl_mesh         = meshes.cyl;
+    auto& torus_mesh       = meshes.torus;
+    auto& floor_mesh       = meshes.floor;
+    auto& knot_mesh        = meshes.knot;
+    auto& gltf_mesh        = meshes.gltf;
+    auto& gltf_loaded_name = meshes.gltf_loaded_name;
+    auto& skinned          = meshes.skinned;
+    auto& blas_cube        = meshes.blas_cube;
+    auto& blas_sphere      = meshes.blas_sphere;
+    auto& blas_cone        = meshes.blas_cone;
+    auto& blas_cyl         = meshes.blas_cyl;
+    auto& blas_torus       = meshes.blas_torus;
+    auto& blas_floor       = meshes.blas_floor;
+    auto& blas_gltf        = meshes.blas_gltf;
     auto mesh_for = [&](PrimitiveKind k) -> const GpuMesh&
     {
         switch (k)
         {
-            case PrimitiveKind::kSphere:
-                return sphere_mesh;
-            case PrimitiveKind::kCone:
-                return cone_mesh;
-            case PrimitiveKind::kCylinder:
-                return cyl_mesh;
-            case PrimitiveKind::kTorus:
-                return torus_mesh;
-            case PrimitiveKind::kGltf:
-                return gltf_mesh.vb.is_valid() ? gltf_mesh : knot_mesh;
-            default:
-                return cube_mesh;
+            case PrimitiveKind::kSphere:   return sphere_mesh;
+            case PrimitiveKind::kCone:     return cone_mesh;
+            case PrimitiveKind::kCylinder: return cyl_mesh;
+            case PrimitiveKind::kTorus:    return torus_mesh;
+            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : knot_mesh;
+            default:                       return cube_mesh;
         }
     };
-
-    // ---- Faz 1.7 - per-mesh-kind BLAS ----
-    // One BLAS per shape (cube / sphere / cone / cylinder / torus +
-    // floor quad). Geometry is static, so we build these once at
-    // boot and keep them for the lifetime of the program.
-    auto build_blas = [&](const GpuMesh& m, std::string_view name) -> cd::rhi::AccelStructureHandle
-    {
-        cd::rhi::AccelTriangleGeometry tri {};
-        tri.vertex_buffer = m.vb;
-        tri.vertex_offset = 0;
-        tri.vertex_count = m.vertex_count;
-        tri.vertex_stride = sizeof(cd::asset::PrimitiveVertex);
-        tri.index_buffer = m.ib;
-        tri.index_offset = 0;
-        tri.index_count = m.index_count;
-        tri.index_type = cd::rhi::IndexType::kUInt16;
-        std::array<cd::rhi::AccelTriangleGeometry, 1> tris { tri };
-        cd::rhi::AccelStructureDesc bd {};
-        bd.kind = cd::rhi::AccelStructureKind::kBottomLevel;
-        bd.triangles = std::span<const cd::rhi::AccelTriangleGeometry>(tris);
-        bd.debug_name = name;
-        auto r = device.create_acceleration_structure(bd);
-        return r.has_value() ? *r : cd::rhi::AccelStructureHandle {};
-    };
-    cd::rhi::AccelStructureHandle blas_cube = build_blas(cube_mesh, "blas_cube");
-    cd::rhi::AccelStructureHandle blas_sphere = build_blas(sphere_mesh, "blas_sphere");
-    cd::rhi::AccelStructureHandle blas_cone = build_blas(cone_mesh, "blas_cone");
-    cd::rhi::AccelStructureHandle blas_cyl = build_blas(cyl_mesh, "blas_cyl");
-    cd::rhi::AccelStructureHandle blas_torus = build_blas(torus_mesh, "blas_torus");
-    cd::rhi::AccelStructureHandle blas_floor = build_blas(floor_mesh, "blas_floor");
-    cd::rhi::AccelStructureHandle blas_gltf =
-        gltf_mesh.vb.is_valid() ? build_blas(gltf_mesh, "blas_gltf") : cd::rhi::AccelStructureHandle {};
     auto blas_for_kind = [&](PrimitiveKind k) -> cd::rhi::AccelStructureHandle
     {
         switch (k)
         {
-            case PrimitiveKind::kSphere:
-                return blas_sphere;
-            case PrimitiveKind::kCone:
-                return blas_cone;
-            case PrimitiveKind::kCylinder:
-                return blas_cyl;
-            case PrimitiveKind::kTorus:
-                return blas_torus;
-            case PrimitiveKind::kGltf:
-                return blas_gltf;
-            default:
-                return blas_cube;
+            case PrimitiveKind::kSphere:   return blas_sphere;
+            case PrimitiveKind::kCone:     return blas_cone;
+            case PrimitiveKind::kCylinder: return blas_cyl;
+            case PrimitiveKind::kTorus:    return blas_torus;
+            case PrimitiveKind::kGltf:     return blas_gltf;
+            default:                       return blas_cube;
         }
     };
-    // Build all BLAS on a one-shot cmd buffer. The renderer's
-    // per-frame cmd buffers don't exist until begin_frame, so we
-    // borrow a transient one for this boot operation.
-    {
-        auto bcmd_ptr = device.create_command_buffer();
-        if (bcmd_ptr == nullptr)
-            return 16;
-        auto& bcmd = *bcmd_ptr;
-        bcmd.begin();
-        for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl, blas_torus, blas_floor, blas_gltf })
-            if (h.is_valid())
-                bcmd.build_acceleration_structure(h);
-        bcmd.end();
-        cd::rhi::SubmitDesc bsd {};
-        std::array<cd::rhi::ICommandBuffer*, 1> bcbs { &bcmd };
-        bsd.command_buffers = bcbs;
-        (void)device.submit(bsd);
-        device.wait_idle();
-    }
-
-    // Per-frame TLAS scratch. `current_tlas` is what the descriptor
-    // points at this frame; `tlas_destroy_queue` holds handles whose
-    // destroy must wait until the renderer has cycled past the
-    // submission that referenced them (frames_in_flight=2 ??' wait 3
-    // frames as a defensive margin).
     cd::rhi::AccelStructureHandle current_tlas {};
-
-    // DeferredTlas type definition moved to HelloTlasRing.hpp
-    // (Marathon Run 11 phase N9-prep).
     std::deque<cd_sample::DeferredTlas> tlas_destroy_queue;
 
     // ---- World / Scene / EditHistory ----
@@ -6457,13 +6341,6 @@ int main()
     renderer.wait_idle();
     streamer.stop();
 
-    // ---- Cleanup ----
-    destroy_mesh(device, cube_mesh);
-    destroy_mesh(device, sphere_mesh);
-    destroy_mesh(device, cone_mesh);
-    destroy_mesh(device, cyl_mesh);
-    destroy_mesh(device, torus_mesh);
-    destroy_mesh(device, knot_mesh);
     destroy_mesh(device, floor_mesh);
     rts.destroy(device);
     bloom_chain.destroy(device);
@@ -6512,11 +6389,7 @@ int main()
         device.destroy_acceleration_structure(tlas_destroy_queue.front().h);
         tlas_destroy_queue.pop_front();
     }
-    for (auto h : { blas_cube, blas_sphere, blas_cone, blas_cyl, blas_torus, blas_floor, blas_gltf })
-        if (h.is_valid())
-            device.destroy_acceleration_structure(h);
-    if (gltf_mesh.vb.is_valid())
-        destroy_mesh(device, gltf_mesh);
+    cd_sample::destroy_meshes(device, meshes);
     std::printf("hello_engine: clean exit (%u frames).\n", frame_idx);
     return 0;
 }
