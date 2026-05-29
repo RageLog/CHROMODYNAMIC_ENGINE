@@ -8,11 +8,6 @@
 add_subdirectory(rhi)
 add_subdirectory(shader)
 
-option(CD_ENABLE_VULKAN "Build cd::rhi Vulkan backend" ON)
-if(CD_ENABLE_VULKAN)
-  add_subdirectory(rhi/vulkan)
-endif()
-
 add_subdirectory(material)
 add_subdirectory(light)        # Phase 165 — SOTA light primitives + clustered + CSM
 add_subdirectory(camera)
@@ -58,8 +53,5 @@ add_subdirectory(virtual_geometry)    # Day 26 — Karis 2021 Nanite-style DAG
 add_subdirectory(virtual_textures)    # Day 27 — Mittring 2008 / Hollander 2013 VT
 add_subdirectory(ddgi)                # Day 29 — Majercik 2019 DDGI irradiance probes
 add_subdirectory(nrc)                 # Faz 3 M — Muller 2021 Neural Radiance Cache
-add_subdirectory(rhi/metal)
-add_subdirectory(rhi/d3d12)
-add_subdirectory(rhi/opengl)  # Phase 18.B — 3rd API priority (boot-only)
-add_subdirectory(rhi/native)
+# rhi backends now consolidated inside rhi/CMakeLists.txt (phase418)
 add_subdirectory(spirv_cross_glue)  # B-infra1 — SPIR-V → HLSL/MSL/GLSL cross-compilation
