@@ -1,5 +1,11 @@
 # ADR-20260529-M2-sample-framework
 
+## Status (Run 29 / phase373 update)
+
+ACCEPTED 2026-05-29 (original date stamp). **M2A LANDED** in Mega-Marathon Run 29 / phase373 (commit f892a2b -> phase373). Library skeleton + virtual interface + 5 lifecycle-contract gtests all green at 104/104 PASS. M2B (device boot) / M2C (frame loop + ImGui + shader watcher) / M2D (hello_engine port) / M2E (hello_engine_lite + acceptance test) REMAIN PENDING per the Implementation plan section below (5-7 days of focused engineering work). See docs/MARATHON_RUN29_MEGA_A_B.md for the full Run-level audit of why M2B was not attempted in Run 29.
+
+---
+
 Date: 2026-05-29 (Mega-Marathon Milestone M2 design pass; landed in the Run 18 mega-marathon orchestrator session, implementation deferred to a future Run with code-edit capability).
 
 ## Context

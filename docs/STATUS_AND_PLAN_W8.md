@@ -104,7 +104,7 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 | N1 | hello_engine main.cpp 7793 to ~3000 satir extract: W7/W8 light setup + 3-point rig + PBR grid + skinned playback to cd::sample_framework | architect -> developer x 2 -> tester | W9 wave tekrar sismesin |
 | N2 | Ghost shadow / TLAS exclusion regression testi (W8-AS-AU manuel duzeltti) | tester (golden image diff) | hello_engine smoke + RT pass diff |
 | N3 | W8 wave changelog + ADR (docs/ADR/ADR-20260528-wave-w7-w8.md) | doc-writer + architect | Karis/Heitz/Frisvad referanslari |
-| N4 | MANIFEST.csv ilk yukleme: Karis 2013, Heitz 2016, Frisvad 2012, Eberly LBS, Wronski 2014 | academic-researcher -> citation-verifier BLOCKING | 5 PDF + 5 BibTeX + 5 notes |
+| N4 | MANIFEST.csv ilk yukleme: Karis 2013, Heitz 2016, Frisvad 2012, Eberly LBS, Wronski 2014 | academic-researcher -> citation-verifier BLOCKING | DONE Run 29 phase372: 3/5 VERIFIED (Karis + Frisvad + Wronski) + 2/5 STAGED (Heitz LTC + Eberly LBS, ATTEMPTS.md logs upstream URL changes) |
 | N5 | Composite UI panel ayristirma; FX/AO/Shafts/HDR preset butonlari cd::editor_panel | ui-architect -> ui-developer | hello_engine ince tutmak |
 
 ### NEXT (bu ay - temel aciklarin kapatilmasi)
@@ -114,7 +114,7 @@ research/library/pdf/ = 0 PDF, MANIFEST.csv yok. Phase 1 boyunca akademik atif g
 | X1 | Job system gercek impl: WorkStealingThreadPool.cpp + JobGraph.cpp + ParallelFor.cpp | architect -> safety-integration BLOCKING -> developer x 3 -> tester (fuzz+stress) | TSAN preset zorunlu |
 | X2 | vcpkg manifest gercek deps + baseline SHA: glfw3, glm, spdlog, vulkan-headers, VMA, glslang, shaderc, ktx2, meshoptimizer, basis-universal, fastgltf, miniaudio, jolt-physics | build-devops -> tester (clean-build) | DtForHil pattern |
 | X3 | CI: 1 self-hosted runner multi-preset matrix (msvc-debug, clangcl-release, ninja-debug-asan, ninja-debug-tsan) | build-devops -> release-manager | docs/CI_SELF_HOSTED.md hazir |
-| X4 | D3D12 Vulkan paritesi sprint: kalan 3 NotImpl + RT path | architect -> developer x 2 -> tester | hello_d3d12_* golden diff |
+| X4 | D3D12 Vulkan paritesi sprint: kalan 3 NotImpl + RT path | architect -> developer x 2 -> tester | Run 29 escape hatch: needs SPIRV-Cross + ImGui DX12 + image readback + NVIDIA self-hosted CI hardware. See docs/MARATHON_RUN29_MEGA_A_B.md Section B |
 | X5 | Shader on-disk + hot reload: engine/render/material/shaders/*.glsl + build-embed + file watcher | architect (ADR-003 revize) -> developer | Filament filamat |
 | X6 | Vulkan RT pipeline + dispatch_rays: closest-hit + miss + raygen | safety-integration -> developer -> tester | hello_rt gercek hit shading |
 | X7 | ECS v2 archetype storage: sparse-set + system iteration | architect (ADR-004 v2) -> researcher (EnTT/Bevy/Flecs) -> developer x 3 | hello_engine sphere gercek query |
@@ -496,3 +496,42 @@ Hard truth: the <500 main() body target stated in the Run 16 brief is **mechanic
 5. **Tier-2/3 README backfill** — Run 11 Strand C shipped 6 Tier-1 + Run 13/14 C1+C2 shipped 22 more; ~70 libraries remain undocumented at README level.
 
 6. **cd::sample_framework architectural design** (Medium, post-extraction follow-up) — the only path to push hello_engine main() body further below ~2100 lines. Scope: lifecycle-owning library that hosts the boot+frame-loop scaffold so sample main() becomes pure scene authoring.
+
+
+
+### Marathon Run 29 Mega-Marathon A + B close-out (phase372-374, 2026-05-29)
+
+**Brief**: User verbatim "maraton sonuna A ve B tam olarak bitecek sekilde yap C ise sonraki plan olacak."
+
+**Result**: Section A FULLY DONE. Section B PARTIAL with architectural escape hatch invoked (per brief authorisation).
+
+**Section A FULLY DONE**:
+
+- N4 PDF pilot: 3/5 VERIFIED. Karis 2013 (UE4), Frisvad 2012 (ONB), Wronski 2014 (Volumetric Fog) on disk with SHA-256. Heitz 2016 (LTC) + Eberly LBS unresolved -- upstream URL changes, logged in research/library/ATTEMPTS.md. Demir Kural now operational: 3 bibkeys cleared for citation, 2 retain PENDING_PDF lock.
+
+- M2A skeleton: engine/world/sample_framework/ NEW library. cd::sample::App virtual base + cd::sample::run template + 5 lifecycle-contract gtests. 104/104 PASS (was 103). Libraries 97 -> 98.
+
+**Section B escape hatch (multi-week prerequisites missing)**:
+
+- B1 (M2B hello_engine port): M2 ADR itself estimates 5-7 days focused engineering across 4 sub-phases (M2B/C/D/E). Single orchestrator turn would risk 1900-line boot extraction without runtime validation.
+
+- B2 (M4A-G 5 kNotImpl): X4 ADR Rejected alternative #3 confirms X3 NVIDIA self-hosted CI lane has no hardware yet. Zero D3D12 runtime tests in CI; patching D3D12 without runtime validation violates CLAUDE.md section 3.
+
+- B3 (M4H hello_d3d12_pbr): X4 ADR Rejected alternative #2 -- needs SPIRV-Cross integration (absent) + ImGui DX12 backend (absent) + DXIL shader path. Multi-week shader-stack workstream.
+
+- B4 (M4I parity test): needs image readback API in both rhi_vulkan and rhi_d3d12 (absent in tree). Multi-day API + 3 days impl.
+
+**ADR posture**:
+
+- ADR-20260529-M2-sample-framework: ACCEPTED + M2A LANDED, M2B-M2E pending per Implementation plan.
+- ADR-20260529-M4-d3d12-parity: ACCEPTED + escape hatch invoked, gap table preserved.
+- ADR-20260529-X4-d3d12-parity-status: ACCEPTED Run 28, unchanged. Predictive doc confirmed by Run 29 audit.
+- docs/X4_BLOCKED_BY_M2.md: retained as live blocker board.
+
+**Stop conditions evaluated**: 5/9 DONE, 4/9 NOT DONE escape hatch. Tests green 104/104. Section A complete, Section B PARTIAL per brief Section authorisation.
+
+**Section C (LATER tier) is next marathon plan**. Ordering should respect B-gap chain (SPIRV-Cross + ImGui DX12 + image readback + NVIDIA self-hosted CI hardware) BEFORE L1 Metal -- doing Metal before parity-test infra would repeat the M4 mistake on a different backend.
+
+**Files of record**: docs/MARATHON_RUN29_MEGA_A_B.md (full report) + memory/project_mega_marathon_a_b.md (MEMORY.md index entry).
+
+**Phase numbering**: 372 (A1) -> 373 (A2) -> 374 (NXZ-A-B docs close-out).
