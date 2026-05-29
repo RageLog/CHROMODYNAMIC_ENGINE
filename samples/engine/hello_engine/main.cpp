@@ -156,6 +156,7 @@
 #include "HelloSkinnedAnim.hpp"
 #include "HelloAudio.hpp"
 #include "HelloIbl.hpp"
+#include "HelloAppState.hpp"
 
 
 namespace
@@ -5287,35 +5288,37 @@ int main()
     scene_cam.set_auto_spin(false);  // user-controlled by default; toggle from palette
     scene_cam.orbit().auto_spin_rate = 0.25F;
 
-    // ---- Free-look camera state (WASD + right-mouse look + wheel zoom) ----
-    // When the user holds the right mouse button, we disable auto-spin and
-    // switch to FPS-style yaw/pitch from mouse delta + WASD translation.
-    bool cam_right_drag = false;
-    float cam_yaw = 0.0F;      // around +Y
-    float cam_pitch = -0.15F;  // looking slightly down
-    float cam_dist = 8.0F;     // distance from target (used as zoom)
-    float last_mouse_x = 0.0F;
-    float last_mouse_y = 0.0F;
-    bool has_last_mouse = false;
-    bool key_w = false, key_a = false, key_s = false, key_d = false;
-    bool key_q = false, key_e = false;         // up/down
-    bool key_shift = false, key_ctrl = false;  // W6-F speed modifiers
-    constexpr float kCamMoveSpeed = 6.0F;      // m/s
-    constexpr float kCamLookSpeed = 0.005F;    // rad/pixel
+    // ---- Free-look camera + pick state (Run 12 phase N13) ----
+    // Bundled into cd_sample::SampleAppState so the WASD/look/zoom handler
+    // and the 3D click-to-pick handler can be extracted out of main() in
+    // follow-up phases (A6 picker, A7 FPS camera) without 20 reference
+    // captures. Name-aliases below keep the existing inline call sites
+    // (input handler, camera tick, picker) working without a mechanical
+    // rename pass — same pattern HelloAudio used for the audio chain
+    // in Marathon Run 11 phase N11.
+    cd_sample::SampleAppState app_state;
+    auto& cam_right_drag = app_state.free_look.right_drag;
+    auto& cam_yaw        = app_state.free_look.yaw;
+    auto& cam_pitch      = app_state.free_look.pitch;
+    auto& cam_dist       = app_state.free_look.dist;
+    auto& last_mouse_x   = app_state.free_look.last_mouse_x;
+    auto& last_mouse_y   = app_state.free_look.last_mouse_y;
+    auto& has_last_mouse = app_state.free_look.has_last_mouse;
+    auto& key_w          = app_state.free_look.key_w;
+    auto& key_a          = app_state.free_look.key_a;
+    auto& key_s          = app_state.free_look.key_s;
+    auto& key_d          = app_state.free_look.key_d;
+    auto& key_q          = app_state.free_look.key_q;
+    auto& key_e          = app_state.free_look.key_e;
+    auto& key_shift      = app_state.free_look.key_shift;
+    auto& key_ctrl       = app_state.free_look.key_ctrl;
+    auto& cam_manual_mode = app_state.free_look.manual_mode;
+    auto& pending_pick   = app_state.pick.pending;
+    auto& pick_x         = app_state.pick.x;
+    auto& pick_y         = app_state.pick.y;
+    using cd_sample::kCamMoveSpeed;
+    using cd_sample::kCamLookSpeed;
 
-    // ---- Pick state (3D click-to-select) ----
-    // Left click in the viewport casts a ray from the mouse pixel into
-    // world space and tests against every entity's sphere bound.
-    bool pending_pick = false;
-    float pick_x = 0.0F, pick_y = 0.0F;
-
-    // ---- Manual camera mode ----
-    // Once the user touches WASD or right-mouse drag, the camera goes
-    // into "manual mode" and scene_cam stops updating cam.eye/target -
-    // otherwise the orbit camera snaps the eye back to its own pose on
-    // every frame. Manual mode persists until palette "Camera: Toggle
-    // Auto-Spin" is hit (which re-engages scene_cam orbit).
-    bool cam_manual_mode = false;
 
     // ---- Audio chain (continuous tick) ----
     // The DSP-chain + meter / ring / WASAPI live-playback boot block
