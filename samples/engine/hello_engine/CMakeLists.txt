@@ -54,3 +54,9 @@ cd_add_sample(hello_engine
     cd::shader
     cd::world_container
 )
+
+# Marathon Run 23 phase N2B: ghost-shadow / TLAS-exclusion regression
+# test (pure-CPU, no RHI device needed).
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()
