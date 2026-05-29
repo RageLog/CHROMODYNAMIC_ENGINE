@@ -86,6 +86,22 @@ struct MaterialDesc
     std::string_view vertex_glsl {};
     std::string_view fragment_glsl {};
 
+    /// On-disk GLSL source — opt-in alternative to inline `vertex_glsl` /
+    /// `fragment_glsl`. When set, `Material::create` reads the file into a
+    /// scratch `std::string` and feeds it to the existing GLSL compile
+    /// path; the underlying file handle does not survive the create call.
+    /// Path is resolved relative to the process working directory (no
+    /// implicit search root for V1 — callers that need search-root
+    /// resolution should compose the path themselves).
+    ///
+    /// Precedence (per ADR-20260529-X5):
+    ///   *_spirv  >  *_glsl_path  >  *_glsl
+    /// i.e. `*_glsl_path` wins over a non-empty inline `*_glsl`. The two
+    /// are not mutually exclusive at the type level so callers can ship an
+    /// embedded fallback string alongside the on-disk path.
+    std::string_view vertex_glsl_path {};
+    std::string_view fragment_glsl_path {};
+
     /// Pre-compiled SPIR-V — takes precedence over GLSL. Used by asset
     /// pipelines that ship .spv blobs.
     std::span<const std::uint32_t> vertex_spirv {};

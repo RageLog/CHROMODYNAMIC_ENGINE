@@ -5,6 +5,10 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 
 #include <cstdint>
+#include <fstream>
+#include <ios>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +29,22 @@ namespace
     if (cd::rhi::has(s, RS::kCompute))
         return cd::shader::ShaderStage::kCompute;
     return cd::shader::ShaderStage::kVertex;
+}
+
+/// Slurp a whole text file into an owning std::string. Returns
+/// std::nullopt if the file cannot be opened. Used by the
+/// `*_glsl_path` branch of `Material::create` so callers can keep
+/// GLSL on disk (hot-reload, IDE syntax highlighting) without
+/// paying for a long-lived file handle.
+[[nodiscard]] std::optional<std::string> read_file_text(std::string_view path)
+{
+    const std::string p { path };
+    std::ifstream in(p, std::ios::in | std::ios::binary);
+    if (!in.is_open())
+        return std::nullopt;
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
 }
 
 /// Compile a single GLSL stage and return its SPIR-V words. `out_spirv`
@@ -132,12 +152,16 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     const std::uint32_t* fs_code { nullptr };
     std::size_t fs_size { 0 };
 
+    // Vertex-stage source resolution. Per ADR-20260529-X5 precedence:
+    //   vertex_spirv > vertex_glsl_path > vertex_glsl
+    // The owning string for the on-disk branch must outlive compile_stage.
+    std::string vs_disk_source;
     if (!desc.vertex_spirv.empty())
     {
         vs_code = desc.vertex_spirv.data();
         vs_size = desc.vertex_spirv.size() * sizeof(std::uint32_t);
     }
-    else if (!desc.vertex_glsl.empty())
+    else if (!desc.vertex_glsl_path.empty() || !desc.vertex_glsl.empty())
     {
         if (compiler == nullptr)
         {
@@ -148,9 +172,29 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
                 )
             );
         }
+        std::string_view vs_src {};
+        if (!desc.vertex_glsl_path.empty())
+        {
+            auto loaded = read_file_text(desc.vertex_glsl_path);
+            if (!loaded.has_value())
+            {
+                return std::unexpected(
+                    material_errors::make(
+                        material_errors::Code::kInvalidArgument,
+                        "Material::create: failed to open vertex_glsl_path"
+                    )
+                );
+            }
+            vs_disk_source = std::move(*loaded);
+            vs_src = vs_disk_source;
+        }
+        else
+        {
+            vs_src = desc.vertex_glsl;
+        }
         auto r = compile_stage(
             *compiler,
-            desc.vertex_glsl,
+            vs_src,
             cd::rhi::ShaderStage::kVertex,
             std::string { desc.name } + ".vert"
         );
@@ -167,12 +211,14 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
         );
     }
 
+    // Fragment-stage source resolution. Same precedence as vertex.
+    std::string fs_disk_source;
     if (!desc.fragment_spirv.empty())
     {
         fs_code = desc.fragment_spirv.data();
         fs_size = desc.fragment_spirv.size() * sizeof(std::uint32_t);
     }
-    else if (!desc.fragment_glsl.empty())
+    else if (!desc.fragment_glsl_path.empty() || !desc.fragment_glsl.empty())
     {
         if (compiler == nullptr)
         {
@@ -183,9 +229,29 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
                 )
             );
         }
+        std::string_view fs_src {};
+        if (!desc.fragment_glsl_path.empty())
+        {
+            auto loaded = read_file_text(desc.fragment_glsl_path);
+            if (!loaded.has_value())
+            {
+                return std::unexpected(
+                    material_errors::make(
+                        material_errors::Code::kInvalidArgument,
+                        "Material::create: failed to open fragment_glsl_path"
+                    )
+                );
+            }
+            fs_disk_source = std::move(*loaded);
+            fs_src = fs_disk_source;
+        }
+        else
+        {
+            fs_src = desc.fragment_glsl;
+        }
         auto r = compile_stage(
             *compiler,
-            desc.fragment_glsl,
+            fs_src,
             cd::rhi::ShaderStage::kFragment,
             std::string { desc.name } + ".frag"
         );
