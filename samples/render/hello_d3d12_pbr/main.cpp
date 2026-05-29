@@ -71,6 +71,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <numbers>
+#include <span>
 #include <vector>
 
 namespace
@@ -367,7 +368,14 @@ int main()
     std::size_t headless_env_sz = 0;
     // _dupenv_s is the MSVC-safe alternative to std::getenv.
     (void)_dupenv_s(&headless_env, &headless_env_sz, "CD_D3D12_PBR_HEADLESS_FRAMES");
-    const int headless_frames = headless_env ? std::atoi(headless_env) : 0;
+    int headless_frames = 0;
+    if (headless_env != nullptr)
+    {
+        char* end = nullptr;
+        const long frames_long = std::strtol(headless_env, &end, 10);
+        if (end != headless_env && frames_long >= 0 && frames_long <= INT_MAX)
+            headless_frames = static_cast<int>(frames_long);
+    }
     free(headless_env);  // _dupenv_s allocates; must free even if null
 
     // ---- Device ---------------------------------------------------------------

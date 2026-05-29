@@ -3246,13 +3246,13 @@ create_d3d12_device(D3D12CreateInfo info)
     return std::unique_ptr<cd::rhi::IDevice>(std::move(dev));
 }
 
-// End of the Windows-only block — close the diagnostic pragma we
-// pushed alongside the Win32 headers above.
+    // End of the Windows-only block — close the diagnostic pragma we
+    // pushed alongside the Win32 headers above.
 #if defined(__clang__)
     #pragma clang diagnostic pop
 #endif
 
-#else  // _WIN32 — non-Windows: backend is unavailable.
+#else  // _WIN32 - non-Windows: backend is unavailable.
 
 cd::core::Result<std::unique_ptr<cd::rhi::IDevice>>
 create_d3d12_device(D3D12CreateInfo /*info*/)
