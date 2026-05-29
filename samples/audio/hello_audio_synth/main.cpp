@@ -10,7 +10,7 @@
 // here is to prove the cook/load contract end-to-end so an audio sample
 // that DOES go to the speakers can rely on cd::asset_wav.
 // =============================================================================
-#include <cd/asset_wav/Wav.hpp>
+#include <cd/asset/wav/Wav.hpp>
 
 #include <cmath>
 #include <cstdint>
@@ -108,7 +108,7 @@ int main()
     std::printf("wrote %zu bytes -> %s\n", bytes.size(), path.c_str());
 
     // 3. Load back via cd::asset_wav.
-    auto r = cd::asset_wav::load(path);
+    auto r = cd::asset::wav::load(path);
     if (!r)
     {
         std::printf("load failed: %.*s\n", static_cast<int>(r.error().message.size()), r.error().message.data());

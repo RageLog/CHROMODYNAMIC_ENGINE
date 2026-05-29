@@ -34,7 +34,7 @@
 // =============================================================================
 #pragma once
 
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
 #include <cd/ecs/Entity.hpp>
@@ -77,41 +77,41 @@ inline constexpr std::uint32_t kSceneJsonVersion = 1;
 // Forward declarations — the template variants live below the
 // non-template wrappers that call them.
 template <class WriteExtras>
-[[nodiscard]] inline cd::asset_json::Value
+[[nodiscard]] inline cd::asset::json::Value
 serialize_scene_with(const Scene& scene, WriteExtras&& write_extras);
 
 using IdMap = std::unordered_map<std::uint64_t, cd::ecs::Entity>;
 
 template <class ReadExtras>
 [[nodiscard]] inline cd::core::Result<IdMap>
-deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtras&& read_extras);
+deserialize_scene_with(Scene& scene, const cd::asset::json::Value& json, ReadExtras&& read_extras);
 
 /// Convert a Vec3f to a JSON 3-element array.
-[[nodiscard]] inline cd::asset_json::Value vec3_to_json(const cd::math::Vec3f& v)
+[[nodiscard]] inline cd::asset::json::Value vec3_to_json(const cd::math::Vec3f& v)
 {
-    cd::asset_json::Array a;
+    cd::asset::json::Array a;
     a.reserve(3);
-    a.push_back(cd::asset_json::Value { static_cast<double>(v.x) });
-    a.push_back(cd::asset_json::Value { static_cast<double>(v.y) });
-    a.push_back(cd::asset_json::Value { static_cast<double>(v.z) });
-    return cd::asset_json::Value { std::move(a) };
+    a.push_back(cd::asset::json::Value { static_cast<double>(v.x) });
+    a.push_back(cd::asset::json::Value { static_cast<double>(v.y) });
+    a.push_back(cd::asset::json::Value { static_cast<double>(v.z) });
+    return cd::asset::json::Value { std::move(a) };
 }
 
 /// Convert a Quatf to a JSON 4-element array (x,y,z,w).
-[[nodiscard]] inline cd::asset_json::Value quat_to_json(const cd::math::Quatf& q)
+[[nodiscard]] inline cd::asset::json::Value quat_to_json(const cd::math::Quatf& q)
 {
-    cd::asset_json::Array a;
+    cd::asset::json::Array a;
     a.reserve(4);
-    a.push_back(cd::asset_json::Value { static_cast<double>(q.x) });
-    a.push_back(cd::asset_json::Value { static_cast<double>(q.y) });
-    a.push_back(cd::asset_json::Value { static_cast<double>(q.z) });
-    a.push_back(cd::asset_json::Value { static_cast<double>(q.w) });
-    return cd::asset_json::Value { std::move(a) };
+    a.push_back(cd::asset::json::Value { static_cast<double>(q.x) });
+    a.push_back(cd::asset::json::Value { static_cast<double>(q.y) });
+    a.push_back(cd::asset::json::Value { static_cast<double>(q.z) });
+    a.push_back(cd::asset::json::Value { static_cast<double>(q.w) });
+    return cd::asset::json::Value { std::move(a) };
 }
 
 /// Read a numeric JSON array of length `N` into a Vec or Quat. Returns
 /// kBadShape on mismatch.
-[[nodiscard]] inline cd::core::Result<cd::math::Vec3f> json_to_vec3(const cd::asset_json::Value& v)
+[[nodiscard]] inline cd::core::Result<cd::math::Vec3f> json_to_vec3(const cd::asset::json::Value& v)
 {
     if (!v.is_array() || v.as_array().size() != 3)
         return std::unexpected(serializer_errors::make(serializer_errors::Code::kBadShape, "vec3 array shape"));
@@ -125,7 +125,7 @@ deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtr
     };
 }
 
-[[nodiscard]] inline cd::core::Result<cd::math::Quatf> json_to_quat(const cd::asset_json::Value& v)
+[[nodiscard]] inline cd::core::Result<cd::math::Quatf> json_to_quat(const cd::asset::json::Value& v)
 {
     if (!v.is_array() || v.as_array().size() != 4)
         return std::unexpected(serializer_errors::make(serializer_errors::Code::kBadShape, "quat array shape"));
@@ -145,9 +145,9 @@ deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtr
 /// material tint, gameplay tags, etc.) should use the templated
 /// `serialize_scene_with` overload below — this thin wrapper kept
 /// for backward compat.
-[[nodiscard]] inline cd::asset_json::Value serialize_scene(const Scene& scene)
+[[nodiscard]] inline cd::asset::json::Value serialize_scene(const Scene& scene)
 {
-    return serialize_scene_with(scene, [](cd::ecs::Entity, cd::asset_json::Object&) {});
+    return serialize_scene_with(scene, [](cd::ecs::Entity, cd::asset::json::Object&) {});
 }
 
 /// Phase 121 — serialize every entity with a LocalTransform plus any
@@ -158,34 +158,34 @@ deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtr
 /// `scale`, `parent`) WILL be overwritten by the serializer if the
 /// caller pre-sets them — set custom keys only.
 template <class WriteExtras>
-[[nodiscard]] inline cd::asset_json::Value
+[[nodiscard]] inline cd::asset::json::Value
 serialize_scene_with(const Scene& scene, WriteExtras&& write_extras)
 {
-    cd::asset_json::Object root;
-    root["version"] = cd::asset_json::Value { static_cast<int>(kSceneJsonVersion) };
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(kSceneJsonVersion) };
 
-    cd::asset_json::Array nodes;
+    cd::asset::json::Array nodes;
     auto& w = const_cast<cd::ecs::World&>(scene.world());
     w.for_each<LocalTransform>(
         [&](cd::ecs::Entity e, LocalTransform& lt)
         {
-            cd::asset_json::Object obj;
+            cd::asset::json::Object obj;
             // Let the caller pre-populate so we can guarantee the
             // canonical fields win (id, transform, parent are set
             // AFTER write_extras, overwriting any conflict).
             write_extras(e, obj);
-            obj["id"] = cd::asset_json::Value { static_cast<std::int64_t>(e.id) };
+            obj["id"] = cd::asset::json::Value { static_cast<std::int64_t>(e.id) };
             obj["translation"] = vec3_to_json(lt.value.position);
             obj["rotation"] = quat_to_json(lt.value.rotation);
             obj["scale"] = vec3_to_json(lt.value.scale);
             const auto parent = scene.parent_of(e);
             if (parent.is_valid())
-                obj["parent"] = cd::asset_json::Value { static_cast<std::int64_t>(parent.id) };
-            nodes.push_back(cd::asset_json::Value { std::move(obj) });
+                obj["parent"] = cd::asset::json::Value { static_cast<std::int64_t>(parent.id) };
+            nodes.push_back(cd::asset::json::Value { std::move(obj) });
         }
     );
-    root["nodes"] = cd::asset_json::Value { std::move(nodes) };
-    return cd::asset_json::Value { std::move(root) };
+    root["nodes"] = cd::asset::json::Value { std::move(nodes) };
+    return cd::asset::json::Value { std::move(root) };
 }
 
 /// (IdMap declared above near the forward declarations.)
@@ -193,10 +193,10 @@ serialize_scene_with(const Scene& scene, WriteExtras&& write_extras)
 /// Recreate scene nodes from `json`. Adds new entities to `scene` (does
 /// not destroy existing ones). Returns the IdMap so the caller can
 /// resolve `json["id"]` back to the new Entity.
-[[nodiscard]] inline cd::core::Result<IdMap> deserialize_scene(Scene& scene, const cd::asset_json::Value& json)
+[[nodiscard]] inline cd::core::Result<IdMap> deserialize_scene(Scene& scene, const cd::asset::json::Value& json)
 {
     return deserialize_scene_with(scene, json,
-        [](cd::ecs::Entity, const cd::asset_json::Object&) {});
+        [](cd::ecs::Entity, const cd::asset::json::Object&) {});
 }
 
 /// Phase 121 — deserialize plus per-node callback. `read_extras` is
@@ -205,7 +205,7 @@ serialize_scene_with(const Scene& scene, WriteExtras&& write_extras)
 /// serializer ignored (name, tint, custom metadata).
 template <class ReadExtras>
 [[nodiscard]] inline cd::core::Result<IdMap>
-deserialize_scene_with(Scene& scene, const cd::asset_json::Value& json, ReadExtras&& read_extras)
+deserialize_scene_with(Scene& scene, const cd::asset::json::Value& json, ReadExtras&& read_extras)
 {
     if (!json.is_object())
         return std::unexpected(

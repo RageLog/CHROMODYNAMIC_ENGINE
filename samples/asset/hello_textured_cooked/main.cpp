@@ -3,9 +3,9 @@
 //
 // Closes the texture cook → load → render loop:
 //   1. On first launch, the sample synthesises a 256x256 procedural RGBA
-//      image, compresses it to BC7 via cd::asset_image::compress_bc7,
+//      image, compresses it to BC7 via cd::asset::image::compress_bc7,
 //      and writes the cook_texture .cdtex format to a temp file.
-//   2. Loads the .cdtex back through cd::asset_cdtex::load.
+//   2. Loads the .cdtex back through cd::asset::cdtex::load.
 //   3. Uploads the raw BC7 blocks into a VK_FORMAT_BC7_UNORM_BLOCK image
 //      via staging buffer + copy_buffer_to_image.
 //   4. Renders the textured quad with linear sampling.
@@ -20,8 +20,8 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_cdtex/CdTex.hpp>
-#include <cd/asset_image/Bc7.hpp>
+#include <cd/asset/cdtex/CdTex.hpp>
+#include <cd/asset/image/Bc7.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/platform/Window.hpp>
 #include <cd/render/Renderer.hpp>
@@ -117,7 +117,7 @@ constexpr std::uint32_t kTexSize = 256;
                        std::to_string(seq.fetch_add(1)) + ".cdtex");
 
     auto rgba = make_procedural_rgba();
-    auto bc7 = cd::asset_image::compress_bc7(rgba, kTexSize, kTexSize, cd::asset_image::Bc7Quality::kBalanced);
+    auto bc7 = cd::asset::image::compress_bc7(rgba, kTexSize, kTexSize, cd::asset::image::Bc7Quality::kBalanced);
     if (!bc7.has_value())
         return {};
 
@@ -256,7 +256,7 @@ int main(int argc, char** argv)
         std::printf("hello_textured_cooked: self-cooked %s\n", path.c_str());
     }
 
-    auto tex = cd::asset_cdtex::load(path);
+    auto tex = cd::asset::cdtex::load(path);
     if (!tex.has_value())
     {
         std::fprintf(

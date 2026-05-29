@@ -27,9 +27,9 @@
 //   3 output write error
 //   4 unsupported format
 // =============================================================================
-#include <cd/asset_cdmesh/CdMesh.hpp>
-#include <cd/asset_gltf/GltfLoader.hpp>
-#include <cd/asset_obj/ObjLoader.hpp>
+#include <cd/asset/cdmesh/CdMesh.hpp>
+#include <cd/asset/gltf/GltfLoader.hpp>
+#include <cd/asset/obj/ObjLoader.hpp>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
@@ -126,7 +126,7 @@ void print_usage()
     bool verbose
 )
 {
-    cd::asset_cdmesh::SaveDesc d {};
+    cd::asset::cdmesh::SaveDesc d {};
     d.vertices = vertices;
     d.indices = indices;
     d.vertex_count = vertex_count;
@@ -135,7 +135,7 @@ void print_usage()
     d.index_stride = index_stride;
     d.bbox_min = bb_min;
     d.bbox_max = bb_max;
-    auto r = cd::asset_cdmesh::save(output, d);
+    auto r = cd::asset::cdmesh::save(output, d);
     if (!r.has_value())
     {
         std::fprintf(
@@ -177,7 +177,7 @@ int main(int argc, char** argv)
     // ---- OBJ path ----
     if (extension_is(args.input, ".obj"))
     {
-        auto loaded = cd::asset_obj::load_obj(args.input);
+        auto loaded = cd::asset::obj::load_obj(args.input);
         if (!loaded.has_value())
         {
             std::fprintf(
@@ -192,12 +192,12 @@ int main(int argc, char** argv)
         return write_cooked(
             args.output,
             { reinterpret_cast<const std::uint8_t*>(mesh.vertices.data()),
-              mesh.vertices.size() * sizeof(cd::asset_obj::ObjVertex) },
+              mesh.vertices.size() * sizeof(cd::asset::obj::ObjVertex) },
             { reinterpret_cast<const std::uint8_t*>(mesh.indices.data()),
               mesh.indices.size() * sizeof(std::uint32_t) },
             static_cast<std::uint32_t>(mesh.vertices.size()),
             static_cast<std::uint32_t>(mesh.indices.size()),
-            sizeof(cd::asset_obj::ObjVertex),
+            sizeof(cd::asset::obj::ObjVertex),
             4,
             mesh.bbox_min,
             mesh.bbox_max,
@@ -208,7 +208,7 @@ int main(int argc, char** argv)
     // ---- glTF path (first instance only) ----
     if (extension_is(args.input, ".gltf") || extension_is(args.input, ".glb"))
     {
-        auto loaded = cd::asset_gltf::load_gltf(args.input);
+        auto loaded = cd::asset::gltf::load_gltf(args.input);
         if (!loaded.has_value())
         {
             std::fprintf(
@@ -234,12 +234,12 @@ int main(int argc, char** argv)
         return write_cooked(
             args.output,
             { reinterpret_cast<const std::uint8_t*>(prim.vertices.data()),
-              prim.vertices.size() * sizeof(cd::asset_gltf::GltfVertex) },
+              prim.vertices.size() * sizeof(cd::asset::gltf::GltfVertex) },
             { reinterpret_cast<const std::uint8_t*>(prim.indices.data()),
               prim.indices.size() * sizeof(std::uint32_t) },
             static_cast<std::uint32_t>(prim.vertices.size()),
             static_cast<std::uint32_t>(prim.indices.size()),
-            sizeof(cd::asset_gltf::GltfVertex),
+            sizeof(cd::asset::gltf::GltfVertex),
             4,
             scene.bbox_min,
             scene.bbox_max,

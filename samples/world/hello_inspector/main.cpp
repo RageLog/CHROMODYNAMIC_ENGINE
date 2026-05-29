@@ -19,7 +19,7 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/ecs/World.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/math/Transform.hpp>
@@ -238,7 +238,7 @@ int main(int argc, char** argv)
         if (ImGui::Button("Save scene"))
         {
             auto j = cd::scene::serialize_scene(scene);
-            const auto text = cd::asset_json::serialize(j, /*pretty=*/true);
+            const auto text = cd::asset::json::serialize(j, /*pretty=*/true);
             std::ofstream out { path_buf, std::ios::binary | std::ios::trunc };
             if (out)
                 out.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -253,7 +253,7 @@ int main(int argc, char** argv)
                 in.seekg(0);
                 std::string text(size, '\0');
                 in.read(text.data(), static_cast<std::streamsize>(size));
-                if (auto parsed = cd::asset_json::parse(text); parsed)
+                if (auto parsed = cd::asset::json::parse(text); parsed)
                 {
                     // Wipe current scene first.
                     cd::ecs::World fresh_world;

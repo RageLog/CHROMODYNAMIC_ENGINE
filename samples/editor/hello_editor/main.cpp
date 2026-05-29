@@ -31,7 +31,7 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/ecs/World.hpp>
 #include <cd/editor/CommandPalette.hpp>
 #include <cd/editor/EditHistory.hpp>
@@ -883,24 +883,24 @@ int main(int argc, char** argv)
                 // per-node JSON fields so the load path can restore
                 // the actual entity identity (not just transforms).
                 const auto json = cd::scene::serialize_scene_with(scene,
-                    [&](cd::ecs::Entity e, cd::asset_json::Object& obj) {
+                    [&](cd::ecs::Entity e, cd::asset::json::Object& obj) {
                         for (const auto& se : entities)
                         {
                             if (se.handle.id != e.id) continue;
-                            obj["name"] = cd::asset_json::Value { se.name };
-                            cd::asset_json::Array tint;
-                            tint.push_back(cd::asset_json::Value { static_cast<double>(se.tint.x) });
-                            tint.push_back(cd::asset_json::Value { static_cast<double>(se.tint.y) });
-                            tint.push_back(cd::asset_json::Value { static_cast<double>(se.tint.z) });
-                            obj["tint"] = cd::asset_json::Value { std::move(tint) };
-                            obj["mesh"] = cd::asset_json::Value {
+                            obj["name"] = cd::asset::json::Value { se.name };
+                            cd::asset::json::Array tint;
+                            tint.push_back(cd::asset::json::Value { static_cast<double>(se.tint.x) });
+                            tint.push_back(cd::asset::json::Value { static_cast<double>(se.tint.y) });
+                            tint.push_back(cd::asset::json::Value { static_cast<double>(se.tint.z) });
+                            obj["tint"] = cd::asset::json::Value { std::move(tint) };
+                            obj["mesh"] = cd::asset::json::Value {
                                 (se.mesh == SceneEntity::MeshKind::kCube)   ? std::string{"Cube"} :
                                 (se.mesh == SceneEntity::MeshKind::kSphere) ? std::string{"Sphere"} :
                                                                               std::string{"Cone"} };
                             break;
                         }
                     });
-                const auto text = cd::asset_json::serialize(json, true);
+                const auto text = cd::asset::json::serialize(json, true);
                 std::ofstream f(path_buf.data(), std::ios::binary);
                 if (f)
                 {
@@ -926,7 +926,7 @@ int main(int argc, char** argv)
                     std::stringstream ss;
                     ss << f.rdbuf();
                     const auto text = ss.str();
-                    auto json_r = cd::asset_json::parse(text);
+                    auto json_r = cd::asset::json::parse(text);
                     if (!json_r.has_value())
                     {
                         log_push("load failed (parse error)");
@@ -969,7 +969,7 @@ int main(int argc, char** argv)
                             scene = cd::scene::Scene { world };
                             auto map_again = cd::scene::deserialize_scene_with(
                                 scene, *json_r,
-                                [&](cd::ecs::Entity e, const cd::asset_json::Object& node)
+                                [&](cd::ecs::Entity e, const cd::asset::json::Object& node)
                                 {
                                     SceneEntity se;
                                     se.handle = e;

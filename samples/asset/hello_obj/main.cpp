@@ -14,7 +14,7 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_obj/ObjLoader.hpp>
+#include <cd/asset/obj/ObjLoader.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/OrbitController.hpp>
 #include <cd/material/Material.hpp>
@@ -48,7 +48,7 @@ struct Vertex
     float uv[2];
 };
 
-static_assert(sizeof(Vertex) == sizeof(cd::asset_obj::ObjVertex), "vertex layout mismatch with ObjVertex");
+static_assert(sizeof(Vertex) == sizeof(cd::asset::obj::ObjVertex), "vertex layout mismatch with ObjVertex");
 
 struct PushBlock
 {
@@ -203,11 +203,11 @@ int main(int argc, char** argv)
         break;
     }
 
-    cd::core::Result<cd::asset_obj::ObjMesh> loaded =
-        std::unexpected(cd::asset_obj::obj_errors::make(cd::asset_obj::obj_errors::Code::kOk));
+    cd::core::Result<cd::asset::obj::ObjMesh> loaded =
+        std::unexpected(cd::asset::obj::obj_errors::make(cd::asset::obj::obj_errors::Code::kOk));
     if (obj_path != nullptr)
     {
-        loaded = cd::asset_obj::load_obj(obj_path);
+        loaded = cd::asset::obj::load_obj(obj_path);
         if (!loaded.has_value())
         {
             std::fprintf(
@@ -227,7 +227,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        loaded = cd::asset_obj::parse_obj(kInlineCubeObj);
+        loaded = cd::asset::obj::parse_obj(kInlineCubeObj);
         if (!loaded.has_value())
         {
             std::fprintf(stderr, "inline obj parse failed\n");
@@ -275,7 +275,7 @@ int main(int argc, char** argv)
 
     // ---- Upload geometry --------------------------------------------------
     const std::span<const std::byte> vb_bytes { reinterpret_cast<const std::byte*>(mesh.vertices.data()),
-                                                mesh.vertices.size() * sizeof(cd::asset_obj::ObjVertex) };
+                                                mesh.vertices.size() * sizeof(cd::asset::obj::ObjVertex) };
     const std::span<const std::byte> ib_bytes { reinterpret_cast<const std::byte*>(mesh.indices.data()),
                                                 mesh.indices.size() * sizeof(std::uint32_t) };
     const auto vb = make_upload_buffer(device, vb_bytes, cd::rhi::BufferUsage::kVertex);

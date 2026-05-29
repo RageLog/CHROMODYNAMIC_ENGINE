@@ -10,8 +10,8 @@
 
 #include <cd/anim/Skeleton.hpp>
 #include <cd/asset/Primitives.hpp>
-#include <cd/asset_gltf/GltfLoader.hpp>
-#include <cd/asset_gltf/SkinnedMeshBridge.hpp>
+#include <cd/asset/gltf/GltfLoader.hpp>
+#include <cd/asset/gltf/SkinnedMeshBridge.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/render/MeshUpload.hpp>
 #include <cd/rhi/IDevice.hpp>
@@ -102,7 +102,7 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
 
     for (const auto& p : kCandidates)
     {
-        auto loaded = cd::asset_gltf::load_gltf(p);
+        auto loaded = cd::asset::gltf::load_gltf(p);
         if (!loaded.has_value())
             continue;
         // Count total vertices across all primitives to choose u16 vs u32 path.
@@ -185,7 +185,7 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                     // Alpha-test: set cutoff > 0 for MASK and BLEND materials.
                     // BLEND is treated as MASK with cutoff=0.5 for first cut
                     // (avoids sort-order issues; full OIT is M4 territory).
-                    using AM = cd::asset_gltf::GltfAlphaMode;
+                    using AM = cd::asset::gltf::GltfAlphaMode;
                     if (mat.alpha_mode == AM::kMask)
                         range.alpha_cutoff = mat.alpha_cutoff;
                     else if (mat.alpha_mode == AM::kBlend)
@@ -210,7 +210,7 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
         if (!loaded->skins.empty() && !loaded->animations.empty() && !loaded->meshes.empty() &&
             !loaded->meshes[0].primitives.empty() && !loaded->meshes[0].primitives[0].skin_vertices.empty())
         {
-            auto bundle = cd::asset_gltf::to_skeleton_bundle(*loaded, 0);
+            auto bundle = cd::asset::gltf::to_skeleton_bundle(*loaded, 0);
             out.skinned.skeleton = std::move(bundle.skeleton);
             out.skinned.node_to_joint = std::move(bundle.node_to_joint);
             out.skinned.skin_joint_remap = std::move(bundle.skin_joint_remap);

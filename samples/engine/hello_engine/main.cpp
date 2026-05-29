@@ -37,9 +37,9 @@
 #include <cd/asset/AsyncStreamer.hpp>
 #include <cd/asset/Primitives.hpp>
 #include <cd/asset/StreamRequest.hpp>
-#include <cd/asset_gltf/GltfLoader.hpp>
-#include <cd/asset_gltf/SkinnedMeshBridge.hpp>
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/gltf/GltfLoader.hpp>
+#include <cd/asset/gltf/SkinnedMeshBridge.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/atmosphere/Atmosphere.hpp>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
@@ -4740,46 +4740,46 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                 return nullptr;
             };
             auto root = cd::scene::serialize_scene_with(s.scene,
-                [&](cd::ecs::Entity e, cd::asset_json::Object& obj)
+                [&](cd::ecs::Entity e, cd::asset::json::Object& obj)
                 {
                     const auto* en = fe(e); if (!en) return;
-                    obj["name"] = cd::asset_json::Value { en->name };
-                    obj["kind"] = cd::asset_json::Value { std::string { kind_name_fn(en->kind) } };
-                    cd::asset_json::Array tint;
-                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.x) });
-                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.y) });
-                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.z) });
-                    obj["tint"] = cd::asset_json::Value { std::move(tint) };
+                    obj["name"] = cd::asset::json::Value { en->name };
+                    obj["kind"] = cd::asset::json::Value { std::string { kind_name_fn(en->kind) } };
+                    cd::asset::json::Array tint;
+                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.x) });
+                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.y) });
+                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.z) });
+                    obj["tint"] = cd::asset::json::Value { std::move(tint) };
                 });
             {
-                cd::asset_json::Array la;
+                cd::asset::json::Array la;
                 for (const auto& l : s.lights)
                 {
-                    cd::asset_json::Object lo;
-                    lo["name"]      = cd::asset_json::Value { l.name };
-                    lo["enabled"]   = cd::asset_json::Value { l.enabled };
-                    lo["type"]      = cd::asset_json::Value { static_cast<int>(l.light.type) };
-                    lo["kelvin"]    = cd::asset_json::Value { static_cast<double>(l.kelvin) };
-                    lo["intensity"] = cd::asset_json::Value { static_cast<double>(l.light.intensity) };
-                    lo["range"]     = cd::asset_json::Value { static_cast<double>(l.light.range) };
-                    cd::asset_json::Array pos, col, dir;
-                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.x) });
-                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.y) });
-                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.z) });
-                    lo["position"] = cd::asset_json::Value { std::move(pos) };
-                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.x) });
-                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.y) });
-                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.z) });
-                    lo["color"]    = cd::asset_json::Value { std::move(col) };
-                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.x) });
-                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.y) });
-                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.z) });
-                    lo["direction"] = cd::asset_json::Value { std::move(dir) };
-                    la.push_back(cd::asset_json::Value { std::move(lo) });
+                    cd::asset::json::Object lo;
+                    lo["name"]      = cd::asset::json::Value { l.name };
+                    lo["enabled"]   = cd::asset::json::Value { l.enabled };
+                    lo["type"]      = cd::asset::json::Value { static_cast<int>(l.light.type) };
+                    lo["kelvin"]    = cd::asset::json::Value { static_cast<double>(l.kelvin) };
+                    lo["intensity"] = cd::asset::json::Value { static_cast<double>(l.light.intensity) };
+                    lo["range"]     = cd::asset::json::Value { static_cast<double>(l.light.range) };
+                    cd::asset::json::Array pos, col, dir;
+                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.x) });
+                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.y) });
+                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.z) });
+                    lo["position"] = cd::asset::json::Value { std::move(pos) };
+                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.x) });
+                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.y) });
+                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.z) });
+                    lo["color"]    = cd::asset::json::Value { std::move(col) };
+                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.x) });
+                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.y) });
+                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.z) });
+                    lo["direction"] = cd::asset::json::Value { std::move(dir) };
+                    la.push_back(cd::asset::json::Value { std::move(lo) });
                 }
-                root.as_object_mut()["lights"] = cd::asset_json::Value { std::move(la) };
+                root.as_object_mut()["lights"] = cd::asset::json::Value { std::move(la) };
             }
-            const auto txt = cd::asset_json::serialize(root, true);
+            const auto txt = cd::asset::json::serialize(root, true);
             std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
             if (f)
             {
@@ -4826,7 +4826,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.palette.register_command(81, "Scene: Load (replace world)",
         [&s, log_push_fn]() mutable
         {
-            auto r = cd::asset_json::load(kSavePath);
+            auto r = cd::asset::json::load(kSavePath);
             if (!r.has_value())
             {
                 log_push_fn("[scene] Load failed: " + std::string { r.error().message });
@@ -4836,7 +4836,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             s.entities.clear();
             std::vector<SceneEntity> loaded;
             (void)cd::scene::deserialize_scene_with(s.scene, *r,
-                [&](cd::ecs::Entity e, const cd::asset_json::Object& obj)
+                [&](cd::ecs::Entity e, const cd::asset::json::Object& obj)
                 {
                     SceneEntity en; en.handle = e;
                     en.kind = PrimitiveKind::kCube; en.tint = { 1,1,1 };
@@ -6824,57 +6824,57 @@ int main(int argc, char** argv)
             };
             auto root = cd::scene::serialize_scene_with(
                 scene,
-                [&](cd::ecs::Entity e, cd::asset_json::Object& obj)
+                [&](cd::ecs::Entity e, cd::asset::json::Object& obj)
                 {
                     const auto* en = find_entity(e);
                     if (en == nullptr)
                         return;
-                    obj["name"] = cd::asset_json::Value { en->name };
-                    obj["kind"] = cd::asset_json::Value { std::string { kind_name(en->kind) } };
-                    cd::asset_json::Array tint;
-                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.x) });
-                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.y) });
-                    tint.push_back(cd::asset_json::Value { static_cast<double>(en->tint.z) });
-                    obj["tint"] = cd::asset_json::Value { std::move(tint) };
+                    obj["name"] = cd::asset::json::Value { en->name };
+                    obj["kind"] = cd::asset::json::Value { std::string { kind_name(en->kind) } };
+                    cd::asset::json::Array tint;
+                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.x) });
+                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.y) });
+                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.z) });
+                    obj["tint"] = cd::asset::json::Value { std::move(tint) };
                 }
             );
             // Extend with a top-level "lights" array so the lights
             // panel state round-trips through save/load too -
             // priority gap #15.
             {
-                cd::asset_json::Array light_arr;
+                cd::asset::json::Array light_arr;
                 for (const auto& l : lights)
                 {
-                    cd::asset_json::Object lo;
-                    lo["name"] = cd::asset_json::Value { l.name };
-                    lo["enabled"] = cd::asset_json::Value { l.enabled };
-                    lo["type"] = cd::asset_json::Value { static_cast<int>(l.light.type) };
-                    lo["kelvin"] = cd::asset_json::Value { static_cast<double>(l.kelvin) };
-                    lo["intensity"] = cd::asset_json::Value { static_cast<double>(l.light.intensity) };
-                    lo["range"] = cd::asset_json::Value { static_cast<double>(l.light.range) };
-                    cd::asset_json::Array pos;
-                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.x) });
-                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.y) });
-                    pos.push_back(cd::asset_json::Value { static_cast<double>(l.light.position.z) });
-                    lo["position"] = cd::asset_json::Value { std::move(pos) };
+                    cd::asset::json::Object lo;
+                    lo["name"] = cd::asset::json::Value { l.name };
+                    lo["enabled"] = cd::asset::json::Value { l.enabled };
+                    lo["type"] = cd::asset::json::Value { static_cast<int>(l.light.type) };
+                    lo["kelvin"] = cd::asset::json::Value { static_cast<double>(l.kelvin) };
+                    lo["intensity"] = cd::asset::json::Value { static_cast<double>(l.light.intensity) };
+                    lo["range"] = cd::asset::json::Value { static_cast<double>(l.light.range) };
+                    cd::asset::json::Array pos;
+                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.x) });
+                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.y) });
+                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.z) });
+                    lo["position"] = cd::asset::json::Value { std::move(pos) };
                     // Persist the linear RGB colour so the load path can
                     // restore a user-picked tint (kelvin=0 mode).
-                    cd::asset_json::Array col;
-                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.x) });
-                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.y) });
-                    col.push_back(cd::asset_json::Value { static_cast<double>(l.light.color.z) });
-                    lo["color"] = cd::asset_json::Value { std::move(col) };
-                    cd::asset_json::Array dir;
-                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.x) });
-                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.y) });
-                    dir.push_back(cd::asset_json::Value { static_cast<double>(l.light.direction.z) });
-                    lo["direction"] = cd::asset_json::Value { std::move(dir) };
-                    light_arr.push_back(cd::asset_json::Value { std::move(lo) });
+                    cd::asset::json::Array col;
+                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.x) });
+                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.y) });
+                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.z) });
+                    lo["color"] = cd::asset::json::Value { std::move(col) };
+                    cd::asset::json::Array dir;
+                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.x) });
+                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.y) });
+                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.z) });
+                    lo["direction"] = cd::asset::json::Value { std::move(dir) };
+                    light_arr.push_back(cd::asset::json::Value { std::move(lo) });
                 }
                 auto& obj = root.as_object_mut();
-                obj["lights"] = cd::asset_json::Value { std::move(light_arr) };
+                obj["lights"] = cd::asset::json::Value { std::move(light_arr) };
             }
-            const auto text = cd::asset_json::serialize(root, /*pretty=*/true);
+            const auto text = cd::asset::json::serialize(root, /*pretty=*/true);
             std::ofstream f { kSavePath, std::ios::binary | std::ios::trunc };
             if (f)
             {
@@ -6924,7 +6924,7 @@ int main(int argc, char** argv)
         "Scene: Load (replace world)",
         [&]
         {
-            auto r = cd::asset_json::load(kSavePath);
+            auto r = cd::asset::json::load(kSavePath);
             if (!r.has_value())
             {
                 log_push(std::string { "[scene] Load failed: " } + std::string { r.error().message });
@@ -6945,7 +6945,7 @@ int main(int argc, char** argv)
             auto rd = cd::scene::deserialize_scene_with(
                 scene,
                 *r,
-                [&](cd::ecs::Entity e, const cd::asset_json::Object& obj)
+                [&](cd::ecs::Entity e, const cd::asset::json::Object& obj)
                 {
                     SceneEntity en;
                     en.handle = e;

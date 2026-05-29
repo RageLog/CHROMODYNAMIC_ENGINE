@@ -2,7 +2,7 @@
 // CHROMODYNAMIC — tools/cook_texture
 //
 // Offline texture cooker. Takes a PNG/JPG/etc. via cd::asset_image, runs
-// it through cd::asset_image::compress_bc7, and writes the BC7 block
+// it through cd::asset::image::compress_bc7, and writes the BC7 block
 // stream to disk. Output format is intentionally minimal — a 16-byte
 // header + raw block bytes — so the engine can fread + Vulkan-upload
 // straight into a VK_FORMAT_BC7_UNORM_BLOCK texture without a parser.
@@ -24,8 +24,8 @@
 //
 // Quality presets map to bc7enc uber_level (0/2/4). Default `balanced`.
 // =============================================================================
-#include <cd/asset_image/Bc7.hpp>
-#include <cd/asset_image/Image.hpp>
+#include <cd/asset/image/Bc7.hpp>
+#include <cd/asset/image/Image.hpp>
 
 #include <cstdint>
 #include <cstdio>
@@ -44,26 +44,26 @@ struct Args
 {
     std::string input;
     std::string output;
-    cd::asset_image::Bc7Quality quality { cd::asset_image::Bc7Quality::kBalanced };
+    cd::asset::image::Bc7Quality quality { cd::asset::image::Bc7Quality::kBalanced };
     bool verbose { false };
     bool gen_mips { false };  ///< --mips: emit full mip chain (.cdtex v2 format).
 };
 
-[[nodiscard]] bool parse_quality(std::string_view s, cd::asset_image::Bc7Quality& out) noexcept
+[[nodiscard]] bool parse_quality(std::string_view s, cd::asset::image::Bc7Quality& out) noexcept
 {
     if (s == "fast")
     {
-        out = cd::asset_image::Bc7Quality::kFast;
+        out = cd::asset::image::Bc7Quality::kFast;
         return true;
     }
     if (s == "balanced")
     {
-        out = cd::asset_image::Bc7Quality::kBalanced;
+        out = cd::asset::image::Bc7Quality::kBalanced;
         return true;
     }
     if (s == "high")
     {
-        out = cd::asset_image::Bc7Quality::kHigh;
+        out = cd::asset::image::Bc7Quality::kHigh;
         return true;
     }
     return false;
@@ -144,7 +144,7 @@ int main(int argc, char** argv)
     }
 
     // ---- Decode ----
-    auto image = cd::asset_image::load_image(args.input);
+    auto image = cd::asset::image::load_image(args.input);
     if (!image.has_value())
     {
         std::fprintf(
@@ -160,10 +160,10 @@ int main(int argc, char** argv)
                     image->width, image->height, image->has_alpha ? "with" : "no");
 
     // ---- Build mip chain (1-deep when --mips not set) ----
-    std::vector<cd::asset_image::Image> mip_chain;
+    std::vector<cd::asset::image::Image> mip_chain;
     if (args.gen_mips)
     {
-        auto chain = cd::asset_image::generate_mips(*image);
+        auto chain = cd::asset::image::generate_mips(*image);
         if (!chain.has_value())
         {
             std::fprintf(
@@ -184,14 +184,14 @@ int main(int argc, char** argv)
         std::printf("cook_texture: generated %zu mip level(s)\n", mip_chain.size());
 
     // ---- Compress every mip via BC7 ----
-    std::vector<cd::asset_image::Bc7Block> encoded;
+    std::vector<cd::asset::image::Bc7Block> encoded;
     encoded.reserve(mip_chain.size());
     std::size_t total_encoded_bytes = 0;
     std::size_t total_source_bytes = 0;
     for (std::size_t i = 0; i < mip_chain.size(); ++i)
     {
         const auto& m = mip_chain[i];
-        auto bc7 = cd::asset_image::compress_bc7(m.rgba, m.width, m.height, args.quality);
+        auto bc7 = cd::asset::image::compress_bc7(m.rgba, m.width, m.height, args.quality);
         if (!bc7.has_value())
         {
             std::fprintf(

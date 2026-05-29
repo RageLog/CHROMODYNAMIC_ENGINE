@@ -2,7 +2,7 @@
 // CHROMODYNAMIC — samples/hello_json
 // Shows cd::asset_json parse + edit + serialize round-trip. Headless, no GPU.
 // =============================================================================
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 
 #include <cstdio>
 #include <string>
@@ -28,7 +28,7 @@ int main()
     std::printf("=== hello_json — cd::asset_json round-trip ===\n");
 
     // 1. Parse.
-    auto parsed = cd::asset_json::parse(kInput);
+    auto parsed = cd::asset::json::parse(kInput);
     if (!parsed)
     {
         std::printf(
@@ -51,25 +51,25 @@ int main()
     // 3. Mutate — append a fourth entity.
     if (ents && (*ents)->is_array())
     {
-        cd::asset_json::Object extra;
-        extra["id"] = cd::asset_json::Value { 4 };
-        extra["type"] = cd::asset_json::Value { std::string { "sound" } };
-        extra["asset"] = cd::asset_json::Value { std::string { "kick.wav" } };
+        cd::asset::json::Object extra;
+        extra["id"] = cd::asset::json::Value { 4 };
+        extra["type"] = cd::asset::json::Value { std::string { "sound" } };
+        extra["asset"] = cd::asset::json::Value { std::string { "kick.wav" } };
         // Casting through const_cast is acceptable here because at() returns
         // const Value*; the const-ness lets the lookup not perturb the
         // tree. The mutation path goes through the mutable root.
         auto& root_obj = root.as_object_mut();
-        root_obj["entities"].as_array_mut().push_back(cd::asset_json::Value { std::move(extra) });
+        root_obj["entities"].as_array_mut().push_back(cd::asset::json::Value { std::move(extra) });
     }
 
     // 4. Serialize pretty + compact.
-    const auto pretty = cd::asset_json::serialize(root, true);
-    const auto compact = cd::asset_json::serialize(root, false);
+    const auto pretty = cd::asset::json::serialize(root, true);
+    const auto compact = cd::asset::json::serialize(root, false);
     std::printf("\n--- pretty ---\n%s\n", pretty.c_str());
     std::printf("\n--- compact (%zu chars) ---\n%s\n", compact.size(), compact.c_str());
 
     // 5. Round-trip — parse the compact serialization and verify equal.
-    auto reparsed = cd::asset_json::parse(compact);
+    auto reparsed = cd::asset::json::parse(compact);
     if (!reparsed || !(*reparsed == root))
     {
         std::printf("round-trip mismatch\n");

@@ -3,7 +3,7 @@
 //
 // Loads a glTF / glb file via cd::asset_gltf and renders every mesh with a
 // textured Lambertian shader. Exercises:
-//   * cd::asset_gltf::load_gltf end-to-end (POSITION + NORMAL + TEXCOORD_0)
+//   * cd::asset::gltf::load_gltf end-to-end (POSITION + NORMAL + TEXCOORD_0)
 //   * GPU upload of each glTF image via staging buffer + copy_buffer_to_image
 //   * Material with combined-image-sampler descriptor at set 0 / binding 0
 //   * Per-primitive MaterialInstance bound to the matching material's texture
@@ -17,7 +17,7 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_gltf/GltfLoader.hpp>
+#include <cd/asset/gltf/GltfLoader.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/Frustum.hpp>
 #include <cd/camera/OrbitController.hpp>
@@ -51,7 +51,7 @@
 namespace
 {
 
-// Vertex layout matches cd::asset_gltf::GltfVertex byte-for-byte so we can
+// Vertex layout matches cd::asset::gltf::GltfVertex byte-for-byte so we can
 // memcpy each primitive's vertex span straight into a GPU buffer.
 struct Vertex
 {
@@ -60,10 +60,10 @@ struct Vertex
     float uv[2];
 };
 
-static_assert(sizeof(Vertex) == sizeof(cd::asset_gltf::GltfVertex), "vertex layout mismatch with GltfVertex");
-static_assert(offsetof(Vertex, pos) == offsetof(cd::asset_gltf::GltfVertex, position), "pos offset");
-static_assert(offsetof(Vertex, normal) == offsetof(cd::asset_gltf::GltfVertex, normal), "normal offset");
-static_assert(offsetof(Vertex, uv) == offsetof(cd::asset_gltf::GltfVertex, texcoord0), "uv offset");
+static_assert(sizeof(Vertex) == sizeof(cd::asset::gltf::GltfVertex), "vertex layout mismatch with GltfVertex");
+static_assert(offsetof(Vertex, pos) == offsetof(cd::asset::gltf::GltfVertex, position), "pos offset");
+static_assert(offsetof(Vertex, normal) == offsetof(cd::asset::gltf::GltfVertex, normal), "normal offset");
+static_assert(offsetof(Vertex, uv) == offsetof(cd::asset::gltf::GltfVertex, texcoord0), "uv offset");
 
 /// Push-constant block — MVP + per-material PBR factors + camera position.
 /// Layout matches std140 alignment so the GLSL `push_constant` block below
@@ -416,23 +416,23 @@ struct Drawable
 
 /// Fallback scene when no glTF path is supplied: a single quad with a 1×1
 /// white texture, just enough to confirm the textured pipeline cold-starts.
-[[nodiscard]] cd::asset_gltf::GltfScene make_fallback_scene()
+[[nodiscard]] cd::asset::gltf::GltfScene make_fallback_scene()
 {
-    cd::asset_gltf::GltfScene scene;
-    cd::asset_gltf::GltfMesh mesh;
+    cd::asset::gltf::GltfScene scene;
+    cd::asset::gltf::GltfMesh mesh;
     mesh.name = "fallback_quad";
-    cd::asset_gltf::GltfPrimitive prim;
+    cd::asset::gltf::GltfPrimitive prim;
     prim.vertices = {
-        cd::asset_gltf::GltfVertex { .position = { -0.5F, -0.5F, 0.0F },
+        cd::asset::gltf::GltfVertex { .position = { -0.5F, -0.5F, 0.0F },
                                     .normal = { 0.0F, 0.0F, 1.0F },
                                     .texcoord0 = { 0.0F, 0.0F } },
-        cd::asset_gltf::GltfVertex { .position = { 0.5F, -0.5F, 0.0F },
+        cd::asset::gltf::GltfVertex { .position = { 0.5F, -0.5F, 0.0F },
                                     .normal = { 0.0F, 0.0F, 1.0F },
                                     .texcoord0 = { 1.0F, 0.0F } },
-        cd::asset_gltf::GltfVertex { .position = { 0.5F, 0.5F, 0.0F },
+        cd::asset::gltf::GltfVertex { .position = { 0.5F, 0.5F, 0.0F },
                                     .normal = { 0.0F, 0.0F, 1.0F },
                                     .texcoord0 = { 1.0F, 1.0F } },
-        cd::asset_gltf::GltfVertex { .position = { -0.5F, 0.5F, 0.0F },
+        cd::asset::gltf::GltfVertex { .position = { -0.5F, 0.5F, 0.0F },
                                     .normal = { 0.0F, 0.0F, 1.0F },
                                     .texcoord0 = { 0.0F, 1.0F } },
     };
@@ -444,7 +444,7 @@ struct Drawable
     // render loop (which iterates scene.instances) sees something to draw.
     // Without this the fallback path renders a black window.
     scene.instances.push_back(
-        cd::asset_gltf::GltfInstance { /*mesh_index=*/0,
+        cd::asset::gltf::GltfInstance { /*mesh_index=*/0,
                                        /*node_index=*/-1,
                                        cd::math::Mat4f::identity() }
     );
@@ -486,10 +486,10 @@ int main(int argc, char** argv)
         break;
     }
 
-    cd::asset_gltf::GltfScene scene;
+    cd::asset::gltf::GltfScene scene;
     if (gltf_path != nullptr)
     {
-        auto loaded = cd::asset_gltf::load_gltf(gltf_path);
+        auto loaded = cd::asset::gltf::load_gltf(gltf_path);
         if (!loaded.has_value())
         {
             std::fprintf(
@@ -703,7 +703,7 @@ int main(int argc, char** argv)
             Drawable d {};
             d.mesh_index = static_cast<int>(m);
             const std::span<const std::byte> vb_bytes { reinterpret_cast<const std::byte*>(prim.vertices.data()),
-                                                        prim.vertices.size() * sizeof(cd::asset_gltf::GltfVertex) };
+                                                        prim.vertices.size() * sizeof(cd::asset::gltf::GltfVertex) };
             const std::span<const std::byte> ib_bytes { reinterpret_cast<const std::byte*>(prim.indices.data()),
                                                         prim.indices.size() * sizeof(std::uint32_t) };
             d.vb = make_upload_buffer(device, vb_bytes, cd::rhi::BufferUsage::kVertex);

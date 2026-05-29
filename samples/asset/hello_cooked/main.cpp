@@ -3,7 +3,7 @@
 //
 // End-to-end runtime test of the cook → load → render pipeline:
 //   1. (Build step) `cd_cook_mesh -i model.obj -o model.cdmesh`
-//   2. (Runtime) hello_cooked .cdmesh path → cd::asset_cdmesh::load →
+//   2. (Runtime) hello_cooked .cdmesh path → cd::asset::cdmesh::load →
 //      memcpy the byte blobs straight into GPU vertex/index buffers.
 //
 // The sample writes its own .cdmesh in a temp dir at startup (from an
@@ -17,8 +17,8 @@
 // =============================================================================
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_cdmesh/CdMesh.hpp>
-#include <cd/asset_obj/ObjLoader.hpp>
+#include <cd/asset/cdmesh/CdMesh.hpp>
+#include <cd/asset/obj/ObjLoader.hpp>
 #include <cd/camera/Camera.hpp>
 #include <cd/camera/OrbitController.hpp>
 #include <cd/material/Material.hpp>
@@ -102,7 +102,7 @@ f 4 8 5 1
 [[nodiscard]] std::string make_self_cooked_cube()
 {
     // 1. Parse inline cube obj.
-    auto obj = cd::asset_obj::parse_obj(kInlineCubeObj);
+    auto obj = cd::asset::obj::parse_obj(kInlineCubeObj);
     if (!obj.has_value())
         return {};
     // 2. Pick a unique temp path so repeated runs don't collide.
@@ -112,18 +112,18 @@ f 4 8 5 1
                       ("cd_cooked_cube_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
                        std::to_string(seq.fetch_add(1)) + ".cdmesh");
     // 3. Cook.
-    cd::asset_cdmesh::SaveDesc d {};
+    cd::asset::cdmesh::SaveDesc d {};
     d.vertices = { reinterpret_cast<const std::uint8_t*>(obj->vertices.data()),
-                   obj->vertices.size() * sizeof(cd::asset_obj::ObjVertex) };
+                   obj->vertices.size() * sizeof(cd::asset::obj::ObjVertex) };
     d.indices = { reinterpret_cast<const std::uint8_t*>(obj->indices.data()),
                   obj->indices.size() * sizeof(std::uint32_t) };
     d.vertex_count = static_cast<std::uint32_t>(obj->vertices.size());
     d.index_count = static_cast<std::uint32_t>(obj->indices.size());
-    d.vertex_stride = sizeof(cd::asset_obj::ObjVertex);
+    d.vertex_stride = sizeof(cd::asset::obj::ObjVertex);
     d.index_stride = 4;
     d.bbox_min = obj->bbox_min;
     d.bbox_max = obj->bbox_max;
-    if (!cd::asset_cdmesh::save(path.string(), d).has_value())
+    if (!cd::asset::cdmesh::save(path.string(), d).has_value())
         return {};
     return path.string();
 }
@@ -237,7 +237,7 @@ int main(int argc, char** argv)
     }
 
     // ---- Load .cdmesh -----------------------------------------------------
-    auto cooked = cd::asset_cdmesh::load(path);
+    auto cooked = cd::asset::cdmesh::load(path);
     if (!cooked.has_value())
     {
         std::fprintf(
@@ -307,7 +307,7 @@ int main(int argc, char** argv)
     if (compiler == nullptr)
         return 8;
 
-    // Vertex format matches cd::asset_cdmesh::CdVertexStd / ObjVertex /
+    // Vertex format matches cd::asset::cdmesh::CdVertexStd / ObjVertex /
     // GltfVertex byte-for-byte (32B: vec3 pos + vec3 normal + vec2 uv).
     struct Vtx
     {

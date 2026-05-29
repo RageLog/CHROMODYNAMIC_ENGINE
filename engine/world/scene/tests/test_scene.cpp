@@ -1,7 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::scene tests
 // =============================================================================
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/ecs/World.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Transform.hpp>
@@ -337,7 +337,7 @@ TEST(SceneSerializer, BadShapeRejected)
 {
     cd::ecs::World w;
     cd::scene::Scene s { w };
-    cd::asset_json::Value scalar { 42 };
+    cd::asset::json::Value scalar { 42 };
     auto r = cd::scene::deserialize_scene(s, scalar);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
@@ -347,10 +347,10 @@ TEST(SceneSerializer, BadVersionRejected)
 {
     cd::ecs::World w;
     cd::scene::Scene s { w };
-    cd::asset_json::Object o;
-    o["version"] = cd::asset_json::Value { 99 };
-    o["nodes"] = cd::asset_json::Value { cd::asset_json::Array {} };
-    cd::asset_json::Value root { std::move(o) };
+    cd::asset::json::Object o;
+    o["version"] = cd::asset::json::Value { 99 };
+    o["nodes"] = cd::asset::json::Value { cd::asset::json::Array {} };
+    cd::asset::json::Value root { std::move(o) };
     auto r = cd::scene::deserialize_scene(s, root);
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadVersion));

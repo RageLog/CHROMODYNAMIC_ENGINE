@@ -41,7 +41,7 @@
 #include <cd/anim/DualQuat.hpp>
 #include <cd/anim/Skeleton.hpp>
 #include <cd/asset/Primitives.hpp>
-#include <cd/asset_gltf/SkinnedMeshBridge.hpp>
+#include <cd/asset/gltf/SkinnedMeshBridge.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Vector.hpp>
 #include <cd/rhi/IDevice.hpp>
@@ -78,7 +78,7 @@ update_skinned_animation(SkinnedRuntime& skinned,
     // joints without an animation track stay at their bind position
     // (correct glTF sampling semantics).
     skinned.pose = cd::anim::Pose::bind_pose(skinned.skeleton);
-    cd::asset_gltf::sample_gltf_animation(
+    cd::asset::gltf::sample_gltf_animation(
         skinned.animation,
         skinned.node_to_joint,
         skinned.anim_t,

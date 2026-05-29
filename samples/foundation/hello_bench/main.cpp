@@ -4,7 +4,7 @@
 // foundation math + ECS + handles + error format + log ring + imgdiff
 // all benched, alongside the original asset/scene/pool/result set.
 // =============================================================================
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/bench/Benchmark.hpp>
 #include <cd/core/CVar.hpp>
 #include <cd/core/ErrorCode.hpp>
@@ -85,15 +85,15 @@ constexpr std::string_view kJsonInput = R"({"name":"clip","gain":0.85,"loop":tru
 
 void bench_json_parse()
 {
-    auto r = cd::asset_json::parse(kJsonInput);
+    auto r = cd::asset::json::parse(kJsonInput);
     cd::bench::do_not_optimize(r);
 }
 
-cd::asset_json::Value g_serialize_root;
+cd::asset::json::Value g_serialize_root;
 
 void bench_json_serialize()
 {
-    auto s = cd::asset_json::serialize(g_serialize_root, false);
+    auto s = cd::asset::json::serialize(g_serialize_root, false);
     cd::bench::do_not_optimize(s);
 }
 
@@ -362,7 +362,7 @@ int main(int argc, char** argv)
     add("PoolAllocator_alloc+free", bench_pool_alloc_free);
 
     // Prime the serializer benchmark by parsing once.
-    if (auto r = cd::asset_json::parse(kJsonInput); r)
+    if (auto r = cd::asset::json::parse(kJsonInput); r)
         g_serialize_root = std::move(*r);
     add("asset_json_parse_S", bench_json_parse);
     add("asset_json_serialize_S", bench_json_serialize);

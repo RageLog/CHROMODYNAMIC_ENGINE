@@ -2,16 +2,16 @@
 // CHROMODYNAMIC — samples/hello_asset_registry
 //
 // Demonstrates cd::asset::AssetRegistry + the wave-10 loader adapters:
-//   * cd::asset_json::JsonAssetLoader
-//   * cd::asset_wav::WavAssetLoader
+//   * cd::asset::json::JsonAssetLoader
+//   * cd::asset::wav::WavAssetLoader
 //
 // Headless, in-memory VFS — no disk artefacts. The point is to show the
 // full "register loader → load by tag → downcast to typed asset" loop
 // that an application's asset bootstrap would do at startup.
 // =============================================================================
 #include <cd/asset/AssetRegistry.hpp>
-#include <cd/asset_json/AssetLoader.hpp>
-#include <cd/asset_wav/AssetLoader.hpp>
+#include <cd/asset/json/AssetLoader.hpp>
+#include <cd/asset/wav/AssetLoader.hpp>
 #include <cd/vfs/MemorySource.hpp>
 #include <cd/vfs/VirtualFileSystem.hpp>
 
@@ -86,8 +86,8 @@ int main()
 
     // 2. Wire up the asset registry with the two loader adapters.
     cd::asset::AssetRegistry registry { vfs };
-    registry.register_loader(std::make_unique<cd::asset_json::JsonAssetLoader>());
-    registry.register_loader(std::make_unique<cd::asset_wav::WavAssetLoader>());
+    registry.register_loader(std::make_unique<cd::asset::json::JsonAssetLoader>());
+    registry.register_loader(std::make_unique<cd::asset::wav::WavAssetLoader>());
     std::printf("registered loaders: %zu\n", registry.loader_count());
 
     // 3. Load both assets through the registry.
@@ -106,8 +106,8 @@ int main()
     std::printf("cached assets: %zu\n", registry.cached_count());
 
     // 4. Downcast to the concrete asset types and use them.
-    const auto* cfg = dynamic_cast<const cd::asset_json::JsonAsset*>(registry.find(*cfg_id));
-    const auto* wav = dynamic_cast<const cd::asset_wav::WavAsset*>(registry.find(*wav_id));
+    const auto* cfg = dynamic_cast<const cd::asset::json::JsonAsset*>(registry.find(*cfg_id));
+    const auto* wav = dynamic_cast<const cd::asset::wav::WavAsset*>(registry.find(*wav_id));
     if (cfg == nullptr || wav == nullptr)
     {
         std::printf("downcast failed\n");

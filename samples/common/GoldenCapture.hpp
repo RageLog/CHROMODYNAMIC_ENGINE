@@ -32,7 +32,7 @@
 
 #include "SampleRuntime.hpp"
 
-#include <cd/asset_image/Image.hpp>
+#include <cd/asset/image/Image.hpp>
 #include <cd/imgdiff/ImageDiff.hpp>
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/Descriptors.hpp>
@@ -201,7 +201,7 @@ struct GoldenState
 
     if (runtime.golden_mode == GoldenMode::kCapture)
     {
-        auto w = cd::asset_image::write_png_rgba(runtime.golden_path, rgba.data(), state.width, state.height);
+        auto w = cd::asset::image::write_png_rgba(runtime.golden_path, rgba.data(), state.width, state.height);
         if (!w.has_value())
         {
             std::fprintf(stderr, "[golden] PNG write failed: %.*s\n",
@@ -215,7 +215,7 @@ struct GoldenState
     }
 
     // Compare path.
-    auto ref = cd::asset_image::load_image(runtime.golden_path);
+    auto ref = cd::asset::image::load_image(runtime.golden_path);
     if (!ref.has_value())
     {
         std::fprintf(stderr, "[golden] reference load failed (%s): %.*s\n",
@@ -258,7 +258,7 @@ struct GoldenState
         {
             auto hl = cd::imgdiff::highlight(a, b, runtime.golden_tolerance);
             if (hl.has_value())
-                (void)cd::asset_image::write_png_rgba(
+                (void)cd::asset::image::write_png_rgba(
                     runtime.golden_diff_out,
                     hl->data(),
                     state.width, state.height);

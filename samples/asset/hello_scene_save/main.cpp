@@ -4,7 +4,7 @@
 // world, assert the topology is identical. Demonstrates the full cd::scene
 // save/load loop.
 // =============================================================================
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 #include <cd/ecs/World.hpp>
 #include <cd/math/Transform.hpp>
 #include <cd/scene/Scene.hpp>
@@ -50,11 +50,11 @@ int main()
 
     // 2. Serialize.
     const auto json = cd::scene::serialize_scene(s_src);
-    const auto text = cd::asset_json::serialize(json, true);
+    const auto text = cd::asset::json::serialize(json, true);
     std::printf("\n--- pretty JSON (%zu chars) ---\n%s\n", text.size(), text.c_str());
 
     // 3. Parse back from text and deserialize into a fresh world.
-    auto reparsed = cd::asset_json::parse(text);
+    auto reparsed = cd::asset::json::parse(text);
     if (!reparsed)
     {
         std::printf("re-parse failed\n");

@@ -20,8 +20,8 @@
 #include <cd/anim/Animation.hpp>
 #include <cd/anim/Skeleton.hpp>
 #include <cd/asset/Primitives.hpp>
-#include <cd/asset_gltf/GltfLoader.hpp>
-#include <cd/asset_gltf/SkinnedMeshBridge.hpp>
+#include <cd/asset/gltf/GltfLoader.hpp>
+#include <cd/asset/gltf/SkinnedMeshBridge.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Vector.hpp>
 
@@ -47,13 +47,13 @@ struct SkinnedRuntime
     // Without this remap CPU-LBS reads the wrong matrix and the
     // character renders as a twisted mess.
     std::vector<std::int32_t> skin_joint_remap;
-    cd::asset_gltf::GltfAnimation animation {};
+    cd::asset::gltf::GltfAnimation animation {};
     // Per-vertex source data (bind-pose positions + normals + uvs +
     // bone influences). Parallel arrays — same length.
     std::vector<cd::math::Vec3f> base_positions;
     std::vector<cd::math::Vec3f> base_normals;
     std::vector<cd::math::Vec2f> base_uvs;
-    std::vector<cd::asset_gltf::GltfSkinVertex> influences;
+    std::vector<cd::asset::gltf::GltfSkinVertex> influences;
     // Scratch buffers reused per frame.
     std::vector<cd::math::Mat4f> palette_scratch;
     std::vector<cd::asset::PrimitiveVertex> deformed_scratch;

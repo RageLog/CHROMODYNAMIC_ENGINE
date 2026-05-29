@@ -19,7 +19,7 @@
 //   1 — at least one bench regressed (CI-friendly)
 //   2 — bad input (file missing, parse error, no benches in common)
 // =============================================================================
-#include <cd/asset_json/Json.hpp>
+#include <cd/asset/json/Json.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -59,7 +59,7 @@ parse_bench_json(std::string_view path)
     auto bytes = read_file(std::string { path });
     if (!bytes.has_value())
         return std::unexpected(bytes.error());
-    auto val = cd::asset_json::parse(*bytes);
+    auto val = cd::asset::json::parse(*bytes);
     if (!val.has_value())
         return std::unexpected(val.error());
     if (!val->is_array())
