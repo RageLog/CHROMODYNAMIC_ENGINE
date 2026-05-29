@@ -6791,90 +6791,13 @@ int main()
             }
         }
 
-        // ---- Update scene camera ----
-        // If the user is right-dragging OR pressing any WASD key, take
-        // direct control: the SceneCameraController's orbit is bypassed
-        // and we drive cam.eye / cam.target from yaw/pitch/dist + WASD.
-        const bool wasd_active = key_w || key_a || key_s || key_d || key_q || key_e;
-        if (cam_right_drag || wasd_active)
-        {
-            // On WASD-first frame, sync yaw/pitch/dist from current cam so
-            // the position doesn't snap.
-            static bool wasd_was_active_prev = false;
-            if (wasd_active && !wasd_was_active_prev && !cam_right_drag)
-            {
-                const float dxd = cam.target.x - cam.eye.x;
-                const float dyd = cam.target.y - cam.eye.y;
-                const float dzd = cam.target.z - cam.eye.z;
-                const float dist = std::sqrt(dxd * dxd + dyd * dyd + dzd * dzd);
-                if (dist > 1e-3F)
-                {
-                    cam_dist = dist;
-                    cam_pitch = std::asin(dyd / dist);
-                    cam_yaw = std::atan2(dxd, -dzd);
-                }
-            }
-            wasd_was_active_prev = wasd_active;
-
-            // Forward = view direction in world space.
-            const float cp = std::cos(cam_pitch), sp = std::sin(cam_pitch);
-            const float cy = std::cos(cam_yaw), sy = std::sin(cam_yaw);
-            cd::math::Vec3f forward { cp * sy, sp, -cp * cy };
-            cd::math::Vec3f right { cy, 0.0F, sy };
-
-            // WASD moves the camera *target* (and eye follows by cam_dist).
-            // W6-F: hold shift for fast (x2.5), hold ctrl for slow (x0.25);
-            // both held cancel and stay at 1x — useful for fine alignment
-            // while inspecting a specific shader / area light.
-            float spd_scale = 1.0F;
-            if (key_shift)
-                spd_scale *= 2.5F;
-            if (key_ctrl)
-                spd_scale *= 0.25F;
-            const float spd = kCamMoveSpeed * dt * spd_scale;
-            if (key_w)
-            {
-                cam.target.x += forward.x * spd;
-                cam.target.y += forward.y * spd;
-                cam.target.z += forward.z * spd;
-            }
-            if (key_s)
-            {
-                cam.target.x -= forward.x * spd;
-                cam.target.y -= forward.y * spd;
-                cam.target.z -= forward.z * spd;
-            }
-            if (key_d)
-            {
-                cam.target.x += right.x * spd;
-                cam.target.z += right.z * spd;
-            }
-            if (key_a)
-            {
-                cam.target.x -= right.x * spd;
-                cam.target.z -= right.z * spd;
-            }
-            if (key_e)
-            {
-                cam.target.y += spd;
-            }
-            if (key_q)
-            {
-                cam.target.y -= spd;
-            }
-
-            // Eye = target - forward * cam_dist (so the target stays in view).
-            cam.eye.x = cam.target.x - forward.x * cam_dist;
-            cam.eye.y = cam.target.y - forward.y * cam_dist;
-            cam.eye.z = cam.target.z - forward.z * cam_dist;
-        }
-        else if (!cam_manual_mode)
-        {
-            // Only auto-orbit if the user hasn't started manual control.
-            // Once manual mode engages, the camera stays exactly where
-            // the user left it on right-mouse release / WASD release.
-            scene_cam.update(dt);
-        }
+        // ---- Update scene camera (Run 12 phase A7 / N14) ----
+        // Per-frame camera tick extracted to cd_sample::update_free_look_camera
+        // in HelloAppState.hpp. Resolves right-mouse-look + WASD/QE direct
+        // drive vs scene_cam auto-orbit branch. Same bit-for-bit behaviour as
+        // the pre-extract inline block, including the function-local-static
+        // `wasd_was_active_prev` latch.
+        cd_sample::update_free_look_camera(app_state.free_look, cam, scene_cam, dt);
 
         // ---- 3D click-to-pick ----
         // Unproject the click pixel to a world ray, then sphere-test
@@ -6913,6 +6836,8 @@ int main()
                                        fwd.z * rgt.x - fwd.x * rgt.z,
                                        fwd.x * rgt.y - fwd.y * rgt.x };
                 // Use the orbit camera's basis when we're NOT in WASD mode.
+                const bool wasd_active = key_w || key_a || key_s || key_d
+                                       || key_q || key_e;
                 if (!cam_right_drag && !wasd_active)
                 {
                     fwd.x = cam.target.x - cam.eye.x;

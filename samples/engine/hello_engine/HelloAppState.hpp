@@ -86,3 +86,124 @@ struct SampleAppState
 };
 
 }  // namespace cd_sample
+
+// =============================================================================
+// FreeLookState helpers
+// =============================================================================
+//
+// update_free_look_camera: per-frame camera tick that resolves the WASD +
+// right-mouse-look + scene-orbit branches into a single call. Lifted out of
+// main()'s frame loop in Marathon Run 12 phase A7 (sub-phase of the N13
+// SampleAppState rollout). Mirrors the pre-extract behaviour bit-for-bit:
+//
+//   if (right_drag || any WASD/QE held):
+//       on WASD-first frame, snapshot yaw/pitch/dist from current cam basis
+//       (prevents the position from snapping when WASD first engages with no
+//       prior right-drag warm-up).
+//       drive cam.target via WASD + QE (with shift x2.5 / ctrl x0.25 modifiers,
+//       both held = 1x for fine alignment),
+//       drive cam.eye = cam.target - forward * dist.
+//   else if (!manual_mode):
+//       scene_cam.update(dt) drives auto-orbit.
+//
+// Manual mode latches separately (set by the input handler on first WASD or
+// right-drag press, cleared by the palette command). We read it here but do
+// not mutate it.
+
+#include <cmath>
+
+#include <cd/scene/SceneCameraController.hpp>
+
+namespace cd_sample {
+
+inline void update_free_look_camera(FreeLookState&                    fl,
+                                    cd::camera::Camera&               cam,
+                                    cd::scene::SceneCameraController& scene_cam,
+                                    float                              dt) noexcept
+{
+    const bool wasd_active = fl.key_w || fl.key_a || fl.key_s || fl.key_d
+                          || fl.key_q || fl.key_e;
+    if (fl.right_drag || wasd_active)
+    {
+        // On WASD-first frame, sync yaw/pitch/dist from current cam so the
+        // position doesn't snap. State is per-call function-local static to
+        // match the pre-extract semantics (single global per program run).
+        static bool wasd_was_active_prev = false;
+        if (wasd_active && !wasd_was_active_prev && !fl.right_drag)
+        {
+            const float dxd  = cam.target.x - cam.eye.x;
+            const float dyd  = cam.target.y - cam.eye.y;
+            const float dzd  = cam.target.z - cam.eye.z;
+            const float dist = std::sqrt(dxd * dxd + dyd * dyd + dzd * dzd);
+            if (dist > 1e-3F)
+            {
+                fl.dist  = dist;
+                fl.pitch = std::asin(dyd / dist);
+                fl.yaw   = std::atan2(dxd, -dzd);
+            }
+        }
+        wasd_was_active_prev = wasd_active;
+
+        // Forward = view direction in world space.
+        const float cp = std::cos(fl.pitch);
+        const float sp = std::sin(fl.pitch);
+        const float cy = std::cos(fl.yaw);
+        const float sy = std::sin(fl.yaw);
+        const cd::math::Vec3f forward { cp * sy, sp, -cp * cy };
+        const cd::math::Vec3f right { cy, 0.0F, sy };
+
+        // WASD moves cam.target; eye trails by fl.dist along -forward.
+        // W6-F: hold shift for fast (x2.5), hold ctrl for slow (x0.25);
+        // both held cancel to 1x for fine alignment.
+        float spd_scale = 1.0F;
+        if (fl.key_shift)
+            spd_scale *= 2.5F;
+        if (fl.key_ctrl)
+            spd_scale *= 0.25F;
+        const float spd = kCamMoveSpeed * dt * spd_scale;
+        if (fl.key_w)
+        {
+            cam.target.x += forward.x * spd;
+            cam.target.y += forward.y * spd;
+            cam.target.z += forward.z * spd;
+        }
+        if (fl.key_s)
+        {
+            cam.target.x -= forward.x * spd;
+            cam.target.y -= forward.y * spd;
+            cam.target.z -= forward.z * spd;
+        }
+        if (fl.key_d)
+        {
+            cam.target.x += right.x * spd;
+            cam.target.z += right.z * spd;
+        }
+        if (fl.key_a)
+        {
+            cam.target.x -= right.x * spd;
+            cam.target.z -= right.z * spd;
+        }
+        if (fl.key_e)
+        {
+            cam.target.y += spd;
+        }
+        if (fl.key_q)
+        {
+            cam.target.y -= spd;
+        }
+
+        // Eye = target - forward * dist (target stays in view).
+        cam.eye.x = cam.target.x - forward.x * fl.dist;
+        cam.eye.y = cam.target.y - forward.y * fl.dist;
+        cam.eye.z = cam.target.z - forward.z * fl.dist;
+    }
+    else if (!fl.manual_mode)
+    {
+        // Only auto-orbit if the user hasn't started manual control.
+        // Once manual mode engages, the camera stays exactly where the
+        // user left it on right-mouse release / WASD release.
+        scene_cam.update(dt);
+    }
+}
+
+}  // namespace cd_sample
