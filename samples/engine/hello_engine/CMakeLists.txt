@@ -10,6 +10,7 @@ cd_add_sample(hello_engine
     cd::core
     cd::ecs
     cd::editor
+    cd::editor_panel
     cd::frame_timing
     cd::imgui_backend
     cd::light

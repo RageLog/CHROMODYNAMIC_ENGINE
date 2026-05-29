@@ -66,6 +66,8 @@
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/SelectionOutline.hpp>
 #include <cd/editor/TransformCommands.hpp>
+#include <cd/editor_panel/CompositeFxBinding.hpp>
+#include <cd/editor_panel/CompositePresetButtonsImGui.hpp>
 #include <cd/frame_timing/FrameTimeRing.hpp>
 #include <cd/gpu_particles/GpuParticles.hpp>
 #include <cd/ibl/BrdfLut.hpp>
@@ -1974,84 +1976,33 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     if (ImGui::CollapsingHeader("R3  Composite post-fx (live)", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextDisabled("single composite pass - AO/DOF/shafts/bloom/atmo");
-        // W6-E: preset buttons — quick A/B between known-good visual
-        // setups so the user doesn't have to remember every default.
-        if (ImGui::Button("Defaults"))
-        {
-            fx.exposure = 3.0F;
-            fx.saturation_boost = 1.50F;
-            fx.bloom_post = 0.04F;
-            fx.ao_strength = 0.55F;
-            fx.dof_strength = 0.0F;
-            fx.shafts_strength = 0.75F;
-            fx.ssr_strength = 0.5F;
-            fx.motion_blur = 0.0F;
-            fx.taa_amount = 0.0F;
-            fx.clouds_coverage = 0.0F;
-            fx.fog_density = 0.0F;
-            fx.aerial_perspective = 0.0F;
-            fx.chromab_strength = 0.0F;
-            fx.film_grain = 0.0F;
-            fx.vignette_strength = 0.25F;
-            log_push("[fx] Reset all composite knobs to defaults");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cinematic"))
-        {
-            fx.exposure = 2.5F;
-            fx.saturation_boost = 1.65F;
-            fx.bloom_post = 0.08F;
-            fx.ao_strength = 0.65F;
-            fx.dof_strength = 0.35F;
-            fx.shafts_strength = 0.85F;
-            fx.ssr_strength = 0.55F;
-            fx.motion_blur = 0.30F;
-            fx.taa_amount = 0.80F;
-            fx.clouds_coverage = 0.45F;
-            fx.fog_density = 0.20F;
-            fx.aerial_perspective = 0.50F;
-            fx.chromab_strength = 0.25F;
-            fx.film_grain = 0.15F;
-            fx.vignette_strength = 0.40F;
-            fx.tonemap_op = 2;  // Hable
-            log_push("[fx] Cinematic preset");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Performance"))
-        {
-            fx.exposure = 1.5F;
-            fx.saturation_boost = 1.20F;
-            fx.bloom_post = 0.0F;
-            fx.ao_strength = 0.0F;
-            fx.dof_strength = 0.0F;
-            fx.shafts_strength = 0.0F;
-            fx.ssr_strength = 0.0F;
-            fx.motion_blur = 0.0F;
-            fx.taa_amount = 0.0F;
-            fx.clouds_coverage = 0.0F;
-            fx.fog_density = 0.0F;
-            fx.aerial_perspective = 0.0F;
-            fx.chromab_strength = 0.0F;
-            fx.film_grain = 0.0F;
-            fx.vignette_strength = 0.0F;
-            fx.tonemap_op = 0;  // Narkowicz (cheapest)
-            log_push("[fx] Performance preset (all post-fx off)");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("HDR Demo"))
-        {
-            fx.exposure = 1.0F;
-            fx.saturation_boost = 1.40F;
-            fx.bloom_post = 0.12F;
-            fx.ao_strength = 0.55F;
-            fx.shafts_strength = 0.90F;
-            fx.clouds_coverage = 0.30F;
-            fx.fog_density = 0.0F;
-            fx.chromab_strength = 0.15F;
-            fx.vignette_strength = 0.30F;
-            fx.tonemap_op = 3;  // AGX — best for wide DR
-            log_push("[fx] HDR demo preset (AGX tonemap + wide DR)");
-        }
+        // W6-E: preset buttons -- delegated to cd::editor_panel since
+        // Marathon Run 23 phase N5B.  CompositeFxBinding wires the 16
+        // composite knobs onto the local HelloEngineFx fields; the
+        // draw_composite_preset_buttons helper renders the 4-button
+        // row and applies the matching preset on click.  Each preset
+        // preserves the original W6-E semantics (Defaults keeps user
+        // tonemap, HDR Demo keeps user dof/ssr/motion_blur/taa/aerial/
+        // film_grain) via std::optional preset fields.
+        const cd::editor_panel::CompositeFxBinding fx_binding {
+            .exposure           = &fx.exposure,
+            .saturation_boost   = &fx.saturation_boost,
+            .bloom_post         = &fx.bloom_post,
+            .ao_strength        = &fx.ao_strength,
+            .dof_strength       = &fx.dof_strength,
+            .shafts_strength    = &fx.shafts_strength,
+            .ssr_strength       = &fx.ssr_strength,
+            .motion_blur        = &fx.motion_blur,
+            .taa_amount         = &fx.taa_amount,
+            .clouds_coverage    = &fx.clouds_coverage,
+            .fog_density        = &fx.fog_density,
+            .aerial_perspective = &fx.aerial_perspective,
+            .chromab_strength   = &fx.chromab_strength,
+            .film_grain         = &fx.film_grain,
+            .vignette_strength  = &fx.vignette_strength,
+            .tonemap_op         = &fx.tonemap_op,
+        };
+        cd::editor_panel::draw_composite_preset_buttons(fx_binding, log_push);
         ImGui::SliderFloat("Exposure", &fx.exposure, 0.1F, 10.0F);
         ImGui::SliderFloat("Saturation boost", &fx.saturation_boost, 0.5F, 2.5F);
         ImGui::SliderFloat("Bloom strength", &fx.bloom_post, 0.0F, 0.30F);
