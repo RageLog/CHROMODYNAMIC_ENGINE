@@ -159,6 +159,7 @@
 #include "HelloAppState.hpp"
 #include "HelloRenderTargets.hpp"
 #include "HelloMaterials.hpp"
+#include "HelloGltf.hpp"
 
 
 namespace
@@ -4544,208 +4545,30 @@ int main()
     const auto knot_cpu = cd::asset::make_torus_knot(0.7F, 0.20F, 2, 3, 256, 24);
     GpuMesh knot_mesh = upload_mesh(device, knot_cpu);
 
-    // ---- glTF auto-load ----
-    // Try a small list of well-known sample paths so the user can drop
-    // any Khronos sample (DamagedHelmet.gltf, FlightHelmet.gltf ???)
-    // into ./assets/samples/ and have hello_engine pick it up on next
-    // launch. Falls back gracefully if nothing is found.
+    // ---- glTF auto-load (Marathon Run 14 phase N16, lifted to HelloGltf.hpp) ----
+    // Wraps create_texture_rgba8 in a functor so the helper stays free of the
+    // sample-local GpuTexture2D type.  Same probe list, same baseColor swap,
+    // same skinned-runtime capture as pre-extract.
     GpuMesh gltf_mesh {};
     std::string gltf_loaded_name;
-
-    // SK4: skinned-mesh state captured at gltf load (CesiumMan-style
-    // assets). When valid, the per-frame loop CPU-skins the source
-    // vertices via cd::anim::compute_skinning_matrices + a 4-weight
-    // LBS and re-uploads them to gltf_mesh.vb so the existing prim
-    // pipeline draws the deformed character without needing a
-    // separate skinned-vertex pipeline.
-    // SkinnedRuntime type definition moved to HelloSkinned.hpp
-    // (Marathon Run 11 phase N9-prep).
     cd_sample::SkinnedRuntime skinned;
     {
-        // Search list - try the binary's CWD first, then walk up the
-        // build tree (binary lives at build/<preset>/bin/<config>/),
-        // and finally try a few project-root anchors so the asset
-        // resolves whether the user runs from project root or from
-        // inside the binary directory.
-        const std::array<std::string, 30> kCandidates {
-            // Same-dir (rare but supports portable layout).
-            "CesiumMan.glb",
-            "model.gltf",
-            // From project root.
-            "assets/samples/CesiumMan.glb",
-            "assets/samples/DamagedHelmet.glb",
-            "assets/samples/FlightHelmet.gltf",
-            "assets/samples/DamagedHelmet.gltf",
-            "assets/samples/BoomBox.gltf",
-            "assets/samples/Duck.gltf",
-            "assets/samples/Suzanne.glb",
-            "assets/samples/Fox.glb",
-            "assets/samples/model.gltf",
-            // From build/<preset>/bin/<config>/ - walk up to project root.
-            "../../../../assets/samples/CesiumMan.glb",
-            "../../../../assets/samples/DamagedHelmet.glb",
-            "../../../../assets/samples/DamagedHelmet.gltf",
-            "../../../../assets/samples/Duck.gltf",
-            "../../../../assets/samples/Suzanne.glb",
-            "../../../../assets/samples/Fox.glb",
-            // From build/<preset>/ - one less up-level.
-            "../../assets/samples/CesiumMan.glb",
-            "../../assets/samples/DamagedHelmet.glb",
-            "../../assets/samples/DamagedHelmet.gltf",
-            // Absolute path probe (project-tree fixed install layout).
-            "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/CesiumMan.glb",
-            "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/DamagedHelmet.glb",
-            // Misc.
-            "",  // placeholders so size stays at 30
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            ""
+        auto upload_albedo = [&device](const std::uint8_t* rgba, std::uint32_t w, std::uint32_t h)
+            -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
+        {
+            auto tex = create_texture_rgba8(device, rgba, w, h);
+            return { tex.image, tex.view };
         };
-        for (const auto& p : kCandidates)
-        {
-            if (p.empty())
-                continue;
-            auto loaded = cd::asset_gltf::load_gltf(p);
-            if (!loaded.has_value())
-                continue;
-            // Merge every primitive of every mesh into one big
-            // PrimitiveVertex buffer so we can render with the
-            // existing prim pipeline. Texture sampling would need an
-            // extra descriptor binding - deferred to the next ship.
-            cd::asset::PrimitiveMesh merged;
-            for (const auto& m : loaded->meshes)
-            {
-                for (const auto& prim : m.primitives)
-                {
-                    const auto base = static_cast<std::uint16_t>(merged.vertices.size());
-                    for (const auto& v : prim.vertices)
-                    {
-                        cd::asset::PrimitiveVertex pv {};
-                        pv.pos[0] = v.position.x;
-                        pv.pos[1] = v.position.y;
-                        pv.pos[2] = v.position.z;
-                        pv.normal[0] = v.normal.x;
-                        pv.normal[1] = v.normal.y;
-                        pv.normal[2] = v.normal.z;
-                        pv.uv[0] = v.texcoord0.x;
-                        pv.uv[1] = v.texcoord0.y;
-                        pv.color[0] = 0.85F;
-                        pv.color[1] = 0.82F;
-                        pv.color[2] = 0.78F;
-                        merged.vertices.push_back(pv);
-                    }
-                    for (auto idx : prim.indices)
-                    {
-                        if (base + idx > 0xFFFFU)
-                            continue;  // skip overflow (sample uses 16-bit IB)
-                        merged.indices.push_back(static_cast<std::uint16_t>(base + idx));
-                    }
-                }
-            }
-            if (merged.vertices.empty() || merged.indices.empty())
-            {
-                std::fprintf(stderr, "[gltf] %s parsed but contained no renderable geometry\n", p.c_str());
-                continue;
-            }
-            gltf_mesh = upload_mesh(device, merged);
-            gltf_loaded_name = p;
-            // SK4: capture skinning data if the asset has a skin AND
-            // at least one animation. The CPU-skinning per-frame path
-            // requires bind-pose positions/normals/uvs + bone IDs +
-            // weights per vertex. We merge the FIRST primitive of the
-            // FIRST mesh; CesiumMan and most glTF Khronos samples ship
-            // a single primitive per mesh so this covers the common
-            // case end-to-end.
-            if (!loaded->skins.empty() && !loaded->animations.empty() && !loaded->meshes.empty() &&
-                !loaded->meshes[0].primitives.empty() && !loaded->meshes[0].primitives[0].skin_vertices.empty())
-            {
-                auto bundle = cd::asset_gltf::to_skeleton_bundle(*loaded, 0);
-                skinned.skeleton = std::move(bundle.skeleton);
-                skinned.node_to_joint = std::move(bundle.node_to_joint);
-                skinned.skin_joint_remap = std::move(bundle.skin_joint_remap);
-                skinned.animation = loaded->animations[0];
-                const auto& prim_src = loaded->meshes[0].primitives[0];
-                skinned.base_positions.reserve(prim_src.vertices.size());
-                skinned.base_normals.reserve(prim_src.vertices.size());
-                skinned.base_uvs.reserve(prim_src.vertices.size());
-                for (const auto& v : prim_src.vertices)
-                {
-                    skinned.base_positions.push_back(v.position);
-                    skinned.base_normals.push_back(v.normal);
-                    skinned.base_uvs.push_back(v.texcoord0);
-                }
-                skinned.influences = prim_src.skin_vertices;
-                skinned.pose = cd::anim::Pose::bind_pose(skinned.skeleton);
-                skinned.deformed_scratch.resize(skinned.base_positions.size());
-                skinned.valid = true;
-                std::fprintf(
-                    stderr,
-                    "[skin] %zu vertices, %zu joints, %zu anim channels\n",
-                    skinned.base_positions.size(),
-                    skinned.skeleton.joint_count(),
-                    skinned.animation.channels.size()
-                );
-            }
-            // gap #1/#13 - pull the first material's baseColor
-            // texture out of the glTF and upload it to the prim
-            // pipeline's binding 4 slot. Falls back silently if the
-            // asset has no textures.
-            if (!loaded->materials.empty() && !loaded->textures.empty())
-            {
-                const auto& mat = loaded->materials.front();
-                const int tex_idx = mat.base_color_texture;
-                if (tex_idx >= 0 && tex_idx < static_cast<int>(loaded->textures.size()))
-                {
-                    const auto& gt = loaded->textures[static_cast<std::size_t>(tex_idx)];
-                    if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
-                    {
-                        GpuTexture2D tex = create_texture_rgba8(device, gt.rgba.data(), gt.width, gt.height);
-                        if (tex.image.is_valid())
-                        {
-                            // Replace the 1x1 white default.
-                            if (albedo_tex.view.is_valid())
-                                device.destroy_texture_view(albedo_tex.view);
-                            if (albedo_tex.image.is_valid())
-                                device.destroy_texture(albedo_tex.image);
-                            albedo_tex = tex;
-                            // Re-write descriptor binding 4 to point
-                            // at the new glTF texture.
-                            std::array<cd::rhi::DescriptorWrite, 1> tw {
-                                cd::rhi::DescriptorWrite { .binding = 4,
-                                                          .array_element = 0,
-                                                          .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                                          .view = albedo_tex.view,
-                                                          .sampler = albedo_sampler }
-                            };
-                            (void)prim_inst.update(tw);
-                            has_gltf_texture = true;
-                            std::fprintf(stderr, "[gltf] baseColor texture loaded (%ux%u)\n", gt.width, gt.height);
-                        }
-                    }
-                }
-            }
-            std::fprintf(
-                stderr,
-                "[gltf] loaded %s - %zu verts, %zu indices (textured=%d)\n",
-                p.c_str(),
-                merged.vertices.size(),
-                merged.indices.size(),
-                static_cast<int>(has_gltf_texture)
-            );
-            break;
-        }
-        if (gltf_loaded_name.empty())
-        {
-            std::fprintf(
-                stderr,
-                "[gltf] no asset found; drop a .gltf into ./assets/samples/ "
-                "(e.g. Khronos DamagedHelmet) and re-launch.\n"
-            );
-        }
+        cd_sample::AlbedoSlot slot { .image_io = &albedo_tex.image,
+                                     .view_io  = &albedo_tex.view,
+                                     .sampler  = albedo_sampler,
+                                     .upload   = upload_albedo };
+        auto loaded = cd_sample::try_auto_load_gltf(device, slot, prim_inst);
+        gltf_mesh        = std::move(loaded.mesh);
+        gltf_loaded_name = std::move(loaded.loaded_name);
+        skinned          = std::move(loaded.skinned);
+        if (loaded.has_texture)
+            has_gltf_texture = true;
     }
 
     auto mesh_for = [&](PrimitiveKind k) -> const GpuMesh&
