@@ -8,7 +8,4 @@
 # back-edges.
 
 add_subdirectory(ui)
-add_subdirectory(editor/ui)
-add_subdirectory(editor)
-#   editor/panel -- Marathon Run 23 phase N5: composite-pass preset library.
-add_subdirectory(editor/panel)
+add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
