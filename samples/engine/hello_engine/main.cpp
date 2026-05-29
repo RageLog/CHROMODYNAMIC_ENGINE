@@ -5469,7 +5469,16 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             device, cmd, s.frame_idx, s.tlas_destroy_queue, s.current_tlas,
             s.prim_inst, std::span<const SceneEntity>(s.entities),
             blas_for_kind,
-            [](const SceneEntity& e) -> cd::math::Vec3f { return e.tint; },
+            // phase434-vis7: Sponza entity tint {1,1,1} is white; chrome
+            // reflections off Sponza walls appear blown-out white. Return a
+            // warm sandstone representative color for the RT reflection SSBO
+            // without touching the raster path (which multiplies sampled
+            // texture * tint directly, so {1,1,1} is correct there).
+            [](const SceneEntity& e) -> cd::math::Vec3f {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return { 0.72F, 0.60F, 0.48F };
+                return e.tint;
+            },
             [](const SceneEntity& e) -> PrimitiveKind    { return e.kind; },
             [&s](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
             {
@@ -7643,7 +7652,12 @@ int main(int argc, char** argv)
             prim_inst,
             std::span<const SceneEntity>(entities),
             blas_for_kind,
-            [](const SceneEntity& e) -> cd::math::Vec3f { return e.tint; },
+            // phase434-vis7: same Sponza sandstone override as HelloEngineApp path.
+            [](const SceneEntity& e) -> cd::math::Vec3f {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return { 0.72F, 0.60F, 0.48F };
+                return e.tint;
+            },
             [](const SceneEntity& e) -> PrimitiveKind { return e.kind; },
             [&](const SceneEntity& e) -> std::optional<cd::math::Mat4f>
             {
