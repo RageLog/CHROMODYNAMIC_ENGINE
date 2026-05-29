@@ -159,6 +159,7 @@
 #include "HelloAppState.hpp"
 #include "HelloRenderTargets.hpp"
 #include "HelloMaterials.hpp"
+#include "HelloShaderWatch.hpp"
 #include "HelloGltf.hpp"
 #include "HelloMeshes.hpp"
 #include "HelloEnginePalette.hpp"
@@ -4142,6 +4143,21 @@ int main()
     [[maybe_unused]] auto& velocity_material = materials.velocity;
     auto& shadow_material           = materials.shadow;
 
+    // X5 / M1 hot-reload — watch prim shader sources and rebuild the
+    // pipeline when prim.vert.glsl or prim.frag.glsl change on disk.
+    // Recreate failures are non-fatal: the previous pipeline keeps
+    // rendering. Polled once per frame inside the main loop.
+    cd_sample::HelloShaderWatch hello_shader_watch;
+    hello_shader_watch.add_entry(
+        &materials.prim,
+        std::vector<std::string> {
+            std::string { cd_sample::kPrimVertGlslPath },
+            std::string { cd_sample::kPrimFragGlslPath } },
+        [&materials](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool {
+            return cd_sample::prim_recreate(d, c, &materials.prim);
+        },
+        "prim");
+
     // ---- Shadow-map resources (Faz 1.6 CSM) ----
     // 2K depth texture + sampler + UBO holding light_vp. The
     // MaterialInstance below points the prim pipeline at all three.
@@ -5425,6 +5441,12 @@ int main()
         events.clear();
         if (!window.pump_events(events))
             break;
+
+        // X5 / M1 hot-reload — re-stat watched shader paths and rebuild
+        // any dirty Material before the frame's first draw call. Cheap
+        // (sub-millisecond stat of two files at 60 Hz).
+        (void)hello_shader_watch.poll_and_reload(device, compiler.get());
+
         for (const auto& e : events)
         {
             ctx.handle_event(e);

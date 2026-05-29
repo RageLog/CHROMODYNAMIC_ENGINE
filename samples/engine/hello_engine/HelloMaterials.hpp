@@ -61,6 +61,98 @@ struct MaterialSpawnError
     const char* name      { "" };
 };
 
+// -- X5 / M1 hot-reload integration -----------------------------------
+// On-disk source paths for the prim material's vertex + fragment
+// shaders. Resolved relative to the process's working directory; the
+// hello_engine launcher is expected to run from the repo root (where
+// `samples/engine/hello_engine/shaders/` lives). If a path fails to
+// open at runtime, Material::create returns kInvalidArgument and the
+// initial spawn falls back through MaterialSpawnError {9, "prim"}.
+inline constexpr std::string_view kPrimVertGlslPath =
+    "samples/engine/hello_engine/shaders/prim.vert.glsl";
+inline constexpr std::string_view kPrimFragGlslPath =
+    "samples/engine/hello_engine/shaders/prim.frag.glsl";
+
+/// Build the full prim MaterialDesc and call Material::create. Shared
+/// between initial spawn (spawn_materials) and hot-reload (HelloShaderWatch).
+/// On success overwrites *prim_material and returns true; on failure
+/// leaves *prim_material untouched and returns false so the previous
+/// pipeline keeps rendering.
+[[nodiscard]] inline bool
+prim_recreate(cd::rhi::IDevice&         device,
+              cd::shader::ICompiler*    compiler,
+              cd::material::Material*   prim_material)
+{
+    constexpr std::array<cd::rhi::Format, 4> kColorFmts {
+        cd::rhi::Format::kRGBA16Float,
+        cd::rhi::Format::kRGBA16Float,
+        cd::rhi::Format::kRGBA8Unorm,
+        cd::rhi::Format::kRG8Unorm
+    };
+    constexpr std::array<cd::rhi::VertexBinding, 1> kPrimBindings {
+        cd::rhi::VertexBinding { 0, sizeof(cd::asset::PrimitiveVertex), false }
+    };
+    constexpr std::array<cd::rhi::VertexAttribute, 4> kPrimAttrs {
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, pos)    },
+        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, normal) },
+        cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(cd::asset::PrimitiveVertex, uv)     },
+        cd::rhi::VertexAttribute { 3, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, color)  }
+    };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange {
+            .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+            .offset = 0,
+            .size   = static_cast<std::uint32_t>(sizeof(cd::hello_engine::PrimPush)) }
+    };
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 11> kBindings {
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 0,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 1,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 2,  .type = cd::rhi::DescriptorType::kAccelerationStructure, .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 3,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 4,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 5,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 6,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 7,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 8,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 9,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 10, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment }
+    };
+
+    cd::material::MaterialDesc md {};
+    // _glsl_path wins over _glsl per ADR-20260529-X5. The embedded
+    // strings remain as a documented fallback for shipped binaries
+    // launched without the on-disk shaders folder.
+    md.vertex_glsl_path   = kPrimVertGlslPath;
+    md.fragment_glsl_path = kPrimFragGlslPath;
+    md.vertex_glsl        = cd::hello_engine::kPrimVS;
+    md.fragment_glsl      = cd::hello_engine::kPrimFS;
+    md.color_attachment_formats = kColorFmts;
+    md.depth_attachment_format  = cd::rhi::Format::kD32Float;
+    md.vertex_bindings    = kPrimBindings;
+    md.vertex_attributes  = kPrimAttrs;
+    md.push_constants     = kPush;
+    md.descriptor_bindings = kBindings;
+    md.raster.cull = cd::rhi::CullMode::kNone;
+    md.depth_stencil.depth_test = true;
+    md.depth_stencil.depth_write = true;
+    md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
+    md.name = "hello_engine/prim";
+    auto r = cd::material::Material::create(device, compiler, md);
+    if (!r.has_value())
+    {
+        std::fprintf(
+            stderr,
+            "hello_engine: prim_material create failed: %.*s\n",
+            static_cast<int>(r.error().message.size()),
+            r.error().message.data()
+        );
+        return false;
+    }
+    *prim_material = std::move(*r);
+    return true;
+}
+
+
 [[nodiscard]] inline std::expected<MaterialBundle, MaterialSpawnError>
 spawn_materials(cd::rhi::IDevice&             device,
                 cd::shader::ICompiler*        compiler)
@@ -228,52 +320,12 @@ spawn_materials(cd::rhi::IDevice&             device,
         cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(cd::asset::PrimitiveVertex, uv)     },
         cd::rhi::VertexAttribute { 3, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, color)  }
     };
+    // Single source of truth for the prim MaterialDesc lives in
+    // prim_recreate() above so the X5/M1 hot-reload path (invoked from
+    // HelloShaderWatch) rebuilds it the same way.
+    if (!prim_recreate(device, compiler, &out.prim))
     {
-        constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
-            cd::rhi::PushConstantRange {
-                .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                .offset = 0,
-                .size   = static_cast<std::uint32_t>(sizeof(cd::hello_engine::PrimPush)) }
-        };
-        constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 11> kBindings {
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 0,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 1,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 2,  .type = cd::rhi::DescriptorType::kAccelerationStructure, .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 3,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 4,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 5,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 6,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 7,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 8,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 9,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-            cd::rhi::DescriptorSetLayoutBinding { .binding = 10, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment }
-        };
-        cd::material::MaterialDesc md {};
-        md.vertex_glsl = cd::hello_engine::kPrimVS;
-        md.fragment_glsl = cd::hello_engine::kPrimFS;
-        md.color_attachment_formats = kColorFmts;
-        md.depth_attachment_format = cd::rhi::Format::kD32Float;
-        md.vertex_bindings = kPrimBindings;
-        md.vertex_attributes = kPrimAttrs;
-        md.push_constants = kPush;
-        md.descriptor_bindings = kBindings;
-        md.raster.cull = cd::rhi::CullMode::kNone;
-        md.depth_stencil.depth_test = true;
-        md.depth_stencil.depth_write = true;
-        md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
-        md.name = "hello_engine/prim";
-        auto r = cd::material::Material::create(device, compiler, md);
-        if (!r.has_value())
-        {
-            std::fprintf(
-                stderr,
-                "hello_engine: prim_material create failed: %.*s\n",
-                static_cast<int>(r.error().message.size()),
-                r.error().message.data()
-            );
-            return std::unexpected(MaterialSpawnError { 9, "prim" });
-        }
-        out.prim = std::move(*r);
+        return std::unexpected(MaterialSpawnError { 9, "prim" });
     }
 
     // ---- Velocity-pass material --------------------------------------------
