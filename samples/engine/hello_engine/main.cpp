@@ -169,7 +169,9 @@
 #include "HelloEnginePalette.hpp"
 #include "HelloPicker.hpp"
 #include "HelloPalette.hpp"
+#include "HelloEngineApp.hpp"
 
+#include <cd/sample/run.hpp>
 
 namespace
 {
@@ -3993,9 +3995,12 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
 }  // namespace
 
 // ============================================================================
-// Main.
+// Legacy main — preserved intact during M2B scaffolding.
+// M2C/M2D/M2E will migrate boot / frame / shutdown into HelloEngineApp
+// member functions.  main_legacy() is NOT called by the new entry point
+// below; it exists so the code is never lost between commits.
 // ============================================================================
-int main()
+[[maybe_unused]] static int main_legacy()
 {
     // ---- Window + Vulkan device + Renderer + ImGui ----
     cd::platform::WindowDesc wd {};
@@ -6172,4 +6177,16 @@ int main()
     cd_sample::destroy_meshes(device, meshes);
     std::printf("hello_engine: clean exit (%u frames).\n", frame_idx);
     return 0;
+}
+
+// ============================================================================
+// M2B entry point — HelloEngineApp scaffolding (phase383).
+//
+// Replaces the 2143-line main() body with cd::sample::run<HelloEngineApp>.
+// The App overrides are stubs in M2B; they become real in M2C/M2D/M2E as
+// boot / frame / shutdown code migrates out of main_legacy() above.
+// ============================================================================
+int main(int argc, char** argv)
+{
+    return cd::sample::run<HelloEngineApp>(argc, argv);
 }

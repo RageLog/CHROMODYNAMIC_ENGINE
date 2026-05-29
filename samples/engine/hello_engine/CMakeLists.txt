@@ -60,6 +60,7 @@ cd_add_sample(hello_engine
     cd::scene
     cd::shader
     cd::world_container
+    cd::sample_framework
 )
 
 # D-F7: propagate the toggle to the compiled binary as a preprocessor define.
