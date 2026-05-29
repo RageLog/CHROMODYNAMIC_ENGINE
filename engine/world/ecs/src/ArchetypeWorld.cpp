@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC -- engine/world/ecs/src/ArchetypeWorld.cpp
 // Phase 370 / Marathon Run 30 / X7B -- archetype-table side layer.
+// Phase 408 / D-F4 -- cross-archetype migration (add_component / remove_component).
 // =============================================================================
 #include <cd/ecs/ArchetypeWorld.hpp>
 

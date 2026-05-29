@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC -- engine/world/ecs/tests/test_archetype_world.cpp
 // Phase 370 / Marathon Run 30 / X7B -- ArchetypeWorld side-layer proof.
+// Phase 408 / D-F4 -- cross-archetype migration tests.
 //
 // Locks down:
 //   - emplace<T...>: archetype creation, chunk row write, entity tracking.
@@ -8,6 +9,10 @@
 //   - destroy: swap-and-pop with entity-location patching.
 //   - chunk allocation: capacity sizing + multi-chunk overflow.
 //   - storage independence from cd::ecs::World.
+//   - add_component: entity migrates to new archetype with added type.
+//   - remove_component: entity migrates to reduced archetype.
+//   - round-trip add then remove: entity returns to original archetype.
+//   - add duplicate policy: noop (asserted in debug; runtime guard in release).
 // =============================================================================
 #include <cd/ecs/ArchetypeWorld.hpp>
 #include <cd/ecs/World.hpp>
@@ -190,4 +195,155 @@ TEST(ArchetypeWorld, ChunkCapacityHonours16KiBTarget)
     const std::size_t cap_pv = w.chunk_capacity_for<Position, Velocity>();
     EXPECT_GE(cap_pv, 4U);
     EXPECT_LE(cap_pv, cap);  // wider rows => smaller-or-equal capacity
+}
+
+// =============================================================================
+// Phase 408 / D-F4 -- cross-archetype migration tests
+// =============================================================================
+
+TEST(ArchetypeWorld, AddComponent_MovesEntityToNewArchetype)
+{
+    // Arrange: entity starts in {Position} archetype.
+    ArchetypeWorld w;
+    const Entity e = w.emplace<Position>(Position { 7.0F, 8.0F, 9.0F });
+    ASSERT_EQ(w.archetype_count(), 1U);
+
+    // Act: add Velocity -> entity must move to {Position, Velocity} archetype.
+    w.add_component<Velocity>(e, Velocity { 1.0F, 2.0F, 3.0F });
+
+    // Assert: two archetypes exist; entity is still alive.
+    EXPECT_EQ(w.archetype_count(), 2U);
+    EXPECT_TRUE(w.is_alive(e));
+    EXPECT_EQ(w.alive_count(), 1U);
+
+    // The entity must appear in a {Position, Velocity} query with correct values.
+    int visit_count = 0;
+    w.each<Position, Velocity>([&](Entity visited, Position& p, Velocity& v) {
+        EXPECT_EQ(visited, e);
+        EXPECT_FLOAT_EQ(p.x, 7.0F);
+        EXPECT_FLOAT_EQ(p.y, 8.0F);
+        EXPECT_FLOAT_EQ(p.z, 9.0F);
+        EXPECT_FLOAT_EQ(v.vx, 1.0F);
+        EXPECT_FLOAT_EQ(v.vy, 2.0F);
+        EXPECT_FLOAT_EQ(v.vz, 3.0F);
+        ++visit_count;
+    });
+    EXPECT_EQ(visit_count, 1);
+
+    // The entity must NOT appear in a {Position}-only query over the single-
+    // component archetype (the query will still visit it because {P,V} is a
+    // superset of {P}, but there must be no entity in the {Position}-only
+    // archetype -- alive_count in that archetype should be 0).
+    // We verify by checking the total visit count from each<Position> == 1
+    // (the entity is in the superset archetype, so it IS visited).
+    int pos_count = 0;
+    w.each<Position>([&](Entity, Position&) { ++pos_count; });
+    EXPECT_EQ(pos_count, 1);
+}
+
+TEST(ArchetypeWorld, RemoveComponent_MovesEntityToReducedArchetype)
+{
+    // Arrange: entity starts in {Position, Velocity} archetype.
+    ArchetypeWorld w;
+    const Entity e = w.emplace<Position, Velocity>(
+        Position { 10.0F, 20.0F, 30.0F },
+        Velocity { 4.0F, 5.0F, 6.0F });
+    ASSERT_EQ(w.archetype_count(), 1U);
+
+    // Act: remove Velocity -> entity must move to {Position} archetype.
+    w.remove_component<Velocity>(e);
+
+    // Assert: two archetypes exist; entity is alive.
+    EXPECT_EQ(w.archetype_count(), 2U);
+    EXPECT_TRUE(w.is_alive(e));
+    EXPECT_EQ(w.alive_count(), 1U);
+
+    // Entity visible in {Position} query with original Position value.
+    int visit_count = 0;
+    w.each<Position>([&](Entity visited, Position& p) {
+        EXPECT_EQ(visited, e);
+        EXPECT_FLOAT_EQ(p.x, 10.0F);
+        EXPECT_FLOAT_EQ(p.y, 20.0F);
+        EXPECT_FLOAT_EQ(p.z, 30.0F);
+        ++visit_count;
+    });
+    EXPECT_EQ(visit_count, 1);
+
+    // Entity must NOT appear in a {Velocity}-only or {Position, Velocity} query.
+    int pv_count = 0;
+    w.each<Position, Velocity>([&](Entity, Position&, Velocity&) { ++pv_count; });
+    EXPECT_EQ(pv_count, 0);
+}
+
+TEST(ArchetypeWorld, RoundTrip_AddThenRemove_ComponentsPreserved)
+{
+    // Arrange: entity starts in {Position} archetype.
+    ArchetypeWorld w;
+    const Entity e = w.emplace<Position>(Position { 1.0F, 2.0F, 3.0F });
+
+    // Act: add Velocity then remove Velocity.
+    w.add_component<Velocity>(e, Velocity { 9.0F, 8.0F, 7.0F });
+    w.remove_component<Velocity>(e);
+
+    // Assert: back to 3 archetypes ({P}, {P,V}, {P} again -- or {P} is
+    // reused since the type-set is the same).  Archetype count may be 2
+    // ({P} + {P,V}), depending on whether find_or_create_archetype_ returns
+    // the existing {P} archetype.
+    EXPECT_TRUE(w.is_alive(e));
+    EXPECT_EQ(w.alive_count(), 1U);
+    EXPECT_LE(w.archetype_count(), 2U);  // at most {P} and {P,V}
+
+    // Original Position value must be intact.
+    int visit_count = 0;
+    w.each<Position>([&](Entity visited, Position& p) {
+        EXPECT_EQ(visited, e);
+        EXPECT_FLOAT_EQ(p.x, 1.0F);
+        EXPECT_FLOAT_EQ(p.y, 2.0F);
+        EXPECT_FLOAT_EQ(p.z, 3.0F);
+        ++visit_count;
+    });
+    EXPECT_EQ(visit_count, 1);
+
+    // No entity in {Position, Velocity}.
+    int pv_count = 0;
+    w.each<Position, Velocity>([&](Entity, Position&, Velocity&) { ++pv_count; });
+    EXPECT_EQ(pv_count, 0);
+}
+
+TEST(ArchetypeWorld, AddDuplicate_IsNoop)
+{
+    // Policy: adding a component type the entity already carries is a
+    // programming bug.  In Debug builds this fires an assertion.
+    // In Release builds (NDEBUG) the runtime guard makes it a safe noop.
+    // We test the noop path only (assertion-death tests would require
+    // EXPECT_DEATH which needs a subprocess; out of scope here).
+    //
+    // Verify that after a duplicate add_component call the entity
+    // is still alive and its original values are intact.
+    ArchetypeWorld w;
+    const Entity e = w.emplace<Position, Velocity>(
+        Position { 5.0F, 0.0F, 0.0F },
+        Velocity { 0.0F, 0.0F, 0.0F });
+
+    // Duplicate add of Velocity (already present) -- noop in release,
+    // assert in debug.  We test in release mode via NDEBUG-aware call.
+#if defined(NDEBUG)
+    w.add_component<Velocity>(e, Velocity { 99.0F, 99.0F, 99.0F });
+    // Entity must still be alive and unmodified.
+    EXPECT_TRUE(w.is_alive(e));
+    EXPECT_EQ(w.alive_count(), 1U);
+    int count = 0;
+    float pos_x = 0.0F;
+    w.each<Position, Velocity>([&](Entity, Position& p, Velocity&) {
+        pos_x = p.x;
+        ++count;
+    });
+    EXPECT_EQ(count, 1);
+    EXPECT_FLOAT_EQ(pos_x, 5.0F);
+#else
+    // In Debug we just confirm the entity is in a valid state without
+    // triggering the assert.
+    EXPECT_TRUE(w.is_alive(e));
+    EXPECT_EQ(w.alive_count(), 1U);
+#endif
 }

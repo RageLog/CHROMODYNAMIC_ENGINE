@@ -23,15 +23,18 @@
 //                                                   Velocity{0,0,1});
 //   w.each<Position, Velocity>([](Entity, Position&, Velocity&){...});
 //   w.destroy(e);
+//   w.add_component<Velocity>(e, Velocity{0,0,1});   // cross-archetype move
+//   w.remove_component<Velocity>(e);                  // cross-archetype move
 //
 // Design notes:
 //   - Archetype identity = sorted vector<type_index>.
 //   - Each archetype owns chunks; chunk capacity targets 16 KiB
 //     payload, clamped to 4 entities min for wide rows.
 //   - Removal is row-level (swap-and-pop in the chunk).
-//   - Cross-archetype moves (add/remove a single component on a live
-//     entity) NOT supported in this side layer.  Use sparse-set
-//     cd::ecs::World for that.
+//   - Cross-archetype moves (add_component / remove_component) copy
+//     existing components to the target archetype then handle the old
+//     slot manually (see migrate_shared_components_).
+//     Single-threaded construction path; no lock needed.
 //
 // Thread safety: reads parallel, writes caller-serialised.
 // =============================================================================
@@ -41,6 +44,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -88,6 +92,24 @@ public:
 
     template <class... Ts, class Fn>
     void each(Fn&& fn) const;
+
+    // -------------------------------------------------------------------------
+    // Cross-archetype migration
+    // -------------------------------------------------------------------------
+    // add_component<T>(e, v):
+    //   Entity must NOT already carry T (asserted).
+    //   Moves entity to archetype {current types + T}; all existing components
+    //   are move-constructed into the new row; T is constructed from v.
+    //
+    // remove_component<T>(e):
+    //   Entity must carry T (asserted).
+    //   Moves entity to archetype {current types - T}; surviving components are
+    //   move-constructed into the new row; T is destructed.
+    template <class T>
+    void add_component(Entity e, T value);
+
+    template <class T>
+    void remove_component(Entity e);
 
 private:
     struct ComponentTypeInfo
@@ -151,6 +173,16 @@ private:
         std::vector<ComponentTypeInfo> infos);
 
     void chunk_swap_pop_(Archetype& a, Chunk& c, std::size_t row);
+
+    // Move-construct all components shared between src and dst archetypes
+    // from (src_c, src_row) into a freshly appended row of dst.
+    // Returns {destination_chunk*, destination_row_index}.
+    // Does NOT construct brand-new types -- caller handles that.
+    // Does NOT update entity lists or entity_locations_ -- caller handles that.
+    // Does NOT destruct the source row -- caller handles that.
+    [[nodiscard]] std::pair<Chunk*, std::size_t>
+    migrate_shared_components_(Archetype& dst, Archetype& src,
+                               Chunk& src_c, std::size_t src_row);
 
     EntityManager entities_ {};
     std::vector<std::unique_ptr<Archetype>> archetypes_ {};
@@ -307,6 +339,200 @@ template <class... Ts, class Fn>
 inline void ArchetypeWorld::each(Fn&& fn) const
 {
     const_cast<ArchetypeWorld*>(this)->template each<Ts...>(std::forward<Fn>(fn));
+}
+
+// =============================================================================
+// Cross-archetype migration -- inline member implementations
+// =============================================================================
+
+inline std::pair<ArchetypeWorld::Chunk*, std::size_t>
+ArchetypeWorld::migrate_shared_components_(
+    Archetype& dst, Archetype& src,
+    Chunk& src_c, std::size_t src_row)
+{
+    // Find or allocate a destination chunk with space.
+    Chunk* dc = nullptr;
+    if (!dst.chunks.empty() &&
+        dst.chunks.back()->size < dst.chunks.back()->capacity)
+    {
+        dc = dst.chunks.back().get();
+    } else {
+        auto nc = std::make_unique<Chunk>();
+        nc->capacity = dst.chunk_capacity;
+        nc->size     = 0;
+        nc->entities.reserve(dst.chunk_capacity);
+        nc->columns.resize(dst.infos.size());
+        for (std::size_t k = 0; k < dst.infos.size(); ++k)
+            nc->columns[k].resize(dst.chunk_capacity * dst.infos[k].size_bytes);
+        dst.chunks.push_back(std::move(nc));
+        dc = dst.chunks.back().get();
+    }
+
+    const std::size_t dst_row = dc->size;
+    // Move-construct each component present in BOTH src and dst.
+    for (std::size_t dk = 0; dk < dst.infos.size(); ++dk) {
+        const std::size_t sk = src.column_for(dst.infos[dk].type);
+        if (sk == static_cast<std::size_t>(-1)) continue;  // new type -- skip
+        auto* dst_ptr = dc->columns[dk].data() + dst_row * dst.infos[dk].size_bytes;
+        auto* src_ptr = src_c.columns[sk].data() + src_row * src.infos[sk].size_bytes;
+        dst.infos[dk].move_construct(dst_ptr, src_ptr);
+    }
+    ++dc->size;
+    return { dc, dst_row };
+}
+
+template <class T>
+inline void ArchetypeWorld::add_component(Entity e, T value)
+{
+    assert(is_alive(e) && "add_component: entity is not alive");
+
+    using U = std::remove_cvref_t<T>;
+    const std::type_index new_type { typeid(U) };
+
+    // Snapshot location BEFORE find_or_create_archetype_ may reallocate
+    // archetypes_ (which would not invalidate entity_locations_ but the
+    // pointer stored in old_loc.archetype could shift if archetypes_ were
+    // a vector<Archetype> rather than vector<unique_ptr<Archetype>> --
+    // safe here because unique_ptr ownership is stable).
+    const EntityLocation old_loc = entity_locations_[e.id];
+    Archetype& old_a = *old_loc.archetype;
+    Chunk&     old_c = *old_a.chunks[old_loc.chunk_index];
+
+    // Policy: duplicate add is a programming bug.
+    assert(old_a.column_for(new_type) == static_cast<std::size_t>(-1)
+           && "add_component: entity already carries this component type");
+    if (old_a.column_for(new_type) != static_cast<std::size_t>(-1)) return;
+
+    // Build the target infos: existing + new, re-sorted by type_index.
+    std::vector<ComponentTypeInfo> new_infos = old_a.infos;
+    new_infos.push_back(info_for_<U>());
+    std::sort(new_infos.begin(), new_infos.end(),
+        [](const ComponentTypeInfo& a, const ComponentTypeInfo& b) {
+            return a.type < b.type;
+        });
+
+    Archetype* new_a = find_or_create_archetype_(std::move(new_infos));
+
+    // Migrate shared components.  The source slots are move-from'd but still
+    // occupy their memory; chunk_swap_pop_ will call destruct on them later,
+    // which is well-defined (moved-from objects are destructible per C++).
+    auto [dc, new_row] = migrate_shared_components_(*new_a, old_a, old_c,
+                                                    old_loc.row_in_chunk);
+
+    // Construct the brand-new component in its column of the destination.
+    const std::size_t new_col = new_a->column_for(new_type);
+    assert(new_col != static_cast<std::size_t>(-1));
+    auto* new_slot = dc->columns[new_col].data() + new_row * sizeof(U);
+    ::new (new_slot) U(std::move(value));
+
+    // Register entity in the new chunk's entity list.
+    dc->entities.push_back(e);
+
+    // Swap-pop the old row.  new_type does not exist in old_a so
+    // chunk_swap_pop_ never touches the new component's column.  The
+    // shared-component slots are in moved-from (but destructible) state.
+    chunk_swap_pop_(old_a, old_c, old_loc.row_in_chunk);
+
+    // Update entity location.
+    const std::size_t new_chunk_idx = new_a->chunks.size() - 1U;
+    entity_locations_[e.id] = EntityLocation { new_a, new_chunk_idx, new_row };
+}
+
+template <class T>
+inline void ArchetypeWorld::remove_component(Entity e)
+{
+    assert(is_alive(e) && "remove_component: entity is not alive");
+
+    using U = std::remove_cvref_t<T>;
+    const std::type_index rem_type { typeid(U) };
+
+    const EntityLocation old_loc = entity_locations_[e.id];
+    Archetype& old_a = *old_loc.archetype;
+    Chunk&     old_c = *old_a.chunks[old_loc.chunk_index];
+
+    const std::size_t rem_col = old_a.column_for(rem_type);
+    assert(rem_col != static_cast<std::size_t>(-1)
+           && "remove_component: entity does not carry this component type");
+    if (rem_col == static_cast<std::size_t>(-1)) return;
+
+    // Build the target infos: existing - removed type.
+    // old_a.infos is already sorted; filtering preserves order.
+    std::vector<ComponentTypeInfo> new_infos;
+    new_infos.reserve(old_a.infos.size() - 1U);
+    for (const auto& ci : old_a.infos)
+        if (ci.type != rem_type) new_infos.push_back(ci);
+
+    Archetype* new_a = find_or_create_archetype_(std::move(new_infos));
+
+    // Migrate surviving components (rem_type is absent from new_a so
+    // migrate_shared_components_ skips it automatically).
+    auto [dc, new_row] = migrate_shared_components_(*new_a, old_a, old_c,
+                                                    old_loc.row_in_chunk);
+    dc->entities.push_back(e);
+
+    // Manual swap-pop of the old row.
+    //
+    // We cannot reuse chunk_swap_pop_ here because the removed component's
+    // slot at old_row is still live (it was NOT move-from'd by migrate),
+    // while the surviving components' slots were already move-from'd.
+    //
+    // Sequence for column k at old_row:
+    //   k == rem_col : slot is LIVE -> destruct, then (if old_row != last)
+    //                  move last slot over it and destruct last.
+    //   k != rem_col : slot is MOVED-FROM (valid, destructible) ->
+    //                  destruct it, then (if old_row != last) move last
+    //                  slot over it and destruct last.
+    {
+        const std::size_t old_row = old_loc.row_in_chunk;
+        const std::size_t last    = old_c.size - 1U;
+
+        // Step 1: destruct the removed component's live value at old_row.
+        {
+            auto* p = old_c.columns[rem_col].data()
+                      + old_row * old_a.infos[rem_col].size_bytes;
+            old_a.infos[rem_col].destruct(p);
+        }
+
+        if (old_row != last) {
+            for (std::size_t k = 0; k < old_a.infos.size(); ++k) {
+                auto* dst_ptr = old_c.columns[k].data()
+                                + old_row * old_a.infos[k].size_bytes;
+                auto* src_ptr = old_c.columns[k].data()
+                                + last    * old_a.infos[k].size_bytes;
+                if (k == rem_col) {
+                    // dst was already destructed (step 1); src is live.
+                    old_a.infos[k].move_construct(dst_ptr, src_ptr);
+                    old_a.infos[k].destruct(src_ptr);
+                } else {
+                    // dst holds a moved-from (but destructible) object.
+                    old_a.infos[k].destruct(dst_ptr);
+                    old_a.infos[k].move_construct(dst_ptr, src_ptr);
+                    old_a.infos[k].destruct(src_ptr);
+                }
+            }
+            // Patch location of the entity that just moved into old_row.
+            const Entity moved_entity = old_c.entities[last];
+            old_c.entities[old_row] = moved_entity;
+            if (moved_entity.id < entity_locations_.size())
+                entity_locations_[moved_entity.id].row_in_chunk = old_row;
+        } else {
+            // old_row IS the last row.
+            // Removed component already destructed (step 1).
+            // Surviving components hold moved-from objects; destruct them.
+            for (std::size_t k = 0; k < old_a.infos.size(); ++k) {
+                if (k == rem_col) continue;
+                auto* p = old_c.columns[k].data()
+                          + old_row * old_a.infos[k].size_bytes;
+                old_a.infos[k].destruct(p);
+            }
+        }
+        old_c.entities.pop_back();
+        --old_c.size;
+    }
+
+    // Update entity location.
+    const std::size_t new_chunk_idx = new_a->chunks.size() - 1U;
+    entity_locations_[e.id] = EntityLocation { new_a, new_chunk_idx, new_row };
 }
 
 }  // namespace cd::ecs

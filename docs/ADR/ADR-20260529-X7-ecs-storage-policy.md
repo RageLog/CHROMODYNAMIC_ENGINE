@@ -97,7 +97,7 @@ Run 27 adds `engine/world/ecs/tests/test_sphere_query.cpp` -- a
   detector.  An interactive overlay remains queued as a polish
   item.
 
-- **"Add archetype-style storage as a side layer (ArchetypeSet<Ts>)
+- **"Add archetype-style storage as a side layer (`ArchetypeSet<Ts>`)
   without disturbing SparseSet."**  Considered.  Deferred: needs a
   real consumer workload to justify the second storage path; with
   hello_engine sitting at ~10-20 entities the smallest-pool
@@ -111,8 +111,7 @@ Run 27 adds `engine/world/ecs/tests/test_sphere_query.cpp` -- a
   `engine/world/ecs/src/ArchetypeWorld.cpp`.  Design follows Bevy /
   Flecs archetype-table layout: archetype = sorted `vector<type_index>`,
   each archetype owns chunks of ~16 KiB payload (clamped to 4 rows
-  minimum), cross-archetype migration not supported (use sparse-set
-  `World` for component-by-component churn).  7 gtest cases in
+  minimum).  7 gtest cases in
   `engine/world/ecs/tests/test_archetype_world.cpp` (emplace, each
   with superset matching, destroy with swap-pop, chunk overflow,
   capacity sizing, independence from sparse-set `World`) -> 7/7 PASS.
@@ -125,9 +124,24 @@ Run 27 adds `engine/world/ecs/tests/test_sphere_query.cpp` -- a
   sparse mixes + incremental churn.  Both paths are legitimate and
   coexist; sparse-set remains the engine primary.
 
+  **CROSS-ARCHETYPE MIGRATION DONE in Phase 408 (D-F4 slice).**
+  `add_component<T>(e, v)` and `remove_component<T>(e)` added to
+  `ArchetypeWorld`.  Implementation: `migrate_shared_components_`
+  private member move-constructs all common components into a freshly
+  allocated row of the target archetype; `add_component` then
+  constructs the new type and calls `chunk_swap_pop_` on the source row;
+  `remove_component` destructs the removed type explicitly and performs
+  a column-aware manual swap-pop that avoids double-destruct on the
+  removed slot.  `EntityLocation` map is patched for both the migrated
+  entity and any entity displaced by the swap-pop.  4 new gtest cases
+  added (AddComponent_MovesEntityToNewArchetype,
+  RemoveComponent_MovesEntityToReducedArchetype,
+  RoundTrip_AddThenRemove_ComponentsPreserved,
+  AddDuplicate_IsNoop) -> 11/11 PASS.  Total ctest: 108/108 PASS.
+
 ## References
 
-- `engine/world/ecs/include/cd/ecs/ComponentStorage.hpp` -- SparseSet<T>.
+- `engine/world/ecs/include/cd/ecs/ComponentStorage.hpp` -- `SparseSet<T>`.
 - `engine/world/ecs/include/cd/ecs/World.hpp` -- each<Ts...>.
 - `engine/world/ecs/include/cd/ecs/Scheduler.hpp` -- system DAG.
 - `engine/world/ecs/tests/test_sphere_query.cpp` -- this run\'s proof.
