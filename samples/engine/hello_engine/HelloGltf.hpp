@@ -26,12 +26,24 @@
 
 namespace cd_sample {
 
+/// Per-primitive sub-range of the merged gltf index buffer + its own
+/// uploaded baseColor texture. Used for per-draw material dispatch.
+struct GltfPrimRange
+{
+    std::uint32_t           index_offset  { 0 };  ///< first_index for draw_indexed
+    std::uint32_t           index_count   { 0 };  ///< index count for this prim
+    cd::rhi::TextureHandle     albedo_tex  {};     ///< uploaded RGBA8 texture (may be invalid)
+    cd::rhi::TextureViewHandle albedo_view {};     ///< view for albedo_tex
+    bool                    has_texture   { false };
+};
+
 struct GltfLoadResult
 {
-    cd::render::GpuMesh       mesh        {};
-    std::string               loaded_name {};
-    cd_sample::SkinnedRuntime skinned     {};
-    bool                      has_texture { false };
+    cd::render::GpuMesh              mesh        {};
+    std::string                      loaded_name {};
+    cd_sample::SkinnedRuntime        skinned     {};
+    bool                             has_texture { false };
+    std::vector<GltfPrimRange>       prim_ranges {};  ///< per-primitive sub-ranges + textures
 };
 
 struct AlbedoSlot
@@ -101,10 +113,18 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
         merged.vertices.reserve(total_verts);
         const bool use_u32_indices = (total_verts > 0xFFFFU);
 
+        // Per-primitive sub-ranges + textures for per-draw material dispatch.
+        std::vector<GltfPrimRange> prim_ranges;
+
         for (const auto& m : loaded->meshes)
         {
             for (const auto& prim : m.primitives)
             {
+                GltfPrimRange range {};
+                range.index_offset = use_u32_indices
+                    ? static_cast<std::uint32_t>(merged.indices_u32.size())
+                    : static_cast<std::uint32_t>(merged.indices.size());
+
                 const auto base = static_cast<std::uint32_t>(merged.vertices.size());
                 for (const auto& v : prim.vertices)
                 {
@@ -126,6 +146,7 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                 {
                     for (auto idx : prim.indices)
                         merged.indices_u32.push_back(base + idx);
+                    range.index_count = static_cast<std::uint32_t>(merged.indices_u32.size()) - range.index_offset;
                 }
                 else
                 {
@@ -136,7 +157,31 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                             continue;  // should not happen given total_verts check
                         merged.indices.push_back(static_cast<std::uint16_t>(val));
                     }
+                    range.index_count = static_cast<std::uint32_t>(merged.indices.size()) - range.index_offset;
                 }
+
+                // Upload this primitive's baseColor texture if it has one.
+                if (prim.material_index >= 0 &&
+                    prim.material_index < static_cast<int>(loaded->materials.size()))
+                {
+                    const auto& mat = loaded->materials[static_cast<std::size_t>(prim.material_index)];
+                    const int tex_idx = mat.base_color_texture;
+                    if (tex_idx >= 0 && tex_idx < static_cast<int>(loaded->textures.size()))
+                    {
+                        const auto& gt = loaded->textures[static_cast<std::size_t>(tex_idx)];
+                        if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
+                        {
+                            auto [img, view] = albedo.upload(gt.rgba.data(), gt.width, gt.height);
+                            if (img.is_valid())
+                            {
+                                range.albedo_tex   = img;
+                                range.albedo_view  = view;
+                                range.has_texture  = true;
+                            }
+                        }
+                    }
+                }
+                prim_ranges.push_back(range);
             }
         }
         const bool indices_ok = use_u32_indices ? !merged.indices_u32.empty() : !merged.indices.empty();
@@ -147,7 +192,10 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
         }
         out.mesh = cd::render::upload_mesh(device, merged);
         out.loaded_name = p;
+        out.prim_ranges = std::move(prim_ranges);
 
+        // Wire the first textured primitive into the global albedo slot so the
+        // single-draw fallback path (CesiumMan / non-Sponza) still works.
         if (!loaded->skins.empty() && !loaded->animations.empty() && !loaded->meshes.empty() &&
             !loaded->meshes[0].primitives.empty() && !loaded->meshes[0].primitives[0].skin_vertices.empty())
         {
@@ -179,6 +227,11 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
             );
         }
 
+        // Global albedo slot: pick the first primitive that has a valid texture.
+        // For CesiumMan (single prim, single tex) this matches the old behaviour.
+        // For Sponza the per-prim loop above carries each material's texture;
+        // this first-tex write just ensures binding=4 is never left on the
+        // 1x1 white default even for the single-draw fallback frame.
         if (!loaded->materials.empty() && !loaded->textures.empty())
         {
             const auto& mat = loaded->materials.front();
@@ -206,10 +259,18 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                         };
                         (void)prim_inst.update(tw);
                         out.has_texture = true;
-                        std::fprintf(stderr, "[gltf] baseColor texture loaded (%ux%u)\n", gt.width, gt.height);
+                        std::fprintf(stderr, "[gltf] baseColor texture[0] loaded (%ux%u)\n", gt.width, gt.height);
                     }
                 }
             }
+        }
+        // Count textured primitives for the log.
+        {
+            std::size_t tex_prims = 0;
+            for (const auto& r : out.prim_ranges)
+                if (r.has_texture) ++tex_prims;
+            std::fprintf(stderr, "[gltf] %zu/%zu primitives have baseColor textures\n",
+                         tex_prims, out.prim_ranges.size());
         }
         const std::size_t idx_count = use_u32_indices ? merged.indices_u32.size() : merged.indices.size();
         std::fprintf(

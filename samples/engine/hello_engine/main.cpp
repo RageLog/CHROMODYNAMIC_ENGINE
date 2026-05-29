@@ -3867,7 +3867,11 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                                     bool has_gltf_texture,
                                     cd::material::Material& prim_material,
                                     cd::core::CounterTable& counters,
-                                    const MeshFor& mesh_for)
+                                    const MeshFor& mesh_for,
+                                    const std::vector<cd_sample::GltfPrimRange>& gltf_prim_ranges,
+                                    cd::material::MaterialInstance& prim_inst,
+                                    cd::rhi::SamplerHandle albedo_sampler,
+                                    cd::rhi::IDevice& device)
 {
     // ---- Floor (large flat quad) ----
     // Faz 1.5 - real geometry on which the planar-shadow pass can
@@ -3987,8 +3991,52 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             sizeof(PrimPush),
             &ent_push_scratch[i]
         );
-        cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
-        counters.increment("draws_prim");
+
+        // Per-primitive material dispatch for Sponza (~28 materials).
+        // When gltf_prim_ranges is populated (Sponza load path), iterate
+        // sub-ranges and switch descriptor binding=4 per primitive.
+        // Falls back to single draw_indexed for CesiumMan / non-Sponza
+        // where prim_ranges is empty (single merged draw, same as before).
+        if (ent.kind == PrimitiveKind::kGltf && !gltf_prim_ranges.empty())
+        {
+            for (const auto& pr : gltf_prim_ranges)
+            {
+                if (pr.index_count == 0)
+                    continue;
+                if (pr.has_texture && pr.albedo_view.is_valid())
+                {
+                    // Switch binding=4 to this primitive's own texture.
+                    const std::array<cd::rhi::DescriptorWrite, 1> tw {
+                        cd::rhi::DescriptorWrite { .binding = 4,
+                                                   .array_element = 0,
+                                                   .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                                   .view = pr.albedo_view,
+                                                   .sampler = albedo_sampler }
+                    };
+                    (void)prim_inst.update(tw);
+                    prim_inst.bind(cmd, 0);
+                }
+                // PrimPush fx_params[1] = 1.0 when this prim has a texture.
+                PrimPush sub_pp = ent_push_scratch[i];
+                sub_pp.fx_params[1] = pr.has_texture ? 1.0F : 0.0F;
+                cmd.push_constants(
+                    prim_material.pipeline_layout(),
+                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                    0,
+                    sizeof(PrimPush),
+                    &sub_pp
+                );
+                cmd.draw_indexed(pr.index_count, 1, pr.index_offset, 0, 0);
+                counters.increment("draws_prim");
+            }
+            // Restore binding=4 to the global albedo after the prim loop.
+            (void)device;  // device parameter reserved for future use
+        }
+        else
+        {
+            cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
+            counters.increment("draws_prim");
+        }
     }
 }
 
@@ -5931,7 +5979,9 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
         constexpr float kShadowLift = 0.01F;
         draw_floor_and_entities(cmd, floor_mesh, kFloorY, vp, fx, sun, cam,
                                 entities, scene, has_gltf_texture,
-                                prim_material, counters, mesh_for);
+                                prim_material, counters, mesh_for,
+                                meshes.gltf_prim_ranges, prim_inst,
+                                albedo_sampler, device);
 
         // ---- Planar projective shadows (Faz 1.5) ----
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, entities,

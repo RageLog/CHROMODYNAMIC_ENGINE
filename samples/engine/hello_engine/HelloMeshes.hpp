@@ -63,6 +63,8 @@ struct HelloMeshes
     std::string         gltf_loaded_name {};
     cd_sample::SkinnedRuntime skinned    {};
     bool                has_gltf_texture { false };
+    /// Per-primitive sub-ranges + per-material textures (non-empty for Sponza).
+    std::vector<cd_sample::GltfPrimRange> gltf_prim_ranges {};
 
     cd::rhi::AccelStructureHandle blas_cube   {};
     cd::rhi::AccelStructureHandle blas_sphere {};
@@ -146,6 +148,7 @@ boot_meshes(cd::rhi::IDevice&                device,
         out.gltf             = std::move(loaded.mesh);
         out.gltf_loaded_name = std::move(loaded.loaded_name);
         out.skinned          = std::move(loaded.skinned);
+        out.gltf_prim_ranges = std::move(loaded.prim_ranges);
         if (loaded.has_texture)
             out.has_gltf_texture = true;
     }
@@ -215,6 +218,15 @@ destroy_meshes(cd::rhi::IDevice& device, HelloMeshes& m) noexcept
     }
     if (m.gltf.vb.is_valid())
         cd::render::destroy_mesh(device, m.gltf);
+    // Destroy per-primitive textures uploaded during gltf load.
+    for (auto& pr : m.gltf_prim_ranges)
+    {
+        if (pr.albedo_view.is_valid())
+            device.destroy_texture_view(pr.albedo_view);
+        if (pr.albedo_tex.is_valid())
+            device.destroy_texture(pr.albedo_tex);
+    }
+    m.gltf_prim_ranges.clear();
 }
 
 } // namespace cd_sample
