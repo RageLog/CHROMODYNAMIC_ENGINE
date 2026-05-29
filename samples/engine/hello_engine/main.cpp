@@ -3861,7 +3861,8 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                                     const std::vector<cd_sample::GltfPrimRange>& gltf_prim_ranges,
                                     cd::material::MaterialInstance& prim_inst,
                                     cd::rhi::SamplerHandle albedo_sampler,
-                                    cd::rhi::IDevice& device)
+                                    cd::rhi::IDevice& device,
+                                    cd::rhi::TextureViewHandle global_albedo_view)
 {
     // ---- Floor (large flat quad) ----
     // Faz 1.5 - real geometry on which the planar-shadow pass can
@@ -4021,8 +4022,25 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                 cmd.draw_indexed(pr.index_count, 1, pr.index_offset, 0, 0);
                 counters.increment("draws_prim");
             }
-            // Restore binding=4 to the global albedo after the prim loop.
-            (void)device;  // device parameter reserved for future use
+            // phase427-vis4: restore binding=4 to the global (non-Sponza)
+            // albedo texture so subsequent entity draws (CesiumMan, PBR
+            // spheres) receive the correct descriptor state. The per-prim
+            // loop left binding 4 pointing at the last Sponza primitive's
+            // texture; without this restore CesiumMan samples the Sponza
+            // leaf/curtain texture at its own UVs -> black/garbage albedo.
+            if (global_albedo_view.is_valid())
+            {
+                const std::array<cd::rhi::DescriptorWrite, 1> rw {
+                    cd::rhi::DescriptorWrite { .binding = 4,
+                                               .array_element = 0,
+                                               .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                                               .view = global_albedo_view,
+                                               .sampler = albedo_sampler }
+                };
+                (void)prim_inst.update(rw);
+                prim_inst.bind(cmd, 0);
+            }
+            (void)device;
         }
         else
         {
@@ -5485,7 +5503,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                 s.entities, s.scene, s.has_gltf_texture,
                                 s.materials.prim, s.counters, mesh_for,
                                 s.meshes.gltf_prim_ranges, s.prim_inst,
-                                s.albedo_sampler, device);
+                                s.albedo_sampler, device, s.albedo_tex.view);
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, s.entities,
                             s.scene, vp, s.materials.prim, s.counters, mesh_for);
 
@@ -7662,7 +7680,7 @@ int main(int argc, char** argv)
                                 entities, scene, has_gltf_texture,
                                 prim_material, counters, mesh_for,
                                 meshes.gltf_prim_ranges, prim_inst,
-                                albedo_sampler, device);
+                                albedo_sampler, device, albedo_tex.view);
 
         // ---- Planar projective shadows (Faz 1.5) ----
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, entities,
