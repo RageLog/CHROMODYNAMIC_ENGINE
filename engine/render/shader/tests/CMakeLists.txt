@@ -24,3 +24,12 @@ cd_add_test(file_watcher_hotreload
   SOURCES test_file_watcher_hotreload.cpp
   DEPS    cd::shader cd::core
 )
+
+# Live edit-and-revert smoke (D-F8 / ADR-20260529-X5 deferred path):
+# write original → watcher fires; modify → fires; revert → fires.
+# Three sequential write events, each fires the watcher within 3 s.
+# Headless — no engine launch or window required.
+cd_add_test(live_edit_smoke
+  SOURCES test_live_edit_smoke.cpp
+  DEPS    cd::shader cd::core
+)
