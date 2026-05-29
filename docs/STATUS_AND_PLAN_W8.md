@@ -16,7 +16,7 @@
 - 97 test binary. Breadth iyi; depth (golden image, fuzz, stress) sample bazinda.
 - 60 plus ADR. Karar disiplini guclu.
 - Marathon Run 3-6: v0.99.33 to v0.99.58 (26 tag), Phase 204 to 279.
-- hello_engine: 6625 satir (W8-BB 7854 -> Run 9 7793 -> Run 10 7854 -> Run 11 7381 -> Run 12 7313 -> Run 13 6908 -> Run 14 6625; main() body 3275 -> 2585 via Run 13 phase334-335 N15a/N15b + Run 14 phase339-340 N16 HelloGltf + N18 HelloPicker extracts; Run 15 target main() body < 500).
+- hello_engine: 6522 satir (W8-BB 7854 -> Run 9 7793 -> Run 10 7854 -> Run 11 7381 -> Run 12 7313 -> Run 13 6908 -> Run 14 6625 -> Run 15 6522; main() body 3275 -> 2482 via Run 13 phase334-335 N15a/N15b + Run 14 phase339-340 N16/N18 + Run 15 phase344 N19 HelloPalette fx-only commands extracts; main()<500 hedef Run 16+'a kaydirildi -- kalan ~2000 satir frame-loop iskeletinden + sahne/isik/audio/streamer command-palette setlerinden olusuyor. Net delta Run 11->15: main() body 3360 -> 2482 (-878 / 26.1%); main.cpp 7381 -> 6522 (-859 / 11.6%).
 - MANIFEST.csv yok / 0 PDF: Demir Kural pipeline henuz tetiklenmedi.
 
 ### Bottom line
