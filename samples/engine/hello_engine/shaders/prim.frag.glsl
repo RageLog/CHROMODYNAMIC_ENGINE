@@ -495,6 +495,10 @@ void main() {
     float scene_hit  = reflection_hit_id(v_world_pos, Npbr, Ripbr, 80.0, hit_inst);
     vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
     vec3  ibl_spec_blended = ibl_spec_p;
+    // phase433-vis6: bounds guard. kMaxInstMats=256; reads beyond the
+    // populated range would return zero (black) albedo causing pitch-
+    // black reflections on high-ID hits. Cap to keep sampling safe.
+    if (hit_inst >= 256) hit_inst = -1;
     if (scene_hit > 0.5 && hit_inst >= 0) {
       vec3 hit_alb   = cd_instance_mats.data[hit_inst].albedo.rgb;
       // Pseudo-normal = surface-outward direction (-dir) on convex hits.
@@ -939,6 +943,12 @@ void main() {
   }
 
   // Linear HDR output - composite pass owns the gamma transform.
+  // phase433-vis6: NaN/Inf safety clamp. Sponza at 0.01 scale + IBL
+  // cotangent_frame on degenerate UVs can produce NaN that propagates
+  // to a fully-black fragment. Clamp to [0, 100] nits (well above any
+  // plausible HDR contribution) before the debug-view early returns
+  // and the final write so every code path benefits.
+  c = clamp(c, vec3(0.0), vec3(100.0));
 
   // Debug view modes (fx_params4.w):
   //   1 albedo only, 2 world normal, 3 MR map, 4 AO, 5 perturbed
