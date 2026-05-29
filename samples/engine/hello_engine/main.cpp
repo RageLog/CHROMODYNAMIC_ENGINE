@@ -4652,6 +4652,25 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
     cam.fov_y = 0.9F;
     cam.near_z = 0.05F;
     cam.far_z = 200.0F;
+
+    // Canonical Sponza nave camera preset (phase389-sponza-fix4).
+    // When Sponza.gltf is loaded, override the default orbit-sphere view
+    // with the classic "entering the atrium" framing: standing at the western
+    // entrance (-10.0, 1.8, 0) looking east (+10.0, 1.8, 0) along the long
+    // axis. far_z extended to 500 m so the full ~30 m atrium length is
+    // always inside the frustum even with the camera at the entrance.
+    // The shadow ortho frustum is sun-direction–driven and remains scene-
+    // scale; no adjustment needed for Sponza at default sun angle.
+    if (!gltf_loaded_name.empty() &&
+        gltf_loaded_name.find("Sponza") != std::string::npos)
+    {
+        cam.eye    = { -10.0F, 1.8F, 0.0F };
+        cam.target = {  10.0F, 1.8F, 0.0F };
+        cam.fov_y  = 1.05F;   // slightly wider FOV for the atrium corridor
+        cam.far_z  = 500.0F;  // cover the full 30+ m atrium length
+        log_push("[boot] Sponza: canonical nave camera preset applied");
+    }
+
     cd::scene::SceneCameraController scene_cam;
     scene_cam.attach(cam, scene, /*target_entity=*/ {});
     scene_cam.set_auto_spin(false);  // user-controlled by default; toggle from palette
