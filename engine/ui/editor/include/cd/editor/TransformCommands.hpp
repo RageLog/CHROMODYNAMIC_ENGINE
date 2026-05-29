@@ -40,10 +40,7 @@ class TranslateCommand final : public ICommand
 {
 public:
     TranslateCommand(cd::scene::Scene& scene, cd::ecs::Entity target, cd::math::Vec3f delta)
-        : scene_(scene), target_(target), delta_(delta)
-    {
-        label_ = "Translate";
-    }
+        : scene_(scene), target_(target), delta_(delta), label_ { "Translate" } {}
 
     void apply() override
     {
@@ -79,10 +76,7 @@ class ScaleCommand final : public ICommand
 {
 public:
     ScaleCommand(cd::scene::Scene& scene, cd::ecs::Entity target, cd::math::Vec3f factor)
-        : scene_(scene), target_(target), factor_(factor)
-    {
-        label_ = "Scale";
-    }
+        : scene_(scene), target_(target), factor_(factor), label_ { "Scale" } {}
 
     void apply() override
     {
@@ -116,10 +110,7 @@ class RotateCommand final : public ICommand
 {
 public:
     RotateCommand(cd::scene::Scene& scene, cd::ecs::Entity target, cd::math::Quatf new_rotation)
-        : scene_(scene), target_(target), new_rotation_(new_rotation)
-    {
-        label_ = "Rotate";
-    }
+        : scene_(scene), target_(target), new_rotation_(new_rotation), label_ { "Rotate" } {}
 
     void apply() override
     {

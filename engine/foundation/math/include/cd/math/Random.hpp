@@ -19,9 +19,9 @@ class Random
 public:
     Random() noexcept : Random(0x853c49e6748fea9bULL) {}
     explicit Random(std::uint64_t seed) noexcept
+        : state_ { 0U },
+          inc_   { (seed << 1U) | 1U }
     {
-        state_ = 0u;
-        inc_ = (seed << 1u) | 1u;
         next_u32();
         state_ += seed;
         next_u32();

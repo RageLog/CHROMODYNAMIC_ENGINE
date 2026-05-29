@@ -48,7 +48,8 @@ Checks: >
   -cppcoreguidelines-rvalue-reference-param-not-moved,
   -cppcoreguidelines-missing-std-forward,
   -cppcoreguidelines-narrowing-conversions,
-  -cppcoreguidelines-avoid-c-arrays,  # PoD layouts mirror GLSL/Vulkan structs; ADR pending
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-macro-usage,  # Run13 B1: 294 instances total, 292 in Defines.hpp / Definitions.hpp (CD_PLATFORM_*, CD_COMPILER_*, CD_HAS_*, CD_STRINGIFY, CD_CONCAT, CD_UNIQUE_NAME) used in #ifdef / token-pasting / unique-id contexts where constexpr is fundamentally impossible. Remaining 2 (Vector.hpp CD_MATH_VEC_BINOP, Enums.hpp CD_RHI_DEFINE_FLAG_OPS) are textbook operator-generator macros.  # PoD layouts mirror GLSL/Vulkan structs; ADR pending
   hicpp-*,
   -hicpp-avoid-c-arrays,
   -hicpp-no-array-decay,
@@ -107,7 +108,7 @@ Checks: >
 # in main.cpp + the engine/ tree are promoted to errors so they cannot
 # regress. The site fixes landed in this same commit (see fix list in the
 # commit message).
-WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c'
+WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer'
 
 # Analyse only OUR code. Engine + samples; never third-party headers via
 # FetchContent (those live under build/*/_deps/) and never legacy code
