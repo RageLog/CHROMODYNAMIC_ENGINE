@@ -187,7 +187,9 @@ enum class PrimitiveKind : std::uint8_t
     kCone,
     kCylinder,
     kTorus,
-    kGltf,
+    kGltf,    ///< CesiumMan / animated character
+    kSponza,  ///< Sponza atrium static scene — separate from kGltf so
+              ///  the turntable + Z-up correction never touch it
 };
 
 struct SceneEntity
@@ -1825,38 +1827,78 @@ inline void spawn_primitive_seeds(cd::scene::Scene& scene,
     }
 }
 
-// ---- spawn_gltf_or_earth_entity ------------------------------------------
-// Spawn the "lead actor" entity at x=-4.5. When a real glTF mesh was
-// loaded at boot, place the imported character with the Z-up -> Y-up
-// (-90 deg about X) correction Cesium scenes need. Otherwise spawn
-// the procedural Earth-like showcase sphere at the same off-row
-// anchor so the procedural fallback does not clip into the Cone at
-// origin. Kind stays kGltf either way - mesh_for(kGltf) selects the
-// imported VB when valid, sphere VB otherwise.
-inline void spawn_gltf_or_earth_entity(cd::scene::Scene& scene,
-                                       const GpuMesh& gltf_mesh,
-                                       std::string_view gltf_loaded_name,
-                                       std::vector<SceneEntity>& entities)
+// ---- spawn_sponza_and_cesiumman_entities ---------------------------------
+// Spawn two glTF entities:
+//   1. Sponza Atrium (kSponza) — static scene, identity rotation (glTF
+//      Khronos Sponza is already Y-up), scale 0.01 to convert raw
+//      centimeter vertices to meters. Placed at origin.
+//   2. CesiumMan (kGltf) — animated character inside the nave. Z-up
+//      -> Y-up correction (-90 deg X) applied because CesiumMan.glb
+//      is authored in Z-up.  Falls back to a procedural Earth sphere
+//      when CesiumMan was not found on disk.
+//
+// When neither Sponza nor CesiumMan is available the old single Earth
+// fallback entity is produced (kGltf, procedural).
+inline void spawn_sponza_and_cesiumman_entities(cd::scene::Scene& scene,
+                                                const GpuMesh& sponza_mesh,
+                                                std::string_view sponza_loaded_name,
+                                                const GpuMesh& cesium_mesh,
+                                                std::string_view cesium_loaded_name,
+                                                std::vector<SceneEntity>& entities)
 {
-    SceneEntity e;
-    e.handle = scene.create_node();
-    if (gltf_mesh.vb.is_valid())
+    // --- Sponza entity (kSponza) ---
+    if (sponza_mesh.vb.is_valid())
     {
-        e.name = std::string { "glTF (" } + std::string { gltf_loaded_name } + ")";
-        scene.local(e.handle)->value.position = { -4.5F, -0.55F, 0.0F };
-        scene.local(e.handle)->value.scale = { 2.2F, 2.2F, 2.2F };
-        // X -90 deg rotation (Z-up -> Y-up).
-        scene.local(e.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
+        SceneEntity es;
+        es.handle = scene.create_node();
+        es.name   = std::string { "Sponza (" } + std::string { sponza_loaded_name } + ")";
+        es.tint   = { 1.0F, 1.0F, 1.0F };
+        es.kind   = PrimitiveKind::kSponza;
+        // Sponza vertices are in centimetres (glTF node carries 0.008 scale
+        // which our loader ignores at vertex-read time).  0.01 brings it to
+        // a metre-scale room that the default camera sees comfortably.
+        // Identity rotation: Khronos Sponza glTF is Y-up, no correction needed.
+        scene.local(es.handle)->value.position = { 0.0F, 0.0F, 0.0F };
+        scene.local(es.handle)->value.scale    = { 0.01F, 0.01F, 0.01F };
+        // Identity quaternion (w=1) — no rotation.
+        scene.local(es.handle)->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        entities.push_back(std::move(es));
     }
-    else
+
+    // --- CesiumMan entity (kGltf) ---
     {
-        e.name = "Earth (procedural showcase)";
-        scene.local(e.handle)->value.position = { -4.5F, 0.7F, 0.0F };
-        scene.local(e.handle)->value.scale = { 1.5F, 1.5F, 1.5F };
+        SceneEntity ec;
+        ec.handle = scene.create_node();
+        ec.tint   = { 1.0F, 1.0F, 1.0F };
+        ec.kind   = PrimitiveKind::kGltf;
+        if (cesium_mesh.vb.is_valid())
+        {
+            ec.name = std::string { "CesiumMan (" } + std::string { cesium_loaded_name } + ")";
+            // Inside Sponza nave: near the centre of the atrium floor.
+            // Sponza is 0.01-scaled so 1 engine unit = 100 cm of Sponza space.
+            // CesiumMan is ~1.8 m tall at scale 2.2; position at nave centre.
+            scene.local(ec.handle)->value.position = { 0.0F, 0.0F, 0.0F };
+            scene.local(ec.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
+            // X -90 deg rotation (CesiumMan.glb is Z-up -> engine Y-up).
+            scene.local(ec.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
+        }
+        else if (!sponza_mesh.vb.is_valid())
+        {
+            // No Sponza and no CesiumMan: procedural Earth fallback.
+            ec.name = "Earth (procedural showcase)";
+            scene.local(ec.handle)->value.position = { -4.5F, 0.7F, 0.0F };
+            scene.local(ec.handle)->value.scale    = { 1.5F, 1.5F, 1.5F };
+            // Identity rotation for procedural Earth.
+            scene.local(ec.handle)->value.rotation = { 0.0F, 0.0F, 0.0F, 1.0F };
+        }
+        else
+        {
+            // Sponza loaded but no CesiumMan: skip the kGltf entity to avoid
+            // an empty mesh placeholder.
+            return;
+        }
+        entities.push_back(std::move(ec));
     }
-    e.tint = { 1.0F, 1.0F, 1.0F };
-    e.kind = PrimitiveKind::kGltf;
-    entities.push_back(std::move(e));
 }
 
 // ---- spawn_pbr_grid_entities ---------------------------------------------
@@ -3900,7 +3942,9 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
             fill_prim_push_shared(pp, fx, sun, cam);
             // ECS override: per-entity texture-path flag in fx_params[1]
-            pp.fx_params[1] = (!ent.is_pbr && ent.kind == PrimitiveKind::kGltf && has_gltf_texture) ? 1.0F : 0.0F;
+            // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
+            // kGltf (CesiumMan): single texture if available.
+            pp.fx_params[1] = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture) ? 1.0F : 0.0F;
             if (ent.is_pbr)
             {
                 pp.fx_params4[0] = ent.metallic;
@@ -3934,11 +3978,9 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
         );
 
         // Per-primitive material dispatch for Sponza (~28 materials).
-        // When gltf_prim_ranges is populated (Sponza load path), iterate
-        // sub-ranges and switch descriptor binding=4 per primitive.
-        // Falls back to single draw_indexed for CesiumMan / non-Sponza
-        // where prim_ranges is empty (single merged draw, same as before).
-        if (ent.kind == PrimitiveKind::kGltf && !gltf_prim_ranges.empty())
+        // kSponza uses gltf_prim_ranges for per-material texture switching.
+        // kGltf (CesiumMan) uses a single draw_indexed (no prim_ranges).
+        if (ent.kind == PrimitiveKind::kSponza && !gltf_prim_ranges.empty())
         {
             for (const auto& pr : gltf_prim_ranges)
             {
@@ -4505,12 +4547,17 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     if (s.meshes.build_exit_code != 0)
         return std::unexpected(
             cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
-    if (s.meshes.has_gltf_texture) s.has_gltf_texture = true;
+    if (s.meshes.has_gltf_texture || s.meshes.has_cesium_texture)
+        s.has_gltf_texture = true;
 
     // World / scene / ECS
     setup_world_container(s.cd_world);
     spawn_primitive_seeds(s.scene, s.entities);
-    spawn_gltf_or_earth_entity(s.scene, s.meshes.gltf, s.meshes.gltf_loaded_name, s.entities);
+    spawn_sponza_and_cesiumman_entities(
+        s.scene,
+        s.meshes.gltf,          s.meshes.gltf_loaded_name,
+        s.meshes.gltf_cesium,   s.meshes.gltf_cesium_loaded_name,
+        s.entities);
     spawn_pbr_grid_entities(s.scene, s.entities);
 
     auto log_push_fn = [&s](std::string msg)
@@ -4527,12 +4574,14 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // Selection + gizmo
     s.outline.style = cd::editor::OutlineStyle::kWireframe;
 
-    // Camera
+    // Camera — positioned inside the Sponza nave looking toward the atrium.
+    // Sponza vertices are in cm; with 0.01 entity scale one engine unit = 1 m.
+    // Camera sits at ~8 m depth looking at the atrium floor (y≈0, z=0).
     s.cam.eye    = { 0.0F, 2.5F, 8.0F };
-    s.cam.target = { 0.0F, 0.5F, 0.0F };
+    s.cam.target = { 0.0F, 1.0F, 0.0F };
     s.cam.fov_y  = 0.9F;
     s.cam.near_z = 0.05F;
-    s.cam.far_z  = 200.0F;
+    s.cam.far_z  = 300.0F;
     s.scene_cam.attach(s.cam, s.scene, {});
     s.scene_cam.set_auto_spin(false);
     s.scene_cam.orbit().auto_spin_rate = 0.25F;
@@ -4727,6 +4776,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             case PrimitiveKind::kCylinder: return "Cylinder";
             case PrimitiveKind::kTorus:    return "Torus";
             case PrimitiveKind::kGltf:     return "Gltf";
+            case PrimitiveKind::kSponza:   return "Sponza";
             case PrimitiveKind::kCube:     return "Cube";
         }
         return "Cube";
@@ -4942,8 +4992,10 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             case PrimitiveKind::kCone:     return s.meshes.cone;
             case PrimitiveKind::kCylinder: return s.meshes.cyl;
             case PrimitiveKind::kTorus:    return s.meshes.torus;
-            case PrimitiveKind::kGltf:
+            case PrimitiveKind::kSponza:
                 return s.meshes.gltf.vb.is_valid() ? s.meshes.gltf : s.meshes.knot;
+            case PrimitiveKind::kGltf:
+                return s.meshes.gltf_cesium.vb.is_valid() ? s.meshes.gltf_cesium : s.meshes.knot;
             default:                       return s.meshes.cube;
         }
     };
@@ -4955,7 +5007,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             case PrimitiveKind::kCone:     return s.meshes.blas_cone;
             case PrimitiveKind::kCylinder: return s.meshes.blas_cyl;
             case PrimitiveKind::kTorus:    return s.meshes.blas_torus;
-            case PrimitiveKind::kGltf:     return s.meshes.blas_gltf;
+            case PrimitiveKind::kSponza:   return s.meshes.blas_gltf;
+            case PrimitiveKind::kGltf:     return s.meshes.blas_cesium;
             default:                       return s.meshes.blas_cube;
         }
     };
@@ -5303,10 +5356,15 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             s.next_random_refresh = s.frame_idx + 120;
         }
 
-        // CPU-LBS skinning
-        if (!cd_sample::update_skinned_animation(s.meshes.skinned, device,
-                                                  s.meshes.gltf.vb, dt))
+        // CPU-LBS skinning for CesiumMan (animated character — kGltf entity).
+        // Sponza (kSponza) has no skin data; its mesh lives in s.meshes.gltf.
+        // CesiumMan skin data lives in s.meshes.cesium_skinned; VB is gltf_cesium.
+        if (!cd_sample::update_skinned_animation(s.meshes.cesium_skinned, device,
+                                                  s.meshes.gltf_cesium.vb, dt))
         {
+            // W4-F fallback turntable: only for kGltf (CesiumMan) when it has
+            // no animation data (e.g. non-animated fallback mesh loaded).
+            // kSponza is always static — never rotated here.
             static float cesium_yaw_t = 0.0F;
             cesium_yaw_t += dt * 0.5F;
             for (auto& ent : s.entities)
@@ -5316,8 +5374,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 if (!lt) continue;
                 const float half = cesium_yaw_t * 0.5F;
                 const float sy = std::sin(half), cy = std::cos(half);
-                const float qx1=0,qy1=sy,qz1=0,qw1=cy;
-                const float qx2=-0.7071068F,qy2=0,qz2=0,qw2=0.7071068F;
+                const float qx1=0.0F,qy1=sy,qz1=0.0F,qw1=cy;
+                const float qx2=-0.7071068F,qy2=0.0F,qz2=0.0F,qw2=0.7071068F;
                 lt->value.rotation = {
                     qw1*qx2+qx1*qw2+qy1*qz2-qz1*qy2,
                     qw1*qy2-qx1*qz2+qy1*qw2+qz1*qx2,
@@ -5394,8 +5452,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 if (!lt) return std::nullopt;
                 return cd::math::to_mat4(lt->value);
             },
-            s.meshes.blas_floor, s.meshes.blas_gltf,
-            s.meshes.skinned.valid, s.inst_mat_ssbo,
+            s.meshes.blas_floor, s.meshes.blas_cesium,
+            s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
             s.rts.depth.image, s.depth_initialised_on_gpu);
 
         const SunLight sun = resolve_sun_light(s.lights);

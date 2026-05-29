@@ -59,12 +59,20 @@ struct HelloMeshes
     cd::render::GpuMesh torus {};
     cd::render::GpuMesh floor {};
     cd::render::GpuMesh knot  {};
+    /// Sponza Atrium (static scene, kSponza entity).
     cd::render::GpuMesh gltf  {};
     std::string         gltf_loaded_name {};
+    /// Sponza has no skin — skinned is always invalid for this mesh.
     cd_sample::SkinnedRuntime skinned    {};
     bool                has_gltf_texture { false };
-    /// Per-primitive sub-ranges + per-material textures (non-empty for Sponza).
+    /// Per-primitive sub-ranges + per-material textures for Sponza.
     std::vector<cd_sample::GltfPrimRange> gltf_prim_ranges {};
+
+    /// CesiumMan animated character (kGltf entity).
+    cd::render::GpuMesh gltf_cesium {};
+    std::string         gltf_cesium_loaded_name {};
+    cd_sample::SkinnedRuntime cesium_skinned {};
+    bool                has_cesium_texture { false };
 
     cd::rhi::AccelStructureHandle blas_cube   {};
     cd::rhi::AccelStructureHandle blas_sphere {};
@@ -72,7 +80,8 @@ struct HelloMeshes
     cd::rhi::AccelStructureHandle blas_cyl    {};
     cd::rhi::AccelStructureHandle blas_torus  {};
     cd::rhi::AccelStructureHandle blas_floor  {};
-    cd::rhi::AccelStructureHandle blas_gltf   {};
+    cd::rhi::AccelStructureHandle blas_gltf   {};   ///< Sponza BLAS
+    cd::rhi::AccelStructureHandle blas_cesium {};   ///< CesiumMan BLAS
 
     int build_exit_code { 0 };  ///< non-zero on one-shot AS-build cmd-buffer failure
 };
@@ -143,14 +152,27 @@ boot_meshes(cd::rhi::IDevice&                device,
     const auto knot_cpu = cd::asset::make_torus_knot(0.7F, 0.20F, 2, 3, 256, 24);
     out.knot = cd::render::upload_mesh(device, knot_cpu);
 
+    // Load Sponza Atrium (static scene, kSponza entity).
     {
         auto loaded = cd_sample::try_auto_load_gltf(device, albedo, prim_inst);
         out.gltf             = std::move(loaded.mesh);
         out.gltf_loaded_name = std::move(loaded.loaded_name);
-        out.skinned          = std::move(loaded.skinned);
+        out.skinned          = std::move(loaded.skinned);  // always invalid for Sponza
         out.gltf_prim_ranges = std::move(loaded.prim_ranges);
         if (loaded.has_texture)
             out.has_gltf_texture = true;
+    }
+
+    // Load CesiumMan animated character (kGltf entity).
+    // Runs AFTER Sponza so both coexist independently.
+    {
+        auto loaded = cd_sample::try_load_cesiumman_gltf(device, albedo, prim_inst);
+        out.gltf_cesium             = std::move(loaded.mesh);
+        out.gltf_cesium_loaded_name = std::move(loaded.loaded_name);
+        out.cesium_skinned          = std::move(loaded.skinned);
+        // CesiumMan prim_ranges are empty (single merged draw); no storage needed.
+        if (loaded.has_texture)
+            out.has_cesium_texture = true;
     }
 
     out.blas_cube   = build_mesh_blas(device, out.cube,   "blas_cube");
@@ -160,7 +182,10 @@ boot_meshes(cd::rhi::IDevice&                device,
     out.blas_torus  = build_mesh_blas(device, out.torus,  "blas_torus");
     out.blas_floor  = build_mesh_blas(device, out.floor,  "blas_floor");
     out.blas_gltf   = out.gltf.vb.is_valid()
-        ? build_mesh_blas(device, out.gltf, "blas_gltf")
+        ? build_mesh_blas(device, out.gltf,        "blas_gltf")
+        : cd::rhi::AccelStructureHandle {};
+    out.blas_cesium = out.gltf_cesium.vb.is_valid()
+        ? build_mesh_blas(device, out.gltf_cesium, "blas_cesium")
         : cd::rhi::AccelStructureHandle {};
 
     {
@@ -178,7 +203,8 @@ boot_meshes(cd::rhi::IDevice&                device,
                         out.blas_cyl,
                         out.blas_torus,
                         out.blas_floor,
-                        out.blas_gltf })
+                        out.blas_gltf,
+                        out.blas_cesium })
         {
             if (h.is_valid())
                 bcmd.build_acceleration_structure(h);
@@ -211,14 +237,15 @@ destroy_meshes(cd::rhi::IDevice& device, HelloMeshes& m) noexcept
                     m.blas_cyl,
                     m.blas_torus,
                     m.blas_floor,
-                    m.blas_gltf })
+                    m.blas_gltf,
+                    m.blas_cesium })
     {
         if (h.is_valid())
             device.destroy_acceleration_structure(h);
     }
     if (m.gltf.vb.is_valid())
         cd::render::destroy_mesh(device, m.gltf);
-    // Destroy per-primitive textures uploaded during gltf load.
+    // Destroy Sponza per-primitive textures.
     for (auto& pr : m.gltf_prim_ranges)
     {
         if (pr.albedo_view.is_valid())
@@ -227,6 +254,9 @@ destroy_meshes(cd::rhi::IDevice& device, HelloMeshes& m) noexcept
             device.destroy_texture(pr.albedo_tex);
     }
     m.gltf_prim_ranges.clear();
+    // Destroy CesiumMan mesh.
+    if (m.gltf_cesium.vb.is_valid())
+        cd::render::destroy_mesh(device, m.gltf_cesium);
 }
 
 } // namespace cd_sample
