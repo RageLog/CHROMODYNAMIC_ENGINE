@@ -154,6 +154,7 @@
 #include "HelloTlasRing.hpp"
 #include "HelloTlasRebuild.hpp"
 #include "HelloSkinnedAnim.hpp"
+#include "HelloAudio.hpp"
 
 
 namespace
@@ -5439,107 +5440,32 @@ int main()
     bool cam_manual_mode = false;
 
     // ---- Audio chain (continuous tick) ----
-    cd::audio::Mixer<2> audio_bus;
-    audio_bus.set_gain(0, 0.6F);
-    audio_bus.set_gain(1, 0.7F);
-    cd::audio::Compressor comp;
-    comp.prepare(
-        static_cast<float>(kAudioSampleRate),
-        /*threshold=*/0.40F,
-        /*ratio=*/6.0F,
-        /*attack=*/0.004F,
-        /*release=*/0.080F
-    );
-    cd::audio::SimpleReverb reverb;
-    reverb.prepare(kAudioSampleRate / 8);
-    reverb.set_feedback(0.35F);
-    cd::audio::LowPass lowpass;
-    lowpass.prepare(static_cast<float>(kAudioSampleRate), /*cutoff=*/6500.0F);
-    cd::audio::Limiter limiter;
-    limiter.prepare(
-        static_cast<float>(kAudioSampleRate),
-        /*thresh=*/0.92F,
-        /*attack=*/0.0002F,
-        /*release=*/0.040F
-    );
-    std::uint64_t audio_t = 0;
-    bool audio_muted = true;  // start muted; palette "Audio: Toggle Mute" opens it
-    float audio_peak_window = 0.0F;
-    float audio_comp_db_window = 0.0F;
-    float audio_limiter_gain_min = 1.0F;
-    std::deque<float> audio_meter_history;  // last ~120 ticks of peak
-
-    // Phase 139 - last-5-seconds ring buffer of DSP chain output (s16
-    // PCM). User clicks "Save WAV" in the Audio panel and the buffer
-    // gets dumped to disk; play with any system audio player.
-    constexpr std::size_t kAudioRingFrames = kAudioSampleRate * 5u;  // 5 s mono
-    std::vector<std::int16_t> audio_ring(kAudioRingFrames, 0);
-    std::size_t audio_ring_write = 0;
-    std::uint64_t audio_total_written = 0;
-
-    // Phase 139 v2 - WASAPI live playback. Pre-render 2 seconds of the
-    // DSP chain at startup, create a looping clip, play. The visual
-    // panel keeps ticking against the same DSP for an in-sync meter,
-    // but the audible output is the pre-rendered loop (WASAPI clip
-    // semantics don't expose continuous-stream push from sample code).
-    // Without this the user heard nothing because the engine's audio
-    // backend was never instantiated by hello_engine.
-    auto audio_backend = cd::audio::make_wasapi_audio_backend();
-    cd::audio::ClipHandle live_clip {};
-    cd::audio::VoiceHandle live_voice {};
-    bool audio_live_ok = (audio_backend != nullptr);
-    if (audio_live_ok)
-    {
-        // Render 2 seconds of audio through the same DSP chain that
-        // the on-screen meter walks every frame, then feed it to
-        // WASAPI as a looping clip.
-        constexpr std::size_t kPreRenderFrames = kAudioSampleRate * 2u;
-        std::vector<float> live_buf(kPreRenderFrames, 0.0F);
-        // Use a separate set of DSP nodes so the "live ticker" the
-        // UI walks isn't pre-cooked by this render pass.
-        cd::audio::Mixer<2> m2;
-        m2.set_gain(0, 0.6F);
-        m2.set_gain(1, 0.7F);
-        cd::audio::Compressor c2;
-        c2.prepare(static_cast<float>(kAudioSampleRate), 0.40F, 6.0F, 0.004F, 0.080F);
-        cd::audio::SimpleReverb r2;
-        r2.prepare(kAudioSampleRate / 8);
-        r2.set_feedback(0.35F);
-        cd::audio::LowPass l2;
-        l2.prepare(static_cast<float>(kAudioSampleRate), 6500.0F);
-        cd::audio::Limiter L2;
-        L2.prepare(static_cast<float>(kAudioSampleRate), 0.92F, 0.0002F, 0.040F);
-        for (std::size_t i = 0; i < kPreRenderFrames; ++i)
-        {
-            m2.mix(0, square_wave(i, 440.0F));
-            m2.mix(1, burst_noise(i));
-            float x = m2.pull();
-            x = c2.process(x);
-            const float wet = r2.process(x);
-            x = 0.75F * x + 0.20F * wet;
-            x = l2.process(x);
-            x = L2.process(x);
-            if (x > 1.0F)
-                x = 1.0F;
-            if (x < -1.0F)
-                x = -1.0F;
-            live_buf[i] = x * 0.7F;  // -3 dB headroom on output
-        }
-        cd::audio::ClipDesc cd_desc {};
-        cd_desc.samples = std::span<const float>(live_buf);
-        cd_desc.channels = 1;
-        cd_desc.sample_rate = kAudioSampleRate;
-        auto clip_r = audio_backend->create_clip(cd_desc);
-        if (clip_r.has_value())
-        {
-            live_clip = *clip_r;
-            // Start silent so the user doesn't get a sudden tone. The
-            // "Audio: Toggle Mute" palette command unmutes to 0.65F.
-            auto voice_r = audio_backend->play(live_clip, /*vol=*/0.0F, /*loop=*/true);
-            if (voice_r.has_value())
-                live_voice = *voice_r;
-        }
-    }
+    // The DSP-chain + meter / ring / WASAPI live-playback boot block
+    // moved to cd_sample::AudioState + init_audio in HelloAudio.hpp
+    // (Marathon Run 11 phase N11). Name-aliases follow so the rest of
+    // main() and the existing draw_audio_panel call continue to read
+    // audio_bus / audio_muted / audio_ring / audio_t / etc. without a
+    // mechanical rename pass.
+    cd_sample::AudioState audio_state;
+    cd_sample::init_audio(audio_state, square_wave, burst_noise);
+    auto& audio_bus              = audio_state.bus;
+    auto& comp                   = audio_state.comp;
+    auto& reverb                 = audio_state.reverb;
+    auto& lowpass                = audio_state.lowpass;
+    auto& limiter                = audio_state.limiter;
+    auto& audio_t                = audio_state.sample_t;
+    auto& audio_muted            = audio_state.muted;
+    auto& audio_peak_window      = audio_state.peak_window;
+    auto& audio_comp_db_window   = audio_state.comp_db_window;
+    auto& audio_limiter_gain_min = audio_state.limiter_gain_min;
+    auto& audio_meter_history    = audio_state.meter_history;
+    auto& audio_ring             = audio_state.ring;
+    auto& audio_ring_write       = audio_state.ring_write;
+    auto& audio_total_written    = audio_state.total_written;
+    auto& audio_backend          = audio_state.backend;
+    auto& live_voice             = audio_state.live_voice;
+    auto& audio_live_ok          = audio_state.live_ok;
+    using cd_sample::kAudioRingFrames;  // resolve bare refs in audio tick / panel call
 
     // ---- Net sim (continuous tick) ----
     cd::net::Throttle net_throttle { /*cap=*/4.0F, /*rate=*/30.0F };
