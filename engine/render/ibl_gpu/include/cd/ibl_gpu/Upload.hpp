@@ -233,7 +233,7 @@ upload_prefiltered_specular(cd::rhi::IDevice& dev,
     cmd->barrier({}, tb_dst);
 
     std::vector<cd::rhi::BufferImageCopyRegion> regs;
-    regs.reserve(src.mip_count * 6);
+    regs.reserve(static_cast<std::size_t>(src.mip_count) * 6U);
     for (std::uint32_t m = 0; m < src.mip_count; ++m) {
         const std::uint32_t s = src.mips[m].face_size;
         const std::size_t face_pixels = static_cast<std::size_t>(s) * s;

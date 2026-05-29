@@ -109,17 +109,19 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
         const auto base = static_cast<std::uint16_t>(m.vertices.size());
         // Four corners: -t-b, +t-b, +t+b, -t+b
         for (int sy = -1; sy <= 1; sy += 2)
-        for (int sx = -1; sx <= 1; sx += 2)
         {
-            const float px = 0.5F * (f.n[0] + f.t[0] * static_cast<float>(sx) + f.b[0] * static_cast<float>(sy));
-            const float py = 0.5F * (f.n[1] + f.t[1] * static_cast<float>(sx) + f.b[1] * static_cast<float>(sy));
-            const float pz = 0.5F * (f.n[2] + f.t[2] * static_cast<float>(sx) + f.b[2] * static_cast<float>(sy));
-            const float u = (sx > 0) ? 1.0F : 0.0F;
-            const float v = (sy > 0) ? 1.0F : 0.0F;
-            m.vertices.push_back(make_v(px, py, pz,
-                                        f.n[0], f.n[1], f.n[2],
-                                        u, v,
-                                        f.color[0], f.color[1], f.color[2]));
+            for (int sx = -1; sx <= 1; sx += 2)
+            {
+                const float px = 0.5F * (f.n[0] + f.t[0] * static_cast<float>(sx) + f.b[0] * static_cast<float>(sy));
+                const float py = 0.5F * (f.n[1] + f.t[1] * static_cast<float>(sx) + f.b[1] * static_cast<float>(sy));
+                const float pz = 0.5F * (f.n[2] + f.t[2] * static_cast<float>(sx) + f.b[2] * static_cast<float>(sy));
+                const float u = (sx > 0) ? 1.0F : 0.0F;
+                const float v = (sy > 0) ? 1.0F : 0.0F;
+                m.vertices.push_back(make_v(px, py, pz,
+                                            f.n[0], f.n[1], f.n[2],
+                                            u, v,
+                                            f.color[0], f.color[1], f.color[2]));
+            }
         }
         // (-,-) (+,-) (+,+) (-,+) — flat-walk corner order. Indices 0,1,2,3.
         push_quad_indices(m.indices, base, static_cast<std::uint16_t>(base + 1),

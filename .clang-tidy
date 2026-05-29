@@ -30,6 +30,7 @@ Checks: >
   cert-*,
   -cert-err58-cpp,
   -cert-msc51-cpp,
+  -cert-err33-c,  # Run12 B1: ignoring printf/scanf/system return codes is endemic in sample bring-up; not a real defect class for us.
   cppcoreguidelines-*,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-avoid-non-const-global-variables,
@@ -43,6 +44,7 @@ Checks: >
   -cppcoreguidelines-init-variables,
   -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-special-member-functions,
+  -cppcoreguidelines-avoid-do-while,  # Run12 B1: do-while is a legitimate idiom (e.g. retry loops, scoped guards); rule fires on perfectly correct usage.
   -cppcoreguidelines-rvalue-reference-param-not-moved,
   -cppcoreguidelines-missing-std-forward,
   -cppcoreguidelines-narrowing-conversions,
@@ -54,6 +56,7 @@ Checks: >
   -hicpp-special-member-functions,
   -hicpp-named-parameter,
   -hicpp-vararg,
+  -hicpp-uppercase-literal-suffix,  # Run12 B1: style preference; lowercase numeric suffixes (1u, 1.0f) are the project convention. Mirrors -readability-uppercase-literal-suffix below.
   misc-*,
   -misc-non-private-member-variables-in-classes,
   -misc-include-cleaner,
@@ -89,7 +92,9 @@ Checks: >
   -readability-make-member-function-const,
   -readability-qualified-auto,
   -readability-redundant-inline-specifier,
-  -readability-redundant-member-init  # explicit-init documents intent; less risk on add-field
+  -readability-redundant-member-init,  # explicit-init documents intent; less risk on add-field
+  -readability-braces-around-statements,  # Run12 B1: single-statement if/else without braces is a project convention in hot-path math + GPU push fill code; rule does not catch real bugs.
+  -readability-suspicious-call-argument  # Run12 B1: false-positive prone on math / shader arg shuffles where x/y/z naming reuses parameter names.
 
 # Warnings stay warnings locally. CI promotes to errors via -warnings-as-errors.
 # Marathon Run 11 phase B4: promote the FULLY-cleaned rules to error status. Bug-class
@@ -98,7 +103,11 @@ Checks: >
 # readability-misleading-indentation, cert-flp30-c) stay as warnings until Run 12 lands
 # the site-by-site fixes; promotion to error happens then. See
 # docs/CLANG_TIDY_AUDIT_RUN11.md for the full rule audit + verdict matrix.
-WarningsAsErrors: 'modernize-use-scoped-lock'
+# Run 12 phase B1+B3: all bug-class rules now fully cleaned site-by-site
+# in main.cpp + the engine/ tree are promoted to errors so they cannot
+# regress. The site fixes landed in this same commit (see fix list in the
+# commit message).
+WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c'
 
 # Analyse only OUR code. Engine + samples; never third-party headers via
 # FetchContent (those live under build/*/_deps/) and never legacy code

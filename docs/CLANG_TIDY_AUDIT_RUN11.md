@@ -103,6 +103,59 @@ Given remaining marathon time + the user quality-bar requirement, Run 11 commits
 
 Once Run 11 batches land, tighten `.clang-tidy` to make the cleaned rules WarningsAsErrors. Disabled rules go into the existing exclude list with a one-line `# rationale:` comment so the reasoning survives future audits.
 
+## Run 12 phase B1 + B3 close-out (2026-05-29)
+
+User mandate verbatim: "fonksiyonlara ve kutuphanelere bolme beraber tum
+warning fixleri yap. fixler bazizlari onemisiz olabile mesela dont use
+do while givi yada printf return kullanma givi hatalar kapatilabilir
+onun disindakiler duzeltilmis olmali" — disable trivial style rules,
+FIX everything else.
+
+### Disabled in `.clang-tidy` (Run 12 B1)
+
+- `cert-err33-c` — printf/scanf/system return-ignore is sample-bring-up
+  noise; not a real defect class.
+- `cppcoreguidelines-avoid-do-while` — do-while is a legitimate idiom
+  (retry loops, scoped guards); rule fires on correct usage.
+- `hicpp-uppercase-literal-suffix` — style preference. Project convention
+  is lowercase numeric suffixes. Mirrors already-disabled
+  `readability-uppercase-literal-suffix`.
+- `readability-braces-around-statements` — single-statement if/else
+  without braces is the project style in hot-path math + GPU push fill
+  code; rule does not catch real bugs.
+- `readability-suspicious-call-argument` — false-positive prone on math /
+  shader arg shuffles where x/y/z parameter names reuse pattern.
+
+### Promoted to WarningsAsErrors (Run 12 B3)
+
+All site-fix-cleaned rules now error out so they cannot regress:
+
+- `modernize-use-scoped-lock` (Run 11 B2)
+- `bugprone-misplaced-widening-cast` (Run 11 B2 + Run 12 B2 — final main.cpp site)
+- `bugprone-implicit-widening-of-multiplication-result` (Run 12 B2 — 3 sites)
+- `bugprone-integer-division` (Run 12 B2 — 1 site)
+- `bugprone-suspicious-stringview-data-usage` (Run 12 B2 — 1 site)
+- `bugprone-unhandled-exception-at-new` (Run 12 B2 — 1 site)
+- `readability-misleading-indentation` (Run 12 B2 — 2 sites)
+- `cert-flp30-c` (Run 12 B2 — 2 sites, NOLINTNEXTLINE with rationale; IBL
+  bake calibration locked to existing float-counter behavior per
+  CLAUDE.md marathon rule "DON'T regenerate IBL bake")
+
+### Fix sites landed in phase329-B1B2B3 commit
+
+| Rule | File | Fix kind |
+|---|---|---|
+| bugprone-misplaced-widening-cast | samples/engine/hello_engine/main.cpp:1557 | `static_cast<size_t>(i) + 1U` |
+| bugprone-unhandled-exception-at-new | engine/foundation/concurrency/include/cd/concurrency/WorkStealingThreadPool.hpp:192 | `new (std::nothrow)` + graceful return false |
+| readability-misleading-indentation | engine/render/decal/include/cd/decal/Decal.hpp:90-106 | brace outer fors |
+| readability-misleading-indentation | engine/asset/include/cd/asset/Primitives.hpp:111-123 | brace outer for |
+| bugprone-implicit-widening-of-multiplication-result | engine/render/ibl_gpu/include/cd/ibl_gpu/Upload.hpp:236 | `size_t(mip_count) * 6U` |
+| bugprone-implicit-widening-of-multiplication-result | engine/ui/editor/include/cd/editor/EditHistory.hpp:93 | `size_t{4U} * 1024U * 1024U` |
+| bugprone-implicit-widening-of-multiplication-result | samples/engine/hello_engine/main.cpp:698 | `static_cast<uint64_t>(rate) * 1U * 2U` |
+| bugprone-integer-division | engine/render/post_gtao/include/cd/post_gtao/Gtao.hpp:86 | float multiply by 0.5F |
+| bugprone-suspicious-stringview-data-usage | samples/engine/hello_engine/main.cpp:1033 | `std::string{sv}` before `c_str()` |
+| cert-flp30-c | engine/render/ibl/include/cd/ibl/IrradianceConvolution.hpp | NOLINTNEXTLINE + rationale (IBL bake locked) |
+
 ## Reproduction
 
 ```

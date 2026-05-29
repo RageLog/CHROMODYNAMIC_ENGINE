@@ -189,12 +189,23 @@ public:
             active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
             idle_condition_.notify_all();
         };
-        enqueue(new Job { [handle]
-                          {
-                              if (!handle.done())
-                                  handle.resume();
-                          },
-                          priority });
+        // bugprone-unhandled-exception-at-new: spawn_detached is noexcept,
+        // so a throwing `new Job{}` would call std::terminate. Use
+        // nothrow allocation + graceful failure path so the coroutine
+        // counter stays balanced if the heap is exhausted.
+        auto* job = new (std::nothrow) Job { [handle]
+                                             {
+                                                 if (!handle.done())
+                                                     handle.resume();
+                                             },
+                                             priority };
+        if (job == nullptr)
+        {
+            active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
+            idle_condition_.notify_all();
+            return false;
+        }
+        enqueue(job);
         return true;
     }
 

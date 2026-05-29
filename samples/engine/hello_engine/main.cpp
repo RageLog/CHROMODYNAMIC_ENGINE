@@ -695,7 +695,7 @@ inline void draw_audio_panel(bool audio_muted,
         push_le(1u, 2);                          // PCM
         push_le(1u, 2);                          // mono
         push_le(kAudioSampleRate, 4);
-        push_le(kAudioSampleRate * 1u * 2u, 4);  // byte rate
+        push_le(static_cast<std::uint64_t>(kAudioSampleRate) * 1U * 2U, 4);  // byte rate
         push_le(2u, 2);                          // block align
         push_le(16u, 2);                         // bits per sample
         push_tag("data");
@@ -1030,7 +1030,11 @@ inline void draw_outliner_panel(const std::vector<SceneEntity>& entities,
     }
     ImGui::Separator();
     ImGui::TextDisabled("World container (read-only):");
-    if (ImGui::TreeNodeEx(cd_world.name().data(), ImGuiTreeNodeFlags_DefaultOpen))
+    // bugprone-suspicious-stringview-data-usage: name() returns a string_view
+    // that is not guaranteed to be null-terminated, so feed it through
+    // std::string before handing the C-string to ImGui.
+    const std::string cd_world_label { cd_world.name() };
+    if (ImGui::TreeNodeEx(cd_world_label.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
     {
         auto* proj = cd_world.project();
         if (proj == nullptr)
@@ -1554,7 +1558,7 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                     for (int i = 0; i < kEdges; ++i)
                     {
                         const auto pa = project(rim[static_cast<std::size_t>(i)]);
-                        const auto pb = project(rim[static_cast<std::size_t>(i + 1)]);
+                        const auto pb = project(rim[static_cast<std::size_t>(i) + 1U]);
                         if (pa.x >= 0.0F && pb.x >= 0.0F)
                             dl_m->AddLine(pa, pb, col_dim, 1.5F);
                     }

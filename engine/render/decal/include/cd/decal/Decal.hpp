@@ -88,21 +88,25 @@ decal_intersects_aabb(const Decal& d,
     cd::math::Vec3f mn { c.x, c.y, c.z };
     cd::math::Vec3f mx { c.x, c.y, c.z };
     for (int sx = -1; sx <= 1; sx += 2)
-    for (int sy = -1; sy <= 1; sy += 2)
-    for (int sz = -1; sz <= 1; sz += 2)
     {
-        const cd::math::Vec3f corner {
-            c.x + d.right.x * d.half_extents.x * static_cast<float>(sx) +
-                  d.up.x    * d.half_extents.y * static_cast<float>(sy) +
-                  d.forward.x * d.half_extents.z * static_cast<float>(sz),
-            c.y + d.right.y * d.half_extents.x * static_cast<float>(sx) +
-                  d.up.y    * d.half_extents.y * static_cast<float>(sy) +
-                  d.forward.y * d.half_extents.z * static_cast<float>(sz),
-            c.z + d.right.z * d.half_extents.x * static_cast<float>(sx) +
-                  d.up.z    * d.half_extents.y * static_cast<float>(sy) +
-                  d.forward.z * d.half_extents.z * static_cast<float>(sz) };
-        mn.x = std::min(mn.x, corner.x); mn.y = std::min(mn.y, corner.y); mn.z = std::min(mn.z, corner.z);
-        mx.x = std::max(mx.x, corner.x); mx.y = std::max(mx.y, corner.y); mx.z = std::max(mx.z, corner.z);
+        for (int sy = -1; sy <= 1; sy += 2)
+        {
+            for (int sz = -1; sz <= 1; sz += 2)
+            {
+                const cd::math::Vec3f corner {
+                    c.x + d.right.x * d.half_extents.x * static_cast<float>(sx) +
+                          d.up.x    * d.half_extents.y * static_cast<float>(sy) +
+                          d.forward.x * d.half_extents.z * static_cast<float>(sz),
+                    c.y + d.right.y * d.half_extents.x * static_cast<float>(sx) +
+                          d.up.y    * d.half_extents.y * static_cast<float>(sy) +
+                          d.forward.y * d.half_extents.z * static_cast<float>(sz),
+                    c.z + d.right.z * d.half_extents.x * static_cast<float>(sx) +
+                          d.up.z    * d.half_extents.y * static_cast<float>(sy) +
+                          d.forward.z * d.half_extents.z * static_cast<float>(sz) };
+                mn.x = std::min(mn.x, corner.x); mn.y = std::min(mn.y, corner.y); mn.z = std::min(mn.z, corner.z);
+                mx.x = std::max(mx.x, corner.x); mx.y = std::max(mx.y, corner.y); mx.z = std::max(mx.z, corner.z);
+            }
+        }
     }
     return !(mx.x < aabb_min.x || mn.x > aabb_max.x ||
              mx.y < aabb_min.y || mn.y > aabb_max.y ||

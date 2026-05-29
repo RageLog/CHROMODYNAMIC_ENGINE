@@ -74,10 +74,18 @@ convolve_irradiance(const CubeMapRgbF& env, std::uint32_t out_size,
 
                 cd::math::Vec3f irr { 0, 0, 0 };
                 std::uint32_t n_samples = 0;
+                // float-counter loops are part of the calibrated IBL bake;
+                // switching to integer count would change n_samples per
+                // output texel and rebake the IBL. The W8-AW chrome-mirror
+                // calibration is fixed against these exact float-counter
+                // loops; do not migrate without a rebake pass. See CLAUDE.md
+                // marathon rule "DON'T regenerate IBL bake".
+                // NOLINTNEXTLINE(cert-flp30-c)
                 for (float phi = 0.0F; phi < 2.0F * std::numbers::pi_v<float>; phi += step)
                 {
                     const float cos_phi = std::cos(phi);
                     const float sin_phi = std::sin(phi);
+                    // NOLINTNEXTLINE(cert-flp30-c)
                     for (float theta = 0.0F; theta < 0.5F * std::numbers::pi_v<float>; theta += step)
                     {
                         const float cos_theta = std::cos(theta);

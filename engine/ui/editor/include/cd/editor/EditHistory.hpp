@@ -90,7 +90,7 @@ public:
         /// Maximum total `byte_size()` retained on the undo stack.
         /// 4 MiB default. Older entries evict oldest-first when an
         /// incoming push would overflow.
-        std::size_t max_bytes { 4U * 1024U * 1024U };
+        std::size_t max_bytes { std::size_t { 4U } * 1024U * 1024U };
     };
 
     EditHistory() = default;

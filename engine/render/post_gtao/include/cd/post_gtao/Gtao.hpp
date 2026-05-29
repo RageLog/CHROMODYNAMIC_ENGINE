@@ -83,7 +83,7 @@ ao_from_horizons(std::span<const float> horizon_pairs,  // pairs of (left_cos, r
     {
         sum += integrate_direction(horizon_pairs[i], horizon_pairs[i + 1], n_dot_d);
     }
-    const auto count = static_cast<float>(horizon_pairs.size() / 2);
+    const auto count = static_cast<float>(horizon_pairs.size()) * 0.5F;
     return std::clamp(sum / (count * 2.0F), 0.0F, 1.0F);
 }
 
