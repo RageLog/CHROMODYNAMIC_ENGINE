@@ -1,11 +1,23 @@
-# engine/ui — Phase 5 UI tier
-# Sub-libraries (dependency order):
-#   ui         — Sprint S5.1: retained-mode widget tree (cd::ui).
-#   editor_ui  — S5.2 (planned): editor-specific widgets (gizmos, inspectors).
-#   editor     — S5.3 (planned): editor application shell.
+# engine/ui — Phase 5 UI tier (phase430: ui/ui flattened into umbrella)
 #
-# Cross-library rule: editor_ui depends on ui, editor depends on both — no
+# cd::ui — Sprint S5.1: retained-mode widget tree. Renderer-agnostic; widgets
+#          emit DrawCommands that frontends (editor / app) consume.
+#          Depends on cd::core only.
+#
+# Sub-libraries driven from here:
+#   editor  — phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
+#
+# Cross-library rule: editor_ui depends on cd::ui, editor depends on both — no
 # back-edges.
 
-add_subdirectory(ui)
+cd_add_library(ui
+  TYPE STATIC
+  SOURCES src/Widget.cpp
+  PUBLIC_DEPS cd::core
+)
+
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()
+
 add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
