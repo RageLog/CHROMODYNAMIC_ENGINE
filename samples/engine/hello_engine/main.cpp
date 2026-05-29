@@ -3862,13 +3862,20 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                                     cd::material::MaterialInstance& prim_inst,
                                     cd::rhi::SamplerHandle albedo_sampler,
                                     cd::rhi::IDevice& device,
-                                    cd::rhi::TextureViewHandle global_albedo_view)
+                                    cd::rhi::TextureViewHandle global_albedo_view,
+                                    // phase435-vis8: skip editor grid when a scene with its
+                                    // own floor (Sponza) is active. Grid bleeds through
+                                    // alpha-discarded vegetation pixels. Default true
+                                    // keeps legacy call sites unchanged.
+                                    bool show_editor_floor = true)
 {
     // ---- Floor (large flat quad) ----
     // Faz 1.5 - real geometry on which the planar-shadow pass can
     // project caster silhouettes. Floor sits at y = floor_y so the
     // front-row primitives (which extend ??0.5 m around y=0) just
     // touch it.
+    // phase435-vis8: skip entirely when a scene with its own floor is active.
+    if (show_editor_floor)
             {
         cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
         cmd.bind_index_buffer(floor_mesh.ib, 0, floor_mesh.index_type);
@@ -4100,6 +4107,10 @@ struct HelloEngineApp::EngineState
     GpuTexture2D                             mr_tex;
     cd::rhi::SamplerHandle                   albedo_sampler  {};
     bool                                     has_gltf_texture { false };
+    // phase435-vis8: suppress the editor floor grid when a scene that
+    // provides its own floor (Sponza) is loaded. Grid shines through
+    // Sponza vegetation alpha-discards and overlaps column bases.
+    bool                                     show_editor_floor { true };
 
     // Material instances
     cd::material::MaterialInstance           prim_inst;
@@ -4584,6 +4595,16 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         s.meshes.gltf_cesium,   s.meshes.gltf_cesium_loaded_name,
         s.entities);
     spawn_pbr_grid_entities(s.scene, s.entities);
+
+    // phase435-vis8: suppress editor floor when Sponza is loaded.
+    // Sponza provides its own floor; the large 1000m editor grid quad
+    // bleeds through Sponza vegetation alpha-discards and overlaps
+    // column bases near y=0. Show grid only in empty/non-Sponza scenes.
+    if (!s.meshes.gltf_loaded_name.empty() &&
+        s.meshes.gltf_loaded_name.find("Sponza") != std::string::npos)
+    {
+        s.show_editor_floor = false;
+    }
 
     auto log_push_fn = [&s](std::string msg)
     {
@@ -5512,7 +5533,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                 s.entities, s.scene, s.has_gltf_texture,
                                 s.materials.prim, s.counters, mesh_for,
                                 s.meshes.gltf_prim_ranges, s.prim_inst,
-                                s.albedo_sampler, device, s.albedo_tex.view);
+                                s.albedo_sampler, device, s.albedo_tex.view,
+                                s.show_editor_floor);  // phase435-vis8
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, s.entities,
                             s.scene, vp, s.materials.prim, s.counters, mesh_for);
 
@@ -5576,6 +5598,20 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         draw_scene_tree_panel(s.entities, s.selected);
         draw_inspector_panel(s.entities, s.selected, s.scene, s.history, log_push_fn);
         draw_r_showcase_panel(s.fx, s.lights, log_push_fn);
+
+        // phase435-vis8: editor floor toggle. Shown as a small checkbox in the
+        // R-Showcase window so the user can re-enable the grid at any time.
+        // When Sponza is active it starts disabled because the 1000m floor quad
+        // bleeds through vegetation alpha-discards and overlaps column bases.
+        {
+            ImGui::Begin("R-Showcase");
+            ImGui::Separator();
+            ImGui::Checkbox("Show editor floor grid", &s.show_editor_floor);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(auto-off when Sponza loaded)");
+            ImGui::End();
+        }
+
         draw_counters_panel(s.counters, dt, s.frame_idx);
         draw_random_panel(s.hist_uniform, s.hist_normal);
         draw_audio_panel(as.muted, as.peak_window, as.comp_db_window,
