@@ -1,0 +1,13 @@
+bibkey,title,year,first_author,venue,pdf_relpath,sha256,url,downloaded_at,verified_by,status,notes_relpath,bibtex_anchor,demir_kural_status
+# Mega-Marathon Milestone M3 — Demir Kural pilot. PDF download requires
+# external network fetch which the orchestrator session cannot perform.
+# Below are STAGED entries: bibkey + bibliography.bib entries are in place,
+# notes templates are written, but pdf_relpath / sha256 / downloaded_at are
+# EMPTY pending the next session run with network access (academic-researcher
+# ajan ile re-dispatch). Until those columns are populated, NO new ADR or
+# shader-comment may cite these entries — Demir Kural blocks.
+karis2013_real_shading_ue4,Real Shading in Unreal Engine 4,2013,Karis B.,SIGGRAPH 2013 Physically Based Shading Course,,,https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf,,,STAGED,notes/karis2013_real_shading_ue4.md,karis2013realshading,PENDING_PDF
+heitz2016_ltc_area_lights,Real-Time Polygonal-Light Shading with Linearly Transformed Cosines,2016,Heitz E.,SIGGRAPH 2016,,,https://eheitzresearch.wordpress.com/415-2/,,,STAGED,notes/heitz2016_ltc_area_lights.md,heitz2016ltc,PENDING_PDF
+frisvad2012_onb_no_normalization,Building an Orthonormal Basis from a 3D Unit Vector Without Normalization,2012,Frisvad J. R.,Journal of Graphics Tools 16(3),,,https://backend.orbit.dtu.dk/ws/portalfiles/portal/126824972/onb_frisvad_jgt2012_v2.pdf,,,STAGED,notes/frisvad2012_onb_no_normalization.md,frisvad2012onb,PENDING_PDF
+eberly_lbs_skinning,Geometric Tools — Skinning (Linear Blend Skinning),2008,Eberly D.,Geometric Tools Engineering Notes,,,https://www.geometrictools.com/Documentation/Skinning.pdf,,,STAGED,notes/eberly_lbs_skinning.md,eberlylbs,PENDING_PDF
+wronski2014_volumetric_fog,Volumetric Fog: Unified Compute Shader Based Solution to Atmospheric Scattering,2014,Wronski B.,SIGGRAPH 2014 Advances in Real-Time Rendering Course,,,https://bartwronski.files.wordpress.com/2014/08/bwronski_volumetric_fog_siggraph2014.pdf,,,STAGED,notes/wronski2014_volumetric_fog.md,wronski2014volfog,PENDING_PDF
