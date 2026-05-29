@@ -41,7 +41,10 @@ set(_cd_imgui_sources
   ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
 )
 if(WIN32)
-  list(APPEND _cd_imgui_sources ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp)
+  list(APPEND _cd_imgui_sources
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_dx12.cpp
+  )
 endif()
 target_sources(cd_imgui_backend PRIVATE ${_cd_imgui_sources})
 
@@ -69,6 +72,15 @@ target_compile_definitions(cd_imgui_backend PRIVATE IMGUI_IMPL_VULKAN_USE_VOLK)
 # transitively need it too.
 if(WIN32 AND (MINGW OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
   target_link_libraries(cd_imgui_backend PUBLIC dwmapi imm32)
+endif()
+
+# DX12 backend requires d3d12 + dxgi. MSVC autolinks both via
+# #pragma comment(lib, ...) inside the Windows SDK headers, but MinGW
+# does not. We link PRIVATE because the DX12 backend symbols are internal
+# to the static lib; callers get them transitively through the static
+# archive without needing the import libs on their own link line.
+if(WIN32)
+  target_link_libraries(cd_imgui_backend PRIVATE d3d12 dxgi)
 endif()
 
 # Drop warnings on the vendored ImGui sources to keep -Werror sane.
