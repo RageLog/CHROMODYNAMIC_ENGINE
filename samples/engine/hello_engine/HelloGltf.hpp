@@ -91,12 +91,21 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
         auto loaded = cd::asset_gltf::load_gltf(p);
         if (!loaded.has_value())
             continue;
+        // Count total vertices across all primitives to choose u16 vs u32 path.
+        std::size_t total_verts = 0;
+        for (const auto& m : loaded->meshes)
+            for (const auto& prim : m.primitives)
+                total_verts += prim.vertices.size();
+
         cd::asset::PrimitiveMesh merged;
+        merged.vertices.reserve(total_verts);
+        const bool use_u32_indices = (total_verts > 0xFFFFU);
+
         for (const auto& m : loaded->meshes)
         {
             for (const auto& prim : m.primitives)
             {
-                const auto base = static_cast<std::uint16_t>(merged.vertices.size());
+                const auto base = static_cast<std::uint32_t>(merged.vertices.size());
                 for (const auto& v : prim.vertices)
                 {
                     cd::asset::PrimitiveVertex pv {};
@@ -113,15 +122,25 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                     pv.color[2] = 0.78F;
                     merged.vertices.push_back(pv);
                 }
-                for (auto idx : prim.indices)
+                if (use_u32_indices)
                 {
-                    if (base + idx > 0xFFFFU)
-                        continue;
-                    merged.indices.push_back(static_cast<std::uint16_t>(base + idx));
+                    for (auto idx : prim.indices)
+                        merged.indices_u32.push_back(base + idx);
+                }
+                else
+                {
+                    for (auto idx : prim.indices)
+                    {
+                        const auto val = base + idx;
+                        if (val > 0xFFFFU)
+                            continue;  // should not happen given total_verts check
+                        merged.indices.push_back(static_cast<std::uint16_t>(val));
+                    }
                 }
             }
         }
-        if (merged.vertices.empty() || merged.indices.empty())
+        const bool indices_ok = use_u32_indices ? !merged.indices_u32.empty() : !merged.indices.empty();
+        if (merged.vertices.empty() || !indices_ok)
         {
             std::fprintf(stderr, "[gltf] %s parsed but contained no renderable geometry\n", p.c_str());
             continue;
@@ -192,12 +211,14 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                 }
             }
         }
+        const std::size_t idx_count = use_u32_indices ? merged.indices_u32.size() : merged.indices.size();
         std::fprintf(
             stderr,
-            "[gltf] loaded %s -- %zu verts, %zu indices (textured=%d)\n",
+            "[gltf] loaded %s -- %zu verts, %zu indices (%s, textured=%d)\n",
             p.c_str(),
             merged.vertices.size(),
-            merged.indices.size(),
+            idx_count,
+            use_u32_indices ? "uint32" : "uint16",
             static_cast<int>(out.has_texture)
         );
         break;

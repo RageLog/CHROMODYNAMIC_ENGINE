@@ -89,7 +89,7 @@ build_mesh_blas(cd::rhi::IDevice&         device,
     tri.index_buffer  = m.ib;
     tri.index_offset  = 0;
     tri.index_count   = m.index_count;
-    tri.index_type    = cd::rhi::IndexType::kUInt16;
+    tri.index_type    = m.index_type;
     std::array<cd::rhi::AccelTriangleGeometry, 1> tris { tri };
     cd::rhi::AccelStructureDesc bd {};
     bd.kind       = cd::rhi::AccelStructureKind::kBottomLevel;

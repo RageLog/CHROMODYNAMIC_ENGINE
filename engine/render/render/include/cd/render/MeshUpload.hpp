@@ -42,10 +42,11 @@ namespace cd::render
 // =============================================================================
 struct GpuMesh
 {
-    cd::rhi::BufferHandle vb {};
-    cd::rhi::BufferHandle ib {};
-    std::uint32_t         vertex_count { 0 };  ///< BLAS reads positions from vb
-    std::uint32_t         index_count  { 0 };
+    cd::rhi::BufferHandle  vb {};
+    cd::rhi::BufferHandle  ib {};
+    std::uint32_t          vertex_count { 0 };  ///< BLAS reads positions from vb
+    std::uint32_t          index_count  { 0 };
+    cd::rhi::IndexType     index_type   { cd::rhi::IndexType::kUInt16 }; ///< u16 or u32
 };
 
 // =============================================================================
@@ -63,14 +64,23 @@ struct GpuMesh
 //   ib : kIndex  | kStorage | kTransferDst   (Storage required for BLAS)
 //   memory : kCpuToGpu (host-visible upload, marathon-friendly default)
 // =============================================================================
+// ---- Internal detection helpers ----------------------------------------
+// has_indices_u32<T>: true when T has a non-empty-able `indices_u32` member.
+template <typename T, typename = void>
+struct has_indices_u32 : std::false_type {};
+
+template <typename T>
+struct has_indices_u32<T, std::void_t<decltype(std::declval<const T&>().indices_u32)>>
+    : std::true_type {};
+
 template <typename MeshT>
 [[nodiscard]] GpuMesh upload_mesh(cd::rhi::IDevice& dev, const MeshT& m)
 {
     using VertexT = std::remove_cvref_t<decltype(*m.vertices.data())>;
-    using IndexT  = std::remove_cvref_t<decltype(*m.indices.data())>;
 
     GpuMesh out {};
 
+    // -- Vertex buffer --------------------------------------------------------
     cd::rhi::BufferDesc vbd {};
     vbd.size  = m.vertices.size() * sizeof(VertexT);
     vbd.usage = cd::rhi::BufferUsage::kVertex
@@ -84,8 +94,29 @@ template <typename MeshT>
         std::span<const std::byte>(
             reinterpret_cast<const std::byte*>(m.vertices.data()), vbd.size));
 
+    // -- Index buffer: prefer u32 path when available and non-empty ----------
+    const bool use_u32 = [&]() -> bool {
+        if constexpr (has_indices_u32<MeshT>::value)
+            return !m.indices_u32.empty();
+        return false;
+    }();
+
     cd::rhi::BufferDesc ibd {};
-    ibd.size  = m.indices.size() * sizeof(IndexT);
+    std::uint32_t       idx_count {};
+    if (use_u32)
+    {
+        if constexpr (has_indices_u32<MeshT>::value)
+        {
+            idx_count = static_cast<std::uint32_t>(m.indices_u32.size());
+            ibd.size  = m.indices_u32.size() * sizeof(std::uint32_t);
+        }
+    }
+    else
+    {
+        using IndexT = std::remove_cvref_t<decltype(*m.indices.data())>;
+        idx_count = static_cast<std::uint32_t>(m.indices.size());
+        ibd.size  = m.indices.size() * sizeof(IndexT);
+    }
     ibd.usage = cd::rhi::BufferUsage::kIndex
               | cd::rhi::BufferUsage::kStorage
               | cd::rhi::BufferUsage::kTransferDst;
@@ -96,15 +127,29 @@ template <typename MeshT>
         dev.destroy_buffer(*vb_r);
         return out;
     }
-    (void)dev.upload_buffer(
-        *ib_r, 0,
-        std::span<const std::byte>(
-            reinterpret_cast<const std::byte*>(m.indices.data()), ibd.size));
+    if (use_u32)
+    {
+        if constexpr (has_indices_u32<MeshT>::value)
+        {
+            (void)dev.upload_buffer(
+                *ib_r, 0,
+                std::span<const std::byte>(
+                    reinterpret_cast<const std::byte*>(m.indices_u32.data()), ibd.size));
+        }
+    }
+    else
+    {
+        (void)dev.upload_buffer(
+            *ib_r, 0,
+            std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(m.indices.data()), ibd.size));
+    }
 
     out.vb           = *vb_r;
     out.ib           = *ib_r;
     out.vertex_count = static_cast<std::uint32_t>(m.vertices.size());
-    out.index_count  = static_cast<std::uint32_t>(m.indices.size());
+    out.index_count  = idx_count;
+    out.index_type   = use_u32 ? cd::rhi::IndexType::kUInt32 : cd::rhi::IndexType::kUInt16;
     return out;
 }
 

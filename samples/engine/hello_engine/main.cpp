@@ -2360,7 +2360,7 @@ inline void draw_planar_shadows(cd::rhi::ICommandBuffer& cmd,
         const auto& ent = entities[i];
         const auto& mesh = mesh_for(ent.kind);
         cmd.bind_vertex_buffer(0, mesh.vb, 0);
-        cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+        cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
         cmd.push_constants(
             prim_material.pipeline_layout(),
             cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
@@ -2453,7 +2453,7 @@ inline void draw_shadow_map_pass(cd::rhi::ICommandBuffer& cmd,
                 const auto& ent = entities[i];
                 const auto& mesh = mesh_for(ent.kind);
                 cmd.bind_vertex_buffer(0, mesh.vb, 0);
-                cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+                cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
                 cmd.push_constants(shadow_material.pipeline_layout(), cd::rhi::ShaderStage::kVertex, 0, sizeof(cd::math::Mat4f), &csm_light_mvp[i]);
                 cmd.draw_indexed(mesh.index_count, 1, 0, 0, 0);
             }
@@ -3272,7 +3272,7 @@ inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
             if (lt == nullptr)
                 continue;
             cmd.bind_vertex_buffer(0, mesh.vb, 0);
-            cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+            cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
 
             const auto curr_model_mat = cd::math::to_mat4(lt->value);
             const auto& prev_model_mat = ent.prev_model_valid ? ent.prev_model : curr_model_mat;
@@ -3876,7 +3876,7 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
     // touch it.
             {
         cmd.bind_vertex_buffer(0, floor_mesh.vb, 0);
-        cmd.bind_index_buffer(floor_mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+        cmd.bind_index_buffer(floor_mesh.ib, 0, floor_mesh.index_type);
         cd::math::Mat4f floor_model = cd::math::Mat4f::identity();
         floor_model[3][1] = floor_y;  // translate quad to y = floor_y
         const auto floor_mvp = vp * floor_model;
@@ -3979,7 +3979,7 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
         const auto& ent = entities[i];
         const auto& mesh = mesh_for(ent.kind);
         cmd.bind_vertex_buffer(0, mesh.vb, 0);
-        cmd.bind_index_buffer(mesh.ib, 0, cd::rhi::IndexType::kUInt16);
+        cmd.bind_index_buffer(mesh.ib, 0, mesh.index_type);
         cmd.push_constants(
             prim_material.pipeline_layout(),
             cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,

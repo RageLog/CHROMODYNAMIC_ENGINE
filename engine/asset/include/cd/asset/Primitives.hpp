@@ -48,8 +48,9 @@ static_assert(sizeof(PrimitiveVertex) == 44,
 
 struct PrimitiveMesh
 {
-    std::vector<PrimitiveVertex> vertices;
-    std::vector<std::uint16_t>   indices;
+    std::vector<PrimitiveVertex>  vertices;
+    std::vector<std::uint16_t>    indices;      ///< u16 path — valid when indices_u32 is empty
+    std::vector<std::uint32_t>    indices_u32;  ///< u32 path — set when vertex count > 65535
 };
 
 namespace primitives_detail
