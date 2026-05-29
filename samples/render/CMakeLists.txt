@@ -1,5 +1,8 @@
 # samples/render — render-tier showcase samples (Vulkan-gated).
 add_subdirectory(hello_pbr)
+if(WIN32)
+  add_subdirectory(hello_d3d12_pbr)
+endif()
 # hello_lit_pbr — orphan stub (CMakeLists without a main.cpp). Skipped.
 add_subdirectory(hello_skybox)
 add_subdirectory(hello_framegraph)
