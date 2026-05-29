@@ -2,6 +2,14 @@
 
 ## Status
 
+**DONE** — 2026-05-29. Marathon Run 30 / phase401 close-out.
+
+Run 30 (phases 393-401) closed all 5 kNotImplemented sites listed in the
+Run 28 audit below. See ADR-20260529-M4-d3d12-parity.md for the
+sub-phase delivery table.
+
+Original Run 28 audit preserved below:
+
 ACCEPTED, 2026-05-29.  Marathon Run 28 / phase368.
 
 Updates / extends ADR-20260529-M4-d3d12-parity.md (M-tier milestone
