@@ -231,7 +231,13 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   vec2 uv = p.xy * 0.5 + 0.5;
   // Slope-scaled depth bias - fights shadow acne on grazing-angle
   // fragments. Coefficient picked empirically.
-  float bias = max(0.0025 * (1.0 - max(dot(N, L), 0.0)), 0.0005);
+  // phase426-vis3: Sponza at 0.01 scale has geometry very close in
+  // depth along the light view. The constant floor 0.0005 was chosen
+  // for a 60 m depth range; with the expanded 100 m ortho (Fix 1)
+  // the same value is fine. Slope term reduced 0.0025->0.0015 to
+  // recover interior shadows lost to over-biasing on near-planar walls
+  // (pillars, arch undersides) while keeping acne-free on the floor.
+  float bias = max(0.0015 * (1.0 - max(dot(N, L), 0.0)), 0.0003);
   float ref  = p.z - bias;
   vec2 ts = 1.0 / vec2(textureSize(cd_shadow_map, 0));
   float s = 0.0;
