@@ -4017,8 +4017,10 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                     prim_inst.bind(cmd, 0);
                 }
                 // PrimPush fx_params[1] = 1.0 when this prim has a texture.
+                // fx_params[3] = alpha_cutoff (> 0 enables GLSL discard).
                 PrimPush sub_pp = ent_push_scratch[i];
                 sub_pp.fx_params[1] = pr.has_texture ? 1.0F : 0.0F;
+                sub_pp.fx_params[3] = pr.alpha_cutoff;
                 cmd.push_constants(
                     prim_material.pipeline_layout(),
                     cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,

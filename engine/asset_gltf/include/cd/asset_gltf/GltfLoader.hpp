@@ -120,6 +120,15 @@ struct GltfTexture
     std::uint32_t height { 0 };
 };
 
+/// glTF alphaMode values. OPAQUE = no alpha; MASK = discard below alphaCutoff;
+/// BLEND = alpha blending (treated as MASK with cutoff=0.5 for first cut).
+enum class GltfAlphaMode : std::uint8_t
+{
+    kOpaque = 0,
+    kMask   = 1,
+    kBlend  = 2,
+};
+
 /// Minimal PBR-flavoured material — enough to drive a flat-color or single-
 /// texture pipeline. Extended factors (metallic, roughness, emissive) are
 /// decoded but unused by the current renderer; kept for forward-compat.
@@ -131,6 +140,8 @@ struct GltfMaterial
     float metallic_factor { 1.0F };
     float roughness_factor { 1.0F };
     bool double_sided { false };
+    GltfAlphaMode alpha_mode { GltfAlphaMode::kOpaque };
+    float alpha_cutoff { 0.5F };  ///< Used when alpha_mode == kMask.
 };
 
 /// One node of the glTF scene tree. Nodes carry a local transform and an

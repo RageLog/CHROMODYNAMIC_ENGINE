@@ -505,6 +505,16 @@ void main() {
     return;
   }
 
+  // Alpha-test / alpha-mask support (glTF alphaMode MASK / BLEND first-cut).
+  // fx_params.w carries alpha_cutoff > 0 for masked materials (leaves,
+  // curtains, foliage). Sample the baseColor alpha channel and discard
+  // fragments below the cutoff. Only active when fx_params.y (texture flag)
+  // is also set — opaque or untextured draws leave fx_params.w == 0.
+  if (pc.fx_params.w > 0.01 && pc.fx_params.y > 0.5) {
+    float alpha_val = texture(cd_albedo_tex, v_uv).a;
+    if (alpha_val < pc.fx_params.w) discard;
+  }
+
   // tint.w sentinel: < 0.5 = "shadow-projection draw" - bypass lighting
   // entirely and output a flat dark silhouette. Used by the planar-
   // shadow pass that re-draws each caster, projected onto the floor

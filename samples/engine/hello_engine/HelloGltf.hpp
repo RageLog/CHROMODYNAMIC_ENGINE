@@ -27,14 +27,16 @@
 namespace cd_sample {
 
 /// Per-primitive sub-range of the merged gltf index buffer + its own
-/// uploaded baseColor texture. Used for per-draw material dispatch.
+/// uploaded baseColor texture + alpha-test data.
+/// Used for per-draw material dispatch and vegetation alpha-test.
 struct GltfPrimRange
 {
-    std::uint32_t           index_offset  { 0 };  ///< first_index for draw_indexed
-    std::uint32_t           index_count   { 0 };  ///< index count for this prim
-    cd::rhi::TextureHandle     albedo_tex  {};     ///< uploaded RGBA8 texture (may be invalid)
-    cd::rhi::TextureViewHandle albedo_view {};     ///< view for albedo_tex
-    bool                    has_texture   { false };
+    std::uint32_t              index_offset  { 0 };    ///< first_index for draw_indexed
+    std::uint32_t              index_count   { 0 };    ///< index count for this prim
+    cd::rhi::TextureHandle     albedo_tex    {};        ///< uploaded RGBA8 texture (may be invalid)
+    cd::rhi::TextureViewHandle albedo_view   {};        ///< view for albedo_tex
+    bool                       has_texture   { false };
+    float                      alpha_cutoff  { 0.0F }; ///< >0 enables alpha-test discard in shader
 };
 
 struct GltfLoadResult
@@ -160,7 +162,7 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                     range.index_count = static_cast<std::uint32_t>(merged.indices.size()) - range.index_offset;
                 }
 
-                // Upload this primitive's baseColor texture if it has one.
+                // Upload this primitive's baseColor texture and record alpha params.
                 if (prim.material_index >= 0 &&
                     prim.material_index < static_cast<int>(loaded->materials.size()))
                 {
@@ -180,6 +182,15 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
                             }
                         }
                     }
+                    // Alpha-test: set cutoff > 0 for MASK and BLEND materials.
+                    // BLEND is treated as MASK with cutoff=0.5 for first cut
+                    // (avoids sort-order issues; full OIT is M4 territory).
+                    using AM = cd::asset_gltf::GltfAlphaMode;
+                    if (mat.alpha_mode == AM::kMask)
+                        range.alpha_cutoff = mat.alpha_cutoff;
+                    else if (mat.alpha_mode == AM::kBlend)
+                        range.alpha_cutoff = 0.5F;
+                    // kOpaque leaves alpha_cutoff at 0.0 (no discard)
                 }
                 prim_ranges.push_back(range);
             }

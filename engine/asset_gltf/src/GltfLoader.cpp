@@ -224,6 +224,13 @@ struct AccessorView
     m.roughness_factor = static_cast<float>(pbr.roughnessFactor);
     m.base_color_texture = pbr.baseColorTexture.index;
     m.double_sided = src.doubleSided;
+    m.alpha_cutoff = static_cast<float>(src.alphaCutoff);
+    if (src.alphaMode == "MASK")
+        m.alpha_mode = GltfAlphaMode::kMask;
+    else if (src.alphaMode == "BLEND")
+        m.alpha_mode = GltfAlphaMode::kBlend;  // treated as MASK with cutoff=0.5 for first cut
+    else
+        m.alpha_mode = GltfAlphaMode::kOpaque;
     return m;
 }
 
