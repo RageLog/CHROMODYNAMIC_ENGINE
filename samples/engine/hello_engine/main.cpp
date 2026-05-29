@@ -153,6 +153,7 @@
 #include "HelloSkinned.hpp"
 #include "HelloTlasRing.hpp"
 #include "HelloTlasRebuild.hpp"
+#include "HelloSkinnedAnim.hpp"
 
 
 namespace
@@ -6953,113 +6954,12 @@ int main()
         }
 
         // ---- SK4+SK7: real skinned-mesh animation (CPU-LBS) ----
-        // When the loaded asset carries skin + animation data
-        // (CesiumMan ships both), sample the first animation track at
-        // current time, build the matrix palette via
-        // cd::anim::compute_skinning_matrices, CPU-skin every vertex
-        // with 4-weight LBS, and re-upload the deformed PrimitiveVertex
-        // buffer to gltf_mesh.vb. Existing prim pipeline renders the
-        // deformed character without needing a separate skinned-vertex
-        // pipeline. CesiumMan has ~3k vertices so the per-frame cost
-        // stays well under 1 ms on a modern CPU.
-        // When the asset has no skin (or has no skin_vertices), we
-        // fall back to the W4-F turntable so the imported model still
-        // reads as 'alive' rather than a static statue.
-        if (skinned.valid && gltf_mesh.vb.is_valid())
-        {
-            // Advance + loop animation time.
-            skinned.anim_t += dt;
-            if (skinned.animation.duration > 0.0F)
-            {
-                while (skinned.anim_t > skinned.animation.duration)
-                    skinned.anim_t -= skinned.animation.duration;
-            }
-            // Reset to bind pose then overlay the animation channels —
-            // joints without an animation track stay at their bind
-            // position (correct glTF sampling semantics).
-            skinned.pose = cd::anim::Pose::bind_pose(skinned.skeleton);
-            cd::asset_gltf::sample_gltf_animation(
-                skinned.animation,
-                skinned.node_to_joint,
-                skinned.anim_t,
-                skinned.pose
-            );
-            // Per-joint skinning matrices = world(pose) * inverse_bind.
-            cd::anim::compute_skinning_matrices(skinned.skeleton, skinned.pose, skinned.palette_scratch);
-            // CPU-skin every vertex.
-            const auto& bone_palette = skinned.palette_scratch;
-            const std::size_t nv = skinned.base_positions.size();
-            for (std::size_t i = 0; i < nv; ++i)
-            {
-                const auto& inf = skinned.influences[i];
-                // Normalise weights so artist-authored non-normalised
-                // skin data still produces a unit blend.
-                float w_sum = inf.weights[0] + inf.weights[1] + inf.weights[2] + inf.weights[3];
-                if (w_sum < 1e-5F)
-                    w_sum = 1.0F;
-                const float inv_w = 1.0F / w_sum;
-                cd::math::Mat4f skin_mat {};  // zero
-                for (std::size_t k = 0; k < 4; ++k)
-                {
-                    const std::uint16_t skin_joint = inf.joints[k];
-                    const float w = inf.weights[k] * inv_w;
-                    if (w <= 0.0F)
-                        continue;
-                    // SK-fix: translate skin-joint index to skeleton-
-                    // joint index. Vertex JOINTS_0 attributes hold the
-                    // position within gskin.joints[], not the topo-
-                    // sorted skeleton index — wrong palette lookup
-                    // produced the twisted-limb render the user saw.
-                    if (skin_joint >= skinned.skin_joint_remap.size())
-                        continue;
-                    const std::int32_t sj = skinned.skin_joint_remap[skin_joint];
-                    if (sj < 0 || sj >= static_cast<std::int32_t>(bone_palette.size()))
-                        continue;
-                    const auto& m = bone_palette[static_cast<std::size_t>(sj)];
-                    for (std::size_t c = 0; c < 4; ++c)
-                        for (std::size_t r = 0; r < 4; ++r)
-                            skin_mat[c][r] += w * m[c][r];
-                }
-                const auto& bp = skinned.base_positions[i];
-                const auto& bn = skinned.base_normals[i];
-                // pos: full mat4 transform.
-                cd::math::Vec4f p4 {
-                    skin_mat[0][0] * bp.x + skin_mat[1][0] * bp.y + skin_mat[2][0] * bp.z + skin_mat[3][0],
-                    skin_mat[0][1] * bp.x + skin_mat[1][1] * bp.y + skin_mat[2][1] * bp.z + skin_mat[3][1],
-                    skin_mat[0][2] * bp.x + skin_mat[1][2] * bp.y + skin_mat[2][2] * bp.z + skin_mat[3][2],
-                    skin_mat[0][3] * bp.x + skin_mat[1][3] * bp.y + skin_mat[2][3] * bp.z + skin_mat[3][3]
-                };
-                // normal: 3x3 transform (no translation), no normalize
-                // (renormalised by FS via length-corrected lighting).
-                cd::math::Vec3f n3 { skin_mat[0][0] * bn.x + skin_mat[1][0] * bn.y + skin_mat[2][0] * bn.z,
-                                     skin_mat[0][1] * bn.x + skin_mat[1][1] * bn.y + skin_mat[2][1] * bn.z,
-                                     skin_mat[0][2] * bn.x + skin_mat[1][2] * bn.y + skin_mat[2][2] * bn.z };
-                auto& out = skinned.deformed_scratch[i];
-                out.pos[0] = p4.x;
-                out.pos[1] = p4.y;
-                out.pos[2] = p4.z;
-                out.normal[0] = n3.x;
-                out.normal[1] = n3.y;
-                out.normal[2] = n3.z;
-                out.uv[0] = skinned.base_uvs[i].x;
-                out.uv[1] = skinned.base_uvs[i].y;
-                out.color[0] = 0.85F;
-                out.color[1] = 0.82F;
-                out.color[2] = 0.78F;
-            }
-            // Upload deformed vertices to GPU buffer used by the kGltf
-            // entity draw. gltf_mesh.vb was created CpuToGpu so the
-            // per-frame upload is non-blocking.
-            (void)device.upload_buffer(
-                gltf_mesh.vb,
-                0,
-                std::span<const std::byte>(
-                    reinterpret_cast<const std::byte*>(skinned.deformed_scratch.data()),
-                    skinned.deformed_scratch.size() * sizeof(cd::asset::PrimitiveVertex)
-                )
-            );
-        }
-        else
+        // The CPU-LBS skinning logic lives in
+        // cd_sample::update_skinned_animation (HelloSkinnedAnim.hpp).
+        // Returns true if the skinned path ran; false (asset has no skin
+        // data) drops into the W4-F fallback turntable below.
+        if (!cd_sample::update_skinned_animation(skinned, device,
+                                                 gltf_mesh.vb, dt))
         {
             // W4-F fallback turntable for assets without skin data.
             static float cesium_yaw_t = 0.0F;
