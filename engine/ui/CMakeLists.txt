@@ -10,3 +10,5 @@
 add_subdirectory(ui)
 add_subdirectory(editor_ui)
 add_subdirectory(editor)
+#   editor_panel -- Marathon Run 23 phase N5: composite-pass preset library.
+add_subdirectory(editor_panel)
