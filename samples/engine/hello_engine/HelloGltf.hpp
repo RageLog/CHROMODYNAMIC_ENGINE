@@ -49,7 +49,15 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
 {
     GltfLoadResult out {};
 
-    const std::array<std::string, 22> kCandidates {
+    // Sponza is placed first — it takes precedence when the ~50 MB asset pack is
+    // present (see assets/samples/Sponza/README.md for download instructions).
+    // CesiumMan and other assets remain as graceful fallbacks.
+    const std::array<std::string, 28> kCandidates {
+        // --- Sponza Atrium (first-priority scene) ---
+        "assets/samples/Sponza/Sponza.gltf",
+        "../../../../assets/samples/Sponza/Sponza.gltf",
+        "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/Sponza/Sponza.gltf",
+        // --- character / object fallbacks ---
         "CesiumMan.glb",
         "model.gltf",
         "assets/samples/CesiumMan.glb",
@@ -72,6 +80,10 @@ try_auto_load_gltf(cd::rhi::IDevice&                device,
         "../../assets/samples/DamagedHelmet.gltf",
         "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/CesiumMan.glb",
         "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/DamagedHelmet.glb",
+        // --- extra Sponza absolute path variants for robustness ---
+        "C:/UserFiles/Project/CHROMODYNAMIC_ENGINE/assets/samples/Sponza/Sponza.gltf",
+        "../../assets/samples/Sponza/Sponza.gltf",
+        "../../../assets/samples/Sponza/Sponza.gltf",
     };
 
     for (const auto& p : kCandidates)

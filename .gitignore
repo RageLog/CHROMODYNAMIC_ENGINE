@@ -98,5 +98,14 @@ research/papers/*.zip
 .asset_cache/
 .shader_cache/
 
+# --- Sponza Atrium (50.2 MB, out-of-tree convention) ---
+# Download with: powershell -ExecutionPolicy Bypass -File scripts/fetch_sponza.ps1
+#           or:  bash scripts/fetch_sponza.sh
+# README + fetch scripts ARE committed; binary assets are NOT.
+assets/samples/Sponza/*.jpg
+assets/samples/Sponza/*.png
+assets/samples/Sponza/*.bin
+assets/samples/Sponza/*.gltf
+
 
 hello_editor.cdscene.json
