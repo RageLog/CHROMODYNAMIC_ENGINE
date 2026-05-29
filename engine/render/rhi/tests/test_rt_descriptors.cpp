@@ -146,3 +146,44 @@ TEST(RtDescriptors, DispatchRaysDescAssemblesThreeSbtRegions)
     EXPECT_EQ(d.width, 256U);
     EXPECT_TRUE(d.callable.buffer.is_null());
 }
+
+// ---- X6B / Phase 369: recursive RT invariants ----------------------------
+// hello_rt Phase 369 lifted RtPipelineDesc::max_recursion from 1 to 2 to
+// allow one bounce of reflection.  These tests lock the recursive surface
+// against silent regression: the descriptor must default to 1 (Whitted
+// disabled), accept user-supplied values up to the Vulkan spec ceiling of
+// 31, and the payload-size budget must accommodate the {vec3, uint} = 16
+// byte recursive payload that hello_rt threads through traceRayEXT.
+TEST(RtDescriptors, RtPipelineDescDefaultMaxRecursionIsOne)
+{
+    rhi::RtPipelineDesc d {};
+    EXPECT_EQ(d.max_recursion, 1U);  // safe default: no recursion
+}
+
+TEST(RtDescriptors, RtPipelineDescAcceptsRecursionDepthTwo)
+{
+    rhi::RtPipelineDesc d {};
+    d.max_recursion = 2;  // one bounce of reflection
+    EXPECT_EQ(d.max_recursion, 2U);
+}
+
+TEST(RtDescriptors, RtPipelineDescAcceptsRecursionDepthAtSpecCeiling)
+{
+    // VkPhysicalDeviceRayTracingPipelinePropertiesKHR::maxRayRecursionDepth
+    // is at least 1 on any conforming impl; modern NV / AMD / Intel all
+    // report 31.  The desc must round-trip arbitrary uint32 values; the
+    // backend is responsible for clamping at create-pipeline time.
+    rhi::RtPipelineDesc d {};
+    d.max_recursion = 31;
+    EXPECT_EQ(d.max_recursion, 31U);
+}
+
+TEST(RtDescriptors, RtPipelineDescPayloadBudgetFitsHelloRtRecursivePayload)
+{
+    // hello_rt X6B payload = struct { vec3 color; uint depth; } = 16 B.
+    // The default max_payload_bytes (64) must comfortably fit that and
+    // leave headroom for future per-bounce energy / albedo splits.
+    rhi::RtPipelineDesc d {};
+    EXPECT_GE(d.max_payload_bytes, 16U);
+    EXPECT_GE(d.max_payload_bytes, 64U);  // engine baseline; bumps are fine
+}

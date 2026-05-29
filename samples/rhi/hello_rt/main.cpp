@@ -4,6 +4,12 @@
 // Phase 141 / v0.99.71 — REAL ray dispatch (BLAS + TLAS + storage image +
 // descriptor set + SBT + vkCmdTraceRaysKHR).
 //
+// Phase 369 / Marathon Run 29 / X6B — RECURSIVE RT SHADING.  The
+// closest-hit shader now fires a secondary reflection ray (one bounce)
+// and blends the reflected radiance into the primary hit colour.  Sky
+// miss provides the reflection fallback.  max_recursion lifted from 1
+// to 2.  Per ADR-20260529-X6 follow-up #1.
+//
 // Builds on Phases 132-136 (BLAS/TLAS create + build, RT pipeline + SBT
 // handle copy) by adding the missing pieces:
 //   * Phase 140's DescriptorType::kAccelerationStructure used to bind
@@ -44,44 +50,101 @@
 namespace
 {
 
-// Phase 141 — raygen now actually writes a per-pixel color via an
-// imageStore into binding 1 (rgba8 storage image). Miss returns
-// background, closest-hit returns barycentric debug coords.
+// Phase 369 / Run 29 X6B — recursive RT shading.  Payload carries a
+// {color, depth} pair.  Raygen kicks the primary ray at depth=0; the
+// closest-hit recurses up to depth=2 (one bounce of reflection) per
+// the lifted max_recursion limit.
 constexpr const char* kRaygenGlsl = R"glsl(
 #version 460
 #extension GL_EXT_ray_tracing : require
 layout(binding = 0, set = 0) uniform accelerationStructureEXT tlas;
 layout(binding = 1, set = 0, rgba8) uniform image2D img;
-layout(location = 0) rayPayloadEXT vec3 payload;
+struct Payload { vec3 color; uint depth; };
+layout(location = 0) rayPayloadEXT Payload payload;
 void main() {
   const ivec2 px  = ivec2(gl_LaunchIDEXT.xy);
   const vec2  uv  = (vec2(px) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
   const vec3  org = vec3(uv * 2.0 - 1.0, -1.5);
   const vec3  dir = normalize(vec3(0.0, 0.0, 1.0));
-  payload = vec3(0.0);
+  payload.color = vec3(0.0);
+  payload.depth = 0u;
   traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF,
               /*sbtRecordOffset=*/0, /*sbtRecordStride=*/0,
               /*missIndex=*/0, org, 0.001, dir, 1000.0, 0);
-  imageStore(img, px, vec4(payload, 1.0));
+  imageStore(img, px, vec4(payload.color, 1.0));
 }
 )glsl";
 
 constexpr const char* kMissGlsl = R"glsl(
 #version 460
 #extension GL_EXT_ray_tracing : require
-layout(location = 0) rayPayloadInEXT vec3 payload;
+struct Payload { vec3 color; uint depth; };
+layout(location = 0) rayPayloadInEXT Payload payload;
 void main() {
-  payload = vec3(0.05, 0.1, 0.2);
+  // Procedural sky: vertical gradient + sun disk so reflection
+  // bounces see a real environment, not a constant.
+  const vec3 dir = normalize(gl_WorldRayDirectionEXT);
+  const float t  = clamp(0.5 * (dir.y + 1.0), 0.0, 1.0);
+  const vec3 horizon = vec3(0.55, 0.65, 0.78);
+  const vec3 zenith  = vec3(0.05, 0.10, 0.25);
+  vec3 sky = mix(horizon, zenith, t);
+  // Bright sun lobe at (-0.4, 0.5, 0.8).
+  const vec3 sun_dir = normalize(vec3(-0.4, 0.5, 0.8));
+  const float s = max(dot(dir, sun_dir), 0.0);
+  sky += vec3(1.6, 1.4, 1.0) * pow(s, 256.0);
+  payload.color = sky;
 }
 )glsl";
 
 constexpr const char* kClosestHitGlsl = R"glsl(
 #version 460
 #extension GL_EXT_ray_tracing : require
-layout(location = 0) rayPayloadInEXT vec3 payload;
+layout(binding = 0, set = 0) uniform accelerationStructureEXT tlas;
+struct Payload { vec3 color; uint depth; };
+layout(location = 0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 bary;
 void main() {
-  payload = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+  // Base shading: barycentric debug colour (R = w0, G = w1, B = w2).
+  const vec3 base = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+
+  // Cap recursion at one bounce.  max_recursion = 2 in the pipeline,
+  // so depth=0 (primary) is allowed to spawn a depth=1 secondary; the
+  // depth=1 secondary is the last layer and must not recurse again.
+  if (payload.depth >= 1u) {
+    payload.color = base;
+    return;
+  }
+
+  // Spawn a reflection ray.  Treat the triangle as a mirror with
+  // geometric normal facing the camera (-Z); the incident ray came
+  // along +Z so the reflected direction is -Z.  We perturb slightly
+  // by barycentric so different pixels sample different sky hemispheres,
+  // making the recursion visible in the output texture.
+  const vec3 normal = vec3(0.0, 0.0, -1.0);
+  const vec3 incident = gl_WorldRayDirectionEXT;
+  const vec3 reflected = reflect(incident, normal);
+  // Perturb by a barycentric-derived offset so we actually sample
+  // the sky procedural gradient, not a constant direction.
+  const vec3 perturb = vec3((bary.x - 0.333) * 0.8,
+                            (bary.y - 0.333) * 0.8,
+                            0.0);
+  const vec3 secondary_dir = normalize(reflected + perturb);
+  const vec3 hit_pos = gl_WorldRayOriginEXT
+                     + gl_WorldRayDirectionEXT * gl_HitTEXT;
+
+  // Persist base shading, then trace.  The miss / closest-hit at
+  // depth=1 will overwrite payload.color with the reflection result.
+  const uint prev_depth = payload.depth;
+  payload.depth = prev_depth + 1u;
+  const vec3 base_saved = base;
+  traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF,
+              /*sbtRecordOffset=*/0, /*sbtRecordStride=*/0,
+              /*missIndex=*/0, hit_pos, 0.001, secondary_dir, 1000.0, 0);
+
+  // Blend: 40% base barycentric, 60% reflected radiance (sky or
+  // re-hit).  payload.color now holds the reflection result.
+  payload.color = base_saved * 0.4 + payload.color * 0.6;
+  payload.depth = prev_depth;
 }
 )glsl";
 
@@ -202,7 +265,7 @@ int main()
     } };
     cd::rhi::RtPipelineDesc rtd {};
     rtd.shaders = std::span<const cd::rhi::RtShaderEntry>(shaders);
-    rtd.max_recursion = 1;
+    rtd.max_recursion = 2;  // Phase 369 X6B: one bounce of reflection.
     rtd.debug_name = "hello_rt";
     auto rtp = device.create_rt_pipeline(rtd, *pl);
     if (!rtp.has_value())
@@ -448,6 +511,6 @@ int main()
     device.destroy_shader_module(ms_mod);
     device.destroy_shader_module(ch_mod);
 
-    std::printf("[hello_rt] OK — TLAS-bound real ray dispatch verified on this adapter.\n");
+    std::printf("[hello_rt] OK — recursive RT (max_recursion=2) verified on this adapter.\n");
     return 0;
 }

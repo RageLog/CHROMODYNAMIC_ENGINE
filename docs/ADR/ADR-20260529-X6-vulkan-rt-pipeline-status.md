@@ -90,6 +90,22 @@ the 8 most-load-bearing invariants:
      proper Whitted recursion + scene-aware miss + secondary-ray
      tracing for reflection/refraction lands as a separate item.
 
+     **STATUS: DONE in Phase 369 / Marathon Run 29 (X6B slice).**
+     hello_rt closest-hit shader now fires `traceRayEXT` recursively
+     when payload depth < 1, blends the secondary radiance (60%)
+     with the primary barycentric base (40%), and the miss shader
+     returns a procedural sky (vertical gradient + sun lobe) so the
+     reflection rays sample a real environment.  `RtPipelineDesc::
+     max_recursion` lifted from 1 to 2.  4 new descriptor smoke
+     tests in `engine/render/rhi/tests/test_rt_descriptors.cpp`
+     lock the recursive surface (default = 1, accepts 2, accepts
+     spec ceiling 31, payload budget >= 64 B fits the 16 B X6B
+     `{vec3, uint}` payload).  RTX 3080 Laptop GPU executes the
+     dispatch with zero validation errors.  Scene-aware secondary
+     rays (proper geometric normals + multi-instance reflection
+     occlusion) remain a future slice once hello_rt grows beyond
+     a single-triangle BLAS.
+
   2. **DXR / D3D12 RT path** (gap table line "D3D12 Vulkan
      paritesi", Major / 3-4 weeks).  Run 32-34 X4 will own this.
      The shared interface surface is already in place; the work is
