@@ -176,17 +176,31 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
         if (!desc.vertex_glsl_path.empty())
         {
             auto loaded = read_file_text(desc.vertex_glsl_path);
-            if (!loaded.has_value())
+            if (loaded.has_value())
+            {
+                vs_disk_source = std::move(*loaded);
+                vs_src = vs_disk_source;
+            }
+            else if (!desc.vertex_glsl.empty())
+            {
+                std::fprintf(
+                    stderr,
+                    "cd::material: warning: vertex_glsl_path '%.*s' not found, "
+                    "falling back to embedded vertex_glsl\n",
+                    static_cast<int>(desc.vertex_glsl_path.size()),
+                    desc.vertex_glsl_path.data()
+                );
+                vs_src = desc.vertex_glsl;
+            }
+            else
             {
                 return std::unexpected(
                     material_errors::make(
                         material_errors::Code::kInvalidArgument,
-                        "Material::create: failed to open vertex_glsl_path"
+                        "Material::create: failed to open vertex_glsl_path AND no embedded vertex_glsl fallback"
                     )
                 );
             }
-            vs_disk_source = std::move(*loaded);
-            vs_src = vs_disk_source;
         }
         else
         {
@@ -233,17 +247,31 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
         if (!desc.fragment_glsl_path.empty())
         {
             auto loaded = read_file_text(desc.fragment_glsl_path);
-            if (!loaded.has_value())
+            if (loaded.has_value())
+            {
+                fs_disk_source = std::move(*loaded);
+                fs_src = fs_disk_source;
+            }
+            else if (!desc.fragment_glsl.empty())
+            {
+                std::fprintf(
+                    stderr,
+                    "cd::material: warning: fragment_glsl_path '%.*s' not found, "
+                    "falling back to embedded fragment_glsl\n",
+                    static_cast<int>(desc.fragment_glsl_path.size()),
+                    desc.fragment_glsl_path.data()
+                );
+                fs_src = desc.fragment_glsl;
+            }
+            else
             {
                 return std::unexpected(
                     material_errors::make(
                         material_errors::Code::kInvalidArgument,
-                        "Material::create: failed to open fragment_glsl_path"
+                        "Material::create: failed to open fragment_glsl_path AND no embedded fragment_glsl fallback"
                     )
                 );
             }
-            fs_disk_source = std::move(*loaded);
-            fs_src = fs_disk_source;
         }
         else
         {

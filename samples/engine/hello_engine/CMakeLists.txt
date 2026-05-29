@@ -68,6 +68,14 @@ cd_add_sample(hello_engine
 target_compile_definitions(cd_sample_hello_engine PRIVATE
   HELLO_ENGINE_USE_ON_DISK_SHADERS=$<BOOL:${HELLO_ENGINE_USE_ON_DISK_SHADERS}>)
 
+# Copy shaders folder next to exe so on-disk hot-reload works from
+# build/bin/Debug/ (or Release/) cwd without needing to run from repo root.
+add_custom_command(TARGET cd_sample_hello_engine POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders
+    $<TARGET_FILE_DIR:cd_sample_hello_engine>/shaders
+  COMMENT "Stage hello_engine shaders for on-disk hot-reload")
+
 # Marathon Run 23 phase N2B: ghost-shadow / TLAS-exclusion regression
 # test (pure-CPU, no RHI device needed).
 if(CD_ENABLE_TESTING)

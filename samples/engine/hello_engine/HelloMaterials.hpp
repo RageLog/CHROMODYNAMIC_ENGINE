@@ -63,22 +63,21 @@ struct MaterialSpawnError
 
 // -- X5 / M1 hot-reload integration -----------------------------------
 // On-disk source paths for the prim and shadow materials' vertex +
-// fragment shaders. Resolved relative to the process's working
-// directory; the hello_engine launcher is expected to run from the
-// repo root (where `samples/engine/hello_engine/shaders/` lives).
-// If a path fails to open at runtime, Material::create returns
-// kInvalidArgument and the initial spawn falls back through
-// MaterialSpawnError {9, "prim"} / {10, "shadow"}.
+// fragment shaders. Resolved relative to the executable directory;
+// the CMake POST_BUILD rule copies shaders/ next to the exe so these
+// paths work from any cwd (bin/Debug/, bin/Release/, etc.).
+// If a path fails to open, Material::create logs a warning and falls
+// back to the embedded GLSL strings (see ADR-20260529-X5 fallback).
 inline constexpr std::string_view kPrimVertGlslPath =
-    "samples/engine/hello_engine/shaders/prim.vert.glsl";
+    "shaders/prim.vert.glsl";
 inline constexpr std::string_view kPrimFragGlslPath =
-    "samples/engine/hello_engine/shaders/prim.frag.glsl";
+    "shaders/prim.frag.glsl";
 
 // D-F6: on-disk paths for the shadow depth-only material.
 inline constexpr std::string_view kShadowVertGlslPath =
-    "samples/engine/hello_engine/shaders/shadow.vert.glsl";
+    "shaders/shadow.vert.glsl";
 inline constexpr std::string_view kShadowFragGlslPath =
-    "samples/engine/hello_engine/shaders/shadow.frag.glsl";
+    "shaders/shadow.frag.glsl";
 
 /// Build the full prim MaterialDesc and call Material::create. Shared
 /// between initial spawn (spawn_materials) and hot-reload (HelloShaderWatch).
