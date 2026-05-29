@@ -9,6 +9,7 @@ cd_add_library(ecs
   TYPE STATIC
   SOURCES
     src/Entity.cpp
+    src/ArchetypeWorld.cpp
   PUBLIC_DEPS
     cd::core
     cd::concurrency  # Scheduler::tick_parallel(World&, ThreadPool&) overload

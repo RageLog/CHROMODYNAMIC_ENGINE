@@ -1,5 +1,6 @@
 # samples/world — ECS / anim / events / replication / scene-graph samples.
 add_subdirectory(hello_ecs)
+add_subdirectory(bench_archetype)
 add_subdirectory(hello_events)
 add_subdirectory(hello_replication)
 add_subdirectory(hello_particles)

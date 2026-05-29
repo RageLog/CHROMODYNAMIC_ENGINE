@@ -104,12 +104,37 @@ Run 27 adds `engine/world/ecs/tests/test_sphere_query.cpp` -- a
   iteration over sparse-sets is already overhead-dominated.  Filed
   as L-tier vision.
 
+  **STATUS: REALISED in Phase 370 / Marathon Run 30 (X7B slice).**
+  `cd::ecs::ArchetypeWorld` lives next to `cd::ecs::World` as an
+  additional storage path, not a replacement.  Header at
+  `engine/world/ecs/include/cd/ecs/ArchetypeWorld.hpp`, impl at
+  `engine/world/ecs/src/ArchetypeWorld.cpp`.  Design follows Bevy /
+  Flecs archetype-table layout: archetype = sorted `vector<type_index>`,
+  each archetype owns chunks of ~16 KiB payload (clamped to 4 rows
+  minimum), cross-archetype migration not supported (use sparse-set
+  `World` for component-by-component churn).  7 gtest cases in
+  `engine/world/ecs/tests/test_archetype_world.cpp` (emplace, each
+  with superset matching, destroy with swap-pop, chunk overflow,
+  capacity sizing, independence from sparse-set `World`) -> 7/7 PASS.
+  Microbenchmark in `samples/world/bench_archetype`: 1000-entity
+  `each<Position, Velocity>` iteration is ~9.3x faster than the
+  cached-query sparse-set path on Release builds (1.76 ns/entity
+  vs 16.40 ns/entity).  The Debug-build delta is ~15.5x.  Honest
+  interpretation: archetype dense rows + cache-friendly column
+  iteration win the dense-workload case; sparse-set still wins on
+  sparse mixes + incremental churn.  Both paths are legitimate and
+  coexist; sparse-set remains the engine primary.
+
 ## References
 
 - `engine/world/ecs/include/cd/ecs/ComponentStorage.hpp` -- SparseSet<T>.
 - `engine/world/ecs/include/cd/ecs/World.hpp` -- each<Ts...>.
 - `engine/world/ecs/include/cd/ecs/Scheduler.hpp` -- system DAG.
 - `engine/world/ecs/tests/test_sphere_query.cpp` -- this run\'s proof.
+- `engine/world/ecs/include/cd/ecs/ArchetypeWorld.hpp` -- archetype side-layer (X7B).
+- `engine/world/ecs/src/ArchetypeWorld.cpp` -- archetype impl (X7B).
+- `engine/world/ecs/tests/test_archetype_world.cpp` -- X7B 7-case proof.
+- `samples/world/bench_archetype/main.cpp` -- archetype vs sparse-set microbench.
 - EnTT [Skypjack 2018] -- sparse-set ECS reference.
 - Bevy ECS, Flecs -- archetype-table alternatives.
 - `docs/STATUS_AND_PLAN_W8.md` Section 3 gap row "ECS v2 archetype".
