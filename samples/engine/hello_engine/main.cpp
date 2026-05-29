@@ -161,6 +161,7 @@
 #include "HelloMaterials.hpp"
 #include "HelloGltf.hpp"
 #include "HelloPicker.hpp"
+#include "HelloPalette.hpp"
 
 
 namespace
@@ -4997,51 +4998,8 @@ int main()
     cd_sample::HelloEngineFx fx {};
     // Defaults documented in HelloEngineFx.hpp (Hable tonemap, 0.55 AO,
     // 0.75 light shafts — matches Marathon Run 5..8 visual baseline).
-    palette.register_command(
-        70,
-        "Tonemap: AGX (Sobotka 2022)",
-        [&]
-        {
-            fx.tonemap_op = 3;
-            log_push("[fx] tonemap = AGX");
-        }
-    );
-    palette.register_command(
-        71,
-        "Tonemap: Hill ACES (Filament fit)",
-        [&]
-        {
-            fx.tonemap_op = 1;
-            log_push("[fx] tonemap = Hill ACES");
-        }
-    );
-    palette.register_command(
-        72,
-        "Tonemap: Hable / Uncharted 2",
-        [&]
-        {
-            fx.tonemap_op = 2;
-            log_push("[fx] tonemap = Hable");
-        }
-    );
-    palette.register_command(
-        73,
-        "Tonemap: Narkowicz ACES",
-        [&]
-        {
-            fx.tonemap_op = 0;
-            log_push("[fx] tonemap = Narkowicz");
-        }
-    );
-    palette.register_command(
-        74,
-        "Tonemap: HDR10 PQ (ST.2084, Rec.2020)",
-        [&]
-        {
-            fx.tonemap_op = 4;
-            log_push("[fx] tonemap = HDR10 PQ (use only on HDR display)");
-        }
-    );
+    // Tonemap + BRDF/FX queued commands lifted to HelloPalette.hpp (N19).
+    cd_sample::register_fx_palette_commands(palette, fx, log_push);
     // v1.4 day-ship FX wire-in. The post_gtao / post_bloom / post_ssr
     // libraries are linked (CMakeLists) and their Settings structs
     // are reachable; the multi-pass GPU dispatch lands in v1.7
@@ -5088,68 +5046,7 @@ int main()
     // the dispatch lands. Each toggle logs queue status.
     // Debug view modes: 0 final, 1 albedo, 2 world normal, 3 MR map,
     // 4 AO, 5 normal-mapped surface normal, 6 vertex UVs.
-    palette.register_command(
-        100,
-        "BRDF: Toggle LTC-GGX area-light specular (queued v1.7)",
-        [&]
-        {
-            fx.ltc_ggx_strength = (fx.ltc_ggx_strength > 0.001F) ? 0.0F : 1.0F;
-            log_push(
-                fx.ltc_ggx_strength > 0.001F ? "[brdf] LTC-GGX queued (v1.7 material rework)" : "[brdf] LTC-GGX off"
-            );
-        }
-    );
-    palette.register_command(
-        101,
-        "BRDF: Toggle Sheen (queued v1.7)",
-        [&]
-        {
-            fx.sheen_strength = (fx.sheen_strength > 0.001F) ? 0.0F : 0.5F;
-            log_push(fx.sheen_strength > 0.001F ? "[brdf] Sheen queued (v1.7 material rework)" : "[brdf] Sheen off");
-        }
-    );
-    palette.register_command(
-        102,
-        "BRDF: Toggle Clearcoat (queued v1.7)",
-        [&]
-        {
-            fx.clearcoat_strength = (fx.clearcoat_strength > 0.001F) ? 0.0F : 0.6F;
-            log_push(
-                fx.clearcoat_strength > 0.001F ? "[brdf] Clearcoat queued (v1.7 material rework)"
-                                               : "[brdf] Clearcoat off"
-            );
-        }
-    );
-    palette.register_command(
-        103,
-        "BRDF: Toggle SSS / Burley diffusion (queued v1.7)",
-        [&]
-        {
-            fx.sss_strength = (fx.sss_strength > 0.001F) ? 0.0F : 0.6F;
-            log_push(fx.sss_strength > 0.001F ? "[brdf] SSS queued (v1.7 needs neighbourhood pass)" : "[brdf] SSS off");
-        }
-    );
-    palette.register_command(
-        104,
-        "FX: Spawn Decal (queued v1.7)",
-        [&]
-        {
-            fx.decal_count += 1.0F;
-            log_push("[fx] Decal queued (v1.7 needs projector volume + GBuffer)");
-        }
-    );
-    palette.register_command(
-        105,
-        "FX: Toggle GPU Particles 10k/sec (queued v1.7)",
-        [&]
-        {
-            fx.particle_emit_rate = (fx.particle_emit_rate > 0.001F) ? 0.0F : 10000.0F;
-            log_push(
-                fx.particle_emit_rate > 0.001F ? "[fx] GPU particles queued (v1.7 needs compute pipe)"
-                                               : "[fx] GPU particles off"
-            );
-        }
-    );
+    // (BRDF / FX queued toggles registered above via register_fx_palette_commands.)
     // v1.5 GI wire-in (queued for v1.7 frame-graph + acceleration
     // structure dispatch). Settings + reservoirs instantiated so the
     // editor UI binds without renaming.
