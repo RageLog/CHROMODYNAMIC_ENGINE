@@ -160,6 +160,7 @@
 #include "HelloRenderTargets.hpp"
 #include "HelloMaterials.hpp"
 #include "HelloGltf.hpp"
+#include "HelloPicker.hpp"
 
 
 namespace
@@ -6224,17 +6225,12 @@ int main()
         // `wasd_was_active_prev` latch.
         cd_sample::update_free_look_camera(app_state.free_look, cam, scene_cam, dt);
 
-        // ---- 3D click-to-pick ----
-        // Unproject the click pixel to a world ray, then sphere-test
-        // each entity. The gizmo overlay (rendered later in this
-        // frame) may set `pending_pick=false` if the click landed on
-        // an axis arrow - in that case it consumed the click and we
-        // skip the pick. The frame here is one-late but for a UX
-        // click the lag is invisible.
+        // ---- 3D click-to-pick (Marathon Run 14 phase N18) ----
+        // Lifted to cd_sample::pick_entity_or_light in HelloPicker.hpp.
+        // Same ray-build (FPS basis vs orbit basis), same sphere tests,
+        // same light-vs-entity priority.
         if (pending_pick && gizmo_state.was_hovered)
         {
-            // The user is clicking on a gizmo arrow (hover detected
-            // last frame). Don't repick; let the gizmo claim the drag.
             pending_pick = false;
         }
         if (pending_pick)
@@ -6244,145 +6240,43 @@ int main()
             const float vh = static_cast<float>(window.height());
             if (vw > 0 && vh > 0)
             {
-                const float aspect_pick = vw / vh;
-                // Invert VP analytically would be ideal; we use unproject
-                // via two ray endpoints (NDC near + far) ??' world.
-                const float ndc_x = (2.0F * pick_x / vw) - 1.0F;
-                const float ndc_y = 1.0F - (2.0F * pick_y / vh);
-                // Build inverse VP by row-by-row 4x4 inversion. Use the
-                // engine's existing utility if present; otherwise a small
-                // local Gauss-Jordan would do. Quick path: use camera
-                // basis directly.
-                const float cp = std::cos(cam_pitch), sp = std::sin(cam_pitch);
-                const float cy = std::cos(cam_yaw), sy = std::sin(cam_yaw);
-                cd::math::Vec3f fwd { cp * sy, sp, -cp * cy };
-                cd::math::Vec3f rgt { cy, 0.0F, sy };
-                cd::math::Vec3f up_v { fwd.y * rgt.z - fwd.z * rgt.y,
-                                       fwd.z * rgt.x - fwd.x * rgt.z,
-                                       fwd.x * rgt.y - fwd.y * rgt.x };
-                // Use the orbit camera's basis when we're NOT in WASD mode.
-                const bool wasd_active = key_w || key_a || key_s || key_d
-                                       || key_q || key_e;
-                if (!cam_right_drag && !wasd_active)
+                const bool wasd_active = key_w || key_a || key_s || key_d || key_q || key_e;
+                std::vector<cd_sample::EntityHit> ehits;
+                ehits.reserve(entities.size());
+                for (const auto& e : entities)
+                    ehits.push_back({ e.handle, e.name });
+                std::vector<cd_sample::LightHit> lhits;
+                lhits.reserve(lights.size());
+                for (const auto& l : lights)
+                    lhits.push_back({ l.light.position, l.light.type, l.name });
+                cd_sample::PickInputs pin {
+                    .ndc_x           = (2.0F * pick_x / vw) - 1.0F,
+                    .ndc_y           = 1.0F - (2.0F * pick_y / vh),
+                    .aspect          = vw / vh,
+                    .cam             = cam,
+                    .cam_pitch       = cam_pitch,
+                    .cam_yaw         = cam_yaw,
+                    .wasd_active     = wasd_active,
+                    .cam_right_drag  = cam_right_drag,
+                    .gizmo_hovered   = false,  // outer if already handled gizmo hover
+                };
+                const auto pr = cd_sample::pick_entity_or_light(pin, ehits, lhits, scene);
+                if (pr.kind == cd_sample::PickKind::kLight)
                 {
-                    fwd.x = cam.target.x - cam.eye.x;
-                    fwd.y = cam.target.y - cam.eye.y;
-                    fwd.z = cam.target.z - cam.eye.z;
-                    const float fl = std::sqrt(fwd.x * fwd.x + fwd.y * fwd.y + fwd.z * fwd.z);
-                    if (fl > 1e-5F)
-                    {
-                        fwd.x /= fl;
-                        fwd.y /= fl;
-                        fwd.z /= fl;
-                    }
-                    cd::math::Vec3f world_up { 0, 1, 0 };
-                    rgt.x = fwd.y * world_up.z - fwd.z * world_up.y;
-                    rgt.y = fwd.z * world_up.x - fwd.x * world_up.z;
-                    rgt.z = fwd.x * world_up.y - fwd.y * world_up.x;
-                    const float rl = std::sqrt(rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z);
-                    if (rl > 1e-5F)
-                    {
-                        rgt.x /= rl;
-                        rgt.y /= rl;
-                        rgt.z /= rl;
-                    }
-                    up_v.x = rgt.y * fwd.z - rgt.z * fwd.y;
-                    up_v.y = rgt.z * fwd.x - rgt.x * fwd.z;
-                    up_v.z = rgt.x * fwd.y - rgt.y * fwd.x;
-                }
-                const float tan_half_fov = std::tan(cam.fov_y * 0.5F);
-                const float scale_x = aspect_pick * tan_half_fov;
-                const float scale_y = tan_half_fov;
-                cd::math::Vec3f ray_dir { fwd.x + rgt.x * ndc_x * scale_x + up_v.x * ndc_y * scale_y,
-                                          fwd.y + rgt.y * ndc_x * scale_x + up_v.y * ndc_y * scale_y,
-                                          fwd.z + rgt.z * ndc_x * scale_x + up_v.z * ndc_y * scale_y };
-                const float rdl = std::sqrt(ray_dir.x * ray_dir.x + ray_dir.y * ray_dir.y + ray_dir.z * ray_dir.z);
-                if (rdl > 1e-5F)
-                {
-                    ray_dir.x /= rdl;
-                    ray_dir.y /= rdl;
-                    ray_dir.z /= rdl;
-                }
-
-                // Sphere-test every entity. Radius scales with the
-                // entity's transform scale so clicking anywhere on a
-                // big imported asset (e.g. CesiumMan at scale 2.2)
-                // still selects it - not just the central pivot.
-                // Closes user-flagged 'cisimler ve isiklar sadece
-                // pivottan secilebiliyor'.
-                float best_t = 1e30F;
-                int best_i = -1;
-                for (std::size_t i = 0; i < entities.size(); ++i)
-                {
-                    auto* lt = scene.local(entities[i].handle);
-                    if (lt == nullptr)
-                        continue;
-                    const cd::math::Vec3f c { lt->value.position.x, lt->value.position.y, lt->value.position.z };
-                    const float ms = std::max({ lt->value.scale.x, lt->value.scale.y, lt->value.scale.z });
-                    // Unit primitive half-extent ??? 0.55; for compound
-                    // / oblong meshes (humanoid) bump by 1.6 along the
-                    // longest dimension.
-                    const float pick_r = 0.55F * std::max(1.0F, ms) * 1.6F;
-                    const cd::math::Vec3f oc { cam.eye.x - c.x, cam.eye.y - c.y, cam.eye.z - c.z };
-                    const float b = oc.x * ray_dir.x + oc.y * ray_dir.y + oc.z * ray_dir.z;
-                    const float cc = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - pick_r * pick_r;
-                    const float disc = b * b - cc;
-                    if (disc < 0.0F)
-                        continue;
-                    const float t = -b - std::sqrt(disc);
-                    if (t > 0.0F && t < best_t)
-                    {
-                        best_t = t;
-                        best_i = static_cast<int>(i);
-                    }
-                }
-                // Also try light positions (point/spot only - directional
-                // has no world position, area is bigger but we use its center).
-                int best_light = -1;
-                float best_light_t = best_t;
-                for (std::size_t i = 0; i < lights.size(); ++i)
-                {
-                    const auto& Lt = lights[i].light;
-                    if (Lt.type == cd::light::LightType::kDirectional)
-                        continue;
-                    const cd::math::Vec3f c { Lt.position.x, Lt.position.y, Lt.position.z };
-                    const cd::math::Vec3f oc { cam.eye.x - c.x, cam.eye.y - c.y, cam.eye.z - c.z };
-                    // Big-pick light bulb hit-sphere so clicking near
-                    // the gizmo or anywhere around the visible bulb
-                    // selects the light, not just its centre dot.
-                    constexpr float kLightPickR = 0.9F;
-                    const float b = oc.x * ray_dir.x + oc.y * ray_dir.y + oc.z * ray_dir.z;
-                    const float cc = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - kLightPickR * kLightPickR;
-                    const float disc = b * b - cc;
-                    if (disc < 0.0F)
-                        continue;
-                    const float t = -b - std::sqrt(disc);
-                    if (t > 0.0F && t < best_light_t)
-                    {
-                        best_light_t = t;
-                        best_light = static_cast<int>(i);
-                    }
-                }
-                if (best_light >= 0)
-                {
-                    selected = best_light;
+                    selected = pr.index;
                     selected_kind = SelKind::kLight;
-                    log_push("[pick] selected light " + lights[static_cast<std::size_t>(best_light)].name);
+                    log_push(pr.log);
                 }
-                else if (best_i >= 0)
+                else if (pr.kind == cd_sample::PickKind::kEntity)
                 {
-                    selected = best_i;
+                    selected = pr.index;
                     selected_kind = SelKind::kEntity;
-                    log_push("[pick] selected " + entities[static_cast<std::size_t>(best_i)].name);
+                    log_push(pr.log);
                 }
-                else
+                else if (selected >= 0)
                 {
-                    // Empty-space click ??' unselect.
-                    if (selected >= 0)
-                    {
-                        log_push("[pick] cleared selection");
-                        selected = -1;
-                    }
+                    log_push("[pick] cleared selection");
+                    selected = -1;
                 }
             }
         }
