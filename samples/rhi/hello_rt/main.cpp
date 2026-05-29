@@ -10,6 +10,14 @@
 // miss provides the reflection fallback.  max_recursion lifted from 1
 // to 2.  Per ADR-20260529-X6 follow-up #1.
 //
+// Phase 406 / D-F3 — MULTI-INSTANCE SCENE + PER-INSTANCE ALBEDO.
+// Three TLAS instances of the same triangle BLAS, placed at X = -3, 0, +3.
+// Each instance carries a distinct albedo (red, green, blue) stored in an
+// SSBO at descriptor binding 2.  Closest-hit reads gl_InstanceCustomIndexEXT
+// to look up albedo; the chrome-mirror reflection bounce then lets sphere A
+// see sphere B (green) and sphere C (blue) depending on reflection angle.
+// The camera is pulled back to frame all three instances.
+//
 // Builds on Phases 132-136 (BLAS/TLAS create + build, RT pipeline + SBT
 // handle copy) by adding the missing pieces:
 //   * Phase 140's DescriptorType::kAccelerationStructure used to bind
@@ -50,10 +58,10 @@
 namespace
 {
 
-// Phase 369 / Run 29 X6B — recursive RT shading.  Payload carries a
-// {color, depth} pair.  Raygen kicks the primary ray at depth=0; the
-// closest-hit recurses up to depth=2 (one bounce of reflection) per
-// the lifted max_recursion limit.
+// Phase 406 / D-F3 — multi-instance scene + per-instance albedo.
+// Raygen is pulled back to Z=-6 and the NDC range widened to [-3,+3] in X
+// so all three triangle instances (at X=-3, 0, +3) are visible.
+// Payload carries {color, depth} — same as Phase 369.
 constexpr const char* kRaygenGlsl = R"glsl(
 #version 460
 #extension GL_EXT_ray_tracing : require
@@ -64,7 +72,10 @@ layout(location = 0) rayPayloadEXT Payload payload;
 void main() {
   const ivec2 px  = ivec2(gl_LaunchIDEXT.xy);
   const vec2  uv  = (vec2(px) + 0.5) / vec2(gl_LaunchSizeEXT.xy);
-  const vec3  org = vec3(uv * 2.0 - 1.0, -1.5);
+  // Widen X range to [-3.5, +3.5] so all three instances are in frame.
+  const vec3  org = vec3((uv.x * 2.0 - 1.0) * 3.5,
+                         (uv.y * 2.0 - 1.0) * 1.5,
+                         -6.0);
   const vec3  dir = normalize(vec3(0.0, 0.0, 1.0));
   payload.color = vec3(0.0);
   payload.depth = 0u;
@@ -96,54 +107,56 @@ void main() {
 }
 )glsl";
 
+// Phase 406 / D-F3 — per-instance albedo via SSBO at binding 2.
+// gl_InstanceCustomIndexEXT == instance_id set on AccelInstance (0, 1, 2).
+// Instance 0 → red, 1 → green, 2 → blue.
+// Reflection bounce (depth=0 only) traces secondary ray; the chrome factor
+// is 0.8 (simple mirror model, no Karis split-sum needed for smoke demo).
 constexpr const char* kClosestHitGlsl = R"glsl(
 #version 460
 #extension GL_EXT_ray_tracing : require
 layout(binding = 0, set = 0) uniform accelerationStructureEXT tlas;
+// Per-instance albedo buffer: 3 × vec4 (rgb, _padding).
+layout(binding = 2, set = 0, std430) readonly buffer AlbedoBlock {
+  vec4 albedo[3];
+} albedo_buf;
 struct Payload { vec3 color; uint depth; };
 layout(location = 0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 bary;
 void main() {
-  // Base shading: barycentric debug colour (R = w0, G = w1, B = w2).
-  const vec3 base = vec3(1.0 - bary.x - bary.y, bary.x, bary.y);
+  // Look up per-instance albedo using the custom instance index.
+  const uint  iid     = uint(gl_InstanceCustomIndexEXT);
+  const vec3  albedo  = albedo_buf.albedo[iid].rgb;
 
-  // Cap recursion at one bounce.  max_recursion = 2 in the pipeline,
-  // so depth=0 (primary) is allowed to spawn a depth=1 secondary; the
-  // depth=1 secondary is the last layer and must not recurse again.
+  // Cap recursion at one bounce.  max_recursion = 2 in the pipeline.
   if (payload.depth >= 1u) {
-    payload.color = base;
+    payload.color = albedo;
     return;
   }
 
-  // Spawn a reflection ray.  Treat the triangle as a mirror with
-  // geometric normal facing the camera (-Z); the incident ray came
-  // along +Z so the reflected direction is -Z.  We perturb slightly
-  // by barycentric so different pixels sample different sky hemispheres,
-  // making the recursion visible in the output texture.
-  const vec3 normal = vec3(0.0, 0.0, -1.0);
+  // Spawn a chrome-mirror reflection ray.
+  // The triangle faces the camera along -Z; incident is +Z, reflect = -Z.
+  // Perturb slightly by barycentric to sample the sky gradient and nearby
+  // instances, making inter-instance reflections visible.
+  const vec3 normal   = vec3(0.0, 0.0, -1.0);
   const vec3 incident = gl_WorldRayDirectionEXT;
   const vec3 reflected = reflect(incident, normal);
-  // Perturb by a barycentric-derived offset so we actually sample
-  // the sky procedural gradient, not a constant direction.
-  const vec3 perturb = vec3((bary.x - 0.333) * 0.8,
-                            (bary.y - 0.333) * 0.8,
-                            0.0);
+  const vec3 perturb  = vec3((bary.x - 0.333) * 0.4,
+                             (bary.y - 0.333) * 0.4,
+                             0.0);
   const vec3 secondary_dir = normalize(reflected + perturb);
   const vec3 hit_pos = gl_WorldRayOriginEXT
                      + gl_WorldRayDirectionEXT * gl_HitTEXT;
 
-  // Persist base shading, then trace.  The miss / closest-hit at
-  // depth=1 will overwrite payload.color with the reflection result.
   const uint prev_depth = payload.depth;
   payload.depth = prev_depth + 1u;
-  const vec3 base_saved = base;
+  const vec3 albedo_saved = albedo;
   traceRayEXT(tlas, gl_RayFlagsOpaqueEXT, 0xFF,
               /*sbtRecordOffset=*/0, /*sbtRecordStride=*/0,
               /*missIndex=*/0, hit_pos, 0.001, secondary_dir, 1000.0, 0);
 
-  // Blend: 40% base barycentric, 60% reflected radiance (sky or
-  // re-hit).  payload.color now holds the reflection result.
-  payload.color = base_saved * 0.4 + payload.color * 0.6;
+  // Blend: 20% own albedo + 80% chrome reflection (sky or neighbour instance).
+  payload.color = albedo_saved * 0.2 + payload.color * 0.8;
   payload.depth = prev_depth;
 }
 )glsl";
@@ -232,10 +245,13 @@ int main()
         return 3;
     std::printf("[hello_rt] 3 RT shader modules compiled.\n");
 
-    // ---- 2. Descriptor set layout (TLAS @ 0, storage image @ 1) ----------
-    std::array<cd::rhi::DescriptorSetLayoutBinding, 2> dsl_bindings { {
+    // ---- 2. Descriptor set layout (TLAS @ 0, storage image @ 1, albedo SSBO @ 2) ---
+    // Binding 2 (per-instance albedo) is read in the closest-hit stage.
+    const cd::rhi::ShaderStage kChit = cd::rhi::ShaderStage::kClosestHit;
+    std::array<cd::rhi::DescriptorSetLayoutBinding, 3> dsl_bindings { {
         { 0, cd::rhi::DescriptorType::kAccelerationStructure, 1, cd::rhi::ShaderStage::kRayGen },
         { 1, cd::rhi::DescriptorType::kStorageImage,          1, cd::rhi::ShaderStage::kRayGen },
+        { 2, cd::rhi::DescriptorType::kStorageBuffer,         1, kChit },
     } };
     cd::rhi::DescriptorSetLayoutDesc dsld {};
     dsld.bindings = std::span<const cd::rhi::DescriptorSetLayoutBinding>(dsl_bindings);
@@ -277,7 +293,8 @@ int main()
     }
     std::printf("[hello_rt] RT pipeline created (3 groups: raygen/miss/hit).\n");
 
-    // ---- 5. BLAS (single triangle) ---------------------------------------
+    // ---- 5. BLAS (single triangle — reused by all 3 instances) ----------
+    // Phase 406: one BLAS, three TLAS instances at X = -3, 0, +3.
     constexpr std::array<float, 9> kTriVerts { {
          0.0F,  0.6F, 0.0F,
         -0.6F, -0.6F, 0.0F,
@@ -315,12 +332,35 @@ int main()
         return 8;
     }
 
-    // ---- 6. TLAS (one identity instance referencing BLAS) ----------------
-    cd::rhi::AccelInstance inst {};
-    inst.blas = *blas_r;
-    inst.instance_id = 0;
-    inst.mask = 0xFF;
-    std::array<cd::rhi::AccelInstance, 1> inst_arr { inst };
+    // ---- 6. TLAS (3 instances: red @ X=-3, green @ X=0, blue @ X=+3) ----
+    // Each instance uses the same BLAS but a distinct world-space transform
+    // (column 3 of the 3×4 row-major matrix carries the translation) and a
+    // unique instance_id (0, 1, 2) that the closest-hit uses to index the
+    // per-instance albedo SSBO.
+    auto make_inst = [&](std::uint32_t id, float tx) -> cd::rhi::AccelInstance
+    {
+        cd::rhi::AccelInstance a {};
+        // Row-major 3×4: identity rotation, translation = (tx, 0, 0).
+        //   row 0: [1, 0, 0, tx]
+        //   row 1: [0, 1, 0, 0 ]
+        //   row 2: [0, 0, 1, 0 ]
+        a.transform[0]  = 1.0F; a.transform[1]  = 0.0F; a.transform[2]  = 0.0F; a.transform[3]  = tx;
+        a.transform[4]  = 0.0F; a.transform[5]  = 1.0F; a.transform[6]  = 0.0F; a.transform[7]  = 0.0F;
+        a.transform[8]  = 0.0F; a.transform[9]  = 0.0F; a.transform[10] = 1.0F; a.transform[11] = 0.0F;
+        a.blas = *blas_r;
+        a.instance_id = id;
+        a.mask = 0xFF;
+        return a;
+    };
+
+    // instance 0 → red  (X = -3)
+    // instance 1 → green (X =  0)
+    // instance 2 → blue  (X = +3)
+    std::array<cd::rhi::AccelInstance, 3> inst_arr { {
+        make_inst(0, -3.0F),
+        make_inst(1,  0.0F),
+        make_inst(2, +3.0F),
+    } };
 
     cd::rhi::AccelStructureDesc tlas_desc {};
     tlas_desc.kind      = cd::rhi::AccelStructureKind::kTopLevel;
@@ -334,6 +374,7 @@ int main()
                      tlas_r.error().message.data());
         return 9;
     }
+    std::printf("[hello_rt] TLAS built: 3 instances (red@X=-3, green@X=0, blue@X=+3).\n");
 
     // ---- 7. Storage image ------------------------------------------------
     constexpr std::uint32_t kImgW = 256;
@@ -362,6 +403,31 @@ int main()
         std::fprintf(stderr, "[hello_rt] storage image view create failed\n");
         return 11;
     }
+
+    // ---- 7b. Per-instance albedo SSBO (binding 2) ------------------------
+    // 3 × vec4 (rgb, _padding=0): instance 0=red, 1=green, 2=blue.
+    // std430 layout: each vec4 is 16 bytes, total = 48 bytes.
+    constexpr std::array<float, 12> kAlbedoData { {
+        1.0F, 0.1F, 0.1F, 0.0F,   // instance 0 — red
+        0.1F, 1.0F, 0.1F, 0.0F,   // instance 1 — green
+        0.1F, 0.1F, 1.0F, 0.0F,   // instance 2 — blue
+    } };
+    cd::rhi::BufferDesc albedo_desc {};
+    albedo_desc.size   = sizeof(kAlbedoData);
+    albedo_desc.usage  = cd::rhi::BufferUsage::kStorage |
+                         cd::rhi::BufferUsage::kTransferDst;
+    albedo_desc.memory = cd::rhi::MemoryUsage::kAuto;
+    auto albedo_r = device.create_buffer(albedo_desc);
+    if (!albedo_r.has_value())
+    {
+        std::fprintf(stderr, "[hello_rt] albedo SSBO create failed\n");
+        return 18;
+    }
+    (void)device.upload_buffer(*albedo_r, 0,
+        std::span<const std::byte> {
+            reinterpret_cast<const std::byte*>(kAlbedoData.data()), sizeof(kAlbedoData)
+        });
+    std::printf("[hello_rt] albedo SSBO created (3 × vec4: red/green/blue).\n");
 
     // ---- 8. SBT buffer (raygen / miss / hit, base-aligned) ---------------
     const std::uint32_t handle_size = device.rt_shader_group_handle_size();
@@ -429,7 +495,15 @@ int main()
     w_img.type = cd::rhi::DescriptorType::kStorageImage;
     w_img.view = *tv_r;
 
-    std::array<cd::rhi::DescriptorWrite, 2> writes { w_tlas, w_img };
+    // Phase 406: per-instance albedo SSBO at binding 2.
+    cd::rhi::DescriptorWrite w_albedo {};
+    w_albedo.binding      = 2;
+    w_albedo.type         = cd::rhi::DescriptorType::kStorageBuffer;
+    w_albedo.buffer       = *albedo_r;
+    w_albedo.buffer_offset = 0;
+    w_albedo.buffer_range  = sizeof(kAlbedoData);
+
+    std::array<cd::rhi::DescriptorWrite, 3> writes { w_tlas, w_img, w_albedo };
     if (auto r = device.update_descriptor_set(*ds,
             std::span<const cd::rhi::DescriptorWrite>(writes));
         !r.has_value())
@@ -439,7 +513,7 @@ int main()
                      r.error().message.data());
         return 15;
     }
-    std::printf("[hello_rt] descriptor set updated (TLAS @ 0, storage image @ 1).\n");
+    std::printf("[hello_rt] descriptor set updated (TLAS @ 0, img @ 1, albedo SSBO @ 2).\n");
 
     // ---- 10. Command buffer record + submit ------------------------------
     auto cmd_ptr = device.create_command_buffer();
@@ -503,6 +577,7 @@ int main()
     device.destroy_acceleration_structure(*tlas_r);
     device.destroy_acceleration_structure(*blas_r);
     device.destroy_buffer(*sbt_r);
+    device.destroy_buffer(*albedo_r);  // Phase 406: per-instance albedo SSBO
     device.destroy_buffer(*vb_r);
     device.destroy_rt_pipeline(*rtp);
     device.destroy_pipeline_layout(*pl);
@@ -511,6 +586,7 @@ int main()
     device.destroy_shader_module(ms_mod);
     device.destroy_shader_module(ch_mod);
 
-    std::printf("[hello_rt] OK — recursive RT (max_recursion=2) verified on this adapter.\n");
+    std::printf("[hello_rt] OK — multi-instance RT (3 instances, per-instance albedo, "
+                "max_recursion=2) verified on this adapter.\n");
     return 0;
 }
