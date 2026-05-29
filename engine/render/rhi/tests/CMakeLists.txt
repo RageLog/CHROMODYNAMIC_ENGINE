@@ -8,3 +8,9 @@ cd_add_test(rt_descriptors
   SOURCES test_rt_descriptors.cpp
   DEPS    cd::rhi cd::core
 )
+
+# Marathon Run 28 X4 slice: lock the Vulkan + D3D12 parity surface.
+cd_add_test(backend_parity
+  SOURCES test_backend_parity.cpp
+  DEPS    cd::rhi cd::core
+)
