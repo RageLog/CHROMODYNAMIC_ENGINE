@@ -17,6 +17,8 @@ endif()
 # RT samples need Vulkan ray-query — same gate as the parent. Listed
 # here for visibility; if you build with CD_ENABLE_VULKAN=OFF this
 # whole subdirectory is skipped.
-add_subdirectory(hello_rt_check)
+# hello_rt_check (Phase 14.G v0.40.0 API-surface probe) was deleted in
+# phase411-D-F5: hello_rt (Phase 141+406) covers BLAS/TLAS create, RT
+# pipeline, SBT, dispatch_rays, and feature detection with a real scene.
 add_subdirectory(hello_rt)
 add_subdirectory(hello_path_trace)
