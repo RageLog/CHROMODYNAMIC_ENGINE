@@ -3146,7 +3146,7 @@ public:
             bgi.geometryCount = 1;
             bgi.pGeometries = &g;
 
-            std::uint32_t prim_count = static_cast<std::uint32_t>(desc.instances.size());
+            auto prim_count = static_cast<std::uint32_t>(desc.instances.size());
             VkAccelerationStructureBuildSizesInfoKHR sizes {};
             sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
             vkGetAccelerationStructureBuildSizesKHR(
@@ -3527,8 +3527,7 @@ public:
         std::vector<std::uint32_t> group_ids_seen;
         for (const auto& e : desc.shaders)
         {
-            if (std::find(group_ids_seen.begin(), group_ids_seen.end(), e.group) ==
-                group_ids_seen.end())
+            if (std::ranges::find(group_ids_seen, e.group) == group_ids_seen.end())
             {
                 group_ids_seen.push_back(e.group);
             }

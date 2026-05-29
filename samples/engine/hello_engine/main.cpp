@@ -141,7 +141,9 @@
 #include <fstream>
 #include <functional>
 #include <ios>
+#include <numbers>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <thread>
@@ -680,7 +682,7 @@ inline void draw_audio_panel(bool audio_muted,
         }
         // Minimal WAV header (mono s16) - same encoder shape as
         // hello_audio_chain / hello_audio_synth.
-        const std::uint32_t data_bytes = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
+        const auto data_bytes = static_cast<std::uint32_t>(samples.size() * sizeof(std::int16_t));
         const std::uint32_t fmt_size = 16;
         const std::uint32_t riff_size = 4u + 8u + fmt_size + 8u + data_bytes;
         std::vector<std::byte> bytes;
@@ -1230,8 +1232,8 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
         // degrees for artist readability and clamp inner <= outer.
         if (row.light.type == cd::light::LightType::kSpot)
         {
-            float inner_deg = std::acos(std::clamp(row.light.cos_inner_cone, -1.0F, 1.0F)) * (180.0F / 3.14159265F);
-            float outer_deg = std::acos(std::clamp(row.light.cos_outer_cone, -1.0F, 1.0F)) * (180.0F / 3.14159265F);
+            float inner_deg = std::acos(std::clamp(row.light.cos_inner_cone, -1.0F, 1.0F)) * (180.0F / std::numbers::pi_v<float>);
+            float outer_deg = std::acos(std::clamp(row.light.cos_outer_cone, -1.0F, 1.0F)) * (180.0F / std::numbers::pi_v<float>);
             bool changed = false;
             if (ImGui::SliderFloat("inner cone (deg)", &inner_deg, 0.5F, 89.0F, "%.1f"))
                 changed = true;
@@ -1243,8 +1245,8 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
                     inner_deg = outer_deg - 0.5F;
                 if (inner_deg < 0.5F)
                     inner_deg = 0.5F;
-                row.light.cos_inner_cone = std::cos(inner_deg * (3.14159265F / 180.0F));
-                row.light.cos_outer_cone = std::cos(outer_deg * (3.14159265F / 180.0F));
+                row.light.cos_inner_cone = std::cos(inner_deg * (std::numbers::pi_v<float> / 180.0F));
+                row.light.cos_outer_cone = std::cos(outer_deg * (std::numbers::pi_v<float> / 180.0F));
                 const float denom = row.light.cos_inner_cone - row.light.cos_outer_cone;
                 row.light.inv_cone_range = denom > 1e-5F ? 1.0F / denom : 0.0F;
             }
@@ -4596,7 +4598,7 @@ int main()
     cam.near_z = 0.05F;
     cam.far_z = 200.0F;
     cd::scene::SceneCameraController scene_cam;
-    scene_cam.attach(cam, scene, /*follow=*/ {});
+    scene_cam.attach(cam, scene, /*target_entity=*/ {});
     scene_cam.set_auto_spin(false);  // user-controlled by default; toggle from palette
     scene_cam.orbit().auto_spin_rate = 0.25F;
 
@@ -4661,7 +4663,7 @@ int main()
     using cd_sample::kAudioRingFrames;  // resolve bare refs in audio tick / panel call
 
     // ---- Net sim (continuous tick) ----
-    cd::net::Throttle net_throttle { /*cap=*/4.0F, /*rate=*/30.0F };
+    cd::net::Throttle net_throttle { /*capacity=*/4.0F, /*rate_per_sec=*/30.0F };
     cd::net::SnapshotBuffer<float> net_snapbuf;  // tiny scalar state for the demo
     cd::net::LatencyStats net_rtt;
     bool net_enabled = true;
@@ -5093,7 +5095,9 @@ int main()
         "Random: Reseed + Refresh",
         [&]
         {
-            rand_rng = cd::math::Random { static_cast<std::uint64_t>(std::rand()) };
+            thread_local std::mt19937_64 rng(std::random_device{}());
+            std::uniform_int_distribution<std::uint64_t> dist;
+            rand_rng = cd::math::Random { dist(rng) };
             rebuild_random_viz();
             log_push("[palette] Random reseeded");
         }
