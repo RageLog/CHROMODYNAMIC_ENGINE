@@ -31,6 +31,10 @@
       "name": "fmt",
       "version>=": "10.0.0",
       "$comment": "Logging format - ADR-005 section B + ADR-017 P1. Resolved via find_package(fmt CONFIG QUIET) in top-level CMakeLists.txt; optional Phase 1."
+    },
+    {
+      "name": "spirv-cross",
+      "$comment": "GLSL/SPIR-V → HLSL/MSL/GLSL cross-compilation for cd_spirv_cross_glue (B-infra1). Promote a dep only when find_package is wired. Resolved via find_package(spirv_cross_core CONFIG) in engine/render/spirv_cross_glue/CMakeLists.txt with FetchContent fallback (vulkan-sdk-1.3.268.0)."
     }
   ],
 
