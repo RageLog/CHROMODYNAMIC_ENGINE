@@ -14,18 +14,8 @@
 #   cross-cutting → imgdiff (test infra), script (Lua tier)
 
 add_subdirectory(foundation)
-add_subdirectory(asset)
+add_subdirectory(asset)       # phase419: all asset sub-libs consolidated inside asset/CMakeLists.txt
 add_subdirectory(texture_synth)
-add_subdirectory(asset/image)
-add_subdirectory(asset/gltf)
-add_subdirectory(asset/obj)
-add_subdirectory(asset/cdmesh)
-add_subdirectory(asset/cdtex)
-add_subdirectory(asset/ktx2)
-add_subdirectory(asset/wav)
-add_subdirectory(asset/json)
-add_subdirectory(asset/pak)
-add_subdirectory(asset/streaming)   # Day 28 — priority-queue async I/O
 add_subdirectory(imgdiff)
 add_subdirectory(script)
 add_subdirectory(render)
