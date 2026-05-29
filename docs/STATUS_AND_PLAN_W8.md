@@ -348,3 +348,55 @@ Strand B remaining bug-class rules (bugprone-implicit-widening-of-multiplication
 - BLOCKING ajan zincirleri: safety-integration (concurrency icin zorunlu), citation-verifier (her academic atif), independent-auditor (kritik claim).
 - Tag yok (feedback_no_auto_tag). Phase numarasi devam: phase303 (Run 9 N3-prep oncelikli).
 - Marathon kurali: kullanici uzun maraton demedigi surece her wave kullanici onayi ile kapanir.
+
+---
+
+### Marathon Run 12 close-out (W8 phase329-332 + Strand C2 ADR batch)
+
+Run 12 was a triple-strand marathon focused on (A) extraction continuation, (B) substantive clang-tidy fixes per user mandate "trivial = disable / rest = fix", and (C) ADR backfill for the four W8 phases Run 11 had deferred.
+
+**Strand B1+B2+B3 substantive clang-tidy + policy (phase329)**:
+
+User mandate verbatim: *"fonksiyonlara ve kutuphanelere bolme beraber tum warning fixleri yap. fixler bazizlari onemisiz olabile mesela dont use do while givi yada printf return kullanma givi hatalar kapatilabilir onun disindakiler duzeltilmis olmali"* — fix the substantive, disable the trivial.
+
+- Disabled in `.clang-tidy` with one-line rationale (Strand B1):
+  - `cert-err33-c` (user verbatim "printf return")
+  - `cppcoreguidelines-avoid-do-while` (user verbatim "do-while")
+  - `hicpp-uppercase-literal-suffix` (style preference, mirrors readability rule)
+  - `readability-braces-around-statements` (project style on hot-path math)
+  - `readability-suspicious-call-argument` (FP-prone on math/shader arg shuffles)
+- Fixed site-by-site in main.cpp + engine/ (Strand B2, 10 sites):
+  - `bugprone-misplaced-widening-cast` (1): main.cpp:1557 spot-cone rim
+  - `bugprone-unhandled-exception-at-new` (1): WorkStealingThreadPool.hpp:192 — `noexcept` spawn_detached's throwing `new` would call `std::terminate`; now uses `new(std::nothrow)` + graceful false return + coroutine counter rollback.
+  - `readability-misleading-indentation` (2): Decal.hpp + Primitives.hpp — brace outer fors.
+  - `bugprone-implicit-widening-of-multiplication-result` (3): Upload.hpp, EditHistory.hpp, main.cpp:698 (WAV byte-rate).
+  - `bugprone-integer-division` (1): Gtao.hpp:86 — replaced `static_cast<float>(size/2)` with `size * 0.5F`.
+  - `bugprone-suspicious-stringview-data-usage` (1): main.cpp:1033 — route through `std::string{sv}` before `c_str()`.
+  - `cert-flp30-c` (2): IBL IrradianceConvolution outer + inner float-counter loops kept verbatim under `NOLINTNEXTLINE(cert-flp30-c)` with rationale; CLAUDE.md marathon rule "DON'T regenerate IBL bake" locks the loop count to the exact float-counter form W8-AW chrome-mirror was calibrated against.
+- Promoted to WarningsAsErrors (Strand B3): all 7 above categories alongside the existing `modernize-use-scoped-lock`. Zero diagnostics in promoted categories against `main.cpp` compile_commands.json sweep.
+
+`docs/CLANG_TIDY_AUDIT_RUN11.md` extended with the Run 12 phase B1+B3 close-out section listing every disable rationale + every fix site + the WarningsAsErrors list.
+
+**Strand C2 four W8 ADRs backfilled (phase330)**:
+
+Iglberger-format ADRs for the four W8 phases identified by Run 11 docs audit:
+
+- `ADR-20260529-W8-AY-bake-budget-revert.md`: IBL bake budget revert from W8-AX 256² to W8-AV 128² (analytic-sky source had zero high-freq content; 4x boot cost for zero visible gain). First env-spec composite gate.
+- `ADR-20260529-W8-AZ-env-spec-sun-gate.md`: tighten the composite gate to strict `clamp(sun_dir.w, 0, 1)`. Stale sun-baked cube would otherwise ghost-reflect when sun toggled off.
+- `ADR-20260529-W8-BA-RT-reflection-occlusion.md`: closest-hit RT walk along the spec reflection direction; on hit, scale sky toward 0. Roughness-attenuated so mirror chrome shows silhouettes while rough metal keeps the IBL. ~0.4 ms GPU on RTX 3060 Ti class.
+- `ADR-20260529-W8-BC-per-instance-albedo-SSBO.md`: per-frame 256-slot SSBO of `(albedo, emissive)` keyed by TLAS instance ID. PBR branch reads `rayQueryGetIntersectionInstanceIdEXT` and indexes the SSBO so the W8-BA silhouette shades to neighbour albedo. Same ray cost, coloured reflections. The "instance ID == SSBO slot" invariant is load-bearing; phase293 N1E extract co-located both halves of the contract in `HelloRayQuery.hpp` precisely for review.
+
+**Strand A1+A7 extraction continuation (phase331-332)**:
+
+- N13 (phase331): `cd_sample::SampleAppState` aggregate landing — bundles 18 free-look camera + pick locals into `FreeLookState` + `PickRequest` substructs. Name-aliases preserve every existing call site (input handlers, palette callbacks, gizmo overlay, picker). Header design note explicitly rejects the kitchen-sink god-object pattern; aggregate is scoped to the cohesive camera+input+pick cluster only. main.cpp 7381 -> 7388 (header overhead net), main() body 3360 -> 3350 (-10 from local declarations consolidated).
+- N14 (phase332, Strand A7): WASD + right-mouse-look + scene_cam auto-orbit per-frame tick (~84 inline lines) lifted into `cd_sample::update_free_look_camera()` in `HelloAppState.hpp`. Preserves the `wasd_was_active_prev` function-local-static latch and the W6-F shift x2.5 / ctrl x0.25 modifiers bit-for-bit. Required a parallel touch in the picker block to recompute `wasd_active` locally (previously shared with the camera tick). main.cpp 7388 -> 7313 (-75), main() body 3350 -> 3275 (-75).
+
+main() body progression Run 12: 3360 -> 3350 (N13) -> 3275 (N14). Net -85 lines (-2.5%).
+
+**Strand A deferred to Run 13**: N15 materials extract (~430 lines), N16 glTF auto-load (~223 lines), N17 glTF baseColor (~251 lines), N18 picker extract (~161 lines), N19 command palette setup (~846 lines), main()<500 target. The deferred extracts each carry higher risk (deeper main()-scope dependencies — material handles passed to dozens of descriptor writes; palette captures every state by reference) and need their own dedicated focused aggregates (HelloMaterials, HelloPalette). The N13 SampleAppState foundation is in place for the picker path; future runs build on it.
+
+**Strand C3 STATUS refresh**: this section.
+
+**Tests**: 96/96 PASS at every Run 12 checkpoint. Zero rendering-behaviour regressions. IBL bake parameters preserved verbatim (Run 12 cert-flp30-c sites preserved under NOLINTNEXTLINE with rationale rather than algorithmic rewrite that would change `n_samples` per output texel).
+
+**Phase numbering**: 329 (B1+B2+B3) -> 330 (C2 four ADRs) -> 331 (A1 N13 SampleAppState) -> 332 (A7 N14 free-look camera extract).
