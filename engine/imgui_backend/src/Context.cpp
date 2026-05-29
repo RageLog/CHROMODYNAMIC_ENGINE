@@ -5,7 +5,7 @@
 #include <cd/imgui/Context.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_vulkan/NativeHandles.hpp>
+#include <cd/rhi/vulkan/NativeHandles.hpp>
 #include <imgui.h>
 
 #if defined(_WIN32)
@@ -141,7 +141,7 @@ struct Context::Impl
 {
     cd::platform::IWindow* window { nullptr };
     cd::rhi::IDevice* device { nullptr };
-    cd::rhi_vulkan::NativeHandles handles {};
+    cd::rhi::vulkan::NativeHandles handles {};
     VkDescriptorPool desc_pool { VK_NULL_HANDLE };
     VkFormat color_format { VK_FORMAT_B8G8R8A8_UNORM };
 
@@ -169,7 +169,7 @@ cd::core::Result<std::unique_ptr<Context>> Context::create(const InitDesc& desc)
         return std::unexpected(imgui_errors::make(imgui_errors::Code::kInvalidArgument, "window or device is null"));
     }
 
-    auto nh = cd::rhi_vulkan::get_native(*desc.device);
+    auto nh = cd::rhi::vulkan::get_native(*desc.device);
     if (!nh.has_value())
     {
         return std::unexpected(
@@ -369,7 +369,7 @@ void Context::render(cd::rhi::ICommandBuffer& cmd)
     auto* draw = ImGui::GetDrawData();
     if (draw == nullptr || draw->TotalVtxCount == 0)
         return;
-    auto vk_cmd = cd::rhi_vulkan::get_native(cmd);
+    auto vk_cmd = cd::rhi::vulkan::get_native(cmd);
     if (vk_cmd == VK_NULL_HANDLE)
         return;
     ImGui_ImplVulkan_RenderDrawData(draw, vk_cmd);

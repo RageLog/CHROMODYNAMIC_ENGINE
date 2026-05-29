@@ -22,7 +22,7 @@
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/shader/CachedCompiler.hpp>
 #include <cd/shader/Compiler.hpp>
 #include <cd/shader/FileWatcher.hpp>
@@ -172,8 +172,8 @@ int main(int argc, char** argv)
         return 1;
     auto& window = **window_r;
 
-    cd::rhi_vulkan::VulkanCreateInfo vci {};
-    auto device_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
+    auto device_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!device_r.has_value())
         return 2;
     auto& device = **device_r;

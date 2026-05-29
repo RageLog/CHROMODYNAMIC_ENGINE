@@ -20,7 +20,7 @@
 // =============================================================================
 #include <cd/core/Version.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 
 #include <cstdio>
 
@@ -42,9 +42,9 @@ int main()
                  static_cast<unsigned>(cd::core::kEngineVersion.minor),
                  static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    cd::rhi_vulkan::VulkanCreateInfo vci {};
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
     vci.enable_validation = false;
-    auto dev_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr,

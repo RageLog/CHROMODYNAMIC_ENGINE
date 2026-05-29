@@ -17,7 +17,7 @@
 #include <cd/render/Renderer.hpp>
 #include <cd/render/SortKey.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -30,9 +30,9 @@ namespace
 
 std::unique_ptr<cd::rhi::IDevice> try_make_device()
 {
-    cd::rhi_vulkan::VulkanCreateInfo info {};
+    cd::rhi::vulkan::VulkanCreateInfo info {};
     info.enable_validation = false;
-    auto r = cd::rhi_vulkan::create_vulkan_device(info);
+    auto r = cd::rhi::vulkan::create_vulkan_device(info);
     if (!r.has_value())
         return nullptr;
     return std::move(*r);

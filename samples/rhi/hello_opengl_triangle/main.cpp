@@ -20,7 +20,7 @@
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
-#include <cd/rhi_opengl/OpenGLDevice.hpp>
+#include <cd/rhi/opengl/OpenGLDevice.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -188,12 +188,12 @@ int main()
     auto& win = **win_r;
 
     // ---- 2. Boot GL device with NO dummy window so we can target the real one ----
-    cd::rhi_opengl::GLCreateInfo info {};
+    cd::rhi::opengl::GLCreateInfo info {};
     info.app_name = "hello_opengl_triangle";
     info.min_version = 30;
     info.enable_validation = false;
     info.create_dummy_window = true;  // device uses its dummy for initial probing
-    auto dev_r = cd::rhi_opengl::create_gl_device(info);
+    auto dev_r = cd::rhi::opengl::create_gl_device(info);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr, "[gl] create_gl_device failed\n");

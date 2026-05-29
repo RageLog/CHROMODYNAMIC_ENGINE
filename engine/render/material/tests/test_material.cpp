@@ -4,7 +4,7 @@
 #include <cd/material/Material.hpp>
 #include <cd/rhi/Format.hpp>
 #include <cd/rhi/NullDevice.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -142,7 +142,7 @@ TEST(MaterialInstance, CreateFromMaterialWithDescriptors)
 
 TEST(Material, GlslEndToEndOnRealDevice)
 {
-    auto vk_r = cd::rhi_vulkan::create_vulkan_device({});
+    auto vk_r = cd::rhi::vulkan::create_vulkan_device({});
     if (!vk_r.has_value())
         GTEST_SKIP() << "no Vulkan ICD";
     auto& dev = **vk_r;

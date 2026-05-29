@@ -60,8 +60,8 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
-#include <cd/rhi_d3d12/D3D12Device.hpp>
-#include <cd/rhi_d3d12/D3D12ShaderCompile.hpp>
+#include <cd/rhi/d3d12/D3D12Device.hpp>
+#include <cd/rhi/d3d12/D3D12ShaderCompile.hpp>
 
 #include <algorithm>
 #include <array>
@@ -379,10 +379,10 @@ int main()
     free(headless_env);  // _dupenv_s allocates; must free even if null
 
     // ---- Device ---------------------------------------------------------------
-    cd::rhi_d3d12::D3D12CreateInfo dci {};
+    cd::rhi::d3d12::D3D12CreateInfo dci {};
     dci.enable_validation    = false;
     dci.prefer_discrete_gpu  = true;
-    auto dev_r = cd::rhi_d3d12::create_d3d12_device(dci);
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device(dci);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr, "[d3d12_pbr] device init failed: %.*s\n",
@@ -425,19 +425,19 @@ int main()
     }
 
     // ---- Shaders ---------------------------------------------------------------
-    cd::rhi_d3d12::CompileOptions vs_opts {};
+    cd::rhi::d3d12::CompileOptions vs_opts {};
     vs_opts.source      = kVS;
     vs_opts.entry_point = "main";
     vs_opts.stage       = cd::rhi::ShaderStage::kVertex;
-    vs_opts.model       = cd::rhi_d3d12::ShaderModel::kSM5_1;
-    auto vs_bc_r = cd::rhi_d3d12::compile_hlsl(vs_opts);
+    vs_opts.model       = cd::rhi::d3d12::ShaderModel::kSM5_1;
+    auto vs_bc_r = cd::rhi::d3d12::compile_hlsl(vs_opts);
 
-    cd::rhi_d3d12::CompileOptions ps_opts {};
+    cd::rhi::d3d12::CompileOptions ps_opts {};
     ps_opts.source      = kPS;
     ps_opts.entry_point = "main";
     ps_opts.stage       = cd::rhi::ShaderStage::kFragment;
-    ps_opts.model       = cd::rhi_d3d12::ShaderModel::kSM5_1;
-    auto ps_bc_r = cd::rhi_d3d12::compile_hlsl(ps_opts);
+    ps_opts.model       = cd::rhi::d3d12::ShaderModel::kSM5_1;
+    auto ps_bc_r = cd::rhi::d3d12::compile_hlsl(ps_opts);
 
     if (!vs_bc_r.has_value() || !ps_bc_r.has_value())
     {

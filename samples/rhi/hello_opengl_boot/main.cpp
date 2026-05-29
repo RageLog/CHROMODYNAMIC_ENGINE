@@ -9,7 +9,7 @@
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Version.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_opengl/OpenGLDevice.hpp>
+#include <cd/rhi/opengl/OpenGLDevice.hpp>
 
 #include <cstdio>
 
@@ -21,11 +21,11 @@ int main()
                  static_cast<unsigned>(cd::core::kEngineVersion.minor),
                  static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    cd::rhi_opengl::GLCreateInfo info {};
+    cd::rhi::opengl::GLCreateInfo info {};
     info.app_name = "hello_opengl_boot";
     info.min_version = 30;   // GL 3.0 minimum so old laptops still pass
     info.enable_validation = false;
-    auto dev_r = cd::rhi_opengl::create_gl_device(info);
+    auto dev_r = cd::rhi::opengl::create_gl_device(info);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr,

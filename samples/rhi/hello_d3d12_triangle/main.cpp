@@ -4,7 +4,7 @@
 // v0.36.0 / Phase 14.C — first D3D12 sample that *draws* (not just clears).
 //
 // Builds a 640x360 Win32 window, opens a flip-model swapchain, compiles
-// an inline HLSL VS+PS via cd::rhi_d3d12::compile_hlsl, creates an
+// an inline HLSL VS+PS via cd::rhi::d3d12::compile_hlsl, creates an
 // ID3D12PipelineState with a position+color input layout, uploads a
 // 3-vertex buffer with one triangle, and renders it through the cd::rhi
 // abstraction's standard begin/begin_render_pass/draw/end loop.
@@ -21,8 +21,8 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
-#include <cd/rhi_d3d12/D3D12Device.hpp>
-#include <cd/rhi_d3d12/D3D12ShaderCompile.hpp>
+#include <cd/rhi/d3d12/D3D12Device.hpp>
+#include <cd/rhi/d3d12/D3D12ShaderCompile.hpp>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -139,9 +139,9 @@ int main()
                  static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
     // ---- Device + window + swapchain ---------------------------------------
-    cd::rhi_d3d12::D3D12CreateInfo dci {};
+    cd::rhi::d3d12::D3D12CreateInfo dci {};
     dci.enable_validation = false;
-    auto dev_r = cd::rhi_d3d12::create_d3d12_device(dci);
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device(dci);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr, "[d3d12] device init failed: %.*s\n",
@@ -174,12 +174,12 @@ int main()
     const auto swap = *swap_r;
 
     // ---- Compile shaders ---------------------------------------------------
-    cd::rhi_d3d12::CompileOptions vs_opts {};
+    cd::rhi::d3d12::CompileOptions vs_opts {};
     vs_opts.source = kVertexHLSL;
     vs_opts.entry_point = "main";
     vs_opts.stage = cd::rhi::ShaderStage::kVertex;
     vs_opts.source_name = "triangle.vs.hlsl";
-    auto vs_blob = cd::rhi_d3d12::compile_hlsl(vs_opts);
+    auto vs_blob = cd::rhi::d3d12::compile_hlsl(vs_opts);
     if (!vs_blob.has_value())
     {
         std::fprintf(stderr, "[d3d12] VS compile failed: %.*s\n",
@@ -188,12 +188,12 @@ int main()
         return 3;
     }
 
-    cd::rhi_d3d12::CompileOptions ps_opts {};
+    cd::rhi::d3d12::CompileOptions ps_opts {};
     ps_opts.source = kFragmentHLSL;
     ps_opts.entry_point = "main";
     ps_opts.stage = cd::rhi::ShaderStage::kFragment;
     ps_opts.source_name = "triangle.ps.hlsl";
-    auto ps_blob = cd::rhi_d3d12::compile_hlsl(ps_opts);
+    auto ps_blob = cd::rhi::d3d12::compile_hlsl(ps_opts);
     if (!ps_blob.has_value())
     {
         std::fprintf(stderr, "[d3d12] PS compile failed: %.*s\n",

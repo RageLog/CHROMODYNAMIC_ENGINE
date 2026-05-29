@@ -22,7 +22,7 @@
 #include <cd/cluster_gpu/GpuPipeline.hpp>
 #include <cd/render/cluster/ClusterGrid.hpp>
 #include <cd/render/cluster/ReferenceCompute.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -42,10 +42,10 @@ int main()
     std::printf("=== hello_gpu_cluster — Forward+ GPU dispatch + parity ===\n");
 
     // 1. Bring up a Vulkan device.
-    cd::rhi_vulkan::VulkanCreateInfo info;
+    cd::rhi::vulkan::VulkanCreateInfo info;
     info.app_name = "hello_gpu_cluster";
     info.enable_validation = false;  // sample runs headless; skip layer.
-    auto device_r = cd::rhi_vulkan::create_vulkan_device(info);
+    auto device_r = cd::rhi::vulkan::create_vulkan_device(info);
     if (!device_r.has_value() || *device_r == nullptr)
     {
         std::printf("[hello_gpu_cluster] no Vulkan device — skipping (exit 2)\n");

@@ -11,7 +11,7 @@
 // definitely terminates.
 //
 // What this sample proves end-to-end:
-//   - cd::rhi_d3d12::create_d3d12_device boots ID3D12Device+queue
+//   - cd::rhi::d3d12::create_d3d12_device boots ID3D12Device+queue
 //   - create_swapchain wires DXGI flip-model + per-image RTV
 //   - create_command_buffer / begin / begin_render_pass with
 //     LoadOp::kClear / end_render_pass / end records a CMD list
@@ -21,7 +21,7 @@
 #include <cd/core/Version.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_d3d12/D3D12Device.hpp>
+#include <cd/rhi/d3d12/D3D12Device.hpp>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -101,11 +101,11 @@ int main()
                  static_cast<unsigned>(cd::core::kEngineVersion.minor),
                  static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    cd::rhi_d3d12::D3D12CreateInfo dci {};
+    cd::rhi::d3d12::D3D12CreateInfo dci {};
     dci.app_name = "hello_d3d12_clear";
     dci.enable_validation = false;
 
-    auto dev_r = cd::rhi_d3d12::create_d3d12_device(dci);
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device(dci);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr,

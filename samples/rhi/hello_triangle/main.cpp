@@ -16,7 +16,7 @@
 #include <cd/render/Renderer.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/shader/Compiler.hpp>
 
 #include <array>
@@ -71,9 +71,9 @@ int main(int argc, char** argv)
     auto& window = **window_r;
 
     // ---- Vulkan device -----------------------------------------------------
-    cd::rhi_vulkan::VulkanCreateInfo vci {};
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
     vci.enable_validation = false;
-    auto device_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    auto device_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!device_r.has_value())
     {
         std::fprintf(

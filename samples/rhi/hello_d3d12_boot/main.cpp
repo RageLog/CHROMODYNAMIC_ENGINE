@@ -4,7 +4,7 @@
 // v0.27.0 boot-only milestone: the D3D12 backend can create an
 // ID3D12Device + DXGI adapter + direct command queue. This sample
 // proves the path is alive by:
-//   1. calling cd::rhi_d3d12::create_d3d12_device()
+//   1. calling cd::rhi::d3d12::create_d3d12_device()
 //   2. printing the chosen adapter name + backend enum
 //   3. invoking wait_idle() (exercises the fence + event signal path)
 //   4. exiting 0
@@ -15,7 +15,7 @@
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Version.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_d3d12/D3D12Device.hpp>
+#include <cd/rhi/d3d12/D3D12Device.hpp>
 
 #include <cstdio>
 
@@ -27,7 +27,7 @@ int main()
                  static_cast<unsigned>(cd::core::kEngineVersion.minor),
                  static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    cd::rhi_d3d12::D3D12CreateInfo info {};
+    cd::rhi::d3d12::D3D12CreateInfo info {};
     info.app_name = "hello_d3d12_boot";
     info.prefer_discrete_gpu = true;
     // Validation off by default — debug runtime requires the Windows
@@ -36,7 +36,7 @@ int main()
     // local development.
     info.enable_validation = false;
 
-    auto dev_r = cd::rhi_d3d12::create_d3d12_device(info);
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device(info);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr,

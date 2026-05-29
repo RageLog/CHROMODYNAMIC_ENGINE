@@ -297,7 +297,7 @@ enum class RtShaderStage : std::uint8_t
 /// One entry in the RT pipeline shader-stage list. Shader source is
 /// pre-compiled to SPIR-V via `cd::shader::ICompiler` + passed in as
 /// a `ShaderModuleHandle` — same contract as graphics + compute
-/// pipelines. Decouples `cd::rhi_vulkan` from `cd::shader`.
+/// pipelines. Decouples `cd::rhi::vulkan` from `cd::shader`.
 struct RtShaderEntry
 {
     RtShaderStage      stage   { RtShaderStage::kRaygen };

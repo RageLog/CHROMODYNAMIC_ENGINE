@@ -46,7 +46,7 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/Pipeline.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/shader/Compiler.hpp>
 
 #include <array>
@@ -209,8 +209,8 @@ int main()
                 static_cast<unsigned>(cd::core::kEngineVersion.minor),
                 static_cast<unsigned>(cd::core::kEngineVersion.patch));
 
-    cd::rhi_vulkan::VulkanCreateInfo vci {};
-    auto dev_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!dev_r.has_value())
     {
         std::fprintf(stderr, "[hello_rt] device init failed: %.*s\n",

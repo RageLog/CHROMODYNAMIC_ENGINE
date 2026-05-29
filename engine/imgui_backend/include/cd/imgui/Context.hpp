@@ -16,7 +16,7 @@
 //
 // `create` takes engine-side handles (Window + IDevice + swapchain color
 // format) and internally fetches the raw Vulkan handles via
-// cd::rhi_vulkan::get_native. If the device is not a Vulkan backend
+// cd::rhi::vulkan::get_native. If the device is not a Vulkan backend
 // (e.g. a future DX12 device) Create returns kBackendMismatch and the
 // caller must use a DX12-specific ImGui wrapper.
 //

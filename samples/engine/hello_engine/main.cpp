@@ -117,7 +117,7 @@
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
-#include <cd/rhi_vulkan/VulkanDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/scene/SceneCameraController.hpp>
 #include <cd/scene/Serializer.hpp>
@@ -4199,8 +4199,8 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.window = std::move(*window_r);
     auto& window = *s.window;
 
-    cd::rhi_vulkan::VulkanCreateInfo vci {};
-    auto dev_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!dev_r.has_value()) return std::unexpected(dev_r.error());
     s.device_owner = std::move(*dev_r);
     auto& device = *s.device_owner;
@@ -5657,8 +5657,8 @@ int main(int argc, char** argv)
         return 1;
     auto& window = **window_r;
 
-    cd::rhi_vulkan::VulkanCreateInfo vci {};
-    auto dev_r = cd::rhi_vulkan::create_vulkan_device(vci);
+    cd::rhi::vulkan::VulkanCreateInfo vci {};
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(vci);
     if (!dev_r.has_value())
         return 2;
     auto& device = **dev_r;
