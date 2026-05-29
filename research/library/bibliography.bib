@@ -1,16 +1,17 @@
 % =============================================================================
 % CHROMODYNAMIC Engine - Demir Kural verified-citation BibTeX file.
 %
-% Mega-Marathon Milestone M3 (Run 18) populates this file with the 5 anchor
-% papers already referenced in W7/W8 shader comments and ADRs. Entries here
-% are PROVISIONAL: the corresponding PDFs are STAGED in MANIFEST.csv with
-% downloaded_at=EMPTY pending a future session with network fetch.
+% Mega-Marathon A1 (Run 29 / phase372): 3 of 5 pilot entries VERIFIED with
+% PDFs on disk + SHA-256 recorded in MANIFEST.csv. 2 of 5 remain
+% PENDING_PDF (heitz2016ltc + eberlylbs); see research/library/ATTEMPTS.md
+% for the resolution log.
 %
-% Demir Kural rule: an ADR or shader comment may not cite a bibkey from this
-% file until the matching MANIFEST.csv row has a verified PDF on disk
-% (pdf_relpath populated + sha256 populated + status=VERIFIED). The entries
-% below carry an explicit `note = {DEMIR_KURAL_PENDING_PDF}` field so
-% citation-verifier rejects them in any draft until the gap closes.
+% Demir Kural rule: an ADR or shader comment may not cite a bibkey from
+% this file until the matching MANIFEST.csv row has a verified PDF
+% (pdf_relpath populated + sha256 populated + status=VERIFIED). Entries
+% still PENDING carry an explicit `note = {DEMIR_KURAL_PENDING_PDF}`
+% field so citation-verifier rejects them in any draft until the gap
+% closes.
 % =============================================================================
 
 @inproceedings{karis2013realshading,
@@ -19,8 +20,7 @@
   booktitle = {{SIGGRAPH} 2013 Course: Physically Based Shading in Theory and Practice},
   year      = {2013},
   publisher = {ACM},
-  url       = {https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf},
-  note      = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv Run 18, no PDF on disk yet}
+  url       = {https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf}
 }
 
 @inproceedings{heitz2016ltc,
@@ -32,7 +32,7 @@
   number    = {4},
   publisher = {ACM},
   url       = {https://eheitzresearch.wordpress.com/415-2/},
-  note      = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv Run 18, no PDF on disk yet}
+  note      = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv, A1 fetch failed, see ATTEMPTS.md}
 }
 
 @article{frisvad2012onb,
@@ -44,8 +44,7 @@
   number    = {3},
   pages     = {151--159},
   publisher = {Taylor \& Francis},
-  url       = {https://backend.orbit.dtu.dk/ws/portalfiles/portal/126824972/onb_frisvad_jgt2012_v2.pdf},
-  note      = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv Run 18, no PDF on disk yet}
+  url       = {https://backend.orbit.dtu.dk/ws/portalfiles/portal/126824972/onb_frisvad_jgt2012_v2.pdf}
 }
 
 @techreport{eberlylbs,
@@ -55,7 +54,7 @@
   year        = {2008},
   type        = {Engineering Notes},
   url         = {https://www.geometrictools.com/Documentation/Skinning.pdf},
-  note        = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv Run 18, no PDF on disk yet}
+  note        = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv, A1 fetch failed (upstream URL dead), see ATTEMPTS.md}
 }
 
 @inproceedings{wronski2014volfog,
@@ -64,6 +63,5 @@
   booktitle = {{SIGGRAPH} 2014 Course: Advances in Real-Time Rendering in Games},
   year      = {2014},
   publisher = {ACM},
-  url       = {https://bartwronski.files.wordpress.com/2014/08/bwronski_volumetric_fog_siggraph2014.pdf},
-  note      = {DEMIR_KURAL_PENDING_PDF -- staged in MANIFEST.csv Run 18, no PDF on disk yet}
+  url       = {https://bartwronski.files.wordpress.com/2014/08/bwronski_volumetric_fog_siggraph2014.pdf}
 }
