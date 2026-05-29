@@ -6234,14 +6234,25 @@ int main(int argc, char** argv)
     auto& knot_mesh        = meshes.knot;
     auto& gltf_mesh        = meshes.gltf;
     auto& gltf_loaded_name = meshes.gltf_loaded_name;
-    auto& skinned          = meshes.skinned;
+    // phase428-vis5: CesiumMan skinned runtime (kGltf entity). Sponza
+    // (kSponza) has no skin; meshes.skinned is always invalid for it.
+    auto& skinned          = meshes.cesium_skinned;
     auto& blas_cube        = meshes.blas_cube;
     auto& blas_sphere      = meshes.blas_sphere;
     auto& blas_cone        = meshes.blas_cone;
     auto& blas_cyl         = meshes.blas_cyl;
     auto& blas_torus       = meshes.blas_torus;
     auto& blas_floor       = meshes.blas_floor;
-    auto& blas_gltf        = meshes.blas_gltf;
+    auto& blas_gltf        = meshes.blas_gltf;    // Sponza BLAS
+    auto& blas_cesium      = meshes.blas_cesium;  // phase428-vis5: CesiumMan BLAS (was missing)
+    // phase428-vis5: mesh_for + blas_for_kind were missing kSponza, causing
+    // the Sponza entity to fall through to cube_mesh / blas_cube. Result:
+    //  - Shadow pass drew cube triangles instead of Sponza geometry.
+    //  - TLAS received blas_cube for the Sponza TLAS instance -> wrong RT hits
+    //    for all ray-query shadow / reflection paths against the atrium walls.
+    //  - kGltf (CesiumMan) was returning blas_gltf (Sponza BLAS) instead of
+    //    blas_cesium, so CesiumMan RT shadows traced Sponza geometry.
+    // Both switches now match the EngineState (HelloEngineApp) version exactly.
     auto mesh_for = [&](PrimitiveKind k) -> const GpuMesh&
     {
         switch (k)
@@ -6250,7 +6261,10 @@ int main(int argc, char** argv)
             case PrimitiveKind::kCone:     return cone_mesh;
             case PrimitiveKind::kCylinder: return cyl_mesh;
             case PrimitiveKind::kTorus:    return torus_mesh;
-            case PrimitiveKind::kGltf:     return gltf_mesh.vb.is_valid() ? gltf_mesh : knot_mesh;
+            case PrimitiveKind::kSponza:
+                return gltf_mesh.vb.is_valid() ? gltf_mesh : knot_mesh;
+            case PrimitiveKind::kGltf:
+                return meshes.gltf_cesium.vb.is_valid() ? meshes.gltf_cesium : knot_mesh;
             default:                       return cube_mesh;
         }
     };
@@ -6262,7 +6276,8 @@ int main(int argc, char** argv)
             case PrimitiveKind::kCone:     return blas_cone;
             case PrimitiveKind::kCylinder: return blas_cyl;
             case PrimitiveKind::kTorus:    return blas_torus;
-            case PrimitiveKind::kGltf:     return blas_gltf;
+            case PrimitiveKind::kSponza:   return blas_gltf;
+            case PrimitiveKind::kGltf:     return blas_cesium;
             default:                       return blas_cube;
         }
     };
@@ -7504,8 +7519,10 @@ int main(int argc, char** argv)
         // cd_sample::update_skinned_animation (HelloSkinnedAnim.hpp).
         // Returns true if the skinned path ran; false (asset has no skin
         // data) drops into the W4-F fallback turntable below.
+        // phase428-vis5: update CesiumMan (gltf_cesium) skin, not Sponza (gltf).
+        // Sponza is kSponza (static, no skin); CesiumMan is kGltf (animated).
         if (!cd_sample::update_skinned_animation(skinned, device,
-                                                 gltf_mesh.vb, dt))
+                                                 meshes.gltf_cesium.vb, dt))
         {
             // W4-F fallback turntable for assets without skin data.
             static float cesium_yaw_t = 0.0F;
@@ -7636,7 +7653,7 @@ int main(int argc, char** argv)
                 return cd::math::to_mat4(lt->value);
             },
             blas_floor,
-            blas_gltf,
+            blas_cesium,  // phase428-vis5: skinned BLAS is CesiumMan, not Sponza
             skinned.valid,
             inst_mat_ssbo,
             depth.image,
