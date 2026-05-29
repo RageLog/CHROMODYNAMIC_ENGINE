@@ -157,6 +157,7 @@
 #include "HelloAudio.hpp"
 #include "HelloIbl.hpp"
 #include "HelloAppState.hpp"
+#include "HelloRenderTargets.hpp"
 
 
 namespace
@@ -4087,73 +4088,33 @@ int main()
     if (compiler == nullptr)
         return 5;
 
-    constexpr auto kDepthFormat = cd::rhi::Format::kD32Float;
-    DepthTarget depth {};
-    // kSampled - needed for the composite-pass GTAO inline AO that
-    // samples the scene depth after the HDR pass ends.
-    if (!create_depth_target(
-            device,
-            { window.width(), window.height() },
-            kDepthFormat,
-            depth,
-            cd::rhi::TextureUsage::kSampled
-        ))
-        return 6;
-    bool depth_initialised_on_gpu = false;
-
-    // R3 - HDR offscreen color target. Scene + sky + UI overlay all
-    // draw into this RGBA16F target; a separate composite pass blits
-    // it to the swapchain with tonemap + saturation correction.
-    constexpr auto kHdrFormat = cd::rhi::Format::kRGBA16Float;
-    ColorTarget hdr_target {};
-    if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
-        return 31;
-
-    // R3 G-Buffer foundation - world-space surface normal target.
-    // Every scene FS (prim, PBR, sky) MRT-writes its world-space
-    // normal here so downstream post-fx (SSR, GTAO with normals,
-    // future reflections) can sample it. RGBA16F encodes the
-    // 3-component normal directly (xyz) + a flag in w (1 = surface,
-    // 0 = sky / no surface). Recreated on swapchain rebuild.
-    constexpr auto kNormalFormat = cd::rhi::Format::kRGBA16Float;
-    ColorTarget gbuf_normal {};
-    if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
-        return 47;
-
-    // R3 G-Buffer phase 219 - Albedo + MR (metallic / roughness).
-    // Unlocks proper deferred shading + SSR colour-tint by surface
-    // properties + future GI integration. Pixel cost ??? 5 B per pixel.
-    constexpr auto kAlbedoFormat = cd::rhi::Format::kRGBA8Unorm;
-    constexpr auto kMrFormat = cd::rhi::Format::kRG8Unorm;
-    ColorTarget gbuf_albedo {};
-    if (!create_color_target(device, { window.width(), window.height() }, kAlbedoFormat, gbuf_albedo))
-        return 49;
-    ColorTarget gbuf_mr {};
-    if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
-        return 50;
-
-    // R3 phase 226 - Velocity G-Buffer (RG16F = curr_uv - prev_uv).
-    // Written by a separate velocity pass after the HDR scene using
-    // cd::velocity::kVelocityVS + kVelocityFS so the main scene
-    // shaders stay unchanged (no MRT velocity in prim/PBR). Composite
-    // samples this for proper per-mesh motion blur + TAA reprojection.
-    constexpr auto kVelocityFormat = cd::rhi::Format::kRG16Float;
-    ColorTarget gbuf_velocity {};
-    if (!create_color_target(device, { window.width(), window.height() }, kVelocityFormat, gbuf_velocity))
-        return 51;
-
-    // R3 TAA history - ping-pong color targets at swapchain format.
-    // Each frame, composite reads history[frame & 1] (last frame's
-    // post-tonemap blend) and writes to history[(frame & 1) ^ 1]
-    // (this frame's blend, for next frame). MRT 2nd attachment in
-    // the composite render pass.
-    constexpr auto kHistoryFormat = cd::rhi::Format::kBGRA8Unorm;
-    std::array<ColorTarget, 2> history_targets {};
-    for (auto& h : history_targets)
+    // ---- Render targets (depth + HDR + 4 G-buffer + 2 TAA history) ----
+    // Bundled into cd_sample::RenderTargets in HelloRenderTargets.hpp
+    // (Marathon Run 13 phase N15a). Format constants live there at
+    // namespace scope and are re-exported via local using-aliases below
+    // so the downstream pipeline / material descs read them unchanged.
+    using cd_sample::kDepthFormat;
+    using cd_sample::kHdrFormat;
+    using cd_sample::kNormalFormat;
+    using cd_sample::kAlbedoFormat;
+    using cd_sample::kMrFormat;
+    using cd_sample::kVelocityFormat;
+    using cd_sample::kHistoryFormat;
+    cd_sample::RenderTargets rts {};
+    if (int rc = cd_sample::create_render_targets(
+            device, { window.width(), window.height() }, rts);
+        rc != 0)
     {
-        if (!create_color_target(device, { window.width(), window.height() }, kHistoryFormat, h))
-            return 48;
+        return rc;
     }
+    auto& depth          = rts.depth;
+    auto& hdr_target     = rts.hdr;
+    auto& gbuf_normal    = rts.gbuf_normal;
+    auto& gbuf_albedo    = rts.gbuf_albedo;
+    auto& gbuf_mr        = rts.gbuf_mr;
+    auto& gbuf_velocity  = rts.gbuf_velocity;
+    auto& history_targets = rts.history;
+    bool depth_initialised_on_gpu = false;
 
     // R3 phase 219: scene materials MRT-write 4 targets:
     //   location 0: HDR colour (RGBA16F)
@@ -6617,35 +6578,12 @@ int main()
                 continue;
             if (!renderer.recreate_swapchain({ window.width(), window.height() }).has_value())
                 continue;
-            if (!create_depth_target(
-                    device,
-                    { window.width(), window.height() },
-                    kDepthFormat,
-                    depth,
-                    cd::rhi::TextureUsage::kSampled
-                ))
-                continue;
-            if (!create_color_target(device, { window.width(), window.height() }, kHdrFormat, hdr_target))
-                continue;
-            if (!create_color_target(device, { window.width(), window.height() }, kNormalFormat, gbuf_normal))
-                continue;
-            if (!create_color_target(device, { window.width(), window.height() }, kAlbedoFormat, gbuf_albedo))
-                continue;
-            if (!create_color_target(device, { window.width(), window.height() }, kMrFormat, gbuf_mr))
-                continue;
-            if (!create_color_target(device, { window.width(), window.height() }, kVelocityFormat, gbuf_velocity))
-                continue;
-            bool history_ok = true;
-            for (auto& h : history_targets)
+            rts.destroy(device);
+            if (cd_sample::create_render_targets(
+                    device, { window.width(), window.height() }, rts) != 0)
             {
-                if (!create_color_target(device, { window.width(), window.height() }, kHistoryFormat, h))
-                {
-                    history_ok = false;
-                    break;
-                }
-            }
-            if (!history_ok)
                 continue;
+            }
             history_states[0] = cd::rhi::ResourceState::kUndefined;
             history_states[1] = cd::rhi::ResourceState::kUndefined;
             if (!create_bloom_chain(device, { window.width(), window.height() }, bloom_chain))
@@ -7249,14 +7187,7 @@ int main()
     destroy_mesh(device, torus_mesh);
     destroy_mesh(device, knot_mesh);
     destroy_mesh(device, floor_mesh);
-    depth.destroy(device);
-    hdr_target.destroy(device);
-    gbuf_normal.destroy(device);
-    gbuf_albedo.destroy(device);
-    gbuf_mr.destroy(device);
-    gbuf_velocity.destroy(device);
-    for (auto& h : history_targets)
-        h.destroy(device);
+    rts.destroy(device);
     bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.
     shadow_target.destroy(device);
