@@ -127,19 +127,21 @@ float distance_atten(float d, float range) {
 // closest one. Ray origin is biased by +1mm along the surface
 // normal to dodge self-intersection acne.
 float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
-  // Bias the origin away from the surface AND start the ray walk at
-  // tmin > 0 so the source instance's own triangles (very close to
-  // the shading point on merged meshes like CesiumMan) don't get
-  // false-hit as occluders. tmin 0.08 + N*0.05 bias clears
-  // typical compound-mesh self-intersection without losing real
-  // shadows from neighbouring objects.
+  // phase451-rt: bias dropped N*0.05+tmin=0.08 -> N*0.01+tmin=0.01.
+  // The previous 8-13cm total bias pushed the ray ORIGIN through any
+  // sub-10cm-thick geometry (Sponza at 0.01 scale has ~5cm wall
+  // thickness). The ray then had to cross back through the wall to
+  // reach an indoor light -> opaque hit -> vis=0 -> non-sun lights
+  // had ZERO effect on Sponza receivers. 1cm bias still clears float-
+  // precision self-hit on triangle-shared edges (sphere grid uses
+  // 0.3m radius + 0.7m gap, 1cm is comfortably inside the clearance).
   rayQueryEXT rq;
   rayQueryInitializeEXT(
       rq, cd_tlas,
       gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.05,
-      0.08, dir, tmax);
+      origin + N * 0.01,
+      0.01, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   return (rayQueryGetIntersectionTypeEXT(rq, true) ==
           gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -153,13 +155,14 @@ float ray_visibility(vec3 origin, vec3 N, vec3 dir, float tmax) {
 // BLAS walk order. tmin matches ray_visibility to avoid self-hit on
 // merged meshes (CesiumMan, GLB samples).
 float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
+  // phase451-rt: matched ray_visibility bias drop for Sponza scale.
   rayQueryEXT rq;
   rayQueryInitializeEXT(
       rq, cd_tlas,
       gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.05,
-      0.08, dir, tmax);
+      origin + N * 0.01,
+      0.01, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   return (rayQueryGetIntersectionTypeEXT(rq, true) ==
           gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
@@ -174,13 +177,14 @@ float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
 // enough for v1 (spheres ~exact, cubes/CesiumMan approximate).
 float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
                         out int out_inst) {
+  // phase451-rt: matched ray_visibility bias drop for Sponza scale.
   rayQueryEXT rq;
   rayQueryInitializeEXT(
       rq, cd_tlas,
       gl_RayFlagsOpaqueEXT,
       0xFFu,
-      origin + N * 0.05,
-      0.08, dir, tmax);
+      origin + N * 0.01,
+      0.01, dir, tmax);
   while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
   if (rayQueryGetIntersectionTypeEXT(rq, true) ==
       gl_RayQueryCommittedIntersectionNoneEXT) {
@@ -237,13 +241,15 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   vec2 uv = p.xy * 0.5 + 0.5;
   // Slope-scaled depth bias - fights shadow acne on grazing-angle
   // fragments. Coefficient picked empirically.
-  // phase426-vis3: Sponza at 0.01 scale has geometry very close in
-  // depth along the light view. The constant floor 0.0005 was chosen
-  // for a 60 m depth range; with the expanded 100 m ortho (Fix 1)
-  // the same value is fine. Slope term reduced 0.0025->0.0015 to
-  // recover interior shadows lost to over-biasing on near-planar walls
-  // (pillars, arch undersides) while keeping acne-free on the floor.
-  float bias = max(0.0015 * (1.0 - max(dot(N, L), 0.0)), 0.0003);
+  // phase451-csm: bias tightened slope 0.0015 -> 0.0003, floor 0.0003
+  // -> 0.00005. Combined with the shrunken ortho frustum in
+  // draw_shadow_map_pass (40m->20m extents, far 100m->60m), the world-
+  // space bias drops from ~6cm to ~0.3cm — small enough that cube /
+  // character / cylinder shadows cast onto Sponza floor are no longer
+  // swallowed by self-bias. PBR sphere grid acne risk: spheres are
+  // smooth, slope-scaled bias still spans the gradient, and the floor
+  // is 0.00005 NDC = 3mm world (well below sphere radius).
+  float bias = max(0.0003 * (1.0 - max(dot(N, L), 0.0)), 0.00005);
   float ref  = p.z - bias;
   vec2 ts = 1.0 / vec2(textureSize(cd_shadow_map, 0));
   float s = 0.0;
@@ -749,12 +755,13 @@ void main() {
       // small to lift the floor above the tonemap noise floor at
       // current calibration. Restore W8-W bias so other receivers
       // (sphere grid, foreground primitives) keep their shadows.
+      // phase451-rt: matched bias drop for Sponza scale (area light).
       float area_tmax = min(d_c, rng);
       rayQueryEXT rq_a;
       rayQueryInitializeEXT(
           rq_a, cd_tlas,
           gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-          0xFFu, v_world_pos + N * 0.05, 0.05, Lc, area_tmax);
+          0xFFu, v_world_pos + N * 0.01, 0.01, Lc, area_tmax);
       while (rayQueryProceedEXT(rq_a)) { /* opaque-only walk */ }
       float vis_a = (rayQueryGetIntersectionTypeEXT(rq_a, true) ==
                      gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
@@ -787,18 +794,18 @@ void main() {
       cone          = smoothstep(cos_out, cos_in, cos_b);
       if (cone <= 0.0) continue;
     }
-    // W8-C: RT shadow re-enabled. User wants flashlight semantics —
-    // crisp cone of direct light + visible shadows on what's behind.
-    // Bias tightened (tmin 0.30 + N*0.20) so self-hit and immediate-
-    // neighbour false occlusion in the dense PBR sphere grid is
-    // avoided while still letting genuinely-occluded shading points
-    // fall into shadow.
+    // phase451-rt: bias dropped N*0.20+tmin=0.30 -> N*0.01+tmin=0.01.
+    // W8-C's wide bias was tuned for the PBR sphere grid's near-touching
+    // spheres; collateral damage was that 0.01-scale Sponza receivers
+    // got the ray origin pushed THROUGH the wall and saw the back side
+    // as an occluder. PBR sphere clearance (0.7m gap between 0.3m
+    // spheres) tolerates the 0.01 bias trivially.
     float ray_tmax = min(d, rng);
     rayQueryEXT rq;
     rayQueryInitializeEXT(
         rq, cd_tlas,
         gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
-        0xFFu, v_world_pos + N * 0.20, 0.30, Lp, ray_tmax);
+        0xFFu, v_world_pos + N * 0.01, 0.01, Lp, ray_tmax);
     while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
     float vis = (rayQueryGetIntersectionTypeEXT(rq, true) ==
                  gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
