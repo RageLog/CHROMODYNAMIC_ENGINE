@@ -3,6 +3,9 @@ cd_add_library(net
   SOURCES
     src/LoopbackConnection.cpp
     src/UdpConnection.cpp
+    src/ReliableChannel.cpp
+    src/QosDispatcher.cpp
+    src/SnapshotReconciler.cpp
   PUBLIC_DEPS cd::core
 )
 
