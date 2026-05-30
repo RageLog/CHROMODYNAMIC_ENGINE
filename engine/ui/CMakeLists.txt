@@ -27,4 +27,5 @@ add_subdirectory(renderer_rhi)  # phase453 — ADR-20260530 Phase 1.2b RHI bridg
 add_subdirectory(input)         # phase457 — ADR-20260530 Phase 2.1 hit-test + focus chain + tab nav + modal capture
 add_subdirectory(animation)     # phase458 — ADR-20260530 Phase 3.2 easing + Tweener + Timeline
 add_subdirectory(widgets)       # phase460 — ADR-20260530 Phase 2.2 concrete widget catalog
+add_subdirectory(theme)         # phase474 — cd::ui::theme V2 design token system (Material 3 shape)
 add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
