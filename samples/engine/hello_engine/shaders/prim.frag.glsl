@@ -608,7 +608,20 @@ void main() {
     vec3 sampled = texture(cd_albedo_tex, v_uv).rgb;
     albedo = sampled * pc.tint.rgb;
   }
-  bool is_floor = (pc.tint.w > 1.5);
+  // phase455-sponza-fix: floor sentinel is ONLY tint.w == 2.0. The prior
+  // (pc.tint.w > 1.5) gate also captured Sponza prims at tint.w == 4.0,
+  // routing them through the editor-grid overlay path which (a) mixed
+  // 1m/5m grid lines into the Sponza wall albedo at every floor texel
+  // position, and (b) at floor_fade < 1 faded the albedo toward BLACK.
+  // Combined with the multi-light loop that lives below the floor block,
+  // any Sponza fragment that fell outside the floor's 60m fade radius
+  // had its albedo modulated by floor_fade BEFORE the lights ran — and
+  // the (mix grid line over wall) overlay confused the user's reading
+  // of "is this light contribution or is this a procedural grid?".
+  // Tighten the gate to the canonical tint.w == 2.0 sentinel (matches
+  // is_floor_w at line 308 in the G-Buffer header) so only the actual
+  // editor floor draw enters this branch.
+  bool is_floor = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
   float floor_fade = 1.0;  // 1 = full body, 0 = fully faded (sky-coloured)
   if (is_floor) {
     // Distance fade - body + lines both attenuate as the camera

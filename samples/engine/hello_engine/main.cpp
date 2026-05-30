@@ -4731,24 +4731,82 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     cd_sample::init_audio(s.audio_state, square_wave, burst_noise);
 
     // Lights (W8-BB: all enabled)
+    // phase455-sponza-fix: when Sponza is loaded, override the default
+    // light positions so they sit INSIDE the atrium volume. Diagnosis
+    // (three parallel agents) confirmed that the shader / TLAS / CSM
+    // paths are all correct for Sponza receivers — multi-light loop is
+    // reached, BLAS is in TLAS, depth buffer clears to 1.0. The user
+    // symptom "non-sun lights don't visibly affect Sponza" traces to a
+    // CALIBRATION problem: defaults were tuned for the open-air PBR
+    // sphere grid scene (lights at y=3..5m, range 15..20m, well-spaced
+    // from receivers). Sponza is a ~24m × 14m × 12m roofed indoor space
+    // at 0.01 scale; the default lights at (2, 3, -3), (0, 5, 0), and
+    // (0, 4.5, 2) sit OUTSIDE the atrium walls/ceiling. RT shadow rays
+    // from Sponza interior fragments shooting outward toward those
+    // positions ALWAYS hit a wall first -> vis=0 -> non-sun lights
+    // contribute zero. Phase 451 reduced the bias to 0.01 to fight the
+    // (different) "ray origin pushed through wall" failure mode; the
+    // bias drop was correct but did NOT address the through-wall
+    // light-position problem because no bias can rescue a ray that
+    // legitimately has to traverse solid geometry.
+    //
+    // Sponza preset: nave-centered lights at y≈2..4m (well above floor
+    // y≈0, below roof y≈12m), spread along the long axis so each side
+    // of the atrium receives visible contribution. Range reduced to
+    // match the smaller indoor scale (8m instead of 15..20m).
+    const bool sponza_loaded =
+        !s.meshes.gltf_loaded_name.empty() &&
+        s.meshes.gltf_loaded_name.find("Sponza") != std::string::npos;
     s.lights.push_back({ "Sun (cool 6500K)",
         cd::light::directional({ -0.35F, -0.65F, -0.7F }, { 1, 1, 1 }, 100000.0F),
         true, 6500.0F });
-    s.lights.push_back({ "Tungsten point (2700K)",
-        cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
-        true, 2700.0F });
-    s.lights.push_back({ "Halogen spot (3200K)",
-        cd::light::spot({ 0.0F, 5.0F, 0.0F }, { 0.0F, -0.316F, -0.949F },
-                        { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
-        true, 3200.0F });
-    s.lights.push_back({ "Cyan rect-area (8000K)",
-        cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
-                             3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
-        true, 8000.0F });
-    s.lights.push_back({ "Magenta HDR neon (25000K)",
-        cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
-                             4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
-        true, 25000.0F });
+    if (sponza_loaded)
+    {
+        // Tungsten lantern: warm point at the western end of the nave,
+        // 2m above floor. From (-6, 2, 0) most interior surfaces have
+        // line-of-sight without crossing a wall.
+        s.lights.push_back({ "Tungsten lantern (2700K)",
+            cd::light::point({ -6.0F, 2.0F, 0.0F }, { 1, 1, 1 }, 3000.0F, 8.0F),
+            true, 2700.0F });
+        // Spot pointing down the nave's central axis from above the
+        // entrance; cone aimed at the eastern end so the floor catches
+        // an obvious oblique pool of warm light.
+        s.lights.push_back({ "Nave spot (3200K)",
+            cd::light::spot({ -4.0F, 4.0F, 0.0F }, { 0.8F, -0.5F, 0.0F },
+                            { 1, 1, 1 }, 6000.0F, 12.0F, 0.30F, 0.50F),
+            true, 3200.0F });
+        // Cyan rect-area on the south wall facing into the nave. The
+        // rect normal +Z points into the atrium so the +N hemisphere
+        // hits the columns and floor without crossing the south wall.
+        s.lights.push_back({ "South wall cyan (8000K)",
+            cd::light::rect_area({ 0.0F, 3.0F, -4.0F }, { 0, 0, 1 }, { 1, 0, 0 },
+                                 2.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
+            true, 8000.0F });
+        // Magenta neon strip on the north wall facing back; pairs with
+        // the cyan to give the dual side-lit nave look.
+        s.lights.push_back({ "North wall magenta (25000K)",
+            cd::light::rect_area({ 0.0F, 3.0F, 4.0F }, { 0, 0, -1 }, { 1, 0, 0 },
+                                 2.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
+            true, 25000.0F });
+    }
+    else
+    {
+        s.lights.push_back({ "Tungsten point (2700K)",
+            cd::light::point({ 2.0F, 3.0F, -3.0F }, { 1, 1, 1 }, 3000.0F, 15.0F),
+            true, 2700.0F });
+        s.lights.push_back({ "Halogen spot (3200K)",
+            cd::light::spot({ 0.0F, 5.0F, 0.0F }, { 0.0F, -0.316F, -0.949F },
+                            { 1, 1, 1 }, 6000.0F, 20.0F, 0.35F, 0.55F),
+            true, 3200.0F });
+        s.lights.push_back({ "Cyan rect-area (8000K)",
+            cd::light::rect_area({ 0.0F, 4.5F, 2.0F }, { 0, 0, -1 }, { 1, 0, 0 },
+                                 3.0F, 1.0F, { 0.6F, 0.85F, 1.0F }, 2500.0F),
+            true, 8000.0F });
+        s.lights.push_back({ "Magenta HDR neon (25000K)",
+            cd::light::rect_area({ 0.0F, 1.8F, -7.5F }, { 0, 0, 1 }, { 1, 0, 0 },
+                                 4.0F, 0.4F, { 1.0F, 0.18F, 0.85F }, 6000.0F),
+            true, 25000.0F });
+    }
 
     s.cluster_desc.tiles_x  = 8; s.cluster_desc.tiles_y  = 4;
     s.cluster_desc.slices_z = 8; s.cluster_desc.near_z = 0.1F;
