@@ -25,6 +25,10 @@ add_subdirectory(world)
 # phase467: cd::script moved after world/ so its ECS/scene Lua bindings
 # (cd/script/Bindings.hpp) can link against cd::ecs / cd::scene / cd::math.
 add_subdirectory(script)
+# Phase G — gameplay tier (cd::game::*). Sits above world/script/ui and
+# below editor/samples; depends on cd::core only at the public header level.
+# See docs/ADR/ADR-20260530-gameplay-library-family.md for the DAG rationale.
+add_subdirectory(game)
 add_subdirectory(ui)
 add_subdirectory(runtime)
 # Phase 2 closed at S2.10 (foundation + runtime).
