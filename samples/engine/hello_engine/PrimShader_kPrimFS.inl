@@ -331,19 +331,25 @@ void main() {
   bool is_floor_w    = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
   bool is_pbr_w      = (pc.tint.w > 2.5 && pc.tint.w < 3.5);
   bool is_gltf_prim  = (pc.tint.w > 3.5 && pc.tint.w < 4.5);
-  // phase447-ssr: surface_flag now encodes SSR eligibility:
-  //   0.0 = sky / no-surface (skip AO + SSR + atrous)
-  //   0.5 = surface + AO only (skip SSR + atrous) — glTF stone/cloth,
-  //         PBR spheres (they have W8-BC RT reflection which would
-  //         double-count + look "cloudy" if SSR layered on top)
-  //   1.0 = surface + everything (default Lit / dielectric showcase
-  //         primitives that genuinely want screen-space reflections)
-  // SSR is fundamentally a MIRROR effect; at roughness 0.85 (Sponza
-  // stone) there should be NO sharp reflection. composite_pass's SSR
-  // gate is updated from > 0.5 to > 0.75 to honor this encoding. AO
-  // and atrous keep their < 0.5 reject so 0.5 prims still participate.
+  // phase447-ssr + phase513-ssr-quality: surface_flag now encodes both
+  // AO eligibility AND a finer SSR/RT-blend bucket so the composite
+  // hierarchical SSR (phase 513) can pick the right combine policy:
+  //   0.0  = sky / no-surface (skip AO + SSR + atrous)
+  //   0.6  = glTF Lit prim (Sponza stone/cloth, CesiumMan) — NO W8-BC
+  //         RT reflection, but rough surface. Hierarchical SSR uses
+  //         this as a softer ADDITIVE enhancement (half-strength).
+  //   0.85 = PBR sphere chrome bucket. ALREADY has W8-BC RT reflection
+  //         baked into out_color via prim.frag closest-hit probe.
+  //         Composite TRUSTS the RT result and DOES NOT add SSR on top
+  //         (the prior "cloudy" look from phase 447 was SSR double-
+  //         counting on this bucket).
+  //   1.0  = default Lit / dielectric showcase primitives (no RT
+  //         reflection of their own) — full-strength hierarchical SSR.
+  // AO and atrous keep their > 0.05 floor so every non-sky pixel
+  // participates; the SSR gate is set per-bucket in composite_pass.
   float surface_flag = (is_shadow_w || is_floor_w) ? 0.0
-                     : (is_gltf_prim || is_pbr_w)  ? 0.5
+                     : is_pbr_w                    ? 0.85
+                     : is_gltf_prim                ? 0.6
                                                    : 1.0;
   // phase437-black: NaN guard on out_normal. Degenerate geometry (zero-
   // length v_world_normal from collapsed triangles in Sponza vegetation

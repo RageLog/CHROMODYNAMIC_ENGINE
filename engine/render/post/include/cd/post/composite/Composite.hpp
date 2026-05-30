@@ -247,32 +247,88 @@ float depth_ao(vec2 uv, float center_d) {
   return clamp(1.0 - occ, 0.0, 1.0);
 }
 
-vec3 ssr_color(vec2 uv, vec3 wp, vec3 N) {
+// phase513-ssr-quality: hierarchical depth march + contact-hardening
+// fade. Two-pass approach inspired by Stachowiak 2015 / McGuire-Mara
+// 2014 — the first 8 COARSE steps locate the (front, back) bracket
+// around the depth-buffer crossing; 4 FINE binary-search steps refine
+// the hit to sub-coarse-step precision. Result is sharper hits with
+// fewer total taps and far less "ghost-step" smear than the prior
+// uniform 24-step march.
+//
+// Contact-hardening: when the camera nearly skims the surface
+// (NoV → 0) the reflection ray runs almost parallel to the screen
+// plane, producing long, low-quality streaks. We attenuate by
+// max(NoV, 0.05) so grazing-angle reflections SOFTEN instead of
+// becoming arbitrarily bright streaks.
+vec3 ssr_color(vec2 uv, vec3 wp, vec3 N, float NoV) {
   if (pc.ssr.x <= 0.001) return vec3(0.0);
   vec3 V = normalize(pc.cam_pos.xyz - wp);
   vec3 R = reflect(-V, N);
-  int max_steps = int(max(pc.ssr.z, 1.0));
   float max_dist = max(pc.ssr.y, 0.1);
-  float step_size = max_dist / float(max_steps);
-  for (int i = 1; i <= max_steps; ++i) {
-    vec3 sample_wp = wp + R * step_size * float(i);
+
+  // ---- COARSE pass: 8 uniform steps locating the depth crossing ----
+  const int kCoarseSteps = 8;
+  float coarse_step = max_dist / float(kCoarseSteps);
+  vec3  hit_sp      = vec3(-1.0);
+  bool  hit_found   = false;
+  // Bracket samples used to refine in the fine pass.
+  vec3  prev_sp     = world_to_uv(wp);
+  float prev_march_lz = linearize_z(prev_sp.z);
+  float prev_scene_lz = prev_march_lz;
+  for (int i = 1; i <= kCoarseSteps; ++i) {
+    vec3 sample_wp = wp + R * coarse_step * float(i);
     vec3 sp = world_to_uv(sample_wp);
     if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0 || sp.z < 0.0)
-      return vec3(0.0);
-    float scene_d = texture(cd_depth, sp.xy).r;
+      break;
+    float scene_d  = texture(cd_depth, sp.xy).r;
     float scene_lz = linearize_z(scene_d);
     float march_lz = linearize_z(sp.z);
-    float thickness = step_size * 1.5;
+    // Crossing test: previous step was IN FRONT of the depth buffer,
+    // current step is BEHIND it (within a thickness band).
+    float thickness = coarse_step * 2.0;
     if (march_lz > scene_lz && (march_lz - scene_lz) < thickness) {
-      vec2 ec = abs(sp.xy - vec2(0.5)) * 2.0;
-      float ef = clamp(1.0 - max(ec.x, ec.y) * pc.ssr.w, 0.0, 1.0);
-      float NoV = max(dot(N, V), 0.0);
-      float fresnel = pow(1.0 - NoV, 3.0);
-      vec3 hit = texture(cd_hdr_color, sp.xy).rgb;
-      return hit * pc.ssr.x * ef * (0.3 + fresnel * 0.7);
+      hit_sp    = sp;
+      hit_found = true;
+      // ---- FINE pass: 4-step binary-search refinement -------------
+      vec3 a_wp = wp + R * coarse_step * float(i - 1); // before crossing
+      vec3 b_wp = sample_wp;                            // after crossing
+      for (int j = 0; j < 4; ++j) {
+        vec3  m_wp = 0.5 * (a_wp + b_wp);
+        vec3  m_sp = world_to_uv(m_wp);
+        if (m_sp.x < 0.0 || m_sp.x > 1.0 ||
+            m_sp.y < 0.0 || m_sp.y > 1.0 || m_sp.z < 0.0)
+          break;
+        float m_scene_lz = linearize_z(texture(cd_depth, m_sp.xy).r);
+        float m_march_lz = linearize_z(m_sp.z);
+        if (m_march_lz > m_scene_lz) {
+          b_wp   = m_wp;
+          hit_sp = m_sp;
+        } else {
+          a_wp = m_wp;
+        }
+      }
+      break;
     }
+    prev_sp = sp;
+    prev_march_lz = march_lz;
+    prev_scene_lz = scene_lz;
   }
-  return vec3(0.0);
+  if (!hit_found) return vec3(0.0);
+
+  // ---- Fade + Fresnel + contact-hardening --------------------------
+  vec2  ec = abs(hit_sp.xy - vec2(0.5)) * 2.0;
+  float ef = clamp(1.0 - max(ec.x, ec.y) * pc.ssr.w, 0.0, 1.0);
+  float fresnel = pow(1.0 - NoV, 3.0);
+  // Contact-hardening: soften at grazing angles. floor of 0.05 keeps
+  // near-silhouette reflections from vanishing entirely.
+  float graze = max(NoV, 0.05);
+  // Distance-based contact term: hits FAR from the source soften
+  // proportionally to their march length (Stachowiak 2015 fig. 27).
+  vec2  px_dist = hit_sp.xy - uv;
+  float screen_dist = length(px_dist);
+  float contact_fade = clamp(1.0 - screen_dist * 1.5, 0.0, 1.0);
+  vec3 hit = texture(cd_hdr_color, hit_sp.xy).rgb;
+  return hit * pc.ssr.x * ef * (0.3 + fresnel * 0.7) * graze * contact_fade;
 }
 
 // Cheap 2D value-noise + 4-octave fBm for the sky cloud overlay.
@@ -418,7 +474,23 @@ void main() {
   // when the view ray faces back along it we get a bright forward-
   // scattering glow through fog. Cheap single-scatter Henyey-Greenstein
   // phase, no froxel — composite-inline so no extra render target.
-  if (center_d < 0.999 && (pc.atmo.x > 0.001 || pc.atmo.y > 0.001)) {
+  //
+  // phase512-volumetric-fog-wire: pc.atmo.x sign now encodes mode.
+  //   pc.atmo.x > 0  : legacy single-tap exp(-lz * density)
+  //   pc.atmo.x < 0  : Wronski 2014 froxel-style integrated single
+  //                    scatter — march N quadratic-warped slices from
+  //                    near up to min(lz, far), accumulate inscatter
+  //                    pre-multiplied by per-slice thickness, then
+  //                    Beer-Lambert transmittance. Matches the math
+  //                    in cd::volumetric::integrate_view_ray() and
+  //                    inject_cell() (phase 469 VolumetricFog.hpp)
+  //                    up to fp16 quantisation. The 3D LUT compute
+  //                    path is queued; this inline path is the LUT-
+  //                    equivalent evaluation for a single analytical
+  //                    sun light, with no extra texture binding.
+  float vol_fog_density = abs(pc.atmo.x);
+  bool  vol_fog_on      = (pc.atmo.x < 0.0);
+  if (center_d < 0.999 && (vol_fog_density > 0.001 || pc.atmo.y > 0.001)) {
     float lz = linearize_z(center_d);
     // W4-C: horizon base is daylight; at night fall back to a near-
     // black sky so the all-lights-off scene doesn't keep a bright
@@ -441,10 +513,53 @@ void main() {
                           pc.sun_col.rgb * (phase * 6.0 + 0.5),
                           clamp(cos_th * 0.8, 0.0, 1.0));
 
-    float fog_t = 1.0 - exp(-lz * max(pc.atmo.x, 0.0));
-    float aer_t = 1.0 - exp(-lz * 0.08);
-    c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
-    c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
+    if (vol_fog_on) {
+      // Wronski integrated single-scatter — front-to-back march.
+      // The Wronski grid normally caches per-slice (sigma_s * phase *
+      // L_sun * dt, sigma_t) in a 3D LUT; here we recompute the same
+      // quantity in-place at N=16 slices along this pixel's view ray.
+      // The depth bound is min(lz, far) so the integrand stops at the
+      // first opaque surface, matching the LUT-sampled equivalent
+      // where the integrated cell carries transmittance to the slice
+      // immediately in front of the scene depth.
+      float near_z = pc.ao.z;
+      float far_z  = min(lz, pc.ao.w);
+      float sigma_s = vol_fog_density;          // scattering coeff (1/m)
+      float sigma_t = vol_fog_density;          // extinction == scattering (no absorption tweak yet)
+      // HG phase as inscatter weight. Albedo defaults to (0.95,0.95,1)
+      // (mild blue tint matching VolumetricFogSettings::albedo); kept
+      // as a const here to avoid burning another push-constant slot.
+      const vec3 vol_albedo = vec3(0.95, 0.95, 1.0);
+      vec3 sun_radiance = pc.sun_col.rgb;
+      vec4 accum = vec4(0.0, 0.0, 0.0, 1.0);   // RGB = inscatter, A = transmittance
+      const int kVolSlices = 16;
+      float prev_z = near_z;
+      for (int i = 1; i <= kVolSlices; ++i) {
+        float s = float(i) / float(kVolSlices);
+        // Wronski quadratic warp: dense near, sparse far.
+        float z = near_z + (far_z - near_z) * s * s;
+        float dt = max(z - prev_z, 0.0);
+        prev_z = z;
+        // Per-slice inscatter = albedo * sun * HG(cos_th) * sigma_s * dt
+        // (pre-multiplied by dt so integration is just sum * T).
+        vec3 inscatter = vol_albedo * sun_radiance * (phase * sigma_s * dt);
+        float trans = exp(-sigma_t * dt);
+        accum.rgb += inscatter * accum.a;
+        accum.a   *= trans;
+      }
+      // Composite via standard Wronski "scene * T + inscatter".
+      c = c * accum.a + accum.rgb;
+      // Aerial perspective still applies on top — paints the horizon
+      // tint over the integrated fog so the far-distance haze matches
+      // the sky band.
+      float aer_t = 1.0 - exp(-lz * 0.08);
+      c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
+    } else {
+      float fog_t = 1.0 - exp(-lz * max(vol_fog_density, 0.0));
+      float aer_t = 1.0 - exp(-lz * 0.08);
+      c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
+      c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
+    }
   }
 
   // DOF
@@ -468,18 +583,36 @@ void main() {
     }
   }
 
-  // SSR
-  // phase447-ssr: gate now > 0.75 (was > 0.5) so glTF prims (Sponza /
-  // CesiumMan) writing surface_flag = 0.5 are NOT eligible for screen-
-  // space mirror reflections. At roughness 0.85 (Sponza stone, cloth)
-  // SSR was wallpapering green curtain colors onto walls and floors that
-  // should be matte. AO + atrous keep the < 0.5 reject so the 0.5 prims
-  // still participate in those passes.
+  // SSR — phase513-ssr-quality hierarchical march + RT-bucket blend.
+  // The G-Buffer surface_flag (ssr_N.w) now encodes a finer bucket
+  // (phase 513): 0.6 = glTF Lit, 0.85 = PBR chrome (has W8-BC RT
+  // reflection), 1.0 = Lit dielectric showcase. Combine policy:
+  //   ssr_N.w >  0.95 → full SSR (no RT, wants screen reflections)
+  //   ssr_N.w in [0.5, 0.95] → half-strength SSR ADDITIVE enhancement
+  //                            (glTF Lit gets a soft reflection cue;
+  //                             chrome at 0.85 also takes a tiny add
+  //                             so screen-local bounce isn't lost
+  //                             entirely on rough chrome — RT is still
+  //                             the primary contribution.)
+  //   ssr_N.w <= 0.5  → no SSR (sky / shadow / floor)
+  // NoV is computed once and threaded into ssr_color so the contact-
+  // hardening fade can soften grazing-angle streaks.
   vec4 ssr_N = texture(cd_gbuf_normal, v_uv);
-  if (pc.ssr.x > 0.001 && ssr_N.w > 0.75 && center_d < 0.999) {
-    vec3 wp = world_pos_from_uv(v_uv, center_d);
-    vec3 N  = normalize(ssr_N.xyz);
-    c += ssr_color(v_uv, wp, N);
+  if (pc.ssr.x > 0.001 && ssr_N.w > 0.5 && center_d < 0.999) {
+    vec3  wp  = world_pos_from_uv(v_uv, center_d);
+    // phase437-black guard mirrors depth_ao: NaN/degenerate normals
+    // are common on Sponza vegetation alpha-test triangles.
+    vec3  N   = (any(isnan(ssr_N.xyz)) || dot(ssr_N.xyz, ssr_N.xyz) < 1e-10)
+                ? vec3(0.0, 1.0, 0.0)
+                : normalize(ssr_N.xyz);
+    vec3  V   = normalize(pc.cam_pos.xyz - wp);
+    float NoV = max(dot(N, V), 0.05);
+    vec3  ssr_contrib = ssr_color(v_uv, wp, N, NoV);
+    // Bucket weight: 1.0 for Lit dielectric (>0.95), 0.5 for the
+    // mid-range (glTF Lit / PBR chrome) so the W8-BC RT reflection
+    // remains the primary source on chrome surfaces.
+    float bucket_w = (ssr_N.w > 0.95) ? 1.0 : 0.5;
+    c += ssr_contrib * bucket_w;
   }
 
   // Motion blur — prefer the velocity G-Buffer (per-mesh + camera
