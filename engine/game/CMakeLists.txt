@@ -65,3 +65,9 @@ add_subdirectory(trigger)
 add_subdirectory(camera)
 add_subdirectory(dialogue)
 add_subdirectory(particles_event)
+
+# Phase G5 — "Live authoring / runtime tooling":
+#   asset_hot_reload — G5.1: cd::game::asset_hot_reload HotReloadBus over
+#                       cd::asset::FileWatcher. Categorised subscriber model
+#                       with 100 ms throttle window for editor-save bursts.
+add_subdirectory(asset_hot_reload)
