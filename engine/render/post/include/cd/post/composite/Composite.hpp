@@ -67,6 +67,19 @@ namespace cd::post::composite
 
 struct Push
 {
+    /// x = tonemap_op (rounded int: 0..4)
+    /// y = linear exposure multiplier — set externally via
+    ///     cd::post::exposure::compute_exposure_multiplier(ev, settings)
+    ///     when auto-exposure is wired (phase 461), or directly from
+    ///     the UI slider for manual control. The composite FS reads
+    ///     this as `c *= max(pc.fx.y, 0.001)` immediately before the
+    ///     tonemap operator. Phase 454 ships the CPU EV pipeline,
+    ///     phase 461 ships the GPU log-luminance reduction skeleton;
+    ///     when both land the integrator threads
+    ///     update_ev(log_avg_lum, prev_ev, dt, settings) ->
+    ///     compute_exposure_multiplier into this slot per frame.
+    /// z = saturation boost (SDR-only)
+    /// w = bloom strength
     float fx[4];        ///< x=tonemap_op, y=exposure, z=sat_boost, w=bloom_strength
     float ao[4];        ///< x=ao_strength, y=ao_radius_px, z=near, w=far
     float dof[4];       ///< x=dof_strength, y=focus_distance(m), z=focus_range(m), w=max_blur_px OR svgf_strength (when DOF off)

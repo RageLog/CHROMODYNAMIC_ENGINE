@@ -1,11 +1,17 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::post::exposure tests
 //
-// Phase 454. Validates the EV math + EMA smoothing in isolation. The
-// GPU log-luminance reduction is covered by the composite-pass GPU
-// tests; this suite covers the pure-CPU kernel.
+// Phase 454 — CPU kernel: EV math + EMA smoothing.
+// Phase 461 — GpuReduction skeleton: API-surface tests against
+//             cd::rhi::NullDevice. The Null backend fakes pipeline /
+//             descriptor / buffer creation and returns zero-filled
+//             readback bytes; the tests therefore validate the API
+//             surface (handles allocated, lifetimes clean) without
+//             asserting on a live GPU reduction.
 // =============================================================================
 #include <cd/post/exposure/Exposure.hpp>
+#include <cd/rhi/NullDevice.hpp>
+
 #include <gtest/gtest.h>
 
 #include <cmath>
@@ -122,4 +128,123 @@ TEST(Exposure, UpdateEvComposesPipeline)
     const float la = std::log2(0.18F);
     const float ev = pex::update_ev(la, /*prev=*/ 0.0F, /*dt=*/ 1.0F, s);
     EXPECT_NEAR(ev, 0.0F, 0.01F);
+}
+
+// =============================================================================
+// Phase 461 — GpuReduction skeleton API tests
+// =============================================================================
+
+TEST(ExposureGpu, ReductionShaderStringIsValidGlsl)
+{
+    // Sanity-check the embedded compute shader header. Catches accidental
+    // truncation of the constexpr string at build time.
+    EXPECT_NE(pex::kExposureReductionCS.find("#version 460"), std::string_view::npos);
+    EXPECT_NE(pex::kExposureReductionCS.find("local_size_x = 8"), std::string_view::npos);
+    EXPECT_NE(pex::kExposureReductionCS.find("cd_hdr"), std::string_view::npos);
+    EXPECT_NE(pex::kExposureReductionCS.find("partial"), std::string_view::npos);
+}
+
+TEST(ExposureGpu, PartialSlotCountIsPowerOfTwo)
+{
+    // 256 partial slots = 1 KB SSBO + each slot covers an 8x8 tile,
+    // so the helper supports up to 128x128 HDR targets without an
+    // intermediate downsample. Bumping kPartialSlotCount needs a
+    // matching grid-fit check in create().
+    EXPECT_EQ(pex::kPartialSlotCount, 256U);
+    EXPECT_EQ(pex::kPartialSlotCount & (pex::kPartialSlotCount - 1U), 0U);
+}
+
+TEST(ExposureGpu, CreateReturnsErrorOnZeroExtent)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::GpuReduction::create(dev, cd::rhi::Extent2D { 0U, 0U });
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(ExposureGpu, CreateReturnsErrorWhenGridExceedsBudget)
+{
+    cd::rhi::NullDevice dev;
+    // 1024x1024 -> 128x128 = 16384 tiles, far past kPartialSlotCount (256).
+    auto r = pex::GpuReduction::create(dev, cd::rhi::Extent2D { 1024U, 1024U });
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(ExposureGpu, CreateSucceedsAtTypicalDownsampledExtent)
+{
+    cd::rhi::NullDevice dev;
+    // Engine integration plan: downsample HDR to <= 128x128 before
+    // reduction. 128x128 -> 16x16 = 256 tiles == kPartialSlotCount.
+    auto r = pex::GpuReduction::create(dev, cd::rhi::Extent2D { 128U, 128U });
+    ASSERT_TRUE(r.has_value());
+    auto gpu = std::move(*r);
+
+    EXPECT_EQ(gpu.grid_x, 16U);
+    EXPECT_EQ(gpu.grid_y, 16U);
+    EXPECT_TRUE(gpu.shader_module.is_valid());
+    EXPECT_TRUE(gpu.set_layout.is_valid());
+    EXPECT_TRUE(gpu.pipeline_layout.is_valid());
+    EXPECT_TRUE(gpu.pipeline.is_valid());
+    EXPECT_TRUE(gpu.descriptor_set.is_valid());
+    EXPECT_TRUE(gpu.linear_sampler.is_valid());
+    EXPECT_TRUE(gpu.partial_buffer.is_valid());
+
+    gpu.destroy();
+    // Post-destroy: every owned handle is invalidated.
+    EXPECT_FALSE(gpu.shader_module.is_valid());
+    EXPECT_FALSE(gpu.pipeline.is_valid());
+    EXPECT_FALSE(gpu.partial_buffer.is_valid());
+    EXPECT_EQ(gpu.device, nullptr);
+}
+
+TEST(ExposureGpu, CreateRoundsUpToTileBoundary)
+{
+    cd::rhi::NullDevice dev;
+    // 100x60 should round up to 13x8 tiles = 104 — within budget.
+    auto r = pex::GpuReduction::create(dev, cd::rhi::Extent2D { 100U, 60U });
+    ASSERT_TRUE(r.has_value());
+    auto gpu = std::move(*r);
+    EXPECT_EQ(gpu.grid_x, 13U);   // ceil(100/8) = 13
+    EXPECT_EQ(gpu.grid_y, 8U);    // ceil(60/8)  = 8
+    EXPECT_LE(gpu.grid_x * gpu.grid_y, pex::kPartialSlotCount);
+    gpu.destroy();
+}
+
+TEST(ExposureGpu, DispatchAndReadbackOnNullDeviceReturnsSkipSentinel)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::GpuReduction::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto gpu = std::move(*r);
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    // Pass a default-constructed view: NullDevice doesn't dereference it;
+    // a real backend would consume the descriptor write the integrator
+    // performs before recording.
+    const float result = gpu.dispatch_and_readback(*cmd, cd::rhi::TextureViewHandle {});
+    cmd->end();
+
+    // NullDevice readback yields zero-filled bytes -> all-invalid tiles
+    // -> kSkipThreshold so the caller falls back to prev_ev.
+    EXPECT_FLOAT_EQ(result, pex::Settings::kSkipThreshold);
+    gpu.destroy();
+}
+
+TEST(ExposureGpu, DestroyIsIdempotentOnDefaultConstructed)
+{
+    pex::GpuReduction gpu {};
+    gpu.destroy();  // No device, no handles — must be a clean no-op.
+    SUCCEED();
+}
+
+TEST(ExposureGpu, DoubleDestroyIsSafe)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::GpuReduction::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto gpu = std::move(*r);
+    gpu.destroy();
+    gpu.destroy();  // After the first destroy, device is nullptr -> no-op.
+    SUCCEED();
 }
