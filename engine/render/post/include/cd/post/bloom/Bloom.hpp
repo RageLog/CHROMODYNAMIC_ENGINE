@@ -272,19 +272,29 @@ void main() {
 // compute path) pick these. Same Karis 13-tap math, same 9-tap tent.
 // Push-constants packed in 16-byte vec4s for trivial std140 layout.
 
+// Phase 511 — EV-aware prefilter. `params.z` carries the current scene EV
+// (auto-exposed log2 luminance ratio). The shader scales the threshold by
+// exp2(-ev) so a user-set threshold of, e.g., 1.0 always means "1 stop
+// above the scene's auto-exposed mean" regardless of how bright the scene
+// is. With params.z = 0 the behaviour is identical to the pre-phase-511
+// shader (exp2(0) = 1), so callers that don't wire auto-exposure see no
+// change. CPU-side pre-scaling (Setup::bloom_threshold_scale()) is still
+// available but redundant once the shader honours EV directly.
 constexpr std::string_view kPrefilterFS = R"glsl(
 #version 450
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(push_constant) uniform PC {
-  vec4 params; // x=threshold, y=knee, z=_, w=_
+  vec4 params; // x=threshold, y=knee, z=ev (stops), w=_
 } pc;
 layout(location = 0) in  vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 void main() {
   vec3 c = texture(src, v_uv).rgb;
   float br = max(c.r, max(c.g, c.b));
-  float thr = max(pc.params.x, 1e-4);
-  float knee = max(pc.params.y, 1e-4);
+  // Auto-exposure EV → threshold scale (Karis 2014 §"EV-aware bloom").
+  float ev_scale = exp2(-pc.params.z);
+  float thr = max(pc.params.x * ev_scale, 1e-4);
+  float knee = max(pc.params.y * ev_scale, 1e-4);
   float rq = clamp(br - thr + knee, 0.0, 2.0 * knee);
   float scale = (rq * rq) / (4.0 * knee + 1e-4);
   float factor = max(br - thr, scale) / max(br, 1e-4);
@@ -346,9 +356,17 @@ void main() {
 )glsl";
 
 /// Push-constant block matching kPrefilterFS layout (16 bytes).
+///
+/// Layout (phase 511):
+///   * `params[0]` — threshold in linear HDR units.
+///   * `params[1]` — soft-knee width.
+///   * `params[2]` — scene EV (stops), produced by
+///     `cd::post::exposure::Setup::current_ev()`. Default 0 = no
+///     EV scaling, behaviour identical to pre-phase-511.
+///   * `params[3]` — reserved (future use).
 struct PrefilterPush
 {
-    float params[4]; ///< x=threshold, y=knee, z/w reserved
+    float params[4]; ///< x=threshold, y=knee, z=ev (stops), w=reserved
 };
 static_assert(sizeof(PrefilterPush) == 16, "PrefilterPush layout drift");
 
@@ -407,22 +425,31 @@ create_bloom_chain(cd::rhi::IDevice& dev,
     return true;
 }
 
+// Phase 511 — EV-aware compute prefilter. Trailing `ev` member is the
+// scene auto-exposed EV (in stops). Shader scales threshold + knee by
+// exp2(-ev) so the prefilter tracks scene auto-exposure. With ev = 0
+// the math collapses to the pre-phase-511 behaviour. Default-initialised
+// callers (PrefilterCsPush{}) therefore see no change.
 constexpr std::string_view kPrefilterCS = R"glsl(
 #version 460
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D dst;
-layout(push_constant) uniform PC { vec2 size; float threshold; float knee; } pc;
+layout(push_constant) uniform PC {
+  vec2 size; float threshold; float knee; float ev; float _pad0; float _pad1; float _pad2;
+} pc;
 void main() {
   uvec2 p = gl_GlobalInvocationID.xy;
   if (p.x >= uint(pc.size.x) || p.y >= uint(pc.size.y)) return;
   vec2 uv = (vec2(p) + 0.5) / pc.size;
   vec3 c = texture(src, uv).rgb;
   float br = max(c.r, max(c.g, c.b));
-  float knee = pc.knee;
-  float rq = clamp(br - pc.threshold + knee, 0.0, 2.0 * knee);
+  float ev_scale = exp2(-pc.ev);
+  float thr = max(pc.threshold * ev_scale, 1e-4);
+  float knee = max(pc.knee * ev_scale, 1e-4);
+  float rq = clamp(br - thr + knee, 0.0, 2.0 * knee);
   float scale = (rq * rq) / (4.0 * knee + 1e-4);
-  float factor = max(br - pc.threshold, scale) / max(br, 1e-4);
+  float factor = max(br - thr, scale) / max(br, 1e-4);
   imageStore(dst, ivec2(p), vec4(c * factor, 1.0));
 }
 )glsl";

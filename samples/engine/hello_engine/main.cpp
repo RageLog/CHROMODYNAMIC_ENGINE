@@ -6468,6 +6468,18 @@ int main(int argc, char** argv)
         return 44;
     auto& bloom_prefilter_inst = *bp_inst_r;
 
+    // Phase 511 — auto-exposure (same scope-down semantics as the
+    // EngineState path above; see HelloEngineApp::on_init for the long
+    // rationale comment). On create() failure the helper stays default-
+    // constructed and current_ev() returns 0, so the bloom prefilter sees
+    // ev=0 = identical to pre-phase-511 behaviour.
+    cd::post::exposure::Setup auto_exposure {};
+    {
+        auto ae_r = cd::post::exposure::Setup::create(
+            device, cd::rhi::Extent2D { 128U, 128U });
+        if (ae_r.has_value()) auto_exposure = std::move(*ae_r);
+    }
+
     std::array<cd::material::MaterialInstance, 3> bloom_down_insts {};
     for (std::uint32_t i = 0; i < 3; ++i)
     {
@@ -8253,10 +8265,15 @@ int main(int argc, char** argv)
                               prev_vp_unjittered, vp_unjittered, mesh_for);
 
         // R3 - Bloom chain (7 passes: 1 prefilter + 3 down + 3 up).
+        // Phase 511 — pass scene EV to prefilter so threshold tracks
+        // auto-exposure. current_ev() returns 0 until tick() is wired
+        // (descriptor-write hook missing), so behaviour is unchanged.
+        const float scene_ev_stops = auto_exposure.current_ev();
         run_bloom_chain(cmd, frame_idx, bloom_chain,
                         bloom_prefilter_material, bloom_prefilter_inst,
                         bloom_downsample_material, bloom_down_insts,
-                        bloom_upsample_material, bloom_up_insts);
+                        bloom_upsample_material, bloom_up_insts,
+                        scene_ev_stops);
 
         // ---- Composite + frame-feedback snapshot (R3) ----
         begin_composite_pass(cmd, frame_idx, frame.swapchain_image_view, frame.extent,
@@ -8289,6 +8306,7 @@ int main(int argc, char** argv)
 
     destroy_mesh(device, floor_mesh);
     rts.destroy(device);
+    auto_exposure.destroy();  // phase 511 — release GpuReduction (idempotent)
     bloom_chain.destroy(device);
     // Faz 1.6 CSM resources.
     shadow_target.destroy(device);
