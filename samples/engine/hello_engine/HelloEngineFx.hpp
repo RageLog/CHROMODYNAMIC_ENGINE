@@ -30,9 +30,20 @@ namespace cd_sample {
 struct HelloEngineFx
 {
     // ---- R-Showcase composite knobs (live in composite pass) ----
-    float exposure { 3.0F };          // pre-tonemap exposure boost
-    float saturation_boost { 1.50F }; // post-tonemap saturation pull-away
-    float bloom_post { 0.04F };       // bloom mip0 contribution mixed into HDR
+    // phase450-exp: exposure 3.0 -> 1.0. The 3x default was crushing the
+    // top of the tonemap curve, so Sponza walls + lit dielectric objects
+    // saturated to near-white and lost their sun-direction shading.
+    // 1.0 = no boost (raw HDR -> tonemap). Lit objects now sit in the
+    // tonemap's mid range where shadow contrast + directional shading
+    // are visible. User can still slider it up via the FX UI for
+    // night/dim scenes that need a boost. Proper auto-exposure is the
+    // architectural fix; queued.
+    float exposure { 1.0F };          // pre-tonemap exposure boost (was 3.0)
+    float saturation_boost { 1.20F }; // post-tonemap saturation pull-away (was 1.50)
+    // phase450-exp: bloom_post 0.04 -> 0.02 (matches the bloom intensity
+    // drop from phase 449; without exposure 3x amplifying the bloom add,
+    // 0.04 was over-tuned).
+    float bloom_post { 0.02F };       // bloom mip0 contribution mixed into HDR (was 0.04)
     float ao_strength { 0.55F };      // composite AO crease darkening
     float dof_strength { 0.0F };      // wired to composite (phase 207)
     // W4-E: bumped default 0.35 -> 0.75 so light shafts are obviously visible
