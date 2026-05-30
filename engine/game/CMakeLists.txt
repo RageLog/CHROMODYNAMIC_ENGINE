@@ -38,6 +38,12 @@
 #              damping). Outputs cd::camera::Camera; resolves entity
 #              positions through an injected TargetPositionFn so the
 #              gameplay tier never pulls cd::scene downward.
+#   particles_event — G3.4: cd::game::particles_event recipe-driven
+#                     gameplay particle dispatcher. Stages authored named
+#                     bursts + on_emit callbacks; the GPU sink
+#                     (cd::render::gpu_particles) is one tier above and
+#                     pulls staged data via active_bursts() — this library
+#                     does NOT link against it.
 #
 # Phase G4 — "Narrative / authoring tools":
 #   dialogue — G4.1: cd::game::dialogue Branching dialogue VM
@@ -58,3 +64,4 @@ add_subdirectory(query)
 add_subdirectory(trigger)
 add_subdirectory(camera)
 add_subdirectory(dialogue)
+add_subdirectory(particles_event)
