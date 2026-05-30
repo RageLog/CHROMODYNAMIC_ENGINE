@@ -1,0 +1,51 @@
+# =============================================================================
+# CHROMODYNAMIC - samples/game/hello_narrative/locales/ar.kv
+# Phase 505 (G4.4 - closes Phase G4). Arabic (ar) locale table.
+#
+# Arabic is RTL (cd::game::l10n::is_rtl("ar") -> true). cd::game::l10n's
+# L10nManager registers explicit plural rules for "en" and "tr" only; an
+# unregistered locale falls back to plural_rule_en (one/other), which is
+# the CLDR-default safe category set per the header contract. We therefore
+# ship "one" + "other" variants for the apples key here. Adding the full
+# Arabic CLDR rule set (zero/one/two/few/many/other) is a one-function
+# extension in cd::game::l10n and a no-op for this sample.
+#
+# Format: `key=value` with no surrounding spaces (the loader is verbatim on
+# the value side -- see en.kv header for the rationale).
+# =============================================================================
+
+# ---- Dialogue: NPC greeting node -------------------------------------------
+intro.speaker=al-Qarawi
+intro.text=marhaba, ladayya muhimma laka. hal taqbalu?
+intro.choice.yes=na'am, sa'usa'idu.
+intro.choice.no=la, laysa al'an.
+
+# ---- Dialogue: accepted-quest end node -------------------------------------
+accept.speaker=al-Qarawi
+accept.text=ra'i'! ahdir li thalath tuffahat min al-bustan.
+
+# ---- Dialogue: declined-quest end node -------------------------------------
+decline.speaker=al-Qarawi
+decline.text=rubbama fi marra qadima, ya musafir.
+
+# ---- Quest journal copy ----------------------------------------------------
+quest.title=ibhath 'an thalath tuffahat
+quest.description=al-qarawi yahtaju thalath tuffahat min al-bustan.
+quest.reward=raghif khubz tazij.
+
+# ---- Objective: pluralised "apples remaining" status -----------------------
+# Per the header comment we ship one+other; if/when the Arabic CLDR rule
+# (zero/one/two/few/many/other) lands in cd::game::l10n the extra keys
+# below become reachable via the new selector.
+apples.one=baqiyat tuffaha {n}
+apples.other=baqiya {n} tuffahat
+apples.zero=la tabqa tuffaha
+apples.two=baqiyat tuffahatan {n}
+apples.few=baqiya {n} tuffahat
+apples.many=baqiya {n} tuffaha
+
+# ---- Quest status banner ---------------------------------------------------
+quest.status.active=nashit
+quest.status.completed=mukmal
+quest.status.failed=fashil
+quest.status.inactive=ghayr nashit
