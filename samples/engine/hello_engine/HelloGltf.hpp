@@ -45,11 +45,23 @@ struct GltfPrimRange
     // "every new object needs more code" pain.
     float                      metallic           { 0.0F };  ///< glTF metallic_factor
     float                      roughness          { 0.9F };  ///< glTF roughness_factor (stone-ish default)
-    float                      normal_strength    { 0.0F };  ///< 1.0 when glTF material has normalTexture; 0 = use vertex normal
+    float                      normal_strength    { 0.0F };  ///< glTF NormalTextureInfo.scale when has_normal_map; else 0 = use vertex normal
+    // phase456: per-prim normal + metallic-roughness textures, mirroring
+    // the per-prim albedo path. Without these, all Sponza prims sampled
+    // the SHARED procedural Earth normal/MR maps (binding 8/9) at glTF
+    // UVs — visually wrong (chrome highlights on stone, polygon facets on
+    // vegetation). The per-prim MaterialInstance now carries bindings 4
+    // (albedo), 8 (normal), and 9 (MR) all keyed to THIS prim's textures.
+    cd::rhi::TextureHandle     normal_tex     {};
+    cd::rhi::TextureViewHandle normal_view    {};
+    bool                       has_normal_map { false };
+    cd::rhi::TextureHandle     mr_tex         {};
+    cd::rhi::TextureViewHandle mr_view        {};
+    bool                       has_mr_map     { false };
     /// Per-prim descriptor set (valid when has_texture=true + prim_recreate called).
     /// Fixes Vulkan descriptor aliasing: each textured prim owns its own
-    /// descriptor set with binding 4 pointing at its albedo texture,
-    /// so all prim draws see the correct texture at GPU execution time.
+    /// descriptor set with bindings 4/8/9 pointing at its own textures,
+    /// so all prim draws see the right material at GPU execution time.
     cd::material::MaterialInstance prim_inst {};
 };
 
@@ -156,6 +168,42 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                         }
                     }
                 }
+                // phase456: per-prim normal texture upload. We reuse the
+                // SAME upload functor as albedo (RGBA8 generic 2D image
+                // path). The shader treats this as a tangent-space normal
+                // map via the normal_strength weight in fx_params4[2].
+                if (mat.normal_texture >= 0 &&
+                    mat.normal_texture < static_cast<int>(loaded.textures.size()))
+                {
+                    const auto& gt = loaded.textures[static_cast<std::size_t>(mat.normal_texture)];
+                    if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
+                    {
+                        auto [img, view] = albedo.upload(gt.rgba.data(), gt.width, gt.height);
+                        if (img.is_valid())
+                        {
+                            range.normal_tex     = img;
+                            range.normal_view    = view;
+                            range.has_normal_map = true;
+                        }
+                    }
+                }
+                // phase456: per-prim metallic-roughness texture upload.
+                // glTF packs ARM-style: G=rough, B=metal (A unused).
+                if (mat.metallic_roughness_texture >= 0 &&
+                    mat.metallic_roughness_texture < static_cast<int>(loaded.textures.size()))
+                {
+                    const auto& gt = loaded.textures[static_cast<std::size_t>(mat.metallic_roughness_texture)];
+                    if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
+                    {
+                        auto [img, view] = albedo.upload(gt.rgba.data(), gt.width, gt.height);
+                        if (img.is_valid())
+                        {
+                            range.mr_tex     = img;
+                            range.mr_view    = view;
+                            range.has_mr_map = true;
+                        }
+                    }
+                }
                 range.double_sided = mat.double_sided;
                 using AM = cd::asset::gltf::GltfAlphaMode;
                 if (mat.alpha_mode == AM::kMask)
@@ -169,16 +217,13 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // The shader reads these via fx_params4 — no per-asset hack.
                 range.metallic        = mat.metallic_factor;
                 range.roughness       = mat.roughness_factor;
-                // phase452: glTF normal_texture index now captured by the
-                // loader. We DON'T yet bind a per-prim normal descriptor
-                // (would require descriptor-set rework matching the per-prim
-                // albedo path in HelloMeshes), so we keep normal_strength=0
-                // for now to avoid sampling the global procedural Earth
-                // normal at glTF UVs (re-introduces polygon facets).
-                // When per-prim normal-texture descriptors land:
-                //   range.normal_strength = (mat.normal_texture >= 0)
-                //                             ? mat.normal_scale : 0.0F;
-                range.normal_strength = 0.0F;
+                // phase456: now that we ACTUALLY upload per-prim normal
+                // textures and bind them as the prim's own binding-8
+                // descriptor, we can finally enable the shader's
+                // tangent-space normal sample path. normal_strength
+                // gates the perturbation: 0 = vertex normal, positive
+                // value = glTF NormalTextureInfo.scale.
+                range.normal_strength = range.has_normal_map ? mat.normal_scale : 0.0F;
             }
             prim_ranges.push_back(std::move(range));
         }

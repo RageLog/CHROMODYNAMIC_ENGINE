@@ -3864,6 +3864,12 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                                     cd::rhi::SamplerHandle albedo_sampler,
                                     cd::rhi::IDevice& device,
                                     cd::rhi::TextureViewHandle global_albedo_view,
+                                    // phase456: global procedural normal + MR views used to
+                                    // restore the shared prim_inst's bindings 8 + 9 after the
+                                    // Sponza per-prim draw loop, so subsequent entity draws
+                                    // (CesiumMan, PBR spheres) sample the right material maps.
+                                    cd::rhi::TextureViewHandle global_normal_view = {},
+                                    cd::rhi::TextureViewHandle global_mr_view     = {},
                                     // phase435-vis8: skip editor grid when a scene with its
                                     // own floor (Sponza) is active. Grid bleeds through
                                     // alpha-discarded vegetation pixels. Default true
@@ -4093,21 +4099,45 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                 cmd.draw_indexed(pr.index_count, 1, pr.index_offset, 0, 0);
                 counters.increment("draws_prim");
             }
-            // phase427-vis4: restore binding=4 to the global (non-Sponza)
-            // albedo texture so subsequent entity draws (CesiumMan, PBR
-            // spheres) receive the correct descriptor state. The per-prim
-            // loop left binding 4 pointing at the last Sponza primitive's
-            // texture; without this restore CesiumMan samples the Sponza
-            // leaf/curtain texture at its own UVs -> black/garbage albedo.
+            // phase427-vis4 + phase456: restore binding=4 (albedo) AND
+            // bindings 8 (normal) + 9 (MR) on the SHARED prim_inst so
+            // subsequent entity draws (CesiumMan, PBR spheres) sample the
+            // global procedural maps rather than the last Sponza prim's
+            // material. Without this restore, the next entity bound to
+            // prim_inst would inherit whatever the per-prim descriptor sets
+            // (4/8/9) last held — and since the per-prim instance is a
+            // separate VkDescriptorSet, this isn't even shared state for
+            // the next BIND — but the shared prim_inst itself may have
+            // been mutated by legacy fallback paths above, so we
+            // defensively re-write all three bindings here.
             if (global_albedo_view.is_valid())
             {
-                const std::array<cd::rhi::DescriptorWrite, 1> rw {
-                    cd::rhi::DescriptorWrite { .binding = 4,
-                                               .array_element = 0,
-                                               .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                                               .view = global_albedo_view,
-                                               .sampler = albedo_sampler }
-                };
+                std::vector<cd::rhi::DescriptorWrite> rw;
+                rw.reserve(3);
+                rw.push_back(cd::rhi::DescriptorWrite {
+                    .binding = 4,
+                    .array_element = 0,
+                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view = global_albedo_view,
+                    .sampler = albedo_sampler });
+                if (global_normal_view.is_valid())
+                {
+                    rw.push_back(cd::rhi::DescriptorWrite {
+                        .binding = 8,
+                        .array_element = 0,
+                        .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                        .view = global_normal_view,
+                        .sampler = albedo_sampler });
+                }
+                if (global_mr_view.is_valid())
+                {
+                    rw.push_back(cd::rhi::DescriptorWrite {
+                        .binding = 9,
+                        .array_element = 0,
+                        .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                        .view = global_mr_view,
+                        .sampler = albedo_sampler });
+                }
                 (void)prim_inst.update(rw);
                 prim_inst.bind(cmd, 0);
             }
@@ -4643,7 +4673,8 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         .sampler  = s.albedo_sampler,
         .upload   = upload_alb_fn,
     };
-    s.meshes = cd_sample::boot_meshes(device, alb_slot, s.prim_inst, s.materials.prim);
+    s.meshes = cd_sample::boot_meshes(device, alb_slot, s.prim_inst, s.materials.prim,
+                                      s.normal_tex.view, s.mr_tex.view);  // phase456: per-prim normal/MR fallback
     if (s.meshes.build_exit_code != 0)
         return std::unexpected(
             cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
@@ -5598,6 +5629,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                 s.materials.prim, s.counters, mesh_for,
                                 s.meshes.gltf_prim_ranges, s.prim_inst,
                                 s.albedo_sampler, device, s.albedo_tex.view,
+                                s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
                                 s.show_editor_floor);  // phase435-vis8
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, s.entities,
                             s.scene, vp, s.materials.prim, s.counters, mesh_for);
@@ -6329,7 +6361,8 @@ int main(int argc, char** argv)
         .sampler  = albedo_sampler,
         .upload   = upload_albedo_fn,
     };
-    auto meshes = cd_sample::boot_meshes(device, meshes_albedo_slot, prim_inst, prim_material);
+    auto meshes = cd_sample::boot_meshes(device, meshes_albedo_slot, prim_inst, prim_material,
+                                         normal_tex.view, mr_tex.view);  // phase456: per-prim normal/MR fallback
     if (meshes.build_exit_code != 0)
         return meshes.build_exit_code;
     // phase437-black: also gate on CesiumMan texture (has_cesium_texture)
@@ -7814,7 +7847,8 @@ int main(int argc, char** argv)
                                 entities, scene, has_gltf_texture,
                                 prim_material, counters, mesh_for,
                                 meshes.gltf_prim_ranges, prim_inst,
-                                albedo_sampler, device, albedo_tex.view);
+                                albedo_sampler, device, albedo_tex.view,
+                                normal_tex.view, mr_tex.view);  // phase456: per-prim restore
 
         // ---- Planar projective shadows (Faz 1.5) ----
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, entities,

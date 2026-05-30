@@ -46,6 +46,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace cd_sample {
 
@@ -114,14 +115,22 @@ build_mesh_blas(cd::rhi::IDevice&         device,
 /// chain, build one BLAS per mesh, and submit a transient one-shot
 /// command buffer that triggers the actual AS builds.
 /// prim_material is used to allocate per-prim descriptor sets for Sponza
-/// so each textured primitive owns its own binding-4 slot and avoids
+/// so each textured primitive owns its own binding-4/8/9 slot and avoids
 /// the Vulkan descriptor-aliasing hazard that caused all Sponza prims to
 /// sample the last-written texture (vegetation/curtains showed wrong colors).
+///
+/// phase456: fallback_normal_view + fallback_mr_view supply the GLOBAL
+/// procedural normal + MR maps so the per-prim descriptor is COMPLETE even
+/// for prims that don't have their own normal/MR textures. (Vulkan requires
+/// every binding in the layout to be written before bind.) Per-prim views
+/// override the fallback when available.
 [[nodiscard]] inline HelloMeshes
 boot_meshes(cd::rhi::IDevice&                device,
             AlbedoSlot                       albedo,
             cd::material::MaterialInstance&  prim_inst,
-            cd::material::Material&          prim_material)
+            cd::material::Material&          prim_material,
+            cd::rhi::TextureViewHandle       fallback_normal_view = {},
+            cd::rhi::TextureViewHandle       fallback_mr_view     = {})
 {
     HelloMeshes out {};
 
@@ -186,15 +195,40 @@ boot_meshes(cd::rhi::IDevice&                device,
                     "falling back to shared descriptor (vegetation may be wrong)\n");
                 continue;
             }
-            // Write binding 4 with this prim's own albedo texture + the shared sampler.
-            const std::array<cd::rhi::DescriptorWrite, 1> tw {
-                cd::rhi::DescriptorWrite {
-                    .binding       = 4,
+            // phase456: write bindings 4 (albedo), 8 (normal), 9 (MR) into
+            // this prim's OWN descriptor set. Per-prim views override; the
+            // global procedural fallbacks fill bindings the prim doesn't
+            // author so Vulkan sees a complete descriptor at bind time.
+            const cd::rhi::TextureViewHandle norm_v =
+                pr.has_normal_map ? pr.normal_view : fallback_normal_view;
+            const cd::rhi::TextureViewHandle mr_v =
+                pr.has_mr_map ? pr.mr_view : fallback_mr_view;
+            std::vector<cd::rhi::DescriptorWrite> tw;
+            tw.reserve(3);
+            tw.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 4,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view          = pr.albedo_view,
+                .sampler       = albedo.sampler });
+            if (norm_v.is_valid())
+            {
+                tw.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 8,
                     .array_element = 0,
                     .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view          = pr.albedo_view,
-                    .sampler       = albedo.sampler }
-            };
+                    .view          = norm_v,
+                    .sampler       = albedo.sampler });
+            }
+            if (mr_v.is_valid())
+            {
+                tw.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 9,
+                    .array_element = 0,
+                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view          = mr_v,
+                    .sampler       = albedo.sampler });
+            }
             (void)inst_r->update(tw);
             pr.prim_inst = std::move(*inst_r);
         }
@@ -289,6 +323,15 @@ destroy_meshes(cd::rhi::IDevice& device, HelloMeshes& m) noexcept
             device.destroy_texture_view(pr.albedo_view);
         if (pr.albedo_tex.is_valid())
             device.destroy_texture(pr.albedo_tex);
+        // phase456: per-prim normal + MR textures.
+        if (pr.normal_view.is_valid())
+            device.destroy_texture_view(pr.normal_view);
+        if (pr.normal_tex.is_valid())
+            device.destroy_texture(pr.normal_tex);
+        if (pr.mr_view.is_valid())
+            device.destroy_texture_view(pr.mr_view);
+        if (pr.mr_tex.is_valid())
+            device.destroy_texture(pr.mr_tex);
     }
     m.gltf_prim_ranges.clear();
     // Destroy CesiumMan mesh.
