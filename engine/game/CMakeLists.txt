@@ -34,6 +34,11 @@
 #              cd::game::query::QueryWorld so the indexed broad-phase plugs
 #              into tick() without a hard link-time dependency.
 #
+# Phase G4 — "Narrative / authoring tools":
+#   dialogue — G4.1: cd::game::dialogue Branching dialogue VM
+#              (Ink / Yarn Spinner-style DialogueNode + DialogueChoice graph
+#              with predicate-gated choices over a typed Blackboard).
+#
 # (Subsequent sub-libraries — time, input_binding — land in their own
 # phase commits as the gameplay family grows. The world/ tree carries
 # transitional `gameplay_time` and `gameplay_input_binding` aliases that
@@ -46,3 +51,4 @@ add_subdirectory(ai_bt)
 add_subdirectory(anim_graph)
 add_subdirectory(query)
 add_subdirectory(trigger)
+add_subdirectory(dialogue)
