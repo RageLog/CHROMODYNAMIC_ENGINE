@@ -52,6 +52,10 @@
 #   quest    — G4.2: cd::game::quest QuestLog objective tracker + journal
 #              (4-bucket partitioning + auto-complete / auto-fail on
 #              objective state change + binary serialise / restore).
+#   l10n     — G4.3: cd::game::l10n Localization runtime
+#              (line-based .lang loader + CLDR plural rules baked in for
+#              en/tr + RTL helper + current/base locale fallback chain +
+#              on_locale_change observers).
 #
 # (Subsequent sub-libraries — time, input_binding — land in their own
 # phase commits as the gameplay family grows. The world/ tree carries
@@ -68,6 +72,7 @@ add_subdirectory(trigger)
 add_subdirectory(camera)
 add_subdirectory(dialogue)
 add_subdirectory(quest)
+add_subdirectory(l10n)
 add_subdirectory(particles_event)
 
 # Phase G5 — "Live authoring / runtime tooling":
