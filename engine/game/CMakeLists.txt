@@ -49,6 +49,9 @@
 #   dialogue — G4.1: cd::game::dialogue Branching dialogue VM
 #              (Ink / Yarn Spinner-style DialogueNode + DialogueChoice graph
 #              with predicate-gated choices over a typed Blackboard).
+#   quest    — G4.2: cd::game::quest QuestLog objective tracker + journal
+#              (4-bucket partitioning + auto-complete / auto-fail on
+#              objective state change + binary serialise / restore).
 #
 # (Subsequent sub-libraries — time, input_binding — land in their own
 # phase commits as the gameplay family grows. The world/ tree carries
@@ -64,6 +67,7 @@ add_subdirectory(query)
 add_subdirectory(trigger)
 add_subdirectory(camera)
 add_subdirectory(dialogue)
+add_subdirectory(quest)
 add_subdirectory(particles_event)
 
 # Phase G5 — "Live authoring / runtime tooling":
