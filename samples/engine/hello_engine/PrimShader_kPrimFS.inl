@@ -4,6 +4,10 @@
 namespace cd::hello_engine
 {
 
+// AUTO-SYNCED with samples/engine/hello_engine/shaders/prim.frag.glsl
+// (phase 438). Embedded fallback used when on-disk shaders/ directory
+// is missing next to the binary. Keep in lockstep with the .glsl file
+// — drift loses runtime fixes silently.
 inline constexpr const char* kPrimFS = R"glsl(
 #version 460
 // Faz 1.7 - inline RT shadows via ray queries inside the raster FS.
@@ -87,7 +91,13 @@ mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
   vec3 dp1perp = cross(N, dp1);
   vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
   vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-  float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
+  // phase437-black: guard against degenerate UV (identical UVs on a
+  // Sponza primitive / collapsed triangle → dFdx/dFdy == 0 →
+  // max(dot(T,T), dot(B,B)) == 0 → inversesqrt(0) = +Inf →
+  // TBN * nm_sample = NaN). Fall back to identity TBN (N unchanged).
+  float denom = max(dot(T, T), dot(B, B));
+  if (denom < 1e-10) return mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), N);
+  float invmax = inversesqrt(denom);
   return mat3(T * invmax, B * invmax, N);
 }
 layout(location = 0) in vec3 v_world_pos;
@@ -238,7 +248,13 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   vec2 uv = p.xy * 0.5 + 0.5;
   // Slope-scaled depth bias - fights shadow acne on grazing-angle
   // fragments. Coefficient picked empirically.
-  float bias = max(0.0025 * (1.0 - max(dot(N, L), 0.0)), 0.0005);
+  // phase426-vis3: Sponza at 0.01 scale has geometry very close in
+  // depth along the light view. The constant floor 0.0005 was chosen
+  // for a 60 m depth range; with the expanded 100 m ortho (Fix 1)
+  // the same value is fine. Slope term reduced 0.0025->0.0015 to
+  // recover interior shadows lost to over-biasing on near-planar walls
+  // (pillars, arch undersides) while keeping acne-free on the floor.
+  float bias = max(0.0015 * (1.0 - max(dot(N, L), 0.0)), 0.0003);
   float ref  = p.z - bias;
   vec2 ts = 1.0 / vec2(textureSize(cd_shadow_map, 0));
   float s = 0.0;
@@ -293,7 +309,17 @@ void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
   bool is_floor_w    = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
   float surface_flag = (is_shadow_w || is_floor_w) ? 0.0 : 1.0;
-  out_normal = vec4(normalize(v_world_normal), surface_flag);
+  // phase437-black: NaN guard on out_normal. Degenerate geometry (zero-
+  // length v_world_normal from collapsed triangles in Sponza vegetation
+  // or skinned CesiumMan at extreme poses) causes normalize() to return
+  // NaN. That NaN propagates into the G-Buffer and then into the
+  // composite pass AO depth_ao() which normalises the G-Buffer normal
+  // again — producing NaN AO → c *= NaN → black fragment even when
+  // out_color was valid. Safe fallback: use the geometric up vector so
+  // the fragment still participates in AO with a neutral contribution.
+  vec3 raw_N = v_world_normal;
+  vec3 safe_N = (dot(raw_N, raw_N) > 1e-10) ? normalize(raw_N) : vec3(0.0, 1.0, 0.0);
+  out_normal = vec4(safe_N, surface_flag);
 
   // R3 G-Buffer phase 219 - albedo + MR. Sample the same textures
   // the lit path uses so deferred / post-fx consumers see exactly
@@ -321,7 +347,9 @@ void main() {
     out_albedo = vec4(clamp(pbr_albedo, vec3(0.0), vec3(1.0)), 1.0);
     out_mr     = vec2(pbr_metal, pbr_rough);
 
-    vec3  Npbr = normalize(v_world_normal);
+    // phase437-black: reuse safe_N for the PBR path too (consistent with
+    // the Lit path below; avoids a second normalize of potentially-zero normal).
+    vec3  Npbr = safe_N;
     vec3  Vpbr = normalize(pc.camera_pos.xyz - v_world_pos);
     float NoVpbr = max(dot(Npbr, Vpbr), 0.0);
     vec3  F0pbr  = mix(vec3(0.04), pbr_albedo, pbr_metal);
@@ -447,7 +475,7 @@ void main() {
                  (atten * cone * vis);
     }
 
-    // ---- IBL split-sum (Karis 2013) ----
+    // ---- IBL split-sum (Karis 2013) + Fdez-Aguera 2019 multi-scatter ----
     // W8-AY: env-spec ALSO gated on sun. User reported "gunes olmadigi
     // yerde gokyuzu yansitiyolar" — chrome reflecting sky-without-sun
     // breaks the lighting consistency. Gate both env-spec and env-
@@ -461,7 +489,16 @@ void main() {
                                               clamp(pbr_rough, 0.0, 1.0))).rg;
     vec3  F_ibl   = F_Schlick_roughness_pbr(NoVpbr, F0pbr, pbr_rough);
     vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - pbr_metal);
-    vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y));
+    // Fdez-Aguera 2019 "A Multiple-Scattering Microfacet Model for Real-Time IBL"
+    // (JCGT 8:1) — multi-scatter compensation (Eq. 12-13, §3.4).
+    // Recovers the ~10-15% energy lost to inter-microfacet bounces in the
+    // Karis 2013 single-scatter approximation; most visible on polished metals.
+    float Ess_p   = brdf_v.x + brdf_v.y;           // single-scatter integral
+    float Ems_p   = 1.0 - Ess_p;                   // missing (multi-scatter) energy
+    vec3  Favg_p  = F0pbr + (1.0 - F0pbr) * (1.0 / 21.0); // average Fresnel
+    vec3  Fms_p   = (Favg_p * Ess_p) / (vec3(1.0) - Favg_p * Ems_p); // multi-scatter Fresnel
+    vec3  ibl_spec_p = spec_e * (F0pbr * brdf_v.x + vec3(brdf_v.y)
+                                 + Fms_p * Ems_p);
 
     // W8-AZ: env-spec gate is now PURELY sun-driven. The previous
     // any_non_sun*0.30 floor caused chrome spheres to keep showing
@@ -485,8 +522,12 @@ void main() {
     // floor, matching the W8-AZ env-spec gate philosophy.
     int   hit_inst   = -1;
     float scene_hit  = reflection_hit_id(v_world_pos, Npbr, Ripbr, 80.0, hit_inst);
-    vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y);
+    vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
     vec3  ibl_spec_blended = ibl_spec_p;
+    // phase433-vis6: bounds guard. kMaxInstMats=256; reads beyond the
+    // populated range would return zero (black) albedo causing pitch-
+    // black reflections on high-ID hits. Cap to keep sampling safe.
+    if (hit_inst >= 256) hit_inst = -1;
     if (scene_hit > 0.5 && hit_inst >= 0) {
       vec3 hit_alb   = cd_instance_mats.data[hit_inst].albedo.rgb;
       // Pseudo-normal = surface-outward direction (-dir) on convex hits.
@@ -586,14 +627,20 @@ void main() {
     albedo  = mix(vec3(0.55, 0.60, 0.66) * 0.0, albedo, floor_fade);
   }
 
-  vec3 N = normalize(v_world_normal);
+  // phase437-black: reuse safe_N (computed at top of main() to guard
+  // out_normal) so the lighting path also starts from a NaN-free normal.
+  vec3 N = safe_N;
   // R2 normal mapping for textured entities - perturbs the surface
   // normal with the tangent-space sample so the procedural Earth
   // bumps register as real 3D relief.
   if (pc.fx_params.y > 0.5) {
     vec3 nm_sample = texture(cd_normal_tex, v_uv).xyz * 2.0 - 1.0;
     mat3 TBN = cotangent_frame(N, v_world_pos, v_uv);
-    N = normalize(TBN * nm_sample);
+    vec3 N_mapped = TBN * nm_sample;
+    // phase437-black: guard normalize of perturbed normal. A black normal-
+    // map pixel gives nm_sample = -1,-1,-1 → TBN * (-1,-1,-1) could be
+    // near-zero depending on TBN. Safe fallback: keep the geometric normal.
+    N = (dot(N_mapped, N_mapped) > 1e-10) ? normalize(N_mapped) : N;
   }
   vec3 lit = vec3(0.0);
 
@@ -747,11 +794,22 @@ void main() {
   // looks dielectric (skin/cloth) instead of mirror-finish, without
   // re-introducing the W8-A 'always bright' fill that ruined spot
   // direction. 0.04 picked to stay well below the lit-side intensity.
+  // phase425-vis2: gate the 0.020 ambient floor on at least one light
+  // being active. When sun_dir.w == 0 AND cd_lights.count == 0 the
+  // scene should be completely dark (user: "ışık yoksa hiç bir şey
+  // görmem gerekir"). The hemi term is already gated on sun_color.w;
+  // the constant floor must follow the same gate so the all-off state
+  // produces lit=0, ambient=0, out_color=vec4(0).
+  // any_light > 0 when sun is on OR at least one non-sun light is
+  // enabled in the UBO.
+  float any_light = clamp(pc.sun_dir.w + float(cd_lights.count) * 0.5, 0.0, 1.0);
   float up_t   = N.y * 0.5 + 0.5;
   vec3  sky_c  = vec3(0.55, 0.65, 0.85);
   vec3  gnd_c  = vec3(0.18, 0.16, 0.14);
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
-  vec3  ambient = albedo * (hemi + vec3(0.020));  // W8-BE: floor 0.04 -> 0.020 per user "biraz daha koyu olsun"
+  // W8-BE: floor 0.04 -> 0.020 per user "biraz daha koyu olsun".
+  // phase425-vis2: multiply by any_light so all-off -> pitch black.
+  vec3  ambient = albedo * (hemi + vec3(0.020) * any_light);
 
   // R2: True IBL with MR map. Karis split-sum:
   //   IBL = kD * irradiance(N) * albedo + prefiltered(R, rough*mipMax)
@@ -781,7 +839,13 @@ void main() {
     vec3 diff_e = texture(cd_ibl_diff, N).rgb;
     vec2 brdf_v = texture(cd_brdf_lut, vec2(clamp(NoV_v, 0.0, 1.0),
                                             clamp(roughness, 0.0, 1.0))).rg;
-    vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y);
+    // Fdez-Aguera 2019 "A Multiple-Scattering Microfacet Model for Real-Time IBL"
+    // (JCGT 8:1) — multi-scatter compensation (Eq. 12-13, §3.4).
+    float Ess_v  = brdf_v.x + brdf_v.y;
+    float Ems_v  = 1.0 - Ess_v;
+    vec3  Favg_v = F0_ibl + (1.0 - F0_ibl) * (1.0 / 21.0);
+    vec3  Fms_v  = (Favg_v * Ess_v) / (vec3(1.0) - Favg_v * Ems_v);
+    vec3 ibl_F  = F0_ibl * brdf_v.x + vec3(brdf_v.y) + Fms_v * Ems_v;
     vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
     vec3 ibl    = (ibl_kD * diff_e * albedo + spec_e * ibl_F) * ao_factor;
     // W8-C: revert to sun-only IBL gate. User explicitly wants
@@ -914,6 +978,12 @@ void main() {
   }
 
   // Linear HDR output - composite pass owns the gamma transform.
+  // phase433-vis6: NaN/Inf safety clamp. Sponza at 0.01 scale + IBL
+  // cotangent_frame on degenerate UVs can produce NaN that propagates
+  // to a fully-black fragment. Clamp to [0, 100] nits (well above any
+  // plausible HDR contribution) before the debug-view early returns
+  // and the final write so every code path benefits.
+  c = clamp(c, vec3(0.0), vec3(100.0));
 
   // Debug view modes (fx_params4.w):
   //   1 albedo only, 2 world normal, 3 MR map, 4 AO, 5 perturbed
