@@ -41,14 +41,20 @@ struct Settings
     /// Number of mip stages (input + downsample levels). Recommended 5-6.
     std::uint32_t stage_count { 5 };
     /// Threshold in linear RGB — pixels below this don't contribute to bloom.
-    /// 1.0 keeps only over-display-white pixels (the canonical filmic
-    /// usage). Lower for a "halo on everything" look.
-    float threshold { 1.0F };
+    /// phase449: bumped 1.0 -> 3.0 because the HDR scene is pre-tonemap;
+    /// linear values of 2-5 are routine for sun-direct + IBL on dielectric
+    /// surfaces. Threshold 1.0 made every sun-lit pixel bloom and overdraw
+    /// the cast shadows. Proper fix is auto-exposure (Reinhard log-avg
+    /// luminance) so threshold scales with scene EV; until that ships,
+    /// 3.0 picks up genuinely-emissive surfaces and sun-on-chrome highlights
+    /// without lighting up every lit cylinder.
+    float threshold { 3.0F };
     /// Soft-knee width around the threshold so bloom doesn't snap on.
     float knee { 0.5F };
     /// Per-stage intensity (added on top of the previous stage's upsample).
-    /// 0.04 is the "Karis stable" default.
-    float intensity { 0.04F };
+    /// 0.04 is the "Karis stable" default; phase449 dropped to 0.02 for
+    /// the same overdraw reason.
+    float intensity { 0.02F };
     /// Sample radius (in texels) for the upsample tent filter. 1.0 = single
     /// tap, 4.0 = wider halo.
     float radius { 1.5F };

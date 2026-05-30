@@ -160,12 +160,12 @@ register_engine_gi_rhi_fx_palette_commands(cd::editor::CommandPalette&          
     );
     palette.register_command(
         83,
-        "FX: Bloom Settings (threshold=1.0, intensity=0.04)",
+        "FX: Bloom Settings (threshold=3.0, intensity=0.02)",
         [&]
         {
-            fx_bloom.threshold = 1.0F;
-            fx_bloom.intensity = 0.04F;
-            log_push("[fx] Bloom settings reset to defaults");
+            fx_bloom.threshold = 3.0F;
+            fx_bloom.intensity = 0.02F;
+            log_push("[fx] Bloom settings reset to defaults (phase 449)");
         }
     );
     palette.register_command(
