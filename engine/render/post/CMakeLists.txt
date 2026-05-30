@@ -74,6 +74,10 @@ cd_add_library(post_fx
     cd::light_shafts
 )
 
+# phase454 — auto-exposure: pure-CPU kernel (log-avg + EMA smoothing),
+# GPU reduction queued for the composite-pass companion.
+add_subdirectory(exposure)
+
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests/bloom)
   add_subdirectory(tests/composite)
