@@ -165,6 +165,7 @@
 #include "HelloMaterials.hpp"
 #include "HelloShaderWatch.hpp"
 #include "HelloGltf.hpp"
+#include "HelloGenericGltf.hpp"
 #include "HelloMeshes.hpp"
 #include "HelloEnginePalette.hpp"
 #include "HelloPicker.hpp"
@@ -4235,6 +4236,12 @@ struct HelloEngineApp::EngineState
     std::deque<std::string>                  log;
     cd::world_container::World               cd_world;
     std::vector<SceneEntity>                 entities;
+    // phase508-generic-gltf-path: 3rd load path. One entry per .gltf
+    // discovered under assets/samples/Generic/ that was successfully run
+    // through cd::asset::gltf::load_scene + cd::render::scene::
+    // ingest_gltf_scene. Each GenericIngest owns the IngestResult so
+    // on_shutdown can free every GPU handle deterministically.
+    std::vector<cd_sample::GenericIngest>    generic_ingests;
     int                                      selected        { 0 };
     SelKind                                  selected_kind   { SelKind::kEntity };
 
@@ -4715,6 +4722,26 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         s.meshes.gltf_cesium,   s.meshes.gltf_cesium_loaded_name,
         s.entities);
     spawn_pbr_grid_entities(s.scene, s.entities);
+
+    // phase508-generic-gltf-path: 3rd load path, runs strictly AFTER the
+    // legacy Sponza + CesiumMan paths above so the generic ingest does not
+    // perturb any of their boot state. The user-facing contract is "drop
+    // any .gltf into assets/samples/Generic/ and it loads with no code
+    // changes" -- everything else (entities, GPU resources, AABB,
+    // suggested world xform) is auto-driven by the SceneLoader +
+    // SceneIngest libraries. See HelloGenericGltf.hpp for the scope
+    // caveats (visible draws of these meshes are deferred to the full
+    // P1.3 migration; this phase exercises load + ingest + cleanup
+    // end-to-end and logs the result).
+    {
+        auto early_log = [&s](std::string msg)
+        {
+            s.log.emplace_back(std::move(msg));
+            while (s.log.size() > 64) s.log.pop_front();
+        };
+        s.generic_ingests = cd_sample::load_generic_gltf_scenes(
+            *s.device_owner, s.ecs_world, s.scene, early_log);
+    }
 
     // phase435-vis8: suppress editor floor when Sponza is loaded.
     // Sponza provides its own floor; the large 1000m editor grid quad
@@ -5909,6 +5936,12 @@ void HelloEngineApp::on_shutdown() noexcept
 
     s.renderer.wait_idle();
     s.streamer.stop();
+
+    // phase508-generic-gltf-path: free every GPU resource (vertex / index /
+    // texture handles) owned by the generic ingest list. Per
+    // destroy_ingest_result's contract the ECS entities are NOT destroyed
+    // here -- the surrounding World destruction handles that moments later.
+    cd_sample::destroy_generic_ingests(device, s.generic_ingests);
 
     destroy_mesh(device, s.meshes.floor);
     s.rts.destroy(device);

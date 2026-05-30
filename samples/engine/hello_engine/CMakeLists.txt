@@ -53,6 +53,7 @@ cd_add_sample(hello_engine
     cd::post_taa
     cd::velocity
     cd::render
+    cd::render_scene_ingest
     cd::volumetric_clouds
     cd::volumetric_fog
     cd::rhi
@@ -75,6 +76,20 @@ add_custom_command(TARGET cd_sample_hello_engine POST_BUILD
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders
     $<TARGET_FILE_DIR:cd_sample_hello_engine>/shaders
   COMMENT "Stage hello_engine shaders for on-disk hot-reload")
+
+# phase508-generic-gltf-path: stage the sample-local Generic glTF folder
+# next to the exe so HelloGenericGltf.hpp's "assets/samples/Generic/"
+# candidate path resolves from build/bin/{Debug,Release}/ without needing
+# the user to run from repo root. The candidate list also includes the
+# absolute repo-root path, so this is a convenience rather than a hard
+# requirement.
+add_custom_command(TARGET cd_sample_hello_engine POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+    $<TARGET_FILE_DIR:cd_sample_hello_engine>/assets/samples/Generic
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets/Generic
+    $<TARGET_FILE_DIR:cd_sample_hello_engine>/assets/samples/Generic
+  COMMENT "Stage hello_engine generic-gltf sample assets")
 
 # Marathon Run 23 phase N2B: ghost-shadow / TLAS-exclusion regression
 # test (pure-CPU, no RHI device needed).

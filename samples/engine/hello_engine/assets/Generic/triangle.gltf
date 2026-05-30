@@ -1,0 +1,37 @@
+{
+  "asset": { "version": "2.0", "generator": "CHROMODYNAMIC phase508 generic-path smoke triangle" },
+  "buffers": [
+    { "byteLength": 42, "uri": "data:application/octet-stream;base64,AACAvwAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA" }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0,  "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 6,  "target": 34963 }
+  ],
+  "accessors": [
+    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+      "min": [-1.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] },
+    { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+  ],
+  "meshes": [
+    {
+      "name": "GenericTriangle",
+      "primitives": [
+        { "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "GenericRed",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [1.0, 0.25, 0.125, 1.0],
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.85
+      },
+      "doubleSided": true
+    }
+  ],
+  "nodes": [ { "mesh": 0, "name": "TriangleRoot" } ],
+  "scenes": [ { "nodes": [0] } ],
+  "scene": 0
+}
