@@ -436,4 +436,9 @@ std::uint64_t Engine::instruction_cap() const noexcept
     return impl_ ? impl_->instruction_cap : 0;
 }
 
+void* Engine::native_state() const noexcept
+{
+    return impl_ ? static_cast<void*>(impl_->L) : nullptr;
+}
+
 }  // namespace cd::script

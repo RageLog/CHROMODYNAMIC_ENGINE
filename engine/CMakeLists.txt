@@ -17,12 +17,14 @@ add_subdirectory(foundation)
 add_subdirectory(asset)       # phase419: all asset sub-libs consolidated inside asset/CMakeLists.txt
 add_subdirectory(texture_synth)
 add_subdirectory(imgdiff)
-add_subdirectory(script)
 add_subdirectory(render)
 if(CD_ENABLE_VULKAN)
   add_subdirectory(imgui_backend)
 endif()
 add_subdirectory(world)
+# phase467: cd::script moved after world/ so its ECS/scene Lua bindings
+# (cd/script/Bindings.hpp) can link against cd::ecs / cd::scene / cd::math.
+add_subdirectory(script)
 add_subdirectory(ui)
 add_subdirectory(runtime)
 # Phase 2 closed at S2.10 (foundation + runtime).

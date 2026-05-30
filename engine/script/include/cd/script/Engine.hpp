@@ -162,6 +162,14 @@ public:
     void set_instruction_cap(std::uint64_t max_instructions) noexcept;
     [[nodiscard]] std::uint64_t instruction_cap() const noexcept;
 
+    // ---- Internal access for binding libraries (Phase 467) --------------
+    //
+    // Returns the raw `lua_State*` typed as `void*` so callers don't pull
+    // `lua.h` through this public header. The cd/script/Bindings.hpp layer
+    // includes `lua.h` inside its TU and `static_cast<lua_State*>` the
+    // result. Stable null when valid() is false.
+    [[nodiscard]] void* native_state() const noexcept;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

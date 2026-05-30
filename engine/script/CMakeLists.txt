@@ -57,7 +57,12 @@ cd_add_library(script
   EXCLUDE_FROM_INSTALL  # vendored Lua via FetchContent — not in export set
   SOURCES
     src/Engine.cpp
-  PUBLIC_DEPS cd::core
+    src/Bindings.cpp   # phase467: math + ecs + scene + event-hook bindings
+  PUBLIC_DEPS
+    cd::core
+    cd::math   # phase467: Vec3f / Vec4f / Mat4f userdata bindings
+    cd::ecs    # phase467: World + Entity bindings
+    cd::scene  # phase467: LocalTransform read/write bindings
 )
 # Lua is a PRIVATE dep: the public header MUST NOT expose Lua types so
 # downstream consumers don't transitively depend on lua.h. The .cpp
