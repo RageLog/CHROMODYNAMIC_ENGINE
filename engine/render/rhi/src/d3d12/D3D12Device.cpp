@@ -700,9 +700,129 @@ public:
         texture_views_.erase(h.index());
     }
 
+    // ---- Sampler (REAL — phase466 v0.99.93 M4-parity-closeout) -----------
+    //
+    // D3D12 samplers live in a dedicated descriptor heap (TYPE_SAMPLER).
+    // The cd::rhi surface returns a SamplerHandle that is later consumed
+    // by update_descriptor_set (for combined-image-sampler) or by the
+    // pipeline static-sampler path. We allocate from a lazily-created
+    // CPU-visible sampler heap (256 slots; bumps per create).
     [[nodiscard]] cd::core::Result<cd::rhi::SamplerHandle>
-    create_sampler(const cd::rhi::SamplerDesc&) override { CD_D3D12_NOT_IMPL_RESULT(SamplerHandle); }
-    void destroy_sampler(cd::rhi::SamplerHandle) override {}
+    create_sampler(const cd::rhi::SamplerDesc& desc) override
+    {
+        // Lazily allocate sampler heap (single 256-slot bump allocator).
+        if (sampler_heap_ == nullptr)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC hd {};
+            hd.NumDescriptors = kSamplerHeapCap;
+            hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+            hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+            if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&sampler_heap_))))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "create_sampler: sampler descriptor heap creation failed"));
+            }
+            sampler_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        }
+        if (sampler_cursor_ >= kSamplerHeapCap)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "create_sampler: sampler heap exhausted (256-slot cap)"));
+        }
+
+        // Map cd::rhi::Sampler* fields onto D3D12 enums.
+        D3D12_SAMPLER_DESC sd {};
+        const bool aniso     = desc.anisotropy_enable && desc.max_anisotropy > 1.0F;
+        const bool compare   = desc.compare_enable;
+        const bool min_lin   = desc.min_filter   == cd::rhi::SamplerFilter::kLinear;
+        const bool mag_lin   = desc.mag_filter   == cd::rhi::SamplerFilter::kLinear;
+        const bool mip_lin   = desc.mipmap_mode  == cd::rhi::SamplerMipmapMode::kLinear;
+        if (aniso)
+        {
+            sd.Filter = compare ? D3D12_FILTER_COMPARISON_ANISOTROPIC
+                                : D3D12_FILTER_ANISOTROPIC;
+        }
+        else
+        {
+            // 8 combinations across (min, mag, mip) all map to a unique
+            // D3D12_FILTER constant. We compose via the standard formula.
+            UINT bits = 0;
+            if (min_lin) bits |= 0x10u;  // min linear
+            if (mag_lin) bits |= 0x04u;  // mag linear
+            if (mip_lin) bits |= 0x01u;  // mip linear
+            sd.Filter = static_cast<D3D12_FILTER>(
+                bits | (compare ? 0x80u : 0x00u));
+        }
+        auto map_addr = [](cd::rhi::SamplerAddressMode m) noexcept {
+            switch (m)
+            {
+                case cd::rhi::SamplerAddressMode::kRepeat:         return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                case cd::rhi::SamplerAddressMode::kMirroredRepeat: return D3D12_TEXTURE_ADDRESS_MODE_MIRROR;
+                case cd::rhi::SamplerAddressMode::kClampToEdge:    return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                case cd::rhi::SamplerAddressMode::kClampToBorder:  return D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+                case cd::rhi::SamplerAddressMode::kMirrorClampToEdge:
+                                                                   return D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE;
+            }
+            return D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        };
+        sd.AddressU = map_addr(desc.address_u);
+        sd.AddressV = map_addr(desc.address_v);
+        sd.AddressW = map_addr(desc.address_w);
+        sd.MipLODBias = desc.mip_lod_bias;
+        sd.MaxAnisotropy = static_cast<UINT>(desc.max_anisotropy);
+        switch (desc.compare_op)
+        {
+            case cd::rhi::CompareOp::kNever:        sd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;         break;
+            case cd::rhi::CompareOp::kLess:         sd.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS;          break;
+            case cd::rhi::CompareOp::kEqual:        sd.ComparisonFunc = D3D12_COMPARISON_FUNC_EQUAL;         break;
+            case cd::rhi::CompareOp::kLessEqual:    sd.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;    break;
+            case cd::rhi::CompareOp::kGreater:      sd.ComparisonFunc = D3D12_COMPARISON_FUNC_GREATER;       break;
+            case cd::rhi::CompareOp::kNotEqual:     sd.ComparisonFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;     break;
+            case cd::rhi::CompareOp::kGreaterEqual: sd.ComparisonFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL; break;
+            case cd::rhi::CompareOp::kAlways:       sd.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;        break;
+        }
+        switch (desc.border_color)
+        {
+            case cd::rhi::BorderColor::kFloatOpaqueWhite:
+                sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 1.0F;
+                break;
+            case cd::rhi::BorderColor::kFloatOpaqueBlack:
+            case cd::rhi::BorderColor::kIntOpaqueBlack:
+                sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = 0.0F;
+                sd.BorderColor[3] = 1.0F;
+                break;
+            case cd::rhi::BorderColor::kFloatTransparentBlack:
+            case cd::rhi::BorderColor::kIntTransparentBlack:
+                sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 0.0F;
+                break;
+            case cd::rhi::BorderColor::kIntOpaqueWhite:
+                sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 1.0F;
+                break;
+        }
+        sd.MinLOD = desc.min_lod;
+        sd.MaxLOD = desc.max_lod;
+
+        D3D12_CPU_DESCRIPTOR_HANDLE dst = sampler_heap_->GetCPUDescriptorHandleForHeapStart();
+        dst.ptr += static_cast<SIZE_T>(sampler_cursor_) * sampler_heap_increment_;
+        device_->CreateSampler(&sd, dst);
+
+        SamplerRecord rec;
+        rec.heap_slot = sampler_cursor_;
+        rec.cpu_handle = dst;
+        ++sampler_cursor_;
+        const auto id = next_id_++;
+        samplers_.emplace(id, std::move(rec));
+        return cd::rhi::SamplerHandle { id, 1u };
+    }
+    void destroy_sampler(cd::rhi::SamplerHandle h) override
+    {
+        samplers_.erase(h.index());
+        // Heap slot not reclaimed (bump allocator); acceptable until a
+        // slab-allocator rework lands.
+    }
 
     // ---- Shader module (REAL — Phase 14.C v0.36.0) ------------------------
 
@@ -842,6 +962,47 @@ public:
             params.push_back(p);
         }
 
+        // phase466 — push-constants → D3D12 root 32-bit constants slot.
+        //
+        // The Vulkan surface allows multiple PushConstantRange entries with
+        // distinct stages. D3D12 root signatures support multiple 32-bit
+        // constants parameters but for parity with the engine push_constants()
+        // call shape (single (layout, stages, offset, size, data)), we
+        // collapse all ranges into one root parameter that spans the union
+        // of all (offset, size) pairs. Cap at D3D12_MAX_ROOT_COST=64 DWORDs;
+        // beyond that the engine's contract guarantees the caller routes
+        // through a uniform buffer.
+        std::uint32_t pc_param_idx = ~std::uint32_t { 0 };
+        std::uint32_t pc_dwords    = 0;
+        if (!desc.push_constants.empty())
+        {
+            std::uint32_t max_end = 0;
+            for (const auto& r : desc.push_constants)
+            {
+                const auto end = r.offset + r.size;
+                if (end > max_end) max_end = end;
+            }
+            // Round up to 4 bytes — root constants are u32 (DWORD) sized.
+            pc_dwords = (max_end + 3u) / 4u;
+            // D3D12_MAX_ROOT_COST is 64 DWORDs total. A descriptor table
+            // costs 1 DWORD; reserve at least params.size() for them.
+            if (pc_dwords + static_cast<std::uint32_t>(params.size()) > 64u)
+            {
+                pc_dwords = 64u - static_cast<std::uint32_t>(params.size());
+            }
+            if (pc_dwords > 0u)
+            {
+                D3D12_ROOT_PARAMETER pcp {};
+                pcp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+                pcp.Constants.ShaderRegister = 0;   // b0
+                pcp.Constants.RegisterSpace  = 1;   // space1 (avoid CBV b0 collisions)
+                pcp.Constants.Num32BitValues = pc_dwords;
+                pcp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                pc_param_idx = static_cast<std::uint32_t>(params.size());
+                params.push_back(pcp);
+            }
+        }
+
         D3D12_ROOT_SIGNATURE_DESC rsd {};
         rsd.NumParameters = static_cast<UINT>(params.size());
         rsd.pParameters = params.empty() ? nullptr : params.data();
@@ -879,6 +1040,8 @@ public:
         PipelineLayoutRecord rec;
         rec.root_sig = root_sig;
         rec.table_params = std::move(table_params);
+        rec.push_constants_param  = pc_param_idx;
+        rec.push_constants_dwords = pc_dwords;
         const auto id = next_id_++;
         pipeline_layouts_.emplace(id, std::move(rec));
         return cd::rhi::PipelineLayoutHandle { id, 1u };
@@ -1095,9 +1258,61 @@ public:
         graphics_pipelines_.erase(h.index());
     }
 
+    // ---- Compute pipeline (REAL — phase466 v0.99.93 M4-parity-closeout) ----
+    //
+    // CreateComputePipelineState consumes a CS shader-bytecode blob plus
+    // the root-signature from a cd::rhi::PipelineLayoutHandle. The shader
+    // module records carry raw DXIL bytecode (already DXC-compiled by
+    // D3D12ShaderCompile.cpp).
     [[nodiscard]] cd::core::Result<cd::rhi::ComputePipelineHandle>
-    create_compute_pipeline(const cd::rhi::ComputePipelineDesc&) override { CD_D3D12_NOT_IMPL_RESULT(ComputePipelineHandle); }
-    void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
+    create_compute_pipeline(const cd::rhi::ComputePipelineDesc& desc) override
+    {
+        auto layout_it = pipeline_layouts_.find(desc.layout.index());
+        if (layout_it == pipeline_layouts_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_compute_pipeline: unknown PipelineLayout handle"));
+        }
+        auto cs_it = shader_modules_.find(desc.shader.index());
+        if (cs_it == shader_modules_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_compute_pipeline: unknown compute shader module"));
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC cpd {};
+        cpd.pRootSignature = layout_it->second.root_sig.Get();
+        cpd.CS.pShaderBytecode = cs_it->second.bytecode.data();
+        cpd.CS.BytecodeLength  = cs_it->second.bytecode.size();
+        cpd.NodeMask = 0;
+        cpd.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+        ComPtr<ID3D12PipelineState> pso;
+        HRESULT hr = device_->CreateComputePipelineState(&cpd, IID_PPV_ARGS(&pso));
+        if (FAILED(hr))
+        {
+            char buf[160] {};
+            std::snprintf(buf, sizeof(buf),
+                          "CreateComputePipelineState failed: HRESULT 0x%08lx",
+                          static_cast<unsigned long>(hr));
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { buf }));
+        }
+
+        ComputePipelineRecord rec;
+        rec.pso = pso;
+        rec.layout_handle = desc.layout;
+        const auto id = next_id_++;
+        compute_pipelines_.emplace(id, std::move(rec));
+        return cd::rhi::ComputePipelineHandle { id, 1u };
+    }
+    void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle h) override
+    {
+        compute_pipelines_.erase(h.index());
+    }
 
     // ---- DXR pipeline state object (Phase 398) ----------------------------
     //
@@ -2510,6 +2725,68 @@ public:
         rec.scratch_gva = rec.scratch->GetGPUVirtualAddress();
         rec.result_size = info.ResultDataMaxSizeInBytes;
         rec.scratch_size = info.ScratchDataSizeInBytes;
+        rec.num_descs = inputs.NumDescs;
+
+        // phase466 — retain BLAS geometry descriptors so a subsequent
+        // build_acceleration_structure can re-issue BuildRTAS with the
+        // correct inputs (without forcing the caller to keep them alive).
+        if (desc.kind == cd::rhi::AccelStructureKind::kBottomLevel)
+        {
+            rec.blas_geos = std::move(geos);
+        }
+        else  // TLAS: allocate an upload buffer for instance descs.
+        {
+            const UINT64 inst_bytes = static_cast<UINT64>(
+                desc.instances.size()) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+            D3D12_HEAP_PROPERTIES hp_up {};
+            hp_up.Type = D3D12_HEAP_TYPE_UPLOAD;
+            D3D12_RESOURCE_DESC rd_up {};
+            rd_up.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd_up.Width  = inst_bytes;
+            rd_up.Height = 1;
+            rd_up.DepthOrArraySize = 1;
+            rd_up.MipLevels = 1;
+            rd_up.Format = DXGI_FORMAT_UNKNOWN;
+            rd_up.SampleDesc.Count = 1;
+            rd_up.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            rd_up.Flags  = D3D12_RESOURCE_FLAG_NONE;
+            ComPtr<ID3D12Resource> inst_res;
+            HRESULT hr = device_->CreateCommittedResource(
+                &hp_up, D3D12_HEAP_FLAG_NONE, &rd_up,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                IID_PPV_ARGS(&inst_res));
+            if (SUCCEEDED(hr) && inst_res)
+            {
+                void* mapped = nullptr;
+                const D3D12_RANGE no_read { 0, 0 };
+                if (SUCCEEDED(inst_res->Map(0, &no_read, &mapped)) && mapped)
+                {
+                    auto* dst = static_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(mapped);
+                    for (std::size_t i = 0; i < desc.instances.size(); ++i)
+                    {
+                        const auto& src = desc.instances[i];
+                        D3D12_RAYTRACING_INSTANCE_DESC d {};
+                        // Row-major 3x4 transform → D3D12 column-major 3x4.
+                        // The cd::rhi::AccelInstance carries 3x4 row-major
+                        // floats; D3D12 takes them in (col,row) packing.
+                        for (int r = 0; r < 3; ++r)
+                            for (int c = 0; c < 4; ++c)
+                                d.Transform[r][c] = src.transform[r * 4 + c];
+                        d.InstanceID   = src.instance_id & 0xFFFFFFu;
+                        d.InstanceMask = src.mask;
+                        d.InstanceContributionToHitGroupIndex =
+                            src.hit_offset & 0xFFFFFFu;
+                        d.Flags = src.flags & 0xFFu;
+                        if (auto bit = accels_.find(src.blas.index()); bit != accels_.end())
+                            d.AccelerationStructure = bit->second.result_gva;
+                        dst[i] = d;
+                    }
+                    inst_res->Unmap(0, nullptr);
+                    rec.tlas_instances = inst_res;
+                    rec.tlas_instances_gva = inst_res->GetGPUVirtualAddress();
+                }
+            }
+        }
 
         const auto id = next_id_++;
         accels_.emplace(id, std::move(rec));
@@ -2599,6 +2876,11 @@ public:
         /// table_params[i] == root-signature parameter index of the
         /// descriptor table that backs descriptor-set index i.
         std::vector<std::uint32_t> table_params;
+        /// phase466 — root-signature parameter index for the 32-bit
+        /// constants slot that backs push_constants. UINT32_MAX means
+        /// "no push-constant range declared at layout creation".
+        std::uint32_t push_constants_param { ~std::uint32_t { 0 } };
+        std::uint32_t push_constants_dwords { 0 };  // total Num32BitValues
     };
 
     struct DescriptorSetRecord
@@ -2617,6 +2899,13 @@ public:
         ComPtr<ID3D12PipelineState> pso;
         cd::rhi::PipelineLayoutHandle layout_handle {};
         D3D_PRIMITIVE_TOPOLOGY d3d_topology { D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST };
+    };
+
+    // phase466 — compute pipeline record.
+    struct ComputePipelineRecord
+    {
+        ComPtr<ID3D12PipelineState>   pso;
+        cd::rhi::PipelineLayoutHandle layout_handle {};
     };
 
     struct SwapchainRecord
@@ -2686,6 +2975,7 @@ private:
     std::unordered_map<std::uint32_t, DescriptorSetLayoutRecord> descriptor_set_layouts_;
     std::unordered_map<std::uint32_t, PipelineLayoutRecord> pipeline_layouts_;
     std::unordered_map<std::uint32_t, GraphicsPipelineRecord> graphics_pipelines_;
+    std::unordered_map<std::uint32_t, ComputePipelineRecord>  compute_pipelines_;  // phase466
     std::unordered_map<std::uint32_t, DescriptorSetRecord> descriptor_sets_;
 
     // Phase 142 step 2 — DXR acceleration-structure record.
@@ -2698,8 +2988,23 @@ private:
         D3D12_GPU_VIRTUAL_ADDRESS   scratch_gva { 0 };
         UINT64                      result_size { 0 };
         UINT64                      scratch_size { 0 };
+        // phase466 — retained build inputs for BLAS/TLAS BuildRaytracingAccelerationStructure.
+        // BLAS: triangle geometry descriptors with cached GPU VAs.
+        // TLAS: instance descriptor staging buffer (uploaded once at create).
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC>     blas_geos;
+        ComPtr<ID3D12Resource>                          tlas_instances;  // upload heap
+        D3D12_GPU_VIRTUAL_ADDRESS                       tlas_instances_gva { 0 };
+        UINT                                            num_descs { 0 };
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
+
+    // phase466 — sampler record (slot in sampler_heap_).
+    struct SamplerRecord
+    {
+        std::uint32_t              heap_slot  { 0 };
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle {};
+    };
+    std::unordered_map<std::uint32_t, SamplerRecord> samplers_;
 
     // Phase 398 — DXR RTPSO record.
     struct RtPipelineRecord
@@ -2741,6 +3046,12 @@ private:
     ComPtr<ID3D12DescriptorHeap> dsv_pool_;
     UINT                          dsv_increment_ { 0 };
     std::uint32_t                 dsv_cursor_    { 0 };
+
+    // phase466 — sampler descriptor heap (CPU-visible, bump allocator).
+    static constexpr std::uint32_t kSamplerHeapCap = 256;
+    ComPtr<ID3D12DescriptorHeap> sampler_heap_;
+    UINT                          sampler_heap_increment_ { 0 };
+    std::uint32_t                 sampler_cursor_         { 0 };
 
     [[nodiscard]] cd::core::Result<void> ensure_rtv_pool_()
     {
@@ -2806,6 +3117,12 @@ public:
     {
         auto it = graphics_pipelines_.find(h.index());
         return it == graphics_pipelines_.end() ? nullptr : &it->second;
+    }
+    // phase466 — compute pipeline accessor for D3D12CommandBuffer.
+    [[nodiscard]] ComputePipelineRecord* find_compute_pipeline(cd::rhi::ComputePipelineHandle h) noexcept
+    {
+        auto it = compute_pipelines_.find(h.index());
+        return it == compute_pipelines_.end() ? nullptr : &it->second;
     }
     [[nodiscard]] PipelineLayoutRecord* find_pipeline_layout(cd::rhi::PipelineLayoutHandle h) noexcept
     {
@@ -2958,9 +3275,22 @@ public:
             if (auto* layout = owner_->find_pipeline_layout(rec->layout_handle))
                 list_->SetGraphicsRootSignature(layout->root_sig.Get());
             list_->IASetPrimitiveTopology(rec->d3d_topology);
+            bound_compute_layout_ = {};
+            bound_graphics_layout_ = rec->layout_handle;
         }
     }
-    void bind_compute_pipeline(cd::rhi::ComputePipelineHandle) override {}
+    // phase466 — compute pipeline bind.
+    void bind_compute_pipeline(cd::rhi::ComputePipelineHandle h) override
+    {
+        if (owner_ == nullptr) return;
+        auto* rec = owner_->find_compute_pipeline(h);
+        if (rec == nullptr) return;
+        list_->SetPipelineState(rec->pso.Get());
+        if (auto* layout = owner_->find_pipeline_layout(rec->layout_handle))
+            list_->SetComputeRootSignature(layout->root_sig.Get());
+        bound_compute_layout_  = rec->layout_handle;
+        bound_graphics_layout_ = {};
+    }
     void bind_descriptor_set(std::uint32_t set_index, cd::rhi::DescriptorSetHandle set) override
     {
         // Phase 15.B real implementation: copy this set's descriptors
@@ -2972,7 +3302,11 @@ public:
         if (gpu.ptr == 0) return;
         ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap() };
         list_->SetDescriptorHeaps(1, heaps);
-        list_->SetGraphicsRootDescriptorTable(set_index, gpu);
+        // phase466 — route to compute or graphics based on the last-bound pipeline.
+        if (bound_compute_layout_.value() != 0u)
+            list_->SetComputeRootDescriptorTable(set_index, gpu);
+        else
+            list_->SetGraphicsRootDescriptorTable(set_index, gpu);
     }
     void bind_vertex_buffer(std::uint32_t binding, cd::rhi::BufferHandle buffer, std::uint64_t offset) override
     {
@@ -3008,7 +3342,60 @@ public:
             list_->IASetIndexBuffer(&ibv);
         }
     }
-    void push_constants(cd::rhi::PipelineLayoutHandle, cd::rhi::ShaderStage, std::uint32_t, std::uint32_t, const void*) override {}
+    // phase466 — push constants via D3D12 root 32-bit constants slot.
+    //
+    // The PipelineLayout stores `push_constants_param` (root-param index)
+    // and `push_constants_dwords` (max 32-bit-value count). We route
+    // through SetGraphics/ComputeRoot32BitConstants based on which pipeline
+    // type is currently bound. Vulkan offset is in BYTES; D3D12 takes a
+    // DEST_OFFSET_IN_32BIT_VALUES (DWORD). For values beyond the 128B
+    // Vulkan minimum-guarantee, the slot can hold up to ~60 DWORDs (240B),
+    // far above the 128B push-constant baseline — large blocks are
+    // accommodated up to the D3D12 root-cost budget (64 DWORDs total).
+    void push_constants(cd::rhi::PipelineLayoutHandle layout,
+                        cd::rhi::ShaderStage /*stages*/,
+                        std::uint32_t offset,
+                        std::uint32_t size,
+                        const void*   data) override
+    {
+        if (owner_ == nullptr || data == nullptr || size == 0u) return;
+        auto* lrec = owner_->find_pipeline_layout(layout);
+        if (lrec == nullptr) return;
+        if (lrec->push_constants_param == ~std::uint32_t { 0 }) return;
+
+        const std::uint32_t dst_dword_offset = offset / 4u;
+        const std::uint32_t num_dwords       = (size + 3u) / 4u;
+        if (dst_dword_offset + num_dwords > lrec->push_constants_dwords)
+        {
+            // Caller exceeded declared range; clamp.
+            const auto clamped = (lrec->push_constants_dwords > dst_dword_offset)
+                ? (lrec->push_constants_dwords - dst_dword_offset)
+                : 0u;
+            if (clamped == 0u) return;
+            // Re-evaluate locally so the call is still safe.
+            if (bound_compute_layout_.value() != 0u)
+            {
+                list_->SetComputeRoot32BitConstants(
+                    lrec->push_constants_param, clamped, data, dst_dword_offset);
+            }
+            else
+            {
+                list_->SetGraphicsRoot32BitConstants(
+                    lrec->push_constants_param, clamped, data, dst_dword_offset);
+            }
+            return;
+        }
+        if (bound_compute_layout_.value() != 0u)
+        {
+            list_->SetComputeRoot32BitConstants(
+                lrec->push_constants_param, num_dwords, data, dst_dword_offset);
+        }
+        else
+        {
+            list_->SetGraphicsRoot32BitConstants(
+                lrec->push_constants_param, num_dwords, data, dst_dword_offset);
+        }
+    }
     void set_viewport(const cd::rhi::Viewport& vp) override
     {
         D3D12_VIEWPORT v {};
@@ -3041,21 +3428,115 @@ public:
         list_->DrawIndexedInstanced(index_count, instance_count, first_index,
                                     vertex_offset, first_instance);
     }
-    void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override {}
-    void copy_buffer(cd::rhi::BufferHandle, cd::rhi::BufferHandle, std::span<const cd::rhi::BufferCopyRegion>) override {}
+    // phase466 — compute dispatch (gates on bound_compute_layout_).
+    void dispatch(std::uint32_t gx, std::uint32_t gy, std::uint32_t gz) override
+    {
+        if (gx == 0u || gy == 0u || gz == 0u) return;
+        list_->Dispatch(gx, gy, gz);
+    }
+    // phase466 — buffer-to-buffer copies via CopyBufferRegion.
+    void copy_buffer(cd::rhi::BufferHandle src,
+                     cd::rhi::BufferHandle dst,
+                     std::span<const cd::rhi::BufferCopyRegion> regions) override
+    {
+        if (owner_ == nullptr) return;
+        auto* src_b = owner_->find_buffer(src);
+        auto* dst_b = owner_->find_buffer(dst);
+        if (src_b == nullptr || dst_b == nullptr) return;
+        for (const auto& r : regions)
+        {
+            const UINT64 sz = (r.size == 0u)
+                ? (src_b->size > r.src_offset
+                    ? src_b->size - r.src_offset
+                    : 0u)
+                : r.size;
+            if (sz == 0u) continue;
+            list_->CopyBufferRegion(
+                dst_b->resource.Get(), r.dst_offset,
+                src_b->resource.Get(), r.src_offset,
+                sz);
+        }
+    }
     void copy_buffer_to_image(cd::rhi::BufferHandle, cd::rhi::TextureHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}
     void copy_image_to_buffer(cd::rhi::TextureHandle, cd::rhi::BufferHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}
-    void barrier(std::span<const cd::rhi::BufferBarrier>, std::span<const cd::rhi::TextureBarrier>) override {}
+    // phase466 — explicit state-transition barriers. Vulkan ResourceState
+    // is mapped to the matching D3D12_RESOURCE_STATES bitmask; we batch
+    // all transitions into a single ResourceBarrier call.
+    void barrier(std::span<const cd::rhi::BufferBarrier> buffer_barriers,
+                 std::span<const cd::rhi::TextureBarrier> texture_barriers) override
+    {
+        if (owner_ == nullptr) return;
+        if (buffer_barriers.empty() && texture_barriers.empty()) return;
+
+        std::vector<D3D12_RESOURCE_BARRIER> bars;
+        bars.reserve(buffer_barriers.size() + texture_barriers.size());
+
+        auto rs_to_d3d12 = [](cd::rhi::ResourceState s) noexcept -> D3D12_RESOURCE_STATES {
+            using R = cd::rhi::ResourceState;
+            switch (s)
+            {
+                case R::kUndefined:        return D3D12_RESOURCE_STATE_COMMON;
+                case R::kCommon:           return D3D12_RESOURCE_STATE_COMMON;
+                case R::kVertexBuffer:     return D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+                case R::kIndexBuffer:      return D3D12_RESOURCE_STATE_INDEX_BUFFER;
+                case R::kConstantBuffer:   return D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+                case R::kShaderResource:   return D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                                               | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                case R::kUnorderedAccess:  return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                case R::kColorAttachment:  return D3D12_RESOURCE_STATE_RENDER_TARGET;
+                case R::kDepthRead:        return D3D12_RESOURCE_STATE_DEPTH_READ;
+                case R::kDepthWrite:       return D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                case R::kTransferSrc:      return D3D12_RESOURCE_STATE_COPY_SOURCE;
+                case R::kTransferDst:      return D3D12_RESOURCE_STATE_COPY_DEST;
+                case R::kPresent:          return D3D12_RESOURCE_STATE_PRESENT;
+                case R::kIndirectArgument: return D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+            }
+            return D3D12_RESOURCE_STATE_COMMON;
+        };
+
+        for (const auto& b : buffer_barriers)
+        {
+            auto* br = owner_->find_buffer(b.buffer);
+            if (br == nullptr) continue;
+            D3D12_RESOURCE_BARRIER bb {};
+            bb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            bb.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            bb.Transition.pResource   = br->resource.Get();
+            bb.Transition.StateBefore = rs_to_d3d12(b.from);
+            bb.Transition.StateAfter  = rs_to_d3d12(b.to);
+            bb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            if (bb.Transition.StateBefore != bb.Transition.StateAfter)
+                bars.push_back(bb);
+        }
+        for (const auto& t : texture_barriers)
+        {
+            auto* tr = owner_->find_texture(t.texture);
+            if (tr == nullptr) continue;
+            D3D12_RESOURCE_BARRIER tb {};
+            tb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            tb.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            tb.Transition.pResource   = tr->resource.Get();
+            tb.Transition.StateBefore = rs_to_d3d12(t.from);
+            tb.Transition.StateAfter  = rs_to_d3d12(t.to);
+            tb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            if (tb.Transition.StateBefore != tb.Transition.StateAfter)
+            {
+                bars.push_back(tb);
+                tr->state = tb.Transition.StateAfter;
+            }
+        }
+        if (!bars.empty())
+            list_->ResourceBarrier(static_cast<UINT>(bars.size()), bars.data());
+    }
     void push_debug_group(std::string_view) override {}
     void pop_debug_group() override {}
 
-    // ---- Phase 142 step 3 — DXR AS build ------------------------------
+    // ---- DXR AS build (REAL — phase466 v0.99.93 M4-parity-closeout) -------
     //
-    // Re-derives the BuildRaytracingAccelerationStructureInputs from the
-    // cached AccelRecord (the create step stored result + scratch
-    // buffers). For TLAS, allocates a small upload buffer for instance
-    // descs on the fly — the build needs a GPU VA for the instance
-    // array.
+    // phase466 wires cached inputs: BLAS replays the stored geometry desc
+    // array; TLAS feeds the stored instance-desc upload buffer GVA. Both
+    // emit a UAV barrier so subsequent reads (TLAS reading BLAS result,
+    // raygen reading TLAS result) wait for the build to drain.
     void build_acceleration_structure(cd::rhi::AccelStructureHandle h) override
     {
         if (owner_ == nullptr) return;
@@ -3067,26 +3548,25 @@ public:
         if (FAILED(list_.As(&list4)) || !list4) return;
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bd {};
-        bd.DestAccelerationStructureData = rec->result_gva;
+        bd.DestAccelerationStructureData    = rec->result_gva;
         bd.ScratchAccelerationStructureData = rec->scratch_gva;
         bd.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
         bd.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
 
-        // The build needs the same geometry inputs the create step used.
-        // For a "build with cached inputs" path we'd need to retain them
-        // on AccelRecord; for v1.2 we issue a single empty build since
-        // the inputs would have to be regenerated by the caller anyway.
-        // BLAS build with no geometry isn't useful, but it's safe + lets
-        // the wiring exist so the next phase can plumb cached inputs.
         if (rec->kind == cd::rhi::AccelStructureKind::kBottomLevel)
         {
-            bd.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            bd.Inputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            bd.Inputs.NumDescs       = static_cast<UINT>(rec->blas_geos.size());
+            bd.Inputs.pGeometryDescs = rec->blas_geos.empty()
+                                       ? nullptr
+                                       : rec->blas_geos.data();
         }
-        else
+        else  // TLAS
         {
-            bd.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+            bd.Inputs.Type          = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+            bd.Inputs.NumDescs      = rec->num_descs;
+            bd.Inputs.InstanceDescs = rec->tlas_instances_gva;
         }
-        bd.Inputs.NumDescs = 0;  // caller must rebuild inputs for live data (Phase 142 step 3b)
 
         list4->BuildRaytracingAccelerationStructure(&bd, 0, nullptr);
 
@@ -3104,6 +3584,11 @@ private:
     ComPtr<ID3D12GraphicsCommandList> list_;
     cd::rhi::TextureViewHandle target_view_ {};
     cd::rhi::TextureHandle target_texture_ {};
+    // phase466 — last-bound pipeline-layout handles so push_constants and
+    // bind_descriptor_set can pick Graphics vs Compute root-signature
+    // entry point without an additional API surface change.
+    cd::rhi::PipelineLayoutHandle bound_graphics_layout_ {};
+    cd::rhi::PipelineLayoutHandle bound_compute_layout_  {};
 };
 
 std::unique_ptr<cd::rhi::ICommandBuffer>
