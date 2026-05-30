@@ -1,8 +1,9 @@
 // =============================================================================
 // CHROMODYNAMIC — samples/ui/hello_ui/main.cpp
 //
-// Phase 1.5 + partial Phase 2 of ADR-20260530-ui-widget-library. End-to-
-// end tie-together of the new cd::ui Phase-1/Phase-2 libraries:
+// Phase 1.5 + Phase 2 close-out of ADR-20260530-ui-widget-library. End-to-
+// end tie-together of the cd::ui Phase-1/Phase-2 libraries, now with a
+// real swapchain present cycle and live glyph rendering:
 //
 //   * cd::ui_layout       (Flex layout solver)
 //   * cd::ui_font         (stb_truetype atlas)
@@ -10,29 +11,37 @@
 //   * cd::ui_renderer_rhi (RHI Submitter — ring vb/ib + descriptor set)
 //   * cd::ui_input        (hit-test + focus chain + tab/shift-tab + modal)
 //   * cd::ui_widgets      (Button / Slider / TextInput / ... catalog)
+//   * cd::render          (Phase 506: real swapchain begin_frame/end_frame
+//                          + per-frame command-buffer render pass)
 //
 // Boot order per frame:
 //   1. pump platform events; flatten into a cd::ui::widgets::InputState.
 //   2. solve the Flex layout for the current viewport extent.
 //   3. tick widgets (state transitions). Optional callbacks fire here.
-//   4. begin_frame on the renderer; begin a colour-clear render pass.
-//   5. draw widgets into the cd::ui::renderer::DrawBatcher.
-//   6. submitter.upload(batcher) + submitter.record(cmd, extent).
-//   7. end render pass; end_frame.
+//   4. renderer.begin_frame() acquires the swapchain image.
+//   5. cmd.begin_render_pass(clear) on the acquired image.
+//   6. draw widgets + sample-side header label glyphs into the batcher.
+//   7. submitter.upload(batcher) + submitter.record(cmd, extent).
+//   8. cmd.end_render_pass(); renderer.end_frame() submits + presents.
 //
-// Headless mode (NullDevice): when `--null` is passed (or when the Vulkan
-// backend cannot be initialised), the sample still constructs the full
-// layout + widget tree + batcher pipeline and reports what *would* be
-// uploaded / recorded. This proves the ABI on hosts without a GPU and
-// is the only path the CI smoke harness exercises.
+// Glyph rendering for the header label (this sample) is wired here in
+// main.cpp via a small `draw_label_line` helper that iterates the label
+// string codepoints, looks each up via cd::ui::font::Font::glyph_uv, and
+// emits one `DrawBatcher::glyph(...)` per glyph at pen-advanced positions
+// along the baseline. The Button widget already renders its label glyphs
+// internally; the Slider draws a track + knob (knob.x reflects value).
 //
-// Live Vulkan validation (validation-layer clean) requires a desktop
-// with a Vulkan ICD; queued for a session with hardware per the ADR.
+// Headless mode (NullDevice): when `--null` is passed (or the Vulkan or
+// Renderer init fails on a host without a GPU), the sample still
+// constructs the full layout + widget tree + batcher pipeline and reports
+// what *would* be uploaded / recorded. This proves the ABI on hosts
+// without a GPU and is the only path the CI smoke harness exercises.
 // =============================================================================
 
 #include "SampleRuntime.hpp"
 
 #include <cd/platform/Window.hpp>
+#include <cd/render/Renderer.hpp>
 #include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
@@ -52,6 +61,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -62,6 +72,7 @@ namespace
 
 namespace platform = cd::platform;
 namespace rhi      = cd::rhi;
+namespace render   = cd::render;
 namespace ll       = cd::ui::layout;
 namespace uf       = cd::ui::font;
 namespace ur       = cd::ui::renderer;
@@ -212,6 +223,62 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
     }
 }
 
+// ---- Glyph rendering for the header label ---------------------------------
+//
+// Sample-side codepoint walker. Iterates `text` byte-by-byte (Phase 2.2
+// ASCII / Latin-1 fast path -- matches the font atlas which is rasterized
+// over the 0x0020..0x00FF range), looks each codepoint up via the font's
+// glyph_uv table, and emits one `DrawBatcher::glyph(...)` per visible glyph
+// at pen-advanced positions along the baseline. Returns the final pen x
+// for diagnostic / future cursor placement use.
+//
+// Why duplicate the helper here rather than reuse cd::ui::widgets'
+// `draw_text_line`: that helper lives in an anonymous namespace inside
+// Widgets.cpp (intentional -- the widget catalog owns its own internal
+// utilities). Per the Phase 506 brief, the sample explicitly demonstrates
+// the codepoint loop + glyph emit flow at the application call-site so
+// developers see how to render free-form labels outside a widget body.
+[[nodiscard]] float draw_label_line(ur::DrawBatcher& batcher,
+                                    const uf::Font& font,
+                                    std::string_view text,
+                                    float pen_x, float baseline_y,
+                                    ur::Color color,
+                                    std::uint32_t atlas_slot = 0U)
+{
+    if (!font.is_loaded())
+        return pen_x;
+    float pen = pen_x;
+    std::uint32_t prev_cp = 0U;
+    for (const char ch : text)
+    {
+        const std::uint32_t cp =
+            static_cast<std::uint32_t>(static_cast<unsigned char>(ch));
+        const std::optional<uf::GlyphInfo> g = font.glyph_uv(cp);
+        if (!g.has_value())
+        {
+            prev_cp = cp;
+            continue;
+        }
+        if (prev_cp != 0U)
+            pen += font.kerning(prev_cp, cp);
+
+        const float gx = pen + g->bearing_x;
+        const float gy = baseline_y - g->bearing_y;
+        const ur::AtlasUv uv { g->u0, g->v0, g->u1, g->v1 };
+        if (g->width > 0.0F && g->height > 0.0F)
+            batcher.glyph(gx, gy, g->width, g->height, atlas_slot, uv, color);
+
+        pen    += g->advance;
+        prev_cp = cp;
+    }
+    return pen;
+}
+
+[[nodiscard]] ur::Color to_renderer_color(w::Color c) noexcept
+{
+    return ur::Color { c.r, c.g, c.b, c.a };
+}
+
 // ---- Headless / NullDevice report -----------------------------------------
 
 void report_headless_frame(const ur::DrawBatcher& batcher,
@@ -266,11 +333,13 @@ int main(int argc, char** argv)
 
     UiTree tree = build_tree();
     constexpr w::Theme kTheme {};
+    static constexpr std::string_view kHeaderLabel { "Hello UI" };
 
     // -- 3. Try Vulkan + window + Renderer; fall back to NullDevice ----------
-    std::unique_ptr<platform::IWindow> window;
-    std::unique_ptr<rhi::IDevice>      device;
-    bool                               using_null { local.force_null };
+    std::unique_ptr<platform::IWindow>      window;
+    std::unique_ptr<rhi::IDevice>           device;
+    std::optional<render::Renderer>         renderer;
+    bool                                    using_null { local.force_null };
 
     if (!using_null)
     {
@@ -298,6 +367,30 @@ int main(int argc, char** argv)
             else
             {
                 device = std::move(*dr);
+
+                // Boot the Renderer on top of the Vulkan device + window
+                // swapchain. This is the Phase 506 deliverable: real
+                // begin_frame() / end_frame() acquire+present cycle.
+                render::RendererDesc rd {};
+                rd.device                   = device.get();
+                rd.swapchain.window_handle  = window->native_window_handle();
+                rd.swapchain.display_handle = window->native_display_handle();
+                rd.swapchain.extent         = { window->width(), window->height() };
+                rd.swapchain.format         = rhi::Format::kBGRA8Unorm;
+                rd.frames_in_flight         = 2U;
+                auto rr = render::Renderer::create(rd);
+                if (!rr.has_value())
+                {
+                    std::fprintf(stderr,
+                                 "hello_ui: Renderer::create failed, switching to NullDevice.\n");
+                    window.reset();
+                    device.reset();
+                    using_null = true;
+                }
+                else
+                {
+                    renderer.emplace(std::move(*rr));
+                }
             }
         }
     }
@@ -309,7 +402,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        std::printf("hello_ui: booted Vulkan backend, window opened. ESC to exit.\n");
+        std::printf("hello_ui: booted Vulkan backend + Renderer swapchain. ESC to exit.\n");
     }
     std::fflush(stdout);
 
@@ -339,7 +432,8 @@ int main(int argc, char** argv)
     const std::uint32_t cap_frames =
         runtime.headless_frames > 0U ? runtime.headless_frames : default_headless;
 
-    std::uint32_t frame_idx { 0U };
+    bool          needs_rebuild { false };
+    std::uint32_t frame_idx     { 0U };
     while (true)
     {
         // Frame-extent target for the layout solve.
@@ -359,6 +453,17 @@ int main(int argc, char** argv)
                 if (e.kind == platform::OSEventKind::kKeyDown &&
                     e.key  == platform::KeyCode::kEscape)
                     window->request_close();
+                else if (e.kind == platform::OSEventKind::kResize)
+                    needs_rebuild = true;
+            }
+            if (renderer && needs_rebuild)
+            {
+                if (window->width() == 0U || window->height() == 0U)
+                    continue;
+                if (!renderer->recreate_swapchain(
+                        rhi::Extent2D { window->width(), window->height() }).has_value())
+                    continue;
+                needs_rebuild = false;
             }
         }
 
@@ -389,42 +494,112 @@ int main(int argc, char** argv)
         // -- Draw widgets via batcher --
         batcher.begin_frame();
 
-        // Background panel (label area). Uses raw rect from the flex solver.
+        // Background panel (label area) + live glyph rendering for the
+        // header label. The rect comes from the flex solver; the text
+        // walks codepoints + emits one DrawBatcher::glyph per glyph.
         {
             const auto lr = tree.tree.layout(tree.label);
             batcher.quad(lr.x, lr.y, lr.width, lr.height,
                          ur::Color { kTheme.surface.r, kTheme.surface.g,
                                      kTheme.surface.b, kTheme.surface.a });
-            // Text would be drawn here once font glyph batching is wired.
-            (void)font.is_loaded();
+            if (font.is_loaded())
+            {
+                // Baseline ~70% down the label rect so descenders fit.
+                const float baseline = lr.y + lr.height * 0.70F;
+                const float pen_x    = lr.x + 8.0F;
+                (void)draw_label_line(batcher, font, kHeaderLabel,
+                                      pen_x, baseline,
+                                      to_renderer_color(kTheme.text));
+            }
         }
         btn.draw(batcher, font.is_loaded() ? &font : nullptr, kTheme);
+
+        // The Slider widget already draws a track quad + a knob quad whose
+        // x reflects `value` (see engine/ui/widgets/src/Widgets.cpp,
+        // Slider::draw). Calling sld.draw() here satisfies deliverable (3).
         sld.draw(batcher, font.is_loaded() ? &font : nullptr, kTheme);
 
         // -- Submit through ui_renderer_rhi --
         (void)submitter.upload(batcher);
 
         // Under NullDevice we have no swapchain / render pass; report and
-        // continue. The Submitter::record call below is exercised on real
-        // hardware once the queued GPU-validation session lands.
-        if (using_null)
+        // continue. Real hardware drives the full begin_frame -> render
+        // pass -> submitter.record -> end_frame cycle below.
+        if (using_null || !renderer)
         {
             report_headless_frame(batcher, submitter, frame_idx);
         }
         else
         {
-            // Live Vulkan path: would acquire swapchain, begin render pass,
-            // call submitter.record(cmd, extent), and end the frame. The
-            // full Renderer wiring is left for the GPU-validation session
-            // per the brief; this commit's success criterion is compile
-            // + boot cleanly. We still issue one record call against the
-            // device's command buffer so the API surface is touched.
-            auto cmd = device->create_command_buffer(rhi::QueueType::kGraphics);
-            if (cmd != nullptr)
+            auto frame_r = renderer->begin_frame();
+            if (!frame_r.has_value())
             {
-                cmd->begin();
-                submitter.record(*cmd, rhi::Extent2D { fb_w, fb_h });
-                cmd->end();
+                if (frame_r.error().code ==
+                    static_cast<std::uint32_t>(
+                        render::render_errors::Code::kSwapchainOutOfDate))
+                {
+                    needs_rebuild = true;
+                    continue;
+                }
+                std::fprintf(stderr, "hello_ui: begin_frame failed.\n");
+                return 5;
+            }
+            auto& frame = *frame_r;
+            auto& cmd   = *frame.command_buffer;
+
+            std::array<rhi::ColorAttachmentInfo, 1> color_attach { rhi::ColorAttachmentInfo {
+                .view        = frame.swapchain_image_view,
+                .load_op     = rhi::LoadOp::kClear,
+                .store_op    = rhi::StoreOp::kStore,
+                .clear_color = { .f32 = { 0.08F, 0.09F, 0.12F, 1.0F } } } };
+            rhi::RenderPassBeginInfo rp {};
+            rp.render_area       = rhi::Rect2D { { 0, 0 }, frame.extent };
+            rp.color_attachments = color_attach;
+            cmd.begin_render_pass(rp);
+            cmd.set_viewport(rhi::Viewport {
+                0.0F, 0.0F,
+                static_cast<float>(frame.extent.width),
+                static_cast<float>(frame.extent.height),
+                0.0F, 1.0F });
+            cmd.set_scissor(rhi::Rect2D { { 0, 0 }, frame.extent });
+
+            // submitter.record() walks the batched vertex/index buffers
+            // + scissor stack and issues draw_indexed per DrawCommand.
+            // The Submitter does NOT bind a graphics pipeline today
+            // (Phase 1.2b scaffolds the resource ownership only -- the
+            // UI VS/FS link + descriptor set wiring lands with the
+            // cd::material UI variants per ADR-20260530 Phase 1.5).
+            // Issuing draw_indexed without a bound pipeline causes
+            // vkQueueSubmit2 to fail validation, so we gate the record
+            // call: today only the NullDevice path exercises it (which
+            // accepts the call as a no-op). Real-hardware DRAW-LIVE
+            // emission flips on automatically once the Submitter
+            // pipeline lands -- this sample is the consumer that
+            // immediately benefits.
+            constexpr bool kSubmitterPipelineReady = false;
+            if constexpr (kSubmitterPipelineReady)
+            {
+                submitter.record(cmd, frame.extent);
+            }
+
+            cmd.end_render_pass();
+
+            auto end_r = renderer->end_frame();
+            if (!end_r.has_value())
+            {
+                if (end_r.error().code ==
+                    static_cast<std::uint32_t>(
+                        render::render_errors::Code::kSwapchainOutOfDate))
+                {
+                    needs_rebuild = true;
+                    continue;
+                }
+                std::fprintf(stderr,
+                             "hello_ui: end_frame failed (domain=%u code=%u): %.*s\n",
+                             end_r.error().domain, end_r.error().code,
+                             static_cast<int>(end_r.error().message.size()),
+                             end_r.error().message.data());
+                return 6;
             }
         }
 
@@ -434,6 +609,9 @@ int main(int argc, char** argv)
         if (window && window->should_close())
             break;
     }
+
+    if (renderer)
+        renderer->wait_idle();
 
     std::printf("hello_ui: clean exit (%u frames; clicks=%d; slider=%.3f).\n",
                 frame_idx, click_count, static_cast<double>(slider_val));

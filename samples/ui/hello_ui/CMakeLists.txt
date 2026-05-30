@@ -18,6 +18,7 @@ cd_add_sample(hello_ui
     cd::platform
     cd::rhi
     cd::rhi_vulkan
+    cd::render
     cd::ui_layout
     cd::ui_font
     cd::ui_renderer
