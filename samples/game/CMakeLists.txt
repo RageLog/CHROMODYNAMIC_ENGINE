@@ -10,5 +10,10 @@
 #                + ActionMap "Jump" binding + Save slot roundtrip + Settings
 #                persistence across runs. Ties every G1 library together so
 #                a downstream consumer can copy-paste the pattern.
+#   hello_npc  — Phase 480 / G2.4 closeout: NPC driven by cd::game::fsm
+#                { Patrol, Chase, Attack } with a per-mode cd::game::ai_bt
+#                BehaviorTree. cd::game::anim_graph (Phase C) is stubbed
+#                with printf locomotion logs for the walk-vs-run blend.
 
 add_subdirectory(hello_game)
+add_subdirectory(hello_npc)
