@@ -21,6 +21,11 @@
 #   ai_bt    — G2.2: cd::game::ai_bt Behavior Tree
 #              (Sequence / Selector / Parallel + Decorators + Blackboard).
 #
+# Phase G3 — "Spatial / ECS queries":
+#   query    — G3.1: cd::game::query QueryWorld facade over
+#              cd::scene::SpatialHash + cd::scene::Frustum. Provides
+#              raycast / sphere / box / frustum gameplay queries.
+#
 # (Subsequent sub-libraries — time, input_binding — land in their own
 # phase commits as the gameplay family grows. The world/ tree carries
 # transitional `gameplay_time` and `gameplay_input_binding` aliases that
@@ -30,3 +35,4 @@ add_subdirectory(save)
 add_subdirectory(settings)
 add_subdirectory(fsm)
 add_subdirectory(ai_bt)
+add_subdirectory(query)
