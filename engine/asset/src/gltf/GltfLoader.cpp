@@ -223,6 +223,22 @@ struct AccessorView
     m.metallic_factor = static_cast<float>(pbr.metallicFactor);
     m.roughness_factor = static_cast<float>(pbr.roughnessFactor);
     m.base_color_texture = pbr.baseColorTexture.index;
+    // phase452: full texture-index plumbing for downstream per-prim
+    // descriptor arrays. Renderers that don't bind these can ignore the
+    // fields; loaders that do (cd::ui_renderer_rhi, future editor PBR)
+    // get exactly what the glTF authored.
+    m.metallic_roughness_texture = pbr.metallicRoughnessTexture.index;
+    m.normal_texture    = src.normalTexture.index;
+    m.normal_scale      = static_cast<float>(src.normalTexture.scale);
+    m.occlusion_texture = src.occlusionTexture.index;
+    m.occlusion_strength = static_cast<float>(src.occlusionTexture.strength);
+    m.emissive_texture  = src.emissiveTexture.index;
+    if (src.emissiveFactor.size() == 3)
+    {
+        m.emissive_factor = { static_cast<float>(src.emissiveFactor[0]),
+                              static_cast<float>(src.emissiveFactor[1]),
+                              static_cast<float>(src.emissiveFactor[2]) };
+    }
     m.double_sided = src.doubleSided;
     m.alpha_cutoff = static_cast<float>(src.alphaCutoff);
     if (src.alphaMode == "MASK")

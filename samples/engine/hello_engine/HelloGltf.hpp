@@ -169,10 +169,15 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // The shader reads these via fx_params4 — no per-asset hack.
                 range.metallic        = mat.metallic_factor;
                 range.roughness       = mat.roughness_factor;
-                // No per-material normal texture support in our v1 loader yet
-                // (loader sets only base_color_texture); when normal_tex lands
-                // this flips to 1.0 and the shader samples the per-prim normal
-                // descriptor. Until then, 0 = skip procedural Earth normal map.
+                // phase452: glTF normal_texture index now captured by the
+                // loader. We DON'T yet bind a per-prim normal descriptor
+                // (would require descriptor-set rework matching the per-prim
+                // albedo path in HelloMeshes), so we keep normal_strength=0
+                // for now to avoid sampling the global procedural Earth
+                // normal at glTF UVs (re-introduces polygon facets).
+                // When per-prim normal-texture descriptors land:
+                //   range.normal_strength = (mat.normal_texture >= 0)
+                //                             ? mat.normal_scale : 0.0F;
                 range.normal_strength = 0.0F;
             }
             prim_ranges.push_back(std::move(range));

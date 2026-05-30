@@ -163,6 +163,18 @@ make_loaded_material(const GltfMaterial& src) noexcept
     {
         m.base_color_tex = static_cast<std::uint32_t>(src.base_color_texture);
     }
+    // phase452: pull through every glTF texture slot the parser captured.
+    if (src.metallic_roughness_texture >= 0)
+        m.mr_tex = static_cast<std::uint32_t>(src.metallic_roughness_texture);
+    if (src.normal_texture >= 0)
+        m.normal_tex = static_cast<std::uint32_t>(src.normal_texture);
+    if (src.emissive_texture >= 0)
+        m.emissive_tex = static_cast<std::uint32_t>(src.emissive_texture);
+    if (src.occlusion_texture >= 0)
+        m.occlusion_tex = static_cast<std::uint32_t>(src.occlusion_texture);
+    m.emissive_factor  = cd::math::Vec3f { src.emissive_factor[0],
+                                           src.emissive_factor[1],
+                                           src.emissive_factor[2] };
     m.metallic_factor  = src.metallic_factor;
     m.roughness_factor = src.roughness_factor;
     m.double_sided     = src.double_sided;

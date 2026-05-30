@@ -132,11 +132,21 @@ enum class GltfAlphaMode : std::uint8_t
 /// Minimal PBR-flavoured material — enough to drive a flat-color or single-
 /// texture pipeline. Extended factors (metallic, roughness, emissive) are
 /// decoded but unused by the current renderer; kept for forward-compat.
+/// phase452: full glTF metallic-roughness + normal + emissive + occlusion
+/// texture indices captured so downstream renderers can wire per-prim
+/// descriptor arrays without re-parsing the source glTF.
 struct GltfMaterial
 {
     std::string name;
     std::array<float, 4> base_color_factor { 1.0F, 1.0F, 1.0F, 1.0F };
     int base_color_texture { -1 };  ///< Index into `GltfScene::textures`, or -1.
+    int metallic_roughness_texture { -1 };  ///< glTF packs: G=rough, B=metal
+    int normal_texture { -1 };       ///< Tangent-space normal map (R/G stored, B reconstructed)
+    int emissive_texture { -1 };     ///< Optional self-emission
+    int occlusion_texture { -1 };    ///< glTF packs: R=AO (usually shared with mr_tex)
+    float normal_scale { 1.0F };     ///< glTF NormalTextureInfo.scale (perturbation strength)
+    float occlusion_strength { 1.0F };   ///< glTF OcclusionTextureInfo.strength
+    std::array<float, 3> emissive_factor { 0.0F, 0.0F, 0.0F };
     float metallic_factor { 1.0F };
     float roughness_factor { 1.0F };
     bool double_sided { false };
