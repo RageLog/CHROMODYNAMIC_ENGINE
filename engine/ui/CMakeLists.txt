@@ -24,4 +24,6 @@ add_subdirectory(layout)  # phase442 — ADR-20260530 Phase 1.0 Flex layout solv
 add_subdirectory(font)    # phase443 — ADR-20260530 Phase 1.1 stb_truetype atlas
 add_subdirectory(renderer)      # phase444 — ADR-20260530 Phase 1.2 CPU draw batcher
 add_subdirectory(renderer_rhi)  # phase453 — ADR-20260530 Phase 1.2b RHI bridge
+add_subdirectory(input)         # phase457 — ADR-20260530 Phase 2.1 hit-test + focus chain + tab nav + modal capture
+add_subdirectory(animation)     # phase458 — ADR-20260530 Phase 3.2 easing + Tweener + Timeline
 add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
