@@ -22,5 +22,6 @@ endif()
 
 add_subdirectory(layout)  # phase442 — ADR-20260530 Phase 1.0 Flex layout solver
 add_subdirectory(font)    # phase443 — ADR-20260530 Phase 1.1 stb_truetype atlas
-add_subdirectory(renderer)  # phase444 — ADR-20260530 Phase 1.2 CPU draw batcher
+add_subdirectory(renderer)      # phase444 — ADR-20260530 Phase 1.2 CPU draw batcher
+add_subdirectory(renderer_rhi)  # phase453 — ADR-20260530 Phase 1.2b RHI bridge
 add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
