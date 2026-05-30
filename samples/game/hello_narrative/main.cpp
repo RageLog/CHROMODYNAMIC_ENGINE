@@ -17,11 +17,12 @@
 //     * No  -> the dialogue ends on the "Maybe next time" speech and the
 //              QuestLog is left empty for that pass.
 //
-// Every 5 s of sim-time the locale rotates en -> tr -> ar -> en. The same
+// Every 5 s of sim-time the locale rotates en -> tr -> ja -> en. The same
 // dialogue tree and the same QuestLog are reused -- only the rendered text
-// changes. The Arabic pass also exercises cd::game::l10n::is_rtl() to
-// annotate output with an "[RTL]" tag so a downstream UI knows to flip its
-// paragraph direction.
+// changes. The is_rtl() helper is still exercised on every code path so a
+// future RTL locale (Arabic / Hebrew / Persian) drops in via one .kv file.
+// Japanese is LTR; its CLDR plural rule is "other only" so the get_plural
+// path falls back to apples.other for every n.
 //
 // The sample is a headless console program (no window / no Vulkan). It runs
 // for a fixed wall-clock budget (default ~15.5 s of sim-time = three locale
@@ -403,7 +404,7 @@ int main(int argc, char* argv[])
     const std::size_t pass_count = extended ? 6U : 3U;
 
     std::printf("hello_narrative (Phase 505 / G4.4) - branching dialogue + quest\n");
-    std::printf("          locales rotating en -> tr -> ar every 5 s sim-time\n");
+    std::printf("          locales rotating en -> tr -> ja every 5 s sim-time\n");
     std::printf("          run mode: %s (%zu passes)\n",
                 extended ? "extended" : "deterministic", pass_count);
 
@@ -413,7 +414,12 @@ int main(int argc, char* argv[])
     const fs::path locales_dir = resolve_locales_dir();
     std::printf("locales dir: %s\n", locales_dir.string().c_str());
 
-    const std::array<std::string_view, 3> locale_codes {"en", "tr", "ar"};
+    // phase510 — ar -> ja swap per user request ("japonca ve japon
+    // harfleriyle olsun"). Japanese is LTR (is_rtl("ja") returns false)
+    // and its CLDR plural rule is "other only" so get_plural falls back
+    // to apples.other for every n. The is_rtl branch below stays so a
+    // future RTL locale (.kv file under locales/) drops in without code.
+    const std::array<std::string_view, 3> locale_codes {"en", "tr", "ja"};
     for (const auto code : locale_codes)
     {
         StringTable tbl;
