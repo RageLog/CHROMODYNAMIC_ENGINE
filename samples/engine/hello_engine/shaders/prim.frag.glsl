@@ -331,13 +331,20 @@ void main() {
   // R3 G-Buffer phase 219 - albedo + MR. Sample the same textures
   // the lit path uses so deferred / post-fx consumers see exactly
   // what the forward path drew. Defaults: 0 metallic, 0.5 roughness.
-  // phase446-vis9: glTF prims (tint.w==4.0) hardcode stone MR — the
-  // procedural Earth MR at Sponza/CesiumMan UVs produced chrome floor +
-  // facets on the character. Hardcoded (metallic=0, roughness=0.85)
-  // is much closer to the dominant glTF surface (stone, cloth, skin).
-  vec4 mr_pre = is_gltf_prim         ? vec4(0.0, 0.85, 0.0, 1.0)
-              : (pc.fx_params.y > 0.5) ? texture(cd_mr_tex, v_uv)
-                                       : vec4(0, 0.5, 0.04, 1);
+  // phase448-arch: glTF prims (tint.w==4.0) carry per-prim PBR factors
+  // in fx_params4.xyz from the glTF file itself — Sponza floor reads
+  // (metallic_factor=0, roughness_factor=0.9), chrome would read (1.0,
+  // 0.05). No per-asset hardcode, no sentinel-tuned magic value: the
+  // data IS the spec. Same shader path for every glTF, present and
+  // future. cd_mr_tex is for the procedural Earth showcase only.
+  vec4 mr_pre;
+  if (is_gltf_prim) {
+    mr_pre = vec4(0.0, pc.fx_params4.y, pc.fx_params4.x, 1.0);   // r=unused, g=rough, b=metal
+  } else if (pc.fx_params.y > 0.5) {
+    mr_pre = texture(cd_mr_tex, v_uv);
+  } else {
+    mr_pre = vec4(0.0, 0.5, 0.04, 1.0);
+  }
   out_albedo = vec4(clamp(v_albedo * pc.tint.rgb, vec3(0.0), vec3(1.0)), 1.0);
   out_mr = vec2(clamp(mr_pre.b, 0.0, 1.0), clamp(mr_pre.g, 0.04, 1.0));
 
@@ -646,12 +653,16 @@ void main() {
   // R2 normal mapping for textured entities - perturbs the surface
   // normal with the tangent-space sample so the procedural Earth
   // bumps register as real 3D relief.
-  // phase446-vis9: glTF prims (tint.w==4.0) SKIP the procedural normal
-  // map. cd_normal_tex is the Earth normal map; sampling it at Sponza /
-  // CesiumMan UVs produced visible polygon edges (Earth bumps shifting
-  // per-triangle). Keep the smooth vertex normal until per-glTF-material
-  // normal maps land.
-  if (pc.fx_params.y > 0.5 && !is_gltf_prim) {
+  // phase448-arch: data-driven normal-map gating.
+  // For glTF prims, fx_params4.z = normal_strength (0 = no per-material
+  // normal map → use vertex normal, 1 = sample cd_normal_tex). Until
+  // per-glTF normal maps are loaded into the descriptor array, this
+  // stays 0 for all glTF prims (Sponza, CesiumMan, future drops).
+  // For the Earth procedural showcase (non-glTF textured), keep the
+  // existing always-sample-cd_normal_tex behaviour.
+  bool sample_normal_map = (pc.fx_params.y > 0.5) &&
+                           (!is_gltf_prim || pc.fx_params4.z > 0.5);
+  if (sample_normal_map) {
     vec3 nm_sample = texture(cd_normal_tex, v_uv).xyz * 2.0 - 1.0;
     mat3 TBN = cotangent_frame(N, v_world_pos, v_uv);
     vec3 N_mapped = TBN * nm_sample;
@@ -827,13 +838,11 @@ void main() {
   vec3  hemi   = mix(gnd_c, sky_c, up_t) * pc.sun_color.w;
   // W8-BE: floor 0.04 -> 0.020 per user "biraz daha koyu olsun".
   // phase425-vis2: multiply by any_light so all-off -> pitch black.
-  // phase446-vis9: glTF prims (Sponza/CesiumMan) get 0.4x hemi so the
-  // interior of Sponza shows sun-driven contrast (lit floor + dark
-  // arches) instead of uniform sky-blue fill. The sun direct +
-  // RT-shadowed point/area lights still drive the highlights at full
-  // strength; we only knock down the AMBIENT floor.
-  float hemi_scale = is_gltf_prim ? 0.4 : 1.0;
-  vec3  ambient = albedo * (hemi * hemi_scale + vec3(0.020) * any_light);
+  // phase448-arch: dropped the per-prim hemi_scale hack. With data-
+  // driven PBR (roughness 0.9, metallic 0 for stone), the IBL
+  // contribution is already naturally small; further scaling was
+  // ad-hoc and made shadows too dark.
+  vec3  ambient = albedo * (hemi + vec3(0.020) * any_light);
 
   // R2: True IBL with MR map. Karis split-sum:
   //   IBL = kD * irradiance(N) * albedo + prefiltered(R, rough*mipMax)
@@ -842,23 +851,20 @@ void main() {
   // material sweep covers ocean (rough water), continents (mid),
   // and polar ice (matte snow).
   if (pc.fx_params.y > 0.5) {
-    // phase446-vis9: glTF prims (tint.w==4.0) override the procedural
-    // Earth MR sample with hardcoded stone-like params. cd_mr_tex at
-    // Sponza floor UVs sampled low-roughness "ocean" texels — that's
-    // what produced the chrome-floor look the user reported.
-    vec4 mr_sample = is_gltf_prim ? vec4(0.0, 0.85, 0.0, 1.0)
-                                  : texture(cd_mr_tex, v_uv);
+    // phase448-arch: per-prim PBR data flows in via fx_params4.xy for
+    // glTF prims (data-driven from the glTF material) and via the
+    // procedural Earth MR sample for the Earth showcase only.
+    vec4 mr_sample = is_gltf_prim
+        ? vec4(0.0, pc.fx_params4.y, pc.fx_params4.x, 1.0)
+        : texture(cd_mr_tex, v_uv);
     float roughness = clamp(mr_sample.g, 0.04, 1.0);
-    // W8-BD: clamp the Lit-path metallic to <= 0.05. cd_mr_tex is the
-    // procedural Earth MR (binding 9 is never replaced per-entity), so
-    // CesiumMan currently samples Earth's metallic at its own UVs.
-    // Earth caps at 0.05 today, but a future glTF with a real MR
-    // texture would push F0 toward albedo and chrome the dielectric
-    // (skin/cloth) character — the very artefact W8-BD is fixing.
-    // Hard ceiling keeps the Lit-path strictly dielectric until the
-    // per-entity MR descriptor lands (v1.6+ texture array path).
-    float metallic  = is_gltf_prim ? 0.0
-                                   : clamp(mr_sample.b, 0.0, 0.05);
+    // W8-BD: clamp the Lit-path metallic to <= 0.05 ONLY for the Earth
+    // procedural path (binding 9 is the shared Earth MR which would
+    // otherwise chrome dielectric characters). glTF prims now carry
+    // authored metallic; trust the data.
+    float metallic  = is_gltf_prim
+        ? clamp(mr_sample.b, 0.0, 1.0)
+        : clamp(mr_sample.b, 0.0, 0.05);
     float ao_factor = mr_sample.a;
     vec3 F0_ibl = mix(vec3(0.04), albedo, metallic);
     vec3 V_v    = normalize(pc.camera_pos.xyz - v_world_pos);
@@ -884,12 +890,11 @@ void main() {
     // bright" feel that ruined the spot's directional identity.
     // Genuine indirect bounce will return with the R4 GI pass.
     float ibl_gate = clamp(pc.sun_dir.w * 0.6, 0.0, 1.0);
-    // phase446-vis9: glTF prims get 0.30 IBL multiplier (down from 0.55)
-    // for the same reason the hemi term is reduced — keep indoor contrast
-    // sun-direct-driven, not sky-diffuse-driven. Default 0.55 stays for
-    // procedural Earth / sphere grid so they keep their familiar look.
-    float ibl_scale = is_gltf_prim ? 0.30 : 0.55;
-    ambient += ibl * ibl_gate * ibl_scale;
+    // phase448-arch: single IBL scale (0.55) regardless of material. Data-
+    // driven roughness already handles the per-material energy split —
+    // matte glTF stone gets less spec than chrome demo sphere just by
+    // virtue of the brdf_lut + roughness sample.
+    ambient += ibl * ibl_gate * 0.55;
   }
 
   // Inline GTAO approximation (v1.4 day-ship wire-in). True multi-pass
@@ -913,13 +918,12 @@ void main() {
   //   cd::brdf_sheen_clearcoat::kSheenClearcoatGlsl
   //   cd::brdf_sss::kBurleySeparableBlurCS
   // Those land via the v1.7 material-graph dispatch.
-  // phase446-vis9: glTF prims SKIP the rim lobes — the user-visible
-  // "halo around bright objects" came from sheen/clearcoat being applied
-  // uniformly via the FX UI slider (since they take pc.fx_params4.* from
-  // the sheen/clearcoat/sss strength fields). Sponza stone shouldn't get
-  // velvet rim or lacquer clearcoat regardless of UI state. The PBR
-  // sphere grid (tint.w==3.0) bypasses this whole block via the early
-  // return above so it keeps its own metal/rough params.
+  // phase448-arch: glTF prims OVERLOAD fx_params4.xyz as (metallic,
+  // roughness, normal_strength) per-prim from the glTF material. Those
+  // slots are NOT the sheen/clearcoat/sss strengths for these prims —
+  // skip the rim block entirely so we don't read material params as
+  // BRDF lobe strengths. PBR demo sphere (tint.w==3.0) already returned
+  // out of main() above.
   float fx_cc    = is_gltf_prim ? 0.0 : clamp(pc.fx_params4.x, 0.0, 1.0);
   float fx_sheen = is_gltf_prim ? 0.0 : clamp(pc.fx_params4.y, 0.0, 1.0);
   float fx_sss   = is_gltf_prim ? 0.0 : clamp(pc.fx_params4.z, 0.0, 1.0);

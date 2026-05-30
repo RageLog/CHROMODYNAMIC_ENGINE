@@ -3973,11 +3973,41 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
             // kGltf (CesiumMan): single texture if available.
             pp.fx_params[1] = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture) ? 1.0F : 0.0F;
+            // phase448-arch: fx_params4 reinterpretation matrix —
+            //   tint.w==3.0 (PBR demo sphere): (metallic, roughness, 0, view_mode)
+            //   tint.w==4.0 (glTF prim, data-driven): (metallic, roughness, normal_strength, view_mode)
+            //     - For Sponza, sub_pp OVERRIDES this per-prim inside the
+            //       draw loop below using gltf_prim_ranges[i].metallic etc.
+            //     - For CesiumMan (kGltf, single draw), this entity-level
+            //       push IS the final value; we seed it from the first
+            //       prim_range so the data-driven material lands at the GPU.
+            //   tint.w==1.0 (default Lit): (clearcoat, sheen, sss, view_mode)
+            //     UI sliders carry scene-wide BRDF strengths for showcase.
             if (ent.is_pbr)
             {
                 pp.fx_params4[0] = ent.metallic;
                 pp.fx_params4[1] = ent.roughness;
                 pp.fx_params4[2] = 0.0F;
+            }
+            else if (is_gltf_prim)
+            {
+                // Default to "stone-ish" (matte dielectric) so unfilled
+                // prim_ranges still look sensible; gets overridden per-prim
+                // for Sponza, or kept as-is for CesiumMan's single draw.
+                float m = 0.0F, r = 0.9F, ns = 0.0F;
+                if (ent.kind == PrimitiveKind::kGltf && !gltf_prim_ranges.empty())
+                {
+                    // CesiumMan: single-draw; seed from first prim_range so
+                    // the glTF material's authored factors flow to the GPU.
+                    // (CesiumMan glTF authors skin: rough=0.8, metal=0 — good
+                    // default. A future per-prim CesiumMan loop would use sub_pp.)
+                    m  = gltf_prim_ranges.front().metallic;
+                    r  = gltf_prim_ranges.front().roughness;
+                    ns = gltf_prim_ranges.front().normal_strength;
+                }
+                pp.fx_params4[0] = m;
+                pp.fx_params4[1] = r;
+                pp.fx_params4[2] = ns;
             }
             else
             {
@@ -4041,9 +4071,17 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                 }
                 // PrimPush fx_params[1] = 1.0 when this prim has a texture.
                 // fx_params[3] = alpha_cutoff (> 0 enables GLSL discard).
+                // phase448-arch: per-prim PBR material from the glTF file —
+                // metallic/roughness/normal_strength flow straight from
+                // GltfMaterial via GltfPrimRange. NO per-asset sentinel; ANY
+                // glTF prim that lands here gets its authored PBR factors.
                 PrimPush sub_pp = ent_push_scratch[i];
-                sub_pp.fx_params[1] = pr.has_texture ? 1.0F : 0.0F;
-                sub_pp.fx_params[3] = pr.alpha_cutoff;
+                sub_pp.fx_params[1]  = pr.has_texture ? 1.0F : 0.0F;
+                sub_pp.fx_params[3]  = pr.alpha_cutoff;
+                sub_pp.fx_params4[0] = pr.metallic;
+                sub_pp.fx_params4[1] = pr.roughness;
+                sub_pp.fx_params4[2] = pr.normal_strength;
+                // fx_params4[3] view_mode untouched (debug overlay).
                 cmd.push_constants(
                     prim_material.pipeline_layout(),
                     cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,

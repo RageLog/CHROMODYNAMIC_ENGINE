@@ -38,6 +38,14 @@ struct GltfPrimRange
     bool                       has_texture   { false };
     bool                       double_sided  { false }; ///< glTF material doubleSided flag (info only; pipeline uses kNone cull)
     float                      alpha_cutoff  { 0.0F }; ///< >0 enables alpha-test discard in shader
+    // phase448: per-prim PBR material factors PULLED FROM THE glTF FILE.
+    // Sponza floor material says metallic_factor=0, roughness_factor=0.9;
+    // chrome demo glTF would say metallic=1.0 rough=0.05 — and BOTH go
+    // through the SAME shader path without per-asset sentinels. End of
+    // "every new object needs more code" pain.
+    float                      metallic           { 0.0F };  ///< glTF metallic_factor
+    float                      roughness          { 0.9F };  ///< glTF roughness_factor (stone-ish default)
+    float                      normal_strength    { 0.0F };  ///< 1.0 when glTF material has normalTexture; 0 = use vertex normal
     /// Per-prim descriptor set (valid when has_texture=true + prim_recreate called).
     /// Fixes Vulkan descriptor aliasing: each textured prim owns its own
     /// descriptor set with binding 4 pointing at its albedo texture,
@@ -156,6 +164,16 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                     // BLEND treated as MASK with a permissive cutoff so thin
                     // semi-transparent areas (alpha 0.1-0.49) survive the test.
                     range.alpha_cutoff = 0.1F;
+                // phase448: pull PBR factors directly from the glTF material.
+                // Sponza's stone says ~(0, 0.9); chrome would say ~(1, 0.05).
+                // The shader reads these via fx_params4 — no per-asset hack.
+                range.metallic        = mat.metallic_factor;
+                range.roughness       = mat.roughness_factor;
+                // No per-material normal texture support in our v1 loader yet
+                // (loader sets only base_color_texture); when normal_tex lands
+                // this flips to 1.0 and the shader samples the per-prim normal
+                // descriptor. Until then, 0 = skip procedural Earth normal map.
+                range.normal_strength = 0.0F;
             }
             prim_ranges.push_back(std::move(range));
         }
