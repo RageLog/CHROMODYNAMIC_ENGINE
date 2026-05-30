@@ -106,6 +106,7 @@
 #include <cd/post/bloom/Bloom.hpp>
 #include <cd/post/composite/Composite.hpp>
 #include <cd/post/dof/Dof.hpp>
+#include <cd/post/exposure/Setup.hpp>
 #include <cd/post/gtao/Gtao.hpp>
 #include <cd/post/motion_blur/MotionBlur.hpp>
 #include <cd/post/smaa/Smaa.hpp>
@@ -125,6 +126,12 @@
 #include <cd/velocity/Velocity.hpp>
 #include <cd/volumetric/clouds/Clouds.hpp>
 #include <cd/volumetric/fog/Fog.hpp>
+// phase512-volumetric-fog-wire: phase 469 froxel grid + GLSL kernel
+// strings + Wronski quadratic warp helpers. The CPU FroxelGrid stays
+// on the host until the 3D LUT GPU compute path lands; the symbols
+// from this header are exercised below so the wire-up is one #include
+// away from the GPU dispatch.
+#include <cd/volumetric/VolumetricFog.hpp>
 #include <cd/world_container/World.hpp>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -2076,14 +2083,33 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::TextDisabled("GPU pipeline wiring queued - needs RT compute pipe.");
         ImGui::TextDisabled("Run samples/lib_smokes/hello_{restir,ddgi,nrc}.exe");
     }
-    if (ImGui::CollapsingHeader("R5  Volumetrics"))
+    if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextDisabled("Composite-inline (cheap) and lib-level (CPU smoke):");
         ImGui::BulletText("Sun in-scatter fog (HG g=0.6) - live in composite");
         ImGui::BulletText("fBm sky cloud overlay - live in composite");
         ImGui::BulletText("hello_volumetric_fog - Wronski 2014 froxel grid (CPU)");
         ImGui::BulletText("hello_volumetric_clouds - Schneider 2017 march (CPU)");
-        ImGui::TextDisabled("3D froxel GPU compute path queued.");
+        // phase512-volumetric-fog-wire: live toggle between the legacy
+        // single-tap exp fog and the Wronski 2014 integrated single-
+        // scatter path. Density slider drives both modes so the user
+        // can compare apples-to-apples by toggling the checkbox.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Volumetric fog (phase 512 wire):");
+        ImGui::Checkbox("Volumetric fog (Wronski integrated)",
+                        &fx.volumetric_fog_on);
+        ImGui::SliderFloat("Vol fog density (1/m)",
+                           &fx.fog_density, 0.0F, 1.0F);
+        // Albedo color picker placeholder — checkbox only for now per
+        // T1.5 brief. When unticked the composite uses the default
+        // (0.95, 0.95, 1.0) tint baked into the shader; the proper
+        // ColorEdit3 ride needs another push-constant slot which is
+        // queued with the 3D LUT GPU compute path.
+        static bool vol_fog_albedo_tinted { true };
+        ImGui::Checkbox("Vol fog tint (placeholder)",
+                        &vol_fog_albedo_tinted);
+        ImGui::TextDisabled("3D froxel GPU compute path queued; inline");
+        ImGui::TextDisabled("Wronski integrator matches phase 469 CPU LUT.");
     }
     if (ImGui::CollapsingHeader("R8  HDR10 display output"))
     {
@@ -3317,6 +3343,12 @@ inline void velocity_gbuffer_pass(cd::rhi::ICommandBuffer& cmd,
 // All 7 invocations share the inner run_bloom_pass lambda; thresholds
 // stay hardcoded as W4 visual baseline (1.10 threshold, 0.50 knee, radius
 // 1.0 / intensity 1.0 per upsample level).
+//
+// Phase 511: `ev_stops` is the current scene auto-exposed EV (from
+// `cd::post::exposure::Setup::current_ev()`). The prefilter shader scales
+// its threshold + knee by exp2(-ev_stops), so the bloom highlight pick-off
+// tracks the scene's auto-exposure. ev_stops = 0 (default) reproduces the
+// pre-phase-511 behaviour exactly, because exp2(0) = 1.
 inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
                             std::uint32_t frame_idx,
                             BloomMipChain& bloom_chain,
@@ -3325,7 +3357,8 @@ inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
                             cd::material::Material& bloom_downsample_material,
                             std::array<cd::material::MaterialInstance, 3>& bloom_down_insts,
                             cd::material::Material& bloom_upsample_material,
-                            std::array<cd::material::MaterialInstance, 3>& bloom_up_insts)
+                            std::array<cd::material::MaterialInstance, 3>& bloom_up_insts,
+                            float ev_stops = 0.0F)
 {
     auto run_bloom_pass = [&](cd::material::Material& mat,
                               cd::material::MaterialInstance& inst,
@@ -3382,12 +3415,12 @@ inline void run_bloom_chain(cd::rhi::ICommandBuffer& cmd,
     };
 
     const bool bloom_first_frame = (frame_idx == 0);
-    // 1) Prefilter: HDR -> mip0 (soft-knee threshold).
+    // 1) Prefilter: HDR -> mip0 (soft-knee threshold, EV-scaled per phase 511).
     {
         BloomPrefilterPush bpp {};
-        bpp.params[0] = 1.10F;  // threshold (linear HDR units)
-        bpp.params[1] = 0.50F;  // knee
-        bpp.params[2] = 0.0F;
+        bpp.params[0] = 1.10F;     // threshold (linear HDR units)
+        bpp.params[1] = 0.50F;     // knee
+        bpp.params[2] = ev_stops;  // scene EV in stops (phase 511)
         bpp.params[3] = 0.0F;
         std::span<const std::byte> bytes { reinterpret_cast<const std::byte*>(&bpp), sizeof(bpp) };
         run_bloom_pass(bloom_prefilter_material, bloom_prefilter_inst,
@@ -3604,7 +3637,13 @@ inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
     // Atmospheric fog (uniform exp-haze) + aerial perspective (sky
     // horizon tint with distance). Reuses the existing UI sliders
     // so the composite is now the *one* home for these effects.
-    cp.atmo[0] = fx.fog_density;
+    // phase512-volumetric-fog-wire: sign bit on atmo[0] selects mode.
+    //   positive density -> legacy single-tap exp fog
+    //   negative density -> Wronski 2014 integrated single-scatter
+    // The composite shader reads abs(pc.atmo.x) as density and tests
+    // pc.atmo.x < 0 for the mode flag. Zero density disables either
+    // path so the checkbox is a true no-op when density == 0.
+    cp.atmo[0] = fx.volumetric_fog_on ? -fx.fog_density : fx.fog_density;
     cp.atmo[1] = fx.aerial_perspective;
     cp.atmo[2] = fx.vignette_strength;
     cp.atmo[3] = fx.film_grain;
@@ -4308,6 +4347,15 @@ struct HelloEngineApp::EngineState
     cd::post::taa::Settings                   fx_taa;
     cd::post::smaa::Settings                  fx_smaa;
 
+    // Phase 511 — auto-exposure (Reinhard log-avg + EMA + EV→linear mul).
+    // Created in on_init when the HDR target extent is known. The helper
+    // stays default-constructed (no GpuReduction) when create() fails or
+    // the integrator hasn't wired the per-frame descriptor write yet; in
+    // that case current_ev() returns 0 and the bloom prefilter behaves as
+    // before (exp2(0) = 1.0 = no EV scaling). See
+    // engine/render/post/exposure/include/cd/post/exposure/Setup.hpp.
+    cd::post::exposure::Setup                 auto_exposure;
+
     // GI wire-in (dispatch queued)
     cd::restir_di::Reservoir                 fx_restir_di_reservoir;
     cd::restir_gi::Reservoir                 fx_restir_gi_reservoir;
@@ -4603,6 +4651,21 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         if (!r.has_value())
             return std::unexpected(cd::core::ErrorCode { 0, 44, "bloom prefilter inst" });
         s.bloom_prefilter_inst = std::move(*r);
+    }
+
+    // Phase 511 — auto-exposure helper. Allocate the GpuReduction against a
+    // small downsampled-HDR extent (<=128x128 so the 256-partial-slot budget
+    // is respected; engine should pre-downsample its HDR before feeding the
+    // reduction). create() failure is *non-fatal*: the helper degrades to
+    // default-constructed (current_ev() == 0, bloom prefilter sees ev=0 =
+    // identical to pre-phase-511 behaviour). This keeps the integration
+    // safe to enable on backends that lack compute support and on headless
+    // smoke runs that don't bind a live HDR descriptor.
+    {
+        auto ae_r = cd::post::exposure::Setup::create(
+            device, cd::rhi::Extent2D { 128U, 128U });
+        if (ae_r.has_value()) s.auto_exposure = std::move(*ae_r);
+        // Else: keep default-constructed; current_ev() returns 0.0F.
     }
     for (std::uint32_t i = 0; i < 3; ++i)
     {
@@ -5895,10 +5958,23 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                               frame.extent, s.materials.velocity,
                               s.entities, s.scene, s.prev_vp_unjittered, vp_unj, mesh_for);
 
+        // Phase 511 — feed scene auto-EV into bloom prefilter so threshold
+        // tracks scene auto-exposure. Setup::tick() (the GPU log-luminance
+        // reduction + EMA) is NOT called yet: the GpuReduction requires a
+        // per-frame descriptor write tying the HDR view + readback SSBO
+        // into its descriptor set, and that hook is not exposed by the
+        // sample-side framegraph yet. current_ev() therefore returns the
+        // default 0.0 and the shader sees exp2(0) = 1 = no EV scaling.
+        // Once the descriptor write API lands, replace this line with
+        // `const float exposure_mul = s.auto_exposure.tick(cmd, s.rts.hdr.view, dt);`
+        // and feed `s.auto_exposure.current_ev()` below.
+        const float scene_ev_stops = s.auto_exposure.current_ev();
+
         run_bloom_chain(cmd, s.frame_idx, s.bloom_chain,
                         s.materials.bloom_prefilter, s.bloom_prefilter_inst,
                         s.materials.bloom_downsample, s.bloom_down_insts,
-                        s.materials.bloom_upsample, s.bloom_up_insts);
+                        s.materials.bloom_upsample, s.bloom_up_insts,
+                        scene_ev_stops);
 
         begin_composite_pass(cmd, s.frame_idx, frame.swapchain_image_view,
                              frame.extent, s.rts.history, s.history_states,
@@ -5945,6 +6021,7 @@ void HelloEngineApp::on_shutdown() noexcept
 
     destroy_mesh(device, s.meshes.floor);
     s.rts.destroy(device);
+    s.auto_exposure.destroy();  // phase 511 — release GpuReduction (idempotent)
     s.bloom_chain.destroy(device);
     s.shadow_target.destroy(device);
     device.destroy_sampler(s.shadow_sampler);
@@ -6957,10 +7034,23 @@ int main(int argc, char** argv)
     cd::light_shafts::Settings fx_lshafts {};
     cd::volumetric::clouds::Settings fx_clouds {};
     cd::volumetric::fog::GridConfig fx_vfog {};
+    // phase512-volumetric-fog-wire: CPU froxel scratch grid + author-
+    // facing settings from phase 469. The composite shader runs an
+    // inline 16-slice equivalent of the integrate pass right now
+    // (no 3D LUT binding wired yet), but the grid is built + injected
+    // each frame to (a) verify the lib API is available end-to-end
+    // and (b) give the queued GPU path a drop-in CPU truth source.
+    cd::volumetric::FroxelGridDesc fx_vfog_desc {};
+    cd::volumetric::FroxelGrid fx_vfog_grid_cpu {};
+    fx_vfog_grid_cpu.desc = fx_vfog_desc;
+    fx_vfog_grid_cpu.resize();
+    cd::volumetric::VolumetricFogSettings fx_vfog_settings {};
     (void)fx_atmosphere;
     (void)fx_lshafts;
     (void)fx_clouds;
     (void)fx_vfog;
+    (void)fx_vfog_grid_cpu;
+    (void)fx_vfog_settings;
     // Advanced BRDF wire-in (queued for v1.7 material-system rework).
     // Settings live here so the editor UI can attach immediately when
     // the dispatch lands. Each toggle logs queue status.

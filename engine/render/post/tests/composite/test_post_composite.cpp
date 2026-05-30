@@ -79,6 +79,19 @@ namespace
            fs.find(", 0.82, density)") != std::string_view::npos;
 }
 
+[[nodiscard]] bool fs_wires_wronski_volumetric_fog() noexcept
+{
+    // phase512-volumetric-fog-wire: the composite FS now branches on
+    // the sign of pc.atmo.x — negative = Wronski 2014 integrated
+    // single-scatter (16 quadratic-warped slices with Beer-Lambert
+    // transmittance + HG phase), positive = legacy single-tap exp
+    // fog. Catches regression to a pure-positive single-tap path.
+    const std::string_view fs { cd::post::composite::kCompositeFS };
+    return fs.find("vol_fog_on") != std::string_view::npos &&
+           fs.find("kVolSlices") != std::string_view::npos &&
+           fs.find("Wronski") != std::string_view::npos;
+}
+
 }  // namespace
 
 int main()
@@ -91,5 +104,6 @@ int main()
     if (!fs_gates_sky_on_sun_strength())        return 6;
     if (!fs_chromab_has_uniform_floor())        return 7;
     if (!fs_widened_cloud_smoothstep())         return 8;
+    if (!fs_wires_wronski_volumetric_fog())     return 9;
     return 0;
 }

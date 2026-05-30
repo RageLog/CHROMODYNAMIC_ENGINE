@@ -55,6 +55,13 @@ struct HelloEngineFx
     float taa_amount { 0.0F };        // composite TAA ping-pong (phase 216-217)
     float clouds_coverage { 0.0F };   // queued — needs 3D Worley/Perlin noise tex
     float fog_density { 0.0F };
+    // phase512-volumetric-fog-wire: when true, composite uses the
+    // Wronski 2014 integrated single-scatter path (16 quadratic-warped
+    // slices, Beer-Lambert transmittance, HG phase) instead of the
+    // legacy single-tap exp(-lz * density). Same UI slider drives
+    // density; main.cpp signs cp.atmo[0] negative when this is set
+    // to pass the mode flag without expanding the 256-B push layout.
+    bool volumetric_fog_on { false };
     float aerial_perspective { 0.0F };
     float chromab_strength { 0.0F };  // 0 = off; 0.5 = subtle radial RGB split
     float film_grain { 0.0F };        // 0 = off; 0.5 = visible filmic noise
