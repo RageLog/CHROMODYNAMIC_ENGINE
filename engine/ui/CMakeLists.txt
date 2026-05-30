@@ -20,4 +20,5 @@ if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
 endif()
 
+add_subdirectory(layout)  # phase442 — ADR-20260530 Phase 1.0 Flex layout solver
 add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
