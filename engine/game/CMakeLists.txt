@@ -21,10 +21,15 @@
 #   ai_bt    — G2.2: cd::game::ai_bt Behavior Tree
 #              (Sequence / Selector / Parallel + Decorators + Blackboard).
 #
-# Phase G3 — "Spatial / ECS queries":
+# Phase G3 — "Spatial / ECS queries / world interaction":
 #   query    — G3.1: cd::game::query QueryWorld facade over
 #              cd::scene::SpatialHash + cd::scene::Frustum. Provides
 #              raycast / sphere / box / frustum gameplay queries.
+#   trigger  — G3.2: cd::game::trigger TriggerVolume + TriggerWorld
+#              (AABB/Sphere volumes + on_enter/on_stay/on_exit dispatch +
+#              layer-mask filter + implicit despawn-exit). Forward-declares
+#              cd::game::query::QueryWorld so the indexed broad-phase plugs
+#              into tick() without a hard link-time dependency.
 #
 # (Subsequent sub-libraries — time, input_binding — land in their own
 # phase commits as the gameplay family grows. The world/ tree carries
@@ -36,3 +41,4 @@ add_subdirectory(settings)
 add_subdirectory(fsm)
 add_subdirectory(ai_bt)
 add_subdirectory(query)
+add_subdirectory(trigger)
