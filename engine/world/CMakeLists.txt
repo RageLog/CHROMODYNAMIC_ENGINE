@@ -9,6 +9,7 @@
 #   net              — S4.7 (planned).
 #   world_container  — gap #18 — World / Project / Level / Layer foundation.
 #   sample_framework — Mega-Marathon M2: cd::sample::App lifecycle library.
+#   gameplay_time    — Phase 459: cd::gameplay::time::TimeKeeper multi-channel clock.
 #
 # Cross-library dependency rule (CLAUDE.md §7): explicit context/registry
 # objects only — no global state shared between world libraries.
@@ -22,3 +23,4 @@ add_subdirectory(input)
 add_subdirectory(net)
 add_subdirectory(world_container)
 add_subdirectory(sample_framework)
+add_subdirectory(gameplay_time)
