@@ -57,6 +57,7 @@ cd_add_library(asset_gltf
   TYPE STATIC
   SOURCES
     src/gltf/GltfLoader.cpp
+    src/gltf/SceneLoader.cpp
   PUBLIC_DEPS
     cd::core
     cd::math
