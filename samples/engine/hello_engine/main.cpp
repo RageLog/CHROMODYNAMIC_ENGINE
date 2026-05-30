@@ -3951,10 +3951,23 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             // full rationale): tint.w==3.0 routes through Cook-
             // Torrance, 1.0 stays on the standard Lambert + textured
             // path.
+            // phase446-vis9: tint.w==4.0 for glTF prims (Sponza/CesiumMan)
+            // — they sample real per-prim albedo but the shared
+            // cd_normal_tex / cd_mr_tex are procedural Earth which is the
+            // WRONG material at Sponza UVs (made stone look chrome) and
+            // CesiumMan UVs (made polygon facets visible from Earth bumps).
+            // tint.w==4.0 keeps the textured albedo path but forces stone-
+            // like MR (rough 0.85, metal 0), skips procedural normal map,
+            // skips BRDF rim lobes, and reduces hemi ambient so sun direct
+            // contribution dominates indoor contrast.
             pp.tint[0] = ent.tint.x;
             pp.tint[1] = ent.tint.y;
             pp.tint[2] = ent.tint.z;
-            pp.tint[3] = ent.is_pbr ? 3.0F : 1.0F;
+            const bool is_gltf_prim = (ent.kind == PrimitiveKind::kSponza ||
+                                       ent.kind == PrimitiveKind::kGltf);
+            pp.tint[3] = ent.is_pbr      ? 3.0F
+                       : is_gltf_prim    ? 4.0F
+                                         : 1.0F;
             fill_prim_push_shared(pp, fx, sun, cam);
             // ECS override: per-entity texture-path flag in fx_params[1]
             // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
