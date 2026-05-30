@@ -33,6 +33,11 @@
 #              layer-mask filter + implicit despawn-exit). Forward-declares
 #              cd::game::query::QueryWorld so the indexed broad-phase plugs
 #              into tick() without a hard link-time dependency.
+#   camera   — G3.3: cd::game::camera Cinemachine-style virtual camera
+#              stack + brain (priority + blend + critically-damped spring
+#              damping). Outputs cd::camera::Camera; resolves entity
+#              positions through an injected TargetPositionFn so the
+#              gameplay tier never pulls cd::scene downward.
 #
 # Phase G4 — "Narrative / authoring tools":
 #   dialogue — G4.1: cd::game::dialogue Branching dialogue VM
@@ -51,4 +56,5 @@ add_subdirectory(ai_bt)
 add_subdirectory(anim_graph)
 add_subdirectory(query)
 add_subdirectory(trigger)
+add_subdirectory(camera)
 add_subdirectory(dialogue)
