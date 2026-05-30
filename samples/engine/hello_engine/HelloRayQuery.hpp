@@ -9,7 +9,22 @@
 //   * InstanceMatGpu     — 32 B PoD matching the GLSL `struct InstanceMat`
 //                          (vec4 albedo + vec4 emissive) declared in
 //                          PrimShader_kPrimFS.inl at binding 10.
-//   * kMaxInstMats       — 256-slot SSBO cap (kInstMatBytes derived).
+//   * kMaxGeomsPerInst   — phase465-perprim: per-instance geometry bucket
+//                          width.  Each TLAS instance owns this many
+//                          consecutive SSBO slots so a closest-hit ray that
+//                          returns (instance_id, geometry_index) maps to
+//                          one slot via inst*kMaxGeomsPerInst + geom.
+//                          Sponza has ~28 prim ranges so 32 is the next
+//                          power-of-two with headroom; non-Sponza
+//                          instances replicate their instance albedo
+//                          across all 32 slots.
+//   * kMaxInstances      — phase465-perprim: per-frame TLAS instance cap.
+//                          Bumped from 8 (old kMaxInstMats / 32) to 64 so
+//                          the 16 PBR sphere grid + 5 prims + Sponza +
+//                          CesiumMan + floor + future probes all fit.
+//   * kMaxInstMats       — total SSBO slot cap = kMaxInstances *
+//                          kMaxGeomsPerInst (2048 slots, 64 KB at 32 B
+//                          per slot).
 //
 // Helpers:
 //   * make_accel_instance(blas, model, mask) -> cd::rhi::AccelInstance —
@@ -41,7 +56,13 @@ struct InstanceMatGpu
 
 static_assert(sizeof(InstanceMatGpu) == 32, "InstanceMatGpu must be 32 B");
 
-constexpr std::uint32_t kMaxInstMats  = 256;
+// phase465-perprim: per-(instance, geometry) SSBO layout for Sponza
+// multi-geometry BLAS reflections. See file header for the indexing
+// scheme.  Constants chosen so the SSBO size stays modest (64 KB) while
+// still covering the typical hello_engine scene.
+constexpr std::uint32_t kMaxGeomsPerInst = 32;
+constexpr std::uint32_t kMaxInstances    = 64;
+constexpr std::uint32_t kMaxInstMats  = kMaxInstances * kMaxGeomsPerInst;
 constexpr std::uint32_t kInstMatBytes = kMaxInstMats * sizeof(InstanceMatGpu);
 
 // ---- make_accel_instance --------------------------------------------------

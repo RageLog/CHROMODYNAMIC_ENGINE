@@ -48,8 +48,16 @@ namespace cd_sample {
 // ---- rebuild_tlas_and_transition_depth ------------------------------------
 // Runs the Faz 1.7 per-frame TLAS rebuild followed by the depth-target
 // ring barrier. Both predicate on cmd already being in a begin()ed state.
+//
+// phase465-perprim: an OPTIONAL `geom_albedos_for(const EntityT&)`
+// callback returns a span of per-geometry albedos when the entity owns a
+// multi-geometry BLAS (today: Sponza).  Empty span -> use the instance
+// tint for every geom slot (today: every non-Sponza entity).  The full
+// per-(instance, geom) SSBO is expanded host-side from those inputs and
+// uploaded to binding 10; the shader reads slot[inst*32 + geom].
 template <typename MaterialInstanceT, typename EntityT, typename BlasForKind,
-          typename TintFor, typename KindFor, typename ModelFor>
+          typename TintFor, typename KindFor, typename ModelFor,
+          typename GeomAlbedosFor>
 inline void
 rebuild_tlas_and_transition_depth(
     cd::rhi::IDevice&                       device,
@@ -63,6 +71,7 @@ rebuild_tlas_and_transition_depth(
     TintFor                                 tint_for,
     KindFor                                 kind_for,
     ModelFor                                model_for,
+    GeomAlbedosFor                          geom_albedos_for,
     cd::rhi::AccelStructureHandle           blas_floor,
     cd::rhi::AccelStructureHandle           blas_gltf,
     bool                                    skinned_valid,
@@ -154,25 +163,83 @@ rebuild_tlas_and_transition_depth(
         (void)prim_inst.update(tlas_writes);
     }
 
-    // W8-BC: upload the per-frame instance materials. Clamp to the SSBO
-    // capacity (defensive; kMaxInstMats = 256 dwarfs current entity
-    // count, but futureproof). Re-issue the binding-10 descriptor write
-    // each frame so the GPU sees the freshly uploaded contents even if
-    // the underlying buffer handle stays put.
+    // W8-BC + phase465-perprim: upload the per-frame instance materials
+    // in 2D layout — slot[inst*kMaxGeomsPerInst + geom] carries the
+    // material for that (instance, geometry) pair.  The default
+    // expansion replicates the instance tint across all 32 geom slots
+    // so non-Sponza hits read back the unchanged W8-BC behaviour.  For
+    // entities whose geom_albedos_for() returns a non-empty span (today:
+    // Sponza), the per-geom albedos overwrite the corresponding slots.
+    //
+    // The TLAS body comes from `compact_tlas_entity_instances` in the
+    // SAME order as the input entity span (skipping ghost-shadow
+    // entries), so we re-walk the entity span with the same gating
+    // logic to map entity index -> TLAS instance index.  The floor
+    // (pushed AFTER the entity body) sits at the trailing slot and
+    // never carries per-geom data (single-geom BLAS).
     if (!inst_mats.empty())
     {
-        const std::uint32_t n =
+        const std::uint32_t inst_n =
             std::min<std::uint32_t>(
                 static_cast<std::uint32_t>(inst_mats.size()),
-                cd::hello_engine::kMaxInstMats);
-        const std::size_t bytes =
-            static_cast<std::size_t>(n)
+                cd::hello_engine::kMaxInstances);
+        std::vector<cd::hello_engine::InstanceMatGpu> expanded(
+            static_cast<std::size_t>(inst_n)
+            * cd::hello_engine::kMaxGeomsPerInst);
+        // Default expansion: replicate each instance tint across every
+        // geom slot so single-geom hits read back the same albedo.
+        for (std::uint32_t i = 0; i < inst_n; ++i)
+        {
+            for (std::uint32_t g = 0; g < cd::hello_engine::kMaxGeomsPerInst; ++g)
+            {
+                expanded[static_cast<std::size_t>(i)
+                         * cd::hello_engine::kMaxGeomsPerInst + g] = inst_mats[i];
+            }
+        }
+        // Per-geom override for multi-geometry BLAS instances.  We
+        // re-walk the entity span and replay the SAME inclusion logic
+        // as compact_tlas_entity_instances so the TLAS slot index is
+        // identical.  Cheap (linear, no parallel scatter) and avoids
+        // changing the compaction API.
+        std::uint32_t tlas_idx = 0;
+        for (const auto& ent : entities)
+        {
+            auto model_opt = model_for(ent);
+            if (!model_opt.has_value())
+                continue;  // ghost-shadow exclusion
+            const auto blas = blas_for_kind(kind_for(ent));
+            if (!blas.is_valid())
+                continue;
+            // This entity contributed instances[tlas_idx]; check for per-geom data.
+            if (tlas_idx < inst_n)
+            {
+                auto geom_albs = geom_albedos_for(ent);
+                if (!geom_albs.empty())
+                {
+                    const std::uint32_t gn = std::min<std::uint32_t>(
+                        static_cast<std::uint32_t>(geom_albs.size()),
+                        cd::hello_engine::kMaxGeomsPerInst);
+                    for (std::uint32_t g = 0; g < gn; ++g)
+                    {
+                        cd::hello_engine::InstanceMatGpu im {};
+                        cd::hello_engine::fill_inst_mat(im, geom_albs[g]);
+                        expanded[static_cast<std::size_t>(tlas_idx)
+                                 * cd::hello_engine::kMaxGeomsPerInst + g] = im;
+                    }
+                    // Geom slots beyond the supplied list (gn..31) keep
+                    // the default instance-tint replication from above,
+                    // safe for stray hits to a higher geometry_index.
+                }
+            }
+            ++tlas_idx;
+        }
+        const std::size_t bytes = expanded.size()
             * sizeof(cd::hello_engine::InstanceMatGpu);
         (void)device.upload_buffer(
             inst_mat_ssbo,
             0,
             std::span<const std::byte>(
-                reinterpret_cast<const std::byte*>(inst_mats.data()),
+                reinterpret_cast<const std::byte*>(expanded.data()),
                 bytes));
         std::array<cd::rhi::DescriptorWrite, 1> ssbo_writes {
             cd::rhi::DescriptorWrite {

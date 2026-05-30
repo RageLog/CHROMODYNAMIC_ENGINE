@@ -111,6 +111,54 @@ build_mesh_blas(cd::rhi::IDevice&         device,
     return r.has_value() ? *r : cd::rhi::AccelStructureHandle {};
 }
 
+/// phase465-perprim: build a multi-geometry BLAS sharing one vb+ib but
+/// carrying one AccelTriangleGeometry per sub-range. The Vulkan backend
+/// (VulkanDevice.cpp::create_acceleration_structure) walks the spans and
+/// builds a single BLAS whose closest-hit ray returns BOTH the
+/// instance_id AND geometry_index (via rayQueryGetIntersectionGeometryIndexEXT).
+/// The reflection shader uses this pair to index the per-(instance, geom)
+/// SSBO so each Sponza prim contributes its OWN albedo to mirror hits.
+///
+/// `ranges` carries one (index_offset, index_count) pair per sub-mesh
+/// (typically from `GltfPrimRange`). Empty ranges are skipped silently
+/// so callers can pass the raw vector without filtering.
+[[nodiscard]] inline cd::rhi::AccelStructureHandle
+build_multi_geom_blas(cd::rhi::IDevice&              device,
+                      const cd::render::GpuMesh&     m,
+                      std::span<const cd_sample::GltfPrimRange> ranges,
+                      std::string_view               name)
+{
+    std::vector<cd::rhi::AccelTriangleGeometry> tris;
+    tris.reserve(ranges.size());
+    const std::uint32_t index_stride_bytes =
+        (m.index_type == cd::rhi::IndexType::kUInt32) ? 4U : 2U;
+    for (const auto& r : ranges)
+    {
+        if (r.index_count == 0)
+            continue;
+        cd::rhi::AccelTriangleGeometry tri {};
+        tri.vertex_buffer = m.vb;
+        tri.vertex_offset = 0;
+        tri.vertex_count  = m.vertex_count;
+        tri.vertex_stride = sizeof(cd::asset::PrimitiveVertex);
+        tri.index_buffer  = m.ib;
+        // index_offset is in BYTES — convert from index count.
+        tri.index_offset  = static_cast<std::uint64_t>(r.index_offset)
+                            * static_cast<std::uint64_t>(index_stride_bytes);
+        tri.index_count   = r.index_count;
+        tri.index_type    = m.index_type;
+        tris.push_back(tri);
+    }
+    if (tris.empty())
+        return cd::rhi::AccelStructureHandle {};
+    cd::rhi::AccelStructureDesc bd {};
+    bd.kind       = cd::rhi::AccelStructureKind::kBottomLevel;
+    bd.triangles  = std::span<const cd::rhi::AccelTriangleGeometry>(tris);
+    bd.debug_name = name;
+    auto r = device.create_acceleration_structure(bd);
+    return r.has_value() ? *r : cd::rhi::AccelStructureHandle {};
+}
+
 /// Build every primitive mesh (CPU + GPU upload), run the glTF auto-load
 /// chain, build one BLAS per mesh, and submit a transient one-shot
 /// command buffer that triggers the actual AS builds.
@@ -252,9 +300,36 @@ boot_meshes(cd::rhi::IDevice&                device,
     out.blas_cyl    = build_mesh_blas(device, out.cyl,    "blas_cyl");
     out.blas_torus  = build_mesh_blas(device, out.torus,  "blas_torus");
     out.blas_floor  = build_mesh_blas(device, out.floor,  "blas_floor");
-    out.blas_gltf   = out.gltf.vb.is_valid()
-        ? build_mesh_blas(device, out.gltf,        "blas_gltf")
-        : cd::rhi::AccelStructureHandle {};
+    // phase465-perprim: Sponza gets a MULTI-GEOMETRY BLAS where each
+    // glTF prim range becomes its own geometry. Closest-hit rays then
+    // return (instance_id, geometry_index) and the reflection shader
+    // indexes a per-(instance, geom) SSBO so vegetation reflects green,
+    // fabric reflects red, stone reflects grey — instead of every
+    // Sponza hit returning the same single sandstone tint.
+    //
+    // CesiumMan and procedural primitives stay single-geom: their
+    // glTF prim_ranges list is empty (CesiumMan) or N/A.  The Vulkan
+    // multi-geom build path caps at 32 geometries per call
+    // (VulkanCommandBuffer kMaxBuildGeos); Sponza ships with ~28
+    // prim ranges, well under the cap.
+    out.blas_gltf = cd::rhi::AccelStructureHandle {};
+    if (out.gltf.vb.is_valid())
+    {
+        if (!out.gltf_prim_ranges.empty())
+        {
+            out.blas_gltf = build_multi_geom_blas(
+                device, out.gltf,
+                std::span<const cd_sample::GltfPrimRange>(out.gltf_prim_ranges),
+                "blas_gltf_multigeom");
+        }
+        if (!out.blas_gltf.is_valid())
+        {
+            // Fallback: single-geom build (covers CesiumMan-like glTFs
+            // that arrive without prim_ranges and the unlikely multi-geom
+            // create-failure path).
+            out.blas_gltf = build_mesh_blas(device, out.gltf, "blas_gltf");
+        }
+    }
     out.blas_cesium = out.gltf_cesium.vb.is_valid()
         ? build_mesh_blas(device, out.gltf_cesium, "blas_cesium")
         : cd::rhi::AccelStructureHandle {};

@@ -4220,6 +4220,13 @@ struct HelloEngineApp::EngineState
     cd_sample::HelloMeshes                   meshes;
     cd::rhi::AccelStructureHandle            current_tlas    {};
     std::deque<cd_sample::DeferredTlas>      tlas_destroy_queue;
+    // phase465-perprim: per-Sponza-prim representative reflection colour.
+    // One entry per gltf_prim_range[i]; matches the multi-geometry BLAS
+    // geometry ordering 1:1.  Used by rebuild_tlas_and_transition_depth's
+    // geom_albedos_for callback to populate the per-(instance, geom)
+    // SSBO so vegetation reflects green, fabric red, stone grey instead
+    // of every Sponza hit sharing the single sandstone tint.
+    std::vector<cd::math::Vec3f>             sponza_geom_albedos;
 
     // World / scene / history
     cd::ecs::World                           ecs_world;
@@ -4680,6 +4687,24 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
     if (s.meshes.has_gltf_texture || s.meshes.has_cesium_texture)
         s.has_gltf_texture = true;
+    // phase465-perprim: derive a representative per-prim albedo for each
+    // Sponza prim range from its glTF base_color_factor.  The raster path
+    // uses the per-prim base color TEXTURE (binding 4 on the per-prim
+    // descriptor set) so it stays texture-driven.  The reflection SSBO,
+    // by contrast, has no texture sampling — we ship a flat factor here.
+    // Sponza materials author legitimate factors (vegetation greens,
+    // fabric reds, sandstone warm-grey) so the factor alone gives a
+    // recognisable mirror colour without needing a per-prim ray-side
+    // texture sample.
+    s.sponza_geom_albedos.clear();
+    s.sponza_geom_albedos.reserve(s.meshes.gltf_prim_ranges.size());
+    for (const auto& pr : s.meshes.gltf_prim_ranges)
+    {
+        s.sponza_geom_albedos.push_back(cd::math::Vec3f {
+            pr.base_color_factor[0],
+            pr.base_color_factor[1],
+            pr.base_color_factor[2] });
+    }
 
     // World / scene / ECS
     setup_world_container(s.cd_world);
@@ -5648,6 +5673,11 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             // warm sandstone representative color for the RT reflection SSBO
             // without touching the raster path (which multiplies sampled
             // texture * tint directly, so {1,1,1} is correct there).
+            //
+            // phase465-perprim: this instance-level fallback now applies
+            // ONLY to geom slots NOT covered by sponza_geom_albedos
+            // (e.g. a hit with geometry_index > #prim_ranges). Sponza's
+            // real per-prim colours flow through geom_albedos_for below.
             [](const SceneEntity& e) -> cd::math::Vec3f {
                 if (e.kind == PrimitiveKind::kSponza)
                     return { 0.72F, 0.60F, 0.48F };
@@ -5659,6 +5689,17 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 auto* lt = s.scene.local(e.handle);
                 if (!lt) return std::nullopt;
                 return cd::math::to_mat4(lt->value);
+            },
+            // phase465-perprim: per-(instance, geom) override.  Returns the
+            // Sponza per-prim albedo span for the kSponza entity; empty
+            // span for every other entity (which makes the rebuild path
+            // replicate the instance tint across all geom slots — same
+            // as the pre-phase-465 behaviour).
+            [&s](const SceneEntity& e) -> std::span<const cd::math::Vec3f>
+            {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return std::span<const cd::math::Vec3f>(s.sponza_geom_albedos);
+                return std::span<const cd::math::Vec3f>{};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
             s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
@@ -6448,6 +6489,18 @@ int main(int argc, char** argv)
     auto& blas_floor       = meshes.blas_floor;
     auto& blas_gltf        = meshes.blas_gltf;    // Sponza BLAS
     auto& blas_cesium      = meshes.blas_cesium;  // phase428-vis5: CesiumMan BLAS (was missing)
+    // phase465-perprim: per-Sponza-prim representative reflection colour.
+    // Mirrors the SampleAppState path; populated once after boot_meshes
+    // from each prim range's base_color_factor.
+    std::vector<cd::math::Vec3f> sponza_geom_albedos;
+    sponza_geom_albedos.reserve(meshes.gltf_prim_ranges.size());
+    for (const auto& pr : meshes.gltf_prim_ranges)
+    {
+        sponza_geom_albedos.push_back(cd::math::Vec3f {
+            pr.base_color_factor[0],
+            pr.base_color_factor[1],
+            pr.base_color_factor[2] });
+    }
     // phase428-vis5: mesh_for + blas_for_kind were missing kSponza, causing
     // the Sponza entity to fall through to cube_mesh / blas_cube. Result:
     //  - Shadow pass drew cube triangles instead of Sponza geometry.
@@ -7847,6 +7900,8 @@ int main(int argc, char** argv)
             std::span<const SceneEntity>(entities),
             blas_for_kind,
             // phase434-vis7: same Sponza sandstone override as HelloEngineApp path.
+            // phase465-perprim: now only applies to geom slots not covered by
+            // sponza_geom_albedos (geometry_index >= #prim_ranges).
             [](const SceneEntity& e) -> cd::math::Vec3f {
                 if (e.kind == PrimitiveKind::kSponza)
                     return { 0.72F, 0.60F, 0.48F };
@@ -7859,6 +7914,14 @@ int main(int argc, char** argv)
                 if (lt == nullptr)
                     return std::nullopt;
                 return cd::math::to_mat4(lt->value);
+            },
+            // phase465-perprim: per-(instance, geom) override (Sponza only).
+            [&sponza_geom_albedos](const SceneEntity& e)
+                -> std::span<const cd::math::Vec3f>
+            {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return std::span<const cd::math::Vec3f>(sponza_geom_albedos);
+                return std::span<const cd::math::Vec3f>{};
             },
             blas_floor,
             blas_cesium,  // phase428-vis5: skinned BLAS is CesiumMan, not Sponza

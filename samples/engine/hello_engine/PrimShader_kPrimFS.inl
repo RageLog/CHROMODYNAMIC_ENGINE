@@ -5,7 +5,7 @@ namespace cd::hello_engine
 {
 
 // AUTO-SYNCED with samples/engine/hello_engine/shaders/prim.frag.glsl
-// (phase 455). Embedded fallback used when on-disk shaders/ directory
+// (phase 465). Embedded fallback used when on-disk shaders/ directory
 // is missing next to the binary. Keep in lockstep with the .glsl file
 // — drift loses runtime fixes silently.
 inline constexpr const char* kPrimFS = R"glsl(
@@ -68,16 +68,22 @@ layout(set = 0, binding = 8) uniform sampler2D   cd_normal_tex;
 // R2 metallic-roughness-AO map. glTF 2.0 packing:
 //   R unused, G roughness, B metallic, A AO
 layout(set = 0, binding = 9) uniform sampler2D   cd_mr_tex;
-// W8-BC per-frame TLAS-instance material table. Index matches the
-// position used by push_inst() on the host, so
-// rayQueryGetIntersectionInstanceIdEXT(rq,true) yields the right slot.
-// albedo.rgb = entity tint (Floor entity gets neutral 0.5 grey);
-// emissive.rgb reserved for self-lit reflections (0 today). Used by
-// the W8-BC colored reflection blend in the kPrimFS PBR branch.
+// W8-BC + phase465-perprim per-(instance, geometry) material table.
+// Slot index = instance_id * kMaxGeomsPerInst + geometry_index, where
+// kMaxGeomsPerInst = 32 (matches HelloRayQuery.hpp).  Closest-hit rays
+// fetch the pair via rayQueryGetIntersectionInstanceIdEXT +
+// rayQueryGetIntersectionGeometryIndexEXT so multi-geometry BLAS hits
+// (Sponza: vegetation / fabric / stone) sample THEIR OWN prim albedo
+// rather than the single instance-level tint that ALL Sponza hits
+// shared before phase465.  Single-geometry instances (procedural prims,
+// CesiumMan, the editor floor) still fill geom slot 0 + replicate to
+// 1..31 on the host so geom_index >= 1 reads back the same albedo.
 struct InstanceMat { vec4 albedo; vec4 emissive; };
 layout(set = 0, binding = 10) readonly buffer InstanceMats {
   InstanceMat data[];
 } cd_instance_mats;
+const int kMaxGeomsPerInst = 32;
+const int kMaxInstMatSlots = 2048;  // matches HelloRayQuery::kMaxInstMats
 const float kIblMaxMipLod = 5.0;
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
@@ -179,15 +185,15 @@ float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
           gl_RayQueryCommittedIntersectionNoneEXT) ? 0.0 : 1.0;
 }
 
-// W8-BC closest-hit reflection probe (Option B colored). Like
-// reflection_hit() but ALSO returns the TLAS instance index on hit
-// via out_inst so we can sample cd_instance_mats.data[inst].albedo
-// for a colored mirror. out_inst is -1 on miss (sky). The pseudo-
-// normal used by the sun-NoL shading at the hit point is just -dir
-// (the surface-outward direction for a convex hit), which is good
-// enough for v1 (spheres ~exact, cubes/CesiumMan approximate).
+// W8-BC + phase465-perprim closest-hit reflection probe (Option B
+// colored). Returns the (instance_id, geometry_index) pair on hit so
+// the caller can index the per-(instance, geom) SSBO and pick the
+// matching prim albedo.  out_inst / out_geom = -1 on miss (sky).
+// The pseudo-normal used by sun-NoL shading at the hit point is just
+// -dir (surface-outward for a convex hit) — convex spheres ~exact,
+// cubes / Sponza walls approximate.
 float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
-                        out int out_inst) {
+                        out int out_inst, out int out_geom) {
   // phase451-rt: matched ray_visibility bias drop for Sponza scale.
   rayQueryEXT rq;
   rayQueryInitializeEXT(
@@ -200,9 +206,15 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
   if (rayQueryGetIntersectionTypeEXT(rq, true) ==
       gl_RayQueryCommittedIntersectionNoneEXT) {
     out_inst = -1;
+    out_geom = -1;
     return 0.0;
   }
   out_inst = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+  // phase465-perprim: also capture the geometry index inside the BLAS.
+  // For single-geom BLAS (procedural prims / CesiumMan) this is always 0;
+  // for Sponza's multi-geom BLAS this picks the prim sub-range that the
+  // ray actually hit (vegetation / fabric / stone).
+  out_geom = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
   return 1.0;
 }
 
@@ -558,15 +570,27 @@ void main() {
     // by pc.sun_dir.w so sun-off scenes leave only the 0.3 ambient
     // floor, matching the W8-AZ env-spec gate philosophy.
     int   hit_inst   = -1;
-    float scene_hit  = reflection_hit_id(v_world_pos, Npbr, Ripbr, 80.0, hit_inst);
+    int   hit_geom   = -1;
+    float scene_hit  = reflection_hit_id(v_world_pos, Npbr, Ripbr, 80.0,
+                                         hit_inst, hit_geom);
     vec3  brdf_term  = F0pbr * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
     vec3  ibl_spec_blended = ibl_spec_p;
-    // phase433-vis6: bounds guard. kMaxInstMats=256; reads beyond the
-    // populated range would return zero (black) albedo causing pitch-
-    // black reflections on high-ID hits. Cap to keep sampling safe.
-    if (hit_inst >= 256) hit_inst = -1;
-    if (scene_hit > 0.5 && hit_inst >= 0) {
-      vec3 hit_alb   = cd_instance_mats.data[hit_inst].albedo.rgb;
+    // phase465-perprim: combined (instance, geom) SSBO lookup.
+    // slot = inst*kMaxGeomsPerInst + clamp(geom, 0, 31).  Non-Sponza
+    // instances replicate the same albedo across all 32 geom slots so
+    // hits there read back the per-instance tint unchanged.  phase433
+    // bounds guard updated for the new 2048-slot cap; reads past the
+    // SSBO would return zero albedo (pitch-black) before this guard.
+    int hit_slot = -1;
+    if (hit_inst >= 0)
+    {
+      int g = (hit_geom < 0) ? 0 : hit_geom;
+      if (g >= kMaxGeomsPerInst) g = kMaxGeomsPerInst - 1;
+      hit_slot = hit_inst * kMaxGeomsPerInst + g;
+      if (hit_slot >= kMaxInstMatSlots) hit_slot = -1;
+    }
+    if (scene_hit > 0.5 && hit_slot >= 0) {
+      vec3 hit_alb   = cd_instance_mats.data[hit_slot].albedo.rgb;
       // Pseudo-normal = surface-outward direction (-dir) on convex hits.
       vec3 pseudo_N  = normalize(-Ripbr);
       vec3 sun_L     = normalize(-pc.sun_dir.xyz);

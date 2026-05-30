@@ -58,6 +58,14 @@ struct GltfPrimRange
     cd::rhi::TextureHandle     mr_tex         {};
     cd::rhi::TextureViewHandle mr_view        {};
     bool                       has_mr_map     { false };
+    /// phase465-perprim: per-prim base color factor from the glTF material.
+    /// Used by the RT-reflection per-(instance, geom) SSBO so each Sponza
+    /// prim (vegetation green / fabric red / stone grey) reflects in its
+    /// material colour instead of the single sandstone fallback.  When
+    /// the prim has no factor (default {1,1,1,1}), the raster path's
+    /// per-prim albedo TEXTURE drives the rasterised look; this RGB is
+    /// the BEST-EFFORT representative tint for the reflection SSBO.
+    std::array<float, 4>       base_color_factor { 1.0F, 1.0F, 1.0F, 1.0F };
     /// Per-prim descriptor set (valid when has_texture=true + prim_recreate called).
     /// Fixes Vulkan descriptor aliasing: each textured prim owns its own
     /// descriptor set with bindings 4/8/9 pointing at its own textures,
@@ -217,6 +225,13 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // The shader reads these via fx_params4 — no per-asset hack.
                 range.metallic        = mat.metallic_factor;
                 range.roughness       = mat.roughness_factor;
+                // phase465-perprim: capture the glTF base color factor so
+                // per-prim RT reflections show the right material colour.
+                // Sponza's vine_leaves material says (0.6, 0.8, 0.4); the
+                // sandstone says (~0.75, ~0.6, ~0.4); curtains carry red /
+                // green / blue per variant.  Default {1,1,1,1} stays
+                // neutral when the material did not author a factor.
+                range.base_color_factor = mat.base_color_factor;
                 // phase456: now that we ACTUALLY upload per-prim normal
                 // textures and bind them as the prim's own binding-8
                 // descriptor, we can finally enable the shader's
