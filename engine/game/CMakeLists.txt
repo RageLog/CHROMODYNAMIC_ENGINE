@@ -16,10 +16,13 @@
 #   settings — G1.4: cd::game::settings persistent prefs + live broadcast.
 #
 # Phase G2 — "AI / Behaviour":
-#   fsm      — G2.1: cd::game::fsm Hierarchical Finite State Machine
-#              (Harel 1987 statecharts + UML 2.5.1 regions + history).
-#   ai_bt    — G2.2: cd::game::ai_bt Behavior Tree
-#              (Sequence / Selector / Parallel + Decorators + Blackboard).
+#   fsm        — G2.1: cd::game::fsm Hierarchical Finite State Machine
+#                (Harel 1987 statecharts + UML 2.5.1 regions + history).
+#   ai_bt      — G2.2: cd::game::ai_bt Behavior Tree
+#                (Sequence / Selector / Parallel + Decorators + Blackboard).
+#   anim_graph — G2.3: cd::game::anim_graph Animation graph
+#                (PlayClip leaves + 1D / 2D blend trees + nested state
+#                machine over cd::anim::SkinnedClip / Pose / Skeleton).
 #
 # Phase G3 — "Spatial / ECS queries / world interaction":
 #   query    — G3.1: cd::game::query QueryWorld facade over
@@ -40,5 +43,6 @@ add_subdirectory(save)
 add_subdirectory(settings)
 add_subdirectory(fsm)
 add_subdirectory(ai_bt)
+add_subdirectory(anim_graph)
 add_subdirectory(query)
 add_subdirectory(trigger)
