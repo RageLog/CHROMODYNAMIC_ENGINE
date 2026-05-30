@@ -107,6 +107,36 @@ void append_json_escaped(std::string& out, std::string_view value)
     return out;
 }
 
+// Phase 2 — render meta.json with the extended SaveMeta keys (version,
+// app_name, app_version, payload_size) appended after the Phase 1 keys.
+// Phase 1 readers ignore unknown keys so this remains forward compatible.
+[[nodiscard]] std::string render_meta_json_extended(const SaveSlot& s,
+                                                    const SaveMeta& m)
+{
+    std::string out;
+    out.reserve(256);
+    out += "{\n  \"id\": ";
+    append_json_escaped(out, s.id);
+    out += ",\n  \"label\": ";
+    append_json_escaped(out, s.label);
+    out += ",\n  \"timestamp\": ";
+    out += std::to_string(s.timestamp);
+    out += ",\n  \"format\": ";
+    append_json_escaped(out, to_string(s.format));
+    out += ",\n  \"size_bytes\": ";
+    out += std::to_string(s.size_bytes);
+    out += ",\n  \"version\": ";
+    out += std::to_string(static_cast<std::uint64_t>(m.version));
+    out += ",\n  \"app_name\": ";
+    append_json_escaped(out, m.app_name);
+    out += ",\n  \"app_version\": ";
+    append_json_escaped(out, m.app_version);
+    out += ",\n  \"payload_size\": ";
+    out += std::to_string(m.payload_size);
+    out += "\n}\n";
+    return out;
+}
+
 void skip_ws(const std::string& text, std::size_t& i)
 {
     while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
@@ -170,7 +200,9 @@ void skip_ws(const std::string& text, std::size_t& i)
     return true;
 }
 
-[[nodiscard]] bool parse_meta_json(const std::string& text, SaveSlot& out)
+[[nodiscard]] bool parse_meta_json(const std::string&         text,
+                                   SaveSlot&                  out,
+                                   SaveMeta*                  extended = nullptr)
 {
     std::size_t i = 0;
     skip_ws(text, i);
@@ -221,6 +253,26 @@ void skip_ws(const std::string& text, std::size_t& i)
             std::int64_t n = 0;
             if (!parse_number(text, i, n)) return false;
             out.size_bytes = (n < 0) ? 0U : static_cast<std::uint64_t>(n);
+        }
+        else if (key == "version" && extended != nullptr)
+        {
+            std::int64_t n = 0;
+            if (!parse_number(text, i, n)) return false;
+            extended->version = (n < 0) ? 0U : static_cast<std::uint32_t>(n);
+        }
+        else if (key == "app_name" && extended != nullptr)
+        {
+            if (!parse_string(text, i, extended->app_name)) return false;
+        }
+        else if (key == "app_version" && extended != nullptr)
+        {
+            if (!parse_string(text, i, extended->app_version)) return false;
+        }
+        else if (key == "payload_size" && extended != nullptr)
+        {
+            std::int64_t n = 0;
+            if (!parse_number(text, i, n)) return false;
+            extended->payload_size = (n < 0) ? 0U : static_cast<std::uint64_t>(n);
         }
         else
         {
@@ -723,6 +775,302 @@ SaveSystem::delete_slot(std::string_view slot_id)
                                                   "slot was empty"));
     }
     return {};
+}
+
+// =============================================================================
+// Phase 2 (G5.3) — versioning + migration + cloud hook.
+// =============================================================================
+
+cd::core::Result<void>
+SaveSystem::write_meta_with_extended(const std::filesystem::path& slot_dir,
+                                     const SaveSlot&              header,
+                                     const SaveMeta&              extended) const
+{
+    const auto meta = meta_path(slot_dir);
+    const auto tmp  = slot_dir / "meta.json.tmp";
+    const auto text = render_meta_json_extended(header, extended);
+    if (!write_text_atomic(meta, tmp, text))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kIoFailed,
+                                                  "atomic meta.json write failed"));
+    }
+    return {};
+}
+
+cd::core::Result<SaveMeta>
+SaveSystem::read_extended_meta(const std::filesystem::path& slot_dir) const
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(meta_path(slot_dir), ec))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kSlotNotFound,
+                                                  "meta.json missing"));
+    }
+    const std::string text = read_text_file(meta_path(slot_dir), ec);
+    if (ec)
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kIoFailed,
+                                                  "read meta.json failed"));
+    }
+    SaveSlot slot;
+    SaveMeta ext;  // defaults: version=1, payload_size=0 — matches Phase 1 implicit.
+    if (!parse_meta_json(text, slot, &ext))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kCorruptHeader,
+                                                  "meta.json unparseable"));
+    }
+    // Inherit ground-truth fields from the Phase 1 slot record so callers
+    // see a single coherent SaveMeta regardless of whether the file was
+    // written by Phase 1 or Phase 2 code paths.
+    ext.format       = slot.format;
+    ext.timestamp    = slot.timestamp;
+    if (ext.payload_size == 0)
+    {
+        ext.payload_size = slot.size_bytes;
+    }
+    return ext;
+}
+
+cd::core::Result<void>
+SaveSystem::save_with_meta(std::string_view              slot_id,
+                           SaveMeta                      meta,
+                           std::span<const std::byte>    blob,
+                           std::string_view              label)
+{
+    if (!is_valid_slot_id(slot_id))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kInvalidSlotId,
+                                                  "slot id contains disallowed characters"));
+    }
+
+    const auto slot_dir = slot_directory(slot_id);
+
+    std::error_code ec;
+    std::filesystem::create_directories(slot_dir, ec);
+    if (ec)
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kIoFailed,
+                                                  "create_directories failed"));
+    }
+
+    // Resolve label the same way save() does: explicit > previously-stored > slot id.
+    std::string final_label;
+    if (!label.empty())
+    {
+        final_label.assign(label);
+    }
+    else
+    {
+        if (auto prev = read_meta(slot_dir); prev)
+        {
+            final_label = prev->label;
+        }
+    }
+    if (final_label.empty())
+    {
+        final_label.assign(slot_id);
+    }
+
+    // 1) Body atomic write.
+    const auto body = body_path(slot_dir, meta.format);
+    const auto tmp  = tmp_body_path(slot_dir, meta.format);
+    if (!write_bytes_atomic(body, tmp, blob))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kIoFailed,
+                                                  "atomic body write failed"));
+    }
+
+    // 2) Purge other-format body to keep the slot directory single-sourced.
+    const auto other_body = body_path(slot_dir,
+        meta.format == SaveFormat::kJson ? SaveFormat::kBinary : SaveFormat::kJson);
+    if (std::filesystem::exists(other_body, ec))
+    {
+        std::filesystem::remove(other_body, ec);
+    }
+
+    // 3) Header — overwrite the timestamp + payload_size with authoritative
+    //    values (so a stale caller-supplied meta never lies on disk).
+    meta.timestamp    = now_epoch_seconds();
+    meta.payload_size = blob.size();
+
+    SaveSlot header;
+    header.id         = std::string(slot_id);
+    header.label      = std::move(final_label);
+    header.timestamp  = meta.timestamp;
+    header.format     = meta.format;
+    header.size_bytes = blob.size();
+
+    if (auto wr = write_meta_with_extended(slot_dir, header, meta); !wr)
+    {
+        return wr;
+    }
+
+    // 4) Optional cloud upload — best effort, post-local-commit. A failure
+    //    here surfaces kCloudFailed but the local body is left intact and
+    //    will be returned by subsequent loads.
+    if (cloud_upload_)
+    {
+        auto up = cloud_upload_(slot_id, meta, blob);
+        if (!up)
+        {
+            return std::unexpected(save_errors::make(save_errors::Code::kCloudFailed,
+                                                      "cloud upload reported error"));
+        }
+    }
+
+    return {};
+}
+
+cd::core::Result<SaveSystem::LoadWithMetaResult>
+SaveSystem::load_with_meta(std::string_view slot_id)
+{
+    if (!is_valid_slot_id(slot_id))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kInvalidSlotId,
+                                                  "slot id contains disallowed characters"));
+    }
+
+    if (slot_exists(slot_id))
+    {
+        const auto slot_dir = slot_directory(slot_id);
+        auto       meta     = read_extended_meta(slot_dir);
+        if (!meta)
+        {
+            return std::unexpected(meta.error());
+        }
+        auto blob = load(slot_id);
+        if (!blob)
+        {
+            return std::unexpected(blob.error());
+        }
+        LoadWithMetaResult result;
+        result.meta = std::move(*meta);
+        result.blob = std::move(*blob);
+        return result;
+    }
+
+    // Local miss — try cloud fallback.
+    if (cloud_download_)
+    {
+        auto dl = cloud_download_(slot_id);
+        if (!dl)
+        {
+            // Surface the original "missing" outcome if the handler said so,
+            // otherwise tag the failure as cloud-side.
+            const auto& e = dl.error();
+            if (e.domain == save_errors::kDomain &&
+                e.code   == static_cast<std::uint32_t>(save_errors::Code::kSlotNotFound))
+            {
+                return std::unexpected(save_errors::make(save_errors::Code::kSlotNotFound,
+                                                          "slot missing locally and in cloud"));
+            }
+            return std::unexpected(save_errors::make(save_errors::Code::kCloudFailed,
+                                                      "cloud download reported error"));
+        }
+        // Write the cloud body locally so subsequent loads are fast — we
+        // call into save_with_meta() but suppress the upload-back to avoid a
+        // download / upload ping-pong by temporarily swapping out the
+        // upload handler.
+        auto saved_upload = std::move(cloud_upload_);
+        cloud_upload_ = {};
+        auto wr = save_with_meta(slot_id, dl->meta, dl->blob);
+        cloud_upload_ = std::move(saved_upload);
+        if (!wr)
+        {
+            return std::unexpected(wr.error());
+        }
+        LoadWithMetaResult result;
+        result.meta = std::move(dl->meta);
+        result.blob = std::move(dl->blob);
+        return result;
+    }
+
+    return std::unexpected(save_errors::make(save_errors::Code::kSlotNotFound,
+                                              "slot missing and no cloud handler"));
+}
+
+void SaveSystem::register_migration(std::uint32_t from_v,
+                                    std::uint32_t to_v,
+                                    MigrationFn   fn)
+{
+    if (!fn) return;  // defensive — null fn is a host bug, silently ignore.
+    MigrationEdge edge;
+    edge.to_v = to_v;
+    edge.fn   = std::move(fn);
+    migrations_[from_v] = std::move(edge);
+}
+
+cd::core::Result<SaveMeta>
+SaveSystem::migrate(std::string_view slot_id, std::uint32_t target_version)
+{
+    if (!is_valid_slot_id(slot_id))
+    {
+        return std::unexpected(save_errors::make(save_errors::Code::kInvalidSlotId,
+                                                  "slot id contains disallowed characters"));
+    }
+
+    auto loaded = load_with_meta(slot_id);
+    if (!loaded)
+    {
+        return std::unexpected(loaded.error());
+    }
+
+    SaveMeta              current_meta = std::move(loaded->meta);
+    std::vector<std::byte> current_blob = std::move(loaded->blob);
+
+    // Walk the registered edges. Guard against pathological cycles with a
+    // hard cap — 64 hops is generous for any realistic schema history and
+    // saves us from an infinite loop if a host registers a cyclic graph.
+    constexpr int kMaxHops = 64;
+    int hops = 0;
+
+    while (current_meta.version != target_version)
+    {
+        auto it = migrations_.find(current_meta.version);
+        if (it == migrations_.end())
+        {
+            return std::unexpected(save_errors::make(save_errors::Code::kMigrationMissing,
+                                                      "no migration edge from current version"));
+        }
+        if (++hops > kMaxHops)
+        {
+            return std::unexpected(save_errors::make(save_errors::Code::kMigrationFailed,
+                                                      "migration chain exceeded hop cap"));
+        }
+
+        const auto& edge = it->second;
+        auto stepped = edge.fn(current_blob);
+        if (!stepped)
+        {
+            return std::unexpected(save_errors::make(save_errors::Code::kMigrationFailed,
+                                                      "migration function failed"));
+        }
+
+        current_blob          = std::move(*stepped);
+        current_meta.version  = edge.to_v;
+        current_meta.payload_size = current_blob.size();
+
+        // Persist the intermediate step so a crash mid-chain resumes from
+        // here rather than the original v1 (matches Unity / Unreal's per-
+        // step migration semantics). We bypass the cloud upload during the
+        // chain to avoid uploading every intermediate version.
+        auto saved_upload = std::move(cloud_upload_);
+        cloud_upload_ = {};
+        auto wr = save_with_meta(slot_id, current_meta, current_blob);
+        cloud_upload_ = std::move(saved_upload);
+        if (!wr)
+        {
+            return std::unexpected(wr.error());
+        }
+    }
+
+    return current_meta;
+}
+
+void SaveSystem::set_cloud_handler(CloudUploadFn upload, CloudDownloadFn download)
+{
+    cloud_upload_   = std::move(upload);
+    cloud_download_ = std::move(download);
 }
 
 }  // namespace cd::game::save

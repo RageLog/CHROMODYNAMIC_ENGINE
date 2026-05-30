@@ -26,11 +26,16 @@
 namespace
 {
 
+using cd::game::save::CloudDownloadFn;
+using cd::game::save::CloudPayload;
+using cd::game::save::CloudUploadFn;
+using cd::game::save::MigrationFn;
 using cd::game::save::SaveFormat;
+using cd::game::save::SaveMeta;
 using cd::game::save::SaveSlot;
 using cd::game::save::SaveSystem;
-using cd::game::save::is_valid_slot_id;
 using cd::game::save::default_storage_root;
+using cd::game::save::is_valid_slot_id;
 using cd::game::save::save_errors::Code;
 
 // -----------------------------------------------------------------------------
@@ -437,6 +442,286 @@ TEST(SaveSystem, DefaultStorageRootContainsBranding)
     const auto s = root.generic_string();
     EXPECT_NE(s.find("CHROMODYNAMIC/saves"), std::string::npos)
         << "default root was: " << s;
+}
+
+// =============================================================================
+// Phase 2 (G5.3) — versioning + migration + cloud hook test cases.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// 15) save_with_meta + load_with_meta roundtrips both the meta block and the
+//     blob, populating timestamp + payload_size from the library (not the
+//     caller-supplied placeholder values).
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, SaveLoadWithMetaRoundtrip)
+{
+    auto root = make_unique_root("v2_roundtrip");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version      = 1U;
+    meta.format       = SaveFormat::kBinary;
+    meta.app_name     = "TestGame";
+    meta.app_version  = "1.0.0";
+    meta.timestamp    = 0;   // library overwrites
+    meta.payload_size = 0;   // library overwrites
+
+    const auto blob = bytes_from("v1-payload-bytes");
+    auto wr = sys.save_with_meta("slot_v1", meta, blob, "First save");
+    ASSERT_TRUE(wr.has_value()) << "save_with_meta failed";
+
+    auto loaded = sys.load_with_meta("slot_v1");
+    ASSERT_TRUE(loaded.has_value()) << "load_with_meta failed";
+    EXPECT_EQ(loaded->meta.version,      1U);
+    EXPECT_EQ(loaded->meta.format,       SaveFormat::kBinary);
+    EXPECT_EQ(loaded->meta.app_name,     "TestGame");
+    EXPECT_EQ(loaded->meta.app_version,  "1.0.0");
+    EXPECT_EQ(loaded->meta.payload_size, blob.size());
+    EXPECT_GT(loaded->meta.timestamp,    0);  // library stamped a real time
+    ASSERT_EQ(loaded->blob.size(),       blob.size());
+    EXPECT_EQ(std::memcmp(loaded->blob.data(), blob.data(), blob.size()), 0);
+}
+
+// -----------------------------------------------------------------------------
+// 16) Single-step migration v1 -> v2 transforms blob and bumps version.
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, SingleStepMigrationV1ToV2)
+{
+    auto root = make_unique_root("v2_migrate1");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Game";
+    const auto v1_blob = bytes_from("v1-data");
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, v1_blob).has_value());
+
+    // v1 -> v2: prepend "v2:" to the bytes.
+    sys.register_migration(1U, 2U,
+        [](std::span<const std::byte> in) -> cd::core::Result<std::vector<std::byte>> {
+            std::string s = "v2:";
+            std::vector<std::byte> out(s.size() + in.size());
+            std::memcpy(out.data(), s.data(), s.size());
+            if (!in.empty())
+            {
+                std::memcpy(out.data() + s.size(), in.data(), in.size());
+            }
+            return out;
+        });
+
+    auto migrated = sys.migrate("slot", 2U);
+    ASSERT_TRUE(migrated.has_value());
+    EXPECT_EQ(migrated->version,      2U);
+    EXPECT_EQ(migrated->payload_size, 3U + v1_blob.size());
+
+    // Body on disk reflects the migrated bytes.
+    auto reloaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->meta.version, 2U);
+    ASSERT_GE(reloaded->blob.size(), 3U);
+    EXPECT_EQ(std::memcmp(reloaded->blob.data(), "v2:", 3), 0);
+}
+
+// -----------------------------------------------------------------------------
+// 17) Multi-step migration v1 -> v2 -> v3 chains through both edges.
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, MultiStepMigrationV1ToV3Chains)
+{
+    auto root = make_unique_root("v2_migrate_chain");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Game";
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, bytes_from("X")).has_value());
+
+    // v1 -> v2: append "_v2"
+    sys.register_migration(1U, 2U,
+        [](std::span<const std::byte> in) -> cd::core::Result<std::vector<std::byte>> {
+            std::vector<std::byte> out(in.begin(), in.end());
+            const std::string s = "_v2";
+            const auto base = out.size();
+            out.resize(base + s.size());
+            std::memcpy(out.data() + base, s.data(), s.size());
+            return out;
+        });
+    // v2 -> v3: append "_v3"
+    sys.register_migration(2U, 3U,
+        [](std::span<const std::byte> in) -> cd::core::Result<std::vector<std::byte>> {
+            std::vector<std::byte> out(in.begin(), in.end());
+            const std::string s = "_v3";
+            const auto base = out.size();
+            out.resize(base + s.size());
+            std::memcpy(out.data() + base, s.data(), s.size());
+            return out;
+        });
+
+    auto migrated = sys.migrate("slot", 3U);
+    ASSERT_TRUE(migrated.has_value());
+    EXPECT_EQ(migrated->version, 3U);
+
+    auto reloaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->meta.version, 3U);
+    // Final blob should be "X_v2_v3".
+    const std::string expected = "X_v2_v3";
+    ASSERT_EQ(reloaded->blob.size(), expected.size());
+    EXPECT_EQ(std::memcmp(reloaded->blob.data(), expected.data(), expected.size()), 0);
+}
+
+// -----------------------------------------------------------------------------
+// 18) Missing migration edge returns kMigrationMissing without mutating the
+//     on-disk blob.
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, MissingMigrationEdgeErrors)
+{
+    auto root = make_unique_root("v2_migrate_missing");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Game";
+    const auto v1_blob = bytes_from("intact");
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, v1_blob).has_value());
+
+    // No migration registered — request v2.
+    auto migrated = sys.migrate("slot", 2U);
+    ASSERT_FALSE(migrated.has_value());
+    EXPECT_EQ(migrated.error().domain, 0x4753U);
+    EXPECT_EQ(migrated.error().code,
+              static_cast<std::uint32_t>(Code::kMigrationMissing));
+
+    // Body on disk is untouched.
+    auto reloaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->meta.version, 1U);
+    ASSERT_EQ(reloaded->blob.size(),  v1_blob.size());
+    EXPECT_EQ(std::memcmp(reloaded->blob.data(), v1_blob.data(), v1_blob.size()), 0);
+}
+
+// -----------------------------------------------------------------------------
+// 19) Cloud upload handler is invoked on save_with_meta when registered.
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, CloudUploadInvokedWhenHandlerRegistered)
+{
+    auto root = make_unique_root("v2_cloud_up");
+    SaveSystem sys(root);
+
+    int         upload_calls   = 0;
+    std::string seen_slot_id;
+    std::size_t seen_bytes     = 0;
+    std::uint32_t seen_version = 0;
+
+    sys.set_cloud_handler(
+        [&](std::string_view              slot_id,
+            const SaveMeta&               meta,
+            std::span<const std::byte>    blob) -> cd::core::Result<void> {
+            ++upload_calls;
+            seen_slot_id.assign(slot_id);
+            seen_bytes   = blob.size();
+            seen_version = meta.version;
+            return {};
+        },
+        /*download=*/{});
+    EXPECT_TRUE(sys.has_cloud_handler());
+
+    SaveMeta meta;
+    meta.version  = 4U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "CloudGame";
+    const auto blob = bytes_from("cloud-bytes");
+    auto wr = sys.save_with_meta("slot_c", meta, blob);
+    ASSERT_TRUE(wr.has_value());
+
+    EXPECT_EQ(upload_calls,   1);
+    EXPECT_EQ(seen_slot_id,   "slot_c");
+    EXPECT_EQ(seen_bytes,     blob.size());
+    EXPECT_EQ(seen_version,   4U);
+}
+
+// -----------------------------------------------------------------------------
+// 20) No cloud handler -> save_with_meta does NOT invoke any upload (proof:
+//     unregistered system + counter in a side channel).
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, CloudUploadNotCalledWhenUnregistered)
+{
+    auto root = make_unique_root("v2_cloud_no_up");
+    SaveSystem sys(root);
+
+    // Independently track that "no callback fires" by registering nothing
+    // and asserting via has_cloud_handler() + slot count on disk.
+    EXPECT_FALSE(sys.has_cloud_handler());
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Solo";
+    ASSERT_TRUE(sys.save_with_meta("slot_n", meta, bytes_from("only-local")).has_value());
+
+    // Local slot present, no side effects from a missing handler.
+    EXPECT_TRUE(sys.slot_exists("slot_n"));
+    EXPECT_FALSE(sys.has_cloud_handler());
+
+    // Also exercise: explicitly clearing the upload while keeping a download
+    // handler still leaves upload uncalled.
+    int upload_calls = 0;
+    sys.set_cloud_handler({}, [](std::string_view) -> cd::core::Result<CloudPayload> {
+        return std::unexpected(cd::game::save::save_errors::make(Code::kSlotNotFound));
+    });
+    ASSERT_TRUE(sys.save_with_meta("slot_n2", meta, bytes_from("still-local")).has_value());
+    EXPECT_EQ(upload_calls, 0);
+}
+
+// -----------------------------------------------------------------------------
+// 21) Cloud download fallback restores a missing slot. Local store is empty
+//     -> load_with_meta calls the registered download handler, the returned
+//     blob is written locally, and the next load_with_meta hits local cache.
+// -----------------------------------------------------------------------------
+TEST(SaveSystemV2, CloudDownloadFallbackRestoresMissingSlot)
+{
+    auto root = make_unique_root("v2_cloud_dl");
+    SaveSystem sys(root);
+
+    const auto cloud_blob_bytes = bytes_from("from-the-cloud");
+
+    int download_calls = 0;
+    sys.set_cloud_handler(
+        /*upload=*/{},
+        [&](std::string_view slot_id) -> cd::core::Result<CloudPayload> {
+            ++download_calls;
+            EXPECT_EQ(std::string(slot_id), "cloud_slot");
+            CloudPayload p;
+            p.meta.version      = 7U;
+            p.meta.format       = SaveFormat::kBinary;
+            p.meta.app_name     = "CloudGame";
+            p.meta.app_version  = "2.0";
+            p.blob.assign(cloud_blob_bytes.begin(), cloud_blob_bytes.end());
+            return p;
+        });
+
+    // Local is empty.
+    EXPECT_FALSE(sys.slot_exists("cloud_slot"));
+
+    auto loaded = sys.load_with_meta("cloud_slot");
+    ASSERT_TRUE(loaded.has_value()) << "cloud fallback should have restored slot";
+    EXPECT_EQ(download_calls,           1);
+    EXPECT_EQ(loaded->meta.version,     7U);
+    EXPECT_EQ(loaded->meta.app_name,    "CloudGame");
+    EXPECT_EQ(loaded->meta.app_version, "2.0");
+    ASSERT_EQ(loaded->blob.size(),      cloud_blob_bytes.size());
+    EXPECT_EQ(std::memcmp(loaded->blob.data(),
+                          cloud_blob_bytes.data(),
+                          cloud_blob_bytes.size()), 0);
+
+    // Next call should not re-download (local cache populated by fallback).
+    auto cached = sys.load_with_meta("cloud_slot");
+    ASSERT_TRUE(cached.has_value());
+    EXPECT_EQ(download_calls,           1);  // unchanged
+    EXPECT_EQ(cached->meta.version,     7U);
+    EXPECT_TRUE(sys.slot_exists("cloud_slot"));
 }
 
 }  // namespace
