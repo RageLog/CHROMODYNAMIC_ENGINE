@@ -8,8 +8,13 @@
 //             readback bytes; the tests therefore validate the API
 //             surface (handles allocated, lifetimes clean) without
 //             asserting on a live GPU reduction.
+// Phase 507 — Setup helper: end-to-end integration shape (boot, tick,
+//             bloom-threshold scale, destroy). NullDevice path verifies
+//             the helper degrades to "keep prev_ev" semantics so head-
+//             less CI never stalls on a missing GPU readback.
 // =============================================================================
 #include <cd/post/exposure/Exposure.hpp>
+#include <cd/post/exposure/Setup.hpp>
 #include <cd/rhi/NullDevice.hpp>
 
 #include <gtest/gtest.h>
@@ -247,4 +252,173 @@ TEST(ExposureGpu, DoubleDestroyIsSafe)
     gpu.destroy();
     gpu.destroy();  // After the first destroy, device is nullptr -> no-op.
     SUCCEED();
+}
+
+// =============================================================================
+// Phase 507 — Setup integration helper tests
+// =============================================================================
+
+TEST(ExposureSetup, CreateFailsOnZeroExtent)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 0U, 0U });
+    EXPECT_FALSE(r.has_value());
+}
+
+TEST(ExposureSetup, CreateSucceedsOnTypicalDownsampledExtent)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 128U, 128U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    EXPECT_TRUE(setup.reduction.pipeline.is_valid());
+    EXPECT_EQ(setup.prev_ev, 0.0F);
+    EXPECT_EQ(setup.ev_bias, 0.0F);
+    EXPECT_EQ(setup.last_log_avg, pex::Settings::kSkipThreshold);
+    EXPECT_FLOAT_EQ(setup.last_multiplier, 1.0F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, TickOnNullDeviceKeepsPrevEv)
+{
+    // NullDevice readback yields zero-filled bytes -> kSkipThreshold ->
+    // update_ev returns prev_ev unchanged. Result: stable multiplier
+    // across ticks. This is the head-less / smoke-test contract.
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.prev_ev = 1.25F;  // pretend we had a prior auto-exposed EV.
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    const float mul = setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 1.0F / 60.0F);
+    cmd->end();
+
+    EXPECT_FLOAT_EQ(setup.prev_ev, 1.25F);  // unchanged.
+    EXPECT_FLOAT_EQ(setup.last_log_avg, pex::Settings::kSkipThreshold);
+    // Multiplier = compute_exposure_multiplier(1.25, key=0.18)
+    const float expected = std::exp2(1.25F) / 0.18F;
+    EXPECT_NEAR(mul, expected, 0.01F);
+    EXPECT_NEAR(setup.last_multiplier, expected, 0.01F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, EvBiasOffsetsAutoEv)
+{
+    // With prev_ev = 0 and bias = +1 stop, the multiplier should be
+    // double the EV-0 multiplier.
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.ev_bias = 1.0F;
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    const float mul = setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 0.0F);
+    cmd->end();
+
+    const float baseline = pex::compute_exposure_multiplier(0.0F, setup.settings);
+    EXPECT_NEAR(mul / baseline, 2.0F, 0.001F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, EvBiasClampsToSettingsRange)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.settings.max_ev = 2.0F;
+    setup.settings.min_ev = -2.0F;
+    setup.ev_bias = 100.0F;  // try to push way past the clamp.
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    (void)setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 0.0F);
+    cmd->end();
+
+    // current_ev() returns the clamped sum; never escapes settings.max_ev.
+    EXPECT_NEAR(setup.current_ev(), 2.0F, 0.001F);
+    // last_multiplier corresponds to EV +2.
+    const float expected = pex::compute_exposure_multiplier(2.0F, setup.settings);
+    EXPECT_NEAR(setup.last_multiplier, expected, 0.01F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, BloomThresholdScaleHalvesAtPlusOneEv)
+{
+    // EV +1 means scene is 1 stop brighter -> bloom threshold should
+    // be halved so the "1.0 = 1 stop above mean" semantics hold.
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.prev_ev = 1.0F;
+    EXPECT_NEAR(setup.bloom_threshold_scale(), 0.5F, 0.001F);
+    setup.ev_bias = -1.0F;  // cancel bias back to EV 0.
+    EXPECT_NEAR(setup.bloom_threshold_scale(), 1.0F, 0.001F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, BloomThresholdScaleDoublesAtMinusOneEv)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.prev_ev = -1.0F;
+    EXPECT_NEAR(setup.bloom_threshold_scale(), 2.0F, 0.001F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, CurrentEvReflectsPrevPlusBiasClamped)
+{
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.prev_ev = 0.5F;
+    setup.ev_bias = 1.0F;
+    EXPECT_NEAR(setup.current_ev(), 1.5F, 0.001F);
+    setup.destroy();
+}
+
+TEST(ExposureSetup, DestroyIsIdempotent)
+{
+    pex::Setup setup {};
+    setup.destroy();  // default-constructed -> reduction.device is null.
+    SUCCEED();
+
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto live = std::move(*r);
+    live.destroy();
+    live.destroy();  // second destroy after wipe -> no-op.
+    SUCCEED();
+}
+
+TEST(ExposureSetup, MultipleTicksKeepEvStableUnderNullDevice)
+{
+    // Drift check: 60 ticks with NullDevice should not creep prev_ev.
+    cd::rhi::NullDevice dev;
+    auto r = pex::Setup::create(dev, cd::rhi::Extent2D { 64U, 64U });
+    ASSERT_TRUE(r.has_value());
+    auto setup = std::move(*r);
+    setup.prev_ev = 0.75F;
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    for (int i = 0; i < 60; ++i)
+    {
+        cmd->begin();
+        (void)setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 1.0F / 60.0F);
+        cmd->end();
+    }
+    EXPECT_FLOAT_EQ(setup.prev_ev, 0.75F);
+    setup.destroy();
 }
