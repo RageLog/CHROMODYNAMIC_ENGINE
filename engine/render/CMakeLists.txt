@@ -53,3 +53,4 @@ add_subdirectory(ddgi)                # Day 29 — Majercik 2019 DDGI irradiance
 add_subdirectory(nrc)                 # Faz 3 M — Muller 2021 Neural Radiance Cache
 # rhi backends now consolidated inside rhi/CMakeLists.txt (phase418)
 add_subdirectory(spirv_cross_glue)  # B-infra1 — SPIR-V → HLSL/MSL/GLSL cross-compilation
+add_subdirectory(scene_ingest)      # phase439 — generic glTF → GPU + ECS (ADR-20260530)
