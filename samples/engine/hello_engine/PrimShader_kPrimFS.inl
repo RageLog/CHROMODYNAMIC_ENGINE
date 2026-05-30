@@ -5,7 +5,7 @@ namespace cd::hello_engine
 {
 
 // AUTO-SYNCED with samples/engine/hello_engine/shaders/prim.frag.glsl
-// (phase 446). Embedded fallback used when on-disk shaders/ directory
+// (phase 447). Embedded fallback used when on-disk shaders/ directory
 // is missing next to the binary. Keep in lockstep with the .glsl file
 // — drift loses runtime fixes silently.
 inline constexpr const char* kPrimFS = R"glsl(
@@ -311,8 +311,22 @@ void main() {
   // so sun direct contribution drives indoor contrast).
   bool is_shadow_w   = (pc.tint.w < 0.5);
   bool is_floor_w    = (pc.tint.w > 1.5 && pc.tint.w < 2.5);
+  bool is_pbr_w      = (pc.tint.w > 2.5 && pc.tint.w < 3.5);
   bool is_gltf_prim  = (pc.tint.w > 3.5 && pc.tint.w < 4.5);
-  float surface_flag = (is_shadow_w || is_floor_w) ? 0.0 : 1.0;
+  // phase447-ssr: surface_flag now encodes SSR eligibility:
+  //   0.0 = sky / no-surface (skip AO + SSR + atrous)
+  //   0.5 = surface + AO only (skip SSR + atrous) — glTF stone/cloth,
+  //         PBR spheres (they have W8-BC RT reflection which would
+  //         double-count + look "cloudy" if SSR layered on top)
+  //   1.0 = surface + everything (default Lit / dielectric showcase
+  //         primitives that genuinely want screen-space reflections)
+  // SSR is fundamentally a MIRROR effect; at roughness 0.85 (Sponza
+  // stone) there should be NO sharp reflection. composite_pass's SSR
+  // gate is updated from > 0.5 to > 0.75 to honor this encoding. AO
+  // and atrous keep their < 0.5 reject so 0.5 prims still participate.
+  float surface_flag = (is_shadow_w || is_floor_w) ? 0.0
+                     : (is_gltf_prim || is_pbr_w)  ? 0.5
+                                                   : 1.0;
   // phase437-black: NaN guard on out_normal. Degenerate geometry (zero-
   // length v_world_normal from collapsed triangles in Sponza vegetation
   // or skinned CesiumMan at extreme poses) causes normalize() to return

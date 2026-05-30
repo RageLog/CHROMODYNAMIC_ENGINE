@@ -456,8 +456,14 @@ void main() {
   }
 
   // SSR
+  // phase447-ssr: gate now > 0.75 (was > 0.5) so glTF prims (Sponza /
+  // CesiumMan) writing surface_flag = 0.5 are NOT eligible for screen-
+  // space mirror reflections. At roughness 0.85 (Sponza stone, cloth)
+  // SSR was wallpapering green curtain colors onto walls and floors that
+  // should be matte. AO + atrous keep the < 0.5 reject so the 0.5 prims
+  // still participate in those passes.
   vec4 ssr_N = texture(cd_gbuf_normal, v_uv);
-  if (pc.ssr.x > 0.001 && ssr_N.w > 0.5 && center_d < 0.999) {
+  if (pc.ssr.x > 0.001 && ssr_N.w > 0.75 && center_d < 0.999) {
     vec3 wp = world_pos_from_uv(v_uv, center_d);
     vec3 N  = normalize(ssr_N.xyz);
     c += ssr_color(v_uv, wp, N);
