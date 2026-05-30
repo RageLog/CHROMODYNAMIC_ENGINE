@@ -6,7 +6,7 @@
 
 **Headers**: `cd/ui/widgets/Widgets.hpp`.
 
-**Dependencies**: `cd::core`, `cd::ui` (retained-mode tree), `cd::ui_layout`, `cd::ui_font`, `cd::ui_renderer`, `cd::ui_input`.
+**Dependencies**: `cd::core`, `cd::ui` (retained-mode tree), `cd::ui_layout`, `cd::ui_font`, `cd::ui_renderer`, `cd::ui_input`, `cd::ui_animation`.
 
 ## Widget catalog
 
@@ -41,8 +41,23 @@ struct ButtonState { bool hovered, pressed, focused; };
 
 Each widget mirrors the same triplet:
 - `void set_rect(Rect)`, `const Rect& rect() const`.
-- `bool tick(const InputState&)` -- returns `true` on the meaningful transition for that widget type (click, value-change, flip, selection-change, close).
-- `void draw(DrawBatcher&, Font*, const Theme&) const` -- emits draw commands via the `cd::ui_renderer` batcher.
+- `bool tick(const InputState&)` -- legacy instant-snap path (no animation advance). Equivalent to `tick(input, 0.0F)`.
+- `bool tick(const InputState&, float dt_s)` -- the canonical entry point: drives the state machine AND advances the per-state `cd::ui::animation::Tweener<float>` instances for `hover_amount` / `press_amount` / `focus_amount` by `dt_s` seconds. Returns `true` on the meaningful transition (click, value-change, flip, selection-change, close).
+- `void draw(DrawBatcher&, Font*, const Theme&) const` -- emits draw commands via the `cd::ui_renderer` batcher; samples the animated `*_amount` floats for tint blending, scale, and elevation.
+
+## Animation wiring (Phase 4.77)
+
+`Button`, `Toggle`, `Checkbox`, and `Slider` carry three `cd::ui::animation::Tweener<float>` channels (`hover_tween_`, `press_tween_`, `focus_tween_`) and a `WidgetAnimation` policy:
+
+```cpp
+struct WidgetAnimation {
+    float                     speed_up   { 10.0F };  // hover/press 0->1 per second
+    float                     speed_down { 10.0F };  // hover/press 1->0 per second
+    cd::ui::animation::Easing easing     { Easing::kEaseOutCubic };
+};
+```
+
+When `tick(input, dt_s)` flips a boolean target (`state_.hovered` / `state_.pressed` / `state_.focused`), the matching tween is (re)started from the current float amount to the new target (0.0 or 1.0) over `1.0 / speed_*` seconds with the policy easing. The amount is exposed via `hover_amount()` / `press_amount()` / `focus_amount()` (all `[0..1]` at rest), and `draw()` blends theme slots accordingly (e.g. `surface -> surface_hover -> surface_press`), grows / shrinks knob and thumb sizes, and fades the focus ring alpha.
 
 ## Theme
 
@@ -104,12 +119,14 @@ master.draw(batcher, font_atlas, theme);
 
 - Drag-and-drop targets, multi-line text, list/tree views.
 - Custom shaders / nine-patch / gradient widgets (Phase 1.2 batcher already supports the variants; this catalogue only emits `kSolid` + `kGlyph`).
-- Animated transitions between states (couples with `cd::ui_animation`).
 - Tab cycling between widgets (lives in `cd::ui_input::FocusManager` -- the frontend orchestrates which widget owns focus this frame).
 
 ## Tests
 
-`ctest --preset ninja-debug -R cd_test_ui_widgets --output-on-failure`. 21 cases:
+`ctest --preset ninja-debug -R cd_test_ui_widgets --output-on-failure`.
+
+`cd_test_ui_widgets` -- 21 state-machine cases:
+
 - Button: click-on-release-inside / drag-outside-cancels / Enter activates focused / draw-without-font smoke.
 - TextInput: character insert / backspace at start no-op / arrow + Home + End + unfocused-ignore / Delete at end no-op.
 - Slider: click positions value / drag updates while down / Left-Right nudge.
@@ -118,6 +135,18 @@ master.draw(batcher, font_atlas, theme);
 - Dropdown: header click toggles expansion / option click commits + collapses / arrow keys move selection with saturation.
 - Modal: Escape closes / outside-click closes / inside-content click stays open / hidden modal ignores Escape.
 - Cross-widget: all seven widgets emit draw commands without a font without asserts.
+
+`cd_test_ui_widgets_animation` -- 16 animation cases:
+
+- Initial amounts: Button hover/press/focus = 0; all-widgets hover/press = 0.
+- Hover ramp: Button / Toggle / Checkbox / Slider all see `hover_amount > 0 && < 1` after a 50 ms tick at default `speed_up = 10/sec`.
+- Hover saturation: Button (and all four widgets) reach `hover_amount ~ 1.0` (within 0.05) after a 1 s tick.
+- Hover decay: amount strictly decreases after unhover (both saturated and mid-transition).
+- Press ramp: Button (and all four widgets) ramp `press_amount > 0` after 30 ms tick while pressed.
+- Focus ramp: focus tween crosses (0, 1) at 50 ms and saturates near 1 at 1 s.
+- Custom speed: `speed_up = 40/sec` reaches saturation faster than `2/sec` over the same 30 ms slice.
+- Legacy `tick(input)` path: still snaps boolean state, leaves amounts at 0 (no animation advance).
+- Cross-widget animated draw smoke: all four animated widgets emit commands without a font.
 
 ## Notes
 

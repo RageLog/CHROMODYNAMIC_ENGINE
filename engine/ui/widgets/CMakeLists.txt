@@ -24,6 +24,7 @@ cd_add_library(ui_widgets
     cd::ui_font
     cd::ui_renderer
     cd::ui_input
+    cd::ui_animation
 )
 
 if(CD_ENABLE_TESTING)

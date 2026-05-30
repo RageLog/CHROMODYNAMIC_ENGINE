@@ -25,6 +25,7 @@
 // =============================================================================
 #include <cd/ui/widgets/Widgets.hpp>
 
+#include <cd/ui/animation/Animation.hpp>
 #include <cd/ui/font/Font.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 
@@ -45,6 +46,74 @@ namespace
 [[nodiscard]] cd::ui::renderer::Color to_renderer_color(Color c) noexcept
 {
     return cd::ui::renderer::Color { c.r, c.g, c.b, c.a };
+}
+
+/// Linear blend between two 8-bit colour channels by t in [0..1].
+[[nodiscard]] std::uint8_t blend_channel(std::uint8_t a, std::uint8_t b, float t) noexcept
+{
+    const float ta = static_cast<float>(a);
+    const float tb = static_cast<float>(b);
+    const float u  = std::clamp(t, 0.0F, 1.0F);
+    const float r  = ta + (tb - ta) * u;
+    return static_cast<std::uint8_t>(std::clamp(r, 0.0F, 255.0F));
+}
+
+/// Linear blend between two `Color` values. `t` is clamped to [0..1] for
+/// colour purposes -- overshoot from back / elastic easings only affects
+/// scale / elevation, not pixel colour (avoids RGBA wrap-around).
+[[nodiscard]] Color blend_color(const Color& a, const Color& b, float t) noexcept
+{
+    return Color {
+        blend_channel(a.r, b.r, t),
+        blend_channel(a.g, b.g, t),
+        blend_channel(a.b, b.b, t),
+        blend_channel(a.a, b.a, t),
+    };
+}
+
+/// Advance an animation amount toward a boolean target using a Tweener<float>.
+/// When the target flips (e.g. hover off -> on), we (re)start the tweener
+/// with from=current, to=target_amount, duration = 1.0 / rate. Subsequent
+/// frames just tick(dt) and read value(). Once done(), we snap to the target.
+///
+/// Returns the new amount value, updates `current` in-place, and (re)starts
+/// `tween` whenever `target` flips relative to `prev_target`.
+void advance_tween(cd::ui::animation::Tweener<float>& tween,
+                   float&                              current,
+                   bool                                target,
+                   bool&                               prev_target,
+                   float                               dt_s,
+                   const WidgetAnimation&              policy) noexcept
+{
+    const float target_amount = target ? 1.0F : 0.0F;
+
+    // Restart the tween whenever the target flips. The tweener interpolates
+    // from the CURRENT in-flight value (preserving smoothness when the
+    // user flicks hover on/off rapidly) toward the new target.
+    if (target != prev_target)
+    {
+        const float rate = target ? policy.speed_up : policy.speed_down;
+        cd::ui::animation::Animation<float> anim {};
+        anim.from       = current;
+        anim.to         = target_amount;
+        anim.duration_s = (rate > 0.0F) ? (1.0F / rate) : 0.0001F;
+        anim.easing     = policy.easing;
+        tween.start(anim);
+        prev_target = target;
+    }
+
+    if (dt_s > 0.0F)
+    {
+        tween.tick(dt_s);
+        current = tween.value();
+    }
+
+    // Snap to the boolean target once the tween completes, so the value
+    // is exactly 0.0F or 1.0F at rest (avoids drifting precision dust).
+    if (tween.done())
+    {
+        current = target_amount;
+    }
 }
 
 void draw_solid_rect(cd::ui::renderer::DrawBatcher& batcher,
@@ -148,7 +217,7 @@ Button::Button(std::string label, ClickCallback on_click)
 {
 }
 
-bool Button::tick(const InputState& input)
+bool Button::tick(const InputState& input, float dt_s)
 {
     const bool inside = rect_.contains(input.pointer.mouse_x, input.pointer.mouse_y);
     state_.hovered = inside;
@@ -185,6 +254,14 @@ bool Button::tick(const InputState& input)
         clicked = true;
     }
 
+    // Animate hover / press / focus toward their boolean targets via the
+    // per-state Tweener<float>. The boolean state_ remains the authoritative
+    // input-state; the *_amount_ floats are the visual interpolant draw()
+    // consumes for smooth tints and elevation.
+    advance_tween(hover_tween_, hover_amount_, state_.hovered, hover_target_, dt_s, animation_);
+    advance_tween(press_tween_, press_amount_, state_.pressed, press_target_, dt_s, animation_);
+    advance_tween(focus_tween_, focus_amount_, state_.focused, focus_target_, dt_s, animation_);
+
     if (clicked && on_click_)
     {
         on_click_();
@@ -196,21 +273,36 @@ void Button::draw(cd::ui::renderer::DrawBatcher& batcher,
                   cd::ui::font::Font* font,
                   const Theme& theme) const
 {
-    Color bg = theme.surface;
-    if (state_.pressed)      { bg = theme.surface_press; }
-    else if (state_.hovered) { bg = theme.surface_hover; }
-    draw_solid_rect(batcher, rect_, bg);
+    // Tint = blend(base -> hover, hover_amount) then blend toward press_amount.
+    // Press dominates hover when both are active (a pressed button is also
+    // hovered by construction in tick()).
+    Color bg = blend_color(theme.surface,       theme.surface_hover, hover_amount_);
+    bg       = blend_color(bg,                  theme.surface_press, press_amount_);
 
-    if (state_.focused)
+    // Elevation: slight upward shift on hover, downward on press. The
+    // shift is purely visual -- hit-testing in tick() still uses the
+    // canonical rect_.
+    const float elevation = (hover_amount_ - press_amount_) * 2.0F;
+    Rect elevated = rect_;
+    elevated.y -= elevation;
+    draw_solid_rect(batcher, elevated, bg);
+
+    if (focus_amount_ > 0.0F)
     {
-        draw_focus_ring(batcher, rect_, theme.focus_ring);
+        // Fade the focus ring in with the focus tween rather than a hard
+        // edge -- visually softer when keyboard nav arrives.
+        Color ring = theme.focus_ring;
+        ring.a = static_cast<std::uint8_t>(
+            std::clamp(static_cast<float>(ring.a) * focus_amount_,
+                       0.0F, 255.0F));
+        draw_focus_ring(batcher, elevated, ring);
     }
 
     if (font != nullptr && !label_.empty())
     {
         // Baseline: roughly 1/3 from the bottom of the rect.
-        const float baseline = rect_.y + rect_.h - (rect_.h * 0.30F);
-        const float x        = rect_.x + 8.0F;
+        const float baseline = elevated.y + elevated.h - (elevated.h * 0.30F);
+        const float x        = elevated.x + 8.0F;
         (void) draw_text_line(batcher, font, label_, x, baseline, theme.text);
     }
 }
@@ -410,7 +502,7 @@ namespace
 }
 }  // namespace
 
-bool Slider::tick(const InputState& input)
+bool Slider::tick(const InputState& input, float dt_s)
 {
     const bool inside = rect_.contains(input.pointer.mouse_x, input.pointer.mouse_y);
     state_.hovered = inside || dragging_;
@@ -464,6 +556,11 @@ bool Slider::tick(const InputState& input)
         mutated = true;
         if (on_change_) { on_change_(value_); }
     }
+
+    advance_tween(hover_tween_, hover_amount_, state_.hovered, hover_target_, dt_s, animation_);
+    advance_tween(press_tween_, press_amount_, state_.pressed, press_target_, dt_s, animation_);
+    advance_tween(focus_tween_, focus_amount_, state_.focused, focus_target_, dt_s, animation_);
+
     return mutated;
 }
 
@@ -483,18 +580,27 @@ void Slider::draw(cd::ui::renderer::DrawBatcher& batcher,
     const Rect  fill   { rect_.x, track_y, fill_w, track_h };
     draw_solid_rect(batcher, fill, theme.accent);
 
-    // Thumb.
-    const float thumb_w = std::max(6.0F, rect_.h * 0.5F);
+    // Thumb. Slightly grows with hover_amount (scale 1.0 -> 1.15) and
+    // shrinks on press (-0.05). Tint blends hover_amount toward
+    // accent_hover and press_amount toward surface_press.
+    const float thumb_scale = 1.0F + (hover_amount_ * 0.15F) - (press_amount_ * 0.05F);
+    const float thumb_w_base = std::max(6.0F, rect_.h * 0.5F);
+    const float thumb_w = thumb_w_base * thumb_scale;
+    const float thumb_h = rect_.h * thumb_scale;
     const float thumb_x = rect_.x + fill_w - (thumb_w * 0.5F);
-    const Rect  thumb   { thumb_x, rect_.y, thumb_w, rect_.h };
-    Color thumb_col = theme.surface_hover;
-    if (state_.pressed)      { thumb_col = theme.surface_press; }
-    else if (state_.hovered) { thumb_col = theme.accent_hover; }
+    const float thumb_y = rect_.y + (rect_.h - thumb_h) * 0.5F;
+    const Rect  thumb   { thumb_x, thumb_y, thumb_w, thumb_h };
+    Color thumb_col = blend_color(theme.surface_hover, theme.accent_hover,  hover_amount_);
+    thumb_col       = blend_color(thumb_col,           theme.surface_press, press_amount_);
     draw_solid_rect(batcher, thumb, thumb_col);
 
-    if (state_.focused)
+    if (focus_amount_ > 0.0F)
     {
-        draw_focus_ring(batcher, rect_, theme.focus_ring);
+        Color ring = theme.focus_ring;
+        ring.a = static_cast<std::uint8_t>(
+            std::clamp(static_cast<float>(ring.a) * focus_amount_,
+                       0.0F, 255.0F));
+        draw_focus_ring(batcher, rect_, ring);
     }
 }
 
@@ -508,7 +614,7 @@ Toggle::Toggle(bool initial, ChangeCallback on_change)
 {
 }
 
-bool Toggle::tick(const InputState& input)
+bool Toggle::tick(const InputState& input, float dt_s)
 {
     const bool inside = rect_.contains(input.pointer.mouse_x, input.pointer.mouse_y);
     state_.hovered = inside;
@@ -538,6 +644,10 @@ bool Toggle::tick(const InputState& input)
         flipped = true;
     }
 
+    advance_tween(hover_tween_, hover_amount_, state_.hovered, hover_target_, dt_s, animation_);
+    advance_tween(press_tween_, press_amount_, state_.pressed, press_target_, dt_s, animation_);
+    advance_tween(focus_tween_, focus_amount_, state_.focused, focus_target_, dt_s, animation_);
+
     if (flipped && on_change_)
     {
         on_change_(value_);
@@ -550,26 +660,34 @@ void Toggle::draw(cd::ui::renderer::DrawBatcher& batcher,
                   const Theme& theme) const
 {
     (void) font;
-    // Lozenge background.
-    const Color bg = value_ ? theme.accent : theme.surface;
-    draw_solid_rect(batcher, rect_, bg);
+    // Lozenge background. Blend hover tint over the value-driven base.
+    Color base = value_ ? theme.accent : theme.surface;
+    base = blend_color(base, value_ ? theme.accent_hover : theme.surface_hover,
+                       hover_amount_);
+    base = blend_color(base, theme.surface_press, press_amount_ * 0.5F);
+    draw_solid_rect(batcher, rect_, base);
 
     // Knob -- circle approximated by a square shrunk to ~80% of the
-    // height; renderer doesn't have a primitive circle yet.
-    const float knob_size = rect_.h * 0.8F;
-    const float knob_y    = rect_.y + (rect_.h - knob_size) * 0.5F;
-    const float knob_x    = value_
+    // height; renderer doesn't have a primitive circle yet. Knob grows
+    // slightly on hover and shrinks on press.
+    const float knob_scale = 1.0F + (hover_amount_ * 0.10F) - (press_amount_ * 0.08F);
+    const float knob_size  = rect_.h * 0.8F * knob_scale;
+    const float knob_y     = rect_.y + (rect_.h - knob_size) * 0.5F;
+    const float knob_x     = value_
         ? (rect_.x + rect_.w - knob_size - (rect_.h - knob_size) * 0.5F)
         : (rect_.x + (rect_.h - knob_size) * 0.5F);
     const Rect knob { knob_x, knob_y, knob_size, knob_size };
-    Color knob_col = theme.text;
-    if (state_.pressed)      { knob_col = theme.surface_press; }
-    else if (state_.hovered) { knob_col = theme.text_dim; }
+    Color knob_col = blend_color(theme.text,        theme.text_dim,      hover_amount_);
+    knob_col       = blend_color(knob_col,          theme.surface_press, press_amount_);
     draw_solid_rect(batcher, knob, knob_col);
 
-    if (state_.focused)
+    if (focus_amount_ > 0.0F)
     {
-        draw_focus_ring(batcher, rect_, theme.focus_ring);
+        Color ring = theme.focus_ring;
+        ring.a = static_cast<std::uint8_t>(
+            std::clamp(static_cast<float>(ring.a) * focus_amount_,
+                       0.0F, 255.0F));
+        draw_focus_ring(batcher, rect_, ring);
     }
 }
 
@@ -584,7 +702,7 @@ Checkbox::Checkbox(bool initial, std::string label, ChangeCallback on_change)
 {
 }
 
-bool Checkbox::tick(const InputState& input)
+bool Checkbox::tick(const InputState& input, float dt_s)
 {
     const bool inside = rect_.contains(input.pointer.mouse_x, input.pointer.mouse_y);
     state_.hovered = inside;
@@ -614,6 +732,10 @@ bool Checkbox::tick(const InputState& input)
         flipped = true;
     }
 
+    advance_tween(hover_tween_, hover_amount_, state_.hovered, hover_target_, dt_s, animation_);
+    advance_tween(press_tween_, press_amount_, state_.pressed, press_target_, dt_s, animation_);
+    advance_tween(focus_tween_, focus_amount_, state_.focused, focus_target_, dt_s, animation_);
+
     if (flipped && on_change_)
     {
         on_change_(value_);
@@ -625,19 +747,21 @@ void Checkbox::draw(cd::ui::renderer::DrawBatcher& batcher,
                     cd::ui::font::Font* font,
                     const Theme& theme) const
 {
-    // Box is a square sized by the rect height.
-    const float box_size = rect_.h;
-    const Rect  box      { rect_.x, rect_.y, box_size, box_size };
-    Color box_col = theme.surface;
-    if (state_.pressed)      { box_col = theme.surface_press; }
-    else if (state_.hovered) { box_col = theme.surface_hover; }
+    // Box is a square sized by the rect height. Elevation lifts on hover,
+    // settles on press -- same convention as Button.
+    const float elevation = (hover_amount_ - press_amount_) * 1.5F;
+    const float box_size  = rect_.h;
+    const Rect  box       { rect_.x, rect_.y - elevation, box_size, box_size };
+    Color box_col = blend_color(theme.surface,       theme.surface_hover, hover_amount_);
+    box_col       = blend_color(box_col,             theme.surface_press, press_amount_);
     draw_solid_rect(batcher, box, box_col);
 
     if (value_)
     {
         // Inner fill (the visual "check") -- inset by 25% on each side.
-        const float pad = box_size * 0.25F;
-        const Rect  check { rect_.x + pad, rect_.y + pad,
+        // Pad shrinks slightly with hover_amount so the check "grows" on hover.
+        const float pad = box_size * (0.25F - hover_amount_ * 0.03F);
+        const Rect  check { box.x + pad, box.y + pad,
                             box_size - 2.0F * pad, box_size - 2.0F * pad };
         draw_solid_rect(batcher, check, theme.accent);
     }
@@ -645,14 +769,18 @@ void Checkbox::draw(cd::ui::renderer::DrawBatcher& batcher,
     // Label trails the box.
     if (font != nullptr && !label_.empty())
     {
-        const float baseline = rect_.y + rect_.h - (rect_.h * 0.30F);
+        const float baseline = box.y + rect_.h - (rect_.h * 0.30F);
         const float x        = rect_.x + box_size + 6.0F;
         (void) draw_text_line(batcher, font, label_, x, baseline, theme.text);
     }
 
-    if (state_.focused)
+    if (focus_amount_ > 0.0F)
     {
-        draw_focus_ring(batcher, rect_, theme.focus_ring);
+        Color ring = theme.focus_ring;
+        ring.a = static_cast<std::uint8_t>(
+            std::clamp(static_cast<float>(ring.a) * focus_amount_,
+                       0.0F, 255.0F));
+        draw_focus_ring(batcher, rect_, ring);
     }
 }
 

@@ -37,6 +37,7 @@
 #pragma once
 
 #include <cd/core/Defines.hpp>
+#include <cd/ui/animation/Animation.hpp>
 
 #include <cstdint>
 #include <functional>
@@ -164,6 +165,19 @@ struct ButtonState
     bool focused { false };
 };
 
+// ---- Animation policy ------------------------------------------------------
+
+/// Per-widget animation policy. `speed_up` / `speed_down` are linear rates
+/// in units of "hover_amount per second" (so 10.0F means the value covers
+/// the [0..1] interval in ~0.1 s). Easing biases the curve shape applied
+/// by the per-state `Tweener<float>`.
+struct WidgetAnimation
+{
+    float                         speed_up   { 10.0F };  ///< rate when target=1
+    float                         speed_down { 10.0F };  ///< rate when target=0
+    cd::ui::animation::Easing     easing     { cd::ui::animation::Easing::kEaseOutCubic };
+};
+
 // ---- Forward decls ---------------------------------------------------------
 
 }  // namespace cd::ui::widgets
@@ -201,20 +215,46 @@ public:
 
     [[nodiscard]] const ButtonState& state() const noexcept { return state_; }
 
+    void set_animation(WidgetAnimation a) noexcept { animation_ = a; }
+    [[nodiscard]] const WidgetAnimation& animation() const noexcept { return animation_; }
+
+    /// Current hover transition amount in [0..1] (0 = idle, 1 = fully hovered).
+    /// Driven by tick(input, dt) toward the boolean state_.hovered target.
+    [[nodiscard]] float hover_amount() const noexcept { return hover_amount_; }
+    /// Current press transition amount in [0..1] (0 = released, 1 = fully pressed).
+    [[nodiscard]] float press_amount() const noexcept { return press_amount_; }
+    /// Current focus transition amount in [0..1] (0 = blurred, 1 = fully focused).
+    [[nodiscard]] float focus_amount() const noexcept { return focus_amount_; }
+
     /// Returns true on a click-completed-this-frame transition (release
-    /// inside the rect after a press inside).
-    bool tick(const InputState& input);
+    /// inside the rect after a press inside). Equivalent to `tick(input, 0.0F)`
+    /// (no animation advance). Preserved for legacy / instant-snap callers.
+    bool tick(const InputState& input) { return tick(input, 0.0F); }
+
+    /// Advance state machine AND animate hover / press / focus tweens by
+    /// `dt_s` seconds. Returns true on click-completed-this-frame.
+    bool tick(const InputState& input, float dt_s);
 
     void draw(cd::ui::renderer::DrawBatcher& batcher,
               cd::ui::font::Font* font,
               const Theme& theme) const;
 
 private:
-    Rect          rect_     {};
-    std::string   label_    {};
-    ClickCallback on_click_ {};
-    ButtonState   state_    {};
-    bool          armed_    { false };  ///< press was inside this rect
+    Rect             rect_          {};
+    std::string      label_         {};
+    ClickCallback    on_click_      {};
+    ButtonState      state_         {};
+    bool             armed_         { false };  ///< press was inside this rect
+    WidgetAnimation  animation_     {};
+    cd::ui::animation::Tweener<float> hover_tween_ {};
+    cd::ui::animation::Tweener<float> press_tween_ {};
+    cd::ui::animation::Tweener<float> focus_tween_ {};
+    float            hover_amount_  { 0.0F };
+    float            press_amount_  { 0.0F };
+    float            focus_amount_  { 0.0F };
+    bool             hover_target_  { false };
+    bool             press_target_  { false };
+    bool             focus_target_  { false };
 };
 
 // ---- TextInput -------------------------------------------------------------
@@ -283,20 +323,42 @@ public:
 
     [[nodiscard]] const ButtonState& state() const noexcept { return state_; }
 
-    /// Returns true when the value mutated this frame.
-    bool tick(const InputState& input);
+    void set_animation(WidgetAnimation a) noexcept { animation_ = a; }
+    [[nodiscard]] const WidgetAnimation& animation() const noexcept { return animation_; }
+
+    [[nodiscard]] float hover_amount() const noexcept { return hover_amount_; }
+    [[nodiscard]] float press_amount() const noexcept { return press_amount_; }
+    [[nodiscard]] float focus_amount() const noexcept { return focus_amount_; }
+
+    /// Returns true when the value mutated this frame. Equivalent to
+    /// `tick(input, 0.0F)` (no animation advance).
+    bool tick(const InputState& input) { return tick(input, 0.0F); }
+
+    /// Advance state machine AND animate hover / press / focus tweens by
+    /// `dt_s` seconds. Returns true when the value mutated this frame.
+    bool tick(const InputState& input, float dt_s);
 
     void draw(cd::ui::renderer::DrawBatcher& batcher,
               cd::ui::font::Font* font,
               const Theme& theme) const;
 
 private:
-    Rect           rect_      {};
-    float          value_     { 0.0F };
-    float          step_      { 0.01F };
-    ChangeCallback on_change_ {};
-    ButtonState    state_     {};
-    bool           dragging_  { false };
+    Rect             rect_          {};
+    float            value_         { 0.0F };
+    float            step_          { 0.01F };
+    ChangeCallback   on_change_     {};
+    ButtonState      state_         {};
+    bool             dragging_      { false };
+    WidgetAnimation  animation_     {};
+    cd::ui::animation::Tweener<float> hover_tween_ {};
+    cd::ui::animation::Tweener<float> press_tween_ {};
+    cd::ui::animation::Tweener<float> focus_tween_ {};
+    float            hover_amount_  { 0.0F };
+    float            press_amount_  { 0.0F };
+    float            focus_amount_  { 0.0F };
+    bool             hover_target_  { false };
+    bool             press_target_  { false };
+    bool             focus_target_  { false };
 };
 
 // ---- Toggle (on/off lozenge) ----------------------------------------------
@@ -321,19 +383,41 @@ public:
 
     [[nodiscard]] const ButtonState& state() const noexcept { return state_; }
 
-    /// Returns true when the value flipped this frame.
-    bool tick(const InputState& input);
+    void set_animation(WidgetAnimation a) noexcept { animation_ = a; }
+    [[nodiscard]] const WidgetAnimation& animation() const noexcept { return animation_; }
+
+    [[nodiscard]] float hover_amount() const noexcept { return hover_amount_; }
+    [[nodiscard]] float press_amount() const noexcept { return press_amount_; }
+    [[nodiscard]] float focus_amount() const noexcept { return focus_amount_; }
+
+    /// Returns true when the value flipped this frame. Equivalent to
+    /// `tick(input, 0.0F)` (no animation advance).
+    bool tick(const InputState& input) { return tick(input, 0.0F); }
+
+    /// Advance state machine AND animate hover / press / focus tweens by
+    /// `dt_s` seconds. Returns true when the value flipped this frame.
+    bool tick(const InputState& input, float dt_s);
 
     void draw(cd::ui::renderer::DrawBatcher& batcher,
               cd::ui::font::Font* font,
               const Theme& theme) const;
 
 private:
-    Rect           rect_      {};
-    bool           value_     { false };
-    ChangeCallback on_change_ {};
-    ButtonState    state_     {};
-    bool           armed_     { false };
+    Rect             rect_          {};
+    bool             value_         { false };
+    ChangeCallback   on_change_     {};
+    ButtonState      state_         {};
+    bool             armed_         { false };
+    WidgetAnimation  animation_     {};
+    cd::ui::animation::Tweener<float> hover_tween_ {};
+    cd::ui::animation::Tweener<float> press_tween_ {};
+    cd::ui::animation::Tweener<float> focus_tween_ {};
+    float            hover_amount_  { 0.0F };
+    float            press_amount_  { 0.0F };
+    float            focus_amount_  { 0.0F };
+    bool             hover_target_  { false };
+    bool             press_target_  { false };
+    bool             focus_target_  { false };
 };
 
 // ---- Checkbox (square check) ----------------------------------------------
@@ -364,19 +448,41 @@ public:
 
     [[nodiscard]] const ButtonState& state() const noexcept { return state_; }
 
-    bool tick(const InputState& input);
+    void set_animation(WidgetAnimation a) noexcept { animation_ = a; }
+    [[nodiscard]] const WidgetAnimation& animation() const noexcept { return animation_; }
+
+    [[nodiscard]] float hover_amount() const noexcept { return hover_amount_; }
+    [[nodiscard]] float press_amount() const noexcept { return press_amount_; }
+    [[nodiscard]] float focus_amount() const noexcept { return focus_amount_; }
+
+    /// Equivalent to `tick(input, 0.0F)` -- no animation advance.
+    bool tick(const InputState& input) { return tick(input, 0.0F); }
+
+    /// Advance state machine AND animate hover / press / focus tweens by
+    /// `dt_s` seconds.
+    bool tick(const InputState& input, float dt_s);
 
     void draw(cd::ui::renderer::DrawBatcher& batcher,
               cd::ui::font::Font* font,
               const Theme& theme) const;
 
 private:
-    Rect           rect_      {};
-    bool           value_     { false };
-    std::string    label_     {};
-    ChangeCallback on_change_ {};
-    ButtonState    state_     {};
-    bool           armed_     { false };
+    Rect             rect_          {};
+    bool             value_         { false };
+    std::string      label_         {};
+    ChangeCallback   on_change_     {};
+    ButtonState      state_         {};
+    bool             armed_         { false };
+    WidgetAnimation  animation_     {};
+    cd::ui::animation::Tweener<float> hover_tween_ {};
+    cd::ui::animation::Tweener<float> press_tween_ {};
+    cd::ui::animation::Tweener<float> focus_tween_ {};
+    float            hover_amount_  { 0.0F };
+    float            press_amount_  { 0.0F };
+    float            focus_amount_  { 0.0F };
+    bool             hover_target_  { false };
+    bool             press_target_  { false };
+    bool             focus_target_  { false };
 };
 
 // ---- Dropdown --------------------------------------------------------------
