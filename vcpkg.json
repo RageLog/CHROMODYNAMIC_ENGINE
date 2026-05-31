@@ -63,8 +63,13 @@
       "dependencies": []
     },
     "phase2-physics": {
-      "description": "Phase 2 physics backend (jolt-physics). Reserved until ADR-008 v2 + adapter pattern lands.",
-      "dependencies": []
+      "description": "Phase 2 physics backend (jolt-physics). Reserved-but-documented: Phase 525 / T0.3 ships cd::physics_jolt as a STUB backend (no vendor link) per the brief's escape hatch. Promotion of `jolt-physics` into the active `dependencies` block is gated on (a) `find_package(Jolt CONFIG)` being wired in `engine/world/physics_jolt/CMakeLists.txt` AND (b) the bringup ADR (`ADR-2026xxxx-physics-jolt-bringup`) recording the pinned Jolt tag + CMake flags. See vcpkg.json `$x-policy-note`.",
+      "dependencies": [
+        {
+          "name": "jolt-physics",
+          "$comment": "Jolt Physics 5.x — MIT, AAA-shipping multicore rigid-body / soft-body solver. See ADR-20260530-jolt-physics-integration §A for the trade-off table that pins Jolt over PhysX / Bullet. Opt-in until find_package is wired."
+        }
+      ]
     },
     "webgpu": {
       "description": "WebGPU backend for cd::ui_renderer_webgpu via google/dawn (phase522). Opt-in: heavy dep (~800 MB). Also set -DCD_ENABLE_WEBGPU=ON at configure time.",

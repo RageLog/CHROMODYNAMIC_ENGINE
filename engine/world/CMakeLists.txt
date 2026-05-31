@@ -3,6 +3,9 @@
 #   ecs              — Sprint S4.1: entity-component-system (sparse-set storage).
 #   scene            — S4.2 (planned): scene graph / transforms on top of ECS.
 #   physics          — S4.3 (planned).
+#   physics_jolt     — Phase 525 / T0.3: Jolt backend (cd::physics_jolt::JoltWorld)
+#                      implementing cd::physics::IPhysicsWorld. Stub scope until
+#                      ADR-2026xxxx-physics-jolt-bringup lands the real vendor.
 #   anim             — S4.4 (planned).
 #   audio            — S4.5 (planned).
 #   input            — S4.6 (planned).
@@ -18,6 +21,7 @@
 add_subdirectory(ecs)
 add_subdirectory(scene)
 add_subdirectory(physics)
+add_subdirectory(physics_jolt)
 add_subdirectory(anim)
 add_subdirectory(audio)
 add_subdirectory(input)
