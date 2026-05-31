@@ -80,3 +80,10 @@ add_subdirectory(particles_event)
 #                       cd::asset::FileWatcher. Categorised subscriber model
 #                       with 100 ms throttle window for editor-save bursts.
 add_subdirectory(asset_hot_reload)
+
+# Phase M7 W4B — "Cutscene / cinematic":
+#   cutscene_player — M7 W4B: cd::game::cutscene_player data-driven timeline.
+#                     Sequence of CutscenePhase entries; each phase fires
+#                     CutsceneEvents at authored offsets. Pure state machine;
+#                     no render/audio/ECS headers pulled in.
+add_subdirectory(cutscene_player)
