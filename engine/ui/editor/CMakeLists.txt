@@ -67,6 +67,11 @@ add_subdirectory(panel_viewport)
 # metallic / roughness sliders + live preview rectangle).
 add_subdirectory(panel_material_editor)
 
+# ── cd::editor_panel_animator (STATIC) ─────────────────────────────────────
+# phase556-557-558 — Animator panel (DrawBatcher path; animation clip browser +
+# timeline scrubber + play/pause/loop toggles).
+add_subdirectory(panel_animator)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
