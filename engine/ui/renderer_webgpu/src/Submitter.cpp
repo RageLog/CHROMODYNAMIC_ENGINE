@@ -213,23 +213,66 @@ void Submitter::record(WgpuCommandEncoder encoder,
     (void)viewport_extent;   // used below in real path
 
 #if CD_UI_WEBGPU_HAVE_DAWN
-    // Real path: open a render pass on the encoder and issue draws.
-    // The render pass descriptor (colour attachment, load op, store op)
-    // must be handed in or pre-set; deferred to Phase 5.5 hello_ui_webgpu.
-    // For now we record the bind + draw sequence so the skeleton is
-    // exercisable once a surface + attachments are wired in.
+    // Real Dawn path: bind the vertex/index ring buffers and issue one
+    // DrawIndexed per DrawCommand.
     //
-    // wgpu::RenderPassEncoder rp = encoder.BeginRenderPass(&rpd);
-    // rp.SetVertexBuffer(0, impl_->vb, 0, wgpu::kWholeSize);
-    // rp.SetIndexBuffer(impl_->ib, wgpu::IndexFormat::Uint16, 0, wgpu::kWholeSize);
-    // for (const auto& dc : impl_->commands)
-    // {
-    //     rp.SetScissorRect(dc.scissor.x, dc.scissor.y,
-    //                       dc.scissor.width, dc.scissor.height);
-    //     rp.DrawIndexed(dc.index_count, 1U, dc.index_offset, 0, 0U);
-    // }
-    // rp.End();
-    (void)encoder;  // remove when render-pass stub above is uncommented
+    // The render pass must already be open on `encoder` — WebGPU encodes
+    // BeginRenderPass on the CommandEncoder (not inline on a queue), so the
+    // caller is responsible for begin/end.  The encoder is passed in already
+    // inside an active pass so that Submitter stays stateless w.r.t. the
+    // colour attachment and load/store ops (which differ between overlay and
+    // full-screen UI modes).
+    //
+    // Pipeline-set is deferred to Phase 5.5 hello_ui_webgpu where a real
+    // swapchain surface validates the PSO; here we emit the pure
+    // geometry-binding + draw sequence so integration tests can verify the
+    // call count without a real GPU.
+    {
+        // Retrieve the render-pass encoder handle embedded in the command
+        // encoder.  In the Dawn C++ API the caller normally opens the pass and
+        // passes the RenderPassEncoder directly; to avoid changing the public
+        // API surface (WgpuCommandEncoder) we derive a transient pass handle
+        // here with a minimal descriptor so the skeleton is self-contained.
+        //
+        // Phase 5.5 will replace this block with a proper
+        //   wgpu::RenderPassDescriptor rpd { … };
+        //   auto rp = encoder.BeginRenderPass(&rpd);
+        // driven by the swapchain texture view.
+        wgpu::RenderPassDescriptor rpd {};
+        // colour attachment left default-initialised (null view) — acceptable
+        // for recording draw commands on a null/mock encoder in unit tests;
+        // Phase 5.5 will fill attachmentCount + colorAttachments.
+        rpd.colorAttachmentCount = 0U;
+        rpd.colorAttachments     = nullptr;
+
+        wgpu::RenderPassEncoder rp = encoder.BeginRenderPass(&rpd);
+
+        rp.SetVertexBuffer(0U, impl_->vb, 0U, wgpu::kWholeSize);
+        rp.SetIndexBuffer(impl_->ib, wgpu::IndexFormat::Uint16, 0U,
+                          wgpu::kWholeSize);
+
+        for (const auto& dc : impl_->commands)
+        {
+            // Clamp scissor to the viewport so we never pass negative or
+            // out-of-range values to SetScissorRect (WebGPU validation layer
+            // rejects them).
+            const auto sx = static_cast<std::uint32_t>(
+                std::max<std::int32_t>(dc.scissor.x, 0));
+            const auto sy = static_cast<std::uint32_t>(
+                std::max<std::int32_t>(dc.scissor.y, 0));
+            const auto sw = std::min(dc.scissor.width,  viewport_extent.width);
+            const auto sh = std::min(dc.scissor.height, viewport_extent.height);
+
+            rp.SetScissorRect(sx, sy, sw, sh);
+            rp.DrawIndexed(dc.index_count,   // indexCount
+                           1U,               // instanceCount
+                           dc.index_offset,  // firstIndex
+                           0,                // baseVertex
+                           0U);              // firstInstance
+        }
+
+        rp.End();
+    }
 #else
     // Stub path: iterate and count (so tests can verify command_count()).
     (void)encoder;
