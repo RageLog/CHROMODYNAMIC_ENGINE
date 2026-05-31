@@ -17,6 +17,9 @@ cd_add_library(ui_widgets
   TYPE STATIC
   SOURCES
     src/Widgets.cpp
+    src/ColorPicker.cpp
+    src/CurveEditor.cpp
+    src/DockSpace.cpp
   PUBLIC_DEPS
     cd::core
     cd::ui
