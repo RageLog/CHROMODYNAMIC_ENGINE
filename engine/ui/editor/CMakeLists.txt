@@ -72,6 +72,11 @@ add_subdirectory(panel_material_editor)
 # timeline scrubber + play/pause/loop toggles).
 add_subdirectory(panel_animator)
 
+# ── cd::editor_panel_behavior_designer (STATIC) ────────────────────────────
+# phase556-557-558 — Behavior Designer panel (DrawBatcher path; behavior tree
+# graph view: placeholder grid + 3 demo nodes; Sprint-2 = full BT graph).
+add_subdirectory(panel_behavior_designer)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
