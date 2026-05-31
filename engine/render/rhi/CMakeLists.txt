@@ -158,22 +158,75 @@ endif() # CD_ENABLE_VULKAN
 
 # ── cd::rhi_metal ──────────────────────────────────────────────────────────
 # macOS / iOS Metal backend. Full Metal lands in Phase 9 Sprint 1;
-# this wave (Wave 97) gives a factory stub.
-cd_add_library(rhi_metal
-  TYPE STATIC
-  SOURCES src/metal/MetalDevice.cpp
-  PUBLIC_DEPS cd::core cd::rhi
-)
+# phase531 ships the Objective-C++ skeleton behind CD_RHI_METAL_ENABLED.
+#
+# CD_RHI_METAL_ENABLED (default OFF):
+#   OFF — plain-C++ stub (MetalDevice.cpp) is compiled on all platforms;
+#         create_metal_device() returns kBackendInitFailed on non-Apple.
+#   ON  — Objective-C++ .mm files are compiled; requires Apple SDK + Clang.
+#         Enable this option when building on macOS / iOS.
+option(CD_RHI_METAL_ENABLED "Build Metal backend Objective-C++ sources (macOS/iOS only)" OFF)
 
-if(APPLE)
-  find_library(CD_METAL_FRAMEWORK Metal)
-  find_library(CD_FOUNDATION_FRAMEWORK Foundation)
-  if(CD_METAL_FRAMEWORK AND CD_FOUNDATION_FRAMEWORK)
-    target_link_libraries(cd_rhi_metal PRIVATE
-      ${CD_METAL_FRAMEWORK}
-      ${CD_FOUNDATION_FRAMEWORK})
+if(CD_RHI_METAL_ENABLED)
+  # .mm files require the Objective-C++ dialect; CMake detects this from
+  # the file extension when ENABLE_LANGUAGE(OBJCXX) is set in the top-level
+  # CMakeLists. Verify the option is enabled on a supported host.
+  if(NOT APPLE)
+    message(WARNING
+      "CD_RHI_METAL_ENABLED=ON but the host platform is not Apple. "
+      "The .mm sources require Xcode / Apple Clang with Metal SDK. "
+      "Falling back to the plain-C++ stub.")
+    set(CD_RHI_METAL_ENABLED OFF CACHE BOOL "" FORCE)
   endif()
 endif()
+
+if(CD_RHI_METAL_ENABLED)
+  cd_add_library(rhi_metal
+    TYPE STATIC
+    SOURCES
+      src/metal/MetalDevice.mm
+      src/metal/MetalCommandBuffer.mm
+      src/metal/MetalSwapchain.mm
+      src/metal/MetalPipeline.mm
+    PUBLIC_DEPS cd::core cd::rhi
+  )
+
+  # Link the Metal, Foundation, and QuartzCore frameworks (present on all
+  # Apple platforms where Metal is supported).
+  find_library(CD_METAL_FRAMEWORK       Metal       REQUIRED)
+  find_library(CD_FOUNDATION_FRAMEWORK  Foundation  REQUIRED)
+  find_library(CD_QUARTZCORE_FRAMEWORK  QuartzCore  REQUIRED)
+
+  target_link_libraries(cd_rhi_metal PRIVATE
+    ${CD_METAL_FRAMEWORK}
+    ${CD_FOUNDATION_FRAMEWORK}
+    ${CD_QUARTZCORE_FRAMEWORK})
+
+  # ARC is enabled by default for Objective-C++ in Xcode; explicitly
+  # request it for CMake builds outside Xcode so the flag is guaranteed.
+  target_compile_options(cd_rhi_metal PRIVATE -fobjc-arc)
+
+  target_compile_definitions(cd_rhi_metal PUBLIC CD_RHI_METAL_ENABLED=1)
+else()
+  # Plain-C++ stub — compiles on all platforms including Win11.
+  cd_add_library(rhi_metal
+    TYPE STATIC
+    SOURCES src/metal/MetalDevice.cpp
+    PUBLIC_DEPS cd::core cd::rhi
+  )
+
+  if(APPLE)
+    # Even the stub target links Metal + Foundation so it can be swapped
+    # for the full backend without changing link lines downstream.
+    find_library(CD_METAL_FRAMEWORK      Metal)
+    find_library(CD_FOUNDATION_FRAMEWORK Foundation)
+    if(CD_METAL_FRAMEWORK AND CD_FOUNDATION_FRAMEWORK)
+      target_link_libraries(cd_rhi_metal PRIVATE
+        ${CD_METAL_FRAMEWORK}
+        ${CD_FOUNDATION_FRAMEWORK})
+    endif()
+  endif()
+endif() # CD_RHI_METAL_ENABLED
 
 # ── cd::rhi_opengl ─────────────────────────────────────────────────────────
 # OpenGL 4.6 backend. Phase 18.B boot-only. 3rd API priority.

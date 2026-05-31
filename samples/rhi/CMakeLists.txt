@@ -22,3 +22,10 @@ endif()
 # pipeline, SBT, dispatch_rays, and feature detection with a real scene.
 add_subdirectory(hello_rt)
 add_subdirectory(hello_path_trace)
+
+# Metal boot smoke — macOS / iOS only; requires CD_RHI_METAL_ENABLED=ON.
+# On Win11 / Linux CD_RHI_METAL_ENABLED defaults to OFF so this block
+# is skipped and the Win11 build stays clean.
+if(CD_RHI_METAL_ENABLED)
+  add_subdirectory(hello_metal)
+endif()
