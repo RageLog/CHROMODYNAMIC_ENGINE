@@ -14,26 +14,35 @@
 //   * cd::ui::a11y               -- accessibility focus chain hook
 //   * cd::editor::Editor         -- authoritative World + Scene + scene-tree state
 //
-// Layout the binary boots with (T0.2 brief default):
+// Layout the binary boots with (phase569 / M4 W1B — 8-panel default):
 //
-//      +--------------------------------------------------------------+
-//      |                                                              |
-//      |  Scene Tree   |          Viewport            |  Inspector    |
-//      |     (LEFT)    |          (CENTER)            |    (RIGHT)    |
-//      |               |                              |               |
-//      |               +------------------------------+               |
-//      |               |  Console        |  Assets    |               |
-//      |               |  (BOTTOM)       | (BOTTOM-R) |               |
-//      +--------------------------------------------------------------+
+//      +-----------------------------------------------------------------------+
+//      |                                                                       |
+//      |  Scene Tree    |          Viewport          |    Inspector            |
+//      |    (LEFT-T)    |          (CENTER-T)        |    (RIGHT-T)            |
+//      |                |                            |                         |
+//      +----------------+----------------------------+-------------------------+
+//      |  Material      |  Console | Assets |  Anim  |    Behavior Designer    |
+//      |  Editor        |  (BOTTOM-CENTER tabs)  |   |    (RIGHT-B)            |
+//      |  (LEFT-B)      |                        |   |                         |
+//      +-----------------------------------------------------------------------+
+//
+// Three new panels (phase569 / M4 W1B):
+//   * material_editor    -- LEFT column, BOTTOM split (below scene_tree)
+//   * animator           -- BOTTOM strip, RIGHT split (next to console+assets)
+//   * behavior_designer  -- RIGHT column, BOTTOM split (below inspector)
+//
+// The LEFT and RIGHT columns now each carry TWO stacked panels (vertically),
+// and the BOTTOM strip carries the existing console+assets tab group plus
+// the new animator as a horizontal sibling.
 //
 // SCOPE-DOWN DECISION (per T0.2 deliverable contract): the editor.exe
-// app boots the FULL DockSpace shell with all five panels registered
-// (scene tree / viewport / inspector / console / assets) and wires
-// the scene-tree panel to a live cd::editor::Editor instance. The
-// remaining four panels are registered with stub drawers that paint
-// only their panel rect background. The follow-up sessions extract
-// inspector + console + asset-browser content widgets from
-// hello_editor / hello_ui templates into reusable panel libraries.
+// app boots the FULL DockSpace shell with all eight panels registered
+// (scene tree / viewport / inspector / console / assets / material_editor /
+// animator / behavior_designer) and wires the scene-tree panel to a live
+// cd::editor::Editor instance. The follow-up sessions extract richer
+// content into reusable panel libraries (phases 556-558 shipped the 3
+// M4 W1B panel libraries; phase569 wires them into apps/editor).
 //
 // Per the T0.2 brief: "If too big for one agent, SCOPE DOWN to:
 // Editor binary with DockSpace shell + 1 panel (scene tree)" -- this
@@ -76,6 +85,9 @@
 #include <cd/editor/panel_console/Console.hpp>
 #include <cd/editor/panel_asset_browser/AssetBrowser.hpp>
 #include <cd/editor/panel_viewport/Viewport.hpp>
+#include <cd/editor/panel_material_editor/MaterialEditor.hpp>
+#include <cd/editor/panel_animator/Animator.hpp>
+#include <cd/editor/panel_behavior_designer/BehaviorDesigner.hpp>
 #include <cd/editor/cdproj/CdprojFile.hpp>
 
 #include <array>
@@ -163,16 +175,22 @@ struct EditorArgs
 
 // ---- Default DockSpace layout ----------------------------------------------
 //
-// Build the 5-panel layout described in the file header. Starts from the
+// Build the 8-panel layout described in the file header. Starts from the
 // freshly-constructed `DockSpace` whose root is a single empty kLeaf;
-// promotes the leaf to a tab group hosting "viewport", then carves off
-// LEFT (scene_tree), RIGHT (inspector), BOTTOM (console), and tab-merges
-// "assets" alongside console in the bottom strip.
+// promotes the leaf to a tab group hosting "viewport", then carves off:
 //
-// Splits are sized to match the brief's intent:
-//   * LEFT  : 18% of width   -> scene tree
-//   * RIGHT : 25% of width   -> inspector
-//   * BOTTOM: 28% of height  -> console + assets tab group
+//   1. LEFT  (scene_tree)        -- 18% width
+//   2. RIGHT (inspector)         -- 25% width on the right side
+//   3. BOTTOM (console)          -- 28% height under the viewport
+//   4. tab-merge assets onto console
+//   5. LEFT-BOTTOM split: material_editor below scene_tree    (phase569 / M4 W1B)
+//   6. RIGHT-BOTTOM split: behavior_designer below inspector  (phase569 / M4 W1B)
+//   7. BOTTOM-RIGHT split: animator to the right of console+assets
+//                                                              (phase569 / M4 W1B)
+//
+// Each new split adds one kSplit node to the tree, so node_count goes from
+// 7 (original 5-panel layout) to 10 (8-panel layout). Tab-merges do NOT
+// change node_count (DockSpace::node_count counts splits + tab groups).
 //
 // Returns true on success, false if any of the structural mutations fails
 // (would indicate a regression in cd::ui_widgets::DockSpace::split).
@@ -234,6 +252,44 @@ struct EditorArgs
     if (console_node == nullptr) { return false; }
     if (!ds.tab_merge(console_node, "assets")) { return false; }
 
+    // ---- phase569 / M4 W1B: 3 new panels -----------------------------------
+    //
+    // Each is plugged in as a fresh kSplit so the editor's node_count grows
+    // from 7 -> 10. The panel content libraries (cd::editor_panel_*) were
+    // shipped in phases 556-558; this wiring is the final consumer step.
+
+    // (1) material_editor BELOW scene_tree (LEFT column, lower half).
+    // ratio=0.55 means scene_tree keeps 55% of the LEFT column's height
+    // and material_editor takes the lower 45%.
+    auto* scene_tree_node = ds.find_panel_owner("scene_tree");
+    if (scene_tree_node == nullptr) { return false; }
+    if (!ds.split(scene_tree_node, uw::DockAxis::kHorizontal,
+                  "material_editor", 0.55F))
+    {
+        return false;
+    }
+
+    // (2) behavior_designer BELOW inspector (RIGHT column, lower half).
+    // ratio=0.55 -> inspector keeps top 55%, behavior_designer takes 45%.
+    auto* inspector_node = ds.find_panel_owner("inspector");
+    if (inspector_node == nullptr) { return false; }
+    if (!ds.split(inspector_node, uw::DockAxis::kHorizontal,
+                  "behavior_designer", 0.55F))
+    {
+        return false;
+    }
+
+    // (3) animator to the RIGHT of the console+assets tab group
+    // (BOTTOM strip, right half). ratio=0.65 -> console+assets keep the
+    // left 65%, animator takes the right 35%.
+    auto* console_owner = ds.find_panel_owner("console");
+    if (console_owner == nullptr) { return false; }
+    if (!ds.split(console_owner, uw::DockAxis::kVertical,
+                  "animator", 0.65F))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -281,6 +337,14 @@ cd::editor::panel::console::Console g_console_panel;
 // Asset browser panel — backed by cd::editor_panel_asset_browser.
 cd::editor::panel::asset_browser::AssetBrowser g_asset_browser_panel;
 
+// phase569 / M4 W1B — 3 new panels wired in (libraries shipped in 556-558).
+// Each lives in file scope so the ContentDrawer lambda can capture them by
+// reference for the lifetime of the program (a local would dangle once
+// main()'s stack frame is left).
+cd::editor::panel::material_editor::MaterialEditor   g_material_editor_panel;
+cd::editor::panel::animator::Animator                g_animator_panel;
+cd::editor::panel::behavior_designer::BehaviorDesigner g_behavior_designer_panel;
+
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
                           uf::Font* /*font*/,
@@ -303,6 +367,32 @@ void draw_assets_panel(const uw::Rect& rect,
                        const uw::Theme& theme)
 {
     g_asset_browser_panel.draw(batcher, theme, rect);
+}
+
+// phase569 / M4 W1B drawers ---------------------------------------------------
+
+void draw_material_editor_panel(const uw::Rect& rect,
+                                ur::DrawBatcher& batcher,
+                                uf::Font* /*font*/,
+                                const uw::Theme& theme)
+{
+    g_material_editor_panel.draw(batcher, theme, rect);
+}
+
+void draw_animator_panel(const uw::Rect& rect,
+                         ur::DrawBatcher& batcher,
+                         uf::Font* /*font*/,
+                         const uw::Theme& theme)
+{
+    g_animator_panel.draw(batcher, theme, rect);
+}
+
+void draw_behavior_designer_panel(const uw::Rect& rect,
+                                  ur::DrawBatcher& batcher,
+                                  uf::Font* /*font*/,
+                                  const uw::Theme& theme)
+{
+    g_behavior_designer_panel.draw(batcher, theme, rect);
 }
 
 // ---- Pointer event flatten (same shape as hello_ui) ------------------------
@@ -491,20 +581,24 @@ int main(int argc, char** argv)
     cd::ui::a11y::A11yTree a11y_tree {};
     (void)a11y_tree;
 
-    // -- 5. Dockspace + 5-panel layout --------------------------------------
+    // -- 5. Dockspace + 8-panel layout (phase569 / M4 W1B) ------------------
     uw::DockSpace dockspace;
-    dockspace.register_panel("scene_tree", draw_scene_tree_stub);
-    dockspace.register_panel("viewport",   draw_viewport_panel);
-    dockspace.register_panel("inspector",  draw_inspector_panel);
-    dockspace.register_panel("console",    draw_console_panel);
-    dockspace.register_panel("assets",     draw_assets_panel);
+    dockspace.register_panel("scene_tree",         draw_scene_tree_stub);
+    dockspace.register_panel("viewport",           draw_viewport_panel);
+    dockspace.register_panel("inspector",          draw_inspector_panel);
+    dockspace.register_panel("console",            draw_console_panel);
+    dockspace.register_panel("assets",             draw_assets_panel);
+    dockspace.register_panel("material_editor",    draw_material_editor_panel);
+    dockspace.register_panel("animator",           draw_animator_panel);
+    dockspace.register_panel("behavior_designer",  draw_behavior_designer_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
         return 1;
     }
-    std::printf("editor: dock layout ready with %zu nodes (5 panels: scene_tree | viewport | "
-                "inspector | console | assets)\n", dockspace.node_count());
+    std::printf("editor: dock layout ready with %zu nodes (8 panels: scene_tree | viewport | "
+                "inspector | console | assets | material_editor | animator | "
+                "behavior_designer)\n", dockspace.node_count());
 
     // -- 6. Try Vulkan + window + Renderer; fall back to NullDevice ---------
     std::unique_ptr<platform::IWindow>  window;

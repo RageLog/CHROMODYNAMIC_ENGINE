@@ -5,26 +5,33 @@
 # binary is gated on CD_ENABLE_VULKAN (same gate used by samples/editor)
 # because it depends on cd::rhi_vulkan + cd::render.
 #
-# Linked libraries (T0.2 brief):
-#   cd::ui                 -- retained-mode widget tree
-#   cd::ui_widgets         -- DockSpace + concrete widget catalog
-#   cd::ui_theme           -- design token theme (V2)
-#   cd::ui_renderer        -- CPU draw batcher
-#   cd::ui_renderer_rhi    -- RHI submitter bridge
-#   cd::ui_input           -- hit-test + focus chain (transitive via widgets)
-#   cd::ui_a11y            -- accessibility focus chain
-#   cd::ui_font            -- TTF glyph atlas
-#   cd::editor_panel       -- composite-pass preset library
-#   cd::editor             -- editor application shell
-#   cd::editor_ui          -- editor-specific widgets (transitive via editor)
-#   cd::platform           -- OS window
-#   cd::rhi                -- RHI abstraction
-#   cd::rhi_vulkan         -- Vulkan backend
-#   cd::render             -- swapchain Renderer
-#   cd::asset              -- asset core (transitive)
-#   cd::asset_gltf         -- gltf loader (transitive; T0.3 plumbs imports)
-#   cd::scene              -- scene graph (transitive via editor)
-#   cd::ecs                -- ECS world (transitive via editor)
+# Linked libraries (T0.2 brief + phase569 / M4 W1B):
+#   cd::ui                              -- retained-mode widget tree
+#   cd::ui_widgets                      -- DockSpace + concrete widget catalog
+#   cd::ui_theme                        -- design token theme (V2)
+#   cd::ui_renderer                     -- CPU draw batcher
+#   cd::ui_renderer_rhi                 -- RHI submitter bridge
+#   cd::ui_input                        -- hit-test + focus chain (transitive)
+#   cd::ui_a11y                         -- accessibility focus chain
+#   cd::ui_font                         -- TTF glyph atlas
+#   cd::editor_panel                    -- composite-pass preset library
+#   cd::editor_panel_inspector          -- inspector panel (phase543)
+#   cd::editor_panel_console            -- console panel (phase544)
+#   cd::editor_panel_asset_browser      -- asset browser panel (phase545)
+#   cd::editor_panel_viewport           -- viewport panel (phase546)
+#   cd::editor_panel_material_editor    -- material editor panel (phase556-558)
+#   cd::editor_panel_animator           -- animator panel (phase556-558)
+#   cd::editor_panel_behavior_designer  -- behavior designer panel (phase556-558)
+#   cd::editor                          -- editor application shell
+#   cd::editor_ui                       -- editor-specific widgets (transitive)
+#   cd::platform                        -- OS window
+#   cd::rhi                             -- RHI abstraction
+#   cd::rhi_vulkan                      -- Vulkan backend
+#   cd::render                          -- swapchain Renderer
+#   cd::asset                           -- asset core (transitive)
+#   cd::asset_gltf                      -- gltf loader (transitive; T0.3)
+#   cd::scene                           -- scene graph (transitive via editor)
+#   cd::ecs                             -- ECS world (transitive via editor)
 #
 # Uses cd_add_sample(...) so the binary picks up the same warnings /
 # sanitizer / smoke-target wiring every cd_sample_* target gets. The
@@ -47,6 +54,9 @@ cd_add_sample(editor
     cd::editor_panel_console
     cd::editor_panel_asset_browser
     cd::editor_panel_viewport
+    cd::editor_panel_material_editor    # phase569 / M4 W1B
+    cd::editor_panel_animator           # phase569 / M4 W1B
+    cd::editor_panel_behavior_designer  # phase569 / M4 W1B
     cd::editor
     cd::editor_ui
     cd::editor_cdproj
