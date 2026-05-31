@@ -38,6 +38,7 @@ add_subdirectory(net)
 add_subdirectory(script)
 add_subdirectory(lib_smokes)
 add_subdirectory(game)     # phase479 — G1 closeout: hello_game (time + input + save + settings)
+add_subdirectory(physics)  # phase530 — T3.3: 5 physics demos (box/pile/ragdoll/character/raycast)
 
 # Render-side samples — gated by Vulkan availability since they boot
 # the cd::rhi_vulkan backend.
