@@ -9,6 +9,7 @@
 
 cd_add_library(ui_renderer_rhi
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # private dep on cd::shader (EXCLUDE_FROM_INSTALL via FetchContent glslang)
   SOURCES
     src/Submitter.cpp
   PUBLIC_DEPS
