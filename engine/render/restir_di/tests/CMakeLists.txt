@@ -19,4 +19,12 @@ if(CD_ENABLE_VULKAN AND TARGET cd_rhi_vulkan)
     SOURCES test_restir_di_denoiser.cpp
     DEPS    cd::restir_di cd::rhi_vulkan
   )
+
+  # Phase 616 / Sprint-4 -- SVGF skeleton smoke. Same Vulkan gating as the
+  # Sprint-3 A-trous denoiser test -- GTEST_SKIPs when no Vulkan ICD is
+  # installed so CI without a GPU stays green.
+  cd_add_test(restir_di_svgf
+    SOURCES test_restir_di_svgf.cpp
+    DEPS    cd::restir_di cd::rhi_vulkan
+  )
 endif()

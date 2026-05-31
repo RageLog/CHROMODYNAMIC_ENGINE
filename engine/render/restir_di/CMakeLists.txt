@@ -19,6 +19,7 @@ cd_add_library(restir_di
   SOURCES
     src/DispatchPass.cpp
     src/Denoiser.cpp
+    src/SvgfDenoiser.cpp
   PUBLIC_DEPS
     cd::core
     cd::math
