@@ -576,17 +576,44 @@ int main(int argc, char** argv)
     std::fflush(stdout);
 
     // -- 7. UI submitter ----------------------------------------------------
+    //
+    // Phase 554 / M3 W1A -- pick between two pipelines:
+    //
+    //   Route A (CD_HAVE_MATERIAL_UI_VARIANTS): cd::material UI variants
+    //   land via the parallel W1B agent. When that compile-def flips ON
+    //   the editor consumes the polished cd::material pipeline (textured
+    //   quads, glyphs, nine-patch, gradients, blur).
+    //
+    //   Route B (default -- what ships today): cd::ui_renderer_rhi compiles
+    //   a minimal inline GLSL pipeline at boot (solid quads only, no
+    //   sampler). That's enough to render every panel rect + theme palette
+    //   so the editor's blackscreen window finally shows DockSpace tiles.
+    //
+    // The constant below resolves at compile time so the unused branch
+    // is dead-stripped; only the active path ends up in the binary.
+#if defined(CD_HAVE_MATERIAL_UI_VARIANTS)
+    constexpr bool kEditorRouteA = true;
+#else
+    constexpr bool kEditorRouteA = false;
+#endif
+
     urr::SubmitterCreateInfo sci {};
     sci.max_vertices = 16384U;
     sci.max_indices  = 65536U;
     sci.color_format = rhi::Format::kBGRA8Unorm;
-    auto sub_r = urr::Submitter::create(*device, sci);
+    auto sub_r = kEditorRouteA
+        ? urr::Submitter::create(*device, sci)
+        : urr::Submitter::create_with_inline_shader(*device, sci);
     if (!sub_r.has_value())
     {
-        std::fprintf(stderr, "editor: ui_renderer_rhi::Submitter::create failed.\n");
+        std::fprintf(stderr, "editor: ui_renderer_rhi::Submitter::create%s failed.\n",
+                     kEditorRouteA ? "" : "_with_inline_shader");
         return 2;
     }
     auto& submitter = *sub_r;
+    std::printf("editor: submitter wired (%s).\n",
+                kEditorRouteA ? "Route A / cd::material UI variants"
+                              : "Route B / inline GLSL fallback");
 
     // -- 8. Frame loop ------------------------------------------------------
     ur::DrawBatcher                batcher;
@@ -701,15 +728,13 @@ int main(int argc, char** argv)
                 0.0F, 1.0F });
             cmd.set_scissor(rhi::Rect2D { { 0, 0 }, frame.extent });
 
-            // The Submitter pipeline lands with cd::material UI variants
-            // per ADR-20260530 Phase 1.5 (mirrors hello_ui's gating).
-            // Until then submitter.record() is gated -- the swapchain clear
-            // above is what proves the editor's frame loop is alive.
-            constexpr bool kSubmitterPipelineReady = false;
-            if constexpr (kSubmitterPipelineReady)
-            {
-                submitter.record(cmd, frame.extent);
-            }
+            // Phase 554 / M3 W1A: the submitter ALWAYS has a usable
+            // pipeline now -- either Route A (cd::material UI variants
+            // when CD_HAVE_MATERIAL_UI_VARIANTS is defined) or Route B
+            // (the inline GLSL fallback compiled at boot above). Record
+            // the per-frame draw commands the DrawBatcher produced so
+            // panel quads + theme palette actually reach the swapchain.
+            submitter.record(cmd, frame.extent);
 
             cmd.end_render_pass();
 

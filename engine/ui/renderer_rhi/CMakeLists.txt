@@ -15,6 +15,13 @@ cd_add_library(ui_renderer_rhi
     cd::core
     cd::rhi
     cd::ui_renderer
+  PRIVATE_DEPS
+    # Phase 554 / M3 W1A -- Route B inline-shader factory uses
+    # cd::shader::make_glslang_compiler() to assemble the fallback
+    # pipeline. cd::shader is a private dependency so downstream
+    # consumers of cd::ui_renderer_rhi do NOT inherit glslang's
+    # transitive include surface.
+    cd::shader
 )
 
 if(CD_ENABLE_TESTING)

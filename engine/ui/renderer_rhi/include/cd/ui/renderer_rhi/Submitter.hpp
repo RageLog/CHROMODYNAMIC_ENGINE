@@ -92,6 +92,30 @@ public:
     [[nodiscard]] static cd::core::Result<Submitter>
     create(cd::rhi::IDevice& device, const SubmitterCreateInfo& info);
 
+    /// Phase 554 / M3 W1A -- Route B fallback factory.
+    ///
+    /// Constructs the submitter with an INLINE-COMPILED GLSL pipeline so
+    /// callers get a working `record()` path even when the cd::material UI
+    /// variants (Route A) are not yet present. The pipeline:
+    ///
+    ///   * vertex shader transforms `pos2` by a viewport-size push-constant
+    ///     into Vulkan-NDC (Y-down) and passes vertex `color4` through;
+    ///   * fragment shader writes the vertex colour straight to the single
+    ///     output attachment -- no atlas sampling in v1 (glyphs deferred
+    ///     until Route A / cd::material UI variants land);
+    ///   * pipeline state: alpha blend ON, depth test OFF, no culling,
+    ///     scissor + viewport are dynamic state (set per draw command).
+    ///
+    /// Vertex layout matches `cd::ui::renderer::Vertex` exactly:
+    ///   location 0 : vec2 (pos)
+    ///   location 1 : vec2 (uv -- bound, ignored by FS today)
+    ///   location 2 : RGBA8 unorm -> vec4 (color)
+    ///
+    /// Returns the same kinds of errors as `create()` plus shader compile
+    /// failures, which arrive in the `ErrorCode::message` field.
+    [[nodiscard]] static cd::core::Result<Submitter>
+    create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCreateInfo& info);
+
     /// Free GPU resources. Idempotent. Called automatically on destruction.
     void destroy() noexcept;
 

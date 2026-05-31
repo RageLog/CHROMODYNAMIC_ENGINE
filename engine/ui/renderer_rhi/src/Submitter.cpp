@@ -1,31 +1,90 @@
 // =============================================================================
-// CHROMODYNAMIC — cd/ui/renderer_rhi/Submitter.cpp
+// CHROMODYNAMIC -- cd/ui/renderer_rhi/Submitter.cpp
 //
-// Phase 1.2b of ADR-20260530-ui-widget-library. Minimal implementation
-// that owns ring vertex/index buffers + a descriptor for the atlas
-// binding. The actual pipeline compilation + draw recording is intentionally
-// scaffolded here: a real Vulkan instance is required to exercise the
-// pipeline path end-to-end (Phase 1.5 `hello_ui` sample). Tests against
-// `NullDevice` validate the create/destroy lifecycle + the upload-overflow
-// guard without launching a graphics device.
+// Phase 1.2b of ADR-20260530-ui-widget-library. Owns ring vertex/index
+// buffers plus (optionally) an inline-compiled GLSL pipeline for the
+// Route B fallback path introduced in Phase 554 / M3 W1A.
 //
-// The reason for the staging:
-//   - `cd::rhi::NullDevice` accepts all create_* calls and returns valid
-//     handles, so vb/ib allocation paths are exercisable headlessly.
-//   - Pipeline + descriptor-set creation succeeds on NullDevice in struct
-//     terms, but issuing actual draws is a no-op.
-//   - Real correctness verification belongs in the GPU-backed sample.
+// Two factories:
+//   * Submitter::create(...)                      -- Route A: ring vb/ib only;
+//                                                    caller binds a pipeline.
+//   * Submitter::create_with_inline_shader(...)   -- Route B: vb/ib +
+//                                                    glslang-compiled
+//                                                    solid-quad pipeline.
+//
+// NullDevice path: `create()` succeeds (vb/ib allocations succeed against
+// NullDevice). `create_with_inline_shader()` ALSO succeeds against
+// NullDevice -- glslang produces real SPIR-V, NullDevice accepts the
+// shader-module / pipeline-layout / graphics-pipeline create calls and
+// returns valid (stub) handles. Functional draws happen only on a real
+// graphics backend (Vulkan today).
 // =============================================================================
 #include <cd/ui/renderer_rhi/Submitter.hpp>
 
+#include <cd/rhi/BlendPresets.hpp>
+#include <cd/rhi/DepthStencilPresets.hpp>
+#include <cd/rhi/RasterStatePresets.hpp>
+#include <cd/shader/Compiler.hpp>
+
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <utility>
 #include <vector>
 
 namespace cd::ui::renderer_rhi
 {
+
+// -----------------------------------------------------------------------------
+// Phase 554 / M3 W1A -- inline GLSL sources for the Route B fallback pipeline.
+//
+// vec2 pos -> NDC via push-constant viewport size; vertex colour passes
+// straight through to the single colour attachment. No texture sampler
+// because the v1 path renders solid quads only (panel backgrounds, etc.).
+// -----------------------------------------------------------------------------
+namespace
+{
+
+constexpr const char* kInlineVS = R"glsl(
+#version 450
+layout(push_constant) uniform PushConstants {
+    vec2 viewport_size;   // in pixels, e.g. (1280, 720)
+} pc;
+
+layout(location = 0) in vec2 in_pos;
+layout(location = 1) in vec2 in_uv;
+layout(location = 2) in vec4 in_color;   // RGBA8 normalized -> vec4
+
+layout(location = 0) out vec4 v_color;
+layout(location = 1) out vec2 v_uv;
+
+void main()
+{
+    // pixel-space -> [0,1] -> [-1,+1]. Y stays top-down (Vulkan NDC).
+    vec2 ndc = (in_pos / pc.viewport_size) * 2.0 - 1.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    v_color = in_color;
+    v_uv    = in_uv;
+}
+)glsl";
+
+constexpr const char* kInlineFS = R"glsl(
+#version 450
+layout(location = 0) in vec4 v_color;
+layout(location = 1) in vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+
+void main()
+{
+    // v1 fallback: no atlas sampler. Glyph rendering requires the
+    // cd::material UI variant (Route A) -- it lands with M3 W1B.
+    out_color = v_color;
+}
+)glsl";
+
+}  // namespace
 
 struct Submitter::Impl
 {
@@ -35,6 +94,14 @@ struct Submitter::Impl
     cd::rhi::BufferHandle       ib {};
     std::uint32_t               vb_capacity_bytes { 0U };
     std::uint32_t               ib_capacity_bytes { 0U };
+
+    // Phase 554 -- inline pipeline (Route B). Stays empty when create()
+    // was used; both factories share the same Impl + destroy() path.
+    bool                            inline_pipeline_owned { false };
+    cd::rhi::ShaderModuleHandle     vs {};
+    cd::rhi::ShaderModuleHandle     fs {};
+    cd::rhi::PipelineLayoutHandle   pipeline_layout {};
+    cd::rhi::GraphicsPipelineHandle pipeline {};
 
     // Frame-local snapshot from `upload`.
     std::uint32_t               vertex_count { 0U };
@@ -64,6 +131,28 @@ void Submitter::destroy() noexcept
     if (!impl_) return;
     if (impl_->device != nullptr)
     {
+        // Tear down inline pipeline resources (Route B) in reverse-create
+        // order so dependents go first. Route A leaves these handles
+        // invalid -- destroy_* is a no-op for null handles.
+        if (impl_->inline_pipeline_owned)
+        {
+            if (impl_->pipeline.is_valid())
+            {
+                impl_->device->destroy_graphics_pipeline(impl_->pipeline);
+            }
+            if (impl_->pipeline_layout.is_valid())
+            {
+                impl_->device->destroy_pipeline_layout(impl_->pipeline_layout);
+            }
+            if (impl_->fs.is_valid())
+            {
+                impl_->device->destroy_shader_module(impl_->fs);
+            }
+            if (impl_->vs.is_valid())
+            {
+                impl_->device->destroy_shader_module(impl_->vs);
+            }
+        }
         if (impl_->vb.is_valid()) impl_->device->destroy_buffer(impl_->vb);
         if (impl_->ib.is_valid()) impl_->device->destroy_buffer(impl_->ib);
     }
@@ -120,6 +209,158 @@ Submitter::create(cd::rhi::IDevice& device, const SubmitterCreateInfo& info)
     return out;
 }
 
+// ---- create_with_inline_shader -------------------------------------------
+//
+// Phase 554 / M3 W1A -- Route B. Reuses `create()` for the ring vertex/index
+// buffer allocation, then layers a full GLSL-compiled pipeline on top so
+// `record()` produces a real coloured panel pass. See header for the
+// shader contract.
+cd::core::Result<Submitter>
+Submitter::create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCreateInfo& info)
+{
+    auto base = Submitter::create(device, info);
+    if (!base.has_value())
+    {
+        return std::unexpected(base.error());
+    }
+    Submitter out = std::move(*base);
+
+    // 1) Compile the inline GLSL via cd::shader::ICompiler (glslang backend).
+    //    When the engine is built without CD_ENABLE_GLSLANG the factory
+    //    returns nullptr and the caller cannot use Route B -- propagate
+    //    the failure as a structured error so the caller can fall back.
+    auto compiler = cd::shader::make_glslang_compiler();
+    if (compiler == nullptr)
+    {
+        out.destroy();
+        return std::unexpected(cd::core::ErrorCode {
+            cd::shader::shader_errors::kDomain,
+            static_cast<std::uint32_t>(cd::shader::shader_errors::Code::kInitFailed),
+            "Submitter::create_with_inline_shader: glslang backend disabled"});
+    }
+
+    cd::shader::CompileDesc vs_desc {};
+    vs_desc.source       = kInlineVS;
+    vs_desc.stage        = cd::shader::ShaderStage::kVertex;
+    vs_desc.lang         = cd::shader::ShaderLanguage::kGlsl;
+    vs_desc.source_name  = "cd_ui_submitter_inline.vert";
+    auto vs_compile = compiler->compile(vs_desc);
+    if (!vs_compile.has_value())
+    {
+        out.destroy();
+        return std::unexpected(vs_compile.error());
+    }
+
+    cd::shader::CompileDesc fs_desc {};
+    fs_desc.source       = kInlineFS;
+    fs_desc.stage        = cd::shader::ShaderStage::kFragment;
+    fs_desc.lang         = cd::shader::ShaderLanguage::kGlsl;
+    fs_desc.source_name  = "cd_ui_submitter_inline.frag";
+    auto fs_compile = compiler->compile(fs_desc);
+    if (!fs_compile.has_value())
+    {
+        out.destroy();
+        return std::unexpected(fs_compile.error());
+    }
+
+    // 2) Create shader modules from the produced SPIR-V words.
+    cd::rhi::ShaderModuleDesc vs_mod {};
+    vs_mod.stage       = cd::rhi::ShaderStage::kVertex;
+    vs_mod.code        = vs_compile->spirv.data();
+    vs_mod.code_size   = vs_compile->spirv.size() * sizeof(std::uint32_t);
+    vs_mod.entry_point = "main";
+    vs_mod.debug_name  = "cd_ui_submitter_inline.vs";
+    auto vs_r = device.create_shader_module(vs_mod);
+    if (!vs_r.has_value())
+    {
+        out.destroy();
+        return std::unexpected(vs_r.error());
+    }
+    out.impl_->vs = *vs_r;
+
+    cd::rhi::ShaderModuleDesc fs_mod {};
+    fs_mod.stage       = cd::rhi::ShaderStage::kFragment;
+    fs_mod.code        = fs_compile->spirv.data();
+    fs_mod.code_size   = fs_compile->spirv.size() * sizeof(std::uint32_t);
+    fs_mod.entry_point = "main";
+    fs_mod.debug_name  = "cd_ui_submitter_inline.fs";
+    auto fs_r = device.create_shader_module(fs_mod);
+    if (!fs_r.has_value())
+    {
+        out.destroy();
+        return std::unexpected(fs_r.error());
+    }
+    out.impl_->fs = *fs_r;
+
+    // 3) Pipeline layout: one push-constant range carrying the viewport
+    //    size (two floats). No descriptor sets in Route B (no sampler).
+    const std::array<cd::rhi::PushConstantRange, 1> pcr {
+        cd::rhi::PushConstantRange {
+            cd::rhi::ShaderStage::kVertex, 0U,
+            static_cast<std::uint32_t>(2U * sizeof(float)) }
+    };
+    cd::rhi::PipelineLayoutDesc pld {};
+    pld.push_constants = std::span<const cd::rhi::PushConstantRange>(pcr.data(), pcr.size());
+    auto pl_r = device.create_pipeline_layout(pld);
+    if (!pl_r.has_value())
+    {
+        out.destroy();
+        return std::unexpected(pl_r.error());
+    }
+    out.impl_->pipeline_layout = *pl_r;
+
+    // 4) Vertex input layout. Matches `cd::ui::renderer::Vertex` exactly:
+    //    pos2 + uv2 + RGBA8 colour. The packed variant+pad bytes are
+    //    ignored by Route B (Route A's pipeline will read them as a uint).
+    const std::array<cd::rhi::VertexBinding, 1> v_binds {
+        cd::rhi::VertexBinding { 0U,
+                                 static_cast<std::uint32_t>(sizeof(cd::ui::renderer::Vertex)),
+                                 false }
+    };
+    const std::array<cd::rhi::VertexAttribute, 3> v_attrs {
+        // location 0 : pos (vec2 float)
+        cd::rhi::VertexAttribute { 0U, 0U, cd::rhi::Format::kRG32Float,
+            static_cast<std::uint32_t>(offsetof(cd::ui::renderer::Vertex, pos_x)) },
+        // location 1 : uv  (vec2 float)
+        cd::rhi::VertexAttribute { 1U, 0U, cd::rhi::Format::kRG32Float,
+            static_cast<std::uint32_t>(offsetof(cd::ui::renderer::Vertex, uv_x)) },
+        // location 2 : color (RGBA8 unorm -> vec4)
+        cd::rhi::VertexAttribute { 2U, 0U, cd::rhi::Format::kRGBA8Unorm,
+            static_cast<std::uint32_t>(offsetof(cd::ui::renderer::Vertex, r)) },
+    };
+
+    // 5) Pipeline state. Alpha blend on, depth disabled, no culling
+    //    (UI quads are emitted in CW order from the batcher but we don't
+    //    want pixel loss if a future caller flips the order).
+    const std::array<cd::rhi::BlendAttachmentState, 1> blends {
+        cd::rhi::blend_alpha()
+    };
+    const std::array<cd::rhi::Format, 1> color_fmts { info.color_format };
+
+    cd::rhi::GraphicsPipelineDesc gpd {};
+    gpd.layout                   = out.impl_->pipeline_layout;
+    gpd.vertex_shader            = out.impl_->vs;
+    gpd.fragment_shader          = out.impl_->fs;
+    gpd.vertex_bindings          = std::span<const cd::rhi::VertexBinding>(v_binds.data(), v_binds.size());
+    gpd.vertex_attributes        = std::span<const cd::rhi::VertexAttribute>(v_attrs.data(), v_attrs.size());
+    gpd.topology                 = cd::rhi::PrimitiveTopology::kTriangleList;
+    gpd.raster                   = cd::rhi::raster_solid_none();
+    gpd.depth_stencil            = cd::rhi::depth_disabled();
+    gpd.blend_attachments        = std::span<const cd::rhi::BlendAttachmentState>(blends.data(), blends.size());
+    gpd.samples                  = cd::rhi::SampleCount::k1;
+    gpd.color_attachment_formats = std::span<const cd::rhi::Format>(color_fmts.data(), color_fmts.size());
+    gpd.depth_attachment_format  = info.depth_format;
+    auto gp_r = device.create_graphics_pipeline(gpd);
+    if (!gp_r.has_value())
+    {
+        out.destroy();
+        return std::unexpected(gp_r.error());
+    }
+    out.impl_->pipeline              = *gp_r;
+    out.impl_->inline_pipeline_owned = true;
+    return out;
+}
+
 // ---- upload ---------------------------------------------------------------
 
 bool Submitter::upload(const cd::ui::renderer::DrawBatcher& batcher)
@@ -161,10 +402,26 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
     if (!impl_ || impl_->commands.empty()) return;
 
     // Iterate the batcher's DrawCommands and issue one scissor + draw per
-    // group. The actual pipeline binding + push-constant projection upload
-    // belongs here once the cd::material UI pipeline lands (Phase 1.5);
-    // for now we issue the scissor + draw_indexed so the call-flow is
-    // exercisable end-to-end and the NullDevice path stays valid.
+    // group. Phase 554 / M3 W1A: when the submitter owns an inline pipeline
+    // (Route B), bind the pipeline + push the viewport size so the vertex
+    // shader can project pixel-space verts into NDC. The Route A path
+    // (cd::material UI variants) layers the pipeline binding in via the
+    // caller -- same `record()` body still applies because the vb/ib bind
+    // and per-command scissor + draw_indexed are universal.
+    if (impl_->inline_pipeline_owned && impl_->pipeline.is_valid())
+    {
+        cmd.bind_graphics_pipeline(impl_->pipeline);
+        const std::array<float, 2> vp_size {
+            static_cast<float>(viewport_extent.width),
+            static_cast<float>(viewport_extent.height)
+        };
+        cmd.push_constants(impl_->pipeline_layout,
+                           cd::rhi::ShaderStage::kVertex,
+                           0U,
+                           static_cast<std::uint32_t>(vp_size.size() * sizeof(float)),
+                           vp_size.data());
+    }
+
     cmd.bind_vertex_buffer(0U, impl_->vb, 0U);
     cmd.bind_index_buffer(impl_->ib, 0U, cd::rhi::IndexType::kUInt16);
 
@@ -173,7 +430,7 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
         cd::rhi::Rect2D s {};
         if (dc.scissor.width == 0xFFFFFFFFu && dc.scissor.height == 0xFFFFFFFFu)
         {
-            s.extent = viewport_extent;  // no-clip → full viewport
+            s.extent = viewport_extent;  // no-clip -> full viewport
         }
         else
         {

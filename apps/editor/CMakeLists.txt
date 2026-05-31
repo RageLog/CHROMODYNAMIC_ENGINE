@@ -66,3 +66,22 @@ cd_add_sample(editor
 # The editor lives in its own "apps" IDE folder so VS / Xcode group it
 # separately from the demo collection.
 set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
+
+# Phase 554 / M3 W1A — Route A vs Route B pipeline selection.
+#
+# CD_HAVE_MATERIAL_UI_VARIANTS (default OFF) -- when the parallel W1B
+# agent lands the cd::material UI variants, flip this ON via cache or
+# command-line:  -DCD_HAVE_MATERIAL_UI_VARIANTS=ON
+#
+# OFF: editor boots with cd::ui_renderer_rhi's inline GLSL submitter
+#      (Route B). Solid panel quads only -- enough to make the editor
+#      window visually alive today.
+#
+# ON : editor boots with the full cd::material UI variant pipeline
+#      (Route A) -- textured quads, glyphs, nine-patch, gradients, blur.
+option(CD_HAVE_MATERIAL_UI_VARIANTS
+       "Editor uses cd::material UI variants (Route A); OFF = inline GLSL fallback (Route B)"
+       OFF)
+if(CD_HAVE_MATERIAL_UI_VARIANTS)
+  target_compile_definitions(cd_sample_editor PRIVATE CD_HAVE_MATERIAL_UI_VARIANTS=1)
+endif()
