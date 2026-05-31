@@ -228,6 +228,12 @@ add_subdirectory(scene_streamer)
 # ── cd::asset_texture_streamer ────────────────────────────────────────────────
 add_subdirectory(texture_streamer)
 
+# ── cd::asset_shader_cache ────────────────────────────────────────────────────
+add_subdirectory(shader_cache)
+
+# ── cd::asset_validator ───────────────────────────────────────────────────────
+add_subdirectory(validator)
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
