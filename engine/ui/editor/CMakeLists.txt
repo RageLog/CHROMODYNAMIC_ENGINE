@@ -77,6 +77,11 @@ add_subdirectory(panel_animator)
 # graph view: placeholder grid + 3 demo nodes; Sprint-2 = full BT graph).
 add_subdirectory(panel_behavior_designer)
 
+# ── cd::editor_panel_asset_drop_target (STATIC) ────────────────────────────
+# phase594 — Asset Drop Target panel (DrawBatcher path; dashed-border drop zone
+# for asset import; extension filter + consume_dropped_path API).
+add_subdirectory(panel_asset_drop_target)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
