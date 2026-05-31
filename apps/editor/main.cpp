@@ -79,6 +79,7 @@
 #include <cd/editor/cdproj/CdprojFile.hpp>
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -360,7 +361,7 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
 {
     auto pack = [](float v) noexcept -> std::uint8_t {
         const float clamped = (v < 0.0F) ? 0.0F : (v > 1.0F) ? 1.0F : v;
-        return static_cast<std::uint8_t>(clamped * 255.0F + 0.5F);
+        return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
     };
     return uw::Color { pack(c.r), pack(c.g), pack(c.b), pack(c.a) };
 }
