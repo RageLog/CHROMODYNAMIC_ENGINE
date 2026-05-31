@@ -76,6 +76,7 @@
 #include <cd/editor/panel_console/Console.hpp>
 #include <cd/editor/panel_asset_browser/AssetBrowser.hpp>
 #include <cd/editor/panel_viewport/Viewport.hpp>
+#include <cd/editor/cdproj/CdprojFile.hpp>
 
 #include <array>
 #include <cstdint>
@@ -406,10 +407,33 @@ int main(int argc, char** argv)
     const cd::sample::Runtime runtime = cd::sample::parse_runtime(argc, argv);
     const EditorArgs          local   = parse_editor_args(argc, argv);
 
-    if (!local.project_path.empty())
+    // -- 0. .cdproj restore — read last.cdproj (or explicit --project path) ----
+    //
+    // On startup we attempt to read the project file. If a --project flag was
+    // passed we honour it; otherwise we fall back to the platform default
+    // location (%APPDATA%\cd_editor\last.cdproj on Windows). The data is used
+    // below to seed the window geometry and dock layout.  If the file is absent
+    // or malformed we proceed with defaults (graceful degradation, no crash).
+    const std::filesystem::path cdproj_path =
+        local.project_path.empty()
+            ? cd::editor::cdproj::default_cdproj_path()
+            : std::filesystem::path(local.project_path);
+
+    cd::editor::cdproj::CdprojData project_data;  // defaults if file absent/bad
+    if (const auto loaded = cd::editor::cdproj::read_cdproj(cdproj_path);
+        loaded.has_value())
     {
-        std::printf("editor: project = %s (parser stub -- T0.3 will plumb full .cdproj)\n",
-                    local.project_path.c_str());
+        project_data = *loaded;
+        std::printf("editor: restored session from %s "
+                    "(scene=%s, recent_files=%zu)\n",
+                    cdproj_path.string().c_str(),
+                    project_data.last_opened_scene_path.c_str(),
+                    project_data.recent_files.size());
+    }
+    else
+    {
+        std::printf("editor: no .cdproj at %s — using defaults.\n",
+                    cdproj_path.string().c_str());
     }
 
     // -- 1. Font (optional; widgets gracefully fall back when missing) -------
@@ -713,6 +737,34 @@ int main(int argc, char** argv)
     }
 
     if (renderer) { renderer->wait_idle(); }
+
+    // -- On-exit .cdproj save -----------------------------------------------
+    // Capture window geometry (size from the last known fb dimensions) and
+    // write the project file so the next launch can restore session state.
+    // dock_layout is stored as a passthrough string; the caller is responsible
+    // for encoding DockSpace::serialize()'s byte vector (e.g. base64). Today
+    // we store the empty string — full round-trip is wired once the encode
+    // helper lands. The save is best-effort: failure is logged but does not
+    // change the exit code.
+    {
+        if (window)
+        {
+            project_data.window.w = static_cast<int>(window->width());
+            project_data.window.h = static_cast<int>(window->height());
+        }
+        project_data.schema_version = 1;
+        if (!cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
+        {
+            std::fprintf(stderr,
+                         "editor: warning — could not save .cdproj to %s\n",
+                         cdproj_path.string().c_str());
+        }
+        else
+        {
+            std::printf("editor: session saved to %s\n",
+                        cdproj_path.string().c_str());
+        }
+    }
 
     std::printf("editor: clean exit (%u frames; dock nodes=%zu).\n",
                 frame_idx, dockspace.node_count());

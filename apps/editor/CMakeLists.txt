@@ -49,6 +49,7 @@ cd_add_sample(editor
     cd::editor_panel_viewport
     cd::editor
     cd::editor_ui
+    cd::editor_cdproj
     cd::platform
     cd::rhi
     cd::rhi_vulkan
