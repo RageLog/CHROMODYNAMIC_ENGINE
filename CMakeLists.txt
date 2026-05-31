@@ -235,6 +235,15 @@ if(CD_ENABLE_SAMPLES)
   add_subdirectory(samples)
 endif()
 
+# --- Apps (end-user shipping binaries: editor, runtime player, etc.) ---
+# Phase 524 / T0.2: split from samples/ to distinguish shipping tools
+# from pedagogical demos. Defaults ON; gate per-app cmake handles
+# backend-specific availability (Vulkan / D3D12 / Metal).
+option(CD_ENABLE_APPS "Build end-user application binaries (cd::editor, ...)" ON)
+if(CD_ENABLE_APPS)
+  add_subdirectory(apps)
+endif()
+
 # --- Offline tools (cookers, packagers) ---
 option(CD_ENABLE_TOOLS "Build the offline command-line tools (cd_cook_mesh, …)" ON)
 if(CD_ENABLE_TOOLS)
