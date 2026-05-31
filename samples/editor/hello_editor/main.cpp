@@ -51,6 +51,7 @@
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
+#include <cd/editor/panel_console/Console.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
@@ -419,10 +420,9 @@ int main(int argc, char** argv)
     cd::editor::EditHistory   history;
     cd::editor::HierarchyView hierarchy;   // T3.2: drive the scene-tree panel
 
-    std::deque<std::string> console;
-    auto log_push = [&console](std::string s) {
-        console.emplace_back(std::move(s));
-        while (console.size() > 32) console.pop_front();
+    cd::editor::panel::console::Console console_panel;
+    auto log_push = [&console_panel](std::string_view s) {
+        console_panel.push_log(s);
     };
 
     // ---- Command palette --------------------------------------------------
@@ -1013,7 +1013,8 @@ int main(int argc, char** argv)
             ImVec2 { vw - 2.0F * gutter, cons_h }, ImGuiCond_FirstUseEver);
         ImGui::Begin("Console");
         {
-            for (auto it = console.rbegin(); it != console.rend(); ++it)
+            const auto& log_entries = console_panel.entries();
+            for (auto it = log_entries.rbegin(); it != log_entries.rend(); ++it)
                 ImGui::TextUnformatted(it->c_str());
         }
         ImGui::End();

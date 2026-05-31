@@ -73,6 +73,7 @@
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
+#include <cd/editor/panel_console/Console.hpp>
 
 #include <array>
 #include <cstdint>
@@ -269,6 +270,9 @@ void draw_viewport_stub(const uw::Rect& rect,
 // below can capture it by reference without a heap allocation each frame.
 cd::editor::panel::inspector::Inspector g_inspector_panel;
 
+// Console panel — backed by cd::editor_panel_console.
+cd::editor::panel::console::Console g_console_panel;
+
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
                           uf::Font* /*font*/,
@@ -277,14 +281,12 @@ void draw_inspector_panel(const uw::Rect& rect,
     g_inspector_panel.draw(batcher, theme, rect);
 }
 
-void draw_console_stub(const uw::Rect& rect,
-                       ur::DrawBatcher& batcher,
-                       uf::Font* /*font*/,
-                       const uw::Theme& theme)
+void draw_console_panel(const uw::Rect& rect,
+                        ur::DrawBatcher& batcher,
+                        uf::Font* /*font*/,
+                        const uw::Theme& theme)
 {
-    batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                 ur::Color { theme.surface.r, theme.surface.g,
-                             theme.surface.b, theme.surface.a });
+    g_console_panel.draw(batcher, theme, rect);
 }
 
 void draw_assets_stub(const uw::Rect& rect,
@@ -451,7 +453,7 @@ int main(int argc, char** argv)
     dockspace.register_panel("scene_tree", draw_scene_tree_stub);
     dockspace.register_panel("viewport",   draw_viewport_stub);
     dockspace.register_panel("inspector",  draw_inspector_panel);
-    dockspace.register_panel("console",    draw_console_stub);
+    dockspace.register_panel("console",    draw_console_panel);
     dockspace.register_panel("assets",     draw_assets_stub);
     if (!build_default_layout(dockspace))
     {

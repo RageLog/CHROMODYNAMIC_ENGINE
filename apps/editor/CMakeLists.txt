@@ -44,6 +44,7 @@ cd_add_sample(editor
     cd::ui_font
     cd::editor_panel
     cd::editor_panel_inspector
+    cd::editor_panel_console
     cd::editor
     cd::editor_ui
     cd::platform

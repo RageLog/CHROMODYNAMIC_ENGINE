@@ -11,6 +11,7 @@ cd_add_sample(hello_editor
     cd::scene
     cd::editor
     cd::editor_panel_inspector
+    cd::editor_panel_console
     cd::asset_json
     cd::asset_gltf
     cd::imgui_backend
