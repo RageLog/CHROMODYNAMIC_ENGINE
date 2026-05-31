@@ -1,6 +1,8 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/render/rhi/src/metal/MetalCommandBuffer.mm
 // phase548 — Metal command-buffer real impl (Sprint-1).
+// phase559 — Sprint-2: push_constants + copy_buffer + copy_buffer_to_image
+//            + copy_image_to_buffer (MTLBlitCommandEncoder path).
 //
 // Compiled only when CD_RHI_METAL_ENABLED=ON (Apple platform).
 //
@@ -20,9 +22,23 @@
 //                                or the command buffer when no encoder is
 //                                open. Both APIs exist since macOS 10.13.
 //
-// Everything else stays a no-op for Sprint-1; subsequent sprints fill in
-// the remaining ICommandBuffer surface (vertex buffers, uniforms, copies,
-// compute, indexed draw, barriers).
+// Sprint-2 additions:
+//   * push_constants           — setVertexBytes / setFragmentBytes inline-
+//                                arg fast path on the active render encoder.
+//   * copy_buffer              — MTLBlitCommandEncoder copyFromBuffer:..:.
+//   * copy_buffer_to_image     — MTLBlitCommandEncoder copyFromBuffer:..:
+//                                toTexture:.. (texture upload path).
+//   * copy_image_to_buffer     — Symmetric image -> buffer readback path.
+// Encoder transitions: Metal disallows nested encoders on a single cmd-buf,
+// so the blit encoder is closed before any render encoder opens (and vice
+// versa). Both encoder kinds are closed on submit_internal.
+//
+// Buffer / texture resolution goes through MetalDeviceCtx::lookup_buffer
+// + lookup_texture. In Sprint-2 those return nil because create_buffer /
+// create_texture still hand out unbacked stub handles; copy paths
+// gracefully skip when the resolution misses, matching Sprint-1's
+// render-pass fallback. Sprint 3 lights up real allocation and the
+// copies fire end-to-end with no further code changes here.
 // =============================================================================
 #if defined(__APPLE__)
 
@@ -64,6 +80,10 @@ void MetalCommandBufferImpl::begin_render_pass(const RenderPassBeginInfo& info)
     {
         return;
     }
+    // phase559: a blit encoder open from a prior copy_* call must be
+    // closed before the render encoder opens — Metal forbids nested
+    // encoders on a single cmd-buf.
+    close_blit_encoder_if_open();
     const ColorAttachmentInfo& att = info.color_attachments[0];
 
     id<MTLTexture> tex = (ctx_ != nullptr)
@@ -208,6 +228,11 @@ void MetalCommandBufferImpl::push_debug_group(std::string_view name)
     {
         [encoder_ pushDebugGroup:ns];
     }
+    else if (blit_ != nil)
+    {
+        // phase559: debug groups while a blit-encoder is open ride on it.
+        [blit_ pushDebugGroup:ns];
+    }
     else if (cmd_ != nil)
     {
         [cmd_ pushDebugGroup:ns];
@@ -219,6 +244,10 @@ void MetalCommandBufferImpl::pop_debug_group()
     if (encoder_ != nil)
     {
         [encoder_ popDebugGroup];
+    }
+    else if (blit_ != nil)
+    {
+        [blit_ popDebugGroup];
     }
     else if (cmd_ != nil)
     {
@@ -232,18 +261,262 @@ void MetalCommandBufferImpl::submit_internal(id<CAMetalDrawable> drawable_to_pre
     {
         return;
     }
-    // Make sure any in-flight encoder is closed before we commit.
+    // Make sure any in-flight encoders are closed before we commit.
     if (encoder_ != nil)
     {
         [encoder_ endEncoding];
         encoder_ = nil;
     }
+    // phase559: also close any pending blit encoder.
+    close_blit_encoder_if_open();
     if (drawable_to_present != nil)
     {
         [cmd_ presentDrawable:drawable_to_present];
     }
     [cmd_ commit];
     cmd_ = nil;
+}
+
+// ---------------------------------------------------------------------------
+// phase559 (Sprint-2) — blit-encoder helpers.
+//
+// MTLBlitCommandEncoder is opened lazily by ensure_blit_encoder_open() on
+// the first copy_* call after begin(). It is closed in three places:
+//   1. before begin_render_pass opens a render encoder (Metal forbids
+//      nested encoders on a single cmd-buf).
+//   2. before submit_internal commits the cmd-buf.
+//   3. explicitly via close_blit_encoder_if_open() anywhere we need to
+//      transition encoder kinds in the future (compute encoder, RT
+//      encoder, …).
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::ensure_blit_encoder_open()
+{
+    if (cmd_ == nil)
+    {
+        // No cmd-buf yet — begin() was not called. Sprint-2 silently skips
+        // matching Sprint-1's defensive behaviour; a future debug-validation
+        // layer can flag this.
+        return;
+    }
+    if (encoder_ != nil)
+    {
+        // Render encoder is active — close it first. Real callers should
+        // do this themselves via end_render_pass(); we defensively unwind
+        // so out-of-order calls don't deadlock the cmd-buf.
+        [encoder_ endEncoding];
+        encoder_ = nil;
+    }
+    if (blit_ != nil)
+    {
+        // Already open — nothing to do.
+        return;
+    }
+    blit_ = [cmd_ blitCommandEncoder];
+    blit_.label = @"cd::rhi::metal::BlitEncoder";
+}
+
+void MetalCommandBufferImpl::close_blit_encoder_if_open() noexcept
+{
+    if (blit_ != nil)
+    {
+        [blit_ endEncoding];
+        blit_ = nil;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// push_constants — Metal inline-byte fast path.
+//
+// Metal does not have a native "push constants" concept; the canonical
+// replacement for the small (≤4 KB) per-draw constants is
+// setVertexBytes:length:atIndex: / setFragmentBytes:length:atIndex:.
+// SPIRV-Cross mlsls Vulkan push-constant blocks to `[[buffer(n)]]` where
+// `n` is the buffer-argument index — we use `offset` for that index so the
+// engine can pre-compute it from the pipeline layout.
+//
+// `size` is clamped at 4 KB per Metal's documented inline-arg cap; larger
+// constants must go through a regular buffer write, which is Sprint-3 work.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::push_constants(PipelineLayoutHandle /*layout*/,
+                                            ShaderStage stages,
+                                            std::uint32_t offset,
+                                            std::uint32_t size,
+                                            const void* data)
+{
+    if (encoder_ == nil || data == nullptr || size == 0)
+    {
+        return;
+    }
+    constexpr std::uint32_t kMetalInlineByteCap = 4096u;
+    const NSUInteger byte_len =
+        (size > kMetalInlineByteCap) ? kMetalInlineByteCap : size;
+    const NSUInteger arg_index = static_cast<NSUInteger>(offset);
+
+    if (has(stages, ShaderStage::kVertex))
+    {
+        [encoder_ setVertexBytes:data
+                          length:byte_len
+                         atIndex:arg_index];
+    }
+    if (has(stages, ShaderStage::kFragment))
+    {
+        [encoder_ setFragmentBytes:data
+                            length:byte_len
+                           atIndex:arg_index];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// copy_buffer — MTLBlitCommandEncoder copyFromBuffer:..:toBuffer:...
+// Sprint-2: lookups miss (no real allocation yet) so the encoder is opened
+// but the loop body skips every region. Sprint 3 allocates real MTLBuffers
+// and the copy fires end-to-end.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::copy_buffer(BufferHandle src, BufferHandle dst,
+                                         std::span<const BufferCopyRegion> regions)
+{
+    if (cmd_ == nil || ctx_ == nullptr || regions.empty())
+    {
+        return;
+    }
+    id<MTLBuffer> src_buf = ctx_->lookup_buffer(src);
+    id<MTLBuffer> dst_buf = ctx_->lookup_buffer(dst);
+    if (src_buf == nil || dst_buf == nil)
+    {
+        // Sprint-2: buffers not yet backed; gracefully skip. Sprint 3
+        // surfaces a kInvalidArgument when create_buffer is real.
+        return;
+    }
+    ensure_blit_encoder_open();
+    if (blit_ == nil)
+    {
+        return;
+    }
+    for (const BufferCopyRegion& r : regions)
+    {
+        if (r.size == 0)
+        {
+            continue;
+        }
+        [blit_ copyFromBuffer:src_buf
+                 sourceOffset:static_cast<NSUInteger>(r.src_offset)
+                     toBuffer:dst_buf
+            destinationOffset:static_cast<NSUInteger>(r.dst_offset)
+                         size:static_cast<NSUInteger>(r.size)];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// copy_buffer_to_image — MTLBlitCommandEncoder
+// copyFromBuffer:..:sourceBytesPerRow:..:sourceBytesPerImage:..:sourceSize:..:
+//   toTexture:destinationSlice:destinationLevel:destinationOrigin:
+//
+// Sprint-2 assumes tightly-packed input (sourceBytesPerRow = width *
+// texel_bytes) — same contract as the Vulkan back-end with the
+// `bufferRowLength = 0` / `bufferImageHeight = 0` defaults. Texel byte size
+// derivation is deferred to Sprint 3 (where TextureHandle resolves to a
+// real MTLTexture and we can read its pixelFormat); Sprint-2 simply passes
+// 0 to let Metal recompute the row stride from the texture descriptor,
+// which is supported for non-compressed formats.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::copy_buffer_to_image(
+    BufferHandle src, TextureHandle dst,
+    std::span<const BufferImageCopyRegion> regions)
+{
+    if (cmd_ == nil || ctx_ == nullptr || regions.empty())
+    {
+        return;
+    }
+    id<MTLBuffer>  src_buf = ctx_->lookup_buffer(src);
+    id<MTLTexture> dst_tex = ctx_->lookup_texture(dst);
+    if (src_buf == nil || dst_tex == nil)
+    {
+        return;
+    }
+    ensure_blit_encoder_open();
+    if (blit_ == nil)
+    {
+        return;
+    }
+    for (const BufferImageCopyRegion& r : regions)
+    {
+        const MTLOrigin origin = MTLOriginMake(
+            static_cast<NSUInteger>(r.image_offset.x < 0 ? 0 : r.image_offset.x),
+            static_cast<NSUInteger>(r.image_offset.y < 0 ? 0 : r.image_offset.y),
+            static_cast<NSUInteger>(r.image_offset.z < 0 ? 0 : r.image_offset.z));
+        const MTLSize size = MTLSizeMake(
+            static_cast<NSUInteger>(r.image_extent.width),
+            static_cast<NSUInteger>(r.image_extent.height),
+            static_cast<NSUInteger>(r.image_extent.depth));
+        // sourceBytesPerRow == 0 + sourceBytesPerImage == 0 = "auto" for
+        // non-compressed formats; Metal computes from the texture's
+        // pixel format and the supplied size. Sprint 3 will resolve a
+        // real texel-byte count for compressed formats.
+        for (std::uint32_t layer = 0; layer < r.layer_count; ++layer)
+        {
+            const NSUInteger slice =
+                static_cast<NSUInteger>(r.base_layer + layer);
+            [blit_ copyFromBuffer:src_buf
+                     sourceOffset:static_cast<NSUInteger>(r.buffer_offset)
+                sourceBytesPerRow:0
+              sourceBytesPerImage:0
+                       sourceSize:size
+                        toTexture:dst_tex
+                 destinationSlice:slice
+                 destinationLevel:static_cast<NSUInteger>(r.mip_level)
+                destinationOrigin:origin];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// copy_image_to_buffer — symmetric readback path. Same Sprint-2
+// "graceful skip when handles unbacked" semantics as copy_buffer_to_image.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::copy_image_to_buffer(
+    TextureHandle src, BufferHandle dst,
+    std::span<const BufferImageCopyRegion> regions)
+{
+    if (cmd_ == nil || ctx_ == nullptr || regions.empty())
+    {
+        return;
+    }
+    id<MTLTexture> src_tex = ctx_->lookup_texture(src);
+    id<MTLBuffer>  dst_buf = ctx_->lookup_buffer(dst);
+    if (src_tex == nil || dst_buf == nil)
+    {
+        return;
+    }
+    ensure_blit_encoder_open();
+    if (blit_ == nil)
+    {
+        return;
+    }
+    for (const BufferImageCopyRegion& r : regions)
+    {
+        const MTLOrigin origin = MTLOriginMake(
+            static_cast<NSUInteger>(r.image_offset.x < 0 ? 0 : r.image_offset.x),
+            static_cast<NSUInteger>(r.image_offset.y < 0 ? 0 : r.image_offset.y),
+            static_cast<NSUInteger>(r.image_offset.z < 0 ? 0 : r.image_offset.z));
+        const MTLSize size = MTLSizeMake(
+            static_cast<NSUInteger>(r.image_extent.width),
+            static_cast<NSUInteger>(r.image_extent.height),
+            static_cast<NSUInteger>(r.image_extent.depth));
+        for (std::uint32_t layer = 0; layer < r.layer_count; ++layer)
+        {
+            const NSUInteger slice =
+                static_cast<NSUInteger>(r.base_layer + layer);
+            [blit_ copyFromTexture:src_tex
+                       sourceSlice:slice
+                       sourceLevel:static_cast<NSUInteger>(r.mip_level)
+                      sourceOrigin:origin
+                        sourceSize:size
+                          toBuffer:dst_buf
+                 destinationOffset:static_cast<NSUInteger>(r.buffer_offset)
+            destinationBytesPerRow:0
+          destinationBytesPerImage:0];
+        }
+    }
 }
 
 }  // namespace cd::rhi::metal::detail

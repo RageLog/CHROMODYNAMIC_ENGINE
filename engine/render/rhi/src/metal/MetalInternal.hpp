@@ -1,6 +1,8 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/render/rhi/src/metal/MetalInternal.hpp
 // phase548 — Metal backend Sprint-1 shared internals.
+// phase559 — Metal backend Sprint-2 extensions (sampler registry +
+//            blit-encoder helpers + push-constant fast path).
 //
 // This header is INTERNAL to the cd_rhi_metal target. It is only included
 // from the four .mm translation units (MetalDevice.mm, MetalCommandBuffer.mm,
@@ -14,9 +16,22 @@
 //   * MetalCommandBufferImpl    — ICommandBuffer wrapper around
 //                                 id<MTLCommandBuffer> + render encoder
 //
-// Everything else (descriptor sets, depth, multi-pass, compute, RT) lives
-// in subsequent sprints; the remaining ~22 kNotImpl calls in MetalDevice.mm
-// stay untouched.
+// Sprint-2 additions (phase559):
+//   * MetalSamplerObj           — id<MTLSamplerState> wrapper
+//   * MetalDeviceCtx::lookup_sampler / lookup_buffer / lookup_texture —
+//     handle resolution hooks consumed by the cmd-buffer copy + descriptor
+//     paths. Buffer/texture maps are intentionally empty in Sprint-2; real
+//     MTLBuffer/MTLTexture allocation lands in Sprint 3 alongside
+//     upload_buffer + create_buffer / create_texture promotion.
+//   * MetalCommandBufferImpl::copy_buffer / copy_buffer_to_image           —
+//     MTLBlitCommandEncoder path; gracefully no-ops when handles are not
+//     yet backed by real Metal resources (Sprint 3 lights them up).
+//   * MetalCommandBufferImpl::push_constants                                —
+//     setVertexBytes / setFragmentBytes inline-arg path (≤4 KB).
+//
+// Everything else (descriptor sets allocation, depth, multi-pass, compute,
+// RT) lives in subsequent sprints; the remaining kNotImpl call surface in
+// MetalDevice.mm shrinks accordingly each sprint.
 // =============================================================================
 #pragma once
 
@@ -125,6 +140,40 @@ build_sprint1_triangle_pipeline(id<MTLDevice> device, MTLPixelFormat color_forma
                                 std::string* error_out) noexcept;
 
 // ---------------------------------------------------------------------------
+// MetalSamplerObj — id<MTLSamplerState> wrapper (Sprint-2 / phase559).
+//
+// Backed by a single MTLSamplerState created on device-side via
+// [device newSamplerStateWithDescriptor:]. The descriptor is built from the
+// cd::rhi::SamplerDesc fields by the device factory; we keep only the
+// resolved state here so the cmd-buffer descriptor / argument-buffer paths
+// can look it up by SamplerHandle in constant time.
+// ---------------------------------------------------------------------------
+class MetalSamplerObj final
+{
+public:
+    explicit MetalSamplerObj(id<MTLSamplerState> state) noexcept
+        : state_(state) {}
+    ~MetalSamplerObj() = default;
+    MetalSamplerObj(const MetalSamplerObj&) = delete;
+    MetalSamplerObj& operator=(const MetalSamplerObj&) = delete;
+    MetalSamplerObj(MetalSamplerObj&&) = delete;
+    MetalSamplerObj& operator=(MetalSamplerObj&&) = delete;
+
+    [[nodiscard]] id<MTLSamplerState> state() const noexcept { return state_; }
+
+private:
+    id<MTLSamplerState> state_ { nil };
+};
+
+// Translate a cd::rhi::SamplerDesc to an MTLSamplerDescriptor + create the
+// MTLSamplerState. Returns nil on failure. SOTA mapping for the address
+// modes / filters / compare op / anisotropy / lod range / border colour;
+// matches the Vulkan back-end's behaviour for the parity test suite.
+[[nodiscard]] id<MTLSamplerState>
+build_metal_sampler(id<MTLDevice> device, const SamplerDesc& desc,
+                    std::string* error_out) noexcept;
+
+// ---------------------------------------------------------------------------
 // MetalCommandBufferImpl — ICommandBuffer wrapper around
 // id<MTLCommandBuffer> + the active id<MTLRenderCommandEncoder>.
 //
@@ -161,9 +210,16 @@ public:
     void bind_index_buffer(BufferHandle /*buffer*/, std::uint64_t /*offset*/,
                            IndexType /*type*/) override {}
 
-    void push_constants(PipelineLayoutHandle /*layout*/, ShaderStage /*stages*/,
-                        std::uint32_t /*offset*/, std::uint32_t /*size*/,
-                        const void* /*data*/) override {}
+    // phase559 (Sprint-2): real setVertexBytes / setFragmentBytes path.
+    // PipelineLayoutHandle is ignored — Metal does not consume a layout
+    // object for inline-byte arg buffers; the ShaderStage mask selects
+    // which encoder slot receives the bytes (vertex / fragment / both).
+    // `offset` is taken as the Metal `index` of the buffer-argument slot
+    // (the canonical Vulkan→MSL convention via SPIRV-Cross is
+    // `[[buffer(n)]]` where n is the push-constant set's binding index).
+    void push_constants(PipelineLayoutHandle layout, ShaderStage stages,
+                        std::uint32_t offset, std::uint32_t size,
+                        const void* data) override;
 
     void set_viewport(const Viewport& vp) override;
     void set_scissor(const Rect2D& rect) override;
@@ -175,12 +231,21 @@ public:
                       std::uint32_t /*first_instance*/) override {}
     void dispatch(std::uint32_t /*x*/, std::uint32_t /*y*/, std::uint32_t /*z*/) override {}
 
-    void copy_buffer(BufferHandle /*src*/, BufferHandle /*dst*/,
-                     std::span<const BufferCopyRegion> /*regions*/) override {}
-    void copy_buffer_to_image(BufferHandle /*src*/, TextureHandle /*dst*/,
-                              std::span<const BufferImageCopyRegion> /*regions*/) override {}
-    void copy_image_to_buffer(TextureHandle /*src*/, BufferHandle /*dst*/,
-                              std::span<const BufferImageCopyRegion> /*regions*/) override {}
+    // phase559 (Sprint-2): real MTLBlitCommandEncoder paths.
+    //
+    // The encoder is lazily opened on first copy call inside the current
+    // cmd-buf and closed in submit_internal() (or before a render encoder
+    // is opened — Metal disallows nested encoders on one cmd-buf). When a
+    // BufferHandle / TextureHandle is not yet backed by a real Metal
+    // resource (still the Sprint-2 default; create_buffer/create_texture
+    // return stub handles), the lookup returns nil and the copy is
+    // gracefully skipped, mirroring the Sprint-1 render-pass fallback.
+    void copy_buffer(BufferHandle src, BufferHandle dst,
+                     std::span<const BufferCopyRegion> regions) override;
+    void copy_buffer_to_image(BufferHandle src, TextureHandle dst,
+                              std::span<const BufferImageCopyRegion> regions) override;
+    void copy_image_to_buffer(TextureHandle src, BufferHandle dst,
+                              std::span<const BufferImageCopyRegion> regions) override;
 
     void barrier(std::span<const BufferBarrier> /*bb*/,
                  std::span<const TextureBarrier> /*tb*/) override {}
@@ -196,9 +261,16 @@ public:
     [[nodiscard]] id<MTLCommandBuffer> mtl_cmd_buf() const noexcept { return cmd_; }
 
 private:
+    // phase559: lazy-open the blit encoder on first copy call and close it
+    // before any render encoder is opened (Metal disallows nested encoders
+    // on a single cmd-buf). Closed automatically by submit_internal.
+    void ensure_blit_encoder_open();
+    void close_blit_encoder_if_open() noexcept;
+
     id<MTLCommandQueue>          queue_ { nil };
     id<MTLCommandBuffer>         cmd_ { nil };
     id<MTLRenderCommandEncoder>  encoder_ { nil };
+    id<MTLBlitCommandEncoder>    blit_ { nil };
     MetalDeviceCtx*              ctx_ { nullptr };  // observer, not owning
     // Cached attachment view for the active render pass — used to derive
     // the colour-target texture when no real TextureViewHandle registry
@@ -233,6 +305,22 @@ public:
     // view.
     [[nodiscard]] virtual MetalSwapchainObj*
     lookup_swapchain_for_view(TextureViewHandle h) const noexcept = 0;
+
+    // phase559 (Sprint-2): resource lookups for the cmd-buffer copy + the
+    // descriptor / argument-buffer write paths. Buffer + texture maps are
+    // empty in Sprint-2 (create_buffer / create_texture still hand out
+    // unbacked stub handles); the lookups return nil so the cmd-buffer
+    // gracefully skips the work, matching Sprint-1's render-pass fallback.
+    // Sprint 3 lights up the maps by routing creation through real
+    // [device newBufferWithLength:] / [device newTextureWithDescriptor:].
+    [[nodiscard]] virtual id<MTLBuffer>
+    lookup_buffer(BufferHandle h) const noexcept = 0;
+
+    [[nodiscard]] virtual id<MTLTexture>
+    lookup_texture(TextureHandle h) const noexcept = 0;
+
+    [[nodiscard]] virtual id<MTLSamplerState>
+    lookup_sampler(SamplerHandle h) const noexcept = 0;
 };
 
 }  // namespace cd::rhi::metal::detail

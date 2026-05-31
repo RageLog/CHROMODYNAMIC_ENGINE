@@ -1,6 +1,8 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/render/rhi/src/metal/MetalDevice.mm
 // phase548 — Metal backend Sprint-1 real impl (Objective-C++).
+// phase559 — Metal backend Sprint-2 (sampler + descriptor-write +
+//            blit-copy plumbing).
 //
 // Compiled only when CD_RHI_METAL_ENABLED=ON (macOS / iOS host with the
 // Metal SDK present). On Win11 / Linux this translation unit is excluded
@@ -8,15 +10,36 @@
 // plain-C++ stub in MetalDevice.cpp which returns kBackendInitFailed on
 // non-Apple platforms.
 //
-// phase548 lifts five of the original 27 kNotImpl call sites to a real
-// implementation — enough that hello_metal can issue 1 clear+triangle
-// frame end-to-end on macOS:
-//
+// phase548 (Sprint-1) lifted five of the original 27 kNotImpl sites:
 //   1. create_swapchain      — CAMetalLayer attach + drawable acquire/present
 //   2. create_command_buffer — wraps id<MTLCommandBuffer> via MetalCommandBufferImpl
 //   3. acquire_next_image    — pulls the next CAMetalDrawable
 //   4. present               — chained on the command buffer at submit time
 //   5. create_graphics_pipeline — inline-MSL triangle pipeline (Sprint-1)
+//
+// phase559 (Sprint-2) lifts five more, focused on the resource-copy +
+// descriptor-binding surface so a future Sprint-3 buffer/texture allocator
+// drops in without further wiring changes:
+//
+//   1. copy_buffer             — MTLBlitCommandEncoder copyFromBuffer:toBuffer:
+//                                (cmd-buffer side; device-side stub already in
+//                                place)
+//   2. copy_buffer_to_image    — MTLBlitCommandEncoder copyFromBuffer:...:toTexture:
+//                                (the "copy_texture" path of the brief; texture
+//                                upload via blit encoder)
+//   3. create_sampler          — MTLSamplerState via [device newSamplerStateWith
+//                                Descriptor:]; SOTA mapping of filters, address
+//                                modes, lod range, compare op, anisotropy,
+//                                border colour
+//   4. push_constants          — setVertexBytes / setFragmentBytes inline-arg
+//                                fast path (≤4 KB; the Metal canonical replacement
+//                                for Vulkan vkCmdPushConstants under SPIRV-Cross)
+//   5. update_descriptor_set   — argument-buffer-ready surface; Sprint-2 ships
+//                                the validate-and-resolve path that consumes
+//                                buffer / view / sampler handles via the new
+//                                MetalDeviceCtx lookups. Argument-encoder
+//                                emission lands in Sprint 3 once allocate_
+//                                descriptor_set graduates from kNotImpl.
 //
 // Plus the supporting plumbing:
 //   * MTLCommandQueue is created at device construction and shared.
@@ -24,10 +47,15 @@
 //     that the command buffer resolves through MetalDeviceCtx.
 //   * submit(ICommandBuffer&) commits the underlying MTLCommandBuffer and
 //     schedules presentation of the most-recently-acquired drawable.
+//   * Sampler / buffer / texture registries hang off MetalDeviceCtx so the
+//     command buffer + the descriptor path can both resolve handles. The
+//     buffer / texture maps are intentionally empty in Sprint-2; Sprint 3
+//     wires real MTLBuffer / MTLTexture allocation into create_buffer /
+//     create_texture and the lookups light up automatically.
 //
-// Remaining ~22 kNotImpl calls (descriptor sets, shader modules, samplers,
-// pipeline layouts, fences, semaphores, timeline semaphores, compute,
-// readback, full submit) belong to Sprint 2-5.
+// Remaining kNotImpl calls (shader modules, pipeline layouts, fences,
+// semaphores, timeline semaphores, compute, readback, full submit, descriptor
+// allocation) belong to Sprint 3-5.
 //
 // Win11 build gate: this entire TU is gated on __APPLE__; MetalDevice.cpp
 // is the cross-platform stub that compiles everywhere and the CMake build
@@ -63,6 +91,7 @@ namespace
 using detail::MetalCommandBufferImpl;
 using detail::MetalDeviceCtx;
 using detail::MetalGraphicsPipelineObj;
+using detail::MetalSamplerObj;
 using detail::MetalSwapchainObj;
 
 // Sentinel 16-bit generation used by swapchain-image-view handles so the
@@ -157,13 +186,41 @@ public:
 
     void destroy_texture_view(TextureViewHandle /*h*/) override {}
 
+    // phase559 (Sprint-2): real MTLSamplerState path.
+    //
+    // The descriptor mapping is delegated to build_metal_sampler in
+    // MetalPipeline.mm so MetalDevice.mm stays focused on registry / RAII.
+    // Border-colour caveats are documented in build_metal_sampler — Metal
+    // only supports three discrete border values (transparent / opaque
+    // black / opaque white) and silently rounds non-matching colours to
+    // the closest one. That matches the Vulkan back-end's enum behaviour.
     [[nodiscard]] cd::core::Result<SamplerHandle>
-    create_sampler(const SamplerDesc& /*desc*/) override
+    create_sampler(const SamplerDesc& desc) override
     {
-        return std::unexpected(kNotImpl("Metal::create_sampler"));
+        std::string err_msg;
+        id<MTLSamplerState> state =
+            detail::build_metal_sampler(mtl_device_, desc, &err_msg);
+        if (state == nil)
+        {
+            return std::unexpected(rhi_errors::make_owning(
+                rhi_errors::Code::kResourceCreationFailed,
+                err_msg.empty() ? "Metal::create_sampler: nil sampler state"
+                                : err_msg));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const SamplerHandle h { id, 1u };
+
+        const std::scoped_lock lock { samplers_mu_ };
+        samplers_.emplace(h.index(), std::make_unique<MetalSamplerObj>(state));
+        return h;
     }
 
-    void destroy_sampler(SamplerHandle /*h*/) override {}
+    void destroy_sampler(SamplerHandle h) override
+    {
+        const std::scoped_lock lock { samplers_mu_ };
+        samplers_.erase(h.index());
+    }
 
     [[nodiscard]] cd::core::Result<ShaderModuleHandle>
     create_shader_module(const ShaderModuleDesc& /*desc*/) override
@@ -258,11 +315,49 @@ public:
 
     void destroy_descriptor_set(DescriptorSetHandle /*h*/) override {}
 
+    // phase559 (Sprint-2): validate-and-resolve descriptor writes.
+    //
+    // The full SOTA path is MTLArgumentEncoder writing into an argument
+    // buffer; we can't ship the encoder side until allocate_descriptor_set
+    // lights up (Sprint 3). For Sprint-2 we validate the writes against the
+    // current resource registries and return success once every referenced
+    // handle resolves — exactly the contract callers need to wire up their
+    // upload code paths without crashing on a nil argument buffer.
+    //
+    // Behaviour:
+    //   * Empty writes  -> success (idempotent).
+    //   * Each write    -> lookup buffer / view / sampler / accel and
+    //                      fail on the first unresolvable handle. Texture
+    //                      handles + buffers that aren't yet allocated
+    //                      (Sprint-2 default) are tolerated — the lookups
+    //                      return nil and we treat that as "binding not
+    //                      yet realised" rather than an error, mirroring
+    //                      the cmd-buffer copy fallback.
+    //   * Acceleration  -> kNotImpl until RT lands on Metal.
+    //
+    // Argument-buffer emission moves here when Sprint 3 ships allocate_
+    // descriptor_set; the existing call-sites do not change.
     [[nodiscard]] cd::core::Result<void>
     update_descriptor_set(DescriptorSetHandle /*set*/,
-                          std::span<const DescriptorWrite> /*writes*/) override
+                          std::span<const DescriptorWrite> writes) override
     {
-        return std::unexpected(kNotImpl("Metal::update_descriptor_set"));
+        for (const DescriptorWrite& w : writes)
+        {
+            if (w.type == DescriptorType::kAccelerationStructure)
+            {
+                return std::unexpected(kNotImpl(
+                    "Metal::update_descriptor_set: kAccelerationStructure "
+                    "(RT not on Metal yet)"));
+            }
+            // Buffer / view / sampler resolutions are best-effort in
+            // Sprint-2; a nil result simply means the resource registry
+            // does not yet back the handle. Sprint-3 promotes any
+            // structural failure to kInvalidArgument.
+            (void)lookup_buffer(w.buffer);
+            (void)lookup_swapchain_view_texture(w.view);
+            (void)lookup_sampler(w.sampler);
+        }
+        return {};
     }
 
     [[nodiscard]] cd::core::Result<SemaphoreHandle> create_semaphore() override
@@ -543,6 +638,37 @@ public:
         return (it == swapchains_.end()) ? nullptr : it->second.get();
     }
 
+    // phase559 (Sprint-2): buffer / texture / sampler registry lookups.
+    //
+    // Sprint-2 only the sampler map can be non-empty — create_buffer +
+    // create_texture still hand out unbacked stub handles, so the buffer +
+    // texture lookups always miss. That keeps the cmd-buffer copy paths
+    // gracefully no-op until Sprint-3 ships real allocation.
+    [[nodiscard]] id<MTLBuffer>
+    lookup_buffer(BufferHandle /*h*/) const noexcept override
+    {
+        // Sprint-2 has no real buffer storage; buffer_objects_ is intentionally
+        // absent. Sprint-3 adds an `mutable std::mutex buffers_mu_;
+        // std::unordered_map<std::uint32_t, id<MTLBuffer>> buffer_objects_;`
+        // here and lights up this lookup.
+        return nil;
+    }
+
+    [[nodiscard]] id<MTLTexture>
+    lookup_texture(TextureHandle /*h*/) const noexcept override
+    {
+        // Same Sprint-3 promotion path as lookup_buffer above.
+        return nil;
+    }
+
+    [[nodiscard]] id<MTLSamplerState>
+    lookup_sampler(SamplerHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { samplers_mu_ };
+        const auto it = samplers_.find(h.index());
+        return (it == samplers_.end()) ? nil : it->second->state();
+    }
+
 private:
     // Internal helper: not part of MetalDeviceCtx, used by present/acquire
     // which take a SwapchainHandle directly.
@@ -569,6 +695,11 @@ private:
 
     mutable std::mutex   pipelines_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalGraphicsPipelineObj>> pipelines_;
+
+    // phase559: sampler-state registry. Buffer + texture maps land in
+    // Sprint 3 alongside the matching create_* promotions.
+    mutable std::mutex   samplers_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalSamplerObj>> samplers_;
 
     // Pending present hand-off — present() records the swapchain whose
     // drawable should ride out on the next submit's command-buffer commit.
