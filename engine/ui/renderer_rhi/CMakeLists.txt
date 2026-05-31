@@ -16,6 +16,13 @@ cd_add_library(ui_renderer_rhi
     cd::core
     cd::rhi
     cd::ui_renderer
+    # Phase 608 / M7 W3 -- Route A factory `create_with_material_ui_variant`
+    # takes a `cd::material::UiVariant&&` by value in the public header
+    # (forward-declared) and stores it via std::unique_ptr inside the
+    # PIMPL. Callers must `#include <cd/material/UiVariant.hpp>` to
+    # construct the variant, so cd::material is PUBLIC so the consumer's
+    # include surface resolves cleanly.
+    cd::material
   PRIVATE_DEPS
     # Phase 554 / M3 W1A -- Route B inline-shader factory uses
     # cd::shader::make_glslang_compiler() to assemble the fallback

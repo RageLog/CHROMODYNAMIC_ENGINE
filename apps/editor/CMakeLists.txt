@@ -83,21 +83,27 @@ cd_add_sample(editor
 # separately from the demo collection.
 set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
 
-# Phase 554 / M3 W1A — Route A vs Route B pipeline selection.
+# Phase 608 / M7 W3 — Route A vs Route B pipeline selection.
 #
-# CD_HAVE_MATERIAL_UI_VARIANTS (default OFF) -- when the parallel W1B
-# agent lands the cd::material UI variants, flip this ON via cache or
-# command-line:  -DCD_HAVE_MATERIAL_UI_VARIANTS=ON
+# CD_USE_MATERIAL_UI_ROUTE_A (default OFF) -- when ON, the editor binary
+# builds a cd::material::UiVariant at boot and wires it into the UI
+# submitter via Submitter::create_with_material_ui_variant. The default
+# stays OFF until the Route A path is visually verified end-to-end
+# against a real swapchain (per the M7 W3 brief).
 #
 # OFF: editor boots with cd::ui_renderer_rhi's inline GLSL submitter
-#      (Route B). Solid panel quads only -- enough to make the editor
-#      window visually alive today.
+#      (Route B / Submitter::create_with_inline_shader). Solid panel
+#      quads only -- enough to make the editor window visually alive.
 #
-# ON : editor boots with the full cd::material UI variant pipeline
-#      (Route A) -- textured quads, glyphs, nine-patch, gradients, blur.
-option(CD_HAVE_MATERIAL_UI_VARIANTS
-       "Editor uses cd::material UI variants (Route A); OFF = inline GLSL fallback (Route B)"
+# ON : editor boots the cd::material UI variant path (Route A /
+#      Submitter::create_with_material_ui_variant). Adds cd::material
+#      to the binary's link surface.
+#
+# Enable via:   cmake -B build -DCD_USE_MATERIAL_UI_ROUTE_A=ON ...
+option(CD_USE_MATERIAL_UI_ROUTE_A
+       "Editor uses cd::material UI variant pipeline (Route A); OFF = inline GLSL fallback (Route B)"
        OFF)
-if(CD_HAVE_MATERIAL_UI_VARIANTS)
-  target_compile_definitions(cd_sample_editor PRIVATE CD_HAVE_MATERIAL_UI_VARIANTS=1)
+if(CD_USE_MATERIAL_UI_ROUTE_A)
+  target_compile_definitions(cd_sample_editor PRIVATE CD_USE_MATERIAL_UI_ROUTE_A=1)
+  target_link_libraries(cd_sample_editor PRIVATE cd::material)
 endif()

@@ -38,6 +38,19 @@
 #include <cstdint>
 #include <memory>
 
+// Phase 608 / M7 W3 — forward-declare cd::material::UiVariant so the
+// header keeps the cd::material include behind the .cpp boundary. The
+// Route A factory below takes the variant by rvalue reference (sink),
+// so callers must `#include <cd/material/UiVariant.hpp>` themselves
+// before invoking `create_with_material_ui_variant`. Keeping the
+// forward-decl here avoids dragging glslang's transitive include
+// surface (cd::material -> cd::shader) into every translation unit
+// that just wants to call `create()` / `record()`.
+namespace cd::material
+{
+class UiVariant;
+}  // namespace cd::material
+
 namespace cd::ui::renderer_rhi
 {
 
@@ -115,6 +128,43 @@ public:
     /// failures, which arrive in the `ErrorCode::message` field.
     [[nodiscard]] static cd::core::Result<Submitter>
     create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCreateInfo& info);
+
+    /// Phase 608 / M7 W3 — Route A factory.
+    ///
+    /// Constructs the submitter using a pre-built `cd::material::UiVariant`
+    /// as the pipeline source (instead of compiling inline GLSL in
+    /// `create_with_inline_shader`). The submitter:
+    ///
+    ///   * takes ownership of the supplied `variant` (move-in);
+    ///   * binds the variant's pipeline + pushes the viewport-size push
+    ///     constant inside `record()`, exactly the same way the Route B
+    ///     inline path does;
+    ///   * reuses the same ring vb/ib allocation flow as `create()`.
+    ///
+    /// Contract: the variant MUST have been built with the canonical UI
+    /// vertex format + a single push constant range carrying `vec2
+    /// inv_viewport` for the vertex stage. The default
+    /// `cd::material::UiVariantSpec` satisfies both requirements (see
+    /// `cd::material::create_ui_variant`).
+    ///
+    /// NOTE: this Sprint deliberately does NOT bind any per-frame
+    /// descriptor sets (theme UBO / SDF sampler). The Sprint-3 contract
+    /// is "Route A REACHABLE end-to-end" — uploading + binding the theme
+    /// UBO is the next Sprint's job. Variants with descriptors will still
+    /// record cleanly because the `record()` path issues
+    /// `vkCmdBindPipeline` only; the unbound set just renders the
+    /// underlying Sprint-1 fallback path the variant's shader degrades
+    /// to (which is the same alpha-blend solid-quad output Route B
+    /// produces today).
+    ///
+    /// Returns the same kinds of errors as `create()` plus any error
+    /// surfaced by the supplied variant (the factory rejects an inert
+    /// `UiVariant` with kInvalidArgument before allocating any GPU
+    /// resources).
+    [[nodiscard]] static cd::core::Result<Submitter>
+    create_with_material_ui_variant(cd::rhi::IDevice&          device,
+                                    const SubmitterCreateInfo& info,
+                                    cd::material::UiVariant&&  variant);
 
     /// Free GPU resources. Idempotent. Called automatically on destruction.
     void destroy() noexcept;

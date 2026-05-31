@@ -21,6 +21,7 @@
 // =============================================================================
 #include <cd/ui/renderer_rhi/Submitter.hpp>
 
+#include <cd/material/UiVariant.hpp>
 #include <cd/rhi/BlendPresets.hpp>
 #include <cd/rhi/DepthStencilPresets.hpp>
 #include <cd/rhi/RasterStatePresets.hpp>
@@ -103,6 +104,14 @@ struct Submitter::Impl
     cd::rhi::PipelineLayoutHandle   pipeline_layout {};
     cd::rhi::GraphicsPipelineHandle pipeline {};
 
+    // Phase 608 / M7 W3 -- Route A pipeline source. When set, `record()`
+    // binds `material_variant->material().pipeline()` and pushes the
+    // viewport size into the variant's push-constant range. RAII through
+    // the variant's owned Material handles, so Submitter::destroy() does
+    // NOT need to touch any of these handles individually.
+    bool                                          material_pipeline_owned { false };
+    std::unique_ptr<cd::material::UiVariant>      material_variant {};
+
     // Frame-local snapshot from `upload`.
     std::uint32_t               vertex_count { 0U };
     std::uint32_t               index_count  { 0U };
@@ -152,6 +161,14 @@ void Submitter::destroy() noexcept
             {
                 impl_->device->destroy_shader_module(impl_->vs);
             }
+        }
+        // Phase 608 / M7 W3 -- Route A: release the owned UiVariant BEFORE
+        // tearing down our own vb/ib so the variant's Material RAII (which
+        // holds pipeline + pipeline_layout + descriptor_set_layout + shader
+        // modules) drives its destroy_* calls against a still-live device.
+        if (impl_->material_pipeline_owned)
+        {
+            impl_->material_variant.reset();
         }
         if (impl_->vb.is_valid()) impl_->device->destroy_buffer(impl_->vb);
         if (impl_->ib.is_valid()) impl_->device->destroy_buffer(impl_->ib);
@@ -361,6 +378,37 @@ Submitter::create_with_inline_shader(cd::rhi::IDevice& device, const SubmitterCr
     return out;
 }
 
+// ---- create_with_material_ui_variant -------------------------------------
+//
+// Phase 608 / M7 W3 -- Route A. Reuses `create()` for the ring vertex/index
+// buffer allocation, then stashes the supplied cd::material::UiVariant as
+// the pipeline source. `record()` later binds the variant's pipeline +
+// pushes the viewport-size push-constant the variant's shader expects
+// (matches the Sprint-1/Sprint-2 vertex-shader push contract).
+cd::core::Result<Submitter>
+Submitter::create_with_material_ui_variant(cd::rhi::IDevice&          device,
+                                           const SubmitterCreateInfo& info,
+                                           cd::material::UiVariant&&  variant)
+{
+    if (!variant.is_valid())
+    {
+        return std::unexpected(cd::core::ErrorCode {
+            0x000F, 2U,
+            "Submitter::create_with_material_ui_variant: supplied UiVariant is inert"});
+    }
+
+    auto base = Submitter::create(device, info);
+    if (!base.has_value())
+    {
+        return std::unexpected(base.error());
+    }
+    Submitter out = std::move(*base);
+
+    out.impl_->material_variant        = std::make_unique<cd::material::UiVariant>(std::move(variant));
+    out.impl_->material_pipeline_owned = true;
+    return out;
+}
+
 // ---- upload ---------------------------------------------------------------
 
 bool Submitter::upload(const cd::ui::renderer::DrawBatcher& batcher)
@@ -404,10 +452,12 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
     // Iterate the batcher's DrawCommands and issue one scissor + draw per
     // group. Phase 554 / M3 W1A: when the submitter owns an inline pipeline
     // (Route B), bind the pipeline + push the viewport size so the vertex
-    // shader can project pixel-space verts into NDC. The Route A path
-    // (cd::material UI variants) layers the pipeline binding in via the
-    // caller -- same `record()` body still applies because the vb/ib bind
-    // and per-command scissor + draw_indexed are universal.
+    // shader can project pixel-space verts into NDC. Phase 608 / M7 W3:
+    // when the submitter owns a cd::material::UiVariant (Route A), bind
+    // the variant's pipeline + push the SAME viewport-size constant the
+    // Route A vertex shader expects (Sprint-1/Sprint-2 vertex shader maps
+    // pixel space -> NDC via `vec2 inv_viewport`). The vb/ib bind and
+    // per-command scissor + draw_indexed are universal across both routes.
     if (impl_->inline_pipeline_owned && impl_->pipeline.is_valid())
     {
         cmd.bind_graphics_pipeline(impl_->pipeline);
@@ -420,6 +470,30 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
                            0U,
                            static_cast<std::uint32_t>(vp_size.size() * sizeof(float)),
                            vp_size.data());
+    }
+    else if (impl_->material_pipeline_owned && impl_->material_variant)
+    {
+        const auto& mat = impl_->material_variant->material();
+        if (mat.pipeline().is_valid())
+        {
+            cmd.bind_graphics_pipeline(mat.pipeline());
+            // Route A vertex shader uses `inv_viewport` (1 / pixel size)
+            // so the same `pos * inv_viewport * 2.0 - 1.0` NDC mapping
+            // works for any caller-supplied viewport. Guard against a
+            // zero-size viewport by writing zeros (no draws will land on
+            // a zero-extent target anyway, but avoid div-by-zero in case
+            // a future caller pushes a NaN through the path).
+            const float inv_w = viewport_extent.width  > 0U
+                ? 1.0F / static_cast<float>(viewport_extent.width)  : 0.0F;
+            const float inv_h = viewport_extent.height > 0U
+                ? 1.0F / static_cast<float>(viewport_extent.height) : 0.0F;
+            const std::array<float, 2> inv_vp { inv_w, inv_h };
+            cmd.push_constants(mat.pipeline_layout(),
+                               cd::rhi::ShaderStage::kVertex,
+                               0U,
+                               static_cast<std::uint32_t>(inv_vp.size() * sizeof(float)),
+                               inv_vp.data());
+        }
     }
 
     cmd.bind_vertex_buffer(0U, impl_->vb, 0U);

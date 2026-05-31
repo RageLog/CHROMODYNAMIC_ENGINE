@@ -88,6 +88,14 @@
 #include <cd/ui/widgets/DockSpace.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
+// Phase 608 / M7 W3 — opt-in Route A path (default OFF). The
+// cd::material UI variant header drags in glslang's transitive include
+// surface via cd::shader, so keep the include local to the Route A
+// compile-time gate.
+#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
+#include <cd/material/UiVariant.hpp>
+#endif
+
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
@@ -736,21 +744,24 @@ int main(int argc, char** argv)
 
     // -- 7. UI submitter ----------------------------------------------------
     //
-    // Phase 554 / M3 W1A -- pick between two pipelines:
+    // Phase 608 / M7 W3 -- pick between two pipelines via compile-time flag:
     //
-    //   Route A (CD_HAVE_MATERIAL_UI_VARIANTS): cd::material UI variants
-    //   land via the parallel W1B agent. When that compile-def flips ON
-    //   the editor consumes the polished cd::material pipeline (textured
-    //   quads, glyphs, nine-patch, gradients, blur).
+    //   Route A (CD_USE_MATERIAL_UI_ROUTE_A, OFF by default): build a
+    //   cd::material::UiVariant via cd::material::create_ui_variant and
+    //   hand it to Submitter::create_with_material_ui_variant. This is
+    //   the strategic path; the variant carries the Sprint-1/Sprint-2
+    //   UI pipeline (vertex-color baseline today, theme UBO + SDF
+    //   sampler optional). Default is OFF until the path is visually
+    //   verified end-to-end against a real swapchain.
     //
     //   Route B (default -- what ships today): cd::ui_renderer_rhi compiles
     //   a minimal inline GLSL pipeline at boot (solid quads only, no
     //   sampler). That's enough to render every panel rect + theme palette
-    //   so the editor's blackscreen window finally shows DockSpace tiles.
+    //   so the editor's window shows DockSpace tiles.
     //
     // The constant below resolves at compile time so the unused branch
     // is dead-stripped; only the active path ends up in the binary.
-#if defined(CD_HAVE_MATERIAL_UI_VARIANTS)
+#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
     constexpr bool kEditorRouteA = true;
 #else
     constexpr bool kEditorRouteA = false;
@@ -760,18 +771,48 @@ int main(int argc, char** argv)
     sci.max_vertices = 16384U;
     sci.max_indices  = 65536U;
     sci.color_format = rhi::Format::kBGRA8Unorm;
-    auto sub_r = kEditorRouteA
-        ? urr::Submitter::create(*device, sci)
-        : urr::Submitter::create_with_inline_shader(*device, sci);
+
+    cd::core::Result<urr::Submitter> sub_r =
+        std::unexpected(cd::core::ErrorCode { 0x0001U, 0U, "uninitialized" });
+#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
+    {
+        // Build the cd::material::UiVariant up front. The default spec
+        // matches Sprint-1 (vertex-color only, alpha blend, depth off)
+        // and targets a single BGRA8 attachment so the variant's
+        // pipeline lines up with the swapchain format selected above.
+        const std::array<rhi::Format, 1> kColorFormats {
+            rhi::Format::kBGRA8Unorm,
+        };
+        cd::material::UiVariantSpec vspec {};
+        vspec.color_attachment_formats = std::span<const rhi::Format>(
+            kColorFormats.data(), kColorFormats.size());
+        vspec.name = "editor_ui_variant_route_a";
+
+        auto var_r = cd::material::create_ui_variant(*device, vspec);
+        if (!var_r.has_value())
+        {
+            std::fprintf(stderr,
+                         "editor: cd::material::create_ui_variant failed: "
+                         "domain=%u code=%u\n",
+                         var_r.error().domain, var_r.error().code);
+            return 2;
+        }
+        sub_r = urr::Submitter::create_with_material_ui_variant(
+            *device, sci, std::move(*var_r));
+    }
+#else
+    sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
+#endif
     if (!sub_r.has_value())
     {
         std::fprintf(stderr, "editor: ui_renderer_rhi::Submitter::create%s failed.\n",
-                     kEditorRouteA ? "" : "_with_inline_shader");
+                     kEditorRouteA ? "_with_material_ui_variant"
+                                   : "_with_inline_shader");
         return 2;
     }
     auto& submitter = *sub_r;
     std::printf("editor: submitter wired (%s).\n",
-                kEditorRouteA ? "Route A / cd::material UI variants"
+                kEditorRouteA ? "Route A / cd::material UI variant"
                               : "Route B / inline GLSL fallback");
 
     // -- 8. Frame loop ------------------------------------------------------
