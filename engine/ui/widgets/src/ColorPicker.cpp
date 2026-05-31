@@ -651,9 +651,9 @@ void ColorPicker::draw(cd::ui::renderer::DrawBatcher& batcher,
             const float hue_deg = static_cast<float>(i) * (360.0F / static_cast<float>(kBands));
             const Float3 rgb = hsv_to_rgb(hue_deg, 1.0F, 1.0F);
             const Color c {
-                static_cast<std::uint8_t>(std::clamp(rgb.x, 0.0F, 1.0F) * 255.0F + 0.5F),
-                static_cast<std::uint8_t>(std::clamp(rgb.y, 0.0F, 1.0F) * 255.0F + 0.5F),
-                static_cast<std::uint8_t>(std::clamp(rgb.z, 0.0F, 1.0F) * 255.0F + 0.5F),
+                static_cast<std::uint8_t>(std::lround(std::clamp(rgb.x, 0.0F, 1.0F) * 255.0F)),
+                static_cast<std::uint8_t>(std::lround(std::clamp(rgb.y, 0.0F, 1.0F) * 255.0F)),
+                static_cast<std::uint8_t>(std::lround(std::clamp(rgb.z, 0.0F, 1.0F) * 255.0F)),
                 255U,
             };
             const Rect band {
@@ -673,9 +673,9 @@ void ColorPicker::draw(cd::ui::renderer::DrawBatcher& batcher,
         // Approximate with a 4-quad gradient blend.
         const Float3 pure   = hsv_to_rgb(hsv_h_, 1.0F, 1.0F);
         const Color  c_pure {
-            static_cast<std::uint8_t>(pure.x * 255.0F + 0.5F),
-            static_cast<std::uint8_t>(pure.y * 255.0F + 0.5F),
-            static_cast<std::uint8_t>(pure.z * 255.0F + 0.5F),
+            static_cast<std::uint8_t>(std::clamp<long>(std::lround(pure.x * 255.0F), 0L, 255L)),
+            static_cast<std::uint8_t>(std::clamp<long>(std::lround(pure.y * 255.0F), 0L, 255L)),
+            static_cast<std::uint8_t>(std::clamp<long>(std::lround(pure.z * 255.0F), 0L, 255L)),
             255U,
         };
         const Color c_white { 255U, 255U, 255U, 255U };
