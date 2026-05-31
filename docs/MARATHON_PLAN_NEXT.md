@@ -279,10 +279,11 @@ just the schedule + status lens.
 
 ### T5.3 Volumetric-fog + auto-exposure-GPU ADR backfill
 
-* Two phases shipped without dedicated ADRs in this resume wave
-  (phase461 GPU exposure skeleton, phase469 volumetric fog). Both
-  deserve an ADR for the design choices made.
-* **Effort**: 0.5 days each.
+* **Status**: DONE (2026-05-31).
+* Two ADRs backfilled for phases shipped earlier:
+  * `docs/ADR/ADR-20260531-volumetric-fog.md` (phase469, froxel volume + HG phase).
+  * `docs/ADR/ADR-20260531-auto-exposure-gpu.md` (phase461/507, Reinhard log-avg + GPU reduction).
+* **Effort**: 0.5 days each (completed).
 
 ---
 
@@ -291,12 +292,12 @@ just the schedule + status lens.
 1. **Marathon N+1 (visual / sample close-out)**: T3.1 visual
    hello_world, T1.4 auto-exposure wire, T1.5 vol-fog wire, T1.7
    Sponza golden-image gate, T5.1 + T5.3 audit/ADR backfill.
-   _(All within existing infra; no new vendored deps.)_
+   *(All within existing infra; no new vendored deps.)*
 2. **Marathon N+2 (editor)**: T2.1 dock-space, T2.2 color picker,
-   T2.3 curve editor, T0.2 editor binary. _(Pure UI + editor; no GPU
-   backend changes.)_
+   T2.3 curve editor, T0.2 editor binary. *(Pure UI + editor; no GPU
+   backend changes.)*
 3. **Marathon N+3 (Metal foundation)**: T0.1 Metal RHI MVP +
-   Sponza render on Metal. _(Requires macOS CI.)_
+   Sponza render on Metal. *(Requires macOS CI.)*
 4. **Long-running parallel track**: T0.3 Jolt + T3.3 physics demos
    can be picked up by a second engineer in parallel any time.
 
