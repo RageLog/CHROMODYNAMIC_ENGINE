@@ -264,10 +264,16 @@ just the schedule + status lens.
 
 ### T5.1 RHI parity audit refresh
 
-* **Status**: `phase466-d3d12-parity` cleared 5 kNotImpl items. Full
-  audit needs a refresh of `docs/D3D12_PARITY_AUDIT.md` against
-  current sources.
-* **Effort**: 1 day.
+* **Status**: DONE (2026-05-31).
+  * `docs/D3D12_PARITY_AUDIT.md` refreshed post-phase466: updated baseline
+    to Phase 466 + current, confirmed 127/127 tests PASS on both Vulkan + D3D12.
+  * Matrix expanded: 74 virtuals (IDevice + ICommandBuffer) with per-method status.
+  * Phase 466 impact documented: 5 kNotImpl → shipped items, bringing D3D12 from
+    9 down to 2 remaining stubs (shared with Vulkan: RT pipeline + dispatch_rays).
+  * Next-priority gaps documented: mesh shaders, work graphs, sampler feedback,
+    GPU upload heap defragmentation (all low-priority, Phase 120+ vision).
+  * Summary table + feature matrix added for quick reference.
+* **Effort**: 1 day (completed).
 
 ### T5.2 Gameplay-tier README sweep
 
