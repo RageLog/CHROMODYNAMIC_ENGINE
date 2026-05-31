@@ -62,6 +62,11 @@ add_subdirectory(panel_asset_browser)
 # phase546 — Viewport panel (DrawBatcher path; textured scene colour target).
 add_subdirectory(panel_viewport)
 
+# ── cd::editor_panel_material_editor (STATIC) ──────────────────────────────
+# phase556-557-558 — Material Editor panel (DrawBatcher path; base color /
+# metallic / roughness sliders + live preview rectangle).
+add_subdirectory(panel_material_editor)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
