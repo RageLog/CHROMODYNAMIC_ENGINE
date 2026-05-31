@@ -82,6 +82,12 @@ add_subdirectory(panel_behavior_designer)
 # for asset import; extension filter + consume_dropped_path API).
 add_subdirectory(panel_asset_drop_target)
 
+# ── cd::editor_panel_cutscene_player (STATIC) ──────────────────────────────
+# phase617 — Cutscene Player panel (DrawBatcher path; timeline scrubber +
+# per-phase block layout + event marker dots + Play/Pause/Stop/Skip strips).
+# Drives cd::game::cutscene_player::CutscenePlayer.
+add_subdirectory(panel_cutscene_player)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)

@@ -41,6 +41,14 @@
 //   * frame_graph_timeline -- floating bottom-right (~400x80 px), fed
 //                             synthetic GPU pass records.
 //
+// New overlay (phase618 / M8 W2B):
+//   * gpu_marker_overlay -- floating top-right below cpu_marker (~300x100 px);
+//                           cpu/gpu sibling classification, NOT a v1/v2 rename.
+//                           Synthetic GpuMarkerSample data per frame (real GPU
+//                           timestamps = future Sprint, ICommandBuffer::write_timestamp).
+//   * asset::validator   -- No status bar exists in apps/editor yet.
+//                           TODO: add status bar + validator badge (pass/warn/error).
+//
 // The LEFT and RIGHT columns now each carry TWO stacked panels (vertically),
 // and the BOTTOM strip carries the existing console+assets tab group plus
 // the new animator as a horizontal sibling.
@@ -111,6 +119,17 @@
 // phase598 / M6 W3 — overlays (CPU marker bar chart + frame-graph Gantt).
 #include <cd/profile/cpu_marker_overlay/CpuMarkerOverlay.hpp>
 #include <cd/profile/frame_graph_timeline/FrameGraphTimeline.hpp>
+
+// phase618 / M8 W2B — GPU marker overlay (sibling to cpu_marker_overlay;
+// cpu/gpu classification, NOT a v1/v2 version rename). Synthetic samples per
+// frame — real GPU timestamps land when ICommandBuffer::write_timestamp ships.
+#include <cd/profile/gpu_marker/GpuMarker.hpp>
+
+// phase618 / M8 W2B — asset::validator for status badge.
+// TODO(phase618): No status bar exists yet in apps/editor. When a status bar
+// is added, wire a cd::asset::validator::Validator instance here and display
+// a pass/warn/error badge from the latest validate call results.
+// #include <cd/asset/validator/Validator.hpp>  // linked but include deferred
 
 #include <array>
 #include <cmath>
@@ -438,6 +457,95 @@ void draw_asset_drop_target_panel(const uw::Rect& rect,
     g_asset_drop_target_panel.draw(batcher, theme, rect);
 }
 
+// ---- GPU marker overlay draw helper ----------------------------------------
+//
+// phase618 / M8 W2B — mirrors the cpu_marker_overlay::Overlay::draw() pattern
+// but consumes cd::profile::gpu_marker::GpuMarkerSample data (name +
+// duration_ms_computed). GPU markers have no thread-id lane concept — all bars
+// are drawn in a single horizontal lane spanning the overlay height.
+//
+// The overlay is fed synthetic GpuMarkerSample data each frame (real GPU
+// timestamps require ICommandBuffer::write_timestamp, which is a future Sprint).
+void draw_gpu_marker_overlay(
+    ur::DrawBatcher&                                          batcher,
+    std::span<const cd::profile::gpu_marker::GpuMarkerSample> samples,
+    float                                                      x,
+    float                                                      y,
+    float                                                      width,
+    float                                                      height,
+    double                                                     window_ms)
+{
+    if (samples.empty() || width <= 0.0F || height <= 0.0F)
+        return;
+
+    // Compute min start_ms equivalent from the GPU tick data.
+    // GpuMarkerSample stores raw ticks; after resolve() duration_ms_computed is
+    // valid. For the overlay we treat gpu_start_tick as the "start" offset in
+    // ticks and map ticks onto the [0, window_ms] time axis using the same
+    // stub frequency used by Recorder::resolve (1 GHz = 1e9 ticks/s).
+    static constexpr double kStubFreqHz = 1.0e9;
+    static constexpr double kTickToMs   = 1000.0 / kStubFreqHz;
+
+    const std::uint64_t min_tick = [&]
+    {
+        std::uint64_t m = samples[0].gpu_start_tick;
+        for (const auto& s : samples)
+            m = (s.gpu_start_tick < m) ? s.gpu_start_tick : m;
+        return m;
+    }();
+
+    const double time_range     = (window_ms > 0.0) ? window_ms : 1.0;
+    const float  pixels_per_ms  =
+        width / static_cast<float>(time_range);
+    const float  bar_h          = height * 0.75F;  // 75% height; 25% top/bottom padding
+    const float  bar_y          = y + (height - bar_h) * 0.5F;
+
+    // djb2 hash → stable hue (same function as cpu_marker_overlay).
+    auto gpu_colour = [](std::string_view name) -> ur::Color
+    {
+        std::uint32_t h = 5381U;
+        for (const char c : name)
+            h = ((h << 5U) + h) + static_cast<std::uint32_t>(static_cast<unsigned char>(c));
+        // Shift bits vs cpu palette to produce visually distinct hues.
+        const auto r = static_cast<std::uint8_t>(((h >> 4U) & 0xFFu));
+        const auto g = static_cast<std::uint8_t>(((h >> 12U) & 0xFFu));
+        const auto b = static_cast<std::uint8_t>((h & 0xFFu));
+        return ur::Color { r, g, b, 200U };
+    };
+
+    // Push a scissor rect scoped to the overlay bounds. This gives the GPU
+    // marker overlay its own DrawCommand in the batcher (distinct scissor key),
+    // so command_count() increments by 1 relative to the CPU/FGT overlays.
+    const ur::ScissorRect scissor {
+        static_cast<std::int32_t>(x),
+        static_cast<std::int32_t>(y),
+        static_cast<std::uint32_t>(width),
+        static_cast<std::uint32_t>(height),
+    };
+    batcher.push_scissor(scissor);
+
+    for (const auto& s : samples)
+    {
+        const double rel_start_ms =
+            static_cast<double>(s.gpu_start_tick - min_tick) * kTickToMs;
+        const double dur_ms = s.duration_ms_computed;
+
+        if (rel_start_ms > time_range)
+            continue;
+        if (rel_start_ms + dur_ms < 0.0)
+            continue;
+
+        const float bar_x =
+            x + static_cast<float>(rel_start_ms) * pixels_per_ms;
+        const float bar_w =
+            std::max(1.0F, static_cast<float>(dur_ms) * pixels_per_ms);
+
+        batcher.quad(bar_x, bar_y, bar_w, bar_h, gpu_colour(s.name));
+    }
+
+    batcher.pop_scissor();
+}
+
 // ---- Pointer event flatten (same shape as hello_ui) ------------------------
 
 struct PointerAccumulator
@@ -659,15 +767,22 @@ int main(int argc, char** argv)
                 "inspector | console | assets | material_editor | animator | "
                 "behavior_designer | asset_drop_target)\n", dockspace.node_count());
 
-    // -- 5b. M5 overlay instances (phase598 / M6 W3) ------------------------
+    // -- 5b. Overlay instances (phase598 / M6 W3; phase618 / M8 W2B) --------
     //
-    // CPU-marker bar chart -> floating top-right (~300x120 px).
-    // Frame-graph timeline -> floating bottom-right (~400x80 px).
+    // CPU-marker bar chart   -> floating top-right (~300x120 px).
+    // GPU-marker bar chart   -> floating top-right below CPU (~300x100 px).
+    //                          phase618 / M8 W2B: cpu/gpu classification sibling.
+    //                          Synthetic samples this Sprint; real timestamps
+    //                          land when ICommandBuffer::write_timestamp ships.
+    // Frame-graph timeline   -> floating bottom-right (~400x80 px).
     //
-    // Both overlays consume DUMMY synthetic samples this Sprint -- real
+    // All overlays consume DUMMY synthetic samples this Sprint — real
     // instrumentation hooks (cd::profile Collector wiring + GPU query
     // readback feed) land in a follow-up Sprint. The dummy feed exists so
     // the overlay surfaces are visibly active in the editor window.
+    //
+    // asset::validator status badge: no status bar exists in apps/editor yet.
+    // TODO(phase618): add status bar and wire cd::asset::validator badge here.
     namespace cmo = cd::profile::cpu_marker_overlay;
     namespace fgt = cd::profile::frame_graph_timeline;
     const cmo::Overlay         cpu_overlay        { 16.0 };
@@ -943,6 +1058,52 @@ int main(int argc, char** argv)
                     std::span<const cmo::MarkerSample>(
                         cpu_dummy.data(), cpu_dummy.size()),
                     bounds);
+            }
+
+            // --- GPU marker overlay -- top-right 300 x 100, below CPU ----
+            // phase618 / M8 W2B — sibling to cpu_marker_overlay (cpu/gpu
+            // classification). Synthetic GpuMarkerSample data fed directly
+            // (no real ICommandBuffer needed until write_timestamp lands).
+            // Stacked below the cpu_marker_overlay: y offset = kMargin +
+            // cpu overlay height (120) + gap (4).
+            {
+                constexpr float kOverlayW  = 300.0F;
+                constexpr float kOverlayH  = 100.0F;
+                constexpr float kMargin    = 8.0F;
+                constexpr float kCpuH      = 120.0F;  // cpu_marker_overlay height
+                constexpr float kGap       = 4.0F;
+                const float     overlay_x  = fbw_f - kOverlayW - kMargin;
+                const float     overlay_y  = kMargin + kCpuH + kGap;
+
+                // Synthetic 4 GPU markers — monotonic counter ticks at 1 GHz
+                // stub rate: 1 tick = 1 ns → each marker is a few million ticks
+                // apart so duration_ms_computed is a small positive value.
+                // Using frame_idx to advance the base tick deterministically.
+                const std::uint64_t base_tick =
+                    static_cast<std::uint64_t>(frame_idx) * 16'000'000ULL;
+
+                // GpuMarkerSample fields: name, gpu_start_tick, gpu_end_tick,
+                // duration_ms_computed.  duration_ms_computed = delta / 1e6
+                // at stub 1 GHz rate. We set it explicitly here so the
+                // draw helper doesn't need to re-derive it from the ticks.
+                using GS = cd::profile::gpu_marker::GpuMarkerSample;
+                const std::array<GS, 4> gpu_marker_dummy {
+                    GS { "gpu.depth_prepass",  base_tick + 0ULL,
+                         base_tick + 2'500'000ULL, 2.5 },
+                    GS { "gpu.gbuffer",        base_tick + 2'500'000ULL,
+                         base_tick + 6'000'000ULL, 3.5 },
+                    GS { "gpu.lighting",       base_tick + 6'000'000ULL,
+                         base_tick + 10'000'000ULL, 4.0 },
+                    GS { "gpu.composite",      base_tick + 10'000'000ULL,
+                         base_tick + 13'500'000ULL, 3.5 },
+                };
+                draw_gpu_marker_overlay(
+                    batcher,
+                    std::span<const GS>(gpu_marker_dummy.data(),
+                                        gpu_marker_dummy.size()),
+                    overlay_x, overlay_y,
+                    kOverlayW, kOverlayH,
+                    16.0);
             }
 
             // --- Frame-graph timeline -- bottom-right 400 x 80 -----------
