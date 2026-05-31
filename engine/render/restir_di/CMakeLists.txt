@@ -18,6 +18,7 @@ cd_add_library(restir_di
   EXCLUDE_FROM_INSTALL
   SOURCES
     src/DispatchPass.cpp
+    src/Denoiser.cpp
   PUBLIC_DEPS
     cd::core
     cd::math
