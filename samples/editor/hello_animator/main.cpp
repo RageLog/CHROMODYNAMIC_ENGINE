@@ -1,7 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — samples/editor/hello_animator
 //
-// phase591-hello-animator-sample
+// phase597-hello-animator-sample  (M6 W2B — visual sample missed in M5 phase 591)
 //
 // Visual sample for cd::editor::panel::animator::Animator.
 // Demonstrates the cd::editor::panel::animator library consumed from an
@@ -22,7 +22,8 @@
 //       submitter.upload(batcher)
 //       [begin_render_pass -> submitter.record(cmd, extent) -> end_render_pass]
 //       renderer.end_frame()
-//   * Press ESC to exit; or pass --headless N for automated CI runs.
+//   * 60-frame render then clean exit; press ESC to exit early.
+//   * Pass --headless N for automated CI runs (e.g. --headless 5).
 //
 // ImGui-free: this sample imports NO imgui headers. All UI is driven
 // via cd::ui_renderer DrawBatcher quads emitted by Animator::draw().
@@ -167,7 +168,7 @@ int main(int argc, char** argv)
 
     // ---- Window --------------------------------------------------------------
     cd::platform::WindowDesc wd {};
-    wd.title  = "CHROMODYNAMIC — hello_animator (phase591)";
+    wd.title  = "CHROMODYNAMIC — hello_animator (phase597)";
     wd.width  = 800U;
     wd.height = 600U;
     auto window_r = cd::platform::create_window(wd);

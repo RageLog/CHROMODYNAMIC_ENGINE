@@ -1,4 +1,4 @@
-# phase591-hello-animator-sample
+# phase597-hello-animator-sample (M6 W2B — visual sample missed in M5 phase 591)
 #
 # Visual sample for cd::editor::panel::animator::Animator.
 # Boots a Vulkan window, creates a cd::ui_renderer_rhi::Submitter via the
