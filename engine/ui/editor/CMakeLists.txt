@@ -46,6 +46,10 @@ cd_add_library(editor
     cd::core
 )
 
+# ── cd::editor_panel_inspector (STATIC) ────────────────────────────────────
+# phase543 — Inspector panel (DrawBatcher + ImGui paths).
+add_subdirectory(panel_inspector)
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)

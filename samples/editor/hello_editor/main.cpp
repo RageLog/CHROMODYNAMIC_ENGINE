@@ -50,6 +50,7 @@
 #include <cd/editor/EditHistory.hpp>
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/TransformCommands.hpp>
+#include <cd/editor/panel_inspector/Inspector.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
@@ -438,6 +439,10 @@ int main(int argc, char** argv)
     // ---- Selected entity (invalid = no selection) ------------------------
     cd::ecs::Entity selected {};
 
+    // ---- Inspector panel (cd::editor_panel_inspector) --------------------
+    cd::editor::panel::inspector::Inspector inspector_panel;
+    inspector_panel.set_world_ptr(&world);
+
     auto find_meta = [&](cd::ecs::Entity e) -> EntityMeta* {
         for (auto& m : entity_metas)
             if (m.handle.id == e.id) return &m;
@@ -484,7 +489,10 @@ int main(int argc, char** argv)
         }
         // Auto-select the first root so the inspector is non-empty on boot.
         if (!gltf_ingests.empty() && gltf_ingests.front().result.root_entity.id != 0)
+        {
             selected = gltf_ingests.front().result.root_entity;
+            inspector_panel.set_target(selected);
+        }
     }
     else
     {
@@ -507,7 +515,10 @@ int main(int argc, char** argv)
             entity_metas.push_back(m);
         }
         if (!entity_metas.empty())
+        {
             selected = entity_metas.front().handle;
+            inspector_panel.set_target(selected);
+        }
         log_push("Spawned Cube, Sphere, Cone");
     }
 
@@ -525,7 +536,13 @@ int main(int argc, char** argv)
     palette.register_command(3, "Edit: Clear History",
         [&]() { history.clear(); log_push("palette: history cleared"); });
     palette.register_command(10, "Select: First Entity",
-        [&]() { if (!entity_metas.empty()) { selected = entity_metas.front().handle; log_push("palette: select first entity"); } });
+        [&]() {
+            if (!entity_metas.empty()) {
+                selected = entity_metas.front().handle;
+                inspector_panel.set_target(selected);
+                log_push("palette: select first entity");
+            }
+        });
     palette.register_command(20, "Transform: Reset Selected",
         [&]() {
             if (selected.id != 0)
@@ -903,6 +920,7 @@ int main(int argc, char** argv)
                         if (!is_selected)
                         {
                             selected = ent;
+                            inspector_panel.set_target(selected);
                             rot_slider_deg    = 0.0F;
                             rot_slider_entity = {};
                             log_push("selected: " + label);
@@ -925,192 +943,18 @@ int main(int argc, char** argv)
             ImGuiCond_FirstUseEver);
         ImGui::Begin("Inspector");
         {
-            if (selected.id == 0)
+            // Display name above the panel (the library reports entity id only;
+            // we add the display name from our metadata table here).
+            if (selected.is_valid())
             {
-                ImGui::TextDisabled("no selection — click an entity in Scene Tree");
-            }
-            else if (auto* lt = scene.local(selected); lt == nullptr)
-            {
-                ImGui::TextDisabled("selected entity has no LocalTransform");
-            }
-            else
-            {
-                // Entity header.
                 const EntityMeta* meta = find_meta(selected);
                 const std::string label = meta ? meta->display_name : entity_label(selected);
                 ImGui::Text("Entity: %s  (id=%u)", label.c_str(), selected.id);
                 ImGui::Separator();
-
-                ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.60F);
-
-                // ---- Position -------------------------------------------
-                ImGui::SeparatorText("Position");
-                {
-                    static cd::math::Vec3f pre_pos {};
-                    float xyz[3] {
-                        lt->value.position.x,
-                        lt->value.position.y,
-                        lt->value.position.z };
-                    ImGui::Text("X Y Z");
-                    ImGui::SameLine();
-                    const bool changed = ImGui::DragFloat3("##pos", xyz, 0.05F, -20.0F, 20.0F, "%.3f");
-                    if (ImGui::IsItemActivated())  pre_pos = lt->value.position;
-                    if (changed) lt->value.position = { xyz[0], xyz[1], xyz[2] };
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        const cd::math::Vec3f delta {
-                            lt->value.position.x - pre_pos.x,
-                            lt->value.position.y - pre_pos.y,
-                            lt->value.position.z - pre_pos.z };
-                        if (delta.x != 0.0F || delta.y != 0.0F || delta.z != 0.0F)
-                        {
-                            lt->value.position = pre_pos;
-                            history.push(std::make_unique<cd::editor::TranslateCommand>(
-                                scene, selected, delta));
-                            log_push("drag-end: TranslateCommand");
-                        }
-                    }
-                }
-
-                // ---- Scale ----------------------------------------------
-                ImGui::SeparatorText("Scale");
-                {
-                    static cd::math::Vec3f pre_scale { 1.0F, 1.0F, 1.0F };
-                    float xyz[3] {
-                        lt->value.scale.x,
-                        lt->value.scale.y,
-                        lt->value.scale.z };
-                    ImGui::Text("X Y Z");
-                    ImGui::SameLine();
-                    const bool changed = ImGui::DragFloat3("##scale", xyz, 0.02F, 0.01F, 10.0F, "%.3f");
-                    if (ImGui::IsItemActivated())  pre_scale = lt->value.scale;
-                    if (changed) lt->value.scale = { xyz[0], xyz[1], xyz[2] };
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        const cd::math::Vec3f factor {
-                            (pre_scale.x != 0.0F) ? (lt->value.scale.x / pre_scale.x) : 1.0F,
-                            (pre_scale.y != 0.0F) ? (lt->value.scale.y / pre_scale.y) : 1.0F,
-                            (pre_scale.z != 0.0F) ? (lt->value.scale.z / pre_scale.z) : 1.0F };
-                        if (factor.x != 1.0F || factor.y != 1.0F || factor.z != 1.0F)
-                        {
-                            lt->value.scale = pre_scale;
-                            history.push(std::make_unique<cd::editor::ScaleCommand>(
-                                scene, selected, factor));
-                            log_push("drag-end: ScaleCommand");
-                        }
-                    }
-                }
-
-                // ---- Rotation (Euler ZYX, degrees) ----------------------
-                ImGui::SeparatorText("Rotation (Euler, deg)");
-                {
-                    constexpr float kRad2Deg = 180.0F / 3.14159265358979F;
-                    constexpr float kDeg2Rad = 3.14159265358979F / 180.0F;
-                    static cd::math::Quatf pre_rot { 0.0F, 0.0F, 0.0F, 1.0F };
-                    static float           editor_euler[3] { 0.0F, 0.0F, 0.0F };
-                    static bool            editing = false;
-
-                    auto quat_to_euler = [](const cd::math::Quatf& q) {
-                        const float sx = 2.0F * (q.w * q.x + q.y * q.z);
-                        const float cx = 1.0F - 2.0F * (q.x * q.x + q.y * q.y);
-                        const float roll = std::atan2(sx, cx);
-                        float sy = 2.0F * (q.w * q.y - q.z * q.x);
-                        sy = std::clamp(sy, -1.0F, 1.0F);
-                        const float pitch = std::asin(sy);
-                        const float sz = 2.0F * (q.w * q.z + q.x * q.y);
-                        const float cz = 1.0F - 2.0F * (q.y * q.y + q.z * q.z);
-                        const float yaw = std::atan2(sz, cz);
-                        return std::array<float, 3> { roll, pitch, yaw };
-                    };
-                    auto euler_to_quat = [](float ex, float ey, float ez) {
-                        const float hx = ex * 0.5F, hy = ey * 0.5F, hz = ez * 0.5F;
-                        const float cx = std::cos(hx), sx = std::sin(hx);
-                        const float cy = std::cos(hy), sy = std::sin(hy);
-                        const float cz = std::cos(hz), sz = std::sin(hz);
-                        cd::math::Quatf q;
-                        q.w = cz * cy * cx + sz * sy * sx;
-                        q.x = cz * cy * sx - sz * sy * cx;
-                        q.y = cz * sy * cx + sz * cy * sx;
-                        q.z = sz * cy * cx - cz * sy * sx;
-                        return q;
-                    };
-
-                    if (!editing)
-                    {
-                        const auto e = quat_to_euler(lt->value.rotation);
-                        editor_euler[0] = e[0] * kRad2Deg;
-                        editor_euler[1] = e[1] * kRad2Deg;
-                        editor_euler[2] = e[2] * kRad2Deg;
-                    }
-                    ImGui::Text("X Y Z");
-                    ImGui::SameLine();
-                    const bool changed = ImGui::DragFloat3(
-                        "##rot", editor_euler, 1.0F, -180.0F, 180.0F, "%.1f");
-                    if (ImGui::IsItemActivated())
-                    {
-                        pre_rot = lt->value.rotation;
-                        editing = true;
-                    }
-                    if (changed && editing)
-                        lt->value.rotation = euler_to_quat(
-                            editor_euler[0] * kDeg2Rad,
-                            editor_euler[1] * kDeg2Rad,
-                            editor_euler[2] * kDeg2Rad);
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        const cd::math::Quatf final_rot = lt->value.rotation;
-                        lt->value.rotation = pre_rot;
-                        history.push(std::make_unique<cd::editor::RotateCommand>(
-                            scene, selected, final_rot));
-                        log_push("drag-end: RotateCommand");
-                        editing = false;
-                    }
-                }
-
-                // ---- Rotation slider (Y-axis) -- viewport update demo ----
-                // This dedicated SliderFloat lets users spin the selected
-                // entity around Y and immediately see the viewport mesh
-                // update. No separate Apply button — the rotation is
-                // applied live every frame the slider moves, and a single
-                // RotateCommand is pushed to history on release.
-                ImGui::SeparatorText("Rotate Y (live slider)");
-                {
-                    // Reset the slider accumulator when selection changes.
-                    if (rot_slider_entity.id != selected.id)
-                    {
-                        rot_slider_deg    = 0.0F;
-                        rot_slider_entity = selected;
-                    }
-
-                    static cd::math::Quatf pre_slider_rot { 0.0F, 0.0F, 0.0F, 1.0F };
-
-                    const bool changed = ImGui::SliderFloat(
-                        "##rot_y_slider", &rot_slider_deg, -180.0F, 180.0F, "%.1f deg");
-
-                    if (ImGui::IsItemActivated())
-                    {
-                        pre_slider_rot = lt->value.rotation;
-                    }
-                    if (changed)
-                    {
-                        // Recompute absolute Y quaternion from slider value.
-                        const float half = rot_slider_deg * (3.14159265358979F / 180.0F) * 0.5F;
-                        cd::math::Quatf qy { 0.0F, std::sin(half), 0.0F, std::cos(half) };
-                        lt->value.rotation = qy;
-                    }
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        const cd::math::Quatf final_rot = lt->value.rotation;
-                        lt->value.rotation = pre_slider_rot;
-                        history.push(std::make_unique<cd::editor::RotateCommand>(
-                            scene, selected, final_rot));
-                        log_push("slider-end: RotateCommand Y=" +
-                                 std::to_string(static_cast<int>(rot_slider_deg)) + "deg");
-                    }
-                }
-
-                ImGui::PopItemWidth();
             }
+            // Delegate all drag-field / slider rendering to the Inspector panel.
+            (void)inspector_panel.draw_imgui(scene, history,
+                                             rot_slider_deg, rot_slider_entity);
         }
         ImGui::End();
 

@@ -43,6 +43,7 @@ cd_add_sample(editor
     cd::ui_a11y
     cd::ui_font
     cd::editor_panel
+    cd::editor_panel_inspector
     cd::editor
     cd::editor_ui
     cd::platform

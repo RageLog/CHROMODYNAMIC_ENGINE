@@ -72,6 +72,7 @@
 
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
+#include <cd/editor/panel_inspector/Inspector.hpp>
 
 #include <array>
 #include <cstdint>
@@ -263,14 +264,17 @@ void draw_viewport_stub(const uw::Rect& rect,
                              theme.background.b, theme.background.a });
 }
 
-void draw_inspector_stub(const uw::Rect& rect,
-                         ur::DrawBatcher& batcher,
-                         uf::Font* /*font*/,
-                         const uw::Theme& theme)
+// Inspector panel — backed by cd::editor_panel_inspector.
+// The inspector instance lives here in file scope so the ContentDrawer lambda
+// below can capture it by reference without a heap allocation each frame.
+cd::editor::panel::inspector::Inspector g_inspector_panel;
+
+void draw_inspector_panel(const uw::Rect& rect,
+                          ur::DrawBatcher& batcher,
+                          uf::Font* /*font*/,
+                          const uw::Theme& theme)
 {
-    batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                 ur::Color { theme.surface.r, theme.surface.g,
-                             theme.surface.b, theme.surface.a });
+    g_inspector_panel.draw(batcher, theme, rect);
 }
 
 void draw_console_stub(const uw::Rect& rect,
@@ -429,6 +433,11 @@ int main(int argc, char** argv)
     std::printf("editor: cd::editor::Editor booted (scene root entity id=%u)\n",
                 editor.scene_root().id);
 
+    // Wire the inspector panel to the editor's ECS World + auto-select the
+    // scene root so the inspector is non-empty on first boot.
+    g_inspector_panel.set_world_ptr(&editor.world());
+    g_inspector_panel.set_target(editor.scene_root());
+
     // -- 4. A11y tree (proves the include + namespace link) -----------------
     // Future per-panel widgets register their A11yMeta via this tree so
     // screen readers + keyboard tab navigation work consistently across
@@ -441,7 +450,7 @@ int main(int argc, char** argv)
     uw::DockSpace dockspace;
     dockspace.register_panel("scene_tree", draw_scene_tree_stub);
     dockspace.register_panel("viewport",   draw_viewport_stub);
-    dockspace.register_panel("inspector",  draw_inspector_stub);
+    dockspace.register_panel("inspector",  draw_inspector_panel);
     dockspace.register_panel("console",    draw_console_stub);
     dockspace.register_panel("assets",     draw_assets_stub);
     if (!build_default_layout(dockspace))
