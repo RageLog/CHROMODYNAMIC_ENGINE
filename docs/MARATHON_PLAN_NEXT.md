@@ -1,7 +1,7 @@
 # Marathon Plan — Next Sessions
 
-Last updated: 2026-05-31, after `phase534-hello-hot-reload-sample` (Tier 0-5 completion).
-Baseline: 150 / 150 tests PASS, ninja-debug clean, 120+ libraries.
+Last updated: 2026-05-31, after `phase534-hello-hot-reload-sample` (Tier 0-5 completion) + `phase536-marathon-final-summary`.
+Baseline: 150 / 150 tests PASS, 1 disabled golden, ninja-debug clean, 120+ libraries.
 
 This document is the **forward backlog** — what remains to be built after
 the Tier 0-5 complete close-out (phases 511-535). Items are grouped by
@@ -123,12 +123,11 @@ just the schedule + status lens.
 
 ### T2.2 Color picker widget
 
-* **Status**: Not started.
-* **Scope**: HSV wheel + RGB sliders + hex input + alpha bar + palette
-  history, OKLCh option for perceptual editing.
-* **Prerequisites**: `cd::ui_widgets::Slider` (shipped), float-array
-  binding (shipped).
-* **Effort**: 1 week.
+* **Status**: ✓ DONE (phase 515) — HSV wheel + RGB sliders + hex input + alpha bar + palette history, OKLCh option for perceptual editing
+* **Scope shipped**: Full color-picker widget with HSV + OKLab + hex I/O, integrated into ui_widgets library.
+* **Artifact**: `engine/ui/ui_widgets/ColorPicker.*` + `cd_test_ui_color_picker` (13 tests).
+* **What remains**: None (bundled with T2.1 DockSpace phase 515).
+* **Effort**: Done in 1 week per phase 515.
 
 ### T2.3 Curve Editor Widget
 
@@ -148,11 +147,11 @@ just the schedule + status lens.
 
 ### T2.5 Gesture recognizers
 
-* **Status**: `cd::ui_input` has HitTester + FocusManager only. No
-  gestures.
-* **Scope**: double-click, long-press, drag, pinch, swipe — wired
-  into the existing `EventBus`.
-* **Effort**: 1 week.
+* **Status**: ✓ DONE (phase 519) — 9 gesture kinds (kDoubleClick, kLongPress, kDrag, kPinchIn, kPinchOut, kSwipe{Left,Right,Up,Down}) wired into EventBus
+* **Scope shipped**: Full gesture-recognition system with 9 recognizer classes, integrated into `cd::ui_input`.
+* **Artifact**: `engine/ui/ui_input/GestureRecognizer.*` + `cd_test_ui_gestures` (9 tests bundled with hello_netcode phase 519).
+* **What remains**: None (shipped).
+* **Effort**: Done in 1 week per phase 519.
 
 ### T2.6 Constraint Solver Layout (Cassowary)
 
