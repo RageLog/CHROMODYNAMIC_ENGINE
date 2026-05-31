@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC - cd/particle/system/ParticleSystemV2.hpp
+// CHROMODYNAMIC - cd/particle/system/ParticleSystem.hpp
 // Phase 564 (M3 W5C) - CPU-side particle simulation system.
 // Phase 583 (M5 W1) - Renamed from system_v2; no v1 ever existed.
 //

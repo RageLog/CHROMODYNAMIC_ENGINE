@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC - tests/test_particle_system_v2.cpp
+// CHROMODYNAMIC - tests/test_particle_system.cpp
 // Phase 564 (M3 W5C) - cd::particle::system unit tests.
 // Phase 583 (M5 W1) - Updated for renamed namespace (was system_v2).
 //
@@ -14,7 +14,7 @@
 //   6. remove_emitter() stops further spawning; existing particles age out.
 //   7. snapshot() size clamped to particle_count().
 // =============================================================================
-#include <cd/particle/system/ParticleSystemV2.hpp>
+#include <cd/particle/system/ParticleSystem.hpp>
 
 #include <gtest/gtest.h>
 
@@ -57,7 +57,7 @@ EmitterSpec make_spec(float rate,
 // ---------------------------------------------------------------------------
 // 1. Empty system has 0 particles.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, EmptySystemHasZeroParticles)
+TEST(ParticleSystem, EmptySystemHasZeroParticles)
 {
     System sys;
     EXPECT_EQ(sys.particle_count(), 0U);
@@ -67,7 +67,7 @@ TEST(ParticleSystemV2, EmptySystemHasZeroParticles)
 // 2. Emitter spawns at expected rate over 1 second.
 //    Rate = 10 p/s, step = 0.1s x 10 steps => expect 10 particles.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, EmitterSpawnsAtExpectedRateOverOneSecond)
+TEST(ParticleSystem, EmitterSpawnsAtExpectedRateOverOneSecond)
 {
     System sys;
     sys.add_emitter(make_spec(10.0F, /*life_s=*/5.0F));
@@ -86,7 +86,7 @@ TEST(ParticleSystemV2, EmitterSpawnsAtExpectedRateOverOneSecond)
 //    Spawn 1 particle then remove the emitter so no new particles are
 //    created.  After the particle's life_seconds have elapsed it must be gone.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, ParticlesDieAfterLifeSeconds)
+TEST(ParticleSystem, ParticlesDieAfterLifeSeconds)
 {
     System sys;
     const EmitterId eid = sys.add_emitter(make_spec(/*rate=*/5.0F, /*life_s=*/0.5F));
@@ -112,7 +112,7 @@ TEST(ParticleSystemV2, ParticlesDieAfterLifeSeconds)
 //    Spawn 1 particle with life=2.0s.  After tick(1.0) the particle is at
 //    normalized age = 0.5, so red ~ 0.5, blue ~ 0.5, size ~ 1.0.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, SnapshotWritesCorrectCountAndInterpolatedColor)
+TEST(ParticleSystem, SnapshotWritesCorrectCountAndInterpolatedColor)
 {
     // Use rate=1 p/s, life=2.0s.  After tick(1.0s) exactly 1 particle lives
     // at normalized age 0.5 (1.0 / 2.0).
@@ -139,7 +139,7 @@ TEST(ParticleSystemV2, SnapshotWritesCorrectCountAndInterpolatedColor)
 // 5. Multiple emitters compose independently.
 //    Two emitters at different positions; particles stay near their origin.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, MultipleEmittersCompose)
+TEST(ParticleSystem, MultipleEmittersCompose)
 {
     System sys;
     EmitterSpec specA = make_spec(5.0F, /*life_s=*/5.0F);
@@ -176,7 +176,7 @@ TEST(ParticleSystemV2, MultipleEmittersCompose)
 // ---------------------------------------------------------------------------
 // 6. remove_emitter() stops further spawning; existing particles age out.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, RemoveEmitterStopsSpawningExistingParticlesAgeOut)
+TEST(ParticleSystem, RemoveEmitterStopsSpawningExistingParticlesAgeOut)
 {
     System sys;
     const EmitterId id = sys.add_emitter(make_spec(/*rate=*/10.0F, /*life_s=*/1.0F));
@@ -200,7 +200,7 @@ TEST(ParticleSystemV2, RemoveEmitterStopsSpawningExistingParticlesAgeOut)
 // ---------------------------------------------------------------------------
 // 7. snapshot() is clamped to particle_count() even if span is larger.
 // ---------------------------------------------------------------------------
-TEST(ParticleSystemV2, SnapshotClampedToParticleCount)
+TEST(ParticleSystem, SnapshotClampedToParticleCount)
 {
     System sys;
     sys.add_emitter(make_spec(/*rate=*/3.0F, /*life_s=*/5.0F));

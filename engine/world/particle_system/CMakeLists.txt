@@ -22,7 +22,7 @@
 cd_add_library(particle_system
   TYPE STATIC
   SOURCES
-    src/ParticleSystemV2.cpp
+    src/ParticleSystem.cpp
   PUBLIC_DEPS
     cd::core
 )

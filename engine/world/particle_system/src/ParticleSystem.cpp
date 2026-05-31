@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC - cd/particle/system/ParticleSystemV2.cpp
+// CHROMODYNAMIC - cd/particle/system/ParticleSystem.cpp
 // Phase 564 (M3 W5C) - System implementation.
 // Phase 583 (M5 W1) - Renamed from system_v2; no v1 ever existed.
 //
@@ -27,7 +27,7 @@
 //
 //   * GPU dispatch: out of scope (V3).
 // =============================================================================
-#include <cd/particle/system/ParticleSystemV2.hpp>
+#include <cd/particle/system/ParticleSystem.hpp>
 
 #include <algorithm>
 #include <cmath>

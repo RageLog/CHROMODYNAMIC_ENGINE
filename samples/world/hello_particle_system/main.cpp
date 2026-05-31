@@ -12,7 +12,7 @@
 // Expected after 2 s at 10 p/s with 1-s lifetime:
 //   Live count ~ 10 (steady state: 10 spawned/s, 10 die/s at 1-s life).
 // =============================================================================
-#include <cd/particle/system/ParticleSystemV2.hpp>
+#include <cd/particle/system/ParticleSystem.hpp>
 
 #include <cstdio>
 #include <vector>
