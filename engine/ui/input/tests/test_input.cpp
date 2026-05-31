@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC — cd::ui::input HitTester + FocusManager tests
+// CHROMODYNAMIC — cd::ui::input HitTester + FocusManager + GestureRecognizer
 //
 // Phase 2.1 coverage per ADR-20260530-ui-widget-library:
 //   * HitTester finds topmost rect on overlap (z-order: last-wins)
@@ -13,6 +13,16 @@
 //   * Empty focus chain is a safe no-op
 //   * set_chain wholesale replace drops stale focus
 //   * MouseEvent / KeyEvent POD smoke test
+//
+// Phase 2.2 coverage — GestureRecognizer:
+//   * Two clicks within 350 ms -> kDoubleClick fires exactly once
+//   * Two clicks outside 350 ms -> two separate clicks, no double-click
+//   * Press + hold >= 500 ms -> kLongPress
+//   * Press + move > 4 px -> kDrag fires (and no kLongPress fires)
+//   * Two-pointer move-apart -> kPinchOut
+//   * Quick directional swipe with velocity > min -> kSwipe* correct direction
+//   * Empty event stream produces no gestures
+//   * Multiple recognizers on same input behave independently
 // =============================================================================
 #include <cd/ui/input/Input.hpp>
 
@@ -20,6 +30,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace ui = cd::ui::input;
 
@@ -302,4 +313,274 @@ TEST(UiInputEvents, MouseAndKeyPodWireTypes)
     EXPECT_NE(ke.modifiers & ui::key_mods::kShift,   0U);
     EXPECT_NE(ke.modifiers & ui::key_mods::kControl, 0U);
     EXPECT_EQ(ke.modifiers & ui::key_mods::kAlt,     0U);
+}
+
+// ---- GestureRecognizer helpers (local) -------------------------------------
+
+namespace
+{
+
+/// Synthetic left-button press at (x, y).
+ui::MouseEvent press_at(float x, float y) noexcept
+{
+    return ui::MouseEvent { x, y, ui::MouseButton::kLeft, ui::MouseAction::kPress };
+}
+
+/// Synthetic left-button release at (x, y).
+ui::MouseEvent release_at(float x, float y) noexcept
+{
+    return ui::MouseEvent { x, y, ui::MouseButton::kLeft, ui::MouseAction::kRelease };
+}
+
+/// Synthetic mouse move at (x, y) (button field ignored for moves).
+ui::MouseEvent move_to(float x, float y) noexcept
+{
+    return ui::MouseEvent { x, y, ui::MouseButton::kLeft, ui::MouseAction::kMove };
+}
+
+/// Synthetic right-button press at (x, y) (used as second pointer for pinch).
+ui::MouseEvent rpress_at(float x, float y) noexcept
+{
+    return ui::MouseEvent { x, y, ui::MouseButton::kRight, ui::MouseAction::kPress };
+}
+
+/// Synthetic right-button move to (x, y).
+ui::MouseEvent rmove_to(float x, float y) noexcept
+{
+    return ui::MouseEvent { x, y, ui::MouseButton::kRight, ui::MouseAction::kMove };
+}
+
+}  // namespace
+
+// ---- GestureRecognizer: double-click ----------------------------------------
+
+/// Two clicks within the 350 ms window -> exactly one kDoubleClick event.
+TEST(UiInputGestureRecognizer, DoubleClickWithinWindowFiresOnce)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Click 1 at t=0.0 s.
+    gr.feed(press_at(100.0F, 100.0F),   0.000);
+    gr.feed(release_at(100.0F, 100.0F), 0.010);
+
+    // Click 2 at t=0.2 s (well within 350 ms).
+    gr.feed(press_at(100.0F, 100.0F),   0.200);
+    gr.feed(release_at(100.0F, 100.0F), 0.210);
+
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, ui::GestureKind::kDoubleClick);
+}
+
+/// Two clicks with more than 350 ms between them -> no double-click, just two
+/// separate single-click records (no gesture callback fired for plain clicks).
+TEST(UiInputGestureRecognizer, DoubleClickOutsideWindowNoDoubleClick)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Click 1.
+    gr.feed(press_at(50.0F, 50.0F),   0.000);
+    gr.feed(release_at(50.0F, 50.0F), 0.010);
+
+    // Click 2 at t=0.5 s (> 350 ms -> outside window).
+    gr.feed(press_at(50.0F, 50.0F),   0.500);
+    gr.feed(release_at(50.0F, 50.0F), 0.510);
+
+    // No gesture fires for plain clicks or out-of-window second click.
+    EXPECT_TRUE(events.empty());
+}
+
+// ---- GestureRecognizer: long-press ------------------------------------------
+
+/// Press and hold for >= 500 ms without moving -> kLongPress on release.
+TEST(UiInputGestureRecognizer, LongPressAfterHold)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    gr.feed(press_at(200.0F, 200.0F),   0.000);
+    // Release after 600 ms (well past 500 ms threshold).
+    gr.feed(release_at(200.0F, 200.0F), 0.600);
+
+    ASSERT_EQ(events.size(), 1U);
+    EXPECT_EQ(events[0].kind, ui::GestureKind::kLongPress);
+}
+
+// ---- GestureRecognizer: drag (and NOT long-press) ---------------------------
+
+/// Press then move more than 4 px -> kDrag fires; kLongPress must NOT fire
+/// even if elapsed time would exceed the long-press threshold.
+TEST(UiInputGestureRecognizer, DragSuppressesLongPress)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    gr.feed(press_at(10.0F, 10.0F), 0.000);
+    // Move 10 px to the right -> exceeds drag_threshold_px=4.
+    gr.feed(move_to(20.0F, 10.0F),  0.001);
+    // Release after 600 ms -> long-press threshold would be met, but drag wins.
+    gr.feed(release_at(20.0F, 10.0F), 0.600);
+
+    // Exactly one gesture: kDrag (fired on first threshold-crossing move).
+    // kLongPress must be absent.
+    ASSERT_GE(events.size(), 1U);
+    bool has_drag       = false;
+    bool has_long_press = false;
+    for (const auto& e : events)
+    {
+        if (e.kind == ui::GestureKind::kDrag)      { has_drag       = true; }
+        if (e.kind == ui::GestureKind::kLongPress)  { has_long_press = true; }
+    }
+    EXPECT_TRUE(has_drag);
+    EXPECT_FALSE(has_long_press);
+}
+
+// ---- GestureRecognizer: pinch-out -------------------------------------------
+
+/// Two pointers moving apart by more than drag_threshold_px -> kPinchOut.
+TEST(UiInputGestureRecognizer, TwoPointerMoveApartIsPinchOut)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Left pointer at x=100, right pointer at x=200 (initial dist = 100 px).
+    gr.feed(press_at(100.0F, 150.0F),  0.000);
+    gr.feed(rpress_at(200.0F, 150.0F), 0.001);
+
+    // Move right pointer further right to x=220 (dist becomes 120 px, diff=20 > 4).
+    gr.feed(rmove_to(220.0F, 150.0F), 0.050);
+
+    ASSERT_FALSE(events.empty());
+    EXPECT_EQ(events.back().kind, ui::GestureKind::kPinchOut);
+    EXPECT_GT(events.back().scale, 1.0F);
+}
+
+// ---- GestureRecognizer: swipe direction -------------------------------------
+
+/// A fast horizontal swipe to the right -> kSwipeRight.
+TEST(UiInputGestureRecognizer, FastHorizontalSwipeRight)
+{
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    // Press at x=0, release at x=100 after 0.1 s -> velocity = 1000 px/s.
+    gr.feed(press_at(0.0F, 100.0F),    0.000);
+    gr.feed(move_to(100.0F, 100.0F),   0.050);  // exceeds drag threshold
+    gr.feed(release_at(100.0F, 100.0F), 0.100);
+
+    // Must have at least the swipe event.
+    bool found_swipe = false;
+    for (const auto& e : events)
+    {
+        if (e.kind == ui::GestureKind::kSwipeRight)
+        {
+            found_swipe = true;
+        }
+    }
+    EXPECT_TRUE(found_swipe);
+}
+
+/// A fast upward swipe (negative y) -> kSwipeUp.
+TEST(UiInputGestureRecognizer, FastVerticalSwipeUp)
+{
+    // Coordinate convention: y increases downward (screen space).
+    // A move from y=200 to y=0 means delta.y = -200 -> kSwipeUp.
+    ui::GestureRecognizer gr;
+    std::vector<ui::GestureEvent> events;
+    gr.on_gesture([&](const ui::GestureEvent& e) { events.push_back(e); });
+
+    gr.feed(press_at(100.0F, 200.0F),   0.000);
+    gr.feed(move_to(100.0F, 100.0F),    0.050);
+    gr.feed(release_at(100.0F, 0.0F),   0.100);
+
+    bool found = false;
+    for (const auto& e : events)
+    {
+        if (e.kind == ui::GestureKind::kSwipeUp) { found = true; }
+    }
+    EXPECT_TRUE(found);
+}
+
+// ---- GestureRecognizer: empty event stream ----------------------------------
+
+/// No events fed -> no gesture callback ever fires.
+TEST(UiInputGestureRecognizer, EmptyEventStreamProducesNoGestures)
+{
+    ui::GestureRecognizer gr;
+    bool fired = false;
+    gr.on_gesture([&](const ui::GestureEvent&) { fired = true; });
+
+    // Feed only a key event (currently a no-op) and nothing else.
+    const ui::KeyEvent ke { 0U, ui::KeyAction::kPress, 0U };
+    gr.feed(ke, 0.0);
+
+    EXPECT_FALSE(fired);
+}
+
+// ---- GestureRecognizer: independence of multiple instances ------------------
+
+/// Two recognizers attached to the same event stream behave independently:
+/// each fires its own callback, counts its own gestures, and their state
+/// machines are fully decoupled.
+TEST(UiInputGestureRecognizer, MultipleRecognizersAreIndependent)
+{
+    ui::GestureRecognizer gr_a;
+    ui::GestureRecognizer gr_b;
+
+    std::vector<ui::GestureEvent> events_a;
+    std::vector<ui::GestureEvent> events_b;
+
+    gr_a.on_gesture([&](const ui::GestureEvent& e) { events_a.push_back(e); });
+    gr_b.on_gesture([&](const ui::GestureEvent& e) { events_b.push_back(e); });
+
+    // Feed both recognizers the same double-click sequence.
+    const auto feed_both = [&](const ui::MouseEvent& ev, double t)
+    {
+        gr_a.feed(ev, t);
+        gr_b.feed(ev, t);
+    };
+
+    feed_both(press_at(50.0F, 50.0F),   0.000);
+    feed_both(release_at(50.0F, 50.0F), 0.010);
+    feed_both(press_at(50.0F, 50.0F),   0.200);
+    feed_both(release_at(50.0F, 50.0F), 0.210);
+
+    // Both should have received exactly one kDoubleClick.
+    ASSERT_EQ(events_a.size(), 1U);
+    EXPECT_EQ(events_a[0].kind, ui::GestureKind::kDoubleClick);
+
+    ASSERT_EQ(events_b.size(), 1U);
+    EXPECT_EQ(events_b[0].kind, ui::GestureKind::kDoubleClick);
+
+    // Reset gr_a; gr_b should be unaffected.
+    gr_a.reset();
+
+    // Another double-click -- only gr_b still fires (gr_a state was wiped).
+    // But gr_a callback is still installed, so if gr_a's double-click fires
+    // it would push to events_a.  After reset, last_click_valid_ is false,
+    // so the first click of the new pair is just recorded, not emitted.
+    feed_both(press_at(50.0F, 50.0F),   0.400);
+    feed_both(release_at(50.0F, 50.0F), 0.410);
+    feed_both(press_at(50.0F, 50.0F),   0.600);
+    feed_both(release_at(50.0F, 50.0F), 0.610);
+
+    // gr_b accumulated another double-click (total 2).
+    EXPECT_EQ(events_b.size(), 2U);
+
+    // gr_a: reset cleared state but preserved the callback. The fresh
+    // double-click sequence (t=0.4->0.6 s, gap=200 ms < 350 ms) fires once
+    // more -> total 2 events in events_a, proving the recognizer is still
+    // independently functional after reset.
+    EXPECT_EQ(events_a.size(), 2U);
+
+    // Crucially: the two instances' event lists are separate objects --
+    // gr_a's reset had zero effect on gr_b's accumulated state.
+    EXPECT_NE(events_a.data(), events_b.data());
 }

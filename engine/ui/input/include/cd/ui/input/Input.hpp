@@ -8,8 +8,7 @@
 // MouseEvent / KeyEvent and feeds them in.
 //
 // Phase 2.1 scope (this header):
-//   * MouseEvent / KeyEvent POD wire types (pointer + keyboard surface;
-//     gesture / gamepad / text-input deferred to Phase 2.2).
+//   * MouseEvent / KeyEvent POD wire types (pointer + keyboard surface).
 //   * HitTester  -- linear walk over a caller-supplied (id, rect) list.
 //                   Topmost match wins (last in z-order); kInvalidWidget on
 //                   miss. The list is supplied per query so callers can
@@ -21,8 +20,15 @@
 //                     modal alone when no sub-chain is registered),
 //                     blocking the underneath widgets per ADR.
 //
-// Out of Phase 2.1 (Phase 2.2+):
-//   * Drag / double-click / long-press gesture recognizers.
+// Phase 2.2 scope (this header):
+//   * GestureKind / GestureEvent -- gesture classification PODs.
+//   * GestureRecognizer -- per-instance state machine that classifies a
+//     stream of MouseEvent + KeyEvent (with a timestamp) into high-level
+//     gestures: double-click, long-press, drag, pinch-in/out, directional
+//     swipes. Thresholds configurable at construction time; callback fires
+//     synchronously from feed().
+//
+// Out of scope for this file:
 //   * Gamepad focus navigation (D-pad / left-stick mapping).
 //   * Text-input compose / IME.
 //   * Bridge to cd::events (this lib stays input-source-agnostic).
@@ -38,12 +44,17 @@
 //   * FocusManager owns the chain + modal stack but not the widget tree;
 //     register(id) appends to the chain, set_chain(span) replaces it
 //     wholesale for callers who rebuild every frame.
+//   * GestureRecognizer is NOT thread-safe. All feed() calls must be made
+//     from the same thread (typically the UI dispatch thread). Each
+//     recognizer is an independent state machine; multiple instances
+//     sharing the same event stream behave independently.
 // =============================================================================
 #pragma once
 
 #include <cd/core/Defines.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -291,6 +302,149 @@ private:
     /// Linear search for `id` in the active chain. Returns chain index
     /// or SIZE_MAX on miss.
     [[nodiscard]] std::size_t index_of_(WidgetId id) const noexcept;
+};
+
+// ---- Gesture recognizer (Phase 2.2) ----------------------------------------
+
+/// The kind of gesture that was recognized.
+enum class GestureKind : std::uint8_t
+{
+    kDoubleClick  = 0,
+    kLongPress    = 1,
+    kDrag         = 2,
+    kPinchIn      = 3,
+    kPinchOut     = 4,
+    kSwipeLeft    = 5,
+    kSwipeRight   = 6,
+    kSwipeUp      = 7,
+    kSwipeDown    = 8,
+};
+
+/// A simple 2-D vector used by gesture events. Kept local to this header so
+/// the library has no dep on cd::math.
+struct Vec2
+{
+    float x { 0.0F };
+    float y { 0.0F };
+};
+
+/// Fired once per recognized gesture. Fields that are not applicable to a
+/// given kind are zeroed (e.g. `delta` for double-click, `scale` for swipe).
+struct GestureEvent
+{
+    GestureKind kind     { GestureKind::kDoubleClick };
+    Vec2        position {};       ///< Pointer position at gesture completion.
+    Vec2        delta    {};       ///< Net displacement (drag) or swipe vector.
+    float       scale    { 1.0F }; ///< Scale factor (pinch). >1 = expand.
+};
+
+/// Configurable thresholds for GestureRecognizer.
+struct GestureThresholds
+{
+    float double_click_window_ms     { 350.0F };  ///< Max ms between two clicks.
+    float long_press_window_ms       { 500.0F };  ///< Min ms held for long-press.
+    float drag_threshold_px          {   4.0F };  ///< Min movement to start drag.
+    float swipe_min_velocity_px_per_s{ 300.0F };  ///< Min speed to register swipe.
+};
+
+/// Per-pointer touch/mouse tracking slot used internally and exposed so the
+/// two-pointer (pinch) path can be fed from the outside for testing.
+struct PointerSlot
+{
+    bool  active      { false };
+    float x           { 0.0F };
+    float y           { 0.0F };
+    float press_x     { 0.0F };
+    float press_y     { 0.0F };
+    float t_press_s   { 0.0F };  ///< Timestamp (seconds) of last press.
+};
+
+/// Gesture recognizer state machine.
+///
+/// Usage:
+///   GestureRecognizer gr;
+///   gr.on_gesture([](const GestureEvent& e){ /* handle e */ });
+///   // each frame / event loop:
+///   gr.feed(mouse_event, t_seconds);
+///   gr.feed(key_event,   t_seconds);   // for future keyboard gestures
+///
+/// Lifetime contract:
+///   * The callback is stored by value; it is called synchronously from
+///     feed(). Callbacks that call feed() recursively are UB.
+///   * Multiple recognizer instances on the same event stream behave
+///     independently (separate state machines, separate callbacks).
+class GestureRecognizer
+{
+public:
+    using Callback = std::function<void(const GestureEvent&)>;
+
+    GestureRecognizer() = default;
+    explicit GestureRecognizer(GestureThresholds thresholds) noexcept;
+    ~GestureRecognizer() = default;
+
+    GestureRecognizer(const GestureRecognizer&)            = default;
+    GestureRecognizer& operator=(const GestureRecognizer&) = default;
+    GestureRecognizer(GestureRecognizer&&) noexcept        = default;
+    GestureRecognizer& operator=(GestureRecognizer&&) noexcept = default;
+
+    /// Register (or replace) the gesture callback. A null function is legal
+    /// and silently discards any recognized gesture.
+    void on_gesture(Callback cb);
+
+    /// Feed one mouse event at timestamp `t_seconds` (monotonically
+    /// increasing, origin arbitrary).
+    void feed(const MouseEvent& ev, double t_seconds);
+
+    /// Feed one key event (reserved for future keyboard gesture detection;
+    /// currently a no-op so callers can unconditionally forward all events).
+    void feed(const KeyEvent& ev, double t_seconds);
+
+    /// Reset all internal state. The callback is preserved.
+    void reset() noexcept;
+
+    // ---- Introspection (primarily for tests) --------------------------------
+
+    [[nodiscard]] const GestureThresholds& thresholds() const noexcept
+    {
+        return thresholds_;
+    }
+
+private:
+    // ---- helpers ------------------------------------------------------------
+
+    void emit_(GestureKind kind, Vec2 pos, Vec2 delta = {}, float scale = 1.0F);
+
+    void handle_press_(const MouseEvent& ev, double t);
+    void handle_release_(const MouseEvent& ev, double t);
+    void handle_move_(const MouseEvent& ev, double t);
+
+    [[nodiscard]] float dist_(float ax, float ay, float bx, float by) const noexcept;
+    [[nodiscard]] static GestureKind swipe_direction_(Vec2 delta) noexcept;
+
+    // ---- state --------------------------------------------------------------
+
+    GestureThresholds thresholds_ {};
+    Callback          callback_   {};
+
+    // Single-pointer state.
+    bool   pressed_       { false };
+    float  press_x_       { 0.0F };
+    float  press_y_       { 0.0F };
+    float  cur_x_         { 0.0F };
+    float  cur_y_         { 0.0F };
+    double t_press_       { 0.0  };
+    bool   drag_active_   { false };
+    bool   long_press_fired_ { false };
+
+    // Double-click state.
+    bool   last_click_valid_  { false };
+    float  last_click_x_      { 0.0F };
+    float  last_click_y_      { 0.0F };
+    double last_click_t_      { 0.0  };
+
+    // Two-pointer (pinch) state.
+    PointerSlot pointer_[2];   ///< slots for primary (0) and secondary (1)
+    float pinch_start_dist_ { 0.0F };
 };
 
 }  // namespace cd::ui::input
