@@ -228,6 +228,9 @@ add_subdirectory(scene_streamer)
 # ── cd::asset_texture_streamer ────────────────────────────────────────────────
 add_subdirectory(texture_streamer)
 
+# ── cd::asset_audio_streamer ──────────────────────────────────────────────────
+add_subdirectory(audio_streamer)
+
 # ── cd::asset_shader_cache ────────────────────────────────────────────────────
 add_subdirectory(shader_cache)
 
