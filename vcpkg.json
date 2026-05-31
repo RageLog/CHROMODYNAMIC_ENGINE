@@ -35,6 +35,17 @@
     {
       "name": "spirv-cross",
       "$comment": "GLSL/SPIR-V → HLSL/MSL/GLSL cross-compilation for cd_spirv_cross_glue (B-infra1). Promote a dep only when find_package is wired. Resolved via find_package(spirv_cross_core CONFIG) in engine/render/spirv_cross_glue/CMakeLists.txt with FetchContent fallback (vulkan-sdk-1.3.268.0)."
+    },
+    {
+      "name": "freetype",
+      "version>=": "2.13.0",
+      "$comment": "TTF/OTF outline rasterizer for cd_ui_font Phase 4 (ADR-20260530 + ADR-009). Resolved via find_package(Freetype CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback (VER-2-13-3). When unavailable, the stb_truetype backend (sibling CD_UI_FONT_BACKEND=stb) continues to compile and pass its tests."
+    },
+    {
+      "name": "harfbuzz",
+      "version>=": "8.0.0",
+      "default-features": false,
+      "$comment": "OpenType shaping engine (BiDi / ligature / Indic conjunct) for cd_ui_font Phase 4 (ADR-20260530 + ADR-009). Resolved via find_package(harfbuzz CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback. When unavailable, Font::shape() degrades to a one-codepoint-per-glyph identity reorder so the public surface keeps compiling."
     }
   ],
 
@@ -54,6 +65,15 @@
     "phase2-physics": {
       "description": "Phase 2 physics backend (jolt-physics). Reserved until ADR-008 v2 + adapter pattern lands.",
       "dependencies": []
+    },
+    "webgpu": {
+      "description": "WebGPU backend for cd::ui_renderer_webgpu via google/dawn (phase522). Opt-in: heavy dep (~800 MB). Also set -DCD_ENABLE_WEBGPU=ON at configure time.",
+      "dependencies": [
+        {
+          "name": "dawn",
+          "$comment": "google/dawn — open-source cross-platform WebGPU implementation (BSD-3-Clause). Port available in vcpkg baseline 56bb2411. Requires Abseil + Python host tooling. Version pinned to 20251202.213730 by the baseline; bump baseline to get a newer snapshot."
+        }
+      ]
     }
   },
 

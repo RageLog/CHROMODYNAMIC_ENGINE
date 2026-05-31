@@ -29,4 +29,5 @@ add_subdirectory(animation)     # phase458 — ADR-20260530 Phase 3.2 easing + T
 add_subdirectory(widgets)       # phase460 — ADR-20260530 Phase 2.2 concrete widget catalog
 add_subdirectory(theme)         # phase474 — cd::ui::theme V2 design token system (Material 3 shape)
 add_subdirectory(a11y)          # phase478 — cd::ui::a11y accessibility baseline (ADR-20260530 Phase 4.4)
+add_subdirectory(renderer_webgpu)  # phase522 — ADR-20260530 Phase 5 WebGPU skeleton (Dawn optional)
 add_subdirectory(editor)  # phase421: editor/CMakeLists.txt drives editor + editor_ui + editor_panel
