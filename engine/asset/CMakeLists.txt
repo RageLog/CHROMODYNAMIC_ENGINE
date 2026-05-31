@@ -222,6 +222,9 @@ cd_add_library(asset_wav
     cd::core
 )
 
+# ── cd::asset_scene_streamer ──────────────────────────────────────────────────
+add_subdirectory(scene_streamer)
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
