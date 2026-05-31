@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/ddgi/DispatchPass.hpp
 // phase549 — GPU dispatch wiring for the DDGI trace compute shader.
 // phase560 — Sprint-2: blend_irradiance + blend_visibility compute passes.
+// phase570 — Sprint-3: execute_sample compute pass (G-buffer → indirect irradiance).
 //
 // DispatchPass owns the GPU resources that the kDdgiTraceCS compute shader
 // reads / writes:
@@ -45,7 +46,14 @@
 //     — reads ray_radiance + ray_dir_dist, writes irradiance_atlas.
 //   * execute_blend_visibility(cmd, frame_index) dispatches kDdgiBlendVisibilityCS
 //     — reads ray_dir_dist, writes visibility_atlas.
-//   The sample-from-atlas fragment pass (kDdgiSampleFS) is Sprint-3.
+//
+// Sprint-3 scope (phase570):
+//   * execute_sample(cmd) dispatches kDdgiSampleCS — reads the irradiance +
+//     visibility atlases together with a caller-supplied world-position +
+//     world-normal G-buffer pair, writes per-pixel indirect irradiance
+//     (RGBA16F) into a caller-supplied output storage image.
+//   * bind_sample_resources(...) wires the descriptor set the first time the
+//     caller has its G-buffer + output image ready.
 // =============================================================================
 #pragma once
 
@@ -96,6 +104,32 @@ struct alignas(16) BlendPushConstants
 };
 static_assert(sizeof(BlendPushConstants) == 64,
               "BlendPushConstants must match kDdgiBlend{Irradiance,Visibility}CS PC blocks");
+
+/// Layout of the push-constant block consumed by kDdgiSampleCS (Sprint-3 —
+/// phase570). Matches the GLSL block:
+///   vec3  grid_origin;   float _pad0;
+///   vec3  grid_spacing;  float _pad1;
+///   uvec4 probes_dim;
+///   uint  probe_face_size;
+///   uint  output_width;
+///   uint  output_height;
+///   uint  _pad3;
+///   vec3  sky_color;     float _pad4;
+/// std430 packing rules apply — total 80 B (same size as TracePushConstants
+/// but the semantics differ).
+struct alignas(16) SamplePushConstants
+{
+    float        grid_origin[3];    float _pad0;
+    float        grid_spacing[3];   float _pad1;
+    std::uint32_t probes_dim[4];      // xyz = count, w = rays_per_probe (unused here)
+    std::uint32_t probe_face_size;
+    std::uint32_t output_width;
+    std::uint32_t output_height;
+    std::uint32_t _pad3;
+    float        sky_color[3];      float _pad4;
+};
+static_assert(sizeof(SamplePushConstants) == 80,
+              "SamplePushConstants must match kDdgiSampleCS push-constant block");
 
 /// Init parameters for DispatchPass.
 struct DispatchPassDesc
@@ -173,6 +207,30 @@ public:
     void execute_blend_visibility(cd::rhi::ICommandBuffer& cmd,
                                   std::uint32_t frame_index);
 
+    /// Sprint-3 (phase570) — point the sample-pass descriptor set at the
+    /// caller-supplied G-buffer + output images. Must be called once before
+    /// the first execute_sample(). The image views must reference RGBA16F
+    /// (or compatible) storage-capable textures the caller has transitioned
+    /// to kUnorderedAccess. The irradiance + visibility atlases are bound
+    /// automatically — they are owned by the pass.
+    [[nodiscard]] cd::core::Result<void>
+    bind_sample_resources(cd::rhi::IDevice& device,
+                          cd::rhi::TextureViewHandle output_view,
+                          cd::rhi::TextureViewHandle world_pos_view,
+                          cd::rhi::TextureViewHandle world_normal_view,
+                          std::uint32_t              output_width,
+                          std::uint32_t              output_height);
+
+    /// Sprint-3 (phase570) — record the sample-pass dispatch. Reads the
+    /// caller-supplied G-buffer (world_pos + world_normal) and the
+    /// irradiance + visibility atlases produced by the blend passes; writes
+    /// per-pixel indirect irradiance into the output image. Caller is
+    /// responsible for the matching image barriers — all five images need
+    /// to be in kUnorderedAccess before this call. `output_width` /
+    /// `output_height` must match the values passed to
+    /// bind_sample_resources().
+    void execute_sample(cd::rhi::ICommandBuffer& cmd);
+
     // ---- Accessors --------------------------------------------------------
 
     [[nodiscard]] cd::rhi::TextureHandle      ray_radiance()      const noexcept { return ray_radiance_; }
@@ -193,6 +251,13 @@ public:
     [[nodiscard]] cd::rhi::ComputePipelineHandle blend_visibility_pipeline()       const noexcept { return blend_vis_pipeline_; }
     [[nodiscard]] cd::rhi::DescriptorSetHandle   blend_irradiance_descriptor_set() const noexcept { return blend_irr_descriptor_set_; }
     [[nodiscard]] cd::rhi::DescriptorSetHandle   blend_visibility_descriptor_set() const noexcept { return blend_vis_descriptor_set_; }
+
+    // ---- Sprint-3 sample-pass accessors ----------------------------------
+    [[nodiscard]] cd::rhi::ComputePipelineHandle sample_pipeline()        const noexcept { return sample_pipeline_; }
+    [[nodiscard]] cd::rhi::PipelineLayoutHandle  sample_pipeline_layout() const noexcept { return sample_pipeline_layout_; }
+    [[nodiscard]] cd::rhi::DescriptorSetHandle   sample_descriptor_set()  const noexcept { return sample_descriptor_set_; }
+    [[nodiscard]] std::uint32_t                  sample_output_width()    const noexcept { return sample_output_width_; }
+    [[nodiscard]] std::uint32_t                  sample_output_height()   const noexcept { return sample_output_height_; }
 
     [[nodiscard]] std::uint32_t ray_image_width()  const noexcept { return ray_image_width_; }
     [[nodiscard]] std::uint32_t ray_image_height() const noexcept { return ray_image_height_; }
@@ -232,6 +297,13 @@ private:
     cd::rhi::TextureViewHandle         irradiance_atlas_view_    {};
     cd::rhi::TextureViewHandle         visibility_atlas_view_    {};
 
+    // ── owned GPU resources — Sprint-3 sample pass ────────────────────────
+    cd::rhi::ShaderModuleHandle        sample_module_           {};
+    cd::rhi::DescriptorSetLayoutHandle sample_set_layout_       {};
+    cd::rhi::PipelineLayoutHandle      sample_pipeline_layout_  {};
+    cd::rhi::ComputePipelineHandle     sample_pipeline_         {};
+    cd::rhi::DescriptorSetHandle       sample_descriptor_set_   {};
+
     // ── cached parameters ─────────────────────────────────────────────────
     ProbeGrid     grid_     {};
     TraceSettings settings_ {};
@@ -242,6 +314,8 @@ private:
     std::uint32_t probe_face_size_  { 0 };
     std::uint32_t atlas_width_      { 0 };
     std::uint32_t atlas_height_     { 0 };
+    std::uint32_t sample_output_width_  { 0 };
+    std::uint32_t sample_output_height_ { 0 };
 };
 
 }  // namespace cd::ddgi

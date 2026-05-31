@@ -722,6 +722,134 @@ void main() {
 }
 )glsl";
 
+/// Sprint-3 (phase570) — compute-shader counterpart of kDdgiSampleFS. Reads
+/// world-position + world-normal G-buffer images, samples the probe atlases
+/// for the 8 nearest probes, applies trilinear + Chebyshev visibility +
+/// backface gating, and writes per-pixel indirect irradiance into an output
+/// storage image (RGBA16F). One thread per output pixel; workgroup 8×8×1.
+///
+/// All images are bound as storage images (read or write) to keep the
+/// descriptor-set / barrier graph uniform across the trace/blend/sample
+/// pipeline trio. A pure FS variant lives at kDdgiSampleFS for callers that
+/// prefer hooking into a graphics framebuffer pass; the math is identical.
+constexpr std::string_view kDdgiSampleCS = R"glsl(
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Output: per-pixel indirect irradiance.
+layout(set = 0, binding = 0, rgba16f) uniform image2D out_indirect;
+// G-Buffer: world position (xyz) — w unused.
+layout(set = 0, binding = 1, rgba16f) uniform image2D world_pos_image;
+// G-Buffer: world normal (xyz, normalised) — w unused.
+layout(set = 0, binding = 2, rgba16f) uniform image2D world_normal_image;
+// Probe atlases.
+layout(set = 0, binding = 3, rgba16f) uniform image2D irradiance_atlas;
+layout(set = 0, binding = 4, rg16f)   uniform image2D visibility_atlas;
+
+layout(push_constant) uniform PC {
+    vec3  grid_origin;   float _pad0;
+    vec3  grid_spacing;  float _pad1;
+    uvec4 probes_dim;
+    uint  probe_face_size;
+    uint  output_width;
+    uint  output_height;
+    uint  _pad3;
+    vec3  sky_color;     float _pad4;
+} pc;
+
+vec2 oct_encode(vec3 n) {
+    float l = abs(n.x) + abs(n.y) + abs(n.z);
+    vec2  p = n.xy / l;
+    if (n.z < 0.0) p = (1.0 - abs(p.yx)) * sign(p);
+    return p * 0.5 + 0.5;
+}
+
+// Chebyshev upper-bound weight for visibility gating (McGuire et al. 2017).
+float chebyshev_weight(float mean, float mean_sq, float dist) {
+    if (dist <= mean) return 1.0;
+    float variance = max(0.0, mean_sq - mean * mean);
+    float d        = dist - mean;
+    return variance / (variance + d * d);
+}
+
+// Per-probe atlas texel coordinate for direction `n`.
+ivec2 probe_atlas_coord(uint flat_idx, vec3 n) {
+    uint pz  = flat_idx / (pc.probes_dim.x * pc.probes_dim.y);
+    uint rem = flat_idx % (pc.probes_dim.x * pc.probes_dim.y);
+    uint py  = rem / pc.probes_dim.x;
+    uint px  = rem % pc.probes_dim.x;
+    vec2 face_uv = oct_encode(n);
+    uint fs = pc.probe_face_size;
+    ivec2 base = ivec2(int((px + pz * pc.probes_dim.x) * fs),
+                       int(py * fs));
+    ivec2 local = ivec2(clamp(int(face_uv.x * float(fs)), 0, int(fs) - 1),
+                        clamp(int(face_uv.y * float(fs)), 0, int(fs) - 1));
+    return base + local;
+}
+
+void main() {
+    uvec2 pix = gl_GlobalInvocationID.xy;
+    if (pix.x >= pc.output_width || pix.y >= pc.output_height) return;
+
+    ivec2 ipix = ivec2(pix);
+    vec3 wp = imageLoad(world_pos_image,    ipix).xyz;
+    vec3 n_raw = imageLoad(world_normal_image, ipix).xyz;
+    float nl = length(n_raw);
+    vec3 n  = (nl > 1e-6) ? (n_raw / nl) : vec3(0.0, 1.0, 0.0);
+
+    // Grid-space fractional position.
+    vec3  gp = (wp - pc.grid_origin) / pc.grid_spacing;
+    ivec3 b0 = ivec3(floor(gp));
+    vec3  f  = gp - vec3(b0);
+
+    vec3  irr_accum = vec3(0.0);
+    float w_total   = 0.0;
+
+    for (int dz = 0; dz <= 1; ++dz)
+    for (int dy = 0; dy <= 1; ++dy)
+    for (int dx = 0; dx <= 1; ++dx) {
+        ivec3 c = b0 + ivec3(dx, dy, dz);
+        c = clamp(c, ivec3(0),
+                  ivec3(int(pc.probes_dim.x) - 1,
+                        int(pc.probes_dim.y) - 1,
+                        int(pc.probes_dim.z) - 1));
+        uint flat_idx = uint(c.x) + pc.probes_dim.x *
+            (uint(c.y) + pc.probes_dim.y * uint(c.z));
+
+        float wx = (dx == 0) ? (1.0 - f.x) : f.x;
+        float wy = (dy == 0) ? (1.0 - f.y) : f.y;
+        float wz = (dz == 0) ? (1.0 - f.z) : f.z;
+        float trilinear = wx * wy * wz;
+
+        vec3 probe_pos = pc.grid_origin
+            + vec3(float(c.x), float(c.y), float(c.z)) * pc.grid_spacing;
+        vec3  to_probe = probe_pos - wp;
+        float dist     = length(to_probe);
+        vec3  to_probe_n = (dist > 1e-6) ? (to_probe / dist) : vec3(0.0, 1.0, 0.0);
+
+        // Visibility (Chebyshev) — sample atlas at -to_probe direction.
+        ivec2 vis_coord = probe_atlas_coord(flat_idx, -to_probe_n);
+        vec2  vis       = imageLoad(visibility_atlas, vis_coord).rg;
+        float cheb_w    = chebyshev_weight(vis.x, vis.y, dist);
+
+        // Backface weight (prevent probes behind the surface normal).
+        float backface = max(0.0, dot(to_probe_n, n));
+        float w = trilinear * max(0.001, backface * cheb_w);
+
+        // Sample irradiance in normal direction.
+        ivec2 irr_coord = probe_atlas_coord(flat_idx, n);
+        vec3  irr       = imageLoad(irradiance_atlas, irr_coord).rgb;
+
+        irr_accum += irr * w;
+        w_total   += w;
+    }
+
+    vec3 indirect = (w_total > 1e-6) ? (irr_accum / w_total) : pc.sky_color;
+    imageStore(out_indirect, ipix, vec4(indirect, 1.0));
+}
+)glsl";
+
 // Alias kept for backwards compatibility (was kProbeUpdateCS in early skeleton).
 constexpr std::string_view kProbeUpdateCS = kDdgiTraceCS;
 

@@ -32,6 +32,8 @@
 #include <cd/core/Result.hpp>
 #include <cd/ddgi/DispatchPass.hpp>
 #include <cd/rhi/Barriers.hpp>
+#include <cd/rhi/Descriptors.hpp>
+#include <cd/rhi/Enums.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
@@ -434,6 +436,163 @@ TEST(DdgiDispatch, BlendVisibilityDispatchSucceeds)
 
     // BlendPushConstants must stay in sync with the GLSL PC blocks (64 B).
     EXPECT_EQ(sizeof(cd::ddgi::BlendPushConstants), 64U);
+
+    pass.shutdown(*dev);
+}
+
+// ---------------------------------------------------------------------------
+// Sprint-3 — sample pass (phase570)
+// ---------------------------------------------------------------------------
+//
+// The sample pass reads the irradiance + visibility atlases (owned by
+// DispatchPass) together with a caller-supplied G-buffer (world-position +
+// world-normal storage images) and writes per-pixel indirect irradiance into
+// a caller-supplied output storage image.
+//
+// SamplePassDispatch wires four dummy storage images (32x32 RGBA16F for
+// position / normal / output, atlases are owned by the pass), transitions
+// every image to kUnorderedAccess, then issues a single execute_sample()
+// dispatch. Verification mirrors the blend smoke tests: post-submit handles
+// must remain valid and validation-layer diagnostics must stay silent.
+
+// ---------------------------------------------------------------------------
+// Test 9 — kDdgiSampleCS dispatches without validation errors and writes
+//          per-pixel indirect irradiance into the output image.
+// ---------------------------------------------------------------------------
+TEST(DdgiDispatch, SamplePassDispatch)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::ddgi::DispatchPass pass;
+    cd::ddgi::DispatchPassDesc desc {};
+    desc.grid.probes_x       = 4;
+    desc.grid.probes_y       = 2;
+    desc.grid.probes_z       = 4;
+    desc.settings.rays_per_probe = 64;
+    desc.needs_tlas          = false;
+    desc.probe_face_size     = 8;
+
+    auto init_r = pass.init(*dev, desc);
+    if (!init_r.has_value())
+        GTEST_SKIP() << "DispatchPass::init failed (likely no glslang backend): "
+                     << init_r.error().message;
+
+    // ---- Allocate dummy 32x32 G-buffer + output storage images. ----------
+    constexpr std::uint32_t kW = 32U;
+    constexpr std::uint32_t kH = 32U;
+
+    auto make_storage_image = [&](std::string_view debug_name)
+        -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
+    {
+        cd::rhi::TextureDesc td {};
+        td.type         = cd::rhi::TextureType::k2D;
+        td.format       = cd::rhi::Format::kRGBA16Float;
+        td.extent       = { kW, kH, 1U };
+        td.mip_levels   = 1;
+        td.array_layers = 1;
+        td.samples      = cd::rhi::SampleCount::k1;
+        td.usage        = cd::rhi::TextureUsage::kStorage |
+                          cd::rhi::TextureUsage::kSampled;
+        td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
+        td.debug_name   = debug_name;
+        auto tex = dev->create_texture(td);
+        if (!tex.has_value())
+            return {};
+        cd::rhi::TextureViewDesc vd {};
+        vd.texture     = *tex;
+        vd.type        = cd::rhi::TextureType::k2D;
+        vd.format      = cd::rhi::Format::kRGBA16Float;
+        vd.base_mip    = 0;
+        vd.mip_count   = 1;
+        vd.base_layer  = 0;
+        vd.layer_count = 1;
+        auto view = dev->create_texture_view(vd);
+        if (!view.has_value())
+        {
+            dev->destroy_texture(*tex);
+            return {};
+        }
+        return { *tex, *view };
+    };
+
+    auto [world_pos_tex,    world_pos_view]    = make_storage_image("ddgi_test_world_pos");
+    auto [world_normal_tex, world_normal_view] = make_storage_image("ddgi_test_world_normal");
+    auto [output_tex,       output_view]       = make_storage_image("ddgi_test_sample_output");
+    ASSERT_TRUE(world_pos_tex.is_valid());
+    ASSERT_TRUE(world_normal_tex.is_valid());
+    ASSERT_TRUE(output_tex.is_valid());
+
+    auto bind_r = pass.bind_sample_resources(*dev,
+                                             output_view,
+                                             world_pos_view,
+                                             world_normal_view,
+                                             kW, kH);
+    ASSERT_TRUE(bind_r.has_value()) << bind_r.error().message;
+
+    auto cmd = dev->create_command_buffer(cd::rhi::QueueType::kCompute);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+
+    // Transition every storage image UNDEFINED → kUnorderedAccess. The two
+    // atlases owned by the pass need transitioning too — the sample shader
+    // reads them via imageLoad, and Vulkan validation rejects reads from
+    // VK_IMAGE_LAYOUT_UNDEFINED.
+    std::array<cd::rhi::TextureBarrier, 5> tex_barriers {
+        cd::rhi::TextureBarrier {
+            .texture = pass.irradiance_atlas(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = pass.visibility_atlas(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = world_pos_tex,
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = world_normal_tex,
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = output_tex,
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+    };
+    cmd->barrier({}, tex_barriers);
+
+    pass.execute_sample(*cmd);
+
+    cmd->end();
+    dev->submit(*cmd);
+    dev->wait_idle();
+
+    EXPECT_TRUE(pass.sample_pipeline().is_valid());
+    EXPECT_TRUE(pass.sample_pipeline_layout().is_valid());
+    EXPECT_TRUE(pass.sample_descriptor_set().is_valid());
+    EXPECT_EQ(pass.sample_output_width(),  kW);
+    EXPECT_EQ(pass.sample_output_height(), kH);
+
+    // SamplePushConstants must stay in sync with the kDdgiSampleCS PC block.
+    EXPECT_EQ(sizeof(cd::ddgi::SamplePushConstants), 80U);
+
+    // Caller-owned image cleanup. Pass cleanup destroys the atlases.
+    dev->destroy_texture_view(output_view);
+    dev->destroy_texture_view(world_normal_view);
+    dev->destroy_texture_view(world_pos_view);
+    dev->destroy_texture(output_tex);
+    dev->destroy_texture(world_normal_tex);
+    dev->destroy_texture(world_pos_tex);
 
     pass.shutdown(*dev);
 }

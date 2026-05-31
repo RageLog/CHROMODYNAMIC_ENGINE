@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — engine/render/ddgi/src/DispatchPass.cpp
 // phase549 — implementation of the DDGI trace-pass GPU dispatcher.
 // phase560 — Sprint-2: blend_irradiance + blend_visibility compute passes.
+// phase570 — Sprint-3: execute_sample compute pass (G-buffer → indirect irradiance).
 // =============================================================================
 #include <cd/ddgi/DispatchPass.hpp>
 
@@ -612,6 +613,117 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
         if (!bupd_vis.has_value()) { shutdown(device); return std::unexpected(bupd_vis.error()); }
     }
 
+    // -----------------------------------------------------------------------
+    // Sprint-3 — sample pass (kDdgiSampleCS)
+    // -----------------------------------------------------------------------
+    // 17. sample descriptor-set layout:
+    //     binding 0 = out_indirect       (storage image, write)
+    //     binding 1 = world_pos_image    (storage image, read)
+    //     binding 2 = world_normal_image (storage image, read)
+    //     binding 3 = irradiance_atlas   (storage image, read)
+    //     binding 4 = visibility_atlas   (storage image, read)
+    {
+        std::array<cd::rhi::DescriptorSetLayoutBinding, 5> sample_bindings {
+            cd::rhi::DescriptorSetLayoutBinding {
+                .binding = 0,
+                .type    = cd::rhi::DescriptorType::kStorageImage,
+                .count   = 1,
+                .stages  = cd::rhi::ShaderStage::kCompute,
+            },
+            cd::rhi::DescriptorSetLayoutBinding {
+                .binding = 1,
+                .type    = cd::rhi::DescriptorType::kStorageImage,
+                .count   = 1,
+                .stages  = cd::rhi::ShaderStage::kCompute,
+            },
+            cd::rhi::DescriptorSetLayoutBinding {
+                .binding = 2,
+                .type    = cd::rhi::DescriptorType::kStorageImage,
+                .count   = 1,
+                .stages  = cd::rhi::ShaderStage::kCompute,
+            },
+            cd::rhi::DescriptorSetLayoutBinding {
+                .binding = 3,
+                .type    = cd::rhi::DescriptorType::kStorageImage,
+                .count   = 1,
+                .stages  = cd::rhi::ShaderStage::kCompute,
+            },
+            cd::rhi::DescriptorSetLayoutBinding {
+                .binding = 4,
+                .type    = cd::rhi::DescriptorType::kStorageImage,
+                .count   = 1,
+                .stages  = cd::rhi::ShaderStage::kCompute,
+            },
+        };
+        cd::rhi::DescriptorSetLayoutDesc ssld {};
+        ssld.bindings = sample_bindings;
+        auto ssl = device.create_descriptor_set_layout(ssld);
+        if (!ssl.has_value()) { shutdown(device); return std::unexpected(ssl.error()); }
+        sample_set_layout_ = *ssl;
+    }
+
+    // 18. sample pipeline layout.
+    {
+        std::array<cd::rhi::DescriptorSetLayoutHandle, 1> sample_set_layouts { sample_set_layout_ };
+        std::array<cd::rhi::PushConstantRange, 1> sample_push {
+            cd::rhi::PushConstantRange {
+                .stages = cd::rhi::ShaderStage::kCompute,
+                .offset = 0,
+                .size   = sizeof(SamplePushConstants),
+            },
+        };
+        cd::rhi::PipelineLayoutDesc spld {};
+        spld.set_layouts    = sample_set_layouts;
+        spld.push_constants = sample_push;
+        auto spl = device.create_pipeline_layout(spld);
+        if (!spl.has_value()) { shutdown(device); return std::unexpected(spl.error()); }
+        sample_pipeline_layout_ = *spl;
+    }
+
+    // 19. compile sample shader + create compute pipeline.
+    {
+        auto ssm = compile_blend_module(device,
+                                        kDdgiSampleCS,
+                                        "ddgi_sample.comp",
+                                        "ddgi_sample_cs");
+        if (!ssm.has_value()) { shutdown(device); return std::unexpected(ssm.error()); }
+        sample_module_ = *ssm;
+
+        cd::rhi::ComputePipelineDesc scpd {};
+        scpd.layout = sample_pipeline_layout_;
+        scpd.shader = sample_module_;
+        auto scp = device.create_compute_pipeline(scpd);
+        if (!scp.has_value()) { shutdown(device); return std::unexpected(scp.error()); }
+        sample_pipeline_ = *scp;
+    }
+
+    // 20. allocate the sample descriptor set — G-buffer + output bindings are
+    //     wired later via bind_sample_resources() once the caller's images
+    //     exist. Atlas bindings (3 / 4) are populated up-front since the pass
+    //     owns those views.
+    {
+        auto sds = device.allocate_descriptor_set(sample_set_layout_);
+        if (!sds.has_value()) { shutdown(device); return std::unexpected(sds.error()); }
+        sample_descriptor_set_ = *sds;
+
+        std::array<cd::rhi::DescriptorWrite, 2> sw {
+            cd::rhi::DescriptorWrite {
+                .binding       = 3,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kStorageImage,
+                .view          = irradiance_atlas_view_,
+            },
+            cd::rhi::DescriptorWrite {
+                .binding       = 4,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kStorageImage,
+                .view          = visibility_atlas_view_,
+            },
+        };
+        auto supd = device.update_descriptor_set(sample_descriptor_set_, sw);
+        if (!supd.has_value()) { shutdown(device); return std::unexpected(supd.error()); }
+    }
+
     return {};
 }
 
@@ -620,7 +732,17 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
 // ---------------------------------------------------------------------------
 void DispatchPass::shutdown(cd::rhi::IDevice& device) noexcept
 {
-    // Sprint-2 blend resources first — they reference the ray images and
+    // Sprint-3 sample resources first — they reference the atlas views;
+    // destroy in reverse-of-init order.
+    if (sample_descriptor_set_.is_valid())   { device.destroy_descriptor_set(sample_descriptor_set_);    sample_descriptor_set_   = {}; }
+    if (sample_pipeline_.is_valid())         { device.destroy_compute_pipeline(sample_pipeline_);        sample_pipeline_         = {}; }
+    if (sample_pipeline_layout_.is_valid())  { device.destroy_pipeline_layout(sample_pipeline_layout_);  sample_pipeline_layout_  = {}; }
+    if (sample_set_layout_.is_valid())       { device.destroy_descriptor_set_layout(sample_set_layout_); sample_set_layout_       = {}; }
+    if (sample_module_.is_valid())           { device.destroy_shader_module(sample_module_);             sample_module_           = {}; }
+    sample_output_width_  = 0;
+    sample_output_height_ = 0;
+
+    // Sprint-2 blend resources next — they reference the ray images and
     // blend_set_layout_; destroy in reverse-of-init order.
     if (blend_irr_descriptor_set_.is_valid()) { device.destroy_descriptor_set(blend_irr_descriptor_set_); blend_irr_descriptor_set_ = {}; }
     if (blend_vis_descriptor_set_.is_valid()) { device.destroy_descriptor_set(blend_vis_descriptor_set_); blend_vis_descriptor_set_ = {}; }
@@ -812,6 +934,110 @@ void DispatchPass::execute_blend_visibility(cd::rhi::ICommandBuffer& cmd,
     const std::uint32_t groups_y = groups_x;
     const std::uint32_t probes   = grid_.probe_count();
     cmd.dispatch(groups_x, groups_y, probes == 0U ? 1U : probes);
+}
+
+// ---------------------------------------------------------------------------
+// Sprint-3 — bind_sample_resources
+// ---------------------------------------------------------------------------
+cd::core::Result<void>
+DispatchPass::bind_sample_resources(cd::rhi::IDevice&          device,
+                                    cd::rhi::TextureViewHandle output_view,
+                                    cd::rhi::TextureViewHandle world_pos_view,
+                                    cd::rhi::TextureViewHandle world_normal_view,
+                                    std::uint32_t              output_width,
+                                    std::uint32_t              output_height)
+{
+    if (!sample_descriptor_set_.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::bind_sample_resources called before init()"));
+    }
+    if (!output_view.is_valid() ||
+        !world_pos_view.is_valid() ||
+        !world_normal_view.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::bind_sample_resources requires three valid image views"));
+    }
+
+    std::array<cd::rhi::DescriptorWrite, 3> writes {
+        cd::rhi::DescriptorWrite {
+            .binding       = 0,
+            .array_element = 0,
+            .type          = cd::rhi::DescriptorType::kStorageImage,
+            .view          = output_view,
+        },
+        cd::rhi::DescriptorWrite {
+            .binding       = 1,
+            .array_element = 0,
+            .type          = cd::rhi::DescriptorType::kStorageImage,
+            .view          = world_pos_view,
+        },
+        cd::rhi::DescriptorWrite {
+            .binding       = 2,
+            .array_element = 0,
+            .type          = cd::rhi::DescriptorType::kStorageImage,
+            .view          = world_normal_view,
+        },
+    };
+    auto upd = device.update_descriptor_set(sample_descriptor_set_, writes);
+    if (!upd.has_value())
+        return std::unexpected(upd.error());
+
+    sample_output_width_  = output_width;
+    sample_output_height_ = output_height;
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// Sprint-3 — execute_sample
+// ---------------------------------------------------------------------------
+void DispatchPass::execute_sample(cd::rhi::ICommandBuffer& cmd)
+{
+    if (!sample_pipeline_.is_valid())
+        return;
+    if (sample_output_width_ == 0U || sample_output_height_ == 0U)
+        return;                                                 // bind_sample_resources() not called yet
+
+    SamplePushConstants pc {};
+    pc.grid_origin[0]   = grid_.origin.x;
+    pc.grid_origin[1]   = grid_.origin.y;
+    pc.grid_origin[2]   = grid_.origin.z;
+    pc._pad0            = 0.0F;
+    pc.grid_spacing[0]  = grid_.spacing.x;
+    pc.grid_spacing[1]  = grid_.spacing.y;
+    pc.grid_spacing[2]  = grid_.spacing.z;
+    pc._pad1            = 0.0F;
+    pc.probes_dim[0]    = grid_.probes_x;
+    pc.probes_dim[1]    = grid_.probes_y;
+    pc.probes_dim[2]    = grid_.probes_z;
+    pc.probes_dim[3]    = settings_.rays_per_probe;
+    pc.probe_face_size  = probe_face_size_;
+    pc.output_width     = sample_output_width_;
+    pc.output_height    = sample_output_height_;
+    pc._pad3            = 0U;
+    pc.sky_color[0]     = sky_color_[0];
+    pc.sky_color[1]     = sky_color_[1];
+    pc.sky_color[2]     = sky_color_[2];
+    pc._pad4            = 0.0F;
+
+    cmd.bind_compute_pipeline(sample_pipeline_);
+    cmd.bind_descriptor_set(0U, sample_descriptor_set_);
+    cmd.push_constants(
+        sample_pipeline_layout_,
+        cd::rhi::ShaderStage::kCompute,
+        0U,
+        static_cast<std::uint32_t>(sizeof(SamplePushConstants)),
+        &pc);
+
+    // 8x8 workgroup over the output image.
+    const std::uint32_t groups_x = (sample_output_width_  + 7U) / 8U;
+    const std::uint32_t groups_y = (sample_output_height_ + 7U) / 8U;
+    cmd.dispatch(groups_x == 0U ? 1U : groups_x,
+                 groups_y == 0U ? 1U : groups_y,
+                 1U);
 }
 
 }  // namespace cd::ddgi
