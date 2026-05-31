@@ -1,15 +1,17 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/ui/font/Font.cpp
 //
-// Phase 1.1 impl. Uses stb_truetype (single-header MIT, vendored via the
-// asset_image FetchContent of nothings/stb). The skyline bin-pack is a
-// minimal in-house implementation -- stbtt_BakeFontBitmap does its own
-// bin-packing but its API rasterizes a CONTIGUOUS codepoint range into
-// a single bake call. We need to support incremental ranges (Türkçe
-// diakritik are scattered across Latin Extended-A), so we drive the
-// rasterizer per-glyph and pack ourselves.
+// Phase 1.1 + Phase 4 (T2.4). This TU owns:
+//   * stb_truetype backend (default fallback, always compiled).
+//   * Shared atlas + skyline bin-pack + MSDF post-processing.
+//   * Backend dispatch (calls into FreeTypeBackend.cpp when built with
+//     CD_UI_FONT_HAVE_FREETYPE).
+//   * Identity Font::shape() fallback (real HB impl lives in
+//     HarfBuzzShaping.cpp behind CD_UI_FONT_HAVE_HARFBUZZ).
 // =============================================================================
 #include <cd/ui/font/Font.hpp>
+
+#include "FontBackend.hpp"
 
 // stb_truetype: enable the implementation in THIS TU only.
 #define STB_TRUETYPE_IMPLEMENTATION
@@ -19,31 +21,51 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
 namespace cd::ui::font
 {
 
-// ---- Impl: holds the stb_truetype font info + a copy of the TTF bytes
-//   so the stbtt_fontinfo's pointer into the font data stays valid for
-//   the lifetime of the Font.
+// ---- Impl: owns BOTH the stb_truetype side AND (when built) a
+//   FreeTypeBackend instance. The active_backend_ field on Font picks
+//   which one is consulted per call. We keep both TU-local because PIMPL
+//   forward declaration cost is negligible and it lets either backend
+//   own resources without leaking types into the header.
 struct Font::Impl
 {
+    // Common to both backends.
     std::vector<std::uint8_t> ttf_bytes;
-    stbtt_fontinfo            info {};
-    float                     scale { 0.0F };
-    int                       ascent { 0 };
-    int                       descent { 0 };
-    int                       line_gap { 0 };
+    float                     scale     { 0.0F };
+    int                       ascent    { 0 };
+    int                       descent   { 0 };
+    int                       line_gap  { 0 };
+
+    // stb_truetype state (always present; fallback path).
+    stbtt_fontinfo stb_info {};
+
+    // FreeType + HarfBuzz state, defined in FreeTypeBackend.cpp and
+    // referenced via opaque pointer (constructed lazily on first use).
+    std::unique_ptr<FreeTypeBackend> ft;
+
+    // Replay-on-grow tracking: every time rasterize_range runs we
+    // recompute the skyline from scratch using the previously-packed
+    // glyph sizes. To do that we need the SOURCE alpha bitmap of each
+    // glyph (so we can re-blit when atlas_mode is kMsdf and we need to
+    // rebuild the SDF). Phase 4 stores only the dimensions — full source
+    // pixel re-rasterization happens on demand from the backend.
 };
 
 namespace
 {
 
-/// Minimal skyline bin-pack. Each entry describes one column-skyline
-/// segment. `try_pack` returns the (x, y) where a (w, h) box fits, or
-/// nullopt when the box doesn't fit anywhere within the current bound.
+// ---------------------------------------------------------------------------
+// Skyline bin-pack. Each entry describes one column-skyline segment.
+// try_pack returns the (x, y) where a (w, h) box fits, or nullopt when the
+// box doesn't fit anywhere within the current bound. This is the SAME
+// implementation that shipped with Phase 1.1; behaviour is preserved.
+// ---------------------------------------------------------------------------
 struct SkylineSegment
 {
     std::uint32_t x { 0U };
@@ -111,11 +133,6 @@ private:
     void commit_(std::size_t start, std::uint32_t w, std::uint32_t h,
                  std::uint32_t box_top_y)
     {
-        // The placed box sits in [x_left, x_left + w) × [box_top_y, box_top_y + h).
-        // Replace every old skyline segment covered by w with a single new
-        // segment at top_y = box_top_y + h. Carry the unconsumed remainder
-        // of the LAST overlapped segment forward at its ORIGINAL y so the
-        // skyline stays a valid 1-D step function.
         const std::uint32_t new_top = box_top_y + h;
         const std::uint32_t left_x  = skyline_[start].x;
 
@@ -150,38 +167,216 @@ private:
     }
 };
 
+// ---------------------------------------------------------------------------
+// MSDF generation — hand-rolled 8-SSED (8-point sequential Euclidean
+// distance) approximation. Operates IN-PLACE on a single-channel alpha
+// glyph bitmap: input is a coverage map (0 = outside, > 0 = inside);
+// output is an unsigned SDF biased so 128 = boundary, > 128 = inside,
+// < 128 = outside. The renderer can sample this with bilinear filtering
+// and the standard
+//
+//   alpha = smoothstep(0.5, 0.5 + 1/spread, sample) - smoothstep(0.5 - 1/spread, 0.5, sample)
+//
+// hint to draw crisp edges at any scale. msdfgen would give multi-
+// channel anti-aliasing for sharp corners; for Phase 4 a single-channel
+// SDF buys us the scale-invariant rendering benefit without pulling in
+// another vendored library.
+// ---------------------------------------------------------------------------
+constexpr int kMsdfSpread       = 8;     // 8-pixel search radius
+constexpr int kMsdfSpreadSquared = kMsdfSpread * kMsdfSpread;
+
+void to_msdf_inplace(std::uint8_t* glyph, std::uint32_t w, std::uint32_t h)
+{
+    if (w == 0U || h == 0U) return;
+
+    // Snapshot input coverage so the distance walk doesn't read its
+    // own writes mid-loop.
+    std::vector<std::uint8_t> src(glyph, glyph + static_cast<std::size_t>(w) * h);
+
+    const int iw = static_cast<int>(w);
+    const int ih = static_cast<int>(h);
+    for (int y = 0; y < ih; ++y)
+    {
+        for (int x = 0; x < iw; ++x)
+        {
+            const bool inside = src[static_cast<std::size_t>(y) * iw + x] >= 128U;
+
+            // Search the (2*spread+1)^2 neighbourhood for the closest
+            // pixel of the OPPOSITE coverage and record squared
+            // Euclidean distance. Bounded loop -> O(spread^2) per pixel
+            // is plenty fast for ASCII-sized glyphs.
+            int best_sq = std::numeric_limits<int>::max();
+            const int y0 = std::max(0, y - kMsdfSpread);
+            const int y1 = std::min(ih - 1, y + kMsdfSpread);
+            const int x0 = std::max(0, x - kMsdfSpread);
+            const int x1 = std::min(iw - 1, x + kMsdfSpread);
+            for (int yy = y0; yy <= y1; ++yy)
+            {
+                for (int xx = x0; xx <= x1; ++xx)
+                {
+                    const bool here = src[static_cast<std::size_t>(yy) * iw + xx] >= 128U;
+                    if (here == inside) continue;
+                    const int dx = xx - x;
+                    const int dy = yy - y;
+                    const int d  = dx * dx + dy * dy;
+                    if (d < best_sq) best_sq = d;
+                }
+            }
+
+            // Map the squared distance to [0, kMsdfSpread^2] and then
+            // to the 0..127 half-range. Sign-bias inside = +, outside = -.
+            int dist_q = (best_sq >= kMsdfSpreadSquared)
+                             ? kMsdfSpreadSquared
+                             : best_sq;
+            // Linear ramp (cheap; not quite a true distance, but smooth).
+            int q = (dist_q * 127) / kMsdfSpreadSquared;
+            int signed_q = inside ? (128 + q) : (128 - q);
+            if (signed_q < 0)   signed_q = 0;
+            if (signed_q > 255) signed_q = 255;
+            glyph[static_cast<std::size_t>(y) * iw + x] = static_cast<std::uint8_t>(signed_q);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal UTF-8 → codepoint decoder. Used by the identity shape() fallback
+// AND by the HarfBuzz tests that probe Arabic/Latin/CJK strings.
+// Invalid bytes are returned as U+FFFD (replacement character).
+// ---------------------------------------------------------------------------
+std::vector<std::uint32_t> utf8_to_codepoints(std::string_view s)
+{
+    std::vector<std::uint32_t> out;
+    out.reserve(s.size());
+    std::size_t i = 0;
+    while (i < s.size())
+    {
+        const auto b = static_cast<std::uint8_t>(s[i]);
+        std::uint32_t cp = 0xFFFDU;
+        int            extra = 0;
+        if (b < 0x80U)               { cp = b; extra = 0; }
+        else if ((b & 0xE0U) == 0xC0U) { cp = b & 0x1FU; extra = 1; }
+        else if ((b & 0xF0U) == 0xE0U) { cp = b & 0x0FU; extra = 2; }
+        else if ((b & 0xF8U) == 0xF0U) { cp = b & 0x07U; extra = 3; }
+        else                            { cp = 0xFFFDU; extra = 0; }
+        ++i;
+        for (int k = 0; k < extra && i < s.size(); ++k, ++i)
+        {
+            const auto c = static_cast<std::uint8_t>(s[i]);
+            if ((c & 0xC0U) != 0x80U) { cp = 0xFFFDU; break; }
+            cp = (cp << 6U) | (c & 0x3FU);
+        }
+        out.push_back(cp);
+    }
+    return out;
+}
+
 }  // namespace
 
+// ============================================================================
+// Backend dispatch — the FT backend lives in a sibling TU. When
+// CD_UI_FONT_HAVE_FREETYPE is undefined, the stubs below short-circuit so
+// kFreeType collapses to kStb at runtime.
+// ============================================================================
+namespace ft_backend
+{
+#if defined(CD_UI_FONT_HAVE_FREETYPE) && CD_UI_FONT_HAVE_FREETYPE
+bool load(FreeTypeBackend& ft, std::span<const std::uint8_t> data, float pixel_size,
+          int& out_ascent, int& out_descent, int& out_line_gap, float& out_scale);
+bool rasterize_glyph(FreeTypeBackend& ft, std::uint32_t codepoint,
+                     std::vector<std::uint8_t>& dst_alpha,
+                     int& w, int& h,
+                     float& bearing_x, float& bearing_y, float& advance);
+#else
+inline bool load(FreeTypeBackend&, std::span<const std::uint8_t>, float,
+                 int&, int&, int&, float&) { return false; }
+inline bool rasterize_glyph(FreeTypeBackend&, std::uint32_t,
+                            std::vector<std::uint8_t>&,
+                            int&, int&, float&, float&, float&) { return false; }
+#endif
+}  // namespace ft_backend
+
+namespace hb_shape
+{
+#if defined(CD_UI_FONT_HAVE_HARFBUZZ) && CD_UI_FONT_HAVE_HARFBUZZ
+std::vector<ShapedGlyph> shape(const FreeTypeBackend& ft,
+                               std::string_view       text,
+                               std::string_view       locale,
+                               float                  scale);
+#else
+inline std::vector<ShapedGlyph> shape(const FreeTypeBackend&,
+                                      std::string_view,
+                                      std::string_view,
+                                      float)
+{
+    return {};
+}
+#endif
+}  // namespace hb_shape
+
+// ============================================================================
 Font::Font() = default;
 Font::~Font() = default;
 Font::Font(Font&&) noexcept = default;
 Font& Font::operator=(Font&&) noexcept = default;
 
+Backend Font::select_backend(Backend desired) noexcept
+{
+    Backend resolved = desired;
+    if (resolved == Backend::kAuto)
+    {
+#if defined(CD_UI_FONT_HAVE_FREETYPE) && CD_UI_FONT_HAVE_FREETYPE
+        resolved = Backend::kFreeType;
+#else
+        resolved = Backend::kStb;
+#endif
+    }
+    if (resolved == Backend::kFreeType && !has_freetype())
+    {
+        resolved = Backend::kStb;
+    }
+    active_backend_ = resolved;
+    return resolved;
+}
+
+AtlasMode Font::select_atlas_mode(AtlasMode desired) noexcept
+{
+    // Mode is only honoured when no glyphs have been packed yet — once a
+    // glyph is rasterized the bitmap format is locked.
+    if (glyphs_.empty())
+    {
+        atlas_mode_ = desired;
+    }
+    return atlas_mode_;
+}
+
 bool Font::load_ttf_in_memory(std::span<const std::uint8_t> data)
 {
-    // stb_truetype does no input validation — it trusts the SFNT header
-    // and walks the table directory blindly. Reject obviously-too-small
-    // / malformed blobs ourselves before reaching for stbtt_InitFont,
-    // which would otherwise dereference garbage offsets and AV-crash.
     constexpr std::size_t kMinTtfHeaderBytes = 256U;
     if (data.size() < kMinTtfHeaderBytes) return false;
+
+    // Resolve backend on first load if caller never called select_backend().
+    if (active_backend_ == Backend::kAuto)
+    {
+        (void)select_backend(Backend::kAuto);
+    }
 
     impl_ = std::make_unique<Impl>();
     impl_->ttf_bytes.assign(data.begin(), data.end());
 
-    // GetFontOffsetForIndex returns -1 when the SFNT magic isn't one of
-    // the known values ('1\0\0\0' / 'OTTO' / 'true' / 'typ1' / 'ttcf').
+    // ---- stb_truetype init (also used by the FT path as a metric cross-
+    //      check + kerning fallback for fonts without GPOS).
     const int offset = stbtt_GetFontOffsetForIndex(impl_->ttf_bytes.data(), 0);
     if (offset < 0)
     {
         impl_.reset();
         return false;
     }
-    if (stbtt_InitFont(&impl_->info, impl_->ttf_bytes.data(), offset) == 0)
+    if (stbtt_InitFont(&impl_->stb_info, impl_->ttf_bytes.data(), offset) == 0)
     {
         impl_.reset();
         return false;
     }
+
     loaded_ = true;
     return true;
 }
@@ -194,24 +389,39 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
     if (!loaded_ || pixel_size <= 0.0F || max_dim == 0U) return false;
     if (last_codepoint < first_codepoint) return false;
 
-    // Lazy-init the atlas on first rasterize_range call. We pick a 1024
-    // starting size and double-up to `max_dim` on overflow. For Phase 1
-    // we keep a single page (no eviction).
+    // Lazy-init atlas + metrics on first call.
     if (atlas_.width == 0U)
     {
         const std::uint32_t initial = std::min<std::uint32_t>(1024U, max_dim);
         atlas_.width  = initial;
         atlas_.height = initial;
         atlas_.pixels.assign(static_cast<std::size_t>(initial) * initial, std::uint8_t { 0 });
-        impl_->scale = stbtt_ScaleForPixelHeight(&impl_->info, pixel_size);
-        stbtt_GetFontVMetrics(&impl_->info, &impl_->ascent, &impl_->descent, &impl_->line_gap);
+
+        // Resolve metrics via the active backend. FT path tries first, then
+        // falls back to stb if FT init fails (e.g. unsupported font).
+        bool got_metrics = false;
+        if (active_backend_ == Backend::kFreeType)
+        {
+#if defined(CD_UI_FONT_HAVE_FREETYPE) && CD_UI_FONT_HAVE_FREETYPE
+            if (!impl_->ft) impl_->ft = std::make_unique<FreeTypeBackend>();
+            got_metrics = ft_backend::load(*impl_->ft,
+                                           std::span<const std::uint8_t>(impl_->ttf_bytes),
+                                           pixel_size,
+                                           impl_->ascent, impl_->descent,
+                                           impl_->line_gap, impl_->scale);
+#endif
+            if (!got_metrics) active_backend_ = Backend::kStb;
+        }
+        if (!got_metrics)
+        {
+            impl_->scale = stbtt_ScaleForPixelHeight(&impl_->stb_info, pixel_size);
+            stbtt_GetFontVMetrics(&impl_->stb_info, &impl_->ascent, &impl_->descent, &impl_->line_gap);
+        }
         pixel_size_  = pixel_size;
         line_height_ = static_cast<float>(impl_->ascent - impl_->descent + impl_->line_gap) * impl_->scale;
     }
 
     SkylinePacker packer(atlas_.width, atlas_.height);
-    // Replay all previously-packed glyphs into the packer so we keep
-    // their reservations.
     for (const auto& [_, g] : glyphs_)
     {
         const auto w = static_cast<std::uint32_t>(g.width);
@@ -224,50 +434,88 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
     for (std::uint32_t cp = first_codepoint; cp <= last_codepoint; ++cp)
     {
         if (glyphs_.find(cp) != glyphs_.end()) continue;
-        const int gi = stbtt_FindGlyphIndex(&impl_->info, static_cast<int>(cp));
-        if (gi == 0) continue;  // not in font
 
-        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        stbtt_GetGlyphBitmapBox(&impl_->info, gi, scale, scale, &x0, &y0, &x1, &y1);
-        const std::uint32_t w = static_cast<std::uint32_t>(std::max(0, x1 - x0));
-        const std::uint32_t h = static_cast<std::uint32_t>(std::max(0, y1 - y0));
+        // ---- Per-backend rasterization into a TEMP alpha bitmap.
+        std::vector<std::uint8_t> tmp;
+        int                       w = 0, h = 0;
+        float                     bx = 0.0F, by = 0.0F, adv = 0.0F;
+        bool                      have_glyph = false;
 
-        int advance_i = 0, lsb = 0;
-        stbtt_GetGlyphHMetrics(&impl_->info, gi, &advance_i, &lsb);
+        if (active_backend_ == Backend::kFreeType && impl_->ft)
+        {
+            have_glyph = ft_backend::rasterize_glyph(*impl_->ft, cp, tmp,
+                                                     w, h, bx, by, adv);
+        }
+        if (!have_glyph)
+        {
+            // stb path — also the FT fallback when FT can't load this glyph.
+            const int gi = stbtt_FindGlyphIndex(&impl_->stb_info, static_cast<int>(cp));
+            if (gi == 0) continue;  // not in font
+
+            int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            stbtt_GetGlyphBitmapBox(&impl_->stb_info, gi, scale, scale, &x0, &y0, &x1, &y1);
+            w = std::max(0, x1 - x0);
+            h = std::max(0, y1 - y0);
+
+            int advance_i = 0, lsb = 0;
+            stbtt_GetGlyphHMetrics(&impl_->stb_info, gi, &advance_i, &lsb);
+            bx  = static_cast<float>(x0);
+            by  = static_cast<float>(-y0);
+            adv = static_cast<float>(advance_i) * scale;
+
+            if (w > 0 && h > 0)
+            {
+                tmp.assign(static_cast<std::size_t>(w) * h, std::uint8_t { 0 });
+                stbtt_MakeGlyphBitmap(&impl_->stb_info,
+                                      tmp.data(),
+                                      w, h, w,
+                                      scale, scale, gi);
+            }
+            have_glyph = true;
+        }
+        if (!have_glyph) continue;
 
         GlyphInfo info {};
         info.width     = static_cast<float>(w);
         info.height    = static_cast<float>(h);
-        info.bearing_x = static_cast<float>(x0);
-        info.bearing_y = static_cast<float>(-y0);  // y0 is top above baseline (negative)
-        info.advance   = static_cast<float>(advance_i) * scale;
+        info.bearing_x = bx;
+        info.bearing_y = by;
+        info.advance   = adv;
 
-        if (w == 0U || h == 0U)
+        if (w == 0 || h == 0)
         {
-            // Whitespace glyph (e.g. space) -- no atlas slot needed.
             glyphs_.emplace(cp, info);
             continue;
         }
 
-        const auto packed = packer.try_pack(w, h);
-        if (!packed.has_value())
-        {
-            return false;  // ran out of atlas space
-        }
+        const auto packed = packer.try_pack(static_cast<std::uint32_t>(w),
+                                            static_cast<std::uint32_t>(h));
+        if (!packed.has_value()) return false;
         const auto [px, py] = *packed;
 
-        // Rasterize directly into the atlas at (px, py).
-        stbtt_MakeGlyphBitmap(
-            &impl_->info,
-            atlas_.pixels.data() + static_cast<std::size_t>(py) * atlas_.width + px,
-            static_cast<int>(w), static_cast<int>(h),
-            static_cast<int>(atlas_.width),
-            scale, scale, gi);
+        // Optional MSDF post-process happens on the SOURCE bitmap before
+        // we blit into the atlas, so the SDF respects glyph-local coords
+        // (not atlas-page coords; bleed across glyphs is impossible).
+        if (atlas_mode_ == AtlasMode::kMsdf)
+        {
+            to_msdf_inplace(tmp.data(),
+                            static_cast<std::uint32_t>(w),
+                            static_cast<std::uint32_t>(h));
+        }
 
-        info.u0 = static_cast<float>(px)      / static_cast<float>(atlas_.width);
-        info.v0 = static_cast<float>(py)      / static_cast<float>(atlas_.height);
-        info.u1 = static_cast<float>(px + w)  / static_cast<float>(atlas_.width);
-        info.v1 = static_cast<float>(py + h)  / static_cast<float>(atlas_.height);
+        // Blit tmp -> atlas at (px, py).
+        for (int row = 0; row < h; ++row)
+        {
+            std::memcpy(atlas_.pixels.data() +
+                            (static_cast<std::size_t>(py + row) * atlas_.width + px),
+                        tmp.data() + static_cast<std::size_t>(row) * w,
+                        static_cast<std::size_t>(w));
+        }
+
+        info.u0 = static_cast<float>(px)     / static_cast<float>(atlas_.width);
+        info.v0 = static_cast<float>(py)     / static_cast<float>(atlas_.height);
+        info.u1 = static_cast<float>(px + w) / static_cast<float>(atlas_.width);
+        info.v1 = static_cast<float>(py + h) / static_cast<float>(atlas_.height);
         glyphs_.emplace(cp, info);
     }
     return true;
@@ -283,8 +531,44 @@ std::optional<GlyphInfo> Font::glyph_uv(std::uint32_t codepoint) const noexcept
 float Font::kerning(std::uint32_t a, std::uint32_t b) const noexcept
 {
     if (!loaded_) return 0.0F;
-    const int adv = stbtt_GetCodepointKernAdvance(&impl_->info, static_cast<int>(a), static_cast<int>(b));
+    const int adv = stbtt_GetCodepointKernAdvance(&impl_->stb_info,
+                                                  static_cast<int>(a),
+                                                  static_cast<int>(b));
     return static_cast<float>(adv) * impl_->scale;
+}
+
+std::vector<ShapedGlyph> Font::shape(std::string_view text,
+                                     std::string_view locale) const
+{
+    if (!loaded_ || text.empty()) return {};
+
+#if defined(CD_UI_FONT_HAVE_HARFBUZZ) && CD_UI_FONT_HAVE_HARFBUZZ
+    if (active_backend_ == Backend::kFreeType && impl_->ft)
+    {
+        auto out = hb_shape::shape(*impl_->ft, text, locale, impl_->scale);
+        if (!out.empty()) return out;
+    }
+#else
+    (void)locale;
+#endif
+
+    // ---- Identity shaper fallback (stb path or HB unavailable).
+    // Decode UTF-8, emit one ShapedGlyph per codepoint with the codepoint
+    // itself in glyph_id and the stb-reported advance.
+    std::vector<ShapedGlyph> out;
+    const auto cps = utf8_to_codepoints(text);
+    out.reserve(cps.size());
+    for (std::uint32_t cp : cps)
+    {
+        ShapedGlyph g {};
+        g.glyph_id = cp;
+        int adv_i = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&impl_->stb_info, static_cast<int>(cp),
+                                   &adv_i, &lsb);
+        g.advance_x = static_cast<float>(adv_i) * impl_->scale;
+        out.push_back(g);
+    }
+    return out;
 }
 
 }  // namespace cd::ui::font
