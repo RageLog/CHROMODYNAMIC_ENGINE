@@ -937,6 +937,57 @@ void DispatchPass::execute_blend_visibility(cd::rhi::ICommandBuffer& cmd,
 }
 
 // ---------------------------------------------------------------------------
+// Sprint-2 CPU-stub — execute_blend_irradiance(frame_index)
+// ---------------------------------------------------------------------------
+// Validates probe-grid + atlas state and increments the call counter.
+// No command buffer or Vulkan device required; designed for CPU-only unit
+// tests and downstream code that needs to confirm the pass is wired.
+cd::core::Result<void>
+DispatchPass::execute_blend_irradiance(std::uint32_t /*frame_index*/)
+{
+    if (grid_.probe_count() == 0U)
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_blend_irradiance: probe_count == 0; "
+            "the probe grid must have at least one probe"));
+    }
+    if (atlas_width_ == 0U || atlas_height_ == 0U)
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_blend_irradiance: atlas not allocated "
+            "(call init() before execute_blend_irradiance)"));
+    }
+    ++blend_irr_call_count_;
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// Sprint-2 CPU-stub — execute_blend_visibility(frame_index)
+// ---------------------------------------------------------------------------
+cd::core::Result<void>
+DispatchPass::execute_blend_visibility(std::uint32_t /*frame_index*/)
+{
+    if (grid_.probe_count() == 0U)
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_blend_visibility: probe_count == 0; "
+            "the probe grid must have at least one probe"));
+    }
+    if (atlas_width_ == 0U || atlas_height_ == 0U)
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_blend_visibility: atlas not allocated "
+            "(call init() before execute_blend_visibility)"));
+    }
+    ++blend_vis_call_count_;
+    return {};
+}
+
+// ---------------------------------------------------------------------------
 // Sprint-3 — bind_sample_resources
 // ---------------------------------------------------------------------------
 cd::core::Result<void>

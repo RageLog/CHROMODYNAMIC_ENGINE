@@ -200,12 +200,30 @@ public:
     void execute_blend_irradiance(cd::rhi::ICommandBuffer& cmd,
                                   std::uint32_t frame_index);
 
+    /// Sprint-2 CPU-stub overload — validates probe-grid and atlas state,
+    /// increments the internal blend_irr_call_count_ counter, and returns
+    /// Result<void>::ok(). No command buffer or Vulkan device required;
+    /// used by CPU-only unit tests and downstream code that needs to confirm
+    /// the pass is wired before recording a real GPU dispatch.
+    /// Returns an error when probe_count() == 0 or the atlas is not allocated.
+    [[nodiscard]] cd::core::Result<void>
+    execute_blend_irradiance(std::uint32_t frame_index);
+
     /// Sprint-2 — record the visibility-blend dispatch into `cmd`. Reads
     /// ray_dir_dist (per-ray direction + distance from the trace pass) and
     /// writes (mean_depth, mean_depth²) into the visibility atlas for
     /// Chebyshev gating in the sample pass (Sprint-3).
     void execute_blend_visibility(cd::rhi::ICommandBuffer& cmd,
                                   std::uint32_t frame_index);
+
+    /// Sprint-2 CPU-stub overload — validates probe-grid and atlas state,
+    /// increments the internal blend_vis_call_count_ counter, and returns
+    /// Result<void>::ok(). No command buffer or Vulkan device required;
+    /// used by CPU-only unit tests and downstream code that needs to confirm
+    /// the pass is wired before recording a real GPU dispatch.
+    /// Returns an error when probe_count() == 0 or the atlas is not allocated.
+    [[nodiscard]] cd::core::Result<void>
+    execute_blend_visibility(std::uint32_t frame_index);
 
     /// Sprint-3 (phase570) — point the sample-pass descriptor set at the
     /// caller-supplied G-buffer + output images. Must be called once before
@@ -265,6 +283,28 @@ public:
     [[nodiscard]] std::uint32_t atlas_height()     const noexcept { return atlas_height_; }
     [[nodiscard]] std::uint32_t probe_face_size()  const noexcept { return probe_face_size_; }
 
+    // ---- Sprint-2 CPU-stub call counters (no Vulkan required) ---------------
+
+    /// Number of times the CPU-stub execute_blend_irradiance(frame_index)
+    /// overload has been called successfully (i.e. probe_count > 0).
+    [[nodiscard]] std::uint32_t blend_irr_call_count() const noexcept { return blend_irr_call_count_; }
+
+    /// Number of times the CPU-stub execute_blend_visibility(frame_index)
+    /// overload has been called successfully (i.e. probe_count > 0).
+    [[nodiscard]] std::uint32_t blend_vis_call_count() const noexcept { return blend_vis_call_count_; }
+
+    /// Test-only helper — set grid_ + atlas dims without a GPU device so the
+    /// CPU-stub execute_blend_irradiance/visibility(frame_index) overloads can
+    /// be exercised in pure CPU unit tests. Not intended for production use.
+    void prime_for_cpu_test(ProbeGrid grid,
+                            std::uint32_t atlas_w,
+                            std::uint32_t atlas_h) noexcept
+    {
+        grid_         = grid;
+        atlas_width_  = atlas_w;
+        atlas_height_ = atlas_h;
+    }
+
     /// True iff init() succeeded and shutdown() has not been called since.
     [[nodiscard]] bool initialised() const noexcept { return pipeline_.is_valid(); }
 
@@ -316,6 +356,10 @@ private:
     std::uint32_t atlas_height_     { 0 };
     std::uint32_t sample_output_width_  { 0 };
     std::uint32_t sample_output_height_ { 0 };
+
+    // ── Sprint-2 CPU-stub call counters ────────────────────────────────────
+    std::uint32_t blend_irr_call_count_ { 0 };   ///< Incremented by CPU-stub execute_blend_irradiance(frame_index).
+    std::uint32_t blend_vis_call_count_ { 0 };   ///< Incremented by CPU-stub execute_blend_visibility(frame_index).
 };
 
 }  // namespace cd::ddgi

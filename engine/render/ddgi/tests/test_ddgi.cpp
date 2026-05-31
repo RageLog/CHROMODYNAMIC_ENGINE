@@ -12,9 +12,15 @@
 //   6. Empty probe grid returns default ambient.
 //
 // Additional pre-existing cases kept to avoid regression.
+//
+// phase596 — CPU-stub blend-method tests (no Vulkan dispatch required):
+//   7. BlendIrradianceIncrementsCounter — call once, counter == 1.
+//   8. BlendVisibilityIncrementsCounter — call once, counter == 1.
+//   9. BlendsRejectZeroProbeGrid       — probe_count==0 returns error.
 // =============================================================================
 
 #include <cd/ddgi/Ddgi.hpp>
+#include <cd/ddgi/DispatchPass.hpp>
 
 #include <gtest/gtest.h>
 
@@ -330,6 +336,76 @@ TEST(Ddgi, GlslShadersNonEmpty)
               std::string_view::npos);
     EXPECT_NE(cd::ddgi::kDdgiSampleFS.find("chebyshev_weight"),
               std::string_view::npos);
+}
+
+
+// ===========================================================================
+// phase596 — CPU-stub blend method tests (no Vulkan dispatch required)
+//
+// DispatchPass::execute_blend_irradiance(frame_index) and
+// execute_blend_visibility(frame_index) are overloads that take no
+// ICommandBuffer. They validate probe-grid + atlas state, increment an
+// internal call counter, and return Result<void>. No GPU device needed.
+// prime_for_cpu_test() seeds grid_ + atlas dims without init().
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Test 7 — BlendIrradianceIncrementsCounter
+// Call execute_blend_irradiance once on a primed pass; counter must be 1.
+// ---------------------------------------------------------------------------
+TEST(Ddgi, BlendIrradianceIncrementsCounter)
+{
+    cd::ddgi::DispatchPass pass;
+    pass.prime_for_cpu_test(cd::ddgi::ProbeGrid{}, 64U, 32U);
+
+    EXPECT_EQ(pass.blend_irr_call_count(), 0U);
+    const auto r = pass.execute_blend_irradiance(/*frame_index=*/0U);
+    EXPECT_TRUE(r.has_value()) << "CPU-stub must succeed on a primed pass";
+    EXPECT_EQ(pass.blend_irr_call_count(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — BlendVisibilityIncrementsCounter
+// Call execute_blend_visibility once on a primed pass; counter must be 1.
+// ---------------------------------------------------------------------------
+TEST(Ddgi, BlendVisibilityIncrementsCounter)
+{
+    cd::ddgi::DispatchPass pass;
+    pass.prime_for_cpu_test(cd::ddgi::ProbeGrid{}, 64U, 32U);
+
+    EXPECT_EQ(pass.blend_vis_call_count(), 0U);
+    const auto r = pass.execute_blend_visibility(/*frame_index=*/0U);
+    EXPECT_TRUE(r.has_value()) << "CPU-stub must succeed on a primed pass";
+    EXPECT_EQ(pass.blend_vis_call_count(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — BlendsRejectZeroProbeGrid
+// prime_for_cpu_test with probes_x/y/z == 0 forces probe_count() == 0.
+// Both CPU-stub overloads must return an error and leave counters at 0.
+// ---------------------------------------------------------------------------
+TEST(Ddgi, BlendsRejectZeroProbeGrid)
+{
+    cd::ddgi::ProbeGrid zero_grid {};
+    zero_grid.probes_x = 0;
+    zero_grid.probes_y = 0;
+    zero_grid.probes_z = 0;
+
+    cd::ddgi::DispatchPass pass;
+    pass.prime_for_cpu_test(zero_grid, 64U, 32U);
+
+    {
+        const auto r = pass.execute_blend_irradiance(/*frame_index=*/0U);
+        EXPECT_FALSE(r.has_value()) << "expected error when probe_count == 0";
+        EXPECT_EQ(pass.blend_irr_call_count(), 0U)
+            << "counter must not increment on error";
+    }
+    {
+        const auto r = pass.execute_blend_visibility(/*frame_index=*/0U);
+        EXPECT_FALSE(r.has_value()) << "expected error when probe_count == 0";
+        EXPECT_EQ(pass.blend_vis_call_count(), 0U)
+            << "counter must not increment on error";
+    }
 }
 
 }  // namespace
