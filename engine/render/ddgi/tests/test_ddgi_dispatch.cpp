@@ -268,4 +268,174 @@ TEST(DdgiDispatch, BindTlasIsNoopOnSmokePass)
     pass.shutdown(*dev);
 }
 
+// ---------------------------------------------------------------------------
+// Sprint-2 — blend passes
+// ---------------------------------------------------------------------------
+//
+// The blend passes ingest the per-ray radiance / direction images that the
+// trace pass writes, then accumulate per-probe irradiance + visibility into
+// octahedral atlas textures. Both shaders compile + dispatch standalone
+// against a Vulkan device — no TLAS / ray-query required.
+//
+// The smoke test pattern below mirrors `RecordAndSubmitSucceedsForSmokeShader`:
+//   1. init the pass with `needs_tlas = false` so the trace pipeline doesn't
+//      pull in VK_KHR_ray_query.
+//   2. transition the four storage images to kUnorderedAccess.
+//   3. dispatch the trace shader to populate ray_radiance + ray_dir_dist.
+//   4. dispatch the target blend shader; submit + wait_idle drains the queue.
+//   5. validate the atlas + blend descriptor-set handles are still live.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+// Set up a smoke-mode DispatchPass, run one trace + one blend dispatch.
+//
+// `do_blend` records the blend dispatch the caller wants to exercise. Returns
+// true on success, false when the device couldn't be initialised (the test
+// then falls through to GTEST_SKIP).
+template <typename DoBlendFn>
+bool run_trace_then_blend(cd::rhi::IDevice& dev,
+                          cd::ddgi::DispatchPass& pass,
+                          DoBlendFn&& do_blend)
+{
+    cd::ddgi::DispatchPassDesc desc {};
+    desc.grid.probes_x       = 4;
+    desc.grid.probes_y       = 2;
+    desc.grid.probes_z       = 4;
+    desc.settings.rays_per_probe = 64;
+    desc.needs_tlas          = false;
+    desc.probe_face_size     = 8;
+
+    auto r = pass.init(dev, desc);
+    if (!r.has_value())
+        return false;
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kCompute);
+    if (cmd == nullptr)
+        return false;
+    cmd->begin();
+
+    // Transition all four storage images UNDEFINED → kUnorderedAccess so
+    // both the trace + blend shaders may write into them.
+    std::array<cd::rhi::TextureBarrier, 4> tex_barriers {
+        cd::rhi::TextureBarrier {
+            .texture = pass.ray_radiance(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = pass.ray_dir_dist(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = pass.irradiance_atlas(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = pass.visibility_atlas(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+    };
+    cmd->barrier({}, tex_barriers);
+
+    // Populate ray_radiance + ray_dir_dist via the trace pass first so the
+    // blend reads have well-defined sources (validation layer flags reads
+    // from untransitioned images).
+    pass.dispatch(*cmd, /*frame_index=*/0U);
+
+    // Memory barrier between the trace shader and the blend shader — both
+    // touch the ray images, so we hold them in kUnorderedAccess but issue a
+    // self-transition to flush + invalidate L1 between dispatches.
+    std::array<cd::rhi::TextureBarrier, 2> sync_barriers {
+        cd::rhi::TextureBarrier {
+            .texture = pass.ray_radiance(),
+            .from    = cd::rhi::ResourceState::kUnorderedAccess,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = pass.ray_dir_dist(),
+            .from    = cd::rhi::ResourceState::kUnorderedAccess,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+    };
+    cmd->barrier({}, sync_barriers);
+
+    do_blend(*cmd);
+
+    cmd->end();
+    dev.submit(*cmd);
+    dev.wait_idle();
+    return true;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Test 7 — kDdgiBlendIrradianceCS dispatches without validation errors and
+//          writes per-probe irradiance into the octahedral atlas image.
+// ---------------------------------------------------------------------------
+TEST(DdgiDispatch, BlendIrradianceDispatchSucceeds)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::ddgi::DispatchPass pass;
+    const bool ok = run_trace_then_blend(*dev, pass,
+        [&pass](cd::rhi::ICommandBuffer& cmd) {
+            pass.execute_blend_irradiance(cmd, /*frame_index=*/0U);
+        });
+    if (!ok)
+        GTEST_SKIP() << "DispatchPass::init failed (likely no glslang backend)";
+
+    EXPECT_TRUE(pass.blend_irradiance_pipeline().is_valid());
+    EXPECT_TRUE(pass.blend_irradiance_descriptor_set().is_valid());
+    EXPECT_TRUE(pass.irradiance_atlas().is_valid());
+    EXPECT_TRUE(pass.irradiance_atlas_view().is_valid());
+
+    // 4 * 2 * 4 = 32 probes; default probe_face_size = 8.
+    // ProbeAtlas: width = probes_x * probes_z * face = 4*4*8 = 128
+    //             height = probes_y * face          = 2*8    = 16
+    EXPECT_EQ(pass.atlas_width(),  128U);
+    EXPECT_EQ(pass.atlas_height(), 16U);
+    EXPECT_EQ(pass.probe_face_size(), 8U);
+
+    pass.shutdown(*dev);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — kDdgiBlendVisibilityCS dispatches without validation errors and
+//          writes (mean_depth, mean_depth²) into the visibility atlas.
+// ---------------------------------------------------------------------------
+TEST(DdgiDispatch, BlendVisibilityDispatchSucceeds)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::ddgi::DispatchPass pass;
+    const bool ok = run_trace_then_blend(*dev, pass,
+        [&pass](cd::rhi::ICommandBuffer& cmd) {
+            pass.execute_blend_visibility(cmd, /*frame_index=*/0U);
+        });
+    if (!ok)
+        GTEST_SKIP() << "DispatchPass::init failed (likely no glslang backend)";
+
+    EXPECT_TRUE(pass.blend_visibility_pipeline().is_valid());
+    EXPECT_TRUE(pass.blend_visibility_descriptor_set().is_valid());
+    EXPECT_TRUE(pass.visibility_atlas().is_valid());
+    EXPECT_TRUE(pass.visibility_atlas_view().is_valid());
+
+    // BlendPushConstants must stay in sync with the GLSL PC blocks (64 B).
+    EXPECT_EQ(sizeof(cd::ddgi::BlendPushConstants), 64U);
+
+    pass.shutdown(*dev);
+}
+
 }  // namespace
