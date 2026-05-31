@@ -271,11 +271,13 @@ just the schedule + status lens.
 
 ### T5.2 Gameplay-tier README sweep
 
-* **Status**: All 13 new `cd::game::*` libraries shipped per-library
-  READMEs as part of their phase commits. A `docs/LIBRARIES.md` index
-  refresh + tier-level README under `engine/game/README.md` is
-  outstanding.
-* **Effort**: 1 day.
+* **Status**: DONE (2026-05-31).
+  * `engine/game/README.md` created with 1-paragraph rationale + table of
+    all 13 cd::game::* libraries (purpose, path, deps) + Mermaid DAG +
+    samples section with 4 examples.
+  * `docs/LIBRARIES.md` refreshed: Game tier (13 libs) inserted between
+    World and UI, library count updated to 67 public + 68 total.
+* **Effort**: 0.5 days (completed).
 
 ### T5.3 Volumetric-fog + auto-exposure-GPU ADR backfill
 

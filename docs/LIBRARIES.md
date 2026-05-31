@@ -118,6 +118,31 @@ in production; samples can pull just the pieces they need.
 
 ---
 
+## Game tier (13)
+
+Gameplay-facing libraries: behavior authoring, narrative, persistence,
+interaction, and developer ergonomics. Each library is independently
+buildable; they depend on the world tier but never reverse. Per
+[ADR-20260530-gameplay-library-family](ADR/ADR-20260530-gameplay-library-family.md).
+
+| Target                  | Alias                      | Responsibility |
+|-------------------------|----------------------------|----------------|
+| `cd_game_save`          | `cd::game::save`           | Slot-based persistence with atomic on-disk writes (temp + rename). |
+| `cd_game_settings`      | `cd::game::settings`       | Persistent preferences store with live change broadcast. |
+| `cd_game_fsm`           | `cd::game::fsm`            | Hierarchical finite state machine (Harel statecharts, UML regions). |
+| `cd_game_ai_bt`         | `cd::game::ai_bt`          | Behavior tree (Sequence / Selector / Parallel + Decorators + Blackboard). |
+| `cd_game_anim_graph`    | `cd::game::anim_graph`     | Animation graph with 1D/2D blend trees over `SkinnedClip` / `Skeleton`. |
+| `cd_game_query`         | `cd::game::query`          | Gameplay spatial queries (raycast, sphere, box, frustum). |
+| `cd_game_trigger`       | `cd::game::trigger`        | Trigger volumes (AABB/Sphere, on_enter/on_stay/on_exit dispatch). |
+| `cd_game_camera`        | `cd::game::camera`         | Cinemachine-style virtual camera stack with priority blending + damping. |
+| `cd_game_dialogue`      | `cd::game::dialogue`       | Branching dialogue VM (Ink/Yarn Spinner-style graph + predicate gates). |
+| `cd_game_quest`         | `cd::game::quest`          | Quest log tracker (4-bucket partitioning, auto-complete/fail, serialization). |
+| `cd_game_l10n`          | `cd::game::l10n`           | Localization runtime (CLDR plural rules, RTL helper, locale fallback). |
+| `cd_game_particles_event` | `cd::game::particles_event` | Recipe-driven gameplay particle dispatcher (named bursts + callbacks). |
+| `cd_game_asset_hot_reload` | `cd::game::asset_hot_reload` | Editor-mode asset hot-reload bus with categorized subscribers. |
+
+---
+
 ## UI tier (3)
 
 | Target          | Alias              | Responsibility |
@@ -151,13 +176,13 @@ set. They are intentionally narrow-scope and depend only on
 
 ## Library count
 
-15 (foundation) + 10 (asset) + 16 (render) + 7 (world) + 3 (ui) + 1
-(runtime) + 2 (cross-cutting) = **54 engine libraries**, plus
+15 (foundation) + 10 (asset) + 16 (render) + 7 (world) + 13 (game) + 3
+(ui) + 1 (runtime) + 2 (cross-cutting) = **67 engine libraries**, plus
 `cd_lua_internal` (internal-only — a vendored Lua build linked
 privately by `cd::script`) brings the actual `cd_add_library()` call
-count to **55**.
+count to **68**.
 
-The 54-count is the public-API surface; the 55-count is the literal
+The 67-count is the public-API surface; the 68-count is the literal
 CMake target count and what `grep -rl cd_add_library engine/` returns.
 
 ---
