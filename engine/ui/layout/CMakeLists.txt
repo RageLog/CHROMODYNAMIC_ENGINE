@@ -8,6 +8,7 @@ cd_add_library(ui_layout
   TYPE STATIC
   SOURCES
     src/Flex.cpp
+    src/Constraint.cpp
   PUBLIC_DEPS
     cd::core
 )
