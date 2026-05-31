@@ -5,6 +5,9 @@
 //            blit-copy plumbing).
 // phase572 — Metal backend Sprint-3 (shader-module + compute-pipeline
 //            factories + the supporting registries / lookups).
+// phase615 — Metal backend Sprint-4 (fence + event + pipeline-layout +
+//            descriptor-set-layout factories + submit(SubmitDesc) queue
+//            plumbing with completion-handler fence signal).
 //
 // Compiled only when CD_RHI_METAL_ENABLED=ON (macOS / iOS host with the
 // Metal SDK present). On Win11 / Linux this translation unit is excluded
@@ -75,9 +78,39 @@
 //                                 index state + dispatchThreadgroups via
 //                                 the bound compute PSO.
 //
-// Remaining kNotImpl calls (pipeline layouts, fences, semaphores, timeline
-// semaphores, readback, full submit, descriptor allocation, texture views)
-// belong to Sprint 4-5.
+// phase615 (Sprint-4) lifts five more, focused on the queue-submit + sync
+// surface so frame pacing + multi-queue handoff can be expressed end-to-end:
+//
+//   1. create_fence + wait_for_fence + reset_fence + is_fence_signaled
+//                                — dispatch_semaphore_t backed CPU-side
+//                                  completion fence; raised from
+//                                  -[MTLCommandBuffer addCompletedHandler:]
+//                                  on the matching submit.
+//   2. create_semaphore         — id<MTLSharedEvent>-backed GPU-to-GPU sync
+//                                  primitive. Wait + signal hookups are
+//                                  expressed via encodeWaitForEvent:value: /
+//                                  encodeSignalEvent:value: on the submit
+//                                  cmd-buf, mirroring the Vulkan binary-
+//                                  semaphore contract.
+//   3. create_pipeline_layout   — Metal has no explicit pipeline-layout
+//                                  object (binding topology is folded into
+//                                  the PSO + argument encoders); the factory
+//                                  records the descriptor metadata against
+//                                  a registry handle for Sprint-5
+//                                  argument-buffer emission to consume.
+//   4. create_descriptor_set_layout — Symmetric metadata-only registry; the
+//                                  real MTLArgumentEncoder is created at
+//                                  allocate_descriptor_set time in Sprint 5.
+//   5. submit(SubmitDesc)       — Iterates the cmd-buffer span, commits
+//                                  each underlying MTLCommandBuffer in
+//                                  order, encodes wait / signal MTLSharedEvent
+//                                  hand-offs on the first / last cmd-buf,
+//                                  and chains the SubmitDesc.signal_fence
+//                                  completion handler so callers can block
+//                                  on wait_for_fence.
+//
+// Remaining kNotImpl calls (descriptor allocation, texture views, timeline
+// semaphores, upload_buffer / download_buffer) belong to Sprint 5+.
 //
 // Win11 build gate: this entire TU is gated on __APPLE__; MetalDevice.cpp
 // is the cross-platform stub that compiles everywhere and the CMake build
@@ -112,8 +145,12 @@ namespace
 
 using detail::MetalCommandBufferImpl;
 using detail::MetalComputePipelineObj;
+using detail::MetalDescriptorSetLayoutObj;
 using detail::MetalDeviceCtx;
+using detail::MetalEventObj;
+using detail::MetalFenceObj;
 using detail::MetalGraphicsPipelineObj;
+using detail::MetalPipelineLayoutObj;
 using detail::MetalSamplerObj;
 using detail::MetalShaderModuleObj;
 using detail::MetalSwapchainObj;
@@ -286,21 +323,81 @@ public:
         shader_modules_.erase(h.index());
     }
 
+    // phase615 (Sprint-4): metadata-only descriptor-set-layout factory.
+    //
+    // Metal expresses descriptor sets via MTLArgumentEncoder; the encoder is
+    // built at allocate_descriptor_set time (Sprint 5). For Sprint-4 we
+    // capture the binding table here so the encoder can size the argument
+    // buffer correctly when the time comes. Empty layouts (zero bindings)
+    // are accepted — the engine sometimes binds an empty set as a "no
+    // resources" marker, matching Vulkan's VkDescriptorSetLayout behaviour.
     [[nodiscard]] cd::core::Result<DescriptorSetLayoutHandle>
-    create_descriptor_set_layout(const DescriptorSetLayoutDesc& /*desc*/) override
+    create_descriptor_set_layout(const DescriptorSetLayoutDesc& desc) override
     {
-        return std::unexpected(kNotImpl("Metal::create_descriptor_set_layout"));
+        auto obj = std::make_unique<MetalDescriptorSetLayoutObj>();
+        for (const DescriptorSetLayoutBinding& b : desc.bindings)
+        {
+            obj->add_binding(b);
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const DescriptorSetLayoutHandle h { id, 1u };
+
+        const std::scoped_lock lock { dsl_mu_ };
+        dsls_.emplace(h.index(), std::move(obj));
+        return h;
     }
 
-    void destroy_descriptor_set_layout(DescriptorSetLayoutHandle /*h*/) override {}
+    void destroy_descriptor_set_layout(DescriptorSetLayoutHandle h) override
+    {
+        const std::scoped_lock lock { dsl_mu_ };
+        dsls_.erase(h.index());
+    }
 
+    // phase615 (Sprint-4): metadata-only pipeline-layout factory.
+    //
+    // Metal does not expose an explicit pipeline-layout object; the
+    // bind-table topology is folded into the PSO + argument encoders. The
+    // factory records the descriptor-set / push-constant metadata so the
+    // Sprint-5 argument-buffer emission can size argument encoders + the
+    // push-constant arg index range. Invalid set-layout handles surface as
+    // kInvalidArgument so callers fix their bind-order bugs.
     [[nodiscard]] cd::core::Result<PipelineLayoutHandle>
-    create_pipeline_layout(const PipelineLayoutDesc& /*desc*/) override
+    create_pipeline_layout(const PipelineLayoutDesc& desc) override
     {
-        return std::unexpected(kNotImpl("Metal::create_pipeline_layout"));
+        auto obj = std::make_unique<MetalPipelineLayoutObj>();
+        {
+            const std::scoped_lock lock { dsl_mu_ };
+            for (const DescriptorSetLayoutHandle& sl : desc.set_layouts)
+            {
+                if (sl.is_valid() && dsls_.find(sl.index()) == dsls_.end())
+                {
+                    return std::unexpected(rhi_errors::make(
+                        rhi_errors::Code::kInvalidArgument,
+                        "Metal::create_pipeline_layout: unknown "
+                        "DescriptorSetLayoutHandle in set_layouts"));
+                }
+                obj->add_set_layout(sl);
+            }
+        }
+        for (const PushConstantRange& pc : desc.push_constants)
+        {
+            obj->add_push_constant_range(pc);
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const PipelineLayoutHandle h { id, 1u };
+
+        const std::scoped_lock lock { pipeline_layouts_mu_ };
+        pipeline_layouts_.emplace(h.index(), std::move(obj));
+        return h;
     }
 
-    void destroy_pipeline_layout(PipelineLayoutHandle /*h*/) override {}
+    void destroy_pipeline_layout(PipelineLayoutHandle h) override
+    {
+        const std::scoped_lock lock { pipeline_layouts_mu_ };
+        pipeline_layouts_.erase(h.index());
+    }
 
     // --------------------------------------------------------------------------
     // create_graphics_pipeline — Sprint-1 inline-MSL triangle pipeline.
@@ -465,29 +562,99 @@ public:
         return {};
     }
 
+    // phase615 (Sprint-4): id<MTLSharedEvent>-backed binary semaphore.
+    //
+    // Returns kBackendInitFailed (not kNotImpl) when the device does not
+    // support shared events — older Intel macs predating macOS 10.14. The
+    // Vulkan back-end's VkSemaphore equivalent is structurally identical:
+    // a queue-side wait + signal pair encoded into the submit cmd-buf.
     [[nodiscard]] cd::core::Result<SemaphoreHandle> create_semaphore() override
     {
-        return std::unexpected(kNotImpl("Metal::create_semaphore"));
+        id<MTLSharedEvent> ev = [mtl_device_ newSharedEvent];
+        if (ev == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kBackendInitFailed,
+                "Metal::create_semaphore: newSharedEvent returned nil "
+                "(device does not support shared events)"));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const SemaphoreHandle h { id, 1u };
+
+        const std::scoped_lock lock { events_mu_ };
+        events_.emplace(h.index(), std::make_unique<MetalEventObj>(ev));
+        return h;
     }
 
-    void destroy_semaphore(SemaphoreHandle /*h*/) override {}
-
-    [[nodiscard]] cd::core::Result<FenceHandle> create_fence(bool /*signaled*/) override
+    void destroy_semaphore(SemaphoreHandle h) override
     {
-        return std::unexpected(kNotImpl("Metal::create_fence"));
+        const std::scoped_lock lock { events_mu_ };
+        events_.erase(h.index());
     }
 
-    void destroy_fence(FenceHandle /*h*/) override {}
+    // phase615 (Sprint-4): dispatch_semaphore_t-backed CPU completion fence.
+    //
+    // The Apple SOTA pattern for "wait on the CPU until a queue submit
+    // finishes" is a dispatch semaphore signalled from the cmd-buf's
+    // addCompletedHandler. We hand out a registry-managed wrapper so
+    // wait_for_fence / reset_fence / is_fence_signaled / destroy_fence all
+    // resolve through the same MetalFenceObj. `signaled = true` mirrors
+    // VK_FENCE_CREATE_SIGNALED_BIT — the very first wait does not block.
+    [[nodiscard]] cd::core::Result<FenceHandle> create_fence(bool signaled) override
+    {
+        auto obj = std::make_unique<MetalFenceObj>(signaled);
 
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const FenceHandle h { id, 1u };
+
+        const std::scoped_lock lock { fences_mu_ };
+        fences_.emplace(h.index(), std::move(obj));
+        return h;
+    }
+
+    void destroy_fence(FenceHandle h) override
+    {
+        const std::scoped_lock lock { fences_mu_ };
+        fences_.erase(h.index());
+    }
+
+    // wait_for_fence — block until the fence is signalled or the timeout
+    // elapses. UINT64_MAX (the IDevice "infinite wait" sentinel) maps to
+    // DISPATCH_TIME_FOREVER. Unknown handles surface as kInvalidArgument so
+    // callers spot fence lifetime bugs early.
     [[nodiscard]] cd::core::Result<void>
-    wait_for_fence(FenceHandle /*fence*/, std::uint64_t /*timeout_ns*/) override
+    wait_for_fence(FenceHandle fence, std::uint64_t timeout_ns) override
     {
-        return std::unexpected(kNotImpl("Metal::wait_for_fence"));
+        MetalFenceObj* f = lookup_fence(fence);
+        if (f == nullptr)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::wait_for_fence: unknown fence handle"));
+        }
+        if (!f->wait(timeout_ns))
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kTimeout,
+                "Metal::wait_for_fence: timeout"));
+        }
+        return {};
     }
 
-    void reset_fence(FenceHandle /*fence*/) override {}
+    void reset_fence(FenceHandle fence) override
+    {
+        if (MetalFenceObj* f = lookup_fence(fence); f != nullptr)
+        {
+            f->reset();
+        }
+    }
 
-    [[nodiscard]] bool is_fence_signaled(FenceHandle /*fence*/) override { return false; }
+    [[nodiscard]] bool is_fence_signaled(FenceHandle fence) override
+    {
+        MetalFenceObj* f = lookup_fence(fence);
+        return (f != nullptr) && f->poll();
+    }
 
     [[nodiscard]] cd::core::Result<TimelineSemaphoreHandle>
     create_timeline_semaphore(std::uint64_t /*initial_value*/) override
@@ -697,9 +864,183 @@ public:
         mcb->submit_internal(d);
     }
 
-    [[nodiscard]] cd::core::Result<void> submit(const SubmitDesc& /*desc*/) override
+    // phase615 (Sprint-4): full SubmitDesc queue plumbing.
+    //
+    // Walks the cmd-buffer span and commits each underlying MTLCommandBuffer
+    // in order. Wait + signal MTLSharedEvent hand-offs are encoded into the
+    // first / last cmd-buf respectively (matches Vulkan's wait-on-first /
+    // signal-after-last queue-submit semantics). The optional
+    // SubmitDesc.signal_fence is chained via addCompletedHandler on the
+    // final cmd-buf so wait_for_fence un-blocks when the GPU is done.
+    //
+    // Timeline semaphores remain kNotImpl until Sprint 5+ wires up the
+    // value-based encode path; if the caller supplies any, we surface the
+    // not-implemented code so the partial submit is not silently committed.
+    //
+    // Empty cmd-buffer spans are legal: Vulkan permits them and the engine
+    // uses the pattern to "park" a fence on the queue (the completion
+    // handler fires after any previously-queued cmd-bufs drain). We then
+    // create a single sentinel cmd-buf that carries the wait + signal + the
+    // fence completion handler so the contract still holds.
+    [[nodiscard]] cd::core::Result<void> submit(const SubmitDesc& desc) override
     {
-        return std::unexpected(kNotImpl("Metal::submit(SubmitDesc)"));
+        if (!desc.wait_timeline_semaphores.empty()
+            || !desc.signal_timeline_semaphores.empty())
+        {
+            return std::unexpected(kNotImpl(
+                "Metal::submit(SubmitDesc): timeline semaphores "
+                "(Sprint 5+)"));
+        }
+
+        // Resolve fence + waits + signals up-front so we can bail before we
+        // touch the queue if anything is wrong.
+        MetalFenceObj* fence_obj = nullptr;
+        if (desc.signal_fence.is_valid())
+        {
+            fence_obj = lookup_fence(desc.signal_fence);
+            if (fence_obj == nullptr)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::submit(SubmitDesc): unknown signal_fence "
+                    "handle"));
+            }
+        }
+
+        // Resolve all wait / signal semaphore handles. We capture both the
+        // event + the value to wait-for / next-to-signal so the wait happens
+        // on the producer-encoded value (the consumer blocks until the
+        // producer-side counter reaches `signal_value`).
+        struct EventEdge
+        {
+            id<MTLSharedEvent> event;
+            std::uint64_t      value;
+        };
+        std::vector<EventEdge> waits;
+        std::vector<EventEdge> signals;
+        waits.reserve(desc.wait_semaphores.size());
+        signals.reserve(desc.signal_semaphores.size());
+
+        for (const SemaphoreSubmit& s : desc.wait_semaphores)
+        {
+            MetalEventObj* ev = lookup_event(s.semaphore);
+            if (ev == nullptr)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::submit(SubmitDesc): unknown "
+                    "wait_semaphores entry"));
+            }
+            waits.push_back({ ev->event(), ev->current_signal_value() });
+        }
+        for (const SemaphoreSubmit& s : desc.signal_semaphores)
+        {
+            MetalEventObj* ev = lookup_event(s.semaphore);
+            if (ev == nullptr)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::submit(SubmitDesc): unknown "
+                    "signal_semaphores entry"));
+            }
+            signals.push_back({ ev->event(), ev->next_signal_value() });
+        }
+
+        // Convert cmd-buffer span entries to the impl type. Non-Metal cmd-
+        // buffers are silently dropped (matches the IDevice contract that
+        // submit is best-effort across mixed backends — wrong-backend cmd
+        // buffers cannot land on a Metal queue).
+        std::vector<MetalCommandBufferImpl*> impls;
+        impls.reserve(desc.command_buffers.size());
+        for (ICommandBuffer* raw : desc.command_buffers)
+        {
+            if (auto* m = dynamic_cast<MetalCommandBufferImpl*>(raw); m != nullptr)
+            {
+                impls.push_back(m);
+            }
+        }
+
+        // Pop any pending swapchain present so the last cmd-buf in this
+        // submit carries the present chain — same hand-off as legacy submit.
+        MetalSwapchainObj* sc = nullptr;
+        {
+            const std::scoped_lock lock { present_mu_ };
+            sc = pending_present_;
+            pending_present_ = nullptr;
+        }
+        id<CAMetalDrawable> drawable_for_present =
+            (sc != nullptr) ? sc->current_drawable() : nil;
+
+        // Empty cmd-buffer span: synthesise a sentinel so the wait + signal
+        // + fence-completion handler can still fire on the queue.
+        if (impls.empty())
+        {
+            id<MTLCommandBuffer> sentinel = [mtl_queue_ commandBuffer];
+            sentinel.label = @"cd::rhi::metal::SubmitSentinel";
+            for (const EventEdge& w : waits)
+            {
+                [sentinel encodeWaitForEvent:w.event value:w.value];
+            }
+            for (const EventEdge& s : signals)
+            {
+                [sentinel encodeSignalEvent:s.event value:s.value];
+            }
+            if (drawable_for_present != nil)
+            {
+                [sentinel presentDrawable:drawable_for_present];
+            }
+            if (fence_obj != nullptr)
+            {
+                MetalFenceObj* captured = fence_obj;
+                [sentinel addCompletedHandler:^(id<MTLCommandBuffer> /*cb*/) {
+                    captured->signal_from_completion();
+                }];
+            }
+            [sentinel commit];
+            return {};
+        }
+
+        // First cmd-buf carries the waits; last one carries the signals +
+        // the fence completion handler + the drawable present (matches the
+        // Vulkan VkQueueSubmit "outside scope" wait-then-execute-then-signal
+        // ordering at the boundary of the batch).
+        for (std::size_t i = 0; i < impls.size(); ++i)
+        {
+            id<MTLCommandBuffer> mcb = impls[i]->mtl_cmd_buf();
+            if (mcb == nil)
+            {
+                continue;
+            }
+            const bool is_first = (i == 0);
+            const bool is_last  = (i + 1 == impls.size());
+            if (is_first)
+            {
+                for (const EventEdge& w : waits)
+                {
+                    [mcb encodeWaitForEvent:w.event value:w.value];
+                }
+            }
+            if (is_last)
+            {
+                for (const EventEdge& s : signals)
+                {
+                    [mcb encodeSignalEvent:s.event value:s.value];
+                }
+                if (fence_obj != nullptr)
+                {
+                    MetalFenceObj* captured = fence_obj;
+                    [mcb addCompletedHandler:^(id<MTLCommandBuffer> /*cb*/) {
+                        captured->signal_from_completion();
+                    }];
+                }
+                impls[i]->submit_internal(drawable_for_present);
+            }
+            else
+            {
+                impls[i]->submit_internal(nil);
+            }
+        }
+        return {};
     }
 
     // ---- MetalDeviceCtx interface -------------------------------------------
@@ -793,6 +1134,25 @@ public:
         return (it == compute_pipelines_.end()) ? nil : it->second->pso();
     }
 
+    // phase615 (Sprint-4): fence + event lookups. Both return nullptr for
+    // unknown handles, matching the rest of the Metal-side resolver
+    // contract.
+    [[nodiscard]] MetalFenceObj*
+    lookup_fence(FenceHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { fences_mu_ };
+        const auto it = fences_.find(h.index());
+        return (it == fences_.end()) ? nullptr : it->second.get();
+    }
+
+    [[nodiscard]] MetalEventObj*
+    lookup_event(SemaphoreHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { events_mu_ };
+        const auto it = events_.find(h.index());
+        return (it == events_.end()) ? nullptr : it->second.get();
+    }
+
 private:
     // Internal helper: not part of MetalDeviceCtx, used by present/acquire
     // which take a SwapchainHandle directly.
@@ -837,6 +1197,25 @@ private:
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalComputePipelineObj>>
         compute_pipelines_;
 
+    // phase615 (Sprint-4): fence + event + pipeline-layout + DSL registries.
+    // Fences are dispatch_semaphore_t-backed CPU completion fences; events
+    // are id<MTLSharedEvent>-backed GPU-side binary semaphores; pipeline-
+    // layouts + DSLs are metadata-only registries that the Sprint-5
+    // argument-buffer emission will read.
+    mutable std::mutex   fences_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalFenceObj>> fences_;
+
+    mutable std::mutex   events_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalEventObj>> events_;
+
+    mutable std::mutex   pipeline_layouts_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalPipelineLayoutObj>>
+        pipeline_layouts_;
+
+    mutable std::mutex   dsl_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalDescriptorSetLayoutObj>>
+        dsls_;
+
     // Pending present hand-off — present() records the swapchain whose
     // drawable should ride out on the next submit's command-buffer commit.
     mutable std::mutex   present_mu_;
@@ -844,6 +1223,81 @@ private:
 };
 
 }  // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// MetalFenceObj — out-of-line implementations (phase615 / Sprint-4).
+//
+// dispatch_semaphore_t is a counting semaphore; we start at the configured
+// "signaled" count so create_fence(signaled = true) is immediately waitable
+// without any prior submit, matching VK_FENCE_CREATE_SIGNALED_BIT. The
+// completion handler chained from submit signals via dispatch_semaphore_signal;
+// wait blocks on dispatch_semaphore_wait with the IDevice timeout (UINT64_MAX
+// maps to DISPATCH_TIME_FOREVER).
+//
+// reset() drains any outstanding signals so the next wait blocks again. The
+// drain is best-effort (non-blocking) — it pops accumulated signals one at a
+// time, which is the SOTA pattern when the caller is responsible for fence
+// "ownership" (one fence per submit, reset between frames).
+// ---------------------------------------------------------------------------
+namespace detail
+{
+
+MetalFenceObj::MetalFenceObj(bool signaled) noexcept
+    : sem_(dispatch_semaphore_create(signaled ? 1 : 0))
+{
+}
+
+MetalFenceObj::~MetalFenceObj() = default;
+
+bool MetalFenceObj::wait(std::uint64_t timeout_ns) noexcept
+{
+    if (sem_ == nullptr)
+    {
+        return false;
+    }
+    const dispatch_time_t deadline =
+        (timeout_ns == UINT64_MAX)
+            ? DISPATCH_TIME_FOREVER
+            : dispatch_time(DISPATCH_TIME_NOW,
+                            static_cast<std::int64_t>(timeout_ns));
+    // dispatch_semaphore_wait returns 0 on signal, non-zero on timeout.
+    return dispatch_semaphore_wait(sem_, deadline) == 0;
+}
+
+bool MetalFenceObj::poll() noexcept
+{
+    if (sem_ == nullptr)
+    {
+        return false;
+    }
+    return dispatch_semaphore_wait(sem_, DISPATCH_TIME_NOW) == 0;
+}
+
+void MetalFenceObj::reset() noexcept
+{
+    if (sem_ == nullptr)
+    {
+        return;
+    }
+    // Drain any accumulated signals so the next wait blocks again. The
+    // semaphore could legally be over-signalled in pathological cases (a
+    // caller that reuses the same fence across overlapping submits); we
+    // pop until the wait misses, then stop.
+    while (dispatch_semaphore_wait(sem_, DISPATCH_TIME_NOW) == 0)
+    {
+        // Counter decremented; keep draining until empty.
+    }
+}
+
+void MetalFenceObj::signal_from_completion() noexcept
+{
+    if (sem_ != nullptr)
+    {
+        dispatch_semaphore_signal(sem_);
+    }
+}
+
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // create_metal_device — public factory (Apple path).

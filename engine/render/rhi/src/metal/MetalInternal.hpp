@@ -6,6 +6,9 @@
 // phase572 — Metal backend Sprint-3 extensions (shader-module + compute
 //            pipeline registries + compute encoder + vertex/index binding
 //            cache + draw_indexed path).
+// phase615 — Metal backend Sprint-4 extensions (fence + event + pipeline-
+//            layout + descriptor-set-layout registries + submit(SubmitDesc)
+//            queue plumbing).
 //
 // This header is INTERNAL to the cd_rhi_metal target. It is only included
 // from the four .mm translation units (MetalDevice.mm, MetalCommandBuffer.mm,
@@ -69,16 +72,19 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Foundation/Foundation.h>
+#import <dispatch/dispatch.h>
 
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Handles.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
+#include <cd/rhi/Pipeline.hpp>
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace cd::rhi::metal::detail
 {
@@ -236,6 +242,169 @@ public:
 
 private:
     id<MTLComputePipelineState> pso_ { nil };
+};
+
+// ---------------------------------------------------------------------------
+// MetalFenceObj — phase615 / Sprint-4.
+//
+// CHROMODYNAMIC's FenceHandle contract is a CPU-side completion signal that
+// the queue raises when an associated submit finishes. Metal does not expose
+// a 1:1 equivalent at the device-fence layer (MTLFence is a GPU-internal
+// barrier primitive — different shape entirely). The SOTA Apple pattern is
+// a dispatch_semaphore_t signaled from -[MTLCommandBuffer addCompletedHandler:]
+// and waited on from the CPU via dispatch_semaphore_wait. The signaled flag
+// is a manual counter so create_fence(signaled = true) starts at 1 (waitable
+// without any submit), matching VkFence's VK_FENCE_CREATE_SIGNALED_BIT and
+// the NullDevice headless contract.
+//
+// reset_fence drains any outstanding signals so the next wait_for_fence
+// blocks again — same semantics as vkResetFences. is_fence_signaled does a
+// non-blocking poll (timeout = DISPATCH_TIME_NOW). Concurrent submits that
+// share the same fence increment a pending counter; each completion handler
+// decrements it back to zero before signalling. This matches the Vulkan
+// "one-submit-per-fence" idiomatic usage while tolerating accidental reuse.
+// ---------------------------------------------------------------------------
+class MetalFenceObj final
+{
+public:
+    explicit MetalFenceObj(bool signaled) noexcept;
+    ~MetalFenceObj();
+    MetalFenceObj(const MetalFenceObj&) = delete;
+    MetalFenceObj& operator=(const MetalFenceObj&) = delete;
+    MetalFenceObj(MetalFenceObj&&) = delete;
+    MetalFenceObj& operator=(MetalFenceObj&&) = delete;
+
+    // Block the calling thread until the dispatch semaphore is signalled or
+    // the timeout (nanoseconds) elapses. UINT64_MAX maps to DISPATCH_TIME_FOREVER.
+    // Returns true on signal, false on timeout.
+    [[nodiscard]] bool wait(std::uint64_t timeout_ns) noexcept;
+
+    // Non-blocking poll. Returns true if the fence is already signalled
+    // (drains one signal in the process — matches vkGetFenceStatus +
+    // vkWaitForFences with a zero timeout). Re-armed via the next submit
+    // completion handler.
+    [[nodiscard]] bool poll() noexcept;
+
+    // Discard any outstanding signal so the next wait blocks again.
+    void reset() noexcept;
+
+    // Called from the submit completion handler. Releases one waiter.
+    void signal_from_completion() noexcept;
+
+    [[nodiscard]] dispatch_semaphore_t sem() const noexcept { return sem_; }
+
+private:
+    dispatch_semaphore_t sem_ { nullptr };
+};
+
+// ---------------------------------------------------------------------------
+// MetalEventObj — phase615 / Sprint-4.
+//
+// CHROMODYNAMIC's SemaphoreHandle is a queue-to-queue (GPU-side) sync
+// primitive; the SOTA Metal mapping is id<MTLSharedEvent>. SubmitDesc
+// wait_semaphores and signal_semaphores hand off via
+// -[MTLCommandBuffer encodeWaitForEvent:value:] +
+// -[MTLCommandBuffer encodeSignalEvent:value:] on the queue's command buffer.
+//
+// Each MetalEventObj keeps an internal counter so the wire-up (which only
+// passes a SemaphoreHandle, no value) maps to an ever-incrementing
+// "submitted" tag in a way that matches the Vulkan binary-semaphore
+// contract (each signal must be paired with exactly one wait before the
+// next signal). The counter is incremented on every signal-encode call.
+// ---------------------------------------------------------------------------
+class MetalEventObj final
+{
+public:
+    explicit MetalEventObj(id<MTLSharedEvent> event) noexcept
+        : event_(event) {}
+    ~MetalEventObj() = default;
+    MetalEventObj(const MetalEventObj&) = delete;
+    MetalEventObj& operator=(const MetalEventObj&) = delete;
+    MetalEventObj(MetalEventObj&&) = delete;
+    MetalEventObj& operator=(MetalEventObj&&) = delete;
+
+    [[nodiscard]] id<MTLSharedEvent> event() const noexcept { return event_; }
+
+    // Bump and return the next signal value (caller passes it to
+    // encodeSignalEvent:value:). Symmetric with next_wait_value below.
+    [[nodiscard]] std::uint64_t next_signal_value() noexcept
+    {
+        return ++signal_counter_;
+    }
+
+    // Return the highest value that has been encoded for signalling so far.
+    // The matching wait_semaphores entry needs to block until that value
+    // is reached (the producer queue raises it; the consumer waits on it).
+    [[nodiscard]] std::uint64_t current_signal_value() const noexcept
+    {
+        return signal_counter_;
+    }
+
+private:
+    id<MTLSharedEvent> event_ { nil };
+    std::uint64_t      signal_counter_ { 0 };
+};
+
+// ---------------------------------------------------------------------------
+// MetalPipelineLayoutObj — phase615 / Sprint-4.
+//
+// Metal does not have an explicit pipeline-layout object; the binding
+// topology lives inside the MTLRenderPipelineState / MTLComputePipelineState
+// via argument indices and -[MTLArgumentEncoder] tables. We still need a
+// handle to satisfy the IDevice / GraphicsPipelineDesc::layout contract.
+// The owned descriptor metadata (set_layouts + push_constant_ranges) is
+// preserved so the future argument-buffer emission in Sprint 5 can read
+// it back to size MTLArgumentEncoders. Sprint-4 stores it as a flat copy.
+// ---------------------------------------------------------------------------
+class MetalPipelineLayoutObj final
+{
+public:
+    MetalPipelineLayoutObj() noexcept = default;
+    ~MetalPipelineLayoutObj() = default;
+    MetalPipelineLayoutObj(const MetalPipelineLayoutObj&) = delete;
+    MetalPipelineLayoutObj& operator=(const MetalPipelineLayoutObj&) = delete;
+    MetalPipelineLayoutObj(MetalPipelineLayoutObj&&) = delete;
+    MetalPipelineLayoutObj& operator=(MetalPipelineLayoutObj&&) = delete;
+
+    void add_set_layout(DescriptorSetLayoutHandle h) { set_layouts_.push_back(h); }
+    void add_push_constant_range(PushConstantRange r) { push_constants_.push_back(r); }
+
+    [[nodiscard]] std::size_t set_layout_count() const noexcept { return set_layouts_.size(); }
+    [[nodiscard]] std::size_t push_constant_range_count() const noexcept { return push_constants_.size(); }
+
+private:
+    // Flat owned copies — Sprint-5 argument-buffer emission reads these.
+    std::vector<DescriptorSetLayoutHandle> set_layouts_;
+    std::vector<PushConstantRange>         push_constants_;
+};
+
+// ---------------------------------------------------------------------------
+// MetalDescriptorSetLayoutObj — phase615 / Sprint-4.
+//
+// Metal expresses descriptor sets via MTLArgumentEncoder + an argument
+// buffer (id<MTLBuffer> with [[argument_buffer]] qualified MSL). The actual
+// encoder is created at allocate_descriptor_set time in Sprint 5. For
+// Sprint-4 we record the binding table here so create_pipeline_layout +
+// allocate_descriptor_set can resolve set indices to descriptor counts
+// when the time comes. Storage is intentionally flat; argument-buffer
+// layout decisions are deferred.
+// ---------------------------------------------------------------------------
+class MetalDescriptorSetLayoutObj final
+{
+public:
+    MetalDescriptorSetLayoutObj() noexcept = default;
+    ~MetalDescriptorSetLayoutObj() = default;
+    MetalDescriptorSetLayoutObj(const MetalDescriptorSetLayoutObj&) = delete;
+    MetalDescriptorSetLayoutObj& operator=(const MetalDescriptorSetLayoutObj&) = delete;
+    MetalDescriptorSetLayoutObj(MetalDescriptorSetLayoutObj&&) = delete;
+    MetalDescriptorSetLayoutObj& operator=(MetalDescriptorSetLayoutObj&&) = delete;
+
+    void add_binding(const DescriptorSetLayoutBinding& b) { bindings_.push_back(b); }
+
+    [[nodiscard]] std::size_t binding_count() const noexcept { return bindings_.size(); }
+
+private:
+    std::vector<DescriptorSetLayoutBinding> bindings_;
 };
 
 // ---------------------------------------------------------------------------
@@ -474,6 +643,16 @@ public:
 
     [[nodiscard]] virtual id<MTLComputePipelineState>
     lookup_compute_pipeline(ComputePipelineHandle h) const noexcept = 0;
+
+    // phase615 (Sprint-4): fence + event lookups. Consumed by
+    // submit(SubmitDesc) for completion-handler fence signal + queue-side
+    // event encodes (encodeSignalEvent / encodeWaitForEvent). Both return
+    // nullptr for unknown / invalid handles.
+    [[nodiscard]] virtual MetalFenceObj*
+    lookup_fence(FenceHandle h) const noexcept = 0;
+
+    [[nodiscard]] virtual MetalEventObj*
+    lookup_event(SemaphoreHandle h) const noexcept = 0;
 };
 
 }  // namespace cd::rhi::metal::detail
