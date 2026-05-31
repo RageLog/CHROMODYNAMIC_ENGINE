@@ -6,6 +6,7 @@
 #include <cd/editor/panel_material_editor/MaterialEditor.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 namespace cd::editor::panel::material_editor
@@ -216,11 +217,11 @@ void MaterialEditor::draw(cd::ui::renderer::DrawBatcher& batcher,
     // Tint overlay: alpha = 200 so the background still bleeds through slightly
     // and gives a sense of the "gamma" of the material colour.
     const auto tint_r = static_cast<std::uint8_t>(
-        std::clamp(static_cast<int>(base_color_r_ * 255.0F + 0.5F), 0, 255));
+        std::clamp(std::lround(base_color_r_ * 255.0F), 0L, 255L));
     const auto tint_g = static_cast<std::uint8_t>(
-        std::clamp(static_cast<int>(base_color_g_ * 255.0F + 0.5F), 0, 255));
+        std::clamp(std::lround(base_color_g_ * 255.0F), 0L, 255L));
     const auto tint_b = static_cast<std::uint8_t>(
-        std::clamp(static_cast<int>(base_color_b_ * 255.0F + 0.5F), 0, 255));
+        std::clamp(std::lround(base_color_b_ * 255.0F), 0L, 255L));
 
     batcher.quad(preview_x, cursor_y,
                  preview_w, kPreviewH,
