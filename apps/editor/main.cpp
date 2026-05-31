@@ -32,6 +32,15 @@
 //   * animator           -- BOTTOM strip, RIGHT split (next to console+assets)
 //   * behavior_designer  -- RIGHT column, BOTTOM split (below inspector)
 //
+// One new panel + two floating overlays (phase598 / M6 W3):
+//   * asset_drop_target  -- tab-merged with `assets` in the BOTTOM strip;
+//                           accepts {.gltf .glb .png .jpg .wav .ogg}, logs
+//                           dropped paths to console.
+//   * cpu_marker_overlay -- floating top-right (~300x120 px), fed synthetic
+//                           samples until real instrumentation lands.
+//   * frame_graph_timeline -- floating bottom-right (~400x80 px), fed
+//                             synthetic GPU pass records.
+//
 // The LEFT and RIGHT columns now each carry TWO stacked panels (vertically),
 // and the BOTTOM strip carries the existing console+assets tab group plus
 // the new animator as a horizontal sibling.
@@ -88,7 +97,12 @@
 #include <cd/editor/panel_material_editor/MaterialEditor.hpp>
 #include <cd/editor/panel_animator/Animator.hpp>
 #include <cd/editor/panel_behavior_designer/BehaviorDesigner.hpp>
+#include <cd/editor/panel_asset_drop_target/AssetDropTarget.hpp>
 #include <cd/editor/cdproj/CdprojFile.hpp>
+
+// phase598 / M6 W3 — overlays (CPU marker bar chart + frame-graph Gantt).
+#include <cd/profile/cpu_marker_overlay/CpuMarkerOverlay.hpp>
+#include <cd/profile/frame_graph_timeline/FrameGraphTimeline.hpp>
 
 #include <array>
 #include <cmath>
@@ -290,6 +304,15 @@ struct EditorArgs
         return false;
     }
 
+    // ---- phase598 / M6 W3 — asset_drop_target tab-merged with assets -------
+    //
+    // The drop target lives next to the asset browser so a user can flip
+    // between "browse" and "drop" in the same bottom strip. tab_merge does
+    // not change node_count (already 10 after the three M4 W1B splits).
+    auto* assets_owner = ds.find_panel_owner("assets");
+    if (assets_owner == nullptr) { return false; }
+    if (!ds.tab_merge(assets_owner, "asset_drop_target")) { return false; }
+
     return true;
 }
 
@@ -345,6 +368,9 @@ cd::editor::panel::material_editor::MaterialEditor   g_material_editor_panel;
 cd::editor::panel::animator::Animator                g_animator_panel;
 cd::editor::panel::behavior_designer::BehaviorDesigner g_behavior_designer_panel;
 
+// phase598 / M6 W3 — asset drop-target panel (dashed-border drop zone).
+cd::editor::panel::asset_drop_target::AssetDropTarget g_asset_drop_target_panel;
+
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
                           uf::Font* /*font*/,
@@ -393,6 +419,15 @@ void draw_behavior_designer_panel(const uw::Rect& rect,
                                   const uw::Theme& theme)
 {
     g_behavior_designer_panel.draw(batcher, theme, rect);
+}
+
+// phase598 / M6 W3 — asset_drop_target drawer.
+void draw_asset_drop_target_panel(const uw::Rect& rect,
+                                  ur::DrawBatcher& batcher,
+                                  uf::Font* /*font*/,
+                                  const uw::Theme& theme)
+{
+    g_asset_drop_target_panel.draw(batcher, theme, rect);
 }
 
 // ---- Pointer event flatten (same shape as hello_ui) ------------------------
@@ -581,24 +616,54 @@ int main(int argc, char** argv)
     cd::ui::a11y::A11yTree a11y_tree {};
     (void)a11y_tree;
 
-    // -- 5. Dockspace + 8-panel layout (phase569 / M4 W1B) ------------------
+    // -- 5. Dockspace + 9-panel layout (phase598 / M6 W3) -------------------
+    //
+    // phase598 wires in the M5 asset_drop_target panel: filter is configured
+    // for the six asset extensions called out in the M6 W3 brief
+    // (.gltf, .glb, .png, .jpg, .wav, .ogg). When the user drops a path the
+    // log shows it; the full routing pipeline lands in a future Sprint.
+    {
+        const std::array<std::string, 6> kAssetExts {
+            std::string{".gltf"}, std::string{".glb"},
+            std::string{".png"},  std::string{".jpg"},
+            std::string{".wav"},  std::string{".ogg"},
+        };
+        g_asset_drop_target_panel.set_accepted_extensions(
+            std::span<const std::string>(kAssetExts.data(), kAssetExts.size()));
+    }
+
     uw::DockSpace dockspace;
-    dockspace.register_panel("scene_tree",         draw_scene_tree_stub);
-    dockspace.register_panel("viewport",           draw_viewport_panel);
-    dockspace.register_panel("inspector",          draw_inspector_panel);
-    dockspace.register_panel("console",            draw_console_panel);
-    dockspace.register_panel("assets",             draw_assets_panel);
-    dockspace.register_panel("material_editor",    draw_material_editor_panel);
-    dockspace.register_panel("animator",           draw_animator_panel);
-    dockspace.register_panel("behavior_designer",  draw_behavior_designer_panel);
+    dockspace.register_panel("scene_tree",          draw_scene_tree_stub);
+    dockspace.register_panel("viewport",            draw_viewport_panel);
+    dockspace.register_panel("inspector",           draw_inspector_panel);
+    dockspace.register_panel("console",             draw_console_panel);
+    dockspace.register_panel("assets",              draw_assets_panel);
+    dockspace.register_panel("material_editor",     draw_material_editor_panel);
+    dockspace.register_panel("animator",            draw_animator_panel);
+    dockspace.register_panel("behavior_designer",   draw_behavior_designer_panel);
+    dockspace.register_panel("asset_drop_target",   draw_asset_drop_target_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
         return 1;
     }
-    std::printf("editor: dock layout ready with %zu nodes (8 panels: scene_tree | viewport | "
+    std::printf("editor: dock layout ready with %zu nodes (9 panels: scene_tree | viewport | "
                 "inspector | console | assets | material_editor | animator | "
-                "behavior_designer)\n", dockspace.node_count());
+                "behavior_designer | asset_drop_target)\n", dockspace.node_count());
+
+    // -- 5b. M5 overlay instances (phase598 / M6 W3) ------------------------
+    //
+    // CPU-marker bar chart -> floating top-right (~300x120 px).
+    // Frame-graph timeline -> floating bottom-right (~400x80 px).
+    //
+    // Both overlays consume DUMMY synthetic samples this Sprint -- real
+    // instrumentation hooks (cd::profile Collector wiring + GPU query
+    // readback feed) land in a follow-up Sprint. The dummy feed exists so
+    // the overlay surfaces are visibly active in the editor window.
+    namespace cmo = cd::profile::cpu_marker_overlay;
+    namespace fgt = cd::profile::frame_graph_timeline;
+    const cmo::Overlay         cpu_overlay        { 16.0 };
+    const fgt::TimelineOverlay frame_graph_overlay { 16.0 };
 
     // -- 6. Try Vulkan + window + Renderer; fall back to NullDevice ---------
     std::unique_ptr<platform::IWindow>  window;
@@ -779,9 +844,93 @@ int main(int argc, char** argv)
         // entity exposed in the inspector panel.
         (void)editor.tick();
 
+        // -- Drain any pending drop and log it (real asset routing is a -----
+        //    future Sprint; today this is the visible surface contract).
+        {
+            std::string dropped_path;
+            if (g_asset_drop_target_panel.consume_dropped_path(dropped_path))
+            {
+                std::printf("editor: AssetDropTarget consumed drop: %s\n",
+                            dropped_path.c_str());
+                std::fflush(stdout);
+            }
+        }
+
         // -- Draw via the CPU batcher + RHI submitter --
         batcher.begin_frame();
         dockspace.draw(batcher, font.is_loaded() ? &font : nullptr, widget_theme);
+
+        // -- phase598 / M6 W3 -- floating overlays (top-right + bottom-right).
+        //
+        // The overlays sit "outside" the DockSpace tree -- they are emitted
+        // directly into the batcher after dockspace.draw() so they composite
+        // on top of the dock tiles. Each gets a synthetic feed (3-4 markers /
+        // 3 passes) so the bar chart + Gantt chart show something visible
+        // every frame. Real instrumentation hooks are a follow-up Sprint.
+        {
+            constexpr float kFbW = 1.0F;  // unused — placeholder for clarity
+            (void)kFbW;
+            const float fbw_f = static_cast<float>(fb_w);
+            const float fbh_f = static_cast<float>(fb_h);
+
+            // --- CPU marker overlay -- top-right 300 x 120 ---------------
+            {
+                constexpr float kOverlayW = 300.0F;
+                constexpr float kOverlayH = 120.0F;
+                constexpr float kMargin   = 8.0F;
+                const cmo::Rect bounds {
+                    fbw_f - kOverlayW - kMargin,
+                    kMargin,
+                    kOverlayW, kOverlayH };
+
+                // Synthetic 4-marker frame. Bars span 0..16 ms across two
+                // logical threads so both lanes light up.
+                const double base_ms =
+                    static_cast<double>(frame_idx) * 16.0;
+                const std::array<cmo::MarkerSample, 4> cpu_dummy {
+                    cmo::MarkerSample {
+                        "frame.gather",  base_ms + 0.5,  3.0, 1U },
+                    cmo::MarkerSample {
+                        "frame.cull",    base_ms + 3.8,  2.4, 1U },
+                    cmo::MarkerSample {
+                        "frame.shadows", base_ms + 6.5,  4.0, 2U },
+                    cmo::MarkerSample {
+                        "frame.submit",  base_ms + 11.0, 4.5, 1U },
+                };
+                cpu_overlay.draw(
+                    batcher,
+                    std::span<const cmo::MarkerSample>(
+                        cpu_dummy.data(), cpu_dummy.size()),
+                    bounds);
+            }
+
+            // --- Frame-graph timeline -- bottom-right 400 x 80 -----------
+            {
+                constexpr float kOverlayW = 400.0F;
+                constexpr float kOverlayH = 80.0F;
+                constexpr float kMargin   = 8.0F;
+                const fgt::Rect bounds {
+                    fbw_f - kOverlayW - kMargin,
+                    fbh_f - kOverlayH - kMargin,
+                    kOverlayW, kOverlayH };
+
+                // Synthetic 3-pass frame: GBuffer / Lighting / Composite.
+                const std::array<fgt::PassRecord, 3> gpu_dummy {
+                    fgt::PassRecord {
+                        "GBuffer",    0.0,  4.5, 1U },
+                    fgt::PassRecord {
+                        "Lighting",   4.5,  6.0, 2U },
+                    fgt::PassRecord {
+                        "Composite", 10.5,  3.0, 3U },
+                };
+                frame_graph_overlay.draw(
+                    batcher,
+                    std::span<const fgt::PassRecord>(
+                        gpu_dummy.data(), gpu_dummy.size()),
+                    bounds);
+            }
+        }
+
         (void)submitter.upload(batcher);
 
         if (using_null || !renderer)

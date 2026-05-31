@@ -22,6 +22,9 @@
 #   cd::editor_panel_material_editor    -- material editor panel (phase556-558)
 #   cd::editor_panel_animator           -- animator panel (phase556-558)
 #   cd::editor_panel_behavior_designer  -- behavior designer panel (phase556-558)
+#   cd::editor_panel_asset_drop_target  -- asset drop target panel (phase594, wired phase598)
+#   cd::profile_cpu_marker_overlay      -- CPU marker overlay (phase587, wired phase598)
+#   cd::profile_frame_graph_timeline    -- frame graph timeline overlay (phase593, wired phase598)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -57,6 +60,9 @@ cd_add_sample(editor
     cd::editor_panel_material_editor    # phase569 / M4 W1B
     cd::editor_panel_animator           # phase569 / M4 W1B
     cd::editor_panel_behavior_designer  # phase569 / M4 W1B
+    cd::editor_panel_asset_drop_target  # phase598 / M6 W3
+    cd::profile_cpu_marker_overlay      # phase598 / M6 W3
+    cd::profile_frame_graph_timeline    # phase598 / M6 W3
     cd::editor
     cd::editor_ui
     cd::editor_cdproj
