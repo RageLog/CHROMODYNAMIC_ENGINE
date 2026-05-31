@@ -1,6 +1,6 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/material/UiVariant.cpp
-// M3 W1B Sprint-1 — Route A foundation.
+// M3 W1B — Route A foundation (Sprint-1) + Sprint-2 theme UBO + SDF sampler.
 // See UiVariant.hpp for design + scope.
 // =============================================================================
 #include <cd/material/UiVariant.hpp>
@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 
 namespace cd::material
@@ -52,15 +53,70 @@ constexpr std::uint32_t kUiDefaultVertexStride = 24U;
     return cd::rhi::depth_disabled();
 }
 
-/// Compose a stable descriptor-layout key from the spec. Sprint-1
-/// only has texture_count + theme_ubo_binding to consider; packing
-/// them into a single uint64_t makes the key trivially comparable.
-[[nodiscard]] std::uint64_t make_layout_key(const UiVariantSpec& spec) noexcept
+/// Compose a stable descriptor-layout key from the spec. Sprint-2
+/// keys are wider: we fold in texture_count (8 bits), theme_ubo_slot
+/// (8 bits), sdf_sampler_slot (8 bits) and the has_theme_ubo flag (1
+/// bit). A bumped key tag in the high byte (`0x02`) signals the
+/// Sprint-2 layout shape so a downstream cache cannot mix Sprint-1
+/// and Sprint-2 sets.
+[[nodiscard]] std::uint64_t make_layout_key(const UiVariantSpec& spec,
+                                            bool has_theme_ubo) noexcept
 {
-    const std::uint64_t tex = static_cast<std::uint64_t>(spec.texture_count) & 0xFFFFFFFFULL;
-    // Map -1 to 0xFFFFFFFFu so the key is purely numeric.
-    const std::uint32_t theme = static_cast<std::uint32_t>(spec.theme_palette_ubo_binding);
-    return (tex << 32) | static_cast<std::uint64_t>(theme);
+    constexpr std::uint64_t kSprint2Tag = 0x02ULL << 56;
+    const std::uint64_t tex  = static_cast<std::uint64_t>(spec.texture_count & 0xFFU) << 16;
+    const std::uint64_t ubo  = static_cast<std::uint64_t>(spec.theme_palette_ubo_slot & 0xFFU) << 8;
+    const std::uint64_t sdf  = static_cast<std::uint64_t>(spec.sdf_font_sampler_slot & 0xFFU);
+    const std::uint64_t flag = has_theme_ubo ? (1ULL << 32) : 0ULL;
+    return kSprint2Tag | flag | tex | ubo | sdf;
+}
+
+/// Emit the Sprint-2 fragment shader source with the caller-supplied
+/// descriptor binding numbers substituted in. The reference shader
+/// constant in the header uses binding=0 for the theme UBO and
+/// binding=1 for the SDF sampler; this generator re-emits the same
+/// source with the actual slots so the SPIR-V matches the descriptor
+/// set layout we hand to Material::create().
+[[nodiscard]] std::string make_sprint2_fs(std::uint32_t theme_slot,
+                                          std::uint32_t sdf_slot,
+                                          bool include_sampler)
+{
+    std::string s;
+    s.reserve(1024U);
+    s += "#version 450\n";
+    s += "layout(set = 0, binding = ";
+    s += std::to_string(theme_slot);
+    s += ") uniform ThemePalette {\n"
+         "    vec4 primary;\n"
+         "    vec4 secondary;\n"
+         "    vec4 surface;\n"
+         "    vec4 on_surface;\n"
+         "} u_theme;\n";
+    if (include_sampler)
+    {
+        s += "layout(set = 0, binding = ";
+        s += std::to_string(sdf_slot);
+        s += ") uniform sampler2D u_sdf_atlas;\n";
+    }
+    s += "layout(location = 0) in vec2 v_uv;\n"
+         "layout(location = 1) in vec4 v_color;\n"
+         "layout(location = 2) flat in uint v_variant;\n"
+         "layout(location = 0) out vec4 out_color;\n"
+         "void main() {\n"
+         "    vec4 base = v_color;\n";
+    if (include_sampler)
+    {
+        s += "    const float kSdfZero = 128.0 / 255.0;\n"
+             "    if (v_uv.x >= 0.0 && v_uv.x <= 1.0 &&\n"
+             "        v_uv.y >= 0.0 && v_uv.y <= 1.0) {\n"
+             "        float d = texture(u_sdf_atlas, v_uv).r;\n"
+             "        float a = smoothstep(kSdfZero - 0.0625, kSdfZero + 0.0625, d);\n"
+             "        base.a *= a;\n"
+             "    }\n";
+    }
+    s += "    vec4 tint = (v_variant == 1u) ? u_theme.surface : u_theme.primary;\n"
+         "    out_color = base * tint;\n"
+         "}\n";
+    return s;
 }
 
 }  // namespace
@@ -74,29 +130,47 @@ create_ui_variant(cd::rhi::IDevice& device, const UiVariantSpec& spec)
     {
         return std::unexpected(material_errors::make(
             material_errors::Code::kInvalidArgument,
-            "create_ui_variant: only UiVertexFormat::kUiDefault is supported in Sprint-1"));
+            "create_ui_variant: only UiVertexFormat::kUiDefault is supported"));
     }
 
     if (spec.texture_count > 1U)
     {
         return std::unexpected(material_errors::make(
             material_errors::Code::kInvalidArgument,
-            "create_ui_variant: texture_count > 1 not supported in Sprint-1"));
+            "create_ui_variant: texture_count > 1 not supported "
+            "(Sprint-2 caps at 1 glyph SDF atlas)"));
     }
 
-    if (spec.texture_count != 0U)
-    {
-        return std::unexpected(material_errors::make(
-            material_errors::Code::kInvalidArgument,
-            "create_ui_variant: texture_count must be 0 in Sprint-1 "
-            "(glyph sampler is Sprint-2)"));
-    }
-
+    // The legacy `theme_palette_ubo_binding` field is reserved as an ABI
+    // marker. Sprint-2 callers must use `theme_palette_ubo_slot` instead;
+    // any non-negative legacy value remains a hard error.
     if (spec.theme_palette_ubo_binding >= 0)
     {
         return std::unexpected(material_errors::make(
             material_errors::Code::kInvalidArgument,
-            "create_ui_variant: theme_palette_ubo_binding is reserved for Sprint-2"));
+            "create_ui_variant: theme_palette_ubo_binding is the legacy "
+            "Sprint-1 ABI marker — set theme_palette_ubo_slot instead and "
+            "leave theme_palette_ubo_binding at -1"));
+    }
+
+    // Sprint-2: decide whether to take the Sprint-2 fragment shader path.
+    // Two opt-in signals trigger Sprint-2: (1) `use_theme_palette_ubo`
+    // is true, or (2) `texture_count == 1` (the SDF sampler shader
+    // requires the theme tint multiplier so we always pair the two).
+    // A default-constructed spec triggers neither -> Sprint-1 path,
+    // matching the Sprint-1 test suite byte-for-byte.
+    const bool wants_sdf_sampler =
+        spec.texture_count == 1U;
+    const bool wants_theme_ubo =
+        wants_sdf_sampler || spec.use_theme_palette_ubo;
+
+    if (wants_sdf_sampler &&
+        spec.sdf_font_sampler_slot == spec.theme_palette_ubo_slot)
+    {
+        return std::unexpected(material_errors::make(
+            material_errors::Code::kInvalidArgument,
+            "create_ui_variant: sdf_font_sampler_slot must differ from "
+            "theme_palette_ubo_slot when texture_count == 1"));
     }
 
     // ---- Acquire compiler --------------------------------------------------
@@ -168,13 +242,58 @@ create_ui_variant(cd::rhi::IDevice& device, const UiVariantSpec& spec)
 
     // ---- Build MaterialDesc + delegate ------------------------------------
 
+    // Sprint-2: when the spec asks for a theme UBO or an SDF sampler we
+    // emit the Sprint-2 fragment shader with the actual descriptor
+    // binding numbers substituted in; otherwise we keep the Sprint-1
+    // vertex-color-only path so default-constructed specs still produce
+    // the variant the Sprint-1 tests exercise.
+    std::string fs_storage;  // must outlive the MaterialDesc
+    std::string_view vs_source = kUiVariantSprint1VS;
+    std::string_view fs_source = kUiVariantSprint1FS;
+    if (wants_theme_ubo)
+    {
+        fs_storage = make_sprint2_fs(spec.theme_palette_ubo_slot,
+                                     spec.sdf_font_sampler_slot,
+                                     wants_sdf_sampler);
+        vs_source = kUiVariantSprint2VS;
+        fs_source = fs_storage;
+    }
+
+    // Sprint-2 descriptor bindings — UBO (binding = theme_palette_ubo_slot)
+    // and optional combined image+sampler (binding = sdf_font_sampler_slot).
+    // The storage must outlive MaterialDesc.
+    std::array<cd::rhi::DescriptorSetLayoutBinding, 2> ds_bindings { {} };
+    std::size_t ds_count = 0U;
+    if (wants_theme_ubo)
+    {
+        ds_bindings[ds_count++] = cd::rhi::DescriptorSetLayoutBinding {
+            .binding = spec.theme_palette_ubo_slot,
+            .type    = cd::rhi::DescriptorType::kUniformBuffer,
+            .count   = 1U,
+            .stages  = cd::rhi::ShaderStage::kFragment,
+        };
+    }
+    if (wants_sdf_sampler)
+    {
+        ds_bindings[ds_count++] = cd::rhi::DescriptorSetLayoutBinding {
+            .binding = spec.sdf_font_sampler_slot,
+            .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .count   = 1U,
+            .stages  = cd::rhi::ShaderStage::kFragment,
+        };
+    }
+    const std::span<const cd::rhi::DescriptorSetLayoutBinding> ds_span {
+        ds_bindings.data(), ds_count
+    };
+
     MaterialDesc md {};
-    md.vertex_glsl              = kUiVariantSprint1VS;
-    md.fragment_glsl            = kUiVariantSprint1FS;
+    md.vertex_glsl              = vs_source;
+    md.fragment_glsl            = fs_source;
     md.color_attachment_formats = color_formats;
     md.depth_attachment_format  = spec.depth_attachment_format;
     md.vertex_bindings          = kVertexBindings;
     md.vertex_attributes        = kVertexAttributes;
+    md.descriptor_bindings      = ds_span;
     md.push_constants           = kPushRanges;
     md.topology                 = cd::rhi::PrimitiveTopology::kTriangleList;
     md.raster                   = raster;
@@ -190,8 +309,9 @@ create_ui_variant(cd::rhi::IDevice& device, const UiVariantSpec& spec)
 
     UiVariant out;
     out.material_              = std::move(*mat_r);
-    out.descriptor_layout_key_ = make_layout_key(spec);
+    out.descriptor_layout_key_ = make_layout_key(spec, wants_theme_ubo);
     out.texture_count_         = spec.texture_count;
+    out.has_theme_ubo_         = wants_theme_ubo;
     return out;
 }
 

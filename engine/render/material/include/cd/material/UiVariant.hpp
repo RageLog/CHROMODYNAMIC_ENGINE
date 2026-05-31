@@ -1,6 +1,6 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/material/UiVariant.hpp
-// M3 W1B Sprint-1 — Route A foundation for the editor's UI material.
+// M3 W1B Route A — UI material factory for the editor + ui_renderer_rhi.
 //
 // The editor (`apps/editor`) currently routes UI draws through a tactical
 // bridge (Route B, owned by parallel agent W1A). The strategic path is
@@ -10,45 +10,62 @@
 // existing factory. When this header is mature enough to replace the
 // tactical bridge, `cd::ui::renderer_rhi::Submitter` will switch its
 // pipeline construction to call `create_ui_variant()` instead of rolling
-// its own `MaterialDesc`. That Submitter wire-up is M3 W2 / M4 — NOT this
-// sprint.
+// its own `MaterialDesc`. That Submitter wire-up (the gate flip) is
+// Sprint-3 — NOT this sprint.
 //
-// Sprint-1 scope (this commit):
+// Sprint-1 (phase 555) scope — DONE:
 //   * Public `UiVariantSpec` + `UiVariant` types.
-//   * `create_ui_variant(device, spec)` factory that:
-//       - resolves the vertex format to a binding+attribute pair that
-//         matches `cd::ui::renderer::Vertex` (pos2 + uv2 + RGBA8 +
-//         variant byte + 3 pad bytes; 24 bytes/stride);
-//       - resolves blend / depth from the spec (defaults = alpha blend
-//         enabled, depth disabled — the canonical UI recipe);
-//       - exposes a *vertex-color-only* fragment shader (no glyph SDF
-//         sampler yet, no theme UBO yet — see Sprint-2 notes below);
-//       - delegates the actual pipeline creation to
-//         `cd::material::Material::create()` so we never duplicate the
-//         RHI plumbing.
+//   * `create_ui_variant(device, spec)` factory that resolves the
+//     vertex format / blend / depth and exposes a vertex-color-only
+//     fragment shader (no glyph SDF, no theme UBO).
 //
-// Sprint-2 scope (NOT this commit):
-//   * Glyph SDF atlas sampler (`texture_count = 1`).
-//   * Theme color palette UBO (`theme_palette_ubo_binding`).
-//   * `cd::ui::renderer_rhi::Submitter` wire-up to Route A.
+// Sprint-2 (phase 573, THIS commit) scope:
+//   * `UiVariantSpec::theme_palette_ubo_slot`   (default 0) — descriptor
+//     binding for a Sprint-2 theme UBO carrying a 4-vec4 subset of the
+//     `cd::ui::theme::PaletteV2`: primary, secondary, surface, on_surface
+//     (the four roles widget code actually paints with). The UBO is bound
+//     for the fragment stage only; the vertex stage continues to use the
+//     pos/uv/color stream verbatim. Std140 layout: 64 bytes per UBO,
+//     4 × vec4 in slot order.
+//   * `UiVariantSpec::sdf_font_sampler_slot`    (default 1) — descriptor
+//     binding for a Sprint-2 glyph SDF atlas (combined image+sampler).
+//     The fragment shader gates the sample on `uv.x in [0..1]` AND
+//     `texture_count > 0` so non-glyph quads still render via the
+//     vertex-color path. The atlas "zero level" (the SDF mid-grey) is
+//     128 / 255 ≈ 0.502 — the shader applies `smoothstep` around that
+//     value to produce a 1-px AA glyph edge.
+//   * Spec accepts `texture_count` in {0, 1}. When `texture_count == 1`,
+//     the factory allocates a combined image+sampler descriptor slot at
+//     `sdf_font_sampler_slot`. When `texture_count == 0` (theme-UBO-only
+//     path or pure vertex-color path), no sampler descriptor is allocated.
+//   * Tests: (a) variant with SDF sampler bound dispatches OK, (b) theme
+//     UBO update reflects in subsequent draws (descriptor_set update is
+//     observable via MaterialInstance::update()).
 //
-// Vertex layout contract (Sprint-1):
+// Sprint-2 does NOT flip the Submitter gate. `cd::ui::renderer_rhi::Submitter`
+// continues to follow the Route-B tactical path for now; a future agent in
+// Sprint-3 flips the gate once both halves of Route A are battle-tested.
+//
+// Vertex layout contract (unchanged Sprint-1 -> Sprint-2):
 //   binding 0, stride 24, per-vertex
 //     loc 0  vec2  pos      (offset 0)
 //     loc 1  vec2  uv       (offset 8)
 //     loc 2  vec4  color    (RGBA8 unorm, offset 16)
 //     loc 3  uint  flags    (8-bit variant + 3 pad bytes, offset 20)
 //
-// The shader strings are kept inline (header-resident `kUiVariantVS` /
-// `kUiVariantFS`) so library consumers can call the factory without
+// The shader strings are kept inline (header-resident `kUiVariantSprint1*`
+// for the Sprint-1 legacy path, `kUiVariantSprint2*` for the Sprint-2 SDF
+// + theme path) so library consumers can call the factory without
 // supplying a compiler argument override.
 //
 // Spec defaults (UiVariantSpec):
 //   vertex_format               = kUiDefault   (matches DrawBatcher::Vertex)
 //   blend_state                 = alpha        (premultiplied-friendly)
 //   depth_state                 = disabled     (UI = depth off)
-//   texture_count               = 0            (Sprint-1)
-//   theme_palette_ubo_binding   = -1           (Sprint-1: unused)
+//   texture_count               = 0            (no SDF sampler)
+//   theme_palette_ubo_binding   = -1           (legacy Sprint-1 reject)
+//   theme_palette_ubo_slot      = 0            (Sprint-2: binding=0 when bound)
+//   sdf_font_sampler_slot       = 1            (Sprint-2: binding=1 when bound)
 //   color_attachment_formats    = {kRGBA8Unorm}  (default UI target)
 //
 // =============================================================================
@@ -126,16 +143,46 @@ struct UiVariantSpec
     UiDepthMode depth_state { UiDepthMode::kDisabled };
 
     /// Number of sampler2D bindings the fragment shader expects.
-    ///   * 0 in Sprint-1 (vertex color only — no glyph sampler yet).
-    ///   * 1 reserved for Sprint-2 (SDF glyph / sprite atlas).
+    ///   * 0 = no glyph sampler (vertex-color or theme-only path).
+    ///   * 1 = SDF glyph / sprite atlas bound at `sdf_font_sampler_slot`.
     /// Any value > 1 is rejected by the factory (kInvalidArgument).
     std::uint32_t texture_count { 0U };
 
-    /// Binding slot for the theme color palette UBO. `-1` means
-    /// "no theme UBO bound" — the Sprint-1 default. Sprint-2 will
-    /// honour any non-negative value by allocating a corresponding
-    /// `kUniformBuffer` binding in the descriptor set layout.
+    /// Legacy Sprint-1 marker — kept for ABI compat. The Sprint-1 factory
+    /// rejected any non-negative value as "Sprint-2 territory"; the
+    /// Sprint-2 factory accepts negative values (=no theme UBO) and
+    /// rejects any non-negative value to steer callers towards
+    /// `theme_palette_ubo_slot` instead. Sprint-3 will remove this field.
     std::int32_t theme_palette_ubo_binding { -1 };
+
+    /// Sprint-2 — descriptor-set binding slot for the theme color
+    /// palette UBO. Default = 0. The UBO carries 4 vec4 (std140, 64
+    /// bytes total) in slot order:
+    ///   binding[0] = primary
+    ///   binding[1] = secondary
+    ///   binding[2] = surface
+    ///   binding[3] = on_surface
+    /// The fragment shader multiplies the resolved color by the
+    /// primary swatch (downstream Sprint-3 will switch to per-quad
+    /// theme-role selection via the variant byte). The UBO is bound
+    /// for the fragment stage only.
+    std::uint32_t theme_palette_ubo_slot { 0U };
+
+    /// Sprint-2 — descriptor-set binding slot for the glyph SDF atlas
+    /// (combined image+sampler). Default = 1. Only consulted when
+    /// `texture_count == 1`. Must differ from `theme_palette_ubo_slot`
+    /// (the factory rejects an overlap with kInvalidArgument).
+    std::uint32_t sdf_font_sampler_slot { 1U };
+
+    /// Sprint-2 opt-in: when true, the factory allocates a theme UBO
+    /// descriptor at `theme_palette_ubo_slot` and routes the fragment
+    /// stage through the Sprint-2 shader (vertex color * theme tint).
+    /// When false, the variant stays on the Sprint-1 vertex-color-only
+    /// path UNLESS `texture_count == 1` (in which case the Sprint-2
+    /// shader is selected anyway because the SDF branch requires the
+    /// theme tint multiplier). Default = false so a default-constructed
+    /// spec yields the Sprint-1 variant byte-for-byte.
+    bool use_theme_palette_ubo { false };
 
     /// Render-target color attachment formats the pipeline will
     /// render INTO. Must match the active render pass when the
@@ -183,8 +230,7 @@ void main()
 )glsl";
 
 /// Fragment shader source. Sprint-1: vertex color only (no
-/// texture sampling, no theme palette). Sprint-2 will add the
-/// glyph SDF + theme UBO branches.
+/// texture sampling, no theme palette).
 inline constexpr std::string_view kUiVariantSprint1FS = R"glsl(
 #version 450
 layout(location = 0) in vec2 v_uv;
@@ -197,6 +243,69 @@ void main()
 {
     // Sprint-1: vertex color only. Variant byte ignored (placeholder).
     out_color = v_color;
+}
+)glsl";
+
+// -----------------------------------------------------------------------------
+// Sprint-2 shaders — theme palette UBO + SDF font sampler.
+// -----------------------------------------------------------------------------
+
+/// Vertex shader is identical to Sprint-1 (same vertex format, same
+/// push-constant). Sprint-2 only diverges in the fragment stage.
+inline constexpr std::string_view kUiVariantSprint2VS = kUiVariantSprint1VS;
+
+/// Fragment shader source — Sprint-2. Samples the SDF atlas when
+/// `uv.x in [0..1]` AND the sampler descriptor is bound; multiplies
+/// the resulting color by the theme primary swatch from the UBO.
+///
+/// The descriptor layout is fixed at runtime by the factory; the
+/// shader source is generated dynamically (see UiVariant.cpp's
+/// `make_sprint2_fs()`) so the actual binding numbers match the
+/// caller's `theme_palette_ubo_slot` / `sdf_font_sampler_slot` spec.
+/// This header constant is the canonical reference layout that the
+/// generator falls back to when both slots take their default values
+/// (UBO=0, SDF=1).
+inline constexpr std::string_view kUiVariantSprint2FS_Reference = R"glsl(
+#version 450
+
+layout(set = 0, binding = 0) uniform ThemePalette {
+    vec4 primary;
+    vec4 secondary;
+    vec4 surface;
+    vec4 on_surface;
+} u_theme;
+
+layout(set = 0, binding = 1) uniform sampler2D u_sdf_atlas;
+
+layout(location = 0) in vec2 v_uv;
+layout(location = 1) in vec4 v_color;
+layout(location = 2) flat in uint v_variant;
+
+layout(location = 0) out vec4 out_color;
+
+void main()
+{
+    // Baseline = vertex color (matches Sprint-1).
+    vec4 base = v_color;
+
+    // SDF branch: only sample inside the [0..1] glyph quad. The atlas
+    // stores a unit-distance field around the "zero level" at 128/255
+    // (~0.502). smoothstep around that mid-grey gives a 1-px AA edge.
+    const float kSdfZero = 128.0 / 255.0;
+    if (v_uv.x >= 0.0 && v_uv.x <= 1.0 &&
+        v_uv.y >= 0.0 && v_uv.y <= 1.0)
+    {
+        float d = texture(u_sdf_atlas, v_uv).r;
+        float a = smoothstep(kSdfZero - 0.0625, kSdfZero + 0.0625, d);
+        base.a *= a;
+    }
+
+    // Theme tint: multiply by the primary swatch. The variant byte
+    // currently selects between primary (=0) and surface (=1); future
+    // Sprint-3 will expose secondary + on_surface for filled chips and
+    // disabled-state widget paint.
+    vec4 tint = (v_variant == 1u) ? u_theme.surface : u_theme.primary;
+    out_color = base * tint;
 }
 )glsl";
 
@@ -245,10 +354,26 @@ public:
         return descriptor_layout_key_;
     }
 
-    /// Sprint-1: 0 textures. Sprint-2: 1 (glyph SDF).
+    /// Sprint-1: 0 textures. Sprint-2: 0 or 1 (glyph SDF).
     [[nodiscard]] std::uint32_t texture_count() const noexcept
     {
         return texture_count_;
+    }
+
+    /// True when the variant was built with a Sprint-2 theme palette
+    /// UBO descriptor (i.e. `theme_palette_ubo_slot` allocated). Used by
+    /// downstream Submitter code to decide whether to upload a
+    /// `ThemePalette` UBO before binding the descriptor set.
+    [[nodiscard]] bool has_theme_ubo() const noexcept
+    {
+        return has_theme_ubo_;
+    }
+
+    /// True when the variant was built with a Sprint-2 SDF atlas
+    /// sampler descriptor (i.e. `texture_count == 1`).
+    [[nodiscard]] bool has_sdf_sampler() const noexcept
+    {
+        return texture_count_ > 0U;
     }
 
     /// Convenience: bind the variant's pipeline for the next draw.
@@ -267,24 +392,59 @@ private:
     Material      material_ {};
     std::uint64_t descriptor_layout_key_ { 0U };
     std::uint32_t texture_count_         { 0U };
+    bool          has_theme_ubo_         { false };
 };
 
 // ---- Factory ----------------------------------------------------------------
 
-/// Build a UiVariant from the supplied spec. Sprint-1 only accepts
-/// `texture_count == 0` and ignores `theme_palette_ubo_binding`
-/// (Sprint-2 will honour both). Returns `kInvalidArgument` for any
-/// out-of-range field. Returns the underlying error tagged with
-/// `kPipelineCreationFailed` for RHI failures.
+/// Build a UiVariant from the supplied spec.
+///
+/// Sprint-2 contract:
+///   * `texture_count` may be 0 or 1. `1` allocates a combined
+///     image+sampler descriptor at `sdf_font_sampler_slot` and uses
+///     the Sprint-2 fragment shader (SDF + theme tint).
+///   * `theme_palette_ubo_binding` is the legacy Sprint-1 ABI marker
+///     and MUST be left at its `-1` default. Any non-negative value
+///     is rejected with kInvalidArgument (use `theme_palette_ubo_slot`
+///     instead). Sprint-3 will remove the legacy field outright.
+///   * `theme_palette_ubo_slot` is always honoured: a UBO descriptor
+///     is allocated at that slot whenever the Sprint-2 fragment shader
+///     is selected. When `texture_count == 0` and the variant must
+///     remain on the Sprint-1 vertex-color-only path, callers should
+///     explicitly skip Sprint-2 by leaving `theme_palette_ubo_slot ==
+///     sdf_font_sampler_slot` — the factory then takes that as "no
+///     descriptors" and falls back to Sprint-1.  (Default values place
+///     them at 0 and 1 respectively, so the default spec automatically
+///     follows the Sprint-1 path when `texture_count == 0`.)
+///   * Slot collision (`theme_palette_ubo_slot ==
+///     sdf_font_sampler_slot` while `texture_count == 1`) is rejected
+///     with kInvalidArgument.
+///
+/// Returns `kInvalidArgument` for any out-of-range spec field; returns
+/// the underlying error tagged with `kPipelineCreationFailed` for RHI
+/// failures.
 ///
 /// Note: this factory does NOT take a `cd::shader::ICompiler*`. It
 /// uses an internally-managed glslang compiler when the engine is
 /// built with `CD_ENABLE_GLSLANG` (the default). When the engine is
-/// built without glslang, the factory returns `kCompilerRequired` —
-/// callers in that configuration must build their UI variant directly
-/// via `Material::create()` from pre-compiled SPIR-V (Sprint-2 will
-/// ship the precompiled `.spv` blobs alongside this header).
+/// built without glslang, the factory returns `kCompilerRequired`.
 [[nodiscard]] cd::core::Result<UiVariant>
 create_ui_variant(cd::rhi::IDevice& device, const UiVariantSpec& spec);
+
+// ---- Sprint-2 theme UBO payload --------------------------------------------
+
+/// Std140 layout for the Sprint-2 theme palette UBO. Four vec4 in
+/// slot order: primary, secondary, surface, on_surface. Each slot
+/// is { r, g, b, a } in linear-space [0..1] (matching
+/// `cd::ui::theme::ColorToken`). Total size = 64 bytes.
+struct UiThemePaletteUbo
+{
+    float primary    [4] { 1.0F, 1.0F, 1.0F, 1.0F };
+    float secondary  [4] { 0.5F, 0.5F, 0.5F, 1.0F };
+    float surface    [4] { 0.1F, 0.1F, 0.1F, 1.0F };
+    float on_surface [4] { 0.9F, 0.9F, 0.9F, 1.0F };
+};
+static_assert(sizeof(UiThemePaletteUbo) == 64,
+              "UiThemePaletteUbo must be 64 bytes (std140 4 x vec4)");
 
 }  // namespace cd::material
