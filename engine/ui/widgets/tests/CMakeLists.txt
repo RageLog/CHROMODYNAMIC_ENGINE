@@ -19,3 +19,8 @@ cd_add_test(ui_dockspace
   SOURCES test_dockspace.cpp
   DEPS    cd::ui_widgets cd::ui_renderer cd::core
 )
+
+cd_add_test(ui_table
+  SOURCES test_table.cpp
+  DEPS    cd::ui_widgets cd::ui_renderer cd::core
+)

@@ -87,3 +87,11 @@ add_subdirectory(asset_hot_reload)
 #                     CutsceneEvents at authored offsets. Pure state machine;
 #                     no render/audio/ECS headers pulled in.
 add_subdirectory(cutscene_player)
+
+# Phase M8 W3B — "Pacing / AI Director":
+#   ai_director — M8 W3B: cd::game::ai_director high-level pacing controller.
+#                  Left 4 Dead / Skyrim Radiant Quest-style tension curve +
+#                  encounter scheduling. TensionState + EncounterTemplate +
+#                  DirectorState + AiDirector. Pure state machine; no ECS /
+#                  render / audio dependency.
+add_subdirectory(ai_director)
