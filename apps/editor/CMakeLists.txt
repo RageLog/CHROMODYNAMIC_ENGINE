@@ -45,6 +45,7 @@ cd_add_sample(editor
     cd::editor_panel
     cd::editor_panel_inspector
     cd::editor_panel_console
+    cd::editor_panel_asset_browser
     cd::editor
     cd::editor_ui
     cd::platform

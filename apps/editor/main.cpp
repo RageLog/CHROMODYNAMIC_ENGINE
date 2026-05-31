@@ -74,6 +74,7 @@
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
 #include <cd/editor/panel_console/Console.hpp>
+#include <cd/editor/panel_asset_browser/AssetBrowser.hpp>
 
 #include <array>
 #include <cstdint>
@@ -273,6 +274,9 @@ cd::editor::panel::inspector::Inspector g_inspector_panel;
 // Console panel — backed by cd::editor_panel_console.
 cd::editor::panel::console::Console g_console_panel;
 
+// Asset browser panel — backed by cd::editor_panel_asset_browser.
+cd::editor::panel::asset_browser::AssetBrowser g_asset_browser_panel;
+
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
                           uf::Font* /*font*/,
@@ -289,14 +293,12 @@ void draw_console_panel(const uw::Rect& rect,
     g_console_panel.draw(batcher, theme, rect);
 }
 
-void draw_assets_stub(const uw::Rect& rect,
-                      ur::DrawBatcher& batcher,
-                      uf::Font* /*font*/,
-                      const uw::Theme& theme)
+void draw_assets_panel(const uw::Rect& rect,
+                       ur::DrawBatcher& batcher,
+                       uf::Font* /*font*/,
+                       const uw::Theme& theme)
 {
-    batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                 ur::Color { theme.surface.r, theme.surface.g,
-                             theme.surface.b, theme.surface.a });
+    g_asset_browser_panel.draw(batcher, theme, rect);
 }
 
 // ---- Pointer event flatten (same shape as hello_ui) ------------------------
@@ -440,6 +442,20 @@ int main(int argc, char** argv)
     g_inspector_panel.set_world_ptr(&editor.world());
     g_inspector_panel.set_target(editor.scene_root());
 
+    // Seed the asset browser with a minimal default file tree so it is
+    // non-empty on first boot. A real .cdproj loader will replace these.
+    {
+        using AB = cd::editor::panel::asset_browser::Entry;
+        const std::array<AB, 5> seed_entries {
+            AB { "textures",  "assets/textures",        true  },
+            AB { "meshes",    "assets/meshes",           true  },
+            AB { "materials", "assets/materials",        true  },
+            AB { "sky.hdr",   "assets/textures/sky.hdr", false },
+            AB { "mesh.glb",  "assets/meshes/mesh.glb",  false },
+        };
+        g_asset_browser_panel.set_entries(seed_entries);
+    }
+
     // -- 4. A11y tree (proves the include + namespace link) -----------------
     // Future per-panel widgets register their A11yMeta via this tree so
     // screen readers + keyboard tab navigation work consistently across
@@ -454,7 +470,7 @@ int main(int argc, char** argv)
     dockspace.register_panel("viewport",   draw_viewport_stub);
     dockspace.register_panel("inspector",  draw_inspector_panel);
     dockspace.register_panel("console",    draw_console_panel);
-    dockspace.register_panel("assets",     draw_assets_stub);
+    dockspace.register_panel("assets",     draw_assets_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");

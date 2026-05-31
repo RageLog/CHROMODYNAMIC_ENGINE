@@ -54,6 +54,10 @@ add_subdirectory(panel_inspector)
 # phase544 — Console panel (DrawBatcher path; last 32 log messages).
 add_subdirectory(panel_console)
 
+# ── cd::editor_panel_asset_browser (STATIC) ────────────────────────────────
+# phase545 — Asset Browser panel (DrawBatcher path; file entry list).
+add_subdirectory(panel_asset_browser)
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
