@@ -198,8 +198,8 @@ std::size_t Curve::set_keyframe(std::size_t index, KeyFrame kf)
 
 void Curve::sort_keyframes() noexcept
 {
-    std::sort(keyframes_.begin(), keyframes_.end(),
-              [](const KeyFrame& a, const KeyFrame& b) { return a.time < b.time; });
+    std::ranges::sort(keyframes_,
+                      [](const KeyFrame& a, const KeyFrame& b) { return a.time < b.time; });
 }
 
 void Curve::recompute_auto_tangents() noexcept
@@ -334,7 +334,7 @@ void draw_text(cd::ui::renderer::DrawBatcher& b,
     std::uint32_t prev_cp = 0U;
     for (const char* p = text; *p != '\0'; ++p)
     {
-        const std::uint32_t cp = static_cast<std::uint32_t>(static_cast<unsigned char>(*p));
+        auto cp = static_cast<std::uint32_t>(static_cast<unsigned char>(*p));
         const auto g = font->glyph_uv(cp);
         if (!g.has_value())
         {

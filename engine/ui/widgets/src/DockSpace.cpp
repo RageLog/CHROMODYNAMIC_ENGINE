@@ -297,7 +297,7 @@ bool DockSpace::tab_merge(DockNode* target, std::string new_panel_id)
 bool DockSpace::remove_panel_from_tab_(DockNode* tab_node, std::string_view panel_id) noexcept
 {
     if (tab_node == nullptr || tab_node->kind() != DockNodeKind::kTabGroup) { return false; }
-    auto it = std::find(tab_node->panels_.begin(), tab_node->panels_.end(), panel_id);
+    auto it = std::ranges::find(tab_node->panels_, panel_id);
     if (it == tab_node->panels_.end()) { return false; }
     const std::size_t removed_idx = static_cast<std::size_t>(
         std::distance(tab_node->panels_.begin(), it));
@@ -539,7 +539,7 @@ DockNode* DockSpace::hit_test_tab_strip_(DockNode* node, float px, float py,
     out_inside_strip = true;
     const float local_x = px - nr.x;
     const float per_tab = TabStrip::kTabWidth + TabStrip::kTabPad;
-    const std::size_t idx = static_cast<std::size_t>(local_x / per_tab);
+    auto idx = static_cast<std::size_t>(local_x / per_tab);
     if (idx < node->panels().size())
     {
         out_tab_idx = idx;
@@ -620,7 +620,7 @@ void DockSpace::tick(const InputState& input, float dt_s)
     }
 
     // (3) Tab strip / drag-out handling.
-    std::size_t tab_idx       = static_cast<std::size_t>(-1);
+    auto        tab_idx       = static_cast<std::size_t>(-1);
     bool        inside_strip  = false;
     DockNode*   tab_node      = hit_test_tab_strip_(root_.get(), px, py, tab_idx, inside_strip);
 

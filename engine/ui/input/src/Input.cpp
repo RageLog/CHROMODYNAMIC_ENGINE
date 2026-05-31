@@ -274,15 +274,15 @@ std::span<const WidgetId> FocusManager::active_chain_() const noexcept
 {
     if (modal_stack_.empty())
     {
-        return std::span<const WidgetId>(chain_.data(), chain_.size());
+        return {chain_.data(), chain_.size()};
     }
     const auto& top = modal_stack_.back();
     if (!top.sub_chain.empty())
     {
-        return std::span<const WidgetId>(top.sub_chain.data(), top.sub_chain.size());
+        return {top.sub_chain.data(), top.sub_chain.size()};
     }
     // No sub-chain registered: the modal id is the entire active chain.
-    return std::span<const WidgetId>(&top.modal_id, 1U);
+    return {&top.modal_id, 1U};
 }
 
 std::size_t FocusManager::index_of_(WidgetId id) const noexcept
