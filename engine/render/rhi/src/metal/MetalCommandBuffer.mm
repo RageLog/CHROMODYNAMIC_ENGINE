@@ -3,6 +3,9 @@
 // phase548 — Metal command-buffer real impl (Sprint-1).
 // phase559 — Sprint-2: push_constants + copy_buffer + copy_buffer_to_image
 //            + copy_image_to_buffer (MTLBlitCommandEncoder path).
+// phase572 — Sprint-3: bind_compute_pipeline + dispatch (MTLComputeCommand
+//            Encoder path) + bind_vertex_buffer + bind_index_buffer +
+//            draw_indexed (drawIndexedPrimitives:..:indexBuffer:..).
 //
 // Compiled only when CD_RHI_METAL_ENABLED=ON (Apple platform).
 //
@@ -84,6 +87,9 @@ void MetalCommandBufferImpl::begin_render_pass(const RenderPassBeginInfo& info)
     // closed before the render encoder opens — Metal forbids nested
     // encoders on a single cmd-buf.
     close_blit_encoder_if_open();
+    // phase572: same rule for a compute encoder left open by a prior
+    // bind_compute_pipeline / dispatch sequence.
+    close_compute_encoder_if_open();
     const ColorAttachmentInfo& att = info.color_attachments[0];
 
     id<MTLTexture> tex = (ctx_ != nullptr)
@@ -233,6 +239,11 @@ void MetalCommandBufferImpl::push_debug_group(std::string_view name)
         // phase559: debug groups while a blit-encoder is open ride on it.
         [blit_ pushDebugGroup:ns];
     }
+    else if (compute_ != nil)
+    {
+        // phase572: debug groups while a compute-encoder is open ride on it.
+        [compute_ pushDebugGroup:ns];
+    }
     else if (cmd_ != nil)
     {
         [cmd_ pushDebugGroup:ns];
@@ -248,6 +259,10 @@ void MetalCommandBufferImpl::pop_debug_group()
     else if (blit_ != nil)
     {
         [blit_ popDebugGroup];
+    }
+    else if (compute_ != nil)
+    {
+        [compute_ popDebugGroup];
     }
     else if (cmd_ != nil)
     {
@@ -269,6 +284,8 @@ void MetalCommandBufferImpl::submit_internal(id<CAMetalDrawable> drawable_to_pre
     }
     // phase559: also close any pending blit encoder.
     close_blit_encoder_if_open();
+    // phase572: also close any pending compute encoder.
+    close_compute_encoder_if_open();
     if (drawable_to_present != nil)
     {
         [cmd_ presentDrawable:drawable_to_present];
@@ -306,6 +323,9 @@ void MetalCommandBufferImpl::ensure_blit_encoder_open()
         [encoder_ endEncoding];
         encoder_ = nil;
     }
+    // phase572: same rule for a compute encoder left open by a prior
+    // bind_compute_pipeline / dispatch sequence.
+    close_compute_encoder_if_open();
     if (blit_ != nil)
     {
         // Already open — nothing to do.
@@ -517,6 +537,218 @@ void MetalCommandBufferImpl::copy_image_to_buffer(
           destinationBytesPerImage:0];
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// phase572 (Sprint-3) — compute encoder + vertex/index binding +
+// draw_indexed implementations.
+//
+// The MTLComputeCommandEncoder is opened lazily by ensure_compute_encoder_
+// open() on the first compute-side call (bind_compute_pipeline / dispatch)
+// after begin(). It is closed in four places, mirroring the Sprint-2 blit
+// encoder discipline:
+//   1. before begin_render_pass opens a render encoder.
+//   2. before ensure_blit_encoder_open opens a blit encoder.
+//   3. before submit_internal commits the cmd-buf.
+//   4. explicitly via close_compute_encoder_if_open() anywhere we need to
+//      transition encoder kinds in the future.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::ensure_compute_encoder_open()
+{
+    if (cmd_ == nil)
+    {
+        // No cmd-buf yet — begin() was not called. Match the blit-encoder
+        // helper's defensive silent skip.
+        return;
+    }
+    if (encoder_ != nil)
+    {
+        [encoder_ endEncoding];
+        encoder_ = nil;
+    }
+    if (blit_ != nil)
+    {
+        [blit_ endEncoding];
+        blit_ = nil;
+    }
+    if (compute_ != nil)
+    {
+        // Already open — nothing to do.
+        return;
+    }
+    compute_ = [cmd_ computeCommandEncoder];
+    compute_.label = @"cd::rhi::metal::ComputeEncoder";
+}
+
+void MetalCommandBufferImpl::close_compute_encoder_if_open() noexcept
+{
+    if (compute_ != nil)
+    {
+        [compute_ endEncoding];
+        compute_ = nil;
+    }
+    // Note: current_compute_pso_ is intentionally NOT cleared here. The
+    // PSO is set once via bind_compute_pipeline and persists across
+    // encoder open/close transitions inside the same cmd-buf so callers
+    // can interleave dispatch with copy_* (which would close the encoder)
+    // without re-binding the PSO. Sprint 4 may revisit if a stricter
+    // validation policy is desired.
+}
+
+// ---------------------------------------------------------------------------
+// bind_compute_pipeline — Sprint-3 setComputePipelineState path.
+//
+// Routes through the device-side compute-pipeline registry. Lookup miss is
+// silently skipped (matches Sprint-1's render-pipeline behaviour).
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::bind_compute_pipeline(ComputePipelineHandle pipeline)
+{
+    if (cmd_ == nil || ctx_ == nullptr)
+    {
+        return;
+    }
+    id<MTLComputePipelineState> pso = ctx_->lookup_compute_pipeline(pipeline);
+    if (pso == nil)
+    {
+        return;
+    }
+    ensure_compute_encoder_open();
+    if (compute_ == nil)
+    {
+        return;
+    }
+    [compute_ setComputePipelineState:pso];
+    current_compute_pso_ = pso;
+}
+
+// ---------------------------------------------------------------------------
+// dispatch — Sprint-3 dispatchThreadgroups path.
+//
+// Sprint-3 surface uses a 1x1x1 threadgroup size; real compute shaders
+// override this via SPIRV-Cross attributes (`[[threads_per_threadgroup]]`)
+// once SPIR-V → MSL translation lands. The (x, y, z) grid dimensions are
+// passed straight through as the threadgroup count.
+//
+// If the caller invokes dispatch without first binding a compute PSO the
+// call is silently skipped — matches the Sprint-1 render-pipeline-not-bound
+// behaviour for draw().
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::dispatch(std::uint32_t x,
+                                      std::uint32_t y,
+                                      std::uint32_t z)
+{
+    if (compute_ == nil || current_compute_pso_ == nil)
+    {
+        return;
+    }
+    if (x == 0u || y == 0u || z == 0u)
+    {
+        return;
+    }
+    const MTLSize groups = MTLSizeMake(
+        static_cast<NSUInteger>(x),
+        static_cast<NSUInteger>(y),
+        static_cast<NSUInteger>(z));
+    const MTLSize threads = MTLSizeMake(1, 1, 1);
+    [compute_ dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+}
+
+// ---------------------------------------------------------------------------
+// bind_vertex_buffer — Sprint-3 setVertexBuffer:offset:atIndex: path.
+//
+// The Metal vertex-buffer table is a flat index space; the engine's
+// `binding` parameter maps directly to it (matches the Vulkan back-end's
+// VkVertexInputBindingDescription::binding and the D3D12 back-end's
+// input-slot index). When the lookup misses (still the Sprint-3 default —
+// create_buffer hands out stub handles) the call is gracefully skipped,
+// mirroring the copy-buffer fallback.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::bind_vertex_buffer(std::uint32_t binding,
+                                                BufferHandle buffer,
+                                                std::uint64_t offset)
+{
+    if (encoder_ == nil || ctx_ == nullptr)
+    {
+        return;
+    }
+    id<MTLBuffer> buf = ctx_->lookup_buffer(buffer);
+    if (buf == nil)
+    {
+        return;
+    }
+    [encoder_ setVertexBuffer:buf
+                       offset:static_cast<NSUInteger>(offset)
+                      atIndex:static_cast<NSUInteger>(binding)];
+}
+
+// ---------------------------------------------------------------------------
+// bind_index_buffer — Sprint-3 index-state cache.
+//
+// Metal does not pre-bind an index buffer; drawIndexedPrimitives takes the
+// buffer + offset + index type inline. We cache the resolved MTLBuffer and
+// MTLIndexType here so draw_indexed can replay them. The buffer is resolved
+// eagerly (rather than at draw time) so the cmd-buffer dependency on the
+// device-side registry stays at the bind site, not scattered across each
+// draw_indexed call.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::bind_index_buffer(BufferHandle buffer,
+                                               std::uint64_t offset,
+                                               IndexType type)
+{
+    if (ctx_ == nullptr)
+    {
+        return;
+    }
+    index_buf_    = ctx_->lookup_buffer(buffer);
+    index_offset_ = static_cast<NSUInteger>(offset);
+    index_type_   = (type == IndexType::kUInt32) ? MTLIndexTypeUInt32
+                                                 : MTLIndexTypeUInt16;
+}
+
+// ---------------------------------------------------------------------------
+// draw_indexed — Sprint-3 drawIndexedPrimitives:..:indexBuffer:.. path.
+//
+// Uses the index state cached by bind_index_buffer. Gracefully no-ops when
+// the index buffer is nil (the cached lookup missed because create_buffer
+// still returns stub handles), matching the Sprint-2 copy fallback.
+//
+// Topology is hardcoded at MTLPrimitiveTypeTriangle to match draw() — the
+// bound pipeline's primitive topology will be sourced from the
+// GraphicsPipelineDesc once Sprint-4 lights up the desc-driven pipeline
+// builder. `vertex_offset` is propagated via baseVertex: which expects a
+// signed integer (Vulkan's int32_t) — Metal accepts the value as-is.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::draw_indexed(std::uint32_t index_count,
+                                          std::uint32_t instance_count,
+                                          std::uint32_t first_index,
+                                          std::int32_t  vertex_offset,
+                                          std::uint32_t first_instance)
+{
+    if (encoder_ == nil || index_buf_ == nil || index_count == 0)
+    {
+        return;
+    }
+    // Metal indexes the index buffer in element units; first_index is
+    // therefore folded into the buffer offset by adding (first_index *
+    // index-element-size) bytes. This matches Vulkan's
+    // vkCmdDrawIndexed firstIndex semantics.
+    const NSUInteger index_elem_bytes =
+        (index_type_ == MTLIndexTypeUInt32) ? 4u : 2u;
+    const NSUInteger byte_offset =
+        index_offset_
+        + static_cast<NSUInteger>(first_index) * index_elem_bytes;
+
+    const NSUInteger inst =
+        (instance_count == 0u) ? 1u : static_cast<NSUInteger>(instance_count);
+
+    [encoder_ drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                         indexCount:static_cast<NSUInteger>(index_count)
+                          indexType:index_type_
+                        indexBuffer:index_buf_
+                  indexBufferOffset:byte_offset
+                      instanceCount:inst
+                         baseVertex:static_cast<NSInteger>(vertex_offset)
+                       baseInstance:static_cast<NSUInteger>(first_instance)];
 }
 
 }  // namespace cd::rhi::metal::detail

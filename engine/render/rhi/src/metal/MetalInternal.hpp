@@ -3,6 +3,9 @@
 // phase548 — Metal backend Sprint-1 shared internals.
 // phase559 — Metal backend Sprint-2 extensions (sampler registry +
 //            blit-encoder helpers + push-constant fast path).
+// phase572 — Metal backend Sprint-3 extensions (shader-module + compute
+//            pipeline registries + compute encoder + vertex/index binding
+//            cache + draw_indexed path).
 //
 // This header is INTERNAL to the cd_rhi_metal target. It is only included
 // from the four .mm translation units (MetalDevice.mm, MetalCommandBuffer.mm,
@@ -29,8 +32,34 @@
 //   * MetalCommandBufferImpl::push_constants                                —
 //     setVertexBytes / setFragmentBytes inline-arg path (≤4 KB).
 //
-// Everything else (descriptor sets allocation, depth, multi-pass, compute,
-// RT) lives in subsequent sprints; the remaining kNotImpl call surface in
+// Sprint-3 additions (phase572):
+//   * MetalShaderModuleObj      — id<MTLLibrary> + id<MTLFunction> + stage
+//                                 wrapper. MSL source compiled via
+//                                 [device newLibraryWithSource:] from the
+//                                 ShaderModuleDesc::code byte blob (treated
+//                                 as a UTF-8 MSL source string for Sprint-3;
+//                                 SPIRV-Cross MSL translation lands later).
+//   * MetalComputePipelineObj   — id<MTLComputePipelineState> wrapper for
+//                                 the create_compute_pipeline factory.
+//   * MetalDeviceCtx::lookup_shader_module / lookup_compute_pipeline —
+//     handle resolution hooks for the create_compute_pipeline + the
+//     cmd-buffer bind_compute_pipeline paths.
+//   * MetalCommandBufferImpl::bind_compute_pipeline / dispatch —
+//     MTLComputeCommandEncoder path with the same lazy-open / encoder-
+//     transition discipline as the blit encoder. Render + blit encoders
+//     are closed before a compute encoder opens (Metal forbids nested
+//     encoders on a single cmd-buf).
+//   * MetalCommandBufferImpl::bind_vertex_buffer                           —
+//     [encoder setVertexBuffer:offset:atIndex:] direct call. Vertex
+//     buffer table indices are taken from VertexBinding::binding.
+//   * MetalCommandBufferImpl::bind_index_buffer                            —
+//     Caches the buffer + offset + MTLIndexType for draw_indexed.
+//   * MetalCommandBufferImpl::draw_indexed                                 —
+//     [encoder drawIndexedPrimitives:..:indexBuffer:..:instanceCount:
+//     baseVertex:baseInstance:] using the cached index state.
+//
+// Everything else (descriptor sets allocation, fences, RT) lives in
+// subsequent sprints; the remaining kNotImpl call surface in
 // MetalDevice.mm shrinks accordingly each sprint.
 // =============================================================================
 #pragma once
@@ -140,6 +169,76 @@ build_sprint1_triangle_pipeline(id<MTLDevice> device, MTLPixelFormat color_forma
                                 std::string* error_out) noexcept;
 
 // ---------------------------------------------------------------------------
+// MetalShaderModuleObj — phase572 / Sprint-3.
+//
+// Holds the id<MTLLibrary> compiled from MSL source plus the id<MTLFunction>
+// resolved against the ShaderModuleDesc::entry_point. The stage is recorded
+// so create_compute_pipeline can validate the bound module before kicking
+// off PSO creation (which would otherwise produce a confusing Metal error
+// when a vertex/fragment function is mis-bound to a compute pipeline).
+//
+// ShaderModuleDesc::code is treated as a UTF-8 MSL source string of length
+// code_size in Sprint-3; SPIRV-Cross MSL translation lands when the engine
+// gets a unified shader pipeline. The Vulkan back-end's SPIR-V byte-code
+// path is unaffected.
+// ---------------------------------------------------------------------------
+class MetalShaderModuleObj final
+{
+public:
+    MetalShaderModuleObj(id<MTLLibrary> lib, id<MTLFunction> fn, ShaderStage stage) noexcept
+        : lib_(lib), fn_(fn), stage_(stage) {}
+    ~MetalShaderModuleObj() = default;
+    MetalShaderModuleObj(const MetalShaderModuleObj&) = delete;
+    MetalShaderModuleObj& operator=(const MetalShaderModuleObj&) = delete;
+    MetalShaderModuleObj(MetalShaderModuleObj&&) = delete;
+    MetalShaderModuleObj& operator=(MetalShaderModuleObj&&) = delete;
+
+    [[nodiscard]] id<MTLLibrary>  lib() const noexcept { return lib_; }
+    [[nodiscard]] id<MTLFunction> fn() const noexcept { return fn_; }
+    [[nodiscard]] ShaderStage     stage() const noexcept { return stage_; }
+
+private:
+    id<MTLLibrary>  lib_ { nil };
+    id<MTLFunction> fn_ { nil };
+    ShaderStage     stage_ { ShaderStage::kNone };
+};
+
+// Compile MSL source into an MTLLibrary and resolve the named entry-point
+// function. Sprint-3 contract: desc.code is UTF-8 MSL source of length
+// desc.code_size; desc.entry_point selects the function inside the library
+// (defaults to "main" per ShaderModuleDesc).
+[[nodiscard]] id<MTLFunction>
+build_metal_shader_function(id<MTLDevice> device,
+                            const ShaderModuleDesc& desc,
+                            id<MTLLibrary>* lib_out,
+                            std::string* error_out) noexcept;
+
+// ---------------------------------------------------------------------------
+// MetalComputePipelineObj — phase572 / Sprint-3.
+//
+// Wraps id<MTLComputePipelineState> built via
+// [device newComputePipelineStateWithFunction:error:]. The PSO is opaque
+// once created; the cmd-buffer binds it via setComputePipelineState: on
+// the active MTLComputeCommandEncoder.
+// ---------------------------------------------------------------------------
+class MetalComputePipelineObj final
+{
+public:
+    explicit MetalComputePipelineObj(id<MTLComputePipelineState> pso) noexcept
+        : pso_(pso) {}
+    ~MetalComputePipelineObj() = default;
+    MetalComputePipelineObj(const MetalComputePipelineObj&) = delete;
+    MetalComputePipelineObj& operator=(const MetalComputePipelineObj&) = delete;
+    MetalComputePipelineObj(MetalComputePipelineObj&&) = delete;
+    MetalComputePipelineObj& operator=(MetalComputePipelineObj&&) = delete;
+
+    [[nodiscard]] id<MTLComputePipelineState> pso() const noexcept { return pso_; }
+
+private:
+    id<MTLComputePipelineState> pso_ { nil };
+};
+
+// ---------------------------------------------------------------------------
 // MetalSamplerObj — id<MTLSamplerState> wrapper (Sprint-2 / phase559).
 //
 // Backed by a single MTLSamplerState created on device-side via
@@ -202,13 +301,26 @@ public:
     void end_render_pass() override;
 
     void bind_graphics_pipeline(GraphicsPipelineHandle pipeline) override;
-    void bind_compute_pipeline(ComputePipelineHandle /*pipeline*/) override {}
+    // phase572 (Sprint-3): real setComputePipelineState path. Opens a
+    // lazy MTLComputeCommandEncoder via ensure_compute_encoder_open(),
+    // closing any active render / blit encoder first (Metal disallows
+    // nested encoders on a single cmd-buf).
+    void bind_compute_pipeline(ComputePipelineHandle pipeline) override;
     void bind_descriptor_set(std::uint32_t /*set_index*/, DescriptorSetHandle /*set*/) override {}
 
-    void bind_vertex_buffer(std::uint32_t /*binding*/, BufferHandle /*buffer*/,
-                            std::uint64_t /*offset*/) override {}
-    void bind_index_buffer(BufferHandle /*buffer*/, std::uint64_t /*offset*/,
-                           IndexType /*type*/) override {}
+    // phase572 (Sprint-3): real setVertexBuffer path. Vertex buffer table
+    // indices are taken from the `binding` parameter (which maps to the
+    // VertexBinding::binding index in the engine's vertex layout). When
+    // the lookup misses (Sprint-2 still hands out unbacked stub handles),
+    // the call is gracefully skipped, mirroring the copy-buffer fallback.
+    void bind_vertex_buffer(std::uint32_t binding, BufferHandle buffer,
+                            std::uint64_t offset) override;
+    // phase572 (Sprint-3): caches the index buffer + offset + MTLIndexType
+    // for the next draw_indexed call. Metal binds the index buffer at
+    // draw-call time (not as a pre-bound state) so we have to stash here
+    // until the drawIndexedPrimitives:..:indexBuffer:.. is issued.
+    void bind_index_buffer(BufferHandle buffer, std::uint64_t offset,
+                           IndexType type) override;
 
     // phase559 (Sprint-2): real setVertexBytes / setFragmentBytes path.
     // PipelineLayoutHandle is ignored — Metal does not consume a layout
@@ -226,10 +338,19 @@ public:
 
     void draw(std::uint32_t vertex_count, std::uint32_t instance_count,
               std::uint32_t first_vertex, std::uint32_t first_instance) override;
-    void draw_indexed(std::uint32_t /*index_count*/, std::uint32_t /*instance_count*/,
-                      std::uint32_t /*first_index*/, std::int32_t /*vertex_offset*/,
-                      std::uint32_t /*first_instance*/) override {}
-    void dispatch(std::uint32_t /*x*/, std::uint32_t /*y*/, std::uint32_t /*z*/) override {}
+    // phase572 (Sprint-3): drawIndexedPrimitives via the cached index buffer
+    // state captured by bind_index_buffer. Gracefully no-ops when the
+    // cached index buffer is nil (handle still unbacked under the Sprint-3
+    // baseline) so the cmd-buffer doesn't crash before allocation lights up.
+    void draw_indexed(std::uint32_t index_count, std::uint32_t instance_count,
+                      std::uint32_t first_index, std::int32_t vertex_offset,
+                      std::uint32_t first_instance) override;
+    // phase572 (Sprint-3): MTLComputeCommandEncoder dispatchThreadgroups
+    // path. Threads-per-threadgroup is taken from the bound compute PSO's
+    // maxTotalThreadsPerThreadgroup property when not specified by the
+    // caller (Sprint-3 surface uses 1x1x1 threadgroup size — real compute
+    // shaders override via SPIRV-Cross attributes when they land).
+    void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override;
 
     // phase559 (Sprint-2): real MTLBlitCommandEncoder paths.
     //
@@ -267,14 +388,36 @@ private:
     void ensure_blit_encoder_open();
     void close_blit_encoder_if_open() noexcept;
 
+    // phase572 (Sprint-3): same lazy-open / encoder-transition discipline
+    // for the compute encoder. ensure_compute_encoder_open() closes any
+    // active render / blit encoder before opening the compute encoder;
+    // close_compute_encoder_if_open() is called from begin_render_pass +
+    // ensure_blit_encoder_open + submit_internal.
+    void ensure_compute_encoder_open();
+    void close_compute_encoder_if_open() noexcept;
+
     id<MTLCommandQueue>          queue_ { nil };
     id<MTLCommandBuffer>         cmd_ { nil };
     id<MTLRenderCommandEncoder>  encoder_ { nil };
     id<MTLBlitCommandEncoder>    blit_ { nil };
+    id<MTLComputeCommandEncoder> compute_ { nil };
     MetalDeviceCtx*              ctx_ { nullptr };  // observer, not owning
     // Cached attachment view for the active render pass — used to derive
     // the colour-target texture when no real TextureViewHandle registry
     // exists yet (Sprint-1 ties views to swapchain drawables only).
+
+    // phase572 (Sprint-3): index buffer cache for draw_indexed. Metal
+    // binds the index buffer at draw-call time, so we have to stash the
+    // last bind_index_buffer values here and replay them when
+    // drawIndexedPrimitives: fires.
+    id<MTLBuffer>                index_buf_ { nil };
+    NSUInteger                   index_offset_ { 0 };
+    MTLIndexType                 index_type_ { MTLIndexTypeUInt16 };
+
+    // phase572 (Sprint-3): currently-bound compute PSO. Used to recover
+    // threads-per-threadgroup at dispatch time when the caller does not
+    // pre-supply a workgroup size (Sprint-3 surface uses 1x1x1).
+    id<MTLComputePipelineState>  current_compute_pso_ { nil };
 };
 
 // ---------------------------------------------------------------------------
@@ -321,6 +464,16 @@ public:
 
     [[nodiscard]] virtual id<MTLSamplerState>
     lookup_sampler(SamplerHandle h) const noexcept = 0;
+
+    // phase572 (Sprint-3): shader-module + compute-pipeline lookups.
+    // The shader-module lookup is consumed by create_compute_pipeline; the
+    // compute-pipeline lookup is consumed by bind_compute_pipeline. Both
+    // return nil for unknown / invalid handles.
+    [[nodiscard]] virtual const MetalShaderModuleObj*
+    lookup_shader_module(ShaderModuleHandle h) const noexcept = 0;
+
+    [[nodiscard]] virtual id<MTLComputePipelineState>
+    lookup_compute_pipeline(ComputePipelineHandle h) const noexcept = 0;
 };
 
 }  // namespace cd::rhi::metal::detail

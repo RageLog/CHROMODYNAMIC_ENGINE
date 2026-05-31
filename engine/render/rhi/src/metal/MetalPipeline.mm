@@ -2,6 +2,8 @@
 // CHROMODYNAMIC — engine/render/rhi/src/metal/MetalPipeline.mm
 // phase548 — Metal pipeline real impl (Sprint-1).
 // phase559 — Sprint-2 addition: build_metal_sampler (MTLSamplerState).
+// phase572 — Sprint-3 addition: build_metal_shader_function (MTLLibrary +
+//            MTLFunction from MSL source supplied via ShaderModuleDesc).
 //
 // Compiled only when CD_RHI_METAL_ENABLED=ON (Apple platform).
 //
@@ -19,6 +21,15 @@
 //     MTLSamplerDescriptor and creates the matching MTLSamplerState. The
 //     enum mapping is SOTA — matches the Vulkan back-end's parity test
 //     expectations modulo Metal's discrete border-colour vocabulary.
+//
+// Sprint-3 scope:
+//   * build_metal_shader_function() compiles MSL source carried by a
+//     cd::rhi::ShaderModuleDesc into an id<MTLLibrary> and resolves the
+//     id<MTLFunction> named by ShaderModuleDesc::entry_point. The descriptor's
+//     `code` is treated as a UTF-8 MSL source string of length `code_size`
+//     for Sprint-3; SPIRV-Cross MSL translation arrives when the engine
+//     introduces a unified shader pipeline (the Vulkan SPIR-V byte-code
+//     path is unaffected).
 // =============================================================================
 #if defined(__APPLE__)
 
@@ -253,6 +264,123 @@ build_metal_sampler(id<MTLDevice> device, const SamplerDesc& desc,
         *error_out = "Metal::build_metal_sampler: newSamplerStateWithDescriptor returned nil";
     }
     return state;
+}
+
+// ---------------------------------------------------------------------------
+// build_metal_shader_function — phase572 / Sprint-3.
+//
+// Compile MSL source carried in ShaderModuleDesc::code (treated as a UTF-8
+// MSL string of length code_size) into an id<MTLLibrary>, then resolve the
+// id<MTLFunction> named by ShaderModuleDesc::entry_point. The library is
+// emitted via `lib_out` so the caller can own its lifetime alongside the
+// function (Metal keeps a strong reference on its own, but the engine wants
+// to release the library when the shader module is destroyed).
+//
+// Sprint-3 contract:
+//   * code/code_size = UTF-8 MSL source (no NUL terminator required).
+//   * entry_point   = function name (defaults to "main").
+//   * Errors        = nil return + populated `error_out`; caller maps to
+//                     kResourceCreationFailed.
+//
+// The MSL language version is pinned at MTLLanguageVersion2_0 to match
+// build_sprint1_triangle_pipeline so the Sprint-3 path is byte-for-byte
+// compatible with the Sprint-1 triangle PSO when the same source is fed
+// through both code-paths.
+// ---------------------------------------------------------------------------
+id<MTLFunction>
+build_metal_shader_function(id<MTLDevice> device,
+                            const ShaderModuleDesc& desc,
+                            id<MTLLibrary>* lib_out,
+                            std::string* error_out) noexcept
+{
+    if (device == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = "Metal::build_metal_shader_function: nil MTLDevice";
+        }
+        return nil;
+    }
+    if (desc.code == nullptr || desc.code_size == 0)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = "Metal::build_metal_shader_function: empty shader code";
+        }
+        return nil;
+    }
+
+    NSString* src = [[NSString alloc]
+        initWithBytes:desc.code
+               length:static_cast<NSUInteger>(desc.code_size)
+             encoding:NSUTF8StringEncoding];
+    if (src == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = "Metal::build_metal_shader_function: shader code is not valid UTF-8 MSL";
+        }
+        return nil;
+    }
+
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+    opts.languageVersion = MTLLanguageVersion2_0;
+
+    NSError* err = nil;
+    id<MTLLibrary> lib = [device newLibraryWithSource:src options:opts error:&err];
+    if (lib == nil)
+    {
+        if (error_out != nullptr)
+        {
+            if (err != nil)
+            {
+                *error_out = std::string {
+                    [[err localizedDescription] UTF8String]
+                };
+            }
+            else
+            {
+                *error_out = "Metal::build_metal_shader_function: newLibraryWithSource returned nil";
+            }
+        }
+        return nil;
+    }
+
+    // ShaderModuleDesc::entry_point defaults to "main" via its
+    // string_view initializer; honour empty / missing entry points by
+    // falling back to that.
+    std::string_view ep = desc.entry_point.empty()
+        ? std::string_view { "main" }
+        : desc.entry_point;
+    NSString* ns_ep = [[NSString alloc] initWithBytes:ep.data()
+                                               length:ep.size()
+                                             encoding:NSUTF8StringEncoding];
+    if (ns_ep == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = "Metal::build_metal_shader_function: entry point not valid UTF-8";
+        }
+        return nil;
+    }
+
+    id<MTLFunction> fn = [lib newFunctionWithName:ns_ep];
+    if (fn == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = std::string {
+                "Metal::build_metal_shader_function: entry point '" }
+                + std::string { ep } + "' not found in MTLLibrary";
+        }
+        return nil;
+    }
+
+    if (lib_out != nullptr)
+    {
+        *lib_out = lib;
+    }
+    return fn;
 }
 
 }  // namespace cd::rhi::metal::detail

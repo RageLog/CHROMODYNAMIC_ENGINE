@@ -3,6 +3,8 @@
 // phase548 — Metal backend Sprint-1 real impl (Objective-C++).
 // phase559 — Metal backend Sprint-2 (sampler + descriptor-write +
 //            blit-copy plumbing).
+// phase572 — Metal backend Sprint-3 (shader-module + compute-pipeline
+//            factories + the supporting registries / lookups).
 //
 // Compiled only when CD_RHI_METAL_ENABLED=ON (macOS / iOS host with the
 // Metal SDK present). On Win11 / Linux this translation unit is excluded
@@ -53,9 +55,29 @@
 //     wires real MTLBuffer / MTLTexture allocation into create_buffer /
 //     create_texture and the lookups light up automatically.
 //
-// Remaining kNotImpl calls (shader modules, pipeline layouts, fences,
-// semaphores, timeline semaphores, compute, readback, full submit, descriptor
-// allocation) belong to Sprint 3-5.
+// phase572 (Sprint-3) lifts five more, focused on the shader + compute
+// surface so the engine can start exercising compute-side paths on Metal:
+//
+//   1. create_shader_module     — newLibraryWithSource: + newFunctionWithName:
+//                                 from ShaderModuleDesc::code (UTF-8 MSL).
+//   2. create_compute_pipeline  — newComputePipelineStateWithFunction: built
+//                                 from a previously-registered ShaderModule.
+//   3. bind_compute_pipeline    — MTLComputeCommandEncoder
+//                                 setComputePipelineState: with the same
+//                                 lazy-open / encoder-transition discipline
+//                                 as the Sprint-2 blit encoder.
+//   4. bind_vertex_buffer +
+//      bind_index_buffer        — [encoder setVertexBuffer:offset:atIndex:]
+//                                 + index buffer + type cached for the
+//                                 next draw_indexed call.
+//   5. draw_indexed +
+//      dispatch                 — drawIndexedPrimitives via the cached
+//                                 index state + dispatchThreadgroups via
+//                                 the bound compute PSO.
+//
+// Remaining kNotImpl calls (pipeline layouts, fences, semaphores, timeline
+// semaphores, readback, full submit, descriptor allocation, texture views)
+// belong to Sprint 4-5.
 //
 // Win11 build gate: this entire TU is gated on __APPLE__; MetalDevice.cpp
 // is the cross-platform stub that compiles everywhere and the CMake build
@@ -89,9 +111,11 @@ namespace
 {
 
 using detail::MetalCommandBufferImpl;
+using detail::MetalComputePipelineObj;
 using detail::MetalDeviceCtx;
 using detail::MetalGraphicsPipelineObj;
 using detail::MetalSamplerObj;
+using detail::MetalShaderModuleObj;
 using detail::MetalSwapchainObj;
 
 // Sentinel 16-bit generation used by swapchain-image-view handles so the
@@ -222,13 +246,45 @@ public:
         samplers_.erase(h.index());
     }
 
+    // phase572 (Sprint-3): real MTLLibrary + MTLFunction path.
+    //
+    // ShaderModuleDesc::code is a UTF-8 MSL source string of length
+    // code_size; build_metal_shader_function compiles it via
+    // newLibraryWithSource: and resolves the entry-point function. Both
+    // the library and the function are retained inside MetalShaderModuleObj
+    // so the create_compute_pipeline factory can fetch them without
+    // re-compiling. Errors map to kResourceCreationFailed (not kNotImpl)
+    // so they surface as actionable shader-compile diagnostics to callers.
     [[nodiscard]] cd::core::Result<ShaderModuleHandle>
-    create_shader_module(const ShaderModuleDesc& /*desc*/) override
+    create_shader_module(const ShaderModuleDesc& desc) override
     {
-        return std::unexpected(kNotImpl("Metal::create_shader_module"));
+        std::string err_msg;
+        id<MTLLibrary>  lib = nil;
+        id<MTLFunction> fn  = detail::build_metal_shader_function(
+            mtl_device_, desc, &lib, &err_msg);
+        if (fn == nil)
+        {
+            return std::unexpected(rhi_errors::make_owning(
+                rhi_errors::Code::kResourceCreationFailed,
+                err_msg.empty() ? "Metal::create_shader_module: nil function"
+                                : err_msg));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const ShaderModuleHandle h { id, 1u };
+
+        const std::scoped_lock lock { shader_modules_mu_ };
+        shader_modules_.emplace(
+            h.index(),
+            std::make_unique<MetalShaderModuleObj>(lib, fn, desc.stage));
+        return h;
     }
 
-    void destroy_shader_module(ShaderModuleHandle /*h*/) override {}
+    void destroy_shader_module(ShaderModuleHandle h) override
+    {
+        const std::scoped_lock lock { shader_modules_mu_ };
+        shader_modules_.erase(h.index());
+    }
 
     [[nodiscard]] cd::core::Result<DescriptorSetLayoutHandle>
     create_descriptor_set_layout(const DescriptorSetLayoutDesc& /*desc*/) override
@@ -299,13 +355,62 @@ public:
         pipelines_.erase(h.index());
     }
 
+    // phase572 (Sprint-3): newComputePipelineStateWithFunction:error: path.
+    //
+    // The shader-module lookup MUST resolve and the module's stage MUST be
+    // kCompute; otherwise we surface a kInvalidArgument so callers can fix
+    // their bind-order bug rather than chase a confusing Metal validation
+    // assert. PSO compilation errors propagate via kResourceCreationFailed
+    // with the Metal-supplied diagnostic preserved.
     [[nodiscard]] cd::core::Result<ComputePipelineHandle>
-    create_compute_pipeline(const ComputePipelineDesc& /*desc*/) override
+    create_compute_pipeline(const ComputePipelineDesc& desc) override
     {
-        return std::unexpected(kNotImpl("Metal::create_compute_pipeline"));
+        const MetalShaderModuleObj* mod = lookup_shader_module(desc.shader);
+        if (mod == nullptr || mod->fn() == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_compute_pipeline: unknown / unresolved "
+                "shader module"));
+        }
+        if (mod->stage() != ShaderStage::kCompute
+            && mod->stage() != ShaderStage::kNone)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_compute_pipeline: shader module is not "
+                "ShaderStage::kCompute"));
+        }
+
+        NSError* err = nil;
+        id<MTLComputePipelineState> pso =
+            [mtl_device_ newComputePipelineStateWithFunction:mod->fn()
+                                                       error:&err];
+        if (pso == nil)
+        {
+            std::string err_msg = (err != nil)
+                ? std::string { [[err localizedDescription] UTF8String] }
+                : std::string { "Metal::create_compute_pipeline: nil PSO" };
+            return std::unexpected(rhi_errors::make_owning(
+                rhi_errors::Code::kResourceCreationFailed,
+                std::move(err_msg)));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const ComputePipelineHandle h { id, 1u };
+
+        const std::scoped_lock lock { compute_pipelines_mu_ };
+        compute_pipelines_.emplace(
+            h.index(),
+            std::make_unique<MetalComputePipelineObj>(pso));
+        return h;
     }
 
-    void destroy_compute_pipeline(ComputePipelineHandle /*h*/) override {}
+    void destroy_compute_pipeline(ComputePipelineHandle h) override
+    {
+        const std::scoped_lock lock { compute_pipelines_mu_ };
+        compute_pipelines_.erase(h.index());
+    }
 
     [[nodiscard]] cd::core::Result<DescriptorSetHandle>
     allocate_descriptor_set(DescriptorSetLayoutHandle /*layout*/) override
@@ -669,6 +774,25 @@ public:
         return (it == samplers_.end()) ? nil : it->second->state();
     }
 
+    // phase572 (Sprint-3): shader-module + compute-pipeline lookups.
+    // Both return nil / nullptr for unknown handles, matching the rest of
+    // the Metal-side resolver contract.
+    [[nodiscard]] const MetalShaderModuleObj*
+    lookup_shader_module(ShaderModuleHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { shader_modules_mu_ };
+        const auto it = shader_modules_.find(h.index());
+        return (it == shader_modules_.end()) ? nullptr : it->second.get();
+    }
+
+    [[nodiscard]] id<MTLComputePipelineState>
+    lookup_compute_pipeline(ComputePipelineHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { compute_pipelines_mu_ };
+        const auto it = compute_pipelines_.find(h.index());
+        return (it == compute_pipelines_.end()) ? nil : it->second->pso();
+    }
+
 private:
     // Internal helper: not part of MetalDeviceCtx, used by present/acquire
     // which take a SwapchainHandle directly.
@@ -700,6 +824,18 @@ private:
     // Sprint 3 alongside the matching create_* promotions.
     mutable std::mutex   samplers_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalSamplerObj>> samplers_;
+
+    // phase572 (Sprint-3): shader-module + compute-pipeline registries.
+    // The shader-module map owns the MTLLibrary + MTLFunction so the
+    // compute-pipeline factory can fetch the function without re-compiling;
+    // the compute-pipeline map owns the resulting MTLComputePipelineState.
+    mutable std::mutex   shader_modules_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalShaderModuleObj>>
+        shader_modules_;
+
+    mutable std::mutex   compute_pipelines_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalComputePipelineObj>>
+        compute_pipelines_;
 
     // Pending present hand-off — present() records the swapchain whose
     // drawable should ride out on the next submit's command-buffer commit.
