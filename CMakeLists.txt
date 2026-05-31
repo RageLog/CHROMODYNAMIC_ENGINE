@@ -230,6 +230,11 @@ endif()
 # --- Engine library tree ---
 add_subdirectory(engine)
 
+# --- Global integration tests (span multiple cd:: libraries) ---
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()
+
 # --- Samples ---
 if(CD_ENABLE_SAMPLES)
   add_subdirectory(samples)
