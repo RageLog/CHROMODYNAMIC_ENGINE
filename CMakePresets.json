@@ -244,6 +244,20 @@
     },
 
     {
+      "name": "ninja-android-base",
+      "displayName": "Android NDK (Ninja Multi-Config)",
+      "description": "Android 11+ / NDK r25+ / arm64-v8a (cross-compile from Windows/Linux/macOS)",
+      "inherits": "ninja-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Android",
+        "CMAKE_SYSTEM_VERSION": "30",
+        "CMAKE_ANDROID_PLATFORM": "android-30",
+        "CMAKE_ANDROID_ABI": "arm64-v8a",
+        "CMAKE_ANDROID_NDK": "$env{ANDROID_NDK_ROOT}"
+      }
+    },
+
+    {
       "name": "ci-vs2026",
       "displayName": "CI Visual Studio 2026",
       "description": "Official Windows verification preset using Visual Studio 2026",
@@ -342,6 +356,9 @@
 
     { "name": "xcode-debug",            "configurePreset": "xcode-base",       "configuration": "Debug",          "displayName": "Xcode Debug" },
     { "name": "xcode-release",          "configurePreset": "xcode-base",       "configuration": "Release",        "displayName": "Xcode Release" },
+
+    { "name": "ninja-android-debug",    "configurePreset": "ninja-android-base", "configuration": "Debug",        "displayName": "Android Debug (NDK)" },
+    { "name": "ninja-android-release",  "configurePreset": "ninja-android-base", "configuration": "Release",      "displayName": "Android Release (NDK)" },
 
     { "name": "ci-vs2026-debug",        "configurePreset": "ci-vs2026",        "configuration": "Debug" },
     { "name": "ci-vs2026-release",      "configurePreset": "ci-vs2026",        "configuration": "Release" },

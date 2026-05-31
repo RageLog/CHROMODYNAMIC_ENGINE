@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CHROMODYNAMIC Web Platform</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #1e1e2e 0%, #2a2a3e 100%);
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+            width: 100%;
+            height: 100%;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-top: 12px;
+        }
+
+        .header h1 {
+            font-size: 32px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #00d4ff;
+        }
+
+        .header p {
+            font-size: 14px;
+            color: #a0a0b0;
+        }
+
+        #canvas {
+            border: 2px solid #00d4ff;
+            background: #0a0a14;
+            border-radius: 8px;
+            box-shadow: 0 0 32px rgba(0, 212, 255, 0.2);
+            max-width: 100%;
+            max-height: calc(100vh - 180px);
+            flex-grow: 1;
+        }
+
+        .status {
+            text-align: center;
+            font-size: 13px;
+            color: #70707a;
+            margin-bottom: 12px;
+        }
+
+        .status.loading {
+            color: #00d4ff;
+        }
+
+        .status.error {
+            color: #ff6b6b;
+        }
+
+        .status.ready {
+            color: #51cf66;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #00d4ff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 6px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .feature-check {
+            font-size: 12px;
+            color: #707080;
+            margin-top: 8px;
+            font-family: monospace;
+        }
+
+        .feature-item {
+            display: inline-block;
+            margin: 0 12px;
+        }
+
+        .feature-item.ok {
+            color: #51cf66;
+        }
+
+        .feature-item.warn {
+            color: #ffa629;
+        }
+
+        .feature-item.fail {
+            color: #ff6b6b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>CHROMODYNAMIC</h1>
+            <p>Web Platform — WebAssembly + WebGPU</p>
+        </div>
+
+        <canvas id="canvas" width="1280" height="720"></canvas>
+
+        <div class="status loading">
+            <span class="spinner"></span>Loading WebAssembly module...
+        </div>
+
+        <div class="feature-check" id="feature-check"></div>
+    </div>
+
+    <script>
+        // Feature detection
+        function checkWebGpuSupport() {
+            if (navigator.gpu) {
+                return { supported: true, api: "WebGPU" };
+            }
+            if (document.createElement("canvas").getContext("webgl2")) {
+                return { supported: true, api: "WebGL 2.0 (fallback)" };
+            }
+            return { supported: false, api: null };
+        }
+
+        function checkWasmSupport() {
+            return typeof WebAssembly !== "undefined" && WebAssembly.instantiate !== undefined;
+        }
+
+        // Display feature status
+        window.addEventListener("load", () => {
+            const gpu = checkWebGpuSupport();
+            const wasm = checkWasmSupport();
+
+            const featureCheckDiv = document.getElementById("feature-check");
+            const statusDiv = document.querySelector(".status");
+
+            let html = "";
+            html += `<div class="feature-item ${wasm ? "ok" : "fail"}">WASM: ${wasm ? "✓" : "✗"}</div>`;
+            html += `<div class="feature-item ${gpu.supported ? "ok" : "fail"}">GPU: ${gpu.api || "✗"}</div>`;
+
+            featureCheckDiv.innerHTML = html;
+
+            if (!wasm) {
+                statusDiv.textContent = "Error: WebAssembly not supported";
+                statusDiv.className = "status error";
+                return;
+            }
+
+            if (!gpu.supported) {
+                statusDiv.textContent = "Error: WebGPU and WebGL 2.0 not supported";
+                statusDiv.className = "status error";
+                return;
+            }
+
+            // Load WASM module
+            // Note: Generated by Emscripten build; here we reference the expected output name
+            loadWasm();
+        });
+
+        async function loadWasm() {
+            try {
+                const response = await fetch("output.wasm");
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const wasmBuffer = await response.arrayBuffer();
+
+                // Import object for WASM module (post-T4.5: add cd::* exported functions)
+                const importObject = {
+                    env: {
+                        // Stub: no imports yet; real integration adds memory export, etc.
+                    },
+                };
+
+                const wasmModule = await WebAssembly.instantiate(wasmBuffer, importObject);
+
+                const statusDiv = document.querySelector(".status");
+                statusDiv.textContent = "WebAssembly loaded. Initializing...";
+                statusDiv.className = "status loading";
+
+                // TODO (T4.5): Call wasmModule.instance.exports.main(canvas, ...)
+                // For now, stub success
+                setTimeout(() => {
+                    statusDiv.textContent = "Ready";
+                    statusDiv.className = "status ready";
+                }, 500);
+            } catch (err) {
+                const statusDiv = document.querySelector(".status");
+                statusDiv.textContent = `Error: ${err.message}`;
+                statusDiv.className = "status error";
+                console.error("WASM load failed:", err);
+            }
+        }
+    </script>
+
+    <!-- Emscripten-generated script (post-build: replace with actual output.js) -->
+    <!-- <script src="output.js"></script> -->
+</body>
+</html>

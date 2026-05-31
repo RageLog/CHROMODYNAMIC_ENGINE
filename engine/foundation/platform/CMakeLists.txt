@@ -27,6 +27,15 @@ if(APPLE)
   list(APPEND _platform_sources src/IosWindow.mm)
 endif()
 
+# Phase 532 (v1.0.0 Android) — NativeActivity + AssetManager wrapper.
+if(ANDROID)
+  list(APPEND _platform_sources
+    src/platform/android/AssetManagerIO.cpp
+    src/platform/android/ActivityLifecycle.cpp
+    src/platform/android/main_android.cpp
+  )
+endif()
+
 cd_add_library(platform
   SOURCES ${_platform_sources}
   PUBLIC_DEPS cd::core
@@ -49,6 +58,19 @@ if(CD_PLATFORM_COCOA AND APPLE)
     "-framework Cocoa"
     "-framework QuartzCore"
   )
+endif()
+
+if(ANDROID)
+  # Android NDK libraries for asset manager + JNI glue.
+  target_link_libraries(cd_platform PRIVATE
+    android                # AAssetManager API
+    log                    # Android logging
+  )
+endif()
+
+# Phase 533 (T4.3) — Web platform (Emscripten + WebGPU)
+if(CD_PLATFORM_WEB AND CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+  add_subdirectory(web)
 endif()
 
 if(CD_ENABLE_TESTING)
