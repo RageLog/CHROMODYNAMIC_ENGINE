@@ -276,6 +276,24 @@
     },
 
     {
+      "name": "ninja-ios-base",
+      "displayName": "iOS (Xcode Ninja Multi-Config)",
+      "description": "iOS 17+ (iPhone/iPad/visionOS) via Xcode toolchain cross-compile (Phase 1 stub, ADR-20260531). Requires macOS + Xcode 15.3+.",
+      "inherits": "ninja-base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_SYSTEM_VERSION": "17.0",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "17.0",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CD_PLATFORM_IOS": "ON",
+        "CD_ENABLE_TESTING": "OFF",
+        "CD_ENABLE_SAMPLES": "ON"
+      }
+    },
+
+    {
       "name": "ci-vs2026",
       "displayName": "CI Visual Studio 2026",
       "description": "Official Windows verification preset using Visual Studio 2026",
@@ -381,6 +399,9 @@
     { "name": "ninja-web-debug",        "configurePreset": "ninja-web-base",     "configuration": "Debug",        "displayName": "Web Debug (Emscripten)" },
     { "name": "ninja-web-release",      "configurePreset": "ninja-web-base",     "configuration": "Release",      "displayName": "Web Release (Emscripten)" },
 
+    { "name": "ninja-ios-debug",        "configurePreset": "ninja-ios-base",     "configuration": "Debug",        "displayName": "iOS Debug (Xcode)" },
+    { "name": "ninja-ios-release",      "configurePreset": "ninja-ios-base",     "configuration": "Release",      "displayName": "iOS Release (Xcode)" },
+
     { "name": "ci-vs2026-debug",        "configurePreset": "ci-vs2026",        "configuration": "Debug" },
     { "name": "ci-vs2026-release",      "configurePreset": "ci-vs2026",        "configuration": "Release" },
     { "name": "ci-vs2022-debug",        "configurePreset": "ci-vs2022",        "configuration": "Debug" },
@@ -457,6 +478,9 @@
 
     { "name": "xcode-debug",            "inherits": "test-base", "configurePreset": "xcode-base",       "configuration": "Debug" },
     { "name": "xcode-release",          "inherits": "test-base", "configurePreset": "xcode-base",       "configuration": "Release" },
+
+    { "name": "ninja-ios-debug",        "inherits": "test-base", "configurePreset": "ninja-ios-base",   "configuration": "Debug" },
+    { "name": "ninja-ios-release",      "inherits": "test-base", "configurePreset": "ninja-ios-base",   "configuration": "Release" },
 
     { "name": "ci-vs2026-debug",        "inherits": "test-base", "configurePreset": "ci-vs2026",        "configuration": "Debug" },
     { "name": "ci-vs2026-release",      "inherits": "test-base", "configurePreset": "ci-vs2026",        "configuration": "Release" },
