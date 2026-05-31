@@ -199,7 +199,7 @@ void to_msdf_inplace(std::uint8_t* glyph, std::uint32_t w, std::uint32_t h)
     {
         for (int x = 0; x < iw; ++x)
         {
-            const bool inside = src[static_cast<std::size_t>(y) * iw + x] >= 128U;
+            const bool inside = src[static_cast<std::size_t>(y) * static_cast<std::size_t>(iw) + static_cast<std::size_t>(x)] >= 128U;
 
             // Search the (2*spread+1)^2 neighbourhood for the closest
             // pixel of the OPPOSITE coverage and record squared
@@ -214,7 +214,7 @@ void to_msdf_inplace(std::uint8_t* glyph, std::uint32_t w, std::uint32_t h)
             {
                 for (int xx = x0; xx <= x1; ++xx)
                 {
-                    const bool here = src[static_cast<std::size_t>(yy) * iw + xx] >= 128U;
+                    const bool here = src[static_cast<std::size_t>(yy) * static_cast<std::size_t>(iw) + static_cast<std::size_t>(xx)] >= 128U;
                     if (here == inside) continue;
                     const int dx = xx - x;
                     const int dy = yy - y;
@@ -233,7 +233,7 @@ void to_msdf_inplace(std::uint8_t* glyph, std::uint32_t w, std::uint32_t h)
             int signed_q = inside ? (128 + q) : (128 - q);
             if (signed_q < 0)   signed_q = 0;
             if (signed_q > 255) signed_q = 255;
-            glyph[static_cast<std::size_t>(y) * iw + x] = static_cast<std::uint8_t>(signed_q);
+            glyph[static_cast<std::size_t>(y) * static_cast<std::size_t>(iw) + static_cast<std::size_t>(x)] = static_cast<std::uint8_t>(signed_q);
         }
     }
 }
@@ -465,7 +465,7 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
 
             if (w > 0 && h > 0)
             {
-                tmp.assign(static_cast<std::size_t>(w) * h, std::uint8_t { 0 });
+                tmp.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), std::uint8_t { 0 });
                 stbtt_MakeGlyphBitmap(&impl_->stb_info,
                                       tmp.data(),
                                       w, h, w,
@@ -508,7 +508,7 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
         {
             std::memcpy(atlas_.pixels.data() +
                             (static_cast<std::size_t>(py + row) * atlas_.width + px),
-                        tmp.data() + static_cast<std::size_t>(row) * w,
+                        tmp.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(w),
                         static_cast<std::size_t>(w));
         }
 
