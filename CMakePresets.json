@@ -258,6 +258,24 @@
     },
 
     {
+      "name": "ninja-web-base",
+      "displayName": "Emscripten Web (Ninja Multi-Config)",
+      "description": "WebAssembly cross-compile via Emscripten toolchain (Phase 1 stub)",
+      "inherits": "ninja-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Emscripten",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/CMakeModules/emscripten.cmake",
+        "CD_PLATFORM_WEB": "ON",
+        "CD_ENABLE_SAMPLES": "ON",
+        "CD_ENABLE_TESTING": "OFF",
+        "EMSCRIPTEN_PREFIX": "$env{EMSDK}/upstream/emscripten"
+      },
+      "environment": {
+        "EMSCRIPTEN": "$env{EMSDK}/upstream/emscripten"
+      }
+    },
+
+    {
       "name": "ci-vs2026",
       "displayName": "CI Visual Studio 2026",
       "description": "Official Windows verification preset using Visual Studio 2026",
@@ -359,6 +377,9 @@
 
     { "name": "ninja-android-debug",    "configurePreset": "ninja-android-base", "configuration": "Debug",        "displayName": "Android Debug (NDK)" },
     { "name": "ninja-android-release",  "configurePreset": "ninja-android-base", "configuration": "Release",      "displayName": "Android Release (NDK)" },
+
+    { "name": "ninja-web-debug",        "configurePreset": "ninja-web-base",     "configuration": "Debug",        "displayName": "Web Debug (Emscripten)" },
+    { "name": "ninja-web-release",      "configurePreset": "ninja-web-base",     "configuration": "Release",      "displayName": "Web Release (Emscripten)" },
 
     { "name": "ci-vs2026-debug",        "configurePreset": "ci-vs2026",        "configuration": "Debug" },
     { "name": "ci-vs2026-release",      "configurePreset": "ci-vs2026",        "configuration": "Release" },
