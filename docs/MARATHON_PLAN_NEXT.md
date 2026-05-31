@@ -1,7 +1,7 @@
 # Marathon Plan — Next Sessions
 
-Last updated: 2026-05-31, after `phase534-hello-hot-reload-sample` (Tier 0-5 completion) + `phase536-marathon-final-summary`.
-Baseline: 150 / 150 tests PASS, 1 disabled golden, ninja-debug clean, 120+ libraries.
+Last updated: 2026-05-31, after `phase552-M2-library-polish-close-out`.
+Baseline: 158 / 158 tests PASS + 1 disabled golden, ninja-debug clean, 120+ libraries.
 
 This document is the **forward backlog** — what remains to be built after
 the Tier 0-5 complete close-out (phases 511-535). Items are grouped by
@@ -44,6 +44,17 @@ just the schedule + status lens.
 * **Artifacts**: `samples/physics/hello_physics_{box,pile,ragdoll,character,raycast}`.
 * **What remains**: Advanced constraint types (ball-socket, hinge, pulley); character controller refinement.
 * **Effort**: 1-2 weeks for each advanced feature (independent).
+
+### T0.4 Editor Submitter gate flip (apps/editor visible)
+
+* **Status**: BLOCKED on cd::material UI variants (per ADR-20260530 Phase 1.5).
+* **Symptom**: editor boots clean, frame loop alive (6619 frames in user repro), but presents only swapchain clear (dark navy {0.06, 0.07, 0.10, 1.0}).
+* **Audit**: `docs/AUDIT/editor-black-screen-2026-05-31.md`
+* **Root cause**: `apps/editor/main.cpp` `constexpr bool kSubmitterPipelineReady = false` gates `submitter.record()`.
+* **Route A**: ship cd::material UI variants → flip kSubmitterPipelineReady in apps/editor + samples/ui/hello_ui (1-2 weeks). PRIMARY (matches project direction: own UI lib first-class).
+* **Route B**: inline GLSL fallback in Submitter::create_with_inline_shader (2-3 days, unblocks visibility, glyphs deferred). TACTICAL bridge.
+* **Architectural confirmation**: apps/editor is built on cd::ui_widgets + cd::ui_renderer_rhi + cd::ui_font + cd::editor_panel — no ImGui. ImGui only retained as prototype in samples/editor/hello_editor.
+* **Effort**: A=1-2 weeks, B=2-3 days.
 
 ---
 
