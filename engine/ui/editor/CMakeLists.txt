@@ -58,6 +58,10 @@ add_subdirectory(panel_console)
 # phase545 — Asset Browser panel (DrawBatcher path; file entry list).
 add_subdirectory(panel_asset_browser)
 
+# ── cd::editor_panel_viewport (STATIC) ─────────────────────────────────────
+# phase546 — Viewport panel (DrawBatcher path; textured scene colour target).
+add_subdirectory(panel_viewport)
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)

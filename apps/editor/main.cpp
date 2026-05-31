@@ -75,6 +75,7 @@
 #include <cd/editor/panel_inspector/Inspector.hpp>
 #include <cd/editor/panel_console/Console.hpp>
 #include <cd/editor/panel_asset_browser/AssetBrowser.hpp>
+#include <cd/editor/panel_viewport/Viewport.hpp>
 
 #include <array>
 #include <cstdint>
@@ -254,16 +255,17 @@ void draw_scene_tree_stub(const uw::Rect& rect,
                              theme.surface.b, theme.surface.a });
 }
 
-void draw_viewport_stub(const uw::Rect& rect,
-                        ur::DrawBatcher& batcher,
-                        uf::Font* /*font*/,
-                        const uw::Theme& theme)
+// Viewport panel — backed by cd::editor_panel_viewport.
+// The scene texture handle is left null until the render loop supplies
+// the real scene colour target (wired in a follow-up session).
+cd::editor::panel::viewport::Viewport g_viewport_panel;
+
+void draw_viewport_panel(const uw::Rect& rect,
+                         ur::DrawBatcher& batcher,
+                         uf::Font* /*font*/,
+                         const uw::Theme& theme)
 {
-    // Viewport gets the background colour (slightly darker than panels)
-    // so the 3D scene's eventual swapchain blit is visually distinct.
-    batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                 ur::Color { theme.background.r, theme.background.g,
-                             theme.background.b, theme.background.a });
+    g_viewport_panel.draw(batcher, theme, rect);
 }
 
 // Inspector panel — backed by cd::editor_panel_inspector.
@@ -467,7 +469,7 @@ int main(int argc, char** argv)
     // -- 5. Dockspace + 5-panel layout --------------------------------------
     uw::DockSpace dockspace;
     dockspace.register_panel("scene_tree", draw_scene_tree_stub);
-    dockspace.register_panel("viewport",   draw_viewport_stub);
+    dockspace.register_panel("viewport",   draw_viewport_panel);
     dockspace.register_panel("inspector",  draw_inspector_panel);
     dockspace.register_panel("console",    draw_console_panel);
     dockspace.register_panel("assets",     draw_assets_panel);
