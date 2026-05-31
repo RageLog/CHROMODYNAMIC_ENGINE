@@ -17,4 +17,5 @@ add_subdirectory(bench)
 add_subdirectory(frame_timing)       # Phase 218 — header-only dt ring + stats
 add_subdirectory(foundation_utils)   # Phase 234 — umbrella over 7 small foundation libs
 # Sprint S2.9+ adds: schema (still ahead)
-add_subdirectory(profile_cpu_marker_overlay)  # Phase 587 — Tracy-style CPU marker bar-chart overlay
+add_subdirectory(profile_cpu_marker_overlay)       # Phase 587 — Tracy-style CPU marker bar-chart overlay
+add_subdirectory(profile_frame_graph_timeline)    # Phase 593 — GPU-side Gantt-chart timeline overlay
