@@ -1,6 +1,7 @@
 // =============================================================================
-// CHROMODYNAMIC - cd/particle/system_v2/ParticleSystemV2.cpp
+// CHROMODYNAMIC - cd/particle/system/ParticleSystemV2.cpp
 // Phase 564 (M3 W5C) - System implementation.
+// Phase 583 (M5 W1) - Renamed from system_v2; no v1 ever existed.
 //
 // Implementation notes:
 //
@@ -26,14 +27,14 @@
 //
 //   * GPU dispatch: out of scope (V3).
 // =============================================================================
-#include <cd/particle/system_v2/ParticleSystemV2.hpp>
+#include <cd/particle/system/ParticleSystemV2.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <random>
 
-namespace cd::particle::system_v2
+namespace cd::particle::system
 {
 
 // -----------------------------------------------------------------------------
@@ -254,4 +255,4 @@ void System::erase_particle_(std::size_t i) noexcept
     spawner_.pop_back();
 }
 
-}  // namespace cd::particle::system_v2
+}  // namespace cd::particle::system

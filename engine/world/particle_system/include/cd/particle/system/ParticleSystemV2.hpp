@@ -1,8 +1,9 @@
 // =============================================================================
-// CHROMODYNAMIC - cd/particle/system_v2/ParticleSystemV2.hpp
-// Phase 564 (M3 W5C) - CPU-side particle simulation system v2.
+// CHROMODYNAMIC - cd/particle/system/ParticleSystemV2.hpp
+// Phase 564 (M3 W5C) - CPU-side particle simulation system.
+// Phase 583 (M5 W1) - Renamed from system_v2; no v1 ever existed.
 //
-// cd::particle::system_v2::System is a CPU particle system with SoA storage
+// cd::particle::system::System is a CPU particle system with SoA storage
 // and swap-and-pop deletion.  Per-particle integration uses semi-implicit
 // Euler.  GPU dispatch is out of scope (V3).
 //
@@ -41,7 +42,7 @@
 #include <span>
 #include <vector>
 
-namespace cd::particle::system_v2
+namespace cd::particle::system
 {
 
 // -----------------------------------------------------------------------------
@@ -200,4 +201,4 @@ private:
     void erase_particle_(std::size_t i) noexcept;
 };
 
-}  // namespace cd::particle::system_v2
+}  // namespace cd::particle::system

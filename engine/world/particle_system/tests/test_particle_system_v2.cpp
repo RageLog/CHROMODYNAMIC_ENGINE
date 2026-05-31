@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC - tests/test_particle_system_v2.cpp
-// Phase 564 (M3 W5C) - cd::particle::system_v2 unit tests.
+// Phase 564 (M3 W5C) - cd::particle::system unit tests.
+// Phase 583 (M5 W1) - Updated for renamed namespace (was system_v2).
 //
 // Brief-mandated coverage (5+ cases):
 //   1. Empty system has 0 particles.
@@ -13,7 +14,7 @@
 //   6. remove_emitter() stops further spawning; existing particles age out.
 //   7. snapshot() size clamped to particle_count().
 // =============================================================================
-#include <cd/particle/system_v2/ParticleSystemV2.hpp>
+#include <cd/particle/system/ParticleSystemV2.hpp>
 
 #include <gtest/gtest.h>
 
@@ -23,12 +24,12 @@
 namespace
 {
 
-using cd::particle::system_v2::EmitterId;
-using cd::particle::system_v2::EmitterSpec;
-using cd::particle::system_v2::ParticleSnapshot;
-using cd::particle::system_v2::ParticleSpec;
-using cd::particle::system_v2::System;
-using cd::particle::system_v2::kInvalidEmitter;
+using cd::particle::system::EmitterId;
+using cd::particle::system::EmitterSpec;
+using cd::particle::system::ParticleSnapshot;
+using cd::particle::system::ParticleSpec;
+using cd::particle::system::System;
+using cd::particle::system::kInvalidEmitter;
 
 /// Build a deterministic EmitterSpec with fixed velocity (zero spread) so
 /// spawn-rate assertions are not confounded by jitter.

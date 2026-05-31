@@ -16,6 +16,7 @@
 #   sample_framework — Mega-Marathon M2: cd::sample::App lifecycle library.
 #   gameplay_time    — Phase 459: cd::gameplay::time::TimeKeeper multi-channel clock.
 #   gameplay_input_binding — Phase 462: cd::gameplay::input_binding::ActionMap (action-mapping layer).
+#   particle_system        — Phase 564/M3 W5C + Phase 583 rename: cd::particle::system (was particle_system_v2; no v1 ever existed).
 #
 # Cross-library dependency rule (CLAUDE.md §7): explicit context/registry
 # objects only — no global state shared between world libraries.
@@ -34,4 +35,4 @@ add_subdirectory(world_container)
 add_subdirectory(sample_framework)
 add_subdirectory(gameplay_time)
 add_subdirectory(gameplay_input_binding)
-add_subdirectory(particle_system_v2)
+add_subdirectory(particle_system)
