@@ -36,6 +36,7 @@ add_subdirectory(audio)
 add_subdirectory(world)
 add_subdirectory(net)
 add_subdirectory(script)
+add_subdirectory(profile)  # phase607 — profiling demos
 add_subdirectory(lib_smokes)
 add_subdirectory(game)     # phase479 — G1 closeout: hello_game (time + input + save + settings)
 add_subdirectory(physics)  # phase530 — T3.3: 5 physics demos (box/pile/ragdoll/character/raycast)
