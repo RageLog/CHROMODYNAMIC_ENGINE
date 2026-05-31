@@ -36,6 +36,7 @@
 #include <cd/asset/AssetId.hpp>
 #include <cd/asset/AsyncStreamer.hpp>
 #include <cd/asset/Primitives.hpp>
+#include <cd/asset/image/Image.hpp>
 #include <cd/asset/StreamRequest.hpp>
 #include <cd/asset/gltf/GltfLoader.hpp>
 #include <cd/asset/gltf/SkinnedMeshBridge.hpp>
@@ -177,8 +178,88 @@
 #include "HelloEnginePalette.hpp"
 #include "HelloPicker.hpp"
 #include "HelloPalette.hpp"
+#include "SponzaFixtures.hpp"
 
 #include <cd/sample/run.hpp>
+
+// ============================================================================
+// T1.7 phase543 -- Sponza golden-image readback wiring.
+//
+// CLI flag parsed in main() before cd::sample::run<>:
+//   --golden-fixture N            ; N in 0..4 selects cd::hello_engine::
+//                                   sponza_fixtures::kFixtures[N].
+//   --golden-out <path.png>       ; PNG file written via the GoldenCapture
+//                                   helper after one full rendered frame.
+//   --golden-frames N             ; capture happens on frame N-1 (default 3).
+//
+// Effect when --golden-fixture is set:
+//   * Camera eye/target/fov_y are overridden in on_boot from kFixtures[N].
+//   * scene_cam auto-spin + free-look update are skipped so the captured
+//     frame is byte-deterministic for the chosen fixture.
+//   * After end_frame on the configured "golden frame", the swapchain is
+//     copied to a host-visible buffer and dumped to --golden-out as PNG.
+//   * The app then requests shutdown and exits 0 on success / non-zero
+//     on capture failure.
+//
+// Without --golden-fixture the runtime path is unchanged.
+// ============================================================================
+namespace cd::hello_engine::golden
+{
+struct CliOptions
+{
+    int         fixture_index { -1 };   ///< -1 = disabled
+    std::string out_png_path  {};       ///< empty = disabled
+    std::uint32_t capture_at_frame { 2 }; ///< capture-on-frame index (0-based)
+};
+
+inline CliOptions& options() noexcept
+{
+    static CliOptions o {};
+    return o;
+}
+
+/// Parse argv before the App is constructed. Unknown flags are silently
+/// ignored so other CLI surfaces (asset path overrides, etc.) keep working.
+/// Returns true iff `--golden-fixture` was provided + parsed successfully.
+inline bool parse(int argc, char** argv) noexcept
+{
+    auto& o = options();
+    bool seen = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string_view a { argv[i] };
+        if (a == "--golden-fixture" && i + 1 < argc)
+        {
+            const int n = std::atoi(argv[i + 1]);
+            if (n >= 0 && static_cast<std::size_t>(n)
+                          < cd::hello_engine::sponza_fixtures::kFixtureCount)
+            {
+                o.fixture_index = n;
+                seen = true;
+            }
+            ++i;
+        }
+        else if (a == "--golden-out" && i + 1 < argc)
+        {
+            o.out_png_path = argv[i + 1];
+            ++i;
+        }
+        else if (a == "--golden-frames" && i + 1 < argc)
+        {
+            const int n = std::atoi(argv[i + 1]);
+            if (n >= 1) o.capture_at_frame = static_cast<std::uint32_t>(n - 1);
+            ++i;
+        }
+    }
+    return seen;
+}
+
+[[nodiscard]] inline bool enabled() noexcept
+{
+    return options().fixture_index >= 0;
+}
+
+}  // namespace cd::hello_engine::golden
 
 // ============================================================================
 // File-scope types needed by HelloEngineApp::EngineState + the three lifecycle
@@ -4842,6 +4923,26 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.scene_cam.set_auto_spin(false);
     s.scene_cam.orbit().auto_spin_rate = 0.25F;
 
+    // T1.7 phase543: golden-fixture camera override. When --golden-fixture
+    // is set on the CLI, replace the default eye/target/fov_y with the
+    // Tier 1 fixture so the captured frame matches the regression slot.
+    if (cd::hello_engine::golden::enabled())
+    {
+        const auto idx = static_cast<std::size_t>(
+            cd::hello_engine::golden::options().fixture_index);
+        const auto& fx = cd::hello_engine::sponza_fixtures::kFixtures[idx];
+        s.cam.eye    = { fx.eye[0],    fx.eye[1],    fx.eye[2] };
+        s.cam.target = { fx.target[0], fx.target[1], fx.target[2] };
+        // fov_y stored in radians inside cd::camera::Camera.
+        s.cam.fov_y  = fx.fov_y_deg * (3.14159265358979323846F / 180.0F);
+        s.scene_cam.set_auto_spin(false);
+        // Freeze free-look so the captured frame is byte-deterministic.
+        s.app_state.free_look.manual_mode = false;
+        log_push_fn(std::string { "[golden] fixture #" }
+                    + std::to_string(idx) + " (" + std::string { fx.slug }
+                    + ") active -- camera pinned");
+    }
+
     // Audio
     cd_sample::init_audio(s.audio_state, square_wave, burst_noise);
 
@@ -5986,6 +6087,74 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         ctx.render(cmd);
         cmd.end_render_pass();
 
+        // ----------------------------------------------------------------
+        // T1.7 phase543 -- Sponza golden-image readback.
+        //
+        // When --golden-fixture was provided AND we have reached the
+        // configured "golden frame", schedule a swapchain -> host-buffer
+        // copy here (after end_render_pass, before end_frame). The post-
+        // end_frame block below downloads + writes the PNG + breaks.
+        // ----------------------------------------------------------------
+        const bool golden_active = cd::hello_engine::golden::enabled()
+            && !cd::hello_engine::golden::options().out_png_path.empty();
+        const bool capture_this_frame = golden_active
+            && s.frame_idx == cd::hello_engine::golden::options().capture_at_frame;
+        cd::rhi::BufferHandle golden_staging {};
+        std::uint32_t golden_w = 0;
+        std::uint32_t golden_h = 0;
+        if (capture_this_frame)
+        {
+            cd::rhi::BufferDesc bd {};
+            bd.size   = static_cast<std::uint64_t>(frame.extent.width)
+                      * frame.extent.height * 4U;
+            bd.usage  = cd::rhi::BufferUsage::kTransferDst;
+            bd.memory = cd::rhi::MemoryUsage::kGpuToCpu;
+            auto buf_r = device.create_buffer(bd);
+            if (buf_r.has_value())
+            {
+                const std::array<cd::rhi::TextureBarrier, 1> to_src {
+                    cd::rhi::TextureBarrier {
+                        .texture = frame.swapchain_image,
+                        .from = cd::rhi::ResourceState::kColorAttachment,
+                        .to   = cd::rhi::ResourceState::kTransferSrc,
+                        .range = { .base_mip = 0, .mip_count = 1,
+                                   .base_layer = 0, .layer_count = 1 },
+                    }
+                };
+                cmd.barrier({}, to_src);
+                const std::array<cd::rhi::BufferImageCopyRegion, 1> regions {
+                    cd::rhi::BufferImageCopyRegion {
+                        .buffer_offset = 0,
+                        .mip_level = 0,
+                        .base_layer = 0,
+                        .layer_count = 1,
+                        .image_offset = { 0, 0, 0 },
+                        .image_extent = { frame.extent.width,
+                                          frame.extent.height, 1 },
+                    }
+                };
+                cmd.copy_image_to_buffer(frame.swapchain_image, *buf_r, regions);
+                const std::array<cd::rhi::TextureBarrier, 1> back {
+                    cd::rhi::TextureBarrier {
+                        .texture = frame.swapchain_image,
+                        .from = cd::rhi::ResourceState::kTransferSrc,
+                        .to   = cd::rhi::ResourceState::kColorAttachment,
+                        .range = { .base_mip = 0, .mip_count = 1,
+                                   .base_layer = 0, .layer_count = 1 },
+                    }
+                };
+                cmd.barrier({}, back);
+                golden_staging = *buf_r;
+                golden_w = frame.extent.width;
+                golden_h = frame.extent.height;
+            }
+            else
+            {
+                std::fprintf(stderr,
+                    "[golden] staging buffer create failed; capture aborted\n");
+            }
+        }
+
         auto end_r = s.renderer.end_frame();
         if (!end_r.has_value())
         {
@@ -5993,6 +6162,53 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 static_cast<std::uint32_t>(
                     cd::render::render_errors::Code::kSwapchainOutOfDate))
             { s.needs_rebuild = true; continue; }
+            break;
+        }
+
+        // After end_frame: GPU has finished writing the staging buffer.
+        // Download bytes, BGRA->RGBA swap, write PNG, request shutdown.
+        if (capture_this_frame && golden_staging.is_valid())
+        {
+            s.renderer.wait_idle();  // belt-and-braces; end_frame already waited
+            const std::uint64_t bytes =
+                static_cast<std::uint64_t>(golden_w) * golden_h * 4U;
+            std::vector<std::byte> raw(static_cast<std::size_t>(bytes));
+            auto dl = device.download_buffer(
+                golden_staging, 0, std::span<std::byte> { raw });
+            device.destroy_buffer(golden_staging);
+            if (!dl.has_value())
+            {
+                std::fprintf(stderr,
+                    "[golden] download_buffer failed (code=%u)\n",
+                    static_cast<unsigned>(dl.error().code));
+                request_shutdown();
+                break;
+            }
+            // Swapchain format is BGRA8Unorm; PNG expects RGBA.
+            std::vector<std::uint8_t> rgba(static_cast<std::size_t>(bytes));
+            for (std::size_t i = 0; i < rgba.size(); i += 4)
+            {
+                rgba[i + 0] = static_cast<std::uint8_t>(raw[i + 2]);
+                rgba[i + 1] = static_cast<std::uint8_t>(raw[i + 1]);
+                rgba[i + 2] = static_cast<std::uint8_t>(raw[i + 0]);
+                rgba[i + 3] = static_cast<std::uint8_t>(raw[i + 3]);
+            }
+            const auto& out_path =
+                cd::hello_engine::golden::options().out_png_path;
+            auto wr = cd::asset::image::write_png_rgba(
+                out_path, rgba.data(), golden_w, golden_h);
+            if (!wr.has_value())
+            {
+                std::fprintf(stderr,
+                    "[golden] PNG write failed: %s\n", out_path.c_str());
+                request_shutdown();
+                break;
+            }
+            std::fprintf(stdout,
+                "[golden] captured fixture #%d -> %s (%ux%u)\n",
+                cd::hello_engine::golden::options().fixture_index,
+                out_path.c_str(), golden_w, golden_h);
+            request_shutdown();
             break;
         }
 
@@ -6072,6 +6288,10 @@ void HelloEngineApp::on_shutdown() noexcept
 // ============================================================================
 int main(int argc, char** argv)
 {
+    // T1.7 phase543: parse --golden-fixture N / --golden-out <path> /
+    // --golden-frames N before App construction. Runtime path is
+    // unchanged when the flag is absent.
+    (void)cd::hello_engine::golden::parse(argc, argv);
     return cd::sample::run<HelloEngineApp>(argc, argv);
 }
 // ============================================================================

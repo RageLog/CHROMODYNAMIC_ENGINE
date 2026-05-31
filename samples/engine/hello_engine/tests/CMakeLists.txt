@@ -1,34 +1,25 @@
-option(CD_SPONZA_GOLDEN_ENABLE
-  "Enable the Sponza golden-image CI gate (cd_test_sample_sponza_golden). Off by default; flip on for self-hosted CI cells with a Vulkan device + committed reference set."
-  OFF)
-
 cd_add_test(tlas_compaction
   SOURCES test_tlas_compaction.cpp
   DEPS    cd::math cd::rhi cd::concurrency
 )
 
-# T1.7 -- Sponza golden-image CI gate (phase 514).
+# T1.7 phase543 -- Sponza golden-image CI gate.
 #
-# Pure-CPU infrastructure tier: 5 fixed camera fixtures + pixel diff /
-# SSIM-lite / FLIP-lite via cd::imgdiff against committed PNG goldens
-# under tests/golden/sponza/.  The actual Vulkan offscreen render-
-# capture step is queued for the next session (see test source for the
-# scope-down rationale); the CI gate infrastructure is in place so the
-# next session only has to wire the swapchain readback through the
-# existing capture/compare path.
+# Two tiers (see test source header for details):
+#   * CPU-synth tier  : always runs; exercises cd::imgdiff against the
+#                       committed 256x144 PNG references under
+#                       tests/golden/sponza/.
+#   * GPU-subprocess  : gated by CD_SPONZA_GOLDEN_REQUIRE=1 env var at
+#                       run time. SKIPs when unset. Spawns the
+#                       hello_engine binary with --golden-fixture N
+#                       --golden-out <path>.png and diffs the dumped PNG.
 #
-# Labelling + DISABLED policy:
-#   * Labelled "golden" + "sample" so `ctest -L golden` runs it
-#     alongside the other 5-sample harness (when re-enabled per cell).
-#   * Initially DISABLED so the minimal CI matrix (which lacks a Vulkan
-#     device on most cells) does not even attempt to run it. Self-hosted
-#     NVIDIA / Intel CI flips DISABLED=FALSE via:
-#       ctest --test-dir <build> -L golden \
-#             --resource-spec-file ... -j1 --output-on-failure
-#     after setting CD_SPONZA_GOLDEN_ENABLE=ON in the cache.
-#   * To enable locally:  ctest -R sponza_golden  (CMake's add_test does
-#     not honour DISABLED for direct name matches when --no-tests=error
-#     is set, so `-R` is the easy override).
+# Labels: "golden", "sample", "sponza" so `ctest -L golden` picks it up
+# alongside the rest of the golden-image CI lane.
+#
+# No DISABLED gate -- the test is opt-in via the env var, not via
+# CMake configuration. Existing CI cells without GPU stay green
+# because the GPU tier SKIPs cleanly.
 cd_add_test(sample_sponza_golden
   SOURCES test_sponza_golden.cpp
   DEPS    cd::asset_image cd::imgdiff cd::core
@@ -36,14 +27,18 @@ cd_add_test(sample_sponza_golden
 if(TARGET cd_test_sample_sponza_golden)
   set_tests_properties(cd_test_sample_sponza_golden PROPERTIES
     LABELS "golden;sample;sponza"
+    # T1.7 GPU tier may take ~90s when active (Vulkan device init x 5).
+    # CPU-synth tier is fast (<1s) -- the timeout only bites when the
+    # subprocess path is engaged.
+    TIMEOUT 600
   )
-  if(NOT CD_SPONZA_GOLDEN_ENABLE)
-    # CTest only honours DISABLED when set to a truthy value; we set TRUE
-    # explicitly so `ctest -L golden` still skips it on cells that have
-    # not opted in. Override with `-DCD_SPONZA_GOLDEN_ENABLE=ON` at
-    # configure time, OR run it directly via name (`ctest -R sponza_golden`)
-    # which bypasses DISABLED.
-    set_tests_properties(cd_test_sample_sponza_golden PROPERTIES
-      DISABLED TRUE)
+  # Test depends on the hello_engine binary being built first so the
+  # subprocess path can locate it. CMake's "FIXTURES_REQUIRED" would
+  # require a separate fixture test -- a build-order dependency via
+  # add_dependencies is enough here (the test exe links nothing from
+  # hello_engine; we just need the .exe to exist on disk before the
+  # gpu-subprocess tier runs).
+  if(TARGET cd_sample_hello_engine)
+    add_dependencies(cd_test_sample_sponza_golden cd_sample_hello_engine)
   endif()
 endif()

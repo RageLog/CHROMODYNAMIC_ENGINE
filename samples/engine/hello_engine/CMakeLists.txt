@@ -9,6 +9,7 @@ cd_add_sample(hello_engine
   DEPS
     cd::asset
     cd::asset_gltf
+    cd::asset_image
     cd::asset_json
     cd::audio
     cd::camera
