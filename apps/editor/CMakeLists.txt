@@ -25,8 +25,8 @@
 #   cd::editor_panel_asset_drop_target  -- asset drop target panel (phase594, wired phase598)
 #   cd::profile_cpu_marker_overlay      -- CPU marker overlay (phase587, wired phase598)
 #   cd::profile_frame_graph_timeline    -- frame graph timeline overlay (phase593, wired phase598)
-#   cd::profile_gpu_marker              -- GPU marker overlay (phase606, wired phase618; cpu/gpu sibling)
-#   cd::asset_validator                 -- asset validator (phase611, wired phase618; status badge TODO)
+#   cd::profile_gpu_marker              -- GPU marker overlay (phase606, wired phase631; cpu/gpu sibling)
+#   cd::asset_validator                 -- asset validator (phase611, wired phase631; status badge TODO)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -65,8 +65,8 @@ cd_add_sample(editor
     cd::editor_panel_asset_drop_target  # phase598 / M6 W3
     cd::profile_cpu_marker_overlay      # phase598 / M6 W3
     cd::profile_frame_graph_timeline    # phase598 / M6 W3
-    cd::profile_gpu_marker              # phase618 / M8 W2B (cpu/gpu sibling)
-    cd::asset_validator                 # phase618 / M8 W2B (TODO: status badge when status bar exists)
+    cd::profile_gpu_marker              # phase631 / M9 W1A (cpu/gpu sibling; backfills phase618 slot)
+    cd::asset_validator                 # phase631 / M9 W1A (TODO: status badge when status bar exists)
     cd::editor
     cd::editor_ui
     cd::editor_cdproj

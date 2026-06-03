@@ -41,7 +41,7 @@
 //   * frame_graph_timeline -- floating bottom-right (~400x80 px), fed
 //                             synthetic GPU pass records.
 //
-// New overlay (phase618 / M8 W2B):
+// New overlay (phase631 / M9 W1A — phase618 slot backfilled):
 //   * gpu_marker_overlay -- floating top-right below cpu_marker (~300x100 px);
 //                           cpu/gpu sibling classification, NOT a v1/v2 rename.
 //                           Synthetic GpuMarkerSample data per frame (real GPU
@@ -120,13 +120,15 @@
 #include <cd/profile/cpu_marker_overlay/CpuMarkerOverlay.hpp>
 #include <cd/profile/frame_graph_timeline/FrameGraphTimeline.hpp>
 
-// phase618 / M8 W2B — GPU marker overlay (sibling to cpu_marker_overlay;
+// phase631 / M9 W1A — GPU marker overlay (sibling to cpu_marker_overlay;
 // cpu/gpu classification, NOT a v1/v2 version rename). Synthetic samples per
 // frame — real GPU timestamps land when ICommandBuffer::write_timestamp ships.
+// (phase618 slot was planned but not delivered as a standalone commit; this
+// phase631 commit is the official delivery.)
 #include <cd/profile/gpu_marker/GpuMarker.hpp>
 
-// phase618 / M8 W2B — asset::validator for status badge.
-// TODO(phase618): No status bar exists yet in apps/editor. When a status bar
+// phase631 / M9 W1A — asset::validator for status badge.
+// TODO(phase631): No status bar exists yet in apps/editor. When a status bar
 // is added, wire a cd::asset::validator::Validator instance here and display
 // a pass/warn/error badge from the latest validate call results.
 // #include <cd/asset/validator/Validator.hpp>  // linked but include deferred
@@ -459,7 +461,7 @@ void draw_asset_drop_target_panel(const uw::Rect& rect,
 
 // ---- GPU marker overlay draw helper ----------------------------------------
 //
-// phase618 / M8 W2B — mirrors the cpu_marker_overlay::Overlay::draw() pattern
+// phase631 / M9 W1A — mirrors the cpu_marker_overlay::Overlay::draw() pattern
 // but consumes cd::profile::gpu_marker::GpuMarkerSample data (name +
 // duration_ms_computed). GPU markers have no thread-id lane concept — all bars
 // are drawn in a single horizontal lane spanning the overlay height.
@@ -767,11 +769,11 @@ int main(int argc, char** argv)
                 "inspector | console | assets | material_editor | animator | "
                 "behavior_designer | asset_drop_target)\n", dockspace.node_count());
 
-    // -- 5b. Overlay instances (phase598 / M6 W3; phase618 / M8 W2B) --------
+    // -- 5b. Overlay instances (phase598 / M6 W3; phase631 / M9 W1A) --------
     //
     // CPU-marker bar chart   -> floating top-right (~300x120 px).
     // GPU-marker bar chart   -> floating top-right below CPU (~300x100 px).
-    //                          phase618 / M8 W2B: cpu/gpu classification sibling.
+    //                          phase631 / M9 W1A: cpu/gpu classification sibling.
     //                          Synthetic samples this Sprint; real timestamps
     //                          land when ICommandBuffer::write_timestamp ships.
     // Frame-graph timeline   -> floating bottom-right (~400x80 px).
@@ -782,7 +784,7 @@ int main(int argc, char** argv)
     // the overlay surfaces are visibly active in the editor window.
     //
     // asset::validator status badge: no status bar exists in apps/editor yet.
-    // TODO(phase618): add status bar and wire cd::asset::validator badge here.
+    // TODO(phase631): add status bar and wire cd::asset::validator badge here.
     namespace cmo = cd::profile::cpu_marker_overlay;
     namespace fgt = cd::profile::frame_graph_timeline;
     const cmo::Overlay         cpu_overlay        { 16.0 };
@@ -1061,7 +1063,7 @@ int main(int argc, char** argv)
             }
 
             // --- GPU marker overlay -- top-right 300 x 100, below CPU ----
-            // phase618 / M8 W2B — sibling to cpu_marker_overlay (cpu/gpu
+            // phase631 / M9 W1A — sibling to cpu_marker_overlay (cpu/gpu
             // classification). Synthetic GpuMarkerSample data fed directly
             // (no real ICommandBuffer needed until write_timestamp lands).
             // Stacked below the cpu_marker_overlay: y offset = kMargin +
