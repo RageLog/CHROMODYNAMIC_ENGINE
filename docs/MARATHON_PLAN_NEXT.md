@@ -120,6 +120,64 @@ just the schedule + status lens.
 * **Artifacts**: `samples/engine/hello_engine/tests/test_sponza_golden.cpp` + reference golden images in `tests/golden/sponza/`.
 * **Effort**: 3-5 days for GPU readback + diff gate integration (next marathon).
 
+### T1.8 SSR Metallic Gate (DONE phase 638)
+
+* **Status**: ✓ DONE (phase 638) — helper `compute_ssr_weight(metallic)` lands.
+* **Source**: User hand-fix in `hello_engine` phase 629 surfaced the bug.
+* **What remains**: hook the helper into the SSR composite path of cd::render::post_ssr / post_composite.
+
+### T1.9 G-buffer Metallic-Roughness MRT Contract (DONE phase 639)
+
+* **Status**: ✓ DONE (phase 639/640 combined) — `MaterialInstance::metallic()/roughness()` + clamp setters + README contract.
+* **Source**: User hand-fix phase 629.
+* **What remains**: actually wire the metallic/roughness MRT channels in the G-buffer fill pass + downstream consumers.
+
+### T1.10 glTF alphaMode End-to-End (DONE phase 640)
+
+* **Status**: ✓ DONE (phase 639/640) — `cd::material::AlphaMode` + `AlphaParams` + accessors + helpers + glTF loader test.
+* **Source**: User hand-fix phase 629.
+* **What remains**: shader-side discard branch (Sprint deferred per brief). cd::asset::gltf loader still needs to read the JSON alphaMode/alphaCutoff and call `set_alpha_params` on the instance.
+
+### T1.11 RT TLAS Coverage for All Geometry Kinds — MEDIUM
+
+* **Status**: Queued (next marathon).
+* **Source**: User screenshot 2026-06-03 — chrome PBR sphere in Sponza shows reflections, but Sponza geometry is absent from the reflection.
+* **Audit**: `docs/AUDIT/learned-lessons-pbr-rt-and-curtain-alpha-2026-06-03.md`
+* **Scope**: `cd::rhi::ICommandBuffer::build_acceleration_structure` TLAS spec must accept all `kind`s with `tlas_eligible = true`. Add unit test asserting a glTF prim ends up in the TLAS instance list.
+* **Effort**: L (1-2 weeks).
+
+### T1.12 RT Hit-Shader General-Geometry Branch — MEDIUM
+
+* **Status**: Queued (next marathon, depends on T1.11).
+* **Scope**: cd::material RT closest-hit branch must read hit material's albedo/normal/emissive on ANY geometry, not only spheres+sky.
+* **Effort**: L (1-2 weeks).
+
+### T1.13 BLAS-Build Phase Ordering Invariant — SMALL
+
+* **Status**: Queued.
+* **Scope**: Document in `engine/render/framegraph/README.md` that TLAS rebuild precedes any RT trace per frame. Debug-build assert.
+* **Effort**: S.
+
+### T1.14 cd::asset::gltf alphaMode Inference Policy — MEDIUM
+
+* **Status**: Queued.
+* **Source**: User screenshot 2026-06-03 — Sponza curtains let things behind them show through (sub-1.0 alpha on solid cloth areas).
+* **Scope**: When loading glTF, the loader should default to `kOpaque` for any material whose alpha-texture histogram shows ≥ 95% values at 1.0 (with cutout on rare <1.0 pixels). Add `infer_alpha_mode(histogram)` helper.
+* **Effort**: M (1 week).
+
+### T1.15 Two-Pass Alpha Render Order — HIGHEST LEVERAGE
+
+* **Status**: Queued.
+* **Source**: Same user screenshot. Bleed-through issue.
+* **Scope**: `cd::render::scene_ingest` / framegraph splits prims into 3 buckets: Opaque (front-to-back early-Z), AlphaMask (after Opaque, depth tested + written), AlphaBlend (after both, back-to-front for correct over-blending). Add `enum class RenderBucket { kOpaque, kAlphaMask, kAlphaBlend }`.
+* **Effort**: M (1 week, but cross-cutting impact across framegraph + scene_ingest + material).
+
+### T1.16 MaterialInstance::is_blend() Accessor — XS
+
+* **Status**: Queued (T1.15 prerequisite).
+* **Scope**: Explicit query so the render path can route to the right bucket without re-deriving from alpha_mode.
+* **Effort**: XS (~30 minutes).
+
 ---
 
 ## Tier 2 — UI / Editor widget library (Phase 4 of ADR-ui-widget-library)
