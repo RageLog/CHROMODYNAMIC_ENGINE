@@ -5,3 +5,4 @@
 # ui_renderer_rhi / ui_input / ui_widgets together.
 
 add_subdirectory(hello_ui)
+add_subdirectory(hello_widgets_table)  # phase635 — headless Table console proof
