@@ -237,6 +237,9 @@ add_subdirectory(shader_cache)
 # ── cd::asset_validator ───────────────────────────────────────────────────────
 add_subdirectory(validator)
 
+# ── cd::asset_material_authoring ─────────────────────────────────────────────
+add_subdirectory(material_authoring)
+
 # ── Tests ──────────────────────────────────────────────────────────────────
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
