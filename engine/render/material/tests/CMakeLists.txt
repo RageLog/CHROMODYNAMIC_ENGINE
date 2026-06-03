@@ -16,3 +16,12 @@ cd_add_test(material_instance_mr_contract
   SOURCES test_material_instance_mr_contract.cpp
   DEPS    cd::material cd::rhi cd::core
 )
+
+# Phase 646 / T1.16: MaterialInstance alpha-mode predicate accessors
+# (is_blend / is_mask / is_opaque) — prerequisite for T1.15 two-pass alpha
+# render order. Downstream call sites branch with is_blend() / is_mask()
+# instead of comparing the AlphaMode enum directly.
+cd_add_test(material_instance_alpha_predicates
+  SOURCES test_material_instance_alpha_predicates.cpp
+  DEPS    cd::material cd::rhi cd::core
+)

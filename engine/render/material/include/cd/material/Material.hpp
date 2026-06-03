@@ -294,6 +294,30 @@ public:
     void set_alpha_cutoff(float c) noexcept;
     void set_alpha_params(const AlphaParams& p) noexcept;
 
+    // ---- T1.16: alpha-mode predicate accessors ----------------------------
+    //
+    // Downstream code can branch on alpha mode without re-querying the enum:
+    //
+    //   if (mat.is_blend()) route_to_blend_bucket();
+    //   if (mat.is_mask())  set_alpha_test_threshold(mat.alpha_cutoff());
+    //
+    // These are trivially inlined; no virtual dispatch, no extra state.
+
+    [[nodiscard]] bool is_opaque() const noexcept
+    {
+        return alpha_mode_ == AlphaMode::kOpaque;
+    }
+
+    [[nodiscard]] bool is_mask() const noexcept
+    {
+        return alpha_mode_ == AlphaMode::kMask;
+    }
+
+    [[nodiscard]] bool is_blend() const noexcept
+    {
+        return alpha_mode_ == AlphaMode::kBlend;
+    }
+
 private:
     void release_() noexcept;
     void steal_(MaterialInstance&& other) noexcept;
