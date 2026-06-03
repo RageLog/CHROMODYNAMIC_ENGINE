@@ -206,10 +206,13 @@ TEST(DspFx_DelayLine, ReadOneReturnsLastWritten)
 // ---------------------------------------------------------------------------
 // TEST 7 — Reverb: Sprint-1 passthrough preserves signal exactly
 // ---------------------------------------------------------------------------
-TEST(DspFx_Reverb, PassthroughPreservesSignal)
+// ---------------------------------------------------------------------------
+// TEST 7 — Reverb: 100% dry mix preserves signal exactly
+// ---------------------------------------------------------------------------
+TEST(DspFx_Reverb, DryMixPreservesSignal)
 {
     cd::audio::dsp_fx::Reverb reverb;
-    reverb.configure({});
+    reverb.configure({ .room_size = 0.5F, .damping = 0.5F, .wet_dry_mix = 0.0F });
 
     constexpr std::size_t kN = 256;
     std::vector<float> input(kN);
@@ -219,23 +222,101 @@ TEST(DspFx_Reverb, PassthroughPreservesSignal)
     reverb.process(std::span<const float>{ input }, std::span<float>{ output });
 
     for (std::size_t i = 0; i < kN; ++i)
-        EXPECT_FLOAT_EQ(output[i], input[i]) << "Reverb passthrough mismatch at index " << i;
+        EXPECT_FLOAT_EQ(output[i], input[i]) << "Reverb dry mismatch at index " << i;
 }
 
 // ---------------------------------------------------------------------------
-// TEST 8 — Reverb: passthrough with non-default config still passes signal
+// TEST 8 — Reverb: 100% wet mix produces a different, reverberated signal
 // ---------------------------------------------------------------------------
-TEST(DspFx_Reverb, PassthroughWithNonDefaultConfig)
+TEST(DspFx_Reverb, WetMixProducesReverb)
 {
     cd::audio::dsp_fx::Reverb reverb;
-    reverb.configure({ .room_size = 0.9F, .damping = 0.3F, .wet_dry_mix = 1.0F });
+    reverb.configure({ .room_size = 0.5F, .damping = 0.5F, .wet_dry_mix = 1.0F });
 
-    const std::array<float, 4> input { 0.1F, -0.2F, 0.3F, -0.4F };
-    std::array<float, 4> output {};
+    const std::vector<float> input { 1.0F, 0.0F, 0.0F, 0.0F, 0.0F };
+    std::vector<float> output(input.size(), 0.0F);
+
     reverb.process(std::span<const float>{ input }, std::span<float>{ output });
 
+    // Output should not be identical to input (an impulse should produce tail)
+    bool identical = true;
     for (std::size_t i = 0; i < input.size(); ++i)
-        EXPECT_FLOAT_EQ(output[i], input[i]);
+    {
+        if (std::abs(output[i] - input[i]) > 1e-5F)
+        {
+            identical = false;
+            break;
+        }
+    }
+    EXPECT_FALSE(identical) << "Wet reverb output should differ from input";
+}
+
+// ---------------------------------------------------------------------------
+// TEST 10 — Reverb: Larger room size produces different/longer decay
+// ---------------------------------------------------------------------------
+TEST(DspFx_Reverb, LargerRoomSizeDifferentOutput)
+{
+    cd::audio::dsp_fx::Reverb reverb1;
+    reverb1.configure({ .room_size = 0.2F, .damping = 0.5F, .wet_dry_mix = 1.0F });
+
+    cd::audio::dsp_fx::Reverb reverb2;
+    reverb2.configure({ .room_size = 0.8F, .damping = 0.5F, .wet_dry_mix = 1.0F });
+
+    const std::vector<float> input(20000, 0.0F);
+    std::vector<float> out1(20000, 0.0F);
+    std::vector<float> out2(20000, 0.0F);
+
+    // Seed with impulse
+    std::vector<float> seed(1, 1.0F);
+    std::vector<float> seed_out(1, 0.0F);
+    reverb1.process(seed, seed_out);
+    reverb2.process(seed, seed_out);
+
+    reverb1.process(input, out1);
+    reverb2.process(input, out2);
+
+    // Sum of absolute values in the late tail (from sample 4000 onwards)
+    float sum1 = 0.0F;
+    float sum2 = 0.0F;
+    for (std::size_t i = 4000; i < out1.size(); ++i)
+    {
+        sum1 += std::abs(out1[i]);
+        sum2 += std::abs(out2[i]);
+    }
+
+    // Larger room size (reverb2) should have higher energy in the late tail
+    EXPECT_GT(sum2, sum1) << "Larger room size should yield higher energy in the late tail (sum1=" << sum1 << ", sum2=" << sum2 << ")";
+}
+
+// ---------------------------------------------------------------------------
+// TEST 11 — Reverb: Reset clears state, restoring determinism
+// ---------------------------------------------------------------------------
+TEST(DspFx_Reverb, ResetRestoresDeterminism)
+{
+    cd::audio::dsp_fx::Reverb reverb;
+    reverb.configure({ .room_size = 0.5F, .damping = 0.5F, .wet_dry_mix = 1.0F });
+
+    std::vector<float> input(500, 0.0F);
+    input[0] = 1.0F; // impulse
+
+    std::vector<float> out1(500, 0.0F);
+    reverb.process(input, out1);
+
+    // Processing more input advances the delay lines
+    std::vector<float> dummy_in(500, 0.0F);
+    std::vector<float> dummy_out(500, 0.0F);
+    reverb.process(dummy_in, dummy_out);
+
+    // Resetting should clear all delay buffers
+    reverb.reset();
+
+    std::vector<float> out2(500, 0.0F);
+    reverb.process(input, out2);
+
+    for (std::size_t i = 0; i < out1.size(); ++i)
+    {
+        EXPECT_FLOAT_EQ(out1[i], out2[i]) << "Mismatch after reset at index " << i;
+    }
 }
 
 // ---------------------------------------------------------------------------

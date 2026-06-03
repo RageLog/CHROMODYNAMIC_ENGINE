@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <span>
+#include <array>
 #include <vector>
 
 namespace cd::audio::dsp_fx
@@ -251,39 +252,60 @@ private:
 };
 
 // =============================================================================
-// Reverb — Sprint-1 passthrough stub
+// Reverb — Schroeder comb-filter + allpass network
 //
-// Sprint-1: configure() is a no-op; process() copies input to output
-// unchanged. This establishes the API contract so call sites compile.
-//
-// Sprint-2 plan: Replace passthrough with a Schroeder comb-filter + allpass
-// network built on top of DelayLine. See ADR-20260601-audio-dsp-fx.md §Sprint-2.
+// Sprint-2 implementation replacing the Sprint-1 passthrough stub.
+// Consists of 4 parallel Low-Pass Feedback Comb Filters (LBCF) for decay and
+// 2 series Allpass filters for diffusion.
 // =============================================================================
 class Reverb
 {
 public:
     struct Config
     {
-        float room_size   { 0.5F };   ///< [0,1] — affects comb delay lengths (Sprint-2)
-        float damping     { 0.5F };   ///< [0,1] — high-freq rolloff in feedback path (Sprint-2)
-        float wet_dry_mix { 0.5F };   ///< [0,1] — 0 = dry only, 1 = wet only (Sprint-2)
+        float room_size   { 0.5F };   ///< [0,1] — affects comb delay lengths
+        float damping     { 0.5F };   ///< [0,1] — high-freq rolloff in feedback path
+        float wet_dry_mix { 0.5F };   ///< [0,1] — 0 = dry only, 1 = wet only
+        float sample_rate { 48000.0F }; ///< Sample rate in Hz
     };
 
-    /// Configure the reverb unit. Sprint-1: stores config for Sprint-2 use.
-    void configure(const Config& cfg) noexcept { config_ = cfg; }
+    /// Configure the reverb unit.
+    void configure(const Config& cfg) noexcept;
 
-    /// Process a block of samples. Sprint-1: passthrough (output == input).
-    void process(std::span<const float> input, std::span<float> output) noexcept
-    {
-        const std::size_t n = std::min(input.size(), output.size());
-        for (std::size_t i = 0; i < n; ++i)
-            output[i] = input[i];
-    }
+    /// Process a block of samples.
+    void process(std::span<const float> input, std::span<float> output) noexcept;
+
+    /// Reset filter state and delay lines.
+    void reset() noexcept;
 
     [[nodiscard]] const Config& config() const noexcept { return config_; }
 
 private:
+    struct CombFilter
+    {
+        DelayLine delay_line;
+        float     s_prev { 0.0F };
+        float     feedback { 0.0F };
+        float     damping { 0.0F };
+
+        void configure(std::size_t delay_samples, float g, float d) noexcept;
+        float tick(float x) noexcept;
+        void reset() noexcept;
+    };
+
+    struct AllpassFilter
+    {
+        DelayLine delay_line;
+        float     feedback { 0.5F };
+
+        void configure(std::size_t delay_samples, float g) noexcept;
+        float tick(float x) noexcept;
+        void reset() noexcept;
+    };
+
     Config config_ {};
+    std::array<CombFilter, 4> combs_;
+    std::array<AllpassFilter, 2> allpasses_;
 };
 
 }  // namespace cd::audio::dsp_fx
