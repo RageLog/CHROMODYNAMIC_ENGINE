@@ -37,6 +37,13 @@
 #                kChoice / kCondition / kEnd routing as 4 distinct stories.
 #                Designer reads main.cpp once, knows how to author 200 nodes.
 
+#   hello_input_replay — Phase 662 / M11 W5A: HL2-style input record/replay
+#                (cd::game::input_recorder). 60-event record (60 Hz circle
+#                sweep + 4 KeyDown) saved to tmp/, loaded back, replayed
+#                frame-accurately at 16.6 ms steps. Stats confirm round-trip.
+#                Moment: developer records 5s of player input to reproduce a
+#                flaky physics bug and replays it 100x to root-cause.
+
 add_subdirectory(hello_game)
 add_subdirectory(hello_npc)
 add_subdirectory(hello_world)
@@ -44,3 +51,4 @@ add_subdirectory(hello_narrative)
 add_subdirectory(hello_ai_director)
 add_subdirectory(hello_cutscene_player)
 add_subdirectory(hello_dialog_branch)
+add_subdirectory(hello_input_replay)
