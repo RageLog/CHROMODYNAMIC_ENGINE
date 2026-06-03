@@ -30,13 +30,16 @@
 #pragma once
 
 #include "HelloGltf.hpp"
+#include "HelloRayQuery.hpp"
 #include "HelloSkinned.hpp"
 
 #include <cd/asset/Primitives.hpp>
 #include <cd/material/Material.hpp>
+#include <cd/math/Matrix.hpp>
 #include <cd/render/MeshUpload.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/IDevice.hpp>
+
 
 
 #include <array>
@@ -74,6 +77,7 @@ struct HelloMeshes
     std::string         gltf_cesium_loaded_name {};
     cd_sample::SkinnedRuntime cesium_skinned {};
     bool                has_cesium_texture { false };
+    std::vector<cd_sample::GltfPrimRange> gltf_cesium_prim_ranges {};
 
     cd::rhi::AccelStructureHandle blas_cube   {};
     cd::rhi::AccelStructureHandle blas_sphere {};
@@ -289,9 +293,55 @@ boot_meshes(cd::rhi::IDevice&                device,
         out.gltf_cesium             = std::move(loaded.mesh);
         out.gltf_cesium_loaded_name = std::move(loaded.loaded_name);
         out.cesium_skinned          = std::move(loaded.skinned);
-        // CesiumMan prim_ranges are empty (single merged draw); no storage needed.
+        out.gltf_cesium_prim_ranges = std::move(loaded.prim_ranges);
         if (loaded.has_texture)
             out.has_cesium_texture = true;
+
+        // Per-prim descriptor sets for CesiumMan / character (same as Sponza).
+        for (auto& pr : out.gltf_cesium_prim_ranges)
+        {
+            if (!pr.has_texture || !pr.albedo_view.is_valid())
+                continue;
+            auto inst_r = cd::material::MaterialInstance::create(device, prim_material);
+            if (!inst_r.has_value())
+            {
+                std::fprintf(stderr,
+                    "[gltf] cesium/character per-prim MaterialInstance create failed\n");
+                continue;
+            }
+            const cd::rhi::TextureViewHandle norm_v =
+                pr.has_normal_map ? pr.normal_view : fallback_normal_view;
+            const cd::rhi::TextureViewHandle mr_v =
+                pr.has_mr_map ? pr.mr_view : fallback_mr_view;
+            std::vector<cd::rhi::DescriptorWrite> tw;
+            tw.reserve(3);
+            tw.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 4,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view          = pr.albedo_view,
+                .sampler       = albedo.sampler });
+            if (norm_v.is_valid())
+            {
+                tw.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 8,
+                    .array_element = 0,
+                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view          = norm_v,
+                    .sampler       = albedo.sampler });
+            }
+            if (mr_v.is_valid())
+            {
+                tw.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 9,
+                    .array_element = 0,
+                    .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+                    .view          = mr_v,
+                    .sampler       = albedo.sampler });
+            }
+            (void)inst_r->update(tw);
+            pr.prim_inst = std::move(*inst_r);
+        }
     }
 
     out.blas_cube   = build_mesh_blas(device, out.cube,   "blas_cube");
@@ -330,9 +380,21 @@ boot_meshes(cd::rhi::IDevice&                device,
             out.blas_gltf = build_mesh_blas(device, out.gltf, "blas_gltf");
         }
     }
-    out.blas_cesium = out.gltf_cesium.vb.is_valid()
-        ? build_mesh_blas(device, out.gltf_cesium, "blas_cesium")
-        : cd::rhi::AccelStructureHandle {};
+    out.blas_cesium = cd::rhi::AccelStructureHandle {};
+    if (out.gltf_cesium.vb.is_valid())
+    {
+        if (!out.gltf_cesium_prim_ranges.empty())
+        {
+            out.blas_cesium = build_multi_geom_blas(
+                device, out.gltf_cesium,
+                std::span<const cd_sample::GltfPrimRange>(out.gltf_cesium_prim_ranges),
+                "blas_cesium_multigeom");
+        }
+        if (!out.blas_cesium.is_valid())
+        {
+            out.blas_cesium = build_mesh_blas(device, out.gltf_cesium, "blas_cesium");
+        }
+    }
 
     {
         auto bcmd_ptr = device.create_command_buffer();
@@ -409,9 +471,125 @@ destroy_meshes(cd::rhi::IDevice& device, HelloMeshes& m) noexcept
             device.destroy_texture(pr.mr_tex);
     }
     m.gltf_prim_ranges.clear();
+    // Destroy Cesium/character per-primitive textures.
+    for (auto& pr : m.gltf_cesium_prim_ranges)
+    {
+        if (pr.albedo_view.is_valid())
+            device.destroy_texture_view(pr.albedo_view);
+        if (pr.albedo_tex.is_valid())
+            device.destroy_texture(pr.albedo_tex);
+        if (pr.normal_view.is_valid())
+            device.destroy_texture_view(pr.normal_view);
+        if (pr.normal_tex.is_valid())
+            device.destroy_texture(pr.normal_tex);
+        if (pr.mr_view.is_valid())
+            device.destroy_texture_view(pr.mr_view);
+        if (pr.mr_tex.is_valid())
+            device.destroy_texture(pr.mr_tex);
+    }
+    m.gltf_cesium_prim_ranges.clear();
     // Destroy CesiumMan mesh.
     if (m.gltf_cesium.vb.is_valid())
         cd::render::destroy_mesh(device, m.gltf_cesium);
+}
+
+// =============================================================================
+// sync_perprim_global_bindings
+// -----------------------------------------------------------------------------
+// Per-prim descriptor sets (created by boot_meshes) only write bindings
+// 4/8/9 (per-prim albedo / normal / MR textures).  Bindings 0 (shadow UBO),
+// 1 (shadow map), 3 (lights UBO), 5 (IBL spec), 6 (IBL diff), 7 (BRDF LUT),
+// and 10 (instance-material SSBO) must be copied from the global prim_inst's
+// resource handles into every per-prim set so the GPU sees valid light,
+// shadow, IBL, and reflection data when drawing textured Sponza/CesiumMan
+// primitives.
+//
+// Called ONCE at boot time after boot_meshes returns.  Binding 2 (TLAS) is
+// handled per-frame by sync_perprim_tlas_and_ssbo below because the TLAS
+// is rebuilt every frame.
+// =============================================================================
+inline void
+sync_perprim_global_bindings(
+    std::vector<cd_sample::GltfPrimRange>& ranges,
+    cd::rhi::BufferHandle          shadow_ubo,
+    cd::rhi::TextureViewHandle     shadow_map_view,
+    cd::rhi::SamplerHandle         shadow_sampler,
+    cd::rhi::BufferHandle          lights_ubo,
+    std::uint64_t                  lights_ubo_bytes,
+    cd::rhi::TextureViewHandle     ibl_spec_view,
+    cd::rhi::SamplerHandle         ibl_sampler,
+    cd::rhi::TextureViewHandle     ibl_diff_view,
+    cd::rhi::TextureViewHandle     brdf_lut_view,
+    cd::rhi::BufferHandle          inst_mat_ssbo,
+    std::uint64_t                  inst_mat_bytes)
+{
+    for (auto& pr : ranges)
+    {
+        if (!pr.prim_inst.is_valid())
+            continue;
+        std::array<cd::rhi::DescriptorWrite, 7> gw {
+            cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer = shadow_ubo, .buffer_offset = 0,
+                .buffer_range = sizeof(cd::math::Mat4f) },
+            cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = shadow_map_view, .sampler = shadow_sampler },
+            cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer = lights_ubo, .buffer_offset = 0,
+                .buffer_range = lights_ubo_bytes },
+            cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = ibl_spec_view, .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 6, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = ibl_diff_view, .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 7, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = brdf_lut_view, .sampler = ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 10, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = inst_mat_ssbo, .buffer_offset = 0,
+                .buffer_range = inst_mat_bytes }
+        };
+        (void)pr.prim_inst.update(gw);
+    }
+}
+
+// =============================================================================
+// sync_perprim_tlas_and_ssbo
+// -----------------------------------------------------------------------------
+// Called every frame AFTER the global prim_inst receives binding 2 (TLAS)
+// and binding 10 (instance-material SSBO) updates in
+// rebuild_tlas_and_transition_depth.  Propagates the same TLAS + SSBO
+// writes to every per-prim descriptor set so the shader's ray queries and
+// reflection material lookups work correctly on textured prims.
+// =============================================================================
+inline void
+sync_perprim_tlas_and_ssbo(
+    std::vector<cd_sample::GltfPrimRange>& ranges,
+    cd::rhi::AccelStructureHandle  tlas,
+    cd::rhi::BufferHandle          inst_mat_ssbo,
+    std::uint64_t                  inst_mat_bytes)
+{
+    for (auto& pr : ranges)
+    {
+        if (!pr.prim_inst.is_valid())
+            continue;
+        std::array<cd::rhi::DescriptorWrite, 2> tw {
+            cd::rhi::DescriptorWrite {
+                .binding = 2, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kAccelerationStructure,
+                .accel = tlas },
+            cd::rhi::DescriptorWrite {
+                .binding = 10, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = inst_mat_ssbo, .buffer_offset = 0,
+                .buffer_range = inst_mat_bytes }
+        };
+        (void)pr.prim_inst.update(tw);
+    }
 }
 
 } // namespace cd_sample

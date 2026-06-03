@@ -70,9 +70,15 @@ constexpr std::uint32_t kInstMatBytes = kMaxInstMats * sizeof(InstanceMatGpu);
 // world transform. The Vulkan AS spec expects a row-major 3x4 transform
 // (last row is implicit (0,0,0,1)). cd::math::Mat4f is column-major
 // (see ADR-017 P4), so we transpose on the fly.
+//
+// instance_id maps to VkAccelerationStructureInstanceKHR::instanceCustomIndex
+// and is returned by rayQueryGetIntersectionInstanceIdEXT on the GPU.
+// It MUST match the slot index in the inst_mat SSBO so the shader can
+// look up the correct material for RT reflection / shadow hits.
 [[nodiscard]] inline cd::rhi::AccelInstance
 make_accel_instance(cd::rhi::AccelStructureHandle blas,
                     const cd::math::Mat4f& m,
+                    std::uint32_t instance_id = 0,
                     std::uint8_t mask = 0xFFu) noexcept
 {
     cd::rhi::AccelInstance inst {};
@@ -84,6 +90,7 @@ make_accel_instance(cd::rhi::AccelStructureHandle blas,
         inst.transform[r * 4 + 3] = m[3][r];
     }
     inst.blas = blas;
+    inst.instance_id = instance_id & 0x00FFFFFFu;  // 24-bit field
     inst.mask = mask;
     return inst;
 }

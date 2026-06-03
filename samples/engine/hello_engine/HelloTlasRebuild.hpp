@@ -106,7 +106,9 @@ rebuild_tlas_and_transition_depth(
     {
         if (!blas.is_valid())
             return;
-        instances.push_back(cd::hello_engine::make_accel_instance(blas, m));
+        const auto inst_idx = static_cast<std::uint32_t>(instances.size());
+        instances.push_back(cd::hello_engine::make_accel_instance(
+            blas, m, inst_idx));
         cd::hello_engine::InstanceMatGpu im {};
         cd::hello_engine::fill_inst_mat(im, albedo);
         inst_mats.push_back(im);

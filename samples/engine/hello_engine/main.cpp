@@ -3966,7 +3966,7 @@ inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
 // kFloorY constant is owned by the caller because planar shadows need it
 // for the projection matrix; we accept it as an argument so the constant
 // stays a single source of truth.
-template <typename MeshFor>
+template <typename MeshFor, typename PrimRangesFor>
 inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                                     const GpuMesh& floor_mesh,
                                     float floor_y,
@@ -3980,7 +3980,7 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                                     cd::material::Material& prim_material,
                                     cd::core::CounterTable& counters,
                                     const MeshFor& mesh_for,
-                                    const std::vector<cd_sample::GltfPrimRange>& gltf_prim_ranges,
+                                    PrimRangesFor prim_ranges_for,
                                     cd::material::MaterialInstance& prim_inst,
                                     cd::rhi::SamplerHandle albedo_sampler,
                                     cd::rhi::IDevice& device,
@@ -4121,17 +4121,15 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             {
                 // Default to "stone-ish" (matte dielectric) so unfilled
                 // prim_ranges still look sensible; gets overridden per-prim
-                // for Sponza, or kept as-is for CesiumMan's single draw.
+                // or kept as-is for single draw.
                 float m = 0.0F, r = 0.9F, ns = 0.0F;
-                if (ent.kind == PrimitiveKind::kGltf && !gltf_prim_ranges.empty())
+                const auto ranges = prim_ranges_for(ent.kind);
+                if (!ranges.empty())
                 {
-                    // CesiumMan: single-draw; seed from first prim_range so
-                    // the glTF material's authored factors flow to the GPU.
-                    // (CesiumMan glTF authors skin: rough=0.8, metal=0 — good
-                    // default. A future per-prim CesiumMan loop would use sub_pp.)
-                    m  = gltf_prim_ranges.front().metallic;
-                    r  = gltf_prim_ranges.front().roughness;
-                    ns = gltf_prim_ranges.front().normal_strength;
+                    // seed from first prim_range so the glTF material's authored factors flow to the GPU.
+                    m  = ranges.front().metallic;
+                    r  = ranges.front().roughness;
+                    ns = ranges.front().normal_strength;
                 }
                 pp.fx_params4[0] = m;
                 pp.fx_params4[1] = r;
@@ -4163,12 +4161,12 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             &ent_push_scratch[i]
         );
 
-        // Per-primitive material dispatch for Sponza (~28 materials).
-        // kSponza uses gltf_prim_ranges for per-material texture switching.
-        // kGltf (CesiumMan) uses a single draw_indexed (no prim_ranges).
-        if (ent.kind == PrimitiveKind::kSponza && !gltf_prim_ranges.empty())
+        // Per-primitive material dispatch.
+        // glTF models use prim_ranges for per-material texture/parameter switching.
+        const auto ranges = prim_ranges_for(ent.kind);
+        if (!ranges.empty())
         {
-            for (const auto& pr : gltf_prim_ranges)
+            for (const auto& pr : ranges)
             {
                 if (pr.index_count == 0)
                     continue;
@@ -4348,6 +4346,7 @@ struct HelloEngineApp::EngineState
     // SSBO so vegetation reflects green, fabric red, stone grey instead
     // of every Sponza hit sharing the single sandstone tint.
     std::vector<cd::math::Vec3f>             sponza_geom_albedos;
+    std::vector<cd::math::Vec3f>             cesium_geom_albedos;
 
     // World / scene / history
     cd::ecs::World                           ecs_world;
@@ -4838,6 +4837,28 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             cd::core::ErrorCode { 0, static_cast<std::uint32_t>(s.meshes.build_exit_code), "meshes" });
     if (s.meshes.has_gltf_texture || s.meshes.has_cesium_texture)
         s.has_gltf_texture = true;
+
+    // phase-descriptor-sync: write global bindings (0,1,3,5,6,7,10) to every
+    // per-prim descriptor set so textured Sponza/CesiumMan prims see valid
+    // light, shadow, IBL, and reflection data on the GPU.  Binding 2 (TLAS)
+    // is synced per-frame in the TLAS rebuild path below.
+    {
+        const auto& gspec = s.ibl_gpu.gpu_spec_cube;
+        const auto& gdiff = s.ibl_gpu.gpu_diff_cube;
+        const auto& gbrdf = s.ibl_gpu.gpu_brdf_lut;
+        auto sync = [&](std::vector<cd_sample::GltfPrimRange>& ranges) {
+            cd_sample::sync_perprim_global_bindings(
+                ranges,
+                s.shadow_ubo, s.shadow_target.view, s.shadow_sampler,
+                s.lights_ubo, kLightUboBytes,
+                gspec.view, s.ibl_gpu.ibl_sampler,
+                gdiff.view, gbrdf.view,
+                s.inst_mat_ssbo, kInstMatBytes);
+        };
+        sync(s.meshes.gltf_prim_ranges);
+        sync(s.meshes.gltf_cesium_prim_ranges);
+    }
+
     // phase465-perprim: derive a representative per-prim albedo for each
     // Sponza prim range from its glTF base_color_factor.  The raster path
     // uses the per-prim base color TEXTURE (binding 4 on the per-prim
@@ -4852,6 +4873,16 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     for (const auto& pr : s.meshes.gltf_prim_ranges)
     {
         s.sponza_geom_albedos.push_back(cd::math::Vec3f {
+            pr.base_color_factor[0],
+            pr.base_color_factor[1],
+            pr.base_color_factor[2] });
+    }
+
+    s.cesium_geom_albedos.clear();
+    s.cesium_geom_albedos.reserve(s.meshes.gltf_cesium_prim_ranges.size());
+    for (const auto& pr : s.meshes.gltf_cesium_prim_ranges)
+    {
+        s.cesium_geom_albedos.push_back(cd::math::Vec3f {
             pr.base_color_factor[0],
             pr.base_color_factor[1],
             pr.base_color_factor[2] });
@@ -5890,11 +5921,27 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             {
                 if (e.kind == PrimitiveKind::kSponza)
                     return std::span<const cd::math::Vec3f>(s.sponza_geom_albedos);
+                if (e.kind == PrimitiveKind::kGltf)
+                    return std::span<const cd::math::Vec3f>(s.cesium_geom_albedos);
                 return std::span<const cd::math::Vec3f>{};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
             s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
             s.rts.depth.image, s.depth_initialised_on_gpu);
+
+        // phase-descriptor-sync: propagate per-frame TLAS + inst_mat SSBO
+        // writes to every per-prim descriptor set (binding 2 + 10).
+        if (s.current_tlas.is_valid())
+        {
+            cd_sample::sync_perprim_tlas_and_ssbo(
+                s.meshes.gltf_prim_ranges,
+                s.current_tlas, s.inst_mat_ssbo,
+                cd::hello_engine::kInstMatBytes);
+            cd_sample::sync_perprim_tlas_and_ssbo(
+                s.meshes.gltf_cesium_prim_ranges,
+                s.current_tlas, s.inst_mat_ssbo,
+                cd::hello_engine::kInstMatBytes);
+        }
 
         const SunLight sun = resolve_sun_light(s.lights);
 
@@ -5917,7 +5964,11 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         draw_floor_and_entities(cmd, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
                                 s.entities, s.scene, s.has_gltf_texture,
                                 s.materials.prim, s.counters, mesh_for,
-                                s.meshes.gltf_prim_ranges, s.prim_inst,
+                                [&s](PrimitiveKind k) -> std::span<const cd_sample::GltfPrimRange> {
+                                    if (k == PrimitiveKind::kSponza) return s.meshes.gltf_prim_ranges;
+                                    if (k == PrimitiveKind::kGltf) return s.meshes.gltf_cesium_prim_ranges;
+                                    return {};
+                                }, s.prim_inst,
                                 s.albedo_sampler, device, s.albedo_tex.view,
                                 s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
                                 s.show_editor_floor);  // phase435-vis8
@@ -6811,7 +6862,25 @@ int main(int argc, char** argv)
     // The EngineApp path (line ~4586) already checks both; sync here.
     if (meshes.has_gltf_texture || meshes.has_cesium_texture)
         has_gltf_texture = true;
+
+    // phase-descriptor-sync: write global bindings (0,1,3,5,6,7,10) to every
+    // per-prim descriptor set (same fix as EngineApp path above).
+    {
+        auto sync = [&](std::vector<cd_sample::GltfPrimRange>& ranges) {
+            cd_sample::sync_perprim_global_bindings(
+                ranges,
+                shadow_ubo, shadow_target.view, shadow_sampler,
+                lights_ubo, kLightUboBytes,
+                gpu_spec_cube.view, ibl_sampler,
+                gpu_diff_cube.view, gpu_brdf_lut.view,
+                inst_mat_ssbo, kInstMatBytes);
+        };
+        sync(meshes.gltf_prim_ranges);
+        sync(meshes.gltf_cesium_prim_ranges);
+    }
+
     auto& cube_mesh        = meshes.cube;
+
     auto& sphere_mesh      = meshes.sphere;
     auto& cone_mesh        = meshes.cone;
     auto& cyl_mesh         = meshes.cyl;
@@ -6839,6 +6908,16 @@ int main(int argc, char** argv)
     for (const auto& pr : meshes.gltf_prim_ranges)
     {
         sponza_geom_albedos.push_back(cd::math::Vec3f {
+            pr.base_color_factor[0],
+            pr.base_color_factor[1],
+            pr.base_color_factor[2] });
+    }
+
+    std::vector<cd::math::Vec3f> cesium_geom_albedos;
+    cesium_geom_albedos.reserve(meshes.gltf_cesium_prim_ranges.size());
+    for (const auto& pr : meshes.gltf_cesium_prim_ranges)
+    {
+        cesium_geom_albedos.push_back(cd::math::Vec3f {
             pr.base_color_factor[0],
             pr.base_color_factor[1],
             pr.base_color_factor[2] });
@@ -8271,11 +8350,13 @@ int main(int argc, char** argv)
                 return cd::math::to_mat4(lt->value);
             },
             // phase465-perprim: per-(instance, geom) override (Sponza only).
-            [&sponza_geom_albedos](const SceneEntity& e)
+            [&sponza_geom_albedos, &cesium_geom_albedos](const SceneEntity& e)
                 -> std::span<const cd::math::Vec3f>
             {
                 if (e.kind == PrimitiveKind::kSponza)
                     return std::span<const cd::math::Vec3f>(sponza_geom_albedos);
+                if (e.kind == PrimitiveKind::kGltf)
+                    return std::span<const cd::math::Vec3f>(cesium_geom_albedos);
                 return std::span<const cd::math::Vec3f>{};
             },
             blas_floor,
@@ -8284,6 +8365,20 @@ int main(int argc, char** argv)
             inst_mat_ssbo,
             depth.image,
             depth_initialised_on_gpu);
+
+        // phase-descriptor-sync: propagate per-frame TLAS + inst_mat SSBO
+        // writes to every per-prim descriptor set (binding 2 + 10).
+        if (current_tlas.is_valid())
+        {
+            cd_sample::sync_perprim_tlas_and_ssbo(
+                meshes.gltf_prim_ranges,
+                current_tlas, inst_mat_ssbo,
+                cd::hello_engine::kInstMatBytes);
+            cd_sample::sync_perprim_tlas_and_ssbo(
+                meshes.gltf_cesium_prim_ranges,
+                current_tlas, inst_mat_ssbo,
+                cd::hello_engine::kInstMatBytes);
+        }
 
         // ---- Sun resolve (shadow + sky + floor + entity passes need it) ----
         const SunLight sun = resolve_sun_light(lights);
@@ -8322,7 +8417,11 @@ int main(int argc, char** argv)
         draw_floor_and_entities(cmd, floor_mesh, kFloorY, vp, fx, sun, cam,
                                 entities, scene, has_gltf_texture,
                                 prim_material, counters, mesh_for,
-                                meshes.gltf_prim_ranges, prim_inst,
+                                [&meshes](PrimitiveKind k) -> std::span<const cd_sample::GltfPrimRange> {
+                                    if (k == PrimitiveKind::kSponza) return meshes.gltf_prim_ranges;
+                                    if (k == PrimitiveKind::kGltf) return meshes.gltf_cesium_prim_ranges;
+                                    return {};
+                                }, prim_inst,
                                 albedo_sampler, device, albedo_tex.view,
                                 normal_tex.view, mr_tex.view);  // phase456: per-prim restore
 

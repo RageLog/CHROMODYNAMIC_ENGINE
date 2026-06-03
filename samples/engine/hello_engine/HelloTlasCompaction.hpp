@@ -118,7 +118,13 @@ compact_tlas_entity_instances(std::span<const EntityT> entities,
     {
         if (ent_valid[i] == 0u)
             continue;
-        out.instances.push_back(ent_inst_scratch[i]);
+        auto inst = ent_inst_scratch[i];
+        // Stamp the TLAS slot index into instanceCustomIndex so the GPU
+        // shader's rayQueryGetIntersectionInstanceIdEXT returns the
+        // correct index into the inst_mat SSBO.
+        inst.instance_id = static_cast<std::uint32_t>(out.instances.size())
+                           & 0x00FFFFFFu;
+        out.instances.push_back(inst);
         out.inst_mats.push_back(ent_mat_scratch[i]);
     }
     return out;
