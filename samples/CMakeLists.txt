@@ -38,7 +38,7 @@ add_subdirectory(net)
 add_subdirectory(script)
 add_subdirectory(profile)  # phase607 — profiling demos
 add_subdirectory(lib_smokes)
-add_subdirectory(game)     # phase479 — G1 closeout: hello_game (time + input + save + settings)
+add_subdirectory(game)     # phase479–636 — game-tier console smokes (hello_game/npc/world/narrative/ai_director/cutscene_player)
 add_subdirectory(physics)  # phase530 — T3.3: 5 physics demos (box/pile/ragdoll/character/raycast)
 
 # Render-side samples — gated by Vulkan availability since they boot
