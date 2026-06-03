@@ -21,9 +21,11 @@
 // =============================================================================
 #include <cd/ui/renderer_rhi/Submitter.hpp>
 
+#include <cd/material/Material.hpp>
 #include <cd/material/UiVariant.hpp>
 #include <cd/rhi/BlendPresets.hpp>
 #include <cd/rhi/DepthStencilPresets.hpp>
+#include <cd/rhi/Pipeline.hpp>
 #include <cd/rhi/RasterStatePresets.hpp>
 #include <cd/shader/Compiler.hpp>
 
@@ -31,6 +33,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <utility>
 #include <vector>
@@ -112,6 +115,20 @@ struct Submitter::Impl
     bool                                          material_pipeline_owned { false };
     std::unique_ptr<cd::material::UiVariant>      material_variant {};
 
+    // Phase 648 / M10 W3A Sprint-3 -- Route A descriptor-set wire-up.
+    //
+    // When the supplied UiVariant has descriptors (theme UBO and/or SDF
+    // sampler), the Submitter allocates a MaterialInstance from the
+    // variant's set layout and (optionally) a theme UBO buffer.  Both
+    // are released in destroy(); the MaterialInstance carries its own
+    // RAII against the device.
+    std::unique_ptr<cd::material::MaterialInstance> material_instance {};
+    cd::rhi::BufferHandle                         theme_ubo {};
+    std::uint32_t                                 theme_ubo_slot { 0U };
+    std::uint32_t                                 sdf_sampler_slot { 0U };
+    bool                                          has_theme_ubo { false };
+    bool                                          has_sdf_sampler { false };
+
     // Frame-local snapshot from `upload`.
     std::uint32_t               vertex_count { 0U };
     std::uint32_t               index_count  { 0U };
@@ -166,8 +183,17 @@ void Submitter::destroy() noexcept
         // tearing down our own vb/ib so the variant's Material RAII (which
         // holds pipeline + pipeline_layout + descriptor_set_layout + shader
         // modules) drives its destroy_* calls against a still-live device.
+        //
+        // Phase 648 / M10 W3A Sprint-3: release the MaterialInstance and
+        // the theme UBO buffer (if any) BEFORE the variant so the descriptor
+        // set goes back to the pool while its layout is still alive.
         if (impl_->material_pipeline_owned)
         {
+            impl_->material_instance.reset();
+            if (impl_->theme_ubo.is_valid())
+            {
+                impl_->device->destroy_buffer(impl_->theme_ubo);
+            }
             impl_->material_variant.reset();
         }
         if (impl_->vb.is_valid()) impl_->device->destroy_buffer(impl_->vb);
@@ -404,9 +430,150 @@ Submitter::create_with_material_ui_variant(cd::rhi::IDevice&          device,
     }
     Submitter out = std::move(*base);
 
+    const bool has_theme_ubo   = variant.has_theme_ubo();
+    const bool has_sdf_sampler = variant.has_sdf_sampler();
+    const bool has_descriptors = variant.material().has_descriptors();
+
     out.impl_->material_variant        = std::make_unique<cd::material::UiVariant>(std::move(variant));
     out.impl_->material_pipeline_owned = true;
+    out.impl_->has_theme_ubo           = has_theme_ubo;
+    out.impl_->has_sdf_sampler         = has_sdf_sampler;
+
+    // Phase 648 / M10 W3A Sprint-3 -- when the variant ships descriptors,
+    // allocate a MaterialInstance + optional theme UBO buffer + write the
+    // initial descriptor set so the first record() can bind it cleanly.
+    //
+    // The slot numbers MUST mirror the spec the variant was built from.
+    // Sprint-2 default is theme_ubo at binding 0, sdf_sampler at binding 1;
+    // if the caller used different slots the descriptor set still has the
+    // bindings (the layout was built from the spec), and a follow-up
+    // set_theme_palette / set_sdf_atlas with the matching slot succeeds.
+    // (Callers using custom slots can rebind via set_theme_palette /
+    // set_sdf_atlas — the slot numbers in those calls flow into the
+    // DescriptorWrite, not the layout, so this default initialiser is
+    // safe even when the spec used non-default slots.)
+    if (has_descriptors)
+    {
+        // For now we hard-wire slots to the Sprint-2 defaults (0 = theme,
+        // 1 = SDF). Callers using custom slots can still upload via the
+        // explicit `set_theme_palette` / `set_sdf_atlas` API after create
+        // returns; only the initial write below uses defaults.
+        out.impl_->theme_ubo_slot   = 0U;
+        out.impl_->sdf_sampler_slot = 1U;
+
+        auto inst_r = cd::material::MaterialInstance::create(
+            device, out.impl_->material_variant->material());
+        if (!inst_r.has_value())
+        {
+            out.destroy();
+            return std::unexpected(inst_r.error());
+        }
+        out.impl_->material_instance =
+            std::make_unique<cd::material::MaterialInstance>(std::move(*inst_r));
+
+        if (has_theme_ubo)
+        {
+            cd::rhi::BufferDesc bd {};
+            bd.size       = sizeof(cd::material::UiThemePaletteUbo);
+            bd.usage      = cd::rhi::BufferUsage::kUniform
+                          | cd::rhi::BufferUsage::kTransferDst;
+            bd.memory     = cd::rhi::MemoryUsage::kCpuToGpu;
+            bd.debug_name = "cd_ui_renderer_rhi.theme_ubo";
+            auto ubo_r = device.create_buffer(bd);
+            if (!ubo_r.has_value())
+            {
+                out.destroy();
+                return std::unexpected(ubo_r.error());
+            }
+            out.impl_->theme_ubo = *ubo_r;
+
+            // Seed the buffer with default palette so the first frame
+            // does not sample uninitialised memory.
+            const cd::material::UiThemePaletteUbo default_payload {};
+            std::array<std::byte, sizeof(cd::material::UiThemePaletteUbo)> bytes {};
+            std::memcpy(bytes.data(), &default_payload, sizeof(default_payload));
+            (void)device.upload_buffer(
+                out.impl_->theme_ubo, 0U,
+                std::span<const std::byte>(bytes.data(), bytes.size()));
+
+            // Write the UBO into the descriptor set so the variant's
+            // pipeline can sample the palette on its first draw. The slot
+            // matches the variant spec's `theme_palette_ubo_slot` (default 0).
+            cd::rhi::DescriptorWrite w {};
+            w.binding       = out.impl_->theme_ubo_slot;
+            w.array_element = 0U;
+            w.type          = cd::rhi::DescriptorType::kUniformBuffer;
+            w.buffer        = out.impl_->theme_ubo;
+            w.buffer_offset = 0U;
+            w.buffer_range  = sizeof(cd::material::UiThemePaletteUbo);
+            const std::array<cd::rhi::DescriptorWrite, 1> writes { w };
+            auto upd = out.impl_->material_instance->update(
+                std::span<const cd::rhi::DescriptorWrite>(writes.data(), writes.size()));
+            if (!upd.has_value())
+            {
+                out.destroy();
+                return std::unexpected(upd.error());
+            }
+        }
+
+        // SDF sampler descriptor is left UNBOUND at create-time. The caller
+        // MUST invoke `set_sdf_atlas` with a live view + sampler before any
+        // record() that depends on glyph quads. The descriptor set still
+        // has the binding (the layout came from the variant spec); a
+        // record() with the binding unbound is a Vulkan validation warning,
+        // not a hard error — the editor's glyph atlas wires in once the
+        // ui_font path produces a TextureView the submitter can consume.
+        if (has_sdf_sampler && info.atlas_view.is_valid() && info.atlas_sampler.is_valid())
+        {
+            cd::rhi::DescriptorWrite w {};
+            w.binding       = out.impl_->sdf_sampler_slot;
+            w.array_element = 0U;
+            w.type          = cd::rhi::DescriptorType::kCombinedImageSampler;
+            w.view          = info.atlas_view;
+            w.sampler       = info.atlas_sampler;
+            const std::array<cd::rhi::DescriptorWrite, 1> writes { w };
+            (void)out.impl_->material_instance->update(
+                std::span<const cd::rhi::DescriptorWrite>(writes.data(), writes.size()));
+        }
+    }
+
     return out;
+}
+
+bool Submitter::set_theme_palette(const cd::material::UiThemePaletteUbo& payload)
+{
+    if (!impl_ || impl_->device == nullptr) return false;
+    if (!impl_->material_pipeline_owned)    return false;
+    if (!impl_->has_theme_ubo)              return false;
+    if (!impl_->theme_ubo.is_valid())       return false;
+
+    std::array<std::byte, sizeof(cd::material::UiThemePaletteUbo)> bytes {};
+    std::memcpy(bytes.data(), &payload, sizeof(payload));
+    auto up = impl_->device->upload_buffer(
+        impl_->theme_ubo, 0U,
+        std::span<const std::byte>(bytes.data(), bytes.size()));
+    return up.has_value();
+}
+
+bool Submitter::set_sdf_atlas(cd::rhi::TextureViewHandle view,
+                              cd::rhi::SamplerHandle     sampler)
+{
+    if (!impl_ || impl_->device == nullptr)  return false;
+    if (!impl_->material_pipeline_owned)     return false;
+    if (!impl_->has_sdf_sampler)             return false;
+    if (!impl_->material_instance)           return false;
+    if (!view.is_valid() || !sampler.is_valid()) return false;
+
+    cd::rhi::DescriptorWrite w {};
+    w.binding       = impl_->sdf_sampler_slot;
+    w.array_element = 0U;
+    w.type          = cd::rhi::DescriptorType::kCombinedImageSampler;
+    w.view          = view;
+    w.sampler       = sampler;
+    const std::array<cd::rhi::DescriptorWrite, 1> writes { w };
+    auto upd = impl_->material_instance->update(
+        std::span<const cd::rhi::DescriptorWrite>(writes.data(), writes.size()));
+    return upd.has_value();
 }
 
 // ---- upload ---------------------------------------------------------------
@@ -493,6 +660,18 @@ void Submitter::record(cd::rhi::ICommandBuffer& cmd,
                                0U,
                                static_cast<std::uint32_t>(inv_vp.size() * sizeof(float)),
                                inv_vp.data());
+
+            // Phase 648 / M10 W3A Sprint-3 -- bind the variant's
+            // descriptor set at set index 0 when present. The set carries
+            // the theme UBO (always when has_theme_ubo) + optional SDF
+            // sampler. The descriptor was written at create()/set_*()
+            // time; record() just binds the existing set.
+            if (impl_->material_instance &&
+                impl_->material_instance->is_valid() &&
+                impl_->material_instance->descriptor_set().is_valid())
+            {
+                impl_->material_instance->bind(cmd, /*set_index=*/0U);
+            }
         }
     }
 

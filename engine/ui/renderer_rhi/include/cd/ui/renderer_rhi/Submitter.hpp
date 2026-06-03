@@ -46,9 +46,16 @@
 // forward-decl here avoids dragging glslang's transitive include
 // surface (cd::material -> cd::shader) into every translation unit
 // that just wants to call `create()` / `record()`.
+//
+// Phase 648 / M10 W3A Sprint-3 — also forward-decl
+// `UiThemePaletteUbo` so the Sprint-3 `set_theme_palette` accessor can
+// stay header-visible without dragging the cd::material include in.
+// Callers that actually invoke `set_theme_palette` must include
+// `<cd/material/UiVariant.hpp>` to construct the payload.
 namespace cd::material
 {
 class UiVariant;
+struct UiThemePaletteUbo;
 }  // namespace cd::material
 
 namespace cd::ui::renderer_rhi
@@ -147,24 +154,63 @@ public:
     /// `cd::material::UiVariantSpec` satisfies both requirements (see
     /// `cd::material::create_ui_variant`).
     ///
-    /// NOTE: this Sprint deliberately does NOT bind any per-frame
-    /// descriptor sets (theme UBO / SDF sampler). The Sprint-3 contract
-    /// is "Route A REACHABLE end-to-end" — uploading + binding the theme
-    /// UBO is the next Sprint's job. Variants with descriptors will still
-    /// record cleanly because the `record()` path issues
-    /// `vkCmdBindPipeline` only; the unbound set just renders the
-    /// underlying Sprint-1 fallback path the variant's shader degrades
-    /// to (which is the same alpha-blend solid-quad output Route B
-    /// produces today).
+    /// Phase 648 / M10 W3A Sprint-3 — END-TO-END WIRE-UP.
+    ///
+    /// When the supplied variant carries descriptor bindings (Sprint-2
+    /// theme UBO and/or SDF glyph sampler), the factory:
+    ///   * allocates a `cd::material::MaterialInstance` from the variant's
+    ///     descriptor-set layout and stashes it inside the submitter;
+    ///   * if the variant has a theme UBO, allocates a
+    ///     `sizeof(UiThemePaletteUbo)` device buffer (kCpuToGpu, kUniform)
+    ///     and writes it into the descriptor at the variant's
+    ///     `theme_palette_ubo_slot`. The UBO starts initialised to the
+    ///     `UiThemePaletteUbo` default constructor (white primary, dim
+    ///     surface). Use `set_theme_palette` to swap the payload before /
+    ///     between frames.
+    ///   * if the variant has an SDF sampler descriptor (texture_count == 1),
+    ///     the descriptor is left UNBOUND at create-time; the caller MUST
+    ///     call `set_sdf_atlas` with a live `TextureViewHandle` +
+    ///     `SamplerHandle` before the first `record()` that depends on
+    ///     glyph sampling. A submitter with an unbound SDF descriptor will
+    ///     still record cleanly (Vulkan validation may warn, but the call
+    ///     sequence is legal); the glyph quad fragments will sample
+    ///     garbage values.
+    ///
+    /// At record-time the submitter:
+    ///   * binds the variant's pipeline;
+    ///   * pushes the viewport-size push constant (`vec2 inv_viewport`);
+    ///   * binds the MaterialInstance descriptor set at set index 0 when
+    ///     the variant has descriptors (no-op otherwise).
+    ///
+    /// The submitter takes ownership of any handles it allocates above;
+    /// `destroy()` tears them down in reverse-create order.
     ///
     /// Returns the same kinds of errors as `create()` plus any error
     /// surfaced by the supplied variant (the factory rejects an inert
     /// `UiVariant` with kInvalidArgument before allocating any GPU
-    /// resources).
+    /// resources) and any descriptor-set allocation / buffer-create
+    /// failure.
     [[nodiscard]] static cd::core::Result<Submitter>
     create_with_material_ui_variant(cd::rhi::IDevice&          device,
                                     const SubmitterCreateInfo& info,
                                     cd::material::UiVariant&&  variant);
+
+    /// Phase 648 / M10 W3A Sprint-3 — refresh the Sprint-2 theme palette
+    /// payload. The submitter must have been built via
+    /// `create_with_material_ui_variant` from a variant with a theme UBO
+    /// descriptor; on any other path this is a no-op (returns false). The
+    /// upload uses the underlying device's `upload_buffer` call so the
+    /// next `record()` reads the fresh palette. Returns true on success.
+    bool set_theme_palette(const cd::material::UiThemePaletteUbo& payload);
+
+    /// Phase 648 / M10 W3A Sprint-3 — bind a glyph SDF atlas
+    /// (combined image+sampler) into the variant's descriptor set. The
+    /// submitter must have been built via
+    /// `create_with_material_ui_variant` from a variant with an SDF
+    /// sampler descriptor (texture_count == 1); on any other path this
+    /// is a no-op (returns false). Returns true on success.
+    bool set_sdf_atlas(cd::rhi::TextureViewHandle view,
+                       cd::rhi::SamplerHandle     sampler);
 
     /// Free GPU resources. Idempotent. Called automatically on destruction.
     void destroy() noexcept;

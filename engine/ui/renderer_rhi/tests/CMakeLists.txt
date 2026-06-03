@@ -22,4 +22,15 @@ if(CD_ENABLE_VULKAN)
     DEPS    cd::ui_renderer_rhi cd::ui_renderer cd::rhi cd::rhi_vulkan
             cd::material cd::shader cd::core
   )
+
+  # Phase 648 / M10 W3A Sprint-3 -- Route A END-TO-END coverage. Builds a
+  # Sprint-2 variant (theme UBO + SDF sampler), feeds the Submitter, calls
+  # set_theme_palette / set_sdf_atlas, pushes 4 quads + 1 glyph through the
+  # batcher, records into a real Vulkan command buffer. Same gates as
+  # submitter_material_route (Vulkan ICD + glslang).
+  cd_add_test(submitter_material_route_end_to_end
+    SOURCES test_submitter_material_route_end_to_end.cpp
+    DEPS    cd::ui_renderer_rhi cd::ui_renderer cd::rhi cd::rhi_vulkan
+            cd::material cd::shader cd::core
+  )
 endif()

@@ -893,16 +893,19 @@ int main(int argc, char** argv)
         std::unexpected(cd::core::ErrorCode { 0x0001U, 0U, "uninitialized" });
 #if defined(CD_USE_MATERIAL_UI_ROUTE_A)
     {
-        // Build the cd::material::UiVariant up front. The default spec
-        // matches Sprint-1 (vertex-color only, alpha blend, depth off)
-        // and targets a single BGRA8 attachment so the variant's
-        // pipeline lines up with the swapchain format selected above.
+        // Build the cd::material::UiVariant up front. Phase 648 / M10 W3A
+        // Sprint-3: opt into the Sprint-2 theme-UBO branch so the variant
+        // carries a real fragment-stage descriptor set (theme palette).
+        // SDF sampler stays off because apps/editor does not yet wire its
+        // ui_font atlas into a TextureView the submitter can sample.
         const std::array<rhi::Format, 1> kColorFormats {
             rhi::Format::kBGRA8Unorm,
         };
         cd::material::UiVariantSpec vspec {};
         vspec.color_attachment_formats = std::span<const rhi::Format>(
             kColorFormats.data(), kColorFormats.size());
+        vspec.use_theme_palette_ubo = true;
+        vspec.theme_palette_ubo_slot = 0U;
         vspec.name = "editor_ui_variant_route_a";
 
         auto var_r = cd::material::create_ui_variant(*device, vspec);
@@ -931,6 +934,33 @@ int main(int argc, char** argv)
     std::printf("editor: submitter wired (%s).\n",
                 kEditorRouteA ? "Route A / cd::material UI variant"
                               : "Route B / inline GLSL fallback");
+
+#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
+    // Phase 648 / M10 W3A Sprint-3 — feed the editor's dark theme palette
+    // into the variant's theme UBO so the fragment shader's `tint` math
+    // multiplies vertex color by the real swatches. Without this call
+    // the UBO carries the `UiThemePaletteUbo` defaults (white primary,
+    // dark grey surface) seeded at submitter create-time.
+    {
+        const auto dark = uth::kDarkTheme();
+        const auto pri  = dark.color(uth::PaletteSlot::kPrimary);
+        const auto sec  = dark.color(uth::PaletteSlot::kSecondary);
+        const auto sur  = dark.color(uth::PaletteSlot::kSurface);
+        const auto on_s = dark.color(uth::PaletteSlot::kOnSurface);
+        cd::material::UiThemePaletteUbo palette {};
+        palette.primary[0]    = pri.r;  palette.primary[1]    = pri.g;
+        palette.primary[2]    = pri.b;  palette.primary[3]    = pri.a;
+        palette.secondary[0]  = sec.r;  palette.secondary[1]  = sec.g;
+        palette.secondary[2]  = sec.b;  palette.secondary[3]  = sec.a;
+        palette.surface[0]    = sur.r;  palette.surface[1]    = sur.g;
+        palette.surface[2]    = sur.b;  palette.surface[3]    = sur.a;
+        palette.on_surface[0] = on_s.r; palette.on_surface[1] = on_s.g;
+        palette.on_surface[2] = on_s.b; palette.on_surface[3] = on_s.a;
+        const bool pal_ok = submitter.set_theme_palette(palette);
+        std::printf("editor: Route A theme palette upload %s.\n",
+                    pal_ok ? "OK" : "skipped (variant has no theme UBO)");
+    }
+#endif
 
     // -- 8. Frame loop ------------------------------------------------------
     ur::DrawBatcher                batcher;
