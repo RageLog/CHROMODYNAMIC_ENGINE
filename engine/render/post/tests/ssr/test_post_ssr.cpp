@@ -5,6 +5,7 @@
 namespace
 {
 
+using cd::post::ssr::compute_ssr_weight;
 using cd::post::ssr::roughness_fade;
 using cd::post::ssr::schlick_fresnel;
 using cd::post::ssr::Settings;
@@ -53,6 +54,37 @@ TEST(PostSsr, GlslKernelNonEmptyAndUsesReflectAndProj)
     EXPECT_FALSE(cd::post::ssr::kSsrTraceCS.empty());
     EXPECT_NE(cd::post::ssr::kSsrTraceCS.find("reflect"), std::string_view::npos);
     EXPECT_NE(cd::post::ssr::kSsrTraceCS.find("unproject"), std::string_view::npos);
+}
+
+// -----------------------------------------------------------------------------
+// M9 W3A — T1.8 metallic-driven SSR gate (curtain-reflection lesson, phase629).
+// SSR must NOT be gated on material *kind*; it must be gated on the per-pixel
+// metallic G-buffer channel. Pure dielectrics (cloth, plaster) skip SSR
+// entirely; pure metals receive full SSR; smoothstep between 0.05 and 0.30.
+// -----------------------------------------------------------------------------
+
+TEST(PostSsrMetallicGate, DielectricGetsZeroWeight)
+{
+    // metallic = 0 → pure dielectric (cloth curtain) → SKIP SSR entirely.
+    EXPECT_NEAR(compute_ssr_weight(0.0F), 0.0F, kEps);
+}
+
+TEST(PostSsrMetallicGate, AtLowerThresholdStillZero)
+{
+    // metallic = 0.05 sits exactly on the ramp's lower clamp.
+    EXPECT_NEAR(compute_ssr_weight(0.05F), 0.0F, kEps);
+}
+
+TEST(PostSsrMetallicGate, AtUpperThresholdReachesOne)
+{
+    // metallic = 0.30 sits exactly on the ramp's upper clamp → full SSR.
+    EXPECT_NEAR(compute_ssr_weight(0.30F), 1.0F, kEps);
+}
+
+TEST(PostSsrMetallicGate, FullyMetallicRegionSaturatesAtOne)
+{
+    // metallic = 0.5 (and any value >= 0.30) → full SSR weight.
+    EXPECT_NEAR(compute_ssr_weight(0.5F), 1.0F, kEps);
 }
 
 }  // namespace

@@ -64,6 +64,39 @@ roughness_fade(float roughness, const Settings& s) noexcept
     return 1.0F - (roughness - kStart) / (s.roughness_max - kStart);
 }
 
+/// Metallic-driven SSR gate (M9 W3A — T1.8).
+///
+/// The hello_engine phase629 curtain bug taught us that SSR must NOT
+/// be gated on material *kind* (e.g. "this primitive came from glTF, so
+/// give it surface_flag = 0.6 → half-strength SSR"). Instead the gate
+/// must read the per-pixel metallic channel from the G-buffer: pure
+/// dielectrics (cloth, plaster, wood, leaves) get zero SSR weight and
+/// are skipped entirely; pure metals (gold, copper, steel) receive
+/// full SSR; the band between 0.05 and 0.30 metallic is a smoothstep
+/// so the transition does not pop on slightly-tinted brushed surfaces.
+///
+/// Contract:
+///   - metallic <= 0.05 → weight = 0.0 (skip SSR trace entirely)
+///   - metallic >= 0.30 → weight = 1.0 (full SSR contribution)
+///   - 0.05 < metallic < 0.30 → smoothstep ramp
+///
+/// Thresholds (0.05 / 0.30) match the audit doc
+/// `docs/AUDIT/learned-lessons-curtain-reflection-2026-06-03.md`
+/// (Lesson 1) — they keep glTF baseColor leakage (typical dielectric
+/// F0 ≈ 0.04) on the "skip" side of the ramp and full conductors on
+/// the "trace" side.
+[[nodiscard]] inline float
+compute_ssr_weight(float metallic) noexcept
+{
+    constexpr float kLo = 0.05F;
+    constexpr float kHi = 0.30F;
+    if (metallic <= kLo) return 0.0F;
+    if (metallic >= kHi) return 1.0F;
+    const float t = (metallic - kLo) / (kHi - kLo);
+    // Hermite smoothstep — identical to GLSL smoothstep(kLo, kHi, x).
+    return t * t * (3.0F - 2.0F * t);
+}
+
 // ---- GLSL compute kernel ----------------------------------------------------
 
 constexpr std::string_view kSsrTraceCS = R"glsl(
