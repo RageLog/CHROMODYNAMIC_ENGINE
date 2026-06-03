@@ -4,7 +4,7 @@
 
 **Namespace**: `cd::render::scene`.
 
-**Headers**: `cd/render/scene/SceneIngest.hpp`.
+**Headers**: `cd/render/scene/SceneIngest.hpp`, `cd/render/scene/RenderBucket.hpp`.
 
 **Primary types**:
 - `cd::render::scene::IngestOptions` -- caller-tunable knobs (override world transform, skip ECS create, skip texture upload).
@@ -35,6 +35,24 @@ if (!r) return /* error */;
 scene.destroy_node(r->root_entity);
 cd::render::scene::destroy_ingest_result(device, *r);
 ```
+
+## Two-pass alpha render order (T1.15)
+
+`cd/render/scene/RenderBucket.hpp` exposes the engine-wide draw-order contract used by the framegraph to avoid the curtain bleed-through failure mode documented in `docs/AUDIT/learned-lessons-pbr-rt-and-curtain-alpha-2026-06-03.md`.
+
+**Bucket contract** (framegraph issues three sequential passes in this order):
+
+| Bucket          | Depth test | Depth write | Sort            | When                                  |
+| --------------- | ---------- | ----------- | --------------- | ------------------------------------- |
+| `kOpaque`       | on         | on          | front-to-back   | first — populates depth, early-Z      |
+| `kAlphaMask`    | on         | on          | front-to-back   | second — discard on `alpha < cutoff`  |
+| `kAlphaBlend`   | on         | **off**     | back-to-front   | last — over-blends against opaque set |
+
+**Routing rule**: `cd::render::scene::bucket_for(const MaterialInstance&)` reads the glTF-mirrored `AlphaMode` via the T1.16 predicate accessors (`is_blend / is_mask / is_opaque`). A scalar overload accepts `cd::material::AlphaMode` directly for code paths that already pulled it out of the material. Default-constructed `MaterialInstance` is `kOpaque` (matches glTF 2.0 default alphaMode).
+
+**Partition helper**: `partition_prims(prims, materials)` returns a `BucketedPrims` whose `opaque_prims() / alpha_mask_prims() / alpha_blend_prims()` spans the framegraph consumes one pass at a time. Input order is preserved within each bucket so a secondary front-to-back / back-to-front sort can be applied without losing primitive identity.
+
+**Moment**: Sponza curtains stop bleeding through opaque vegetation behind them — alpha-blend prims are drawn after their occluders rather than before, so the depth test rejects them where the curtain is itself occluded.
 
 **Test command**: `ctest --preset ninja-debug -R cd_test_scene_ingest --output-on-failure`.
 

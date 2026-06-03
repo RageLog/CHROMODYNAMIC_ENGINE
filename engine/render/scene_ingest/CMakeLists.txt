@@ -18,6 +18,7 @@ cd_add_library(render_scene_ingest
     cd::scene
     cd::render
     cd::asset_gltf
+    cd::material   # M11 W1 T1.15 — RenderBucket / bucket_for read alpha_mode predicates
 )
 
 if(CD_ENABLE_TESTING)
