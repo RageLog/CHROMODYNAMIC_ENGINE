@@ -104,3 +104,11 @@ add_subdirectory(ai_director)
 #                 A designer authors a 5-node tree; player choices + runtime
 #                 flags drive different endings without recompiling.
 add_subdirectory(dialog_tree)
+
+# Phase 651 — "HL2-style input record/replay" (M10 W4B):
+#   input_recorder — cd::game::input_recorder Recorder + Replayer + binary
+#                    .cdinput file format. Record a 30-second movement sequence;
+#                    replay it 100x to debug a flaky physics interaction. Also
+#                    used for deterministic CI regression fixtures and demo
+#                    capture. Pure state machine; no ECS / render / audio.
+add_subdirectory(input_recorder)
