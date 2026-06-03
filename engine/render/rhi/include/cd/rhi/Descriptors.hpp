@@ -282,6 +282,44 @@ struct AccelStructureDesc
     std::string_view debug_name {};
 };
 
+/// Phase 656 (M11 W2A / T1.11) — TLAS-coverage host-side candidate.
+///
+/// `AccelInstance` is 64-byte ABI-locked because it mirrors
+/// `VkAccelerationStructureInstanceKHR` bit-for-bit (see
+/// `test_rt_descriptors.cpp::AccelInstanceIs64Bytes`).  We CANNOT add an
+/// "include me in the TLAS?" flag to that struct without breaking the
+/// driver-side layout.
+///
+/// `TlasInstanceCandidate` is the host-side wrapper that scene-ingest and
+/// per-frame TLAS-builder code use BEFORE the driver-facing
+/// `AccelInstance` array is materialised.  It carries the same instance
+/// payload plus a `tlas_eligible` bool that *defaults to true* so a glTF
+/// prim ends up in the TLAS without per-asset setup -- matching the
+/// T1.11 moment: a developer drags a glTF asset into a scene and the
+/// chrome PBR sphere's reflection picks it up immediately.
+///
+/// Contract: there is NO geometry-kind filter at the RHI level.  Any
+/// candidate with `tlas_eligible == true` flows through to the backend
+/// TLAS build.  Higher-level code (scene ingest, ECS render pass) may
+/// flip the flag to false for a specific instance (e.g. an editor-only
+/// gizmo, a debug visualiser, a ghost-shadow placeholder) but must
+/// never gate on the BLAS source asset type.
+///
+/// Use `build_tlas_instances(candidates, out)` (declared below) to
+/// materialise the filtered `AccelInstance` vector ready to pass to
+/// `AccelStructureDesc::instances`.
+struct TlasInstanceCandidate
+{
+    /// Driver-facing instance payload (transform, BLAS, id, mask, flags).
+    AccelInstance instance {};
+
+    /// Host-side gate.  True by default -- the engine wants new geometry
+    /// to enter the TLAS without per-call setup.  Flip to false to
+    /// exclude this instance from the TLAS build (the BLAS itself is
+    /// unaffected -- only the top-level reference is dropped).
+    bool          tlas_eligible { true };
+};
+
 /// Phase 118 — RT pipeline shader-stage tags. Mirrors
 /// `VkRayTracingShaderGroupTypeKHR` / DXR hit-group categories.
 enum class RtShaderStage : std::uint8_t
