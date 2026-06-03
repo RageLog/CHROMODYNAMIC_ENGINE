@@ -96,6 +96,14 @@ add_subdirectory(cutscene_player)
 #                  render / audio dependency.
 add_subdirectory(ai_director)
 
+# Phase 661 — "Save compression" (M11 W4B):
+#   save_compression — cd::game::save_compression Sprint-1 RLE sidecar.
+#                      Compress/decompress save-game byte streams: 5 MB world-
+#                      state → ~800 KB. Sidecar to cd::game::save (NOT a v2).
+#                      Sprint-2 plan: LZ4 / zstd overloads via vcpkg features.
+#                      cd::core only — no filesystem, no slot-management.
+add_subdirectory(save_compression)
+
 # Phase 645 — "BG3-style branching dialog graph":
 #   dialog_tree — cd::game::dialog_tree BG3-style directed dialog graph.
 #                 NodeKind (Say/Choice/Condition/End) + transparent kCondition
