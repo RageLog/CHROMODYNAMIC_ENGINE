@@ -27,7 +27,16 @@ hdr.destroy(device);
 
 **Test command**: `ctest --preset ninja-debug -R cd_test_framegraph --output-on-failure`.
 
+**RT phase ordering invariant**:
+
+When using ray-tracing passes in the frame graph:
+
+- **TLAS (Top-Level Acceleration Structure) rebuild passes MUST be scheduled before any RT trace pass in the same frame.**
+- The frame graph compiler enforces this via topological sort on RT-pass declared inputs: if a trace pass declares the TLAS handle as input, the compiler ensures the rebuild pass is scheduled strictly before.
+- If a trace pass is added without the TLAS handle in its inputs (a developer mistake), the framegraph will silently render black reflections / miss data. Register the TLAS as a read input to enable compile-time detection.
+- In debug builds, the framegraph emits a compile-time `CHROMA_ASSERT` to catch misordering: `CHROMA_ASSERT(rebuild_node_id < trace_node_id)`.
+
 **Notes**:
-- Header-only.
+- Header-only for Targets/FrameGraph core.
 - The two helpers (ColorTarget / DepthTarget) are the bread-and-butter API for samples and most engine subsystems; the full FrameGraph is only used by libraries opting into declarative pass topology (planned: post-fx, GI).
 - hello_engine bundles 7 instances of these into `cd_sample::RenderTargets` for its HDR-MRT layout (samples/engine/hello_engine/HelloRenderTargets.hpp).

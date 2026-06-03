@@ -165,6 +165,47 @@ cd::core::Result<void> FrameGraph::compile()
         }
         r.rhi_handle = *t;
     }
+
+    // [T1.13] RT phase ordering invariant: TLAS rebuild must precede trace passes.
+    // Search for passes that match the pattern:
+    //   - TLAS rebuild pass: name contains "rebuild" or similar
+    //   - RT trace pass: name contains "trace" or similar
+    // If both exist, verify rebuild_index < trace_index.
+    // TODO: This is a scaffolding check. When RT becomes a first-class framework
+    // (with explicit RT pass types and resource semantics), move this logic to
+    // the topological sort validator in PassTopology. For now, the assert is a
+    // best-effort guard against silent black-reflection bugs.
+#if CHROMA_DEBUG
+    std::int32_t tlas_rebuild_index { -1 };
+    std::int32_t rt_trace_index { -1 };
+    for (std::uint32_t i = 0; i < passes_.size(); ++i)
+    {
+        const auto& pass_name = passes_[i].name;
+        // Heuristic: look for "rebuild" and "tlas" together (case-insensitive).
+        bool is_rebuild = pass_name.find("rebuild") != std::string::npos ||
+                          pass_name.find("TLAS") != std::string::npos;
+        // Heuristic: look for "trace" (case-insensitive).
+        bool is_trace = pass_name.find("trace") != std::string::npos;
+
+        if (is_rebuild && tlas_rebuild_index == -1)
+        {
+            tlas_rebuild_index = static_cast<std::int32_t>(i);
+        }
+        if (is_trace && rt_trace_index == -1)
+        {
+            rt_trace_index = static_cast<std::int32_t>(i);
+        }
+    }
+    // If both are present, rebuild must come first.
+    if (tlas_rebuild_index != -1 && rt_trace_index != -1)
+    {
+        CHROMA_ASSERT(tlas_rebuild_index < rt_trace_index,
+                      "FrameGraph: RT trace pass must follow TLAS rebuild pass. "
+                      "Trace at index %d, rebuild at index %d.",
+                      rt_trace_index, tlas_rebuild_index);
+    }
+#endif
+
     compiled_ = true;
     return {};
 }
