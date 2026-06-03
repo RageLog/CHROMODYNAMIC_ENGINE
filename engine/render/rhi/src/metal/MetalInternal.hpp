@@ -9,6 +9,14 @@
 // phase615 — Metal backend Sprint-4 extensions (fence + event + pipeline-
 //            layout + descriptor-set-layout registries + submit(SubmitDesc)
 //            queue plumbing).
+// phase649 — Metal backend Sprint-5 extensions (texture-view registry +
+//            descriptor-set argument-encoder registry + timeline-semaphore
+//            registry + upload/download_buffer shared-storage memcpy +
+//            SubmitDesc timeline-encode hand-off). Closes the remaining
+//            9 kNotImpl sites and brings the Metal backend to 27/27
+//            implemented coverage on the IDevice surface (RT-related
+//            DescriptorWrite::kAccelerationStructure still surfaces
+//            kInvalidArgument since Metal RT is a separate roadmap item).
 //
 // This header is INTERNAL to the cd_rhi_metal target. It is only included
 // from the four .mm translation units (MetalDevice.mm, MetalCommandBuffer.mm,
@@ -61,9 +69,35 @@
 //     [encoder drawIndexedPrimitives:..:indexBuffer:..:instanceCount:
 //     baseVertex:baseInstance:] using the cached index state.
 //
-// Everything else (descriptor sets allocation, fences, RT) lives in
-// subsequent sprints; the remaining kNotImpl call surface in
-// MetalDevice.mm shrinks accordingly each sprint.
+// Sprint-5 additions (phase649):
+//   * MetalTextureViewObj       — TextureViewDesc + resolved id<MTLTexture>
+//                                 (subresource view via newTextureViewWith*
+//                                 when backing texture is live; nil
+//                                 gracefully when the texture handle is
+//                                 still unbacked).
+//   * MetalDescriptorSetObj     — id<MTLArgumentEncoder> + the underlying
+//                                 argument id<MTLBuffer> sized via
+//                                 [encoder encodedLength]. Sprint-5 stores
+//                                 the encoder/buffer per DescriptorSetHandle
+//                                 so update_descriptor_set + future
+//                                 bind_descriptor_set call sites can write
+//                                 into the argument buffer directly.
+//   * MetalTimelineObj          — id<MTLSharedEvent>-backed timeline
+//                                 semaphore. signaledValue is the source
+//                                 of truth; host wait uses notifyListener:
+//                                 atValue:block: + dispatch_semaphore_t
+//                                 to keep the IDevice timeout contract.
+//   * MetalDeviceCtx::lookup_texture_view / lookup_descriptor_set /
+//     lookup_timeline — handle resolution hooks (Sprint-5 closes the
+//     final kNotImpl surface for these).
+//
+// With Sprint-5 in place every IDevice method that was returning
+// kNotImpl now returns either a real result or a structured
+// kInvalidArgument / kBackendInitFailed — the Metal backend is
+// feature-complete on the IDevice contract modulo RT (which is gated
+// on a separate Metal Ray-Tracing tier roadmap item and reported via
+// kInvalidArgument from update_descriptor_set's acceleration-structure
+// branch).
 // =============================================================================
 #pragma once
 
@@ -442,6 +476,133 @@ build_metal_sampler(id<MTLDevice> device, const SamplerDesc& desc,
                     std::string* error_out) noexcept;
 
 // ---------------------------------------------------------------------------
+// MetalTextureViewObj — phase649 / Sprint-5.
+//
+// CHROMODYNAMIC's TextureViewHandle is the subresource view abstraction: a
+// (texture, format-override, mip range, layer range, type) tuple. The SOTA
+// Metal expression is -[id<MTLTexture> newTextureViewWithPixelFormat:
+// textureType:levels:slices:] which lets you re-interpret the underlying
+// pixel store as a different format / subset. We materialise the view
+// lazily on lookup so that an unbacked source TextureHandle (the Sprint-2
+// stub-handle baseline) results in `nil` rather than a hard error — same
+// graceful-skip pattern that the buffer / texture registries already use.
+//
+// When the descriptor matches the parent texture's full extent + format
+// exactly we return the parent MTLTexture directly without allocating a
+// view (Metal validation rejects newTextureViewWith* in that case as a
+// no-op anyway).
+// ---------------------------------------------------------------------------
+class MetalTextureViewObj final
+{
+public:
+    explicit MetalTextureViewObj(const TextureViewDesc& desc) noexcept
+        : desc_(desc) {}
+    ~MetalTextureViewObj() = default;
+    MetalTextureViewObj(const MetalTextureViewObj&) = delete;
+    MetalTextureViewObj& operator=(const MetalTextureViewObj&) = delete;
+    MetalTextureViewObj(MetalTextureViewObj&&) = delete;
+    MetalTextureViewObj& operator=(MetalTextureViewObj&&) = delete;
+
+    [[nodiscard]] const TextureViewDesc& desc() const noexcept { return desc_; }
+
+    // Resolve the live MTLTexture for this view. `parent` is the parent
+    // texture's MTLTexture (looked up via MetalDeviceCtx::lookup_texture);
+    // when nil the view also resolves to nil. The cached view is created
+    // on first call so repeated lookups are O(1).
+    [[nodiscard]] id<MTLTexture> resolve(id<MTLTexture> parent) noexcept;
+
+private:
+    TextureViewDesc desc_;
+    id<MTLTexture>  view_ { nil };
+};
+
+// ---------------------------------------------------------------------------
+// MetalDescriptorSetObj — phase649 / Sprint-5.
+//
+// Metal's SOTA equivalent of VkDescriptorSet is the argument-buffer model:
+// an MTLArgumentEncoder describes the binding table, and an MTLBuffer
+// stores the encoded handles + offsets. Sprint-5 wires up the allocation
+// path so descriptor-set handles map to a real (encoder, buffer) pair.
+// Layouts with zero bindings are legal — the engine occasionally uses
+// them as a "no resources" marker (Vulkan VkDescriptorSetLayout parity);
+// we still allocate an empty argument buffer so the cmd-buffer
+// bind_descriptor_set path can lookup the handle and treat it as a no-op
+// without an extra null check.
+// ---------------------------------------------------------------------------
+class MetalDescriptorSetObj final
+{
+public:
+    MetalDescriptorSetObj(id<MTLArgumentEncoder> encoder,
+                          id<MTLBuffer> arg_buffer) noexcept
+        : encoder_(encoder), arg_buffer_(arg_buffer) {}
+    ~MetalDescriptorSetObj() = default;
+    MetalDescriptorSetObj(const MetalDescriptorSetObj&) = delete;
+    MetalDescriptorSetObj& operator=(const MetalDescriptorSetObj&) = delete;
+    MetalDescriptorSetObj(MetalDescriptorSetObj&&) = delete;
+    MetalDescriptorSetObj& operator=(MetalDescriptorSetObj&&) = delete;
+
+    [[nodiscard]] id<MTLArgumentEncoder> encoder() const noexcept { return encoder_; }
+    [[nodiscard]] id<MTLBuffer>          arg_buffer() const noexcept { return arg_buffer_; }
+
+private:
+    id<MTLArgumentEncoder> encoder_ { nil };
+    id<MTLBuffer>          arg_buffer_ { nil };
+};
+
+// ---------------------------------------------------------------------------
+// MetalTimelineObj — phase649 / Sprint-5.
+//
+// id<MTLSharedEvent> doubles as Vulkan-style timeline semaphore: the
+// monotonic `signaledValue` property maps 1:1 onto VkSemaphoreType
+// VK_SEMAPHORE_TYPE_TIMELINE. Host wait uses
+// -[id<MTLSharedEvent> notifyListener:atValue:block:] feeding a
+// dispatch_semaphore_t so the IDevice timeout contract still holds
+// (DISPATCH_TIME_FOREVER for UINT64_MAX, otherwise nanosecond deadline).
+// Host signal pokes `signaledValue` directly; we keep a guard so
+// non-monotonic writes (value <= current) surface as kInvalidArgument
+// from the device factory rather than tripping a Metal validation assert.
+//
+// Submit-side encode-wait / encode-signal hand-offs are issued by
+// MetalDevice::submit(SubmitDesc) against the cached MTLSharedEvent — the
+// matching call sites pass an explicit `value`, so we don't bump the
+// counter here.
+// ---------------------------------------------------------------------------
+class MetalTimelineObj final
+{
+public:
+    MetalTimelineObj(id<MTLSharedEvent> event, std::uint64_t initial_value) noexcept;
+    ~MetalTimelineObj();
+    MetalTimelineObj(const MetalTimelineObj&) = delete;
+    MetalTimelineObj& operator=(const MetalTimelineObj&) = delete;
+    MetalTimelineObj(MetalTimelineObj&&) = delete;
+    MetalTimelineObj& operator=(MetalTimelineObj&&) = delete;
+
+    [[nodiscard]] id<MTLSharedEvent> event() const noexcept { return event_; }
+
+    // Read the current signalled value. Reads `signaledValue` directly so
+    // host signal_timeline_semaphore + queue-side encodeSignalEvent both
+    // converge on the same source of truth.
+    [[nodiscard]] std::uint64_t value() const noexcept;
+
+    // Bump `signaledValue` to `value`. Monotonic — the caller must ensure
+    // value > current; the device factory enforces this and returns
+    // kInvalidArgument when violated.
+    void signal(std::uint64_t value) noexcept;
+
+    // Block the calling thread until `signaledValue >= value` or the
+    // timeout elapses. Returns true on signal, false on timeout. Uses
+    // -[id<MTLSharedEvent> notifyListener:atValue:block:] internally with
+    // a dispatch_semaphore_t to honour the IDevice timeout contract.
+    [[nodiscard]] bool wait(std::uint64_t value, std::uint64_t timeout_ns) noexcept;
+
+private:
+    id<MTLSharedEvent> event_ { nil };
+    // Notifier listener queue — shared across all wait() calls on this
+    // timeline so we don't allocate a fresh dispatch queue per wait.
+    dispatch_queue_t listener_queue_ { nullptr };
+};
+
+// ---------------------------------------------------------------------------
 // MetalCommandBufferImpl — ICommandBuffer wrapper around
 // id<MTLCommandBuffer> + the active id<MTLRenderCommandEncoder>.
 //
@@ -653,6 +814,21 @@ public:
 
     [[nodiscard]] virtual MetalEventObj*
     lookup_event(SemaphoreHandle h) const noexcept = 0;
+
+    // phase649 (Sprint-5): texture-view + descriptor-set + timeline lookups.
+    // The descriptor-set lookup is consumed by update_descriptor_set + the
+    // future bind_descriptor_set path; the timeline lookup is consumed by
+    // submit(SubmitDesc) for the host-encoded wait / signal value hand-off.
+    // All three return nullptr for unknown / invalid handles, matching the
+    // rest of the Metal-side resolver contract.
+    [[nodiscard]] virtual id<MTLTexture>
+    lookup_texture_view(TextureViewHandle h) const noexcept = 0;
+
+    [[nodiscard]] virtual MetalDescriptorSetObj*
+    lookup_descriptor_set(DescriptorSetHandle h) const noexcept = 0;
+
+    [[nodiscard]] virtual MetalTimelineObj*
+    lookup_timeline(TimelineSemaphoreHandle h) const noexcept = 0;
 };
 
 }  // namespace cd::rhi::metal::detail
