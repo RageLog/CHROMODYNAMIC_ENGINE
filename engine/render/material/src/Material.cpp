@@ -428,6 +428,18 @@ void MaterialInstance::release_() noexcept
     desc_set_ = {};
     metallic_ = 0.0F;
     roughness_ = 0.5F;
+    alpha_mode_ = AlphaMode::kOpaque;
+    alpha_cutoff_ = 0.5F;
+    // T1.12 — restore PbrFactors-equivalent defaults so an inert
+    // MaterialInstance returns the documented neutral grey via the
+    // ray_hit_sample fallback path (rather than stale set values from
+    // before release).
+    albedo_[0] = 1.0F;
+    albedo_[1] = 1.0F;
+    albedo_[2] = 1.0F;
+    emissive_[0] = 0.0F;
+    emissive_[1] = 0.0F;
+    emissive_[2] = 0.0F;
 }
 
 void MaterialInstance::steal_(MaterialInstance&& other) noexcept
@@ -436,10 +448,26 @@ void MaterialInstance::steal_(MaterialInstance&& other) noexcept
     desc_set_ = other.desc_set_;
     metallic_ = other.metallic_;
     roughness_ = other.roughness_;
+    alpha_mode_ = other.alpha_mode_;
+    alpha_cutoff_ = other.alpha_cutoff_;
+    albedo_[0] = other.albedo_[0];
+    albedo_[1] = other.albedo_[1];
+    albedo_[2] = other.albedo_[2];
+    emissive_[0] = other.emissive_[0];
+    emissive_[1] = other.emissive_[1];
+    emissive_[2] = other.emissive_[2];
     other.device_ = nullptr;
     other.desc_set_ = {};
     other.metallic_ = 0.0F;
     other.roughness_ = 0.5F;
+    other.alpha_mode_ = AlphaMode::kOpaque;
+    other.alpha_cutoff_ = 0.5F;
+    other.albedo_[0] = 1.0F;
+    other.albedo_[1] = 1.0F;
+    other.albedo_[2] = 1.0F;
+    other.emissive_[0] = 0.0F;
+    other.emissive_[1] = 0.0F;
+    other.emissive_[2] = 0.0F;
 }
 
 void MaterialInstance::set_metallic(float m) noexcept
@@ -474,6 +502,74 @@ void MaterialInstance::set_alpha_params(const AlphaParams& p) noexcept
     // T1.10 — convenience wrapper: glTF loader writes the pair atomically.
     set_alpha_mode(p.mode);
     set_alpha_cutoff(p.cutoff);
+}
+
+void MaterialInstance::set_albedo(float r, float g, float b) noexcept
+{
+    // T1.12 — clamp to [0, kRtMaxRadiance]. Lower bound 0 keeps Schlick F0
+    // lerps and reflection multiplications well-defined; upper bound is a
+    // generous HDR cap so a runaway glTF baseColor cannot NaN the trace.
+    constexpr float kRtMaxRadiance = 1024.0F;
+    albedo_[0] = std::clamp(r, 0.0F, kRtMaxRadiance);
+    albedo_[1] = std::clamp(g, 0.0F, kRtMaxRadiance);
+    albedo_[2] = std::clamp(b, 0.0F, kRtMaxRadiance);
+}
+
+void MaterialInstance::set_emissive(float r, float g, float b) noexcept
+{
+    // T1.12 — same clamp domain as albedo so KHR_materials_emissive_strength
+    // scaled values cannot push downstream sums to inf.
+    constexpr float kRtMaxRadiance = 1024.0F;
+    emissive_[0] = std::clamp(r, 0.0F, kRtMaxRadiance);
+    emissive_[1] = std::clamp(g, 0.0F, kRtMaxRadiance);
+    emissive_[2] = std::clamp(b, 0.0F, kRtMaxRadiance);
+}
+
+// ---- T1.12 — RT closest-hit sample stub helper ----------------------------
+//
+// Today the cd::material library does not own an RT pipeline (the closest-hit
+// GLSL lives in samples/rhi/hello_rt/main.cpp as a string literal, and the
+// hello_engine sample is FROZEN). This helper is the **stable contract** the
+// future engine-owned RT pipeline will read: given a MaterialInstance, it
+// returns the per-prim shading state a general-geometry closest-hit shader
+// needs to shade a non-sphere hit (Sponza wall, curtain, vegetation).
+//
+// Defensive guarantee per T1.12 step 3: when `instance.is_valid()` is false
+// — which happens for default-constructed inert instances, or instances
+// whose device handles have been released — the helper still returns a
+// well-formed `RayHitSample` with the neutral-grey albedo fallback. The
+// `valid` flag lets the caller distinguish "real material data" from
+// "fallback" without parsing the albedo values.
+
+RayHitSample ray_hit_sample(const MaterialInstance& instance) noexcept
+{
+    RayHitSample s {};
+    if (!instance.is_valid())
+    {
+        // Defensive fallback: neutral grey so the reflection shows
+        // SOMETHING instead of black. Emissive stays zero so the
+        // fallback path cannot accidentally light the scene.
+        s.albedo[0] = kRayHitFallbackGrey;
+        s.albedo[1] = kRayHitFallbackGrey;
+        s.albedo[2] = kRayHitFallbackGrey;
+        s.emissive[0] = 0.0F;
+        s.emissive[1] = 0.0F;
+        s.emissive[2] = 0.0F;
+        s.metallic = 0.0F;
+        s.roughness = 0.5F;
+        s.valid = false;
+        return s;
+    }
+    s.albedo[0] = instance.albedo_r();
+    s.albedo[1] = instance.albedo_g();
+    s.albedo[2] = instance.albedo_b();
+    s.emissive[0] = instance.emissive_r();
+    s.emissive[1] = instance.emissive_g();
+    s.emissive[2] = instance.emissive_b();
+    s.metallic = instance.metallic();
+    s.roughness = instance.roughness();
+    s.valid = true;
+    return s;
 }
 
 cd::core::Result<MaterialInstance> MaterialInstance::create(cd::rhi::IDevice& device, const Material& material)

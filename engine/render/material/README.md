@@ -101,3 +101,74 @@ considered fully dielectric (cloth, plaster, wood) and skips the trace.
 Cross-reference `docs/AUDIT/learned-lessons-curtain-reflection-2026-06-03.md`
 for the full rationale. T1.9 (this commit) ships the API + contract; T1.9b
 ships the framegraph wiring; T1.8 ships the metallic-driven SSR gate ramp.
+
+## RT closest-hit sample contract (T1.12)
+
+The chrome PBR sphere bug surfaced in the 2026-06-03 user screenshot
+(`docs/AUDIT/learned-lessons-pbr-rt-and-curtain-alpha-2026-06-03.md`, Bug A)
+revealed a second blind spot: when an RT reflection ray hits a non-sphere
+prim (Sponza wall, curtain, vegetation), the closest-hit shader has no way
+to read the prim's `MaterialInstance` albedo / emissive — so the reflection
+falls back to black or to the IBL miss branch, and the chrome sphere
+appears to reflect only sky + nearby spheres.
+
+The full engine-owned RT closest-hit shader is deferred behind an inline-
+GLSL-string boundary (today the closest-hit lives in
+`samples/rhi/hello_rt/main.cpp` and `hello_engine` is FROZEN). What this
+library ships in phase 657 is the **stable CPU-side contract** the future
+shader-record builder will read:
+
+```cpp
+#include <cd/material/Material.hpp>
+
+cd::material::MaterialInstance inst = /* per-prim, glTF-loaded */;
+inst.set_albedo(0.10F, 0.65F, 0.20F);    // Sponza curtain green
+inst.set_emissive(0.0F, 0.05F, 0.0F);    // optional LED trim
+inst.set_metallic(0.0F);
+inst.set_roughness(0.85F);
+
+const auto sample = cd::material::ray_hit_sample(inst);
+// sample.albedo[3], sample.emissive[3], sample.metallic, sample.roughness,
+// sample.valid — packed into the per-prim SBT albedo SSBO by the future
+// engine RT pipeline. Closest-hit GLSL reads:
+//
+//   const vec3 albedo = albedo_buf[gl_InstanceCustomIndexEXT].rgb;
+//   payload.color = albedo * lighting + emissive;
+```
+
+### Defensive fallback
+
+When the `MaterialInstance` is inert (default-constructed, or device
+handles released) `ray_hit_sample` returns `valid = false` AND fills
+`albedo` with the neutral-grey constant `kRayHitFallbackGrey = 0.6`.
+Emissive falls back to zero so the fallback path cannot accidentally
+light the scene.
+
+The 0.6 magnitude is high enough to read as a real diffuse reflection
+against an HDR sky background, low enough to look like an unresolved
+stand-in instead of a lit surface. Without this fallback a partially-
+wired material would render the chrome reflection as black, which is
+indistinguishable from a miss — the user would see "no geometry in the
+chrome" instead of "the geometry is there but its colour is missing".
+
+### Future RT closest-hit integration point
+
+When the engine RT pipeline lands (post-X6, when Vulkan + D3D12 closest-
+hit shader records are owned by `cd::render::rt_pipeline` instead of a
+sample), the integration is:
+
+1. The shader-record builder iterates the scene's per-prim
+   `MaterialInstance` list and calls `ray_hit_sample(*inst)` for each.
+2. The result is packed into a per-prim SSBO indexed by
+   `gl_InstanceCustomIndexEXT` — same indexing pattern as
+   `samples/rhi/hello_rt/main.cpp` already demonstrates.
+3. The closest-hit GLSL reads the buffer on every hit and shades
+   `payload.color` from `albedo + emissive + Schlick(metallic,roughness)`
+   instead of returning black / IBL miss.
+4. The branch is gated on `hit_kind != kSphere` so the existing chrome /
+   sphere code paths stay byte-identical (no M0 regression).
+
+The unit-test target `cd_test_rt_hit_general_geometry` locks in the
+contract: case 1 (valid glTF prim → non-zero sample.albedo), case 2
+(inert instance → neutral-grey fallback). Future RT integration work
+re-runs this test before touching downstream shader code.

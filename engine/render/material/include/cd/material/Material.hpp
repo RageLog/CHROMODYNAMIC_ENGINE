@@ -318,6 +318,40 @@ public:
         return alpha_mode_ == AlphaMode::kBlend;
     }
 
+    // ---- T1.12: CPU-side albedo + emissive accessors ----------------------
+    //
+    // The metallic / roughness accessors above let the G-buffer fill pass
+    // forward the two scalar BRDF knobs into MRT slot 2 without inferring
+    // them from a material-kind enum (the surface_flag bug pattern). T1.12
+    // extends the same idea to the two RGB values an RT closest-hit shader
+    // needs to shade a general-geometry hit:
+    //
+    //   * albedo   — baseColor.rgb (alpha lives on alpha_mode / alpha_cutoff).
+    //   * emissive — KHR_materials_emissive_strength scaled emissive.rgb.
+    //
+    // The accessors are pure CPU state. The Sponza glTF loader writes them
+    // when it builds each prim's MaterialInstance; the (future) RT hit-shader
+    // record builder reads them via `cd::material::ray_hit_sample` and packs
+    // them into the per-instance SSBO that the closest-hit GLSL samples on
+    // `gl_InstanceCustomIndexEXT`.
+    //
+    // Defaults mirror `PbrFactors`: albedo = (1,1,1), emissive = (0,0,0).
+    // Components are clamped into [0, kRtMaxRadiance] on set; the upper
+    // bound prevents NaN propagation if a glTF importer ships a runaway
+    // emissive strength (HDR scenes commonly run into the hundreds, so the
+    // cap is generous — but finite).
+
+    [[nodiscard]] float albedo_r() const noexcept { return albedo_[0]; }
+    [[nodiscard]] float albedo_g() const noexcept { return albedo_[1]; }
+    [[nodiscard]] float albedo_b() const noexcept { return albedo_[2]; }
+
+    [[nodiscard]] float emissive_r() const noexcept { return emissive_[0]; }
+    [[nodiscard]] float emissive_g() const noexcept { return emissive_[1]; }
+    [[nodiscard]] float emissive_b() const noexcept { return emissive_[2]; }
+
+    void set_albedo(float r, float g, float b) noexcept;
+    void set_emissive(float r, float g, float b) noexcept;
+
 private:
     void release_() noexcept;
     void steal_(MaterialInstance&& other) noexcept;
@@ -330,6 +364,63 @@ private:
     // T1.10 — glTF alphaMode defaults (opaque, standard cutoff).
     AlphaMode alpha_mode_ { AlphaMode::kOpaque };
     float alpha_cutoff_ { 0.5F };
+    // T1.12 — RT closest-hit sample state. Defaults match PbrFactors
+    // (white diffuse, no emissive).
+    float albedo_[3]   { 1.0F, 1.0F, 1.0F };
+    float emissive_[3] { 0.0F, 0.0F, 0.0F };
 };
+
+// ---- T1.12 — RT closest-hit sample stub helper -----------------------------
+//
+// Future integration point for the cd::material RT closest-hit shader (or its
+// equivalent shader-record table). When an RT reflection / GI / probe ray
+// hits a non-sphere geometry, the closest-hit shader needs the hit material's
+// albedo + emissive to shade the sample correctly — without that, the chrome
+// PBR sphere reflection of a Sponza scene shows only sky + nearby spheres
+// because every general-geometry hit falls back to black or to the IBL miss
+// branch.
+//
+// The full integration (closest-hit GLSL branch on hit_kind, per-instance
+// SBT albedo SSBO, barycentric UV interpolation) is deferred behind the
+// inline-GLSL-string boundary in samples/rhi/hello_rt and the eventual
+// engine RT pipeline. This header-only helper is the **stable contract**:
+// the CPU-side data the future shader-record builder will pack.
+//
+// Returned by value. Contains everything an RT hit needs to shade a sample:
+//   - albedo   (RGB; vec3-as-3-float for std140 ergonomics)
+//   - emissive (RGB)
+//   - metallic + roughness (forwarded from the MaterialInstance accessors —
+//     duplicated here so the future SBT-record builder reads ONE struct
+//     per prim instead of three live MaterialInstance fields).
+//   - valid    : false when the source instance is inert (no device, no
+//                descriptor set); the caller must use the neutral-grey
+//                fallback in that case to keep the reflection visible.
+//
+// Defensive guarantee: when the MaterialInstance is inert / invalid,
+// `ray_hit_sample` returns `valid = false` AND fills albedo with the
+// neutral-grey fallback (0.6, 0.6, 0.6) so a closest-hit shader that
+// blindly multiplies `payload.color *= sample.albedo` still shows
+// SOMETHING in the reflection instead of black. Emissive falls back to
+// zero so the fallback path cannot light the scene by accident.
+struct RayHitSample
+{
+    float albedo[3]   { 0.6F, 0.6F, 0.6F };   ///< neutral-grey fallback
+    float emissive[3] { 0.0F, 0.0F, 0.0F };
+    float metallic   { 0.0F };
+    float roughness  { 0.5F };
+    bool  valid      { false };
+};
+
+/// Neutral-grey fallback used when the source MaterialInstance is inert.
+/// 0.6 matches the audit doc note on "show SOMETHING instead of black"
+/// (docs/AUDIT/learned-lessons-pbr-rt-and-curtain-alpha-2026-06-03.md,
+/// Bug A, T1.12 step 3) and is high enough to read as a real reflection
+/// against a typical HDR sky background but low enough to look like an
+/// unresolved diffuse stand-in, not a lit surface.
+inline constexpr float kRayHitFallbackGrey = 0.6F;
+
+/// Sample the per-prim shading state an RT closest-hit shader would read.
+/// Defensive against inert `MaterialInstance` per the T1.12 contract.
+[[nodiscard]] RayHitSample ray_hit_sample(const MaterialInstance& instance) noexcept;
 
 }  // namespace cd::material
