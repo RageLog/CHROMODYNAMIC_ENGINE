@@ -95,3 +95,12 @@ add_subdirectory(cutscene_player)
 #                  DirectorState + AiDirector. Pure state machine; no ECS /
 #                  render / audio dependency.
 add_subdirectory(ai_director)
+
+# Phase 645 — "BG3-style branching dialog graph":
+#   dialog_tree — cd::game::dialog_tree BG3-style directed dialog graph.
+#                 NodeKind (Say/Choice/Condition/End) + transparent kCondition
+#                 chaining + boolean condition-variable store. Sibling to
+#                 cd::game::dialogue (linear chain); different responsibility.
+#                 A designer authors a 5-node tree; player choices + runtime
+#                 flags drive different endings without recompiling.
+add_subdirectory(dialog_tree)
