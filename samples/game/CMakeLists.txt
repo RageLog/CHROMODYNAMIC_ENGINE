@@ -32,9 +32,15 @@
 #                cd::game::cutscene_player is consumable standalone.
 #                3 phases x 1000 ms, 2 events/phase, 50 x 100 ms ticks.
 
+#   hello_dialog_branch — Phase 652 / M10 W5A: BG3-style 7-node dialog graph
+#                (cd::game::dialog_tree). 4 simulated play-throughs show kSay /
+#                kChoice / kCondition / kEnd routing as 4 distinct stories.
+#                Designer reads main.cpp once, knows how to author 200 nodes.
+
 add_subdirectory(hello_game)
 add_subdirectory(hello_npc)
 add_subdirectory(hello_world)
 add_subdirectory(hello_narrative)
 add_subdirectory(hello_ai_director)
 add_subdirectory(hello_cutscene_player)
+add_subdirectory(hello_dialog_branch)
