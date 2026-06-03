@@ -25,8 +25,16 @@
 #   hello_narrative — Phase 505 / G4.4 closeout: branching dialogue +
 #                QuestLog "Find 3 apples" in en/tr/ar with CLDR plurals
 #                (cd::game::dialogue + cd::game::quest + cd::game::l10n).
+#   hello_ai_director — Phase 634 / M9 W2: console proof of cd::game::ai_director;
+#                3 EncounterTemplates, 20-tick simulation with player events,
+#                TensionState transitions + request_next_encounter output.
+#   hello_cutscene_player — Phase 636 / M9 W2: console proof that
+#                cd::game::cutscene_player is consumable standalone.
+#                3 phases x 1000 ms, 2 events/phase, 50 x 100 ms ticks.
 
 add_subdirectory(hello_game)
 add_subdirectory(hello_npc)
 add_subdirectory(hello_world)
 add_subdirectory(hello_narrative)
+add_subdirectory(hello_ai_director)
+add_subdirectory(hello_cutscene_player)
