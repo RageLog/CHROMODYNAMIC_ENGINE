@@ -70,6 +70,7 @@ cd_add_sample(editor
     cd::editor
     cd::editor_ui
     cd::editor_cdproj
+    cd::material                        # phase659 / M11 W3B Sprint-4 -- always linked (Route A runtime path)
     cd::platform
     cd::rhi
     cd::rhi_vulkan
@@ -87,27 +88,32 @@ cd_add_sample(editor
 # separately from the demo collection.
 set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
 
-# Phase 608 / M7 W3 — Route A vs Route B pipeline selection.
+# Phase 608 / M7 W3 introduced Route A vs Route B as a hard compile-time
+# split. Phase 659 / M11 W3B Sprint-4 turns the flag into a PREFERRED-PATH
+# selector with graceful runtime fallback:
 #
-# CD_USE_MATERIAL_UI_ROUTE_A (default OFF) -- when ON, the editor binary
-# builds a cd::material::UiVariant at boot and wires it into the UI
-# submitter via Submitter::create_with_material_ui_variant. The default
-# stays OFF until the Route A path is visually verified end-to-end
-# against a real swapchain (per the M7 W3 brief).
+# CD_USE_MATERIAL_UI_ROUTE_A (default ON after Sprint-4):
+#   * ON  -- main.cpp tries Route A (cd::material::UiVariant +
+#            Submitter::create_with_material_ui_variant) first; on any
+#            error it logs a warning and falls back to Route B
+#            (Submitter::create_with_inline_shader) so the editor still
+#            opens with a live swapchain. Boot prints which route
+#            actually succeeded ("Route A success" or "Route A failed ->
+#            Route B fallback").
+#   * OFF -- main.cpp never attempts Route A; it goes straight to
+#            Route B. Boot prints "Route B only".
 #
-# OFF: editor boots with cd::ui_renderer_rhi's inline GLSL submitter
-#      (Route B / Submitter::create_with_inline_shader). Solid panel
-#      quads only -- enough to make the editor window visually alive.
+# Both Submitter factories are linked into the binary regardless of the
+# flag value (cd::material is now an unconditional dependency above);
+# the flag only chooses whether to even try Route A at runtime. Default
+# is ON because the runtime fallback makes the strategic path safe to
+# ship as the visible default; OFF stays available for hosts where
+# attempting Route A is undesirable (e.g. CI bots with no glslang).
 #
-# ON : editor boots the cd::material UI variant path (Route A /
-#      Submitter::create_with_material_ui_variant). Adds cd::material
-#      to the binary's link surface.
-#
-# Enable via:   cmake -B build -DCD_USE_MATERIAL_UI_ROUTE_A=ON ...
+# Override via:   cmake -B build -DCD_USE_MATERIAL_UI_ROUTE_A=OFF ...
 option(CD_USE_MATERIAL_UI_ROUTE_A
-       "Editor uses cd::material UI variant pipeline (Route A); OFF = inline GLSL fallback (Route B)"
-       OFF)
+       "Editor prefers Route A (cd::material UI variant) at runtime, with safety fallback to Route B (inline GLSL)."
+       ON)
 if(CD_USE_MATERIAL_UI_ROUTE_A)
   target_compile_definitions(cd_sample_editor PRIVATE CD_USE_MATERIAL_UI_ROUTE_A=1)
-  target_link_libraries(cd_sample_editor PRIVATE cd::material)
 endif()

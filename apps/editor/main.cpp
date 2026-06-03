@@ -96,13 +96,17 @@
 #include <cd/ui/widgets/DockSpace.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
-// Phase 608 / M7 W3 — opt-in Route A path (default OFF). The
-// cd::material UI variant header drags in glslang's transitive include
-// surface via cd::shader, so keep the include local to the Route A
-// compile-time gate.
-#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
+// Phase 608 / M7 W3 — Route A path. As of phase659 / M11 W3B Sprint-4 the
+// cd::material UI variant header is included UNCONDITIONALLY so the editor
+// can attempt Route A at runtime and gracefully fall back to Route B when
+// the cd::material::create_ui_variant factory returns an error (e.g. the
+// host lacks glslang or the descriptor layout cannot be allocated). The
+// compile-time `CD_USE_MATERIAL_UI_ROUTE_A` flag now controls the
+// PREFERRED route -- ON (default) = "try A first, fall back to B on error",
+// OFF = "only ever build with B". Both Submitter factories are linked into
+// the binary either way; the runtime self-test below logs which one
+// succeeded so the user sees the active path on every boot.
 #include <cd/material/UiVariant.hpp>
-#endif
 
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
@@ -861,27 +865,35 @@ int main(int argc, char** argv)
 
     // -- 7. UI submitter ----------------------------------------------------
     //
-    // Phase 608 / M7 W3 -- pick between two pipelines via compile-time flag:
+    // Phase 608 / M7 W3 introduced Route A vs Route B as a compile-time
+    // gate. Phase 659 / M11 W3B Sprint-4 flips that to a RUNTIME selection
+    // with graceful fallback, so default-on Route A becomes safe to ship:
     //
-    //   Route A (CD_USE_MATERIAL_UI_ROUTE_A, OFF by default): build a
-    //   cd::material::UiVariant via cd::material::create_ui_variant and
-    //   hand it to Submitter::create_with_material_ui_variant. This is
-    //   the strategic path; the variant carries the Sprint-1/Sprint-2
-    //   UI pipeline (vertex-color baseline today, theme UBO + SDF
-    //   sampler optional). Default is OFF until the path is visually
-    //   verified end-to-end against a real swapchain.
+    //   Route A (PREFERRED when CD_USE_MATERIAL_UI_ROUTE_A is defined --
+    //   default ON after Sprint-4): build a cd::material::UiVariant via
+    //   cd::material::create_ui_variant and hand it to
+    //   Submitter::create_with_material_ui_variant. The variant carries
+    //   the Sprint-1/Sprint-2 UI pipeline (vertex-color baseline + theme
+    //   UBO; SDF sampler stays off until ui_font is wired to a sample-able
+    //   TextureView). If anything in this pipeline returns an error -- the
+    //   factory itself, descriptor allocation, glslang missing -- the
+    //   editor logs a clear warning and immediately retries Route B so
+    //   the user still sees a live window. The boot log line "editor:
+    //   submitter route = ..." records which path actually succeeded.
     //
-    //   Route B (default -- what ships today): cd::ui_renderer_rhi compiles
-    //   a minimal inline GLSL pipeline at boot (solid quads only, no
-    //   sampler). That's enough to render every panel rect + theme palette
-    //   so the editor's window shows DockSpace tiles.
+    //   Route B (FALLBACK when Route A errors, or PRIMARY when the flag is
+    //   compiled off): cd::ui_renderer_rhi compiles a minimal inline GLSL
+    //   pipeline at boot (solid quads only, no sampler). That's enough to
+    //   render every panel rect + theme palette so the editor's window
+    //   shows DockSpace tiles.
     //
-    // The constant below resolves at compile time so the unused branch
-    // is dead-stripped; only the active path ends up in the binary.
+    // The compile-time flag now only chooses between "prefer A, accept B
+    // on failure" (ON) and "B only, never try A" (OFF) -- both Submitter
+    // factories are linked into the binary either way.
 #if defined(CD_USE_MATERIAL_UI_ROUTE_A)
-    constexpr bool kEditorRouteA = true;
+    constexpr bool kEditorPreferRouteA = true;
 #else
-    constexpr bool kEditorRouteA = false;
+    constexpr bool kEditorPreferRouteA = false;
 #endif
 
     urr::SubmitterCreateInfo sci {};
@@ -889,9 +901,19 @@ int main(int argc, char** argv)
     sci.max_indices  = 65536U;
     sci.color_format = rhi::Format::kBGRA8Unorm;
 
+    // Runtime self-test marker -- which route actually produced the
+    // working submitter. Logged once after submitter wire-up so the user
+    // sees the active path on every boot. Values:
+    //   0 = uninitialized
+    //   1 = Route A succeeded (preferred path took effect)
+    //   2 = Route A attempted then failed; Route B succeeded (fallback)
+    //   3 = Route B was the only attempt (flag OFF or A path unavailable)
+    int route_taken { 0 };
+
     cd::core::Result<urr::Submitter> sub_r =
         std::unexpected(cd::core::ErrorCode { 0x0001U, 0U, "uninitialized" });
-#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
+
+    if (kEditorPreferRouteA)
     {
         // Build the cd::material::UiVariant up front. Phase 648 / M10 W3A
         // Sprint-3: opt into the Sprint-2 theme-UBO branch so the variant
@@ -912,35 +934,68 @@ int main(int argc, char** argv)
         if (!var_r.has_value())
         {
             std::fprintf(stderr,
-                         "editor: cd::material::create_ui_variant failed: "
-                         "domain=%u code=%u\n",
+                         "editor: WARNING -- Route A (cd::material UI variant) "
+                         "create_ui_variant failed: domain=%u code=%u -- "
+                         "falling back to Route B (inline GLSL).\n",
                          var_r.error().domain, var_r.error().code);
-            return 2;
+            sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
+            route_taken = sub_r.has_value() ? 2 : 0;
         }
-        sub_r = urr::Submitter::create_with_material_ui_variant(
-            *device, sci, std::move(*var_r));
+        else
+        {
+            sub_r = urr::Submitter::create_with_material_ui_variant(
+                *device, sci, std::move(*var_r));
+            if (!sub_r.has_value())
+            {
+                std::fprintf(stderr,
+                             "editor: WARNING -- Route A "
+                             "Submitter::create_with_material_ui_variant "
+                             "failed: domain=%u code=%u -- falling back "
+                             "to Route B (inline GLSL).\n",
+                             sub_r.error().domain, sub_r.error().code);
+                sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
+                route_taken = sub_r.has_value() ? 2 : 0;
+            }
+            else
+            {
+                route_taken = 1;
+            }
+        }
     }
-#else
-    sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
-#endif
+    else
+    {
+        sub_r = urr::Submitter::create_with_inline_shader(*device, sci);
+        route_taken = sub_r.has_value() ? 3 : 0;
+    }
+
     if (!sub_r.has_value())
     {
-        std::fprintf(stderr, "editor: ui_renderer_rhi::Submitter::create%s failed.\n",
-                     kEditorRouteA ? "_with_material_ui_variant"
-                                   : "_with_inline_shader");
+        std::fprintf(stderr,
+                     "editor: ui_renderer_rhi::Submitter::create failed on "
+                     "both Route A and Route B (last error: domain=%u code=%u).\n",
+                     sub_r.error().domain, sub_r.error().code);
         return 2;
     }
     auto& submitter = *sub_r;
-    std::printf("editor: submitter wired (%s).\n",
-                kEditorRouteA ? "Route A / cd::material UI variant"
-                              : "Route B / inline GLSL fallback");
 
-#if defined(CD_USE_MATERIAL_UI_ROUTE_A)
-    // Phase 648 / M10 W3A Sprint-3 — feed the editor's dark theme palette
-    // into the variant's theme UBO so the fragment shader's `tint` math
-    // multiplies vertex color by the real swatches. Without this call
-    // the UBO carries the `UiThemePaletteUbo` defaults (white primary,
-    // dark grey surface) seeded at submitter create-time.
+    // Runtime self-test log line — exactly one of these prints every boot.
+    const char* route_label = "unknown";
+    switch (route_taken)
+    {
+        case 1: route_label = "Route A success (cd::material UI variant)"; break;
+        case 2: route_label = "Route A failed -> Route B fallback (inline GLSL)"; break;
+        case 3: route_label = "Route B only (CD_USE_MATERIAL_UI_ROUTE_A off)"; break;
+        default: route_label = "unknown"; break;
+    }
+    std::printf("editor: submitter route = %s.\n", route_label);
+    std::fflush(stdout);
+
+    // Feed the editor's dark theme palette into the variant's theme UBO so
+    // the fragment shader's `tint` math multiplies vertex color by the real
+    // swatches. Only meaningful on Route A; `set_theme_palette` is a no-op
+    // (returns false) on the Route B inline path, so the call is safe to
+    // make unconditionally.
+    if (route_taken == 1)
     {
         const auto dark = uth::kDarkTheme();
         const auto pri  = dark.color(uth::PaletteSlot::kPrimary);
@@ -960,7 +1015,6 @@ int main(int argc, char** argv)
         std::printf("editor: Route A theme palette upload %s.\n",
                     pal_ok ? "OK" : "skipped (variant has no theme UBO)");
     }
-#endif
 
     // -- 8. Frame loop ------------------------------------------------------
     ur::DrawBatcher                batcher;
