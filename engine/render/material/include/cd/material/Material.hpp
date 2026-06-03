@@ -24,6 +24,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
+#include <cd/material/AlphaMode.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Enums.hpp>
 #include <cd/rhi/Format.hpp>
@@ -235,12 +236,76 @@ public:
     /// owning Material's `apply()`.
     void bind(cd::rhi::ICommandBuffer& cmd, std::uint32_t set_index = 0) const;
 
+    // ---- T1.9: metallic / roughness CPU-side accessors --------------------
+    //
+    // The Material descriptor-set ships metallic/roughness to the GPU via
+    // the std140 PbrFactors UBO. These accessors expose the same scalars on
+    // the CPU side so the engine can:
+    //
+    //   * write metallic into the G-buffer metallic_roughness MRT channel
+    //     during the geometry / fill pass, instead of inferring it from the
+    //     material kind enum (the bug pattern documented in
+    //     docs/AUDIT/learned-lessons-curtain-reflection-2026-06-03.md).
+    //   * gate SSR / RT-reflection composite by the per-pixel metallic
+    //     readback, not by a discrete surface_flag bucket.
+    //
+    // Both values are clamped to [0,1] on set — out-of-range input is
+    // silently saturated so downstream BRDF math (Schlick F0 lerp, GGX
+    // roughness^2) cannot see NaNs or negative weights.
+    //
+    // The accessors are pure CPU state; they do NOT touch the descriptor
+    // set. The G-buffer writer pass (and any std140 packer) is responsible
+    // for forwarding the values to the GPU on the next frame.
+
+    [[nodiscard]] float metallic() const noexcept
+    {
+        return metallic_;
+    }
+
+    [[nodiscard]] float roughness() const noexcept
+    {
+        return roughness_;
+    }
+
+    void set_metallic(float m) noexcept;
+    void set_roughness(float r) noexcept;
+
+    // ---- T1.10: glTF alphaMode round-trip ---------------------------------
+    //
+    // The render-tier mirror of `cd::asset::gltf::GltfAlphaMode`. The glTF
+    // loader sets these when ingesting a material; the shader / pipeline-
+    // selection code reads them to:
+    //   * MASK   → enable per-fragment discard against `alpha_cutoff_`
+    //   * BLEND  → route through the alpha-blend pass (sort back-to-front,
+    //              depth-test on / depth-write off)
+    //   * OPAQUE → standard depth-tested + depth-written render
+    // See docs/AUDIT/learned-lessons-curtain-reflection-2026-06-03.md.
+    [[nodiscard]] AlphaMode alpha_mode() const noexcept
+    {
+        return alpha_mode_;
+    }
+
+    [[nodiscard]] float alpha_cutoff() const noexcept
+    {
+        return alpha_cutoff_;
+    }
+
+    void set_alpha_mode(AlphaMode m) noexcept;
+    void set_alpha_cutoff(float c) noexcept;
+    void set_alpha_params(const AlphaParams& p) noexcept;
+
 private:
     void release_() noexcept;
     void steal_(MaterialInstance&& other) noexcept;
 
     cd::rhi::IDevice* device_ { nullptr };
     cd::rhi::DescriptorSetHandle desc_set_ {};
+    // T1.9 — match PbrFactors defaults (dielectric, half-rough).
+    float metallic_ { 0.0F };
+    float roughness_ { 0.5F };
+    // T1.10 — glTF alphaMode defaults (opaque, standard cutoff).
+    AlphaMode alpha_mode_ { AlphaMode::kOpaque };
+    float alpha_cutoff_ { 0.5F };
 };
 
 }  // namespace cd::material

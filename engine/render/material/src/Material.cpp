@@ -4,6 +4,7 @@
 #include <cd/material/Material.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <ios>
@@ -425,14 +426,54 @@ void MaterialInstance::release_() noexcept
         device_->destroy_descriptor_set(desc_set_);
     device_ = nullptr;
     desc_set_ = {};
+    metallic_ = 0.0F;
+    roughness_ = 0.5F;
 }
 
 void MaterialInstance::steal_(MaterialInstance&& other) noexcept
 {
     device_ = other.device_;
     desc_set_ = other.desc_set_;
+    metallic_ = other.metallic_;
+    roughness_ = other.roughness_;
     other.device_ = nullptr;
     other.desc_set_ = {};
+    other.metallic_ = 0.0F;
+    other.roughness_ = 0.5F;
+}
+
+void MaterialInstance::set_metallic(float m) noexcept
+{
+    // T1.9 — clamp into [0,1]; out-of-range input is silently saturated so
+    // downstream Schlick F0 lerp and GGX roughness^2 stay numerically safe.
+    metallic_ = std::clamp(m, 0.0F, 1.0F);
+}
+
+void MaterialInstance::set_roughness(float r) noexcept
+{
+    roughness_ = std::clamp(r, 0.0F, 1.0F);
+}
+
+void MaterialInstance::set_alpha_mode(AlphaMode m) noexcept
+{
+    // T1.10 — enum domain is already constrained; defensive default for
+    // any caller that casts an out-of-range integer in.
+    alpha_mode_ = (m == AlphaMode::kOpaque || m == AlphaMode::kMask || m == AlphaMode::kBlend)
+                  ? m : AlphaMode::kOpaque;
+}
+
+void MaterialInstance::set_alpha_cutoff(float c) noexcept
+{
+    // T1.10 — glTF 2.0 §3.9.3 cutoff is in [0,1]. Saturate so the shader
+    // discard branch stays well-defined.
+    alpha_cutoff_ = std::clamp(c, 0.0F, 1.0F);
+}
+
+void MaterialInstance::set_alpha_params(const AlphaParams& p) noexcept
+{
+    // T1.10 — convenience wrapper: glTF loader writes the pair atomically.
+    set_alpha_mode(p.mode);
+    set_alpha_cutoff(p.cutoff);
 }
 
 cd::core::Result<MaterialInstance> MaterialInstance::create(cd::rhi::IDevice& device, const Material& material)
