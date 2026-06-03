@@ -7,6 +7,7 @@ add_subdirectory(hello_scene_save)
 add_subdirectory(hello_scene_streamer)
 add_subdirectory(hello_texture_streamer)
 add_subdirectory(hello_audio_streamer)
+add_subdirectory(hello_texture_compress_ratio)
 # Vulkan-gated samples that need rendering to visualize the imported asset.
 if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_mesh)
