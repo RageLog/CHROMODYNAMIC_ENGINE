@@ -44,6 +44,7 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <cstdio>
 
 namespace cd::asset::gltf
 {
@@ -312,6 +313,47 @@ struct AccessorView
     scene.textures.reserve(model.textures.size());
     for (const auto& tex : model.textures)
         scene.textures.push_back(decode_texture(model, tex));
+
+    // ---- T1.14: alpha-mode override pass ------------------------------------
+    // When the glTF JSON says alphaMode="OPAQUE" but the linked base-color
+    // texture has alpha data that suggests a different intent, we infer the
+    // correct mode. This handles the Sponza-curtain case where artists export
+    // without setting alphaMode explicitly (the spec default is OPAQUE).
+    //
+    // Override policy:
+    //   JSON OPAQUE + inferred kMask  → override to kMask + emit warning.
+    //   JSON OPAQUE + inferred kBlend → keep JSON's OPAQUE choice; an artist
+    //     who deliberately wants BLEND would have set it in the authoring tool.
+    //   JSON MASK / BLEND             → never touched; respect the author.
+    for (auto& mat : scene.materials)
+    {
+        if (mat.alpha_mode != GltfAlphaMode::kOpaque)
+            continue;  // JSON had a deliberate non-OPAQUE setting — don't touch.
+
+        if (mat.base_color_texture < 0 ||
+            static_cast<std::size_t>(mat.base_color_texture) >= scene.textures.size())
+            continue;  // No linked alpha texture → nothing to infer from.
+
+        const auto& tex = scene.textures[static_cast<std::size_t>(mat.base_color_texture)];
+        if (tex.rgba.empty())
+            continue;  // Texture failed to decode → skip.
+
+        const GltfAlphaMode inferred = infer_alpha_mode(std::span<const std::uint8_t>(tex.rgba));
+        if (inferred == GltfAlphaMode::kMask)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
+            std::fprintf(
+                stderr,
+                "[cd::asset::gltf] T1.14 alpha-mode override: material '%s' "
+                "JSON=OPAQUE → inferred MASK (alpha histogram >= 95%% fully "
+                "opaque with cutout edges). Override applied.\n",
+                mat.name.c_str()
+            );
+            mat.alpha_mode = GltfAlphaMode::kMask;
+        }
+        // inferred == kBlend: keep OPAQUE per the override policy above.
+        // inferred == kOpaque: nothing to do.
+    }
 
     // Meshes — flatten primitives (do NOT compute bbox here; that comes
     // from per-instance world-space accumulation below).
@@ -595,6 +637,47 @@ struct AccessorView
 }
 
 }  // namespace
+
+// ---- Public helper: alpha-mode heuristic ------------------------------------
+
+GltfAlphaMode infer_alpha_mode(std::span<const std::uint8_t> rgba_pixels) noexcept
+{
+    // Each pixel is 4 bytes: R G B A. We only inspect the A channel (byte 3).
+    // Empty span = no evidence of translucency → kOpaque.
+    if (rgba_pixels.empty())
+        return GltfAlphaMode::kOpaque;
+
+    // Require a complete set of RGBA4 pixels.
+    const std::size_t pixel_count = rgba_pixels.size() / 4U;
+    if (pixel_count == 0U)
+        return GltfAlphaMode::kOpaque;
+
+    std::size_t fully_opaque = 0U;
+    for (std::size_t i = 0U; i < pixel_count; ++i)
+    {
+        if (rgba_pixels[i * 4U + 3U] == 0xFFU)
+            ++fully_opaque;
+    }
+
+    // 100 % fully opaque → kOpaque.
+    if (fully_opaque == pixel_count)
+        return GltfAlphaMode::kOpaque;
+
+    // Degenerate: all pixels are fully transparent (alpha==0 across the board).
+    // This is an invalid / placeholder texture — we have no evidence of
+    // semi-transparency intent, so kOpaque is the safe fallback.
+    if (fully_opaque == 0U)
+        return GltfAlphaMode::kOpaque;
+
+    // >= 95 % at 255 AND at least one < 255 → kMask (cutout edges).
+    // Use integer arithmetic: fully_opaque * 20 >= pixel_count * 19
+    // avoids floating-point and is exact for any pixel count.
+    if (fully_opaque * 20U >= pixel_count * 19U)
+        return GltfAlphaMode::kMask;
+
+    // < 95 % fully opaque (but at least one opaque) → mixed / semi-transparent.
+    return GltfAlphaMode::kBlend;
+}
 
 cd::core::Result<GltfScene> load_gltf(std::string_view path)
 {

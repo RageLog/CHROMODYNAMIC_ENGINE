@@ -254,6 +254,27 @@ struct GltfScene
     cd::math::Vec3f bbox_max { 0.0F, 0.0F, 0.0F };
 };
 
+// ---- Alpha-mode heuristic ---------------------------------------------------
+
+/// Infer the correct `GltfAlphaMode` from the alpha channel of a decoded RGBA8
+/// texture. The input span contains interleaved RGBA8 pixels (4 bytes per
+/// pixel); stride is always 4.
+///
+/// Decision table (T1.14 spec):
+///   * All pixels at alpha == 255              → kOpaque
+///   * >= 95 % at 255 AND at least one < 255   → kMask  (rare cutout edges)
+///   * < 95 % at 255 (mixed / semi-transparent) → kBlend
+///
+/// Degenerate edge: empty span → kOpaque (safe fallback — no pixel data means
+/// no evidence of translucency).
+///
+/// The helper is intentionally stateless and header-exposed so:
+///   a) unit tests can call it directly without going through a file-backed
+///      loader, and
+///   b) a future offline pre-processor pass can use it without linking the
+///      full `cd::asset_gltf` library (the function body is in the .cpp).
+[[nodiscard]] GltfAlphaMode infer_alpha_mode(std::span<const std::uint8_t> rgba_pixels) noexcept;
+
 // ---- Loader API -------------------------------------------------------------
 
 /// Load a glTF file from disk. The container type is detected from the file
