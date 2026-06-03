@@ -54,3 +54,4 @@ add_subdirectory(nrc)                 # Faz 3 M — Muller 2021 Neural Radiance 
 # rhi backends now consolidated inside rhi/CMakeLists.txt (phase418)
 add_subdirectory(spirv_cross_glue)  # B-infra1 — SPIR-V → HLSL/MSL/GLSL cross-compilation
 add_subdirectory(scene_ingest)      # phase439 — generic glTF → GPU + ECS (ADR-20260530)
+add_subdirectory(lighting_clusters) # phase660 — Forward+ froxel grid CPU assignment (Olsson 2012)
