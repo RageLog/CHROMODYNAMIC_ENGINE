@@ -98,7 +98,7 @@ void print_event(double current_ms, const ir::InputEvent& ev) noexcept
     {
         std::printf("  [t=%7.2f ms] %-14s  dx=%+6.3f  dy=%+6.3f\n",
                     current_ms,
-                    kind_name(ev.kind).data(),
+                    std::string(kind_name(ev.kind)).c_str(),
                     static_cast<double>(ev.payload[0]),
                     static_cast<double>(ev.payload[1]));
     }
@@ -106,14 +106,14 @@ void print_event(double current_ms, const ir::InputEvent& ev) noexcept
     {
         std::printf("  [t=%7.2f ms] %-14s  code=%u\n",
                     current_ms,
-                    kind_name(ev.kind).data(),
+                    std::string(kind_name(ev.kind)).c_str(),
                     ev.code);
     }
     else
     {
         std::printf("  [t=%7.2f ms] %-14s  code=%u\n",
                     current_ms,
-                    kind_name(ev.kind).data(),
+                    std::string(kind_name(ev.kind)).c_str(),
                     ev.code);
     }
 }
