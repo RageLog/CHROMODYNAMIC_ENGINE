@@ -13,6 +13,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -34,10 +35,10 @@ inline constexpr std::uint64_t kGBd = 1000ULL * 1000ULL * 1000ULL;
     auto two_decimal = [](double d) noexcept
     {
         char buf[32] {};
-        const auto v = static_cast<long long>(d * 100.0 + 0.5);
+        const auto v = std::lround(d * 100.0);
         const auto whole = v / 100;
         const auto frac  = v % 100;
-        std::snprintf(buf, sizeof(buf), "%lld.%02lld", whole, frac);
+        std::snprintf(buf, sizeof(buf), "%ld.%02ld", whole, frac);
         return std::string { buf };
     };
     if (n >= kTB) return two_decimal(static_cast<double>(n) / static_cast<double>(kTB)) + " TB";

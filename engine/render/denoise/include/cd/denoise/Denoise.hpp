@@ -84,7 +84,7 @@ atrous_iteration(const AuxBuffers& src_aux,
     {
         for (std::uint32_t x = 0; x < src_aux.w; ++x)
         {
-            const std::size_t centre = y * src_aux.w + x;
+            const std::size_t centre = static_cast<std::size_t>(y) * src_aux.w + x;
             const cd::math::Vec3f c0 = src_color[centre];
             const cd::math::Vec3f n0 = src_aux.normal[centre];
             const float           d0 = src_aux.depth[centre];

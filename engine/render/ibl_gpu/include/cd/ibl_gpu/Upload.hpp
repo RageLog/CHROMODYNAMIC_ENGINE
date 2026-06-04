@@ -81,8 +81,8 @@ upload_cubemap_rgba16f(cd::rhi::IDevice& dev, const cd::ibl::CubeMapRgbF& src)
     out.image = *img;
 
     const std::size_t face_pixels = static_cast<std::size_t>(size) * size;
-    const std::size_t face_bytes  = face_pixels * 4 * sizeof(std::uint16_t);
-    const std::size_t total_bytes = face_bytes * 6;
+    const std::size_t face_bytes  = face_pixels * static_cast<std::size_t>(4) * sizeof(std::uint16_t);
+    const std::size_t total_bytes = face_bytes * static_cast<std::size_t>(6);
     std::vector<std::uint16_t> staging(total_bytes / sizeof(std::uint16_t));
 
     for (std::uint8_t f = 0; f < cd::ibl::kCubeFaceCount; ++f)
@@ -237,7 +237,7 @@ upload_prefiltered_specular(cd::rhi::IDevice& dev,
     for (std::uint32_t m = 0; m < src.mip_count; ++m) {
         const std::uint32_t s = src.mips[m].face_size;
         const std::size_t face_pixels = static_cast<std::size_t>(s) * s;
-        const std::size_t face_bytes  = face_pixels * 4 * sizeof(std::uint16_t);
+        const std::size_t face_bytes  = face_pixels * static_cast<std::size_t>(4) * sizeof(std::uint16_t);
         for (std::uint32_t f = 0; f < 6; ++f) {
             regs.push_back(cd::rhi::BufferImageCopyRegion {
                 .buffer_offset = mip_byte_offset[m] + face_bytes * f,
@@ -300,7 +300,7 @@ upload_brdf_lut(cd::rhi::IDevice& dev, const cd::ibl::BrdfLut& src)
         staging[i*2 + 0] = detail::float_to_half(src.rg[i*2 + 0]);
         staging[i*2 + 1] = detail::float_to_half(src.rg[i*2 + 1]);
     }
-    const std::size_t bytes = pixels * 2 * sizeof(std::uint16_t);
+    const std::size_t bytes = pixels * static_cast<std::size_t>(2) * sizeof(std::uint16_t);
 
     cd::rhi::BufferDesc sd {};
     sd.size = bytes;

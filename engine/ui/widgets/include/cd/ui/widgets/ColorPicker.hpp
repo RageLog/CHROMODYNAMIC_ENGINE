@@ -104,10 +104,10 @@ struct ColorF
     [[nodiscard]] Color to_color8() const noexcept
     {
         return Color {
-            static_cast<std::uint8_t>(std::clamp(r, 0.0F, 1.0F) * 255.0F + 0.5F),
-            static_cast<std::uint8_t>(std::clamp(g, 0.0F, 1.0F) * 255.0F + 0.5F),
-            static_cast<std::uint8_t>(std::clamp(b, 0.0F, 1.0F) * 255.0F + 0.5F),
-            static_cast<std::uint8_t>(std::clamp(a, 0.0F, 1.0F) * 255.0F + 0.5F),
+            static_cast<std::uint8_t>(std::lround(std::clamp(r, 0.0F, 1.0F) * 255.0F)),
+            static_cast<std::uint8_t>(std::lround(std::clamp(g, 0.0F, 1.0F) * 255.0F)),
+            static_cast<std::uint8_t>(std::lround(std::clamp(b, 0.0F, 1.0F) * 255.0F)),
+            static_cast<std::uint8_t>(std::lround(std::clamp(a, 0.0F, 1.0F) * 255.0F)),
         };
     }
 

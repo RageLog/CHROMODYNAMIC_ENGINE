@@ -31,6 +31,7 @@
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -80,10 +81,10 @@ public:
         const auto itd = compute_itd_seconds(listener, source_pos);
         // Positive ITD → right ear delayed; negative → left ear delayed.
         const int delay_l_samples = (itd < 0.0F)
-            ? static_cast<int>(-itd * static_cast<float>(sample_rate_) + 0.5F)
+            ? static_cast<int>(std::lround(-itd * static_cast<float>(sample_rate_)))
             : 0;
         const int delay_r_samples = (itd > 0.0F)
-            ? static_cast<int>(itd * static_cast<float>(sample_rate_) + 0.5F)
+            ? static_cast<int>(std::lround(itd * static_cast<float>(sample_rate_)))
             : 0;
         const auto cap_l = delay_l_.size();
         const auto cap_r = delay_r_.size();

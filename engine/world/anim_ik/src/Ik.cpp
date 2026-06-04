@@ -28,8 +28,10 @@
 #include <cd/animation/ik/Ik.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <numbers>
+#include <vector>
 
 namespace cd::animation::ik
 {

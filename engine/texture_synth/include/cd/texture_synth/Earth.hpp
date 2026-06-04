@@ -103,9 +103,9 @@ bake_earth_normal_rgba8(std::uint32_t size, float strength = 4.0F)
             const float l = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
             if (l > 1e-6F) { n.x/=l; n.y/=l; n.z/=l; }
             const std::size_t i = (static_cast<std::size_t>(py) * size + px) * 4;
-            nrm[i + 0] = static_cast<std::uint8_t>((n.x * 0.5F + 0.5F) * 255.0F);
-            nrm[i + 1] = static_cast<std::uint8_t>((n.y * 0.5F + 0.5F) * 255.0F);
-            nrm[i + 2] = static_cast<std::uint8_t>((n.z * 0.5F + 0.5F) * 255.0F);
+            nrm[i + 0] = static_cast<std::uint8_t>(std::lround((n.x * 0.5F + 0.5F) * 255.0F));
+            nrm[i + 1] = static_cast<std::uint8_t>(std::lround((n.y * 0.5F + 0.5F) * 255.0F));
+            nrm[i + 2] = static_cast<std::uint8_t>(std::lround((n.z * 0.5F + 0.5F) * 255.0F));
             nrm[i + 3] = 255;
         }
     }
