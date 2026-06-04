@@ -145,6 +145,19 @@ add_subdirectory(panel_keyboard_shortcut_overlay)
 # MOMENT: 500-entity scene, type 'enem', see 12 enemy spawners instantly.
 add_subdirectory(panel_scene_navigator)
 
+# ── cd::editor_panel_settings (STATIC) ───────────────────────────────────────
+# phase698 — Settings panel (DrawBatcher path; 5-category tab strip +
+# key/value entry registry). MOMENT: user edits vsync=on → off, engine
+# respects it next frame.
+add_subdirectory(panel_settings)
+
+# ── cd::editor_panel_build (STATIC) ───────────────────────────────────────────
+# phase699 — Build Panel (DrawBatcher path; colour-coded Status badge +
+# scrollable BuildEvent log with timestamp/message/severity tinting;
+# click on event with source_file emits selected_event_index).
+# MOMENT: dev presses Build, sees live progress + errors — no terminal needed.
+add_subdirectory(panel_build)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
