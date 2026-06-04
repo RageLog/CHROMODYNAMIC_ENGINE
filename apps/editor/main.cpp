@@ -238,6 +238,7 @@
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/renderer_rhi/Submitter.hpp>
 #include <cd/ui/theme/Theme.hpp>
+#include <cd/ui/ToastAnim.hpp>
 #include <cd/ui/widgets/DockSpace.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
@@ -1196,6 +1197,8 @@ struct Toast
     std::string message;                              ///< Short text payload.
     Kind        kind { Kind::kInfo };                 ///< Colour category.
     std::chrono::steady_clock::time_point spawn_tp {};///< Birth wall-clock.
+    double      spawn_ms    { 0.0 };                  ///< Monotonic ms at push (for anim).
+    double      lifetime_ms { 2000.0 };               ///< Total lifetime (ms); default 2000.
 };
 
 class ToastQueue
@@ -1206,11 +1209,17 @@ public:
     static constexpr double      kFadeMs       =  300.0;  ///< Fade-out duration.
 
     /// Push a new toast. When the queue is full the oldest is evicted (FIFO).
-    void push(std::string message, Kind kind = Kind::kInfo)
+    /// @param lifetime_ms  Total visible lifetime in milliseconds (default 2000).
+    void push(std::string message, Kind kind = Kind::kInfo,
+              double lifetime_ms = kLifetimeMs)
     {
         if (toasts_.size() >= kMaxToasts) { toasts_.erase(toasts_.begin()); }
+        const auto now = std::chrono::steady_clock::now();
+        const double spawn_ms_val = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                now.time_since_epoch()).count()) / 1000.0;
         toasts_.push_back(Toast{
-            std::move(message), kind, std::chrono::steady_clock::now() });
+            std::move(message), kind, now, spawn_ms_val, lifetime_ms });
     }
 
     /// Drop toasts whose lifetime has expired. Call once per frame BEFORE
@@ -1280,8 +1289,11 @@ namespace
 
 // Render the toast stack into the bottom-right corner of the framebuffer,
 // stacking UP from just above the status bar. Each toast is a 220 x 22 px
-// pill quad in the colour matching its kind; opacity scales in the last
-// kFadeMs of its lifetime.
+// pill quad in the colour matching its kind.
+//
+// phase724: slide-in from the right (cubic ease-out, 0..150 ms),
+// steady (150..1850 ms), then linear fade-out (1850..2000 ms).
+// cd::ui::toast_anim() drives both alpha and x_offset.
 void draw_toasts(ur::DrawBatcher& batcher,
                  const uw::Theme& theme,
                  const cd::editor::toast::ToastQueue& queue,
@@ -1302,7 +1314,7 @@ void draw_toasts(ur::DrawBatcher& batcher,
     constexpr float kToastStatusBarH = 20.0F;
 
     const float bottom = fb_h - kToastStatusBarH - kMarginB;
-    const float x      = fb_w - kToastW - kMarginR;
+    const float base_x = fb_w - kToastW - kMarginR;
 
     const auto& items = queue.items();
     for (std::size_t i = 0; i < items.size(); ++i)
@@ -1313,15 +1325,16 @@ void draw_toasts(ur::DrawBatcher& batcher,
             duration_cast<microseconds>(now - t.spawn_tp).count()) / 1000.0;
         if (age_ms >= ToastQueue::kLifetimeMs) { continue; }
 
-        // Alpha ramp: 1.0 until the last kFadeMs, then linearly to 0.
-        double alpha_f = 1.0;
-        const double fade_start = ToastQueue::kLifetimeMs - ToastQueue::kFadeMs;
-        if (age_ms > fade_start)
-        {
-            const double t_frac = (age_ms - fade_start) / ToastQueue::kFadeMs;
-            alpha_f = 1.0 - std::clamp(t_frac, 0.0, 1.0);
-        }
-        const auto alpha = static_cast<std::uint8_t>(alpha_f * 230.0);
+        // phase724 — animation: cubic ease-out slide-in + linear fade-out.
+        const cd::ui::ToastAnimCfg anim_cfg {
+            t.lifetime_ms,
+            150.0,                           // slide_ms
+            ToastQueue::kFadeMs,             // fadeout_ms
+            50.0F                            // slide_max_px
+        };
+        const auto [alpha_f, x_offset] = cd::ui::toast_anim(age_ms, anim_cfg);
+        const auto alpha    = static_cast<std::uint8_t>(alpha_f * 230.0F);
+        const float x       = base_x + x_offset;
 
         ur::Color fill { 100U, 150U, 220U, alpha };  // kInfo (blue)
         switch (t.kind)
@@ -1349,7 +1362,7 @@ void draw_toasts(ur::DrawBatcher& batcher,
         constexpr float kDotW = 5.0F;
         constexpr float kDotH = 4.0F;
         constexpr float kDotY = 9.0F;
-        const auto dim_alpha = static_cast<std::uint8_t>(alpha * 0.7F);
+        const auto dim_alpha = static_cast<std::uint8_t>(alpha_f * 230.0F * 0.7F);
         for (int d = 0; d < 3; ++d)
         {
             batcher.quad(x + 12.0F + static_cast<float>(d) * (kDotW + 3.0F),
