@@ -219,6 +219,13 @@ public:
 
     [[nodiscard]] std::size_t child_count() const noexcept { return children_.size(); }
 
+    /// Non-owning accessor for graph traversal (e.g. editor panels).
+    /// Returns nullptr when `index` is out of range.
+    [[nodiscard]] const Node* child_at(std::size_t index) const noexcept
+    {
+        return (index < children_.size()) ? children_[index].get() : nullptr;
+    }
+
     void reset() noexcept override
     {
         for (auto& c : children_) { c->reset(); }
@@ -312,6 +319,10 @@ class DecoratorNode : public Node
 {
 public:
     explicit DecoratorNode(std::unique_ptr<Node> child) : child_(std::move(child)) {}
+
+    /// Non-owning accessor for graph traversal (e.g. editor panels).
+    /// Returns nullptr when no child has been set.
+    [[nodiscard]] const Node* child() const noexcept { return child_.get(); }
 
     void reset() noexcept override
     {
@@ -412,5 +423,57 @@ public:
 private:
     std::unique_ptr<Node> root_ {};
 };
+
+// -----------------------------------------------------------------------------
+// NodeKind — coarse classification used by tooling (editor panels, loggers).
+//
+// The enum deliberately does not expose Parallel separately from other
+// composites: visual tools colour composites uniformly unless they choose to
+// dynamic_cast<ParallelNode*> themselves.
+// -----------------------------------------------------------------------------
+enum class NodeKind : std::uint8_t
+{
+    kSequence  = 0,  ///< SequenceNode (AND-composite)
+    kSelector  = 1,  ///< SelectorNode (OR-composite)
+    kParallel  = 2,  ///< ParallelNode (all-children composite)
+    kDecorator = 3,  ///< Any DecoratorNode subclass
+    kLeaf      = 4,  ///< Any leaf / action / condition node
+};
+
+/// Classify a node pointer by dynamic type.
+/// Returns kLeaf for nullptr so callers don't need to null-check separately.
+[[nodiscard]] inline NodeKind node_kind(const Node* node) noexcept
+{
+    if (node == nullptr) { return NodeKind::kLeaf; }
+    if (dynamic_cast<const SequenceNode*>(node) != nullptr) { return NodeKind::kSequence; }
+    if (dynamic_cast<const SelectorNode*>(node) != nullptr) { return NodeKind::kSelector; }
+    if (dynamic_cast<const ParallelNode*>(node) != nullptr) { return NodeKind::kParallel; }
+    if (dynamic_cast<const DecoratorNode*>(node) != nullptr) { return NodeKind::kDecorator; }
+    return NodeKind::kLeaf;
+}
+
+/// Collect non-owning child pointers of a node.
+/// Composites emit child_count() pointers; decorators emit 1 (or 0 if null);
+/// leaves emit nothing.
+[[nodiscard]] inline std::vector<const Node*> node_children(const Node* node)
+{
+    if (node == nullptr) { return {}; }
+    if (const auto* c = dynamic_cast<const CompositeNode*>(node))
+    {
+        std::vector<const Node*> out;
+        out.reserve(c->child_count());
+        for (std::size_t i = 0; i < c->child_count(); ++i)
+        {
+            out.push_back(c->child_at(i));
+        }
+        return out;
+    }
+    if (const auto* d = dynamic_cast<const DecoratorNode*>(node))
+    {
+        if (d->child() != nullptr) { return { d->child() }; }
+        return {};
+    }
+    return {};
+}
 
 }  // namespace cd::game::ai_bt
