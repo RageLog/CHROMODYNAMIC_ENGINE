@@ -1,6 +1,8 @@
 # engine/ui/editor/panel_cutscene_player — cd::editor_panel_cutscene_player
 #
 # phase617 — CutscenePlayer editor panel library.
+# phase703 — Save/Load JSON round-trip wired into the panel (M15 W4B).
+#
 # Provides cd::editor::panel::cutscene_player::CutscenePlayerPanel
 # (DrawBatcher path).
 # Timeline scrubber + per-phase block layout + event marker dots:
@@ -9,6 +11,7 @@
 #   * Global playhead scrubber showing the current position.
 #   * Current-offset display strip (progress within the active phase).
 #   * Play/Pause/Stop/Skip button strips.
+#   * Save/Load button strips — round-trip via save_to_json/load_from_json.
 #   * Bind via set_cutscene(Cutscene) + set_player(CutscenePlayer*).
 #
 # Targets:
@@ -21,7 +24,7 @@ cd_add_library(editor_panel_cutscene_player
     src/CutscenePlayerPanel.cpp
   PUBLIC_DEPS
     cd::core
-    cd::game_cutscene_player
+    cd::game_cutscene_player  # includes CutsceneJson + CutscenePlayer; pulls in cd::asset_json
     cd::ui_renderer     # DrawBatcher
     cd::ui_widgets      # Theme + Rect
 )

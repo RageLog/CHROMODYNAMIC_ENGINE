@@ -16,13 +16,22 @@
 //   T8.  Empty-phase cutscene completes immediately on play().
 //   T9.  dt spanning multiple phase boundaries fires events in all phases.
 //   T10. Negative dt is clamped; playhead does not go backwards.
+//
+// Phase 703 / M15 W4B — JSON round-trip tests:
+//   T11. Round-trip simple cutscene: save_to_json + load_from_json preserves all fields.
+//   T12. Malformed JSON file rejected: load_from_json returns nullopt.
+//   T13. Deeply-nested phases preserved: 5-phase cutscene with events round-trips intact.
 // =============================================================================
 #include <cd/game/cutscene_player/CutscenePlayer.hpp>
+#include <cd/game/cutscene_player/CutsceneJson.hpp>
 
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -388,6 +397,205 @@ TEST(CutscenePlayerTest, T10_NegativeDtClamped)
     player.tick(-999.0F);
     EXPECT_FLOAT_EQ(player.current_offset_ms(), 300.0F);
     EXPECT_TRUE(player.is_playing());
+}
+
+// ============================================================================
+// T11 (Phase 703): Round-trip simple cutscene — save + load preserves fields
+// ============================================================================
+TEST(CutscenePlayerTest, T11_RoundTripSimpleCutscene)
+{
+    // Build a cutscene with two phases, each with events covering every field.
+    Cutscene cs;
+    cs.cutscene_id = "opening_cinematic";
+    cs.can_skip    = false;
+
+    {
+        CutscenePhase ph;
+        ph.phase_id    = "intro";
+        ph.duration_ms = 2500.0F;
+
+        CutsceneEvent ev0;
+        ev0.offset_ms  = 100.0F;
+        ev0.kind       = EventKind::kFadeIn;
+        ev0.string_arg = "ease_in_cubic";
+        ev0.vec3_arg   = { 0.25F, 0.5F, 0.75F };
+        ph.events.push_back(ev0);
+
+        CutsceneEvent ev1;
+        ev1.offset_ms  = 800.0F;
+        ev1.kind       = EventKind::kPlaySound;
+        ev1.string_arg = "audio/voice/opening_line.wav";
+        ev1.vec3_arg   = { 1.0F, 2.0F, 3.0F };
+        ph.events.push_back(ev1);
+
+        cs.phases.push_back(std::move(ph));
+    }
+    {
+        CutscenePhase ph;
+        ph.phase_id    = "outro";
+        ph.duration_ms = 1000.0F;
+
+        CutsceneEvent ev;
+        ev.offset_ms  = 0.0F;
+        ev.kind       = EventKind::kSetFlag;
+        ev.string_arg = "level_complete";
+        ev.vec3_arg   = { 1.0F, 0.0F, 0.0F };
+        ph.events.push_back(ev);
+
+        cs.phases.push_back(std::move(ph));
+    }
+
+    // Write to a temp file.
+    const auto tmp_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_t11.json";
+
+    const bool saved = save_to_json(cs, tmp_path);
+    ASSERT_TRUE(saved) << "save_to_json failed for path: " << tmp_path;
+
+    // Load back.
+    const auto loaded = load_from_json(tmp_path);
+    ASSERT_TRUE(loaded.has_value()) << "load_from_json returned nullopt";
+
+    const Cutscene& rt = *loaded;
+
+    EXPECT_EQ(rt.cutscene_id, cs.cutscene_id);
+    EXPECT_EQ(rt.can_skip,    cs.can_skip);
+    ASSERT_EQ(rt.phases.size(), cs.phases.size());
+
+    for (std::size_t pi = 0; pi < cs.phases.size(); ++pi)
+    {
+        EXPECT_EQ(rt.phases[pi].phase_id,    cs.phases[pi].phase_id);
+        EXPECT_FLOAT_EQ(rt.phases[pi].duration_ms, cs.phases[pi].duration_ms);
+        ASSERT_EQ(rt.phases[pi].events.size(), cs.phases[pi].events.size());
+
+        for (std::size_t ei = 0; ei < cs.phases[pi].events.size(); ++ei)
+        {
+            const auto& eo = cs.phases[pi].events[ei];
+            const auto& er = rt.phases[pi].events[ei];
+            EXPECT_FLOAT_EQ(er.offset_ms, eo.offset_ms);
+            EXPECT_EQ(er.kind,       eo.kind);
+            EXPECT_EQ(er.string_arg, eo.string_arg);
+            EXPECT_FLOAT_EQ(er.vec3_arg[0], eo.vec3_arg[0]);
+            EXPECT_FLOAT_EQ(er.vec3_arg[1], eo.vec3_arg[1]);
+            EXPECT_FLOAT_EQ(er.vec3_arg[2], eo.vec3_arg[2]);
+        }
+    }
+
+    // Cleanup.
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
+}
+
+// ============================================================================
+// T12 (Phase 703): Malformed JSON rejected — load_from_json returns nullopt
+// ============================================================================
+TEST(CutscenePlayerTest, T12_MalformedJsonRejected)
+{
+    const auto tmp_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_t12_malformed.json";
+
+    // Write deliberately broken JSON (unclosed brace, no schema_version).
+    {
+        std::ofstream f(tmp_path, std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({ "cutscene_id": "bad" "missing_colon" true, "phases": [)";
+        // intentionally NOT closed
+    }
+
+    const auto result = load_from_json(tmp_path);
+    EXPECT_FALSE(result.has_value())
+        << "load_from_json should return nullopt for malformed JSON";
+
+    // Also test: valid JSON but missing schema_version.
+    {
+        std::ofstream f(tmp_path, std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({"cutscene_id":"no_schema","can_skip":true,"phases":[]})";
+    }
+    const auto result2 = load_from_json(tmp_path);
+    EXPECT_FALSE(result2.has_value())
+        << "load_from_json should return nullopt when schema_version is absent";
+
+    // Also test: schema_version present but wrong value.
+    {
+        std::ofstream f(tmp_path, std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({"schema_version":99,"cutscene_id":"future","can_skip":true,"phases":[]})";
+    }
+    const auto result3 = load_from_json(tmp_path);
+    EXPECT_FALSE(result3.has_value())
+        << "load_from_json should return nullopt for schema_version != 1";
+
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
+}
+
+// ============================================================================
+// T13 (Phase 703): Deeply-nested phases preserved — 5-phase cutscene round-trips
+// ============================================================================
+TEST(CutscenePlayerTest, T13_DeeplyNestedPhasesPreserved)
+{
+    constexpr std::size_t kNumPhases     = 5U;
+    constexpr std::size_t kEventsPerPhase = 4U;
+
+    Cutscene cs;
+    cs.cutscene_id = "multi_phase_stress";
+    cs.can_skip    = true;
+
+    for (std::size_t pi = 0; pi < kNumPhases; ++pi)
+    {
+        CutscenePhase ph;
+        ph.phase_id    = "phase_" + std::to_string(pi);
+        ph.duration_ms = static_cast<float>((pi + 1U) * 1000U);
+
+        for (std::size_t ei = 0; ei < kEventsPerPhase; ++ei)
+        {
+            CutsceneEvent ev;
+            ev.offset_ms  = static_cast<float>(ei) * (ph.duration_ms / static_cast<float>(kEventsPerPhase));
+            // Cycle through all EventKind values (8 defined).
+            ev.kind       = static_cast<EventKind>(static_cast<std::uint8_t>((pi * kEventsPerPhase + ei) % 8U));
+            ev.string_arg = "arg_p" + std::to_string(pi) + "_e" + std::to_string(ei);
+            ev.vec3_arg   = { static_cast<float>(pi), static_cast<float>(ei), 0.5F };
+            ph.events.push_back(ev);
+        }
+
+        cs.phases.push_back(std::move(ph));
+    }
+
+    const auto tmp_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_t13_deep.json";
+
+    ASSERT_TRUE(save_to_json(cs, tmp_path));
+
+    const auto loaded = load_from_json(tmp_path);
+    ASSERT_TRUE(loaded.has_value());
+
+    const Cutscene& rt = *loaded;
+    EXPECT_EQ(rt.cutscene_id, cs.cutscene_id);
+    EXPECT_EQ(rt.can_skip,    cs.can_skip);
+    ASSERT_EQ(rt.phases.size(), kNumPhases);
+
+    for (std::size_t pi = 0; pi < kNumPhases; ++pi)
+    {
+        EXPECT_EQ(rt.phases[pi].phase_id, cs.phases[pi].phase_id);
+        EXPECT_FLOAT_EQ(rt.phases[pi].duration_ms, cs.phases[pi].duration_ms);
+        ASSERT_EQ(rt.phases[pi].events.size(), kEventsPerPhase);
+
+        for (std::size_t ei = 0; ei < kEventsPerPhase; ++ei)
+        {
+            const auto& eo = cs.phases[pi].events[ei];
+            const auto& er = rt.phases[pi].events[ei];
+            EXPECT_FLOAT_EQ(er.offset_ms,   eo.offset_ms);
+            EXPECT_EQ(er.kind,              eo.kind);
+            EXPECT_EQ(er.string_arg,        eo.string_arg);
+            EXPECT_FLOAT_EQ(er.vec3_arg[0], eo.vec3_arg[0]);
+            EXPECT_FLOAT_EQ(er.vec3_arg[1], eo.vec3_arg[1]);
+            EXPECT_FLOAT_EQ(er.vec3_arg[2], eo.vec3_arg[2]);
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
 }
 
 }  // namespace cd::game::cutscene_player::tests

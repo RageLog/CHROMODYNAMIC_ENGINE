@@ -4,16 +4,17 @@
 # CutscenePhase entries, each with a duration and a list of CutsceneEvents
 # to fire at specific offsets within that phase.
 #
-# Dependencies (CLAUDE.md §7): cd::core only. No allocator, no math, no I/O.
-# The player is a pure state machine; the engine routes fired events to the
-# appropriate backend (audio, render, ECS) from the outside.
+# Phase 703 / M15 W4B — JSON round-trip (save_to_json / load_from_json) added.
+# Depends on cd::asset_json for serialization; cd::core for the player state machine.
 
 cd_add_library(game_cutscene_player
   TYPE STATIC
   SOURCES
     src/CutscenePlayer.cpp
+    src/CutsceneJson.cpp
   PUBLIC_DEPS
     cd::core
+    cd::asset_json
 )
 
 if(CD_ENABLE_TESTING)

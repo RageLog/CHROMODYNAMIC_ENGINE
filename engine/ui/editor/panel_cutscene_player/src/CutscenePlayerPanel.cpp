@@ -2,11 +2,27 @@
 // CHROMODYNAMIC — engine/ui/editor/panel_cutscene_player/src/CutscenePlayerPanel.cpp
 //
 // phase617 — cd::editor::panel::cutscene_player  implementation
+// phase703 — Save/Load JSON round-trip added (M15 W4B).
 // =============================================================================
 #include <cd/editor/panel_cutscene_player/CutscenePlayerPanel.hpp>
 
 #include <algorithm>
 #include <cstddef>
+#include <filesystem>
+#include <optional>
+#include <string>
+
+#if defined(_WIN32)
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #include <cstdlib>
+#else
+  #include <cstdlib>
+#endif
 
 namespace cd::editor::panel::cutscene_player
 {
@@ -37,6 +53,113 @@ void CutscenePlayerPanel::set_player(cd::game::cutscene_player::CutscenePlayer* 
 cd::game::cutscene_player::CutscenePlayer* CutscenePlayerPanel::player() const noexcept
 {
     return player_;
+}
+
+// ---------------------------------------------------------------------------
+// Save / Load API (phase 703)
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+/// Portable getenv — mirrors cd::editor::cdproj / cd::game_save pattern.
+[[nodiscard]] std::optional<std::string> get_env_str(const char* name)
+{
+#if defined(_WIN32)
+    char*       buf = nullptr;
+    std::size_t sz  = 0;
+    if (::_dupenv_s(&buf, &sz, name) != 0 || buf == nullptr)
+    {
+        return std::nullopt;
+    }
+    std::string value(buf);
+    std::free(buf);  // NOLINT(cppcoreguidelines-no-malloc)
+    if (value.empty()) { return std::nullopt; }
+    return value;
+#else
+    const char* p = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
+    if (p == nullptr || p[0] == '\0') { return std::nullopt; }
+    return std::string(p);
+#endif
+}
+
+}  // namespace
+
+std::filesystem::path CutscenePlayerPanel::default_save_path() const
+{
+    namespace fs = std::filesystem;
+
+    const std::string& cs_id = cutscene_.cutscene_id.empty()
+                             ? std::string("unnamed")
+                             : cutscene_.cutscene_id;
+    const std::string filename = cs_id + ".json";
+
+#if defined(_WIN32)
+    if (auto base = get_env_str("APPDATA"))
+    {
+        return fs::path(*base) / "cd_editor" / "cutscenes" / filename;
+    }
+    if (auto base = get_env_str("LOCALAPPDATA"))
+    {
+        return fs::path(*base) / "cd_editor" / "cutscenes" / filename;
+    }
+    if (auto up = get_env_str("USERPROFILE"))
+    {
+        return fs::path(*up) / "AppData" / "Roaming" / "cd_editor" / "cutscenes" / filename;
+    }
+    return fs::temp_directory_path() / "cd_editor" / "cutscenes" / filename;
+#elif defined(__APPLE__)
+    if (auto home = get_env_str("HOME"))
+    {
+        return fs::path(*home) / "Library" / "Application Support"
+                              / "cd_editor" / "cutscenes" / filename;
+    }
+    return fs::temp_directory_path() / "cd_editor" / "cutscenes" / filename;
+#else
+    if (auto xdg = get_env_str("XDG_CONFIG_HOME"))
+    {
+        return fs::path(*xdg) / "cd_editor" / "cutscenes" / filename;
+    }
+    if (auto home = get_env_str("HOME"))
+    {
+        return fs::path(*home) / ".config" / "cd_editor" / "cutscenes" / filename;
+    }
+    return fs::temp_directory_path() / "cd_editor" / "cutscenes" / filename;
+#endif
+}
+
+bool CutscenePlayerPanel::save()
+{
+    last_path_    = default_save_path();
+    last_save_ok_ = cd::game::cutscene_player::save_to_json(cutscene_, last_path_);
+    return last_save_ok_;
+}
+
+bool CutscenePlayerPanel::load()
+{
+    last_path_ = default_save_path();
+    auto result = cd::game::cutscene_player::load_from_json(last_path_);
+    last_load_ok_ = result.has_value();
+    if (last_load_ok_)
+    {
+        cutscene_ = std::move(*result);
+    }
+    return last_load_ok_;
+}
+
+const std::filesystem::path& CutscenePlayerPanel::last_save_path() const noexcept
+{
+    return last_path_;
+}
+
+bool CutscenePlayerPanel::last_save_ok() const noexcept
+{
+    return last_save_ok_;
+}
+
+bool CutscenePlayerPanel::last_load_ok() const noexcept
+{
+    return last_load_ok_;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +367,31 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
                 ? cd::ui::renderer::Color { 255U, 180U,  50U, 200U }
                 : cd::ui::renderer::Color { 100U, 100U, 100U, 120U };
         batcher.quad(bounds.x + kPad + 2.0F * (kBtnW + kGap), cursor_y, kBtnW, kBtnH, skip_col);
+
+        cursor_y += kBtnH + kPad;
+    }
+
+    // ---- Save / Load button strips (phase 703) --------------------------------
+    // Visual-only representation: Save = teal strip, Load = lavender strip.
+    // Status tint: bright when last op succeeded, dim when failed or never called.
+    {
+        constexpr float kBtnW = 36.0F;
+        constexpr float kBtnH = 14.0F;
+        constexpr float kGap  =  6.0F;
+
+        // Save strip — teal; brightens on last_save_ok_.
+        const cd::ui::renderer::Color save_col =
+            last_save_ok_
+                ? cd::ui::renderer::Color {  40U, 210U, 190U, 230U }
+                : cd::ui::renderer::Color {  40U, 140U, 130U, 150U };
+        batcher.quad(bounds.x + kPad, cursor_y, kBtnW, kBtnH, save_col);
+
+        // Load strip — lavender; brightens on last_load_ok_.
+        const cd::ui::renderer::Color load_col =
+            last_load_ok_
+                ? cd::ui::renderer::Color { 160U, 130U, 230U, 230U }
+                : cd::ui::renderer::Color { 110U,  90U, 160U, 150U };
+        batcher.quad(bounds.x + kPad + (kBtnW + kGap), cursor_y, kBtnW, kBtnH, load_col);
     }
 }
 
