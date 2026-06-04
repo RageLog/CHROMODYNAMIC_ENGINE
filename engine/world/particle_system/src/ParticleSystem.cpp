@@ -33,6 +33,7 @@
 #include <cmath>
 #include <limits>
 #include <random>
+#include <ranges>
 
 namespace cd::particle::system
 {
@@ -118,10 +119,9 @@ void System::tick(float dt)
     }
 
     // Compact dead emitters lazily after spawning so indices stay stable.
-    emitters_.erase(
-        std::remove_if(emitters_.begin(), emitters_.end(),
-                       [](const EmitterEntry& e) noexcept { return !e.alive; }),
-        emitters_.end());
+    const auto dead = std::ranges::remove_if(emitters_,
+                       [](const EmitterEntry& e) noexcept { return !e.alive; });
+    emitters_.erase(dead.begin(), dead.end());
 
     // ------------------------------------------------------------------
     // 2. Integrate + expire live particles (swap-and-pop).

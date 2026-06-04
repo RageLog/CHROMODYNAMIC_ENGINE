@@ -1215,7 +1215,7 @@ public:
     {
         if (toasts_.size() >= kMaxToasts) { toasts_.erase(toasts_.begin()); }
         const auto now = std::chrono::steady_clock::now();
-        const double spawn_ms_val = static_cast<double>(
+        const auto spawn_ms_val = static_cast<double>(
             std::chrono::duration_cast<std::chrono::microseconds>(
                 now.time_since_epoch()).count()) / 1000.0;
         toasts_.push_back(Toast{
@@ -3770,7 +3770,7 @@ int main(int argc, char** argv)
             snap.total_ms = last_dt_ms > 0.0 ? last_dt_ms : 16.67;
 
             using cd::profile::cpu_marker_overlay::MarkerSample;
-            const double cpu_base = static_cast<double>(frame_idx) * 16.0;
+            const auto cpu_base = static_cast<double>(frame_idx) * 16.0;
             snap.cpu_markers = {
                 MarkerSample { "frame.gather",  cpu_base + 0.5,  3.0,  1U },
                 MarkerSample { "frame.cull",    cpu_base + 3.8,  2.4,  1U },
@@ -4041,9 +4041,9 @@ int main(int argc, char** argv)
             constexpr float kSaveBadgeW = 150.0F;
             constexpr float kStatsW     = 360.0F;
             constexpr float kBadgeW     = 280.0F;
-            const float save_x = static_cast<float>(0.0F) + kBadgeW + 12.0F
+            const auto save_x = static_cast<float>(0.0F) + kBadgeW + 12.0F
                                  + kStatsW + 16.0F;
-            const float save_y = static_cast<float>(fb_h) - kStatusBarH + 2.0F;
+            const auto save_y = static_cast<float>(fb_h) - kStatusBarH + 2.0F;
             const uw::Rect save_rect {
                 save_x, save_y, kSaveBadgeW, kStatusBarH - 4.0F
             };

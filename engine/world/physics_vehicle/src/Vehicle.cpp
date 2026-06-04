@@ -45,6 +45,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <numbers>
 
 namespace cd::physics::vehicle
 {
@@ -213,7 +214,7 @@ void Vehicle::tick(float dt) noexcept
     const float total_ratio = ratio * final_drive;
 
     // ---- Engine RPM (clamped to operating window) ---------------------------
-    const float e_rpm = std::clamp(std::fabs(omega) * total_ratio * (60.0F / (2.0F * 3.14159265F)),
+    const float e_rpm = std::clamp(std::fabs(omega) * total_ratio * (60.0F / (2.0F * std::numbers::pi_v<float>)),
                                    m_cfg.engine.idle_rpm,
                                    m_cfg.engine.max_rpm);
 
@@ -301,7 +302,7 @@ float Vehicle::engine_rpm_from_wheel(float wheel_omega_rad_s) const noexcept
     const float final_drive = m_cfg.engine.final_drive;
     const float total_ratio = ratio * final_drive;
     // rpm = (omega_wheel * total_ratio) * (60 / 2pi)
-    const float rpm = std::fabs(wheel_omega_rad_s) * total_ratio * (60.0F / (2.0F * 3.14159265F));
+    const float rpm = std::fabs(wheel_omega_rad_s) * total_ratio * (60.0F / (2.0F * std::numbers::pi_v<float>));
     return std::clamp(rpm, m_cfg.engine.idle_rpm, m_cfg.engine.max_rpm);
 }
 

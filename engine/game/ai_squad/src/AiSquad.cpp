@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <ranges>
 #include <stdexcept>
 
 namespace cd::ai::squad
@@ -42,7 +43,7 @@ void Squad::add_member(uint64_t entity_id, SquadRole role)
 
 void Squad::remove_member(uint64_t entity_id)
 {
-    auto it = std::find_if(members_.begin(), members_.end(),
+    auto it = std::ranges::find_if(members_,
         [entity_id](const SquadMember& m) { return m.entity_id == entity_id; });
     if (it != members_.end())
     {

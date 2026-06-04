@@ -26,12 +26,12 @@ void Timeline::record_pass(std::string_view pass_name,
                            double           gpu_duration_ms,
                            std::uint32_t    node_id)
 {
-    current_passes_.push_back(PassRecord{
+    current_passes_.emplace_back(
         std::string(pass_name),
         gpu_start_ms,
         gpu_duration_ms,
         node_id
-    });
+    );
 }
 
 void Timeline::end_frame()
@@ -50,7 +50,7 @@ void Timeline::end_frame()
 
 std::span<const PassRecord> Timeline::last_frame_passes() const noexcept
 {
-    return std::span<const PassRecord>(last_passes_.data(), last_passes_.size());
+    return {last_passes_.data(), last_passes_.size()};
 }
 
 double Timeline::last_frame_total_ms() const noexcept

@@ -286,7 +286,7 @@ struct AccessorView
     {
         // Grayscale / unsupported channel count — fill alpha white, broadcast
         // first channel into RGB so the pipeline gets something deterministic.
-        const std::size_t channels = static_cast<std::size_t>(img.component <= 0 ? 1 : img.component);
+        const auto channels = static_cast<std::size_t>(img.component <= 0 ? 1 : img.component);
         for (std::size_t i = 0; i < pixel_count; ++i)
         {
             const std::uint8_t v = img.image[i * channels];
@@ -441,7 +441,7 @@ struct AccessorView
             // 3 packed entries — we keep the buffer flat and let the bridge layer
             // address it with stride knowledge.
             const AccessorView vv = access(model, s.output);
-            const std::size_t comp = static_cast<std::size_t>(
+            const auto comp = static_cast<std::size_t>(
                 tinygltf::GetNumComponentsInType(static_cast<std::uint32_t>(vv.type)));
             smp.values.resize(vv.count * comp);
             for (std::size_t i = 0; i < vv.count; ++i)

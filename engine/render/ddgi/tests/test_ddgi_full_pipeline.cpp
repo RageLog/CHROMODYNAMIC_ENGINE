@@ -322,8 +322,8 @@ TEST(DdgiFullPipeline, ExecuteProducesNonZeroOutput)
     // enough to make the output non-black on frame 0.)
     bool any_nonzero = false;
     float max_seen = 0.0F;
-    const std::uint16_t* halves = reinterpret_cast<const std::uint16_t*>(host_bytes.data());
-    const std::uint64_t kTexels = static_cast<std::uint64_t>(kW) * kH;
+    const auto* halves = reinterpret_cast<const std::uint16_t*>(host_bytes.data());
+    const auto kTexels = static_cast<std::uint64_t>(kW) * kH;
     for (std::uint64_t t = 0; t < kTexels; ++t)
     {
         const float r = half_to_float(halves[t * 4U + 0U]);

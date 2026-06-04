@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <ranges>
+#include <span>
 #include <sstream>
 #include <string>
 
@@ -272,10 +274,9 @@ bool validate_authored(const AuthoredMaterial& mat, std::vector<std::string>& ou
 
     // Return true = no new kError-level issues were added by this call.
     // Detect errors by the prefix "[ERROR]" we write above.
-    const bool had_new_error = std::any_of(
-        out_issues.begin() + static_cast<std::ptrdiff_t>(issues_before),
-        out_issues.end(),
-        [](const std::string& s) { return s.rfind("[ERROR]", 0) == 0; });
+    const bool had_new_error = std::ranges::any_of(
+        std::span(out_issues).subspan(issues_before),
+        [](const std::string& s) { return s.starts_with("[ERROR]"); });
 
     return !had_new_error;
 }

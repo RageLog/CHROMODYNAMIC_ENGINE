@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <ranges>
 #include <vector>
 
 namespace cd::editor::panel::keyboard_shortcut_overlay
@@ -55,7 +56,7 @@ collect_categories(const std::vector<Shortcut>& shortcuts)
     for (const auto& s : shortcuts)
     {
         const bool already_seen =
-            std::any_of(cats.cbegin(), cats.cend(),
+            std::ranges::any_of(cats,
                         [&](const std::string& c) { return c == s.category; });
         if (!already_seen)
             cats.push_back(s.category);

@@ -670,7 +670,7 @@ void CurveEditor::draw(cd::ui::renderer::DrawBatcher& batcher,
         constexpr int kGridLines = 5;
         for (int i = 0; i <= kGridLines; ++i)
         {
-            const float norm = static_cast<float>(i) / static_cast<float>(kGridLines);
+            const auto norm = static_cast<float>(i) / static_cast<float>(kGridLines);
             const float px   = rect_.x + norm * rect_.w;
             fill_rect(batcher, px, rect_.y, 1.0F, rect_.h,
                       Color { theme.surface_hover.r,
@@ -680,7 +680,7 @@ void CurveEditor::draw(cd::ui::renderer::DrawBatcher& batcher,
         }
         for (int i = 0; i <= kGridLines; ++i)
         {
-            const float norm = static_cast<float>(i) / static_cast<float>(kGridLines);
+            const auto norm = static_cast<float>(i) / static_cast<float>(kGridLines);
             const float py   = rect_.y + norm * rect_.h;
             fill_rect(batcher, rect_.x, py, rect_.w, 1.0F,
                       Color { theme.surface_hover.r,
@@ -710,7 +710,7 @@ void CurveEditor::draw(cd::ui::renderer::DrawBatcher& batcher,
 
         for (int s = 0; s < kSampleCount; ++s)
         {
-            const float norm_t = static_cast<float>(s) / static_cast<float>(kSampleCount - 1);
+            const auto norm_t = static_cast<float>(s) / static_cast<float>(kSampleCount - 1);
             const float ct     = view_t_min_ + norm_t * (view_t_max_ - view_t_min_);
             const float cv     = curve.evaluate(ct);
 

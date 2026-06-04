@@ -79,6 +79,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <numbers>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -117,16 +118,15 @@ struct MeshCpu
 [[nodiscard]] inline MeshCpu make_sphere(int stacks = 18, int slices = 24)
 {
     MeshCpu m;
-    constexpr float kPi = 3.14159265358979F;
     m.verts.reserve(static_cast<std::size_t>((stacks + 1) * (slices + 1)));
     for (int i = 0; i <= stacks; ++i)
     {
-        const float phi   = static_cast<float>(i) / static_cast<float>(stacks) * kPi;
+        const float phi   = static_cast<float>(i) / static_cast<float>(stacks) * std::numbers::pi_v<float>;
         const float sin_p = std::sin(phi);
         const float cos_p = std::cos(phi);
         for (int j = 0; j <= slices; ++j)
         {
-            const float theta = static_cast<float>(j) / static_cast<float>(slices) * 2.0F * kPi;
+            const float theta = static_cast<float>(j) / static_cast<float>(slices) * 2.0F * std::numbers::pi_v<float>;
             CubeVertex v {};
             v.pos[0] = 0.5F * sin_p * std::cos(theta);
             v.pos[1] = 0.5F * cos_p;
@@ -158,13 +158,12 @@ struct MeshCpu
 [[nodiscard]] inline MeshCpu make_cone(int slices = 32)
 {
     MeshCpu m;
-    constexpr float kPi = 3.14159265358979F;
     m.verts.reserve(static_cast<std::size_t>(2 + 2 * slices));
     m.verts.push_back({ {  0.0F,  0.5F, 0.0F }, { 1.00F, 1.00F, 1.00F } });
     m.verts.push_back({ {  0.0F, -0.5F, 0.0F }, { 0.30F, 0.30F, 0.30F } });
     for (int i = 0; i < slices; ++i)
     {
-        const float t = static_cast<float>(i) / static_cast<float>(slices) * 2.0F * kPi;
+        const float t = static_cast<float>(i) / static_cast<float>(slices) * 2.0F * std::numbers::pi_v<float>;
         const float x = 0.5F * std::cos(t);
         const float z = 0.5F * std::sin(t);
         CubeVertex side {};
@@ -176,7 +175,7 @@ struct MeshCpu
     }
     for (int i = 0; i < slices; ++i)
     {
-        const float t = static_cast<float>(i) / static_cast<float>(slices) * 2.0F * kPi;
+        const float t = static_cast<float>(i) / static_cast<float>(slices) * 2.0F * std::numbers::pi_v<float>;
         const float x = 0.5F * std::cos(t);
         const float z = 0.5F * std::sin(t);
         CubeVertex disk {};

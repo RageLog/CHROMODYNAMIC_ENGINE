@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -208,7 +209,7 @@ void Overlay::draw(cd::ui::renderer::DrawBatcher& batcher,
     std::vector<std::uint32_t> thread_ids;
     for (const auto& s : samples)
     {
-        if (std::find(thread_ids.begin(), thread_ids.end(), s.thread_id) == thread_ids.end())
+        if (std::ranges::find(thread_ids, s.thread_id) == thread_ids.end())
             thread_ids.push_back(s.thread_id);
     }
     const auto lane_count =
@@ -242,7 +243,7 @@ void Overlay::draw(cd::ui::renderer::DrawBatcher& batcher,
             continue;
 
         // Lane index for this thread.
-        const auto it         = std::find(thread_ids.begin(), thread_ids.end(), s.thread_id);
+        const auto it         = std::ranges::find(thread_ids, s.thread_id);
         const auto lane_index = static_cast<float>(std::distance(thread_ids.begin(), it));
 
         const float bar_x = bounds.x + static_cast<float>(rel_start) * pixels_per_ms;

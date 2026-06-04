@@ -501,8 +501,8 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
     {
         for (std::size_t ch = 0U; ch < 3U; ++ch)
         {
-            const double orig = static_cast<double>(rgba8_pixels[i * 4U + ch]);
-            const double recon = static_cast<double>(decoded[i * 4U + ch]);
+            const auto orig = static_cast<double>(rgba8_pixels[i * 4U + ch]);
+            const auto recon = static_cast<double>(decoded[i * 4U + ch]);
             const double diff  = orig - recon;
             sse += diff * diff;
         }

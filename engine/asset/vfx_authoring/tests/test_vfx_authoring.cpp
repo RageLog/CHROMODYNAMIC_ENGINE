@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,9 +41,9 @@ using cd::asset::vfx_authoring::validate_authored;
 
 bool has_error(const std::vector<std::string>& issues)
 {
-    return std::any_of(issues.begin(), issues.end(),
+    return std::ranges::any_of(issues,
                        [](const std::string& s)
-                       { return s.rfind("[ERROR]", 0) == 0; });
+                       { return s.starts_with("[ERROR]"); });
 }
 
 // ---- T1: Presets pass validation --------------------------------------------

@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdint>
 #include <numeric>
+#include <ranges>
 #include <vector>
 
 namespace cd::editor::panel::perf_profiler
@@ -221,7 +222,7 @@ void PerfProfiler::draw_history_bars(cd::ui::renderer::DrawBatcher& batcher,
     for (std::size_t i = 0U; i < count_; ++i)
     {
         const FrameSnapshot& snap = snapshot_at(i);
-        const float ms       = static_cast<float>(snap.total_ms);
+        const auto ms       = static_cast<float>(snap.total_ms);
         const float norm     = std::clamp(ms / max_ms, 0.0F, 1.0F);
         const float bar_h    = std::max(norm * section.h, 1.0F);
         const float bar_x    = section.x + static_cast<float>(i) * bar_slot_w;
@@ -277,7 +278,7 @@ void PerfProfiler::draw_drill_down(cd::ui::renderer::DrawBatcher& batcher,
         batcher.quad(section.x, cursor_y, section.w, kRowH - 1.0F, row_bg);
 
         // Proportional bar.
-        const float dur     = static_cast<float>(m.duration_ms);
+        const auto dur     = static_cast<float>(m.duration_ms);
         const float norm    = std::clamp(dur / max_ms, 0.0F, 1.0F);
         const float bar_w   = std::max(norm * section.w, 1.0F);
         batcher.quad(section.x, cursor_y, bar_w, kRowH - 1.0F, cpu_bar_color);
@@ -292,7 +293,7 @@ void PerfProfiler::draw_drill_down(cd::ui::renderer::DrawBatcher& batcher,
 
         batcher.quad(section.x, cursor_y, section.w, kRowH - 1.0F, row_bg);
 
-        const float dur   = static_cast<float>(m.duration_ms_computed);
+        const auto dur   = static_cast<float>(m.duration_ms_computed);
         const float norm  = std::clamp(dur / max_ms, 0.0F, 1.0F);
         const float bar_w = std::max(norm * section.w, 1.0F);
         batcher.quad(section.x, cursor_y, bar_w, kRowH - 1.0F, gpu_bar_color);
@@ -310,7 +311,7 @@ void PerfProfiler::draw_drill_down(cd::ui::renderer::DrawBatcher& batcher,
 
         batcher.quad(section.x, cursor_y, section.w, kRowH - 1.0F, row_bg);
 
-        const float dur   = static_cast<float>(p.gpu_duration_ms);
+        const auto dur   = static_cast<float>(p.gpu_duration_ms);
         const float norm  = std::clamp(dur / max_ms, 0.0F, 1.0F);
         const float bar_w = std::max(norm * section.w, 1.0F);
         batcher.quad(section.x, cursor_y, bar_w, kRowH - 1.0F, pass_bar_color);
@@ -350,12 +351,12 @@ void PerfProfiler::draw_stats_strip(cd::ui::renderer::DrawBatcher& batcher,
     // ---- Compute statistics ------------------------------------------------
     const float sum = std::accumulate(values.begin(), values.end(), 0.0F);
     const float avg = sum / static_cast<float>(count_);
-    const float min_val = *std::min_element(values.begin(), values.end());
-    const float max_val = *std::max_element(values.begin(), values.end());
+    const float min_val = *std::ranges::min_element(values);
+    const float max_val = *std::ranges::max_element(values);
 
     // p99 — sort a copy and pick the 99th-percentile element.
     std::vector<float> sorted = values;
-    std::sort(sorted.begin(), sorted.end());
+    std::ranges::sort(sorted);
     const std::size_t p99_idx = std::max(
         std::size_t{0},
         static_cast<std::size_t>(static_cast<float>(sorted.size()) * 0.99F) );

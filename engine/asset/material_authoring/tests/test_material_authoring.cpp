@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -39,9 +40,9 @@ using cd::asset::material_authoring::validate_authored;
 
 bool has_prefix(const std::vector<std::string>& issues, std::string_view prefix)
 {
-    return std::any_of(issues.begin(), issues.end(),
+    return std::ranges::any_of(issues,
                        [prefix](const std::string& s)
-                       { return s.rfind(prefix, 0) == 0; });
+                       { return s.starts_with(prefix); });
 }
 
 bool has_error(const std::vector<std::string>& issues)
@@ -166,9 +167,9 @@ TEST(MaterialAuthoring, OutOfRangeScalarsAreErrors)
     EXPECT_TRUE(has_error(issues));
 
     // Should have at least two [ERROR] entries (one per bad field).
-    const auto error_count = std::count_if(
-        issues.begin(), issues.end(),
-        [](const std::string& s) { return s.rfind("[ERROR]", 0) == 0; });
+    const auto error_count = std::ranges::count_if(
+        issues,
+        [](const std::string& s) { return s.starts_with("[ERROR]"); });
     EXPECT_GE(error_count, 2);
 }
 

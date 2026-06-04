@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <ranges>
 #include <string>
 
 namespace cd::editor::panel::scene_navigator
@@ -48,7 +49,7 @@ void SceneNavigator::set_entities(std::span<const cd::ecs::Entity> entities,
     if (selected_.has_value())
     {
         const cd::ecs::Entity sel = *selected_;
-        const bool still_present = std::any_of(entities_.begin(), entities_.end(),
+        const bool still_present = std::ranges::any_of(entities_,
             [sel](const cd::ecs::Entity& e) { return e == sel; });
         if (!still_present)
             selected_.reset();

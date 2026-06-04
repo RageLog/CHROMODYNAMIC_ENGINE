@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <ranges>
 #include <string_view>
 #include <system_error>
 
@@ -548,7 +549,7 @@ bool write_cdproj(const CdprojData& data, const std::filesystem::path& path)
 void push_recent_file(CdprojData& data, std::string path)
 {
     // Move-to-front deduplication.
-    auto it = std::find(data.recent_files.begin(), data.recent_files.end(), path);
+    auto it = std::ranges::find(data.recent_files, path);
     if (it != data.recent_files.end())
     {
         data.recent_files.erase(it);

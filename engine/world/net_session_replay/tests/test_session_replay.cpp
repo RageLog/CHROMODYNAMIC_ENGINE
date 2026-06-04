@@ -42,7 +42,7 @@ using cd::net::session_replay::Replayer;
 /// Build a small payload from an initialiser list.
 [[nodiscard]] std::vector<std::uint8_t> make_payload(std::initializer_list<std::uint8_t> bytes)
 {
-    return std::vector<std::uint8_t>(bytes);
+    return {bytes};
 }
 
 // ---------------------------------------------------------------------------

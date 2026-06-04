@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <numbers>
 #include <string>
 
 namespace cd::ui::widgets
@@ -219,7 +220,7 @@ float ColorPicker::wheel_ring_hue(const Rect& ring, float mx, float my) noexcept
     const float cy = ring.y + ring.h * 0.5F;
     const float dx = mx - cx;
     const float dy = my - cy;
-    float angle = std::atan2(dy, dx) * (180.0F / 3.14159265358979323846F);
+    float angle = std::atan2(dy, dx) * (180.0F / std::numbers::pi_v<float>);
     if (angle < 0.0F) { angle += 360.0F; }
     return angle;
 }
@@ -693,7 +694,7 @@ void ColorPicker::draw(cd::ui::renderer::DrawBatcher& batcher,
         const float cx     = z.wheel_ring.x + z.wheel_ring.w * 0.5F;
         const float cy     = z.wheel_ring.y + z.wheel_ring.h * 0.5F;
         const float rad    = z.wheel_ring.w * 0.5F - z.wheel_ring.w * 0.075F;
-        const float ang    = hsv_h_ * (3.14159265358979323846F / 180.0F);
+        const float ang    = hsv_h_ * (std::numbers::pi_v<float> / 180.0F);
         const float tick_x = cx + rad * std::cos(ang) - 2.0F;
         const float tick_y = cy + rad * std::sin(ang) - 2.0F;
         const Rect  tick   { tick_x, tick_y, 4.0F, 4.0F };
