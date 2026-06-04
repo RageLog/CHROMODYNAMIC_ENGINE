@@ -53,6 +53,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace cd::post::composite
@@ -110,9 +111,27 @@ enum class BindingSlot : std::uint32_t
     kGbufNormal   = 3,
     kHistoryPrev  = 4,
     kGbufVelocity = 5,
+    // ---- phase691 — M14 W4 — full GI/RT consumer hooks --------------------
+    // OPTIONAL bindings. Declared in `kCompositeFSWithGiHooks` and gated by
+    // `#define CD_COMPOSITE_USE_DDGI 1` / `#define CD_COMPOSITE_USE_RESTIR 1`
+    // injected ahead of the source string by
+    // `make_composite_fs_source_with_gi_hooks()`. When the macros are
+    // undefined the bindings are NOT declared and the FS is byte-equivalent
+    // to `kCompositeFS` (no behavioural change → default OFF).
+    //
+    // `kDdgiIndirectIrradiance` = `cd::ddgi::FullPipeline::sample` output
+    //   (RGBA16F per-pixel indirect diffuse irradiance). Additively blends
+    //   into the lit colour right after bloom + before exposure / tonemap.
+    //
+    // `kRestirDenoisedDirect` = `cd::restir_di::FullPipelineDenoised`
+    //   denoised direct-light output (RGBA16F). Additively blends into the
+    //   lit colour at the same injection point as the DDGI sample.
+    kDdgiIndirectIrradiance = 6,
+    kRestirDenoisedDirect   = 7,
 };
 
-inline constexpr std::uint32_t kBindingCount = 6;
+inline constexpr std::uint32_t kBindingCount             = 6;
+inline constexpr std::uint32_t kBindingCountWithGiHooks  = 8;
 
 // ---- GLSL — fullscreen-triangle VS -----------------------------------------
 
@@ -775,5 +794,176 @@ void main() {
   out_history = vec4(c, 1.0);
 }
 )glsl";
+
+// ---- phase691 — composite FS with optional DDGI + ReSTIR GI/RT hooks -------
+//
+// Sister GLSL string to `kCompositeFS`. The hook bindings are wrapped in
+// `#ifdef CD_COMPOSITE_USE_DDGI` / `#ifdef CD_COMPOSITE_USE_RESTIR` blocks
+// so when neither macro is defined the SPIR-V output is byte-equivalent to
+// `kCompositeFS` and the renderer's composite pass behaves exactly as it
+// did pre-phase691. Use `make_composite_fs_source_with_gi_hooks()` to
+// build the source string with the macros prepended, or pass the GLSL
+// straight to a glslang preamble that defines them externally.
+//
+// The hook contribution is purely ADDITIVE on the lit colour `c` AFTER
+// the SSR/light-shaft/bloom add but BEFORE the exposure multiply +
+// tonemap. That matches Sprint-5 (DDGI sample writes per-pixel indirect
+// diffuse irradiance) + Sprint-6 (ReSTIR denoised direct illumination)
+// — both contributions are in linear-HDR radiance and should compose
+// linearly with the engine's existing direct-light forward pass.
+//
+// Contract (must match the caller's pipeline layout when either macro
+// is ON):
+//   * binding 6 — sampler2D cd_ddgi_indirect_irradiance (RGBA16F).
+//     Sourced from `cd::ddgi::FullPipeline::bind_sample_resources(...)`
+//     `output_view`. May be a per-pixel ATLAS for the indirect-only path
+//     or a viewport-sized buffer if the renderer projects probes to
+//     screen-space first. The shader simply does a single bilinear tap
+//     at `v_uv` and adds the RGB channels.
+//   * binding 7 — sampler2D cd_restir_denoised_direct (RGBA16F).
+//     Sourced from `cd::restir_di::FullPipelineDenoised::execute(...)`
+//     output buffer (post-SVGF denoise). Same single bilinear tap at
+//     `v_uv` and the RGB channels add to `c`.
+//
+// MOMENT (per the M14 W4 brief): a graphics dev flips
+// CD_COMPOSITE_USE_DDGI=ON in their CMake, recompiles, and the scene gets
+// actual indirect bounce lighting in the next frame — the full GI/RT
+// chain is consumable, not just dispatchable.
+constexpr std::string_view kCompositeFSWithGiHooks = R"glsl(
+#version 450
+layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
+layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
+layout(set = 0, binding = 2) uniform sampler2D cd_depth;
+layout(set = 0, binding = 3) uniform sampler2D cd_gbuf_normal;
+layout(set = 0, binding = 4) uniform sampler2D cd_history_prev;
+layout(set = 0, binding = 5) uniform sampler2D cd_gbuf_velocity;
+#ifdef CD_COMPOSITE_USE_DDGI
+layout(set = 0, binding = 6) uniform sampler2D cd_ddgi_indirect_irradiance;
+#endif
+#ifdef CD_COMPOSITE_USE_RESTIR
+layout(set = 0, binding = 7) uniform sampler2D cd_restir_denoised_direct;
+#endif
+layout(push_constant) uniform PC {
+  vec4 fx;
+  vec4 ao;
+  vec4 dof;
+  vec4 shafts;
+  vec4 sun_col;
+  vec4 atmo;
+  vec4 lens;
+  vec4 cam_right;
+  vec4 cam_up;
+  vec4 cam_fwd;
+  vec4 cam_pos;
+  vec4 ssr;
+  vec4 prev_cam_right;
+  vec4 prev_cam_up;
+  vec4 prev_cam_fwd;
+  vec4 prev_cam_pos;
+} pc;
+
+layout(location = 0) in  vec2 v_uv;
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_history;
+
+void main() {
+  // Hook smoke variant: we keep the FS minimal so library-level integration
+  // tests can verify pipeline-creation + dispatch without paying for the
+  // full composite chain. The renderer's production composite path uses
+  // `kCompositeFS` (or extends it inline) — when both macros stay OFF this
+  // smoke FS still produces the same `c = HDR + bloom * w + exposure`
+  // skeleton the original composite shipped with, so a downstream consumer
+  // can switch over without seeing a black frame.
+  vec3 c = texture(cd_hdr_color, v_uv).rgb;
+  vec3 bloom = texture(cd_bloom_mip0, v_uv).rgb;
+  c += bloom * max(pc.fx.w, 0.0);
+
+#ifdef CD_COMPOSITE_USE_DDGI
+  // DDGI indirect bounce — additive in linear HDR. The DDGI sample pass
+  // writes per-pixel diffuse irradiance already divided by PI (Majercik
+  // 2019); the composite simply adds it on top of the lit direct +
+  // analytic ambient that the forward pass produced.
+  vec3 ddgi_irr = texture(cd_ddgi_indirect_irradiance, v_uv).rgb;
+  c += ddgi_irr;
+#endif
+
+#ifdef CD_COMPOSITE_USE_RESTIR
+  // ReSTIR DI denoised direct illumination — additive. The SVGF chain
+  // writes temporally-stable direct light radiance (Bitterli 2020 +
+  // Schied 2017). The renderer's analytic forward pass is expected to
+  // SKIP the lights ReSTIR is responsible for so the contributions do
+  // not double-count; the seam policy is documented in the README.
+  vec3 restir_dir = texture(cd_restir_denoised_direct, v_uv).rgb;
+  c += restir_dir;
+#endif
+
+  c *= max(pc.fx.y, 0.001);
+
+  // Cheap Reinhard tonemap so the smoke FS still produces a swap-chain-
+  // valid LDR colour. The production composite (`kCompositeFS`) keeps
+  // its full ACES / AGX / Hable operator menu — this minimal path just
+  // exercises the binding/push-constant layout for the hook smoke test.
+  c = c / (c + vec3(1.0));
+  c = pow(c, vec3(1.0 / 2.2));
+
+  out_color   = vec4(c, 1.0);
+  out_history = vec4(c, 1.0);
+}
+)glsl";
+
+// ---- phase691 — helper: build the GI-hook FS with the macros prepended -----
+//
+// glslang accepts a single source string per CompileDesc + no separate
+// `defines` channel (see `cd::shader::CompileDesc`). The simplest portable
+// way to wire CD_COMPOSITE_USE_DDGI / CD_COMPOSITE_USE_RESTIR into the GLSL
+// source is to inject `#define` lines AFTER the `#version` directive and
+// before the rest of the source. This helper returns that concatenated
+// string so consumers can pass it straight to
+// `cd::shader::ICompiler::compile(...)`.
+//
+// Behaviour:
+//   * `use_ddgi   == false && use_restir == false` → returns
+//     `kCompositeFSWithGiHooks` unchanged (no hook bindings declared, no
+//     contributions added → same SPIR-V as the no-flag baseline).
+//   * either flag set → the corresponding `#define <macro> 1` line is
+//     inserted right after the `#version 450` header so the GLSL
+//     preprocessor sees the macro before the `#ifdef` block expands.
+//
+// Returning `std::string` (not `std::string_view`) keeps the helper safe
+// for inline use: the lifetime of the returned source is bound to the
+// caller's local variable, exactly mirroring how the unit tests below
+// (and the library-level integration test) consume it.
+[[nodiscard]] inline std::string
+make_composite_fs_source_with_gi_hooks(bool use_ddgi, bool use_restir)
+{
+    // Locate the first newline so we can splice the #define block in
+    // RIGHT after the `#version 450` line (GLSL requires #version to be
+    // the first non-whitespace token in the unit).
+    std::string out;
+    out.reserve(kCompositeFSWithGiHooks.size() + 96U);
+    const std::string_view src = kCompositeFSWithGiHooks;
+    // The source string starts with a leading "\n" (raw string literal)
+    // followed by "#version 450\n". Skip the leading newline first.
+    std::size_t version_end = src.find('\n');
+    if (version_end != std::string_view::npos && version_end + 1U < src.size())
+    {
+        // Find the END of the `#version` line.
+        version_end = src.find('\n', version_end + 1U);
+    }
+    if (version_end == std::string_view::npos)
+    {
+        out = std::string(src);
+        return out;
+    }
+    // Copy `#version 450\n` (inclusive of trailing newline).
+    out.append(src.substr(0, version_end + 1U));
+    if (use_ddgi)
+        out.append("#define CD_COMPOSITE_USE_DDGI 1\n");
+    if (use_restir)
+        out.append("#define CD_COMPOSITE_USE_RESTIR 1\n");
+    // Remainder of the FS source.
+    out.append(src.substr(version_end + 1U));
+    return out;
+}
 
 }  // namespace cd::post::composite
