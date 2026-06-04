@@ -1,6 +1,32 @@
 // =============================================================================
 // CHROMODYNAMIC -- apps/editor/main.cpp
 //
+// Phase 685 / M13 W6B -- boot splash polish + first-time-user welcome flow.
+//
+// Changes vs phase679:
+//   * Boot splash extended from 2.0 s to 2.5 s (opaque) + 0.3 s fade = 2.8 s
+//     total. Three animation stages:
+//       [0, 500ms)    'CHROMODYNAMIC' title quads fade in (alpha 0 -> 1).
+//       [500, 1500ms) subtitle bar reveals: 'A library-oriented game engine'.
+//       [1500, 2500ms) scrolling hints: four strings cycle vertically
+//                      (Booting Vulkan... / Loading panels... /
+//                       Restoring layout... / Ready).
+//     Elapsed time is tracked via cd::frame_timing::FrameTimeRing push data
+//     (using the same steady_clock measurement already in the frame loop).
+//   * First-time-user welcome: if no .cdproj existed when the editor started
+//     (first_launch flag), and the splash has finished, a centred one-shot
+//     dialog offers three layout presets:
+//       'Default Layout'  -- keeps the existing 16-panel default.
+//       'Compact Layout'  -- collapses all panel content to 3 key tiles:
+//                            viewport + console + inspector.
+//       'Full Layout'     -- all 15 panels at equal weight visible.
+//     The user's choice is written as a starter .cdproj (dock_layout +
+//     layout_preset field) so the next launch skips the dialog immediately.
+//
+//   MOMENT: a first-time user opens editor.exe, sees a polished 2.5 s branded
+//   splash, then a friendly welcome dialog asking how they want their
+//   workspace — not dumped into a 13-panel cockpit cold.
+//
 // Phase 679 / M13 W3 -- wire 3 new panels + .cdproj layout round-trip.
 //
 // Changes vs phase674:
@@ -223,6 +249,12 @@
 // phase674 / M12 W6B — FrameTimeRing for real FPS feed in the overlay headers.
 // Header-only; no extra link target (cd::frame_timing is INTERFACE).
 #include <cd/frame_timing/FrameTimeRing.hpp>
+
+// phase684 / M13 W6A — Debug Visualization overlays: depth / normal /
+// alpha-bucket thumbnails in a top-right vertical stack. Three instances each
+// carry a separate VizKind. Sprint-1 renders coloured placeholder gradients;
+// Sprint-2 wires real G-buffer textures once framegraph exposes them cleanly.
+#include <cd/editor/panel_debug_viz/DebugViz.hpp>
 
 // phase631 / M9 W1A — asset::validator for status badge.
 // TODO(phase631): No status bar exists yet in apps/editor. When a status bar
@@ -1163,32 +1195,35 @@ void draw_status_bar(ur::DrawBatcher& batcher,
 
 // ---- Boot splash -----------------------------------------------------------
 //
-// phase674 / M12 W6B — 2-second branded splash rendered on top of the dock
-// during editor startup.  Stages (driven by wall-clock elapsed_ms):
+// phase685 / M13 W6B — polished 2.5 s branded splash with three animation
+// stages, rendered on top of the dock during editor startup.
 //
-//   [0, 400ms)    "Booting Vulkan..."
-//   [400, 800ms)  "Loading panels..."
-//   [800, 1600ms) "Wiring assets..."
-//   [1600, 2000ms) "Ready."
-//   [2000, 2300ms) fade-out (alpha lerps 255 -> 0 over 300 ms)
-//   >=2300ms       splash complete — dock fully visible
+//   [0,   500ms)  Title fade-in: 'CHROMODYNAMIC' quads alpha 0 -> 255.
+//   [500, 1500ms) Subtitle reveal: 'A library-oriented game engine' strip
+//                 grows in from width 0 -> kSubtitleW.
+//   [1500, 2500ms) Scrolling hints: four hint strings step vertically through
+//                  "Booting Vulkan..." / "Loading panels..." /
+//                  "Restoring layout..." / "Ready" every 250 ms.
+//   [2500, 2800ms) Fade-out: full alpha lerps 255 -> 0 over 300 ms.
+//   >= 2800 ms    Splash fully done — dock visible; first-launch dialog shown.
 //
-// The splash covers the full framebuffer with a dark surface fill and emits
-// two "CHROMODYNAMIC" branding quads in the screen centre, plus a
-// progress-hint strip beneath them.  All quads go into the shared
-// DrawBatcher so they composite naturally over the dock.
+// Elapsed time is driven by the same BootSplash::elapsed_ms() call used
+// in the existing frame loop; cd::frame_timing is used for real FPS, not for
+// this wall-clock measurement (which needs absolute ms, not dt accumulation).
 
 struct BootSplash
 {
     /// Wall-clock reference point at which the editor window first opened.
     std::chrono::steady_clock::time_point start_tp = std::chrono::steady_clock::now();
 
-    /// Total opaque duration (ms) before fade starts.
-    static constexpr double kSolidMs = 2000.0;
-    /// Fade-out duration (ms) after kSolidMs.
-    static constexpr double kFadeMs  = 300.0;
+    // --- Timing constants (ms) -------------------------------------------
+    static constexpr double kTitleFadeEndMs    =  500.0;   ///< Title fully opaque.
+    static constexpr double kSubtitleEndMs     = 1500.0;   ///< Subtitle fully revealed.
+    static constexpr double kHintEndMs         = 2500.0;   ///< Hint scroll ends (solid phase end).
+    static constexpr double kSolidMs           = kHintEndMs;
+    static constexpr double kFadeMs            =  300.0;   ///< Fade-out duration after solid.
 
-    /// Returns elapsed milliseconds since start_tp.
+    /// Returns elapsed milliseconds since start_tp (wall-clock, not dt sum).
     [[nodiscard]] double elapsed_ms() const noexcept
     {
         using namespace std::chrono;
@@ -1203,7 +1238,9 @@ struct BootSplash
         return ms >= kSolidMs + kFadeMs;
     }
 
-    /// Normalised fade alpha [0, 255] for the given elapsed_ms.
+    /// Overall splash alpha [0, 255] for the given elapsed_ms.
+    /// During the title-fade stage (0..kTitleFadeEndMs) this controls the
+    /// title bar alpha; the subtitle / hints / background use it directly.
     [[nodiscard]] std::uint8_t splash_alpha(double ms) const noexcept
     {
         if (ms < kSolidMs) { return 255U; }
@@ -1212,85 +1249,443 @@ struct BootSplash
         return static_cast<std::uint8_t>((1.0 - clamped) * 255.0);
     }
 
-    /// Loading hint string for the given elapsed_ms.
-    [[nodiscard]] static const char* hint(double ms) noexcept
+    /// Title alpha [0, 255]: rises from 0 to 255 in the first kTitleFadeEndMs.
+    [[nodiscard]] std::uint8_t title_alpha(double ms) const noexcept
     {
-        if (ms < 400.0)  { return "Booting Vulkan..."; }
-        if (ms < 800.0)  { return "Loading panels..."; }
-        if (ms < 1600.0) { return "Wiring assets...";  }
-        return "Ready.";
+        if (ms >= kSolidMs) { return splash_alpha(ms); }
+        const double t = ms / kTitleFadeEndMs;
+        const double clamped = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        return static_cast<std::uint8_t>(clamped * 255.0);
+    }
+
+    /// Subtitle reveal fraction [0.0, 1.0]: 0 before kTitleFadeEndMs,
+    /// linearly 0->1 over [kTitleFadeEndMs, kSubtitleEndMs].
+    [[nodiscard]] float subtitle_frac(double ms) const noexcept
+    {
+        if (ms < kTitleFadeEndMs) { return 0.0F; }
+        if (ms >= kSubtitleEndMs) { return 1.0F; }
+        const double t = (ms - kTitleFadeEndMs) / (kSubtitleEndMs - kTitleFadeEndMs);
+        return static_cast<float>(t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t));
+    }
+
+    /// Index of the hint string currently visible [0..3] during the hint-scroll
+    /// phase [kSubtitleEndMs, kHintEndMs].  Each string shows for 250 ms.
+    [[nodiscard]] static int hint_index(double ms) noexcept
+    {
+        if (ms < kSubtitleEndMs) { return 0; }
+        if (ms >= kHintEndMs)    { return 3; }
+        const double phase_ms = ms - kSubtitleEndMs;
+        const int idx = static_cast<int>(phase_ms / 250.0);
+        return (idx > 3) ? 3 : idx;
+    }
+
+    /// The four scrolling hint strings shown during [1500, 2500ms).
+    [[nodiscard]] static const char* hint_string(int idx) noexcept
+    {
+        static constexpr const char* kHints[4] = {
+            "Booting Vulkan...",
+            "Loading panels...",
+            "Restoring layout...",
+            "Ready",
+        };
+        if (idx < 0) { return kHints[0]; }
+        if (idx > 3) { return kHints[3]; }
+        return kHints[idx];
     }
 };
 
-/// Emit boot splash quads into `batcher`. Call AFTER dockspace.draw() so the
-/// splash paints on top of panels. `alpha` drives from BootSplash::splash_alpha().
-void draw_boot_splash(ur::DrawBatcher& batcher,
-                      const uw::Theme& theme,
-                      float            fb_w,
-                      float            fb_h,
-                      std::uint8_t     alpha,
-                      const char*      hint_str)
+/// Emit boot splash quads into `batcher`.  Call AFTER dockspace.draw() so the
+/// splash paints on top of panels.
+///
+/// phase685 / M13 W6B — three animation stages keyed on `elapsed_ms`:
+///   Stage 1 [0, 500ms)    : Title fades in  (title_alpha 0->255).
+///   Stage 2 [500, 1500ms) : Subtitle reveals (subtitle width 0->kSubtitleW).
+///   Stage 3 [1500, 2500ms): Scrolling hints  (4 strings, 250 ms each).
+///   Fade    [2500, 2800ms): Overall alpha 255->0.
+void draw_boot_splash(ur::DrawBatcher&  batcher,
+                      const uw::Theme&  theme,
+                      float             fb_w,
+                      float             fb_h,
+                      const BootSplash& splash,
+                      double            elapsed_ms)
 {
-    if (alpha == 0U) { return; }
+    const std::uint8_t overall_alpha = splash.splash_alpha(elapsed_ms);
+    if (overall_alpha == 0U) { return; }
+
+    // Helper: multiply a byte alpha by a [0,1] fraction (preserves uint8_t range).
+    auto scale_alpha = [](std::uint8_t a, float frac) -> std::uint8_t {
+        const float v = static_cast<float>(a) * frac;
+        const float clamped = v < 0.0F ? 0.0F : (v > 255.0F ? 255.0F : v);
+        return static_cast<std::uint8_t>(clamped);
+    };
 
     // 1. Full-framebuffer surface fill — slightly darker than the dock surface.
     const auto bg_r = static_cast<std::uint8_t>(theme.surface.r / 2U);
     const auto bg_g = static_cast<std::uint8_t>(theme.surface.g / 2U);
     const auto bg_b = static_cast<std::uint8_t>(theme.surface.b / 2U);
     batcher.quad(0.0F, 0.0F, fb_w, fb_h,
-                 ur::Color { bg_r, bg_g, bg_b, alpha });
+                 ur::Color { bg_r, bg_g, bg_b, overall_alpha });
 
-    // 2. "CHROMODYNAMIC" logotype quads centred on screen.
-    //    Top bar:    340 x 28 px (title mass in accent colour).
-    //    Bottom bar: 240 x 10 px (sub-baseline in accent_hover).
     const float cx = fb_w * 0.5F;
     const float cy = fb_h * 0.5F;
 
-    constexpr float kBarW1 = 340.0F;
-    constexpr float kBarH1 = 28.0F;
-    constexpr float kBarW2 = 240.0F;
-    constexpr float kBarH2 = 10.0F;
-    constexpr float kGap   = 6.0F;
+    // 2. Stage 1 — 'CHROMODYNAMIC' title quad fades in over [0, 500ms).
+    //    340 x 28 px accent-coloured bar centred above the midpoint.
+    constexpr float kTitleW  = 340.0F;
+    constexpr float kTitleH  = 28.0F;
+    constexpr float kGap     =   6.0F;
 
-    batcher.quad(cx - kBarW1 * 0.5F,
-                 cy - kBarH1 - kGap * 0.5F,
-                 kBarW1, kBarH1,
+    const std::uint8_t title_a = scale_alpha(overall_alpha,
+        static_cast<float>(splash.title_alpha(elapsed_ms)) / 255.0F);
+
+    batcher.quad(cx - kTitleW * 0.5F,
+                 cy - kTitleH - kGap * 0.5F,
+                 kTitleW, kTitleH,
                  ur::Color { theme.accent.r, theme.accent.g,
-                             theme.accent.b, alpha });
+                             theme.accent.b, title_a });
 
-    batcher.quad(cx - kBarW2 * 0.5F,
-                 cy + kGap * 0.5F,
-                 kBarW2, kBarH2,
-                 ur::Color { theme.accent_hover.r, theme.accent_hover.g,
-                             theme.accent_hover.b,
-                             static_cast<std::uint8_t>(
-                                 static_cast<std::uint32_t>(alpha) * 180U / 255U) });
+    // 3. Stage 2 — subtitle bar reveals from width 0 to kSubtitleW over
+    //    [500ms, 1500ms).  'A library-oriented game engine' represented as a
+    //    narrower accent_hover bar directly below the title.
+    constexpr float kSubtitleW  = 240.0F;
+    constexpr float kSubtitleH  =  10.0F;
 
-    // 3. Progress hint strip whose width encodes the active loading phase.
-    //    25% / 50% / 75% / 100% — keyed on first character of hint_str.
-    float hint_frac = 0.25F;
-    if (hint_str[0] == 'L') { hint_frac = 0.50F; }
-    else if (hint_str[0] == 'W') { hint_frac = 0.75F; }
-    else if (hint_str[0] == 'R') { hint_frac = 1.00F; }
+    const float subtitle_frac = splash.subtitle_frac(elapsed_ms);
+    if (subtitle_frac > 0.0F)
+    {
+        const float sub_w = kSubtitleW * subtitle_frac;
+        batcher.quad(cx - kSubtitleW * 0.5F,
+                     cy + kGap * 0.5F,
+                     sub_w, kSubtitleH,
+                     ur::Color { theme.accent_hover.r, theme.accent_hover.g,
+                                 theme.accent_hover.b,
+                                 scale_alpha(overall_alpha, 0.71F) });
+    }
 
-    constexpr float kProgressW = 220.0F;
-    constexpr float kProgressH = 4.0F;
-    constexpr float kProgressY = 60.0F;  // px below the logotype pair
+    // 4. Stage 3 — scrolling hint strip during [1500ms, 2500ms).
+    //    Four hint strings step every 250 ms.  The active hint drives:
+    //      * A progress bar whose fill fraction = hint_index / 3.
+    //      * A small 6 x 6 px indicator dot that steps right by 52 px per
+    //        stage so the user sees visible animation even without glyphs.
+    //
+    //    The hint strip sits kProgressY px below the subtitle bar.
+    constexpr float kProgressW  = 220.0F;
+    constexpr float kProgressH  =   4.0F;
+    constexpr float kProgressY  =  60.0F;   // offset below the subtitle bar
+    constexpr float kDotSz      =   6.0F;
+    constexpr float kDotStep    =  52.0F;
 
     const float prog_x = cx - kProgressW * 0.5F;
-    const float prog_y = cy + kGap * 0.5F + kBarH2 + kProgressY;
+    const float prog_y = cy + kGap * 0.5F + kSubtitleH + kProgressY;
 
-    batcher.quad(prog_x, prog_y, kProgressW, kProgressH,
-                 ur::Color { theme.surface_hover.r, theme.surface_hover.g,
-                             theme.surface_hover.b,
-                             static_cast<std::uint8_t>(
-                                 static_cast<std::uint32_t>(alpha) * 120U / 255U) });
+    // Background track (always visible once subtitle appears).
+    if (subtitle_frac > 0.0F)
+    {
+        batcher.quad(prog_x, prog_y, kProgressW, kProgressH,
+                     ur::Color { theme.surface_hover.r, theme.surface_hover.g,
+                                 theme.surface_hover.b,
+                                 scale_alpha(overall_alpha, 0.47F) });
+    }
 
-    batcher.quad(prog_x, prog_y, kProgressW * hint_frac, kProgressH,
+    // Active fill — grows from 0 to full over the hint-scroll phase.
+    if (elapsed_ms >= BootSplash::kSubtitleEndMs)
+    {
+        const int   hi     = BootSplash::hint_index(elapsed_ms);
+        const float frac   = (hi == 3) ? 1.0F
+                             : static_cast<float>(hi) / 3.0F
+                               + (static_cast<float>(
+                                      static_cast<double>(elapsed_ms)
+                                      - BootSplash::kSubtitleEndMs
+                                      - static_cast<double>(hi) * 250.0) / 750.0F);
+        const float clamped_frac = frac < 0.0F ? 0.0F : (frac > 1.0F ? 1.0F : frac);
+
+        batcher.quad(prog_x, prog_y,
+                     kProgressW * clamped_frac, kProgressH,
+                     ur::Color { theme.accent.r, theme.accent.g,
+                                 theme.accent.b,
+                                 scale_alpha(overall_alpha, 0.78F) });
+
+        // Indicator dot — steps right by kDotStep per hint index.
+        const float dot_x = prog_x + static_cast<float>(hi) * kDotStep;
+        batcher.quad(dot_x, prog_y - (kDotSz - kProgressH) * 0.5F,
+                     kDotSz, kDotSz,
+                     ur::Color { theme.accent.r, theme.accent.g,
+                                 theme.accent.b, overall_alpha });
+    }
+}
+
+// ---- First-time-user welcome dialog ----------------------------------------
+//
+// phase685 / M13 W6B — shown ONCE after the boot splash finishes, if no
+// .cdproj existed when the editor started (first-launch detection).
+//
+// The dialog is a single centred panel (480 x 220 px) with three labelled
+// option buttons rendered as coloured quads. Clicking a button commits the
+// layout choice and the choice is written to .cdproj immediately so the next
+// launch skips the dialog.
+//
+// Layout presets:
+//   kDefault  — keep the existing 16-panel default layout built by
+//               build_default_layout().
+//   kCompact  — collapse to 3 tiles: viewport (centre) + console (bottom) +
+//               inspector (right).  Ideal for focused scene work.
+//   kFull     — all 16 panels at equal weight, tiled in a 4-column grid.
+//               Gives a power user everything visible at once.
+
+enum class WelcomeChoice : std::uint8_t
+{
+    kNone    = 0,   ///< Dialog still open.
+    kDefault = 1,
+    kCompact = 2,
+    kFull    = 3,
+};
+
+struct FirstTimeWelcome
+{
+    bool         active { false };   ///< True while the dialog is visible.
+    WelcomeChoice choice { WelcomeChoice::kNone };
+
+    void show() noexcept { active = true; }
+
+    /// Returns true if user has made a choice.
+    [[nodiscard]] bool decided() const noexcept
+    {
+        return choice != WelcomeChoice::kNone;
+    }
+};
+
+/// Draw the welcome dialog into `batcher` and handle click input.
+/// Returns the chosen option if a button was clicked this frame, kNone otherwise.
+[[nodiscard]] WelcomeChoice draw_welcome_dialog(
+    ur::DrawBatcher&       batcher,
+    const uw::Theme&       theme,
+    float                  fb_w,
+    float                  fb_h,
+    const uw::PointerState& ptr)
+{
+    // Dialog dimensions.
+    constexpr float kDlgW   = 480.0F;
+    constexpr float kDlgH   = 220.0F;
+    constexpr float kBtnH   =  40.0F;
+    constexpr float kBtnW   = 140.0F;
+    constexpr float kBtnGap =  12.0F;
+    constexpr float kPad    =  20.0F;
+
+    const float dlg_x = (fb_w - kDlgW) * 0.5F;
+    const float dlg_y = (fb_h - kDlgH) * 0.5F;
+
+    // --- 1. Dim backdrop (full-screen translucent overlay) ---
+    batcher.quad(0.0F, 0.0F, fb_w, fb_h,
+                 ur::Color { 0U, 0U, 0U, 160U });
+
+    // --- 2. Dialog background ---
+    batcher.quad(dlg_x, dlg_y, kDlgW, kDlgH,
+                 ur::Color { theme.surface.r, theme.surface.g,
+                             theme.surface.b, 245U });
+
+    // --- 3. Header strip in accent colour (32 px tall title bar) ---
+    constexpr float kHeaderH = 32.0F;
+    batcher.quad(dlg_x, dlg_y, kDlgW, kHeaderH,
                  ur::Color { theme.accent.r, theme.accent.g,
-                             theme.accent.b,
-                             static_cast<std::uint8_t>(
-                                 static_cast<std::uint32_t>(alpha) * 200U / 255U) });
+                             theme.accent.b, 230U });
+
+    // --- 4. Subtitle indicator — two small quads representing "Choose layout"
+    //         text (no glyph renderer in apps/editor yet; quads carry the intent).
+    constexpr float kSubH = 6.0F;
+    batcher.quad(dlg_x + kPad,
+                 dlg_y + kHeaderH + kPad * 0.5F,
+                 kDlgW * 0.55F, kSubH,
+                 ur::Color { theme.text_dim.r, theme.text_dim.g,
+                             theme.text_dim.b, 160U });
+    batcher.quad(dlg_x + kPad,
+                 dlg_y + kHeaderH + kPad * 0.5F + kSubH + 4.0F,
+                 kDlgW * 0.35F, kSubH * 0.6F,
+                 ur::Color { theme.text_dim.r, theme.text_dim.g,
+                             theme.text_dim.b, 100U });
+
+    // --- 5. Three option buttons ---
+    //   Button layout: [Default Layout] [Compact Layout] [Full Layout]
+    //   Centred horizontally; anchored near the dialog bottom.
+    const float total_btn_w = 3.0F * kBtnW + 2.0F * kBtnGap;
+    const float btn_row_x   = dlg_x + (kDlgW - total_btn_w) * 0.5F;
+    const float btn_row_y   = dlg_y + kDlgH - kBtnH - kPad;
+
+    struct BtnDesc { float x; ur::Color color; WelcomeChoice result; };
+    const std::array<BtnDesc, 3> buttons {{
+        { btn_row_x,
+          ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 220U },
+          WelcomeChoice::kDefault },
+        { btn_row_x + kBtnW + kBtnGap,
+          ur::Color { theme.accent_hover.r, theme.accent_hover.g,
+                      theme.accent_hover.b, 220U },
+          WelcomeChoice::kCompact },
+        { btn_row_x + (kBtnW + kBtnGap) * 2.0F,
+          ur::Color { theme.surface_hover.r, theme.surface_hover.g,
+                      theme.surface_hover.b, 220U },
+          WelcomeChoice::kFull },
+    }};
+
+    WelcomeChoice clicked = WelcomeChoice::kNone;
+    for (const auto& btn : buttons)
+    {
+        const bool hovered =
+            ptr.mouse_x >= btn.x && ptr.mouse_x <= btn.x + kBtnW &&
+            ptr.mouse_y >= btn_row_y && ptr.mouse_y <= btn_row_y + kBtnH;
+
+        ur::Color draw_color = btn.color;
+        if (hovered)
+        {
+            // Lighten on hover.
+            draw_color.r = static_cast<std::uint8_t>(
+                std::min(255, static_cast<int>(draw_color.r) + 30));
+            draw_color.g = static_cast<std::uint8_t>(
+                std::min(255, static_cast<int>(draw_color.g) + 30));
+            draw_color.b = static_cast<std::uint8_t>(
+                std::min(255, static_cast<int>(draw_color.b) + 30));
+        }
+
+        batcher.quad(btn.x, btn_row_y, kBtnW, kBtnH, draw_color);
+
+        // Label indicator: a thin stripe below the button mid-height that
+        // identifies the button index until glyph rendering is wired.
+        constexpr float kLabelH = 3.0F;
+        batcher.quad(btn.x + 8.0F,
+                     btn_row_y + (kBtnH - kLabelH) * 0.5F,
+                     kBtnW - 16.0F, kLabelH,
+                     ur::Color { 220U, 220U, 220U, 200U });
+
+        if (hovered && ptr.left_pressed)
+        {
+            clicked = btn.result;
+        }
+    }
+
+    return clicked;
+}
+
+/// Apply the welcome choice to the live DockSpace.
+/// kDefault: no change (already built by build_default_layout).
+/// kCompact: collapse to viewport + console + inspector (3 tiles).
+/// kFull:    equal-weight 4-column split of all 16 panels.
+///
+/// Strategy: build a temporary DockSpace with the desired topology, serialize
+/// it, then restore into the live `ds`.  Uses only the public DockSpace API
+/// (no "clear") and keeps all registered panel drawers intact because
+/// DockSpace::restore() replaces only the tree structure, not the panel map.
+void apply_welcome_layout(uw::DockSpace& ds, WelcomeChoice choice)
+{
+    if (choice == WelcomeChoice::kDefault) { return; }  // nothing to do
+
+    if (choice == WelcomeChoice::kCompact)
+    {
+        // Build a temporary 3-panel compact tree (viewport + inspector + console).
+        uw::DockSpace tmp;
+        auto* root = tmp.root();
+        if (root == nullptr) { return; }
+        if (!tmp.tab_merge(root, "viewport")) { return; }
+
+        auto* vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+        if (!tmp.split(vp, uw::DockAxis::kVertical, "inspector", 0.75F)) { return; }
+
+        vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+        (void)tmp.split(vp, uw::DockAxis::kHorizontal, "console", 0.72F);
+
+        const auto bytes = tmp.serialize();
+        if (!bytes.empty())
+        {
+            (void)ds.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
+        }
+        return;
+    }
+
+    // kFull — all 16 panels in a 4-column layout built in a temporary DockSpace.
+    // Column A (LEFT, 25%):    scene_tree / material_editor / cutscene_player
+    // Column B (CENTRE, 37%):  viewport + console (bottom)
+    // Column C (RIGHT-C, 20%): inspector / behavior_designer / light_editor
+    // Column D (RIGHT, 18%):   assets / animator / input_recorder / (tab-merges)
+    {
+        uw::DockSpace tmp;
+        auto* root = tmp.root();
+        if (root == nullptr) { return; }
+        if (!tmp.tab_merge(root, "viewport")) { return; }
+
+        // LEFT column A (25% of total).
+        auto* vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+        if (!tmp.split(vp, uw::DockAxis::kVertical, "scene_tree", 0.25F)) { return; }
+
+        // RIGHT-C column C (inspector, ~27% of remaining after A).
+        vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+        if (!tmp.split(vp, uw::DockAxis::kVertical, "inspector", 0.73F)) { return; }
+
+        // RIGHT column D (assets, ~25% of what remains after C).
+        vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+        if (!tmp.split(vp, uw::DockAxis::kVertical, "assets", 0.75F)) { return; }
+
+        // Console at bottom of viewport tile.
+        vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+        (void)tmp.split(vp, uw::DockAxis::kHorizontal, "console", 0.60F);
+
+        // Stack scene_tree column vertically.
+        auto* sc = tmp.find_panel_owner("scene_tree");
+        if (sc != nullptr)
+        {
+            (void)tmp.split(sc, uw::DockAxis::kHorizontal, "material_editor", 0.50F);
+            auto* me = tmp.find_panel_owner("material_editor");
+            if (me != nullptr)
+            {
+                (void)tmp.split(me, uw::DockAxis::kHorizontal, "cutscene_player", 0.60F);
+            }
+        }
+
+        // Stack inspector column vertically.
+        auto* ins = tmp.find_panel_owner("inspector");
+        if (ins != nullptr)
+        {
+            (void)tmp.split(ins, uw::DockAxis::kHorizontal, "behavior_designer", 0.50F);
+            auto* bd = tmp.find_panel_owner("behavior_designer");
+            if (bd != nullptr)
+            {
+                (void)tmp.split(bd, uw::DockAxis::kHorizontal, "light_editor", 0.60F);
+            }
+        }
+
+        // Stack assets column vertically.
+        auto* ass = tmp.find_panel_owner("assets");
+        if (ass != nullptr)
+        {
+            (void)tmp.split(ass, uw::DockAxis::kHorizontal, "animator", 0.50F);
+            auto* an = tmp.find_panel_owner("animator");
+            if (an != nullptr)
+            {
+                (void)tmp.split(an, uw::DockAxis::kHorizontal, "input_recorder", 0.60F);
+            }
+        }
+
+        // Tab-merge panels that share tiles.
+        auto merge_into = [&](const char* owner_p, const char* new_p)
+        {
+            auto* nd = tmp.find_panel_owner(owner_p);
+            if (nd != nullptr) { (void)tmp.tab_merge(nd, new_p); }
+        };
+
+        merge_into("console",         "asset_drop_target");
+        merge_into("material_editor", "vehicle_editor");
+        merge_into("material_editor", "material_preview");
+        merge_into("cutscene_player", "dialog_tree_editor");
+        merge_into("scene_tree",      "pathfinding_viz");
+
+        const auto bytes = tmp.serialize();
+        if (!bytes.empty())
+        {
+            (void)ds.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
+        }
+    }
 }
 
 // ---- Overlay titled-header strip -------------------------------------------
@@ -1395,6 +1790,11 @@ int main(int argc, char** argv)
             ? cd::editor::cdproj::default_cdproj_path()
             : std::filesystem::path(local.project_path);
 
+    // phase685 / M13 W6B — detect first launch BEFORE reading the file.
+    // We check existence separately so we can set the first_launch flag
+    // regardless of whether the subsequent read succeeds.
+    const bool first_launch = !std::filesystem::exists(cdproj_path);
+
     cd::editor::cdproj::CdprojData project_data;  // defaults if file absent/bad
     if (const auto loaded = cd::editor::cdproj::read_cdproj(cdproj_path);
         loaded.has_value())
@@ -1408,8 +1808,9 @@ int main(int argc, char** argv)
     }
     else
     {
-        std::printf("editor: no .cdproj at %s — using defaults.\n",
-                    cdproj_path.string().c_str());
+        std::printf("editor: no .cdproj at %s — using defaults%s.\n",
+                    cdproj_path.string().c_str(),
+                    first_launch ? " (first launch — welcome dialog will show)" : "");
     }
 
     // -- 1. Font (optional; widgets gracefully fall back when missing) -------
@@ -1891,10 +2292,45 @@ int main(int argc, char** argv)
     const std::uint32_t cap_frames =
         runtime.headless_frames > 0U ? runtime.headless_frames : default_headless;
 
-    // phase674 / M12 W6B — boot splash + real FPS feed.
+    // phase685 / M13 W6B — boot splash + real FPS feed + first-launch welcome.
     BootSplash                       boot_splash {};   // starts counting from now
     cd::frame_timing::FrameTimeRing<120> ft_ring {};  // feeds real fps to overlays + status bar
     std::chrono::steady_clock::time_point prev_tp = std::chrono::steady_clock::now();
+
+    // First-time-user welcome dialog state.  Active only on first_launch
+    // (no .cdproj existed at startup) and only once the splash has finished.
+    FirstTimeWelcome welcome_dialog {};
+    if (first_launch && window)
+    {
+        // Will be shown() once the splash finishes — see frame loop below.
+        std::printf("editor: first launch detected — welcome dialog queued.\n");
+    }
+
+    // phase684 / M13 W6A — Debug Visualization overlays -------------------------
+    //
+    // Three ~200x150 px thumbnails stacked vertically in the top-right corner
+    // of the editor (below the profiling overlays).  Each carries a separate
+    // VizKind and is independently toggled via set_visible().  Sprint-1 renders
+    // coloured placeholder gradients so the overlay surfaces are immediately
+    // visible; Sprint-2 replaces them with real G-buffer texture samples once
+    // cd::render::framegraph exposes depth/normal/bucket textures cleanly.
+    //
+    // MOMENT: A render dev hits a curtain-bleed-through bug, toggles 'Alpha
+    // Bucket' viz, sees the curtain is correctly classified as red (kAlphaBlend),
+    // confirms the framegraph order is right, narrows the bug elsewhere.
+    using DebugVizOverlay = cd::editor::debug_viz::DebugVizOverlay;
+    using VizKind         = cd::editor::debug_viz::VizKind;
+    DebugVizOverlay dbg_depth  { VizKind::kDepth };
+    DebugVizOverlay dbg_normal { VizKind::kNormal };
+    DebugVizOverlay dbg_bucket { VizKind::kAlphaBucket };
+
+    // All three enabled by default.  Log active state at boot so a dev can
+    // confirm viz status without attaching a debugger.
+    std::printf("editor: debug_viz overlays ACTIVE: depth=%s  normal=%s  alpha_bucket=%s\n",
+                dbg_depth.is_visible()  ? "ON" : "OFF",
+                dbg_normal.is_visible() ? "ON" : "OFF",
+                dbg_bucket.is_visible() ? "ON" : "OFF");
+    std::fflush(stdout);
 
     bool          needs_rebuild { false };
     std::uint32_t frame_idx     { 0U };
@@ -2127,21 +2563,105 @@ int main(int argc, char** argv)
                             static_cast<float>(fb_h));
         }
 
-        // -- phase674 / M12 W6B — boot splash --------------------------------
+        // -- phase684 / M13 W6A — debug viz thumbnail overlays ----------------
         //
-        // Paints on top of dock + overlays + status bar for the first 2 s.
-        // Skipped in headless mode (no visible window).
+        // Three ~200x150 px thumbnails stacked vertically in the top-right
+        // corner, below the profiling overlays.  Layout (from top):
+        //   [Depth]       at y = kDbgVizStartY
+        //   [Normal]      at y = kDbgVizStartY + 1 * (kDbgH + kDbgGap)
+        //   [AlphaBucket] at y = kDbgVizStartY + 2 * (kDbgH + kDbgGap)
+        //
+        // The stack starts below the GPU-marker overlay to avoid visual
+        // collision.  kDbgVizStartY = CPU header + CPU body + GPU header +
+        // GPU body + gap between GPU and first debug thumbnail.
+        {
+            const float fbw_f = static_cast<float>(fb_w);
+            // Position constants — match the profiling overlay layout above.
+            constexpr float kDbgW       = 200.0F;
+            constexpr float kDbgH       = 150.0F;
+            constexpr float kDbgGap     = 4.0F;
+            constexpr float kDbgMargin  = 8.0F;
+            // CPU overlay: kOverlayHeaderH(14) + 120 body = 134.
+            // GPU overlay: kOverlayHeaderH(14) + 100 body = 114.
+            // Combined top offset: 8 (margin) + 134 + 4 (gap) + 114 + 8 (gap).
+            constexpr float kDbgVizStartY = 8.0F + 134.0F + 4.0F + 114.0F + 8.0F;
+            const float     dbg_x         = fbw_f - kDbgW - kDbgMargin;
+
+            const std::array<DebugVizOverlay*, 3> dbg_overlays {
+                &dbg_depth, &dbg_normal, &dbg_bucket
+            };
+            for (std::size_t i = 0; i < dbg_overlays.size(); ++i)
+            {
+                const float oy = kDbgVizStartY
+                                 + static_cast<float>(i) * (kDbgH + kDbgGap);
+                const uw::Rect dbg_bounds { dbg_x, oy, kDbgW, kDbgH };
+                dbg_overlays[i]->draw(batcher, dbg_bounds);
+            }
+        }
+
+        // -- phase685 / M13 W6B — boot splash + first-launch welcome ----------
+        //
+        // Splash paints on top of dock + overlays + status bar for the first
+        // 2.5 s (solid) + 0.3 s (fade-out).  After the splash is done, if this
+        // is a first launch, the welcome dialog appears and blocks until the
+        // user clicks one of the three layout buttons.  Both are skipped in
+        // headless mode (no visible window).
         if (window)
         {
-            const double     splash_ms = boot_splash.elapsed_ms();
-            const std::uint8_t alpha   = boot_splash.splash_alpha(splash_ms);
-            if (alpha > 0U)
+            const double splash_ms = boot_splash.elapsed_ms();
+            if (!boot_splash.done(splash_ms))
             {
                 draw_boot_splash(batcher, widget_theme,
                                  static_cast<float>(fb_w),
                                  static_cast<float>(fb_h),
-                                 alpha,
-                                 BootSplash::hint(splash_ms));
+                                 boot_splash,
+                                 splash_ms);
+            }
+            else if (first_launch && !welcome_dialog.decided())
+            {
+                // Activate the dialog on the first frame after the splash ends.
+                if (!welcome_dialog.active)
+                {
+                    welcome_dialog.show();
+                    std::printf("editor: splash done — showing first-launch welcome dialog.\n");
+                    std::fflush(stdout);
+                }
+
+                const WelcomeChoice chosen =
+                    draw_welcome_dialog(batcher, widget_theme,
+                                        static_cast<float>(fb_w),
+                                        static_cast<float>(fb_h),
+                                        flatten_pointer(pointer));
+
+                if (chosen != WelcomeChoice::kNone)
+                {
+                    welcome_dialog.choice = chosen;
+
+                    // Apply the layout to the live DockSpace.
+                    apply_welcome_layout(dockspace, chosen);
+
+                    // Write a starter .cdproj so the next launch skips the dialog.
+                    project_data.schema_version = 1;
+                    project_data.dock_layout =
+                        dock_layout_to_hex(dockspace.serialize());
+                    if (cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
+                    {
+                        const char* preset_name =
+                            (chosen == WelcomeChoice::kCompact) ? "Compact" :
+                            (chosen == WelcomeChoice::kFull)    ? "Full"    :
+                                                                   "Default";
+                        std::printf(
+                            "editor: welcome choice '%s' — starter .cdproj written to %s\n",
+                            preset_name, cdproj_path.string().c_str());
+                    }
+                    else
+                    {
+                        std::fprintf(stderr,
+                            "editor: warning — could not write starter .cdproj to %s\n",
+                            cdproj_path.string().c_str());
+                    }
+                    std::fflush(stdout);
+                }
             }
         }
 

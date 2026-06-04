@@ -34,6 +34,7 @@
 #   cd::editor_panel_vehicle_editor     -- vehicle editor panel (phase676, wired phase679)
 #   cd::editor_panel_pathfinding_viz    -- pathfinding viz panel (phase677, wired phase679)
 #   cd::editor_panel_material_preview   -- material preview panel (phase678, wired phase679)
+#   cd::editor_panel_debug_viz          -- debug viz overlays: depth/normal/alpha-bucket (phase684)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -87,6 +88,8 @@ cd_add_sample(editor
     cd::editor_panel_vehicle_editor
     cd::editor_panel_pathfinding_viz
     cd::editor_panel_material_preview
+    # phase684 / M13 W6A — 3 debug-viz thumbnails (depth / normal / alpha-bucket).
+    cd::editor_panel_debug_viz
     cd::editor
     cd::editor_ui
     cd::editor_cdproj

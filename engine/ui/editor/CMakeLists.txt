@@ -125,6 +125,12 @@ add_subdirectory(panel_pathfinding_viz)
 # Drives cd::asset::material_authoring::AuthoredMaterial (M10 phase644).
 add_subdirectory(panel_material_preview)
 
+# ── cd::editor_panel_debug_viz (STATIC) ───────────────────────────────────────
+# phase684 — Debug Visualization overlay (DrawBatcher path; 3 toggleable
+# thumbnails: depth / normal / alpha-bucket). Sprint-1 placeholder gradient
+# tiles; Sprint-2 = real G-buffer sampling via cd::render::framegraph.
+add_subdirectory(panel_debug_viz)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
