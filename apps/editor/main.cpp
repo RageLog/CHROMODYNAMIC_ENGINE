@@ -1093,7 +1093,7 @@ void draw_status_bar(ur::DrawBatcher& batcher,
 
     auto block_w = [&](std::uint32_t count) -> float {
         if (total == 0U) { return (badge_avail - 4.0F) / 3.0F; }
-        const float frac = static_cast<float>(count) / static_cast<float>(total);
+        const auto frac = static_cast<float>(count) / static_cast<float>(total);
         return std::max(kMinBlock, frac * (badge_avail - 4.0F));
     };
 
@@ -1275,7 +1275,7 @@ struct BootSplash
         if (ms < kSubtitleEndMs) { return 0; }
         if (ms >= kHintEndMs)    { return 3; }
         const double phase_ms = ms - kSubtitleEndMs;
-        const int idx = static_cast<int>(phase_ms / 250.0);
+        const auto idx = static_cast<int>(phase_ms / 250.0);
         return (idx > 3) ? 3 : idx;
     }
 
@@ -1314,7 +1314,7 @@ void draw_boot_splash(ur::DrawBatcher&  batcher,
 
     // Helper: multiply a byte alpha by a [0,1] fraction (preserves uint8_t range).
     auto scale_alpha = [](std::uint8_t a, float frac) -> std::uint8_t {
-        const float v = static_cast<float>(a) * frac;
+        const auto v = static_cast<float>(a) * frac;
         const float clamped = v < 0.0F ? 0.0F : (v > 255.0F ? 255.0F : v);
         return static_cast<std::uint8_t>(clamped);
     };
@@ -2418,12 +2418,12 @@ int main(int argc, char** argv)
         {
             using namespace std::chrono;
             const auto  now  = steady_clock::now();
-            const float dt_s = static_cast<float>(
+            const auto dt_s = static_cast<float>(
                 duration_cast<microseconds>(now - prev_tp).count()) / 1'000'000.0F;
             prev_tp = now;
             if (dt_s > 0.0F) { ft_ring.push(dt_s); }
         }
-        const float real_fps = static_cast<float>(ft_ring.stats().fps_mean());
+        const auto real_fps = static_cast<float>(ft_ring.stats().fps_mean());
 
         // -- Draw via the CPU batcher + RHI submitter --
         batcher.begin_frame();
@@ -2437,8 +2437,8 @@ int main(int argc, char** argv)
         // count.  All other timing data remains representative synthetic bars
         // (real GPU timestamps land when ICommandBuffer::write_timestamp ships).
         {
-            const float fbw_f = static_cast<float>(fb_w);
-            const float fbh_f = static_cast<float>(fb_h);
+            const auto fbw_f = static_cast<float>(fb_w);
+            const auto fbh_f = static_cast<float>(fb_h);
 
             // --- CPU overlay — "CPU" header + 120 px bar chart body --------
             {
@@ -2455,7 +2455,7 @@ int main(int argc, char** argv)
                 const cmo::Rect bounds {
                     ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
 
-                const double base_ms = static_cast<double>(frame_idx) * 16.0;
+                const auto base_ms = static_cast<double>(frame_idx) * 16.0;
                 const std::array<cmo::MarkerSample, 4> cpu_markers {
                     cmo::MarkerSample { "frame.gather",  base_ms + 0.5,  3.0, 1U },
                     cmo::MarkerSample { "frame.cull",    base_ms + 3.8,  2.4, 1U },
@@ -2526,7 +2526,7 @@ int main(int argc, char** argv)
 
                 // Real data: "UI" pass scales with current frame's vertex load
                 // (capped at 65 536 verts == full budget == 2 ms equivalent).
-                const double ui_dur = static_cast<double>(
+                const auto ui_dur = static_cast<double>(
                     std::clamp(static_cast<float>(batcher.vertex_count())
                                / 65536.0F, 0.0F, 1.0F)) * 2.0;
 
@@ -2575,7 +2575,7 @@ int main(int argc, char** argv)
         // collision.  kDbgVizStartY = CPU header + CPU body + GPU header +
         // GPU body + gap between GPU and first debug thumbnail.
         {
-            const float fbw_f = static_cast<float>(fb_w);
+            const auto fbw_f = static_cast<float>(fb_w);
             // Position constants — match the profiling overlay layout above.
             constexpr float kDbgW       = 200.0F;
             constexpr float kDbgH       = 150.0F;
