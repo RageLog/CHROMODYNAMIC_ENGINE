@@ -3,6 +3,10 @@
 //
 // Phase 606 — GPU marker recorder (cpu/gpu classification companion to
 //             cd::profile::cpu_marker_overlay, Phase 587).
+// Phase 739 — stub-wire RHI-contract-gap doc pass (FINALE-2 W3B B9).
+//             write_timestamp / QueryPool / gpu_tick_frequency are NOT in
+//             the cd::rhi surface yet; this header pins down the exact
+//             contract additions required to lift the stub to real timing.
 //
 // Provides:
 //   GpuMarkerSample — one resolved GPU marker event (name, gpu_start_tick,
@@ -23,11 +27,68 @@
 //   * resolve() converts raw tick deltas to duration_ms_computed using
 //     device gpu_tick_frequency. Call it once after the GPU work completes
 //     (after wait_idle / fence signal) before reading samples().
-//   * TODO: real GPU timestamps when ICommandBuffer::write_timestamp lands.
-//     Replace stub monotonic counter with actual pipeline-stage timestamp
-//     writes and query pool readback (Vulkan: vkCmdWriteTimestamp2 +
-//     vkGetQueryPoolResults; D3D12: ID3D12CommandList::EndQuery +
-//     ResolveQueryData; Metal: sampleCountersInBuffer).
+//
+// -----------------------------------------------------------------------------
+// RHI_CONTRACT_GAP — phase739 (B9 BLOCKED)
+// -----------------------------------------------------------------------------
+// Lifting Recorder from monotonic-counter stub to real GPU timestamps requires
+// the following additions to cd::rhi. Each entry maps 1:1 to the existing
+// Vulkan / D3D12 / Metal primitive so backends translate directly.
+//
+// 1. cd::rhi::QueryPoolDesc + IDevice::create_query_pool / destroy_query_pool
+//      struct QueryPoolDesc { QueryType type; std::uint32_t count; };
+//      enum class QueryType { kTimestamp, kPipelineStatistics, kOcclusion };
+//      Result<QueryPoolHandle> create_query_pool(const QueryPoolDesc&);
+//      void                    destroy_query_pool(QueryPoolHandle);
+//    Vulkan: vkCreateQueryPool(VK_QUERY_TYPE_TIMESTAMP, count).
+//    D3D12 : ID3D12Device::CreateQueryHeap(D3D12_QUERY_HEAP_TYPE_TIMESTAMP).
+//    Metal : MTLCounterSampleBufferDescriptor + MTLDevice newCounterSampleBufferWithDescriptor.
+//
+// 2. ICommandBuffer::reset_query_pool(QueryPoolHandle, first, count)
+//    Vulkan: vkCmdResetQueryPool — REQUIRED once per frame before writes.
+//    D3D12 : no-op (heap entries are write-only per submit).
+//
+// 3. ICommandBuffer::write_timestamp(PipelineStage stage,
+//                                    QueryPoolHandle pool,
+//                                    std::uint32_t index)
+//    Vulkan: vkCmdWriteTimestamp2(stage_mask, pool, index).
+//    D3D12 : ID3D12GraphicsCommandList::EndQuery(heap,
+//               D3D12_QUERY_TYPE_TIMESTAMP, index).
+//    Metal : MTLComputeCommandEncoder sampleCountersInBuffer: atSampleIndex:
+//               (or render-encoder sampleCountAtEnd/Begin attachments).
+//
+// 4. IDevice::get_query_pool_results(QueryPoolHandle pool,
+//                                    std::uint32_t first, std::uint32_t count,
+//                                    std::span<std::uint64_t> dst,
+//                                    QueryResultFlags flags)
+//    Vulkan: vkGetQueryPoolResults(..., VK_QUERY_RESULT_64_BIT |
+//                                       VK_QUERY_RESULT_WAIT_BIT).
+//    D3D12 : ResolveQueryData into a readback buffer, then map.
+//    Metal : resolveCounters:inRange:destinationBuffer:.
+//
+// 5. IDevice::gpu_tick_frequency() -> std::uint64_t  (ticks per second)
+//    Vulkan: VkPhysicalDeviceLimits::timestampPeriod (ns/tick) inverted.
+//    D3D12 : ID3D12CommandQueue::GetTimestampFrequency().
+//    Metal : MTLDevice sampleTimestamps:gpuTimestamp:  delta over a known
+//               wall-clock window (or MTLCounterSampleBuffer scale).
+//
+// 6. DeviceFeatures::timestamp_queries is already declared (Descriptors.hpp
+//    line 460). Backends must populate it from
+//    VkPhysicalDeviceLimits::timestampComputeAndGraphics (Vulkan) or
+//    D3D12_FEATURE_DATA_D3D12_OPTIONS3::WriteBufferImmediateSupportFlags
+//    + COMMAND_LIST_SUPPORT_FLAG_DIRECT (D3D12). Recorder::resolve() will
+//    branch on this flag to keep the stub path live on backends without
+//    timestamp support (mobile GLES2 fallback, headless null device).
+//
+// Once items 1–5 land, GpuMarker.cpp swaps `monotonic_counter` for a
+// QueryPoolHandle owned by Impl, allocates two indices per begin/end pair,
+// emits cmd.write_timestamp(...) inside begin_marker / end_marker, and
+// resolve() calls device.get_query_pool_results into a u64 vector that
+// then feeds gpu_start_tick / gpu_end_tick. The duration_ms math (delta
+// / freq * 1000.0) is unchanged — only the data source differs.
+//
+// Tracking: docs/FINALE_PLAN.md FINALE-2 B9; resumes when items 1–5 ship
+// (suggested ADR: ADR-YYYYMMDD-rhi-query-pool-timestamps.md).
 // =============================================================================
 #pragma once
 

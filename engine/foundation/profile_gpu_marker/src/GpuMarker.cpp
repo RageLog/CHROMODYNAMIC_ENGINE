@@ -2,20 +2,20 @@
 // CHROMODYNAMIC — cd/profile/gpu_marker/GpuMarker.cpp
 //
 // Phase 606 — Stub implementation of GPU marker Recorder.
+// Phase 739 — stub-wire RHI-contract-gap doc pass (FINALE-2 W3B B9 BLOCKED).
+//             See GpuMarker.hpp "RHI_CONTRACT_GAP" block for the precise
+//             cd::rhi additions required to lift this stub to real GPU
+//             timestamps. Until those land, this implementation provides
+//             deterministic, testable duration values via a 1 GHz monotonic
+//             counter so the editor overlay + tests remain live.
 //
-// Stub rationale:
-//   ICommandBuffer::write_timestamp() does not yet exist. This implementation
-//   uses a monotonic counter (std::uint64_t, incremented per begin/end call)
-//   as a stand-in for real GPU timestamps. The counter ticks are resolved via
-//   a stub frequency (1 GHz = 1e9 ticks/s), producing duration_ms values
-//   that are deterministic and testable even without a GPU device.
-//
-// TODO: real GPU timestamps when ICommandBuffer::write_timestamp lands.
-//   Replace monotonic_counter_ with actual query-pool indices; in begin_marker
-//   call cmd.write_timestamp(stage, query_pool, index); in end_marker call
-//   cmd.write_timestamp(stage, query_pool, index+1); in resolve() call
-//   device.get_query_pool_results(query_pool, ...) to read back ticks and
-//   then divide by device.gpu_tick_frequency().
+// Wire-up path once the RHI gap closes (single-file change to this .cpp):
+//   * Impl gains: QueryPoolHandle pool_; std::uint32_t next_index_;
+//                 std::vector<std::uint64_t> raw_ticks_;
+//   * begin_marker / end_marker call cmd.write_timestamp(stage, pool_, ix).
+//   * resolve() calls device.get_query_pool_results(pool_, 0, n, dst, kWait)
+//                then divides by device.gpu_tick_frequency() instead of
+//                kStubTickFrequencyHz.
 // =============================================================================
 #include <cd/profile/gpu_marker/GpuMarker.hpp>
 
