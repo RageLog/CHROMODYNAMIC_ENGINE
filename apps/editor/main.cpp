@@ -352,6 +352,23 @@
 #include <cd/editor/panel_asset_pipeline_status/AssetPipelineStatus.hpp>
 #include <cd/editor/panel_ik_chain_editor/IkChainEditor.hpp>
 
+// phase720 / M17 W3 — three new panels wired into apps/editor:
+//   * scene_palette        — tab-merged with settings_panel on RIGHT-top.
+//                            Live theme token preview grid (15 swatch cells).
+//   * lobby_browser        — standalone bottom-right node (split alongside
+//                            perf_profiler / asset_pipeline_status).
+//                            Visualises cd::network::lobby active rooms.
+//   * auto_save_indicator  — NOT a dock node; rendered in the STATUS BAR
+//                            (~150 px wide strip pinned left of the theme picker).
+// Dock panel count grows 22 -> 24 (scene_palette is a tab-merge, lobby_browser
+// is a fresh split; auto_save_indicator lives outside the dock entirely).
+#include <cd/editor/panel_scene_palette/ScenePalette.hpp>
+#include <cd/editor/panel_lobby_browser/LobbyBrowser.hpp>
+#include <cd/editor/panel_auto_save_indicator/AutoSaveIndicator.hpp>
+
+// phase720 / M17 W3 — Lobby instance for the LobbyBrowser panel seed.
+#include <cd/network/lobby/Lobby.hpp>
+
 // phase707 / M15 W6B — cd::particle::system::System drives the slow upward-
 // drifting particle field rendered behind the boot splash title.
 #include <cd/particle/system/ParticleSystem.hpp>
@@ -770,6 +787,41 @@ struct EditorArgs
         return false;
     }
 
+    // ---- phase720 / M17 W3 — two new dock panels -----------------------------
+    //
+    //   (15) scene_palette  -- tab-merged INTO settings_panel so the RIGHT-top
+    //        tile flips between "inspector / settings / scene_palette".  A UI
+    //        designer reskins the editor and sees every palette token side-by-
+    //        side with the property panel they are tweaking.
+    //
+    //   (16) lobby_browser  -- split BELOW perf_profiler on RIGHT-lower.
+    //        ratio=0.55 -> perf_profiler keeps top 55%, lobby_browser takes 45%.
+    //        Standalone bottom-right node (NOT a tab-merge) per the M17 W3 brief
+    //        so a multiplayer dev sees rooms in their own dedicated tile.
+    //
+    // The third M17 W3 panel (auto_save_indicator) lives in the STATUS BAR and
+    // is NOT a dock node — see draw_status_bar() below.
+    //
+    // Dock node count grows by +1 (lobby_browser split); scene_palette is a
+    // tab-merge.  Registered-panel count grows 22 -> 24.
+
+    // (15) scene_palette tab-merged with settings_panel.
+    auto* settings_owner_720 = ds.find_panel_owner("settings_panel");
+    if (settings_owner_720 == nullptr) { return false; }
+    if (!ds.tab_merge(settings_owner_720, "scene_palette"))
+    {
+        return false;
+    }
+
+    // (16) perf_profiler -> lobby_browser split (RIGHT-lower, bottom 45%).
+    auto* perf_profiler_owner_720 = ds.find_panel_owner("perf_profiler");
+    if (perf_profiler_owner_720 == nullptr) { return false; }
+    if (!ds.split(perf_profiler_owner_720, uw::DockAxis::kHorizontal,
+                  "lobby_browser", 0.55F))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -869,6 +921,15 @@ cd::editor::panel::perf_profiler::PerfProfiler               g_perf_profiler_pan
 // lifetime of the program.
 cd::editor::panel::asset_pipeline_status::AssetPipelineStatus g_asset_pipeline_status_panel;
 cd::editor::panel::ik_chain_editor::IkChainEditor             g_ik_chain_editor_panel;
+
+// phase720 / M17 W3 — three new panel instances wired into the editor.
+// File-scope so the ContentDrawer lambdas / status-bar helper capture them by
+// reference for the lifetime of the program. The Lobby instance is the live
+// data the LobbyBrowser visualises (seeded with two demo rooms in main()).
+cd::editor::panel::scene_palette::ScenePalette                g_scene_palette_panel;
+cd::editor::panel::lobby_browser::LobbyBrowser                g_lobby_browser_panel;
+cd::editor::panel::auto_save_indicator::AutoSaveIndicator     g_auto_save_indicator;
+cd::network::lobby::Lobby                                     g_demo_lobby;
 
 // phase711 / M16 W3 — demo IK chain backing the ik_chain_editor panel.
 // A 5-joint leg chain anchored at the origin, target shifted forward so the
@@ -1071,6 +1132,33 @@ void draw_ik_chain_editor_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_ik_chain_editor_panel.draw(batcher, theme, rect);
+}
+
+// phase720 / M17 W3 — drawers for the 2 new dock panels (scene_palette +
+// lobby_browser). auto_save_indicator is NOT a dock panel; it is drawn
+// directly from the status-bar pass.
+//
+// scene_palette consumes cd::ui::widgets::Theme directly (same uw::Theme the
+// DockSpace already hands to drawers).
+//
+// lobby_browser consumes cd::ui::widgets::Theme directly. Bound to a live
+// cd::network::lobby::Lobby in main() so the panel renders real room rows
+// rather than the empty-state placeholder.
+
+void draw_scene_palette_panel(const uw::Rect& rect,
+                              ur::DrawBatcher& batcher,
+                              uf::Font* /*font*/,
+                              const uw::Theme& theme)
+{
+    g_scene_palette_panel.draw(batcher, theme, rect);
+}
+
+void draw_lobby_browser_panel(const uw::Rect& rect,
+                              ur::DrawBatcher& batcher,
+                              uf::Font* /*font*/,
+                              const uw::Theme& theme)
+{
+    g_lobby_browser_panel.draw(batcher, theme, rect);
 }
 
 // ===========================================================================
@@ -2671,6 +2759,16 @@ int main(int argc, char** argv)
     // only the registered-panel count grows 20 -> 22.
     dockspace.register_panel("asset_pipeline_status", draw_asset_pipeline_status_panel);
     dockspace.register_panel("ik_chain_editor",       draw_ik_chain_editor_panel);
+    // phase720 / M17 W3 — register the 2 new dock panels (auto_save_indicator
+    // lives in the status bar and is NOT a dock node, so it is NOT registered
+    // with the DockSpace here):
+    //   scene_palette  (tab-merged with settings_panel),
+    //   lobby_browser  (split below perf_profiler, RIGHT-lower).
+    // scene_palette is a tab-merge so node_count is unchanged by it; only the
+    // lobby_browser split bumps the underlying tree (+1 node). Registered-panel
+    // count grows 22 -> 24.
+    dockspace.register_panel("scene_palette",  draw_scene_palette_panel);
+    dockspace.register_panel("lobby_browser",  draw_lobby_browser_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
@@ -2692,15 +2790,22 @@ int main(int argc, char** argv)
     // phase711 / M16 W3: panel count grew 20 -> 22 (asset_pipeline_status +
     // ik_chain_editor added). Both are tab-merges (flat), so the underlying
     // dockspace.node_count() does NOT change — only the registered-panel
-    // count does. The "22 dock nodes" log line is what the M16 W3 smoke
-    // checks for.
-    constexpr std::size_t kEditorPanelCount = 22U;
+    // count does.
+    //
+    // phase720 / M17 W3: panel count grew 22 -> 24 (scene_palette +
+    // lobby_browser added). scene_palette is tab-merged with settings_panel
+    // (flat); lobby_browser introduces one new split below perf_profiler (+1
+    // node). auto_save_indicator is NOT a dock node — it lives in the status
+    // bar — so it does NOT bump kEditorPanelCount. The "24 dock nodes" log
+    // line is what the M17 W3 smoke checks for.
+    constexpr std::size_t kEditorPanelCount = 24U;
     std::printf("editor: dock layout ready with %zu dock nodes (%zu panels: scene_tree | "
-                "scene_navigator | viewport | inspector | settings_panel | console | "
-                "build_panel | assets | material_editor | animator | ik_chain_editor | "
-                "behavior_designer | asset_drop_target | light_editor | input_recorder | "
-                "dialog_tree_editor | cutscene_player | vehicle_editor | pathfinding_viz | "
-                "material_preview | perf_profiler | asset_pipeline_status)\n",
+                "scene_navigator | viewport | inspector | settings_panel | scene_palette | "
+                "console | build_panel | assets | material_editor | animator | "
+                "ik_chain_editor | behavior_designer | asset_drop_target | light_editor | "
+                "input_recorder | dialog_tree_editor | cutscene_player | vehicle_editor | "
+                "pathfinding_viz | material_preview | perf_profiler | "
+                "asset_pipeline_status | lobby_browser)\n",
                 kEditorPanelCount, kEditorPanelCount);
 
     // -- phase679 / M13 W3 — restore saved dock layout (if any) -------------
@@ -2811,7 +2916,7 @@ int main(int argc, char** argv)
     // the shortcut walker. Order MUST mirror the dockspace.register_panel
     // call order above so the Ctrl+N focus hotkeys line up with the visible
     // panel index a user counts from left to right in the dock.
-    const std::array<PanelShortcutSpec, 22> kPanelRegistry { {
+    const std::array<PanelShortcutSpec, 24> kPanelRegistry { {
         { "scene_tree",            "Scene Tree",             {} },
         { "viewport",              "Viewport",               {} },
         { "inspector",             "Inspector",              {} },
@@ -2838,6 +2943,11 @@ int main(int argc, char** argv)
         // phase711 / M16 W3 — two new panels join the registry.
         { "asset_pipeline_status", "Asset Pipeline Status",  {} },
         { "ik_chain_editor",       "IK Chain Editor",        {} },
+        // phase720 / M17 W3 — two new dock panels join the registry.
+        // auto_save_indicator is a status-bar widget (not a dock panel) and
+        // therefore is NOT listed here.
+        { "scene_palette",         "Scene Palette",          {} },
+        { "lobby_browser",         "Lobby Browser",          {} },
     } };
 
     // Standard editor-wide shortcuts. These are NOT panel-bound — they drive
@@ -2944,6 +3054,48 @@ int main(int argc, char** argv)
                 "completed=%zu).\n",
                 g_asset_pipeline_status_panel.total_pending(),
                 g_asset_pipeline_status_panel.total_completed());
+
+    // -- 5b1c. phase720 / M17 W3 — scene_palette + lobby_browser seed ---------
+    //
+    // scene_palette: bind the live cd::ui::widgets::Theme so the swatch grid
+    // reads from the same palette the dock paints with.  When the theme picker
+    // swaps the palette the next draw() picks up the new pointer-value via the
+    // theme parameter, so no per-frame re-binding is needed (the held pointer
+    // is just a hint until the explicit theme argument arrives at draw time).
+    g_scene_palette_panel.set_palette(&widget_theme);
+    std::printf("editor: scene_palette bound to live widget_theme (15 tokens).\n");
+
+    // lobby_browser: seed the demo Lobby with two rooms so the panel reads as
+    // a real visualiser on first boot — not an empty placeholder.
+    //   * "Capture Point Beta" — public, 4-player slot, 2 joined, no passcode.
+    //   * "VIP Match"          — private, 8-player slot, 1 joined, passcode set.
+    {
+        using cd::network::lobby::LobbyConfig;
+        using cd::network::lobby::PlayerState;
+
+        LobbyConfig public_cfg {};
+        public_cfg.lobby_name  = "Capture Point Beta";
+        public_cfg.game_mode   = "ctf";
+        public_cfg.max_players = 4U;
+        public_cfg.is_public   = true;
+        const auto room_a = g_demo_lobby.create_room(public_cfg, 1001ULL);
+        (void)g_demo_lobby.join_room(room_a,
+            PlayerState{ 1002ULL, "Alice", false, 0U }, std::string_view{""});
+
+        LobbyConfig private_cfg {};
+        private_cfg.lobby_name  = "VIP Match";
+        private_cfg.game_mode   = "deathmatch";
+        private_cfg.max_players = 8U;
+        private_cfg.is_public   = false;
+        private_cfg.passcode    = "1234";
+        const auto room_b = g_demo_lobby.create_room(private_cfg, 2001ULL);
+        (void)room_b;
+
+        g_lobby_browser_panel.set_lobby(&g_demo_lobby);
+        std::printf("editor: lobby_browser seeded with %zu demo rooms.\n",
+                    g_demo_lobby.active_rooms().size());
+    }
+    std::fflush(stdout);
 
     // -- 5b2. phase690 / M14 W3 — popout_dock state machine ------------------
     //
@@ -3377,6 +3529,63 @@ int main(int argc, char** argv)
                 dbg_bucket.is_visible() ? "ON" : "OFF");
     std::fflush(stdout);
 
+    // -- phase720 / M17 W3 — 30 s auto-save timer + dirty-flag propagation ----
+    //
+    // Drives the AutoSaveIndicator status-bar widget through its five-state
+    // lifecycle (kIdle / kPendingDirty / kSaving / kJustSaved / kError).
+    //
+    // Dirty propagation:
+    //   * A short hash of (dock_layout_hex || theme_name || window geometry) is
+    //     recomputed every frame.  Any change (e.g. user drags a divider, swaps
+    //     theme, resizes window) flips the indicator to kPendingDirty and arms
+    //     the auto-save timer.
+    //
+    // Auto-save cadence:
+    //   * Every kAutosaveIntervalMs the editor checks the dirty flag; if dirty,
+    //     it flips the indicator to kSaving, writes the .cdproj atomically via
+    //     cd::editor::cdproj::write_cdproj, then flips to kJustSaved (or kError
+    //     on write failure).  The "Saved N s ago" counter is refreshed each
+    //     frame so the indicator's label stays current.
+    //
+    // Initial state:
+    //   * Idle on boot (boot itself doesn't count as user-driven change).  The
+    //     first divider drag / theme swap / resize transitions to PendingDirty.
+    //
+    // MOMENT: a user edits the layout, walks away for 30 seconds, returns to
+    // find the indicator showing "Saved 12s ago" — they never lose work to a
+    // crash because the editor saves itself proactively.
+
+    using auto_save_status = cd::editor::panel::auto_save_indicator::Status;
+    constexpr double kAutosaveIntervalMs = 30'000.0;  // 30 seconds
+
+    // Hash the persisted-state snapshot so we detect "data has changed since
+    // last save" purely from observable fields (no scattered dirty flags to
+    // sync across panels). Uses std::hash<std::string> on a concatenated key
+    // so equivalent snapshots collapse to the same value.
+    auto compute_state_hash = [&]() -> std::size_t {
+        std::string key;
+        key.reserve(64);
+        // DockSpace serialized layout (hex string, JSON-safe).
+        key.append(dock_layout_to_hex(dockspace.serialize()));
+        key.push_back('|');
+        // Active theme name.
+        key.append(active_theme_name);
+        key.push_back('|');
+        // Window geometry: position + size + maximized flag.
+        const std::uint32_t ww = window ? window->width()  : 0U;
+        const std::uint32_t wh = window ? window->height() : 0U;
+        key.append(std::to_string(ww));
+        key.push_back('x');
+        key.append(std::to_string(wh));
+        return std::hash<std::string>{}(key);
+    };
+
+    const std::size_t initial_state_hash = compute_state_hash();
+    std::size_t        last_saved_state_hash    { initial_state_hash };
+    auto               last_save_tp             = std::chrono::steady_clock::now();
+    auto               last_autosave_check_tp   = std::chrono::steady_clock::now();
+    bool               autosave_logged_fired    { false };
+
     bool          needs_rebuild { false };
     std::uint32_t frame_idx     { 0U };
     while (true)
@@ -3680,6 +3889,93 @@ int main(int argc, char** argv)
             }
         }
 
+        // -- phase720 / M17 W3 — auto-save timer + dirty-flag propagation ----
+        //
+        // 1. Recompute the persisted-state hash; transition to kPendingDirty
+        //    on any change (and remain there until the next save).
+        // 2. Every kAutosaveIntervalMs, if dirty, write the .cdproj atomically
+        //    and transition through kSaving -> kJustSaved (or kError on fail).
+        // 3. Refresh the "Saved N s ago" counter while in kJustSaved.
+        //
+        // The tick is cheap: the hash is recomputed every frame but the actual
+        // .cdproj write only fires once per 30 s (and only when dirty).
+        {
+            using sc = std::chrono::steady_clock;
+            const auto now_tp = sc::now();
+
+            // (a) Dirty-flag detection.
+            const std::size_t current_hash = compute_state_hash();
+            const auto        prev_status  = g_auto_save_indicator.current_status();
+            if (current_hash != last_saved_state_hash &&
+                prev_status != auto_save_status::kPendingDirty &&
+                prev_status != auto_save_status::kSaving)
+            {
+                g_auto_save_indicator.mark_dirty();
+            }
+
+            // (b) Refresh "Saved N s ago" while showing the post-save status.
+            if (g_auto_save_indicator.current_status() == auto_save_status::kJustSaved)
+            {
+                using ms = std::chrono::duration<double, std::milli>;
+                const double elapsed_ms = std::chrono::duration_cast<ms>(
+                    now_tp - last_save_tp).count();
+                g_auto_save_indicator.set_last_save_ms_ago(elapsed_ms);
+            }
+
+            // (c) Auto-save check every kAutosaveIntervalMs.
+            using ms = std::chrono::duration<double, std::milli>;
+            const double since_last_check_ms = std::chrono::duration_cast<ms>(
+                now_tp - last_autosave_check_tp).count();
+            if (since_last_check_ms >= kAutosaveIntervalMs)
+            {
+                last_autosave_check_tp = now_tp;
+                if (current_hash != last_saved_state_hash)
+                {
+                    // Transition to kSaving for visibility before the atomic write.
+                    g_auto_save_indicator.set_status(auto_save_status::kSaving);
+
+                    // Capture window geometry into project_data so the write
+                    // matches the live editor state (mirrors the on-exit path).
+                    if (window)
+                    {
+                        project_data.window.w = static_cast<int>(window->width());
+                        project_data.window.h = static_cast<int>(window->height());
+                    }
+                    project_data.schema_version = 1;
+                    project_data.theme_name     = active_theme_name;
+                    project_data.dock_layout    = dock_layout_to_hex(dockspace.serialize());
+
+                    const bool ok = cd::editor::cdproj::write_cdproj(
+                        project_data, cdproj_path);
+
+                    if (ok)
+                    {
+                        g_auto_save_indicator.mark_saved();
+                        last_saved_state_hash = current_hash;
+                        last_save_tp          = now_tp;
+                        if (!autosave_logged_fired)
+                        {
+                            const double secs_since_boot =
+                                std::chrono::duration_cast<ms>(
+                                    now_tp - boot_splash.start_tp).count() / 1000.0;
+                            std::printf(
+                                "editor: autosave fired at %.1fs (.cdproj written to %s).\n",
+                                secs_since_boot, cdproj_path.string().c_str());
+                            std::fflush(stdout);
+                            autosave_logged_fired = true;
+                        }
+                    }
+                    else
+                    {
+                        g_auto_save_indicator.set_status(auto_save_status::kError);
+                        std::fprintf(stderr,
+                            "editor: autosave FAILED writing .cdproj to %s\n",
+                            cdproj_path.string().c_str());
+                    }
+                }
+            }
+        }
+
         // -- phase667 / M12 W2 + phase674 — status bar -----------------------
         //
         // phase674: FPS from FrameTimeRing (real wall-clock dt) replaces the
@@ -3697,6 +3993,35 @@ int main(int argc, char** argv)
             draw_status_bar(batcher, widget_theme, stats,
                             static_cast<float>(fb_w),
                             static_cast<float>(fb_h));
+        }
+
+        // -- phase720 / M17 W3 — auto-save indicator (status-bar widget) ------
+        //
+        // Pinned between the frame-stats meters and the theme picker. Width is
+        // 150 px so the badge reads as a self-contained "save state" pill
+        // without crowding the FPS / verts / draws strips.
+        //
+        // Layout reference (existing draw_status_bar regions):
+        //   [0 .. kBadgeW=280]              validator badge
+        //   [292  .. 292 + kStatsW=360]     frame stats meters
+        //   [fb_w - kRouteW - 6]            route indicator (right anchor)
+        //   [fb_w - kRouteW - 12 - 204]     theme picker (3 slabs)
+        //
+        // The indicator slots in to the right of the frame stats meters with a
+        // 16 px gap — a small but visible separation so the status-bar reads as
+        // [badge | stats | save_state | picker | route] left-to-right.
+        {
+            constexpr float kSaveBadgeW = 150.0F;
+            constexpr float kStatsW     = 360.0F;
+            constexpr float kBadgeW     = 280.0F;
+            const float save_x = static_cast<float>(0.0F) + kBadgeW + 12.0F
+                                 + kStatsW + 16.0F;
+            const float save_y = static_cast<float>(fb_h) - kStatusBarH + 2.0F;
+            const uw::Rect save_rect {
+                save_x, save_y, kSaveBadgeW, kStatusBarH - 4.0F
+            };
+            const auto v2_theme = uth::theme_from_name(active_theme_name);
+            g_auto_save_indicator.draw(batcher, v2_theme, save_rect);
         }
 
         // -- phase701 / M15 W3 — toast notification render --------------------

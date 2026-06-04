@@ -122,6 +122,18 @@ cd_add_sample(editor
     # first-time user pressing '?' sees every shortcut DAY ONE.
     cd::editor_panel_asset_pipeline_status
     cd::editor_panel_ik_chain_editor
+    # phase720 / M17 W3 — three new M17 surfaces wired into apps/editor:
+    #   * scene_palette        — tab-merged with settings_panel on RIGHT-top.
+    #   * lobby_browser        — standalone split below perf_profiler RIGHT-lower.
+    #   * auto_save_indicator  — status-bar widget (NOT a dock panel); driven
+    #                            by a 30 s auto-save timer + dirty-flag walker.
+    # Dock panel count grows 22 -> 24; node_count grows by +1 (lobby_browser
+    # split; scene_palette is a tab-merge; auto_save_indicator is outside the
+    # dock entirely).
+    cd::editor_panel_scene_palette
+    cd::editor_panel_lobby_browser
+    cd::editor_panel_auto_save_indicator
+    cd::net_lobby                       # phase720 — Lobby instance for the LobbyBrowser seed.
     # phase707 / M15 W6B — particle system for the cinematic boot splash
     # background (20 particles/sec, 4s life, accent_success green glow).
     cd::particle_system
