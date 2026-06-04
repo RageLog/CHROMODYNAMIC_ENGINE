@@ -234,6 +234,9 @@ add_subdirectory(audio_streamer)
 # ── cd::asset_shader_cache ────────────────────────────────────────────────────
 add_subdirectory(shader_cache)
 
+# ── cd::asset_streamer_pool ───────────────────────────────────────────────────
+add_subdirectory(streamer_pool)
+
 # ── cd::asset_validator ───────────────────────────────────────────────────────
 add_subdirectory(validator)
 
