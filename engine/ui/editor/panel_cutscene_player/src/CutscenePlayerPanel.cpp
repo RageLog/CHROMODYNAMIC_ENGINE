@@ -3,10 +3,13 @@
 //
 // phase617 — cd::editor::panel::cutscene_player  implementation
 // phase703 — Save/Load JSON round-trip added (M15 W4B).
+// phase741 — Pan/zoom Sprint-2: zoom_factor + pan_offset_x + tick_input +
+//             scrollbar rendering; all timeline elements scale + offset.
 // =============================================================================
 #include <cd/editor/panel_cutscene_player/CutscenePlayerPanel.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <optional>
@@ -163,6 +166,109 @@ bool CutscenePlayerPanel::last_load_ok() const noexcept
 }
 
 // ---------------------------------------------------------------------------
+// Pan / Zoom API (phase 741)
+// ---------------------------------------------------------------------------
+
+float CutscenePlayerPanel::zoom_factor() const noexcept
+{
+    return zoom_factor_;
+}
+
+float CutscenePlayerPanel::pan_offset_x() const noexcept
+{
+    return pan_offset_x_;
+}
+
+void CutscenePlayerPanel::set_zoom_factor(float zoom) noexcept
+{
+    zoom_factor_ = std::clamp(zoom, kZoomMin, kZoomMax);
+}
+
+void CutscenePlayerPanel::set_pan_offset_x(float offset_x, float track_width) noexcept
+{
+    pan_offset_x_ = offset_x;
+    clamp_pan_(track_width);
+}
+
+void CutscenePlayerPanel::reset_view() noexcept
+{
+    zoom_factor_  = 1.0F;
+    pan_offset_x_ = 0.0F;
+    panning_      = false;
+}
+
+void CutscenePlayerPanel::clamp_pan_(float track_w) noexcept
+{
+    // The zoomed timeline has pixel width = track_w * zoom_factor_.
+    // Allow panning up to (zoomed_width - track_w) to the right (negative offset).
+    // The pan is stored as a positive-right signed value applied as
+    //   block_x = timeline_origin - pan_offset_x_
+    // so:
+    //   pan_min = 0                              (left edge at origin, no overscroll)
+    //   pan_max = max(0, track_w * zoom_factor_ - track_w)
+    const float zoomed_w = track_w * zoom_factor_;
+    const float max_pan  = std::max(0.0F, zoomed_w - track_w);
+    pan_offset_x_ = std::clamp(pan_offset_x_, 0.0F, max_pan);
+}
+
+void CutscenePlayerPanel::tick_input(const cd::ui::widgets::PointerState& pointer,
+                                     bool                                  middle_down,
+                                     float                                 wheel_delta,
+                                     bool                                  shift_held,
+                                     const cd::ui::widgets::Rect&          bounds) noexcept
+{
+    const float track_w = bounds.w;  // use full panel width as track reference
+
+    // ---- Zoom via mouse wheel (cursor-anchored) ------------------------------
+    if (wheel_delta != 0.0F)
+    {
+        // Cursor position relative to the track origin.
+        const float cursor_x_in_track = pointer.mouse_x - bounds.x;
+
+        // Map cursor to a normalised position within the zoomed timeline:
+        //   norm = (cursor_x_in_track + pan_offset_x_) / (track_w * zoom_factor_)
+        // After zoom the same norm must still be at cursor_x_in_track:
+        //   new_pan = norm * new_zoomed_w - cursor_x_in_track
+        const float old_zoomed_w = track_w * zoom_factor_;
+        const float norm_at_cursor = (old_zoomed_w > 0.0F)
+            ? (cursor_x_in_track + pan_offset_x_) / old_zoomed_w
+            : 0.0F;
+
+        // Apply zoom step for each tick (fractional deltas handled proportionally).
+        const float factor = (wheel_delta > 0.0F)
+            ? std::pow(kZoomStep, wheel_delta)
+            : (1.0F / std::pow(kZoomStep, -wheel_delta));
+
+        zoom_factor_ = std::clamp(zoom_factor_ * factor, kZoomMin, kZoomMax);
+
+        const float new_zoomed_w  = track_w * zoom_factor_;
+        pan_offset_x_ = norm_at_cursor * new_zoomed_w - cursor_x_in_track;
+        clamp_pan_(track_w);
+    }
+
+    // ---- Pan via middle-button drag or shift + left-drag --------------------
+    const bool pan_button_down = middle_down || (shift_held && pointer.left_down);
+
+    if (pan_button_down)
+    {
+        if (panning_)
+        {
+            const float delta_x = pointer.mouse_x - prev_mouse_x_;
+            // Dragging right means panning left → subtract delta from pan offset.
+            pan_offset_x_ -= delta_x;
+            clamp_pan_(track_w);
+        }
+        panning_ = true;
+    }
+    else
+    {
+        panning_ = false;
+    }
+
+    prev_mouse_x_ = pointer.mouse_x;
+}
+
+// ---------------------------------------------------------------------------
 // DrawBatcher path
 // ---------------------------------------------------------------------------
 
@@ -185,6 +291,10 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
     constexpr float kBarH = 4.0F;
     const float     row_w = bounds.w - 2.0F * kPad;
 
+    // Zoomed track width and panned left-edge for all timeline-space elements.
+    const float zoomed_row_w = row_w * zoom_factor_;
+    const float track_origin = bounds.x + kPad - pan_offset_x_;
+
     // Separator bar under the title area (accent colour).
     batcher.quad(bounds.x + kPad, bounds.y + kPad,
                  row_w, kBarH,
@@ -201,26 +311,34 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
     const std::size_t active_phase = (player_ != nullptr) ? player_->current_phase_index() : 0U;
     const float       offset_ms    = (player_ != nullptr) ? player_->current_offset_ms()   : 0.0F;
 
-    // ---- Per-phase block layout ----------------------------------------------
-    // Compute total duration for proportional sizing.
-    {
-        float total_ms = 0.0F;
-        for (const auto& phase : cutscene_.phases)
-            total_ms += phase.duration_ms;
+    // Push a scissor so zoomed/panned blocks don't bleed outside the track area.
+    const cd::ui::renderer::ScissorRect track_scissor {
+        static_cast<std::int32_t>(bounds.x + kPad),
+        static_cast<std::int32_t>(bounds.y),
+        static_cast<std::uint32_t>(std::max(0.0F, row_w)),
+        static_cast<std::uint32_t>(std::max(0.0F, bounds.h))
+    };
+    batcher.push_scissor(track_scissor);
 
+    // ---- Per-phase block layout (zoomed + panned) ---------------------------
+    float total_ms = 0.0F;
+    for (const auto& phase : cutscene_.phases)
+        total_ms += phase.duration_ms;
+
+    {
         constexpr float kPhaseRowH  = 20.0F;
         constexpr float kDotR       =  3.0F;
         constexpr float kMinBlockW  =  4.0F;
 
         if (total_ms > 0.0F && !cutscene_.phases.empty())
         {
-            float block_x = bounds.x + kPad;
+            float block_x = track_origin;
 
             for (std::size_t i = 0U; i < cutscene_.phases.size(); ++i)
             {
                 const auto& phase    = cutscene_.phases[i];
                 const float fraction = phase.duration_ms / total_ms;
-                const float block_w  = std::max(kMinBlockW, row_w * fraction);
+                const float block_w  = std::max(kMinBlockW, zoomed_row_w * fraction);
                 const bool  active   = (i == active_phase);
 
                 // Phase block background.
@@ -232,7 +350,7 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
 
                 batcher.quad(block_x, cursor_y, block_w, kPhaseRowH, block_col);
 
-                // Event marker dots within the phase block.
+                // Event marker dots within the phase block (zoomed position).
                 for (const auto& evt : phase.events)
                 {
                     if (phase.duration_ms <= 0.0F)
@@ -264,9 +382,8 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
         }
     }
 
-    // ---- Global timeline scrubber -------------------------------------------
-    // A full-width track; the playhead is drawn as a vertical bar at the
-    // current position within the active phase.
+    // ---- Global timeline scrubber (zoomed + panned) -------------------------
+    // A track fixed to the unzoomed width; the playhead position is scaled.
     {
         constexpr float kScrubH = 18.0F;
 
@@ -277,39 +394,73 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
                          theme.accent.r, theme.accent.g, theme.accent.b, 80U });
         cursor_y += kBarH + kPad * 0.5F;
 
-        // Scrubber track background.
+        // Scrubber track background (unzoomed width — always full-width).
         batcher.quad(bounds.x + kPad, cursor_y,
                      row_w, kScrubH,
                      cd::ui::renderer::Color {
                          theme.surface_hover.r, theme.surface_hover.g,
                          theme.surface_hover.b, theme.surface_hover.a });
 
-        // Playhead: compute global position proportionally.
-        if (!cutscene_.phases.empty())
+        // Playhead: compute global position proportionally, then apply zoom + pan.
+        if (!cutscene_.phases.empty() && total_ms > 0.0F)
         {
-            float total_ms = 0.0F;
-            for (const auto& phase : cutscene_.phases)
-                total_ms += phase.duration_ms;
+            // Accumulate completed-phase time + current offset.
+            float elapsed_ms = offset_ms;
+            for (std::size_t i = 0U; i < active_phase && i < cutscene_.phases.size(); ++i)
+                elapsed_ms += cutscene_.phases[i].duration_ms;
 
-            if (total_ms > 0.0F)
+            const float norm_head = std::clamp(elapsed_ms / total_ms, 0.0F, 1.0F);
+
+            // Map norm into the zoomed timeline; subtract pan to get screen pos.
+            const float zoomed_head_x = track_origin + zoomed_row_w * norm_head;
+
+            // Only draw the playhead if it is within the visible scrubber track.
+            constexpr float kHeadW = 2.0F;
+            const float head_screen_x = zoomed_head_x - kHeadW * 0.5F;
+            if (head_screen_x >= bounds.x + kPad &&
+                head_screen_x < bounds.x + kPad + row_w)
             {
-                // Accumulate completed-phase time + current offset.
-                float elapsed_ms = offset_ms;
-                for (std::size_t i = 0U; i < active_phase && i < cutscene_.phases.size(); ++i)
-                    elapsed_ms += cutscene_.phases[i].duration_ms;
-
-                const float norm_head = std::clamp(elapsed_ms / total_ms, 0.0F, 1.0F);
-
-                // Draw playhead as a 2-pixel wide strip.
-                constexpr float kHeadW = 2.0F;
-                batcher.quad(bounds.x + kPad + row_w * norm_head - kHeadW * 0.5F,
-                             cursor_y,
+                batcher.quad(head_screen_x, cursor_y,
                              kHeadW, kScrubH,
                              cd::ui::renderer::Color { 100U, 200U, 255U, 240U });
             }
         }
 
         cursor_y += kScrubH + kPad;
+    }
+
+    batcher.pop_scissor();
+
+    // ---- Scrollbar (phase 741) -----------------------------------------------
+    // Shows the currently visible viewport window within the full zoomed timeline.
+    // Only drawn when the timeline is actually zoomed in (zoom_factor_ > 1.0).
+    {
+        // Track.
+        batcher.quad(bounds.x + kPad, cursor_y,
+                     row_w, kScrollbarH,
+                     cd::ui::renderer::Color {
+                         theme.surface_hover.r, theme.surface_hover.g,
+                         theme.surface_hover.b, theme.surface_hover.a });
+
+        if (zoom_factor_ > 1.0F)
+        {
+            // Thumb spans the fraction of the zoomed timeline that is visible:
+            //   thumb_w = row_w / zoom_factor_
+            //   thumb_x = (pan_offset_x_ / zoomed_row_w) * row_w
+            const float thumb_w = std::max(4.0F, row_w / zoom_factor_);
+            const float zoomed_w = row_w * zoom_factor_;
+            const float thumb_x  = (zoomed_w > 0.0F)
+                ? (pan_offset_x_ / zoomed_w) * row_w
+                : 0.0F;
+
+            batcher.quad(bounds.x + kPad + std::clamp(thumb_x, 0.0F, row_w - thumb_w),
+                         cursor_y,
+                         thumb_w, kScrollbarH,
+                         cd::ui::renderer::Color { theme.accent.r, theme.accent.g,
+                                                    theme.accent.b, 180U });
+        }
+
+        cursor_y += kScrollbarH + kPad;
     }
 
     // ---- Current offset display strip ----------------------------------------
@@ -371,6 +522,9 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
         cursor_y += kBtnH + kPad;
     }
 
+    // Suppress unused-variable warning for cursor_y after last strip.
+    (void)cursor_y;
+
     // ---- Save / Load button strips (phase 703) --------------------------------
     // Visual-only representation: Save = teal strip, Load = lavender strip.
     // Status tint: bright when last op succeeded, dim when failed or never called.
@@ -379,19 +533,22 @@ void CutscenePlayerPanel::draw(cd::ui::renderer::DrawBatcher& batcher,
         constexpr float kBtnH = 14.0F;
         constexpr float kGap  =  6.0F;
 
+        // cursor_y was advanced by the last strip; reuse it here.
+        const float save_y = bounds.y + bounds.h - kBtnH - kPad;
+
         // Save strip — teal; brightens on last_save_ok_.
         const cd::ui::renderer::Color save_col =
             last_save_ok_
                 ? cd::ui::renderer::Color {  40U, 210U, 190U, 230U }
                 : cd::ui::renderer::Color {  40U, 140U, 130U, 150U };
-        batcher.quad(bounds.x + kPad, cursor_y, kBtnW, kBtnH, save_col);
+        batcher.quad(bounds.x + kPad, save_y, kBtnW, kBtnH, save_col);
 
         // Load strip — lavender; brightens on last_load_ok_.
         const cd::ui::renderer::Color load_col =
             last_load_ok_
                 ? cd::ui::renderer::Color { 160U, 130U, 230U, 230U }
                 : cd::ui::renderer::Color { 110U,  90U, 160U, 150U };
-        batcher.quad(bounds.x + kPad + (kBtnW + kGap), cursor_y, kBtnW, kBtnH, load_col);
+        batcher.quad(bounds.x + kPad + (kBtnW + kGap), save_y, kBtnW, kBtnH, load_col);
     }
 }
 
