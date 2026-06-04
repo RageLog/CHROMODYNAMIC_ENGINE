@@ -3,6 +3,9 @@
 // phase549 — GPU dispatch wiring for the DDGI trace compute shader.
 // phase560 — Sprint-2: blend_irradiance + blend_visibility compute passes.
 // phase570 — Sprint-3: execute_sample compute pass (G-buffer → indirect irradiance).
+// phase668 — Sprint-4: execute_sample atlas+G-buffer binding validation
+//            (Result<void> overload — reject null-input dispatch before
+//             Vulkan validation traps).
 //
 // DispatchPass owns the GPU resources that the kDdgiTraceCS compute shader
 // reads / writes:
@@ -247,7 +250,38 @@ public:
     /// to be in kUnorderedAccess before this call. `output_width` /
     /// `output_height` must match the values passed to
     /// bind_sample_resources().
+    ///
+    /// Silently no-ops when the pass has not been bound yet — for a
+    /// validated dispatch use `execute_sample_checked(cmd)` instead.
     void execute_sample(cd::rhi::ICommandBuffer& cmd);
+
+    /// Sprint-4 (phase668) — validated counterpart of `execute_sample(cmd)`.
+    ///
+    /// Verifies the pass has been initialised AND `bind_sample_resources()`
+    /// has wired the G-buffer + output bindings AND the irradiance /
+    /// visibility atlases owned by the pass are non-null, BEFORE recording
+    /// any GPU command. Vulkan's validation layer would otherwise trap on
+    /// the missing descriptors at submit time — this helper surfaces the
+    /// error inside our `Result<void>` channel so callers can react gracefully
+    /// (skip the pass for the current frame, log the gap, etc).
+    ///
+    /// Returns:
+    ///   * std::unexpected(kInvalidArgument) when init() has not run
+    ///     (sample_pipeline_ invalid) or `bind_sample_resources()` has
+    ///     not been called (output dims still 0), or when the irradiance /
+    ///     visibility atlases owned by the pass are still null.
+    ///   * {} on success — the dispatch was recorded into `cmd`.
+    [[nodiscard]] cd::core::Result<void>
+    execute_sample_checked(cd::rhi::ICommandBuffer& cmd);
+
+    /// Sprint-4 (phase668) — CPU-stub overload that runs the exact same
+    /// validation as `execute_sample_checked(cmd)` without requiring an
+    /// `ICommandBuffer`. Used by unit tests + downstream code that wants
+    /// to confirm the sample pass is wired before recording a real
+    /// dispatch.
+    ///
+    /// Increments the internal sample_call_count_ counter on success.
+    [[nodiscard]] cd::core::Result<void> execute_sample();
 
     // ---- Accessors --------------------------------------------------------
 
@@ -292,6 +326,14 @@ public:
     /// Number of times the CPU-stub execute_blend_visibility(frame_index)
     /// overload has been called successfully (i.e. probe_count > 0).
     [[nodiscard]] std::uint32_t blend_vis_call_count() const noexcept { return blend_vis_call_count_; }
+
+    /// Number of times the CPU-stub execute_sample() overload has been
+    /// called successfully (Sprint-4 — phase668). Incremented by the
+    /// no-command-buffer overload only; the command-buffer overload
+    /// (`execute_sample_checked(cmd)`) does NOT bump this counter so the
+    /// metric stays a clean signal that the validation layer would have
+    /// accepted the dispatch.
+    [[nodiscard]] std::uint32_t sample_call_count() const noexcept { return sample_call_count_; }
 
     /// Test-only helper — set grid_ + atlas dims without a GPU device so the
     /// CPU-stub execute_blend_irradiance/visibility(frame_index) overloads can
@@ -360,6 +402,9 @@ private:
     // ── Sprint-2 CPU-stub call counters ────────────────────────────────────
     std::uint32_t blend_irr_call_count_ { 0 };   ///< Incremented by CPU-stub execute_blend_irradiance(frame_index).
     std::uint32_t blend_vis_call_count_ { 0 };   ///< Incremented by CPU-stub execute_blend_visibility(frame_index).
+
+    // ── Sprint-4 CPU-stub call counter (phase668) ─────────────────────────
+    std::uint32_t sample_call_count_ { 0 };      ///< Incremented by CPU-stub execute_sample().
 };
 
 }  // namespace cd::ddgi

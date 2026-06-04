@@ -3,6 +3,11 @@
 // phase549 — implementation of the DDGI trace-pass GPU dispatcher.
 // phase560 — Sprint-2: blend_irradiance + blend_visibility compute passes.
 // phase570 — Sprint-3: execute_sample compute pass (G-buffer → indirect irradiance).
+// phase668 — Sprint-4: execute_sample_checked()+execute_sample() Result-returning
+//            overloads — validate atlas+G-buffer bindings before recording the
+//            GPU dispatch, surfacing missing-input errors through our
+//            std::expected channel instead of trapping the Vulkan validation
+//            layer at submit time.
 // =============================================================================
 #include <cd/ddgi/DispatchPass.hpp>
 
@@ -1089,6 +1094,97 @@ void DispatchPass::execute_sample(cd::rhi::ICommandBuffer& cmd)
     cmd.dispatch(groups_x == 0U ? 1U : groups_x,
                  groups_y == 0U ? 1U : groups_y,
                  1U);
+}
+
+// ---------------------------------------------------------------------------
+// Sprint-4 (phase668) — sample-pass validation helpers.
+// ---------------------------------------------------------------------------
+// Shared validator used by both the command-buffer overload
+// (execute_sample_checked) and the CPU-stub overload (execute_sample). Returns
+// {} on success or a descriptive kInvalidArgument error pointing at the first
+// missing input — irradiance atlas, visibility atlas, descriptor set, or
+// output-image dimensions.
+namespace
+{
+
+cd::core::Result<void>
+validate_sample_inputs(const cd::rhi::TextureHandle&        irradiance_atlas,
+                       const cd::rhi::TextureHandle&        visibility_atlas,
+                       const cd::rhi::ComputePipelineHandle& sample_pipeline,
+                       const cd::rhi::DescriptorSetHandle&   sample_descriptor_set,
+                       std::uint32_t                         sample_output_width,
+                       std::uint32_t                         sample_output_height)
+{
+    if (!sample_pipeline.is_valid() || !sample_descriptor_set.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_sample: sample pipeline / descriptor set "
+            "is null (init() must run before execute_sample)"));
+    }
+    if (!irradiance_atlas.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_sample: irradiance_atlas is null "
+            "(blend_irradiance pass must produce the atlas before sampling)"));
+    }
+    if (!visibility_atlas.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_sample: visibility_atlas is null "
+            "(blend_visibility pass must produce the atlas before sampling)"));
+    }
+    if (sample_output_width == 0U || sample_output_height == 0U)
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::execute_sample: G-buffer + output bindings not "
+            "wired — call bind_sample_resources(output, world_pos, "
+            "world_normal, w, h) before execute_sample"));
+    }
+    return {};
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Sprint-4 (phase668) — execute_sample_checked(cmd)
+// ---------------------------------------------------------------------------
+cd::core::Result<void>
+DispatchPass::execute_sample_checked(cd::rhi::ICommandBuffer& cmd)
+{
+    auto v = validate_sample_inputs(
+        irradiance_atlas_, visibility_atlas_,
+        sample_pipeline_,  sample_descriptor_set_,
+        sample_output_width_, sample_output_height_);
+    if (!v.has_value())
+        return std::unexpected(v.error());
+
+    // Validation passed — record the dispatch through the existing path.
+    execute_sample(cmd);
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// Sprint-4 (phase668) — execute_sample() CPU-stub overload
+// ---------------------------------------------------------------------------
+// Mirrors execute_blend_{irradiance,visibility}() — runs the validator but
+// does not touch a command buffer, so CPU-only unit tests can confirm the
+// pass is wired before recording a real GPU dispatch.
+cd::core::Result<void>
+DispatchPass::execute_sample()
+{
+    auto v = validate_sample_inputs(
+        irradiance_atlas_, visibility_atlas_,
+        sample_pipeline_,  sample_descriptor_set_,
+        sample_output_width_, sample_output_height_);
+    if (!v.has_value())
+        return std::unexpected(v.error());
+
+    ++sample_call_count_;
+    return {};
 }
 
 }  // namespace cd::ddgi

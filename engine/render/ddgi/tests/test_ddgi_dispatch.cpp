@@ -597,4 +597,170 @@ TEST(DdgiDispatch, SamplePassDispatch)
     pass.shutdown(*dev);
 }
 
+// ---------------------------------------------------------------------------
+// Sprint-4 — execute_sample_checked() / execute_sample() validation (phase668)
+// ---------------------------------------------------------------------------
+//
+// The validated overloads of execute_sample() guard the GPU dispatch against
+// missing inputs that would otherwise trap the Vulkan validation layer at
+// submit time (null atlas descriptors, unbound G-buffer / output, etc.).
+//
+// This test exercises two paths:
+//   1. Calling execute_sample() (no-cmd CPU-stub) BEFORE bind_sample_resources()
+//      must return an `kInvalidArgument` Result<void> with a message that
+//      mentions the missing wiring.
+//   2. After bind_sample_resources() succeeds the same call must return ok
+//      and bump the sample_call_count() counter.
+//   3. execute_sample_checked(cmd) records the dispatch + returns ok exactly
+//      once bind_sample_resources() has wired the G-buffer + output — and
+//      the queue accepts the submit without a validation diagnostic.
+// ---------------------------------------------------------------------------
+TEST(DdgiDispatch, SamplePassCheckedRejectsUnboundInputs)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::ddgi::DispatchPass pass;
+    cd::ddgi::DispatchPassDesc desc {};
+    desc.grid.probes_x       = 4;
+    desc.grid.probes_y       = 2;
+    desc.grid.probes_z       = 4;
+    desc.settings.rays_per_probe = 64;
+    desc.needs_tlas          = false;
+    desc.probe_face_size     = 8;
+
+    auto init_r = pass.init(*dev, desc);
+    if (!init_r.has_value())
+        GTEST_SKIP() << "DispatchPass::init failed (likely no glslang backend): "
+                     << init_r.error().message;
+
+    // -- 1. CPU-stub execute_sample() must reject the unbound state. ---------
+    EXPECT_EQ(pass.sample_call_count(), 0U);
+    auto pre_bind = pass.execute_sample();
+    ASSERT_FALSE(pre_bind.has_value());
+    EXPECT_NE(pre_bind.error().message.find("bind_sample_resources"),
+              std::string::npos)
+        << "error message must point the caller at bind_sample_resources(); got: "
+        << pre_bind.error().message;
+    EXPECT_EQ(pass.sample_call_count(), 0U);
+
+    // -- 2. Allocate G-buffer + output, wire bindings, retry. ---------------
+    constexpr std::uint32_t kW = 32U;
+    constexpr std::uint32_t kH = 32U;
+    auto make_storage_image = [&](std::string_view debug_name)
+        -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
+    {
+        cd::rhi::TextureDesc td {};
+        td.type         = cd::rhi::TextureType::k2D;
+        td.format       = cd::rhi::Format::kRGBA16Float;
+        td.extent       = { kW, kH, 1U };
+        td.mip_levels   = 1;
+        td.array_layers = 1;
+        td.samples      = cd::rhi::SampleCount::k1;
+        td.usage        = cd::rhi::TextureUsage::kStorage |
+                          cd::rhi::TextureUsage::kSampled;
+        td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
+        td.debug_name   = debug_name;
+        auto tex = dev->create_texture(td);
+        if (!tex.has_value())
+            return {};
+        cd::rhi::TextureViewDesc vd {};
+        vd.texture     = *tex;
+        vd.type        = cd::rhi::TextureType::k2D;
+        vd.format      = cd::rhi::Format::kRGBA16Float;
+        vd.base_mip    = 0;
+        vd.mip_count   = 1;
+        vd.base_layer  = 0;
+        vd.layer_count = 1;
+        auto view = dev->create_texture_view(vd);
+        if (!view.has_value())
+        {
+            dev->destroy_texture(*tex);
+            return {};
+        }
+        return { *tex, *view };
+    };
+
+    auto [world_pos_tex,    world_pos_view]    = make_storage_image("ddgi_chk_world_pos");
+    auto [world_normal_tex, world_normal_view] = make_storage_image("ddgi_chk_world_normal");
+    auto [output_tex,       output_view]       = make_storage_image("ddgi_chk_sample_output");
+    ASSERT_TRUE(world_pos_tex.is_valid());
+    ASSERT_TRUE(world_normal_tex.is_valid());
+    ASSERT_TRUE(output_tex.is_valid());
+
+    auto bind_r = pass.bind_sample_resources(*dev,
+                                             output_view,
+                                             world_pos_view,
+                                             world_normal_view,
+                                             kW, kH);
+    ASSERT_TRUE(bind_r.has_value()) << bind_r.error().message;
+
+    auto post_bind = pass.execute_sample();
+    ASSERT_TRUE(post_bind.has_value())
+        << "execute_sample after bind_sample_resources should succeed; got: "
+        << post_bind.error().message;
+    EXPECT_EQ(pass.sample_call_count(), 1U);
+
+    // -- 3. execute_sample_checked(cmd) records the dispatch + queue accepts. -
+    auto cmd = dev->create_command_buffer(cd::rhi::QueueType::kCompute);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+
+    std::array<cd::rhi::TextureBarrier, 5> tex_barriers {
+        cd::rhi::TextureBarrier {
+            .texture = pass.irradiance_atlas(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = pass.visibility_atlas(),
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = world_pos_tex,
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = world_normal_tex,
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+        cd::rhi::TextureBarrier {
+            .texture = output_tex,
+            .from    = cd::rhi::ResourceState::kUndefined,
+            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .range   = { 0U, 1U, 0U, 1U },
+        },
+    };
+    cmd->barrier({}, tex_barriers);
+
+    auto rec = pass.execute_sample_checked(*cmd);
+    ASSERT_TRUE(rec.has_value())
+        << "execute_sample_checked after bind_sample_resources should succeed; got: "
+        << rec.error().message;
+
+    cmd->end();
+    dev->submit(*cmd);
+    dev->wait_idle();
+
+    // Counter only bumps from the CPU-stub overload, not the cmd-buffer one
+    // (deliberate — the metric should not pollute the GPU-path call site).
+    EXPECT_EQ(pass.sample_call_count(), 1U);
+
+    // Cleanup.
+    dev->destroy_texture_view(output_view);
+    dev->destroy_texture_view(world_normal_view);
+    dev->destroy_texture_view(world_pos_view);
+    dev->destroy_texture(output_tex);
+    dev->destroy_texture(world_normal_tex);
+    dev->destroy_texture(world_pos_tex);
+
+    pass.shutdown(*dev);
+}
+
 }  // namespace
