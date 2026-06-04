@@ -84,6 +84,54 @@ ctest --preset ninja-debug -R ddgi --output-on-failure
 4. Bind irradiance + visibility atlases to the composite pass FS and inject
    `kDdgiSampleFS` logic into `cd::post::composite`.
 
+## Full pipeline (phase680, Sprint-5)
+
+`cd::ddgi::FullPipeline` composes the four GPU passes into a single
+per-frame `execute()` call. A graphics dev no longer has to orchestrate
+the trace / blend_irradiance / blend_visibility / sample dispatches
+manually — one call delivers indirect bounce GI end-to-end.
+
+### Pipeline order
+
+1. **trace** — `kDdgiTraceCS`. One workgroup per probe; rays sampled via
+   `cd_tlas` (or sky-only on the smoke variant). Writes
+   `ray_radiance` (RGBA16F) and `ray_dir_dist` (RG16F).
+2. *Barrier:* `ray_radiance` + `ray_dir_dist` `kUAV → kUAV`.
+3. **blend_irradiance** — `kDdgiBlendIrradianceCS`. Reads the ray images;
+   writes the irradiance atlas (RGBA16F) with cosine-weighted EMA blend.
+4. **blend_visibility** — `kDdgiBlendVisibilityCS`. Reads the ray images;
+   writes the visibility atlas (RG16F: mean depth, mean depth²). Disjoint
+   write target from blend_irradiance, so the GPU may overlap them.
+5. *Barrier:* `irradiance_atlas` + `visibility_atlas` `kUAV → kUAV`.
+6. **sample** — `kDdgiSampleCS`. Reads both atlases + the caller-bound
+   G-buffer (world position + world normal); writes per-pixel indirect
+   irradiance into the caller-bound output image.
+
+### Caller contract
+
+- `FullPipeline::init(device, desc)` — allocates the trace / blend / sample
+  pipelines + every owned image (ray images, irradiance / visibility
+  atlases). Returns `Result<void>`; rolls back on partial failure.
+- `FullPipeline::bind_sample_resources(device, output_view, world_pos_view,
+  world_normal_view, w, h)` — wires the sample-pass G-buffer + output
+  bindings. Must be called once before the first `execute()`.
+- `FullPipeline::execute(cmd, view_proj, scene_tlas, frame_index)` —
+  records the four dispatches with the inter-pass memory barriers above
+  into the caller's open command buffer. The caller is responsible for
+  transitioning every storage image to `kUnorderedAccess` before this
+  call. `view_proj` is reserved for future probe-relocation variants and
+  is not consumed by the current shader set. When the underlying
+  DispatchPass was initialised with `needs_tlas = true`, the caller must
+  also call `pipeline.pass().bind_tlas(device, scene_tlas)` once per
+  frame before `execute()` — the TLAS is bound by descriptor write, not
+  by command recording.
+- `FullPipeline::shutdown(device)` — destroys every GPU resource owned
+  by the pipeline.
+
+See `tests/test_ddgi_full_pipeline.cpp` for the end-to-end Vulkan smoke
+test (4×2×4 probe grid, 32×32 output viewport, single `execute()` call
+followed by a host readback that verifies non-zero output texels).
+
 ## References
 
 - Majercik, Z., Marrs, A., Spjut, J., McGuire, M. (2019). *Dynamic Diffuse Global

@@ -16,6 +16,7 @@ cd_add_library(ddgi
   EXCLUDE_FROM_INSTALL
   SOURCES
     src/DispatchPass.cpp
+    src/FullPipeline.cpp
   PUBLIC_DEPS  cd::core cd::math cd::rhi
   PRIVATE_DEPS cd::shader
 )
