@@ -13,6 +13,7 @@
 #   input            — S4.6 (planned).
 #   net              — S4.7 (planned).
 #   net_matchmaker   — Phase 563 / Sprint W5B: cd::net::matchmaker Sprint-1 (in-memory).
+#   net_lobby        — Phase 713 / Sprint W5A: cd::network::lobby Sprint-1 (room-state).
 #   net_session_replay — Phase 600 / M6 W4B: cd::net::session_replay (record + replay).
 #   world_container  — gap #18 — World / Project / Level / Layer foundation.
 #   sample_framework — Mega-Marathon M2: cd::sample::App lifecycle library.
@@ -36,6 +37,7 @@ add_subdirectory(audio_spatial)
 add_subdirectory(input)
 add_subdirectory(net)
 add_subdirectory(net_matchmaker)
+add_subdirectory(net_lobby)
 add_subdirectory(net_session_replay)
 add_subdirectory(world_container)
 add_subdirectory(sample_framework)
