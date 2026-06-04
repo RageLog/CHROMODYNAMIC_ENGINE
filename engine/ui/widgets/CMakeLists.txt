@@ -20,6 +20,7 @@ cd_add_library(ui_widgets
     src/ColorPicker.cpp
     src/CurveEditor.cpp
     src/DockSpace.cpp
+    src/PopoutDock.cpp
     src/Table.cpp
     src/TreeView.cpp
   PUBLIC_DEPS

@@ -29,3 +29,8 @@ cd_add_test(ui_tree_view
   SOURCES test_tree_view.cpp
   DEPS    cd::ui_widgets cd::ui_renderer cd::core
 )
+
+cd_add_test(ui_popout_dock
+  SOURCES test_popout_dock.cpp
+  DEPS    cd::ui_widgets cd::core
+)
