@@ -5,6 +5,7 @@
 // =============================================================================
 #include <cd/editor/panel_build/BuildPanel.hpp>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace cd::editor::panel::build

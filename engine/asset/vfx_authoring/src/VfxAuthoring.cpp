@@ -11,6 +11,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 #include <sstream>
 #include <string>
 
@@ -33,7 +34,7 @@ template <std::size_t N>
     a.reserve(N);
     for (const float v : arr)
     {
-        a.push_back(Value { static_cast<double>(v) });
+        a.emplace_back(static_cast<double>(v));
     }
     return Value { std::move(a) };
 }
@@ -269,10 +270,10 @@ bool validate_authored(const AuthoredVfx& vfx, std::vector<std::string>& out_iss
         }
     }
 
-    const bool had_new_error = std::any_of(
+    const bool had_new_error = std::ranges::any_of(
         out_issues.begin() + static_cast<std::ptrdiff_t>(issues_before),
         out_issues.end(),
-        [](const std::string& s) { return s.rfind("[ERROR]", 0) == 0; });
+        [](const std::string& s) { return s.starts_with("[ERROR]"); });
 
     return !had_new_error;
 }
