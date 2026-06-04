@@ -1,5 +1,5 @@
 # =============================================================================
-# apps/editor -- cd::editor binary application (Phase 524 / T0.2).
+# apps/editor -- cd::editor binary application (Phase 524 / T0.2; updated phase685).
 #
 # Boots the cd::editor stack on the Vulkan + cd::render swapchain. The
 # binary is gated on CD_ENABLE_VULKAN (same gate used by samples/editor)
