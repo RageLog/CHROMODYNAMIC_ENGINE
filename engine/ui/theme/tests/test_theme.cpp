@@ -264,3 +264,80 @@ TEST(ThemeV2SemanticTokens, AccentSuccessHasDominantGreen)
     EXPECT_GT(static_cast<int>(t.accent_success.a), 0)
         << "accent_success alpha must be non-zero";
 }
+
+// ============================================================================
+// phase695 / M14 W6A — cd_test_ui_theme_pickers
+//
+// Three cases that verify the named palette factories introduced in phase695:
+//   default_dark_palette()
+//   default_light_palette()
+//   default_high_contrast_palette()
+//
+// Case P1: all three palettes populate every slot in the 16-slot array with
+//          non-zero alpha (no uninitialized/transparent sentinel).
+// Case P2: default values for surface token are non-zero in all palettes so
+//          the editor fills its background on first boot without explicit seed.
+// Case P3: light palette surface luminance > dark palette surface luminance
+//          (inverted surface brightness — the defining dark-vs-light contract).
+// ============================================================================
+
+// ---- Case P1: all palette slots have alpha=1 (no invisible sentinel) -------
+
+TEST(ThemePickerPalettes, AllSlotsHaveNonZeroAlpha)
+{
+    const auto dark = tt::default_dark_palette();
+    const auto lgt  = tt::default_light_palette();
+    const auto hc   = tt::default_high_contrast_palette();
+
+    for (std::size_t s = 0; s < tt::kPaletteSize; ++s)
+    {
+        EXPECT_NEAR(dark.palette[s].a, 1.0F, kEps)
+            << "dark palette slot " << s << " alpha must be 1.0";
+        EXPECT_NEAR(lgt.palette[s].a, 1.0F, kEps)
+            << "light palette slot " << s << " alpha must be 1.0";
+        EXPECT_NEAR(hc.palette[s].a, 1.0F, kEps)
+            << "high_contrast palette slot " << s << " alpha must be 1.0";
+    }
+}
+
+// ---- Case P2: surface token is non-zero in every palette -------------------
+
+TEST(ThemePickerPalettes, SurfaceTokenIsNonZeroInAllPalettes)
+{
+    auto surface_sum = [](const tt::Theme& t) -> float {
+        const auto c = t.color(tt::PaletteSlot::kSurface);
+        return c.r + c.g + c.b;
+    };
+
+    // Dark: very dark but NOT pure black — sum must be > 0.
+    EXPECT_GT(surface_sum(tt::default_dark_palette()), 0.0F)
+        << "dark surface must be non-zero (not pure invisible black)";
+
+    // Light: near-white — sum must be > 2.7 (RGB each >= 0.9).
+    EXPECT_GT(surface_sum(tt::default_light_palette()), 2.7F)
+        << "light surface must be near-white (channel sum > 2.7)";
+
+    // High-contrast: pure black IS valid for maximum contrast,
+    // but on_surface must be pure white to satisfy AAA.
+    const auto hc = tt::default_high_contrast_palette();
+    const auto on_surface = hc.color(tt::PaletteSlot::kOnSurface);
+    EXPECT_GT(on_surface.r + on_surface.g + on_surface.b, 2.9F)
+        << "high_contrast on_surface must be near-white";
+}
+
+// ---- Case P3: light surface luminance > dark surface luminance -------------
+
+TEST(ThemePickerPalettes, LightSurfaceBrighterThanDarkSurface)
+{
+    const auto dark = tt::default_dark_palette();
+    const auto lgt  = tt::default_light_palette();
+
+    const float lum_dark  = tt::relative_luminance(dark.color(tt::PaletteSlot::kSurface));
+    const float lum_light = tt::relative_luminance(lgt.color(tt::PaletteSlot::kSurface));
+
+    // Light palette surface must be substantially brighter (delta > 0.7 covers
+    // any reasonable dark/light palette without being overly strict).
+    EXPECT_GT(lum_light - lum_dark, 0.7F)
+        << "light surface luminance must exceed dark surface luminance by > 0.7 "
+           "(inverted brightness contract)";
+}

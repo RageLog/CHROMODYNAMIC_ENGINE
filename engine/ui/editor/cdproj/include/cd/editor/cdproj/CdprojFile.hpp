@@ -69,6 +69,10 @@ struct CdprojData
     std::string              dock_layout;
     CdprojWindow             window;
     std::vector<std::string> recent_files;
+    /// phase695 / M14 W6A — active theme name; one of "dark" / "light" /
+    /// "high_contrast". Defaults to "dark" when the field is absent (forward
+    /// compatibility with pre-695 .cdproj files).
+    std::string              theme_name            { "dark" };
 };
 
 // ---------------------------------------------------------------------------

@@ -211,6 +211,45 @@ struct Theme
 [[nodiscard]] Theme kLightTheme() noexcept;
 [[nodiscard]] Theme kHighContrastTheme() noexcept;
 
+// ---- Named palette factories (phase695 / M14 W6A) --------------------------
+//
+// Stable named entry points for the three canonical palettes. Prefer these
+// over the kXxxTheme() functions in new call sites -- the `default_*_palette`
+// names are consistent with Material 3 / design-system vocabulary and make
+// a round-trip through a theme_name string (e.g. .cdproj) straightforward.
+//
+//   default_dark_palette()          -- warm-dark Material 3 reference palette
+//   default_light_palette()         -- near-white surface, dark text
+//   default_high_contrast_palette() -- black surface + white text (WCAG AAA)
+[[nodiscard]] inline Theme default_dark_palette() noexcept
+{
+    return kDarkTheme();
+}
+
+[[nodiscard]] inline Theme default_light_palette() noexcept
+{
+    return kLightTheme();
+}
+
+[[nodiscard]] inline Theme default_high_contrast_palette() noexcept
+{
+    return kHighContrastTheme();
+}
+
+// Resolve a theme_name string (as stored in .cdproj) to one of the three
+// built-in themes. Unknown strings fall back to the dark palette.
+[[nodiscard]] inline Theme theme_from_name(std::string_view name) noexcept
+{
+    if (name == "light")         { return default_light_palette(); }
+    if (name == "high_contrast") { return default_high_contrast_palette(); }
+    return default_dark_palette();  // "dark" or any unknown value
+}
+
+// Canonical name strings for persistence (e.g. .cdproj theme_name field).
+inline constexpr std::string_view kThemeNameDark          = "dark";
+inline constexpr std::string_view kThemeNameLight         = "light";
+inline constexpr std::string_view kThemeNameHighContrast  = "high_contrast";
+
 // ---- Brand override --------------------------------------------------------
 //
 // Replace the primary swatch with `brand`, and re-pick on_primary so it

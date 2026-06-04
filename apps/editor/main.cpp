@@ -1055,9 +1055,14 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
 // ---- Theme bridge ----------------------------------------------------------
 //
 // cd::ui::theme V2 exposes float-RGBA design tokens. cd::ui_widgets uses
-// its own uint8_t-RGBA palette. Translate the dark-default theme so the
+// its own uint8_t-RGBA palette. Translate the chosen V2 theme so the
 // editor binary stays on the V2 token surface while still feeding the
 // widget catalog.
+//
+// phase695 / M14 W6A: build_widget_theme() now accepts a theme_name string
+// ("dark" / "light" / "high_contrast") so the caller can hot-swap the
+// palette without touching the widget hierarchy. Unknown names fall back to
+// the dark palette (same behaviour as theme_from_name()).
 [[nodiscard]] uw::Color to_widget_color(uth::ColorToken c) noexcept
 {
     auto pack = [](float v) noexcept -> std::uint8_t {
@@ -1067,32 +1072,32 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
     return uw::Color { pack(c.r), pack(c.g), pack(c.b), pack(c.a) };
 }
 
-[[nodiscard]] uw::Theme build_widget_theme_from_dark_tokens()
+[[nodiscard]] uw::Theme build_widget_theme(std::string_view theme_name)
 {
-    const auto dark = uth::kDarkTheme();
+    const auto tok = uth::theme_from_name(theme_name);
     uw::Theme t {};
     // Map V2 16-slot palette into the cd::ui_widgets 9-slot theme. The
     // semantic intent stays in lock-step with Material 3: background =
     // surface, panel surface = surfaceVariant, hover/press = secondary /
     // primary containers, focus = primary container (highlight).
-    t.background    = to_widget_color(dark.color(uth::PaletteSlot::kBackground));
-    t.surface       = to_widget_color(dark.color(uth::PaletteSlot::kSurface));
-    t.surface_hover = to_widget_color(dark.color(uth::PaletteSlot::kSurfaceVariant));
-    t.surface_press = to_widget_color(dark.color(uth::PaletteSlot::kPrimaryContainer));
-    t.accent        = to_widget_color(dark.color(uth::PaletteSlot::kPrimary));
-    t.accent_hover  = to_widget_color(dark.color(uth::PaletteSlot::kPrimaryContainer));
-    t.text          = to_widget_color(dark.color(uth::PaletteSlot::kOnSurface));
-    t.text_dim      = to_widget_color(dark.color(uth::PaletteSlot::kOnSurfaceVariant));
+    t.background    = to_widget_color(tok.color(uth::PaletteSlot::kBackground));
+    t.surface       = to_widget_color(tok.color(uth::PaletteSlot::kSurface));
+    t.surface_hover = to_widget_color(tok.color(uth::PaletteSlot::kSurfaceVariant));
+    t.surface_press = to_widget_color(tok.color(uth::PaletteSlot::kPrimaryContainer));
+    t.accent        = to_widget_color(tok.color(uth::PaletteSlot::kPrimary));
+    t.accent_hover  = to_widget_color(tok.color(uth::PaletteSlot::kPrimaryContainer));
+    t.text          = to_widget_color(tok.color(uth::PaletteSlot::kOnSurface));
+    t.text_dim      = to_widget_color(tok.color(uth::PaletteSlot::kOnSurfaceVariant));
 
-    // phase673 / M12 W6A — populate the phase673 semantic extension tokens.
-    // surface_subtle / divider / accent_warning / accent_success stay at their
-    // warm-dark struct defaults (baked in Widgets.hpp). accent_error is driven
-    // from the V2 kError swatch so warning/error visuals are consistent across
-    // the theme tree. All others (surface_subtle, divider, accent_warning,
-    // accent_success) are stable at their struct-default values.
-    t.accent_error = to_widget_color(dark.color(uth::PaletteSlot::kError));
+    // Semantic extension tokens (phase673 / M12 W6A):
+    // accent_error driven from the V2 kError swatch so warning/error visuals
+    // are consistent across the theme tree. surface_subtle / divider /
+    // accent_warning / accent_success retain their struct defaults so they
+    // remain legible in all three palettes without per-palette overrides.
+    t.accent_error = to_widget_color(tok.color(uth::PaletteSlot::kError));
     return t;
 }
+
 
 // ---- phase667 / M12 W2 — status bar ---------------------------------------
 //
@@ -1276,6 +1281,110 @@ void draw_status_bar(ur::DrawBatcher& batcher,
         default: break;
     }
     batcher.quad(route_x, route_y, kRouteW, route_h, route_color);
+}
+
+// ---- phase695 / M14 W6A — theme picker in the status bar ------------------
+//
+// Three equal-width clickable slabs pinned to the RIGHT of the status bar,
+// to the LEFT of the route indicator. Each slab represents one of the three
+// built-in palettes:
+//
+//   [Dark]  [Light]  [Hi-C]
+//
+// The active slab is drawn at full opacity; inactive slabs are dimmed.
+// A left-click on a slab sets `*out_new_name` to the matching theme_name
+// string so the caller can swap widget_theme on the next frame.
+//
+// Coordinates: slabs occupy a 204 px strip (3 × 66 px + 2 × 3 px gap)
+// anchored kRouteW + 12 px from the right edge.
+//
+// Returns true if any slab was clicked (caller re-builds widget_theme).
+[[nodiscard]] bool draw_theme_picker(ur::DrawBatcher&   batcher,
+                                     const uw::Theme&   theme,
+                                     float              fb_w,
+                                     float              fb_h,
+                                     std::string_view   active_name,
+                                     float              mouse_x,
+                                     float              mouse_y,
+                                     bool               left_clicked,
+                                     std::string*       out_new_name)
+{
+    // Layout constants.
+    constexpr float kPickerSlabW = 48.0F;
+    constexpr float kPickerGap   =  3.0F;
+    constexpr float kPickerPad   =  6.0F;
+    // Total strip width: 3 slabs + 2 gaps.
+    constexpr float kPickerW = 3.0F * kPickerSlabW + 2.0F * kPickerGap;
+    // Position: to the left of the route indicator (kRouteW) plus margin.
+    constexpr float kRouteW  = 140.0F;
+    const float strip_right  = fb_w - kRouteW - kPickerPad * 3.0F;
+    const float strip_x      = strip_right - kPickerW;
+    const float strip_y      = fb_h - kStatusBarH + 2.0F;
+    const float slab_h       = kStatusBarH - 4.0F;
+
+    // Slab descriptors: name string, label colour.
+    struct SlabDesc
+    {
+        std::string_view name;
+        ur::Color        active_color;   // slab fill when this theme is active
+        ur::Color        inactive_color; // slab fill when another theme is active
+    };
+    const std::array<SlabDesc, 3> slabs {{
+        // Dark  — lavender tinted strip (matches dark primary token #D0BCFF).
+        { "dark",
+          ur::Color { 140U, 112U, 200U, 230U },
+          ur::Color {  70U,  56U, 100U, 160U } },
+        // Light — warm soft white strip.
+        { "light",
+          ur::Color { 230U, 224U, 245U, 230U },
+          ur::Color { 115U, 112U, 122U, 160U } },
+        // High-contrast — pure black + cyan accent strip.
+        { "high_contrast",
+          ur::Color {   0U, 200U, 220U, 230U },
+          ur::Color {   0U, 100U, 110U, 160U } },
+    }};
+
+    bool any_clicked = false;
+    for (std::size_t idx = 0; idx < slabs.size(); ++idx)
+    {
+        const float slab_x = strip_x
+                             + static_cast<float>(idx) * (kPickerSlabW + kPickerGap);
+        const bool is_active  = (slabs[idx].name == active_name);
+        const bool is_hovered = (mouse_x >= slab_x &&
+                                 mouse_x <= slab_x + kPickerSlabW &&
+                                 mouse_y >= strip_y &&
+                                 mouse_y <= strip_y + slab_h);
+
+        ur::Color fill = is_active ? slabs[idx].active_color
+                                   : slabs[idx].inactive_color;
+        if (is_hovered && !is_active)
+        {
+            // Subtle brightening on hover.
+            fill.r = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.r) + 40));
+            fill.g = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.g) + 40));
+            fill.b = static_cast<std::uint8_t>(std::min(255, static_cast<int>(fill.b) + 40));
+        }
+
+        batcher.quad(slab_x, strip_y, kPickerSlabW, slab_h, fill);
+
+        // Active indicator: a 2 px white bar along the top edge of the slab.
+        if (is_active)
+        {
+            batcher.quad(slab_x, strip_y, kPickerSlabW, 2.0F,
+                         ur::Color { 255U, 255U, 255U, 220U });
+        }
+
+        if (is_hovered && left_clicked && !is_active)
+        {
+            *out_new_name = std::string(slabs[idx].name);
+            any_clicked   = true;
+        }
+    }
+
+    // Suppress unused-parameter warning — theme available for future label glyph.
+    (void)theme;
+
+    return any_clicked;
 }
 
 // ---- Boot splash -----------------------------------------------------------
@@ -1911,8 +2020,16 @@ int main(int argc, char** argv)
         }
     }
 
-    // -- 2. Theme tokens + widget-side palette ------------------------------
-    const uw::Theme widget_theme = build_widget_theme_from_dark_tokens();
+    // -- 2. Theme tokens + widget-side palette (phase695 / M14 W6A) ----------
+    //
+    // Restore the active theme from .cdproj (theme_name field). On first launch
+    // the field defaults to "dark". The widget_theme is rebuilt whenever the
+    // user clicks a slab in the status-bar theme picker.
+    std::string active_theme_name = project_data.theme_name.empty()
+                                        ? std::string(uth::kThemeNameDark)
+                                        : project_data.theme_name;
+    uw::Theme widget_theme = build_widget_theme(active_theme_name);
+    std::printf("editor: active theme = '%s'\n", active_theme_name.c_str());
 
     // -- 3. cd::editor instance (drives the scene-tree panel content) -------
     cd::editor::EditorDesc ed_desc {};
@@ -2777,6 +2894,33 @@ int main(int argc, char** argv)
                             static_cast<float>(fb_h));
         }
 
+        // -- phase695 / M14 W6A — theme picker (3 slabs in the status bar) ----
+        //
+        // Drawn after draw_status_bar so the slabs paint on top of the status
+        // ribbon background. A left-click on a slab rebuilds widget_theme and
+        // records active_theme_name so the on-exit .cdproj save captures it.
+        {
+            std::string new_theme_name;
+            const auto  ptr      = flatten_pointer(pointer);
+            const bool  clicked  = draw_theme_picker(
+                batcher,
+                widget_theme,
+                static_cast<float>(fb_w),
+                static_cast<float>(fb_h),
+                active_theme_name,
+                ptr.mouse_x, ptr.mouse_y,
+                ptr.left_pressed,
+                &new_theme_name);
+            if (clicked)
+            {
+                active_theme_name = new_theme_name;
+                widget_theme      = build_widget_theme(active_theme_name);
+                std::printf("editor: theme switched to '%s'\n",
+                            active_theme_name.c_str());
+                std::fflush(stdout);
+            }
+        }
+
         // -- phase684 / M13 W6A — debug viz thumbnail overlays ----------------
         //
         // Three ~200x150 px thumbnails stacked vertically in the top-right
@@ -2809,7 +2953,7 @@ int main(int argc, char** argv)
                 const float oy = kDbgVizStartY
                                  + static_cast<float>(i) * (kDbgH + kDbgGap);
                 const uw::Rect dbg_bounds { dbg_x, oy, kDbgW, kDbgH };
-                dbg_overlays[i]->draw(batcher, dbg_bounds);
+                dbg_overlays[i]->draw(batcher, dbg_bounds, widget_theme);
             }
         }
 
@@ -3030,6 +3174,8 @@ int main(int argc, char** argv)
             project_data.window.h = static_cast<int>(window->height());
         }
         project_data.schema_version = 1;
+        // phase695 / M14 W6A — persist the active theme so next launch restores it.
+        project_data.theme_name  = active_theme_name;
         // Serialize the live DockSpace tree -> hex string (JSON-safe payload).
         project_data.dock_layout = dock_layout_to_hex(dockspace.serialize());
         if (!cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
