@@ -21,6 +21,7 @@ cd_add_library(restir_di
     src/Denoiser.cpp
     src/SvgfDenoiser.cpp
     src/FullSvgfPipeline.cpp
+    src/FullPipelineDenoised.cpp
   PUBLIC_DEPS
     cd::core
     cd::math

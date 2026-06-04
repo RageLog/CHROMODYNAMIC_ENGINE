@@ -35,4 +35,13 @@ if(CD_ENABLE_VULKAN AND TARGET cd_rhi_vulkan)
     SOURCES test_restir_di_full_svgf.cpp
     DEPS    cd::restir_di cd::rhi_vulkan
   )
+
+  # Phase 681 / Sprint-6 -- Full denoised pipeline smoke. Same Vulkan
+  # gating as Sprint-5. Verifies the chained sample -> temporal_reuse ->
+  # spatial_reuse -> SVGF facade dispatches without validation errors and
+  # advances frame_index_ after each successful execute().
+  cd_add_test(restir_di_full_pipeline_denoised
+    SOURCES test_restir_di_full_pipeline_denoised.cpp
+    DEPS    cd::restir_di cd::rhi_vulkan
+  )
 endif()
