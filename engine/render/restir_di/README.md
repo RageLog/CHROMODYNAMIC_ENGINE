@@ -9,10 +9,60 @@ ReSTIR direct illumination — weighted reservoir sampling (WRS) for per-pixel l
 ## Public headers
 - `include/cd/restir_di/Reservoir.hpp` — WRS sample container and combine semantics
 - `include/cd/restir_di/ReuseStrategy.hpp` — Temporal/spatial reuse patterns
+- `include/cd/restir_di/DispatchPass.hpp` — GPU initial-candidate + temporal + spatial reuse compute pass (Sprint-1, Sprint-2)
+- `include/cd/restir_di/Denoiser.hpp` — A-trous wavelet edge-aware blur (Sprint-3, legacy hookpoint)
+- `include/cd/restir_di/SvgfDenoiser.hpp` — SVGF skeleton: moment / variance / filter passes as independently-configurable building blocks (Sprint-4)
+- `include/cd/restir_di/FullSvgfPipeline.hpp` — **Sprint-5** named full SVGF chain: moment + variance + 3x A-trous filter as a single dispatch entry; production seam the integrator wires into the framegraph composite
 
 ## Primary types
 - `Restir_di::Reservoir` — Selected light index + sample weight + validity flags
 - `Restir_di::ReusePattern` — Neighbor offset sets for spatial taps
+- `Restir_di::SvgfDenoiser` — three-pass skeleton with per-knob configure (variance, depth_phi, normal_phi, temporal_alpha, filter_iterations)
+- `Restir_di::FullSvgfPipeline` — production wrapper, fixed `filter_iterations = 3`; argument order matches the framegraph G-buffer slot order `(reservoir, normal, depth, mesh_id, out)`
+
+## SVGF Pipeline (Sprint-5, chained)
+
+`cd::restir_di::FullSvgfPipeline` orchestrates the three SVGF passes
+(Schied 2017, "Spatiotemporal Variance-Guided Filtering: Real-Time
+Reconstruction for Path-Traced Global Illumination") as a single named
+dispatch:
+
+1. **Moment estimation pass** — reads the per-pixel reservoir luminance,
+   accumulates first + second raw moments into a temporal SSBO with an
+   exponential alpha decay, increments a `history_length` counter (capped
+   at 64).
+2. **Variance estimation pass** — when `history_length <
+   kSvgfShortHistoryThreshold` (4 by default), falls back to a 7×7
+   bilateral spatial luminance variance estimate (paper Section 4.1);
+   otherwise uses the temporal moment difference `mu_2 - mu_1^2`.
+3. **Edge-aware A-trous filter pass** — 5×5 wavelet stencil run 3 times
+   (`kFullSvgfFilterIterations`) with step-width doubling per iteration.
+   The luminance edge-stop sigma is variance-derived per paper Eq. 5:
+   `phi_l = phi_color * sqrt(g(variance))` with `g` a 3×3 Gaussian
+   prefilter over the variance SSBO. The filter ping-pongs between the
+   input reservoir buffer and the output buffer; with 3 iterations the
+   final write lands on the output buffer (iterations 0 and 2 write
+   out, iteration 1 writes back to input).
+
+```cpp
+#include <cd/restir_di/FullSvgfPipeline.hpp>
+
+cd::restir_di::FullSvgfPipeline pipe;
+auto cr = pipe.configure(*device, viewport_w, viewport_h);
+// ... per-frame record:
+pipe.execute(cmd_buf,
+             reservoir_buf,            // ReSTIR DI spatial-reuse output
+             gbuffer_normal_view,
+             gbuffer_depth_view,
+             gbuffer_mesh_id_view,
+             denoised_reservoir_buf);  // framegraph composite input
+```
+
+The depth / normal / mesh-id texture views are **reserved seam slots** at
+Sprint-5 -- the integrator currently passes null handles and the kernel
+falls back to a reservoir-luminance-only edge stop (Sprint-3-equivalent).
+Sprint-6 will wire the G-buffer slots so depth + normal edge stops kick
+in and the chain matches the Schied 2017 reference exactly.
 
 ## Usage example
 ```cpp

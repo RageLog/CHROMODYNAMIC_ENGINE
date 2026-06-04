@@ -27,4 +27,12 @@ if(CD_ENABLE_VULKAN AND TARGET cd_rhi_vulkan)
     SOURCES test_restir_di_svgf.cpp
     DEPS    cd::restir_di cd::rhi_vulkan
   )
+
+  # Phase 669 / Sprint-5 -- SVGF full pipeline chain smoke. Same Vulkan
+  # gating as Sprint-4. Verifies the chained moment + variance + 3x A-trous
+  # filter actually reduces per-pixel luminance variance on a noisy input.
+  cd_add_test(restir_di_full_svgf
+    SOURCES test_restir_di_full_svgf.cpp
+    DEPS    cd::restir_di cd::rhi_vulkan
+  )
 endif()
