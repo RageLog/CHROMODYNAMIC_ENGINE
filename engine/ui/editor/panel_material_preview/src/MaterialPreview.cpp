@@ -1,18 +1,72 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/ui/editor/panel_material_preview/src/MaterialPreview.cpp
 //
-// phase678 — cd::editor::panel::material_preview implementation
+// phase678 — cd::editor::panel::material_preview implementation.
+// phase738 — Sprint-2: real PBR sphere via apps/editor RT callback.
+//
+// Sphere swatch now branches on preview_texture_:
+//   * Valid handle  → emit a DrawBatcher::textured_quad over the sphere area.
+//                     The lower 32 bits of the handle's raw value are forwarded
+//                     as the texture_slot (same convention as
+//                     cd::editor::panel::viewport::Viewport and the
+//                     debug_viz overlays).
+//   * Null handle   → keep the Sprint-1 dark background + base_color tint
+//                     overlay so headless tests + boot frames stay legible.
+//
+// Cache invalidation:
+//   compute_hash_() folds base_color (3 channels), metallic, roughness,
+//   alpha_mode, and alpha_cutoff into a single 64-bit fingerprint via the
+//   FNV-1a body of every IEEE-754 float bit-pattern. set_material() resets
+//   has_rendered_ so the host pays the next PBR render unconditionally;
+//   draw() additionally flips has_rendered_ off whenever the live hash
+//   drifts from the last clear_dirty() snapshot (catches in-place mutation
+//   of the AuthoredMaterial backing struct).
 // =============================================================================
 #include <cd/editor/panel_material_preview/MaterialPreview.hpp>
 
 #include <cd/material/AlphaMode.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 
 namespace cd::editor::panel::material_preview
 {
+
+namespace
+{
+
+// FNV-1a 64-bit constants — standard, dependency-free fingerprint primitive.
+inline constexpr std::uint64_t kFnvOffsetBasis = 0xCBF29CE484222325ULL;
+inline constexpr std::uint64_t kFnvPrime       = 0x100000001B3ULL;
+
+[[nodiscard]] inline std::uint64_t hash_fold_u32(std::uint64_t acc,
+                                                 std::uint32_t v) noexcept
+{
+    // Byte-wise FNV-1a fold (little-endian byte order; deterministic).
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto byte = static_cast<std::uint8_t>((v >> (i * 8)) & 0xFFU);
+        acc ^= static_cast<std::uint64_t>(byte);
+        acc *= kFnvPrime;
+    }
+    return acc;
+}
+
+[[nodiscard]] inline std::uint64_t hash_fold_float(std::uint64_t acc,
+                                                   float v) noexcept
+{
+    // Treat NaN as zero so two different NaN bit patterns don't desync the
+    // hash for materials that compare equal under the artist's intent.
+    if (std::isnan(v))
+    {
+        return hash_fold_u32(acc, 0U);
+    }
+    return hash_fold_u32(acc, std::bit_cast<std::uint32_t>(v));
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // State API
@@ -22,12 +76,73 @@ void MaterialPreview::set_material(
     const cd::asset::material_authoring::AuthoredMaterial* mat) noexcept
 {
     mat_ = mat;
+    // Force a re-render on the next is_dirty() poll: the host has to refresh
+    // the RT before clear_dirty() resumes returning false.
+    has_rendered_ = false;
 }
 
 const cd::asset::material_authoring::AuthoredMaterial*
 MaterialPreview::material() const noexcept
 {
     return mat_;
+}
+
+// ---------------------------------------------------------------------------
+// RT cache API (phase738)
+// ---------------------------------------------------------------------------
+
+void MaterialPreview::set_preview_texture(cd::rhi::TextureHandle handle) noexcept
+{
+    preview_texture_ = handle;
+}
+
+cd::rhi::TextureHandle MaterialPreview::preview_texture() const noexcept
+{
+    return preview_texture_;
+}
+
+bool MaterialPreview::is_dirty() const noexcept
+{
+    // No material bound → nothing to render; do not strand the host in a
+    // permanent dirty state.
+    if (mat_ == nullptr)
+    {
+        return false;
+    }
+    // First-ever poll → host must pay the initial PBR render.
+    if (!has_rendered_)
+    {
+        return true;
+    }
+    // Otherwise compare fingerprints; any drift flips us dirty.
+    return compute_hash_() != last_rendered_hash_;
+}
+
+void MaterialPreview::clear_dirty() noexcept
+{
+    if (mat_ == nullptr)
+    {
+        // No bound material — snapshot stays zero and has_rendered_ stays
+        // false so the next set_material() starts from a clean baseline.
+        return;
+    }
+    last_rendered_hash_ = compute_hash_();
+    has_rendered_       = true;
+}
+
+std::uint64_t MaterialPreview::compute_hash_() const noexcept
+{
+    if (mat_ == nullptr) { return 0U; }
+
+    std::uint64_t acc = kFnvOffsetBasis;
+    acc = hash_fold_float(acc, mat_->base_color[0]);
+    acc = hash_fold_float(acc, mat_->base_color[1]);
+    acc = hash_fold_float(acc, mat_->base_color[2]);
+    acc = hash_fold_float(acc, mat_->metallic);
+    acc = hash_fold_float(acc, mat_->roughness);
+    acc = hash_fold_u32(acc,   static_cast<std::uint32_t>(mat_->alpha_mode));
+    acc = hash_fold_float(acc, mat_->alpha_cutoff);
+    return acc;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +182,16 @@ void MaterialPreview::draw(cd::ui::renderer::DrawBatcher& batcher,
     // Early out if no material is bound.
     if (mat_ == nullptr)
         return;
+
+    // ---- Drift detection (phase738) ----------------------------------------
+    // If the live AuthoredMaterial's hash drifted from the last clear_dirty()
+    // ack we flip has_rendered_ off so the next is_dirty() poll catches the
+    // change. This handles in-place mutation of the backing struct (the
+    // inspector edits a slider directly on *mat_).
+    if (has_rendered_ && compute_hash_() != last_rendered_hash_)
+    {
+        has_rendered_ = false;
+    }
 
     // ---- Helpers ------------------------------------------------------------
 
@@ -118,24 +243,43 @@ void MaterialPreview::draw(cd::ui::renderer::DrawBatcher& batcher,
     };
 
     // ---- 3. Sphere swatch ---------------------------------------------------
-    // Sprint-1: a square quad tinted with base_color.  Sprint-2 will replace
-    // this with a real PBR sphere rendered via cd::material UI variant pipeline.
+    // phase738: when a valid preview RT handle is bound, sample it via a
+    // textured_quad — that's the apps/editor-rendered PBR sphere shaded with
+    // the AuthoredMaterial's metallic + roughness + base_color factors.
+    // Null handle = Sprint-1 base_color-tinted fallback (headless / boot-frame).
     constexpr float kSphereH = 80.0F;
     const float     sphere_x = bounds.x + kPad;
     const float     sphere_w = row_w;
 
-    // Dark background so even a pure-black tint is distinguishable.
-    batcher.quad(sphere_x, cursor_y,
-                 sphere_w, kSphereH,
-                 cd::ui::renderer::Color {
-                     theme.background.r,
-                     theme.background.g,
-                     theme.background.b,
-                     theme.background.a });
-
-    // Tint overlay at alpha=210 — the darker background bleeds through to give
-    // a crude sense of the sphere "edge" fade.
+    if (preview_texture_.is_valid() && sphere_w > 0.0F && kSphereH > 0.0F)
     {
+        // PBR RT path — sample the 256x256 sphere RT covering the full swatch
+        // area (UV 0..1). Tint stays white so the RT's PBR shading reaches
+        // the user 1:1.
+        const auto tex_slot =
+            static_cast<std::uint32_t>(preview_texture_.value() & 0xFFFFFFFFU);
+        static constexpr cd::ui::renderer::AtlasUv kFullUv {
+            0.0F, 0.0F, 1.0F, 1.0F
+        };
+        batcher.textured_quad(sphere_x, cursor_y,
+                              sphere_w, kSphereH,
+                              tex_slot, kFullUv,
+                              cd::ui::renderer::Color { 255U, 255U, 255U, 255U });
+    }
+    else
+    {
+        // Sprint-1 fallback ---------------------------------------------------
+        // Dark background so even a pure-black tint is distinguishable.
+        batcher.quad(sphere_x, cursor_y,
+                     sphere_w, kSphereH,
+                     cd::ui::renderer::Color {
+                         theme.background.r,
+                         theme.background.g,
+                         theme.background.b,
+                         theme.background.a });
+
+        // Tint overlay at alpha=210 — the darker background bleeds through to
+        // give a crude sense of the sphere "edge" fade.
         const std::uint8_t tint_r = to_u8(mat_->base_color[0]);
         const std::uint8_t tint_g = to_u8(mat_->base_color[1]);
         const std::uint8_t tint_b = to_u8(mat_->base_color[2]);

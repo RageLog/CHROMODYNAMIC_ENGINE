@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — engine/ui/editor/panel_material_preview/tests/test_material_preview.cpp
 //
 // phase678 — unit tests for cd::editor::panel::material_preview::MaterialPreview.
+// phase738 — Sprint-2: PBR RT path + cache invalidation coverage.
 //
 // All tests are headless (no ImGui / no RHI). Verified:
 //   * DefaultCtorHasNoMaterial         — material() == nullptr after default ctor.
@@ -15,11 +16,22 @@
 //   * DrawZeroBoundsReturnEarly        — draw() on zero-size rect stays near-empty.
 //   * TexturePillsPresentVsAbsent      — bound texture paths produce different geometry
 //                                        than empty paths (same pill count, different cols).
+//   * PreviewTextureRoundTrips         — set_preview_texture / preview_texture() handle round-trip.
+//   * DirtyDefaultsTrueWhenMaterialBound — first poll after set_material is dirty.
+//   * DirtyNoMaterialIsClean           — is_dirty() == false when no material bound.
+//   * ClearDirtyAcksRender             — clear_dirty() flips is_dirty() to false.
+//   * DirtyOnMaterialFieldDrift        — mutating metallic/roughness/base_color re-dirties.
+//   * SetMaterialReDirtiesAfterAck     — set_material(new) re-dirties even after clear.
+//   * DirtyOnAlphaModeChange           — switching alpha_mode flips dirty.
+//   * PreviewTexturePathEmitsTextured  — bound RT triggers a kTextured-variant vertex.
+//   * PreviewTextureFallsBackOnNull    — null handle keeps Sprint-1 2D swatch path.
 // =============================================================================
 #include <cd/editor/panel_material_preview/MaterialPreview.hpp>
 
 #include <cd/asset/material_authoring/MaterialAuthoring.hpp>
+#include <cd/core/Handle.hpp>
 #include <cd/material/AlphaMode.hpp>
+#include <cd/rhi/Handles.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
@@ -267,4 +279,227 @@ TEST(MaterialPreviewPanel, TexturePillsPresentVsAbsent)
     // Pill count is the same regardless of whether paths are present/absent
     // (all 3 pills are drawn in both cases; presence only changes tint colour).
     EXPECT_EQ(batcher_no.vertex_count(), batcher_with.vertex_count());
+}
+
+// ===========================================================================
+// phase738 — Sprint-2: PBR RT path + cache invalidation
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// TEST 10 — PreviewTextureRoundTrips
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, PreviewTextureRoundTrips)
+{
+    mp::MaterialPreview preview;
+
+    // Default is null (is_valid() == false).
+    EXPECT_FALSE(preview.preview_texture().is_valid());
+
+    // Bind a sentinel handle (index=7, generation=1).
+    const cd::rhi::TextureHandle h { 7U, 1U };
+    preview.set_preview_texture(h);
+
+    EXPECT_TRUE(preview.preview_texture().is_valid());
+    EXPECT_EQ(preview.preview_texture().value(), h.value());
+
+    // Clear back to null.
+    preview.set_preview_texture(cd::rhi::TextureHandle::null());
+    EXPECT_FALSE(preview.preview_texture().is_valid());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 11 — DirtyDefaultsTrueWhenMaterialBound
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, DirtyDefaultsTrueWhenMaterialBound)
+{
+    mp::MaterialPreview preview;
+    ma::AuthoredMaterial mat = make_mat(0.5F, 0.4F, 0.3F);
+
+    preview.set_material(&mat);
+    // First poll after set_material → host must pay the initial PBR render.
+    EXPECT_TRUE(preview.is_dirty());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 12 — DirtyNoMaterialIsClean
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, DirtyNoMaterialIsClean)
+{
+    mp::MaterialPreview preview;
+    // No material bound → nothing to render, panel must not strand the host
+    // in a permanent dirty state.
+    EXPECT_FALSE(preview.is_dirty());
+
+    // clear_dirty() with no material bound is a no-op.
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 13 — ClearDirtyAcksRender
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, ClearDirtyAcksRender)
+{
+    mp::MaterialPreview preview;
+    ma::AuthoredMaterial mat = make_mat(0.5F, 0.4F, 0.3F);
+
+    preview.set_material(&mat);
+    EXPECT_TRUE(preview.is_dirty());
+
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Polling repeatedly without mutating the material stays clean.
+    EXPECT_FALSE(preview.is_dirty());
+    EXPECT_FALSE(preview.is_dirty());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 14 — DirtyOnMaterialFieldDrift
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, DirtyOnMaterialFieldDrift)
+{
+    mp::MaterialPreview preview;
+    ma::AuthoredMaterial mat = make_mat(0.5F, 0.4F, 0.3F, 0.0F, 0.5F);
+
+    preview.set_material(&mat);
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Mutate metallic in place — the inspector edits the backing struct
+    // directly so the panel must catch the drift.
+    mat.metallic = 0.75F;
+    EXPECT_TRUE(preview.is_dirty());
+
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Mutate roughness.
+    mat.roughness = 0.95F;
+    EXPECT_TRUE(preview.is_dirty());
+
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Mutate base_color.
+    mat.base_color[0] = 0.9F;
+    EXPECT_TRUE(preview.is_dirty());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 15 — SetMaterialReDirtiesAfterAck
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, SetMaterialReDirtiesAfterAck)
+{
+    mp::MaterialPreview preview;
+    ma::AuthoredMaterial mat_a = make_mat(0.2F, 0.3F, 0.4F);
+    ma::AuthoredMaterial mat_b = make_mat(0.8F, 0.7F, 0.6F);
+
+    preview.set_material(&mat_a);
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Swap to a different AuthoredMaterial — must re-dirty regardless of
+    // whether mat_b happens to hash equal to mat_a (it doesn't here).
+    preview.set_material(&mat_b);
+    EXPECT_TRUE(preview.is_dirty());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 16 — DirtyOnAlphaModeChange
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, DirtyOnAlphaModeChange)
+{
+    mp::MaterialPreview preview;
+    ma::AuthoredMaterial mat = make_mat(0.5F, 0.5F, 0.5F);
+    mat.alpha_mode   = cd::material::AlphaMode::kOpaque;
+    mat.alpha_cutoff = 0.5F;
+
+    preview.set_material(&mat);
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Flip alpha_mode — the PBR variant may need to recompile the pipeline,
+    // so a drift here MUST refresh the RT.
+    mat.alpha_mode = cd::material::AlphaMode::kMask;
+    EXPECT_TRUE(preview.is_dirty());
+
+    preview.clear_dirty();
+    EXPECT_FALSE(preview.is_dirty());
+
+    // Tweak the cutoff while in kMask.
+    mat.alpha_cutoff = 0.25F;
+    EXPECT_TRUE(preview.is_dirty());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 17 — PreviewTexturePathEmitsTextured
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, PreviewTexturePathEmitsTextured)
+{
+    ma::AuthoredMaterial mat = make_mat(0.5F, 0.5F, 0.5F);
+
+    mp::MaterialPreview preview;
+    preview.set_material(&mat);
+    preview.set_preview_texture(cd::rhi::TextureHandle { 42U, 1U });
+
+    cd::ui::renderer::DrawBatcher  batcher;
+    const cd::ui::widgets::Theme   theme {};
+    const cd::ui::widgets::Rect    bounds { 0.0F, 0.0F, 400.0F, 600.0F };
+
+    batcher.begin_frame();
+    preview.draw(batcher, theme, bounds);
+
+    // At least one DrawCommand must carry the kTextured variant (the sphere
+    // swatch sampled from the 256x256 RT).
+    bool saw_textured = false;
+    std::uint32_t expected_slot = 42U;  // lower 32 bits of value(7,1) — exact match below.
+    expected_slot = static_cast<std::uint32_t>(
+        cd::rhi::TextureHandle { 42U, 1U }.value() & 0xFFFFFFFFU);
+    for (const auto& cmd : batcher.commands())
+    {
+        if (cmd.variant == cd::ui::renderer::material::kTextured &&
+            cmd.texture_slot == expected_slot)
+        {
+            saw_textured = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(saw_textured);
+}
+
+// ---------------------------------------------------------------------------
+// TEST 18 — PreviewTextureFallsBackOnNull
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, PreviewTextureFallsBackOnNull)
+{
+    ma::AuthoredMaterial mat = make_mat(0.5F, 0.5F, 0.5F);
+
+    mp::MaterialPreview preview;
+    preview.set_material(&mat);
+    // Explicitly bind null → fall back to Sprint-1 swatch.
+    preview.set_preview_texture(cd::rhi::TextureHandle::null());
+
+    cd::ui::renderer::DrawBatcher  batcher;
+    const cd::ui::widgets::Theme   theme {};
+    const cd::ui::widgets::Rect    bounds { 0.0F, 0.0F, 400.0F, 600.0F };
+
+    batcher.begin_frame();
+    preview.draw(batcher, theme, bounds);
+
+    // No DrawCommand should carry the kTextured variant when no RT is bound.
+    for (const auto& cmd : batcher.commands())
+    {
+        EXPECT_NE(cmd.variant, cd::ui::renderer::material::kTextured);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TEST 19 — kPreviewRtSizeIs256
+// ---------------------------------------------------------------------------
+TEST(MaterialPreviewPanel, PreviewRtSizeIs256)
+{
+    // Sanity-check the contract constant the apps/editor host uses to size
+    // the cd::rhi::TextureHandle it allocates.
+    EXPECT_EQ(mp::kPreviewRtSize, 256U);
 }

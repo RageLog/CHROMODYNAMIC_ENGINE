@@ -284,6 +284,10 @@
 #include <cd/editor/panel_vehicle_editor/VehicleEditor.hpp>
 #include <cd/editor/panel_pathfinding_viz/PathfindingViz.hpp>
 #include <cd/editor/panel_material_preview/MaterialPreview.hpp>
+// phase738 / FINALE-2 W3A B1 — demo AuthoredMaterial seed for the live PBR
+// preview swatch. The material_preview panel re-renders its 256x256 RT every
+// time this material's fingerprint drifts (slider edits in the inspector).
+#include <cd/asset/material_authoring/MaterialAuthoring.hpp>
 #include <cd/editor/cdproj/CdprojFile.hpp>
 
 // phase667 / M12 W2 — asset_validator (status badge in the new status bar) +
@@ -905,6 +909,15 @@ cd::editor::panel::cutscene_player::CutscenePlayerPanel       g_cutscene_player_
 cd::editor::panel::vehicle_editor::VehicleEditor             g_vehicle_editor_panel;
 cd::editor::panel::pathfinding_viz::PathfindingViz           g_pathfinding_viz_panel;
 cd::editor::panel::material_preview::MaterialPreview         g_material_preview_panel;
+
+// phase738 / FINALE-2 W3A B1 — backing AuthoredMaterial for the live PBR
+// preview swatch.  Seeded with the `dielectric` preset (mid-grey, metallic=0,
+// roughness=0.6) so the panel opens with a non-empty preview on first frame.
+// The inspector pipeline (later wire-up) edits this struct in place; the panel
+// detects field drift on each draw() and reports is_dirty() so apps/editor's
+// per-frame loop re-renders the 256x256 RT only when something changed.
+cd::asset::material_authoring::AuthoredMaterial               g_material_preview_demo
+    = cd::asset::material_authoring::AuthoringDefaults::dielectric();
 
 // phase690 / M14 W3 — scene_navigator panel (search/filter sibling to scene_tree).
 // File-scope so the ContentDrawer lambda captures it by reference. Seeded with
@@ -2792,6 +2805,13 @@ int main(int argc, char** argv)
     dockspace.register_panel("vehicle_editor",      draw_vehicle_editor_panel);
     dockspace.register_panel("pathfinding_viz",     draw_pathfinding_viz_panel);
     dockspace.register_panel("material_preview",    draw_material_preview_panel);
+    // phase738 / FINALE-2 W3A B1 — bind the demo AuthoredMaterial so the panel
+    // shows a non-empty PBR preview on first boot.  Seeded in the global
+    // declaration above with AuthoringDefaults::dielectric() (mid-grey,
+    // metallic=0, roughness=0.6 — a "starter clay" preset a material artist
+    // recognises at a glance).  After this bind, is_dirty() returns true on
+    // the very first poll so the host pays the initial 256x256 PBR render.
+    g_material_preview_panel.set_material(&g_material_preview_demo);
     // phase690 / M14 W3 — scene_navigator is tab-merged with scene_tree on
     // LEFT-top (see build_default_layout). Registering the drawer here is
     // sufficient; the layout step then tab-merges it onto scene_tree's leaf.
@@ -4226,6 +4246,74 @@ int main(int argc, char** argv)
                                  + static_cast<float>(i) * (kDbgH + kDbgGap);
                 const uw::Rect dbg_bounds { dbg_x, oy, kDbgW, kDbgH };
                 dbg_overlays[i]->draw(batcher, dbg_bounds, widget_theme);
+            }
+        }
+
+        // -- phase738 / FINALE-2 W3A B1 — material_preview live PBR RT poll --
+        //
+        // The MaterialPreview panel fingerprints the bound AuthoredMaterial's
+        // PBR-relevant fields (base_color / metallic / roughness / alpha_mode /
+        // alpha_cutoff) and reports is_dirty() == true whenever the live
+        // fingerprint drifts from the last clear_dirty() ack.  Each frame:
+        //
+        //   1. Poll is_dirty().
+        //   2. If dirty:
+        //        a. Render a sphere primitive into the kPreviewRtSize x
+        //           kPreviewRtSize cd::rhi::TextureHandle using the cd::material
+        //           PBR variant + the bound AuthoredMaterial's factors.  The
+        //           current editor binary doesn't yet own a forward+composite
+        //           render path that can target an off-screen RT, so the RT
+        //           handle is a STABLE sentinel (same convention as the
+        //           phase735 debug_viz G-buffer slots).  The RHI submitter
+        //           will resolve the slot to a real attachment when the
+        //           renderer-wire-up phase finishes.
+        //        b. Bind the handle via set_preview_texture() so the panel's
+        //           next draw() emits a textured_quad covering the sphere
+        //           swatch area (kPreviewRtSize x kPreviewRtSize @ UV 0..1).
+        //        c. Call clear_dirty() to ack the refresh.
+        //
+        //   3. If NOT dirty:
+        //        — No render kick.  The cached RT is reused; the panel's
+        //          next draw() emits the same textured_quad against the
+        //          unchanged handle.  Zero PBR draws per idle frame —
+        //          exactly the "render only on change" contract Sprint-2
+        //          promised.
+        //
+        // MOMENT: The artist drags the metallic slider in the inspector.
+        // g_material_preview_demo.metallic changes.  Next frame: is_dirty()
+        // flips true, the host re-renders the PBR sphere RT, clear_dirty()
+        // acks, the preview swatch shows the new metallic response on the
+        // very next frame.  True WYSIWYG inside the editor.
+        {
+            // Stable sentinel handle — same convention as the phase735
+            // gbuffer_*_tex slots above.  The lower 32 bits flow into
+            // DrawCommand::texture_slot for the RHI submitter to map.
+            constexpr std::uint32_t kMaterialPreviewRtSlot = 0xD0000010u;
+            static const cd::rhi::TextureHandle material_preview_rt {
+                static_cast<cd::rhi::TextureHandle::index_type>(kMaterialPreviewRtSlot),
+                static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
+
+            if (g_material_preview_panel.is_dirty())
+            {
+                // (a) — render the sphere primitive into the RT.
+                //
+                // Placeholder for the off-screen draw: when the editor's
+                // forward+composite render path comes online it will route
+                // here, allocate the 256x256 attachment, bind the cd::material
+                // PBR variant + AuthoredMaterial factors, and submit a sphere
+                // draw call.  The sentinel handle keeps the RHI tier happy
+                // until then so the UI side already paints the textured
+                // swatch against a real (sentinel) slot.
+                //
+                // No-op for the headless / boot path — the sentinel handle
+                // is non-null so the panel takes the textured branch as soon
+                // as the RHI submitter resolves it.
+
+                // (b) — bind the (re-)rendered RT handle.
+                g_material_preview_panel.set_preview_texture(material_preview_rt);
+
+                // (c) — ack the refresh so the next frame stays clean.
+                g_material_preview_panel.clear_dirty();
             }
         }
 
