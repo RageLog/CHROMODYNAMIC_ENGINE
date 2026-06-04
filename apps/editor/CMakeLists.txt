@@ -35,6 +35,9 @@
 #   cd::editor_panel_pathfinding_viz    -- pathfinding viz panel (phase677, wired phase679)
 #   cd::editor_panel_material_preview   -- material preview panel (phase678, wired phase679)
 #   cd::editor_panel_debug_viz          -- debug viz overlays: depth/normal/alpha-bucket (phase684)
+#   cd::editor_panel_settings           -- settings panel (phase698, wired phase701)
+#   cd::editor_panel_build              -- build status panel (phase699, wired phase701)
+#   cd::editor_panel_perf_profiler      -- deep frame-by-frame profiler (phase700, wired phase701)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -98,6 +101,15 @@ cd_add_sample(editor
     #                                       (already pulled in via cd::ui_widgets).
     cd::editor_panel_scene_navigator
     cd::editor_panel_keyboard_shortcut_overlay
+    # phase701 / M15 W3 — three NEW M15 W3 surfaces wired into apps/editor:
+    #   * settings_panel  — tab-merged with inspector on RIGHT-top.
+    #   * build_panel     — tab-merged with console on BOTTOM.
+    #   * perf_profiler   — split below light_editor on RIGHT-lower (+1 node).
+    # Dock panel count grows 17 -> 20 (settings + build are tab-merges;
+    # perf_profiler introduces the only new split this phase).
+    cd::editor_panel_settings
+    cd::editor_panel_build
+    cd::editor_panel_perf_profiler
     cd::editor
     cd::editor_ui
     cd::editor_cdproj

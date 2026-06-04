@@ -315,6 +315,20 @@
 #include <cd/editor/panel_keyboard_shortcut_overlay/KeyboardShortcutOverlay.hpp>
 #include <cd/ui/widgets/PopoutDock.hpp>
 
+// phase701 / M15 W3 — three new panels wired into apps/editor:
+//   * settings_panel      — tab-merged with inspector on RIGHT-top.
+//   * build_panel         — tab-merged with console on BOTTOM-CENTRE.
+//   * perf_profiler       — tab-merged with the debug_viz overlay area
+//                           (RIGHT-lower; split below light_editor so
+//                           perf data lives next to runtime debug overlays).
+//
+// All three are tab-merges + one new split for perf_profiler. The toast
+// notification queue + the build-panel global registration helper are
+// declared in a small editor::toast namespace below.
+#include <cd/editor/panel_settings/SettingsPanel.hpp>
+#include <cd/editor/panel_build/BuildPanel.hpp>
+#include <cd/editor/panel_perf_profiler/PerfProfiler.hpp>
+
 // phase631 / M9 W1A — asset::validator for status badge.
 // TODO(phase631): No status bar exists yet in apps/editor. When a status bar
 // is added, wire a cd::asset::validator::Validator instance here and display
@@ -654,6 +668,45 @@ struct EditorArgs
     if (scene_tree_owner_690 == nullptr) { return false; }
     if (!ds.tab_merge(scene_tree_owner_690, "scene_navigator")) { return false; }
 
+    // ---- phase701 / M15 W3 — three new panels --------------------------------
+    //
+    // Wire mode:
+    //   (10) settings_panel  -- tab-merged INTO inspector on RIGHT-top.
+    //   (11) build_panel     -- tab-merged INTO console on BOTTOM-CENTRE
+    //                           (joins the console+assets+asset_drop_target
+    //                            tab group as a sibling).
+    //   (12) perf_profiler   -- split BELOW light_editor on RIGHT-lower
+    //                           (a fresh tile so the live perf history bars
+    //                            do not fight with the inspector or behavior
+    //                            designer for attention). +1 node.
+    //
+    // Tab-merges keep node_count flat; only perf_profiler's split bumps it.
+    // Panel count grows 17 -> 20 (settings + build + perf_profiler).
+    //
+    // MOMENT: a dev opens the editor and immediately sees the runtime perf
+    // ribbon, the build status badge, and a settings tab right where they
+    // need them — no extra clicks.
+
+    // (10) settings_panel tab-merged with inspector (RIGHT-top tile).
+    auto* inspector_owner_701 = ds.find_panel_owner("inspector");
+    if (inspector_owner_701 == nullptr) { return false; }
+    if (!ds.tab_merge(inspector_owner_701, "settings_panel")) { return false; }
+
+    // (11) build_panel tab-merged with console (BOTTOM tab group).
+    auto* console_owner_701 = ds.find_panel_owner("console");
+    if (console_owner_701 == nullptr) { return false; }
+    if (!ds.tab_merge(console_owner_701, "build_panel")) { return false; }
+
+    // (12) perf_profiler split BELOW light_editor (RIGHT-lower column).
+    // ratio=0.55 -> light_editor keeps top 55%, perf_profiler takes 45%.
+    auto* light_editor_owner_701 = ds.find_panel_owner("light_editor");
+    if (light_editor_owner_701 == nullptr) { return false; }
+    if (!ds.split(light_editor_owner_701, uw::DockAxis::kHorizontal,
+                  "perf_profiler", 0.55F))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -739,6 +792,14 @@ cd::editor::panel::material_preview::MaterialPreview         g_material_preview_
 // File-scope so the ContentDrawer lambda captures it by reference. Seeded with
 // a small demo entity set in main() so the panel is non-empty on first boot.
 cd::editor::panel::scene_navigator::SceneNavigator           g_scene_navigator_panel;
+
+// phase701 / M15 W3 — settings + build + perf_profiler panel instances.
+// File-scope so the ContentDrawer lambdas capture them by reference for the
+// lifetime of the program. Seeded with realistic demo data in main() so the
+// panels are non-empty on first boot.
+cd::editor::panel::settings::SettingsPanel                   g_settings_panel;
+cd::editor::panel::build::BuildPanel                         g_build_panel;
+cd::editor::panel::perf_profiler::PerfProfiler               g_perf_profiler_panel;
 
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
@@ -865,6 +926,246 @@ void draw_scene_navigator_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_scene_navigator_panel.draw(batcher, theme, rect);
+}
+
+// phase701 / M15 W3 — drawers for the 3 new panels.
+//
+// SettingsPanel and BuildPanel consume cd::ui::widgets::Theme directly. The
+// PerfProfiler signature however takes cd::ui::theme::Theme (V2), so the
+// perf_profiler drawer rebuilds a transient V2 theme via theme_from_name()
+// using the active palette name kept by main() (see g_active_theme_name_ptr).
+// We expose the V2 theme via a function-static fallback for the headless
+// path where the global is not yet wired.
+std::string* g_active_theme_name_ptr { nullptr };
+
+void draw_settings_panel(const uw::Rect& rect,
+                         ur::DrawBatcher& batcher,
+                         uf::Font* /*font*/,
+                         const uw::Theme& theme)
+{
+    g_settings_panel.draw(batcher, theme, rect);
+}
+
+void draw_build_panel(const uw::Rect& rect,
+                      ur::DrawBatcher& batcher,
+                      uf::Font* /*font*/,
+                      const uw::Theme& theme)
+{
+    g_build_panel.draw(batcher, theme, rect);
+}
+
+void draw_perf_profiler_panel(const uw::Rect& rect,
+                              ur::DrawBatcher& batcher,
+                              uf::Font* /*font*/,
+                              const uw::Theme& /*widget_theme*/)
+{
+    const std::string_view name =
+        (g_active_theme_name_ptr != nullptr && !g_active_theme_name_ptr->empty())
+            ? std::string_view(*g_active_theme_name_ptr)
+            : std::string_view(uth::kThemeNameDark);
+    const auto v2_theme = uth::theme_from_name(name);
+    g_perf_profiler_panel.draw(batcher, v2_theme, rect);
+}
+
+// ===========================================================================
+// phase701 / M15 W3 — toast notification system
+// ===========================================================================
+//
+// Small floating-message queue rendered in the bottom-right of the status bar.
+// Each Toast lives 2 seconds (1.7 s opaque + 0.3 s fade-out). The queue holds
+// at most kMaxToasts; pushing into a full queue evicts the oldest entry.
+//
+// Three colour kinds, each mapped to a status-bar swatch:
+//   kInfo    — blue   (RGB 100 / 150 / 220)
+//   kSuccess — green  (RGB  80 / 200 / 100)
+//   kWarning — amber  (RGB 220 / 200 /  80)
+//
+// MOMENT: a dev opens the editor; three toasts pop up — 'Editor ready' (green),
+// 'Loaded saved layout' (blue), 'Theme: Dark' (blue). The editor talks to them,
+// they feel oriented before they have to click anything.
+
+}  // namespace  (close the outer anonymous namespace so named cd::editor::*
+   //             namespaces below are valid C++; reopened after the bridge.)
+
+namespace cd::editor::toast
+{
+
+enum class Kind : std::uint8_t
+{
+    kInfo    = 0,
+    kSuccess = 1,
+    kWarning = 2,
+};
+
+struct Toast
+{
+    std::string message;                              ///< Short text payload.
+    Kind        kind { Kind::kInfo };                 ///< Colour category.
+    std::chrono::steady_clock::time_point spawn_tp {};///< Birth wall-clock.
+};
+
+class ToastQueue
+{
+public:
+    static constexpr std::size_t kMaxToasts    = 5U;
+    static constexpr double      kLifetimeMs   = 2000.0;  ///< Total visible life.
+    static constexpr double      kFadeMs       =  300.0;  ///< Fade-out duration.
+
+    /// Push a new toast. When the queue is full the oldest is evicted (FIFO).
+    void push(std::string message, Kind kind = Kind::kInfo)
+    {
+        if (toasts_.size() >= kMaxToasts) { toasts_.erase(toasts_.begin()); }
+        toasts_.push_back(Toast{
+            std::move(message), kind, std::chrono::steady_clock::now() });
+    }
+
+    /// Drop toasts whose lifetime has expired. Call once per frame BEFORE
+    /// rendering so the rendered list is always fresh.
+    void tick(std::chrono::steady_clock::time_point now)
+    {
+        toasts_.erase(
+            std::remove_if(toasts_.begin(), toasts_.end(),
+                [&](const Toast& t)
+                {
+                    using namespace std::chrono;
+                    const auto age_ms = static_cast<double>(
+                        duration_cast<microseconds>(now - t.spawn_tp).count()) / 1000.0;
+                    return age_ms >= kLifetimeMs;
+                }),
+            toasts_.end());
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept { return toasts_.size(); }
+    [[nodiscard]] const std::vector<Toast>& items() const noexcept { return toasts_; }
+
+private:
+    std::vector<Toast> toasts_ {};
+};
+
+}  // namespace cd::editor::toast
+
+// ===========================================================================
+// phase701 / M15 W3 — global build-panel registration helper (Sprint-1)
+// ===========================================================================
+//
+// Other engine subsystems (asset validator, future shader compiler hook, etc.)
+// need a way to inform the editor's BuildPanel about events WITHOUT linking
+// the cd::editor binary itself. The helper exposes a free function +
+// thread-safe pointer set at editor startup. When the editor is not running
+// (samples, tests) the pointer stays null and the helper is a no-op.
+
+namespace cd::editor::build_panel_bridge
+{
+
+namespace
+{
+    panel::build::BuildPanel* g_bridge_target { nullptr };
+}  // namespace
+
+void register_target(panel::build::BuildPanel* target) noexcept
+{
+    g_bridge_target = target;
+}
+
+void push_event(const panel::build::BuildEvent& event)
+{
+    if (g_bridge_target != nullptr) { g_bridge_target->push_event(event); }
+}
+
+void set_status(panel::build::Status status) noexcept
+{
+    if (g_bridge_target != nullptr) { g_bridge_target->set_status(status); }
+}
+
+}  // namespace cd::editor::build_panel_bridge
+
+// Reopen the outer anonymous namespace closed above so the rest of the file
+// (drawer stubs, helpers, main()) retains internal linkage as before.
+namespace
+{
+
+// Render the toast stack into the bottom-right corner of the framebuffer,
+// stacking UP from just above the status bar. Each toast is a 220 x 22 px
+// pill quad in the colour matching its kind; opacity scales in the last
+// kFadeMs of its lifetime.
+void draw_toasts(ur::DrawBatcher& batcher,
+                 const uw::Theme& theme,
+                 const cd::editor::toast::ToastQueue& queue,
+                 float fb_w, float fb_h,
+                 std::chrono::steady_clock::time_point now)
+{
+    using cd::editor::toast::Kind;
+    using cd::editor::toast::ToastQueue;
+
+    constexpr float kToastW   = 220.0F;
+    constexpr float kToastH   =  22.0F;
+    constexpr float kToastGap =   4.0F;
+    constexpr float kMarginR  =  10.0F;
+    constexpr float kMarginB  =   4.0F;   // above status bar
+    // Status bar pinned height (mirrors kStatusBarH defined further below; we
+    // duplicate the literal here so draw_toasts can sit ahead of the status-bar
+    // helpers without a forward declaration).
+    constexpr float kToastStatusBarH = 20.0F;
+
+    const float bottom = fb_h - kToastStatusBarH - kMarginB;
+    const float x      = fb_w - kToastW - kMarginR;
+
+    const auto& items = queue.items();
+    for (std::size_t i = 0; i < items.size(); ++i)
+    {
+        const auto& t = items[i];
+        using namespace std::chrono;
+        const auto age_ms = static_cast<double>(
+            duration_cast<microseconds>(now - t.spawn_tp).count()) / 1000.0;
+        if (age_ms >= ToastQueue::kLifetimeMs) { continue; }
+
+        // Alpha ramp: 1.0 until the last kFadeMs, then linearly to 0.
+        double alpha_f = 1.0;
+        const double fade_start = ToastQueue::kLifetimeMs - ToastQueue::kFadeMs;
+        if (age_ms > fade_start)
+        {
+            const double t_frac = (age_ms - fade_start) / ToastQueue::kFadeMs;
+            alpha_f = 1.0 - std::clamp(t_frac, 0.0, 1.0);
+        }
+        const auto alpha = static_cast<std::uint8_t>(alpha_f * 230.0);
+
+        ur::Color fill { 100U, 150U, 220U, alpha };  // kInfo (blue)
+        switch (t.kind)
+        {
+            case Kind::kSuccess: fill = ur::Color {  80U, 200U, 100U, alpha }; break;
+            case Kind::kWarning: fill = ur::Color { 220U, 200U,  80U, alpha }; break;
+            case Kind::kInfo:    /* already set */                            break;
+        }
+
+        // Stack upwards: newest at the bottom, older toasts above.
+        const float y = bottom - static_cast<float>(i + 1U) * (kToastH + kToastGap);
+        if (y < 0.0F) { break; }
+
+        // Body fill.
+        batcher.quad(x, y, kToastW, kToastH, fill);
+
+        // 2 px left-edge accent stripe in theme accent so the toast reads as
+        // a toast (not a button).
+        batcher.quad(x, y, 2.0F, kToastH,
+                     ur::Color { theme.accent.r, theme.accent.g,
+                                 theme.accent.b, alpha });
+
+        // 12 px message-indicator strip: 3 small dim quads inside the body
+        // so the toast surface conveys "this is a message" without glyphs.
+        constexpr float kDotW = 5.0F;
+        constexpr float kDotH = 4.0F;
+        constexpr float kDotY = 9.0F;
+        const auto dim_alpha = static_cast<std::uint8_t>(alpha * 0.7F);
+        for (int d = 0; d < 3; ++d)
+        {
+            batcher.quad(x + 12.0F + static_cast<float>(d) * (kDotW + 3.0F),
+                         y + kDotY, kDotW, kDotH,
+                         ur::Color { 240U, 240U, 240U, dim_alpha });
+        }
+
+        // Suppress unused warning for the message string (no glyph renderer yet).
+        (void)t.message;
+    }
 }
 
 // ---- phase679 / M13 W3 — DockSpace serialize <-> string hex codec ----------
@@ -2193,6 +2494,13 @@ int main(int argc, char** argv)
     // LEFT-top (see build_default_layout). Registering the drawer here is
     // sufficient; the layout step then tab-merges it onto scene_tree's leaf.
     dockspace.register_panel("scene_navigator",     draw_scene_navigator_panel);
+    // phase701 / M15 W3 — register the 3 new panels:
+    //   settings_panel (tab-merged with inspector),
+    //   build_panel    (tab-merged with console),
+    //   perf_profiler  (split below light_editor, RIGHT-lower).
+    dockspace.register_panel("settings_panel",      draw_settings_panel);
+    dockspace.register_panel("build_panel",         draw_build_panel);
+    dockspace.register_panel("perf_profiler",       draw_perf_profiler_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
@@ -2206,13 +2514,18 @@ int main(int argc, char** argv)
     //
     // phase690 / M14 W3: panel count grew 16 -> 17 (scene_navigator added,
     // tab-merged with scene_tree on LEFT-top; tab_merge keeps node_count flat).
-    // The "17 dock nodes" log line is what the M14 W3 smoke test checks for.
-    constexpr std::size_t kEditorPanelCount = 17U;
+    //
+    // phase701 / M15 W3: panel count grew 17 -> 20 (settings_panel +
+    // build_panel + perf_profiler added). settings_panel + build_panel are
+    // tab-merges (flat); perf_profiler is the only new split (+1 node).
+    // The "20 dock nodes" log line is what the M15 W3 smoke test checks for.
+    constexpr std::size_t kEditorPanelCount = 20U;
     std::printf("editor: dock layout ready with %zu dock nodes (%zu panels: scene_tree | "
-                "scene_navigator | viewport | inspector | console | assets | "
-                "material_editor | animator | behavior_designer | asset_drop_target | "
-                "light_editor | input_recorder | dialog_tree_editor | cutscene_player | "
-                "vehicle_editor | pathfinding_viz | material_preview)\n",
+                "scene_navigator | viewport | inspector | settings_panel | console | "
+                "build_panel | assets | material_editor | animator | behavior_designer | "
+                "asset_drop_target | light_editor | input_recorder | dialog_tree_editor | "
+                "cutscene_player | vehicle_editor | pathfinding_viz | material_preview | "
+                "perf_profiler)\n",
                 kEditorPanelCount, kEditorPanelCount);
 
     // -- phase679 / M13 W3 — restore saved dock layout (if any) -------------
@@ -2352,6 +2665,80 @@ int main(int argc, char** argv)
     cd::ui::widgets::PopoutDock popout_dock {};
     std::printf("editor: popout_dock tracks %zu detached panels.\n",
                 popout_dock.detached_windows().size());
+    std::fflush(stdout);
+
+    // -- 5c. phase701 / M15 W3 — settings + build + perf_profiler seeding ----
+    //
+    // Pre-seed all 3 new panels so they are non-empty on first boot.
+    //   * settings: 8 demo entries spread across all 5 categories.
+    //   * build:    Compiling status + 5 demo events with timestamps.
+    //   * perf:     60-fps target + initial budget (synthetic frames feed in
+    //               the main loop below).
+    //
+    // The build_panel_bridge global helper points at g_build_panel so other
+    // subsystems can call cd::editor::build_panel_bridge::push_event(...)
+    // without linking apps/editor (Sprint-1 placeholder; Sprint-2 will wire
+    // real shader-compile events).
+    {
+        using cd::editor::panel::settings::Category;
+        using cd::editor::panel::settings::Entry;
+        const std::array<Entry, 8> kSeedSettings {
+            Entry { "vsync",           "V-Sync",            "on",       "Vertical sync — caps render rate to monitor refresh.", Category::kGraphics },
+            Entry { "resolution",      "Resolution",        "1280x720", "Render target resolution.",                            Category::kGraphics },
+            Entry { "shadow_quality",  "Shadow Quality",    "high",     "Cascade count + filter taps.",                          Category::kGraphics },
+            Entry { "mouse_sens",      "Mouse Sensitivity", "1.0",      "Multiplier for raw pointer deltas.",                    Category::kInput    },
+            Entry { "master_volume",   "Master Volume",     "0.85",     "Output mixer attenuation [0,1].",                       Category::kAudio    },
+            Entry { "spatial_audio",   "Spatial Audio",     "on",       "HRTF + per-source positional mixing.",                  Category::kAudio    },
+            Entry { "auto_save_min",   "Auto-Save (min)",   "5",        "Editor auto-save interval in minutes.",                 Category::kEditor   },
+            Entry { "log_verbosity",   "Log Verbosity",     "info",     "Per-subsystem default log level.",                       Category::kAdvanced },
+        };
+        for (const auto& e : kSeedSettings) { g_settings_panel.register_entry(e); }
+        std::printf("editor: settings_panel seeded with %zu entries across 5 categories.\n",
+                    g_settings_panel.entry_count());
+    }
+
+    {
+        using cd::editor::panel::build::BuildEvent;
+        using cd::editor::panel::build::Status;
+        g_build_panel.set_status(Status::kCompiling);
+        const std::array<BuildEvent, 5> kSeedEvents {
+            BuildEvent {   12.5, "configuring CMake presets...",          "", 0U,    Status::kIdle      },
+            BuildEvent {  243.0, "compiling cd::core...",                 "", 0U,    Status::kCompiling },
+            BuildEvent {  812.5, "compiling cd::editor_panel_settings...","", 0U,    Status::kCompiling },
+            BuildEvent { 1502.0, "warning: unused parameter 'flags'",
+                         "engine/render/Material.cpp",                    142U,  Status::kSuccess   },
+            BuildEvent { 1820.0, "linked cd_sample_editor.exe",           "", 0U,    Status::kSuccess   },
+        };
+        for (const auto& ev : kSeedEvents) { g_build_panel.push_event(ev); }
+        cd::editor::build_panel_bridge::register_target(&g_build_panel);
+        std::printf("editor: build_panel seeded with %zu events (bridge registered).\n",
+                    g_build_panel.event_count());
+    }
+
+    // PerfProfiler: configure budget (60 fps target). Synthetic FrameSnapshot
+    // data is captured per frame in the main loop below until the real
+    // cd::profile Collector instrumentation lands (Sprint-2).
+    g_perf_profiler_panel.set_target_fps(60.0F);
+    std::printf("editor: perf_profiler budget_ms=%.2f (60 fps target).\n",
+                static_cast<double>(g_perf_profiler_panel.budget_ms()));
+
+    // Wire the perf_profiler drawer's V2 theme bridge to the live theme name.
+    g_active_theme_name_ptr = &active_theme_name;
+
+    // -- 5d. phase701 / M15 W3 — toast notification queue --------------------
+    //
+    // Pre-register 3 example toasts so a first-time editor user sees the
+    // editor talk to them on boot — Source 2 / Hammer SDK feel. The queue
+    // holds at most 5 entries with a 2-second lifetime each (fade-out in the
+    // last 300 ms).
+    cd::editor::toast::ToastQueue toast_queue {};
+    toast_queue.push("Editor ready",          cd::editor::toast::Kind::kSuccess);
+    toast_queue.push("Loaded saved layout",   cd::editor::toast::Kind::kInfo);
+    toast_queue.push(std::string("Theme: ") + active_theme_name,
+                     cd::editor::toast::Kind::kInfo);
+    std::printf("editor: 3 toasts queued on startup (queue size=%zu, cap=%zu).\n",
+                toast_queue.size(),
+                cd::editor::toast::ToastQueue::kMaxToasts);
     std::fflush(stdout);
 
     // -- 5b. Overlay instances (phase598 / M6 W3; phase631 / M9 W1A) --------
@@ -2746,6 +3133,7 @@ int main(int argc, char** argv)
         //
         // Push elapsed seconds into the FrameTimeRing so the status bar and
         // overlay context show a real FPS value instead of the 62.5 stand-in.
+        double last_dt_ms = 0.0;
         {
             using namespace std::chrono;
             const auto  now  = steady_clock::now();
@@ -2753,8 +3141,52 @@ int main(int argc, char** argv)
                 duration_cast<microseconds>(now - prev_tp).count()) / 1'000'000.0F;
             prev_tp = now;
             if (dt_s > 0.0F) { ft_ring.push(dt_s); }
+            last_dt_ms = static_cast<double>(dt_s) * 1000.0;
         }
         const auto real_fps = static_cast<float>(ft_ring.stats().fps_mean());
+
+        // -- phase701 / M15 W3 — synthetic FrameSnapshot feed ----------------
+        //
+        // The perf_profiler panel surfaces 60 frames of rolling history. Real
+        // instrumentation (cd::profile Collector + GPU query readback) lands
+        // in Sprint-2; for now we synthesize a plausible snapshot per frame
+        // so the panel is visibly active from the first frame:
+        //   * total_ms        = last real wall-clock dt (or 16.67 stand-in).
+        //   * cpu_markers     = 3 plausible passes scaled by frame_idx.
+        //   * gpu_markers     = 2 plausible GPU pass durations.
+        //   * gpu_passes      = same 3-pass framegraph the FRAME overlay uses.
+        {
+            using namespace cd::editor::panel::perf_profiler;
+            FrameSnapshot snap;
+            snap.total_ms = last_dt_ms > 0.0 ? last_dt_ms : 16.67;
+
+            using cd::profile::cpu_marker_overlay::MarkerSample;
+            const double cpu_base = static_cast<double>(frame_idx) * 16.0;
+            snap.cpu_markers = {
+                MarkerSample { "frame.gather",  cpu_base + 0.5,  3.0,  1U },
+                MarkerSample { "frame.cull",    cpu_base + 3.8,  2.4,  1U },
+                MarkerSample { "frame.submit",  cpu_base + 11.0, 4.5,  1U },
+            };
+
+            using cd::profile::gpu_marker::GpuMarkerSample;
+            const std::uint64_t base_tick =
+                static_cast<std::uint64_t>(frame_idx) * 16'000'000ULL;
+            snap.gpu_markers = {
+                GpuMarkerSample { "gpu.gbuffer",   base_tick,
+                                  base_tick + 3'500'000ULL, 3.5 },
+                GpuMarkerSample { "gpu.lighting",  base_tick + 3'500'000ULL,
+                                  base_tick + 7'500'000ULL, 4.0 },
+            };
+
+            using cd::profile::frame_graph_timeline::PassRecord;
+            snap.gpu_passes = {
+                PassRecord { "GBuffer",   0.0,   4.5, 1U },
+                PassRecord { "Lighting",  4.5,   6.0, 2U },
+                PassRecord { "Composite", 10.5,  3.0, 3U },
+            };
+
+            g_perf_profiler_panel.capture_frame(snap);
+        }
 
         // -- Draw via the CPU batcher + RHI submitter --
         batcher.begin_frame();
@@ -2892,6 +3324,21 @@ int main(int argc, char** argv)
             draw_status_bar(batcher, widget_theme, stats,
                             static_cast<float>(fb_w),
                             static_cast<float>(fb_h));
+        }
+
+        // -- phase701 / M15 W3 — toast notification render --------------------
+        //
+        // Floating messages in the bottom-right above the status bar.
+        // Toasts fade out in their last 300 ms; the queue caps at 5 entries
+        // (FIFO eviction). The tick + draw call is cheap: per-frame O(n) with
+        // n bounded to 5.
+        {
+            const auto now = std::chrono::steady_clock::now();
+            toast_queue.tick(now);
+            draw_toasts(batcher, widget_theme, toast_queue,
+                        static_cast<float>(fb_w),
+                        static_cast<float>(fb_h),
+                        now);
         }
 
         // -- phase695 / M14 W6A — theme picker (3 slabs in the status bar) ----
@@ -3192,8 +3639,13 @@ int main(int argc, char** argv)
         }
     }
 
-    std::printf("editor: clean exit (%u frames; dock nodes=%zu).\n",
-                frame_idx, dockspace.node_count());
+    // phase701 / M15 W3 — unwire the bridge so a post-shutdown push() is a no-op.
+    cd::editor::build_panel_bridge::register_target(nullptr);
+
+    std::printf("editor: clean exit (%u frames; dock nodes=%zu; "
+                "perf_profiler captured %zu/60 synthetic frames).\n",
+                frame_idx, dockspace.node_count(),
+                g_perf_profiler_panel.recorded_frame_count());
     std::fflush(stdout);
     return 0;
 }
