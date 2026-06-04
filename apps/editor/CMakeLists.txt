@@ -90,6 +90,14 @@ cd_add_sample(editor
     cd::editor_panel_material_preview
     # phase684 / M13 W6A — 3 debug-viz thumbnails (depth / normal / alpha-bucket).
     cd::editor_panel_debug_viz
+    # phase690 / M14 W3 — three NEW M14 surfaces wired into apps/editor:
+    #   * scene_navigator           — search-filter sibling to scene_tree (LEFT, tab-merged).
+    #   * keyboard_shortcut_overlay — '?' toggle full-screen cheatsheet (15 default shortcuts).
+    #   * PopoutDock (in cd::ui_widgets) — state-machine for detach/reattach (Sprint-1 internal,
+    #                                       native multi-window = Sprint-2). NOT a separate dep
+    #                                       (already pulled in via cd::ui_widgets).
+    cd::editor_panel_scene_navigator
+    cd::editor_panel_keyboard_shortcut_overlay
     cd::editor
     cd::editor_ui
     cd::editor_cdproj
