@@ -26,7 +26,11 @@
 #   cd::profile_cpu_marker_overlay      -- CPU marker overlay (phase587, wired phase598)
 #   cd::profile_frame_graph_timeline    -- frame graph timeline overlay (phase593, wired phase598)
 #   cd::profile_gpu_marker              -- GPU marker overlay (phase606, wired phase631; cpu/gpu sibling)
-#   cd::asset_validator                 -- asset validator (phase611, wired phase631; status badge TODO)
+#   cd::asset_validator                 -- asset validator (phase611, wired into status bar badge phase667)
+#   cd::editor_panel_light_editor       -- light editor panel (phase664, wired phase667)
+#   cd::editor_panel_input_recorder     -- input recorder panel (phase665, wired phase667)
+#   cd::editor_panel_dialog_tree_editor -- dialog tree editor panel (phase666, wired phase667)
+#   cd::editor_panel_cutscene_player    -- cutscene player panel (phase617, wired phase667 LEFT col)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -66,7 +70,13 @@ cd_add_sample(editor
     cd::profile_cpu_marker_overlay      # phase598 / M6 W3
     cd::profile_frame_graph_timeline    # phase598 / M6 W3
     cd::profile_gpu_marker              # phase631 / M9 W1A (cpu/gpu sibling; backfills phase618 slot)
-    cd::asset_validator                 # phase631 / M9 W1A (TODO: status badge when status bar exists)
+    cd::asset_validator                 # phase631 / M9 W1A — wired into status bar badge in phase667
+    # phase667 / M12 W2 — three new panels + cutscene_player sibling for the
+    # LEFT-column tab pair (dialog_tree_editor + cutscene_player).
+    cd::editor_panel_light_editor
+    cd::editor_panel_input_recorder
+    cd::editor_panel_dialog_tree_editor
+    cd::editor_panel_cutscene_player
     cd::editor
     cd::editor_ui
     cd::editor_cdproj

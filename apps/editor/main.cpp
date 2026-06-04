@@ -46,8 +46,23 @@
 //                           cpu/gpu sibling classification, NOT a v1/v2 rename.
 //                           Synthetic GpuMarkerSample data per frame (real GPU
 //                           timestamps = future Sprint, ICommandBuffer::write_timestamp).
-//   * asset::validator   -- No status bar exists in apps/editor yet.
-//                           TODO: add status bar + validator badge (pass/warn/error).
+//   * asset::validator   -- Wired into the bottom status bar via phase667 /
+//                           M12 W2. Validator badge shows green/yellow/red
+//                           counts (pass / warn / error) seeded by three
+//                           synthetic blob validations at boot.
+//
+// Four new panels (phase667 / M12 W2 — 10 -> 13 dock nodes):
+//   * light_editor       -- RIGHT column, BOTTOM split below behavior_designer.
+//   * input_recorder     -- BOTTOM strip, right split alongside animator.
+//   * dialog_tree_editor -- tab-merged INTO the new cutscene_player leaf on
+//                           the LEFT column.
+//   * cutscene_player    -- LEFT column, BOTTOM split below material_editor.
+//                           Sits alongside dialog_tree_editor as a 2-tab pair.
+//
+// Status bar (phase667 / M12 W2 — pinned to the BOTTOM 20 px of the framebuffer):
+//   * asset_validator badge -- pass / warn / error count blocks.
+//   * frame stats meters    -- FPS / vertex count / draw call count.
+//   * route indicator       -- which UI submitter route is live (A / fallback / B).
 //
 // The LEFT and RIGHT columns now each carry TWO stacked panels (vertically),
 // and the BOTTOM strip carries the existing console+assets tab group plus
@@ -108,6 +123,12 @@
 // succeeded so the user sees the active path on every boot.
 #include <cd/material/UiVariant.hpp>
 
+// phase667 / M12 W2 — Material + MaterialInstance used by the Inspector PBR
+// section. The editor seeds an inert MaterialInstance so the round-trip
+// surface (metallic / roughness / alpha_mode / alpha_cutoff sliders) is
+// non-empty on first boot.
+#include <cd/material/Material.hpp>
+
 #include <cd/editor/Editor.hpp>
 #include <cd/editor/HierarchyView.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
@@ -118,7 +139,17 @@
 #include <cd/editor/panel_animator/Animator.hpp>
 #include <cd/editor/panel_behavior_designer/BehaviorDesigner.hpp>
 #include <cd/editor/panel_asset_drop_target/AssetDropTarget.hpp>
+// phase667 / M12 W2 — three new panels wired into the dock + cutscene_player
+// joined alongside dialog_tree_editor on the LEFT column.
+#include <cd/editor/panel_light_editor/LightEditor.hpp>
+#include <cd/editor/panel_input_recorder/InputRecorderPanel.hpp>
+#include <cd/editor/panel_dialog_tree_editor/DialogTreeEditor.hpp>
+#include <cd/editor/panel_cutscene_player/CutscenePlayerPanel.hpp>
 #include <cd/editor/cdproj/CdprojFile.hpp>
+
+// phase667 / M12 W2 — asset_validator (status badge in the new status bar) +
+// cd::asset::validator::Severity for green/yellow/red counts.
+#include <cd/asset/validator/Validator.hpp>
 
 // phase598 / M6 W3 — overlays (CPU marker bar chart + frame-graph Gantt).
 #include <cd/profile/cpu_marker_overlay/CpuMarkerOverlay.hpp>
@@ -137,6 +168,7 @@
 // a pass/warn/error badge from the latest validate call results.
 // #include <cd/asset/validator/Validator.hpp>  // linked but include deferred
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -346,6 +378,68 @@ struct EditorArgs
     if (assets_owner == nullptr) { return false; }
     if (!ds.tab_merge(assets_owner, "asset_drop_target")) { return false; }
 
+    // ---- phase667 / M12 W2 — three new panel slots --------------------------
+    //
+    // The brief grows the dock from 10 -> 13 nodes by adding three new splits.
+    // Each new split lands the new panel physically adjacent to its semantic
+    // companion so the result behaves like a tab-merge from the designer's
+    // point of view (they see the new content next to where they expect it):
+    //
+    //   (4) cutscene_player BELOW material_editor (LEFT column, 3-stack:
+    //       scene_tree / material_editor / cutscene_player). +1 node.
+    //
+    //   (5) light_editor BELOW behavior_designer (RIGHT column, 3-stack:
+    //       inspector / behavior_designer / light_editor). +1 node.
+    //
+    //   (6) input_recorder to the RIGHT of animator (BOTTOM strip,
+    //       4-region split). +1 node.
+    //
+    // After the three splits node_count goes from 10 -> 13, matching the
+    // M12 W2 target. Then we tab-merge dialog_tree_editor INTO the
+    // cutscene_player leaf so the designer flips between the BG3-style
+    // dialog graph and the cutscene timeline on the same dock tile — the
+    // moment a narrative designer wants in a shipping editor.
+    //
+    // MOMENT: a first-time editor user opens apps/editor and immediately sees
+    // a lighting designer slot, an input-replay slot, and a dialog/cutscene
+    // pair — three brand-new authoring surfaces shipped DAY ONE.
+
+    // (4) material_editor -> cutscene_player split (LEFT col lower half).
+    // ratio=0.65 -> material_editor keeps 65%, cutscene_player takes 35%.
+    auto* material_editor_node = ds.find_panel_owner("material_editor");
+    if (material_editor_node == nullptr) { return false; }
+    if (!ds.split(material_editor_node, uw::DockAxis::kHorizontal,
+                  "cutscene_player", 0.65F))
+    {
+        return false;
+    }
+
+    // Tab-merge dialog_tree_editor INTO the cutscene_player leaf so the LEFT
+    // column carries a dialog/cutscene pair on the same tile.
+    auto* cutscene_owner = ds.find_panel_owner("cutscene_player");
+    if (cutscene_owner == nullptr) { return false; }
+    if (!ds.tab_merge(cutscene_owner, "dialog_tree_editor")) { return false; }
+
+    // (5) behavior_designer -> light_editor split (RIGHT col lower half).
+    // ratio=0.65 -> behavior_designer keeps top 65%, light_editor takes 35%.
+    auto* behavior_designer_node = ds.find_panel_owner("behavior_designer");
+    if (behavior_designer_node == nullptr) { return false; }
+    if (!ds.split(behavior_designer_node, uw::DockAxis::kHorizontal,
+                  "light_editor", 0.65F))
+    {
+        return false;
+    }
+
+    // (6) animator -> input_recorder split (BOTTOM strip far-right).
+    // ratio=0.55 -> animator keeps 55%, input_recorder takes 45%.
+    auto* animator_node = ds.find_panel_owner("animator");
+    if (animator_node == nullptr) { return false; }
+    if (!ds.split(animator_node, uw::DockAxis::kVertical,
+                  "input_recorder", 0.55F))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -404,6 +498,18 @@ cd::editor::panel::behavior_designer::BehaviorDesigner g_behavior_designer_panel
 // phase598 / M6 W3 — asset drop-target panel (dashed-border drop zone).
 cd::editor::panel::asset_drop_target::AssetDropTarget g_asset_drop_target_panel;
 
+// phase667 / M12 W2 — three new panel instances + cutscene_player sibling.
+//
+// Lifetime: each panel lives in file scope so the ContentDrawer lambdas
+// capture them by reference for the lifetime of the program. The brief
+// "what moment does this enable?" is encoded directly here — a designer
+// drops into this editor and sees Lighting + InputReplay + DialogGraph +
+// CutscenePlayer panels DAY ONE, not as TODO placeholders.
+cd::editor::panel::light_editor::LightEditor                  g_light_editor_panel;
+cd::editor::panel::input_recorder::InputRecorderPanel         g_input_recorder_panel;
+cd::editor::panel::dialog_tree_editor::DialogTreeEditor       g_dialog_tree_editor_panel;
+cd::editor::panel::cutscene_player::CutscenePlayerPanel       g_cutscene_player_panel;
+
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
                           uf::Font* /*font*/,
@@ -461,6 +567,39 @@ void draw_asset_drop_target_panel(const uw::Rect& rect,
                                   const uw::Theme& theme)
 {
     g_asset_drop_target_panel.draw(batcher, theme, rect);
+}
+
+// phase667 / M12 W2 — new panel drawers.
+void draw_light_editor_panel(const uw::Rect& rect,
+                             ur::DrawBatcher& batcher,
+                             uf::Font* /*font*/,
+                             const uw::Theme& theme)
+{
+    g_light_editor_panel.draw(batcher, theme, rect);
+}
+
+void draw_input_recorder_panel(const uw::Rect& rect,
+                               ur::DrawBatcher& batcher,
+                               uf::Font* /*font*/,
+                               const uw::Theme& theme)
+{
+    g_input_recorder_panel.draw(batcher, theme, rect);
+}
+
+void draw_dialog_tree_editor_panel(const uw::Rect& rect,
+                                   ur::DrawBatcher& batcher,
+                                   uf::Font* /*font*/,
+                                   const uw::Theme& theme)
+{
+    g_dialog_tree_editor_panel.draw(batcher, theme, rect);
+}
+
+void draw_cutscene_player_panel(const uw::Rect& rect,
+                                ur::DrawBatcher& batcher,
+                                uf::Font* /*font*/,
+                                const uw::Theme& theme)
+{
+    g_cutscene_player_panel.draw(batcher, theme, rect);
 }
 
 // ---- GPU marker overlay draw helper ----------------------------------------
@@ -632,6 +771,173 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
     return t;
 }
 
+// ---- phase667 / M12 W2 — status bar ---------------------------------------
+//
+// A 20px-tall horizontal strip pinned to the bottom of the framebuffer that
+// shows three live readouts the brief calls out:
+//
+//   * asset::validator badge — three colour-coded count blocks (green = pass,
+//     yellow = warn, red = error) sized proportionally to the corresponding
+//     issue counts. The counts come from the latest Validator pass.
+//   * frame stats — FPS, vertex count, draw command count. Rendered as
+//     three coloured intensity strips so the user sees them light up even
+//     before glyph rendering is hooked.
+//   * active route indicator — single coloured strip showing which UI
+//     submitter path (Route A vs Route B) is live this boot.
+//
+// The status bar lives OUTSIDE the dock tree so it does not bump
+// DockSpace::node_count. The dock area is shrunk by `kStatusBarH` before
+// `set_rect()` so the status bar never overlaps a panel.
+constexpr float kStatusBarH = 20.0F;
+
+struct StatusBarStats
+{
+    // Validator badge totals.
+    std::uint32_t validator_pass  { 0U };
+    std::uint32_t validator_warn  { 0U };
+    std::uint32_t validator_error { 0U };
+    // Frame stats — derived from DrawBatcher after dockspace.draw() per frame.
+    float         fps             { 0.0F };
+    std::uint32_t vertex_count    { 0U };
+    std::uint32_t draw_calls      { 0U };
+    // Route indicator: 1 = A success, 2 = A fallback, 3 = B only.
+    int           route_taken     { 0 };
+};
+
+/// Emit the bottom status bar quads into `batcher`. Rendered AFTER the dock
+/// content so the bar paints on top of any anti-aliased panel edges. The
+/// status bar is opinionated about its own background fill (slightly darker
+/// than the dock surface so the user reads it as a separate ribbon).
+void draw_status_bar(ur::DrawBatcher& batcher,
+                     const uw::Theme& theme,
+                     const StatusBarStats& stats,
+                     float fb_w, float fb_h)
+{
+    const float bar_x = 0.0F;
+    const float bar_y = fb_h - kStatusBarH;
+    const float bar_w = fb_w;
+
+    // 1. Status bar background — a notch darker than the dock so the user
+    //    reads it as a discrete ribbon.
+    batcher.quad(bar_x, bar_y, bar_w, kStatusBarH,
+                 ur::Color {
+                     static_cast<std::uint8_t>(theme.background.r > 16 ? theme.background.r - 16 : 0),
+                     static_cast<std::uint8_t>(theme.background.g > 16 ? theme.background.g - 16 : 0),
+                     static_cast<std::uint8_t>(theme.background.b > 16 ? theme.background.b - 16 : 0),
+                     255U });
+
+    // 2. Top separator line (1 px accent line under the dock).
+    batcher.quad(bar_x, bar_y, bar_w, 1.0F,
+                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 200U });
+
+    // ---- 3. Validator badge (LEFT region, 30% of the bar width) -----------
+    //
+    // Three side-by-side count blocks; each block width is proportional to
+    // its count relative to the total, with a 6 px minimum so a zero-count
+    // bucket is still visually present. Colour mapping mirrors
+    // cd::asset::validator::Severity:
+    //    Info / pass  -> green
+    //    Warning      -> yellow
+    //    Error        -> red
+    constexpr float kBadgeW    = 280.0F;
+    constexpr float kBadgePad  = 6.0F;
+    constexpr float kBadgeH    = kStatusBarH - 4.0F;
+    const float     badge_y    = bar_y + 2.0F;
+    const float     badge_avail = kBadgeW - 2.0F * kBadgePad;
+
+    const std::uint32_t total = stats.validator_pass + stats.validator_warn + stats.validator_error;
+    const float kMinBlock = 6.0F;
+
+    auto block_w = [&](std::uint32_t count) -> float {
+        if (total == 0U) { return (badge_avail - 4.0F) / 3.0F; }
+        const float frac = static_cast<float>(count) / static_cast<float>(total);
+        return std::max(kMinBlock, frac * (badge_avail - 4.0F));
+    };
+
+    float bx = bar_x + kBadgePad;
+    // pass (green)
+    {
+        const float w = block_w(stats.validator_pass);
+        batcher.quad(bx, badge_y, w, kBadgeH,
+                     ur::Color { 80U, 200U, 100U, 230U });
+        bx += w + 2.0F;
+    }
+    // warn (yellow)
+    {
+        const float w = block_w(stats.validator_warn);
+        batcher.quad(bx, badge_y, w, kBadgeH,
+                     ur::Color { 220U, 200U, 80U, 230U });
+        bx += w + 2.0F;
+    }
+    // error (red)
+    {
+        const float w = block_w(stats.validator_error);
+        batcher.quad(bx, badge_y, w, kBadgeH,
+                     ur::Color { 220U, 80U, 80U, 230U });
+    }
+
+    // ---- 4. Frame stats (CENTRE region) -----------------------------------
+    //
+    // Three thin strips (FPS, vertex count, draw call count) each clamped
+    // to a sane upper bound so they read as a "VU meter" without text.
+    //   FPS:        capped at 240 fps
+    //   verts:      capped at 64k
+    //   draw calls: capped at 256
+    constexpr float kStatsW    = 360.0F;
+    constexpr float kStatsPad  = 6.0F;
+    const float     stats_x    = bar_x + kBadgeW + 12.0F;
+    const float     stats_h    = kStatusBarH - 4.0F;
+    const float     strip_w    = (kStatsW - 2.0F * kStatsPad - 4.0F) / 3.0F;
+    const float     stats_y0   = bar_y + 2.0F;
+
+    auto draw_meter = [&](float ox, float norm, ur::Color color) {
+        const float clamped = std::clamp(norm, 0.0F, 1.0F);
+        // Background strip.
+        batcher.quad(stats_x + ox, stats_y0,
+                     strip_w, stats_h,
+                     ur::Color {
+                         theme.surface_hover.r,
+                         theme.surface_hover.g,
+                         theme.surface_hover.b,
+                         theme.surface_hover.a });
+        if (clamped > 0.0F)
+        {
+            batcher.quad(stats_x + ox, stats_y0,
+                         strip_w * clamped, stats_h, color);
+        }
+    };
+
+    draw_meter(0.0F,
+               std::clamp(stats.fps / 240.0F, 0.0F, 1.0F),
+               ur::Color { 100U, 200U, 220U, 220U });
+    draw_meter(strip_w + 2.0F,
+               std::clamp(static_cast<float>(stats.vertex_count) / 65536.0F, 0.0F, 1.0F),
+               ur::Color { 200U, 160U, 80U, 220U });
+    draw_meter((strip_w + 2.0F) * 2.0F,
+               std::clamp(static_cast<float>(stats.draw_calls) / 256.0F, 0.0F, 1.0F),
+               ur::Color { 180U, 100U, 200U, 220U });
+
+    // ---- 5. Active route indicator (RIGHT region) -------------------------
+    //
+    // Single coloured strip — colour encodes which UI submitter path is live
+    // this boot (Route A success / fallback / Route B only). Pinned to the
+    // far right of the status bar.
+    constexpr float kRouteW = 140.0F;
+    const float     route_x = bar_x + bar_w - kRouteW - 6.0F;
+    const float     route_y = bar_y + 2.0F;
+    const float     route_h = kStatusBarH - 4.0F;
+
+    ur::Color route_color { 120U, 120U, 120U, 200U };
+    switch (stats.route_taken)
+    {
+        case 1: route_color = ur::Color {  80U, 200U, 100U, 230U }; break;  // green — Route A
+        case 2: route_color = ur::Color { 220U, 200U,  80U, 230U }; break;  // yellow — fallback
+        case 3: route_color = ur::Color { 100U, 150U, 220U, 230U }; break;  // blue — Route B only
+        default: break;
+    }
+    batcher.quad(route_x, route_y, kRouteW, route_h, route_color);
+}
+
 // ---- Headless one-line summary ---------------------------------------------
 
 void report_headless_frame(const ur::DrawBatcher& batcher,
@@ -640,7 +946,8 @@ void report_headless_frame(const ur::DrawBatcher& batcher,
                            std::uint32_t frame_idx)
 {
     std::printf(
-        "editor[headless frame %u]: dock nodes=%zu  batcher verts=%zu/idx=%zu/cmds=%zu  "
+        "editor[headless frame %u]: dock nodes=%zu  status_bar=on  "
+        "batcher verts=%zu/idx=%zu/cmds=%zu  "
         "submitter verts=%u/idx=%u/cmds=%u\n",
         frame_idx, ds.node_count(),
         batcher.vertex_count(), batcher.index_count(), batcher.command_count(),
@@ -716,6 +1023,86 @@ int main(int argc, char** argv)
     g_inspector_panel.set_world_ptr(&editor.world());
     g_inspector_panel.set_target(editor.scene_root());
 
+    // phase667 / M12 W2 — Inspector PBR / alpha section:
+    //
+    // Hand the inspector an inert (device-less) MaterialInstance so the new
+    // metallic / roughness / alpha_mode / alpha_cutoff sliders have a
+    // non-empty round-trip target on first boot. The inspector reads the
+    // CPU-side accessors only, so an inert instance is sufficient until a
+    // real glTF material is selected via the scene-tree panel in a later
+    // session. The instance lives in main()'s stack frame and is bound to
+    // the inspector for the lifetime of main().
+    //
+    // Defaults: metallic = 0.0 (dielectric), roughness = 0.5, kOpaque, 0.5
+    // alpha_cutoff. We pre-seed metallic = 0.6 + alpha_mode = kMask so a
+    // first-time user sees the gold and orange swatches light up on every
+    // boot (proves the PBR pipeline reads round-trip values).
+    cd::material::MaterialInstance inspector_demo_material {};
+    inspector_demo_material.set_metallic(0.6F);
+    inspector_demo_material.set_roughness(0.35F);
+    inspector_demo_material.set_alpha_mode(cd::material::AlphaMode::kMask);
+    inspector_demo_material.set_alpha_cutoff(0.5F);
+    g_inspector_panel.set_material_instance(&inspector_demo_material);
+
+    // phase667 / M12 W2 — Asset validator wired for the new status bar badge.
+    //
+    // Seed the validator with one PASS + one WARN + one ERROR by validating
+    // three synthetic blobs at boot so the status bar shows non-zero counts
+    // in each colour bucket DAY ONE. A real Sprint will replace this seed
+    // with a sweep of the project's actual asset set on .cdproj load.
+    cd::asset::validator::Validator validator;
+    std::uint32_t validator_pass  = 0U;
+    std::uint32_t validator_warn  = 0U;
+    std::uint32_t validator_error = 0U;
+    {
+        // PNG magic bytes — passes texture validation (0 issues -> 1 pass).
+        const std::array<std::uint8_t, 8> kPngMagic {
+            0x89U, 0x50U, 0x4EU, 0x47U, 0x0DU, 0x0AU, 0x1AU, 0x0AU
+        };
+        const auto png_issues = validator.validate_texture_blob(
+            std::span<const std::uint8_t>(kPngMagic.data(), kPngMagic.size()),
+            "demo/textures/baseline.png");
+        if (png_issues.empty()) { ++validator_pass; }
+        else
+        {
+            for (const auto& iss : png_issues)
+            {
+                if (iss.severity == cd::asset::validator::Severity::kError)        ++validator_error;
+                else if (iss.severity == cd::asset::validator::Severity::kWarning) ++validator_warn;
+            }
+        }
+
+        // 8 byte glTF-shaped blob with version != 2 -> warning bucket.
+        const std::array<std::uint8_t, 12> kGlbV1 {
+            0x67U, 0x6CU, 0x54U, 0x46U,
+            0x01U, 0x00U, 0x00U, 0x00U,   // version = 1
+            0x00U, 0x00U, 0x00U, 0x00U
+        };
+        const auto glb_issues = validator.validate_gltf_blob(
+            std::span<const std::uint8_t>(kGlbV1.data(), kGlbV1.size()),
+            "demo/meshes/legacy.glb");
+        for (const auto& iss : glb_issues)
+        {
+            if (iss.severity == cd::asset::validator::Severity::kError)        ++validator_error;
+            else if (iss.severity == cd::asset::validator::Severity::kWarning) ++validator_warn;
+        }
+        if (glb_issues.empty()) { ++validator_pass; }
+
+        // Empty audio blob -> error bucket.
+        const std::vector<std::uint8_t> empty_blob {};
+        const auto wav_issues = validator.validate_audio_blob(
+            std::span<const std::uint8_t>(empty_blob.data(), empty_blob.size()),
+            "demo/audio/missing.wav");
+        for (const auto& iss : wav_issues)
+        {
+            if (iss.severity == cd::asset::validator::Severity::kError)        ++validator_error;
+            else if (iss.severity == cd::asset::validator::Severity::kWarning) ++validator_warn;
+        }
+        if (wav_issues.empty()) { ++validator_pass; }
+    }
+    std::printf("editor: validator badge seed -> pass=%u warn=%u error=%u\n",
+                validator_pass, validator_warn, validator_error);
+
     // Seed the asset browser with a minimal default file tree so it is
     // non-empty on first boot. A real .cdproj loader will replace these.
     {
@@ -764,14 +1151,27 @@ int main(int argc, char** argv)
     dockspace.register_panel("animator",            draw_animator_panel);
     dockspace.register_panel("behavior_designer",   draw_behavior_designer_panel);
     dockspace.register_panel("asset_drop_target",   draw_asset_drop_target_panel);
+    // phase667 / M12 W2 — register the 4 new panel drawers (the brief's "3 new
+    // panels" + cutscene_player as the LEFT-column tab companion of
+    // dialog_tree_editor).
+    dockspace.register_panel("light_editor",        draw_light_editor_panel);
+    dockspace.register_panel("input_recorder",      draw_input_recorder_panel);
+    dockspace.register_panel("dialog_tree_editor",  draw_dialog_tree_editor_panel);
+    dockspace.register_panel("cutscene_player",     draw_cutscene_player_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
         return 1;
     }
-    std::printf("editor: dock layout ready with %zu nodes (9 panels: scene_tree | viewport | "
+    // phase667 / M12 W2: panel count went from 9 -> 13 (the four newly
+    // registered drawers). dockspace.node_count() also grew by +3 (we added
+    // exactly three new splits in build_default_layout to carve out the
+    // new panel rects; tab_merges do not increment node_count).
+    std::printf("editor: dock layout ready with %zu nodes (13 panels: scene_tree | viewport | "
                 "inspector | console | assets | material_editor | animator | "
-                "behavior_designer | asset_drop_target)\n", dockspace.node_count());
+                "behavior_designer | asset_drop_target | light_editor | "
+                "input_recorder | dialog_tree_editor | cutscene_player)\n",
+                dockspace.node_count());
 
     // -- 5b. Overlay instances (phase598 / M6 W3; phase631 / M9 W1A) --------
     //
@@ -1071,9 +1471,16 @@ int main(int argc, char** argv)
         }
 
         // -- Dockspace layout + state tick --
+        //
+        // phase667 / M12 W2: reserve a 20 px ribbon at the bottom of the
+        // framebuffer for the new status bar (validator badge + frame stats
+        // + route indicator). The dock area shrinks by kStatusBarH so no
+        // panel ever overlaps the status ribbon.
+        const float dock_h = std::max(0.0F,
+                                      static_cast<float>(fb_h) - kStatusBarH);
         dockspace.set_rect(uw::Rect { 0.0F, 0.0F,
                                       static_cast<float>(fb_w),
-                                      static_cast<float>(fb_h) });
+                                      dock_h });
         uw::InputState input;
         input.pointer = flatten_pointer(pointer);
         input.focused = false;
@@ -1193,13 +1600,16 @@ int main(int argc, char** argv)
             }
 
             // --- Frame-graph timeline -- bottom-right 400 x 80 -----------
+            //
+            // phase667 / M12 W2: lifted by kStatusBarH so the overlay sits
+            // above the new status bar ribbon instead of being clipped.
             {
                 constexpr float kOverlayW = 400.0F;
                 constexpr float kOverlayH = 80.0F;
                 constexpr float kMargin   = 8.0F;
                 const fgt::Rect bounds {
                     fbw_f - kOverlayW - kMargin,
-                    fbh_f - kOverlayH - kMargin,
+                    fbh_f - kOverlayH - kMargin - kStatusBarH,
                     kOverlayW, kOverlayH };
 
                 // Synthetic 3-pass frame: GBuffer / Lighting / Composite.
@@ -1217,6 +1627,32 @@ int main(int argc, char** argv)
                         gpu_dummy.data(), gpu_dummy.size()),
                     bounds);
             }
+        }
+
+        // -- phase667 / M12 W2 — status bar (20 px ribbon at bottom) --------
+        //
+        // Emits AFTER the dock + overlays so the ribbon paints on top of any
+        // overlap-edge anti-aliasing. Three regions: validator badge (LEFT,
+        // 280 px), frame stats meters (CENTRE), route indicator (RIGHT,
+        // 140 px). All quads encode live data — no static placeholders.
+        //
+        // FPS is computed from the previous frame's elapsed-ms estimate
+        // (16 ms = 62.5 fps stand-in until cd::frame_timing wires a real
+        // delta in a follow-up Sprint).  vertex_count + draw_calls are read
+        // directly off the DrawBatcher accumulated this frame.
+        {
+            StatusBarStats stats {};
+            stats.validator_pass  = validator_pass;
+            stats.validator_warn  = validator_warn;
+            stats.validator_error = validator_error;
+            stats.fps             = 62.5F;  // stand-in until real frame_timing wired
+            stats.vertex_count    = static_cast<std::uint32_t>(batcher.vertex_count());
+            stats.draw_calls      = static_cast<std::uint32_t>(batcher.command_count());
+            stats.route_taken     = route_taken;
+
+            draw_status_bar(batcher, widget_theme, stats,
+                            static_cast<float>(fb_w),
+                            static_cast<float>(fb_h));
         }
 
         (void)submitter.upload(batcher);

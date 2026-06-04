@@ -16,6 +16,7 @@
 
 #include <cd/ecs/Entity.hpp>
 #include <cd/ecs/World.hpp>
+#include <cd/material/Material.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
@@ -139,6 +140,117 @@ TEST(InspectorPanel, RetargetChangesSelection)
     // Clear selection.
     inspector.set_target({});
     EXPECT_EQ(inspector.get_selected().id, 0U);
+}
+
+// ---------------------------------------------------------------------------
+// phase667 / M12 W2 — MaterialInstance round-trip
+// ---------------------------------------------------------------------------
+
+TEST(InspectorPanel, MaterialInstanceBindingDefaultsAreNullSafe)
+{
+    insp::Inspector inspector;
+
+    // No material bound: getters return MaterialInstance defaults; setters
+    // are no-ops (no crash).
+    EXPECT_EQ(inspector.material_instance(), nullptr);
+    EXPECT_FLOAT_EQ(inspector.metallic(),  0.0F);
+    EXPECT_FLOAT_EQ(inspector.roughness(), 0.5F);
+    EXPECT_EQ(inspector.alpha_mode(), cd::material::AlphaMode::kOpaque);
+    EXPECT_FLOAT_EQ(inspector.alpha_cutoff(), 0.5F);
+
+    inspector.set_metallic(0.9F);
+    inspector.set_roughness(0.1F);
+    inspector.set_alpha_mode(cd::material::AlphaMode::kBlend);
+    inspector.set_alpha_cutoff(0.25F);
+
+    // Still no instance bound → no observable side effect, defaults persist.
+    EXPECT_EQ(inspector.material_instance(), nullptr);
+    EXPECT_FLOAT_EQ(inspector.metallic(),  0.0F);
+    EXPECT_FLOAT_EQ(inspector.roughness(), 0.5F);
+    EXPECT_EQ(inspector.alpha_mode(), cd::material::AlphaMode::kOpaque);
+}
+
+TEST(InspectorPanel, MaterialInstancePbrRoundTrip)
+{
+    insp::Inspector                  inspector;
+    cd::material::MaterialInstance   mi;  // inert default-constructed instance
+
+    inspector.set_material_instance(&mi);
+    EXPECT_EQ(inspector.material_instance(), &mi);
+
+    // metallic / roughness round-trip via the Inspector accessors.
+    inspector.set_metallic(0.75F);
+    inspector.set_roughness(0.20F);
+    EXPECT_FLOAT_EQ(inspector.metallic(),  0.75F);
+    EXPECT_FLOAT_EQ(inspector.roughness(), 0.20F);
+    // Underlying MaterialInstance should see the same state.
+    EXPECT_FLOAT_EQ(mi.metallic(),  0.75F);
+    EXPECT_FLOAT_EQ(mi.roughness(), 0.20F);
+
+    // Out-of-range input is clamped by MaterialInstance internally.
+    inspector.set_metallic(2.5F);
+    inspector.set_roughness(-1.0F);
+    EXPECT_FLOAT_EQ(inspector.metallic(),  1.0F);
+    EXPECT_FLOAT_EQ(inspector.roughness(), 0.0F);
+}
+
+TEST(InspectorPanel, MaterialInstanceAlphaRoundTrip)
+{
+    insp::Inspector                  inspector;
+    cd::material::MaterialInstance   mi;
+
+    inspector.set_material_instance(&mi);
+
+    inspector.set_alpha_mode(cd::material::AlphaMode::kMask);
+    inspector.set_alpha_cutoff(0.35F);
+    EXPECT_EQ(inspector.alpha_mode(), cd::material::AlphaMode::kMask);
+    EXPECT_FLOAT_EQ(inspector.alpha_cutoff(), 0.35F);
+    EXPECT_EQ(mi.alpha_mode(),         cd::material::AlphaMode::kMask);
+    EXPECT_FLOAT_EQ(mi.alpha_cutoff(), 0.35F);
+
+    inspector.set_alpha_mode(cd::material::AlphaMode::kBlend);
+    EXPECT_EQ(inspector.alpha_mode(), cd::material::AlphaMode::kBlend);
+
+    inspector.set_alpha_mode(cd::material::AlphaMode::kOpaque);
+    EXPECT_EQ(inspector.alpha_mode(), cd::material::AlphaMode::kOpaque);
+
+    // Detach.
+    inspector.set_material_instance(nullptr);
+    EXPECT_EQ(inspector.material_instance(), nullptr);
+}
+
+TEST(InspectorPanel, DrawWithMaterialInstanceEmitsExtraQuads)
+{
+    cd::ecs::World   world;
+    cd::scene::Scene scene { world };
+    const cd::ecs::Entity e = scene.create_node();
+
+    insp::Inspector                  inspector;
+    cd::material::MaterialInstance   mi;
+    mi.set_metallic(0.7F);
+    mi.set_roughness(0.4F);
+    mi.set_alpha_mode(cd::material::AlphaMode::kMask);
+    mi.set_alpha_cutoff(0.6F);
+
+    inspector.set_target(e);
+    inspector.set_world_ptr(&world);
+    inspector.set_material_instance(&mi);
+
+    cd::ui::renderer::DrawBatcher batcher;
+    const cd::ui::widgets::Theme  theme  {};
+    const cd::ui::widgets::Rect   bounds { 0.0F, 0.0F, 400.0F, 800.0F };
+
+    batcher.begin_frame();
+    inspector.draw(batcher, theme, bounds);
+
+    // With both target + material bound the PBR section adds:
+    //   * 1 section separator quad
+    //   * 2 (background + fill) per metallic + roughness slider  = 4
+    //   * 3 alpha mode cells                                     = 3
+    //   * 2 (background + fill) for the alpha_cutoff slider      = 2
+    // Plus the LocalTransform 3 rows. Combined vertex count is well above
+    // the 8-vert minimum the no-PBR variant produces.
+    EXPECT_GE(batcher.vertex_count(), static_cast<std::size_t>(32U));
 }
 
 // ---------------------------------------------------------------------------

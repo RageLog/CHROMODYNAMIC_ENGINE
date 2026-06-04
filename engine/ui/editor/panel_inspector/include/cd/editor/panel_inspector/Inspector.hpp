@@ -29,6 +29,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/ecs/World.hpp>
+#include <cd/material/AlphaMode.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
@@ -36,6 +37,11 @@
 // includes imgui.h and links cd::editor).
 namespace cd::scene  { class Scene; }
 namespace cd::editor { class EditHistory; }
+
+// Forward declaration for the M12 W2 PBR / alpha-mode round-trip surface.
+// Inspector only stores a non-owning observer pointer; the caller owns the
+// MaterialInstance and is responsible for its lifetime.
+namespace cd::material { class MaterialInstance; }
 
 namespace cd::editor::panel::inspector
 {
@@ -57,6 +63,50 @@ public:
 
     /// Returns the entity currently being inspected.
     [[nodiscard]] cd::ecs::Entity get_selected() const noexcept;
+
+    // ---- M12 W2: PBR / alpha-mode material binding --------------------------
+    //
+    // When a MaterialInstance is bound, the DrawBatcher draw path renders an
+    // additional PBR section below the LocalTransform rows:
+    //
+    //   * metallic   slider strip in [0, 1] (filled proportional to value).
+    //   * roughness  slider strip in [0, 1].
+    //   * alpha_mode 3-button dropdown (kOpaque / kMask / kBlend); the active
+    //                mode gets an accent-colored highlight.
+    //   * alpha_cutoff slider strip (visible only when alpha_mode == kMask).
+    //
+    // The setters listed below drive `MaterialInstance::set_metallic` /
+    // `set_roughness` / `set_alpha_mode` / `set_alpha_cutoff` through the
+    // bound pointer. The accessors read the live MaterialInstance state so
+    // the same Inspector instance can round-trip values without caching.
+    //
+    // Lifetime contract: the MaterialInstance pointer is non-owning. Pass
+    // nullptr to detach. The caller is responsible for ensuring the
+    // MaterialInstance outlives the Inspector (or for calling
+    // set_material_instance(nullptr) before destroying it).
+
+    /// Bind a MaterialInstance for PBR / alpha-mode round-trip editing.
+    /// Pass nullptr to detach (PBR section is then hidden in draw()).
+    void set_material_instance(cd::material::MaterialInstance* mi) noexcept;
+
+    /// Returns the currently bound MaterialInstance pointer (may be null).
+    [[nodiscard]] cd::material::MaterialInstance* material_instance() const noexcept;
+
+    /// Forward metallic / roughness / alpha_mode / alpha_cutoff to the bound
+    /// MaterialInstance. No-op when no instance is bound. The MaterialInstance
+    /// clamps inputs internally so these are safe to call with any float.
+    void set_metallic(float m) noexcept;
+    void set_roughness(float r) noexcept;
+    void set_alpha_mode(cd::material::AlphaMode mode) noexcept;
+    void set_alpha_cutoff(float c) noexcept;
+
+    /// Read the round-trip state from the bound MaterialInstance. The fallback
+    /// values (returned when no instance is bound) match the MaterialInstance
+    /// defaults so callers do not need to branch on the binding state.
+    [[nodiscard]] float metallic() const noexcept;
+    [[nodiscard]] float roughness() const noexcept;
+    [[nodiscard]] cd::material::AlphaMode alpha_mode() const noexcept;
+    [[nodiscard]] float alpha_cutoff() const noexcept;
 
     // ---- DrawBatcher path (DockSpace / apps/editor) -------------------------
 
@@ -93,8 +143,9 @@ public:
                     cd::ecs::Entity&       rot_slider_entity) const;
 
 private:
-    cd::ecs::Entity  target_   {};         ///< Currently inspected entity.
-    cd::ecs::World*  world_    { nullptr }; ///< Non-owning ptr to the ECS World.
+    cd::ecs::Entity                  target_           {};        ///< Currently inspected entity.
+    cd::ecs::World*                  world_            { nullptr }; ///< Non-owning ptr to the ECS World.
+    cd::material::MaterialInstance*  material_instance_ { nullptr }; ///< M12 W2 non-owning PBR / alpha editor target.
 };
 
 }  // namespace cd::editor::panel::inspector

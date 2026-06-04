@@ -17,6 +17,7 @@ cd_add_library(editor_panel_inspector
     cd::ecs
     cd::scene
     cd::math
+    cd::material        # M12 W2 — MaterialInstance + AlphaMode round-trip surface
     cd::editor          # TransformCommands, EditHistory, ICommand
     cd::ui_renderer     # DrawBatcher
     cd::ui_widgets      # Theme + Rect
