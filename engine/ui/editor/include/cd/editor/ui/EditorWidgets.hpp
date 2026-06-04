@@ -13,6 +13,9 @@
 //     `cd::scene::LocalTransform`. The gizmo holds three axis-aligned
 //     buttons (X / Y / Z); clicking advances the position by a fixed
 //     `step` along the corresponding axis.
+//     Phase 725: active-axis highlight — clicking an axis sets it as
+//     "active" (accent_warning gold + full opacity); inactive axes are
+//     dimmed (0.4 alpha). `clear_active_axis()` resets to kNone (Esc).
 //   * `SceneTreeView` — Panel + nested labels for the parent → child
 //     hierarchy under a Scene root.
 //
@@ -23,6 +26,7 @@
 
 #include <cd/core/Defines.hpp>
 #include <cd/ecs/Entity.hpp>
+#include <cd/editor/AxisGizmo.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/ui/Widget.hpp>
 
@@ -98,12 +102,30 @@ public:
     /// Test helper: invoke the gizmo by simulating a click on a specific axis.
     void click_axis(int axis_index_xyz);  // 0=X, 1=Y, 2=Z
 
+    // ---- Active-axis highlight (Phase 725) --------------------------------
+
+    /// Returns the currently highlighted axis (kNone when no axis is active).
+    [[nodiscard]] GizmoAxis active_axis() const noexcept
+    {
+        return active_axis_;
+    }
+
+    /// Programmatically set the active axis and refresh button colours.
+    /// Passing kNone is equivalent to `clear_active_axis()`.
+    void set_active_axis(GizmoAxis axis) noexcept;
+
+    /// Clear the active axis (Esc behaviour). All buttons return to their
+    /// default colours.
+    void clear_active_axis() noexcept;
+
 private:
     void apply_delta_(int axis_index_xyz);
+    void refresh_axis_colors_() noexcept;
 
     cd::scene::Scene* scene_ { nullptr };
     cd::ecs::Entity target_ {};
     float step_ { 1.0F };
+    GizmoAxis active_axis_ { GizmoAxis::kNone };
     cd::ui::Button* axis_x_ { nullptr };
     cd::ui::Button* axis_y_ { nullptr };
     cd::ui::Button* axis_z_ { nullptr };

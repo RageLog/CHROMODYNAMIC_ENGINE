@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/editor/ui/EditorWidgets.cpp
 // =============================================================================
 #include <cd/ecs/World.hpp>
+#include <cd/editor/AxisGizmo.hpp>
 #include <cd/editor/ui/EditorWidgets.hpp>
 #include <cd/math/Vector.hpp>
 #include <cd/scene/Scene.hpp>
@@ -17,6 +18,19 @@ namespace cd::editor::ui
 
 namespace
 {
+
+// ---- Gizmo colour constants -----------------------------------------------
+
+// Default axis colours (same values as TransformGizmo ctor background calls).
+constexpr cd::ui::Color kColorAxisX      { 0.8F, 0.2F, 0.2F, 1.0F };
+constexpr cd::ui::Color kColorAxisY      { 0.2F, 0.8F, 0.2F, 1.0F };
+constexpr cd::ui::Color kColorAxisZ      { 0.2F, 0.4F, 0.9F, 1.0F };
+
+// Active-axis highlight: accent_warning gold (matches cd::ui::Theme::accent).
+constexpr cd::ui::Color kColorAxisActive { 1.0F, 0.667F, 0.2F, 1.0F };
+
+// Inactive-axis dim: original colour at reduced opacity.
+constexpr float kDimAlpha = 0.4F;
 
 [[nodiscard]] std::string format_vec3(const cd::math::Vec3f& v)
 {
@@ -95,6 +109,7 @@ TransformGizmo::TransformGizmo(float step)
     axis_x_->set_on_click(
         [this]
         {
+            set_active_axis(GizmoAxis::kX);
             apply_delta_(0);
         }
     );
@@ -105,6 +120,7 @@ TransformGizmo::TransformGizmo(float step)
     axis_y_->set_on_click(
         [this]
         {
+            set_active_axis(GizmoAxis::kY);
             apply_delta_(1);
         }
     );
@@ -115,9 +131,47 @@ TransformGizmo::TransformGizmo(float step)
     axis_z_->set_on_click(
         [this]
         {
+            set_active_axis(GizmoAxis::kZ);
             apply_delta_(2);
         }
     );
+}
+
+void TransformGizmo::set_active_axis(GizmoAxis axis) noexcept
+{
+    active_axis_ = axis;
+    refresh_axis_colors_();
+}
+
+void TransformGizmo::clear_active_axis() noexcept
+{
+    active_axis_ = GizmoAxis::kNone;
+    refresh_axis_colors_();
+}
+
+void TransformGizmo::refresh_axis_colors_() noexcept
+{
+    if (active_axis_ == GizmoAxis::kNone)
+    {
+        // Restore all axes to their default colours at full opacity.
+        axis_x_->set_background(kColorAxisX);
+        axis_y_->set_background(kColorAxisY);
+        axis_z_->set_background(kColorAxisZ);
+        return;
+    }
+
+    // Active axis gets accent_warning gold; inactive axes get their default
+    // colour dimmed to kDimAlpha so the active one pops visually.
+    const cd::ui::Color dim_x { kColorAxisX.r, kColorAxisX.g, kColorAxisX.b,
+                                 kDimAlpha };
+    const cd::ui::Color dim_y { kColorAxisY.r, kColorAxisY.g, kColorAxisY.b,
+                                 kDimAlpha };
+    const cd::ui::Color dim_z { kColorAxisZ.r, kColorAxisZ.g, kColorAxisZ.b,
+                                 kDimAlpha };
+
+    axis_x_->set_background(active_axis_ == GizmoAxis::kX ? kColorAxisActive : dim_x);
+    axis_y_->set_background(active_axis_ == GizmoAxis::kY ? kColorAxisActive : dim_y);
+    axis_z_->set_background(active_axis_ == GizmoAxis::kZ ? kColorAxisActive : dim_z);
 }
 
 void TransformGizmo::set_target(cd::scene::Scene* scene, cd::ecs::Entity e) noexcept
