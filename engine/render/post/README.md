@@ -39,9 +39,14 @@
 `cd::post_composite` exposes two optional consumer hooks that wire the
 full GI/RT chain (`cd::ddgi::FullPipeline` from phase 680 + Sprint-5,
 `cd::restir_di::FullPipelineDenoised` from phase 681 + Sprint-6) into
-the composite pass. The hooks are **default OFF** — the rendered output
-is byte-identical to the pre-phase691 baseline until a graphics dev opts
-in.
+the composite pass.
+
+**Defaults (phase730 — FINALE-1 W2 A6):**
+
+- `CD_COMPOSITE_USE_DDGI`   — still **default OFF** (A5 owns the DDGI flip).
+- `CD_COMPOSITE_USE_RESTIR` — flipped to **default ON**: denoised RT
+  direct illumination now lives in every default render, giving
+  temporally-stable RT shadows without a manual flag flip.
 
 ### Flags
 

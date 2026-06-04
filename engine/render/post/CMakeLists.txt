@@ -34,14 +34,18 @@ cd_add_library(post_composite
 #                               ReSTIR-denoised direct-light output
 #                               (binding 7) and adds it to the lit colour.
 #
-# DEFAULT OFF — the default-OFF flags ship the full GI/RT chain ready to
-# wire BUT do not change rendered output until a graphics dev opts in.
+# DEFAULTS (phase730 — FINALE-1 W2 A6 flipped CD_COMPOSITE_USE_RESTIR to ON):
+#   CD_COMPOSITE_USE_DDGI   — OFF (still opt-in; A5 owns the DDGI flip).
+#   CD_COMPOSITE_USE_RESTIR — ON  (denoised RT direct illumination is now part
+#                                  of the default render — every scene gets
+#                                  temporally-stable RT shadows without a
+#                                  manual flag flip).
 # Defining the macro on the INTERFACE target propagates to BOTH the C++
 # consumers (so they can `#ifdef` their CPU-side bind code) AND the GLSL
 # preprocessor when the composite FS source is preprocessed via
 # `cd::post::composite::make_composite_fs_source_with_gi_hooks(...)`.
 option(CD_COMPOSITE_USE_DDGI   "phase691: composite samples DDGI indirect irradiance"   OFF)
-option(CD_COMPOSITE_USE_RESTIR "phase691: composite samples ReSTIR denoised direct light" OFF)
+option(CD_COMPOSITE_USE_RESTIR "phase691: composite samples ReSTIR denoised direct light (default ON since phase730 — FINALE-1 W2 A6)" ON)
 
 if(CD_COMPOSITE_USE_DDGI)
   target_compile_definitions(cd_post_composite INTERFACE CD_COMPOSITE_USE_DDGI=1)
