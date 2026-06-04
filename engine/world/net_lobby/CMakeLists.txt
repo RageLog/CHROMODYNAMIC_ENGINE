@@ -23,6 +23,8 @@ cd_add_library(net_lobby
   TYPE STATIC
   SOURCES
     src/Lobby.cpp
+    src/Packet.cpp
+    src/Transport.cpp
   PUBLIC_DEPS
     cd::core
     cd::net
