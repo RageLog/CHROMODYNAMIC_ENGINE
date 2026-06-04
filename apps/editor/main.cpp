@@ -1328,16 +1328,22 @@ void set_status(panel::build::Status status) noexcept
 }  // namespace cd::editor::build_panel_bridge
 
 // ===========================================================================
-// phase736 -- cd::editor::profile::FrameCapture
+// phase746 -- cd::editor::profile::FrameCapture
 // ===========================================================================
 //
-// Aggregates real profiling data streams collected per frame into a single
+// Aggregates REAL profiling data streams collected per frame into a single
 // POD that is converted to PerfProfiler::FrameSnapshot via to_snapshot().
 //
-//   cpu_markers  -- MarkerSamples from cpu_marker_overlay::Collector.
-//   gpu_markers  -- GpuMarkerSamples from gpu_marker::Recorder (Vulkan path).
-//   gpu_passes   -- PassRecords from fgt_timeline.last_frame_passes().
-//   total_ms     -- real wall-clock frame dt.
+// Data sources (all real, no synthetic feed):
+//   cpu_markers  -- MarkerSamples from cpu_marker_overlay::Collector
+//                   ("frame.draw" scope, 2×budget_ms lookback).
+//   gpu_markers  -- GpuMarkerSamples from gpu_marker::Recorder via
+//                   prev_gpu_markers carry-forward (resolved samples from the
+//                   previous frame's Vulkan submit; same double-buffer pattern
+//                   as Timeline::last_frame_passes()).
+//   gpu_passes   -- PassRecords from fgt_timeline.last_frame_passes()
+//                   ("DockDraw" CPU wall-clock pass).
+//   total_ms     -- real wall-clock frame dt from FrameTimeRing.
 
 namespace cd::editor::profile
 {
