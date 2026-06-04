@@ -41,12 +41,16 @@ full GI/RT chain (`cd::ddgi::FullPipeline` from phase 680 + Sprint-5,
 `cd::restir_di::FullPipelineDenoised` from phase 681 + Sprint-6) into
 the composite pass.
 
-**Defaults (phase730 — FINALE-1 W2 A6):**
+**Defaults (phase729 — FINALE-1 W2 A5; phase730 — FINALE-1 W2 A6):**
 
-- `CD_COMPOSITE_USE_DDGI`   — still **default OFF** (A5 owns the DDGI flip).
-- `CD_COMPOSITE_USE_RESTIR` — flipped to **default ON**: denoised RT
-  direct illumination now lives in every default render, giving
-  temporally-stable RT shadows without a manual flag flip.
+- `CD_COMPOSITE_USE_DDGI`   — flipped to **default ON** (phase729): the
+  composite samples DDGI's indirect-irradiance image into the final
+  color, so indirect-bounce GI lives in every default render. Flip OFF
+  via `-DCD_COMPOSITE_USE_DDGI=OFF` to A/B against the analytic-only
+  baseline or to ship a tighter binary.
+- `CD_COMPOSITE_USE_RESTIR` — flipped to **default ON** (phase730):
+  denoised RT direct illumination now lives in every default render,
+  giving temporally-stable RT shadows without a manual flag flip.
 
 ### Flags
 

@@ -34,8 +34,13 @@ cd_add_library(post_composite
 #                               ReSTIR-denoised direct-light output
 #                               (binding 7) and adds it to the lit colour.
 #
-# DEFAULTS (phase730 — FINALE-1 W2 A6 flipped CD_COMPOSITE_USE_RESTIR to ON):
-#   CD_COMPOSITE_USE_DDGI   — OFF (still opt-in; A5 owns the DDGI flip).
+# DEFAULTS (phase729 — FINALE-1 W2 A5 flipped CD_COMPOSITE_USE_DDGI to ON;
+#           phase730 — FINALE-1 W2 A6 flipped CD_COMPOSITE_USE_RESTIR to ON):
+#   CD_COMPOSITE_USE_DDGI   — ON  (indirect-bounce GI lives in every default
+#                                  render; flip OFF via
+#                                  `-DCD_COMPOSITE_USE_DDGI=OFF` to A/B
+#                                  against the analytic-only baseline or
+#                                  to ship a tighter binary).
 #   CD_COMPOSITE_USE_RESTIR — ON  (denoised RT direct illumination is now part
 #                                  of the default render — every scene gets
 #                                  temporally-stable RT shadows without a
@@ -44,7 +49,7 @@ cd_add_library(post_composite
 # consumers (so they can `#ifdef` their CPU-side bind code) AND the GLSL
 # preprocessor when the composite FS source is preprocessed via
 # `cd::post::composite::make_composite_fs_source_with_gi_hooks(...)`.
-option(CD_COMPOSITE_USE_DDGI   "phase691: composite samples DDGI indirect irradiance"   OFF)
+option(CD_COMPOSITE_USE_DDGI   "phase691: composite samples DDGI indirect irradiance (default ON since phase729 — FINALE-1 W2 A5)" ON)
 option(CD_COMPOSITE_USE_RESTIR "phase691: composite samples ReSTIR denoised direct light (default ON since phase730 — FINALE-1 W2 A6)" ON)
 
 if(CD_COMPOSITE_USE_DDGI)
