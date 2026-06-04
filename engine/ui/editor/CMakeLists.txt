@@ -88,6 +88,22 @@ add_subdirectory(panel_asset_drop_target)
 # Drives cd::game::cutscene_player::CutscenePlayer.
 add_subdirectory(panel_cutscene_player)
 
+# ── cd::editor_panel_input_recorder (STATIC) ───────────────────────────────
+# phase665 — Input Recorder panel (DrawBatcher path; Record/Stop/Replay button
+# strips + timestamp/progress display). Drives cd::game::input_recorder.
+add_subdirectory(panel_input_recorder)
+
+# ── cd::editor_panel_light_editor (STATIC) ─────────────────────────────────
+# phase664 — Light Editor panel (DrawBatcher path; point-light list +
+# cluster grid stats; click-to-select; Sprint-2 = edit fields).
+add_subdirectory(panel_light_editor)
+
+# ── cd::editor_panel_dialog_tree_editor (STATIC) ──────────────────────────
+# phase666 — Dialog Tree Editor panel (DrawBatcher path; BG3-style dialog
+# graph view: colour-coded node rectangles + edge connectors + click-to-select).
+# Drives cd::game::dialog_tree::DialogTree.
+add_subdirectory(panel_dialog_tree_editor)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
