@@ -31,6 +31,9 @@
 #   cd::editor_panel_input_recorder     -- input recorder panel (phase665, wired phase667)
 #   cd::editor_panel_dialog_tree_editor -- dialog tree editor panel (phase666, wired phase667)
 #   cd::editor_panel_cutscene_player    -- cutscene player panel (phase617, wired phase667 LEFT col)
+#   cd::editor_panel_vehicle_editor     -- vehicle editor panel (phase676, wired phase679)
+#   cd::editor_panel_pathfinding_viz    -- pathfinding viz panel (phase677, wired phase679)
+#   cd::editor_panel_material_preview   -- material preview panel (phase678, wired phase679)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -77,6 +80,13 @@ cd_add_sample(editor
     cd::editor_panel_input_recorder
     cd::editor_panel_dialog_tree_editor
     cd::editor_panel_cutscene_player
+    # phase679 / M13 W3 — three new authoring panels:
+    #   vehicle_editor (tab-merged with material_editor),
+    #   pathfinding_viz (standalone bottom-left split),
+    #   material_preview (3-way tab strip with material_editor + vehicle_editor).
+    cd::editor_panel_vehicle_editor
+    cd::editor_panel_pathfinding_viz
+    cd::editor_panel_material_preview
     cd::editor
     cd::editor_ui
     cd::editor_cdproj

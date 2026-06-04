@@ -1,6 +1,32 @@
 // =============================================================================
 // CHROMODYNAMIC -- apps/editor/main.cpp
 //
+// Phase 679 / M13 W3 -- wire 3 new panels + .cdproj layout round-trip.
+//
+// Changes vs phase674:
+//   * Three brand-new panels are registered with the DockSpace shell:
+//       vehicle_editor    -- tab-merged with material_editor on LEFT-lower.
+//       pathfinding_viz   -- standalone split BELOW scene_tree on LEFT-top.
+//       material_preview  -- tab-merged with material_editor + vehicle_editor
+//                            so material_editor's leaf becomes a 3-way tab
+//                            strip (Material / Vehicle / Preview).
+//     The dock panel count grows 13 -> 16; node_count grows by exactly +1
+//     (only pathfinding_viz adds a split; tab-merges keep node_count flat).
+//   * .cdproj layout round-trip: on boot, dock_layout (hex-encoded byte
+//     stream from DockSpace::serialize) is fed through DockSpace::restore so
+//     the user sees the EXACT layout they left behind (active tab indices
+//     included).  Log line "restored layout from <path>" (or "no saved
+//     layout, using defaults") records which path was taken.  On exit the
+//     live DockSpace is serialized + hex-encoded + written back to the same
+//     %APPDATA%\cd_editor\last.cdproj file.  Save is best-effort; failure
+//     does not change the exit code.
+//   * "File > Save Layout" menu hint is printed at boot (real menubar lives
+//     in a future Sprint).
+//
+//   MOMENT: a user closes the editor mid-task, reopens it, the layout is
+//   EXACTLY as they left it — including which tab in each tab strip was
+//   active.  Source 2 SDK feel.
+//
 // Phase 674 / M12 W6B -- frame stats overlay polish + boot splash.
 //
 // Changes vs phase667:
@@ -75,6 +101,13 @@
 //                           the LEFT column.
 //   * cutscene_player    -- LEFT column, BOTTOM split below material_editor.
 //                           Sits alongside dialog_tree_editor as a 2-tab pair.
+//
+// Three new panels (phase679 / M13 W3 — 13 -> 16 panels; +1 dock node):
+//   * vehicle_editor     -- LEFT-lower; tab-merged INTO material_editor.
+//   * pathfinding_viz    -- LEFT-top; standalone split BELOW scene_tree.
+//   * material_preview   -- LEFT-lower; tab-merged INTO material_editor so
+//                           the leaf becomes a 3-way Material/Vehicle/Preview
+//                           tab strip.
 //
 // Status bar (phase667 / M12 W2 — pinned to the BOTTOM 20 px of the framebuffer):
 //   * asset_validator badge -- pass / warn / error count blocks.
@@ -162,6 +195,14 @@
 #include <cd/editor/panel_input_recorder/InputRecorderPanel.hpp>
 #include <cd/editor/panel_dialog_tree_editor/DialogTreeEditor.hpp>
 #include <cd/editor/panel_cutscene_player/CutscenePlayerPanel.hpp>
+// phase679 / M13 W3 — three brand-new authoring panels wired into the dock:
+//   * vehicle_editor    -- tab-merged with material_editor on LEFT-lower
+//   * pathfinding_viz   -- standalone split beneath scene_tree on LEFT-top
+//   * material_preview  -- tab-merged with material_editor + vehicle_editor
+//                          (3-way tab strip on LEFT-lower)
+#include <cd/editor/panel_vehicle_editor/VehicleEditor.hpp>
+#include <cd/editor/panel_pathfinding_viz/PathfindingViz.hpp>
+#include <cd/editor/panel_material_preview/MaterialPreview.hpp>
 #include <cd/editor/cdproj/CdprojFile.hpp>
 
 // phase667 / M12 W2 — asset_validator (status badge in the new status bar) +
@@ -462,6 +503,54 @@ struct EditorArgs
         return false;
     }
 
+    // ---- phase679 / M13 W3 — three new panel slots --------------------------
+    //
+    // Grows the dock from 13 -> 16 PANELS (the dock_node count grows by +1
+    // because only pathfinding_viz introduces a new split; vehicle_editor and
+    // material_preview are tab-merged onto material_editor and do not change
+    // node_count).
+    //
+    //   (7) vehicle_editor   -- tab-merged INTO material_editor.
+    //                           A racing dev can flip material<->vehicle on
+    //                           the same LEFT-bottom tile without a separate
+    //                           dock target.
+    //
+    //   (8) pathfinding_viz  -- standalone split BELOW scene_tree on LEFT-top
+    //                           (good for viewing alongside the scene
+    //                           hierarchy a designer is editing). +1 node.
+    //
+    //   (9) material_preview -- tab-merged INTO material_editor (now a 3-way
+    //                           tab strip with vehicle_editor). A material
+    //                           artist sees the live PBR preview right next
+    //                           to the property editor.
+    //
+    // MOMENT: a first-time editor user opens apps/editor and sees a vehicle
+    // tuning panel, a navmesh visualisation slot, and a live PBR preview
+    // -- three brand-new authoring surfaces shipped DAY ONE.
+
+    // (7) vehicle_editor tab-merged with material_editor.
+    auto* material_editor_owner = ds.find_panel_owner("material_editor");
+    if (material_editor_owner == nullptr) { return false; }
+    if (!ds.tab_merge(material_editor_owner, "vehicle_editor")) { return false; }
+
+    // (8) scene_tree -> pathfinding_viz split (LEFT-top column, lower half).
+    // ratio=0.65 -> scene_tree keeps top 65%, pathfinding_viz takes bottom 35%.
+    auto* scene_tree_owner = ds.find_panel_owner("scene_tree");
+    if (scene_tree_owner == nullptr) { return false; }
+    if (!ds.split(scene_tree_owner, uw::DockAxis::kHorizontal,
+                  "pathfinding_viz", 0.65F))
+    {
+        return false;
+    }
+
+    // (9) material_preview tab-merged INTO the same material_editor leaf so
+    // material_editor / vehicle_editor / material_preview share a 3-way tab
+    // strip. Re-resolve the owner: the prior split() calls may have moved the
+    // node, but the panel-id index inside DockSpace tracks it for us.
+    auto* material_editor_owner2 = ds.find_panel_owner("material_editor");
+    if (material_editor_owner2 == nullptr) { return false; }
+    if (!ds.tab_merge(material_editor_owner2, "material_preview")) { return false; }
+
     return true;
 }
 
@@ -535,6 +624,13 @@ cd::editor::panel::light_editor::LightEditor                  g_light_editor_pan
 cd::editor::panel::input_recorder::InputRecorderPanel         g_input_recorder_panel;
 cd::editor::panel::dialog_tree_editor::DialogTreeEditor       g_dialog_tree_editor_panel;
 cd::editor::panel::cutscene_player::CutscenePlayerPanel       g_cutscene_player_panel;
+
+// phase679 / M13 W3 — three new panel instances wired into the dock.
+// File-scope storage so the ContentDrawer lambdas can capture them by
+// reference for the lifetime of the program.
+cd::editor::panel::vehicle_editor::VehicleEditor             g_vehicle_editor_panel;
+cd::editor::panel::pathfinding_viz::PathfindingViz           g_pathfinding_viz_panel;
+cd::editor::panel::material_preview::MaterialPreview         g_material_preview_panel;
 
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
@@ -626,6 +722,82 @@ void draw_cutscene_player_panel(const uw::Rect& rect,
                                 const uw::Theme& theme)
 {
     g_cutscene_player_panel.draw(batcher, theme, rect);
+}
+
+// phase679 / M13 W3 — drawers for the 3 new panels.
+
+void draw_vehicle_editor_panel(const uw::Rect& rect,
+                               ur::DrawBatcher& batcher,
+                               uf::Font* /*font*/,
+                               const uw::Theme& theme)
+{
+    g_vehicle_editor_panel.draw(batcher, theme, rect);
+}
+
+void draw_pathfinding_viz_panel(const uw::Rect& rect,
+                                ur::DrawBatcher& batcher,
+                                uf::Font* /*font*/,
+                                const uw::Theme& theme)
+{
+    g_pathfinding_viz_panel.draw(batcher, theme, rect);
+}
+
+void draw_material_preview_panel(const uw::Rect& rect,
+                                 ur::DrawBatcher& batcher,
+                                 uf::Font* /*font*/,
+                                 const uw::Theme& theme)
+{
+    g_material_preview_panel.draw(batcher, theme, rect);
+}
+
+// ---- phase679 / M13 W3 — DockSpace serialize <-> string hex codec ----------
+//
+// DockSpace::serialize() returns std::vector<std::byte>; CdprojData stores
+// dock_layout as a UTF-8 std::string. Encode bytes as lowercase hex so the
+// payload is JSON-safe (printable, escape-free, no embedded NULs). On boot the
+// inverse decode is fed back to DockSpace::restore().
+//
+// Hex was chosen over base64 because it has no third-party-library dependency
+// in cd::core, is human-debuggable in a .cdproj file, and the payload size
+// (~2x the byte stream) is negligible — a typical 16-node tree fits in <1 KB.
+// =============================================================================
+
+[[nodiscard]] std::string dock_layout_to_hex(const std::vector<std::byte>& bytes)
+{
+    static constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes.size() * 2U);
+    for (const auto b : bytes)
+    {
+        const auto u = static_cast<std::uint8_t>(b);
+        out.push_back(kHex[(u >> 4U) & 0x0FU]);
+        out.push_back(kHex[u & 0x0FU]);
+    }
+    return out;
+}
+
+[[nodiscard]] std::vector<std::byte> dock_layout_from_hex(std::string_view hex)
+{
+    std::vector<std::byte> out;
+    if ((hex.size() & 0x1U) != 0U) { return out; }
+    out.reserve(hex.size() / 2U);
+
+    auto digit = [](char c) -> int {
+        if (c >= '0' && c <= '9') { return c - '0'; }
+        if (c >= 'a' && c <= 'f') { return 10 + (c - 'a'); }
+        if (c >= 'A' && c <= 'F') { return 10 + (c - 'A'); }
+        return -1;
+    };
+
+    for (std::size_t i = 0; i < hex.size(); i += 2U)
+    {
+        const int hi = digit(hex[i]);
+        const int lo = digit(hex[i + 1U]);
+        if (hi < 0 || lo < 0) { out.clear(); return out; }
+        out.push_back(static_cast<std::byte>(
+            static_cast<std::uint8_t>((hi << 4) | lo)));
+    }
+    return out;
 }
 
 // ---- GPU marker overlay draw helper ----------------------------------------
@@ -1407,20 +1579,64 @@ int main(int argc, char** argv)
     dockspace.register_panel("input_recorder",      draw_input_recorder_panel);
     dockspace.register_panel("dialog_tree_editor",  draw_dialog_tree_editor_panel);
     dockspace.register_panel("cutscene_player",     draw_cutscene_player_panel);
+    // phase679 / M13 W3 — register the 3 new drawers (vehicle_editor +
+    // pathfinding_viz + material_preview). vehicle_editor and material_preview
+    // share the material_editor tile via tab-merge; pathfinding_viz lives in
+    // its own bottom-left split.
+    dockspace.register_panel("vehicle_editor",      draw_vehicle_editor_panel);
+    dockspace.register_panel("pathfinding_viz",     draw_pathfinding_viz_panel);
+    dockspace.register_panel("material_preview",    draw_material_preview_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
         return 1;
     }
-    // phase667 / M12 W2: panel count went from 9 -> 13 (the four newly
-    // registered drawers). dockspace.node_count() also grew by +3 (we added
-    // exactly three new splits in build_default_layout to carve out the
-    // new panel rects; tab_merges do not increment node_count).
-    std::printf("editor: dock layout ready with %zu nodes (13 panels: scene_tree | viewport | "
+    // phase679 / M13 W3: panel count grew 13 -> 16 (vehicle_editor +
+    // pathfinding_viz + material_preview). dockspace.node_count() grew by
+    // exactly +1 because only pathfinding_viz introduces a new split;
+    // vehicle_editor and material_preview are tab-merged onto material_editor
+    // (tab_merges do not increment node_count).
+    std::printf("editor: dock layout ready with %zu nodes (16 panels: scene_tree | viewport | "
                 "inspector | console | assets | material_editor | animator | "
                 "behavior_designer | asset_drop_target | light_editor | "
-                "input_recorder | dialog_tree_editor | cutscene_player)\n",
+                "input_recorder | dialog_tree_editor | cutscene_player | "
+                "vehicle_editor | pathfinding_viz | material_preview)\n",
                 dockspace.node_count());
+
+    // -- phase679 / M13 W3 — restore saved dock layout (if any) -------------
+    //
+    // The .cdproj read step above populated `project_data.dock_layout` with the
+    // hex-encoded byte stream captured at the previous shutdown. Apply it via
+    // DockSpace::restore so the user sees the EXACT layout they left behind
+    // (including which tab in each tab strip was active). On any framing
+    // failure we silently fall back to the default 16-panel layout — the user
+    // still gets a working editor and we log which path was taken.
+    //
+    // MOMENT: a user closes the editor mid-task, reopens it, the layout is
+    // EXACTLY as they left it. Source 2 SDK feel.
+    if (!project_data.dock_layout.empty())
+    {
+        const auto bytes = dock_layout_from_hex(project_data.dock_layout);
+        if (!bytes.empty() && dockspace.restore(std::span<const std::byte>(
+                                  bytes.data(), bytes.size())))
+        {
+            std::printf("editor: restored layout from %s (%zu nodes)\n",
+                        cdproj_path.string().c_str(),
+                        dockspace.node_count());
+        }
+        else
+        {
+            std::printf("editor: saved layout in %s was malformed — using defaults.\n",
+                        cdproj_path.string().c_str());
+        }
+    }
+    else
+    {
+        std::printf("editor: no saved layout, using defaults.\n");
+    }
+    std::printf("editor: File > Save Layout (auto-saved on exit to %s)\n",
+                cdproj_path.string().c_str());
+    std::fflush(stdout);
 
     // -- 5b. Overlay instances (phase598 / M6 W3; phase631 / M9 W1A) --------
     //
@@ -2006,13 +2222,13 @@ int main(int argc, char** argv)
     if (renderer) { renderer->wait_idle(); }
 
     // -- On-exit .cdproj save -----------------------------------------------
-    // Capture window geometry (size from the last known fb dimensions) and
-    // write the project file so the next launch can restore session state.
-    // dock_layout is stored as a passthrough string; the caller is responsible
-    // for encoding DockSpace::serialize()'s byte vector (e.g. base64). Today
-    // we store the empty string — full round-trip is wired once the encode
-    // helper lands. The save is best-effort: failure is logged but does not
-    // change the exit code.
+    // Capture window geometry and the live DockSpace layout (serialized to a
+    // hex-encoded string for JSON safety) and write the project file so the
+    // next launch can restore session state. phase679 / M13 W3 closes the
+    // round-trip: a user closes the editor mid-task, reopens it, the layout
+    // is EXACTLY as they left it (down to which tab in each tab strip was
+    // active). The save is best-effort: failure is logged but does not change
+    // the exit code.
     {
         if (window)
         {
@@ -2020,6 +2236,8 @@ int main(int argc, char** argv)
             project_data.window.h = static_cast<int>(window->height());
         }
         project_data.schema_version = 1;
+        // Serialize the live DockSpace tree -> hex string (JSON-safe payload).
+        project_data.dock_layout = dock_layout_to_hex(dockspace.serialize());
         if (!cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
         {
             std::fprintf(stderr,
@@ -2028,8 +2246,9 @@ int main(int argc, char** argv)
         }
         else
         {
-            std::printf("editor: session saved to %s\n",
-                        cdproj_path.string().c_str());
+            std::printf("editor: session saved to %s (dock_layout=%zu bytes hex)\n",
+                        cdproj_path.string().c_str(),
+                        project_data.dock_layout.size());
         }
     }
 
