@@ -165,6 +165,21 @@ add_subdirectory(panel_build)
 # MOMENT: perf dev finds TLAS rebuild spike in seconds via drill-down.
 add_subdirectory(panel_perf_profiler)
 
+# ── cd::editor_panel_asset_pipeline_status (STATIC) ──────────────────────────
+# phase709 — Asset Pipeline Status panel (DrawBatcher path; 4 horizontal bar
+# charts: scene / texture / audio / shader — pending vs. completed counts).
+# Drives cd::asset::streamer_pool::StreamerPool (M15 phase705).
+# MOMENT: dev spots texture streamer as the bottleneck (pending=200) during
+# scene-load and tunes priorities before the next PlayTest.
+add_subdirectory(panel_asset_pipeline_status)
+
+# ── cd::editor_panel_ik_chain_editor (STATIC) ─────────────────────────────────
+# phase710 — IK Chain Editor panel (DrawBatcher path; 2D side-view of a
+# cd::animation::ik::IkChain: coloured joint circles + bone lines + target
+# X marker + convergence indicator). MOMENT: animator drops a 5-joint leg
+# chain + ground-target, sees IK solve converge to plant foot without game.
+add_subdirectory(panel_ik_chain_editor)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
