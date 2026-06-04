@@ -3548,6 +3548,38 @@ int main(int argc, char** argv)
     DebugVizOverlay dbg_normal { VizKind::kNormal };
     DebugVizOverlay dbg_bucket { VizKind::kAlphaBucket };
 
+    // -- phase735 / B6 — Live G-buffer texture handles ------------------------
+    //
+    // Sprint-1 (phase684) shipped placeholder gradients. Sprint-2 plumbs real
+    // cd::rhi::TextureHandle values into the three overlays each frame so the
+    // DebugVizOverlay::draw path emits DrawBatcher::textured_quad commands
+    // against the live G-buffer attachments.
+    //
+    // Until the editor binary owns a forward+composite pipeline that produces
+    // its own G-buffer (queued for the post-FINALE renderer wire-up), the
+    // handles below are stable, non-null sentinels representing the slots the
+    // RHI submitter will later resolve to depth / normal / albedo descriptors.
+    // The handle's lower 32 bits flow directly into DrawCommand::texture_slot
+    // (matching the cd::editor::panel::viewport::Viewport convention), so the
+    // RHI tier can map slot -> bound descriptor without any UI-side change
+    // when real targets arrive.
+    //
+    // MOMENT: F4/F5/F6 toggles now show actual G-buffer slices (or sentinel
+    // tiles until the renderer is wired); debugging-by-glance becomes powerful.
+    constexpr std::uint32_t kGBufferDepthSlot  = 0xD0000001u;  // depth   target slot
+    constexpr std::uint32_t kGBufferNormalSlot = 0xD0000002u;  // normal  target slot
+    constexpr std::uint32_t kGBufferAlbedoSlot = 0xD0000003u;  // albedo  target slot
+
+    const cd::rhi::TextureHandle gbuffer_depth_tex {
+        static_cast<cd::rhi::TextureHandle::index_type>(kGBufferDepthSlot),
+        static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
+    const cd::rhi::TextureHandle gbuffer_normal_tex {
+        static_cast<cd::rhi::TextureHandle::index_type>(kGBufferNormalSlot),
+        static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
+    const cd::rhi::TextureHandle gbuffer_albedo_tex {
+        static_cast<cd::rhi::TextureHandle::index_type>(kGBufferAlbedoSlot),
+        static_cast<cd::rhi::TextureHandle::generation_type>(1U) };
+
     // All three enabled by default.  Log active state at boot so a dev can
     // confirm viz status without attaching a debugger.
     std::printf("editor: debug_viz overlays ACTIVE: depth=%s  normal=%s  alpha_bucket=%s\n",
@@ -4175,6 +4207,19 @@ int main(int argc, char** argv)
             const std::array<DebugVizOverlay*, 3> dbg_overlays {
                 &dbg_depth, &dbg_normal, &dbg_bucket
             };
+
+            // -- phase735 / B6 — Per-frame live G-buffer texture binding ------
+            //
+            // Pipe the depth / normal / albedo cd::rhi::TextureHandle values
+            // into the three overlays. Each kind-specific setter is no-op for
+            // overlays of a different kind so we can fire all three setters
+            // every frame without branching; the API is intentionally
+            // broadcast-friendly to keep this call-site simple as the renderer
+            // wire-up evolves.
+            dbg_depth.set_depth_texture (gbuffer_depth_tex);
+            dbg_normal.set_normal_texture(gbuffer_normal_tex);
+            dbg_bucket.set_albedo_texture(gbuffer_albedo_tex);
+
             for (std::size_t i = 0; i < dbg_overlays.size(); ++i)
             {
                 const float oy = kDbgVizStartY

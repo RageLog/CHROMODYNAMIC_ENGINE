@@ -13,10 +13,25 @@
 //                RenderBucket (kOpaque / kAlphaMask / kAlphaBlend) and
 //                draws proportional colour bars instead of equal-width bands.
 //
+// phase735 — Sprint-2: real G-buffer texture overlays.
+//            DebugVizOverlay now carries a live cd::rhi::TextureHandle.
+//            When the bound texture is valid the overlay emits a
+//            DrawBatcher::textured_quad covering the content area
+//            (the lower 32 bits of the handle's raw value are forwarded
+//            as the texture_slot — same convention used by
+//            cd::editor::panel::viewport::Viewport).
+//            When the texture handle is null, the overlay falls back to
+//            the Sprint-1 gradient / bucket-bar placeholder so headless
+//            and pre-render-thread frames are still legible.
+//            Three kind-specific setters (set_depth_texture /
+//            set_normal_texture / set_albedo_texture) route to the
+//            matching VizKind only; calls against a non-matching kind
+//            are silently ignored.
+//
 // Supported kinds (VizKind enum):
 //   kDepth       — grayscale depth thumbnail (placeholder gradient). Hotkey F4.
 //   kNormal      — world-normal RGB thumbnail. Hotkey F5.
-//   kAlphaBucket — per-bucket quad-count bars. Hotkey F6.
+//   kAlphaBucket — per-bucket quad-count bars / G-buffer albedo. Hotkey F6.
 //
 // Sparkline API (kDepth / kNormal feeds frame-timing ms per stage):
 //   push_frame_sample(float ms)
@@ -52,6 +67,7 @@
 // =============================================================================
 #pragma once
 
+#include <cd/rhi/Handles.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/widgets/Widgets.hpp>
 
@@ -146,6 +162,36 @@ public:
     [[nodiscard]] std::size_t sample_count() const noexcept;
     [[nodiscard]] float       sample_at(std::size_t i) const noexcept;
 
+    // ---- G-buffer Texture API (phase735, Sprint-2) --------------------------
+
+    /// Bind the live cd::rhi::TextureHandle this overlay should sample at
+    /// draw() time. Pass a default-constructed (null) handle to clear the
+    /// binding and fall back to the Sprint-1 gradient / bucket placeholder.
+    ///
+    /// The texture is kind-agnostic at this level; the kind-specific
+    /// convenience setters below only forward when the kinds match so
+    /// caller code can fire all three setters every frame and stay
+    /// expressive.
+    void set_texture(cd::rhi::TextureHandle handle) noexcept;
+
+    /// Convenience: assign the depth G-buffer texture. No-op when the
+    /// overlay's kind is not kDepth (calls against the wrong overlay are
+    /// silently ignored so apps/editor can broadcast all three setters).
+    void set_depth_texture(cd::rhi::TextureHandle handle) noexcept;
+
+    /// Convenience: assign the world-normal G-buffer texture. No-op when
+    /// the overlay's kind is not kNormal.
+    void set_normal_texture(cd::rhi::TextureHandle handle) noexcept;
+
+    /// Convenience: assign the albedo (base-colour) G-buffer texture.
+    /// Routes to kAlphaBucket overlays — when a valid albedo texture is
+    /// bound the overlay displays the sampled albedo instead of the
+    /// per-bucket quad-count bars. No-op for other kinds.
+    void set_albedo_texture(cd::rhi::TextureHandle handle) noexcept;
+
+    /// Returns the currently bound texture (null when none was set).
+    [[nodiscard]] cd::rhi::TextureHandle current_texture() const noexcept;
+
     // ---- DrawBatcher path ---------------------------------------------------
 
     /// Emit draw commands into `batcher` within `bounds`.
@@ -175,6 +221,9 @@ private:
 
     // Alpha-bucket state ----------------------------------------------------
     BucketCounts bucket_counts_ {};
+
+    // G-buffer texture binding (phase735) ----------------------------------
+    cd::rhi::TextureHandle texture_ {};   ///< Live G-buffer texture; null = placeholder.
 
     // Internal helpers -------------------------------------------------------
 

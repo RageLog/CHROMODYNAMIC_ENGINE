@@ -14,9 +14,16 @@
 //   • kAlphaBucket bars are now proportional to bucket_counts_ totals; fall
 //     back to equal-thirds when total == 0 (first frame before any data).
 //
-// Sprint-2 (future): replace placeholder tiles with real G-buffer texture
-// samples once cd::render::framegraph exposes depth / normal / bucket textures
-// as bindable handles in the editor overlay pipeline.
+// phase735 — Sprint-2: real G-buffer texture overlays.
+//   • set_texture() / set_depth_texture() / set_normal_texture() /
+//     set_albedo_texture() bind a cd::rhi::TextureHandle the overlay
+//     samples at draw time.
+//   • When the texture handle is valid the per-kind draw routine emits a
+//     DrawBatcher::textured_quad covering the content area (UV 0..1) with
+//     the lower 32 bits of the handle's raw value as the texture_slot —
+//     same convention as cd::editor::panel::viewport::Viewport.
+//   • Null texture handle = fall back to Sprint-1 gradient / bucket bars
+//     so headless / boot frames are still legible.
 // =============================================================================
 #include <cd/editor/panel_debug_viz/DebugViz.hpp>
 
@@ -104,6 +111,44 @@ float DebugVizOverlay::sample_at(std::size_t i) const noexcept
 }
 
 // ---------------------------------------------------------------------------
+// G-buffer Texture API (phase735)
+// ---------------------------------------------------------------------------
+
+void DebugVizOverlay::set_texture(cd::rhi::TextureHandle handle) noexcept
+{
+    texture_ = handle;
+}
+
+void DebugVizOverlay::set_depth_texture(cd::rhi::TextureHandle handle) noexcept
+{
+    if (kind_ == VizKind::kDepth)
+    {
+        texture_ = handle;
+    }
+}
+
+void DebugVizOverlay::set_normal_texture(cd::rhi::TextureHandle handle) noexcept
+{
+    if (kind_ == VizKind::kNormal)
+    {
+        texture_ = handle;
+    }
+}
+
+void DebugVizOverlay::set_albedo_texture(cd::rhi::TextureHandle handle) noexcept
+{
+    if (kind_ == VizKind::kAlphaBucket)
+    {
+        texture_ = handle;
+    }
+}
+
+cd::rhi::TextureHandle DebugVizOverlay::current_texture() const noexcept
+{
+    return texture_;
+}
+
+// ---------------------------------------------------------------------------
 // Header colour per kind
 // ---------------------------------------------------------------------------
 
@@ -180,14 +225,57 @@ void DebugVizOverlay::draw(cd::ui::renderer::DrawBatcher& batcher,
 }
 
 // ---------------------------------------------------------------------------
-// kDepth — 8 horizontal grayscale bands: white (top) → black (bottom)
+// Texture-sampling helper (phase735)
+//
+// When the overlay has a valid cd::rhi::TextureHandle bound, paint a
+// kTextured quad covering the content tile (UV 0..1). The lower 32 bits
+// of the handle's raw value are forwarded as the texture_slot — same
+// convention used by cd::editor::panel::viewport::Viewport so the RHI
+// submitter can resolve the descriptor index.
+//
+// Returns true when a textured quad was emitted (callers skip the
+// placeholder gradient path in that case).
+// ---------------------------------------------------------------------------
+namespace
+{
+
+[[nodiscard]] bool emit_textured_tile(cd::ui::renderer::DrawBatcher& batcher,
+                                      cd::rhi::TextureHandle         texture,
+                                      float x, float y, float w, float h,
+                                      cd::ui::renderer::Color        tint)
+{
+    if (!texture.is_valid()) { return false; }
+    if (w <= 0.0F || h <= 0.0F) { return false; }
+
+    const auto raw_slot =
+        static_cast<std::uint32_t>(texture.value() & 0xFFFFFFFFu);
+    static constexpr cd::ui::renderer::AtlasUv kFullUv { 0.0F, 0.0F, 1.0F, 1.0F };
+    batcher.textured_quad(x, y, w, h, raw_slot, kFullUv, tint);
+    return true;
+}
+
+}  // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// kDepth — when a depth texture is bound, sample it; otherwise fall back to
+// the Sprint-1 8-band grayscale gradient (white top → black bottom).
 // ---------------------------------------------------------------------------
 void DebugVizOverlay::draw_depth(cd::ui::renderer::DrawBatcher& batcher,
                                  const cd::ui::widgets::Rect&   content) const
 {
-    static constexpr int kBands = 8;
     // Render only in the upper portion (leave bottom for sparkline).
     const float tile_h = std::max(content.h - kSparkH, 1.0F);
+
+    // Real G-buffer path (phase735): textured_quad over the tile area.
+    if (emit_textured_tile(batcher, texture_,
+                           content.x, content.y, content.w, tile_h,
+                           cd::ui::renderer::Color { 255U, 255U, 255U, 230U }))
+    {
+        return;
+    }
+
+    // Fallback (Sprint-1): 8 horizontal grayscale bands.
+    static constexpr int kBands = 8;
     const float band_h = tile_h / static_cast<float>(kBands);
 
     for (int i = 0; i < kBands; ++i)
@@ -212,9 +300,19 @@ void DebugVizOverlay::draw_depth(cd::ui::renderer::DrawBatcher& batcher,
 void DebugVizOverlay::draw_normal(cd::ui::renderer::DrawBatcher& batcher,
                                   const cd::ui::widgets::Rect&   content) const
 {
-    const float third_w = content.w / 3.0F;
     // Render only in the upper portion (leave bottom for sparkline).
     const float tile_h = std::max(content.h - kSparkH, 1.0F);
+
+    // Real G-buffer path (phase735): textured_quad over the tile area.
+    if (emit_textured_tile(batcher, texture_,
+                           content.x, content.y, content.w, tile_h,
+                           cd::ui::renderer::Color { 255U, 255U, 255U, 220U }))
+    {
+        return;
+    }
+
+    // Fallback (Sprint-1): three-band approximation of normal-map RGB.
+    const float third_w = content.w / 3.0F;
 
     // Left third — R dominant (facing +X ≈ orange/red in normal-map space).
     batcher.quad(content.x, content.y, third_w, tile_h,
@@ -249,6 +347,17 @@ void DebugVizOverlay::draw_alpha_bucket(cd::ui::renderer::DrawBatcher& batcher,
 {
     // Render only in the upper portion (leave bottom for sparkline).
     const float tile_h = std::max(content.h - kSparkH, 1.0F);
+
+    // Real G-buffer path (phase735): when an albedo texture is bound, sample
+    // it instead of drawing per-bucket count bars. The bucket counter API
+    // remains live (still callable from apps/editor) but the texture takes
+    // visual priority since it carries strictly more debug information.
+    if (emit_textured_tile(batcher, texture_,
+                           content.x, content.y, content.w, tile_h,
+                           cd::ui::renderer::Color { 255U, 255U, 255U, 220U }))
+    {
+        return;
+    }
 
     const std::uint32_t total = bucket_counts_.total();
 

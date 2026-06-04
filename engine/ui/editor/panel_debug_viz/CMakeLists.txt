@@ -25,6 +25,7 @@ cd_add_library(editor_panel_debug_viz
     src/DebugViz.cpp
   PUBLIC_DEPS
     cd::core
+    cd::rhi          # cd/rhi/Handles.hpp — TextureHandle (phase735)
     cd::ui_renderer  # DrawBatcher
     cd::ui_widgets   # Rect
 )
