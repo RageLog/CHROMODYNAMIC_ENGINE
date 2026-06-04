@@ -5,6 +5,7 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -19,13 +20,15 @@ namespace
 /// Helper to write a TextureBarrier in the form barrier() expects (a
 /// single-slice subresource, color aspect implied by the RHI for now).
 [[nodiscard]] cd::rhi::TextureBarrier
-make_barrier(cd::rhi::TextureHandle tex, cd::rhi::ResourceState from, cd::rhi::ResourceState to) noexcept
+make_barrier(cd::rhi::TextureHandle tex,
+             cd::rhi::ResourceState from,
+             cd::rhi::ResourceState to) noexcept
 {
     cd::rhi::TextureBarrier b {};
     b.texture = tex;
-    b.from = from;
-    b.to = to;
-    b.range = cd::rhi::TextureSubresourceRange { 0, 1, 0, 1 };
+    b.from    = from;
+    b.to      = to;
+    b.range   = cd::rhi::TextureSubresourceRange { 0, 1, 0, 1 };
     return b;
 }
 
@@ -40,13 +43,14 @@ FrameGraph::~FrameGraph()
 
 FrameGraph::FrameGraph(FrameGraph&& other) noexcept
 {
-    device_ = other.device_;
-    resources_ = std::move(other.resources_);
-    passes_ = std::move(other.passes_);
-    compiled_ = other.compiled_;
-    next_generation_ = other.next_generation_;
-    other.device_ = nullptr;
-    other.compiled_ = false;
+    device_              = other.device_;
+    resources_           = std::move(other.resources_);
+    passes_              = std::move(other.passes_);
+    instrumentation_cb_  = std::move(other.instrumentation_cb_);
+    compiled_            = other.compiled_;
+    next_generation_     = other.next_generation_;
+    other.device_        = nullptr;
+    other.compiled_      = false;
 }
 
 FrameGraph& FrameGraph::operator=(FrameGraph&& other) noexcept
@@ -54,13 +58,14 @@ FrameGraph& FrameGraph::operator=(FrameGraph&& other) noexcept
     if (this != &other)
     {
         release_();
-        device_ = other.device_;
-        resources_ = std::move(other.resources_);
-        passes_ = std::move(other.passes_);
-        compiled_ = other.compiled_;
-        next_generation_ = other.next_generation_;
-        other.device_ = nullptr;
-        other.compiled_ = false;
+        device_              = other.device_;
+        resources_           = std::move(other.resources_);
+        passes_              = std::move(other.passes_);
+        instrumentation_cb_  = std::move(other.instrumentation_cb_);
+        compiled_            = other.compiled_;
+        next_generation_     = other.next_generation_;
+        other.device_        = nullptr;
+        other.compiled_      = false;
     }
     return *this;
 }
@@ -83,33 +88,35 @@ void FrameGraph::release_() noexcept
 
 // ---- Resource declaration --------------------------------------------------
 
-ResourceHandle FrameGraph::create_texture(const TransientTextureDesc& desc, std::string_view name)
+ResourceHandle FrameGraph::create_texture(const TransientTextureDesc& desc,
+                                          std::string_view name)
 {
     Resource r;
-    r.kind = ResourceKind::kTransient;
+    r.kind          = ResourceKind::kTransient;
     r.transient_desc = desc;
-    r.state = cd::rhi::ResourceState::kUndefined;
-    r.final_state = cd::rhi::ResourceState::kUndefined;
+    r.state         = cd::rhi::ResourceState::kUndefined;
+    r.final_state   = cd::rhi::ResourceState::kUndefined;
     r.name.assign(name);
-    r.generation = next_generation_++;
+    r.generation    = next_generation_++;
     r.owned_by_graph = true;
-    const auto idx = static_cast<std::uint32_t>(resources_.size());
+    const auto idx  = static_cast<std::uint32_t>(resources_.size());
     resources_.push_back(std::move(r));
     return ResourceHandle { idx, resources_[idx].generation };
 }
 
-ResourceHandle FrameGraph::import_texture(const ImportedTextureDesc& desc, std::string_view name)
+ResourceHandle FrameGraph::import_texture(const ImportedTextureDesc& desc,
+                                          std::string_view name)
 {
     Resource r;
-    r.kind = ResourceKind::kImported;
-    r.imported_desc = desc;
-    r.rhi_handle = desc.texture;
-    r.state = desc.initial_state;
-    r.final_state = desc.final_state;
+    r.kind          = ResourceKind::kImported;
+    r.imported_desc  = desc;
+    r.rhi_handle     = desc.texture;
+    r.state         = desc.initial_state;
+    r.final_state   = desc.final_state;
     r.name.assign(name);
-    r.generation = next_generation_++;
+    r.generation    = next_generation_++;
     r.owned_by_graph = false;
-    const auto idx = static_cast<std::uint32_t>(resources_.size());
+    const auto idx  = static_cast<std::uint32_t>(resources_.size());
     resources_.push_back(std::move(r));
     return ResourceHandle { idx, resources_[idx].generation };
 }
@@ -130,28 +137,30 @@ cd::core::Result<void> FrameGraph::compile()
 {
     if (device_ == nullptr)
     {
-        return std::unexpected(fg_errors::make(fg_errors::Code::kInvalidArgument, "FrameGraph: no device"));
+        return std::unexpected(
+            fg_errors::make(fg_errors::Code::kInvalidArgument,
+                            "FrameGraph: no device"));
     }
     if (compiled_)
     {
-        return std::unexpected(fg_errors::make(fg_errors::Code::kAlreadyCompiled, "FrameGraph::compile twice"));
+        return std::unexpected(
+            fg_errors::make(fg_errors::Code::kAlreadyCompiled,
+                            "FrameGraph::compile twice"));
     }
 
-    // Allocate transient textures. Imported textures already point at a real
-    // VkImage; transient ones are created lazily here so the user can build
-    // up the declaration phase without touching the GPU.
+    // Allocate transient textures.
     for (auto& r : resources_)
     {
         if (r.kind != ResourceKind::kTransient)
             continue;
         cd::rhi::TextureDesc td {};
-        td.type = r.transient_desc.type;
-        td.format = r.transient_desc.format;
-        td.extent = r.transient_desc.extent;
-        td.mip_levels = r.transient_desc.mip_levels;
+        td.type         = r.transient_desc.type;
+        td.format       = r.transient_desc.format;
+        td.extent       = r.transient_desc.extent;
+        td.mip_levels   = r.transient_desc.mip_levels;
         td.array_layers = r.transient_desc.array_layers;
-        td.usage = r.transient_desc.usage;
-        td.memory = cd::rhi::MemoryUsage::kGpuOnly;
+        td.usage        = r.transient_desc.usage;
+        td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
         auto t = device_->create_texture(td);
         if (!t.has_value())
         {
@@ -159,44 +168,28 @@ cd::core::Result<void> FrameGraph::compile()
                 fg_errors::make(
                     fg_errors::Code::kAllocationFailed,
                     std::string { "transient texture '" } + r.name +
-                        "' creation failed: " + std::string { t.error().message }
-                )
-            );
+                        "' creation failed: " +
+                        std::string { t.error().message }));
         }
         r.rhi_handle = *t;
     }
 
-    // [T1.13] RT phase ordering invariant: TLAS rebuild must precede trace passes.
-    // Search for passes that match the pattern:
-    //   - TLAS rebuild pass: name contains "rebuild" or similar
-    //   - RT trace pass: name contains "trace" or similar
-    // If both exist, verify rebuild_index < trace_index.
-    // TODO: This is a scaffolding check. When RT becomes a first-class framework
-    // (with explicit RT pass types and resource semantics), move this logic to
-    // the topological sort validator in PassTopology. For now, the assert is a
-    // best-effort guard against silent black-reflection bugs.
+    // [T1.13] RT phase ordering invariant.
 #if CHROMA_DEBUG
     std::int32_t tlas_rebuild_index { -1 };
     std::int32_t rt_trace_index { -1 };
     for (std::uint32_t i = 0; i < passes_.size(); ++i)
     {
         const auto& pass_name = passes_[i].name;
-        // Heuristic: look for "rebuild" and "tlas" together (case-insensitive).
         bool is_rebuild = pass_name.find("rebuild") != std::string::npos ||
                           pass_name.find("TLAS") != std::string::npos;
-        // Heuristic: look for "trace" (case-insensitive).
-        bool is_trace = pass_name.find("trace") != std::string::npos;
+        bool is_trace   = pass_name.find("trace") != std::string::npos;
 
         if (is_rebuild && tlas_rebuild_index == -1)
-        {
             tlas_rebuild_index = static_cast<std::int32_t>(i);
-        }
         if (is_trace && rt_trace_index == -1)
-        {
             rt_trace_index = static_cast<std::int32_t>(i);
-        }
     }
-    // If both are present, rebuild must come first.
     if (tlas_rebuild_index != -1 && rt_trace_index != -1)
     {
         CHROMA_ASSERT(tlas_rebuild_index < rt_trace_index,
@@ -216,12 +209,23 @@ cd::core::Result<void> FrameGraph::execute(cd::rhi::ICommandBuffer& cmd)
 {
     if (!compiled_)
     {
-        return std::unexpected(fg_errors::make(fg_errors::Code::kNotCompiled, "FrameGraph::execute before compile"));
+        return std::unexpected(
+            fg_errors::make(fg_errors::Code::kNotCompiled,
+                            "FrameGraph::execute before compile"));
     }
 
-    // Per-pass barrier emission. We gather all transitions a pass requires
-    // into one vector and emit a single vkCmdPipelineBarrier2 per pass —
-    // batching matters on tiled GPUs.
+    // Per-pass barrier emission + optional CPU instrumentation.
+    //
+    // When instrumentation_cb_ is non-empty, each pass is bracketed with
+    // steady_clock timestamps.  The overhead is two Clock::now() calls per
+    // pass — negligible compared to real render work.
+    using Clock    = std::chrono::steady_clock;
+    using Duration = std::chrono::duration<double, std::milli>;
+
+    const bool        instrument    = static_cast<bool>(instrumentation_cb_);
+    const auto        execute_epoch = Clock::now();  // reference for start_ms
+    std::uint32_t     pass_index    = 0U;
+
     for (const auto& pass : passes_)
     {
         std::vector<cd::rhi::TextureBarrier> barriers;
@@ -237,28 +241,39 @@ cd::core::Result<void> FrameGraph::execute(cd::rhi::ICommandBuffer& cmd)
             if (res.generation != pr.resource.generation)
                 return;
             if (res.state == pr.state)
-                return;  // identity transition — elide.
+                return;  // identity transition — elide
             barriers.push_back(make_barrier(res.rhi_handle, res.state, pr.state));
             res.state = pr.state;
         };
+
         for (const auto& r : pass.reads)
             process(r);
         for (const auto& w : pass.writes)
             process(w);
 
         if (!barriers.empty())
-        {
             cmd.barrier({}, barriers);
-        }
+
         if (pass.execute)
         {
-            pass.execute(cmd);
+            if (instrument)
+            {
+                const auto t0        = Clock::now();
+                pass.execute(cmd);
+                const auto t1        = Clock::now();
+                const double start   = Duration(t0 - execute_epoch).count();
+                const double dur     = Duration(t1 - t0).count();
+                instrumentation_cb_(pass.name, start, dur, pass_index);
+            }
+            else
+            {
+                pass.execute(cmd);
+            }
         }
+        ++pass_index;
     }
 
-    // Final transition for imported resources: take them to their declared
-    // post-graph state (e.g. PRESENT for the swapchain image). Transient
-    // resources have no post-graph state — they're about to be destroyed.
+    // Final imported-resource state transitions.
     std::vector<cd::rhi::TextureBarrier> finalize;
     for (auto& res : resources_)
     {
@@ -272,9 +287,8 @@ cd::core::Result<void> FrameGraph::execute(cd::rhi::ICommandBuffer& cmd)
         res.state = res.final_state;
     }
     if (!finalize.empty())
-    {
         cmd.barrier({}, finalize);
-    }
+
     return {};
 }
 

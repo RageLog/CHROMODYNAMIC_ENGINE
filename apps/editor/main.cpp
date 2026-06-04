@@ -293,6 +293,8 @@
 // phase598 / M6 W3 — overlays (CPU marker bar chart + frame-graph Gantt).
 #include <cd/profile/cpu_marker_overlay/CpuMarkerOverlay.hpp>
 #include <cd/profile/frame_graph_timeline/FrameGraphTimeline.hpp>
+// phase737 — real cd::framegraph pass timing.
+#include <cd/framegraph/FrameGraph.hpp>
 
 // phase631 / M9 W1A — GPU marker overlay (sibling to cpu_marker_overlay;
 // cpu/gpu classification, NOT a v1/v2 version rename). Synthetic samples per
@@ -1281,6 +1283,42 @@ void set_status(panel::build::Status status) noexcept
 }
 
 }  // namespace cd::editor::build_panel_bridge
+
+// ===========================================================================
+// phase736 -- cd::editor::profile::FrameCapture
+// ===========================================================================
+//
+// Aggregates real profiling data streams collected per frame into a single
+// POD that is converted to PerfProfiler::FrameSnapshot via to_snapshot().
+//
+//   cpu_markers  -- MarkerSamples from cpu_marker_overlay::Collector.
+//   gpu_markers  -- GpuMarkerSamples from gpu_marker::Recorder (Vulkan path).
+//   gpu_passes   -- PassRecords from fgt_timeline.last_frame_passes().
+//   total_ms     -- real wall-clock frame dt.
+
+namespace cd::editor::profile
+{
+
+struct FrameCapture
+{
+    double total_ms { 0.0 };
+    std::vector<cd::profile::cpu_marker_overlay::MarkerSample>   cpu_markers;
+    std::vector<cd::profile::gpu_marker::GpuMarkerSample>         gpu_markers;
+    std::vector<cd::profile::frame_graph_timeline::PassRecord>    gpu_passes;
+};
+
+[[nodiscard]] cd::editor::panel::perf_profiler::FrameSnapshot
+to_snapshot(FrameCapture&& cap)
+{
+    cd::editor::panel::perf_profiler::FrameSnapshot snap;
+    snap.total_ms    = cap.total_ms;
+    snap.cpu_markers = std::move(cap.cpu_markers);
+    snap.gpu_markers = std::move(cap.gpu_markers);
+    snap.gpu_passes  = std::move(cap.gpu_passes);
+    return snap;
+}
+
+}  // namespace cd::editor::profile
 
 // Reopen the outer anonymous namespace closed above so the rest of the file
 // (drawer stubs, helpers, main()) retains internal linkage as before.
@@ -3131,8 +3169,8 @@ int main(int argc, char** argv)
     // Pre-seed all 3 new panels so they are non-empty on first boot.
     //   * settings: 8 demo entries spread across all 5 categories.
     //   * build:    Compiling status + 5 demo events with timestamps.
-    //   * perf:     60-fps target + initial budget (synthetic frames feed in
-    //               the main loop below).
+    //   * perf:     60-fps target; real FrameCapture data from cpu_collector +
+    //               gpu_marker_recorder + fgt_timeline (phase736).
     //
     // The build_panel_bridge global helper points at g_build_panel so other
     // subsystems can call cd::editor::build_panel_bridge::push_event(...)
@@ -3178,7 +3216,7 @@ int main(int argc, char** argv)
     // data is captured per frame in the main loop below until the real
     // cd::profile Collector instrumentation lands (Sprint-2).
     g_perf_profiler_panel.set_target_fps(60.0F);
-    std::printf("editor: perf_profiler budget_ms=%.2f (60 fps target).\n",
+    std::printf("editor: perf_profiler budget_ms=%.2f (60 fps target, REAL data feed).\n",
                 static_cast<double>(g_perf_profiler_panel.budget_ms()));
 
     // Wire the perf_profiler drawer's V2 theme bridge to the live theme name.
@@ -3220,6 +3258,15 @@ int main(int argc, char** argv)
     namespace fgt = cd::profile::frame_graph_timeline;
     const cmo::Overlay         cpu_overlay        { 16.0 };
     const fgt::TimelineOverlay frame_graph_overlay { 16.0 };
+    // phase737 — mutable timeline that accumulates real pass records each frame.
+    fgt::Timeline              fgt_timeline {};
+
+    // phase736 — real instrumentation objects for FrameCapture.
+    //   cpu_collector      -- Collector records "frame.draw" CPU scope each frame.
+    //   gpu_marker_recorder -- Recorder brackets "gpu.ui_submit" in Vulkan cmd path.
+    //                         Empty on NullDevice (no cmd buffer available).
+    cmo::Collector                     cpu_collector { 4096U };
+    cd::profile::gpu_marker::Recorder  gpu_marker_recorder {};
 
     // -- 6. Try Vulkan + window + Renderer; fall back to NullDevice ---------
     std::unique_ptr<platform::IWindow>  window;
@@ -3786,50 +3833,29 @@ int main(int argc, char** argv)
             }
         }
 
-        // -- phase701 / M15 W3 — synthetic FrameSnapshot feed ----------------
+        // -- phase736 -- real FrameCapture feed (replaces synthetic dummy) ----
         //
-        // The perf_profiler panel surfaces 60 frames of rolling history. Real
-        // instrumentation (cd::profile Collector + GPU query readback) lands
-        // in Sprint-2; for now we synthesize a plausible snapshot per frame
-        // so the panel is visibly active from the first frame:
-        //   * total_ms        = last real wall-clock dt (or 16.67 stand-in).
-        //   * cpu_markers     = 3 plausible passes scaled by frame_idx.
-        //   * gpu_markers     = 2 plausible GPU pass durations.
-        //   * gpu_passes      = same 3-pass framegraph the FRAME overlay uses.
-        {
-            using namespace cd::editor::panel::perf_profiler;
-            FrameSnapshot snap;
-            snap.total_ms = last_dt_ms > 0.0 ? last_dt_ms : 16.67;
+        // Collects REAL profiling data from the editor's own render path.
+        // cpu_markers  -- cpu_collector scope ("frame.draw") sampled each frame.
+        // gpu_markers  -- gpu_marker_recorder resolved samples (Vulkan path only).
+        // gpu_passes   -- fgt_timeline last_frame_passes() from phase737 wiring.
+        // total_ms     -- real wall-clock dt from FrameTimeRing.
+        //
+        // MOMENT: a perf dev opens perf_profiler, sees REAL frame timings from
+        // the editor's own render path -- root-cause analysis is one-click.
 
-            using cd::profile::cpu_marker_overlay::MarkerSample;
-            const auto cpu_base = static_cast<double>(frame_idx) * 16.0;
-            snap.cpu_markers = {
-                MarkerSample { "frame.gather",  cpu_base + 0.5,  3.0,  1U },
-                MarkerSample { "frame.cull",    cpu_base + 3.8,  2.4,  1U },
-                MarkerSample { "frame.submit",  cpu_base + 11.0, 4.5,  1U },
-            };
+        // Open the frame.draw CPU scope BEFORE the draw block below.
+        const auto frame_draw_handle = cpu_collector.begin("frame.draw");
 
-            using cd::profile::gpu_marker::GpuMarkerSample;
-            const std::uint64_t base_tick =
-                static_cast<std::uint64_t>(frame_idx) * 16'000'000ULL;
-            snap.gpu_markers = {
-                GpuMarkerSample { "gpu.gbuffer",   base_tick,
-                                  base_tick + 3'500'000ULL, 3.5 },
-                GpuMarkerSample { "gpu.lighting",  base_tick + 3'500'000ULL,
-                                  base_tick + 7'500'000ULL, 4.0 },
-            };
-
-            using cd::profile::frame_graph_timeline::PassRecord;
-            snap.gpu_passes = {
-                PassRecord { "GBuffer",   0.0,   4.5, 1U },
-                PassRecord { "Lighting",  4.5,   6.0, 2U },
-                PassRecord { "Composite", 10.5,  3.0, 3U },
-            };
-
-            g_perf_profiler_panel.capture_frame(snap);
-        }
 
         // -- Draw via the CPU batcher + RHI submitter --
+        // phase737: begin_frame() resets the fgt_timeline accumulator; a
+        // wall-clock start timestamp is taken so record_pass("DockDraw", ...)
+        // can report the real CPU duration for the full batcher-populate phase.
+        fgt_timeline.begin_frame();
+        using FgClock    = std::chrono::steady_clock;
+        using FgDuration = std::chrono::duration<double, std::milli>;
+        const auto fg_dock_start = FgClock::now();
         batcher.begin_frame();
         dockspace.draw(batcher, font.is_loaded() ? &font : nullptr, widget_theme);
 
@@ -3859,18 +3885,17 @@ int main(int argc, char** argv)
                 const cmo::Rect bounds {
                     ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
 
-                const auto base_ms = static_cast<double>(frame_idx) * 16.0;
-                const std::array<cmo::MarkerSample, 4> cpu_markers {
-                    cmo::MarkerSample { "frame.gather",  base_ms + 0.5,  3.0, 1U },
-                    cmo::MarkerSample { "frame.cull",    base_ms + 3.8,  2.4, 1U },
-                    cmo::MarkerSample { "frame.shadows", base_ms + 6.5,  4.0, 2U },
-                    cmo::MarkerSample { "frame.submit",  base_ms + 11.0, 4.5, 1U },
-                };
-                cpu_overlay.draw(
-                    batcher,
-                    std::span<const cmo::MarkerSample>(
-                        cpu_markers.data(), cpu_markers.size()),
-                    bounds);
+                // phase736: real CPU samples from cpu_collector (32 ms lookback).
+                {
+                    using namespace std::chrono;
+                    const auto now_us_c = static_cast<double>(
+                        duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+                    const double cutoff_c = (now_us_c / 1000.0) - 32.0;
+                    const auto real_cpu = cpu_collector.samples_since(cutoff_c);
+                    cpu_overlay.draw(batcher,
+                        std::span<const cmo::MarkerSample>(real_cpu.data(), real_cpu.size()),
+                        bounds);
+                }
             }
 
             // --- GPU overlay — "GPU" header + 100 px body, below CPU ------
@@ -3889,24 +3914,11 @@ int main(int argc, char** argv)
                 draw_overlay_header(batcher, widget_theme,
                                     ox, oy, kOverlayW, OverlayKind::kGpu);
 
-                const std::uint64_t base_tick =
-                    static_cast<std::uint64_t>(frame_idx) * 16'000'000ULL;
-                using GS = cd::profile::gpu_marker::GpuMarkerSample;
-                const std::array<GS, 4> gpu_markers {
-                    GS { "gpu.depth_prepass",  base_tick,
-                         base_tick + 2'500'000ULL, 2.5 },
-                    GS { "gpu.gbuffer",        base_tick + 2'500'000ULL,
-                         base_tick + 6'000'000ULL, 3.5 },
-                    GS { "gpu.lighting",       base_tick + 6'000'000ULL,
-                         base_tick + 10'000'000ULL, 4.0 },
-                    GS { "gpu.composite",      base_tick + 10'000'000ULL,
-                         base_tick + 13'500'000ULL, 3.5 },
-                };
-                draw_gpu_marker_overlay(
-                    batcher,
-                    std::span<const GS>(gpu_markers.data(), gpu_markers.size()),
-                    ox, oy + kOverlayHeaderH,
-                    kOverlayW, kOverlayH, 16.0);
+                // phase736: real GPU samples from gpu_marker_recorder.
+                // Empty on NullDevice (no cmd buffer); overlay handles empty span.
+                const auto gpu_samples = gpu_marker_recorder.samples();
+                draw_gpu_marker_overlay(batcher, gpu_samples,
+                    ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH, 16.0);
             }
 
             // --- FRAME overlay — "FRAME" header + 80 px body, bottom-right -
@@ -3928,23 +3940,11 @@ int main(int argc, char** argv)
                 const fgt::Rect bounds {
                     ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
 
-                // Real data: "UI" pass scales with current frame's vertex load
-                // (capped at 65 536 verts == full budget == 2 ms equivalent).
-                const auto ui_dur = static_cast<double>(
-                    std::clamp(static_cast<float>(batcher.vertex_count())
-                               / 65536.0F, 0.0F, 1.0F)) * 2.0;
-
-                const std::array<fgt::PassRecord, 4> frame_passes {
-                    fgt::PassRecord { "GBuffer",  0.0,   4.5,     1U },
-                    fgt::PassRecord { "Lighting", 4.5,   6.0,     2U },
-                    fgt::PassRecord { "Composite", 10.5, 3.0,     3U },
-                    fgt::PassRecord { "UI",        13.5, ui_dur,  4U },
-                };
-                frame_graph_overlay.draw(
-                    batcher,
-                    std::span<const fgt::PassRecord>(
-                        frame_passes.data(), frame_passes.size()),
-                    bounds);
+                // phase737 — real data: last_frame_passes() returns the previous
+                // frame's pass records (double-buffered by Timeline). On frame 0
+                // the span is empty; the overlay becomes non-empty from frame 1.
+                const auto real_passes = fgt_timeline.last_frame_passes();
+                frame_graph_overlay.draw(batcher, real_passes, bounds);
             }
         }
 
@@ -4358,6 +4358,46 @@ int main(int argc, char** argv)
             }
         }
 
+        // phase737 — record real DockDraw CPU duration then freeze the frame.
+        // phase736 — close frame.draw CPU scope + build FrameCapture.
+        {
+            const auto    fg_dock_end   = FgClock::now();
+            const double  dock_start_ms = 0.0;  // DockDraw begins at epoch
+            const double  dock_dur_ms   = FgDuration(fg_dock_end - fg_dock_start).count();
+            fgt_timeline.record_pass("DockDraw", dock_start_ms, dock_dur_ms, 0U);
+            fgt_timeline.end_frame();
+
+            // phase736 -- Steps 3-7: close CPU scope + harvest samples + capture.
+
+            // Step 3: close "frame.draw" CPU scope opened before the draw block.
+            cpu_collector.end(frame_draw_handle);
+
+            // Step 4: harvest CPU samples from the last 2 budget windows.
+            cd::editor::profile::FrameCapture cap;
+            cap.total_ms = last_dt_ms > 0.0 ? last_dt_ms : 16.67;
+            {
+                using namespace std::chrono;
+                const auto now_us = static_cast<double>(
+                    duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+                const double cutoff_ms = (now_us / 1000.0) - 2.0 *
+                    static_cast<double>(g_perf_profiler_panel.budget_ms());
+                cap.cpu_markers = cpu_collector.samples_since(cutoff_ms);
+            }
+
+            // Step 5: fgt_timeline.end_frame() was just called above;
+            // last_frame_passes() now contains this frame's pass records.
+            {
+                const auto passes = fgt_timeline.last_frame_passes();
+                cap.gpu_passes.assign(passes.begin(), passes.end());
+            }
+            // gpu_markers: populated in the Vulkan branch after resolve();
+            // empty on NullDevice/headless.
+
+            // Step 6: capture into the rolling ring.
+            g_perf_profiler_panel.capture_frame(
+                cd::editor::profile::to_snapshot(std::move(cap)));
+        }
+
         (void)submitter.upload(batcher);
 
         if (using_null || !renderer)
@@ -4404,7 +4444,17 @@ int main(int argc, char** argv)
             // (the inline GLSL fallback compiled at boot above). Record
             // the per-frame draw commands the DrawBatcher produced so
             // panel quads + theme palette actually reach the swapchain.
-            submitter.record(cmd, frame.extent);
+            //
+            // phase736: bracket the UI submit in a gpu_marker_recorder scope
+            // ("gpu.ui_submit"). After resolve(), the sample feeds the GPU
+            // overlay and future FrameCapture gpu_markers iteration.
+            gpu_marker_recorder.clear();
+            {
+                cd::profile::gpu_marker::Scope gpu_ui_scope(
+                    gpu_marker_recorder, cmd, "gpu.ui_submit");
+                submitter.record(cmd, frame.extent);
+            }
+            gpu_marker_recorder.resolve(*device);
 
             cmd.end_render_pass();
 
@@ -4471,7 +4521,7 @@ int main(int argc, char** argv)
     cd::editor::build_panel_bridge::register_target(nullptr);
 
     std::printf("editor: clean exit (%u frames; dock nodes=%zu; "
-                "perf_profiler captured %zu/60 synthetic frames).\n",
+                "perf_profiler captured %zu/60 real frames).\n",
                 frame_idx, dockspace.node_count(),
                 g_perf_profiler_panel.recorded_frame_count());
     std::fflush(stdout);

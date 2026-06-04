@@ -79,6 +79,7 @@ cd_add_sample(editor
     cd::editor_panel_asset_drop_target  # phase598 / M6 W3
     cd::profile_cpu_marker_overlay      # phase598 / M6 W3
     cd::profile_frame_graph_timeline    # phase598 / M6 W3
+    cd::framegraph                      # phase737 — InstrumentationCallback for real pass timing
     cd::profile_gpu_marker              # phase631 / M9 W1A (cpu/gpu sibling; backfills phase618 slot)
     cd::asset_validator                 # phase631 / M9 W1A — wired into status bar badge in phase667
     # phase667 / M12 W2 — three new panels + cutscene_player sibling for the

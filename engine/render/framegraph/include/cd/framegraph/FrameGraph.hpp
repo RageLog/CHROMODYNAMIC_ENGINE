@@ -166,16 +166,42 @@ public:
     /// Declare a transient texture. Returns a graph-scoped handle that can be
     /// referenced in subsequent `add_pass` calls. The RHI texture is created
     /// during `compile()`.
-    [[nodiscard]] ResourceHandle create_texture(const TransientTextureDesc& desc, std::string_view name = "transient");
+    [[nodiscard]] ResourceHandle create_texture(const TransientTextureDesc& desc,
+                                                std::string_view name = "transient");
 
     /// Import an externally-owned texture. The graph tracks state across
     /// passes; the texture itself is not created or destroyed by the graph.
-    [[nodiscard]] ResourceHandle import_texture(const ImportedTextureDesc& desc, std::string_view name = "imported");
+    [[nodiscard]] ResourceHandle import_texture(const ImportedTextureDesc& desc,
+                                                std::string_view name = "imported");
 
     // ---- Pass declaration -------------------------------------------------
 
     /// Register a pass. Passes execute in registration order (MVP).
     void add_pass(const PassDesc& desc);
+
+    // ---- Instrumentation hook -------------------------------------------
+
+    /// Per-pass CPU timing callback.  Delivered once per executed pass when
+    /// set_instrumentation_callback() has been called with a non-empty fn.
+    ///
+    ///   pass_name       — label from PassDesc::name.
+    ///   cpu_start_ms    — steady_clock offset from start of execute() (ms).
+    ///   cpu_duration_ms — wall-clock time spent in the execute callback (ms).
+    ///   pass_index      — 0-based index in registration order.
+    ///
+    /// Called synchronously on the execute() thread.
+    using InstrumentationCallback =
+        std::function<void(std::string_view pass_name,
+                           double           cpu_start_ms,
+                           double           cpu_duration_ms,
+                           std::uint32_t    pass_index)>;
+
+    /// Register (or replace) the per-pass timing callback.
+    /// Passing a default-constructed function disables timing.
+    void set_instrumentation_callback(InstrumentationCallback cb) noexcept
+    {
+        instrumentation_cb_ = std::move(cb);
+    }
 
     // ---- Compile / Execute -----------------------------------------------
 
@@ -239,11 +265,12 @@ private:
         PassExecuteFn execute {};
     };
 
-    cd::rhi::IDevice* device_ { nullptr };
-    std::vector<Resource> resources_ {};
-    std::vector<Pass> passes_ {};
-    bool compiled_ { false };
-    std::uint32_t next_generation_ { 1 };
+    cd::rhi::IDevice*       device_ { nullptr };
+    std::vector<Resource>   resources_ {};
+    std::vector<Pass>       passes_ {};
+    InstrumentationCallback instrumentation_cb_ {};
+    bool                    compiled_ { false };
+    std::uint32_t           next_generation_ { 1 };
 };
 
 }  // namespace cd::framegraph
