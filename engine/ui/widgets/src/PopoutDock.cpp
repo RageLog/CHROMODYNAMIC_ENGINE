@@ -73,7 +73,7 @@ bool PopoutDock::is_detached(std::string_view panel_id) const noexcept
 
 std::span<const PopoutWindow> PopoutDock::detached_windows() const noexcept
 {
-    return std::span<const PopoutWindow>(windows_.data(), windows_.size());
+    return {windows_.data(), windows_.size()};
 }
 
 // ---------------------------------------------------------------------------

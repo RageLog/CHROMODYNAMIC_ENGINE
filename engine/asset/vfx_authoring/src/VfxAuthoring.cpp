@@ -7,7 +7,9 @@
 #include <cd/asset/json/Json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>

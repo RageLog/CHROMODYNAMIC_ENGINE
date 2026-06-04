@@ -19,6 +19,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 
 namespace
@@ -124,7 +125,7 @@ TEST(AudioSpatial_Distance, BeyondOuterRadiusIsZero)
     cd::audio::spatial::SpatialMixer mixer;
     mixer.set_listener(make_listener_at_origin());
 
-    auto src = make_source(4u, { 100.0F, 0.0F, 0.0F }, /*inner=*/1.0F, /*outer=*/10.0F);
+    auto src = make_source(4u, { 100.0F, 0.0F, 0.0F }, /*inner_radius=*/1.0F, /*outer_radius=*/10.0F);
     mixer.add_source(src);
 
     const auto mix = mixer.compute_mix(4u);
@@ -145,7 +146,7 @@ TEST(AudioSpatial_Distance, InsideInnerRadiusIsUnity)
     cd::audio::spatial::SpatialMixer mixer;
     mixer.set_listener(make_listener_at_origin());
 
-    auto src = make_source(5u, { 2.0F, 0.0F, 0.0F }, /*inner=*/5.0F, /*outer=*/50.0F);
+    auto src = make_source(5u, { 2.0F, 0.0F, 0.0F }, /*inner_radius=*/5.0F, /*outer_radius=*/50.0F);
     mixer.add_source(src);
 
     const auto mix = mixer.compute_mix(5u);
