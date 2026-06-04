@@ -26,7 +26,7 @@
 
 ## FINALE-1 Detay (M18, dispatching now)
 
-**10 agent, 4 wave, OOM-aware (`-j 2`):**
+**10 agent, 4 wave, OOM-aware (default parallelism):**
 
 ### W1 Anında missed retry (2 sonnet)
 - **A1** IK Sprint-2 joint limits (M17 W4B missed) — phase 726
@@ -162,7 +162,7 @@ Bu finale serisi şunları **YAPMAYACAK** (user-owned):
 ## OOM Mitigation Devam Eder
 
 Her finale marathon:
-- `-j 2` parallelism (build OOM mitigation)
+- default parallelism parallelism (build OOM mitigation)
 - Surgical Edit > Write
 - Opt-in flags new compile units için (dormant by default)
 - Max 5 paralel agent / wave (heuristic hard rule)
