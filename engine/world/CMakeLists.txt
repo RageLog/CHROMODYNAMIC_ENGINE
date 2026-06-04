@@ -22,6 +22,7 @@
 #   particle_system        — Phase 564/M3 W5C + Phase 583 rename: cd::particle::system (was particle_system_v2; no v1 ever existed).
 #   physics_vehicle        — Phase 670: cd::physics::vehicle Sprint-1 (4-wheel CPU bicycle model + gear-shift).
 #   anim_ik                — Phase 702: cd::animation::ik Sprint-1 CCD IK solver (sidecar to cd::anim).
+#   physics_soft_body      — Phase 721: cd::physics::soft_body Sprint-1 (cloth/rope Verlet + PBD CPU sim).
 #
 # Cross-library dependency rule (CLAUDE.md §7): explicit context/registry
 # objects only — no global state shared between world libraries.
@@ -46,3 +47,4 @@ add_subdirectory(gameplay_input_binding)
 add_subdirectory(particle_system)
 add_subdirectory(physics_vehicle)
 add_subdirectory(anim_ik)
+add_subdirectory(physics_soft_body)

@@ -1,6 +1,6 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/animation/ik/Ik.cpp
-// Phase 702 — cd::animation::ik Sprint-1 implementation.
+// Phase 722 — cd::animation::ik Sprint-2 implementation (joint limits).
 //
 // CCD algorithm (per-iteration, per-joint):
 //
@@ -29,9 +29,64 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace cd::animation::ik
 {
+
+// =============================================================================
+// JointLimitPresets — factory implementations (Sprint-2)
+// =============================================================================
+
+// Knee: sagittal hinge only.
+//   X: 0 (no hyperextension) to ~140 deg flex (2.443 rad)
+//   Y, Z: very small tolerance (±0.05 rad) to avoid hard lock, absorb numeric noise
+JointLimits JointLimitPresets::knee() noexcept
+{
+    JointLimits lim;
+    lim.enabled     = true;
+    lim.min_euler   = {  0.0F,   -0.05F, -0.05F };
+    lim.max_euler   = {  2.443F,  0.05F,  0.05F };
+    return lim;
+}
+
+// Elbow: sagittal hinge only.
+//   X: 0 (no hyperextension) to ~145 deg flex (2.530 rad)
+//   Y, Z: small tolerance ±0.1 rad for forearm rotation
+JointLimits JointLimitPresets::elbow() noexcept
+{
+    JointLimits lim;
+    lim.enabled     = true;
+    lim.min_euler   = {  0.0F,   -0.1F, -0.1F };
+    lim.max_euler   = {  2.530F,  0.1F,  0.1F };
+    return lim;
+}
+
+// Shoulder: ball-and-socket.
+//   X (forward flex / extension): -0.52 (30 deg extension) to 2.97 (170 deg flex)
+//   Y (abduction / adduction):    -0.52 (30 deg in) to 1.57 (90 deg out)
+//   Z (internal / external rot):  -1.57 (90 deg internal) to 0.87 (50 deg external)
+JointLimits JointLimitPresets::shoulder() noexcept
+{
+    JointLimits lim;
+    lim.enabled     = true;
+    lim.min_euler   = { -0.524F, -0.524F, -1.571F };
+    lim.max_euler   = {  2.967F,  1.571F,  0.873F };
+    return lim;
+}
+
+// Hip: ball-and-socket.
+//   X (forward flex / extension): -0.35 (20 deg extension) to 2.09 (120 deg flex)
+//   Y (abduction / adduction):    -0.35 (20 deg adduction) to 0.79 (45 deg abduction)
+//   Z (internal / external rot):  -0.79 (45 deg internal) to 0.79 (45 deg external)
+JointLimits JointLimitPresets::hip() noexcept
+{
+    JointLimits lim;
+    lim.enabled     = true;
+    lim.min_euler   = { -0.349F, -0.349F, -0.785F };
+    lim.max_euler   = {  2.094F,  0.785F,  0.785F };
+    return lim;
+}
 
 // =============================================================================
 // CcdSolver — public interface
@@ -116,6 +171,9 @@ IkResult CcdSolver::solve(const IkChain& chain) const
 
             // Apply delta in world-space: new_rot = delta_q * old_rot
             rotations[i] = quat_mul(delta_q, rotations[i]);
+
+            // Sprint-2: clamp to per-joint limits if enabled
+            rotations[i] = apply_joint_limits(rotations[i], joints[i].limits);
         }
 
         // End-of-pass convergence check
@@ -315,6 +373,103 @@ std::array<float, 4> CcdSolver::quat_from_two_vectors(
         axis[2] * inv,
         w
     };
+}
+
+// =============================================================================
+// Sprint-2 helpers: Euler <-> quaternion, joint-limit clamping
+// =============================================================================
+
+// Intrinsic XYZ Euler decomposition from unit quaternion [x, y, z, w].
+// Returns [pitch_x, yaw_y, roll_z] in radians, range [-pi, pi].
+// Uses standard rotation matrix extraction to avoid gimbal-lock singularity
+// issues at poles (±90 deg pitch), where yaw/roll are degenerate; we keep
+// yaw=0 in the degenerate case (safe default for IK clamping).
+std::array<float, 3> CcdSolver::quat_to_euler_xyz(std::array<float, 4> q) noexcept
+{
+    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+
+    // Rotation matrix elements needed for XYZ Euler extraction
+    // R = Rz * Ry * Rx  (intrinsic XYZ = extrinsic ZYX)
+    // sin(pitch) = R[2][0] = 2*(qx*qz + qy*qw)  — note sign differs by convention
+    // We use the column-major rotation matrix form.
+    //
+    // M[row][col]:
+    //   M[0][0] = 1 - 2*(qy^2 + qz^2)
+    //   M[1][0] = 2*(qx*qy + qz*qw)
+    //   M[2][0] = 2*(qx*qz - qy*qw)
+    //   M[2][1] = 2*(qy*qz + qx*qw)
+    //   M[2][2] = 1 - 2*(qx^2 + qy^2)
+
+    const float m20 = 2.0F * (qx * qz - qy * qw);
+    const float m21 = 2.0F * (qy * qz + qx * qw);
+    const float m22 = 1.0F - 2.0F * (qx * qx + qy * qy);
+    const float m10 = 2.0F * (qx * qy + qz * qw);
+    const float m00 = 1.0F - 2.0F * (qy * qy + qz * qz);
+
+    // pitch_y (rotation about Y from intrinsic XYZ)
+    // sin(ry) = m20 (clamped to [-1, 1])
+    const float sin_ry = std::clamp(-m20, -1.0F, 1.0F);  // note negation: R[2][0] = -sin(ry)
+    const float ry = std::asin(sin_ry);
+
+    float rx = 0.0F;
+    float rz = 0.0F;
+    const float cos_ry = std::cos(ry);
+
+    if (cos_ry > 1e-6F)
+    {
+        // General case
+        rx = std::atan2(m21 / cos_ry, m22 / cos_ry);
+        rz = std::atan2(m10 / cos_ry, m00 / cos_ry);
+    }
+    else
+    {
+        // Gimbal lock: set rz=0, solve rx
+        // When ry = +pi/2: m21 = 2*(qy*qz + qx*qw), m10 similar
+        rx = std::atan2(m21, m22);
+        rz = 0.0F;
+    }
+
+    return { rx, ry, rz };
+}
+
+// Build unit quaternion from intrinsic XYZ Euler angles (radians).
+// q = Rx * Ry * Rz  (applied X first, then Y, then Z about fixed axes)
+// Equivalent to: qz * qy * qx  (Hamilton product, rightmost applied first).
+std::array<float, 4> CcdSolver::euler_xyz_to_quat(std::array<float, 3> euler) noexcept
+{
+    const float hx = euler[0] * 0.5F;
+    const float hy = euler[1] * 0.5F;
+    const float hz = euler[2] * 0.5F;
+
+    const float cx = std::cos(hx), sx = std::sin(hx);
+    const float cy = std::cos(hy), sy = std::sin(hy);
+    const float cz = std::cos(hz), sz = std::sin(hz);
+
+    // q = qx * qy * qz  (intrinsic XYZ)
+    return {
+        sx * cy * cz + cx * sy * sz,
+        cx * sy * cz - sx * cy * sz,
+        cx * cy * sz + sx * sy * cz,
+        cx * cy * cz - sx * sy * sz
+    };
+}
+
+// Clamp quaternion to JointLimits by decomposing to intrinsic XYZ Euler,
+// clamping each axis, then rebuilding.  Returns q unchanged if !limits.enabled.
+std::array<float, 4> CcdSolver::apply_joint_limits(
+    std::array<float, 4> q,
+    const JointLimits&   limits) noexcept
+{
+    if (!limits.enabled)
+        return q;
+
+    std::array<float, 3> euler = quat_to_euler_xyz(q);
+
+    euler[0] = std::clamp(euler[0], limits.min_euler[0], limits.max_euler[0]);
+    euler[1] = std::clamp(euler[1], limits.min_euler[1], limits.max_euler[1]);
+    euler[2] = std::clamp(euler[2], limits.min_euler[2], limits.max_euler[2]);
+
+    return euler_xyz_to_quat(euler);
 }
 
 }  // namespace cd::animation::ik

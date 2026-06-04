@@ -1,6 +1,6 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/animation/ik/Ik.hpp
-// Phase 702 — cd::animation::ik Sprint-1 public API.
+// Phase 722 — cd::animation::ik Sprint-2 public API (joint limits extension).
 //
 // CCD (Cyclic Coordinate Descent) Inverse Kinematics solver.
 // Sidecar relationship:
@@ -14,15 +14,20 @@
 //   for up to max_iterations passes until convergence_threshold is met.
 //
 // Sprint-1 scope:
-//   - Pure CCD, no joint angle limits (limits are Sprint-2).
+//   - Pure CCD, no joint angle limits.
 //   - Solve one chain at a time, single-threaded.
 //   - Positions expressed in world-space or a consistent local frame.
 //   - Quaternion output (compact, no gimbal lock).
 //
-// Sprint-2 queue:
-//   - Per-joint angle clamp constraints (twist / swing limits).
+// Sprint-2 scope (phase 722):
+//   - Per-joint Euler angle clamp constraints (JointLimits).
+//   - JointLimitPresets factory: knee / elbow / shoulder / hip.
+//   - After each CCD rotation update, the rotation is clamped to limits.
+//
+// Sprint-3 queue:
 //   - FABRIK alternative solver (faster convergence on long chains).
 //   - Multi-chain solve with shared parent locks.
+//   - Swing/twist decomposition for anatomically correct shoulder.
 //
 // Thread-safety: none — caller must serialise.
 // =============================================================================
@@ -33,8 +38,61 @@
 #include <string>
 #include <vector>
 
+// =============================================================================
+// JointLimits — per-joint Euler angle clamping constraints (Sprint-2)
+//
+// Angles are in radians, expressed as intrinsic XYZ Euler angles applied to
+// the joint's local rotation quaternion.
+//
+// min_euler / max_euler : lower / upper bound per axis [X, Y, Z] in radians.
+//   - X axis (pitch) : sagittal plane rotation (forward / back).
+//   - Y axis (yaw)   : transverse plane rotation (left / right).
+//   - Z axis (roll)  : frontal plane rotation (tilt / twist).
+// enabled             : when false the joint is unconstrained (Sprint-1 behaviour).
+//
+// Example — knee (hinge, bends only on X):
+//   min_euler = { 0.0, 0.0, 0.0 }   (cannot hyperextend)
+//   max_euler = { 2.4, 0.0, 0.0 }   (~140 degrees max flex)
+// =============================================================================
+
 namespace cd::animation::ik
 {
+
+// =============================================================================
+// JointLimits — per-joint Euler angle constraints (Sprint-2)
+// =============================================================================
+struct JointLimits
+{
+    std::array<float, 3> min_euler { -3.14159265F, -3.14159265F, -3.14159265F };
+    std::array<float, 3> max_euler {  3.14159265F,  3.14159265F,  3.14159265F };
+    bool                 enabled   { false };
+};
+
+// =============================================================================
+// JointLimitPresets — factory for standard human joint limits (Sprint-2)
+//
+// All angles in radians.  Values are approximate anatomical ranges suitable
+// for character IK; tighten per-character as needed.
+//
+// Convention: +X = forward flex, -X = hyperextension
+//             +Y = abduction / outward, -Y = adduction / inward
+//             +Z = external rotation, -Z = internal rotation
+// =============================================================================
+struct JointLimitPresets
+{
+    /// Knee — sagittal hinge only.
+    /// Blocks backward bend (hyperextension).  Allows ~140 deg of flexion.
+    [[nodiscard]] static JointLimits knee() noexcept;
+
+    /// Elbow — sagittal hinge only, ~145 deg flexion, no hyperextension.
+    [[nodiscard]] static JointLimits elbow() noexcept;
+
+    /// Shoulder — ball-and-socket with anatomical limits on all three axes.
+    [[nodiscard]] static JointLimits shoulder() noexcept;
+
+    /// Hip — ball-and-socket with anatomical limits on all three axes.
+    [[nodiscard]] static JointLimits hip() noexcept;
+};
 
 // =============================================================================
 // Joint — a single bone in the IK chain
@@ -56,6 +114,7 @@ struct Joint
     std::array<float, 3>   local_position      { 0.0F, 0.0F, 0.0F };
     std::array<float, 4>   local_rotation_quat { 0.0F, 0.0F, 0.0F, 1.0F };
     float                  length              { 1.0F };
+    JointLimits            limits              {};    ///< Sprint-2: per-joint angle constraints.
 };
 
 // =============================================================================
@@ -202,6 +261,22 @@ private:
     [[nodiscard]] static std::array<float, 4> quat_from_two_vectors(
         std::array<float, 3> from_unit,
         std::array<float, 3> to_unit) noexcept;
+
+    /// Decompose unit quaternion into intrinsic XYZ Euler angles (radians).
+    /// Output: [pitch_x, yaw_y, roll_z].
+    [[nodiscard]] static std::array<float, 3> quat_to_euler_xyz(
+        std::array<float, 4> q) noexcept;
+
+    /// Build unit quaternion from intrinsic XYZ Euler angles (radians).
+    [[nodiscard]] static std::array<float, 4> euler_xyz_to_quat(
+        std::array<float, 3> euler) noexcept;
+
+    /// Apply JointLimits to a rotation quaternion.
+    /// Decomposes to Euler XYZ, clamps each component, rebuilds quaternion.
+    /// If limits.enabled == false, returns q unchanged.
+    [[nodiscard]] static std::array<float, 4> apply_joint_limits(
+        std::array<float, 4>  q,
+        const JointLimits&    limits) noexcept;
 
     // -------------------------------------------------------------------------
     // State

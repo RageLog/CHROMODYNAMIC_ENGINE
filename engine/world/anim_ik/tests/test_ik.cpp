@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <vector>
@@ -261,6 +262,222 @@ TEST(CcdSolver_Degenerate, EmptyChainNoCrash)
     EXPECT_TRUE(result.solved_rotations.empty())
         << "Empty chain must return empty solved_rotations";
     EXPECT_EQ(result.iterations_used, 0U);
+}
+
+// =============================================================================
+// Sprint-2 tests — JointLimits and JointLimitPresets (phase 722)
+// =============================================================================
+
+// Helper: extract intrinsic XYZ Euler angles from a quaternion [x,y,z,w].
+// Mirrors the logic in Ik.cpp (not exposed in public API, replicated here).
+static std::array<float, 3> euler_from_quat(std::array<float, 4> q) noexcept
+{
+    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const float m20 = 2.0F * (qx * qz - qy * qw);
+    const float m21 = 2.0F * (qy * qz + qx * qw);
+    const float m22 = 1.0F - 2.0F * (qx * qx + qy * qy);
+    const float m10 = 2.0F * (qx * qy + qz * qw);
+    const float m00 = 1.0F - 2.0F * (qy * qy + qz * qz);
+
+    const float sin_ry = std::clamp(-m20, -1.0F, 1.0F);
+    const float ry     = std::asin(sin_ry);
+    const float cos_ry = std::cos(ry);
+
+    float rx = 0.0F;
+    float rz = 0.0F;
+    if (cos_ry > 1e-6F)
+    {
+        rx = std::atan2(m21 / cos_ry, m22 / cos_ry);
+        rz = std::atan2(m10 / cos_ry, m00 / cos_ry);
+    }
+    else
+    {
+        rx = std::atan2(m21, m22);
+        rz = 0.0F;
+    }
+    return { rx, ry, rz };
+}
+
+// ---------------------------------------------------------------------------
+// TEST 8 — Unconstrained joint behaves identically to Sprint-1
+//
+// A joint with limits.enabled=false must produce the same result as a joint
+// with no limits field set at all (backward-compatible with Sprint-1).
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_JointLimits, UnconstrainedMatchesSprint1)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    // Build two identical 3-joint chains — one with limits.enabled=false
+    auto chain_no_limits = make_3joint_chain(1.0F);
+    chain_no_limits.end_effector_target   = { 1.5F, 1.5F, 0.0F };
+    chain_no_limits.max_iterations        = 64U;
+    chain_no_limits.convergence_threshold = 0.001F;
+
+    auto chain_explicit_off = chain_no_limits;
+    for (auto& j : chain_explicit_off.joints)
+    {
+        j.limits.enabled = false;  // explicitly off
+    }
+
+    const auto r1 = solver.solve(chain_no_limits);
+    const auto r2 = solver.solve(chain_explicit_off);
+
+    EXPECT_EQ(r1.converged,       r2.converged);
+    EXPECT_EQ(r1.iterations_used, r2.iterations_used);
+    ASSERT_EQ(r1.solved_rotations.size(), r2.solved_rotations.size());
+
+    constexpr float kTol = 1e-5F;
+    for (std::size_t i = 0; i < r1.solved_rotations.size(); ++i)
+    {
+        for (int c = 0; c < 4; ++c)
+        {
+            EXPECT_NEAR(r1.solved_rotations[i][static_cast<std::size_t>(c)],
+                        r2.solved_rotations[i][static_cast<std::size_t>(c)],
+                        kTol)
+                << "Joint " << i << " component " << c << " differs";
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TEST 9 — Constrained joint stays within its limits
+//
+// A single joint is constrained so it can only rotate between 0 and 0.3 rad
+// on the X axis.  We send the target far off-axis and verify that the solved
+// rotation's X Euler component is in [0, 0.3].
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_JointLimits, ConstrainedJointStaysWithinLimits)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    cd::animation::ik::Joint j{};
+    j.name                = "constrained";
+    j.local_position      = { 0.0F, 0.0F, 0.0F };
+    j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    j.length              = 1.0F;
+    j.limits.enabled      = true;
+    j.limits.min_euler    = { 0.0F,   -0.05F, -0.05F };
+    j.limits.max_euler    = { 0.3F,    0.05F,  0.05F };
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { j };
+    chain.end_effector_target   = { 5.0F, 0.0F, 0.0F };  // far off axis
+    chain.max_iterations        = 64U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    ASSERT_EQ(result.solved_rotations.size(), 1u);
+
+    const auto euler = euler_from_quat(result.solved_rotations[0]);
+
+    EXPECT_GE(euler[0], j.limits.min_euler[0] - 1e-4F)
+        << "X Euler must not go below min_euler[0]";
+    EXPECT_LE(euler[0], j.limits.max_euler[0] + 1e-4F)
+        << "X Euler must not exceed max_euler[0]";
+}
+
+// ---------------------------------------------------------------------------
+// TEST 10 — Knee preset blocks backward bend
+//
+// A 2-joint leg chain: thigh (root) + knee.
+// Target is placed directly behind and above the knee to demand backward bending.
+// With the knee preset applied, the knee rotation must never go negative on X
+// (no hyperextension — forward bending only).
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_JointLimits, KneePresetBlocksBackwardBend)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    // Thigh joint at origin — unconstrained (hip allows arbitrary orientation)
+    cd::animation::ik::Joint thigh{};
+    thigh.name                = "thigh";
+    thigh.local_position      = { 0.0F, 0.0F, 0.0F };
+    thigh.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    thigh.length              = 1.0F;
+    thigh.limits.enabled      = false;
+
+    // Knee joint — apply preset
+    cd::animation::ik::Joint knee{};
+    knee.name                = "knee";
+    knee.local_position      = { 0.0F, 1.0F, 0.0F };
+    knee.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    knee.length              = 1.0F;
+    knee.limits              = cd::animation::ik::JointLimitPresets::knee();
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { thigh, knee };
+    // Target behind and below — forces backward knee motion without limits
+    chain.end_effector_target   = { 0.0F, -0.5F, 0.0F };
+    chain.max_iterations        = 64U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    ASSERT_EQ(result.solved_rotations.size(), 2u);
+
+    const auto knee_euler = euler_from_quat(result.solved_rotations[1]);
+
+    // X rotation must be >= knee preset min (0.0 — no backward bend)
+    EXPECT_GE(knee_euler[0], knee.limits.min_euler[0] - 1e-4F)
+        << "Knee must not hyperextend (backward bend). X euler = " << knee_euler[0];
+}
+
+// ---------------------------------------------------------------------------
+// TEST 11 — Multiple constrained joints solve together without crash
+//
+// A 3-joint chain where ALL joints have tight limits.
+// Verify: no crash, solved_rotations has correct count, each joint respects
+// its individual limits.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_JointLimits, MultipleConstrainedJointsSolveTogether)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    // All joints constrained to a very narrow X range: [0.1, 0.5] rad
+    auto make_constrained_joint = [](const char* n, float py) -> cd::animation::ik::Joint
+    {
+        cd::animation::ik::Joint j{};
+        j.name                = n;
+        j.local_position      = { 0.0F, py, 0.0F };
+        j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+        j.length              = 1.0F;
+        j.limits.enabled      = true;
+        j.limits.min_euler    = { 0.1F, -0.05F, -0.05F };
+        j.limits.max_euler    = { 0.5F,  0.05F,  0.05F };
+        return j;
+    };
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints = {
+        make_constrained_joint("root", 0.0F),
+        make_constrained_joint("mid",  1.0F),
+        make_constrained_joint("end",  2.0F)
+    };
+    chain.end_effector_target   = { 1.5F, 1.0F, 0.0F };
+    chain.max_iterations        = 64U;
+    chain.convergence_threshold = 0.001F;
+
+    // Must not crash
+    const auto result = solver.solve(chain);
+
+    ASSERT_EQ(result.solved_rotations.size(), 3u);
+
+    // Each joint rotation must stay within the declared limits
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        const auto euler = euler_from_quat(result.solved_rotations[i]);
+        const auto& lim  = chain.joints[i].limits;
+
+        // Tolerance accounts for Euler decomposition + recomposition round-trip
+        // numerical error (~2.5e-3 rad at these angles).
+        constexpr float kLimitTol = 5e-3F;
+        EXPECT_GE(euler[0], lim.min_euler[0] - kLimitTol)
+            << "Joint " << i << " X under min";
+        EXPECT_LE(euler[0], lim.max_euler[0] + kLimitTol)
+            << "Joint " << i << " X over max";
+    }
 }
 
 }  // anonymous namespace
