@@ -180,6 +180,29 @@ add_subdirectory(panel_asset_pipeline_status)
 # chain + ground-target, sees IK solve converge to plant foot without game.
 add_subdirectory(panel_ik_chain_editor)
 
+# ── cd::editor_panel_scene_palette (STATIC) ───────────────────────────────────
+# phase717 — Scene Palette panel (DrawBatcher path; live theme token preview grid;
+# 15-swatch colour grid: background/surface/accent/text/divider/… tokens labelled
+# with name + hex value; click to select for copy-to-clipboard).
+# MOMENT: UI designer sees all 12+ palette tokens at-a-glance — not hex values.
+add_subdirectory(panel_scene_palette)
+
+# ── cd::editor_panel_lobby_browser (STATIC) ───────────────────────────────────
+# phase718 — Lobby Browser panel (DrawBatcher path; active room list +
+# player-count bars + lock icon for passcode rooms; click-to-select).
+# Drives cd::network::lobby::Lobby (M16 phase713).
+# MOMENT: multiplayer dev sees rooms appear/disappear in real-time — no external
+# network monitor needed.
+add_subdirectory(panel_lobby_browser)
+
+# ── cd::editor_panel_auto_save_indicator (STATIC) ─────────────────────────────
+# phase719 — Auto-Save Indicator panel (DrawBatcher path; 5-state Status enum:
+# Idle / PendingDirty / Saving / JustSaved / Error; colour-coded icon + label
+# background strip, ~50 px high; fits in the status bar or right corner).
+# MOMENT: user edits scene → "Unsaved changes" badge (amber) appears; auto-save
+# fires → "Saving..." → "Saved just now" (green). Trust signal in the status bar.
+add_subdirectory(panel_auto_save_indicator)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
