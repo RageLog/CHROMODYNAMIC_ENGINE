@@ -129,3 +129,15 @@ add_subdirectory(input_recorder)
 #                    Sprint-2 plan: BVH nearest-triangle + funnel smoothing.
 #                    Moment: NPCs walk around obstacles via real A* pathfinding.
 add_subdirectory(ai_pathfinding)
+
+# Phase 682 — "Multi-agent squad coordination" (M13 W5A):
+#   ai_squad — cd::ai::squad Sprint-1 squad layer.
+#              SquadRole (Pointman/Flanker/Suppressor/Coverer) + Formation
+#              geometry (centroid + radius) + shared Blackboard (target +
+#              threat decay + facts map). Sibling to cd::ai::pathfinding
+#              (spatial movement) and cd::game::ai_bt (per-agent behaviour);
+#              this library coordinates N agents at the squad tier.
+#              Sprint-2 plan: MoveCommand steering integration + LOS graph.
+#              Moment: 4-agent enemy squad coordinates in formation with
+#              role-specific behaviors without hand-rolled per-agent logic.
+add_subdirectory(ai_squad)

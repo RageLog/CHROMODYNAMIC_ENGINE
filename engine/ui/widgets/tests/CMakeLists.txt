@@ -24,3 +24,8 @@ cd_add_test(ui_table
   SOURCES test_table.cpp
   DEPS    cd::ui_widgets cd::ui_renderer cd::core
 )
+
+cd_add_test(ui_tree_view
+  SOURCES test_tree_view.cpp
+  DEPS    cd::ui_widgets cd::ui_renderer cd::core
+)

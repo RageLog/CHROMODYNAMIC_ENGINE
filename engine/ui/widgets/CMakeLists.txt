@@ -21,6 +21,7 @@ cd_add_library(ui_widgets
     src/CurveEditor.cpp
     src/DockSpace.cpp
     src/Table.cpp
+    src/TreeView.cpp
   PUBLIC_DEPS
     cd::core
     cd::ui
