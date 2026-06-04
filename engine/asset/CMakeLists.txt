@@ -240,6 +240,9 @@ add_subdirectory(validator)
 # ── cd::asset_material_authoring ─────────────────────────────────────────────
 add_subdirectory(material_authoring)
 
+# ── cd::asset_vfx_authoring ──────────────────────────────────────────────────
+add_subdirectory(vfx_authoring)
+
 # ── cd::asset_texture_compress ────────────────────────────────────────────────
 add_subdirectory(texture_compress)
 
