@@ -158,6 +158,13 @@ add_subdirectory(panel_settings)
 # MOMENT: dev presses Build, sees live progress + errors — no terminal needed.
 add_subdirectory(panel_build)
 
+# ── cd::editor_panel_perf_profiler (STATIC) ───────────────────────────────────
+# phase700 — Deep frame-by-frame performance profiler panel (M15 W2C).
+# 60-frame rolling bar chart + drill-down (CPU markers + GPU passes) +
+# avg/min/max/p99 stats strip.  DrawBatcher path; no ImGui.
+# MOMENT: perf dev finds TLAS rebuild spike in seconds via drill-down.
+add_subdirectory(panel_perf_profiler)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
