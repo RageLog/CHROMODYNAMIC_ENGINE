@@ -2,29 +2,47 @@
 // CHROMODYNAMIC — engine/ui/editor/panel_ik_chain_editor/tests/test_ik_chain_editor.cpp
 //
 // phase710 — unit tests for cd::editor::panel::ik_chain_editor::IkChainEditor.
+// phase743 — additional tests for set_camera() VP projection + drag API.
 //
 // All tests are headless (no RHI, no ImGui).  We verify:
-//   1. DefaultCtor            — starts with no chain, no result, no selection.
-//   2. SetChainClearsSelection — set_chain resets any prior selection.
-//   3. DrawEmitsNoCommandsWithoutChain
-//                             — draw() without a bound chain emits only the
-//                               background quad (1 command).
-//   4. DrawEmitsCommandsProportionalToJoints
-//                             — more joints => more draw commands.
-//   5. SimulateClickSelectsNearestJoint
-//                             — click near a joint's projected position selects
-//                               that joint index.
-//   6. SimulateClickOutsideBoundsIgnored
-//                             — click outside panel leaves selection unchanged.
-//   7. ConvergedResultIndicatorEmitsCommands
-//                             — binding a converged IkResult causes additional
-//                               quads vs no-result case.
-//   8. NonConvergedResultIndicatorEmitsCommands
-//                             — binding a non-converged IkResult also produces
-//                               additional quads.
-//   9. NullChainAfterSetDetaches
-//                             — set_chain(nullptr) detaches; draw() emits only
-//                               background quad and selected_joint is nullopt.
+//   1.  DefaultCtor            — starts with no chain, no result, no selection.
+//   2.  SetChainClearsSelection — set_chain resets any prior selection.
+//   3.  DrawEmitsNoCommandsWithoutChain
+//                              — draw() without a bound chain emits only the
+//                                background quad (1 command).
+//   4.  DrawEmitsCommandsProportionalToJoints
+//                              — more joints => more draw commands.
+//   5.  SimulateClickSelectsNearestJoint
+//                              — click near a joint's projected position selects
+//                                that joint index.
+//   6.  SimulateClickOutsideBoundsIgnored
+//                              — click outside panel leaves selection unchanged.
+//   7.  ConvergedResultIndicatorEmitsCommands
+//                              — binding a converged IkResult causes additional
+//                                quads vs no-result case.
+//   8.  NonConvergedResultIndicatorEmitsCommands
+//                              — binding a non-converged IkResult also produces
+//                                additional quads.
+//   9.  NullChainAfterSetDetaches
+//                              — set_chain(nullptr) detaches; draw() emits only
+//                                background quad and selected_joint is nullopt.
+//   10. SetCameraDoesNotCrash  — set_camera() + draw() with a VP matrix completes
+//                                without crash and emits at least the background
+//                                + separator quads (2+ draw commands).
+//   11. ClearCameraRevertsTo2D — clear_camera() after set_camera() reverts to the
+//                                same vertex count as the 2D baseline.
+//   12. SetChainMutableBinds   — set_chain_mutable() makes the mutable chain
+//                                visible to draw() (same command count as const).
+//   13. BeginTargetDragReturnsFalseWhenNoMutableChain
+//                              — begin_target_drag() returns false when only the
+//                                const chain is bound.
+//   14. BeginTargetDragReturnsFalseWhenFarFromTarget
+//                              — begin_target_drag() returns false for a click
+//                                far from the target marker.
+//   15. DragCycleUpdatesMutableTarget
+//                              — begin → update → end cycle writes a different
+//                                end_effector_target into the mutable chain.
+//   16. IsDraggingTargetState  — is_dragging_target() tracks begin/end drag state.
 // =============================================================================
 #include <cd/editor/panel_ik_chain_editor/IkChainEditor.hpp>
 
@@ -310,4 +328,193 @@ TEST(IkChainEditorPanel, NullChainAfterSetDetaches)
     batcher.begin_frame();
     EXPECT_NO_THROW(editor.draw(batcher, standard_theme(), standard_bounds()));
     EXPECT_EQ(batcher.command_count(), static_cast<std::size_t>(1U));
+}
+
+// ---------------------------------------------------------------------------
+// TEST 10 — SetCameraDoesNotCrash
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, SetCameraDoesNotCrash)
+{
+    ike::IkChainEditor editor;
+    const auto chain = make_line_chain(3);
+    editor.set_chain(&chain);
+
+    // A simple orthographic-style VP matrix (identity-ish, just maps world to
+    // NDC with a scale): column-major identity.
+    // clang-format off
+    const std::array<float, 16> identity_vp {
+        1.0F, 0.0F, 0.0F, 0.0F,  // col 0
+        0.0F, 1.0F, 0.0F, 0.0F,  // col 1
+        0.0F, 0.0F, 1.0F, 0.0F,  // col 2
+        0.0F, 0.0F, 0.0F, 1.0F   // col 3
+    };
+    // clang-format on
+    EXPECT_NO_THROW(editor.set_camera(identity_vp));
+
+    cd::ui::renderer::DrawBatcher batcher;
+    batcher.begin_frame();
+    EXPECT_NO_THROW(editor.draw(batcher, standard_theme(), standard_bounds()));
+
+    // At minimum: background quad + separator bar + joints + lines + target marker
+    // each contribute 4 vertices (the batcher may merge draw commands, so check
+    // vertex_count rather than command_count).
+    // A 3-joint chain contributes: background + separator + 2 bone lines +
+    // 3 joint circles + 2 target arms = 9 quads = 36 vertices minimum.
+    EXPECT_GE(batcher.vertex_count(), static_cast<std::size_t>(36U));
+}
+
+// ---------------------------------------------------------------------------
+// TEST 11 — ClearCameraRevertsTo2D
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, ClearCameraRevertsTo2D)
+{
+    const cd::ui::widgets::Rect  bounds = standard_bounds();
+    const cd::ui::widgets::Theme theme  = standard_theme();
+    const auto chain = make_line_chain(3);
+
+    // Baseline: 2D mode.
+    ike::IkChainEditor editor_2d;
+    editor_2d.set_chain(&chain);
+    cd::ui::renderer::DrawBatcher b2d;
+    b2d.begin_frame();
+    editor_2d.draw(b2d, theme, bounds);
+    const std::size_t verts_2d = b2d.vertex_count();
+
+    // Set camera then clear it — should revert to same 2D vertex count.
+    ike::IkChainEditor editor_clear;
+    editor_clear.set_chain(&chain);
+    // clang-format off
+    editor_clear.set_camera({
+        1.0F, 0.0F, 0.0F, 0.0F,
+        0.0F, 1.0F, 0.0F, 0.0F,
+        0.0F, 0.0F, 1.0F, 0.0F,
+        0.0F, 0.0F, 0.0F, 1.0F
+    });
+    // clang-format on
+    editor_clear.clear_camera();
+
+    cd::ui::renderer::DrawBatcher b_clear;
+    b_clear.begin_frame();
+    editor_clear.draw(b_clear, theme, bounds);
+
+    EXPECT_EQ(b_clear.vertex_count(), verts_2d);
+}
+
+// ---------------------------------------------------------------------------
+// TEST 12 — SetChainMutableBinds
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, SetChainMutableBinds)
+{
+    const cd::ui::widgets::Rect  bounds = standard_bounds();
+    const cd::ui::widgets::Theme theme  = standard_theme();
+
+    auto chain = make_line_chain(3);
+
+    ike::IkChainEditor editor_const;
+    editor_const.set_chain(&chain);
+    cd::ui::renderer::DrawBatcher b_const;
+    b_const.begin_frame();
+    editor_const.draw(b_const, theme, bounds);
+
+    ike::IkChainEditor editor_mut;
+    editor_mut.set_chain_mutable(&chain);
+    cd::ui::renderer::DrawBatcher b_mut;
+    b_mut.begin_frame();
+    editor_mut.draw(b_mut, theme, bounds);
+
+    // Mutable and const chains produce the same draw output.
+    EXPECT_EQ(b_mut.vertex_count(), b_const.vertex_count());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 13 — BeginTargetDragReturnsFalseWhenNoMutableChain
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, BeginTargetDragReturnsFalseWhenNoMutableChain)
+{
+    ike::IkChainEditor editor;
+    const auto chain = make_line_chain(3);
+    editor.set_chain(&chain);  // read-only, no mutable
+
+    const cd::ui::widgets::Rect bounds = standard_bounds();
+    // Try to drag at the centre of the panel.
+    const bool started = editor.begin_target_drag(200.0F, 300.0F, bounds);
+    EXPECT_FALSE(started);
+    EXPECT_FALSE(editor.is_dragging_target());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 14 — BeginTargetDragReturnsFalseWhenFarFromTarget
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, BeginTargetDragReturnsFalseWhenFarFromTarget)
+{
+    ike::IkChainEditor editor;
+    auto chain = make_line_chain(3);
+    editor.set_chain_mutable(&chain);
+
+    const cd::ui::widgets::Rect bounds = standard_bounds();
+    // Click in the top-left corner — far from the target projected position.
+    const bool started = editor.begin_target_drag(
+        bounds.x + 1.0F, bounds.y + 1.0F, bounds);
+    EXPECT_FALSE(started);
+}
+
+// ---------------------------------------------------------------------------
+// TEST 15 — DragCycleUpdatesMutableTarget
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, DragCycleUpdatesMutableTarget)
+{
+    ike::IkChainEditor editor;
+
+    // Build a simple 3-joint chain along +X; target at (3, 0, 0).
+    auto chain = make_line_chain(3, 1.0F);
+    editor.set_chain_mutable(&chain);
+
+    const cd::ui::widgets::Rect bounds = standard_bounds();
+
+    // Determine where the target projects in 2D mode:
+    // Content area: x=[6..394], y=[16..594]. range_x=3, range_y=1.
+    // Target (3, 0) -> projected_x = 6 + (3/3)*388 = 394, projected_y = 16 + 578 = 594.
+    // Move to that point to begin, then drag somewhere far.
+    const float target_screen_x = 394.0F;
+    const float target_screen_y = 594.0F;
+
+    const auto original_target = chain.end_effector_target;
+
+    const bool started = editor.begin_target_drag(target_screen_x, target_screen_y, bounds);
+    ASSERT_TRUE(started);
+    EXPECT_TRUE(editor.is_dragging_target());
+
+    // Drag to a significantly different screen position (centre of panel).
+    editor.update_target_drag(200.0F, 300.0F, bounds);
+
+    // The end_effector_target must have changed.
+    EXPECT_FALSE(
+        chain.end_effector_target[0] == original_target[0] &&
+        chain.end_effector_target[1] == original_target[1]
+    );
+
+    editor.end_target_drag();
+    EXPECT_FALSE(editor.is_dragging_target());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 16 — IsDraggingTargetState
+// ---------------------------------------------------------------------------
+TEST(IkChainEditorPanel, IsDraggingTargetState)
+{
+    ike::IkChainEditor editor;
+    auto chain = make_line_chain(3, 1.0F);
+    editor.set_chain_mutable(&chain);
+
+    EXPECT_FALSE(editor.is_dragging_target());
+
+    const cd::ui::widgets::Rect bounds = standard_bounds();
+
+    // Begin drag at the target projected position (394, 594) as computed above.
+    const bool ok = editor.begin_target_drag(394.0F, 594.0F, bounds);
+    ASSERT_TRUE(ok);
+    EXPECT_TRUE(editor.is_dragging_target());
+
+    editor.end_target_drag();
+    EXPECT_FALSE(editor.is_dragging_target());
 }
