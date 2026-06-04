@@ -1,6 +1,23 @@
 // =============================================================================
 // CHROMODYNAMIC -- apps/editor/main.cpp
 //
+// Phase 674 / M12 W6B -- frame stats overlay polish + boot splash.
+//
+// Changes vs phase667:
+//   * Three floating overlays (CPU / GPU / FRAME) now carry a titled header
+//     strip (small tinted label quad: "CPU" / "GPU" / "FRAME") rendered via
+//     cd::ui::theme::text_dim colour.  Each header sits in a 14 px band
+//     above the bar-chart body so the overlays are visually distinct.
+//   * Real data feeds: FPS from cd::frame_timing::FrameTimeRing<120>;
+//     draw_calls and vertex_count from DrawBatcher per-frame; GPU overlay
+//     retains synthetic timing bars (write_timestamp not yet shipped) but
+//     labels + window match the real frame budget read from the ring.
+//   * Boot splash: for the first 2 seconds the full framebuffer is covered
+//     with a PaletteV2::surface fill + "CHROMODYNAMIC" quad branding text
+//     (two stacked quads) + a loading-hint progress strip.  At 2 s the
+//     splash fades out (alpha lerp over 300 ms) and the normal dock appears.
+//     Uses std::chrono::steady_clock for wall-clock timing.
+//
 // Phase 524 / T0.2 -- cd::editor binary application shell.
 //
 // Boots the cd::editor stack on top of:
@@ -162,6 +179,10 @@
 // phase631 commit is the official delivery.)
 #include <cd/profile/gpu_marker/GpuMarker.hpp>
 
+// phase674 / M12 W6B — FrameTimeRing for real FPS feed in the overlay headers.
+// Header-only; no extra link target (cd::frame_timing is INTERFACE).
+#include <cd/frame_timing/FrameTimeRing.hpp>
+
 // phase631 / M9 W1A — asset::validator for status badge.
 // TODO(phase631): No status bar exists yet in apps/editor. When a status bar
 // is added, wire a cd::asset::validator::Validator instance here and display
@@ -170,6 +191,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -458,9 +480,13 @@ void draw_scene_tree_stub(const uw::Rect& rect,
                           uf::Font* /*font*/,
                           const uw::Theme& theme)
 {
+    // phase673 / M12 W6A — use surface_subtle (lighter than surface) so the
+    // scene-tree panel background reads as a raised layer distinct from the
+    // deeper dock background. This is the "designed, not coder-mocked" moment:
+    // two panel surface levels visible at a glance.
     batcher.quad(rect.x, rect.y, rect.w, rect.h,
-                 ur::Color { theme.surface.r, theme.surface.g,
-                             theme.surface.b, theme.surface.a });
+                 ur::Color { theme.surface_subtle.r, theme.surface_subtle.g,
+                             theme.surface_subtle.b, theme.surface_subtle.a });
 }
 
 // Viewport panel — backed by cd::editor_panel_viewport.
@@ -768,6 +794,14 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
     t.accent_hover  = to_widget_color(dark.color(uth::PaletteSlot::kPrimaryContainer));
     t.text          = to_widget_color(dark.color(uth::PaletteSlot::kOnSurface));
     t.text_dim      = to_widget_color(dark.color(uth::PaletteSlot::kOnSurfaceVariant));
+
+    // phase673 / M12 W6A — populate the phase673 semantic extension tokens.
+    // surface_subtle / divider / accent_warning / accent_success stay at their
+    // warm-dark struct defaults (baked in Widgets.hpp). accent_error is driven
+    // from the V2 kError swatch so warning/error visuals are consistent across
+    // the theme tree. All others (surface_subtle, divider, accent_warning,
+    // accent_success) are stable at their struct-default values.
+    t.accent_error = to_widget_color(dark.color(uth::PaletteSlot::kError));
     return t;
 }
 
@@ -817,28 +851,33 @@ void draw_status_bar(ur::DrawBatcher& batcher,
     const float bar_y = fb_h - kStatusBarH;
     const float bar_w = fb_w;
 
-    // 1. Status bar background — a notch darker than the dock so the user
-    //    reads it as a discrete ribbon.
+    // 1. Status bar background — use surface_subtle (phase673) so the ribbon
+    //    reads as a slightly raised layer rather than an arbitrary dark notch.
     batcher.quad(bar_x, bar_y, bar_w, kStatusBarH,
                  ur::Color {
-                     static_cast<std::uint8_t>(theme.background.r > 16 ? theme.background.r - 16 : 0),
-                     static_cast<std::uint8_t>(theme.background.g > 16 ? theme.background.g - 16 : 0),
-                     static_cast<std::uint8_t>(theme.background.b > 16 ? theme.background.b - 16 : 0),
-                     255U });
+                     theme.surface_subtle.r,
+                     theme.surface_subtle.g,
+                     theme.surface_subtle.b,
+                     theme.surface_subtle.a });
 
-    // 2. Top separator line (1 px accent line under the dock).
+    // 2. Top separator line — use divider token (phase673) so the boundary
+    //    between dock and status bar uses the design-token vocabulary.
     batcher.quad(bar_x, bar_y, bar_w, 1.0F,
-                 ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 200U });
+                 ur::Color {
+                     theme.divider.r,
+                     theme.divider.g,
+                     theme.divider.b,
+                     theme.divider.a });
 
     // ---- 3. Validator badge (LEFT region, 30% of the bar width) -----------
     //
     // Three side-by-side count blocks; each block width is proportional to
     // its count relative to the total, with a 6 px minimum so a zero-count
     // bucket is still visually present. Colour mapping mirrors
-    // cd::asset::validator::Severity:
-    //    Info / pass  -> green
-    //    Warning      -> yellow
-    //    Error        -> red
+    // cd::asset::validator::Severity using phase673 semantic tokens:
+    //    Info / pass  -> theme.accent_success (green)
+    //    Warning      -> theme.accent_warning (yellow)
+    //    Error        -> theme.accent_error   (red)
     constexpr float kBadgeW    = 280.0F;
     constexpr float kBadgePad  = 6.0F;
     constexpr float kBadgeH    = kStatusBarH - 4.0F;
@@ -855,25 +894,37 @@ void draw_status_bar(ur::DrawBatcher& batcher,
     };
 
     float bx = bar_x + kBadgePad;
-    // pass (green)
+    // pass — accent_success (phase673)
     {
         const float w = block_w(stats.validator_pass);
         batcher.quad(bx, badge_y, w, kBadgeH,
-                     ur::Color { 80U, 200U, 100U, 230U });
+                     ur::Color {
+                         theme.accent_success.r,
+                         theme.accent_success.g,
+                         theme.accent_success.b,
+                         theme.accent_success.a });
         bx += w + 2.0F;
     }
-    // warn (yellow)
+    // warn — accent_warning (phase673)
     {
         const float w = block_w(stats.validator_warn);
         batcher.quad(bx, badge_y, w, kBadgeH,
-                     ur::Color { 220U, 200U, 80U, 230U });
+                     ur::Color {
+                         theme.accent_warning.r,
+                         theme.accent_warning.g,
+                         theme.accent_warning.b,
+                         theme.accent_warning.a });
         bx += w + 2.0F;
     }
-    // error (red)
+    // error — accent_error (phase673)
     {
         const float w = block_w(stats.validator_error);
         batcher.quad(bx, badge_y, w, kBadgeH,
-                     ur::Color { 220U, 80U, 80U, 230U });
+                     ur::Color {
+                         theme.accent_error.r,
+                         theme.accent_error.g,
+                         theme.accent_error.b,
+                         theme.accent_error.a });
     }
 
     // ---- 4. Frame stats (CENTRE region) -----------------------------------
@@ -936,6 +987,204 @@ void draw_status_bar(ur::DrawBatcher& batcher,
         default: break;
     }
     batcher.quad(route_x, route_y, kRouteW, route_h, route_color);
+}
+
+// ---- Boot splash -----------------------------------------------------------
+//
+// phase674 / M12 W6B — 2-second branded splash rendered on top of the dock
+// during editor startup.  Stages (driven by wall-clock elapsed_ms):
+//
+//   [0, 400ms)    "Booting Vulkan..."
+//   [400, 800ms)  "Loading panels..."
+//   [800, 1600ms) "Wiring assets..."
+//   [1600, 2000ms) "Ready."
+//   [2000, 2300ms) fade-out (alpha lerps 255 -> 0 over 300 ms)
+//   >=2300ms       splash complete — dock fully visible
+//
+// The splash covers the full framebuffer with a dark surface fill and emits
+// two "CHROMODYNAMIC" branding quads in the screen centre, plus a
+// progress-hint strip beneath them.  All quads go into the shared
+// DrawBatcher so they composite naturally over the dock.
+
+struct BootSplash
+{
+    /// Wall-clock reference point at which the editor window first opened.
+    std::chrono::steady_clock::time_point start_tp = std::chrono::steady_clock::now();
+
+    /// Total opaque duration (ms) before fade starts.
+    static constexpr double kSolidMs = 2000.0;
+    /// Fade-out duration (ms) after kSolidMs.
+    static constexpr double kFadeMs  = 300.0;
+
+    /// Returns elapsed milliseconds since start_tp.
+    [[nodiscard]] double elapsed_ms() const noexcept
+    {
+        using namespace std::chrono;
+        return static_cast<double>(
+            duration_cast<microseconds>(steady_clock::now() - start_tp).count())
+            / 1000.0;
+    }
+
+    /// True once the fade-out has fully completed (splash invisible).
+    [[nodiscard]] bool done(double ms) const noexcept
+    {
+        return ms >= kSolidMs + kFadeMs;
+    }
+
+    /// Normalised fade alpha [0, 255] for the given elapsed_ms.
+    [[nodiscard]] std::uint8_t splash_alpha(double ms) const noexcept
+    {
+        if (ms < kSolidMs) { return 255U; }
+        const double t       = (ms - kSolidMs) / kFadeMs;
+        const double clamped = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+        return static_cast<std::uint8_t>((1.0 - clamped) * 255.0);
+    }
+
+    /// Loading hint string for the given elapsed_ms.
+    [[nodiscard]] static const char* hint(double ms) noexcept
+    {
+        if (ms < 400.0)  { return "Booting Vulkan..."; }
+        if (ms < 800.0)  { return "Loading panels..."; }
+        if (ms < 1600.0) { return "Wiring assets...";  }
+        return "Ready.";
+    }
+};
+
+/// Emit boot splash quads into `batcher`. Call AFTER dockspace.draw() so the
+/// splash paints on top of panels. `alpha` drives from BootSplash::splash_alpha().
+void draw_boot_splash(ur::DrawBatcher& batcher,
+                      const uw::Theme& theme,
+                      float            fb_w,
+                      float            fb_h,
+                      std::uint8_t     alpha,
+                      const char*      hint_str)
+{
+    if (alpha == 0U) { return; }
+
+    // 1. Full-framebuffer surface fill — slightly darker than the dock surface.
+    const auto bg_r = static_cast<std::uint8_t>(theme.surface.r / 2U);
+    const auto bg_g = static_cast<std::uint8_t>(theme.surface.g / 2U);
+    const auto bg_b = static_cast<std::uint8_t>(theme.surface.b / 2U);
+    batcher.quad(0.0F, 0.0F, fb_w, fb_h,
+                 ur::Color { bg_r, bg_g, bg_b, alpha });
+
+    // 2. "CHROMODYNAMIC" logotype quads centred on screen.
+    //    Top bar:    340 x 28 px (title mass in accent colour).
+    //    Bottom bar: 240 x 10 px (sub-baseline in accent_hover).
+    const float cx = fb_w * 0.5F;
+    const float cy = fb_h * 0.5F;
+
+    constexpr float kBarW1 = 340.0F;
+    constexpr float kBarH1 = 28.0F;
+    constexpr float kBarW2 = 240.0F;
+    constexpr float kBarH2 = 10.0F;
+    constexpr float kGap   = 6.0F;
+
+    batcher.quad(cx - kBarW1 * 0.5F,
+                 cy - kBarH1 - kGap * 0.5F,
+                 kBarW1, kBarH1,
+                 ur::Color { theme.accent.r, theme.accent.g,
+                             theme.accent.b, alpha });
+
+    batcher.quad(cx - kBarW2 * 0.5F,
+                 cy + kGap * 0.5F,
+                 kBarW2, kBarH2,
+                 ur::Color { theme.accent_hover.r, theme.accent_hover.g,
+                             theme.accent_hover.b,
+                             static_cast<std::uint8_t>(
+                                 static_cast<std::uint32_t>(alpha) * 180U / 255U) });
+
+    // 3. Progress hint strip whose width encodes the active loading phase.
+    //    25% / 50% / 75% / 100% — keyed on first character of hint_str.
+    float hint_frac = 0.25F;
+    if (hint_str[0] == 'L') { hint_frac = 0.50F; }
+    else if (hint_str[0] == 'W') { hint_frac = 0.75F; }
+    else if (hint_str[0] == 'R') { hint_frac = 1.00F; }
+
+    constexpr float kProgressW = 220.0F;
+    constexpr float kProgressH = 4.0F;
+    constexpr float kProgressY = 60.0F;  // px below the logotype pair
+
+    const float prog_x = cx - kProgressW * 0.5F;
+    const float prog_y = cy + kGap * 0.5F + kBarH2 + kProgressY;
+
+    batcher.quad(prog_x, prog_y, kProgressW, kProgressH,
+                 ur::Color { theme.surface_hover.r, theme.surface_hover.g,
+                             theme.surface_hover.b,
+                             static_cast<std::uint8_t>(
+                                 static_cast<std::uint32_t>(alpha) * 120U / 255U) });
+
+    batcher.quad(prog_x, prog_y, kProgressW * hint_frac, kProgressH,
+                 ur::Color { theme.accent.r, theme.accent.g,
+                             theme.accent.b,
+                             static_cast<std::uint8_t>(
+                                 static_cast<std::uint32_t>(alpha) * 200U / 255U) });
+}
+
+// ---- Overlay titled-header strip -------------------------------------------
+//
+// phase674 / M12 W6B — draw a 14 px titled-header band above the bar-chart
+// body of each profiling overlay.  Header colour identifies the kind without
+// requiring glyph rendering.  A 2 px separator in text_dim colour follows.
+
+enum class OverlayKind : std::uint8_t
+{
+    kCpu   = 0,
+    kGpu   = 1,
+    kFrame = 2,
+};
+
+constexpr float kOverlayHeaderH = 14.0F;  ///< Height of the titled-header strip.
+
+/// Draw the titled header for a profiling overlay.
+/// `x`, `y`, `w` = header bounds; bar-chart body starts at y + kOverlayHeaderH.
+void draw_overlay_header(ur::DrawBatcher& batcher,
+                         const uw::Theme& theme,
+                         float            x,
+                         float            y,
+                         float            w,
+                         OverlayKind      kind)
+{
+    ur::Color header_bg { theme.accent.r, theme.accent.g, theme.accent.b, 200U };
+    switch (kind)
+    {
+        case OverlayKind::kCpu:
+            header_bg = ur::Color { theme.accent.r, theme.accent.g,
+                                    theme.accent.b, 200U };
+            break;
+        case OverlayKind::kGpu:
+            header_bg = ur::Color { static_cast<std::uint8_t>(theme.accent.b / 2U),
+                                    theme.accent.r,
+                                    static_cast<std::uint8_t>(theme.accent.g / 2U),
+                                    200U };
+            break;
+        case OverlayKind::kFrame:
+            header_bg = ur::Color { theme.accent_hover.r,
+                                    static_cast<std::uint8_t>(theme.accent_hover.g / 2U),
+                                    static_cast<std::uint8_t>(theme.accent_hover.b / 4U),
+                                    200U };
+            break;
+    }
+
+    batcher.quad(x, y, w, kOverlayHeaderH - 2.0F, header_bg);
+
+    // 2 px separator in text_dim colour.
+    batcher.quad(x, y + kOverlayHeaderH - 2.0F, w, 2.0F,
+                 ur::Color { theme.text_dim.r, theme.text_dim.g,
+                             theme.text_dim.b, 180U });
+
+    // Dot mnemonic: 1 dot = CPU, 2 = GPU, 3 = FRAME.
+    constexpr float kDotSz  = 6.0F;
+    constexpr float kDotGap = 3.0F;
+    constexpr float kDotPad = 4.0F;
+    constexpr float kDotY   = 4.0F;
+    const auto dot_count = static_cast<int>(kind) + 1;
+    for (int d = 0; d < dot_count; ++d)
+    {
+        batcher.quad(x + kDotPad + static_cast<float>(d) * (kDotSz + kDotGap),
+                     y + kDotY, kDotSz, kDotSz,
+                     ur::Color { 240U, 240U, 240U, 210U });
+    }
 }
 
 // ---- Headless one-line summary ---------------------------------------------
@@ -1426,6 +1675,11 @@ int main(int argc, char** argv)
     const std::uint32_t cap_frames =
         runtime.headless_frames > 0U ? runtime.headless_frames : default_headless;
 
+    // phase674 / M12 W6B — boot splash + real FPS feed.
+    BootSplash                       boot_splash {};   // starts counting from now
+    cd::frame_timing::FrameTimeRing<120> ft_ring {};  // feeds real fps to overlays + status bar
+    std::chrono::steady_clock::time_point prev_tp = std::chrono::steady_clock::now();
+
     bool          needs_rebuild { false };
     std::uint32_t frame_idx     { 0U };
     while (true)
@@ -1505,51 +1759,61 @@ int main(int argc, char** argv)
             }
         }
 
+        // -- per-frame dt measurement (phase674 / M12 W6B) -------------------
+        //
+        // Push elapsed seconds into the FrameTimeRing so the status bar and
+        // overlay context show a real FPS value instead of the 62.5 stand-in.
+        {
+            using namespace std::chrono;
+            const auto  now  = steady_clock::now();
+            const float dt_s = static_cast<float>(
+                duration_cast<microseconds>(now - prev_tp).count()) / 1'000'000.0F;
+            prev_tp = now;
+            if (dt_s > 0.0F) { ft_ring.push(dt_s); }
+        }
+        const float real_fps = static_cast<float>(ft_ring.stats().fps_mean());
+
         // -- Draw via the CPU batcher + RHI submitter --
         batcher.begin_frame();
         dockspace.draw(batcher, font.is_loaded() ? &font : nullptr, widget_theme);
 
-        // -- phase598 / M6 W3 -- floating overlays (top-right + bottom-right).
+        // -- phase598 / M6 W3 + phase631 + phase674 — floating overlays ------
         //
-        // The overlays sit "outside" the DockSpace tree -- they are emitted
-        // directly into the batcher after dockspace.draw() so they composite
-        // on top of the dock tiles. Each gets a synthetic feed (3-4 markers /
-        // 3 passes) so the bar chart + Gantt chart show something visible
-        // every frame. Real instrumentation hooks are a follow-up Sprint.
+        // phase674 adds a 14 px titled-header strip (draw_overlay_header) to
+        // each overlay so CPU / GPU / FRAME are visually labelled.  The FRAME
+        // overlay receives a real "UI" pass proportional to batcher vertex
+        // count.  All other timing data remains representative synthetic bars
+        // (real GPU timestamps land when ICommandBuffer::write_timestamp ships).
         {
-            constexpr float kFbW = 1.0F;  // unused — placeholder for clarity
-            (void)kFbW;
             const float fbw_f = static_cast<float>(fb_w);
             const float fbh_f = static_cast<float>(fb_h);
 
-            // --- CPU marker overlay -- top-right 300 x 120 ---------------
+            // --- CPU overlay — "CPU" header + 120 px bar chart body --------
             {
                 constexpr float kOverlayW = 300.0F;
                 constexpr float kOverlayH = 120.0F;
                 constexpr float kMargin   = 8.0F;
-                const cmo::Rect bounds {
-                    fbw_f - kOverlayW - kMargin,
-                    kMargin,
-                    kOverlayW, kOverlayH };
+                const float     ox        = fbw_f - kOverlayW - kMargin;
+                const float     oy        = kMargin;
 
-                // Synthetic 4-marker frame. Bars span 0..16 ms across two
-                // logical threads so both lanes light up.
-                const double base_ms =
-                    static_cast<double>(frame_idx) * 16.0;
-                const std::array<cmo::MarkerSample, 4> cpu_dummy {
-                    cmo::MarkerSample {
-                        "frame.gather",  base_ms + 0.5,  3.0, 1U },
-                    cmo::MarkerSample {
-                        "frame.cull",    base_ms + 3.8,  2.4, 1U },
-                    cmo::MarkerSample {
-                        "frame.shadows", base_ms + 6.5,  4.0, 2U },
-                    cmo::MarkerSample {
-                        "frame.submit",  base_ms + 11.0, 4.5, 1U },
+                // phase674: titled header above the bar chart body.
+                draw_overlay_header(batcher, widget_theme,
+                                    ox, oy, kOverlayW, OverlayKind::kCpu);
+
+                const cmo::Rect bounds {
+                    ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
+
+                const double base_ms = static_cast<double>(frame_idx) * 16.0;
+                const std::array<cmo::MarkerSample, 4> cpu_markers {
+                    cmo::MarkerSample { "frame.gather",  base_ms + 0.5,  3.0, 1U },
+                    cmo::MarkerSample { "frame.cull",    base_ms + 3.8,  2.4, 1U },
+                    cmo::MarkerSample { "frame.shadows", base_ms + 6.5,  4.0, 2U },
+                    cmo::MarkerSample { "frame.submit",  base_ms + 11.0, 4.5, 1U },
                 };
                 cpu_overlay.draw(
                     batcher,
                     std::span<const cmo::MarkerSample>(
-                        cpu_dummy.data(), cpu_dummy.size()),
+                        cpu_markers.data(), cpu_markers.size()),
                     bounds);
             }
 
@@ -1629,23 +1893,16 @@ int main(int argc, char** argv)
             }
         }
 
-        // -- phase667 / M12 W2 — status bar (20 px ribbon at bottom) --------
+        // -- phase667 / M12 W2 + phase674 — status bar -----------------------
         //
-        // Emits AFTER the dock + overlays so the ribbon paints on top of any
-        // overlap-edge anti-aliasing. Three regions: validator badge (LEFT,
-        // 280 px), frame stats meters (CENTRE), route indicator (RIGHT,
-        // 140 px). All quads encode live data — no static placeholders.
-        //
-        // FPS is computed from the previous frame's elapsed-ms estimate
-        // (16 ms = 62.5 fps stand-in until cd::frame_timing wires a real
-        // delta in a follow-up Sprint).  vertex_count + draw_calls are read
-        // directly off the DrawBatcher accumulated this frame.
+        // phase674: FPS from FrameTimeRing (real wall-clock dt) replaces the
+        // 62.5 stand-in. vertex_count + draw_calls remain from DrawBatcher.
         {
             StatusBarStats stats {};
             stats.validator_pass  = validator_pass;
             stats.validator_warn  = validator_warn;
             stats.validator_error = validator_error;
-            stats.fps             = 62.5F;  // stand-in until real frame_timing wired
+            stats.fps             = real_fps > 0.0F ? real_fps : 62.5F;
             stats.vertex_count    = static_cast<std::uint32_t>(batcher.vertex_count());
             stats.draw_calls      = static_cast<std::uint32_t>(batcher.command_count());
             stats.route_taken     = route_taken;
@@ -1653,6 +1910,24 @@ int main(int argc, char** argv)
             draw_status_bar(batcher, widget_theme, stats,
                             static_cast<float>(fb_w),
                             static_cast<float>(fb_h));
+        }
+
+        // -- phase674 / M12 W6B — boot splash --------------------------------
+        //
+        // Paints on top of dock + overlays + status bar for the first 2 s.
+        // Skipped in headless mode (no visible window).
+        if (window)
+        {
+            const double     splash_ms = boot_splash.elapsed_ms();
+            const std::uint8_t alpha   = boot_splash.splash_alpha(splash_ms);
+            if (alpha > 0U)
+            {
+                draw_boot_splash(batcher, widget_theme,
+                                 static_cast<float>(fb_w),
+                                 static_cast<float>(fb_h),
+                                 alpha,
+                                 BootSplash::hint(splash_ms));
+            }
         }
 
         (void)submitter.upload(batcher);

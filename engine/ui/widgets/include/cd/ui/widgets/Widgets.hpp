@@ -84,6 +84,17 @@ struct Color
 /// Theme palette. Concrete widgets sample these slots when drawing. The
 /// frontend (editor / app) supplies a theme via the draw call so multiple
 /// widget trees can share one theme instance without cloning.
+///
+/// Phase 673 — 6 semantic tokens added (warm-dark defaults):
+///   surface_subtle   -- slightly lighter than surface; panel backgrounds vs
+///                       deeper interior fill (e.g. docked panel header vs body).
+///   divider          -- low-alpha line between dock nodes / section separators.
+///   text_dim         -- low-contrast text for hints and secondary labels.
+///   accent_warning   -- yellow; asset_validator warning badge, toast banners.
+///   accent_error     -- red;    asset_validator error badge, critical status.
+///   accent_success   -- green;  asset_validator pass badge, build-success toast.
+///
+/// Back-compat: all pre-phase673 fields remain unchanged (name, type, default).
 struct Theme
 {
     Color background    { 32U,  32U,  36U,  255U };
@@ -96,6 +107,21 @@ struct Theme
     Color text          {235U, 235U, 240U,  255U };
     Color text_dim      {160U, 160U, 170U,  255U };
     Color dim_overlay   {  0U,   0U,   0U,  160U };
+
+    // ---- Phase 673 semantic extension (warm dark palette) -------------------
+    // surface_subtle: one step lighter than surface (48,48,56) so panel
+    // background quads read as a raised layer without a border. Sits between
+    // surface and surface_hover in the elevation stack.
+    Color surface_subtle  { 56U,  58U,  68U,  255U };
+    // divider: #38424F at alpha 180 — a barely-visible line that separates
+    // dock tiles and section headers without drawing the eye.
+    Color divider         { 56U,  66U,  79U,  180U };
+    // accent_warning: warm amber (#DCC850) — matches asset_validator Severity::kWarning.
+    Color accent_warning  {220U, 200U,  80U,  230U };
+    // accent_error: desaturated red (#DC5050) — matches asset_validator Severity::kError.
+    Color accent_error    {220U,  80U,  80U,  230U };
+    // accent_success: muted green (#50C864) — matches asset_validator pass bucket.
+    Color accent_success  { 80U, 200U, 100U,  230U };
 };
 
 // ---- Pointer + key input snapshot -----------------------------------------
