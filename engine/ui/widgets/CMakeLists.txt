@@ -20,11 +20,13 @@ cd_add_library(ui_widgets
     src/ColorPicker.cpp
     src/CurveEditor.cpp
     src/DockSpace.cpp
+    src/NativeWindowAdapter.cpp
     src/PopoutDock.cpp
     src/Table.cpp
     src/TreeView.cpp
   PUBLIC_DEPS
     cd::core
+    cd::platform
     cd::ui
     cd::ui_layout
     cd::ui_font

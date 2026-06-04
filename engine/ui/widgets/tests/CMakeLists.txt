@@ -34,3 +34,8 @@ cd_add_test(ui_popout_dock
   SOURCES test_popout_dock.cpp
   DEPS    cd::ui_widgets cd::core
 )
+
+cd_add_test(ui_native_window_adapter
+  SOURCES test_native_window_adapter.cpp
+  DEPS    cd::ui_widgets cd::platform cd::core
+)
