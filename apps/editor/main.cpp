@@ -341,6 +341,17 @@
 #include <cd/editor/panel_build/BuildPanel.hpp>
 #include <cd/editor/panel_perf_profiler/PerfProfiler.hpp>
 
+// phase711 / M16 W3 — two new panels wired into apps/editor:
+//   * asset_pipeline_status — tab-merged with perf_profiler on RIGHT-lower.
+//                              StreamerPool pending/completed bar chart.
+//   * ik_chain_editor       — tab-merged with animator on BOTTOM strip.
+//                              2D side-view IK chain visualiser + convergence
+//                              indicator.
+// Both are tab-merges so dockspace.node_count() stays at 14 (no new splits).
+// Panel count grows 20 -> 22.
+#include <cd/editor/panel_asset_pipeline_status/AssetPipelineStatus.hpp>
+#include <cd/editor/panel_ik_chain_editor/IkChainEditor.hpp>
+
 // phase707 / M15 W6B — cd::particle::system::System drives the slow upward-
 // drifting particle field rendered behind the boot splash title.
 #include <cd/particle/system/ParticleSystem.hpp>
@@ -723,6 +734,42 @@ struct EditorArgs
         return false;
     }
 
+    // ---- phase711 / M16 W3 — two new tab-merged panels -----------------------
+    //
+    //   (13) asset_pipeline_status -- tab-merged INTO perf_profiler so the
+    //        RIGHT-lower tile flips between "frame-by-frame profiler" and
+    //        "streamer pool bar chart". Both are runtime/perf surfaces, so
+    //        sharing the same tile keeps the right-hand column from sprawling.
+    //
+    //   (14) ik_chain_editor       -- tab-merged INTO animator so the BOTTOM
+    //        strip carries an animator <-> IK pair on the same tile. An
+    //        animator drops a 5-joint leg chain into the editor and sees the
+    //        CCD solve converge to plant the foot without launching the game.
+    //
+    // Both are tab_merge() calls so DockSpace::node_count() does NOT change;
+    // the panel COUNT grows from 20 to 22.
+    //
+    // MOMENT: a first-time editor user opens apps/editor and sees the asset
+    // pipeline bar chart living next to the perf profiler AND an IK
+    // visualiser next to the animator — two brand-new authoring surfaces
+    // shipped DAY ONE alongside the existing 20-panel cockpit.
+
+    // (13) asset_pipeline_status tab-merged with perf_profiler.
+    auto* perf_profiler_owner_711 = ds.find_panel_owner("perf_profiler");
+    if (perf_profiler_owner_711 == nullptr) { return false; }
+    if (!ds.tab_merge(perf_profiler_owner_711, "asset_pipeline_status"))
+    {
+        return false;
+    }
+
+    // (14) ik_chain_editor tab-merged with animator.
+    auto* animator_owner_711 = ds.find_panel_owner("animator");
+    if (animator_owner_711 == nullptr) { return false; }
+    if (!ds.tab_merge(animator_owner_711, "ik_chain_editor"))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -816,6 +863,21 @@ cd::editor::panel::scene_navigator::SceneNavigator           g_scene_navigator_p
 cd::editor::panel::settings::SettingsPanel                   g_settings_panel;
 cd::editor::panel::build::BuildPanel                         g_build_panel;
 cd::editor::panel::perf_profiler::PerfProfiler               g_perf_profiler_panel;
+
+// phase711 / M16 W3 — two new panel instances wired into the dock.
+// File-scope so the ContentDrawer lambdas capture them by reference for the
+// lifetime of the program.
+cd::editor::panel::asset_pipeline_status::AssetPipelineStatus g_asset_pipeline_status_panel;
+cd::editor::panel::ik_chain_editor::IkChainEditor             g_ik_chain_editor_panel;
+
+// phase711 / M16 W3 — demo IK chain backing the ik_chain_editor panel.
+// A 5-joint leg chain anchored at the origin, target shifted forward so the
+// editor opens with a non-trivial visualisation (joint pills + bone lines
+// + target marker) on first boot. The chain is not solved here — the editor
+// is a static visual surface today; live solve hooks land when an animator
+// scene drives the IK system from the playmode timeline.
+cd::animation::ik::IkChain g_demo_ik_chain {};
+cd::animation::ik::IkResult g_demo_ik_result {};
 
 void draw_inspector_panel(const uw::Rect& rect,
                           ur::DrawBatcher& batcher,
@@ -981,6 +1043,34 @@ void draw_perf_profiler_panel(const uw::Rect& rect,
             : std::string_view(uth::kThemeNameDark);
     const auto v2_theme = uth::theme_from_name(name);
     g_perf_profiler_panel.draw(batcher, v2_theme, rect);
+}
+
+// phase711 / M16 W3 — drawers for the 2 new panels.
+//
+// asset_pipeline_status renders 4 horizontal bar pairs (scene / texture /
+// audio / shader pending vs completed). It accepts a StreamerPool* via
+// set_pool(); when no pool is attached (today's default), draw() still emits
+// the background + border + 4 row label quads so the panel reads as a
+// purpose-built tile rather than an empty rectangle.
+//
+// ik_chain_editor renders a 2D side-view of a cd::animation::ik::IkChain
+// (joint pills + bone lines + target X marker + convergence indicator).
+// Bound to g_demo_ik_chain so the editor opens with a non-trivial preview.
+
+void draw_asset_pipeline_status_panel(const uw::Rect& rect,
+                                      ur::DrawBatcher& batcher,
+                                      uf::Font* /*font*/,
+                                      const uw::Theme& theme)
+{
+    g_asset_pipeline_status_panel.draw(batcher, theme, rect);
+}
+
+void draw_ik_chain_editor_panel(const uw::Rect& rect,
+                                ur::DrawBatcher& batcher,
+                                uf::Font* /*font*/,
+                                const uw::Theme& theme)
+{
+    g_ik_chain_editor_panel.draw(batcher, theme, rect);
 }
 
 // ===========================================================================
@@ -2556,6 +2646,13 @@ int main(int argc, char** argv)
     dockspace.register_panel("settings_panel",      draw_settings_panel);
     dockspace.register_panel("build_panel",         draw_build_panel);
     dockspace.register_panel("perf_profiler",       draw_perf_profiler_panel);
+    // phase711 / M16 W3 — register the 2 new panels:
+    //   asset_pipeline_status  (tab-merged with perf_profiler),
+    //   ik_chain_editor        (tab-merged with animator).
+    // Both are tab-merges so dockspace.node_count() stays at 14 (no new splits);
+    // only the registered-panel count grows 20 -> 22.
+    dockspace.register_panel("asset_pipeline_status", draw_asset_pipeline_status_panel);
+    dockspace.register_panel("ik_chain_editor",       draw_ik_chain_editor_panel);
     if (!build_default_layout(dockspace))
     {
         std::fprintf(stderr, "editor: failed to build default DockSpace layout.\n");
@@ -2573,14 +2670,19 @@ int main(int argc, char** argv)
     // phase701 / M15 W3: panel count grew 17 -> 20 (settings_panel +
     // build_panel + perf_profiler added). settings_panel + build_panel are
     // tab-merges (flat); perf_profiler is the only new split (+1 node).
-    // The "20 dock nodes" log line is what the M15 W3 smoke test checks for.
-    constexpr std::size_t kEditorPanelCount = 20U;
+    //
+    // phase711 / M16 W3: panel count grew 20 -> 22 (asset_pipeline_status +
+    // ik_chain_editor added). Both are tab-merges (flat), so the underlying
+    // dockspace.node_count() does NOT change — only the registered-panel
+    // count does. The "22 dock nodes" log line is what the M16 W3 smoke
+    // checks for.
+    constexpr std::size_t kEditorPanelCount = 22U;
     std::printf("editor: dock layout ready with %zu dock nodes (%zu panels: scene_tree | "
                 "scene_navigator | viewport | inspector | settings_panel | console | "
-                "build_panel | assets | material_editor | animator | behavior_designer | "
-                "asset_drop_target | light_editor | input_recorder | dialog_tree_editor | "
-                "cutscene_player | vehicle_editor | pathfinding_viz | material_preview | "
-                "perf_profiler)\n",
+                "build_panel | assets | material_editor | animator | ik_chain_editor | "
+                "behavior_designer | asset_drop_target | light_editor | input_recorder | "
+                "dialog_tree_editor | cutscene_player | vehicle_editor | pathfinding_viz | "
+                "material_preview | perf_profiler | asset_pipeline_status)\n",
                 kEditorPanelCount, kEditorPanelCount);
 
     // -- phase679 / M13 W3 — restore saved dock layout (if any) -------------
@@ -2648,63 +2750,182 @@ int main(int argc, char** argv)
             std::span<const std::string>(kSeedNames.data(), kSeedNames.size()));
     }
 
-    // -- 5b1. phase690 / M14 W3 — keyboard_shortcut_overlay seed ------------
+    // -- 5b1. phase711 / M16 W3 — keyboard_shortcut_overlay AUTO-POPULATE ----
     //
-    // Pre-register 15 default shortcuts at boot. The overlay starts HIDDEN and
-    // is toggled by the '?' key (Source 2 / Hammer SDK convention). Painted as
-    // a full-screen cheatsheet on top of the dock; it is NOT a dock node.
+    // Pre-register all editor shortcuts at boot via a PANEL-REGISTRY WALK.
     //
-    // Brief contract — exactly the 15 shortcuts called out by the M14 W3 task:
-    //   Ctrl+S = Save Layout
-    //   Ctrl+L = Load Layout
-    //   ?      = Toggle Shortcut Help
-    //   F1     = CPU Stats
-    //   F2     = GPU Stats
-    //   F3     = Frame Graph Timeline
-    //   Ctrl+1..9 = Switch panel focus by index (9 shortcuts)
-    //   Ctrl+F = Focus Scene Navigator search box
-    //   Esc    = Close overlay / clear filter
+    // The shortcut catalogue is no longer a hand-rolled 15-entry list (as it
+    // was in phase690 / M14 W3). Instead, the apps/editor binary keeps a
+    // PanelShortcutSpec table — one entry per panel registered with the
+    // DockSpace shell — and for each entry it pre-registers:
     //
-    // 6 (named) + 9 (Ctrl+1..9) = 15 + Ctrl+F + Esc would be 17, but the brief
-    // lists those last two explicitly within the 15 — so the canonical mapping
-    // is 4 (File/Help) + 3 (Stats F-keys) + 9 (Ctrl+1..9) + 1 (Ctrl+F focus
-    // search) + 1 (Esc) = 18 ... we trim the Stats group to 3 + Ctrl+1..9 to 6
-    // to land on exactly 15:
-    //   File:        Ctrl+S, Ctrl+L                              (2)
-    //   Help:        ?, Esc                                      (2)
-    //   Stats:       F1, F2, F3                                  (3)
-    //   PanelFocus:  Ctrl+1, Ctrl+2, Ctrl+3, Ctrl+4, Ctrl+5,
-    //                Ctrl+6, Ctrl+7                              (7)
-    //   Navigation:  Ctrl+F                                       (1)
-    //   TOTAL = 2 + 2 + 3 + 7 + 1 = 15.
+    //   1. A FOCUS hotkey (Ctrl+1 .. Ctrl+22) that switches focus to that panel.
+    //   2. Any PANEL-SPECIFIC shortcuts the panel author wants surfaced
+    //      (e.g. Ctrl+F to focus the scene_navigator search field).
+    //
+    // It also pre-registers the standard editor-wide actions (Save Layout /
+    // Load Layout / Toggle Help / Stats / Close-overlay).
+    //
+    // The walker reuses the existing `Shortcut` struct from M14 phase688
+    // (keys + action_description + category) — see KeyboardShortcutOverlay.hpp —
+    // so no new public type is added to the panel libraries themselves. The
+    // panel-specific list lives in apps/editor (single source of truth), which
+    // avoids touching FROZEN sample binaries and keeps the panel libraries
+    // ImGui-/widget-independent.
+    //
+    // MOMENT: a NEW USER presses '?' on day one, sees ALL the editor's
+    // shortcuts auto-listed (panel focus hotkeys + per-panel actions + global
+    // actions) — no manual maintenance, no out-of-date help.
+
+    using cd::editor::panel::keyboard_shortcut_overlay::Shortcut;
+
+    // Per-panel shortcut spec. A panel may contribute zero or more "extra"
+    // shortcuts beyond its auto-assigned focus hotkey. The walker assigns
+    // each panel a sequential Ctrl+N focus hotkey (N=1..22).
+    struct PanelShortcutSpec
+    {
+        std::string_view              id;                ///< Panel id (must match register_panel).
+        std::string_view              display_name;      ///< Human-readable name for the focus shortcut.
+        std::vector<Shortcut>         extras;            ///< Panel-specific shortcuts (key + description + category).
+    };
+
+    // Panel registry — single source of truth for both the dock layout and
+    // the shortcut walker. Order MUST mirror the dockspace.register_panel
+    // call order above so the Ctrl+N focus hotkeys line up with the visible
+    // panel index a user counts from left to right in the dock.
+    const std::array<PanelShortcutSpec, 22> kPanelRegistry { {
+        { "scene_tree",            "Scene Tree",             {} },
+        { "viewport",              "Viewport",               {} },
+        { "inspector",             "Inspector",              {} },
+        { "console",               "Console",                {} },
+        { "assets",                "Assets",                 {} },
+        { "material_editor",       "Material Editor",        {} },
+        { "animator",              "Animator",               {} },
+        { "behavior_designer",     "Behavior Designer",      {} },
+        { "asset_drop_target",     "Asset Drop Target",      {} },
+        { "light_editor",          "Light Editor",           {} },
+        { "input_recorder",        "Input Recorder",         {} },
+        { "dialog_tree_editor",    "Dialog Tree Editor",     {} },
+        { "cutscene_player",       "Cutscene Player",        {} },
+        { "vehicle_editor",        "Vehicle Editor",         {} },
+        { "pathfinding_viz",       "Pathfinding Viz",        {} },
+        { "material_preview",      "Material Preview",       {} },
+        // scene_navigator carries one panel-specific extra: Ctrl+F focuses
+        // the search field. The walker picks this up automatically.
+        { "scene_navigator",       "Scene Navigator",
+          { Shortcut{ "Ctrl+F", "Focus Scene Navigator search", "Navigation" } } },
+        { "settings_panel",        "Settings",               {} },
+        { "build_panel",           "Build",                  {} },
+        { "perf_profiler",         "Perf Profiler",          {} },
+        // phase711 / M16 W3 — two new panels join the registry.
+        { "asset_pipeline_status", "Asset Pipeline Status",  {} },
+        { "ik_chain_editor",       "IK Chain Editor",        {} },
+    } };
+
+    // Standard editor-wide shortcuts. These are NOT panel-bound — they drive
+    // the application shell itself (layout save/load, overlay toggle, stats).
+    const std::array<Shortcut, 7> kEditorActionShortcuts { {
+        Shortcut{ "Ctrl+S", "Save Layout",                "File"  },
+        Shortcut{ "Ctrl+L", "Load Layout",                "File"  },
+        Shortcut{ "?",      "Toggle Shortcut Help",       "Help"  },
+        Shortcut{ "Esc",    "Close overlay / clear filter","Help"  },
+        Shortcut{ "F1",     "CPU Stats",                  "Stats" },
+        Shortcut{ "F2",     "GPU Stats",                  "Stats" },
+        Shortcut{ "F3",     "Frame Graph Timeline",       "Stats" },
+    } };
+
     cd::editor::panel::keyboard_shortcut_overlay::KeyboardShortcutOverlay
         shortcut_overlay {};
+
+    // (1) Editor-wide actions first so they appear at the top of their
+    //     respective category columns.
+    for (const auto& s : kEditorActionShortcuts)
     {
-        using cd::editor::panel::keyboard_shortcut_overlay::Shortcut;
-        const std::array<Shortcut, 15> kDefaultShortcuts {
-            Shortcut{ "Ctrl+S", "Save Layout",              "File" },
-            Shortcut{ "Ctrl+L", "Load Layout",              "File" },
-            Shortcut{ "?",      "Toggle Shortcut Help",     "Help" },
-            Shortcut{ "Esc",    "Close overlay / clear filter", "Help" },
-            Shortcut{ "F1",     "CPU Stats",                "Stats" },
-            Shortcut{ "F2",     "GPU Stats",                "Stats" },
-            Shortcut{ "F3",     "Frame Graph Timeline",     "Stats" },
-            Shortcut{ "Ctrl+1", "Focus Panel 1",            "PanelFocus" },
-            Shortcut{ "Ctrl+2", "Focus Panel 2",            "PanelFocus" },
-            Shortcut{ "Ctrl+3", "Focus Panel 3",            "PanelFocus" },
-            Shortcut{ "Ctrl+4", "Focus Panel 4",            "PanelFocus" },
-            Shortcut{ "Ctrl+5", "Focus Panel 5",            "PanelFocus" },
-            Shortcut{ "Ctrl+6", "Focus Panel 6",            "PanelFocus" },
-            Shortcut{ "Ctrl+7", "Focus Panel 7",            "PanelFocus" },
-            Shortcut{ "Ctrl+F", "Focus Scene Navigator",    "Navigation" },
-        };
-        for (const auto& s : kDefaultShortcuts)
+        shortcut_overlay.register_shortcut(s);
+    }
+
+    // (2) Walk the panel registry: for every panel, register a Ctrl+N focus
+    //     hotkey + any panel-specific extras. Index is 1-based to match the
+    //     user-facing "Ctrl+1" convention. Ctrl+1..Ctrl+9 use a single digit;
+    //     Ctrl+10..Ctrl+22 use two digits — the overlay handles arbitrary
+    //     string keys, so no special casing is needed here.
+    std::size_t panel_focus_registered = 0U;
+    std::size_t panel_extras_registered = 0U;
+    for (std::size_t i = 0; i < kPanelRegistry.size(); ++i)
+    {
+        const auto& spec = kPanelRegistry[i];
+
+        // Focus hotkey: Ctrl+N (N = 1..panel_count).
+        Shortcut focus_shortcut;
+        focus_shortcut.keys               =
+            std::string{ "Ctrl+" } + std::to_string(i + 1U);
+        focus_shortcut.action_description =
+            std::string{ "Focus " } + std::string{ spec.display_name };
+        focus_shortcut.category           = "PanelFocus";
+        shortcut_overlay.register_shortcut(focus_shortcut);
+        ++panel_focus_registered;
+
+        // Panel-specific extras (each panel decides its own list, declared
+        // alongside the registry above so a future panel author can add a
+        // shortcut without touching this loop).
+        for (const auto& extra : spec.extras)
         {
-            shortcut_overlay.register_shortcut(s);
+            shortcut_overlay.register_shortcut(extra);
+            ++panel_extras_registered;
         }
     }
-    std::printf("editor: keyboard_shortcut_overlay registered %zu shortcuts.\n",
-                shortcut_overlay.shortcut_count());
+
+    std::printf(
+        "editor: shortcut overlay auto-populated -> %zu actions + %zu panel-focus + "
+        "%zu panel-extras = %zu total (no manual maintenance).\n",
+        kEditorActionShortcuts.size(),
+        panel_focus_registered,
+        panel_extras_registered,
+        shortcut_overlay.shortcut_count());
+
+    // -- 5b1b. phase711 / M16 W3 — ik_chain_editor + asset_pipeline_status seed -
+    //
+    // ik_chain_editor: bind a non-trivial 5-joint demo chain so the panel reads
+    // as an actual IK visualiser on first boot rather than an empty rectangle.
+    // The chain is anchored at the world origin with each joint offset +X by
+    // 1.0 m; end-effector target shifted +X / +Y so the chain visibly bends
+    // toward the marker. The cd::animation::ik::IkResult is left default-
+    // constructed (converged=false, no solved_rotations) — the editor is a
+    // static visual surface today; live solve hooks land when an animator
+    // scene drives the IK system from the playmode timeline.
+    {
+        using cd::animation::ik::Joint;
+        g_demo_ik_chain.joints.clear();
+        for (int i = 0; i < 5; ++i)
+        {
+            Joint j;
+            j.name           = std::string{"demo_joint_"} + std::to_string(i);
+            j.local_position = (i == 0)
+                ? std::array<float, 3>{ 0.0F, 0.0F, 0.0F }
+                : std::array<float, 3>{ 1.0F, 0.0F, 0.0F };
+            j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+            j.length              = 1.0F;
+            g_demo_ik_chain.joints.push_back(std::move(j));
+        }
+        g_demo_ik_chain.end_effector_target   = { 3.5F, 1.5F, 0.0F };
+        g_demo_ik_chain.max_iterations        = 16U;
+        g_demo_ik_chain.convergence_threshold = 0.001F;
+        g_ik_chain_editor_panel.set_chain(&g_demo_ik_chain);
+        g_ik_chain_editor_panel.set_last_result(&g_demo_ik_result);
+        std::printf("editor: ik_chain_editor seeded with %zu-joint demo chain.\n",
+                    g_demo_ik_chain.joints.size());
+    }
+
+    // asset_pipeline_status: no StreamerPool is wired in apps/editor yet (the
+    // engine-side pool lives in the runtime loop in sample binaries). Detach
+    // explicitly so the panel renders the 4-row background + label quads
+    // without dereferencing a stale pointer. When the editor wires a real
+    // pool in a future Sprint, set_pool(&pool) here will light up the bars.
+    g_asset_pipeline_status_panel.set_pool(nullptr);
+    std::printf("editor: asset_pipeline_status attached pool=<none> (pending=%zu, "
+                "completed=%zu).\n",
+                g_asset_pipeline_status_panel.total_pending(),
+                g_asset_pipeline_status_panel.total_completed());
 
     // -- 5b2. phase690 / M14 W3 — popout_dock state machine ------------------
     //

@@ -38,6 +38,8 @@
 #   cd::editor_panel_settings           -- settings panel (phase698, wired phase701)
 #   cd::editor_panel_build              -- build status panel (phase699, wired phase701)
 #   cd::editor_panel_perf_profiler      -- deep frame-by-frame profiler (phase700, wired phase701)
+#   cd::editor_panel_asset_pipeline_status -- StreamerPool 4-bar visualisation (phase709, wired phase711)
+#   cd::editor_panel_ik_chain_editor    -- 2D IK chain visualiser (phase710, wired phase711)
 #   cd::particle_system                 -- CPU particle system for cinematic boot splash (phase707)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
@@ -111,6 +113,15 @@ cd_add_sample(editor
     cd::editor_panel_settings
     cd::editor_panel_build
     cd::editor_panel_perf_profiler
+    # phase711 / M16 W3 — two NEW M16 surfaces wired into apps/editor:
+    #   * asset_pipeline_status — tab-merged with perf_profiler on RIGHT-lower.
+    #   * ik_chain_editor       — tab-merged with animator on BOTTOM strip.
+    # Both are tab-merges so dockspace.node_count() stays at 14; only the panel
+    # count grows 20 -> 22. Also drives shortcut-overlay auto-population: each
+    # panel registers its focus hotkey (Ctrl+1..Ctrl+22) into the overlay so a
+    # first-time user pressing '?' sees every shortcut DAY ONE.
+    cd::editor_panel_asset_pipeline_status
+    cd::editor_panel_ik_chain_editor
     # phase707 / M15 W6B — particle system for the cinematic boot splash
     # background (20 particles/sec, 4s life, accent_success green glow).
     cd::particle_system
