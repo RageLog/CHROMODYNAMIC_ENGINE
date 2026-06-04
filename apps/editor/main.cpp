@@ -3405,16 +3405,30 @@ int main(int argc, char** argv)
     }
     auto& submitter = *sub_r;
 
-    // Runtime self-test log line — exactly one of these prints every boot.
-    const char* route_label = "unknown";
+    // Phase 731 / FINALE-1 W2C A7 — Route A is the default-ON ship path
+    // (CMake CD_USE_MATERIAL_UI_ROUTE_A default ON since phase659; the
+    // editor binary boots through cd::material's UI pipeline end-to-end).
+    // On the success case we emit the single-line "Route A active" marker
+    // the audit asks for; the fallback / Route-B-only branches keep their
+    // longer diagnostic strings because they signal a regression and the
+    // operator needs the error context immediately.
     switch (route_taken)
     {
-        case 1: route_label = "Route A success (cd::material UI variant)"; break;
-        case 2: route_label = "Route A failed -> Route B fallback (inline GLSL)"; break;
-        case 3: route_label = "Route B only (CD_USE_MATERIAL_UI_ROUTE_A off)"; break;
-        default: route_label = "unknown"; break;
+        case 1:
+            std::printf("editor: Route A active.\n");
+            break;
+        case 2:
+            std::printf("editor: submitter route = "
+                        "Route A failed -> Route B fallback (inline GLSL).\n");
+            break;
+        case 3:
+            std::printf("editor: submitter route = "
+                        "Route B only (CD_USE_MATERIAL_UI_ROUTE_A off).\n");
+            break;
+        default:
+            std::printf("editor: submitter route = unknown.\n");
+            break;
     }
-    std::printf("editor: submitter route = %s.\n", route_label);
     std::fflush(stdout);
 
     // Feed the editor's dark theme palette into the variant's theme UBO so

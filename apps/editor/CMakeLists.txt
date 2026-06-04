@@ -160,30 +160,37 @@ cd_add_sample(editor
 set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
 
 # Phase 608 / M7 W3 introduced Route A vs Route B as a hard compile-time
-# split. Phase 659 / M11 W3B Sprint-4 turns the flag into a PREFERRED-PATH
-# selector with graceful runtime fallback:
+# split. Phase 659 / M11 W3B Sprint-4 turned the flag into a PREFERRED-PATH
+# selector with graceful runtime fallback. Phase 731 / FINALE-1 W2C A7
+# audited the path end-to-end (`apps/editor --headless 5`) and confirmed:
 #
-# CD_USE_MATERIAL_UI_ROUTE_A (default ON after Sprint-4):
+#   * Submitter::create_with_material_ui_variant returns a valid handle.
+#   * Theme palette UBO uploads OK on the variant's descriptor set.
+#   * All 24 dock panels render through the cd::material UI pipeline
+#     (vertex-color + theme UBO), NOT a clear-color placeholder.
+#
+# CD_USE_MATERIAL_UI_ROUTE_A (default ON since phase659; ship default
+# re-confirmed in phase731):
 #   * ON  -- main.cpp tries Route A (cd::material::UiVariant +
-#            Submitter::create_with_material_ui_variant) first; on any
-#            error it logs a warning and falls back to Route B
-#            (Submitter::create_with_inline_shader) so the editor still
-#            opens with a live swapchain. Boot prints which route
-#            actually succeeded ("Route A success" or "Route A failed ->
-#            Route B fallback").
+#            Submitter::create_with_material_ui_variant) first; on the
+#            success case the boot log prints the single-line marker
+#            "editor: Route A active." On any factory or descriptor
+#            error main.cpp logs a diagnostic warning and falls back to
+#            Route B (Submitter::create_with_inline_shader) so the
+#            editor still opens with a live swapchain.
 #   * OFF -- main.cpp never attempts Route A; it goes straight to
-#            Route B. Boot prints "Route B only".
+#            Route B. Boot prints "submitter route = Route B only".
 #
 # Both Submitter factories are linked into the binary regardless of the
-# flag value (cd::material is now an unconditional dependency above);
-# the flag only chooses whether to even try Route A at runtime. Default
-# is ON because the runtime fallback makes the strategic path safe to
-# ship as the visible default; OFF stays available for hosts where
-# attempting Route A is undesirable (e.g. CI bots with no glslang).
+# flag value (cd::material is an unconditional dependency above); the
+# flag only chooses whether to even try Route A at runtime. Default is
+# ON because the runtime fallback makes the strategic path safe to ship
+# as the visible default; OFF stays available for hosts where attempting
+# Route A is undesirable (e.g. CI bots with no glslang).
 #
 # Override via:   cmake -B build -DCD_USE_MATERIAL_UI_ROUTE_A=OFF ...
 option(CD_USE_MATERIAL_UI_ROUTE_A
-       "Editor prefers Route A (cd::material UI variant) at runtime, with safety fallback to Route B (inline GLSL)."
+       "Editor prefers Route A (cd::material UI variant) at runtime, with safety fallback to Route B (inline GLSL). Default ON (ship path)."
        ON)
 if(CD_USE_MATERIAL_UI_ROUTE_A)
   target_compile_definitions(cd_sample_editor PRIVATE CD_USE_MATERIAL_UI_ROUTE_A=1)
