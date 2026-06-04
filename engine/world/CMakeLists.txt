@@ -9,6 +9,7 @@
 #   anim             — S4.4 (planned).
 #   audio            — S4.5 (planned).
 #   audio_dsp_fx     — Phase 562: cd::audio::dsp_fx Sprint-1 (BiquadCoeffs, LowPass, HighPass, DelayLine, Reverb stub).
+#   audio_spatial    — Phase 693: cd::audio::spatial Sprint-1 (3D positional: ITD/ILD panning + 1/r distance + Doppler).
 #   input            — S4.6 (planned).
 #   net              — S4.7 (planned).
 #   net_matchmaker   — Phase 563 / Sprint W5B: cd::net::matchmaker Sprint-1 (in-memory).
@@ -30,6 +31,7 @@ add_subdirectory(physics_jolt)
 add_subdirectory(anim)
 add_subdirectory(audio)
 add_subdirectory(audio_dsp_fx)
+add_subdirectory(audio_spatial)
 add_subdirectory(input)
 add_subdirectory(net)
 add_subdirectory(net_matchmaker)
