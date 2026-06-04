@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/physics/vehicle/Vehicle.hpp
 // Phase 670 — cd::physics::vehicle Sprint-1 (CPU bicycle model).
+// Phase 692 — Sprint-2: use_jolt flag + JoltAdapter delegation.
 //
 // Provides a 4-wheel car/truck vehicle model with:
 //   * WheelConfig  — per-wheel geometry, suspension, and steering parameters.
@@ -17,9 +18,15 @@
 //   * Anti-roll and suspension stiffness influence handled as tuning constants
 //     (not full spring-damper integration — deferred to Sprint-2 + Jolt).
 //
-// Sprint-2 will wire cd::physics::IPhysicsWorld rigid-body handles and real
-// terrain-contact normal queries. The public API contract (WheelConfig,
-// EngineConfig, VehicleConfig, VehicleState, Vehicle) is stable across sprints.
+// Sprint-2 (Phase 692):
+//   * VehicleConfig::use_jolt (default false) — when true, Vehicle::tick()
+//     delegates to cd::physics::vehicle::JoltAdapter instead of the bicycle
+//     model. The adapter is configured via Vehicle::configure_jolt().
+//   * The public API contract (WheelConfig, EngineConfig, VehicleConfig,
+//     VehicleState, Vehicle) is stable across sprints.
+//
+// Sprint-3 will wire JPH::WheeledVehicleController per-wheel constraints
+// once the vcpkg jolt-physics port lands (ADR-2026xxxx-physics-jolt-bringup).
 //
 // MOMENT: A racing-game dev drops VehicleConfig in, gets a controllable car
 // that responds to throttle/brake/steer with realistic gear-shift behaviour —
@@ -35,9 +42,16 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
+
+// Forward declarations (Sprint-2 additions).
+namespace cd::physics { class IPhysicsWorld; }
 
 namespace cd::physics::vehicle
 {
+
+// Forward declaration (avoids including JoltAdapter.hpp in public header).
+class JoltAdapter;
 
 // ---------------------------------------------------------------------------
 // WheelConfig — per-wheel authored parameters.
@@ -109,6 +123,16 @@ struct VehicleConfig
     std::array<WheelConfig, 4> wheels {};
 
     EngineConfig engine {};
+
+    /// When true, Vehicle::tick() delegates chassis dynamics to
+    /// cd::physics::vehicle::JoltAdapter (Sprint-2+). The adapter must
+    /// be armed by calling Vehicle::configure_jolt() before the first
+    /// tick; if not armed, Vehicle falls back to the bicycle model
+    /// regardless of this flag.
+    ///
+    /// Default false — preserves Sprint-1 behaviour when no Jolt world
+    /// is available or desired (unit tests, headless tools).
+    bool use_jolt { false };
 };
 
 // ---------------------------------------------------------------------------
@@ -147,8 +171,11 @@ struct VehicleState
 class Vehicle
 {
 public:
-    Vehicle() noexcept = default;
-    ~Vehicle() noexcept = default;
+    // Constructor + destructor are user-declared and defined in Vehicle.cpp
+    // so that unique_ptr<JoltAdapter> can see the complete JoltAdapter type
+    // at the deletion point (PIMPL pattern, CLAUDE.md §1).
+    Vehicle() noexcept;
+    ~Vehicle() noexcept;
 
     Vehicle(const Vehicle&) = delete;
     Vehicle& operator=(const Vehicle&) = delete;
@@ -160,6 +187,20 @@ public:
     /// Replace current configuration. Resets all dynamic state (speed, RPM,
     /// gear) to initial values. Safe to call multiple times.
     void configure(const VehicleConfig& cfg) noexcept;
+
+    /// Arm the JoltAdapter for this vehicle (Sprint-2).
+    /// Must be called before tick() when VehicleConfig::use_jolt == true.
+    ///
+    /// @param world  The live IPhysicsWorld (owned externally; lifetime must
+    ///               exceed this Vehicle). For the stub backend pass the
+    ///               result of cd::physics_jolt::make_jolt_physics_world();
+    ///               for tests a plain cd::physics::make_builtin_physics_world()
+    ///               suffices since IPhysicsWorld is backend-agnostic.
+    ///
+    /// @returns true  when the chassis body was successfully registered.
+    ///          false when the world rejected the body; in that case tick()
+    ///                silently falls back to the bicycle model.
+    bool configure_jolt(cd::physics::IPhysicsWorld& world) noexcept;
 
     // ---- Per-frame input ---------------------------------------------------
 
@@ -211,6 +252,13 @@ private:
     uint8_t m_gear { 0 };
 
     VehicleState m_state {};
+
+    // ---- Sprint-2: JoltAdapter (heap-allocated to keep header PIMPL-clean) --
+    // Non-null only after a successful configure_jolt() call.
+    std::unique_ptr<JoltAdapter> m_jolt_adapter;
+
+    /// Non-owning pointer to the world passed to configure_jolt().
+    cd::physics::IPhysicsWorld* m_jolt_world { nullptr };
 };
 
 }  // namespace cd::physics::vehicle

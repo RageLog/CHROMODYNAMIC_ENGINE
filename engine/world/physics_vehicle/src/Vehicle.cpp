@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/physics/vehicle/Vehicle.cpp
 // Phase 670 — cd::physics::vehicle Sprint-1 implementation.
+// Phase 692 — Sprint-2: configure_jolt() + Jolt delegation path in tick().
 //
 // Implementation notes
 // --------------------
@@ -37,13 +38,22 @@
 // =============================================================================
 
 #include <cd/physics/vehicle/Vehicle.hpp>
+#include <cd/physics/vehicle/JoltAdapter.hpp>
+#include <cd/physics/IPhysicsWorld.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 namespace cd::physics::vehicle
 {
+
+// ---- Vehicle ctor/dtor (defined here so ~unique_ptr<JoltAdapter> sees the
+//      complete type; JoltAdapter.hpp is included above). PIMPL pattern. ---
+
+Vehicle::Vehicle() noexcept {}
+Vehicle::~Vehicle() noexcept {}
 
 // ---- Physical constants (Sprint-1 fixed) -----------------------------------
 
@@ -77,6 +87,35 @@ void Vehicle::configure(const VehicleConfig& cfg) noexcept
     m_steer       = 0.0F;
     m_gear        = 0;
     m_state       = VehicleState {};
+
+    // Reset any previously configured Jolt adapter; the caller must call
+    // configure_jolt() again after configure() if use_jolt is still desired.
+    m_jolt_adapter.reset();
+    m_jolt_world = nullptr;
+}
+
+// ---- Vehicle::configure_jolt -----------------------------------------------
+
+bool Vehicle::configure_jolt(cd::physics::IPhysicsWorld& world) noexcept
+{
+    // Lazily create the adapter on first call.
+    if (!m_jolt_adapter)
+    {
+        m_jolt_adapter = std::make_unique<JoltAdapter>();
+    }
+
+    const bool ok = m_jolt_adapter->configure(m_cfg, world);
+    if (ok)
+    {
+        m_jolt_world = &world;
+    }
+    else
+    {
+        // configure() failed — destroy adapter so tick() falls back to bicycle.
+        m_jolt_adapter.reset();
+        m_jolt_world = nullptr;
+    }
+    return ok;
 }
 
 // ---- Vehicle::set_input ----------------------------------------------------
@@ -97,6 +136,38 @@ void Vehicle::tick(float dt) noexcept
     {
         return;
     }
+
+    // ---- Sprint-2: Jolt delegation path ------------------------------------
+    // When use_jolt is requested AND the adapter was successfully armed via
+    // configure_jolt(), push inputs into Jolt, step the world, then read back
+    // chassis transform. RPM / gear remain bicycle-model derived (Sprint-3
+    // will compute them from JPH::WheeledVehicleController::GetInfo()).
+    if (m_cfg.use_jolt && m_jolt_adapter && m_jolt_adapter->is_configured()
+        && m_jolt_world != nullptr)
+    {
+        m_jolt_adapter->set_inputs(m_throttle, m_brake, m_steer);
+        m_jolt_adapter->sync_to_jolt(dt);
+        m_jolt_world->step(dt);
+        m_jolt_adapter->sync_from_jolt(m_state);
+
+        // Populate inputs in state (sync_from_jolt only touches speed/wheels).
+        m_state.throttle = m_throttle;
+        m_state.brake    = m_brake;
+        m_state.steer    = m_steer;
+
+        // RPM + gear estimation from speed read back (reuse bicycle helper).
+        const float speed_ms = m_state.speed_kph / 3.6F;
+        const float wheel_r  = m_cfg.wheels[0].radius > 1e-6F
+                                   ? m_cfg.wheels[0].radius : 0.32F;
+        const float omega    = speed_ms / wheel_r;
+        const float raw_rpm  = engine_rpm_from_wheel(omega);
+        m_gear               = auto_shift(raw_rpm, m_gear);
+        m_state.gear         = m_gear;
+        m_state.rpm          = raw_rpm;
+
+        return; // Jolt path complete — skip bicycle model below.
+    }
+    // ---- Fall-through: Sprint-1 bicycle model (use_jolt false or unarmed) --
 
     // ---- Effective wheel radius (use first driven wheel; fallback FL) -------
     float wheel_radius = m_cfg.wheels[0].radius;

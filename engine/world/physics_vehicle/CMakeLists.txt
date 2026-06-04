@@ -1,36 +1,41 @@
-# engine/world/physics_vehicle — cd::physics::vehicle (Phase 670)
+# engine/world/physics_vehicle — cd::physics::vehicle (Phase 670/692)
 #
-# Sprint-1: CPU-side 4-wheel vehicle model (bicycle model + gear-ratio torque).
+# Sprint-1 (Phase 670): CPU-side 4-wheel vehicle model (bicycle model + gear
+#   ratio torque chain).
+# Sprint-2 (Phase 692): JoltAdapter bridges to cd::physics::IPhysicsWorld so
+#   the chassis responds to terrain via rigid-body collision.
 #
 # Provides:
-#   * WheelConfig   — per-wheel geometry, suspension, and steering parameters.
-#   * EngineConfig  — max torque, 6 gear ratios, final drive, RPM limits.
-#   * VehicleConfig — chassis + wheel array + engine assembly.
-#   * VehicleState  — per-frame speed/rpm/gear/steer output.
-#   * Vehicle       — configure / set_input / tick / state API.
-#
-# Sprint-1 scope: longitudinal bicycle model, auto gear-shift, no terrain.
-# Sprint-2 will wire cd::physics::IPhysicsWorld rigid-body handles and real
-# terrain-contact queries (Jolt integration, see physics_jolt CMakeLists).
+#   * WheelConfig          — per-wheel geometry, suspension, and steering.
+#   * EngineConfig         — max torque, 6 gear ratios, final drive, RPM.
+#   * VehicleConfig        — chassis + wheel array + engine assembly.
+#   *   use_jolt bool      — Sprint-2 flag (default false).
+#   * VehicleState         — per-frame speed/rpm/gear/steer output.
+#   * Vehicle              — configure / configure_jolt / set_input / tick.
+#   * JoltAdapter          — configure / sync_to_jolt / sync_from_jolt.
+#   * WheelConstraintDesc  — per-wheel bookkeeping (Sprint-2 stub; Sprint-3
+#                             replaces with JPH::WheelConstraint* once the
+#                             vcpkg jolt-physics port lands).
 #
 # Dependencies (CLAUDE.md §7):
-#   cd::physics (public interface + IPhysicsWorld header) — Sprint-2 wiring.
-#   cd::math    — Vec3f transitively via cd::physics.
-#   cd::core    — CD_NODISCARD + base defines.
-#
-# Sprint-1 note: cd::physics is listed as a PUBLIC dep so Sprint-2 consumers
-# only need to link cd::physics_vehicle and get the physics interface headers
-# transitively. No cd::physics symbols are called in Sprint-1; the dependency
-# is structural only.
+#   cd::physics      — IPhysicsWorld interface + BodyHandle.  PUBLIC so
+#                      downstream consumers inherit the header transitively.
+#   cd::physics_jolt — is_stub_backend() used by tests. PRIVATE — callers
+#                      should not need to see JoltWorld.hpp to drive a Vehicle.
+#   cd::math         — Vec3f.  Transitive via cd::physics.
+#   cd::core         — CD_NODISCARD + base defines.  Transitive.
 
 cd_add_library(physics_vehicle
   TYPE STATIC
   SOURCES
     src/Vehicle.cpp
+    src/JoltAdapter.cpp
   PUBLIC_DEPS
     cd::physics
     cd::math
     cd::core
+  PRIVATE_DEPS
+    cd::physics_jolt
 )
 
 if(CD_ENABLE_TESTING)
