@@ -120,3 +120,12 @@ add_subdirectory(dialog_tree)
 #                    used for deterministic CI regression fixtures and demo
 #                    capture. Pure state machine; no ECS / render / audio.
 add_subdirectory(input_recorder)
+
+# Phase 671 — "NavMesh + A* pathfinding" (M12 W4B):
+#   ai_pathfinding — cd::ai::pathfinding Sprint-1 in-memory NavMesh + A*.
+#                    Triangle dual-graph A* with centroid heuristic + neighbour
+#                    adjacency. Sibling to cd::game::ai_bt (different
+#                    responsibility: spatial pathfinding vs. behaviour logic).
+#                    Sprint-2 plan: BVH nearest-triangle + funnel smoothing.
+#                    Moment: NPCs walk around obstacles via real A* pathfinding.
+add_subdirectory(ai_pathfinding)
