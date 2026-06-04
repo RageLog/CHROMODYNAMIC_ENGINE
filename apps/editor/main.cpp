@@ -1817,35 +1817,27 @@ int main(int argc, char** argv)
                     bounds);
             }
 
-            // --- GPU marker overlay -- top-right 300 x 100, below CPU ----
-            // phase631 / M9 W1A — sibling to cpu_marker_overlay (cpu/gpu
-            // classification). Synthetic GpuMarkerSample data fed directly
-            // (no real ICommandBuffer needed until write_timestamp lands).
-            // Stacked below the cpu_marker_overlay: y offset = kMargin +
-            // cpu overlay height (120) + gap (4).
+            // --- GPU overlay — "GPU" header + 100 px body, below CPU ------
+            // phase631 / M9 W1A classification (cpu/gpu sibling).
+            // phase674: titled header added. Y offset accounts for CPU header.
             {
                 constexpr float kOverlayW  = 300.0F;
                 constexpr float kOverlayH  = 100.0F;
                 constexpr float kMargin    = 8.0F;
-                constexpr float kCpuH      = 120.0F;  // cpu_marker_overlay height
+                // CPU overlay total height = its header + 120 px body.
+                constexpr float kCpuTotal  = kOverlayHeaderH + 120.0F;
                 constexpr float kGap       = 4.0F;
-                const float     overlay_x  = fbw_f - kOverlayW - kMargin;
-                const float     overlay_y  = kMargin + kCpuH + kGap;
+                const float     ox         = fbw_f - kOverlayW - kMargin;
+                const float     oy         = kMargin + kCpuTotal + kGap;
 
-                // Synthetic 4 GPU markers — monotonic counter ticks at 1 GHz
-                // stub rate: 1 tick = 1 ns → each marker is a few million ticks
-                // apart so duration_ms_computed is a small positive value.
-                // Using frame_idx to advance the base tick deterministically.
+                draw_overlay_header(batcher, widget_theme,
+                                    ox, oy, kOverlayW, OverlayKind::kGpu);
+
                 const std::uint64_t base_tick =
                     static_cast<std::uint64_t>(frame_idx) * 16'000'000ULL;
-
-                // GpuMarkerSample fields: name, gpu_start_tick, gpu_end_tick,
-                // duration_ms_computed.  duration_ms_computed = delta / 1e6
-                // at stub 1 GHz rate. We set it explicitly here so the
-                // draw helper doesn't need to re-derive it from the ticks.
                 using GS = cd::profile::gpu_marker::GpuMarkerSample;
-                const std::array<GS, 4> gpu_marker_dummy {
-                    GS { "gpu.depth_prepass",  base_tick + 0ULL,
+                const std::array<GS, 4> gpu_markers {
+                    GS { "gpu.depth_prepass",  base_tick,
                          base_tick + 2'500'000ULL, 2.5 },
                     GS { "gpu.gbuffer",        base_tick + 2'500'000ULL,
                          base_tick + 6'000'000ULL, 3.5 },
@@ -1856,39 +1848,46 @@ int main(int argc, char** argv)
                 };
                 draw_gpu_marker_overlay(
                     batcher,
-                    std::span<const GS>(gpu_marker_dummy.data(),
-                                        gpu_marker_dummy.size()),
-                    overlay_x, overlay_y,
-                    kOverlayW, kOverlayH,
-                    16.0);
+                    std::span<const GS>(gpu_markers.data(), gpu_markers.size()),
+                    ox, oy + kOverlayHeaderH,
+                    kOverlayW, kOverlayH, 16.0);
             }
 
-            // --- Frame-graph timeline -- bottom-right 400 x 80 -----------
+            // --- FRAME overlay — "FRAME" header + 80 px body, bottom-right -
             //
-            // phase667 / M12 W2: lifted by kStatusBarH so the overlay sits
-            // above the new status bar ribbon instead of being clipped.
+            // phase667: lifted by kStatusBarH so it clears the status ribbon.
+            // phase674: titled header + real "UI" pass from batcher data.
+            //   "UI" pass duration ∝ batcher.vertex_count() (live data).
             {
                 constexpr float kOverlayW = 400.0F;
                 constexpr float kOverlayH = 80.0F;
                 constexpr float kMargin   = 8.0F;
-                const fgt::Rect bounds {
-                    fbw_f - kOverlayW - kMargin,
-                    fbh_f - kOverlayH - kMargin - kStatusBarH,
-                    kOverlayW, kOverlayH };
+                const float     ox        = fbw_f - kOverlayW - kMargin;
+                const float     oy        = fbh_f - kOverlayH - kOverlayHeaderH
+                                            - kMargin - kStatusBarH;
 
-                // Synthetic 3-pass frame: GBuffer / Lighting / Composite.
-                const std::array<fgt::PassRecord, 3> gpu_dummy {
-                    fgt::PassRecord {
-                        "GBuffer",    0.0,  4.5, 1U },
-                    fgt::PassRecord {
-                        "Lighting",   4.5,  6.0, 2U },
-                    fgt::PassRecord {
-                        "Composite", 10.5,  3.0, 3U },
+                draw_overlay_header(batcher, widget_theme,
+                                    ox, oy, kOverlayW, OverlayKind::kFrame);
+
+                const fgt::Rect bounds {
+                    ox, oy + kOverlayHeaderH, kOverlayW, kOverlayH };
+
+                // Real data: "UI" pass scales with current frame's vertex load
+                // (capped at 65 536 verts == full budget == 2 ms equivalent).
+                const double ui_dur = static_cast<double>(
+                    std::clamp(static_cast<float>(batcher.vertex_count())
+                               / 65536.0F, 0.0F, 1.0F)) * 2.0;
+
+                const std::array<fgt::PassRecord, 4> frame_passes {
+                    fgt::PassRecord { "GBuffer",  0.0,   4.5,     1U },
+                    fgt::PassRecord { "Lighting", 4.5,   6.0,     2U },
+                    fgt::PassRecord { "Composite", 10.5, 3.0,     3U },
+                    fgt::PassRecord { "UI",        13.5, ui_dur,  4U },
                 };
                 frame_graph_overlay.draw(
                     batcher,
                     std::span<const fgt::PassRecord>(
-                        gpu_dummy.data(), gpu_dummy.size()),
+                        frame_passes.data(), frame_passes.size()),
                     bounds);
             }
         }

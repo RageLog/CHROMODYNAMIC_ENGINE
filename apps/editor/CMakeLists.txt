@@ -81,6 +81,7 @@ cd_add_sample(editor
     cd::editor_ui
     cd::editor_cdproj
     cd::material                        # phase659 / M11 W3B Sprint-4 -- always linked (Route A runtime path)
+    cd::frame_timing                    # phase674 / M12 W6B -- header-only FrameTimeRing for real FPS feed
     cd::platform
     cd::rhi
     cd::rhi_vulkan
