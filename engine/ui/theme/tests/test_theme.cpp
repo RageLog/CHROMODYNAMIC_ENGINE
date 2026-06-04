@@ -341,3 +341,69 @@ TEST(ThemePickerPalettes, LightSurfaceBrighterThanDarkSurface)
         << "light surface luminance must exceed dark surface luminance by > 0.7 "
            "(inverted brightness contract)";
 }
+
+// ============================================================================
+// phase715 / M16 W6 — cd_test_palette_lerp
+//
+// Three cases that verify the lerp_palette() helper introduced in phase715
+// for the 200 ms cross-fade animation in the theme picker:
+//
+//   L1: t=0  returns `from` exactly (every channel).
+//   L2: t=1  returns `to`   exactly (every channel).
+//   L3: t=0.5 returns the per-channel midpoint of dark and light palettes.
+// ============================================================================
+
+// ---- Case L1: lerp_palette(from, to, 0) == from ---------------------------
+
+TEST(PaletteLerp, TZeroReturnsFrom)
+{
+    const auto from = tt::default_dark_palette();
+    const auto to   = tt::default_light_palette();
+    const auto out  = tt::lerp_palette(from, to, 0.0F);
+
+    for (std::size_t i = 0; i < tt::kPaletteSize; ++i)
+    {
+        EXPECT_NEAR(out.palette[i].r, from.palette[i].r, kEps) << "slot " << i << " r";
+        EXPECT_NEAR(out.palette[i].g, from.palette[i].g, kEps) << "slot " << i << " g";
+        EXPECT_NEAR(out.palette[i].b, from.palette[i].b, kEps) << "slot " << i << " b";
+        EXPECT_NEAR(out.palette[i].a, from.palette[i].a, kEps) << "slot " << i << " a";
+    }
+}
+
+// ---- Case L2: lerp_palette(from, to, 1) == to -----------------------------
+
+TEST(PaletteLerp, TOneReturnsTo)
+{
+    const auto from = tt::default_dark_palette();
+    const auto to   = tt::default_light_palette();
+    const auto out  = tt::lerp_palette(from, to, 1.0F);
+
+    for (std::size_t i = 0; i < tt::kPaletteSize; ++i)
+    {
+        EXPECT_NEAR(out.palette[i].r, to.palette[i].r, kEps) << "slot " << i << " r";
+        EXPECT_NEAR(out.palette[i].g, to.palette[i].g, kEps) << "slot " << i << " g";
+        EXPECT_NEAR(out.palette[i].b, to.palette[i].b, kEps) << "slot " << i << " b";
+        EXPECT_NEAR(out.palette[i].a, to.palette[i].a, kEps) << "slot " << i << " a";
+    }
+}
+
+// ---- Case L3: lerp_palette(from, to, 0.5) == per-channel midpoint ---------
+
+TEST(PaletteLerp, THalfReturnsMidpoint)
+{
+    const auto from = tt::default_dark_palette();
+    const auto to   = tt::default_high_contrast_palette();
+    const auto out  = tt::lerp_palette(from, to, 0.5F);
+
+    for (std::size_t i = 0; i < tt::kPaletteSize; ++i)
+    {
+        const float expect_r = (from.palette[i].r + to.palette[i].r) * 0.5F;
+        const float expect_g = (from.palette[i].g + to.palette[i].g) * 0.5F;
+        const float expect_b = (from.palette[i].b + to.palette[i].b) * 0.5F;
+        const float expect_a = (from.palette[i].a + to.palette[i].a) * 0.5F;
+        EXPECT_NEAR(out.palette[i].r, expect_r, kEps) << "slot " << i << " r";
+        EXPECT_NEAR(out.palette[i].g, expect_g, kEps) << "slot " << i << " g";
+        EXPECT_NEAR(out.palette[i].b, expect_b, kEps) << "slot " << i << " b";
+        EXPECT_NEAR(out.palette[i].a, expect_a, kEps) << "slot " << i << " a";
+    }
+}

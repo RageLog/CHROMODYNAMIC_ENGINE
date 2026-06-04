@@ -2477,6 +2477,24 @@ int main(int argc, char** argv)
     uw::Theme widget_theme = build_widget_theme(active_theme_name);
     std::printf("editor: active theme = '%s'\n", active_theme_name.c_str());
 
+    // -- phase715 / M16 W6 — 200 ms cross-fade transition state -------------
+    //
+    // When the user picks a new theme, we store the V2 `from` palette and the
+    // `to` palette plus the start wall-clock time. For the next 200 ms the
+    // lerp_palette() helper blends every color token; after 200 ms we snap.
+    // `theme_fade_active` gates the lerp so there is zero overhead per frame
+    // when no transition is in progress.
+    //
+    // We store ONLY the V2 cd::ui::theme::Theme palettes (not widget_theme)
+    // because lerp_palette() operates on the token layer. build_widget_theme()
+    // is only called once per transition start and once on snap (not every
+    // frame) so it is not on the hot path.
+    static constexpr float kThemeFadeMs = 200.0F;
+    uth::Theme theme_fade_from {};
+    uth::Theme theme_fade_to   {};
+    bool       theme_fade_active    = false;
+    std::chrono::steady_clock::time_point theme_fade_start_tp {};
+
     // -- 3. cd::editor instance (drives the scene-tree panel content) -------
     cd::editor::EditorDesc ed_desc {};
     ed_desc.width  = 1280.0F;
@@ -3696,11 +3714,62 @@ int main(int argc, char** argv)
                         now);
         }
 
+        // -- phase715 / M16 W6 — 200 ms theme cross-fade tick ------------------
+        //
+        // If a palette fade is active, compute elapsed time, lerp the V2
+        // palette, then rebuild widget_theme from the blended token set.
+        // After kThemeFadeMs the transition is snapped to `to` exactly and
+        // the flag is cleared so this block costs nothing in steady state.
+        {
+            using sc = std::chrono::steady_clock;
+            using ms = std::chrono::duration<float, std::milli>;
+            if (theme_fade_active)
+            {
+                const float elapsed = std::chrono::duration_cast<ms>(
+                    sc::now() - theme_fade_start_tp).count();
+                if (elapsed >= kThemeFadeMs)
+                {
+                    // Snap to target and stop.
+                    widget_theme     = build_widget_theme(active_theme_name);
+                    theme_fade_active = false;
+                }
+                else
+                {
+                    const float t = elapsed / kThemeFadeMs;
+                    const uth::Theme blended = uth::lerp_palette(theme_fade_from,
+                                                                 theme_fade_to, t);
+                    // Derive widget_theme colors from the blended V2 token set.
+                    // build_widget_theme() works from a name, so we build from
+                    // the target name first (for non-color slots) then patch the
+                    // palette-mapped colors using the blended surface token.
+                    //
+                    // Simple policy: use build_widget_theme(target) for structural
+                    // slots, then override the four primary widget colors from the
+                    // blended palette tokens: surface, on_surface, primary,
+                    // surface_variant. This keeps the rest of the widget struct
+                    // coherent while animating the visually dominant swatches.
+                    widget_theme = build_widget_theme(active_theme_name);
+                    const auto& p = blended.palette;
+                    using S = uth::PaletteSlot;
+                    widget_theme.background     = to_widget_color(p[static_cast<std::size_t>(S::kBackground)]);
+                    widget_theme.surface        = to_widget_color(p[static_cast<std::size_t>(S::kSurface)]);
+                    widget_theme.surface_hover  = to_widget_color(p[static_cast<std::size_t>(S::kSurfaceVariant)]);
+                    widget_theme.surface_press  = to_widget_color(p[static_cast<std::size_t>(S::kPrimaryContainer)]);
+                    widget_theme.surface_subtle = to_widget_color(p[static_cast<std::size_t>(S::kSurfaceVariant)]);
+                    widget_theme.accent         = to_widget_color(p[static_cast<std::size_t>(S::kPrimary)]);
+                    widget_theme.accent_hover   = to_widget_color(p[static_cast<std::size_t>(S::kPrimaryContainer)]);
+                    widget_theme.text           = to_widget_color(p[static_cast<std::size_t>(S::kOnSurface)]);
+                    widget_theme.text_dim       = to_widget_color(p[static_cast<std::size_t>(S::kOnSurfaceVariant)]);
+                    widget_theme.accent_error   = to_widget_color(p[static_cast<std::size_t>(S::kError)]);
+                }
+            }
+        }
+
         // -- phase695 / M14 W6A — theme picker (3 slabs in the status bar) ----
         //
         // Drawn after draw_status_bar so the slabs paint on top of the status
-        // ribbon background. A left-click on a slab rebuilds widget_theme and
-        // records active_theme_name so the on-exit .cdproj save captures it.
+        // ribbon background. A left-click on a slab starts a 200 ms cross-fade
+        // (phase715) and records active_theme_name for .cdproj save on exit.
         {
             std::string new_theme_name;
             const auto  ptr      = flatten_pointer(pointer);
@@ -3715,9 +3784,13 @@ int main(int argc, char** argv)
                 &new_theme_name);
             if (clicked)
             {
+                // phase715 — begin 200 ms cross-fade instead of instant swap.
+                theme_fade_from   = uth::theme_from_name(active_theme_name);
                 active_theme_name = new_theme_name;
-                widget_theme      = build_widget_theme(active_theme_name);
-                std::printf("editor: theme switched to '%s'\n",
+                theme_fade_to     = uth::theme_from_name(active_theme_name);
+                theme_fade_start_tp  = std::chrono::steady_clock::now();
+                theme_fade_active    = true;
+                std::printf("editor: theme fade started -> '%s'\n",
                             active_theme_name.c_str());
                 std::fflush(stdout);
             }

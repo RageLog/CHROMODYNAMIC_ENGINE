@@ -250,6 +250,38 @@ inline constexpr std::string_view kThemeNameDark          = "dark";
 inline constexpr std::string_view kThemeNameLight         = "light";
 inline constexpr std::string_view kThemeNameHighContrast  = "high_contrast";
 
+// ---- Palette interpolation (phase715 / M16 W6) ----------------------------
+//
+// lerp_palette() blends every ColorToken field (r, g, b, a) linearly
+// between `from` and `to` at parameter `t` in [0, 1].
+//
+//   t = 0.0  => returns `from` exactly.
+//   t = 1.0  => returns `to`   exactly.
+//   t = 0.5  => returns per-channel midpoint.
+//
+// Intended use: 200 ms cross-fade animation when the editor theme picker
+// switches palettes. The non-palette fields (typography / spacing / motion
+// / elevation) are taken from `to` so the new layout metrics apply
+// immediately while only the colour tokens animate.
+[[nodiscard]] inline Theme lerp_palette(const Theme& from,
+                                        const Theme& to,
+                                        float        t) noexcept
+{
+    Theme result = to;  // non-color fields (typo/spacing/motion/elevation) from `to`
+    for (std::size_t i = 0; i < kPaletteSize; ++i)
+    {
+        const ColorToken& f = from.palette[i];
+        const ColorToken& d = to.palette[i];
+        result.palette[i] = ColorToken {
+            f.r + (d.r - f.r) * t,
+            f.g + (d.g - f.g) * t,
+            f.b + (d.b - f.b) * t,
+            f.a + (d.a - f.a) * t,
+        };
+    }
+    return result;
+}
+
 // ---- Brand override --------------------------------------------------------
 //
 // Replace the primary swatch with `brand`, and re-pick on_primary so it
