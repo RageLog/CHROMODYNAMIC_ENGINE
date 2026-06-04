@@ -131,6 +131,20 @@ add_subdirectory(panel_material_preview)
 # tiles; Sprint-2 = real G-buffer sampling via cd::render::framegraph.
 add_subdirectory(panel_debug_viz)
 
+# ── cd::editor_panel_keyboard_shortcut_overlay (STATIC) ───────────────────────
+# phase688 — Keyboard Shortcut Overlay (DrawBatcher path; full-screen semi-
+# transparent cheatsheet; shortcuts grouped by category in horizontal columns).
+# Toggle with '?' (Source 2 / Hammer SDK convention).
+# MOMENT: new user presses '?', sees the entire keyboard map instantly.
+add_subdirectory(panel_keyboard_shortcut_overlay)
+
+# ── cd::editor_panel_scene_navigator (STATIC) ─────────────────────────────────
+# phase687 — Scene Navigator panel (DrawBatcher path; search box + live-filtered
+# scrollable entity list; case-insensitive substring match; Esc clears filter).
+# Sibling to scene_tree (different responsibility: search/filter, not hierarchy).
+# MOMENT: 500-entity scene, type 'enem', see 12 enemy spawners instantly.
+add_subdirectory(panel_scene_navigator)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
