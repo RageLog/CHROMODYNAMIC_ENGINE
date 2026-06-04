@@ -1,6 +1,6 @@
 # engine/ui/editor/panel_auto_save_indicator — cd::editor_panel_auto_save_indicator
 #
-# phase719 — Auto-Save Indicator panel (status-bar widget).
+# phase745 — Auto-Save Indicator panel (status-bar widget).
 # Provides cd::editor::panel::auto_save_indicator::AutoSaveIndicator
 # (DrawBatcher path; no ImGui).
 #

@@ -1,7 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/ui/editor/panel_auto_save_indicator/src/AutoSaveIndicator.cpp
 //
-// phase719 — cd::editor::panel::auto_save_indicator::AutoSaveIndicator implementation.
+// phase745 — cd::editor::panel::auto_save_indicator::AutoSaveIndicator implementation.
 //
 // Draw layout (left → right, vertically centered within bounds):
 //

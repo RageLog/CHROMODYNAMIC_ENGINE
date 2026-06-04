@@ -196,7 +196,7 @@ add_subdirectory(panel_scene_palette)
 add_subdirectory(panel_lobby_browser)
 
 # ── cd::editor_panel_auto_save_indicator (STATIC) ─────────────────────────────
-# phase719 — Auto-Save Indicator panel (DrawBatcher path; 5-state Status enum:
+# phase745 — Auto-Save Indicator panel (DrawBatcher path; 5-state Status enum:
 # Idle / PendingDirty / Saving / JustSaved / Error; colour-coded icon + label
 # background strip, ~50 px high; fits in the status bar or right corner).
 # MOMENT: user edits scene → "Unsaved changes" badge (amber) appears; auto-save

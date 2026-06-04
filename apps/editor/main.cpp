@@ -3334,9 +3334,9 @@ int main(int argc, char** argv)
         std::fflush(stdout);
     }
 
-    // PerfProfiler: configure budget (60 fps target). Synthetic FrameSnapshot
-    // data is captured per frame in the main loop below until the real
-    // cd::profile Collector instrumentation lands (Sprint-2).
+    // PerfProfiler: configure budget (60 fps target).
+    // phase736/phase746: REAL FrameSnapshot data — cpu_collector + fgt_timeline +
+    // prev_gpu_markers carry-forward — feeds capture_frame() each iteration.
     g_perf_profiler_panel.set_target_fps(60.0F);
     std::printf("editor: perf_profiler budget_ms=%.2f (60 fps target, REAL data feed).\n",
                 static_cast<double>(g_perf_profiler_panel.budget_ms()));
@@ -3365,14 +3365,16 @@ int main(int argc, char** argv)
     // CPU-marker bar chart   -> floating top-right (~300x120 px).
     // GPU-marker bar chart   -> floating top-right below CPU (~300x100 px).
     //                          phase631 / M9 W1A: cpu/gpu classification sibling.
-    //                          Synthetic samples this Sprint; real timestamps
-    //                          land when ICommandBuffer::write_timestamp ships.
+    //                          Real GpuMarkerSamples via gpu_marker_recorder +
+    //                          prev_gpu_markers carry-forward (phase746).
+    //                          duration_ms_computed from stub monotonic counter
+    //                          until ICommandBuffer::write_timestamp lands.
     // Frame-graph timeline   -> floating bottom-right (~400x80 px).
     //
-    // All overlays consume DUMMY synthetic samples this Sprint — real
-    // instrumentation hooks (cd::profile Collector wiring + GPU query
-    // readback feed) land in a follow-up Sprint. The dummy feed exists so
-    // the overlay surfaces are visibly active in the editor window.
+    // All overlays consume REAL data as of phase736/phase746:
+    //   cpu_overlay         — cpu_collector.samples_since() each frame.
+    //   gpu_marker overlay  — gpu_marker_recorder resolved samples.
+    //   frame_graph overlay — fgt_timeline.last_frame_passes() (DockDraw pass).
     //
     // asset::validator status badge: no status bar exists in apps/editor yet.
     // TODO(phase631): add status bar and wire cd::asset::validator badge here.
@@ -3383,12 +3385,19 @@ int main(int argc, char** argv)
     // phase737 — mutable timeline that accumulates real pass records each frame.
     fgt::Timeline              fgt_timeline {};
 
-    // phase736 — real instrumentation objects for FrameCapture.
-    //   cpu_collector      -- Collector records "frame.draw" CPU scope each frame.
-    //   gpu_marker_recorder -- Recorder brackets "gpu.ui_submit" in Vulkan cmd path.
-    //                         Empty on NullDevice (no cmd buffer available).
-    cmo::Collector                     cpu_collector { 4096U };
-    cd::profile::gpu_marker::Recorder  gpu_marker_recorder {};
+    // phase736 / phase746 — real instrumentation objects for FrameCapture.
+    //   cpu_collector        -- Collector records "frame.draw" CPU scope each frame.
+    //   gpu_marker_recorder  -- Recorder brackets "gpu.ui_submit" in Vulkan cmd path.
+    //                           Empty on NullDevice (no cmd buffer available).
+    //   prev_gpu_markers     -- Carry-forward buffer: holds the resolved samples from
+    //                           the previous frame's gpu_marker_recorder.resolve().
+    //                           GPU timestamps are only valid AFTER resolve(), which
+    //                           runs after capture_frame(); the carry-forward makes the
+    //                           N-1 frame's GPU data available when building frame N's
+    //                           FrameCapture — identical pattern to Timeline::last_frame_passes().
+    cmo::Collector                                               cpu_collector { 4096U };
+    cd::profile::gpu_marker::Recorder                           gpu_marker_recorder {};
+    std::vector<cd::profile::gpu_marker::GpuMarkerSample>       prev_gpu_markers {};
 
     // -- 6. Try Vulkan + window + Renderer; fall back to NullDevice ---------
     std::unique_ptr<platform::IWindow>  window;
@@ -4040,10 +4049,12 @@ int main(int argc, char** argv)
         // -- phase598 / M6 W3 + phase631 + phase674 — floating overlays ------
         //
         // phase674 adds a 14 px titled-header strip (draw_overlay_header) to
-        // each overlay so CPU / GPU / FRAME are visually labelled.  The FRAME
-        // overlay receives a real "UI" pass proportional to batcher vertex
-        // count.  All other timing data remains representative synthetic bars
-        // (real GPU timestamps land when ICommandBuffer::write_timestamp ships).
+        // each overlay so CPU / GPU / FRAME are visually labelled.
+        // phase736/phase746: all three overlays are fed REAL data:
+        //   CPU   — cpu_collector ring (32 ms lookback).
+        //   GPU   — gpu_marker_recorder resolved samples (stub monotonic counter
+        //           until write_timestamp lands; correct shape, see GpuMarker.hpp).
+        //   FRAME — fgt_timeline.last_frame_passes() (DockDraw CPU wall-clock pass).
         {
             const auto fbw_f = static_cast<float>(fb_w);
             const auto fbh_f = static_cast<float>(fb_h);
@@ -4232,11 +4243,15 @@ int main(int argc, char** argv)
                             static_cast<float>(fb_h));
         }
 
-        // -- phase720 / M17 W3 — auto-save indicator (status-bar widget) ------
+        // -- phase745 (FINALE-3 W1A A2) — auto-save indicator (status-bar widget)
+        //    (supersedes phase720 / M17 W3 inline intent — now uses
+        //     cd::editor_panel_auto_save_indicator lib; no inline draw logic here)
         //
         // Pinned between the frame-stats meters and the theme picker. Width is
         // 150 px so the badge reads as a self-contained "save state" pill
         // without crowding the FPS / verts / draws strips.
+        // MOMENT: trust signal that work isn't lost — badge switches Idle →
+        // Unsaved changes (amber) → Saving... (yellow) → Saved Ns ago (green).
         //
         // Layout reference (existing draw_status_bar regions):
         //   [0 .. kBadgeW=280]              validator badge
@@ -4636,8 +4651,11 @@ int main(int argc, char** argv)
                 const auto passes = fgt_timeline.last_frame_passes();
                 cap.gpu_passes.assign(passes.begin(), passes.end());
             }
-            // gpu_markers: populated in the Vulkan branch after resolve();
-            // empty on NullDevice/headless.
+            // Step 5b: gpu_markers — carry-forward from the previous frame's
+            // gpu_marker_recorder.resolve().  resolve() runs after capture_frame()
+            // in the Vulkan path; prev_gpu_markers holds N-1's resolved samples.
+            // Empty on NullDevice / headless (no Vulkan cmd buffer).
+            cap.gpu_markers = prev_gpu_markers;
 
             // Step 6: capture into the rolling ring.
             g_perf_profiler_panel.capture_frame(
@@ -4691,9 +4709,10 @@ int main(int argc, char** argv)
             // the per-frame draw commands the DrawBatcher produced so
             // panel quads + theme palette actually reach the swapchain.
             //
-            // phase736: bracket the UI submit in a gpu_marker_recorder scope
-            // ("gpu.ui_submit"). After resolve(), the sample feeds the GPU
-            // overlay and future FrameCapture gpu_markers iteration.
+            // phase736 / phase746: bracket the UI submit in a gpu_marker_recorder
+            // scope ("gpu.ui_submit"). After resolve(), the samples are persisted
+            // into prev_gpu_markers so the NEXT frame's FrameCapture receives real
+            // GPU timings (carry-forward pattern; same as Timeline::last_frame_passes()).
             gpu_marker_recorder.clear();
             {
                 cd::profile::gpu_marker::Scope gpu_ui_scope(
@@ -4701,6 +4720,11 @@ int main(int argc, char** argv)
                 submitter.record(cmd, frame.extent);
             }
             gpu_marker_recorder.resolve(*device);
+            // phase746: snapshot resolved samples into the carry-forward buffer.
+            {
+                const auto resolved = gpu_marker_recorder.samples();
+                prev_gpu_markers.assign(resolved.begin(), resolved.end());
+            }
 
             cmd.end_render_pass();
 
