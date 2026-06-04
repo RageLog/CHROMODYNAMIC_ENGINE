@@ -104,6 +104,27 @@ add_subdirectory(panel_light_editor)
 # Drives cd::game::dialog_tree::DialogTree.
 add_subdirectory(panel_dialog_tree_editor)
 
+# ── cd::editor_panel_vehicle_editor (STATIC) ──────────────────────────────
+# phase676 — Vehicle Editor panel (DrawBatcher path; engine/wheels/chassis
+# sections + live state readout). Drives cd::physics::vehicle::VehicleConfig
+# and VehicleState. MOMENT: racing dev tweaks gear ratios, sees next-frame
+# acceleration response without recompile.
+add_subdirectory(panel_vehicle_editor)
+
+# ── cd::editor_panel_pathfinding_viz (STATIC) ─────────────────────────────
+# phase677 — Pathfinding Viz panel (DrawBatcher path; top-down 2D navmesh
+# projection + A* last-path overlay + stats strip).
+# Drives cd::ai::pathfinding::NavMesh + PathResult.
+# MOMENT: designer drops a navmesh + clicks start/goal, sees A* path painted.
+add_subdirectory(panel_pathfinding_viz)
+
+# ── cd::editor_panel_material_preview (STATIC) ────────────────────────────
+# phase678 — Material Preview panel (DrawBatcher path; 2D sphere swatch tinted
+# by base_color + metallic/roughness bars + alpha cutoff bar (kMask) + texture
+# path pills). Sprint-2: real PBR sphere via cd::material UI variant pipeline.
+# Drives cd::asset::material_authoring::AuthoredMaterial (M10 phase644).
+add_subdirectory(panel_material_preview)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)
