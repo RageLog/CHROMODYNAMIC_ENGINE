@@ -38,14 +38,24 @@
     },
     {
       "name": "freetype",
-      "version>=": "2.13.0",
-      "$comment": "TTF/OTF outline rasterizer for cd_ui_font Phase 4 (ADR-20260530 + ADR-009). Resolved via find_package(Freetype CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback (VER-2-13-3). When unavailable, the stb_truetype backend (sibling CD_UI_FONT_BACKEND=stb) continues to compile and pass its tests."
+      "version>=": "2.13.2",
+      "$comment": "TTF/OTF outline rasterizer for cd_ui_font Phase 4 (ADR-20260530 + ADR-009). Resolved via find_package(Freetype CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback (VER-2-13-3). When unavailable, the stb_truetype backend (sibling CD_UI_FONT_BACKEND=stb) continues to compile and pass its tests. version>= uses 2.13.2 (minimum that exists in the version DB; 2.13.0 has no DB entry)."
     },
     {
       "name": "harfbuzz",
       "version>=": "8.0.0",
       "default-features": false,
       "$comment": "OpenType shaping engine (BiDi / ligature / Indic conjunct) for cd_ui_font Phase 4 (ADR-20260530 + ADR-009). Resolved via find_package(harfbuzz CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback. When unavailable, Font::shape() degrades to a one-codepoint-per-glyph identity reorder so the public surface keeps compiling."
+    },
+    {
+      "name": "lz4",
+      "version>=": "1.9.4",
+      "$comment": "Lossless compression codec for cd::game::save_compression Sprint-2 (Phase 749). compress_lz4() / decompress_lz4() added beside the RLE path; RLE kept for back-compat. Resolved via find_package(lz4 CONFIG QUIET) in engine/game/save_compression/CMakeLists.txt with FetchContent fallback (tag v1.10.0). Target: lz4::lz4. Moment: 5 MB save -> ~600 KB at ~100 MB/s."
+    },
+    {
+      "name": "joltphysics",
+      "version>=": "5.5.0",
+      "$comment": "Jolt Physics 5.x — MIT, AAA-shipping multicore rigid-body solver (ADR-008 + ADR-20260530). Promoted from phase2-physics feature gate to active top-level dependency in FINALE-3/W2B-C2 (phase748). Resolved via find_package(Jolt CONFIG) in engine/world/physics_jolt/CMakeLists.txt with FetchContent fallback (tag v5.5.0). CMake target: Jolt::Jolt. Enables cd::physics_jolt real JPH::PhysicsSystem backend replacing the semi-implicit Euler stub."
     }
   ],
 
@@ -63,13 +73,8 @@
       "dependencies": []
     },
     "phase2-physics": {
-      "description": "Phase 2 physics backend (jolt-physics). Reserved-but-documented: Phase 525 / T0.3 ships cd::physics_jolt as a STUB backend (no vendor link) per the brief's escape hatch. Promotion of `jolt-physics` into the active `dependencies` block is gated on (a) `find_package(Jolt CONFIG)` being wired in `engine/world/physics_jolt/CMakeLists.txt` AND (b) the bringup ADR (`ADR-2026xxxx-physics-jolt-bringup`) recording the pinned Jolt tag + CMake flags. See vcpkg.json `$x-policy-note`.",
-      "dependencies": [
-        {
-          "name": "jolt-physics",
-          "$comment": "Jolt Physics 5.x — MIT, AAA-shipping multicore rigid-body / soft-body solver. See ADR-20260530-jolt-physics-integration §A for the trade-off table that pins Jolt over PhysX / Bullet. Opt-in until find_package is wired."
-        }
-      ]
+      "description": "Phase 2 physics backend gate — now superseded: joltphysics promoted to top-level `dependencies` in FINALE-3/W2B-C2 (phase748). This feature gate kept as a tombstone so no existing cmake -Dfeature= invocations break; it carries no additional deps.",
+      "dependencies": []
     },
     "webgpu": {
       "description": "WebGPU backend for cd::ui_renderer_webgpu via google/dawn (phase522). Opt-in: heavy dep (~800 MB). Also set -DCD_ENABLE_WEBGPU=ON at configure time.",
@@ -82,6 +87,6 @@
     }
   },
 
-  "builtin-baseline": "56bb2411609227288b70117ead2c47585ba07713",
-  "$x-baseline-comment": "vcpkg release 2026.04.27 (tag dc8d75cfc..., points to commit 56bb2411...). Bump together with a clean-build verification."
+  "builtin-baseline": "f14401ca0f2754347c3864da7488a9b955b4e47a",
+  "$x-baseline-comment": "vcpkg commit f14401ca (2026-01-24 local tool HEAD). Provides freetype 2.13.3 + harfbuzz 12.3.1 + spirv-cross 1.4.328.0. Previous baseline 56bb2411 (2026.04.27) targeted freetype 2.14.3 + harfbuzz 14.2.0 which are absent from the local version DB — caused vcpkg manifest-install failure. Bump when vcpkg tool is updated past this commit."
 }

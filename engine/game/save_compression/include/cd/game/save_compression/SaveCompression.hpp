@@ -1,23 +1,23 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/game/save_compression/SaveCompression.hpp
-// Phase 661 — cd::game::save_compression (M11 W4B sidecar to cd::game::save)
+// Phase 661 / 749 — cd::game::save_compression (M11 W4B / FINALE-3 W2C C4)
 //
 // PURPOSE
 // -------
 // Compress/decompress save-game byte streams so larger worlds fit in smaller
-// files and write/read times halve.  A 5 MB world-state blob with typical
-// struct-padding zero runs → ~800 KB on disk with Sprint-1 RLE alone.
+// files and write/read times improve.  Typical 5 MB world-state blob:
+//   Sprint-1 RLE  → ~800 KB at ~50 MB/s
+//   Sprint-2 LZ4  → ~600 KB at ~100 MB/s  (when lz4 is available)
 //
 // This library is a *sidecar* to cd::game::save — it does NOT replace it and
 // it does NOT depend on it.  Callers compress the byte vector before handing
 // it to SaveSystem::save() and decompress after SaveSystem::load() returns.
-// The split keeps the I/O and the compression concerns independent, which
-// enables future A/B benchmarking of Sprint-2 codec candidates (LZ4, zstd,
-// brotli) without touching the atomic-write machinery.
+// The split keeps the I/O and the compression concerns independent, enabling
+// A/B benchmarking of codec candidates without touching atomic-write machinery.
 //
 // SPRINT PLAN
 // -----------
-// Sprint 1 (this commit): Run-Length Encoding (RLE).
+// Sprint 1 (Phase 661): Run-Length Encoding (RLE).
 //   - Simple packet format; each packet is one byte header followed by data.
 //   - Exploits the long zero-runs that dominate uninitialized struct fields
 //     and spatial sparsity in world-state saves.
@@ -29,10 +29,14 @@
 //   - Worst case: 1 overhead byte per 128 input bytes (~0.78% expansion cap).
 //     Well-formed saves never hit this floor because struct padding and entity
 //     pools always produce meaningful repetition.
-// Sprint 2 (future): LZ4 / zstd via vcpkg manifest mode.
-//   - Will add compress_lz4() / compress_zstd() overloads behind the same
-//     CompressedSave envelope so callers switch codec without changing the
-//     round-trip call sites.
+// Sprint 2 (Phase 749): LZ4 via vcpkg manifest mode.
+//   - compress_lz4() / decompress_lz4() added behind CD_SAVE_COMPRESSION_HAS_LZ4
+//     compile-time guard.  Callers switch codec without changing round-trip
+//     call sites — same CompressedSave envelope, same decompress contract.
+//   - LZ4 block format (LZ4_compress_default / LZ4_decompress_safe).  Original
+//     size is stored in CompressedSave::original_size for pre-allocation.
+//   - When lz4 is unavailable at configure time the LZ4 functions are absent;
+//     callers should check CD_SAVE_COMPRESSION_HAS_LZ4 before calling them.
 //
 // NAMING NOTE
 // -----------
@@ -43,10 +47,10 @@
 //
 // DEPENDENCIES (CLAUDE.md §7)
 // ---------------------------
-// cd::core only — no filesystem, no cd::game::save, no rapidjson, no zstd.
-// Keeps the library at the bottom of the gameplay dependency DAG so it can
-// also compress non-save blobs (replay headers, telemetry snapshots, etc.)
-// without pulling in slot-management machinery.
+// cd::core + optional lz4 (Sprint-2).  No filesystem, no cd::game::save,
+// no rapidjson, no zstd.  Keeps the library near the bottom of the gameplay
+// dependency DAG so it can also compress non-save blobs (replay headers,
+// telemetry snapshots) without pulling in slot-management machinery.
 // =============================================================================
 #pragma once
 
@@ -63,9 +67,9 @@ namespace cd::game::save_compression
 // =============================================================================
 // CompressedSave — envelope around a compressed byte blob.
 //
-// `blob`          : compressed bytes produced by compress_rle() (or a future
-//                   Sprint-2 codec).  Treat as opaque; pass verbatim to
-//                   decompress_rle().
+// `blob`          : compressed bytes produced by compress_rle() or
+//                   compress_lz4().  Treat as opaque; pass verbatim to the
+//                   matching decompress_*() call (codecs are NOT interchangeable).
 // `original_size` : byte count of the uncompressed input.  Stored alongside
 //                   the blob so the decompressor can pre-allocate exactly the
 //                   right output buffer and verify the round-trip.
@@ -136,5 +140,40 @@ decompress_rle(const CompressedSave& compressed);
 // includes only the compression call (not allocation of the stats struct).
 // =============================================================================
 [[nodiscard]] CompressionStats benchmark(std::span<const std::uint8_t> raw);
+
+// =============================================================================
+// LZ4 path — Sprint-2 (Phase 749).
+//
+// Available only when CD_SAVE_COMPRESSION_HAS_LZ4 == 1 (lz4 resolved at
+// configure time via vcpkg or FetchContent).  Guarded by #if so the library
+// compiles cleanly on platforms / CI configs where lz4 is absent.
+//
+// compress_lz4()
+//   Encode `raw` using LZ4_compress_default (LZ4 block format — NOT the LZ4
+//   frame format).  The frame format adds a content-length header which we
+//   store ourselves in CompressedSave::original_size, keeping the envelope
+//   identical to the RLE path.
+//   Typical performance: ~100 MB/s compression, ~400 MB/s decompression.
+//   Typical ratio vs RLE: ~0.75x (better on binary / mixed data).
+//
+// decompress_lz4()
+//   Reconstruct original bytes from a CompressedSave produced by compress_lz4().
+//   Returns std::nullopt on LZ4 decode failure or size mismatch.
+//   CAUTION: do NOT pass an RLE-produced CompressedSave — codecs are opaque.
+//
+// benchmark_lz4()
+//   Same contract as benchmark() but drives the LZ4 path.  Use to compare
+//   codec throughput side-by-side in the diagnostic overlay.
+// =============================================================================
+#if CD_SAVE_COMPRESSION_HAS_LZ4
+
+[[nodiscard]] CompressedSave compress_lz4(std::span<const std::uint8_t> raw);
+
+[[nodiscard]] std::optional<std::vector<std::uint8_t>>
+decompress_lz4(const CompressedSave& compressed);
+
+[[nodiscard]] CompressionStats benchmark_lz4(std::span<const std::uint8_t> raw);
+
+#endif  // CD_SAVE_COMPRESSION_HAS_LZ4
 
 }  // namespace cd::game::save_compression

@@ -1,8 +1,8 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/game/save_compression/SaveCompression.cpp
-// Phase 661 — Sprint-1 RLE compress/decompress implementation.
+// Phase 661 / 749 — Sprint-1 RLE + Sprint-2 LZ4 compress/decompress.
 //
-// Packet format (reproduced here for impl clarity):
+// RLE packet format:
 //   Each packet = 1 header byte + payload.
 //   Header byte layout:
 //     bit 7       : 0 = literal run,  1 = repeat run
@@ -11,22 +11,30 @@
 //   Literal packet  : header (bit7=0, count-1 in [6:0]) + count literal bytes.
 //   Repeat packet   : header (bit7=1, count-1 in [6:0]) + 1 repeated byte.
 //
-// Encoder decision:
+// RLE encoder decision:
 //   Scan from the current position to find the longest run of identical bytes
 //   (up to 128).  If the run is ≥ 2 bytes, emit a repeat packet.  Otherwise,
 //   accumulate literal bytes until we hit a repeat of ≥ 2 or exhaust input,
 //   then flush the literal packet (max 128 literals per packet to fit [6:0]).
 //
-// Decoder:
-//   Read header; dispatch on bit 7; copy/fill output; advance; repeat.
+// LZ4 (Sprint-2):
+//   Uses LZ4_compress_default / LZ4_decompress_safe (block API, not frame).
+//   original_size is stored in CompressedSave::original_size; the blob is the
+//   raw LZ4 block.  LZ4_compressBound() gives the worst-case allocation size.
+//   Gated on CD_SAVE_COMPRESSION_HAS_LZ4 compile-time macro.
 // =============================================================================
 #include <cd/game/save_compression/SaveCompression.hpp>
+
+#if CD_SAVE_COMPRESSION_HAS_LZ4
+#  include <lz4.h>
+#endif
 
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace cd::game::save_compression
 {
@@ -222,5 +230,144 @@ CompressionStats benchmark(std::span<const std::uint8_t> raw)
     stats.time_ms      = elapsed_ms;
     return stats;
 }
+
+// =============================================================================
+// LZ4 Sprint-2 (Phase 749) — compiled in only when lz4 is available
+// =============================================================================
+#if CD_SAVE_COMPRESSION_HAS_LZ4
+
+// =============================================================================
+// compress_lz4
+// =============================================================================
+CompressedSave compress_lz4(std::span<const std::uint8_t> raw)
+{
+    CompressedSave result;
+    result.original_size = raw.size();
+
+    if (raw.empty())
+    {
+        result.ratio = std::numeric_limits<double>::quiet_NaN();
+        return result;
+    }
+
+    // LZ4_compressBound returns the maximum compressed size for a given input.
+    // Input size must fit in int for the LZ4 C API.
+    if (raw.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        // Input exceeds LZ4 block API limit (~2 GB).  Return an empty blob
+        // with ratio NaN so callers can detect the failure without an exception.
+        result.ratio = std::numeric_limits<double>::quiet_NaN();
+        return result;
+    }
+
+    const int src_size    = static_cast<int>(raw.size());
+    const int bound       = LZ4_compressBound(src_size);
+    if (bound <= 0)
+    {
+        result.ratio = std::numeric_limits<double>::quiet_NaN();
+        return result;
+    }
+
+    result.blob.resize(static_cast<std::size_t>(bound));
+
+    const int compressed_size = LZ4_compress_default(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<const char*>(raw.data()),
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<char*>(result.blob.data()),
+        src_size,
+        bound
+    );
+
+    if (compressed_size <= 0)
+    {
+        // LZ4 compression failed (should not happen for valid input).
+        result.blob.clear();
+        result.ratio = std::numeric_limits<double>::quiet_NaN();
+        return result;
+    }
+
+    result.blob.resize(static_cast<std::size_t>(compressed_size));
+    result.ratio = static_cast<double>(result.blob.size()) /
+                   static_cast<double>(result.original_size);
+
+    return result;
+}
+
+// =============================================================================
+// decompress_lz4
+// =============================================================================
+std::optional<std::vector<std::uint8_t>>
+decompress_lz4(const CompressedSave& compressed)
+{
+    // Validate envelope.
+    if (compressed.blob.empty())
+    {
+        if (compressed.original_size == 0U)
+        {
+            return std::vector<std::uint8_t>{};
+        }
+        return std::nullopt;  // corrupt: non-zero original_size but empty blob
+    }
+
+    if (compressed.original_size == 0U)
+    {
+        return std::nullopt;  // corrupt: non-zero blob but claims zero original
+    }
+
+    // Guard against inputs that exceed the LZ4 C API limit.
+    if (compressed.blob.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        compressed.original_size > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+    {
+        return std::nullopt;
+    }
+
+    const int src_size = static_cast<int>(compressed.blob.size());
+    const int dst_size = static_cast<int>(compressed.original_size);
+
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(dst_size));
+
+    const int decoded = LZ4_decompress_safe(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<const char*>(compressed.blob.data()),
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<char*>(out.data()),
+        src_size,
+        dst_size
+    );
+
+    if (decoded < 0 || static_cast<std::uint64_t>(decoded) != compressed.original_size)
+    {
+        return std::nullopt;
+    }
+
+    return out;
+}
+
+// =============================================================================
+// benchmark_lz4
+// =============================================================================
+CompressionStats benchmark_lz4(std::span<const std::uint8_t> raw)
+{
+    using clock = std::chrono::high_resolution_clock;
+
+    const auto t0 = clock::now();
+    const CompressedSave cs = compress_lz4(raw);
+    const auto t1 = clock::now();
+
+    const double elapsed_ms =
+        static_cast<double>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()
+        ) / 1.0e6;
+
+    CompressionStats stats;
+    stats.input_bytes  = raw.size();
+    stats.output_bytes = cs.blob.size();
+    stats.ratio        = cs.ratio;
+    stats.time_ms      = elapsed_ms;
+    return stats;
+}
+
+#endif  // CD_SAVE_COMPRESSION_HAS_LZ4
 
 }  // namespace cd::game::save_compression
