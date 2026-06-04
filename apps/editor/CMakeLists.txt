@@ -38,6 +38,7 @@
 #   cd::editor_panel_settings           -- settings panel (phase698, wired phase701)
 #   cd::editor_panel_build              -- build status panel (phase699, wired phase701)
 #   cd::editor_panel_perf_profiler      -- deep frame-by-frame profiler (phase700, wired phase701)
+#   cd::particle_system                 -- CPU particle system for cinematic boot splash (phase707)
 #   cd::editor                          -- editor application shell
 #   cd::editor_ui                       -- editor-specific widgets (transitive)
 #   cd::platform                        -- OS window
@@ -110,6 +111,9 @@ cd_add_sample(editor
     cd::editor_panel_settings
     cd::editor_panel_build
     cd::editor_panel_perf_profiler
+    # phase707 / M15 W6B — particle system for the cinematic boot splash
+    # background (20 particles/sec, 4s life, accent_success green glow).
+    cd::particle_system
     cd::editor
     cd::editor_ui
     cd::editor_cdproj

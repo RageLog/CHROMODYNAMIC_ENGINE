@@ -1,6 +1,18 @@
 // =============================================================================
 // CHROMODYNAMIC -- apps/editor/main.cpp
 //
+// Phase 707 / M15 W6B -- cinematic boot splash: slow particle field behind title.
+//
+// Adds a cd::particle::system::System to the boot splash.  A single emitter
+// spawns 20 particles/sec.  Each particle drifts upward with random horizontal
+// velocity and fades out over 4 seconds.  Color is PaletteV2::accent_success
+// (muted green, #50C864).  Particles are rendered FIRST in draw_boot_splash so
+// they appear behind the title + subtitle + progress strip.  The particle
+// system is destroyed when the splash completes (optional.reset()).
+//
+// MOMENT: A user launches editor.exe, sees the CHROMODYNAMIC title over a slow
+// upward-drifting particle field — the engine has presence the moment it boots.
+//
 // Phase 690 / M14 W3 -- wire 3 new M14 surfaces into apps/editor in one commit.
 //
 // Three surface additions (one commit, single moment):
@@ -328,6 +340,10 @@
 #include <cd/editor/panel_settings/SettingsPanel.hpp>
 #include <cd/editor/panel_build/BuildPanel.hpp>
 #include <cd/editor/panel_perf_profiler/PerfProfiler.hpp>
+
+// phase707 / M15 W6B — cd::particle::system::System drives the slow upward-
+// drifting particle field rendered behind the boot splash title.
+#include <cd/particle/system/ParticleSystem.hpp>
 
 // phase631 / M9 W1A — asset::validator for status badge.
 // TODO(phase631): No status bar exists yet in apps/editor. When a status bar
@@ -1797,12 +1813,20 @@ struct BootSplash
 ///   Stage 2 [500, 1500ms) : Subtitle reveals (subtitle width 0->kSubtitleW).
 ///   Stage 3 [1500, 2500ms): Scrolling hints  (4 strings, 250 ms each).
 ///   Fade    [2500, 2800ms): Overall alpha 255->0.
-void draw_boot_splash(ur::DrawBatcher&  batcher,
-                      const uw::Theme&  theme,
-                      float             fb_w,
-                      float             fb_h,
-                      const BootSplash& splash,
-                      double            elapsed_ms)
+///
+/// phase707 / M15 W6B — `particle_snaps` carries live particle data from the
+///   cd::particle::system::System ticked each frame while the splash is active.
+///   Particles are rendered AFTER the background fill but BEFORE the title /
+///   subtitle / hints so they sit between the dark background and the foreground
+///   text elements.  Each particle is a 4x4 px dot in PaletteV2::accent_success
+///   colour (muted green, { 80, 200, 100 }).
+void draw_boot_splash(ur::DrawBatcher&                                  batcher,
+                      const uw::Theme&                                   theme,
+                      float                                              fb_w,
+                      float                                              fb_h,
+                      const BootSplash&                                  splash,
+                      double                                             elapsed_ms,
+                      std::span<const cd::particle::system::ParticleSnapshot> particle_snaps)
 {
     const std::uint8_t overall_alpha = splash.splash_alpha(elapsed_ms);
     if (overall_alpha == 0U) { return; }
@@ -1815,11 +1839,42 @@ void draw_boot_splash(ur::DrawBatcher&  batcher,
     };
 
     // 1. Full-framebuffer surface fill — slightly darker than the dock surface.
+    //    This is the deepest layer: covers dock panels beneath the splash.
     const auto bg_r = static_cast<std::uint8_t>(theme.surface.r / 2U);
     const auto bg_g = static_cast<std::uint8_t>(theme.surface.g / 2U);
     const auto bg_b = static_cast<std::uint8_t>(theme.surface.b / 2U);
     batcher.quad(0.0F, 0.0F, fb_w, fb_h,
                  ur::Color { bg_r, bg_g, bg_b, overall_alpha });
+
+    // 1b. Particle field — rendered AFTER the background fill but BEFORE the
+    //     title / subtitle / hints so particles appear between the background
+    //     and the foreground text elements.  Each particle is a 4x4 px dot in
+    //     PaletteV2::accent_success colour (muted green, { 80, 200, 100 }).
+    //
+    //     Coordinate mapping (simulation -> screen):
+    //       screen_x = fb_w * 0.5 + p.pos[0]
+    //       screen_y = fb_h * 0.85 - p.pos[1]   (pos[1] grows upward)
+    //     Emitter spawns particles at origin (0, 0, 0) spread ±fb_w/2 on x;
+    //     velocity_y drives upward drift in abstract "pixel units per second".
+    {
+        constexpr float kDotSz     = 4.0F;
+        constexpr float kHalfDot   = kDotSz * 0.5F;
+        constexpr std::uint8_t kPR = 80U;
+        constexpr std::uint8_t kPG = 200U;
+        constexpr std::uint8_t kPB = 100U;
+        const float origin_x = fb_w * 0.5F;
+        const float origin_y = fb_h * 0.85F;
+        for (const auto& p : particle_snaps)
+        {
+            const float sx = origin_x + p.pos[0] - kHalfDot;
+            const float sy = origin_y - p.pos[1] - kHalfDot;
+            // p.color[3] holds the particle's alpha (fades over its lifetime).
+            const auto  pa = scale_alpha(overall_alpha, p.color[3]);
+            if (pa == 0U) { continue; }
+            batcher.quad(sx, sy, kDotSz, kDotSz,
+                         ur::Color { kPR, kPG, kPB, pa });
+        }
+    }
 
     const float cx = fb_w * 0.5F;
     const float cy = fb_h * 0.5F;
@@ -2999,6 +3054,55 @@ int main(int argc, char** argv)
     cd::frame_timing::FrameTimeRing<120> ft_ring {};  // feeds real fps to overlays + status bar
     std::chrono::steady_clock::time_point prev_tp = std::chrono::steady_clock::now();
 
+    // phase707 / M15 W6B — particle system driving the cinematic boot splash
+    // background.  Lifetime matches the splash window (kSolidMs + kFadeMs =
+    // 2.8 s max).  The optional<> is reset when the splash is done so the
+    // System is destroyed cleanly (no leaked allocations after boot).
+    //
+    // Emitter parameters:
+    //   * 20 particles/sec — steady slow rain of green glows.
+    //   * velocity_x in [-400, 400] px/s — wide horizontal spread.
+    //   * velocity_y in  [40,  120] px/s — upward drift in sim-space;
+    //     mapped to -screen_y at draw time.
+    //   * life_seconds = 4.0 s — fades out gracefully over full lifetime.
+    //   * color_start alpha = 0.6, color_end alpha = 0.0 (fade-to-transparent).
+    using cd::particle::system::System;
+    using cd::particle::system::EmitterSpec;
+    using cd::particle::system::ParticleSpec;
+    using cd::particle::system::ParticleSnapshot;
+
+    std::optional<System> splash_particles;
+    if (window)
+    {
+        splash_particles.emplace();
+
+        ParticleSpec pspec;
+        pspec.life_seconds = 4.0F;
+        pspec.size_start   = 1.0F;
+        pspec.size_end     = 0.5F;
+        // accent_success: { 80, 200, 100 } normalised -> { 0.314, 0.784, 0.392 }
+        pspec.color_start  = { 0.314F, 0.784F, 0.392F, 0.6F };
+        pspec.color_end    = { 0.314F, 0.784F, 0.392F, 0.0F };
+
+        EmitterSpec espec;
+        espec.emit_rate_per_sec = 20.0F;
+        espec.position          = { 0.0F, 0.0F, 0.0F };
+        espec.velocity_min      = { -400.0F,  40.0F, 0.0F };
+        espec.velocity_max      = {  400.0F, 120.0F, 0.0F };
+        espec.particle           = pspec;
+
+        splash_particles->add_emitter(espec);
+        std::printf("editor: splash particle system ACTIVE (20/sec, 4s life, accent_success).\n");
+        std::fflush(stdout);
+    }
+
+    // Snapshot buffer — reused every frame to avoid per-frame allocation.
+    // 512 slots: 20/sec * 4s max life = 80 live particles steady-state max.
+    // We over-provision to handle bursts safely.
+    constexpr std::size_t kParticleSnapCap = 512U;
+    std::array<ParticleSnapshot, kParticleSnapCap> particle_snap_buf {};
+    std::size_t particle_snap_count = 0U;
+
     // First-time-user welcome dialog state.  Active only on first_launch
     // (no .cdproj existed at startup) and only once the splash has finished.
     FirstTimeWelcome welcome_dialog {};
@@ -3134,6 +3238,7 @@ int main(int argc, char** argv)
         // Push elapsed seconds into the FrameTimeRing so the status bar and
         // overlay context show a real FPS value instead of the 62.5 stand-in.
         double last_dt_ms = 0.0;
+        float  last_dt_s  = 0.0F;
         {
             using namespace std::chrono;
             const auto  now  = steady_clock::now();
@@ -3142,8 +3247,37 @@ int main(int argc, char** argv)
             prev_tp = now;
             if (dt_s > 0.0F) { ft_ring.push(dt_s); }
             last_dt_ms = static_cast<double>(dt_s) * 1000.0;
+            last_dt_s  = dt_s;
         }
         const auto real_fps = static_cast<float>(ft_ring.stats().fps_mean());
+
+        // -- phase707 / M15 W6B — splash particle system tick -----------------
+        //
+        // Tick the particle system while the splash is active.  Once the
+        // splash is done the optional<System> is reset (destroyed cleanly).
+        // The snapshot buffer is refilled each tick for the draw call below.
+        if (splash_particles.has_value())
+        {
+            const double splash_ms_now = boot_splash.elapsed_ms();
+            if (boot_splash.done(splash_ms_now))
+            {
+                // Splash has completed — destroy the particle system cleanly.
+                splash_particles.reset();
+                particle_snap_count = 0U;
+                std::printf("editor: splash particle system destroyed (splash complete).\n");
+                std::fflush(stdout);
+            }
+            else
+            {
+                if (last_dt_s > 0.0F)
+                {
+                    splash_particles->tick(last_dt_s);
+                }
+                particle_snap_count = splash_particles->snapshot(
+                    std::span<ParticleSnapshot>(particle_snap_buf.data(),
+                                               particle_snap_buf.size()));
+            }
+        }
 
         // -- phase701 / M15 W3 — synthetic FrameSnapshot feed ----------------
         //
@@ -3480,7 +3614,10 @@ int main(int argc, char** argv)
                                  static_cast<float>(fb_w),
                                  static_cast<float>(fb_h),
                                  boot_splash,
-                                 splash_ms);
+                                 splash_ms,
+                                 std::span<const ParticleSnapshot>(
+                                     particle_snap_buf.data(),
+                                     particle_snap_count));
             }
             else if (first_launch && !welcome_dialog.decided())
             {
