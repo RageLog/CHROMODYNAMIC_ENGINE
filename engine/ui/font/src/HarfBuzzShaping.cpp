@@ -59,7 +59,7 @@ std::vector<ShapedGlyph> shape(const FreeTypeBackend& ft,
                                                        static_cast<int>(locale.size())));
     }
 
-    hb_shape(ft.hb_font, buf, nullptr, 0);
+    ::hb_shape(ft.hb_font, buf, nullptr, 0);  // :: qualifies past namespace hb_shape
 
     unsigned int glyph_count = 0;
     hb_glyph_info_t*     infos = hb_buffer_get_glyph_infos(buf, &glyph_count);
