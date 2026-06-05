@@ -36,6 +36,19 @@ namespace cd::platform
 namespace
 {
 
+// ---- Window-class refcount (Phase 764 / FINALE-6 W1) -----------------------
+//
+// Multiple Win32Window instances now coexist in the same process. The class
+// only needs to be registered once but must outlive every HWND that uses it
+// (UnregisterClassW fails while any window of that class still exists).
+// Refcount the registration so the *last* window destructor cleans up.
+
+[[nodiscard]] int& class_refcount() noexcept
+{
+    static int s_count = 0;
+    return s_count;
+}
+
 [[nodiscard]] KeyCode key_from_vk(WPARAM vk) noexcept
 {
     // Win32 maps letters to ASCII codes and digits the same — quick shortcuts.
@@ -136,10 +149,17 @@ public:
             DestroyWindow(hwnd_);
             hwnd_ = nullptr;
         }
-        if (registered_class_)
+        if (owns_class_ref_)
         {
-            UnregisterClassW(kClassName, instance_);
-            registered_class_ = false;
+            int& refs = class_refcount();
+            if (refs > 0)
+                --refs;
+            // Only the last live window unregisters the shared class.
+            if (refs == 0 && instance_ != nullptr)
+            {
+                UnregisterClassW(kClassName, instance_);
+            }
+            owns_class_ref_ = false;
         }
     }
 
@@ -163,14 +183,16 @@ public:
         if (RegisterClassExW(&wc) == 0)
         {
             // Class may already be registered from a prior window in this
-            // process — accept the existing one rather than failing.
+            // process — accept the existing one rather than failing. Phase
+            // 764 still tracks an owns_class_ref_ slot on the new window so
+            // the class refcount is balanced 1:1 with live Win32Window's.
             if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
                 return false;
         }
-        else
-        {
-            registered_class_ = true;
-        }
+        // Every successfully-constructed Win32Window participates in the
+        // class refcount; the *last* one's destructor calls UnregisterClassW.
+        ++class_refcount();
+        owns_class_ref_ = true;
 
         const DWORD style =
             desc.resizable ? (WS_OVERLAPPEDWINDOW) : (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX);
@@ -265,6 +287,38 @@ public:
             const auto w = widen(title);
             SetWindowTextW(hwnd_, w.c_str());
         }
+    }
+
+    [[nodiscard]] bool set_parent(IWindow* parent) noexcept override
+    {
+        if (hwnd_ == nullptr)
+            return false;
+
+        if (parent == nullptr)
+        {
+            // Detach: restore overlapped style + clear parent.
+            LONG_PTR style = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+            style &= ~static_cast<LONG_PTR>(WS_POPUP);
+            style |= static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW);
+            SetWindowLongPtrW(hwnd_, GWL_STYLE, style);
+            SetParent(hwnd_, nullptr);
+            SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            return true;
+        }
+
+        auto* parent_hwnd = static_cast<HWND>(parent->native_window_handle());
+        if (parent_hwnd == nullptr)
+            return false;
+
+        // Re-style as a popup that follows the parent's z-order. Must
+        // SWP_FRAMECHANGED to commit the new style without resizing.
+        LONG_PTR style = GetWindowLongPtrW(hwnd_, GWL_STYLE);
+        style &= ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW);
+        style |= static_cast<LONG_PTR>(WS_POPUP | WS_CAPTION | WS_SYSMENU);
+        SetWindowLongPtrW(hwnd_, GWL_STYLE, style);
+        SetParent(hwnd_, parent_hwnd);
+        SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        return true;
     }
 
 private:
@@ -400,7 +454,7 @@ private:
 
     HINSTANCE instance_ { nullptr };
     HWND hwnd_ { nullptr };
-    bool registered_class_ { false };
+    bool owns_class_ref_ { false };
     bool should_close_ { false };
     std::uint32_t width_ { 0 };
     std::uint32_t height_ { 0 };

@@ -20,6 +20,14 @@
 //     for the current OS (e.g. Linux without Wayland or X11 headers).
 //
 // Lifetime: callers own the unique_ptr; closing happens in the dtor.
+//
+// FINALE-6 W1 / Phase 764 — multi-window primitive (Sprint-1, Windows-native):
+//   * `create_window` may be called multiple times within one process; each
+//     IWindow owns its own native handle + event queue.
+//   * `IWindow::set_parent(IWindow*)` establishes a popout relationship so
+//     the child window floats above the parent (Win32: WS_POPUP + SetParent).
+//   * `pump_all_windows` is the aggregate drain that iterates every live
+//     window so the host loop only has to call one function per frame.
 // =============================================================================
 #pragma once
 
@@ -29,6 +37,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -227,12 +236,59 @@ public:
     [[nodiscard]] virtual std::uint32_t height() const noexcept = 0;
 
     virtual void set_title(std::string_view title) = 0;
+
+    /// Establish a parent/child popout relationship between two real OS
+    /// windows. Sprint-1 contract (Phase 764 / FINALE-6 W1):
+    ///   * Win32: re-styles the child as WS_POPUP and calls SetParent so the
+    ///     child floats on top of `parent` and follows its z-order. Passing
+    ///     `nullptr` detaches.
+    ///   * Other backends: no-op (override available; default ignores).
+    /// Returns true when a parent link was actually established. A backend
+    /// that does not yet support multi-window parenting returns false.
+    [[nodiscard]] virtual bool set_parent(IWindow* parent) noexcept
+    {
+        (void) parent;
+        return false;
+    }
 };
 
 // ---- Factory --------------------------------------------------------------
 
 /// Create a platform window. Returns kNotImplemented when the engine was
 /// built on a platform without a window backend.
+///
+/// FINALE-6 W1 / Phase 764 — Multiple cd::platform::IWindow instances may
+/// coexist in the same process. Each window owns its own native handle and
+/// its own event queue; `pump_events` drains only that window's queue.
+/// Use `pump_all_windows` to drain every live window in one call.
 [[nodiscard]] cd::core::Result<std::unique_ptr<IWindow>> create_window(const WindowDesc& desc);
+
+// ---- Multi-window pump ----------------------------------------------------
+
+/// Drain the OS message queue for every window in `windows` and append the
+/// resulting events to `out`. Returns false only when every window has
+/// signalled close (i.e. the application can exit its main loop). Returns
+/// true while at least one window is still alive.
+///
+/// Sprint-1 (Phase 764) — Windows-native multi-window primitive backing the
+/// "Inspector on a second monitor" moment from FINALE-6 W1. Non-Win32
+/// backends inherit the same contract via per-window pump_events.
+///
+/// Implementation is inline because it only touches the IWindow public
+/// interface and therefore needs no per-OS translation unit.
+[[nodiscard]] inline bool pump_all_windows(std::span<IWindow* const> windows, std::vector<OSEvent>& out)
+{
+    bool any_alive = false;
+    for (auto* w : windows)
+    {
+        if (w == nullptr)
+            continue;
+        if (w->should_close())
+            continue;
+        if (w->pump_events(out))
+            any_alive = true;
+    }
+    return any_alive;
+}
 
 }  // namespace cd::platform
