@@ -26,6 +26,7 @@ cd_add_library(game_ai_pathfinding
   TYPE STATIC
   SOURCES
     src/Pathfinding.cpp
+    src/Triangulator.cpp
   PUBLIC_DEPS
     cd::core
 )
