@@ -12,6 +12,7 @@ cd_add_library(material
   EXCLUDE_FROM_INSTALL  # transitive on cd::shader (vendored glslang)
   SOURCES
     src/Material.cpp
+    src/RtClosestHit.cpp
     src/UiVariant.cpp
   PUBLIC_DEPS
     cd::rhi

@@ -40,3 +40,20 @@ cd_add_test(rt_hit_general_geometry
   SOURCES test_rt_hit_general_geometry.cpp
   DEPS    cd::material cd::rhi cd::core
 )
+
+# Phase 759 / FINALE-5 W1 / A8: RT closest-hit shader live wire — chrome PBR
+# sphere reflects ACTUAL surrounding geometry (Sponza walls + vegetation +
+# curtains) instead of pure sky. Three cases:
+#   1. Packer (CPU): MaterialInstance -> std430 RtMaterialRecord byte
+#      layout matches the GLSL SSBO declared in kRtClosestHitGlsl.
+#   2. Vulkan-gated (skipped without ICD or glslang): kRtClosestHitGlsl
+#      compiles cleanly through glslang to SPIR-V; protects against
+#      regression in the live closest-hit shader.
+#   3. Vulkan-gated: 2-prim scene (chrome sphere + colored quad behind)
+#      packed records upload cleanly into a Vulkan storage buffer; the
+#      magenta quad albedo survives the round-trip end-to-end (so the
+#      chrome reflection would not show pure sky -- the 2026-06-03 bug).
+cd_add_test(rt_chrome_sphere_reflects_geometry
+  SOURCES test_rt_chrome_sphere_reflects_geometry.cpp
+  DEPS    cd::material cd::rhi cd::shader cd::core $<$<BOOL:${CD_ENABLE_VULKAN}>:cd::rhi_vulkan>
+)
