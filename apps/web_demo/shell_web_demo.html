@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<!--
+  CHROMODYNAMIC — Web Demo HTML Shell
+  Phase 773 (FINALE-7 W2C Sprint-1)
+
+  This file is the Emscripten --shell-file template. Emscripten replaces the
+  {{{ SCRIPT }}} placeholder with the generated .js loader at build time.
+
+  Features:
+    - WebGPU + WebAssembly feature detection (shown before WASM loads)
+    - Full-viewport canvas sized to devicePixelRatio for crisp rendering
+    - Keyboard/mouse locked to canvas on click (prevents browser shortcuts)
+    - Status bar updates driven by Emscripten module callbacks
+    - Dark-mode UI matching CHROMODYNAMIC brand palette
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CHROMODYNAMIC — Web Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0d14;
+      --surface:   #14141f;
+      --border:    #1e1e30;
+      --accent:    #00d4ff;
+      --accent2:   #7c5cfc;
+      --text:      #d0d0e0;
+      --muted:     #5a5a72;
+      --ok:        #4ade80;
+      --warn:      #fbbf24;
+      --error:     #f87171;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      overflow: hidden;
+    }
+
+    #layout {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+      padding: 12px 16px 8px;
+      gap: 8px;
+    }
+
+    /* Header */
+    #header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      width: 100%;
+      max-width: 1280px;
+    }
+    #header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+    }
+    #header .subtitle {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* Feature badges */
+    #badges {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+    }
+    .badge.ok    { color: var(--ok);    border-color: var(--ok); }
+    .badge.warn  { color: var(--warn);  border-color: var(--warn); }
+    .badge.error { color: var(--error); border-color: var(--error); }
+
+    /* Canvas */
+    #canvas {
+      flex: 1;
+      display: block;
+      width: 100%;
+      max-width: 1280px;
+      min-height: 0;
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 0 40px rgba(0,212,255,0.08);
+      cursor: crosshair;
+      outline: none;
+    }
+    #canvas:focus { border-color: var(--accent2); }
+
+    /* Status bar */
+    #statusbar {
+      width: 100%;
+      max-width: 1280px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    #status-text { flex: 1; }
+    #progress-wrap {
+      width: 180px;
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent2), var(--accent));
+      transition: width 0.2s;
+    }
+    #frame-counter { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+<div id="layout">
+  <div id="header">
+    <h1>CHROMODYNAMIC</h1>
+    <span class="subtitle">Web Platform &mdash; Sprint-1 &middot; Phase 773</span>
+    <div id="badges">
+      <span id="badge-wasm"   class="badge">WASM &hellip;</span>
+      <span id="badge-webgpu" class="badge">WebGPU &hellip;</span>
+    </div>
+  </div>
+
+  <canvas id="canvas" tabindex="0"></canvas>
+
+  <div id="statusbar">
+    <span id="status-text">Initializing&hellip;</span>
+    <div id="progress-wrap"><div id="progress-bar"></div></div>
+    <span id="frame-counter">frame 0</span>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Feature detection
+// ---------------------------------------------------------------------------
+function detectFeatures() {
+  const wasm = typeof WebAssembly !== 'undefined';
+  const webgpu = !!navigator.gpu;
+  const webgl2 = !!document.createElement('canvas').getContext('webgl2');
+
+  const badgeWasm   = document.getElementById('badge-wasm');
+  const badgeWebgpu = document.getElementById('badge-webgpu');
+
+  badgeWasm.textContent = wasm ? 'WASM OK' : 'WASM FAIL';
+  badgeWasm.className   = 'badge ' + (wasm ? 'ok' : 'error');
+
+  if (webgpu) {
+    badgeWebgpu.textContent = 'WebGPU OK';
+    badgeWebgpu.className   = 'badge ok';
+  } else if (webgl2) {
+    badgeWebgpu.textContent = 'WebGL2 (fallback)';
+    badgeWebgpu.className   = 'badge warn';
+  } else {
+    badgeWebgpu.textContent = 'No GPU API';
+    badgeWebgpu.className   = 'badge error';
+  }
+
+  return { wasm, webgpu, webgl2 };
+}
+
+// ---------------------------------------------------------------------------
+// Canvas DPI scaling
+// ---------------------------------------------------------------------------
+function resizeCanvas() {
+  const canvas = document.getElementById('canvas');
+  const dpr    = window.devicePixelRatio || 1;
+  const rect   = canvas.getBoundingClientRect();
+  canvas.width  = Math.round(rect.width  * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+}
+
+// ---------------------------------------------------------------------------
+// Emscripten Module configuration
+// ---------------------------------------------------------------------------
+const status    = document.getElementById('status-text');
+const progress  = document.getElementById('progress-bar');
+const frameEl   = document.getElementById('frame-counter');
+let frameCount  = 0;
+
+// Emscripten reads this object before the generated script runs.
+// IMPORTANT: this must exist as `window.Module` before {{{ SCRIPT }}} executes.
+window.Module = {
+  canvas: (function() {
+    const c = document.getElementById('canvas');
+    // Focus canvas so it captures keyboard events immediately.
+    c.addEventListener('click', () => c.focus());
+    return c;
+  })(),
+
+  // Status / progress callbacks
+  setStatus: function(text) {
+    if (text) {
+      status.textContent = text;
+    } else {
+      status.textContent = 'Running';
+    }
+  },
+
+  monitorRunDependencies: function(left) {
+    if (left > 0) {
+      progress.style.width = Math.max(5, 100 - left * 5) + '%';
+    } else {
+      progress.style.width = '100%';
+    }
+  },
+
+  onRuntimeInitialized: function() {
+    status.textContent = 'WebAssembly ready';
+    progress.style.width = '100%';
+    // Start a simple frame counter overlay driven from JS.
+    // The C++ tick() callback does the real work.
+    requestAnimationFrame(function tick() {
+      frameCount++;
+      frameEl.textContent = 'frame ' + frameCount;
+      requestAnimationFrame(tick);
+    });
+  },
+
+  print: function(text)    { console.log('[wasm]', text); },
+  printErr: function(text) { console.warn('[wasm]', text); },
+
+  // Prevent Emscripten from calling alert() on error.
+  quit: function(status_code, err) {
+    if (err) { console.error('[wasm] quit:', err); }
+    if (status_code !== 0) {
+      document.getElementById('status-text').textContent =
+        'Runtime exited (code ' + status_code + ')';
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+window.addEventListener('DOMContentLoaded', function() {
+  const { wasm, webgpu, webgl2 } = detectFeatures();
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+
+  if (!wasm) {
+    status.textContent = 'Error: WebAssembly required.';
+    return;
+  }
+  if (!webgpu && !webgl2) {
+    status.textContent = 'Error: WebGPU or WebGL 2.0 required.';
+    return;
+  }
+
+  status.textContent = 'Loading WebAssembly module…';
+});
+</script>
+
+<!-- Emscripten injects the generated .js loader here at link time. -->
+{{{ SCRIPT }}}
+</body>
+</html>
