@@ -1,15 +1,18 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/asset/texture_compress/src/TextureCompress.cpp
-// Phase 650 — cd::asset::texture_compress implementation (Sprint-1)
+// Phase 650 (Sprint-1) + Phase 750 (Sprint-2)
 //
 // Sprint-1: BC1 stub encoder + BC1 decoder (for analyze()).
+// Sprint-2: real BC7 via bc7enc_rdo + real ASTC via ARM astc-encoder.
+//           Both are optional: guarded by CD_TC_HAS_BC7ENC / CD_TC_HAS_ASTCENC.
+//
 // BC1 block layout (8 bytes per 4×4 block):
 //   [0..1] color0 (RGB565 little-endian)
 //   [2..3] color1 (RGB565 little-endian)
 //   [4..7] 2-bit per-texel indices (16 texels, packed LSB-first)
 //
-// Endpoint selection: naive per-block min/max channel-wise in RGB565 space.
-// Sprint-2: replace encode_bc1_block() with PCA-based endpoint search.
+// BC7 block layout: 16 bytes per 4×4 block (handled by bc7enc_rdo).
+// ASTC block layout: 16 bytes per block (handled by ARM astc-encoder).
 // =============================================================================
 
 #include <cd/asset/texture_compress/TextureCompress.hpp>
@@ -20,6 +23,16 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+
+// ---- Optional BC7 encoder (bc7enc_rdo) ------------------------------------
+#if CD_TC_HAS_BC7ENC
+#  include <bc7enc.h>
+#endif
+
+// ---- Optional ASTC encoder (ARM astc-encoder) ------------------------------
+#if CD_TC_HAS_ASTCENC
+#  include <astcenc.h>
+#endif
 
 namespace cd::asset::texture_compress
 {
@@ -84,14 +97,6 @@ void write_u32_le(std::uint8_t* dst, std::uint32_t v) noexcept
 // ---- BC1 block encoder (Sprint-1: min/max endpoint picker) -----------------
 
 /// Encode one 4×4 block of RGBA8 texels into 8 bytes of BC1 data.
-///
-/// Sprint-1 algorithm:
-///   1. Find min and max for each channel (R,G,B) across the 16 texels.
-///   2. Pack min as color1 (RGB565), max as color0 (RGB565).
-///   3. For each texel, compute the lerp index [0..3] by projecting the texel
-///      onto the (color1..color0) axis in 565 space.
-///
-/// color0 > color1 selects the 4-color mode (no transparent texels in BC1).
 void encode_bc1_block(const std::uint8_t* block_rgba,  // 16 texels × 4 bytes
                       std::uint8_t*       out_8)        // 8 bytes output
     noexcept
@@ -110,27 +115,16 @@ void encode_bc1_block(const std::uint8_t* block_rgba,  // 16 texels × 4 bytes
     }
 
     // --- Step 2: pack endpoints in RGB565 -----------------------------------
-    // color0 = max endpoint (higher 565 value → 4-color mode when c0 > c1)
-    // color1 = min endpoint
     const std::uint16_t color0 = pack_rgb565(max_r, max_g, max_b);
     const std::uint16_t color1 = pack_rgb565(min_r, min_g, min_b);
 
-    // Ensure color0 >= color1 (4-color opaque mode). If they are equal,
-    // both encode to index 0 which references color0 — correct.
     const std::uint16_t c0 = (color0 >= color1) ? color0 : color1;
     const std::uint16_t c1 = (color0 >= color1) ? color1 : color0;
 
     // --- Step 3: compute per-texel 2-bit indices ----------------------------
-    // 4-color mode palette:
-    //   idx 0 → c0
-    //   idx 1 → c1
-    //   idx 2 → (2*c0 + c1) / 3
-    //   idx 3 → (c0 + 2*c1) / 3
-
     const Rgb8 p0 = unpack_rgb565(c0);
     const Rgb8 p1 = unpack_rgb565(c1);
 
-    // Palette entries (in 8-bit space for distance computation).
     const std::array<Rgb8, 4> palette = { p0, p1,
         Rgb8{ static_cast<std::uint8_t>((2U * p0.r + p1.r) / 3U),
               static_cast<std::uint8_t>((2U * p0.g + p1.g) / 3U),
@@ -147,7 +141,6 @@ void encode_bc1_block(const std::uint8_t* block_rgba,  // 16 texels × 4 bytes
         const std::uint8_t tg = block_rgba[static_cast<std::size_t>(t) * 4U + 1U];
         const std::uint8_t tb = block_rgba[static_cast<std::size_t>(t) * 4U + 2U];
 
-        // Find nearest palette entry (L2 squared distance in RGB space).
         std::uint32_t best_dist = std::numeric_limits<std::uint32_t>::max();
         std::uint32_t best_idx  = 0U;
 
@@ -210,7 +203,7 @@ void decode_bc1_block(const std::uint8_t* in_8,       // 8 bytes input
     }
     else
     {
-        // 3-color + transparent mode (c0 == c1 collapses to this branch safely)
+        // 3-color + transparent mode
         palette[0] = p0;
         palette[1] = p1;
         palette[2] = { static_cast<std::uint8_t>((p0.r + p1.r) / 2U),
@@ -226,13 +219,13 @@ void decode_bc1_block(const std::uint8_t* in_8,       // 8 bytes input
         block_rgba[off + 0U] = palette[idx].r;
         block_rgba[off + 1U] = palette[idx].g;
         block_rgba[off + 2U] = palette[idx].b;
-        block_rgba[off + 3U] = 255U;  // BC1 always opaque in 4-color mode
+        block_rgba[off + 3U] = 255U;
     }
 }
 
 // ---- Mip level helpers -----------------------------------------------------
 
-/// Number of mip levels for a dimension.
+/// Number of mip levels for given dimensions.
 [[nodiscard]] constexpr std::uint32_t mip_count(std::uint32_t w,
                                                  std::uint32_t h) noexcept
 {
@@ -243,13 +236,22 @@ void decode_bc1_block(const std::uint8_t* in_8,       // 8 bytes input
 }
 
 /// Bytes required for one BC1 mip level of given dimensions.
-/// BC1 = 8 bytes per 4×4 block; dimensions padded up to multiples of 4.
 [[nodiscard]] constexpr std::uint64_t bc1_mip_bytes(std::uint32_t w,
                                                      std::uint32_t h) noexcept
 {
     const std::uint32_t bw = (w + 3U) / 4U;
     const std::uint32_t bh = (h + 3U) / 4U;
     return static_cast<std::uint64_t>(bw) * bh * 8ULL;
+}
+
+/// ASTC: 16 bytes per block, block_dim × block_dim texels.
+[[nodiscard]] constexpr std::uint64_t astc_mip_bytes(std::uint32_t w,
+                                                      std::uint32_t h,
+                                                      std::uint32_t block_dim) noexcept
+{
+    const std::uint32_t bw = (w + block_dim - 1U) / block_dim;
+    const std::uint32_t bh = (h + block_dim - 1U) / block_dim;
+    return static_cast<std::uint64_t>(bw) * bh * 16ULL;
 }
 
 /// Downsample RGBA8 image to half-resolution using a 2×2 box filter.
@@ -266,7 +268,6 @@ downsample_2x(const std::vector<std::uint8_t>& src,
     {
         for (std::uint32_t dx = 0U; dx < dw; ++dx)
         {
-            // Sample 2×2 neighbourhood (clamp to edge).
             const std::uint32_t sx0 = dx * 2U;
             const std::uint32_t sy0 = dy * 2U;
             const std::uint32_t sx1 = std::min(sx0 + 1U, w - 1U);
@@ -287,19 +288,68 @@ downsample_2x(const std::vector<std::uint8_t>& src,
     return dst;
 }
 
-/// Encode a single mip level (w×h RGBA8 → BC1) and append to `blob`.
+/// Encode a single BC1 mip level and append to blob.
 void encode_bc1_mip(const std::uint8_t* rgba8,
                     std::uint32_t       w,
                     std::uint32_t       h,
                     std::vector<std::uint8_t>& blob)
 {
-    // BC1: 4×4 blocks, 8 bytes each.
     const std::uint32_t bw = (w + 3U) / 4U;
     const std::uint32_t bh = (h + 3U) / 4U;
 
-    // Scratch buffer for one 4×4 block of RGBA8 texels.
-    std::array<std::uint8_t, 64U> block_pixels{};  // 16 texels × 4 bytes
+    std::array<std::uint8_t, 64U> block_pixels{};
     std::array<std::uint8_t,  8U> block_out{};
+
+    for (std::uint32_t by = 0U; by < bh; ++by)
+    {
+        for (std::uint32_t bx = 0U; bx < bw; ++bx)
+        {
+            for (std::uint32_t ty = 0U; ty < 4U; ++ty)
+            {
+                for (std::uint32_t tx = 0U; tx < 4U; ++tx)
+                {
+                    const std::uint32_t px = std::min(bx * 4U + tx, w - 1U);
+                    const std::uint32_t py = std::min(by * 4U + ty, h - 1U);
+                    const std::size_t   si = (static_cast<std::size_t>(py) * w + px) * 4U;
+                    const std::size_t   di = (ty * 4U + tx) * 4U;
+                    block_pixels[di + 0U] = rgba8[si + 0U];
+                    block_pixels[di + 1U] = rgba8[si + 1U];
+                    block_pixels[di + 2U] = rgba8[si + 2U];
+                    block_pixels[di + 3U] = rgba8[si + 3U];
+                }
+            }
+
+            encode_bc1_block(block_pixels.data(), block_out.data());
+            blob.insert(blob.end(), block_out.begin(), block_out.end());
+        }
+    }
+}
+
+// ---- BC7 mip encoder (Sprint-2) --------------------------------------------
+
+#if CD_TC_HAS_BC7ENC
+
+/// BC7: 16 bytes per 4×4 block.
+[[nodiscard]] constexpr std::uint64_t bc7_mip_bytes(std::uint32_t w,
+                                                     std::uint32_t h) noexcept
+{
+    const std::uint32_t bw = (w + 3U) / 4U;
+    const std::uint32_t bh = (h + 3U) / 4U;
+    return static_cast<std::uint64_t>(bw) * bh * 16ULL;
+}
+
+/// Encode one mip level of RGBA8 into BC7 (16 bytes per 4×4 block).
+void encode_bc7_mip(const std::uint8_t*        rgba8,
+                    std::uint32_t              w,
+                    std::uint32_t              h,
+                    std::vector<std::uint8_t>& blob,
+                    const bc7enc_compress_block_params& params)
+{
+    const std::uint32_t bw = (w + 3U) / 4U;
+    const std::uint32_t bh = (h + 3U) / 4U;
+
+    std::array<std::uint8_t, 64U> block_pixels{};  // 16 texels × 4 bytes RGBA
+    std::array<std::uint8_t, 16U> block_out{};     // 16 bytes BC7 output
 
     for (std::uint32_t by = 0U; by < bh; ++by)
     {
@@ -321,12 +371,97 @@ void encode_bc1_mip(const std::uint8_t* rgba8,
                 }
             }
 
-            encode_bc1_block(block_pixels.data(), block_out.data());
+            // bc7enc_compress_block() returns true if the block used the alpha
+            // path, false if it used the opaque path — NOT a success/failure
+            // indicator. Both outcomes produce a valid 16-byte BC7 block.
+            bc7enc_compress_block(block_out.data(),
+                                  block_pixels.data(),
+                                  &params);
 
             blob.insert(blob.end(), block_out.begin(), block_out.end());
         }
     }
 }
+
+#endif  // CD_TC_HAS_BC7ENC
+
+// ---- ASTC mip encoder (Sprint-2) -------------------------------------------
+
+#if CD_TC_HAS_ASTCENC
+
+/// Encode one mip level of RGBA8 into ASTC (16 bytes per block_dim×block_dim).
+/// Returns false on astcenc failure.
+[[nodiscard]] bool encode_astc_mip(const std::uint8_t*        rgba8,
+                                    std::uint32_t              w,
+                                    std::uint32_t              h,
+                                    std::uint32_t              block_dim,
+                                    std::vector<std::uint8_t>& blob,
+                                    float                      quality)
+{
+    // --- Configure and allocate context ----------------------------------------
+    astcenc_config cfg{};
+    const astcenc_error err_cfg = astcenc_config_init(
+        ASTCENC_PRF_LDR,
+        block_dim, block_dim,
+        1U,           // block_z = 1 (2D)
+        quality,
+        0U,           // flags = 0
+        &cfg);
+    if (err_cfg != ASTCENC_SUCCESS)
+    {
+        return false;
+    }
+
+    astcenc_context* ctx = nullptr;
+    const astcenc_error err_alloc = astcenc_context_alloc(&cfg, 1U, &ctx);
+    if (err_alloc != ASTCENC_SUCCESS || ctx == nullptr)
+    {
+        return false;
+    }
+
+    // --- Build astcenc_image from our flat RGBA8 buffer -------------------------
+    // astcenc_image.data is void** — array of 2D slice pointers.
+    // For a 2D image, dim_z = 1 and data[0] points at the row-major RGBA8 data.
+    // The data is read-only during compression; the cast-away-const is safe here
+    // because astcenc does not modify the input pixels.
+    void* slice_ptr = const_cast<std::uint8_t*>(rgba8);  // NOLINT(cppcoreguidelines-pro-type-const-cast)
+
+    astcenc_image img{};
+    img.dim_x     = w;
+    img.dim_y     = h;
+    img.dim_z     = 1U;
+    img.data_type = ASTCENC_TYPE_U8;
+    img.data      = &slice_ptr;
+
+    // --- Allocate output buffer --------------------------------------------------
+    const std::uint32_t bw = (w + block_dim - 1U) / block_dim;
+    const std::uint32_t bh = (h + block_dim - 1U) / block_dim;
+    const std::size_t   out_bytes = static_cast<std::size_t>(bw) * bh * 16U;
+    std::vector<std::uint8_t> out_buf(out_bytes, 0U);
+
+    // --- Identity swizzle (RGBA → RGBA) -----------------------------------------
+    const astcenc_swizzle swizzle{ ASTCENC_SWZ_R, ASTCENC_SWZ_G,
+                                   ASTCENC_SWZ_B, ASTCENC_SWZ_A };
+
+    // --- Compress ---------------------------------------------------------------
+    const astcenc_error err_cmp = astcenc_compress_image(
+        ctx, &img, &swizzle,
+        out_buf.data(), out_bytes,
+        0U  // thread_index = 0 (single-threaded)
+    );
+
+    astcenc_context_free(ctx);
+
+    if (err_cmp != ASTCENC_SUCCESS)
+    {
+        return false;
+    }
+
+    blob.insert(blob.end(), out_buf.begin(), out_buf.end());
+    return true;
+}
+
+#endif  // CD_TC_HAS_ASTCENC
 
 }  // anonymous namespace
 
@@ -340,78 +475,220 @@ encode(std::span<const std::uint8_t> rgba8_pixels,
        std::uint32_t                 height,
        const EncodeOptions&          options)
 {
-    // ---- Validate format (Sprint-1: BC1 only) --------------------------------
-    if (options.target != Format::kBC1)
-    {
-        // Sprint-2 will implement remaining formats.
-        return std::nullopt;
-    }
-
     // ---- Validate dimensions ------------------------------------------------
     if (width == 0U || height == 0U)
     {
         return std::nullopt;
     }
 
-    if (width % 4U != 0U || height % 4U != 0U)
-    {
-        // BC1 requires dimensions to be multiples of 4.
-        return std::nullopt;
-    }
-
     // ---- Validate input size ------------------------------------------------
     const std::size_t expected_bytes =
         static_cast<std::size_t>(width) * height * 4U;
-
     if (rgba8_pixels.size() != expected_bytes)
     {
         return std::nullopt;
     }
 
-    // ---- Compute total blob size (mip 0 only or full chain) ----------------
-    const std::uint32_t num_mips =
-        options.generate_mips ? mip_count(width, height) : 1U;
+    // ---- Dispatch by format -------------------------------------------------
 
-    std::uint64_t total_bytes = 0ULL;
+    // ---- BC1 ----------------------------------------------------------------
+    if (options.target == Format::kBC1)
     {
-        std::uint32_t mw = width;
-        std::uint32_t mh = height;
-        for (std::uint32_t m = 0U; m < num_mips; ++m)
+        if (width % 4U != 0U || height % 4U != 0U)
         {
-            total_bytes += bc1_mip_bytes(mw, mh);
-            mw = std::max(1U, mw / 2U);
-            mh = std::max(1U, mh / 2U);
+            return std::nullopt;
         }
+
+        const std::uint32_t num_mips =
+            options.generate_mips ? mip_count(width, height) : 1U;
+
+        std::uint64_t total_bytes = 0ULL;
+        {
+            std::uint32_t mw = width;
+            std::uint32_t mh = height;
+            for (std::uint32_t m = 0U; m < num_mips; ++m)
+            {
+                total_bytes += bc1_mip_bytes(mw, mh);
+                mw = std::max(1U, mw / 2U);
+                mh = std::max(1U, mh / 2U);
+            }
+        }
+
+        CompressedTexture result;
+        result.format = Format::kBC1;
+        result.width  = width;
+        result.height = height;
+        result.blob.reserve(static_cast<std::size_t>(total_bytes));
+
+        encode_bc1_mip(rgba8_pixels.data(), width, height, result.blob);
+
+        if (options.generate_mips && num_mips > 1U)
+        {
+            std::vector<std::uint8_t> prev_mip(rgba8_pixels.begin(),
+                                                rgba8_pixels.end());
+            std::uint32_t mw = width;
+            std::uint32_t mh = height;
+
+            for (std::uint32_t m = 1U; m < num_mips; ++m)
+            {
+                std::vector<std::uint8_t> cur_mip = downsample_2x(prev_mip, mw, mh);
+                mw = std::max(1U, mw / 2U);
+                mh = std::max(1U, mh / 2U);
+                encode_bc1_mip(cur_mip.data(), mw, mh, result.blob);
+                prev_mip = std::move(cur_mip);
+            }
+        }
+
+        return result;
     }
 
-    CompressedTexture result;
-    result.format = Format::kBC1;
-    result.width  = width;
-    result.height = height;
-    result.blob.reserve(static_cast<std::size_t>(total_bytes));
-
-    // ---- Encode mip 0 -------------------------------------------------------
-    encode_bc1_mip(rgba8_pixels.data(), width, height, result.blob);
-
-    // ---- Encode remaining mip levels (box-filter downsample) ---------------
-    if (options.generate_mips && num_mips > 1U)
+    // ---- BC7 ----------------------------------------------------------------
+    if (options.target == Format::kBC7)
     {
-        std::vector<std::uint8_t> prev_mip(rgba8_pixels.begin(),
-                                            rgba8_pixels.end());
-        std::uint32_t mw = width;
-        std::uint32_t mh = height;
-
-        for (std::uint32_t m = 1U; m < num_mips; ++m)
+#if CD_TC_HAS_BC7ENC
+        if (width % 4U != 0U || height % 4U != 0U)
         {
-            std::vector<std::uint8_t> cur_mip = downsample_2x(prev_mip, mw, mh);
-            mw = std::max(1U, mw / 2U);
-            mh = std::max(1U, mh / 2U);
-            encode_bc1_mip(cur_mip.data(), mw, mh, result.blob);
-            prev_mip = std::move(cur_mip);
+            return std::nullopt;
         }
+
+        // Map quality [0..255] → bc7enc uber_level [0..4].
+        // uber_level 0 = fastest, 4 = best. Our quality byte:
+        //   0..50   → 0, 51..101 → 1, 102..152 → 2, 153..203 → 3, 204..255 → 4
+        const std::uint32_t uber = static_cast<std::uint32_t>(options.quality) * 4U / 255U;
+
+        // Initialise the lookup tables (thread-safe: idempotent after first call).
+        bc7enc_compress_block_init();
+
+        bc7enc_compress_block_params params{};
+        bc7enc_compress_block_params_init(&params);
+        params.m_uber_level = uber;
+
+        const std::uint32_t num_mips =
+            options.generate_mips ? mip_count(width, height) : 1U;
+
+        CompressedTexture result;
+        result.format = Format::kBC7;
+        result.width  = width;
+        result.height = height;
+
+        // Estimate total bytes for reservation.
+        {
+            std::uint64_t total = 0ULL;
+            std::uint32_t mw = width;
+            std::uint32_t mh = height;
+            for (std::uint32_t m = 0U; m < num_mips; ++m)
+            {
+                total += bc7_mip_bytes(mw, mh);
+                mw = std::max(1U, mw / 2U);
+                mh = std::max(1U, mh / 2U);
+            }
+            result.blob.reserve(static_cast<std::size_t>(total));
+        }
+
+        // Encode mip 0.
+        encode_bc7_mip(rgba8_pixels.data(), width, height, result.blob, params);
+
+        // Encode remaining mips.
+        if (options.generate_mips && num_mips > 1U)
+        {
+            std::vector<std::uint8_t> prev_mip(rgba8_pixels.begin(),
+                                                rgba8_pixels.end());
+            std::uint32_t mw = width;
+            std::uint32_t mh = height;
+
+            for (std::uint32_t m = 1U; m < num_mips; ++m)
+            {
+                std::vector<std::uint8_t> cur_mip = downsample_2x(prev_mip, mw, mh);
+                mw = std::max(1U, mw / 2U);
+                mh = std::max(1U, mh / 2U);
+                encode_bc7_mip(cur_mip.data(), mw, mh, result.blob, params);
+                prev_mip = std::move(cur_mip);
+            }
+        }
+
+        return result;
+#else
+        // BC7 encoder not compiled in.
+        return std::nullopt;
+#endif  // CD_TC_HAS_BC7ENC
     }
 
-    return result;
+    // ---- ASTC 4×4 / 8×8 ----------------------------------------------------
+    if (options.target == Format::kAstc4x4 || options.target == Format::kAstc8x8)
+    {
+#if CD_TC_HAS_ASTCENC
+        const std::uint32_t block_dim =
+            (options.target == Format::kAstc4x4) ? 4U : 8U;
+
+        // ASTC does not require power-of-2 or multiple-of-block dimensions,
+        // but width/height must be non-zero (checked above).
+
+        // Map quality [0..255] → astcenc preset [FASTEST..EXHAUSTIVE].
+        const float quality = ASTCENC_PRE_FASTEST +
+            static_cast<float>(options.quality) *
+            (ASTCENC_PRE_EXHAUSTIVE - ASTCENC_PRE_FASTEST) / 255.0F;
+
+        const std::uint32_t num_mips =
+            options.generate_mips ? mip_count(width, height) : 1U;
+
+        CompressedTexture result;
+        result.format = options.target;
+        result.width  = width;
+        result.height = height;
+
+        // Estimate total bytes for reservation.
+        {
+            std::uint64_t total = 0ULL;
+            std::uint32_t mw = width;
+            std::uint32_t mh = height;
+            for (std::uint32_t m = 0U; m < num_mips; ++m)
+            {
+                total += astc_mip_bytes(mw, mh, block_dim);
+                mw = std::max(1U, mw / 2U);
+                mh = std::max(1U, mh / 2U);
+            }
+            result.blob.reserve(static_cast<std::size_t>(total));
+        }
+
+        // Encode mip 0.
+        if (!encode_astc_mip(rgba8_pixels.data(), width, height,
+                             block_dim, result.blob, quality))
+        {
+            return std::nullopt;
+        }
+
+        // Encode remaining mips.
+        if (options.generate_mips && num_mips > 1U)
+        {
+            std::vector<std::uint8_t> prev_mip(rgba8_pixels.begin(),
+                                                rgba8_pixels.end());
+            std::uint32_t mw = width;
+            std::uint32_t mh = height;
+
+            for (std::uint32_t m = 1U; m < num_mips; ++m)
+            {
+                std::vector<std::uint8_t> cur_mip = downsample_2x(prev_mip, mw, mh);
+                mw = std::max(1U, mw / 2U);
+                mh = std::max(1U, mh / 2U);
+                if (!encode_astc_mip(cur_mip.data(), mw, mh,
+                                    block_dim, result.blob, quality))
+                {
+                    return std::nullopt;
+                }
+                prev_mip = std::move(cur_mip);
+            }
+        }
+
+        return result;
+#else
+        // ASTC encoder not compiled in.
+        return std::nullopt;
+#endif  // CD_TC_HAS_ASTCENC
+    }
+
+    // ---- BC3 / BC5 (not yet implemented) ------------------------------------
+    // Sprint-3: bc7enc_rdo rgbcx.h provides BC1/BC3/BC5 real encoders.
+    return std::nullopt;
 }
 
 // ============================================================================
@@ -422,13 +699,13 @@ std::optional<CompressionStats>
 analyze(std::span<const std::uint8_t> rgba8_pixels,
         const CompressedTexture&      compressed)
 {
-    // ---- Sprint-1: BC1 only -------------------------------------------------
+    // analyze() currently supports BC1 only (Sprint-1 + Sprint-2 scope).
+    // BC7 and ASTC decoders are not bundled; adding them is Sprint-3 scope.
     if (compressed.format != Format::kBC1)
     {
         return std::nullopt;
     }
 
-    // ---- Validate dimensions ------------------------------------------------
     if (compressed.width == 0U || compressed.height == 0U)
     {
         return std::nullopt;
@@ -442,7 +719,6 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
         return std::nullopt;
     }
 
-    // ---- Expected BC1 blob size for mip 0 only (or at least mip 0) ---------
     const std::uint64_t mip0_bytes =
         bc1_mip_bytes(compressed.width, compressed.height);
 
@@ -451,15 +727,13 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
         return std::nullopt;
     }
 
-    // ---- Decode mip 0 and compute RMSE -------------------------------------
     const std::uint32_t bw = (compressed.width  + 3U) / 4U;
     const std::uint32_t bh = (compressed.height + 3U) / 4U;
 
-    // Reconstructed RGBA8 (mip 0 only).
     std::vector<std::uint8_t> decoded(expected_input, 0U);
 
     std::size_t blob_offset = 0U;
-    std::array<std::uint8_t, 64U> block_rgba{};  // 16 texels × 4 bytes
+    std::array<std::uint8_t, 64U> block_rgba{};
 
     for (std::uint32_t by = 0U; by < bh; ++by)
     {
@@ -469,7 +743,6 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
                              block_rgba.data());
             blob_offset += 8U;
 
-            // Scatter decoded texels back into the decoded image buffer.
             for (std::uint32_t ty = 0U; ty < 4U; ++ty)
             {
                 for (std::uint32_t tx = 0U; tx < 4U; ++tx)
@@ -501,7 +774,7 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
     {
         for (std::size_t ch = 0U; ch < 3U; ++ch)
         {
-            const auto orig = static_cast<double>(rgba8_pixels[i * 4U + ch]);
+            const auto orig  = static_cast<double>(rgba8_pixels[i * 4U + ch]);
             const auto recon = static_cast<double>(decoded[i * 4U + ch]);
             const double diff  = orig - recon;
             sse += diff * diff;
@@ -511,7 +784,6 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
     const double mse  = sse / static_cast<double>(num_pixels * 3U);
     const double rmse = std::sqrt(mse);
 
-    // ---- Build stats --------------------------------------------------------
     CompressionStats stats;
     stats.input_bytes  = static_cast<std::uint64_t>(expected_input);
     stats.output_bytes = static_cast<std::uint64_t>(compressed.blob.size());
