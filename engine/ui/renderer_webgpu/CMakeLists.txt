@@ -24,9 +24,19 @@
 # -------------------------------------------------------------------------------
 
 # ---- Option ------------------------------------------------------------------
+# CD_ENABLE_WEBGPU defaults ON so that configure always probes for Dawn and
+# reports the backend status clearly.  If Dawn is not installed the probe falls
+# through to stub mode (no hard error) — the only effect of the ON default is
+# a STATUS line in the configure output instead of silence.
+#
+# To install Dawn run:
+#   vcpkg install "chromodynamic[webgpu]"
+# then reconfigure (Dawn is already in vcpkg.json feature gate "webgpu";
+# top-level promotion is deferred until Dawn build times are acceptable on
+# stock CI runners — see README.md §"Dawn vcpkg promote status").
 option(CD_ENABLE_WEBGPU
     "Enable real Dawn WebGPU backend for cd::ui_renderer_webgpu (requires Dawn vcpkg port)"
-    OFF)
+    ON)
 
 # ---- Dawn probe (when opted in) ---------------------------------------------
 set(CD_UI_WEBGPU_HAVE_DAWN 0)

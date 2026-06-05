@@ -11,11 +11,26 @@
 ## Integration status
 
 | State | How |
-|-------|-----|
-| **STUB (default)** | `CD_ENABLE_WEBGPU=OFF` (default). All handles are opaque integers; all GPU calls are no-ops. Build-only tests compile and pass on every CI tier without a GPU or Dawn. |
-| **REAL (opt-in)** | `vcpkg install chromodynamic[webgpu]` + `-DCD_ENABLE_WEBGPU=ON`. Dawn `find_package` resolves `Dawn::webgpu_cpp`; real `wgpu::Device::CreateBuffer` / `Queue::WriteBuffer` paths activate. |
+| ----- | --- |
+| **STUB (auto-probe)** | `CD_ENABLE_WEBGPU=ON` (default since phase753). CMake probes for Dawn; falls back to stub if not found. Opaque handles, no-op GPU calls. All four build-only tests pass on every CI tier. |
+| **REAL (requires Dawn)** | Run `vcpkg install "chromodynamic[webgpu]"`, then reconfigure. `find_package(Dawn)` resolves `Dawn::webgpu_cpp`; `CreateBuffer` / `Queue::WriteBuffer` paths activate. No extra CMake flag needed. |
 
-Dawn is available in the project's vcpkg baseline (`56bb2411`, version `20251202.213730`, BSD-3-Clause) but is **not installed by default** because it requires Abseil + Python host tooling and adds ~800 MB to the build.
+Dawn is available in the project's vcpkg baseline (version `20251202.213730`, BSD-3-Clause) but is **not installed by default** because it requires Abseil + Python host tooling and adds ~800 MB to the build.
+
+### Dawn vcpkg promote status (phase753)
+
+Dawn remains in the `webgpu` **feature gate** in `vcpkg.json` (not promoted to top-level `dependencies`) for the following reasons:
+
+| Constraint | Detail |
+| ---------- | ------ |
+| **Build size** | Abseil (~30 MB) + Python tooling (~150 MB) + Dawn source (~300 MB). D3D12 + Vulkan: **~800 MB** Release, **~1.4 GB** Debug+Release. |
+| **Build time** | Cold build on 8-core Windows: **25–45 min**. Standard CI tiers would time out without a pre-cached Dawn sysroot. |
+| **Platform deps** | D3D12 needs `directx-dxc`; Vulkan needs `vulkan-headers`. Both are auto-fetched by vcpkg — intrusive for all-developer installs. |
+| **Promotion criteria** | Promote to top-level when: (a) self-hosted CI runner with cached Dawn sysroot is live, (b) `hello_ui_webgpu` Phase 5.5 requires Dawn unconditionally. |
+
+**`CD_ENABLE_WEBGPU` is now ON by default** so configure always probes and reports the backend state. Developers with Dawn installed see "real WebGPU backend enabled"; others see "falling back to stub" — no hard error either way.
+
+The `Submitter::create` factory is the **default-OK path**: it succeeds in both stub and real modes. `create_with_dawn` (future Phase 5.5 factory) will require an actual `wgpu::Device` and is intentionally deferred until the `hello_ui_webgpu` sample ships a real surface.
 
 ---
 
