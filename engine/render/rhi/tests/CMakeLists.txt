@@ -37,3 +37,20 @@ cd_add_test(tlas_coverage
   SOURCES test_tlas_coverage.cpp
   DEPS    cd::rhi cd::core
 )
+
+# phase766 FINALE-6 W2B F5: D3D12 native mesh-shader path.
+# Surface-contract checks runnable everywhere; Windows-gated functional
+# probes (TEST: D3D12DeviceCreatesAndExposesMeshShaderFeatureBit and
+# D3D12CreatePipelineRejectsMeshDescWhenUnsupported) link against
+# cd::rhi_d3d12 and SKIP cleanly when no D3D12 adapter is present.
+if(WIN32)
+  cd_add_test(rhi_d3d12_mesh_shader
+    SOURCES test_d3d12_mesh_shader.cpp
+    DEPS    cd::rhi cd::rhi_d3d12 cd::core
+  )
+else()
+  cd_add_test(rhi_d3d12_mesh_shader
+    SOURCES test_d3d12_mesh_shader.cpp
+    DEPS    cd::rhi cd::core
+  )
+endif()

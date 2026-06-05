@@ -67,6 +67,17 @@ struct GraphicsPipelineDesc
     ShaderModuleHandle tess_ctrl_shader {};
     ShaderModuleHandle tess_eval_shader {};
 
+    /// phase766 — Mesh-shading pipeline (Shader Model 6.5 / VK_EXT_mesh_shader).
+    /// When `mesh_shader` is valid the backend builds a mesh-shading PSO
+    /// (D3D12 PIPELINE_STATE_STREAM with MS+AS subobjects, or Vulkan
+    /// VkGraphicsPipelineCreateInfo with the mesh-stage chain). The
+    /// `amplification_shader` (D3D12) / task shader (Vulkan) is optional.
+    /// `vertex_shader` and the vertex-input fields are ignored when a mesh
+    /// shader is present — DispatchMesh / vkCmdDrawMeshTasksEXT drives the
+    /// pipeline directly.
+    ShaderModuleHandle mesh_shader {};
+    ShaderModuleHandle amplification_shader {};
+
     std::span<const VertexBinding> vertex_bindings;
     std::span<const VertexAttribute> vertex_attributes;
 
@@ -86,6 +97,52 @@ struct ComputePipelineDesc
 {
     PipelineLayoutHandle layout {};
     ShaderModuleHandle shader {};
+};
+
+// ---- Pipeline kind discriminator (Phase 765 W2A — F5) ---------------------
+//
+// Identifies which pipeline variant a backend should construct from a
+// descriptor. Graphics + Compute are the classic two; MeshShader is the
+// Nanite-class virtual-geometry path that replaces the vertex-input
+// assembler with a task -> mesh shader chain (Vulkan VK_EXT_mesh_shader,
+// D3D12 mesh-shader tier). Backends without mesh-shader support reject
+// `kMeshShader` with kNotImplemented; callers gate on
+// `device.features().mesh_shader` before constructing one.
+enum class PipelineKind : std::uint8_t
+{
+    kGraphics = 0,
+    kCompute,
+    kMeshShader,
+};
+
+// ---- Mesh-shader pipeline descriptor (Phase 765 W2A — F5) -----------------
+//
+// Mesh-shader pipelines skip the input assembler / vertex shader stage
+// entirely and start from a task (amplification) shader that emits work
+// for a mesh shader, which in turn emits triangles to the rasterizer.
+// The descriptor mirrors `GraphicsPipelineDesc` for state shared with
+// the rasterizer (raster, depth-stencil, blend, attachment formats) but
+// drops vertex_input / topology fields that don't apply.
+//
+// `task_shader` is optional -- a pipeline may consist of mesh + fragment
+// only. `fragment_shader` is required for any rasterized output.
+struct MeshPipelineDesc
+{
+    PipelineLayoutHandle layout {};
+    ShaderModuleHandle task_shader {};      // optional -- amplification stage
+    ShaderModuleHandle mesh_shader {};      // required -- primitive output stage
+    ShaderModuleHandle fragment_shader {};  // required for rasterized output
+
+    RasterState raster {};
+    DepthStencilState depth_stencil {};
+    std::span<const BlendAttachmentState> blend_attachments;
+    SampleCount samples { SampleCount::k1 };
+
+    // Output format declaration (used for dynamic rendering & PSO caches).
+    // Same conventions as GraphicsPipelineDesc.
+    std::span<const Format> color_attachment_formats;
+    Format depth_attachment_format { Format::kUndefined };
+    Format stencil_attachment_format { Format::kUndefined };
 };
 
 // ---- Descriptor writes (S3.4) ---------------------------------------------

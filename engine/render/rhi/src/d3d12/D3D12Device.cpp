@@ -244,6 +244,21 @@ public:
             (void)device_.As(&device5_);
         }
 
+        // ---- 7. Mesh-shader feature query (phase766) -----------------------
+        // D3D12_FEATURE_DATA_D3D12_OPTIONS7::MeshShaderTier reports
+        // MESH_SHADER_TIER_1 on Shader Model 6.5+ adapters with
+        // ID3D12Device2 / ID3D12GraphicsCommandList6 support. We also
+        // probe ID3D12Device2 for CreatePipelineState(stream) — required
+        // by the D3D12_PIPELINE_STATE_STREAM_DESC + MS/AS subobjects path.
+        D3D12_FEATURE_DATA_D3D12_OPTIONS7 opts7 {};
+        if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7,
+                                                   &opts7, sizeof(opts7))))
+        {
+            const bool has_tier_1 = (opts7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1);
+            (void)device_.As(&device2_);
+            features_.mesh_shader = has_tier_1 && device2_;
+        }
+
         return S_OK;
     }
 
@@ -1063,6 +1078,17 @@ public:
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
                 "graphics pipeline: layout handle unknown"));
         }
+
+        // phase766 — Mesh-shading PSO path. When the descriptor declares a
+        // mesh shader, build a D3D12_PIPELINE_STATE_STREAM_DESC with the
+        // MeshShader + (optional) AmplificationShader subobjects and route
+        // through ID3D12Device2::CreatePipelineState. Vertex/IA stages are
+        // suppressed — DispatchMesh drives the pipeline directly.
+        if (desc.mesh_shader.value() != 0u)
+        {
+            return create_mesh_pipeline_(desc, layout_it->second.root_sig.Get());
+        }
+
         auto vs_it = shader_modules_.find(desc.vertex_shader.index());
         auto fs_it = shader_modules_.find(desc.fragment_shader.index());
         if (vs_it == shader_modules_.end() || fs_it == shader_modules_.end())
@@ -1256,6 +1282,255 @@ public:
     void destroy_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) override
     {
         graphics_pipelines_.erase(h.index());
+    }
+
+    // ---- Mesh-shading pipeline (REAL — phase766 F5) -----------------------
+    //
+    // Mesh-shading PSO via ID3D12Device2::CreatePipelineState +
+    // D3D12_PIPELINE_STATE_STREAM_DESC. The PSS-stream is a sequence of
+    // (subobject_type_alignas16, payload) tuples; we pack the subobjects
+    // into a POD struct so the layout is contiguous and properly aligned
+    // (each subobject must start on its natural alignment within the
+    // stream — std::uint32_t for the tag + the payload type).
+    //
+    // Subobjects emitted (when applicable):
+    //   * ROOT_SIGNATURE                                  -- pipeline layout
+    //   * AS (Amplification Shader)                       -- optional
+    //   * MS (Mesh Shader)                                -- REQUIRED
+    //   * PS (Pixel Shader / fragment)                    -- optional but typical
+    //   * RASTERIZER                                      -- raster state
+    //   * DEPTH_STENCIL                                   -- depth/stencil state
+    //   * BLEND                                           -- blend state
+    //   * RENDER_TARGET_FORMATS                           -- color attachments
+    //   * DEPTH_STENCIL_FORMAT                            -- depth attachment
+    //   * SAMPLE_DESC                                     -- MSAA (count + quality)
+    //   * SAMPLE_MASK                                     -- rasterizer mask
+    //   * PRIMITIVE_TOPOLOGY (TRIANGLE)                   -- mesh PSOs default tri
+    //
+    // The DispatchMesh command-list entry point (ID3D12GraphicsCommandList6)
+    // executes the pipeline. Vertex-input / IA stages are inert.
+    [[nodiscard]] cd::core::Result<cd::rhi::GraphicsPipelineHandle>
+    create_mesh_pipeline_(const cd::rhi::GraphicsPipelineDesc& desc,
+                          ID3D12RootSignature*                 root_sig)
+    {
+        if (!features_.mesh_shader || !device2_)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_graphics_pipeline (mesh): adapter lacks "
+                "D3D12_MESH_SHADER_TIER_1 / ID3D12Device2 (Shader Model 6.5+)"));
+        }
+
+        auto ms_it = shader_modules_.find(desc.mesh_shader.index());
+        if (ms_it == shader_modules_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_graphics_pipeline (mesh): mesh-shader module handle unknown"));
+        }
+        const ShaderModuleRecord* as_rec = nullptr;
+        if (desc.amplification_shader.value() != 0u)
+        {
+            auto as_it = shader_modules_.find(desc.amplification_shader.index());
+            if (as_it == shader_modules_.end())
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_graphics_pipeline (mesh): amplification shader module handle unknown"));
+            }
+            as_rec = &as_it->second;
+        }
+        // Pixel shader is optional (depth-only mesh-PSO is legal).
+        const ShaderModuleRecord* ps_rec = nullptr;
+        if (desc.fragment_shader.value() != 0u)
+        {
+            auto fs_it = shader_modules_.find(desc.fragment_shader.index());
+            if (fs_it != shader_modules_.end())
+                ps_rec = &fs_it->second;
+        }
+
+        // Pack PSS subobjects. Each (type-tag + payload) starts on its
+        // natural alignment within the contiguous stream blob; the easiest
+        // way to do this portably is one struct per subobject group with
+        // CD3DX12-style alignas(void*) tags. We avoid CD3DX12 headers and
+        // build the struct by hand for clarity.
+        struct alignas(void*) PssSubObj
+        {
+            D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+        };
+
+        // Rasterizer
+        D3D12_RASTERIZER_DESC rs {};
+        rs.FillMode = (desc.raster.polygon_mode == cd::rhi::PolygonMode::kFill)
+            ? D3D12_FILL_MODE_SOLID : D3D12_FILL_MODE_WIREFRAME;
+        switch (desc.raster.cull)
+        {
+            case cd::rhi::CullMode::kNone:  rs.CullMode = D3D12_CULL_MODE_NONE;  break;
+            case cd::rhi::CullMode::kFront: rs.CullMode = D3D12_CULL_MODE_FRONT; break;
+            case cd::rhi::CullMode::kBack:  rs.CullMode = D3D12_CULL_MODE_BACK;  break;
+            case cd::rhi::CullMode::kFrontAndBack: rs.CullMode = D3D12_CULL_MODE_NONE; break;
+        }
+        rs.FrontCounterClockwise =
+            (desc.raster.front_face == cd::rhi::FrontFace::kCounterClockwise) ? TRUE : FALSE;
+        rs.DepthClipEnable = TRUE;
+
+        // Blend
+        D3D12_BLEND_DESC bd {};
+        bd.AlphaToCoverageEnable = FALSE;
+        bd.IndependentBlendEnable = FALSE;
+        for (auto& rt : bd.RenderTarget)
+        {
+            rt.BlendEnable = FALSE;
+            rt.LogicOpEnable = FALSE;
+            rt.SrcBlend = D3D12_BLEND_ONE;
+            rt.DestBlend = D3D12_BLEND_ZERO;
+            rt.BlendOp = D3D12_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+            rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        }
+
+        // Depth-stencil
+        D3D12_DEPTH_STENCIL_DESC ds {};
+        ds.DepthEnable = (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
+            && desc.depth_stencil.depth_test;
+        ds.DepthWriteMask = desc.depth_stencil.depth_write
+            ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+        ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        ds.StencilEnable = FALSE;
+
+        // Color formats
+        D3D12_RT_FORMAT_ARRAY rtfmts {};
+        rtfmts.NumRenderTargets =
+            static_cast<UINT>(std::min<std::size_t>(desc.color_attachment_formats.size(), 8));
+        for (UINT i = 0; i < rtfmts.NumRenderTargets; ++i)
+            rtfmts.RTFormats[i] = to_dxgi_format(desc.color_attachment_formats[i]);
+
+        // Depth format
+        const DXGI_FORMAT dsv_fmt =
+            (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
+                ? to_dxgi_format(desc.depth_attachment_format)
+                : DXGI_FORMAT_UNKNOWN;
+
+        // Sample desc
+        DXGI_SAMPLE_DESC sd {};
+        sd.Count = 1;
+        sd.Quality = 0;
+
+        // Build the contiguous PSS blob via a single packed struct. The
+        // D3D12 driver walks the stream by reading the tag, dispatching
+        // to the matching subobject size, then advancing to the next
+        // (alignas(void*)) boundary -- so we match that exactly here.
+        struct PipelineStateStream
+        {
+            // Root signature
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE root_sig_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE };
+            ID3D12RootSignature* root_sig { nullptr };
+
+            // AS (Amplification Shader)
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE as_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS };
+            D3D12_SHADER_BYTECODE as_bc {};
+
+            // MS (Mesh Shader)
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ms_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS };
+            D3D12_SHADER_BYTECODE ms_bc {};
+
+            // PS (Pixel Shader)
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ps_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS };
+            D3D12_SHADER_BYTECODE ps_bc {};
+
+            // Rasterizer
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rast_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER };
+            D3D12_RASTERIZER_DESC rast_desc {};
+
+            // Depth-stencil
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE ds_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL };
+            D3D12_DEPTH_STENCIL_DESC ds_desc {};
+
+            // Blend
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE blend_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND };
+            D3D12_BLEND_DESC blend_desc {};
+
+            // Sample mask
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE smask_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK };
+            UINT sample_mask { UINT_MAX };
+
+            // Sample desc
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE sdesc_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC };
+            DXGI_SAMPLE_DESC sample_desc {};
+
+            // RT formats
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE rtfmt_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS };
+            D3D12_RT_FORMAT_ARRAY rt_formats {};
+
+            // DS format
+            alignas(void*) D3D12_PIPELINE_STATE_SUBOBJECT_TYPE dsfmt_tag
+                { D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT };
+            DXGI_FORMAT ds_format { DXGI_FORMAT_UNKNOWN };
+        };
+
+        PipelineStateStream pss {};
+        pss.root_sig = root_sig;
+        if (as_rec != nullptr)
+        {
+            pss.as_bc.pShaderBytecode = as_rec->bytecode.data();
+            pss.as_bc.BytecodeLength  = as_rec->bytecode.size();
+        }
+        pss.ms_bc.pShaderBytecode = ms_it->second.bytecode.data();
+        pss.ms_bc.BytecodeLength  = ms_it->second.bytecode.size();
+        if (ps_rec != nullptr)
+        {
+            pss.ps_bc.pShaderBytecode = ps_rec->bytecode.data();
+            pss.ps_bc.BytecodeLength  = ps_rec->bytecode.size();
+        }
+        pss.rast_desc   = rs;
+        pss.ds_desc     = ds;
+        pss.blend_desc  = bd;
+        pss.sample_desc = sd;
+        pss.rt_formats  = rtfmts;
+        pss.ds_format   = dsv_fmt;
+
+        D3D12_PIPELINE_STATE_STREAM_DESC stream_desc {};
+        stream_desc.SizeInBytes                   = sizeof(pss);
+        stream_desc.pPipelineStateSubobjectStream = &pss;
+
+        ComPtr<ID3D12PipelineState> pso;
+        const HRESULT hr =
+            device2_->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&pso));
+        if (FAILED(hr))
+        {
+            char buf[160] {};
+            std::snprintf(buf, sizeof(buf),
+                          "CreatePipelineState(mesh PSS) failed: HRESULT 0x%08lx",
+                          static_cast<unsigned long>(hr));
+            return std::unexpected(cd::rhi::rhi_errors::make_owning(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                std::string { buf }));
+        }
+
+        GraphicsPipelineRecord rec;
+        rec.pso = pso;
+        rec.layout_handle = desc.layout;
+        // Mesh PSOs ignore IA topology -- DispatchMesh drives directly --
+        // but the bind path still calls IASetPrimitiveTopology. Use TRI
+        // as a safe default; the runtime will ignore it for mesh PSOs.
+        rec.d3d_topology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+        rec.is_mesh_shader = true;
+        const auto id = next_id_++;
+        graphics_pipelines_.emplace(id, std::move(rec));
+        return cd::rhi::GraphicsPipelineHandle { id, 1u };
     }
 
     // ---- Compute pipeline (REAL — phase466 v0.99.93 M4-parity-closeout) ----
@@ -2899,6 +3174,11 @@ public:
         ComPtr<ID3D12PipelineState> pso;
         cd::rhi::PipelineLayoutHandle layout_handle {};
         D3D_PRIMITIVE_TOPOLOGY d3d_topology { D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST };
+        /// phase766 — true when this PSO was built via the mesh-shading
+        /// PIPELINE_STATE_STREAM path. The command-list bind path skips
+        /// IASetPrimitiveTopology for mesh PSOs (the IA is inert), and
+        /// draw_mesh_tasks gates DispatchMesh on this flag.
+        bool is_mesh_shader { false };
     };
 
     // phase466 — compute pipeline record.
@@ -2956,6 +3236,7 @@ private:
     ComPtr<IDXGIFactory6> factory_;
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12Device5> device5_;  // DXR entry points (Phase 142)
+    ComPtr<ID3D12Device2> device2_;  // CreatePipelineState(stream) for mesh PSOs (phase766)
     ComPtr<ID3D12CommandQueue> graphics_queue_;
     ComPtr<ID3D12Fence> idle_fence_;
     UINT64 idle_value_ { 0 };
@@ -3205,6 +3486,7 @@ public:
         list_->Reset(alloc_.Get(), nullptr);
         target_view_ = {};
         target_texture_ = {};
+        bound_is_mesh_shader_ = false;
     }
     void end() override
     {
@@ -3274,9 +3556,13 @@ public:
             list_->SetPipelineState(rec->pso.Get());
             if (auto* layout = owner_->find_pipeline_layout(rec->layout_handle))
                 list_->SetGraphicsRootSignature(layout->root_sig.Get());
-            list_->IASetPrimitiveTopology(rec->d3d_topology);
+            // phase766 — mesh PSOs ignore IA topology; skip the call so we
+            // don't generate spurious debug-layer chatter on mesh-only paths.
+            if (!rec->is_mesh_shader)
+                list_->IASetPrimitiveTopology(rec->d3d_topology);
             bound_compute_layout_ = {};
             bound_graphics_layout_ = rec->layout_handle;
+            bound_is_mesh_shader_ = rec->is_mesh_shader;
         }
     }
     // phase466 — compute pipeline bind.
@@ -3434,6 +3720,21 @@ public:
         if (gx == 0u || gy == 0u || gz == 0u) return;
         list_->Dispatch(gx, gy, gz);
     }
+    // phase766 — mesh-shading dispatch via ID3D12GraphicsCommandList6::DispatchMesh.
+    // Caller MUST have a mesh-shading PSO bound (bound_is_mesh_shader_)
+    // and the device MUST report features().mesh_shader = true. We probe
+    // for ID3D12GraphicsCommandList6 lazily; on hosts where the SDK runtime
+    // lacks the interface (older Windows 10 builds), the cast fails and
+    // we skip the call. This mirrors the Vulkan path which gates on
+    // vkCmdDrawMeshTasksEXT being present in the dispatch table.
+    void draw_mesh_tasks(std::uint32_t gx, std::uint32_t gy, std::uint32_t gz) override
+    {
+        if (!bound_is_mesh_shader_) return;
+        if (gx == 0u || gy == 0u || gz == 0u) return;
+        ComPtr<ID3D12GraphicsCommandList6> list6;
+        if (FAILED(list_.As(&list6)) || !list6) return;
+        list6->DispatchMesh(gx, gy, gz);
+    }
     // phase466 — buffer-to-buffer copies via CopyBufferRegion.
     void copy_buffer(cd::rhi::BufferHandle src,
                      cd::rhi::BufferHandle dst,
@@ -3589,6 +3890,9 @@ private:
     // entry point without an additional API surface change.
     cd::rhi::PipelineLayoutHandle bound_graphics_layout_ {};
     cd::rhi::PipelineLayoutHandle bound_compute_layout_  {};
+    // phase766 — true after bind_graphics_pipeline on a mesh-shading PSO.
+    // draw_mesh_tasks consults this flag before issuing DispatchMesh.
+    bool bound_is_mesh_shader_ { false };
 };
 
 std::unique_ptr<cd::rhi::ICommandBuffer>

@@ -173,6 +173,18 @@ public:
     virtual void push_debug_group(std::string_view name) = 0;
     virtual void pop_debug_group() = 0;
 
+    // ---- Mesh shader (Phase 765 W2A — F5) ---------------------------------
+    //
+    // Dispatch a 3D grid of task-shader workgroups (or mesh-shader workgroups
+    // when no task stage is present). Maps directly to vkCmdDrawMeshTasksEXT
+    // on Vulkan and DispatchMesh on D3D12. Default no-op so backends without
+    // mesh-shader support compile unchanged. Caller must have bound a mesh
+    // pipeline via `bind_graphics_pipeline()` first; outside a render pass
+    // the call is undefined behavior (same contract as `draw`).
+    virtual void draw_mesh_tasks(std::uint32_t /*group_x*/,
+                                 std::uint32_t /*group_y*/,
+                                 std::uint32_t /*group_z*/) {}
+
     // ---- Ray tracing (Phase 14.G — API shape only at v0.40.0) --------------
     //
     // Default non-pure-virtual implementations let backends without RT
