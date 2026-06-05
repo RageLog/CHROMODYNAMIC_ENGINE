@@ -1,10 +1,12 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/physics/soft_body/SoftBody.hpp
 // Phase 721 — cd::physics::soft_body Sprint-1 (cloth/rope CPU simulation).
+// Phase 760 — Sprint-2 self-collision (spatial-hash broad-phase + impulse).
 //
 // Provides a mass-spring CPU soft-body simulation for cloth and rope:
 //   * Particle      — point mass with Verlet position state + pin flag.
 //   * SpringConstraint — distance constraint between two particle indices.
+//   * SelfCollision    — particle-particle repulsion configuration (Sprint-2).
 //   * SoftBodyConfig   — full assembly (particles + constraints + solver tuning).
 //   * SoftBody         — configure / tick / particles / apply_force API.
 //
@@ -15,18 +17,34 @@
 //   * External gravity applied per tick as a body force.
 //   * apply_force() imposes an instantaneous velocity impulse on a particle.
 //
-// Sprint-2 (deferred): self-collision detection + spatial hashing.
+// Sprint-2 scope (phase 760):
+//   * SelfCollision configuration block — particle_radius, enable flag,
+//     spatial_hash_cell_size for broad-phase grid tuning.
+//   * Uniform spatial hash broad-phase: each tick after the PBD constraint
+//     pass, particles are binned into integer grid cells of side cell_size
+//     and we visit each cell + its 26 neighbours for candidate pairs.
+//   * Near-phase PBD repulsion: pairs with |p_b - p_a| < 2 * radius are
+//     pushed apart along the separating axis to restore the min-distance
+//     2 * radius. Inverse-mass weighting matches the distance constraint.
+//   * Stable solver ordering: self-collision runs after each distance pass
+//     inside the iteration loop, then pins re-enforced.
+//   * Disabled by default (enable_self_collision = false) → zero overhead
+//     for existing Sprint-1 ropes.
+//
 // Sprint-3 (deferred): GPU compute (Vulkan/D3D12 compute shader port).
 //
 // MOMENT: A character has a cape that responds to wind + gravity via real
 // cloth sim — not bone-driven fake animation. Half-Life 2 gravity-gun-pull-
-// a-tablecloth moment.
+// a-tablecloth moment. With Sprint-2, the cape FOLDS REALISTICALLY on itself
+// when the character turns — no clipping through neck or shoulders.
 //
 // SOTA references:
 //   * Müller et al., "Position Based Dynamics", VRIPHYS 2006.
 //   * Jakobsen, "Advanced Character Physics", GDC 2001.
 //   * Provot, "Deformation Constraints in a Mass-Spring Model to Describe
 //     Rigid Cloth Behaviour", Graphics Interface 1995.
+//   * Teschner et al., "Optimized Spatial Hashing for Collision Detection of
+//     Deformable Objects", VMV 2003. (Sprint-2 broad-phase reference.)
 // =============================================================================
 #pragma once
 
@@ -84,6 +102,31 @@ struct SpringConstraint
 };
 
 // ---------------------------------------------------------------------------
+// SelfCollision — Sprint-2 particle-particle repulsion configuration.
+// ---------------------------------------------------------------------------
+
+struct SelfCollision
+{
+    /// Master switch. When false (default), the broad-phase + near-phase are
+    /// entirely skipped — Sprint-1 simulations pay zero cost.
+    bool enable_self_collision { false };
+
+    /// Effective particle radius (m). Pairs closer than 2 * particle_radius
+    /// are pushed apart by a PBD-style repulsion impulse so the minimum
+    /// separation is restored to 2 * particle_radius.
+    /// Typical cloth quad spacing 5 cm -> radius ≈ 0.02–0.03 m.
+    float particle_radius { 0.02F };
+
+    /// Spatial-hash grid cell size (m). Cells are uniform cubes; each tick
+    /// we visit a particle's home cell + the 26 neighbours. For correctness
+    /// cell_size MUST be >= 2 * particle_radius so that ALL pairs closer than
+    /// the collision distance fall inside the 3x3x3 neighbourhood — otherwise
+    /// close contacts can be missed across cell boundaries.
+    /// Typical: 2.0–4.0 * particle_radius.
+    float spatial_hash_cell_size { 0.05F };
+};
+
+// ---------------------------------------------------------------------------
 // SoftBodyConfig — full simulation assembly.
 // ---------------------------------------------------------------------------
 
@@ -106,6 +149,9 @@ struct SoftBodyConfig
     /// 0.0 = no damping (underdamped). 1.0 = full freeze.
     /// Typical cloth: 0.01–0.05.
     float damping { 0.01F };
+
+    /// Sprint-2 self-collision parameters. Default-constructed: disabled.
+    SelfCollision self_collision {};
 };
 
 // ---------------------------------------------------------------------------
@@ -169,6 +215,12 @@ private:
     /// Run one pass of PBD distance constraint correction.
     void solve_constraints() noexcept;
 
+    /// Run one pass of Sprint-2 particle-particle self-collision repulsion
+    /// using a uniform spatial-hash broad-phase. No-op when
+    /// m_cfg.self_collision.enable_self_collision == false or when there are
+    /// fewer than two non-pinned particles.
+    void solve_self_collisions() noexcept;
+
     /// Re-pin all particles that have pinned == true or inv_mass == 0.0F back
     /// to their initial (configured) positions.
     void enforce_pins() noexcept;
@@ -183,6 +235,25 @@ private:
     /// Accumulated per-particle force offsets (reset each tick).
     /// Indexed parallel to m_particles. Used by apply_force().
     std::vector<std::array<float, 3>> m_force_accum {};
+
+    // ---- Sprint-2 self-collision scratch buffers ----------------------------
+    // Allocated once at configure() time (sized to particle count) to avoid
+    // per-tick heap churn in solve_self_collisions().
+
+    /// Integer grid coordinate triple (cell_x, cell_y, cell_z) per particle.
+    std::vector<std::array<int32_t, 3>> m_cell_coord {};
+
+    /// Hash key per particle (computed each tick from m_cell_coord).
+    std::vector<uint32_t> m_cell_hash {};
+
+    /// Sort-permutation: indices [0..N) reordered so equal-hash particles are
+    /// contiguous. Built each tick via std::sort over m_cell_hash.
+    std::vector<uint32_t> m_hash_index {};
+
+    /// For each hash bucket key (mod table size), the start offset into
+    /// m_hash_index of particles whose hash equals the key.
+    /// Size = bucket_count + 1; last entry = m_hash_index.size().
+    std::vector<uint32_t> m_bucket_start {};
 };
 
 }  // namespace cd::physics::soft_body
