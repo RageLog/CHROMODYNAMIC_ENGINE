@@ -663,6 +663,19 @@ void VulkanCommandBuffer::pop_debug_group()
     vkCmdEndDebugUtilsLabelEXT(cmd_);
 }
 
+// Phase 765 W2A — F5: vkCmdDrawMeshTasksEXT. Resolved by volk when the
+// device was created with VK_EXT_mesh_shader enabled. Guard the call so
+// running this method against a device without mesh-shader support is
+// silent (matches the rest of the cmd-buffer's "unknown handle" policy).
+void VulkanCommandBuffer::draw_mesh_tasks(std::uint32_t group_x,
+                                          std::uint32_t group_y,
+                                          std::uint32_t group_z)
+{
+    if (vkCmdDrawMeshTasksEXT == nullptr)
+        return;
+    vkCmdDrawMeshTasksEXT(cmd_, group_x, group_y, group_z);
+}
+
 // Phase 135 — RT pipeline bind.
 void VulkanCommandBuffer::bind_rt_pipeline(cd::rhi::RtPipelineHandle pipeline)
 {

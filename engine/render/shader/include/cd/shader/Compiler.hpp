@@ -80,6 +80,12 @@ enum class ShaderStage : std::uint8_t
     kAnyHit,
     kIntersection,
     kCallable,
+    // Phase 765 W2A — F5 — mesh-shader pipeline stages.
+    // Compiles via glslang's EShLangMesh / EShLangTask entry points (the
+    // Vulkan-style GL_EXT_mesh_shader spelling, identical SPIR-V output as
+    // GL_NV_mesh_shader once glslang lowers it).
+    kMesh,
+    kTask,
 };
 
 /// Source language at the compiler input. Vulkan SPIR-V is always the output.

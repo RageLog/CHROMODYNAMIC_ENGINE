@@ -1694,6 +1694,284 @@ public:
         pipeline_to_layout_.erase(h.index());
     }
 
+    // --- Mesh-shader pipeline (Phase 765 W2A — F5) -----------------------
+    //
+    // Builds a Vulkan VkPipeline whose stage list contains an optional task
+    // shader, a mesh shader, and a fragment shader -- no vertex-input or
+    // input-assembly state (VK_EXT_mesh_shader replaces both with the
+    // task/mesh dispatch). Stored in `graphics_pipelines_` so the existing
+    // bind_graphics_pipeline + pipeline_to_layout machinery transparently
+    // handles mesh PSOs at command-buffer record time.
+    [[nodiscard]] cd::core::Result<cd::rhi::GraphicsPipelineHandle>
+    create_mesh_pipeline(const cd::rhi::MeshPipelineDesc& desc) override
+    {
+        if (!features_.mesh_shader)
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kNotImplemented,
+                         "mesh pipeline: device has no VK_EXT_mesh_shader support")
+            );
+        }
+        if (!desc.mesh_shader.is_valid())
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "mesh pipeline: mesh shader required")
+            );
+        }
+        if (!desc.layout.is_valid())
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "mesh pipeline: pipeline layout required")
+            );
+        }
+        auto ms_it = shaders_.find(desc.mesh_shader.index());
+        auto layout_it = pipeline_layouts_.find(desc.layout.index());
+        if (ms_it == shaders_.end() || layout_it == pipeline_layouts_.end())
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "mesh pipeline: unknown shader/layout handle")
+            );
+        }
+
+        // --- Shader stages --------------------------------------------------
+        std::vector<VkPipelineShaderStageCreateInfo> stages;
+        stages.reserve(3);
+        if (desc.task_shader.is_valid())
+        {
+            auto ts_it = shaders_.find(desc.task_shader.index());
+            if (ts_it == shaders_.end())
+            {
+                return std::unexpected(make_err(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "mesh pipeline: unknown task shader handle"
+                ));
+            }
+            stages.push_back(
+                VkPipelineShaderStageCreateInfo {
+                    .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .stage = VK_SHADER_STAGE_TASK_BIT_EXT,
+                    .module = ts_it->second,
+                    .pName = "main",
+                    .pSpecializationInfo = nullptr,
+                }
+            );
+        }
+        stages.push_back(
+            VkPipelineShaderStageCreateInfo {
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .stage = VK_SHADER_STAGE_MESH_BIT_EXT,
+                .module = ms_it->second,
+                .pName = "main",
+                .pSpecializationInfo = nullptr,
+            }
+        );
+        if (desc.fragment_shader.is_valid())
+        {
+            auto fs_it = shaders_.find(desc.fragment_shader.index());
+            if (fs_it == shaders_.end())
+            {
+                return std::unexpected(make_err(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "mesh pipeline: unknown fragment shader handle"
+                ));
+            }
+            stages.push_back(
+                VkPipelineShaderStageCreateInfo {
+                    .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                    .pNext = nullptr,
+                    .flags = 0,
+                    .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                    .module = fs_it->second,
+                    .pName = "main",
+                    .pSpecializationInfo = nullptr,
+                }
+            );
+        }
+
+        // --- Viewport / scissor: dynamic (set per command buffer) -----------
+        const VkPipelineViewportStateCreateInfo vp {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .viewportCount = 1,
+            .pViewports = nullptr,
+            .scissorCount = 1,
+            .pScissors = nullptr,
+        };
+
+        // --- Rasterization (same mapping as graphics pipeline) --------------
+        const VkPipelineRasterizationStateCreateInfo rs {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthClampEnable = desc.raster.depth_clamp ? VK_TRUE : VK_FALSE,
+            .rasterizerDiscardEnable = VK_FALSE,
+            .polygonMode = map_polygon_mode(desc.raster.polygon_mode),
+            .cullMode = map_cull_mode(desc.raster.cull),
+            .frontFace = map_front_face(desc.raster.front_face),
+            .depthBiasEnable = desc.raster.depth_bias_enable ? VK_TRUE : VK_FALSE,
+            .depthBiasConstantFactor = desc.raster.depth_bias_constant,
+            .depthBiasClamp = 0.0F,
+            .depthBiasSlopeFactor = desc.raster.depth_bias_slope,
+            .lineWidth = desc.raster.line_width,
+        };
+
+        // --- Multisample ----------------------------------------------------
+        const VkPipelineMultisampleStateCreateInfo ms {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .rasterizationSamples = map_samples(desc.samples),
+            .sampleShadingEnable = VK_FALSE,
+            .minSampleShading = 0.0F,
+            .pSampleMask = nullptr,
+            .alphaToCoverageEnable = VK_FALSE,
+            .alphaToOneEnable = VK_FALSE,
+        };
+
+        // --- Depth/stencil --------------------------------------------------
+        const bool has_depth_attach = desc.depth_attachment_format != cd::rhi::Format::kUndefined;
+        const bool has_stencil_attach = desc.stencil_attachment_format != cd::rhi::Format::kUndefined;
+        const VkPipelineDepthStencilStateCreateInfo ds {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .depthTestEnable = (desc.depth_stencil.depth_test && has_depth_attach) ? VK_TRUE : VK_FALSE,
+            .depthWriteEnable = (desc.depth_stencil.depth_write && has_depth_attach) ? VK_TRUE : VK_FALSE,
+            .depthCompareOp = map_compare(desc.depth_stencil.depth_compare),
+            .depthBoundsTestEnable = VK_FALSE,
+            .stencilTestEnable = (desc.depth_stencil.stencil_test && has_stencil_attach) ? VK_TRUE : VK_FALSE,
+            .front = {},
+            .back = {},
+            .minDepthBounds = 0.0F,
+            .maxDepthBounds = 1.0F,
+        };
+
+        // --- Blend per attachment (same opaque fallback as graphics) --------
+        std::vector<VkPipelineColorBlendAttachmentState> blends;
+        if (!desc.blend_attachments.empty())
+        {
+            blends.reserve(desc.blend_attachments.size());
+            for (const auto& b : desc.blend_attachments)
+            {
+                blends.push_back(
+                    VkPipelineColorBlendAttachmentState {
+                        .blendEnable = b.blend_enable ? VK_TRUE : VK_FALSE,
+                        .srcColorBlendFactor = map_blend_factor(b.src_color),
+                        .dstColorBlendFactor = map_blend_factor(b.dst_color),
+                        .colorBlendOp = map_blend_op(b.color_op),
+                        .srcAlphaBlendFactor = map_blend_factor(b.src_alpha),
+                        .dstAlphaBlendFactor = map_blend_factor(b.dst_alpha),
+                        .alphaBlendOp = map_blend_op(b.alpha_op),
+                        .colorWriteMask = b.color_write_mask,
+                    }
+                );
+            }
+        }
+        else
+        {
+            blends.reserve(desc.color_attachment_formats.size());
+            constexpr VkColorComponentFlags kRgbaWrite = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            for (std::size_t i = 0; i < desc.color_attachment_formats.size(); ++i)
+            {
+                blends.push_back(
+                    VkPipelineColorBlendAttachmentState {
+                        .blendEnable = VK_FALSE,
+                        .srcColorBlendFactor = VK_BLEND_FACTOR_ONE,
+                        .dstColorBlendFactor = VK_BLEND_FACTOR_ZERO,
+                        .colorBlendOp = VK_BLEND_OP_ADD,
+                        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+                        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+                        .alphaBlendOp = VK_BLEND_OP_ADD,
+                        .colorWriteMask = kRgbaWrite,
+                    }
+                );
+            }
+        }
+        const VkPipelineColorBlendStateCreateInfo cb {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .logicOpEnable = VK_FALSE,
+            .logicOp = VK_LOGIC_OP_COPY,
+            .attachmentCount = static_cast<std::uint32_t>(blends.size()),
+            .pAttachments = blends.empty() ? nullptr : blends.data(),
+            .blendConstants = { 0.0F, 0.0F, 0.0F, 0.0F },
+        };
+
+        // --- Dynamic state -------------------------------------------------
+        constexpr std::array<VkDynamicState, 2> kDynamic { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        const VkPipelineDynamicStateCreateInfo dyn {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .dynamicStateCount = static_cast<std::uint32_t>(kDynamic.size()),
+            .pDynamicStates = kDynamic.data(),
+        };
+
+        // --- Dynamic rendering (no VkRenderPass) ---------------------------
+        std::vector<VkFormat> color_formats;
+        color_formats.reserve(desc.color_attachment_formats.size());
+        for (auto f : desc.color_attachment_formats)
+            color_formats.push_back(map_format(f));
+        const VkPipelineRenderingCreateInfo rendering {
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+            .pNext = nullptr,
+            .viewMask = 0,
+            .colorAttachmentCount = static_cast<std::uint32_t>(color_formats.size()),
+            .pColorAttachmentFormats = color_formats.empty() ? nullptr : color_formats.data(),
+            .depthAttachmentFormat = map_format(desc.depth_attachment_format),
+            .stencilAttachmentFormat = map_format(desc.stencil_attachment_format),
+        };
+
+        // Mesh pipelines must NOT supply pVertexInputState / pInputAssemblyState.
+        // The Vulkan spec explicitly forbids vertex-input state when the stage
+        // list contains MESH_BIT_EXT (VUID-VkGraphicsPipelineCreateInfo-pStages-02095).
+        const VkGraphicsPipelineCreateInfo pci {
+            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            .pNext = &rendering,
+            .flags = 0,
+            .stageCount = static_cast<std::uint32_t>(stages.size()),
+            .pStages = stages.data(),
+            .pVertexInputState = nullptr,
+            .pInputAssemblyState = nullptr,
+            .pTessellationState = nullptr,
+            .pViewportState = &vp,
+            .pRasterizationState = &rs,
+            .pMultisampleState = &ms,
+            .pDepthStencilState = &ds,
+            .pColorBlendState = &cb,
+            .pDynamicState = &dyn,
+            .layout = layout_it->second,
+            .renderPass = VK_NULL_HANDLE,
+            .subpass = 0,
+            .basePipelineHandle = VK_NULL_HANDLE,
+            .basePipelineIndex = -1,
+        };
+
+        VkPipeline pipeline {};
+        if (vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &pci, nullptr, &pipeline) != VK_SUCCESS)
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kResourceCreationFailed, "vkCreateGraphicsPipelines (mesh) failed")
+            );
+        }
+        const auto id = next_id_++;
+        // Share the graphics_pipelines_ + pipeline_to_layout_ maps with the
+        // classic graphics path: mesh pipelines bind via vkCmdBindPipeline at
+        // VK_PIPELINE_BIND_POINT_GRAPHICS exactly like a vertex/fragment PSO,
+        // so reusing bind_graphics_pipeline + bind_descriptor_set keeps the
+        // command-buffer hot path uniform.
+        graphics_pipelines_.emplace(id, pipeline);
+        pipeline_to_layout_.emplace(id, layout_it->second);
+        return cd::rhi::GraphicsPipelineHandle { id, 1u };
+    }
+
     // --- Descriptor set allocation (S3.4) -------------------------------
     [[nodiscard]] cd::core::Result<cd::rhi::DescriptorSetHandle>
     allocate_descriptor_set(cd::rhi::DescriptorSetLayoutHandle layout) override
@@ -3991,6 +4269,7 @@ namespace
     // independently when its extension is present.
     bool rt_enabled = false;
     bool rq_enabled = false;
+    bool mesh_shader_enabled = false;
     {
         std::uint32_t count = 0;
         vkEnumerateDeviceExtensionProperties(pd, nullptr, &count, nullptr);
@@ -4014,6 +4293,23 @@ namespace
         rq_enabled = has("VK_KHR_ray_query");
         if (rq_enabled)
             exts.push_back("VK_KHR_ray_query");
+
+        // Phase 765 W2A F5 — Mesh shader (Nanite-class virtual geometry).
+        // Prefer the cross-vendor VK_EXT_mesh_shader; fall back to NV's
+        // legacy VK_NV_mesh_shader on older NVIDIA-only ICDs. The detection
+        // bit was already lit up in init_features_() at Phase 12.D; this
+        // factory path lights the *enablement* so vkCreateDevice accepts
+        // the meshShader / taskShader feature bits we chain in below.
+        if (has("VK_EXT_mesh_shader"))
+        {
+            exts.push_back("VK_EXT_mesh_shader");
+            mesh_shader_enabled = true;
+        }
+        else if (has("VK_NV_mesh_shader"))
+        {
+            exts.push_back("VK_NV_mesh_shader");
+            mesh_shader_enabled = true;
+        }
     }
 
     const float queue_priority = 1.0F;
@@ -4081,6 +4377,22 @@ namespace
     {
         f_rq.pNext = f12.pNext;
         f12.pNext  = &f_rq;
+    }
+
+    // Phase 765 W2A F5 — Chain VkPhysicalDeviceMeshShaderFeaturesEXT when the
+    // extension was enabled above. The mesh-shader feature bits are gated
+    // exactly like the RT structs: the driver rejects vkCreateDevice if the
+    // pNext bit is requested without the matching extension also in the
+    // enabled list. Backends without VK_EXT_mesh_shader skip the entire
+    // chain element.
+    VkPhysicalDeviceMeshShaderFeaturesEXT f_mesh {};
+    f_mesh.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT;
+    f_mesh.meshShader = VK_TRUE;
+    f_mesh.taskShader = VK_TRUE;
+    if (mesh_shader_enabled)
+    {
+        f_mesh.pNext = f12.pNext;
+        f12.pNext   = &f_mesh;
     }
 
     // Vulkan 1.4 features (opt-in). Headers ≥ 1.4 SDK define the structure;

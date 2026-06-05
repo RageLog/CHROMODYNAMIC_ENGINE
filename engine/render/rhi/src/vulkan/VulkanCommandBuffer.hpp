@@ -150,6 +150,11 @@ public:
     void push_debug_group(std::string_view name) override;
     void pop_debug_group() override;
 
+    // Phase 765 W2A — F5: vkCmdDrawMeshTasksEXT.
+    void draw_mesh_tasks(std::uint32_t group_x,
+                         std::uint32_t group_y,
+                         std::uint32_t group_z) override;
+
     // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
     void build_acceleration_structure(cd::rhi::AccelStructureHandle as) override;
 

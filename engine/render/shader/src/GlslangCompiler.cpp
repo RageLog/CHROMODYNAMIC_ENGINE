@@ -97,6 +97,13 @@ void glslang_shutdown()
             return EShLangIntersect;
         case ShaderStage::kCallable:
             return EShLangCallable;
+        // Phase 765 W2A — F5 — mesh-shader stages (glslang ≥ 11 ships
+        // EShLangMesh / EShLangTask; older glslang versions are not
+        // supported by the engine baseline).
+        case ShaderStage::kMesh:
+            return EShLangMesh;
+        case ShaderStage::kTask:
+            return EShLangTask;
     }
     return EShLangVertex;
 }

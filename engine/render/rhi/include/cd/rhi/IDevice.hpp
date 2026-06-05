@@ -397,6 +397,30 @@ public:
             rhi_errors::Code::kNotImplemented,
             "get_rt_shader_group_handles: backend has no RT implementation"));
     }
+
+    // ---- Mesh shader (Phase 765 W2A — F5) ---------------------------------
+    //
+    // Nanite-class virtual-geometry pipeline. Replaces the input assembler
+    // + vertex shader with a task -> mesh -> fragment chain. Backends that
+    // do not support mesh shading (no VK_EXT_mesh_shader on Vulkan, no
+    // D3D12_MESH_SHADER_TIER_1 on D3D12, no equivalent on Metal/GL) return
+    // kNotImplemented from create_mesh_pipeline -- callers gate on
+    // `features().mesh_shader` before constructing one.
+    //
+    // The returned handle reuses the GraphicsPipelineHandle tag because
+    // mesh pipelines bind on VK_PIPELINE_BIND_POINT_GRAPHICS (Vulkan) and
+    // the D3D12 GRAPHICS root-signature space, exactly like a classic
+    // graphics pipeline. The command buffer therefore binds them via
+    // `bind_graphics_pipeline(handle)` and dispatches via
+    // `draw_mesh_tasks(x, y, z)`.
+
+    [[nodiscard]] virtual cd::core::Result<GraphicsPipelineHandle>
+    create_mesh_pipeline(const MeshPipelineDesc& /*desc*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "create_mesh_pipeline: backend has no mesh-shader implementation"));
+    }
 };
 
 }  // namespace cd::rhi
