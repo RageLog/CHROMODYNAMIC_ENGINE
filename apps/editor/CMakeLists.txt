@@ -138,6 +138,9 @@ cd_add_sample(editor
     # phase707 / M15 W6B — particle system for the cinematic boot splash
     # background (20 particles/sec, 4s life, accent_success green glow).
     cd::particle_system
+    # phase775 / FINALE-8 W1B H2 — 500 ms oscillator-generated boot chime.
+    # Uses native audio backend (WASAPI -> null fallback); no sample asset required.
+    cd::audio
     cd::editor
     cd::editor_ui
     cd::editor_cdproj
@@ -159,6 +162,12 @@ cd_add_sample(editor
 # The editor lives in its own "apps" IDE folder so VS / Xcode group it
 # separately from the demo collection.
 set_target_properties(cd_sample_editor PROPERTIES FOLDER "apps")
+
+# phase775 / FINALE-8 W1B H2 — splash audio cue unit tests.
+# Independent of the Vulkan gate; only needs cd::audio + cd::core.
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()
 
 # Phase 608 / M7 W3 introduced Route A vs Route B as a hard compile-time
 # split. Phase 659 / M11 W3B Sprint-4 turned the flag into a PREFERRED-PATH

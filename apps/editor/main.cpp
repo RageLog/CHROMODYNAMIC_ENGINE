@@ -399,6 +399,13 @@
 // drifting particle field rendered behind the boot splash title.
 #include <cd/particle/system/ParticleSystem.hpp>
 
+// phase775 / FINALE-8 W1B H2 — 500 ms oscillator-generated boot chime.
+// Fires once at splash t=300 ms via the native audio backend; gracefully
+// skips if no device is available (null fallback).
+#include "SplashAudioCue.hpp"
+#include <cd/audio/IAudioBackend.hpp>
+#include <cd/audio/NativeBackend.hpp>
+
 // phase631 / M9 W1A — asset::validator for status badge.
 // TODO(phase631): No status bar exists yet in apps/editor. When a status bar
 // is added, wire a cd::asset::validator::Validator instance here and display
@@ -1419,7 +1426,8 @@ void draw_toasts(ur::DrawBatcher& batcher,
             ToastQueue::kFadeMs,             // fadeout_ms
             50.0F                            // slide_max_px
         };
-        const auto [alpha_f, x_offset] = cd::ui::toast_anim(age_ms, anim_cfg);
+        const auto [alpha_f, x_offset, y_offset] = cd::ui::toast_anim(age_ms, anim_cfg);
+        (void)y_offset;
         const auto alpha    = static_cast<std::uint8_t>(alpha_f * 230.0F);
         const float x       = base_x + x_offset;
 
@@ -3705,6 +3713,42 @@ int main(int argc, char** argv)
     std::array<ParticleSnapshot, kParticleSnapCap> particle_snap_buf {};
     std::size_t particle_snap_count = 0U;
 
+    // -- phase775 / FINALE-8 W1B H2 — splash audio cue ----------------------
+    //
+    // A 500 ms sine-wave chime (440 Hz, soft ADSR envelope) is generated
+    // procedurally at runtime and played once via the native audio backend
+    // at splash t = 300 ms (after the title begins to fade in).
+    //
+    // Resolution order:
+    //   1. make_native_audio_backend() — WASAPI on Windows; falls through to
+    //      null backend if WASAPI cannot initialise (e.g. headless CI with no
+    //      audio service).
+    //   2. Null backend — accepts clip + play calls; produces no output.
+    //      The chime trigger still fires (fired() == true); chimed() == false
+    //      because the null backend is still a valid backend, it just produces
+    //      no sound.
+    //
+    // MOMENT: the CHROMODYNAMIC title fades in, a soft chime sounds at 300 ms —
+    // the engine has a voice the moment it starts.
+    cd::audio::NativeBackendResult splash_audio_result =
+        cd::audio::make_native_audio_backend();
+
+    std::printf("editor: splash audio backend = %s\n",
+                [&]() -> const char*
+                {
+                    switch (splash_audio_result.kind)
+                    {
+                        case cd::audio::NativeBackendKind::kWasapi:      return "WASAPI";
+                        case cd::audio::NativeBackendKind::kCoreAudio:   return "CoreAudio";
+                        case cd::audio::NativeBackendKind::kAlsa:        return "ALSA";
+                        case cd::audio::NativeBackendKind::kNullFallback: return "null fallback";
+                    }
+                    return "unknown";
+                }());
+    std::fflush(stdout);
+
+    cd::editor::SplashAudioCue splash_audio_cue {};
+
     // First-time-user welcome dialog state.  Active only on first_launch
     // (no .cdproj existed at startup) and only once the splash has finished.
     FirstTimeWelcome welcome_dialog {};
@@ -3829,6 +3873,17 @@ int main(int argc, char** argv)
     auto               last_autosave_check_tp   = std::chrono::steady_clock::now();
     bool               autosave_logged_fired    { false };
 
+    // -- phase776 — chord state machine + Ctrl modifier tracking ---------------
+    namespace kso_ns = cd::editor::panel::keyboard_shortcut_overlay;
+    kso_ns::ChordStateMachine chord_sm;
+    bool ctrl_down { false };
+    const auto now_ms = []() noexcept -> std::int64_t {
+        return static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    };
+
     bool          needs_rebuild { false };
     std::uint32_t frame_idx     { 0U };
     while (true)
@@ -3845,6 +3900,21 @@ int main(int argc, char** argv)
             for (const auto& e : events)
             {
                 apply_event(pointer, e);
+
+                // Track Ctrl modifier state.
+                if (e.kind == platform::OSEventKind::kKeyDown &&
+                    (e.key == platform::KeyCode::kLCtrl ||
+                     e.key == platform::KeyCode::kRCtrl))
+                {
+                    ctrl_down = true;
+                }
+                else if (e.kind == platform::OSEventKind::kKeyUp &&
+                         (e.key == platform::KeyCode::kLCtrl ||
+                          e.key == platform::KeyCode::kRCtrl))
+                {
+                    ctrl_down = false;
+                }
+
                 if (e.kind == platform::OSEventKind::kKeyDown &&
                     e.key  == platform::KeyCode::kEscape)
                 {
@@ -3857,6 +3927,54 @@ int main(int argc, char** argv)
                     else
                     {
                         window->request_close();
+                    }
+                    chord_sm.reset();
+                }
+                else if (e.kind == platform::OSEventKind::kKeyDown &&
+                         ctrl_down &&
+                         e.key != platform::KeyCode::kLCtrl &&
+                         e.key != platform::KeyCode::kRCtrl)
+                {
+                    // phase776: chord feed. Map alpha KeyCode to char.
+                    char key_char = '\0';
+                    const auto kc = static_cast<int>(e.key);
+                    constexpr int kFirstAlpha =
+                        static_cast<int>(platform::KeyCode::kA);
+                    constexpr int kLastAlpha  =
+                        static_cast<int>(platform::KeyCode::kZ);
+                    if (kc >= kFirstAlpha && kc <= kLastAlpha)
+                    {
+                        key_char = static_cast<char>('A' + (kc - kFirstAlpha));
+                    }
+                    const std::uint8_t mods =
+                        ctrl_down ? kso_ns::ChordModifier::kCtrl
+                                  : std::uint8_t{0U};
+                    const std::string chord =
+                        chord_sm.feed_key(mods, key_char, now_ms());
+                    if (!chord.empty())
+                    {
+                        if (chord == "Ctrl+K Ctrl+S")
+                        {
+                            std::printf("editor: chord -> Save Layout\n");
+                            std::fflush(stdout);
+                        }
+                        else if (chord == "Ctrl+K Ctrl+L")
+                        {
+                            std::printf("editor: chord -> Load Layout\n");
+                            std::fflush(stdout);
+                        }
+                        else if (chord == "Ctrl+K Ctrl+T")
+                        {
+                            std::printf("editor: chord -> Theme Picker\n");
+                            std::fflush(stdout);
+                        }
+                        else if (chord == "Ctrl+K Ctrl+H")
+                        {
+                            shortcut_overlay.set_visible(
+                                !shortcut_overlay.is_visible());
+                            std::printf("editor: chord -> Hotkey Overlay\n");
+                            std::fflush(stdout);
+                        }
                     }
                 }
                 else if (e.kind == platform::OSEventKind::kTextChar &&
@@ -3871,6 +3989,7 @@ int main(int argc, char** argv)
                     needs_rebuild = true;
                 }
             }
+            chord_sm.tick(now_ms());
             if (renderer && needs_rebuild)
             {
                 if (window->width() == 0U || window->height() == 0U) { continue; }
@@ -4568,6 +4687,15 @@ int main(int argc, char** argv)
             const double splash_ms = boot_splash.elapsed_ms();
             if (!boot_splash.done(splash_ms))
             {
+                // phase775 — fire the boot chime once at t >= 300 ms.
+                if (splash_audio_cue.trigger_if_needed(
+                        splash_ms, splash_audio_result.backend.get()))
+                {
+                    std::printf("editor: splash audio chime fired (t=%.0f ms).\n",
+                                splash_ms);
+                    std::fflush(stdout);
+                }
+
                 draw_boot_splash(batcher, widget_theme,
                                  static_cast<float>(fb_w),
                                  static_cast<float>(fb_h),
