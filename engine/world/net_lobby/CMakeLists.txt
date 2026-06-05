@@ -25,6 +25,7 @@ cd_add_library(net_lobby
     src/Lobby.cpp
     src/Packet.cpp
     src/Transport.cpp
+    src/SocketTransport.cpp
   PUBLIC_DEPS
     cd::core
     cd::net
