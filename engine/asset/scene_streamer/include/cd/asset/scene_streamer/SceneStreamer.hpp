@@ -1,16 +1,17 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/asset/scene_streamer/SceneStreamer.hpp
 // Phase 586 — cd::asset::scene_streamer (Sprint-1: synchronous)
+// Phase 755 — cd::asset::scene_streamer (Sprint-2: opt-in async path)
 //
 // High-level scene streaming coordinator. Accepts enqueue/cancel requests
 // keyed by asset path and drives synchronous load via cd::asset::gltf::
 // load_scene() on each tick() call.
 //
-// Sprint-1 constraints:
-//   * Synchronous: load happens inline on the calling thread inside tick().
-//   * Priority: higher uint8 value = higher priority. Requests are served in
-//     descending priority order each tick (one per call in Sprint-1).
-//   * Sprint-2 will replace the load call with an async job submission.
+// Sprint-1: synchronous — highest-priority pending request processed inline.
+// Sprint-2: opt-in async via AsyncScenePool + SceneStreamerConfig.
+//   * Set use_async = true (and optionally worker_count > 0) to offload I/O
+//     to background threads while tick() only drains the completion queue.
+//   * Priority: higher uint8 value = higher priority (255 = highest, 0 = lowest).
 //
 // Namespace: cd::asset::scene_streamer
 // =============================================================================
@@ -18,12 +19,16 @@
 
 #include <cd/asset/gltf/SceneLoader.hpp>
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -48,28 +53,123 @@ struct StreamRequest
     std::uint8_t priority { 128U };
 };
 
+// ---- AsyncScenePool ---------------------------------------------------------
+
+/// Thread-pool that executes StreamRequests on background worker threads.
+///
+/// Usage (standalone or via SceneStreamer when use_async == true):
+///   AsyncScenePool pool;
+///   pool.configure(2);                          // start 2 workers
+///   pool.submit_async({ "level.glb", 200 });    // enqueue a request
+///   auto done = pool.poll_completed();           // drain finished paths
+///   pool.join_all();                             // wait + shutdown
+///
+/// Thread safety: submit_async / poll_completed / join_all are each
+///   individually thread-safe via internal mutex + condition_variable.
+///   Do NOT call join_all while another thread holds a lock on the pool.
+///
+/// The pool simulates I/O completion via a lightweight stub — real glTF
+/// decode is driven by cd::asset::gltf::load_scene() in future production
+/// integration; Sprint-2 validates the threading infrastructure end-to-end.
+class AsyncScenePool
+{
+public:
+    AsyncScenePool()  = default;
+    ~AsyncScenePool() noexcept;
+
+    // Non-copyable, non-movable (owns threads + mutex).
+    AsyncScenePool(const AsyncScenePool&)            = delete;
+    AsyncScenePool& operator=(const AsyncScenePool&) = delete;
+    AsyncScenePool(AsyncScenePool&&)                 = delete;
+    AsyncScenePool& operator=(AsyncScenePool&&)      = delete;
+
+    /// Start `worker_count` background worker threads (idempotent if called
+    /// once; must NOT be called after join_all()).
+    void configure(std::uint32_t worker_count = 2U);
+
+    /// Enqueue a request for async processing. Thread-safe.
+    void submit_async(StreamRequest request);
+
+    /// Drain and return asset paths that have been fully processed since the
+    /// last poll_completed() call. Thread-safe. Returns an empty vector if
+    /// nothing has finished yet. Does NOT block.
+    [[nodiscard]] std::vector<std::string> poll_completed();
+
+    /// Signal all workers to finish outstanding work, then join them.
+    /// Blocks until all submitted requests are processed. Safe to call from
+    /// the owner thread. Must not be called concurrently with submit_async().
+    void join_all();
+
+    /// Number of requests successfully completed (cumulative, thread-safe).
+    [[nodiscard]] std::size_t completed_count() const noexcept;
+
+private:
+    // ---- Worker loop --------------------------------------------------------
+    void worker_loop();
+
+    // ---- State --------------------------------------------------------------
+    struct PendingEntry
+    {
+        std::string  path;
+        std::uint8_t priority { 0U };
+    };
+
+    mutable std::mutex      mutex_;
+    std::condition_variable work_cv_;    // workers wait for work or stop
+    std::condition_variable idle_cv_;    // join_all waits for quiescence
+
+    std::vector<PendingEntry>  pending_queue_;   // protected by mutex_
+    std::vector<std::string>   completed_queue_; // protected by mutex_
+
+    std::atomic<std::size_t>   completed_count_ { 0U };
+    std::atomic<std::uint32_t> inflight_        { 0U }; // jobs in-progress
+
+    bool                       stop_ { false };         // protected by mutex_
+
+    std::vector<std::thread>   workers_;
+};
+
+// ---- SceneStreamerConfig ----------------------------------------------------
+
+/// Optional configuration for SceneStreamer Sprint-2.
+///   `use_async`    — false (default) = Sprint-1 sync path; true = async pool.
+///   `worker_count` — number of worker threads when use_async == true.
+struct SceneStreamerConfig
+{
+    bool          use_async    { false };
+    std::uint32_t worker_count { 2U };
+};
+
 // ---- SceneStreamer -----------------------------------------------------------
 
-/// Synchronous scene streamer (Sprint-1).
+/// Scene streamer — Sprint-1 (sync) or Sprint-2 (opt-in async).
 ///
-/// Lifecycle:
+/// Lifecycle (sync, Sprint-1 default):
 ///   SceneStreamer s;
 ///   s.enqueue({ "assets/sponza.glb", 200 });
 ///   while (!s.is_loaded("assets/sponza.glb")) { s.tick(dt); }
 ///   auto id = s.get_loaded("assets/sponza.glb"); // has value
 ///
-/// Thread safety: not thread-safe — all calls must come from the same thread.
+/// Lifecycle (async, Sprint-2):
+///   SceneStreamer s({ .use_async = true, .worker_count = 2 });
+///   s.enqueue({ "level/city.glb", 200 });
+///   s.tick(dt);       // delegates to AsyncScenePool
+///   s.join_pending(); // optional — wait for all async loads to finish
+///
+/// Thread safety: not thread-safe for concurrent calls — all public methods
+///   must come from the same (owner) thread.
 class SceneStreamer
 {
 public:
-    SceneStreamer()  = default;
-    ~SceneStreamer() = default;
+    /// Construct with optional Sprint-2 config. Default = Sprint-1 sync path.
+    explicit SceneStreamer(SceneStreamerConfig cfg = {});
+    ~SceneStreamer();
 
-    // Non-copyable, movable.
+    // Non-copyable; non-movable (owns AsyncScenePool which is non-movable).
     SceneStreamer(const SceneStreamer&)            = delete;
     SceneStreamer& operator=(const SceneStreamer&) = delete;
-    SceneStreamer(SceneStreamer&&)                 = default;
-    SceneStreamer& operator=(SceneStreamer&&)      = default;
+    SceneStreamer(SceneStreamer&&)                 = delete;
+    SceneStreamer& operator=(SceneStreamer&&)      = delete;
 
     // ---- Mutation -----------------------------------------------------------
 
@@ -78,13 +178,24 @@ public:
     void enqueue(StreamRequest request);
 
     /// Cancel a pending request. If the path is already loaded or unknown,
-    /// this is a no-op.
+    /// this is a no-op.  NOTE: in async mode cancel() only removes the path
+    /// from the local pending_map_ dedup set; a request already dispatched to
+    /// the AsyncScenePool will still complete (its result is accepted on the
+    /// next poll inside tick()).
     void cancel(std::string_view asset_path);
 
-    /// Drive loading: process the highest-priority pending request.
-    /// Sprint-1: at most one load per tick() call, synchronous.
-    /// `dt` is reserved for future budget / time-slicing (async Sprint-2).
+    /// Drive loading.
+    ///   Sync mode  (use_async == false): process the highest-priority pending
+    ///              request synchronously — at most one load per tick() call.
+    ///   Async mode (use_async == true):  submit ALL pending requests to the
+    ///              AsyncScenePool, then drain the pool's completion queue
+    ///              into completed_paths_.
+    /// `dt` is reserved for future budget / time-slicing.
     void tick(float dt);
+
+    /// Block until the AsyncScenePool has processed all outstanding requests.
+    /// No-op in sync mode. Safe to call from the owner thread.
+    void join_pending();
 
     // ---- Queries ------------------------------------------------------------
 
@@ -119,14 +230,32 @@ private:
         SceneId                      id {};
     };
 
-    // Pending set: path → priority (fast cancel + dedup).
-    std::unordered_map<std::string, std::uint8_t> pending_map_;
+    // Configuration (set at construction, immutable thereafter).
+    SceneStreamerConfig config_;
+
+    // Sprint-2 async pool — only constructed when config_.use_async == true.
+    std::unique_ptr<AsyncScenePool> async_pool_;
+
+    // Pending set: path → entry (fast cancel + dedup).
+    std::unordered_map<std::string, PendingEntry> pending_map_;
 
     // Completed table indexed by SceneId::index.
     std::vector<LoadedRecord> completed_;
 
     // Reverse lookup: path → SceneId for completed assets.
     std::unordered_map<std::string, SceneId> completed_paths_;
+
+    // ---- Helpers ------------------------------------------------------------
+
+    /// Accept a batch of completed asset paths from the async pool and register
+    /// placeholder SceneIds in completed_ / completed_paths_.
+    void accept_async_completions(std::vector<std::string> paths);
+
+    /// Sprint-1 sync tick: process the single highest-priority pending entry.
+    void tick_sync_impl();
+
+    /// Sprint-2 async tick: drain pending_map_ into the AsyncScenePool.
+    void tick_async_impl();
 };
 
 }  // namespace cd::asset::scene_streamer
