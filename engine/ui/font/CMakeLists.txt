@@ -1,13 +1,15 @@
-# engine/ui/font — Glyph atlas + outline rasterizer (ADR-20260530, Phase 1.1 + 4)
+# engine/ui/font — Glyph atlas + outline rasterizer (ADR-20260530, Phase 1.1 + 4 + 752)
 #
-# cd::ui_font Phase 1.1: stb_truetype rasterizer + skyline bin-pack +
-#                        alpha atlas (single page, no LRU).
+# cd::ui_font Phase 1.1:    stb_truetype rasterizer + skyline bin-pack +
+#                           alpha atlas (single page, no LRU).
 # cd::ui_font Phase 4 (T2.4): FreeType outline backend + HarfBuzz BiDi /
-#                        ligature shaping + 8-SSED unsigned MSDF atlas.
+#                           ligature shaping + 8-SSED unsigned MSDF atlas.
+# cd::ui_font Phase 752 Sprint-2: msdfgen core multi-channel MSDF atlas
+#                           (AtlasMode::kMsdfMulti — sharp corners, no rounding).
 #
 # Dependency resolution tiers (same as cd::spirv_cross_glue / cd::shader):
 #   1. vcpkg find_package(Freetype CONFIG) + find_package(harfbuzz CONFIG)
-#      — CI canonical when CD_DISABLE_VCPKG=OFF.
+#      + find_package(msdfgen CONFIG QUIET)  — CI canonical.
 #   2. FetchContent fallback — freetype + harfbuzz vendored at pinned tags
 #      (only attempted when CD_UI_FONT_ENABLE_FETCHCONTENT_FT is ON; OFF
 #      by default to keep clean ninja-base configures cheap).
@@ -18,12 +20,16 @@
 # Backend selection at compile time:
 #   CD_UI_FONT_HAVE_FREETYPE = 1  when FreeType was resolved
 #   CD_UI_FONT_HAVE_HARFBUZZ = 1  when HarfBuzz was resolved (implies FT)
+#   CD_UI_FONT_HAVE_MSDFGEN  = 1  when msdfgen core was resolved (kMsdfMulti)
 #
 # Note: stb_truetype.h is reused from cd::asset_image's stb FetchContent.
 # CMake ordering puts engine/asset before engine/ui so the variable is
 # populated by the time this file runs.
 
 include(FetchContent)
+
+set(_CD_UI_FONT_HAS_MSDF 0)
+set(_CD_UI_FONT_MSDF_TARGETS "")
 
 option(CD_UI_FONT_ENABLE_FETCHCONTENT_FT
        "Allow cd::ui_font to FetchContent freetype + harfbuzz when find_package fails (off by default; keeps clean configures fast). When OFF the lib silently degrades to the stb_truetype-only backend."
@@ -127,6 +133,34 @@ if(NOT _CD_UI_FONT_HAS_FT AND CD_UI_FONT_ENABLE_FETCHCONTENT_FT)
   endif()
 endif()
 
+# --- Tier 1: msdfgen vcpkg find_package (core-only, no extensions) -------
+# msdfgen is pulled from vcpkg with default-features=false in vcpkg.json,
+# which means only the core library (MSDFGEN_CORE_ONLY=ON). This gives us
+# generateMSDF() without pulling in freetype/libpng/tinyxml2/skia again.
+# The vcpkg CONFIG package exports msdfgen::msdfgen-core.
+# msdfgen requires FreeType to be available as well (we build the glyph
+# Shape by decomposing the FT_Outline), so we gate activation on _HAS_FT.
+if(_CD_UI_FONT_HAS_FT)
+  find_package(msdfgen CONFIG QUIET)
+  if(msdfgen_FOUND)
+    # vcpkg core-only build exports msdfgen::msdfgen-core (no font loading).
+    if(TARGET msdfgen::msdfgen-core)
+      message(STATUS "[cd] ui_font: msdfgen via find_package (core-only, kMsdfMulti enabled)")
+      set(_CD_UI_FONT_HAS_MSDF 1)
+      list(APPEND _CD_UI_FONT_MSDF_TARGETS msdfgen::msdfgen-core)
+    elseif(TARGET msdfgen::msdfgen)
+      # Some package variants export the combined target instead.
+      message(STATUS "[cd] ui_font: msdfgen via find_package (combined target, kMsdfMulti enabled)")
+      set(_CD_UI_FONT_HAS_MSDF 1)
+      list(APPEND _CD_UI_FONT_MSDF_TARGETS msdfgen::msdfgen)
+    else()
+      message(STATUS "[cd] ui_font: msdfgen found but no known target — kMsdfMulti disabled")
+    endif()
+  else()
+    message(STATUS "[cd] ui_font: msdfgen not found — kMsdfMulti will degrade to kMsdf")
+  endif()
+endif()
+
 # --- Stb_truetype: reuse asset_image's FetchContent --------------------
 FetchContent_GetProperties(stb_image)
 if(NOT stb_image_POPULATED)
@@ -146,6 +180,9 @@ if(_CD_UI_FONT_HAS_FT)
 endif()
 if(_CD_UI_FONT_HAS_HB)
   list(APPEND _CD_UI_FONT_SOURCES src/HarfBuzzShaping.cpp)
+endif()
+if(_CD_UI_FONT_HAS_MSDF)
+  list(APPEND _CD_UI_FONT_SOURCES src/MsdfgenBackend.cpp)
 endif()
 
 cd_add_library(ui_font
@@ -174,6 +211,16 @@ if(_CD_UI_FONT_HAS_HB AND _CD_UI_FONT_HB_TARGETS)
   target_link_libraries(cd_ui_font PRIVATE ${_CD_UI_FONT_HB_TARGETS})
   target_compile_definitions(cd_ui_font PUBLIC CD_UI_FONT_HAVE_HARFBUZZ=1)
   foreach(_t ${_CD_UI_FONT_HB_TARGETS})
+    if(TARGET ${_t})
+      cd_mark_target_system_includes(${_t})
+    endif()
+  endforeach()
+endif()
+
+if(_CD_UI_FONT_HAS_MSDF AND _CD_UI_FONT_MSDF_TARGETS)
+  target_link_libraries(cd_ui_font PRIVATE ${_CD_UI_FONT_MSDF_TARGETS})
+  target_compile_definitions(cd_ui_font PUBLIC CD_UI_FONT_HAVE_MSDFGEN=1)
+  foreach(_t ${_CD_UI_FONT_MSDF_TARGETS})
     if(TARGET ${_t})
       cd_mark_target_system_includes(${_t})
     endif()

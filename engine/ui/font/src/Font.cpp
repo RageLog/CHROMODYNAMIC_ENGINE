@@ -313,6 +313,27 @@ inline std::vector<ShapedGlyph> shape(const FreeTypeBackend&,
 #endif
 }  // namespace hb_shape
 
+namespace msdfgen_backend
+{
+#if defined(CD_UI_FONT_HAVE_MSDFGEN) && CD_UI_FONT_HAVE_MSDFGEN && \
+    defined(CD_UI_FONT_HAVE_FREETYPE) && CD_UI_FONT_HAVE_FREETYPE
+// Defined in MsdfgenBackend.cpp. Converts the FreeType outline for `cp`
+// into an msdfgen Shape, runs generateMSDF(), and writes the result into
+// `dst` as interleaved R/G/B uint8 (3 * w * h bytes). `dst` is resized.
+void to_msdf_multi(FreeTypeBackend&          ft,
+                   std::uint32_t              cp,
+                   std::vector<std::uint8_t>& dst,
+                   std::uint32_t              w,
+                   std::uint32_t              h);
+#else
+inline void to_msdf_multi(FreeTypeBackend&,
+                           std::uint32_t,
+                           std::vector<std::uint8_t>&,
+                           std::uint32_t,
+                           std::uint32_t) {}
+#endif
+}  // namespace msdfgen_backend
+
 // ============================================================================
 Font::Font() = default;
 Font::~Font() = default;
@@ -344,7 +365,17 @@ AtlasMode Font::select_atlas_mode(AtlasMode desired) noexcept
     // glyph is rasterized the bitmap format is locked.
     if (glyphs_.empty())
     {
-        atlas_mode_ = desired;
+        AtlasMode resolved = desired;
+        // kMsdfMulti requires both FreeType (outline access) AND msdfgen.
+        // When either is absent, fall back to kMsdf (8-SSED approximation).
+        if (resolved == AtlasMode::kMsdfMulti)
+        {
+#if !(defined(CD_UI_FONT_HAVE_MSDFGEN) && CD_UI_FONT_HAVE_MSDFGEN) || \
+    !(defined(CD_UI_FONT_HAVE_FREETYPE) && CD_UI_FONT_HAVE_FREETYPE)
+            resolved = AtlasMode::kMsdf;
+#endif
+        }
+        atlas_mode_ = resolved;
     }
     return atlas_mode_;
 }
@@ -393,9 +424,12 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
     if (atlas_.width == 0U)
     {
         const std::uint32_t initial = std::min<std::uint32_t>(1024U, max_dim);
-        atlas_.width  = initial;
-        atlas_.height = initial;
-        atlas_.pixels.assign(static_cast<std::size_t>(initial) * initial, std::uint8_t { 0 });
+        atlas_.width    = initial;
+        atlas_.height   = initial;
+        atlas_.channels = (atlas_mode_ == AtlasMode::kMsdfMulti) ? 3U : 1U;
+        atlas_.pixels.assign(
+            static_cast<std::size_t>(initial) * initial * atlas_.channels,
+            std::uint8_t { 0 });
 
         // Resolve metrics via the active backend. FT path tries first, then
         // falls back to stb if FT init fails (e.g. unsupported font).
@@ -493,9 +527,7 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
         if (!packed.has_value()) return false;
         const auto [px, py] = *packed;
 
-        // Optional MSDF post-process happens on the SOURCE bitmap before
-        // we blit into the atlas, so the SDF respects glyph-local coords
-        // (not atlas-page coords; bleed across glyphs is impossible).
+        // Optional SDF / MSDF post-process on the source bitmap before blit.
         if (atlas_mode_ == AtlasMode::kMsdf)
         {
             to_msdf_inplace(tmp.data(),
@@ -503,13 +535,53 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
                             static_cast<std::uint32_t>(h));
         }
 
-        // Blit tmp -> atlas at (px, py).
+        if (atlas_mode_ == AtlasMode::kMsdfMulti)
+        {
+            // Multi-channel SDF via msdfgen. The implementation lives in
+            // MsdfgenBackend.cpp (compiled only when CD_UI_FONT_HAVE_MSDFGEN).
+            // to_msdfmulti_inplace converts the FreeType glyph outline into
+            // an msdfgen Shape and runs generateMSDF(), then writes the 3-
+            // channel result into `tmp` as interleaved R/G/B uint8 (3x the
+            // original byte count). `w` and `h` remain the same in texels.
+#if defined(CD_UI_FONT_HAVE_MSDFGEN) && CD_UI_FONT_HAVE_MSDFGEN && \
+    defined(CD_UI_FONT_HAVE_FREETYPE) && CD_UI_FONT_HAVE_FREETYPE
+            if (impl_->ft)
+            {
+                msdfgen_backend::to_msdf_multi(
+                    *impl_->ft, cp, tmp,
+                    static_cast<std::uint32_t>(w),
+                    static_cast<std::uint32_t>(h));
+            }
+            else
+#endif
+            {
+                // Fallback when msdfgen or FT is absent: run single-channel
+                // SDF and triplicate the channel so the atlas has the right
+                // byte count (3 bytes/texel) but degrades visually to kMsdf.
+                to_msdf_inplace(tmp.data(),
+                                static_cast<std::uint32_t>(w),
+                                static_cast<std::uint32_t>(h));
+                std::vector<std::uint8_t> rgb;
+                rgb.reserve(tmp.size() * 3U);
+                for (std::uint8_t v : tmp)
+                {
+                    rgb.push_back(v);
+                    rgb.push_back(v);
+                    rgb.push_back(v);
+                }
+                tmp = std::move(rgb);
+            }
+        }
+
+        // Blit tmp -> atlas at (px, py). For kMsdfMulti each row is
+        // w * 3 bytes; for kAlpha/kMsdf it is w * 1 byte.
+        const std::size_t bytes_per_row = static_cast<std::size_t>(w) * atlas_.channels;
         for (int row = 0; row < h; ++row)
         {
             std::memcpy(atlas_.pixels.data() +
-                            (static_cast<std::size_t>(py + row) * atlas_.width + px),
-                        tmp.data() + static_cast<std::size_t>(row) * static_cast<std::size_t>(w),
-                        static_cast<std::size_t>(w));
+                            (static_cast<std::size_t>(py + row) * atlas_.width + px) * atlas_.channels,
+                        tmp.data() + static_cast<std::size_t>(row) * bytes_per_row,
+                        bytes_per_row);
         }
 
         info.u0 = static_cast<float>(px)     / static_cast<float>(atlas_.width);

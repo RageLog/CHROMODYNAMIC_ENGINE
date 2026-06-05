@@ -1,7 +1,8 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/ui/font/Font.hpp
 //
-// Phase 1.1 + Phase 4 (T2.4) of ADR-20260530-ui-widget-library.
+// Phase 1.1 + Phase 4 (T2.4) + Phase 752 (Sprint-2 MSDF) of
+// ADR-20260530-ui-widget-library.
 //
 //   Phase 1.1 surface (PRESERVED)
 //     load_ttf_in_memory / rasterize_range / glyph_uv / kerning / atlas /
@@ -20,9 +21,23 @@
 //       around load_ttf_in_memory. Default backend is FreeType when built
 //       with CD_UI_FONT_HAVE_FREETYPE, else stb_truetype.
 //
+//   Phase 752 Sprint-2 additions (MSDF multi-channel)
+//     AtlasMode::kMsdfMulti — true multi-channel signed distance field via
+//       msdfgen (Chlumsky/msdfgen, MIT). Atlas pixels are stored as 3-channel
+//       interleaved uint8 (R/G/B, 3 bytes per texel, row-major):
+//         channel = clamp((sd + spread) / (2*spread) * 255, 0, 255)
+//       The renderer samples all three channels and computes
+//         alpha = smoothstep(0.5 - w, 0.5 + w, median(R,G,B))
+//       Benefit: sharp glyph corners are preserved (no SDF rounding), text
+//       scales to any size without rounding artifacts.
+//       atlas_channels() returns 3 for kMsdfMulti, 1 for kAlpha/kMsdf.
+//       Falls back to kMsdf when CD_UI_FONT_HAVE_MSDFGEN is not defined OR
+//       when FreeType is unavailable (msdfgen core-only needs FT outlines).
+//
 // Backend matrix (compile-time, set by engine/ui/font/CMakeLists.txt):
 //   * CD_UI_FONT_HAVE_FREETYPE = 1  → FreeType outline rasterizer available
 //   * CD_UI_FONT_HAVE_HARFBUZZ = 1  → HarfBuzz shape() available
+//   * CD_UI_FONT_HAVE_MSDFGEN  = 1  → msdfgen core available (kMsdfMulti)
 //   * Neither defined            → stb_truetype-only fallback (existing
 //                                   behaviour, 100% source-compatible).
 //
@@ -58,14 +73,21 @@ struct GlyphInfo
     float advance   { 0.0F };         ///< horizontal pen advance after this glyph
 };
 
-/// Atlas pixel buffer + dimensions. The pixel format is single-channel
-/// 8-bit — coverage when atlas_mode() == kAlpha, signed-distance-field
-/// (biased to unsigned with zero at 128) when atlas_mode() == kMsdf.
+/// Atlas pixel buffer + dimensions.
+///
+/// Pixel format depends on the active AtlasMode:
+///   kAlpha     — single-channel 8-bit coverage (1 byte/texel)
+///   kMsdf      — single-channel 8-bit unsigned SDF, zero at 128 (1 byte/texel)
+///   kMsdfMulti — 3-channel 8-bit interleaved R/G/B MSDF (3 bytes/texel)
+///
+/// The field `channels` indicates how many bytes per texel the `pixels`
+/// buffer uses: 1 for kAlpha/kMsdf, 3 for kMsdfMulti.
 struct AtlasBitmap
 {
-    std::vector<std::uint8_t> pixels;   ///< width * height bytes, row-major
-    std::uint32_t             width  { 0U };
-    std::uint32_t             height { 0U };
+    std::vector<std::uint8_t> pixels;             ///< width * height * channels bytes, row-major
+    std::uint32_t             width    { 0U };
+    std::uint32_t             height   { 0U };
+    std::uint32_t             channels { 1U };    ///< bytes per texel: 1 or 3
 };
 
 /// One shaped glyph produced by Font::shape(). With HarfBuzz available
@@ -84,8 +106,10 @@ struct ShapedGlyph
 /// has begun is a no-op.
 enum class AtlasMode : std::uint8_t
 {
-    kAlpha = 0,   ///< 8-bit coverage (Phase 1 default).
-    kMsdf  = 1,   ///< 8-bit unsigned SDF (Phase 4); zero level at value 128.
+    kAlpha     = 0,   ///< 8-bit coverage (Phase 1 default).
+    kMsdf      = 1,   ///< 8-bit unsigned SDF (Phase 4); zero level at value 128.
+    kMsdfMulti = 2,   ///< 3-channel 8-bit MSDF via msdfgen (Phase 752 Sprint-2).
+                      ///< Falls back to kMsdf when CD_UI_FONT_HAVE_MSDFGEN is not defined.
 };
 
 /// Which backend should rasterize outlines. Default == kAuto picks
@@ -130,11 +154,21 @@ public:
 
     /// The pixel value that marks the zero level of an MSDF atlas. By
     /// convention 128 — pixels strictly greater than this are INSIDE the
-    /// glyph, strictly less are OUTSIDE. Always 128 for kMsdf, undefined
-    /// (returns 0) for kAlpha.
+    /// glyph, strictly less are OUTSIDE. Returns 128 for kMsdf and kMsdfMulti
+    /// (each channel encoded with the same bias), 0 for kAlpha.
     [[nodiscard]] std::uint8_t sdf_zero() const noexcept
     {
-        return atlas_mode_ == AtlasMode::kMsdf ? std::uint8_t { 128U } : std::uint8_t { 0U };
+        return (atlas_mode_ == AtlasMode::kMsdf || atlas_mode_ == AtlasMode::kMsdfMulti)
+                   ? std::uint8_t { 128U }
+                   : std::uint8_t { 0U };
+    }
+
+    /// Number of bytes per texel in the atlas pixel buffer.
+    /// 1 for kAlpha / kMsdf, 3 for kMsdfMulti (R/G/B interleaved).
+    /// Matches atlas().channels.
+    [[nodiscard]] std::uint32_t atlas_channels() const noexcept
+    {
+        return atlas_mode_ == AtlasMode::kMsdfMulti ? 3U : 1U;
     }
 
     /// Parse a TTF / OTF byte blob. The caller retains ownership of `data`
@@ -202,6 +236,14 @@ public:
     [[nodiscard]] static constexpr bool has_harfbuzz() noexcept
     {
 #if defined(CD_UI_FONT_HAVE_HARFBUZZ) && CD_UI_FONT_HAVE_HARFBUZZ
+        return true;
+#else
+        return false;
+#endif
+    }
+    [[nodiscard]] static constexpr bool has_msdfgen() noexcept
+    {
+#if defined(CD_UI_FONT_HAVE_MSDFGEN) && CD_UI_FONT_HAVE_MSDFGEN
         return true;
 #else
         return false;

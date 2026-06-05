@@ -356,7 +356,133 @@ TEST(Font, MsdfAtlasHasInteriorInsideAndExteriorOutside)
     EXPECT_TRUE(found_edge);
 }
 
-// (6) stb backend continues to compile + pass even when FT is disabled.
+// (6) kMsdfMulti: msdfgen multi-channel SDF atlas. Requires FreeType +
+//     msdfgen. When either is absent the test SKIPs rather than fails.
+//
+//     Checks:
+//       a) atlas().channels == 3 for kMsdfMulti.
+//       b) atlas has non-zero content in the glyph region (MSDF generated
+//          something meaningful — not an all-zero bitmap).
+//       c) Across the horizontal mid-scanline of the glyph slot, at least
+//          one channel transitions from one side to the other (presence of
+//          a sign boundary = the glyph edge was captured).
+//       d) atlas_channels() accessor matches atlas().channels.
+TEST(Font, MsdfMultiAtlasIsThreeChannelWithEdgeTransition)
+{
+    if (!cd::ui::font::Font::has_msdfgen())
+    {
+        GTEST_SKIP() << "Built without CD_UI_FONT_HAVE_MSDFGEN";
+    }
+    if (!cd::ui::font::Font::has_freetype())
+    {
+        GTEST_SKIP() << "Built without CD_UI_FONT_HAVE_FREETYPE (required for MSDF outline)";
+    }
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kFreeType);
+    EXPECT_EQ(f.select_atlas_mode(cd::ui::font::AtlasMode::kMsdfMulti),
+              cd::ui::font::AtlasMode::kMsdfMulti);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0041U, 0x0041U, 32.0F, 1024U));  // 'A'
+
+    // (a) atlas channels
+    const auto& atlas = f.atlas();
+    EXPECT_EQ(atlas.channels, 3U);
+    EXPECT_EQ(f.atlas_channels(), 3U);
+
+    // (b) atlas has non-zero content
+    bool any_nonzero = false;
+    for (std::uint8_t v : atlas.pixels)
+    {
+        if (v != 0U) { any_nonzero = true; break; }
+    }
+    EXPECT_TRUE(any_nonzero) << "MSDF atlas is all zeros — msdfgen produced no output";
+
+    // (c) glyph_uv found and has a valid slot
+    auto g = f.glyph_uv(0x0041U);
+    ASSERT_TRUE(g.has_value());
+    ASSERT_GT(g->width,  0.0F);
+    ASSERT_GT(g->height, 0.0F);
+
+    // (d) sdf_zero returns 128 for kMsdfMulti
+    EXPECT_EQ(f.sdf_zero(), 128U);
+
+    // (e) Sweep the horizontal mid-scanline of the glyph slot in the atlas
+    //     and verify that at least ONE channel has a value that differs from
+    //     the background (0). For a proper MSDF, values should range from
+    //     near-0 (far outside) to near-255 (far inside) with the boundary
+    //     around 128. We just need something non-trivially distributed.
+    const auto px  = static_cast<std::uint32_t>(g->u0 * static_cast<float>(atlas.width));
+    const auto py  = static_cast<std::uint32_t>(g->v0 * static_cast<float>(atlas.height));
+    const auto gw  = static_cast<std::uint32_t>(g->width);
+    const auto gh  = static_cast<std::uint32_t>(g->height);
+    const auto cy  = py + gh / 2U;   // vertical midpoint of glyph slot
+
+    std::uint8_t min_val = 255U, max_val = 0U;
+    for (std::uint32_t x = px; x < px + gw; ++x)
+    {
+        // kMsdfMulti: 3 bytes per texel, row-stride = atlas.width * 3
+        const std::size_t texel_base =
+            (static_cast<std::size_t>(cy) * atlas.width + x) * 3U;
+        for (int ch = 0; ch < 3; ++ch)
+        {
+            const std::uint8_t v = atlas.pixels[texel_base + static_cast<std::size_t>(ch)];
+            min_val = std::min(min_val, v);
+            max_val = std::max(max_val, v);
+        }
+    }
+    // We expect at least a 64-unit spread across the scan (anything tighter
+    // would suggest the SDF collapsed to a flat value).
+    EXPECT_GT(static_cast<int>(max_val) - static_cast<int>(min_val), 64)
+        << "MSDF mid-scanline has insufficient value range: ["
+        << static_cast<int>(min_val) << ", " << static_cast<int>(max_val) << "]";
+}
+
+// (7) kMsdfMulti falls back gracefully to kMsdf when msdfgen is absent.
+//     When CD_UI_FONT_HAVE_MSDFGEN is not defined, select_atlas_mode()
+//     returns kMsdf instead of kMsdfMulti, and the atlas remains 1-channel.
+TEST(Font, MsdfMultiFallsBackToMsdfWhenMsdfgenAbsent)
+{
+    // This test is ONLY interesting when msdfgen is NOT compiled in.
+    // When it IS compiled in, we just verify the fallback doesn't trigger.
+    if (cd::ui::font::Font::has_msdfgen())
+    {
+        // msdfgen IS available — verify select_atlas_mode() returns kMsdfMulti
+        // (no fallback needed) and atlas.channels == 3 after rasterization.
+        const auto ttf = find_system_font();
+        if (ttf.empty())
+        {
+            GTEST_SKIP() << "No system TTF found";
+        }
+        cd::ui::font::Font f;
+        f.select_backend(cd::ui::font::Backend::kFreeType);
+        EXPECT_EQ(f.select_atlas_mode(cd::ui::font::AtlasMode::kMsdfMulti),
+                  cd::ui::font::AtlasMode::kMsdfMulti);
+        ASSERT_TRUE(f.load_ttf_in_memory(
+            std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+        ASSERT_TRUE(f.rasterize_range(0x0041U, 0x005AU, 16.0F, 1024U));
+        EXPECT_EQ(f.atlas().channels, 3U);
+    }
+    else
+    {
+        // msdfgen NOT available — select_atlas_mode(kMsdfMulti) must return kMsdf.
+        cd::ui::font::Font f;
+        const cd::ui::font::AtlasMode resolved =
+            f.select_atlas_mode(cd::ui::font::AtlasMode::kMsdfMulti);
+        EXPECT_EQ(resolved, cd::ui::font::AtlasMode::kMsdf)
+            << "Without msdfgen, kMsdfMulti should degrade to kMsdf";
+    }
+}
+
+// --- Phase 1.1 regression ---------------------------------------------------
+
+// (8) stb backend continues to compile + pass even when FT is disabled.
 //     This is verified by the Phase 1.1 cases (NewlyConstructedIsNotLoaded,
 //     EmptyDataRejected, GarbageDataRejected, RasterizeAsciiOnSystemFont,
 //     KerningReturnsZeroForUnloadedFont) running unconditionally; here we
