@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/platform/AndroidWindow.cpp
 // Phase 160 / v0.99.95 — Android NativeActivity window backend (untested).
+// Phase 772 — Fixed KeyCode names (kLeft/kRight/kUp/kDown) + should_close().
 //
 // Wraps an externally-provided `ANativeWindow*` (obtained from
 // android_native_app_glue or GameActivity's onNativeWindowCreated)
@@ -52,10 +53,10 @@ std::atomic<AInputQueue*>   g_pending_input  { nullptr };
         case AKEYCODE_SPACE:     return KeyCode::kSpace;
         case AKEYCODE_TAB:       return KeyCode::kTab;
         case AKEYCODE_DEL:       return KeyCode::kBackspace;
-        case AKEYCODE_DPAD_LEFT: return KeyCode::kArrowLeft;
-        case AKEYCODE_DPAD_RIGHT:return KeyCode::kArrowRight;
-        case AKEYCODE_DPAD_UP:   return KeyCode::kArrowUp;
-        case AKEYCODE_DPAD_DOWN: return KeyCode::kArrowDown;
+        case AKEYCODE_DPAD_LEFT: return KeyCode::kLeft;
+        case AKEYCODE_DPAD_RIGHT:return KeyCode::kRight;
+        case AKEYCODE_DPAD_UP:   return KeyCode::kUp;
+        case AKEYCODE_DPAD_DOWN: return KeyCode::kDown;
         default:                 return KeyCode::kUnknown;
     }
 }
@@ -113,6 +114,7 @@ public:
         return !close_requested_;
     }
 
+    [[nodiscard]] bool should_close() const noexcept override { return close_requested_; }
     void request_close() noexcept override { close_requested_ = true; }
 
     [[nodiscard]] void* native_window_handle() const noexcept override

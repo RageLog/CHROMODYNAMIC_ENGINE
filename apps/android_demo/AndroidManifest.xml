@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    CHROMODYNAMIC — apps/android_demo/AndroidManifest.xml
+    Phase 772 / FINALE-7 W2B F3 — NativeActivity template.
+
+    Sprint-1 scope:
+      * NativeActivity with android:hasCode="false" (pure native .so).
+      * Minimum API level 26 (Android 8.0, Oreo) — AHardwareBuffer + Vulkan 1.1
+        baseline per ADR-20260101-android-ndk (Phase 532).
+      * Target SDK 35 (Android 15).
+      * VK_KHR_android_surface: the NativeActivity window surface is created
+        from ANativeWindow* — no Java/Kotlin Vulkan boilerplate required.
+      * Landscape + portrait both allowed; configChanges listed so the native
+        thread survives orientation change without Activity restart.
+
+    APK packaging:
+      This manifest is a template.  A Gradle / AGP build script (user-owned)
+      must replace $PACKAGE_NAME with the concrete application ID
+      (e.g. com.chromodynamic.android_demo).  The .so produced by the CMake
+      build goes into jniLibs/arm64-v8a/ (or x86_64/ for emulator targets).
+
+    Device CI:
+      User-owned per Sprint-1 scope (FINALE-7 W2B brief).  The minimum
+      hardware target is any Android 8.0+ device with a Vulkan 1.1 driver
+      that exposes VK_KHR_android_surface.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.chromodynamic.android_demo">
+
+    <!-- Feature declarations -->
+    <uses-feature
+        android:name="android.hardware.vulkan.version"
+        android:version="0x00401000"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.vulkan.level"
+        android:version="1"
+        android:required="false" />
+    <uses-feature
+        android:glEsVersion="0x00000000"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="true" />
+
+    <application
+        android:label="@string/app_name"
+        android:hasCode="false"
+        android:extractNativeLibs="true"
+        android:debuggable="false">
+
+        <!-- NativeActivity wraps android_main(android_app*) via android_native_app_glue. -->
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+
+            <!-- NativeActivity glue: load libandroid_demo.so -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="android_demo" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+    </application>
+
+</manifest>
