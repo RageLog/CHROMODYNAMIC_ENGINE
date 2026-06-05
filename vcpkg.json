@@ -18,7 +18,19 @@
     "Resolution Tiers' for the full policy.",
     "Promote a dep into this manifest only when you have ALSO wired",
     "find_package(<name> CONFIG) into the consuming CMakeLists.txt and tested it",
-    "resolves from vcpkg."
+    "resolves from vcpkg.",
+    "",
+    "FetchContent-only deps (NOT in vcpkg registry — intentionally absent here):",
+    "  bc7enc_rdo (richgel999/bc7enc_rdo, MIT) — BC7 block encoder for",
+    "    cd::asset::texture_compress Sprint-2 (phase750). No vcpkg port exists;",
+    "    no CMake library target in upstream; consumed via FetchContent_Populate +",
+    "    manual add_library(bc7enc_rdo_lib) from bc7enc.cpp only. Guarded by",
+    "    CD_TC_HAS_BC7ENC compile definition. Target: bc7enc_rdo_lib (PRIVATE).",
+    "  astc-encoder 4.7.0 (ARM-software/astc-encoder, Apache-2.0) — ASTC 4x4/8x8",
+    "    block encoder for cd::asset::texture_compress Sprint-2 (phase750). No vcpkg",
+    "    port exists; consumed via FetchContent_MakeAvailable with ASTCENC_ISA_NONE=ON",
+    "    (portable, no SIMD). CMake target: astcenc-none-static (PRIVATE). Guarded by",
+    "    CD_TC_HAS_ASTCENC compile definition."
   ],
 
   "dependencies": [
@@ -56,6 +68,17 @@
       "name": "joltphysics",
       "version>=": "5.5.0",
       "$comment": "Jolt Physics 5.x — MIT, AAA-shipping multicore rigid-body solver (ADR-008 + ADR-20260530). Promoted from phase2-physics feature gate to active top-level dependency in FINALE-3/W2B-C2 (phase748). Resolved via find_package(Jolt CONFIG) in engine/world/physics_jolt/CMakeLists.txt with FetchContent fallback (tag v5.5.0). CMake target: Jolt::Jolt. Enables cd::physics_jolt real JPH::PhysicsSystem backend replacing the semi-implicit Euler stub."
+    },
+    {
+      "name": "openal-soft",
+      "version>=": "1.24.0",
+      "$comment": "OpenAL Soft — LGPL cross-platform HRTF convolution audio backend for cd::audio::spatial Sprint-2 (phase751). Provides real HRTF convolution via OpenAL's built-in HRTF dataset (44100/48000 Hz binaural rendering). Resolved via find_package(OpenAL CONFIG QUIET) in engine/world/audio_spatial/CMakeLists.txt with FetchContent fallback (tag 1.24.2). CMake target: OpenAL::OpenAL. When unavailable CD_AUDIO_SPATIAL_HAS_OPENAL=0 and HrtfMixer falls back to ITD/ILD path (Sprint-1 SpatialMixer). Moment: 3D audio sounds like Half-Life Alyx (proper HRTF, not pan)."
+    },
+    {
+      "name": "msdfgen",
+      "version>=": "1.13",
+      "default-features": false,
+      "$comment": "Multi-channel signed distance field generator for cd::ui::font AtlasMode::kMsdfMulti (phase752 Sprint-2). Core-only build (no extensions/skia/libpng/tinyxml2) — we supply glyph outlines via our existing FreeType integration and only use msdfgen's generateMSDF() on Shape objects. Resolved via find_package(msdfgen CONFIG) in engine/ui/font/CMakeLists.txt. CMake targets: msdfgen::msdfgen-core. When unavailable, kMsdfMulti degrades to kMsdf (8-SSED Euclidean approximation). Moment: sharp glyph corners (no rounding artifacts), MSDF text scales 8x without blurring."
     }
   ],
 
