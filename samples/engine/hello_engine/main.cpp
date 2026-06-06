@@ -4908,13 +4908,23 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         const auto& gdiff = s.ibl_gpu.gpu_diff_cube;
         const auto& gbrdf = s.ibl_gpu.gpu_brdf_lut;
         auto sync = [&](std::vector<cd_sample::GltfPrimRange>& ranges) {
+            // phase848-W8-BE-perprim-bindings-11-12-fix: also propagate
+            // bindings 11 + 12 (Sponza VB + IB) to every per-prim
+            // descriptor set so the chrome reflection branch in the
+            // shared shader can compile-evaluate the (sentinel-gated)
+            // bindless sample path without faulting on uninitialised
+            // bindings.
             cd_sample::sync_perprim_global_bindings(
                 ranges,
                 s.shadow_ubo, s.shadow_target.view, s.shadow_sampler,
                 s.lights_ubo, kLightUboBytes,
                 gspec.view, s.ibl_gpu.ibl_sampler,
                 gdiff.view, gbrdf.view,
-                s.inst_mat_ssbo, kInstMatBytes);
+                s.inst_mat_ssbo, kInstMatBytes,
+                s.meshes.gltf.vb.is_valid()
+                    ? s.meshes.gltf.vb : s.meshes.sphere.vb,
+                s.meshes.gltf.ib.is_valid()
+                    ? s.meshes.gltf.ib : s.meshes.sphere.ib);
         };
         sync(s.meshes.gltf_prim_ranges);
         sync(s.meshes.gltf_cesium_prim_ranges);
@@ -7029,13 +7039,17 @@ int main(int argc, char** argv)
     // per-prim descriptor set (same fix as EngineApp path above).
     {
         auto sync = [&](std::vector<cd_sample::GltfPrimRange>& ranges) {
+            // phase848-W8-BE-perprim-bindings-11-12-fix (dead-code path,
+            // kept in lockstep for the day someone resurrects it).
             cd_sample::sync_perprim_global_bindings(
                 ranges,
                 shadow_ubo, shadow_target.view, shadow_sampler,
                 lights_ubo, kLightUboBytes,
                 gpu_spec_cube.view, ibl_sampler,
                 gpu_diff_cube.view, gpu_brdf_lut.view,
-                inst_mat_ssbo, kInstMatBytes);
+                inst_mat_ssbo, kInstMatBytes,
+                meshes.gltf.vb.is_valid() ? meshes.gltf.vb : meshes.sphere.vb,
+                meshes.gltf.ib.is_valid() ? meshes.gltf.ib : meshes.sphere.ib);
         };
         sync(meshes.gltf_prim_ranges);
         sync(meshes.gltf_cesium_prim_ranges);

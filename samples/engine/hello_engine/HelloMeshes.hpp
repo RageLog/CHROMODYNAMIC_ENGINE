@@ -528,13 +528,35 @@ sync_perprim_global_bindings(
     cd::rhi::TextureViewHandle     ibl_diff_view,
     cd::rhi::TextureViewHandle     brdf_lut_view,
     cd::rhi::BufferHandle          inst_mat_ssbo,
-    std::uint64_t                  inst_mat_bytes)
+    std::uint64_t                  inst_mat_bytes,
+    // phase848-W8-BE-perprim-bindings-11-12-fix:
+    // Sponza per-prim descriptor sets share the same layout as the
+    // global prim_inst (14 bindings including the W8-BE additions 11
+    // = Sponza VB, 12 = Sponza IB, 13 = bindless sampler2D array).
+    // The OLD path only wrote bindings 0/1/3/5/6/7/10 here. When the
+    // chrome reflection branch ran during a Sponza-fragment draw (or
+    // when the compiler emitted speculative access to bindings 11/12
+    // even though the branch is `metallic > 0.1`-gated), the
+    // UNWRITTEN kStorageBuffer bindings 11+12 caused a device-lost
+    // fault — visible to the user as "kamera hereket edince donup
+    // crash oluyo" because moving the camera puts more Sponza pixels
+    // through the shader path that touches the (uninitialised)
+    // bindings.
+    //
+    // Pass `vb_handle` / `ib_handle` here so all per-prim sets get
+    // bindings 11 + 12 in lockstep with s.prim_inst's boot-time wiring.
+    // Binding 13 (bindless) IS PARTIALLY_BOUND on the layout so it
+    // remains safe to leave unwritten on per-prim sets — the shader
+    // only accesses it inside the sentinel-checked chrome branch
+    // which is gated by metallic + scene_hit + albedo_tex_slot.
+    cd::rhi::BufferHandle          sponza_vb,
+    cd::rhi::BufferHandle          sponza_ib)
 {
     for (auto& pr : ranges)
     {
         if (!pr.prim_inst.is_valid())
             continue;
-        std::array<cd::rhi::DescriptorWrite, 7> gw {
+        const std::array<cd::rhi::DescriptorWrite, 9> gw {
             cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kUniformBuffer,
                 .buffer = shadow_ubo, .buffer_offset = 0,
@@ -558,7 +580,13 @@ sync_perprim_global_bindings(
             cd::rhi::DescriptorWrite { .binding = 10, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kStorageBuffer,
                 .buffer = inst_mat_ssbo, .buffer_offset = 0,
-                .buffer_range = inst_mat_bytes }
+                .buffer_range = inst_mat_bytes },
+            cd::rhi::DescriptorWrite { .binding = 11, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = sponza_vb },
+            cd::rhi::DescriptorWrite { .binding = 12, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = sponza_ib },
         };
         (void)pr.prim_inst.update(gw);
     }
