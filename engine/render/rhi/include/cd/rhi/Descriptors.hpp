@@ -412,6 +412,34 @@ struct SwapchainDesc
     bool vsync { true };
 };
 
+// ---- Bindless texture array (phase837 — ADR W8-BE) -----------------------
+//
+// Runtime-indexed sampler2D array. The fragment shader (or any shader
+// stage) reads `texture(arr[N], uv)` where N is a runtime value loaded
+// from a buffer / push constant. Requires:
+//   * Vulkan VK_EXT_descriptor_indexing (1.2 core) with
+//     UPDATE_AFTER_BIND | PARTIALLY_BOUND | VARIABLE_DESCRIPTOR_COUNT.
+//   * D3D12 RESOURCE_BINDING_TIER_3 (heap-indexed SRVs).
+//
+// `IDevice::create_bindless_texture_array` returns `kNotImplemented` on
+// backends that lack the prerequisite — callers fall back to the
+// per-prim avg-colour path (W8-BD).
+struct BindlessTextureArrayDesc
+{
+    /// Maximum slot count for the array. Per-prim showcase scenes today
+    /// fit comfortably under 256 (Khronos Sponza is 103). Implementations
+    /// SHOULD honor `min(slot_count, device.limits().max_descriptor_set_sampled_images)`.
+    std::uint32_t slot_count { 256 };
+
+    /// Sampler bound for every slot (one sampler per array; per-slot
+    /// sampler variation is not supported in v1). Caller owns the sampler
+    /// lifetime; the bindless array does not destroy it.
+    SamplerHandle sampler {};
+
+    /// Optional debug name (Vulkan VK_EXT_debug_utils / D3D12 SetName).
+    std::string_view debug_name {};
+};
+
 // ---- Device limits & capabilities ----------------------------------------
 
 struct DeviceLimits

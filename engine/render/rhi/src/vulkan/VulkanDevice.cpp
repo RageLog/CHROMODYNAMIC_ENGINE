@@ -579,6 +579,13 @@ struct VmaUsageMapping
             return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
         case DT::kAccelerationStructure:
             return VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        case DT::kBindlessSampledImage:
+            // phase837-W8-BE: bindless sampler2D array is still
+            // represented at the Vulkan layer as COMBINED_IMAGE_SAMPLER
+            // — the binding's `descriptorCount` >1 and the flags
+            // (UPDATE_AFTER_BIND | PARTIALLY_BOUND | VARIABLE_DESCRIPTOR_COUNT)
+            // make it bindless. See phase838 for the layout-side flags.
+            return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 }
@@ -2201,6 +2208,26 @@ public:
                     });
                     entry.pNext = &accel_writes.back();
                     break;
+                }
+                case cd::rhi::DescriptorType::kBindlessSampledImage:
+                {
+                    // phase837-W8-BE: Not routed through DescriptorWrite v1.
+                    // The bindless array lives behind its own
+                    // `IDevice::write_bindless_texture_slot` lifecycle —
+                    // per-slot writes happen there. The DescriptorWrite
+                    // table here would need a slot index + view list; that
+                    // expansion is queued for phase838 once the Vulkan
+                    // backend impl + descriptor layout flags land. For
+                    // now, return unimplemented at the v1 entry point so a
+                    // caller that accidentally routes a bindless-typed
+                    // write through update_descriptor_set fails LOUDLY
+                    // instead of silently writing nothing.
+                    return std::unexpected(make_err(
+                        cd::rhi::rhi_errors::Code::kNotImplemented,
+                        "update_descriptor_set: kBindlessSampledImage writes go through "
+                        "IDevice::write_bindless_texture_slot, not update_descriptor_set "
+                        "(see ADR W8-BE)"
+                    ));
                 }
             }
             vk_writes.push_back(entry);

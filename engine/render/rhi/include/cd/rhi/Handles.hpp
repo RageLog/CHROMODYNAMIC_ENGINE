@@ -91,6 +91,16 @@ struct RtPipelineTag
 {
 };
 
+// phase837-W8-BE-rt-bindless-texture-sampling:
+// Handle for a runtime-indexed bindless sampler2D array. One handle
+// owns kMaxSlots descriptor slots; the caller fills slots one at a
+// time via `IDevice::write_bindless_texture_slot`. Backends without
+// descriptor_indexing support return kNotImplemented from the
+// factory so consumers fall back to a per-prim avg-colour path.
+struct BindlessTextureArrayTag
+{
+};
+
 using BufferHandle = cd::core::Handle<BufferTag>;
 using TextureHandle = cd::core::Handle<TextureTag>;
 using TextureViewHandle = cd::core::Handle<TextureViewTag>;
@@ -118,5 +128,10 @@ using AccelStructureHandle = cd::core::Handle<AccelStructureTag>;
 /// bound together via VkPipelineLayout + an SBT). Vulkan backend
 /// implementation arrives with Phase 135.
 using RtPipelineHandle = cd::core::Handle<RtPipelineTag>;
+
+/// phase837-W8-BE-rt-bindless-texture-sampling: runtime-indexed
+/// sampler2D array handle. See `cd::rhi::BindlessTextureArrayDesc`
+/// + `IDevice::create_bindless_texture_array` for the lifecycle.
+using BindlessTextureArrayHandle = cd::core::Handle<BindlessTextureArrayTag>;
 
 }  // namespace cd::rhi

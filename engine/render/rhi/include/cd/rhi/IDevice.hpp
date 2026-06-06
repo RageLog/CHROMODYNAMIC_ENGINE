@@ -421,6 +421,52 @@ public:
             rhi_errors::Code::kNotImplemented,
             "create_mesh_pipeline: backend has no mesh-shader implementation"));
     }
+
+    // ---- Bindless texture array (phase837 — ADR W8-BE) -------------------
+    //
+    // Runtime-indexed sampler2D array. Required for ray-side texture
+    // sampling in the chrome-Sponza reflection path (see ADR W8-BE).
+    //
+    // Backends that do not implement descriptor_indexing (or the
+    // equivalent on D3D12 / Metal) return kNotImplemented. Consumers
+    // should gate on `features().bindless_resources` before reaching
+    // for these and fall back to a per-prim avg-colour path (W8-BD).
+    //
+    // Lifecycle:
+    //   1. `create_bindless_texture_array(desc)` — allocate the array
+    //      with `desc.slot_count` empty slots + the bound sampler.
+    //   2. Per slot: `write_bindless_texture_slot(handle, slot, view)`
+    //      — populate one slot. Safe to call any time after creation
+    //      and before the array is bound to a frame command buffer.
+    //      Vulkan PARTIALLY_BOUND + UPDATE_AFTER_BIND let the write
+    //      land while other slots remain empty.
+    //   3. The handle gets attached to a `DescriptorWrite` with
+    //      `type = kBindlessSampledImage` against a layout binding
+    //      that declared the same `slot_count`.
+    //   4. `destroy_bindless_texture_array(handle)` — release the
+    //      array. Per-slot images / views are caller-owned and not
+    //      destroyed here.
+
+    [[nodiscard]] virtual cd::core::Result<BindlessTextureArrayHandle>
+    create_bindless_texture_array(const BindlessTextureArrayDesc& /*desc*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "create_bindless_texture_array: backend has no descriptor_indexing "
+            "support (fall back to per-prim avg colour path)"));
+    }
+
+    [[nodiscard]] virtual cd::core::Result<void>
+    write_bindless_texture_slot(BindlessTextureArrayHandle /*array*/,
+                                std::uint32_t              /*slot*/,
+                                TextureViewHandle          /*view*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "write_bindless_texture_slot: backend has no bindless support"));
+    }
+
+    virtual void destroy_bindless_texture_array(BindlessTextureArrayHandle /*h*/) {}
 };
 
 }  // namespace cd::rhi

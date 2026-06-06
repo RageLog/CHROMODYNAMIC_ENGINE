@@ -30,6 +30,16 @@ enum class DescriptorType : std::uint8_t
     kInputAttachment,
     kAccelerationStructure, // Phase 140 — VkAccelerationStructureKHR /
                             // D3D12 RaytracingAccelerationStructure SRV
+    // phase837-W8-BE-rt-bindless-texture-sampling:
+    // Runtime-indexed sampler2D array. The fragment shader (or any
+    // shader stage) reads `texture(arr[N], uv)` where N is a runtime
+    // value computed from a buffer load / push constant. Requires
+    // VK_EXT_descriptor_indexing on Vulkan (1.2 core) or
+    // D3D12_RESOURCE_BINDING_TIER_3 on D3D12. Backends that lack
+    // the prerequisite return `kNotImplemented` from
+    // `IDevice::create_bindless_texture_array` so callers fall back
+    // to the per-prim avg-colour path (W8-BD).
+    kBindlessSampledImage,
 };
 
 struct DescriptorSetLayoutBinding
