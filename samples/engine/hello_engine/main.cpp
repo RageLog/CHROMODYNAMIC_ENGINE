@@ -4950,10 +4950,10 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.cesium_geom_albedos.reserve(s.meshes.gltf_cesium_prim_ranges.size());
     for (const auto& pr : s.meshes.gltf_cesium_prim_ranges)
     {
-        s.cesium_geom_albedos.push_back(cd::math::Vec3f {
+        s.cesium_geom_albedos.emplace_back(
             pr.base_color_factor[0],
             pr.base_color_factor[1],
-            pr.base_color_factor[2] });
+            pr.base_color_factor[2]);
     }
 
     // World / scene / ECS
@@ -5333,9 +5333,9 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                     obj["name"] = cd::asset::json::Value { en->name };
                     obj["kind"] = cd::asset::json::Value { std::string { kind_name_fn(en->kind) } };
                     cd::asset::json::Array tint;
-                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.x) });
-                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.y) });
-                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.z) });
+                    tint.emplace_back(static_cast<double>(en->tint.x));
+                    tint.emplace_back(static_cast<double>(en->tint.y));
+                    tint.emplace_back(static_cast<double>(en->tint.z));
                     obj["tint"] = cd::asset::json::Value { std::move(tint) };
                 });
             {
@@ -5350,19 +5350,19 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                     lo["intensity"] = cd::asset::json::Value { static_cast<double>(l.light.intensity) };
                     lo["range"]     = cd::asset::json::Value { static_cast<double>(l.light.range) };
                     cd::asset::json::Array pos, col, dir;
-                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.x) });
-                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.y) });
-                    pos.push_back(cd::asset::json::Value { static_cast<double>(l.light.position.z) });
+                    pos.emplace_back(static_cast<double>(l.light.position.x));
+                    pos.emplace_back(static_cast<double>(l.light.position.y));
+                    pos.emplace_back(static_cast<double>(l.light.position.z));
                     lo["position"] = cd::asset::json::Value { std::move(pos) };
-                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.x) });
-                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.y) });
-                    col.push_back(cd::asset::json::Value { static_cast<double>(l.light.color.z) });
+                    col.emplace_back(static_cast<double>(l.light.color.x));
+                    col.emplace_back(static_cast<double>(l.light.color.y));
+                    col.emplace_back(static_cast<double>(l.light.color.z));
                     lo["color"]    = cd::asset::json::Value { std::move(col) };
-                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.x) });
-                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.y) });
-                    dir.push_back(cd::asset::json::Value { static_cast<double>(l.light.direction.z) });
+                    dir.emplace_back(static_cast<double>(l.light.direction.x));
+                    dir.emplace_back(static_cast<double>(l.light.direction.y));
+                    dir.emplace_back(static_cast<double>(l.light.direction.z));
                     lo["direction"] = cd::asset::json::Value { std::move(dir) };
-                    la.push_back(cd::asset::json::Value { std::move(lo) });
+                    la.emplace_back(std::move(lo));
                 }
                 root.as_object_mut()["lights"] = cd::asset::json::Value { std::move(la) };
             }
@@ -7735,9 +7735,9 @@ int main(int argc, char** argv)
                     obj["name"] = cd::asset::json::Value { en->name };
                     obj["kind"] = cd::asset::json::Value { std::string { kind_name(en->kind) } };
                     cd::asset::json::Array tint;
-                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.x) });
-                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.y) });
-                    tint.push_back(cd::asset::json::Value { static_cast<double>(en->tint.z) });
+                    tint.emplace_back(static_cast<double>(en->tint.x));
+                    tint.emplace_back(static_cast<double>(en->tint.y));
+                    tint.emplace_back(static_cast<double>(en->tint.z));
                     obj["tint"] = cd::asset::json::Value { std::move(tint) };
                 }
             );
