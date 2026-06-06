@@ -7,6 +7,7 @@
 #pragma once
 
 #include "HelloSkinned.hpp"
+#include "HelloTextureAverage.hpp"
 
 #include <cd/anim/Skeleton.hpp>
 #include <cd/asset/Primitives.hpp>
@@ -89,6 +90,11 @@ struct AlbedoSlot
     cd::rhi::SamplerHandle      sampler;
     std::function<std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>(const std::uint8_t*, std::uint32_t, std::uint32_t)> upload;
 };
+
+// phase822-rt-chrome-sponza-tex-avg-extract:
+// compute_texture_average_alpha_weighted lives in HelloTextureAverage.hpp
+// (stdlib-only) so a unit test can include it without dragging in
+// cd::rhi / Vulkan headers. See test_hello_engine_tex_avg.cpp.
 
 // Internal helper: parse a loaded GltfScene into a GltfLoadResult.
 // Shared by both try_auto_load_gltf (Sponza) and try_load_cesiumman_gltf.
@@ -191,37 +197,14 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                             range.albedo_view  = view;
                             range.has_texture  = true;
                         }
-                        // Compute texture-average colour (alpha-weighted).
-                        double  sum_r  = 0.0;
-                        double  sum_g  = 0.0;
-                        double  sum_b  = 0.0;
-                        double  sum_a  = 0.0;
-                        constexpr std::uint32_t kStride = 16U;
-                        for (std::uint32_t y = 0; y < gt.height; y += kStride)
+                        // phase822: delegate to the extracted free function
+                        // (testable via test_hello_engine_tex_avg.cpp).
+                        if (const auto avg = compute_texture_average_alpha_weighted(
+                                std::span<const std::uint8_t> { gt.rgba.data(), gt.rgba.size() },
+                                gt.width, gt.height); avg.has_value())
                         {
-                            for (std::uint32_t x = 0; x < gt.width; x += kStride)
-                            {
-                                const std::size_t off =
-                                    (static_cast<std::size_t>(y) * gt.width + x) * 4U;
-                                if (off + 3U >= gt.rgba.size()) continue;
-                                // alpha-weighted; computed in double precision
-                                // so we don't trip -Wdouble-promotion when the
-                                // weight feeds the double sum accumulators.
-                                const double w =
-                                    static_cast<double>(gt.rgba[off + 3U]) / 255.0;
-                                sum_r += static_cast<double>(gt.rgba[off + 0U]) * w;
-                                sum_g += static_cast<double>(gt.rgba[off + 1U]) * w;
-                                sum_b += static_cast<double>(gt.rgba[off + 2U]) * w;
-                                sum_a += w;
-                            }
-                        }
-                        if (sum_a > 0.0)
-                        {
-                            avg_texture_color[0] = static_cast<float>(sum_r / sum_a / 255.0);
-                            avg_texture_color[1] = static_cast<float>(sum_g / sum_a / 255.0);
-                            avg_texture_color[2] = static_cast<float>(sum_b / sum_a / 255.0);
-                            avg_texture_color[3] = 1.0F;
-                            avg_texture_valid    = true;
+                            avg_texture_color = *avg;
+                            avg_texture_valid = true;
                         }
                     }
                 }

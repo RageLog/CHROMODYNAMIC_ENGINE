@@ -3,6 +3,15 @@ cd_add_test(tlas_compaction
   DEPS    cd::math cd::rhi cd::concurrency
 )
 
+# phase822 — texture-average colour helper that drives the chrome-Sponza
+# reflection per-prim albedo flow. Helper lives in
+# samples/engine/hello_engine/HelloTextureAverage.hpp (stdlib-only) so
+# this test can exercise it without the rhi / glTF heavy include graph.
+cd_add_test(hello_engine_tex_avg
+  SOURCES test_hello_engine_tex_avg.cpp
+  DEPS    cd::core
+)
+
 # T1.7 phase543 -- Sponza golden-image CI gate.
 #
 # Two tiers (see test source header for details):
