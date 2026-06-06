@@ -22,6 +22,17 @@ cd_add_test(hello_engine_golden_cli
   DEPS    cd::core
 )
 
+# phase827 — PBR demo-grid layout. Locks the 4x4 cardinality, the
+# metallic/roughness gradient monotonicity, the chrome albedo tint,
+# the phase799 "Z=0 mid-nave" relocation, and the in-atrium bounds
+# guarantee (X∈[-15,+15], Y∈[0,+5], Z∈[-3,+3]) so a future refactor
+# can't silently push the grid back outside Sponza (the original
+# "spheres in a different universe" failure mode).
+cd_add_test(hello_engine_pbr_grid
+  SOURCES test_hello_engine_pbr_grid.cpp
+  DEPS    cd::core cd::math
+)
+
 # T1.7 phase543 -- Sponza golden-image CI gate.
 #
 # Two tiers (see test source header for details):
