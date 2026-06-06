@@ -73,6 +73,22 @@ constexpr std::uint32_t kMaxInstances    = 64;
 constexpr std::uint32_t kMaxInstMats  = kMaxInstances * kMaxGeomsPerInst;
 constexpr std::uint32_t kInstMatBytes = kMaxInstMats * sizeof(InstanceMatGpu);
 
+// phase807-rt-chrome-sponza-regression-test: compile-time floor for
+// kMaxGeomsPerInst. The Khronos Sponza glTF currently shipped under
+// assets/samples/Sponza/Sponza.gltf has 103 primitives (see boot log
+// "[gltf] 103/103 primitives have baseColor textures"). Phase 798
+// raised the cap from 32 -> 128 specifically to fit this prim count
+// without the shader's `if (g >= kMaxGeomsPerInst) g = kMaxGeomsPerInst-1;`
+// silently clamping every curtain past slot 31 to a single colour
+// (the user-reported "spheres in a different universe" symptom that
+// drove ADR W8-BD). The floor below catches a future refactor that
+// would push the cap back below the prim count.
+constexpr std::uint32_t kKhronosSponzaPrimCount = 103U;
+static_assert(kMaxGeomsPerInst >= kKhronosSponzaPrimCount,
+              "kMaxGeomsPerInst must cover the full Sponza primitive set "
+              "so RT reflection per-prim albedos don't clamp to the last "
+              "per-geom slot. See ADR W8-BD.");
+
 // ---- make_accel_instance --------------------------------------------------
 // Build a cd::rhi::AccelInstance from a BLAS handle + column-major Mat4f
 // world transform. The Vulkan AS spec expects a row-major 3x4 transform

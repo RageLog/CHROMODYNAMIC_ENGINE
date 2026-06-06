@@ -45,6 +45,10 @@
 // =============================================================================
 
 #include "../SponzaFixtures.hpp"
+// phase807-rt-chrome-sponza-regression-test: the kMaxGeomsPerInst floor
+// is enforced via a compile-time static_assert inside HelloRayQuery.hpp
+// itself (avoids dragging the rhi Vulkan headers into this CPU-only TU).
+// See SponzaGoldenFixtures.KMaxGeomsPerInstFloorEnforcedAtCompileTime.
 
 #include <cd/asset/image/Image.hpp>
 #include <cd/core/Result.hpp>
@@ -78,6 +82,8 @@
 namespace
 {
 using cd::hello_engine::sponza_fixtures::Fixture;
+using cd::hello_engine::sponza_fixtures::kChromeProbePosition;
+using cd::hello_engine::sponza_fixtures::kChromeProbeScale;
 using cd::hello_engine::sponza_fixtures::kFixtureCount;
 using cd::hello_engine::sponza_fixtures::kFixtureHeight;
 using cd::hello_engine::sponza_fixtures::kFixtures;
@@ -358,9 +364,13 @@ synthesise(const Fixture& cam, std::uint32_t w, std::uint32_t h)
 // CPU-SYNTH tests -- always run, no GPU required.
 // ============================================================================
 
-TEST(SponzaGoldenFixtures, CameraSetIsExactlyFiveAndAllSlugsUnique)
+TEST(SponzaGoldenFixtures, CameraSetIsExactlySixAndAllSlugsUnique)
 {
-    EXPECT_EQ(kFixtures.size(), 5U);
+    // phase797-rt-chrome-sponza-probe: cardinality bumped from 5 to 6
+    // when the chrome-probe diagnostic fixture landed. Fixture #5
+    // (slug "chrome_probe") drives the iteration loop for the RT
+    // reflection regression hunt.
+    EXPECT_EQ(kFixtures.size(), 6U);
     for (std::size_t i = 0; i < kFixtures.size(); ++i)
     {
         EXPECT_FALSE(kFixtures[i].slug.empty()) << "fixture " << i;
@@ -370,6 +380,29 @@ TEST(SponzaGoldenFixtures, CameraSetIsExactlyFiveAndAllSlugsUnique)
             EXPECT_NE(kFixtures[i].slug, kFixtures[j].slug)
                 << "fixture slug collision " << i << " vs " << j;
     }
+}
+
+// phase807-rt-chrome-sponza-regression-test: lock the chrome_probe
+// fixture slot (#5) so a future "renumber the fixtures" refactor
+// can't silently break the iteration loop or the spawn gate in
+// main.cpp.
+TEST(SponzaGoldenFixtures, ChromeProbeIsFixtureFiveAndCarriesProbeConstants)
+{
+    constexpr std::size_t kChromeProbeIdx = 5U;
+    ASSERT_LT(kChromeProbeIdx, kFixtures.size());
+    EXPECT_EQ(kFixtures[kChromeProbeIdx].slug, "chrome_probe");
+    // The fixture lives inside the Sponza atrium (X∈[-15,+15],
+    // Y∈[0,5], Z∈[-3,+3]). Eye + target both fall inside the open
+    // court; FOV > 0.
+    EXPECT_GE(kFixtures[kChromeProbeIdx].eye[0], -15.0F);
+    EXPECT_LE(kFixtures[kChromeProbeIdx].eye[0],  15.0F);
+    EXPECT_GE(kFixtures[kChromeProbeIdx].eye[1],   0.0F);
+    EXPECT_LE(kFixtures[kChromeProbeIdx].eye[1],   5.0F);
+    EXPECT_GE(kFixtures[kChromeProbeIdx].eye[2],  -3.0F);
+    EXPECT_LE(kFixtures[kChromeProbeIdx].eye[2],   3.0F);
+    // Probe constants exposed as inline constexpr so the spawn site
+    // in main.cpp and the fixture camera stay in lock-step.
+    EXPECT_GT(kChromeProbeScale, 0.0F);
 }
 
 TEST(SponzaGoldenSynth, IsDeterministicAcrossInvocations)
