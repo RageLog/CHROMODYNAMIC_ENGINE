@@ -5,7 +5,7 @@ Bu dizin CHROMODYNAMIC Engine için **kalıcı mimari kararları** Iglberger for
 ## Phase 1 — Tasarım ADR'ları (2026-05)
 
 | # | Başlık | Sprint | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **001** | [RHI Architecture](ADR-001-rhi-architecture.md) | S1 | ✅ Accepted |
 | **002** | [Renderer Architecture](ADR-002-renderer-architecture.md) | S2 | ✅ Accepted |
 | **003** | [Shader & Material Pipeline](ADR-003-shader-material-pipeline.md) | S3 | ✅ Accepted |
@@ -65,3 +65,4 @@ Aşağıdaki konular henüz ADR olarak yazılmadı; Phase 1 sonrası beklemede:
 | 2026-05-29 | [W8-BC — Per-instance albedo SSBO](ADR-20260529-W8-BC-per-instance-albedo-SSBO.md) | per-instance hit-colour SSBO (Option B from W8-BA) |
 | 2026-06-06 | [W8-BD — Per-(instance, geom) SSBO + curtain reflections](ADR-20260606-W8-BD-per-geom-albedo-SSBO-and-curtain-reflections.md) | per-prim 2D SSBO + `kMaxGeomsPerInst 32 -> 128` + texture-avg colour flow + grid relocation (Run 16 chrome-Sponza fix chain) |
 | 2026-06-06 | [Golden-fixture agent iteration loop](ADR-20260606-golden-fixture-agent-iteration-loop.md) | methodology ADR for closed-loop agent-driven visual debugging (Run 16 retrospective) |
+| 2026-06-06 | [Sample helper extract-and-test pattern](ADR-20260606-sample-helper-extract-and-test-pattern.md) | methodology ADR codifying the helper-extraction + matching gtest pattern shipped 4× across phases 822-827 |
