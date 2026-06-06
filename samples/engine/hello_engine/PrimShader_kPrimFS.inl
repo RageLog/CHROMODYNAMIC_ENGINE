@@ -610,18 +610,17 @@ void main() {
   }
   if (scene_hit > 0.5 && hit_slot >= 0) {
     vec3 hit_alb   = cd_instance_mats.data[hit_slot].albedo.rgb;
-    // phase795-rt-chrome-sponza-brightness (auto-synced from prim.frag.glsl):
-    // Emit hit_alb at HDR-bright (5x sun_color), no pseudo-normal cosine
-    // term. The old NoL_hit math collapsed to ~0.9*hit_alb on most rays
-    // and lost the per-prim Sponza colour signal in the final blend.
-    vec3 refl_color = hit_alb * pc.sun_color.rgb * 5.0;
-    // Match the on-disk .glsl roughness^2 blend so smooth chrome (~0.05
-    // roughness) reaches ~99.75% scene reflection. Old sqrt-based blend
-    // washed chrome toward IBL at far too low roughness.
+    // phase830-rt-chrome-sponza-visible-mirror (auto-synced from prim.frag.glsl):
+    // For mirror reflections the BRDF integral at the reflection direction
+    // is unity — multiplying by brdf_term was attenuating the chrome
+    // reflection and tinting it with F0 a second time, fading the curtain
+    // reflections into the white-wall background. Drop the brdf_term for
+    // the RT branch; keep it on the IBL fallback.
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * 8.0;
     float rough_blend = clamp(roughness * roughness, 0.0, 1.0);
     float metal_gate  = clamp(metallic, 0.0, 1.0);
     float blend_t     = mix(1.0, rough_blend, metal_gate);
-    ibl_spec_blended = mix(refl_color * brdf_term, ibl_spec_p, blend_t);
+    ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);
   }
 
   vec3 ibl_contrib = (ibl_kD * diff_e * albedo + ibl_spec_blended) * ao_factor * ibl_gate;

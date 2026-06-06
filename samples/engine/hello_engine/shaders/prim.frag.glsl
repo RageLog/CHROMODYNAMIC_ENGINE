@@ -664,19 +664,36 @@ void main() {
     // how the cubemap encodes interior brightness. Saturated per-prim
     // colours (red curtain, green curtain, sandstone wall) now actually
     // make it into the mirror image.
-    vec3 refl_color = hit_alb * pc.sun_color.rgb * 5.0;
-    // Blend between RT scene reflection and IBL sky cubemap.
-    // Use roughness^2 so SMOOTH metallic surfaces get nearly 100% scene
-    // reflection (no sky bleed through Sponza walls).  Only rough
-    // metallic (roughness > 0.5) progressively falls back to IBL
-    // because a single RT ray cannot represent a blurred BRDF lobe.
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * 8.0;
+    // phase830-rt-chrome-sponza-visible-mirror:
+    // For mirror reflections (perfect specular delta function) the BRDF
+    // integral over the cone is unity at the reflection direction — so
+    // we should NOT multiply by `brdf_term` (which is the diffuse-cone
+    // F0*GGX integral, designed for the IBL prefilter path). Multiplying
+    // by it was attenuating the chrome reflection by ~20% AND tinting it
+    // with F0 a second time, which made the curtain reflections fade
+    // into the white-wall background. The Fresnel weighting we DO want
+    // for chrome already lives in `F0` baked into the hit-side surface;
+    // here we just paint the hit colour at the prim's albedo brightness.
+    //
+    // For ROUGH metallic surfaces (roughness > ~0.3) a single RT ray is
+    // an under-sampled estimator of the BRDF lobe; the rough_blend term
+    // still folds in the IBL prefilter as the dim-blur fallback.
+    //
     //   roughness=0.05 → blend=0.0025 → 99.75% scene (chrome mirror)
     //   roughness=0.30 → blend=0.09   → 91% scene
     //   roughness=0.90 → blend=0.81   → 19% scene (mostly IBL blur)
+    //
+    // F0-based fade-in: for low-F0 metals (impossible — metals have high
+    // F0) or non-metals (skipped at line 631) the gate is moot. The
+    // metal_gate at the blend keeps non-metallic dielectrics on the IBL
+    // path untouched.
     float rough_blend = clamp(roughness * roughness, 0.0, 1.0);
     float metal_gate  = clamp(metallic, 0.0, 1.0);
     float blend_t     = mix(1.0, rough_blend, metal_gate);
-    ibl_spec_blended = mix(refl_color * brdf_term, ibl_spec_p, blend_t);
+    // Mirror-direction RT branch: hit colour direct (no brdf_term).
+    // IBL fallback: with brdf_term (the existing prefilter path).
+    ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);
   }
 
   vec3 ibl_contrib = (ibl_kD * diff_e * albedo + ibl_spec_blended) * ao_factor * ibl_gate;
