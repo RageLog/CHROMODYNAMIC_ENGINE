@@ -13,3 +13,12 @@ cd_add_test(vehicle_jolt
   SOURCES test_vehicle_jolt.cpp
   DEPS    cd::physics_vehicle cd::physics_jolt cd::physics cd::math cd::core
 )
+
+# Phase 786 — A10: real Jolt VehicleConstraint link.
+# Uses make_jolt_physics_world() so real JPH::PhysicsSystem is exercised when
+# CD_PHYSICS_JOLT_REAL=1 is compiled in.  All 5 cases call GTEST_SKIP when
+# the stub backend is active so CI always passes regardless of Jolt tier.
+cd_add_test(vehicle_real_jolt
+  SOURCES test_vehicle_real_jolt.cpp
+  DEPS    cd::physics_vehicle cd::physics_jolt cd::physics cd::math cd::core
+)

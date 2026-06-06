@@ -44,6 +44,7 @@
 #include <cd/math/Vector.hpp>
 #include <cd/physics/IPhysicsWorld.hpp>
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -304,5 +305,110 @@ bool attach_joint(
 /// Returns the engine's default config when the world is not Jolt-backed.
 [[nodiscard]] JoltBackendConfig backend_config(
     const cd::physics::IPhysicsWorld& world) noexcept;
+
+// ---- Vehicle constraint side-band (phase 786) ------------------------------
+//
+// These functions expose a minimal surface for wiring a JPH::VehicleConstraint
+// + JPH::WheeledVehicleController through the IPhysicsWorld abstraction.
+// All JPH::* symbols are hidden inside JoltWorld.cpp; callers only see the
+// opaque VehicleConstraintHandle index and these free functions.
+//
+// Lifecycle:
+//   1. create_body() the chassis first (via IPhysicsWorld), then call
+//      create_vehicle_constraint() with the resulting BodyHandle and the
+//      plain-data VehicleConstraintDesc to build the JPH constraint.
+//   2. Each tick: call set_vehicle_driver_input() BEFORE world.step(dt).
+//   3. After world.step(dt): call get_vehicle_wheel_contact() per wheel.
+//   4. Call destroy_vehicle_constraint() when done (removes the constraint
+//      and step-listener from the PhysicsSystem).
+//
+// Returns VehicleConstraintHandle::kInvalid on failure (stub backend or
+// body not found).
+
+/// Plain-data descriptor for creating a WheeledVehicleController.
+/// Mirrors cd::physics::vehicle::VehicleConfig but uses only primitive types
+/// so JoltWorld.hpp stays free of the vehicle library header.
+struct VehicleConstraintDesc
+{
+    /// Total chassis + wheel mass (kg).
+    float total_mass_kg { 1400.0F };
+    /// Chassis half-extents [half_length, half_width, half_height] (m).
+    float chassis_half[3] { 1.2F, 0.475F, 0.35F };
+    /// Peak engine torque (N·m).
+    float max_torque_nm { 300.0F };
+    /// Engine idle RPM.
+    float idle_rpm { 800.0F };
+    /// Engine redline RPM.
+    float max_rpm { 6500.0F };
+    /// 6 forward gear ratios (index 0 = 1st gear).
+    float gear_ratios[6] { 3.5F, 2.1F, 1.4F, 1.0F, 0.8F, 0.67F };
+    /// Final-drive ratio.
+    float final_drive { 3.7F };
+    /// Per-wheel parameters (4 entries: FL=0, FR=1, RL=2, RR=3).
+    struct WheelDesc
+    {
+        /// Attachment point in chassis-local space (m).
+        float local[3]       { 0.0F, 0.0F, 0.0F };
+        /// Wheel rolling radius (m).
+        float radius         { 0.33F };
+        /// Wheel width (m).
+        float width          { 0.12F };
+        /// Maximum steering angle (radians); 0 = non-steering.
+        float max_steer      { 0.0F };
+        /// Suspension rest length (m).
+        float suspension_rest { 0.25F };
+        /// Suspension stiffness (N/m) — mapped to frequency in Jolt spring.
+        float suspension_stiffness { 22000.0F };
+        /// Suspension damping (N·s/m).
+        float suspension_damping   { 4000.0F };
+        /// True if this wheel receives drive torque.
+        bool is_driven       { false };
+    } wheels[4];
+};
+
+/// Opaque handle to a registered JPH::VehicleConstraint.
+/// kInvalid == 0; valid handles are > 0.
+struct VehicleConstraintHandle
+{
+    std::uint32_t index { 0U };
+    [[nodiscard]] bool is_valid() const noexcept { return index != 0U; }
+    static const VehicleConstraintHandle kInvalid;
+};
+
+inline const VehicleConstraintHandle VehicleConstraintHandle::kInvalid { 0U };
+
+/// Create a JPH::VehicleConstraint for chassis body `chassis` in `world`.
+/// Registers the constraint as a PhysicsStepListener automatically.
+/// Returns VehicleConstraintHandle::kInvalid when the world is not real-Jolt
+/// or the chassis body is not found.
+[[nodiscard]] VehicleConstraintHandle create_vehicle_constraint(
+    cd::physics::IPhysicsWorld& world,
+    cd::physics::BodyHandle chassis,
+    const VehicleConstraintDesc& desc);
+
+/// Push driver inputs to the WheeledVehicleController for the next step().
+/// forward ∈ [0,1]: gas pedal (positive = forwards, negative = reverse in
+///   automatic mode Jolt supports passing negative values).
+/// right   ∈ [-1,1]: steer right.
+/// brake   ∈ [0,1]: brake pedal.
+void set_vehicle_driver_input(
+    cd::physics::IPhysicsWorld& world,
+    VehicleConstraintHandle handle,
+    float forward,
+    float right,
+    float brake) noexcept;
+
+/// Query whether wheel `wheel_index` (0–3) is in ground contact this frame.
+/// Returns false when the handle is invalid or the backend is a stub.
+[[nodiscard]] bool get_vehicle_wheel_contact(
+    const cd::physics::IPhysicsWorld& world,
+    VehicleConstraintHandle handle,
+    int wheel_index) noexcept;
+
+/// Remove the VehicleConstraint + step-listener from the world and free it.
+/// Safe to call with an invalid handle (no-op).
+void destroy_vehicle_constraint(
+    cd::physics::IPhysicsWorld& world,
+    VehicleConstraintHandle handle) noexcept;
 
 }  // namespace cd::physics_jolt

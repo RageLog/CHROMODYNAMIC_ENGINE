@@ -169,6 +169,11 @@ private:
     /// Total vehicle mass cached from configure() for force computation.
     float m_total_mass_kg { 1400.0F };
 
+    /// Opaque index into the JoltWorld vehicle-constraint table.
+    /// 0 = invalid / not created (maps to VehicleConstraintHandle::kInvalid).
+    /// Non-zero means a real JPH::VehicleConstraint is registered in the world.
+    std::uint32_t m_vehicle_constraint_idx { 0U };
+
     bool m_configured { false };
 };
 

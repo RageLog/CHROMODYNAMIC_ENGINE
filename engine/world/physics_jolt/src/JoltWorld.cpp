@@ -52,6 +52,9 @@ JPH_SUPPRESS_WARNINGS
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
+#include <Jolt/Physics/Vehicle/VehicleConstraint.h>
+#include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/RegisterTypes.h>
 
 #include <atomic>
@@ -483,7 +486,160 @@ public:
         return config_;
     }
 
+    // ---- Vehicle constraint side-band (phase 786) --------------------------
+
+    /// Build a JPH::VehicleConstraint from a plain descriptor and register it.
+    /// Returns the opaque slot index (>0) or 0 on failure.
+    [[nodiscard]] std::uint32_t register_vehicle_constraint(
+        cd::physics::BodyHandle chassis,
+        const VehicleConstraintDesc& vd)
+    {
+        const JPH::BodyID chassis_id = handles_.find(chassis.index());
+        if (chassis_id.IsInvalid())
+            return 0U;
+
+        // Use the no-lock interface to obtain the Body pointer; this is safe
+        // here because we are on the main/single-threaded path (configure is
+        // not called from within a physics step).
+        JPH::Body* body = physics_.GetBodyLockInterfaceNoLock().TryGetBody(chassis_id);
+        if (body == nullptr)
+            return 0U;
+
+        // ---- Build per-wheel settings (WheelSettingsWV) --------------------
+        JPH::VehicleConstraintSettings vs;
+        vs.mUp      = JPH::Vec3 { 0.0F, 1.0F, 0.0F };
+        vs.mForward = JPH::Vec3 { 0.0F, 0.0F, 1.0F };
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto& wd = vd.wheels[i];
+            auto* ws = new JPH::WheelSettingsWV;  // NOLINT(cppcoreguidelines-owning-memory)
+            ws->mPosition          = JPH::Vec3 { wd.local[0], wd.local[1], wd.local[2] };
+            ws->mRadius            = wd.radius;
+            ws->mWidth             = wd.width;
+            ws->mMaxSteerAngle     = wd.max_steer;
+            // Suspension: translate spring-stiffness to frequency/damping ratio.
+            // Jolt uses SpringSettings{ESpringMode::FrequencyAndDamping, freq, damp}.
+            // Natural frequency: f = sqrt(k/m) / (2*pi). We approximate with
+            // a sensible default for a ~1400 kg vehicle (1.5–2.5 Hz typical).
+            ws->mSuspensionMinLength   = std::max(0.0F, wd.suspension_rest - 0.05F);
+            ws->mSuspensionMaxLength   = wd.suspension_rest + 0.05F;
+            ws->mSuspensionSpring.mFrequency = 1.5F;  // Hz — stable for car-scale
+            ws->mSuspensionSpring.mDamping   = 0.5F;  // critically damped
+            ws->mMaxBrakeTorque        = 1500.0F;
+            ws->mMaxHandBrakeTorque    = wd.is_driven ? 4000.0F : 0.0F;
+            vs.mWheels.push_back(ws);
+        }
+
+        // ---- Build WheeledVehicleController settings -----------------------
+        auto* ctrl_settings = new JPH::WheeledVehicleControllerSettings;  // NOLINT(cppcoreguidelines-owning-memory)
+
+        ctrl_settings->mEngine.mMaxTorque = vd.max_torque_nm;
+        ctrl_settings->mEngine.mMinRPM    = vd.idle_rpm;
+        ctrl_settings->mEngine.mMaxRPM    = vd.max_rpm;
+
+        ctrl_settings->mTransmission.mMode = JPH::ETransmissionMode::Auto;
+        ctrl_settings->mTransmission.mGearRatios.clear();
+        for (float r : vd.gear_ratios)
+        {
+            ctrl_settings->mTransmission.mGearRatios.push_back(r * vd.final_drive);
+        }
+
+        // Identify driven wheels and build differentials.
+        // Each driven axle gets its own open differential.
+        // Rear axle = indices 2,3; front axle = indices 0,1.
+        bool rear_driven  = vd.wheels[2].is_driven || vd.wheels[3].is_driven;
+        bool front_driven = vd.wheels[0].is_driven || vd.wheels[1].is_driven;
+        float torque_split = (rear_driven && front_driven) ? 0.5F : 1.0F;
+
+        if (rear_driven)
+        {
+            JPH::VehicleDifferentialSettings diff {};
+            diff.mLeftWheel         = 2;
+            diff.mRightWheel        = 3;
+            diff.mEngineTorqueRatio = torque_split;
+            ctrl_settings->mDifferentials.push_back(diff);
+        }
+        if (front_driven)
+        {
+            JPH::VehicleDifferentialSettings diff {};
+            diff.mLeftWheel         = 0;
+            diff.mRightWheel        = 1;
+            diff.mEngineTorqueRatio = torque_split;
+            ctrl_settings->mDifferentials.push_back(diff);
+        }
+        if (!rear_driven && !front_driven)
+        {
+            // Fallback: rear-wheel drive.
+            JPH::VehicleDifferentialSettings diff {};
+            diff.mLeftWheel  = 2;
+            diff.mRightWheel = 3;
+            diff.mEngineTorqueRatio = 1.0F;
+            ctrl_settings->mDifferentials.push_back(diff);
+        }
+
+        vs.mController = ctrl_settings;
+
+        // ---- Create constraint + collision tester --------------------------
+        // VehicleCollisionTesterRay on the kNonMoving layer so wheels detect
+        // static terrain. Cast direction is world -Y (gravity down).
+        JPH::Ref<JPH::VehicleCollisionTester> tester =
+            new JPH::VehicleCollisionTesterRay(layers::kNonMoving);  // NOLINT(cppcoreguidelines-owning-memory)
+
+        JPH::Ref<JPH::VehicleConstraint> constraint =
+            new JPH::VehicleConstraint(*body, vs);  // NOLINT(cppcoreguidelines-owning-memory)
+        constraint->SetVehicleCollisionTester(tester);
+
+        physics_.AddConstraint(constraint);
+        physics_.AddStepListener(constraint);
+
+        // ---- Store in slot table ------------------------------------------
+        const std::uint32_t slot = next_vehicle_slot_++;
+        vehicle_constraints_.emplace(slot, VehicleSlot { constraint, tester });
+        return slot;
+    }
+
+    void set_vehicle_driver_input(std::uint32_t slot,
+                                  float forward, float right, float brake) noexcept
+    {
+        auto it = vehicle_constraints_.find(slot);
+        if (it == vehicle_constraints_.end()) return;
+
+        auto* ctrl = static_cast<JPH::WheeledVehicleController*>(
+            it->second.constraint->GetController());
+        if (ctrl == nullptr) return;
+
+        ctrl->SetDriverInput(forward, right, brake, 0.0F /* handbrake */);
+    }
+
+    [[nodiscard]] bool get_vehicle_wheel_contact(std::uint32_t slot, int wheel_idx) const noexcept
+    {
+        auto it = vehicle_constraints_.find(slot);
+        if (it == vehicle_constraints_.end()) return false;
+        const auto& wheels = it->second.constraint->GetWheels();
+        if (wheel_idx < 0 || static_cast<std::size_t>(wheel_idx) >= wheels.size())
+            return false;
+        return wheels[static_cast<std::size_t>(wheel_idx)]->HasContact();
+    }
+
+    void remove_vehicle_constraint(std::uint32_t slot) noexcept
+    {
+        auto it = vehicle_constraints_.find(slot);
+        if (it == vehicle_constraints_.end()) return;
+
+        physics_.RemoveStepListener(it->second.constraint);
+        physics_.RemoveConstraint(it->second.constraint);
+        vehicle_constraints_.erase(it);
+    }
+
 private:
+    // ---- Vehicle constraint slot entry -------------------------------------
+    struct VehicleSlot
+    {
+        JPH::Ref<JPH::VehicleConstraint>         constraint;
+        JPH::Ref<JPH::VehicleCollisionTester>    tester;
+    };
+
     // global_init_ MUST be first member: ctor increments the Jolt global
     // refcount (RegisterDefaultAllocator + Factory + RegisterTypes) before any
     // other JPH objects are constructed; dtor decrements after all others die.
@@ -507,6 +663,10 @@ private:
     std::unordered_map<std::uint32_t, components::RigidBodyComponent> rigid_components_ {};
     std::unordered_map<std::uint32_t, std::vector<components::ColliderComponent>> colliders_ {};
     std::vector<components::JointComponent> joints_ {};
+
+    // Vehicle constraint table
+    std::unordered_map<std::uint32_t, VehicleSlot> vehicle_constraints_ {};
+    std::uint32_t next_vehicle_slot_ { 1U };  // 0 reserved for kInvalid
 };
 
 }  // namespace
@@ -651,6 +811,54 @@ JoltBackendConfig backend_config(const cd::physics::IPhysicsWorld& world) noexce
     const auto* impl = as_jolt(world);
     if (impl == nullptr) return JoltBackendConfig {};
     return impl->config();
+}
+
+// ---- Vehicle constraint free functions (real backend) ----------------------
+
+VehicleConstraintHandle create_vehicle_constraint(
+    cd::physics::IPhysicsWorld& world,
+    cd::physics::BodyHandle chassis,
+    const VehicleConstraintDesc& desc)
+{
+    auto* impl = as_jolt(world);
+    if (impl == nullptr)
+        return VehicleConstraintHandle::kInvalid;
+    const std::uint32_t slot = impl->register_vehicle_constraint(chassis, desc);
+    return VehicleConstraintHandle { slot };
+}
+
+void set_vehicle_driver_input(
+    cd::physics::IPhysicsWorld& world,
+    VehicleConstraintHandle handle,
+    float forward,
+    float right,
+    float brake) noexcept
+{
+    if (!handle.is_valid()) return;
+    auto* impl = as_jolt(world);
+    if (impl == nullptr) return;
+    impl->set_vehicle_driver_input(handle.index, forward, right, brake);
+}
+
+bool get_vehicle_wheel_contact(
+    const cd::physics::IPhysicsWorld& world,
+    VehicleConstraintHandle handle,
+    int wheel_index) noexcept
+{
+    if (!handle.is_valid()) return false;
+    const auto* impl = as_jolt(world);
+    if (impl == nullptr) return false;
+    return impl->get_vehicle_wheel_contact(handle.index, wheel_index);
+}
+
+void destroy_vehicle_constraint(
+    cd::physics::IPhysicsWorld& world,
+    VehicleConstraintHandle handle) noexcept
+{
+    if (!handle.is_valid()) return;
+    auto* impl = as_jolt(world);
+    if (impl == nullptr) return;
+    impl->remove_vehicle_constraint(handle.index);
 }
 
 }  // namespace cd::physics_jolt
@@ -916,6 +1124,41 @@ JoltBackendConfig backend_config(const cd::physics::IPhysicsWorld& world) noexce
     const auto* impl = as_jolt(world);
     if (impl == nullptr) return JoltBackendConfig {};
     return impl->config();
+}
+
+// ---- Vehicle constraint free functions (stub backend — no-op) --------------
+
+VehicleConstraintHandle create_vehicle_constraint(
+    cd::physics::IPhysicsWorld& /*world*/,
+    cd::physics::BodyHandle     /*chassis*/,
+    const VehicleConstraintDesc& /*desc*/)
+{
+    return VehicleConstraintHandle::kInvalid;
+}
+
+void set_vehicle_driver_input(
+    cd::physics::IPhysicsWorld& /*world*/,
+    VehicleConstraintHandle     /*handle*/,
+    float /*forward*/,
+    float /*right*/,
+    float /*brake*/) noexcept
+{
+    // Stub: no-op. Driver inputs are applied by JoltAdapter's impulse path.
+}
+
+bool get_vehicle_wheel_contact(
+    const cd::physics::IPhysicsWorld& /*world*/,
+    VehicleConstraintHandle           /*handle*/,
+    int                               /*wheel_index*/) noexcept
+{
+    return false;  // Stub: no terrain query; JoltAdapter sets grounded=true.
+}
+
+void destroy_vehicle_constraint(
+    cd::physics::IPhysicsWorld& /*world*/,
+    VehicleConstraintHandle     /*handle*/) noexcept
+{
+    // Stub: no-op.
 }
 
 }  // namespace cd::physics_jolt
