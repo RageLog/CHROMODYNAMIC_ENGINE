@@ -67,16 +67,34 @@ layout(set = 0, binding = 9) uniform sampler2D   cd_mr_tex;
 // shared before phase465.  Single-geometry instances (procedural prims,
 // CesiumMan, the editor floor) still fill geom slot 0 + replicate to
 // 1..31 on the host so geom_index >= 1 reads back the same albedo.
-struct InstanceMat { vec4 albedo; vec4 emissive; };
+// phase840-W8-BE-rt-bindless-texture-sampling: InstanceMat extended
+// with `albedo_tex_slot` + `index_offset` fields. Slot value
+// `kBindlessAlbedoSlotNone` (= 0xFFFFFFFFu) signals "no per-prim
+// texture, fall back to the albedo (avg-colour) field" (W8-BD path).
+//
+// The new bindings 11 (sampler2D array), 12 (vertex SSBO), 13 (index
+// SSBO) are added in phase842 alongside the host-side wiring so the
+// validation layer never sees a shader that references a binding the
+// pipeline layout does not yet expose.
+struct InstanceMat {
+  vec4 albedo;
+  vec4 emissive;
+  uint albedo_tex_slot;
+  uint index_offset;
+  uint _pad0;
+  uint _pad1;
+};
 layout(set = 0, binding = 10) readonly buffer InstanceMats {
   InstanceMat data[];
 } cd_instance_mats;
 // phase798-rt-chrome-sponza-geom-cap: 32 -> 128 to cover Sponza's 103
 // primitives (every curtain / column past slot 31 was clamping to 31).
 // Slot count = kMaxInstances(64) * kMaxGeomsPerInst(128) = 8192.
-const int kMaxGeomsPerInst = 128;
-const int kMaxInstMatSlots = 8192;  // matches HelloRayQuery::kMaxInstMats
-const float kIblMaxMipLod = 5.0;
+const int  kMaxGeomsPerInst        = 128;
+const int  kMaxInstMatSlots        = 8192;
+const float kIblMaxMipLod          = 5.0;
+// phase840 sentinel: matches HelloRayQuery::kBindlessAlbedoSlotNone.
+const uint kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
 // Avoids needing per-vertex tangents - works for any UV-mapped mesh.
