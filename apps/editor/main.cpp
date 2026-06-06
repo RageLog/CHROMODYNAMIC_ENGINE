@@ -4617,7 +4617,7 @@ int main(int argc, char** argv)
                 ev_success.timestamp_ms = reload_t1;
                 ev_success.message      =
                     std::string("hot-reload: ok in ")
-                    + std::to_string(static_cast<int>(reload_t1 - reload_t0 + 0.5))
+                    + std::to_string(static_cast<int>(std::lround(reload_t1 - reload_t0)))
                     + "ms";
                 ev_success.severity     = Status::kSuccess;
                 bpb::set_status(Status::kSuccess);
