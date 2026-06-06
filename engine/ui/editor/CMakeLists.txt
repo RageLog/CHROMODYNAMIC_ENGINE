@@ -203,6 +203,14 @@ add_subdirectory(panel_lobby_browser)
 # fires → "Saving..." → "Saved just now" (green). Trust signal in the status bar.
 add_subdirectory(panel_auto_save_indicator)
 
+# ── cd::editor_panel_status_bar_fps_sparkline (STATIC) ────────────────────────
+# phase787 — FPS sparkline status-bar widget (DrawBatcher path; ring buffer of
+# 120 frame times; colour-coded waveform: green/amber/red for 60/30/<30 fps).
+# 200 px wide strip; fits inside the status bar between the frame-stats meters
+# and the auto-save indicator.
+# MOMENT: FPS history at a glance — dev spots hitches without opening profiler.
+add_subdirectory(panel_status_bar_fps_sparkline)
+
 # ── cd::editor_cdproj (STATIC) ──────────────────────────────────────────────
 # phase547 — .cdproj project-file read/write (JSON, standalone, cd::core only).
 add_subdirectory(cdproj)

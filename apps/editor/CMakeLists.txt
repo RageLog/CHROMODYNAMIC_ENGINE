@@ -134,6 +134,7 @@ cd_add_sample(editor
     cd::editor_panel_scene_palette
     cd::editor_panel_lobby_browser
     cd::editor_panel_auto_save_indicator
+    cd::editor_panel_status_bar_fps_sparkline   # phase787 — FPS sparkline in status bar
     cd::net_lobby                       # phase720 — Lobby instance for the LobbyBrowser seed.
     # phase707 / M15 W6B — particle system for the cinematic boot splash
     # background (20 particles/sec, 4s life, accent_success green glow).

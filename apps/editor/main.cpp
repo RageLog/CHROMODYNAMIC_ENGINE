@@ -396,6 +396,13 @@
 #include <cd/editor/panel_lobby_browser/LobbyBrowser.hpp>
 #include <cd/editor/panel_auto_save_indicator/AutoSaveIndicator.hpp>
 
+// phase787 / FINALE-close-out H4 — FPS sparkline status-bar widget.
+// Ring buffer of 120 frame times; colour-coded waveform (green/amber/red).
+// Width = FpsSparkline::kWidth (200 px), slotted between the frame-stats
+// meters and the auto-save indicator.
+// MOMENT: FPS history at a glance — dev spots hitches without the profiler.
+#include <cd/editor/panel_status_bar_fps_sparkline/FpsSparkline.hpp>
+
 // phase720 / M17 W3 — Lobby instance for the LobbyBrowser panel seed.
 #include <cd/network/lobby/Lobby.hpp>
 
@@ -993,6 +1000,8 @@ cd::editor::panel::ik_chain_editor::IkChainEditor             g_ik_chain_editor_
 cd::editor::panel::scene_palette::ScenePalette                g_scene_palette_panel;
 cd::editor::panel::lobby_browser::LobbyBrowser                g_lobby_browser_panel;
 cd::editor::panel::auto_save_indicator::AutoSaveIndicator     g_auto_save_indicator;
+// phase787 — FPS sparkline: ring buffer of last 120 frame times fed per-frame.
+cd::editor::status_bar::FpsSparkline                          g_fps_sparkline;
 cd::network::lobby::Lobby                                     g_demo_lobby;
 
 // phase711 / M16 W3 — demo IK chain backing the ik_chain_editor panel.
@@ -4342,7 +4351,12 @@ int main(int argc, char** argv)
             const auto dt_s = static_cast<float>(
                 duration_cast<microseconds>(now - prev_tp).count()) / 1'000'000.0F;
             prev_tp = now;
-            if (dt_s > 0.0F) { ft_ring.push(dt_s); }
+            if (dt_s > 0.0F)
+            {
+                ft_ring.push(dt_s);
+                // phase787 — feed the same dt into the FPS sparkline (ms units).
+                g_fps_sparkline.push(dt_s * 1000.0F);
+            }
             last_dt_ms = static_cast<double>(dt_s) * 1000.0;
             last_dt_s  = dt_s;
         }
@@ -4630,6 +4644,33 @@ int main(int argc, char** argv)
             };
             const auto v2_theme = uth::theme_from_name(active_theme_name);
             g_auto_save_indicator.draw(batcher, v2_theme, save_rect);
+        }
+
+        // -- phase787 / FINALE-close-out H4 — FPS sparkline in status bar -----
+        //
+        // 200 px waveform pinned to the right of the auto-save indicator.
+        // Layout (left-to-right):
+        //   [badge=280] [stats=360] [gap=16] [save=150] [gap=8] [spark=200]
+        //   ... then theme picker + route indicator on the far right.
+        //
+        // Colour: accent_success if avg<16.67ms, accent_warning if <33.33ms,
+        //         accent_error otherwise.
+        // MOMENT: FPS history at a glance — dev spots hitches without profiler.
+        {
+            constexpr float kSaveBadgeW = 150.0F;
+            constexpr float kStatsW     = 360.0F;
+            constexpr float kBadgeW     = 280.0F;
+            constexpr float kSparkGap   =   8.0F;
+            const float spark_x = kBadgeW + 12.0F
+                                  + kStatsW + 16.0F
+                                  + kSaveBadgeW + kSparkGap;
+            const float spark_y = static_cast<float>(fb_h) - kStatusBarH + 2.0F;
+            const uw::Rect spark_rect {
+                spark_x, spark_y,
+                cd::editor::status_bar::FpsSparkline::kWidth,
+                kStatusBarH - 4.0F
+            };
+            g_fps_sparkline.draw(batcher, widget_theme, spark_rect);
         }
 
         // -- phase701 / M15 W3 — toast notification render --------------------
