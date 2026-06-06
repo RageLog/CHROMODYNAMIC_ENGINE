@@ -696,7 +696,21 @@ void main() {
     ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);
   }
 
-  vec3 ibl_contrib = (ibl_kD * diff_e * albedo + ibl_spec_blended) * ao_factor * ibl_gate;
+  // phase831-rt-chrome-sponza-bypass-ambient-gates:
+  // A perfect mirror reflection is direct specular — it should NOT be
+  // attenuated by `ao_factor` (the mirror surface itself is not
+  // shadowed by ambient occlusion at the reflection direction) or
+  // `ibl_gate` (which fades the IBL term when the sun is low, but the
+  // RT scene reflection is independent of sun strength). Split the
+  // ambient contribution so the diffuse + IBL-spec path keeps its
+  // existing ao*gate attenuation while the smooth-metallic RT-hit
+  // mirror path is added at full energy.
+  bool is_rt_mirror = (scene_hit > 0.5) && (metallic > 0.5) && (roughness < 0.3);
+  vec3 ibl_spec_for_ambient = is_rt_mirror ? vec3(0.0) : ibl_spec_blended;
+  vec3 ibl_contrib =
+      (ibl_kD * diff_e * albedo + ibl_spec_for_ambient) * ao_factor * ibl_gate;
+  if (is_rt_mirror)
+      ibl_contrib += ibl_spec_blended;
   float ibl_scale = is_pbr_w ? 1.0 : 0.55;
   ambient += ibl_contrib * ibl_scale;
 

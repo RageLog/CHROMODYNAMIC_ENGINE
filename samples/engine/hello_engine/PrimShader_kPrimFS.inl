@@ -623,7 +623,15 @@ void main() {
     ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);
   }
 
-  vec3 ibl_contrib = (ibl_kD * diff_e * albedo + ibl_spec_blended) * ao_factor * ibl_gate;
+  // phase831-rt-chrome-sponza-bypass-ambient-gates (auto-synced from .glsl):
+  // Mirror reflections bypass ao_factor + ibl_gate so chrome keeps full
+  // reflection energy regardless of sun strength.
+  bool is_rt_mirror = (scene_hit > 0.5) && (metallic > 0.5) && (roughness < 0.3);
+  vec3 ibl_spec_for_ambient = is_rt_mirror ? vec3(0.0) : ibl_spec_blended;
+  vec3 ibl_contrib =
+      (ibl_kD * diff_e * albedo + ibl_spec_for_ambient) * ao_factor * ibl_gate;
+  if (is_rt_mirror)
+      ibl_contrib += ibl_spec_blended;
   float ibl_scale = is_pbr_w ? 1.0 : 0.55;
   ambient += ibl_contrib * ibl_scale;
 
