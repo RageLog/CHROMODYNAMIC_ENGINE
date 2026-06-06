@@ -58,9 +58,17 @@ static_assert(sizeof(InstanceMatGpu) == 32, "InstanceMatGpu must be 32 B");
 
 // phase465-perprim: per-(instance, geometry) SSBO layout for Sponza
 // multi-geometry BLAS reflections. See file header for the indexing
-// scheme.  Constants chosen so the SSBO size stays modest (64 KB) while
-// still covering the typical hello_engine scene.
-constexpr std::uint32_t kMaxGeomsPerInst = 32;
+// scheme.
+//
+// phase798-rt-chrome-sponza-geom-cap: kMaxGeomsPerInst raised from 32
+// to 128 because the Khronos Sponza glTF has 103 primitives — every
+// curtain / column / vegetation prim past index 31 was previously
+// silently clamping to the SSBO's slot 31 in the fragment shader (see
+// prim.frag.glsl:637 — `if (g >= kMaxGeomsPerInst) g = kMaxGeomsPerInst-1;`)
+// — which made every chrome reflection of a curtain panel paint
+// whatever colour happened to occupy slot 31 instead of the curtain's
+// actual albedo. SSBO size grows from 64 KB → 256 KB (still trivial).
+constexpr std::uint32_t kMaxGeomsPerInst = 128;
 constexpr std::uint32_t kMaxInstances    = 64;
 constexpr std::uint32_t kMaxInstMats  = kMaxInstances * kMaxGeomsPerInst;
 constexpr std::uint32_t kInstMatBytes = kMaxInstMats * sizeof(InstanceMatGpu);

@@ -162,6 +162,23 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
             {
                 const auto& mat = loaded.materials[static_cast<std::size_t>(prim.material_index)];
                 const int tex_idx = mat.base_color_texture;
+                // phase796-rt-chrome-sponza-real-prim-color:
+                // Compute the texture-average colour for this prim's albedo
+                // texture so the RT reflection SSBO (HelloTlasRebuild) shows
+                // the prim's ACTUAL visual colour — not the (1,1,1) factor
+                // most authored Sponza materials carry. Without this every
+                // Sponza prim collapses to a uniform tint in chrome
+                // reflections and the curtains / vegetation / wall shapes
+                // become invisible on the mirror sphere.
+                //
+                // We sample on a sparse grid (stride 16 px) so each prim
+                // adds <0.5 ms to load. The result is alpha-weighted so
+                // transparent border pixels of cutout textures (vegetation,
+                // fabric) don't drag the mean towards black. If the texture
+                // is missing or unloadable, the fallback is the glTF
+                // base_color_factor (which is the legacy phase465 path).
+                std::array<float, 4> avg_texture_color { 1.0F, 1.0F, 1.0F, 1.0F };
+                bool                 avg_texture_valid { false };
                 if (tex_idx >= 0 && tex_idx < static_cast<int>(loaded.textures.size()))
                 {
                     const auto& gt = loaded.textures[static_cast<std::size_t>(tex_idx)];
@@ -173,6 +190,38 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                             range.albedo_tex   = img;
                             range.albedo_view  = view;
                             range.has_texture  = true;
+                        }
+                        // Compute texture-average colour (alpha-weighted).
+                        double  sum_r  = 0.0;
+                        double  sum_g  = 0.0;
+                        double  sum_b  = 0.0;
+                        double  sum_a  = 0.0;
+                        constexpr std::uint32_t kStride = 16U;
+                        for (std::uint32_t y = 0; y < gt.height; y += kStride)
+                        {
+                            for (std::uint32_t x = 0; x < gt.width; x += kStride)
+                            {
+                                const std::size_t off =
+                                    (static_cast<std::size_t>(y) * gt.width + x) * 4U;
+                                if (off + 3U >= gt.rgba.size()) continue;
+                                // alpha-weighted; computed in double precision
+                                // so we don't trip -Wdouble-promotion when the
+                                // weight feeds the double sum accumulators.
+                                const double w =
+                                    static_cast<double>(gt.rgba[off + 3U]) / 255.0;
+                                sum_r += static_cast<double>(gt.rgba[off + 0U]) * w;
+                                sum_g += static_cast<double>(gt.rgba[off + 1U]) * w;
+                                sum_b += static_cast<double>(gt.rgba[off + 2U]) * w;
+                                sum_a += w;
+                            }
+                        }
+                        if (sum_a > 0.0)
+                        {
+                            avg_texture_color[0] = static_cast<float>(sum_r / sum_a / 255.0);
+                            avg_texture_color[1] = static_cast<float>(sum_g / sum_a / 255.0);
+                            avg_texture_color[2] = static_cast<float>(sum_b / sum_a / 255.0);
+                            avg_texture_color[3] = 1.0F;
+                            avg_texture_valid    = true;
                         }
                     }
                 }
@@ -227,11 +276,29 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 range.roughness       = mat.roughness_factor;
                 // phase465-perprim: capture the glTF base color factor so
                 // per-prim RT reflections show the right material colour.
-                // Sponza's vine_leaves material says (0.6, 0.8, 0.4); the
-                // sandstone says (~0.75, ~0.6, ~0.4); curtains carry red /
-                // green / blue per variant.  Default {1,1,1,1} stays
-                // neutral when the material did not author a factor.
-                range.base_color_factor = mat.base_color_factor;
+                // phase796-rt-chrome-sponza-real-prim-color: when the
+                // texture-average colour is valid, use the PRODUCT of
+                // (factor * texture-average) — this is the same energy
+                // composition the raster path uses (texture sampled *
+                // factor) and means even a (1,1,1) factor returns the
+                // texture's actual dominant colour. Without this every
+                // (1,1,1)-factor prim collapsed to white on the RT side
+                // and lost the colour separation between curtain panels,
+                // vegetation, sandstone walls etc.
+                if (avg_texture_valid)
+                {
+                    range.base_color_factor[0] =
+                        mat.base_color_factor[0] * avg_texture_color[0];
+                    range.base_color_factor[1] =
+                        mat.base_color_factor[1] * avg_texture_color[1];
+                    range.base_color_factor[2] =
+                        mat.base_color_factor[2] * avg_texture_color[2];
+                    range.base_color_factor[3] = mat.base_color_factor[3];
+                }
+                else
+                {
+                    range.base_color_factor = mat.base_color_factor;
+                }
                 // phase456: now that we ACTUALLY upload per-prim normal
                 // textures and bind them as the prim's own binding-8
                 // descriptor, we can finally enable the shader's

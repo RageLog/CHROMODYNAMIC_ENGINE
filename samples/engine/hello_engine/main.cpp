@@ -1990,6 +1990,40 @@ inline void spawn_sponza_and_cesiumman_entities(cd::scene::Scene& scene,
     }
 }
 
+// ---- spawn_chrome_probe_entity --------------------------------------------
+// phase797-rt-chrome-sponza-probe: spawn ONE chrome sphere at the world
+// position locked in SponzaFixtures.hpp (kChromeProbePosition). This
+// sphere is the iteration anchor for the chrome-reflection golden loop:
+// the fixture-#5 camera (`chrome_probe` slug) frames it with curtains
+// + columns behind, and `--golden-fixture 5 --golden-out X.png` writes
+// a deterministic PNG that I (the agent) can read back and verify.
+//
+// The probe is only spawned when fixture #5 is active so the normal
+// hello_engine scene stays byte-identical for every other fixture and
+// every interactive run. Metallic=1, roughness=0.04 (near-mirror) so
+// the SSBO reflection branch dominates and any RT-energy bug is
+// immediately visible on the captured PNG.
+inline void spawn_chrome_probe_entity(cd::scene::Scene&         scene,
+                                      std::vector<SceneEntity>& entities)
+{
+    SceneEntity e;
+    e.handle    = scene.create_node();
+    e.name      = "ChromeProbe (phase797)";
+    e.kind      = PrimitiveKind::kSphere;
+    e.tint      = cd::math::Vec3f { 0.95F, 0.93F, 0.88F };  // matches PBR grid chrome albedo
+    e.is_pbr    = true;
+    e.metallic  = 1.0F;
+    e.roughness = 0.04F;
+    scene.local(e.handle)->value.position = {
+        cd::hello_engine::sponza_fixtures::kChromeProbePosition[0],
+        cd::hello_engine::sponza_fixtures::kChromeProbePosition[1],
+        cd::hello_engine::sponza_fixtures::kChromeProbePosition[2],
+    };
+    const float k = cd::hello_engine::sponza_fixtures::kChromeProbeScale;
+    scene.local(e.handle)->value.scale    = { k, k, k };
+    entities.push_back(std::move(e));
+}
+
 // ---- spawn_pbr_grid_entities ---------------------------------------------
 // Consume the 4x4 PbrGridSlot array from HelloPbrGrid.hpp and assemble
 // one SceneEntity per slot. Sample-local SceneEntity / PrimitiveKind
@@ -4870,14 +4904,17 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // texture sample.
     s.sponza_geom_albedos.clear();
     s.sponza_geom_albedos.reserve(s.meshes.gltf_prim_ranges.size());
-    // phase793-rt-chrome-sponza-fix: Sponza glTF authors most prims with
-    // base_color_factor = (1,1,1) (the real colour comes from a texture
-    // that the reflection SSBO path cannot sample). Pass-through of that
-    // pure-white factor makes every chrome reflection of Sponza look like
-    // a uniform white wall — washing out the entire mirror image. When
-    // the factor is near-white (any channel > 0.85), substitute the
-    // phase434 representative warm-sandstone fallback so chrome reflections
-    // recover the surrounding scene's characteristic look.
+    // phase796-rt-chrome-sponza-real-prim-color: HelloGltf.hpp now folds
+    // the texture-average colour into `base_color_factor` per-prim during
+    // load. So for a Sponza prim with an authored (1,1,1) factor but a
+    // red-fabric texture, `pr.base_color_factor` arrives here as the
+    // real visual red — and the chrome reflection SSBO can paint the
+    // curtain shape with that prim's actual colour. The near-white check
+    // below is now a LAST-RESORT safety net: it triggers only when the
+    // prim is textureless AND the author left the factor at white (rare
+    // in Sponza — happens mostly for placeholder / debug prims). In that
+    // case fall back to phase434's representative warm-sandstone so the
+    // chrome reflection does not collapse to pure white.
     constexpr float kSponzaWhiteThreshold = 0.85F;
     const cd::math::Vec3f kSponzaSandstone { 0.72F, 0.60F, 0.48F };
     for (const auto& pr : s.meshes.gltf_prim_ranges)
@@ -4907,12 +4944,27 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // World / scene / ECS
     setup_world_container(s.cd_world);
     spawn_primitive_seeds(s.scene, s.entities);
+    // phase798-rt-chrome-sponza-probe: in fixture-#5 mode skip CesiumMan
+    // (4 m glowing humanoid at world origin) so it doesn't block the
+    // probe view. Sponza is the actually-tested geometry here.
+    const bool chrome_probe_mode =
+        cd::hello_engine::golden::enabled() &&
+        cd::hello_engine::golden::options().fixture_index == 5;
     spawn_sponza_and_cesiumman_entities(
         s.scene,
         s.meshes.gltf,          s.meshes.gltf_loaded_name,
-        s.meshes.gltf_cesium,   s.meshes.gltf_cesium_loaded_name,
+        chrome_probe_mode ? cd::render::GpuMesh {} : s.meshes.gltf_cesium,
+        chrome_probe_mode ? std::string_view {}    : s.meshes.gltf_cesium_loaded_name,
         s.entities);
     spawn_pbr_grid_entities(s.scene, s.entities);
+
+    // phase797-rt-chrome-sponza-probe: opt-in chrome probe sphere inside
+    // Sponza nave, ONLY when CLI selected fixture #5 ("chrome_probe").
+    // Every other fixture + every interactive run is untouched.
+    if (chrome_probe_mode)
+    {
+        spawn_chrome_probe_entity(s.scene, s.entities);
+    }
 
     // phase508-generic-gltf-path: 3rd load path, runs strictly AFTER the
     // legacy Sponza + CesiumMan paths above so the generic ingest does not
@@ -4983,8 +5035,16 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         // fov_y stored in radians inside cd::camera::Camera.
         s.cam.fov_y  = fx.fov_y_deg * (3.14159265358979323846F / 180.0F);
         s.scene_cam.set_auto_spin(false);
-        // Freeze free-look so the captured frame is byte-deterministic.
-        s.app_state.free_look.manual_mode = false;
+        // phase797-rt-chrome-sponza-probe: manual_mode MUST be true so
+        // update_free_look_camera() takes the manual branch (does nothing
+        // when no WASD/right-drag held) instead of the auto-orbit branch
+        // (which calls scene_cam.update() and overwrites the camera with
+        // an orbit-derived pose every frame, defeating the entire purpose
+        // of a fixture pin). Previously this was set to `false`, which is
+        // why fixtures 0..4 silently drifted to whatever the orbit
+        // controller produced — the fixture eye/target lasted exactly one
+        // frame.
+        s.app_state.free_look.manual_mode = true;
         log_push_fn(std::string { "[golden] fixture #" }
                     + std::to_string(idx) + " (" + std::string { fx.slug }
                     + ") active -- camera pinned");
@@ -5993,14 +6053,27 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
 
         ctx.new_frame();
 
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
-            ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
-            ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent))
+        // phase797-rt-chrome-sponza-probe: in --golden-fixture capture mode
+        // we skip every editor panel + overlay + gizmo. The captured PNG
+        // shows the raw rendered scene, which is what the iteration loop
+        // needs in order to see the chrome reflection unobstructed by
+        // ImGui draw commands. The new_frame()/render() pair still runs so
+        // the ImGui per-frame state (font atlas, viewport setup) stays
+        // intact; only the panel-drawing block is gated.
+        const bool kHideEditorUiForGolden =
+            cd::hello_engine::golden::enabled();
+
+        if (!kHideEditorUiForGolden &&
+            (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P) ||
+             ImGui::IsKeyChordPressed(ImGuiKey_F2) ||
+             ImGui::IsKeyChordPressed(ImGuiKey_GraveAccent)))
         {
             s.palette_visible = !s.palette_visible;
             if (s.palette_visible) s.palette_query.clear();
         }
 
+        if (!kHideEditorUiForGolden)
+        {
         // DockSpace
         {
             const ImGuiViewport* mv = ImGui::GetMainViewport();
@@ -6098,6 +6171,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                               vp, s.cam, window, frame.extent);
         draw_command_palette_popup(s.palette, s.palette_visible, s.palette_query,
                                    frame.extent);
+        }  // if (!kHideEditorUiForGolden) — phase797 golden capture gate
 
         cmd.end_render_pass();
         {

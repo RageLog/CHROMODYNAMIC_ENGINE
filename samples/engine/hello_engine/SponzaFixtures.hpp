@@ -47,8 +47,17 @@ struct Fixture
 inline constexpr std::uint32_t kFixtureWidth  = 256U;
 inline constexpr std::uint32_t kFixtureHeight = 144U;
 
-/// Five fixed camera poses. Index = fixture id; slug = filename suffix.
-inline constexpr std::array<Fixture, 5> kFixtures { {
+/// Six fixed camera poses. Index = fixture id; slug = filename suffix.
+///
+/// phase797-rt-chrome-sponza-probe: fixture #5 ("chrome_probe") drives
+/// the chrome-reflection iteration loop. It looks at a single chrome
+/// probe sphere (spawned at world (2.0, 1.8, 0.0) ONLY when fixture #5
+/// is the active one, via hello_engine's `spawn_chrome_probe_entity`)
+/// from a few metres back along the -X nave axis, with the rest of the
+/// Sponza geometry (curtains, columns, vegetation) framed behind the
+/// probe. The mirror reflection on the probe should paint the framed
+/// Sponza geometry — when it doesn't, the RT path is broken.
+inline constexpr std::array<Fixture, 6> kFixtures { {
     { "entrance",   "Sponza main entrance looking down the nave",
       { -11.50F, 1.60F,  0.00F }, {  0.00F, 1.60F,  0.00F }, 60.0F,
       { 1.00F, 0.85F, 0.60F } },
@@ -64,7 +73,27 @@ inline constexpr std::array<Fixture, 5> kFixtures { {
     { "floor",      "Looking down at the marble floor for reflections",
       {   0.00F, 3.20F,  0.00F }, {  0.50F, 0.00F,  0.40F }, 70.0F,
       { 0.90F, 0.92F, 1.00F } },
+    { "chrome_probe", "Inside Sponza nave; large probe close to camera, curtains framed all around",
+      {  -5.00F, 2.50F,  0.00F }, {  0.00F, 2.00F,  0.00F }, 55.0F,
+      { 0.85F, 0.75F, 0.65F } },
 } };
+
+// ---------------------------------------------------------------------------
+// phase797-rt-chrome-sponza-probe: world position of the single chrome
+// probe sphere spawned for fixture #5. Kept in this header so the spawn
+// code in main.cpp and the fixture camera framing stay in lock-step.
+//
+// phase798-fix1: top-down diagnostic capture showed Sponza is a long thin
+// loggia: court X∈[-15,+15] m, Z∈[-3,+3] m, Y∈[0,~5] m, with sandstone
+// walls / roof in Z∈[±3,±10]. The previous (0,2.5,+8) eye sat in the
+// outer roof at Z=8, which is why every "down the X axis" fixture
+// terminated on a wall. Inside-court coordinates work cleanly: eye Z=0,
+// target Z=0, both Y≈2 (head height). Probe placed at world (3, 1.5, 0)
+// — well inside the nave on the +X side of the camera, with the
+// upper-gallery curtain rows visible to either side along Z.
+// ---------------------------------------------------------------------------
+inline constexpr float kChromeProbePosition[3] { 0.00F, 2.00F, 0.00F };
+inline constexpr float kChromeProbeScale       { 1.20F };
 
 /// Convenience: total fixture count for range checks at the CLI parsers.
 inline constexpr std::size_t kFixtureCount = kFixtures.size();

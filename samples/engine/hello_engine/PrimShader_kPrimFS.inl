@@ -82,8 +82,10 @@ struct InstanceMat { vec4 albedo; vec4 emissive; };
 layout(set = 0, binding = 10) readonly buffer InstanceMats {
   InstanceMat data[];
 } cd_instance_mats;
-const int kMaxGeomsPerInst = 32;
-const int kMaxInstMatSlots = 2048;  // matches HelloRayQuery::kMaxInstMats
+// phase798-rt-chrome-sponza-geom-cap: 32 -> 128 to cover Sponza's 103
+// primitives (every curtain / column past slot 31 was clamping to 31).
+const int kMaxGeomsPerInst = 128;
+const int kMaxInstMatSlots = 8192;  // matches HelloRayQuery::kMaxInstMats
 const float kIblMaxMipLod = 5.0;
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
