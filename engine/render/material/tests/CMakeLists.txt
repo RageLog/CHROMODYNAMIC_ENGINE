@@ -55,5 +55,6 @@ cd_add_test(rt_hit_general_geometry
 #      chrome reflection would not show pure sky -- the 2026-06-03 bug).
 cd_add_test(rt_chrome_sphere_reflects_geometry
   SOURCES test_rt_chrome_sphere_reflects_geometry.cpp
-  DEPS    cd::material cd::rhi cd::shader cd::core $<$<BOOL:${CD_ENABLE_VULKAN}>:cd::rhi_vulkan>
+  DEPS    cd::material cd::rhi cd::shader cd::core
+          $<$<BOOL:${CD_ENABLE_VULKAN}>:cd::rhi_vulkan>
 )
