@@ -589,6 +589,16 @@ void main() {
   vec3  Fms_p   = (Favg_p * Ess_p) / (vec3(1.0) - Favg_p * Ems_p);
   vec3  ibl_spec_p = spec_e * (F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p);
 
+  // phase794-rt-chrome-sponza-interior-tint (auto-synced from prim.frag.glsl):
+  // Multiply IBL specular by warm sandstone tint for metallic surfaces so
+  // chrome rays that miss Sponza fall back to a warm interior look instead
+  // of bright outdoor sky. Effect ramps with metallic, no-op on dielectric.
+  const vec3  kSponzaInteriorTint = vec3(0.92, 0.78, 0.62);
+  const float kInteriorTintGate   = 0.65;
+  float metallic_clamped = clamp(metallic, 0.0, 1.0);
+  vec3  interior_mix     = mix(vec3(1.0), kSponzaInteriorTint, kInteriorTintGate * metallic_clamped);
+  ibl_spec_p *= interior_mix;
+
   float ibl_gate_factor = is_pbr_w ? 1.0 : 0.6;
   float ibl_gate = clamp(pc.sun_dir.w * ibl_gate_factor, 0.0, 1.0);
 

@@ -613,6 +613,26 @@ void main() {
                                 : mix(0.12, 1.0, clamp(metallic, 0.0, 1.0));
   vec3  ibl_spec_p = raw_ibl_spec * ibl_spec_metallic_gate;
 
+  // phase794-rt-chrome-sponza-interior-tint:
+  // The IBL cubemap is baked from the outdoor Khronos default sky — when
+  // chrome rays MISS Sponza geometry (or scene_hit<0.5 below), the chrome
+  // sphere falls back to ibl_spec_p which renders as bright outdoor sky.
+  // Visually the sphere looks like it's NOT inside Sponza, in a different
+  // universe (user-reported bug 2026-06-06).
+  //
+  // Pre-tint the IBL specular for highly-metallic surfaces with a warm
+  // sandstone factor so the chrome's IBL fallback already looks like it's
+  // bouncing Sponza interior light. Effect ramps with metallic (no effect
+  // on dielectric), and is mild on dielectric-leaning materials.
+  // For pure chrome (metallic ~= 1.0): IBL is multiplied by sandstone tint,
+  // matching the warm interior context. For dielectric (metallic = 0): no
+  // change, keeps original behaviour.
+  const vec3  kSponzaInteriorTint = vec3(0.92, 0.78, 0.62);  // warm sandstone, lifted
+  const float kInteriorTintGate   = 0.65;                    // 65% tint strength at full metallic
+  float metallic_clamped = clamp(metallic, 0.0, 1.0);
+  vec3  interior_mix     = mix(vec3(1.0), kSponzaInteriorTint, kInteriorTintGate * metallic_clamped);
+  ibl_spec_p *= interior_mix;
+
   float ibl_gate_factor = is_pbr_w ? 1.0 : 0.6;
   float ibl_gate = clamp(pc.sun_dir.w * ibl_gate_factor, 0.0, 1.0);
 
