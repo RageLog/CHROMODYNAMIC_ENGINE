@@ -16,6 +16,10 @@ inline constexpr const char* kPrimFS = R"glsl(
 // guard never fires on unsupported hardware. GLSL 460 is required
 // because ray-query intrinsics were introduced for that profile.
 #extension GL_EXT_ray_query : require
+// phase847-W8-BE-fix: Move the descriptor_indexing extension directive
+// up here next to ray_query so the GLSL preprocessor sees it before
+// the binding declarations that depend on it (compiler-strict path).
+#extension GL_EXT_nonuniform_qualifier : require
 layout(push_constant) uniform PC {
   mat4 mvp;
   mat4 model;
@@ -102,8 +106,9 @@ const uint kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 // phase844-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
 // bindings 11/12/13 + PrimitiveVertexGpu struct + UV barycentric
 // interp + bindless texture sample. See prim.frag.glsl for the
-// full block-comment rationale.
-#extension GL_EXT_nonuniform_qualifier : require
+// full block-comment rationale. (The #extension GL_EXT_nonuniform_qualifier
+// declaration was moved to the file head for compiler strictness in
+// phase847.)
 struct PrimitiveVertexGpu {
   vec4 pos_x_y_z_nx;
   vec4 ny_nz_u_v;

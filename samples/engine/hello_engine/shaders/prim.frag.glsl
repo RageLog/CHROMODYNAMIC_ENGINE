@@ -5,6 +5,10 @@
 // guard never fires on unsupported hardware. GLSL 460 is required
 // because ray-query intrinsics were introduced for that profile.
 #extension GL_EXT_ray_query : require
+// phase847-W8-BE-fix: Move the descriptor_indexing extension directive
+// up here next to ray_query so the GLSL preprocessor sees it before
+// the binding declarations that depend on it (compiler-strict path).
+#extension GL_EXT_nonuniform_qualifier : require
 layout(push_constant) uniform PC {
   mat4 mvp;
   mat4 model;
@@ -108,7 +112,8 @@ const uint kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 //        slots indexed by InstanceMat.albedo_tex_slot. The
 //        nonuniform_qualifier extension is required because the slot
 //        index varies per-pixel across the chrome surface.
-#extension GL_EXT_nonuniform_qualifier : require
+// (#extension GL_EXT_nonuniform_qualifier moved to the file head in
+// phase847 for compiler strictness.)
 struct PrimitiveVertexGpu {
   vec4 pos_x_y_z_nx;     // pos.xyz + normal.x   (std430 packs 3-float as vec3 alignment)
   vec4 ny_nz_u_v;        // normal.yz + uv.xy
