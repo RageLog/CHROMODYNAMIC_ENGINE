@@ -1599,8 +1599,8 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                     {
                         for (int i = 0; i < 24; ++i)
                         {
-                            const float t0 = static_cast<float>(i) / 24.0F * 6.2831853F;
-                            const float t1 = static_cast<float>(i + 1) / 24.0F * 6.2831853F;
+                            const float t0 = static_cast<float>(i) / 24.0F * 2.0F * std::numbers::pi_v<float>;
+                            const float t1 = static_cast<float>(i + 1) / 24.0F * 2.0F * std::numbers::pi_v<float>;
                             cd::math::Vec3f a { L.position.x + std::cos(t0) * L.range,
                                                 L.position.y,
                                                 L.position.z + std::sin(t0) * L.range };
@@ -1654,7 +1654,7 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                     std::array<cd::math::Vec3f, kEdges + 1> rim {};
                     for (int i = 0; i <= kEdges; ++i)
                     {
-                        const float t = static_cast<float>(i) / static_cast<float>(kEdges) * 6.2831853F;
+                        const float t = static_cast<float>(i) / static_cast<float>(kEdges) * 2.0F * std::numbers::pi_v<float>;
                         const float ct = std::cos(t), st = std::sin(t);
                         rim[static_cast<std::size_t>(i)] = { far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
                                                              far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
@@ -2761,8 +2761,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     {
                         for (int i = 0; i < kRingSeg; ++i)
                         {
-                            const float a = static_cast<float>(i) / kRingSeg * 6.2831853F;
-                            const float b = static_cast<float>(i + 1) / kRingSeg * 6.2831853F;
+                            const float a = static_cast<float>(i) / kRingSeg * 2.0F * std::numbers::pi_v<float>;
+                            const float b = static_cast<float>(i + 1) / kRingSeg * 2.0F * std::numbers::pi_v<float>;
                             const float ca0 = std::cos(a), sa0 = std::sin(a);
                             const float cb0 = std::cos(b), sb0 = std::sin(b);
                             cd::math::Vec3f wa { tgt.x + (u.x * ca0 + v.x * sa0) * kRingRad,
@@ -2843,7 +2843,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         bool prev_ok = false;
                         for (int i = 0; i <= kHoverSeg; ++i)
                         {
-                            const float a = static_cast<float>(i) / kHoverSeg * 6.2831853F;
+                            const float a = static_cast<float>(i) / kHoverSeg * 2.0F * std::numbers::pi_v<float>;
                             const float ca = std::cos(a), sa = std::sin(a);
                             const cd::math::Vec3f w { tgt.x + (u.x * ca + v.x * sa) * kHoverRad,
                                                       tgt.y + (u.y * ca + v.y * sa) * kHoverRad,
@@ -5170,7 +5170,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                 if (u1 < 1e-7F) u1 = 1e-7F;
                 float u2 = s.rand_rng.next_float();
                 float rr = std::sqrt(-2.0F * std::log(u1));
-                float t  = 6.28318530717958F * u2;
+                float t  = 2.0F * std::numbers::pi_v<float> * u2;
                 cv = rr * std::sin(t); cv_ok = true;
                 n.push_back(rr * std::cos(t));
             }
@@ -5285,7 +5285,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                 float u1 = s.rand_rng.next_float(); if (u1 < 1e-7F) u1 = 1e-7F;
                 float u2 = s.rand_rng.next_float();
                 float rr = std::sqrt(-2.0F * std::log(u1));
-                float t  = 6.28318530717958F * u2;
+                float t  = 2.0F * std::numbers::pi_v<float> * u2;
                 cv = rr * std::sin(t); cv_ok = true;
                 n.push_back(rr * std::cos(t));
             }
@@ -5885,7 +5885,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 float u1 = s.rand_rng.next_float(); if (u1 < 1e-7F) u1 = 1e-7F;
                 float u2 = s.rand_rng.next_float();
                 float rr = std::sqrt(-2.0F * std::log(u1));
-                float t  = 6.28318530717958F * u2;
+                float t  = 2.0F * std::numbers::pi_v<float> * u2;
                 cv = rr * std::sin(t); cv_ok = true;
                 n.push_back(rr * std::cos(t));
             }
@@ -7395,7 +7395,7 @@ int main(int argc, char** argv)
                 u1 = 1e-7F;
             const float u2 = rand_rng.next_float();
             const float r = std::sqrt(-2.0F * std::log(u1));
-            const float t = 6.28318530717958F * u2;
+            const float t = 2.0F * std::numbers::pi_v<float> * u2;
             cached = r * std::sin(t);
             have_cached = true;
             n.push_back(r * std::cos(t));

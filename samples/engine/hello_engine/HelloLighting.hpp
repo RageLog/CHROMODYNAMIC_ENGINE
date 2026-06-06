@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 
 namespace cd::hello_engine
 {
@@ -137,12 +138,12 @@ static_assert(sizeof(LightUboGpu) == 16 + kMaxLights * 80, "LightUboGpu must be 
     //   Area:    ki = phi / (8*pi) * 0.20   (Lambertian rect emitter)
     //   Punctual: ki = phi / (8*pi)         (point baseline)
     //   Spot:    same * 2.5                 (cone inflation)
-    constexpr float kInvPi = 0.31830988618F;  // 1 / pi
+    constexpr float kInvPi = std::numbers::inv_pi_v<float>;
     float ki = 0.0F;
     if (k == LT::kRectArea || k == LT::kDiskArea)
     {
         // W8-AG: 0.20 area multiplier (W8-T baseline, reverted from W8-AB 1.5x).
-        ki = L.intensity / (4.0F * 3.14159265F) / 2.0F * 0.20F;
+        ki = L.intensity / (4.0F * std::numbers::pi_v<float>) / 2.0F * 0.20F;
     }
     else
     {
