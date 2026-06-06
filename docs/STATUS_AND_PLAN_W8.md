@@ -859,8 +859,33 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 - USER-reported bugs queued for phase 847+:
   - PBR M1R0 sphere visual artefact (bottom-left chrome sphere of
-    the grid).
+    the grid). NOTE: phase 850 baseline capture shows this is most
+    likely the W8-BD avg-colour reflection path expressing flat
+    per-prim colours through a roughness=0.04 mirror, NOT a code
+    bug — same "stained-glass" pattern affects all top-row spheres
+    (M0R0..M3R0) which all share roughness=0.04. Resolution path:
+    the texture-upload follow-on to phase 849 W8-BE infrastructure
+    (decode Sponza GltfTexture::rgba arrays + create per-tex Vulkan
+    Texture+View + write_bindless_texture_slot for each prim,
+    then revive the shader bindless branch). Multi-week, not a
+    single-phase fix. User-visual reference image needed to
+    confirm whether M1R0 specifically has a deeper artefact above
+    the shared-mirror-path symptom.
   - Black halo / silhouette artefact around scene objects.
+    NOTE: GTAO crease-AO is already reduced to 0.35x in phase 849
+    baseline (prim.frag.glsl:831 — "Reduce crease-AO intensity to
+    avoid dark halos around objects"). No other systemic halo path
+    found in code inspection. User-visual reference image needed
+    to pinpoint exact halo (TAA history mismatch? bloom threshold?
+    SSR edge? volumetric edge?).
+- Wire actual Sponza per-prim albedo texture upload through the
+  W8-BE bindless array. Once slots 0..102 are written with real
+  textures, revert phase849-W8-BE-disable's `tex_slot =
+  kBindlessAlbedoSlotNone;` line in prim.frag.glsl + .inl so the
+  bindless branch runs again. Acceptance test:
+  test_hello_engine_w8be_layout already covers the host-side
+  contract; add a runtime-only capture diff to confirm chrome
+  spheres show real damask / leaf-vein / sandstone detail.
 - L1 Metal backend (per ADR-20260530-metal-backend.md).
 - Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
 
