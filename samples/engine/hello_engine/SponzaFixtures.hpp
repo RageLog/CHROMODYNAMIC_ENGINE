@@ -73,8 +73,8 @@ inline constexpr std::array<Fixture, 6> kFixtures { {
     { "floor",      "Looking down at the marble floor for reflections",
       {   0.00F, 3.20F,  0.00F }, {  0.50F, 0.00F,  0.40F }, 70.0F,
       { 0.90F, 0.92F, 1.00F } },
-    { "chrome_probe", "Inside Sponza nave; large probe close to camera, curtains framed all around",
-      {  -5.00F, 2.50F,  0.00F }, {  0.00F, 2.00F,  0.00F }, 55.0F,
+    { "chrome_probe", "Probe in Sponza nave, framed clear of the PBR grid for isolated reflection inspection",
+      {  -3.00F, 2.20F, -2.00F }, {  4.00F, 2.20F,  0.00F }, 50.0F,
       { 0.85F, 0.75F, 0.65F } },
 } };
 
@@ -92,8 +92,8 @@ inline constexpr std::array<Fixture, 6> kFixtures { {
 // — well inside the nave on the +X side of the camera, with the
 // upper-gallery curtain rows visible to either side along Z.
 // ---------------------------------------------------------------------------
-inline constexpr float kChromeProbePosition[3] { 0.00F, 2.00F, 0.00F };
-inline constexpr float kChromeProbeScale       { 1.20F };
+inline constexpr float kChromeProbePosition[3] { 4.00F, 2.20F, 0.00F };
+inline constexpr float kChromeProbeScale       { 0.80F };
 
 /// Convenience: total fixture count for range checks at the CLI parsers.
 inline constexpr std::size_t kFixtureCount = kFixtures.size();

@@ -50,15 +50,33 @@ struct PbrGridSlot
 };
 
 // ---- Grid layout constants ------------------------------------------------
-// Matches the W8-AX visual lock: 4 columns x 4 rows, 1.70 m spacing,
-// 0.80 m radius, 0.95 m baseline elevation, -4.5 m camera-side z so
-// the bigger grid still fits the default FOV.
+//
+// phase799-rt-chrome-sponza-grid-inside:
+//   The grid lived at Z=-4.5 (5 m behind the Sponza atrium's -Z outer
+//   wall) for so long that the default-camera view of the chrome
+//   spheres reflected the IBL sky + the BACKSIDE of the outer wall —
+//   essentially never any of the curtains / columns / vegetation that
+//   make Sponza recognisable. User-reported symptom: "kureler spanza
+//   icinde degilmis gibi duruyor" / "ben perdeleri gormem gerekiyor".
+//
+//   We move the entire grid INTO Sponza (Z=0, mid-court) at the cost
+//   of a tighter spacing + smaller scale so the 4×4 layout fits the
+//   atrium height (Y ≤ ~5 m roof) and width (Z ≤ ±3 m between column
+//   rows). The educational metal/rough gradient stays the same; only
+//   the world placement + per-sphere size change.
+//
+//   Old (W8-AX visual lock):   spacing 1.70, scale 0.80, y_base 0.95, z=-4.5
+//   New (phase799 in-Sponza):  spacing 1.05, scale 0.42, y_base 0.55, z= 0.0
+//
+//   X span: 3 * 1.05 = 3.15 m  → x ∈ [-1.58, +1.58]  (atrium ±15 m  ✓)
+//   Y span: 0.55 + 3 * 1.05    → y ∈ [ 0.55, +3.70] (roof ~5 m       ✓)
+//   Z fixed: 0 (mid-court between curtain rows on either side         ✓)
 inline constexpr int   kPbrGridCols    = 4;
 inline constexpr int   kPbrGridRows    = 4;
-inline constexpr float kPbrGridSpacing = 1.70F;
-inline constexpr float kPbrGridYBase   = 0.95F;
-inline constexpr float kPbrGridZ       = -4.5F;
-inline constexpr float kPbrGridScale   = 0.80F;
+inline constexpr float kPbrGridSpacing = 1.05F;
+inline constexpr float kPbrGridYBase   = 0.55F;
+inline constexpr float kPbrGridZ       = 0.00F;
+inline constexpr float kPbrGridScale   = 0.42F;
 inline constexpr cd::math::Vec3f kPbrGridChromeAlbedo { 0.95F, 0.93F, 0.88F };
 
 // ---- build_pbr_demo_grid --------------------------------------------------
