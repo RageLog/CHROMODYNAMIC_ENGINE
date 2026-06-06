@@ -181,6 +181,7 @@
 #include "HelloPicker.hpp"
 #include "HelloPalette.hpp"
 #include "SponzaFixtures.hpp"
+#include "HelloGoldenCli.hpp"
 
 #include <cd/sample/run.hpp>
 
@@ -204,77 +205,13 @@
 //     on capture failure.
 //
 // Without --golden-fixture the runtime path is unchanged.
+//
+// phase825-rt-chrome-sponza-golden-cli-extract: the parser implementation
+// lives in HelloGoldenCli.hpp so a unit test can exercise it without
+// bringing up Vulkan + the App lifecycle. See test_hello_engine_golden_cli.cpp.
 // ============================================================================
-namespace cd::hello_engine::golden
-{
-struct CliOptions
-{
-    int         fixture_index { -1 };   ///< -1 = disabled
-    std::string out_png_path  {};       ///< empty = disabled
-    std::uint32_t capture_at_frame { 2 }; ///< capture-on-frame index (0-based)
-};
-
-inline CliOptions& options() noexcept
-{
-    static CliOptions o {};
-    return o;
-}
-
-/// Parse argv before the App is constructed. Unknown flags are silently
-/// ignored so other CLI surfaces (asset path overrides, etc.) keep working.
-/// Returns true iff `--golden-fixture` was provided + parsed successfully.
-inline bool parse(int argc, char** argv) noexcept
-{
-    auto& o = options();
-    bool seen = false;
-    // phase816-clang-tidy-cert-err34-c: atoi() silently swallows
-    // conversion errors. strtol() reports them via end_ptr; we treat
-    // any non-numeric / out-of-range input as "flag not provided" so
-    // a typo like `--golden-fixture xyz` fails silently rather than
-    // landing on slot 0 by accident.
-    const auto parse_int = [](const char* arg) -> std::optional<long> {
-        char* end_ptr  = nullptr;
-        errno          = 0;
-        const long val = std::strtol(arg, &end_ptr, 10);
-        if (end_ptr == arg || *end_ptr != '\0' || errno != 0)
-            return std::nullopt;
-        return val;
-    };
-    for (int i = 1; i < argc; ++i)
-    {
-        const std::string_view a { argv[i] };
-        if (a == "--golden-fixture" && i + 1 < argc)
-        {
-            if (const auto n = parse_int(argv[i + 1]); n.has_value() &&
-                *n >= 0 && static_cast<std::size_t>(*n)
-                           < cd::hello_engine::sponza_fixtures::kFixtureCount)
-            {
-                o.fixture_index = static_cast<int>(*n);
-                seen = true;
-            }
-            ++i;
-        }
-        else if (a == "--golden-out" && i + 1 < argc)
-        {
-            o.out_png_path = argv[i + 1];
-            ++i;
-        }
-        else if (a == "--golden-frames" && i + 1 < argc)
-        {
-            if (const auto n = parse_int(argv[i + 1]); n.has_value() && *n >= 1)
-                o.capture_at_frame = static_cast<std::uint32_t>(*n - 1);
-            ++i;
-        }
-    }
-    return seen;
-}
-
-[[nodiscard]] inline bool enabled() noexcept
-{
-    return options().fixture_index >= 0;
-}
-
-}  // namespace cd::hello_engine::golden
+// (golden::CliOptions / options() / parse() / enabled() declared in
+// HelloGoldenCli.hpp included above with the other Hello* sample headers.)
 
 // ============================================================================
 // File-scope types needed by HelloEngineApp::EngineState + the three lifecycle

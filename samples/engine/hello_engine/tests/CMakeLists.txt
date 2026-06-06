@@ -12,6 +12,16 @@ cd_add_test(hello_engine_tex_avg
   DEPS    cd::core
 )
 
+# phase826 — golden-fixture CLI parser. The pure parse_args() lives in
+# HelloGoldenCli.hpp (depends only on SponzaFixtures.hpp); the test
+# exercises every edge case the agent-iteration loop relies on
+# (out-of-range fixtures, non-numeric input, frame-index 0-based shift,
+# null argv tolerance, full command-line round-trip).
+cd_add_test(hello_engine_golden_cli
+  SOURCES test_hello_engine_golden_cli.cpp
+  DEPS    cd::core
+)
+
 # T1.7 phase543 -- Sponza golden-image CI gate.
 #
 # Two tiers (see test source header for details):
