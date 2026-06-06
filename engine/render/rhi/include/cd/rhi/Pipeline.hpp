@@ -48,6 +48,20 @@ struct DescriptorSetLayoutBinding
     DescriptorType type { DescriptorType::kUniformBuffer };
     std::uint32_t count { 1 };
     ShaderStage stages { ShaderStage::kAllGraphics };
+
+    // phase842-W8-BE-rt-bindless-texture-sampling: per-binding flags.
+    // When `bindless == true`, the binding is treated as
+    // UPDATE_AFTER_BIND | PARTIALLY_BOUND. If it is also the LAST
+    // binding in the set, VARIABLE_DESCRIPTOR_COUNT is added.
+    // The implementation must:
+    //   * Set VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT
+    //     on the layout.
+    //   * Chain a VkDescriptorSetLayoutBindingFlagsCreateInfo with
+    //     the relevant per-binding flags.
+    // Backends without descriptor_indexing should fall back to
+    // declining the layout creation (kNotImplemented), letting the
+    // caller fall back to a non-bindless variant.
+    bool bindless { false };
 };
 
 struct DescriptorSetLayoutDesc

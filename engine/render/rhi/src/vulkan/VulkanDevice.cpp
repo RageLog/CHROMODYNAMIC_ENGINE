@@ -1237,9 +1237,13 @@ public:
     create_descriptor_set_layout(const cd::rhi::DescriptorSetLayoutDesc& desc) override
     {
         std::vector<VkDescriptorSetLayoutBinding> bindings;
+        std::vector<VkDescriptorBindingFlags>     binding_flags;
         bindings.reserve(desc.bindings.size());
-        for (const auto& b : desc.bindings)
+        binding_flags.reserve(desc.bindings.size());
+        bool any_bindless = false;
+        for (std::size_t i = 0; i < desc.bindings.size(); ++i)
         {
+            const auto& b = desc.bindings[i];
             bindings.push_back(
                 VkDescriptorSetLayoutBinding {
                     .binding = b.binding,
@@ -1249,11 +1253,35 @@ public:
                     .pImmutableSamplers = nullptr,
                 }
             );
+            // phase842-W8-BE-rt-bindless-texture-sampling: per-binding
+            // flag chain. Non-bindless bindings get 0; bindless ones get
+            // UPDATE_AFTER_BIND | PARTIALLY_BOUND. If the bindless
+            // binding is the LAST one in the set, also flag it with
+            // VARIABLE_DESCRIPTOR_COUNT so the descriptor set can be
+            // allocated with a smaller actual count when needed.
+            VkDescriptorBindingFlags flags = 0;
+            if (b.bindless)
+            {
+                any_bindless = true;
+                flags |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+                       | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+                if (i + 1 == desc.bindings.size())
+                    flags |= VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+            }
+            binding_flags.push_back(flags);
         }
+        const VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci {
+            .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .pNext         = nullptr,
+            .bindingCount  = static_cast<std::uint32_t>(binding_flags.size()),
+            .pBindingFlags = binding_flags.empty() ? nullptr : binding_flags.data(),
+        };
         const VkDescriptorSetLayoutCreateInfo ci {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
+            .pNext = any_bindless ? static_cast<const void*>(&flags_ci) : nullptr,
+            .flags = any_bindless
+                       ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT
+                       : 0u,
             .bindingCount = static_cast<std::uint32_t>(bindings.size()),
             .pBindings = bindings.empty() ? nullptr : bindings.data(),
         };
@@ -2010,7 +2038,16 @@ public:
                 // FREE_DESCRIPTOR_SET_BIT lets callers release individual sets via
                 // destroy_descriptor_set; A6 warned this can hurt ARM mobile drivers.
                 // We accept the cost in exchange for the simpler lifecycle in v1.
-                .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+                //
+                // phase842-W8-BE-rt-bindless-texture-sampling: add the
+                // UPDATE_AFTER_BIND_POOL flag so this shared pool can
+                // allocate descriptor sets whose layout was created
+                // with the UPDATE_AFTER_BIND_POOL_BIT layout flag (the
+                // bindless texture-array case). Non-bindless sets are
+                // unaffected; UPDATE_AFTER_BIND is opt-in per layout
+                // and per binding.
+                .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+                       | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
                 .maxSets = 1024U,
                 .poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
                 .pPoolSizes = sizes.data(),
