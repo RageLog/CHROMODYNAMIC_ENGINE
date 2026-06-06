@@ -520,27 +520,51 @@ void main() {
                   + ndc.x * pc.cam_right.w * pc.cam_right.xyz
                   - ndc.y * pc.cam_up.w    * pc.cam_up.xyz;
     vec3 dir_world = normalize(view_ray);
-    // Sky-plane intersection; clamp .y to avoid the horizon
-    // singularity at low pitches (clouds would diverge to infinity).
-    const float kSkyAltitude = 80.0;
-    float dy = max(dir_world.y, 0.08);
-    vec3 sky_pt = pc.cam_pos.xyz + dir_world * (kSkyAltitude / dy);
-    vec2 sky_uv = sky_pt.xz * 0.04;
+    // phase859-clouds-angular: switch from sky-plane intersection
+    // (which gave wildly different angular resolution at high vs
+    // low pitch — high-pitch clouds were coarse blobs, low-pitch
+    // clouds were tight wisps because the 1/dy projection stretched
+    // them differently) to a pure SPHERICAL/ANGULAR coordinate
+    // system. The longitude (atan2 of XZ) + latitude (Y, mapped
+    // through asin) feed the fBm directly, giving identical cloud
+    // resolution at every pitch. World position drops out of the
+    // coordinate entirely → no per-pixel position dependence on the
+    // camera origin. Drift is purely a time-driven sky animation.
+    float longi = atan(dir_world.x, dir_world.z);  // [-π, π]
+    float lat   = asin(clamp(dir_world.y, -1.0, 1.0)); // [-π/2, π/2]
+    vec2 sky_uv = vec2(longi * 2.5, lat * 4.0);
+    // phase859b-clouds-slower-layered: user-requested "bulutlar hizli
+    // akiyor daha yavas olmali ve daha katman katman gozukmeli"
+    // (clouds drift too fast; should be slower and more layered).
+    // Scale every time-coupled offset down ~5× and add a second
+    // "high cloud" layer drifting at a different rate / orientation
+    // so the visible cover looks like real clouds in multiple
+    // strata, not a single fBm field.
     float t = pc.cam_pos.w;
-    // Step 1: rough density to drive curl (time-only drift, no
-    // longer mixed with the screen-space domain — that mix was a
-    // second contributor to the rotation-flip).
-    vec2 q = vec2(cd_fbm4(sky_uv + vec2(0.0,  t * 0.05)),
-                  cd_fbm4(sky_uv + vec2(5.2,  t * 0.05 + 1.3)));
-    // Step 2: curl-skewed second warp.
-    vec2 r = vec2(cd_fbm4(sky_uv + 4.0 * q + vec2(1.7, 9.2) + t * 0.03),
-                  cd_fbm4(sky_uv + 4.0 * q + vec2(8.3, 2.8) + t * 0.03));
-    float density = cd_fbm4(sky_uv + 4.0 * r + vec2(t * 0.06, t * 0.022));
+    // ---- Low cloud layer ----
+    vec2 q = vec2(cd_fbm4(sky_uv + vec2(0.0,  t * 0.010)),
+                  cd_fbm4(sky_uv + vec2(5.2,  t * 0.010 + 1.3)));
+    vec2 r = vec2(cd_fbm4(sky_uv + 4.0 * q + vec2(1.7, 9.2) + t * 0.006),
+                  cd_fbm4(sky_uv + 4.0 * q + vec2(8.3, 2.8) + t * 0.006));
+    float density_lo = cd_fbm4(sky_uv + 4.0 * r + vec2(t * 0.012, t * 0.0045));
+    // ---- High cloud layer (cirrus-like, drifts faster but smaller
+    // amplitude — gives parallax + visible second stratum). Scale
+    // the sky_uv 0.55× so the high layer reads as a different size.
+    vec2 sky_uv_hi = sky_uv * 0.55 + vec2(31.7, 13.9);
+    vec2 r_hi = vec2(cd_fbm4(sky_uv_hi + vec2(t * 0.018, 0.0)),
+                     cd_fbm4(sky_uv_hi + vec2(0.0, t * 0.018)));
+    float density_hi = cd_fbm4(sky_uv_hi + 2.0 * r_hi);
+    // Layer composite: low layer dominates, high layer adds 35%.
+    float density = density_lo * 0.65 + density_hi * 0.45;
     float cov = clamp(pc.sun_col.w, 0.0, 1.0);
     // phase856a: smoothly fade clouds off as the view drops below
     // the horizon — looking-down rays should NEVER carry a cloud
     // overlay regardless of depth-gate (sky never visible there).
-    float horizon_fade = smoothstep(0.0, 0.25, dir_world.y);
+    // phase859: widen the fade band 0..0.25 → -0.05..0.40 so the
+    // sharp horizontal line a 14.5° transition produced (visible
+    // in the user's "looking up" screenshots) becomes a gentle
+    // 30° gradient instead.
+    float horizon_fade = smoothstep(-0.05, 0.40, dir_world.y);
     // W4-G: widen the smoothstep band so cloud edges fade smoothly
     // instead of stepping; combined with the 24x12 cell scale this
     // removes the pixelated-block look the user reported.
@@ -621,9 +645,17 @@ void main() {
     const float g2 = g * g;
     float phase = (1.0 - g2) / (4.0 * 3.14159265 *
                   pow(1.0 + g2 - 2.0 * g * cos_th, 1.5));
+    // phase859-fog-direction-stability: user-reported "bakisima gore
+    // gorseller fog seviye bulut rengleri vb gibi seyler degisiyor".
+    // The previous `clamp(cos_th * 0.8, 0, 1)` mix coupling made fog
+    // colour swing from cream (away from sun) to bright sun glow
+    // (toward sun) as the camera rotated, which read as the entire
+    // scene tint "flipping" by direction. Dial the coupling down to
+    // 0.25 so the inscatter sun-tint stays as a subtle directional
+    // accent on top of the stable horizon-lit fog base.
     vec3 fog_colour = mix(horizon_lit,
                           pc.sun_col.rgb * (phase * 6.0 + 0.5),
-                          clamp(cos_th * 0.8, 0.0, 1.0));
+                          clamp(cos_th * 0.25, 0.0, 1.0));
 
     if (vol_fog_on) {
       // Wronski integrated single-scatter — front-to-back march.
