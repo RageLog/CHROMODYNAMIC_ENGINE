@@ -258,7 +258,20 @@ float depth_ao(vec2 uv, float center_d) {
     dir /= dlen;
     float n_dot = max(dot(dir, N), 0.0);
     float falloff = 1.0 / (1.0 + dlen * 2.0);
-    occ += clamp((dz - bias) / 0.5, 0.0, 1.0) * n_dot * falloff;
+    // phase856b-ao-halo-fix: user reported "cisimlerin cevresinde
+    // siyah hale var". Root cause is the AO loop saturating its
+    // occlusion contribution (clamp((dz-bias)/0.5, 0.0, 1.0)) for
+    // any dz above ~0.5, so background pixels just behind a
+    // foreground silhouette accumulate full occlusion from the
+    // foreground depth sample → dark halo. Replace the saturating
+    // ramp with a BELL curve that peaks at small dz (real local
+    // ambient contact occlusion) and falls back off as dz grows
+    // (the silhouette is now too far in front to count as
+    // ambient-scale occluder).
+    float dz_rise = smoothstep(bias, bias + 0.05, dz);
+    float dz_fall = 1.0 - smoothstep(0.30, 0.80, dz);
+    float dz_w    = dz_rise * dz_fall;
+    occ += dz_w * n_dot * falloff;
     weight_sum += n_dot;
   }
   if (weight_sum < 1e-4) return 1.0;
