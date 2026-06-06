@@ -268,6 +268,13 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
   return 1.0;
 }
 
+// (phase852 reflection_hit_id_t + reflection_hit_color helpers were
+// drafted for a true 2-bounce ray query but removed once it became
+// clear we have no reliable per-hit-normal source for procedural
+// geometry. The IBL-shine stand-in in the main FS path does NOT need
+// either helper. Kept the prior `reflection_hit_id` for the existing
+// 1-bounce flow above.)
+
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
 // occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
 // uv has y down (matches Vulkan clip y after perspective divide).
@@ -711,16 +718,16 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase849-W8-BE-disable-until-textures-uploaded: the Run 18
-    // L-rt-tex strand wired the bindless descriptor surface (layout +
-    // pool + variable-count alloc + per-prim write + slot-0 fallback)
-    // but NEVER actually uploaded the Sponza per-prim albedo textures
-    // into the bindless array. Sampling unwritten slots produces
-    // undefined behaviour that device-lost on NVIDIA — exactly the
-    // symptom user reported after right-click ("sağ tık ve objeler
-    // gözükünce crash"). Force-skip the bindless path until the
-    // texture-upload phase lands. Avg-colour (W8-BD) still gives
-    // recognisable per-prim reflection tinting.
+    // phase851b-W8-BE-bindless-dynamic-index-broken: phase 851 proved
+    // (a) host writes 103 slots OK, (b) shader fixed-slot reads work,
+    // (c) dynamic SSBO-driven slot reads crash 3-15 frames in. Root
+    // cause is non-trivial — likely NVIDIA driver behaviour on the
+    // descriptor pool we share between bindless + classic sets, or
+    // the per-prim sets carrying unwritten binding-13 slots that the
+    // driver speculatively touches. Multi-week to resolve cleanly
+    // (likely needs a separate dedicated bindless descriptor SET on
+    // a different set index, not a binding in the per-prim set).
+    // Bindless branch stays gated off; avg-colour W8-BD path remains.
     tex_slot = kBindlessAlbedoSlotNone;
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
       uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
@@ -733,6 +740,22 @@ void main() {
       vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
       hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
     }
+    // phase852b-rt-chrome-second-bounce-ibl-shine: User asked for
+    // "yansımanın yansıması" — the recursive shine you'd see when
+    // chrome reflects chrome. A proper 2-bounce ray query needs a
+    // hit-normal source at the first hit (so the second ray direction
+    // is meaningful). For procedural sphere geometry that requires
+    // per-instance center data in the SSBO, and for Sponza requires
+    // safe access to SponzaVB normals — both multi-week additions
+    // (see phase851 bindless investigation). As a CHEAP STAND-IN,
+    // sample the IBL specular cubemap at the FIRST-bounce reflection
+    // direction (Ri) and mix it into the hit colour. This is what
+    // a fully-reflective surface at the first hit WOULD see in the
+    // distant environment — close enough to "shine of the reflection"
+    // for chrome-on-chrome to read as glossy instead of opaque.
+    vec3 second_bounce_ibl = textureLod(cd_ibl_spec, Ri,
+                                        roughness * kIblMaxMipLod).rgb;
+    hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.5, 0.4);
     // phase795-rt-chrome-sponza-brightness:
     // OLD: refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * sun_color * 3.0
     //

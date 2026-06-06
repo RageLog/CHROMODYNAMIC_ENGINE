@@ -2036,14 +2036,26 @@ public:
             // v1 bindful: one persistent pool with generous per-type capacities.
             // A2 A6: per-frame ring + auto-grow is the S3.5 evolution; v1 is
             // sized to cover a "typical" small engine scene without overflow.
+            // phase851-W8-BE-pool-bump: COMBINED_IMAGE_SAMPLER bumped from
+            // 1024 to 65536 because the bindless texture-array binding
+            // (binding 13 on the prim material layout) allocates a full
+            // 256-slot array PER descriptor set. With ~103 Sponza per-
+            // prim sets, that alone needs 103 * 256 = 26368 descriptors
+            // of this type. The previous 1024 ceiling was silently
+            // exceeding pool capacity for sets allocated after the
+            // first ~4, manifesting as device-lost a few frames later
+            // when the shader read garbage descriptors. UPDATE_AFTER_BIND
+            // pools allocate eagerly per spec, so the pool size IS the
+            // hard ceiling. Other sizes bumped proportionally for
+            // headroom.
             const std::array<VkDescriptorPoolSize, 7> sizes {
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         256U  },
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         256U  },
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          1024U },
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          256U  },
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024U },
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER,                128U  },
-                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       32U   },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         2048U  },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         2048U  },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          4096U  },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          1024U  },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 65536U },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER,                256U   },
+                VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,       128U   },
             };
             const VkDescriptorPoolCreateInfo pci {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -2061,7 +2073,7 @@ public:
                 // and per binding.
                 .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
                        | VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
-                .maxSets = 1024U,
+                .maxSets = 4096U,
                 .poolSizeCount = static_cast<std::uint32_t>(sizes.size()),
                 .pPoolSizes = sizes.data(),
             };

@@ -263,6 +263,8 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
   return 1.0;
 }
 
+// (phase852 helpers removed; see prim.frag.glsl.)
+
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
 // occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
 // uv has y down (matches Vulkan clip y after perspective divide).
@@ -641,8 +643,10 @@ void main() {
   int   hit_geom   = -1;
   int   hit_prim   = -1;
   vec2  hit_bary   = vec2(0.0);
-  float scene_hit  = reflection_hit_id(v_world_pos, safe_N, Ri, 80.0,
-                                       hit_inst, hit_geom, hit_prim, hit_bary);
+  float scene_hit  = 0.0;
+  if (metallic > 0.1)
+    scene_hit = reflection_hit_id(v_world_pos, safe_N, Ri, 80.0,
+                                  hit_inst, hit_geom, hit_prim, hit_bary);
   vec3  brdf_term  = F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
   vec3  ibl_spec_blended = ibl_spec_p;
   int hit_slot = -1;
@@ -663,10 +667,7 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase849-W8-BE-disable-until-textures-uploaded: see prim.frag.glsl
-    // for the long form of this comment. Sampling unwritten bindless
-    // slots device-losses the renderer; the texture-upload step in the
-    // W8-BE wiring is still missing, so force-skip the bindless path.
+    // phase851b: bindless dynamic-index broken (see prim.frag.glsl).
     tex_slot = kBindlessAlbedoSlotNone;
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
       uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
@@ -679,6 +680,10 @@ void main() {
       vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
       hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
     }
+    // phase852b-rt-chrome-second-bounce-ibl-shine (see prim.frag.glsl)
+    vec3 second_bounce_ibl = textureLod(cd_ibl_spec, Ri,
+                                        roughness * kIblMaxMipLod).rgb;
+    hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.5, 0.4);
     // phase830-rt-chrome-sponza-visible-mirror (auto-synced from prim.frag.glsl):
     // For mirror reflections the BRDF integral at the reflection direction
     // is unity — multiplying by brdf_term was attenuating the chrome
