@@ -38,23 +38,41 @@ struct HelloEngineFx
     // are visible. User can still slider it up via the FX UI for
     // night/dim scenes that need a boost. Proper auto-exposure is the
     // architectural fix; queued.
+    // phase857-fx-default-polish: user-requested "senin actigin
+    // ayarlari default yapabilir miyiz" — bump first-boot FX so the
+    // engine looks polished without the user having to enable
+    // anything in the palette. Each new value is justified inline so
+    // a future tuning pass can roll back any single one without
+    // guessing what was intentional.
     float exposure { 1.0F };          // pre-tonemap exposure boost (was 3.0)
     float saturation_boost { 1.20F }; // post-tonemap saturation pull-away (was 1.50)
-    // phase450-exp: bloom_post 0.04 -> 0.02 (matches the bloom intensity
-    // drop from phase 449; without exposure 3x amplifying the bloom add,
-    // 0.04 was over-tuned).
-    float bloom_post { 0.02F };       // bloom mip0 contribution mixed into HDR (was 0.04)
+    // phase857: bumped 0.02 → 0.035 — small bump so bright highlights
+    // (chrome reflections, sun-lit Sponza wall) read as glowing, not
+    // flat. Still far below the 0.04 over-tuned regime.
+    float bloom_post { 0.035F };      // bloom mip0 contribution mixed into HDR
     float ao_strength { 0.55F };      // composite AO crease darkening
     float dof_strength { 0.0F };      // wired to composite (phase 207)
-    // W4-E: bumped default 0.35 -> 0.75 so light shafts are obviously visible
-    // on first run. User reported they were hard to read at the previous
-    // default.
     float shafts_strength { 0.75F };  // light shafts radial intensity
     float ssr_strength { 0.5F };      // SSR reflection contribution (default on)
-    float motion_blur { 0.0F };       // composite camera-velocity (phase 215)
-    float taa_amount { 0.0F };        // composite TAA ping-pong (phase 216-217)
-    float clouds_coverage { 0.0F };   // queued — needs 3D Worley/Perlin noise tex
-    float fog_density { 0.0F };
+    // phase857: motion_blur 0.0 → 0.20 — subtle per-pixel velocity
+    // smear gives cinematic continuity to free-flight. Combined with
+    // phase 855 TAA motion decay, the blur stops at the silhouette
+    // instead of ghosting the whole moving object.
+    float motion_blur { 0.20F };      // composite camera-velocity (phase 215)
+    // phase857: taa_amount 0.0 → 0.85 — TAA on by default because
+    // phase 855 added velocity-based history decay, so the camera-
+    // movement blur user reported is no longer an issue and the
+    // anti-aliasing benefit is significant on static frames.
+    float taa_amount { 0.85F };       // composite TAA ping-pong (phase 216-217)
+    // phase857: clouds_coverage 0.0 → 0.45 — clouds visible by
+    // default; phase 853-856a fixes (quintic Hermite + world-anchor
+    // sky projection) make the cloud overlay actually look like
+    // clouds, so leaving it off on first boot wastes the work.
+    float clouds_coverage { 0.45F };  // sky overlay (phase 853 fBm)
+    // phase857: fog_density 0.0 → 0.08 — very gentle exp fog adds
+    // atmospheric depth to long-distance Sponza shots without
+    // washing the scene out.
+    float fog_density { 0.08F };
     // phase512-volumetric-fog-wire: when true, composite uses the
     // Wronski 2014 integrated single-scatter path (16 quadratic-warped
     // slices, Beer-Lambert transmittance, HG phase) instead of the
@@ -62,10 +80,21 @@ struct HelloEngineFx
     // density; main.cpp signs cp.atmo[0] negative when this is set
     // to pass the mode flag without expanding the 256-B push layout.
     bool volumetric_fog_on { false };
-    float aerial_perspective { 0.0F };
-    float chromab_strength { 0.0F };  // 0 = off; 0.5 = subtle radial RGB split
-    float film_grain { 0.0F };        // 0 = off; 0.5 = visible filmic noise
-    float vignette_strength { 0.25F };// soft default — readable cinematic edge
+    // phase857: aerial_perspective 0.0 → 0.20 — distant Sponza geom
+    // picks up a slight blue tint, reads as "scene has air in it".
+    float aerial_perspective { 0.20F };
+    // phase857: chromab_strength 0.0 → 0.12 — barely-perceptible
+    // radial RGB split adds lens character without distracting from
+    // edges. The pc.lens.x * (4 + 28*r²) formula keeps the floor at
+    // 4 px so the effect shows on object silhouettes near centre too.
+    float chromab_strength { 0.12F }; // 0 = off; 0.5 = visible split
+    // phase857: film_grain 0.0 → 0.08 — adds a low-frequency filmic
+    // noise that hides banding in dark gradients (the gradient on the
+    // Sponza sandstone walls used to show step banding at near-black).
+    float film_grain { 0.08F };       // 0 = off; 0.5 = visible noise
+    // phase857: vignette 0.25 → 0.32 — slightly more cinematic edge
+    // without crushing the corners of the frame.
+    float vignette_strength { 0.32F };// soft default — cinematic edge
 
     // ---- R-Showcase legacy / queued knobs ----
     float gtao_strength { 0.0F };     // legacy inline GTAO (deprecated)
