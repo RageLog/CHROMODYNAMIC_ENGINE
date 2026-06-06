@@ -110,7 +110,21 @@ prim_recreate(cd::rhi::IDevice&         device,
             .offset = 0,
             .size   = static_cast<std::uint32_t>(sizeof(cd::hello_engine::PrimPush)) }
     };
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 11> kBindings {
+    // phase842b-W8-BE-rt-bindless-texture-sampling: three new bindings
+    // for the ray-side texture-sampling path:
+    //   11 — Sponza vertex buffer (PrimitiveVertex array) as storage
+    //        buffer. Read by the chrome reflection branch to recover
+    //        per-vertex UV at a ray hit.
+    //   12 — Sponza index buffer (uint32) as storage buffer. Looks up
+    //        the 3 vertex indices of the hit triangle.
+    //   13 — bindless sampler2D array (kBindlessSampledImage). Last
+    //        binding in the set; VARIABLE_DESCRIPTOR_COUNT lights up.
+    //        Per-prim albedo textures get written to slots by the
+    //        host-side wiring in phase843.
+    //
+    // Non-Sponza prims keep the W8-BD avg-colour path; they never
+    // sample bindings 11-13.
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 14> kBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 1,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 2,  .type = cd::rhi::DescriptorType::kAccelerationStructure, .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
@@ -121,7 +135,10 @@ prim_recreate(cd::rhi::IDevice&         device,
         cd::rhi::DescriptorSetLayoutBinding { .binding = 7,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 8,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 9,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 10, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment }
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 10, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 11, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 12, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 13, .type = cd::rhi::DescriptorType::kBindlessSampledImage,  .count = 256, .stages = cd::rhi::ShaderStage::kFragment, .bindless = true },
     };
 
     cd::material::MaterialDesc md {};
