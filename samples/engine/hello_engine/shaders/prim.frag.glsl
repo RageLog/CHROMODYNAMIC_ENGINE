@@ -612,26 +612,9 @@ void main() {
   float ibl_spec_metallic_gate = diel_no_spec ? 0.0
                                 : mix(0.12, 1.0, clamp(metallic, 0.0, 1.0));
   vec3  ibl_spec_p = raw_ibl_spec * ibl_spec_metallic_gate;
-
-  // phase794-rt-chrome-sponza-interior-tint:
-  // The IBL cubemap is baked from the outdoor Khronos default sky — when
-  // chrome rays MISS Sponza geometry (or scene_hit<0.5 below), the chrome
-  // sphere falls back to ibl_spec_p which renders as bright outdoor sky.
-  // Visually the sphere looks like it's NOT inside Sponza, in a different
-  // universe (user-reported bug 2026-06-06).
-  //
-  // Pre-tint the IBL specular for highly-metallic surfaces with a warm
-  // sandstone factor so the chrome's IBL fallback already looks like it's
-  // bouncing Sponza interior light. Effect ramps with metallic (no effect
-  // on dielectric), and is mild on dielectric-leaning materials.
-  // For pure chrome (metallic ~= 1.0): IBL is multiplied by sandstone tint,
-  // matching the warm interior context. For dielectric (metallic = 0): no
-  // change, keeps original behaviour.
-  const vec3  kSponzaInteriorTint = vec3(0.92, 0.78, 0.62);  // warm sandstone, lifted
-  const float kInteriorTintGate   = 0.65;                    // 65% tint strength at full metallic
-  float metallic_clamped = clamp(metallic, 0.0, 1.0);
-  vec3  interior_mix     = mix(vec3(1.0), kSponzaInteriorTint, kInteriorTintGate * metallic_clamped);
-  ibl_spec_p *= interior_mix;
+  // phase794 IBL interior tint reverted in phase795 — the brightness fix
+  // on the RT branch below (refl_color * 5x sun_color) now drives the
+  // visible result for chrome, no IBL pre-tint needed.
 
   float ibl_gate_factor = is_pbr_w ? 1.0 : 0.6;
   float ibl_gate = clamp(pc.sun_dir.w * ibl_gate_factor, 0.0, 1.0);
@@ -657,14 +640,28 @@ void main() {
   }
   if (scene_hit > 0.5 && hit_slot >= 0) {
     vec3 hit_alb   = cd_instance_mats.data[hit_slot].albedo.rgb;
-    vec3 pseudo_N  = normalize(-Ri);
-    vec3 sun_L     = normalize(-pc.sun_dir.xyz);
-    float NoL_hit  = max(dot(pseudo_N, sun_L), 0.0);
-    // Scale the RT reflection to match the IBL cubemap energy range.
-    // The IBL cubemap has sun radiance baked in at HDR values (~1-10),
-    // NOT in raw lux (100000). We use a moderate HDR factor so the
-    // RT reflection is visible against the IBL without being blown out.
-    vec3 refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * pc.sun_color.rgb * 3.0;
+    // phase795-rt-chrome-sponza-brightness:
+    // OLD: refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * sun_color * 3.0
+    //
+    // The OLD math used a pseudo_N = -Ri "fake normal" dotted with the
+    // sun direction. For typical chrome reflection rays this dot ends up
+    // close to zero (or even negative — clamped to zero), so refl_color
+    // ended up at the 0.3 floor: ~0.9 * hit_alb * sun_color. After the
+    // brdf_term * blend the surviving signal was so dim that chrome
+    // mostly fell back to the IBL term, painting the spheres in the
+    // outdoor sky colour even when the RT ray DID land on Sponza
+    // geometry. The user-reported bug ("spheres look like they're in a
+    // different universe than Sponza") was driven by this energy loss
+    // — not by an actual RT miss.
+    //
+    // NEW: emit hit_alb at a flat HDR-bright level (5x sun_color). No
+    // pseudo-normal cosine term. The intent is "this surface returns
+    // its full diffuse albedo at the IBL energy range" — appropriate
+    // for the indirect GI-ish role this branch is playing, and matches
+    // how the cubemap encodes interior brightness. Saturated per-prim
+    // colours (red curtain, green curtain, sandstone wall) now actually
+    // make it into the mirror image.
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * 5.0;
     // Blend between RT scene reflection and IBL sky cubemap.
     // Use roughness^2 so SMOOTH metallic surfaces get nearly 100% scene
     // reflection (no sky bleed through Sponza walls).  Only rough

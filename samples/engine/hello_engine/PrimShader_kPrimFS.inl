@@ -589,16 +589,6 @@ void main() {
   vec3  Fms_p   = (Favg_p * Ess_p) / (vec3(1.0) - Favg_p * Ems_p);
   vec3  ibl_spec_p = spec_e * (F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p);
 
-  // phase794-rt-chrome-sponza-interior-tint (auto-synced from prim.frag.glsl):
-  // Multiply IBL specular by warm sandstone tint for metallic surfaces so
-  // chrome rays that miss Sponza fall back to a warm interior look instead
-  // of bright outdoor sky. Effect ramps with metallic, no-op on dielectric.
-  const vec3  kSponzaInteriorTint = vec3(0.92, 0.78, 0.62);
-  const float kInteriorTintGate   = 0.65;
-  float metallic_clamped = clamp(metallic, 0.0, 1.0);
-  vec3  interior_mix     = mix(vec3(1.0), kSponzaInteriorTint, kInteriorTintGate * metallic_clamped);
-  ibl_spec_p *= interior_mix;
-
   float ibl_gate_factor = is_pbr_w ? 1.0 : 0.6;
   float ibl_gate = clamp(pc.sun_dir.w * ibl_gate_factor, 0.0, 1.0);
 
@@ -618,11 +608,17 @@ void main() {
   }
   if (scene_hit > 0.5 && hit_slot >= 0) {
     vec3 hit_alb   = cd_instance_mats.data[hit_slot].albedo.rgb;
-    vec3 pseudo_N  = normalize(-Ri);
-    vec3 sun_L     = normalize(-pc.sun_dir.xyz);
-    float NoL_hit  = max(dot(pseudo_N, sun_L), 0.0) * pc.sun_dir.w;
-    vec3 refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * pc.sun_color.rgb;
-    float blend_t  = sqrt(clamp(roughness, 0.0, 1.0));
+    // phase795-rt-chrome-sponza-brightness (auto-synced from prim.frag.glsl):
+    // Emit hit_alb at HDR-bright (5x sun_color), no pseudo-normal cosine
+    // term. The old NoL_hit math collapsed to ~0.9*hit_alb on most rays
+    // and lost the per-prim Sponza colour signal in the final blend.
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * 5.0;
+    // Match the on-disk .glsl roughness^2 blend so smooth chrome (~0.05
+    // roughness) reaches ~99.75% scene reflection. Old sqrt-based blend
+    // washed chrome toward IBL at far too low roughness.
+    float rough_blend = clamp(roughness * roughness, 0.0, 1.0);
+    float metal_gate  = clamp(metallic, 0.0, 1.0);
+    float blend_t     = mix(1.0, rough_blend, metal_gate);
     ibl_spec_blended = mix(refl_color * brdf_term, ibl_spec_p, blend_t);
   }
 
