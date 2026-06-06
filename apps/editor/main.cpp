@@ -295,6 +295,10 @@
 #include <cd/editor/panel_input_recorder/InputRecorderPanel.hpp>
 #include <cd/editor/panel_dialog_tree_editor/DialogTreeEditor.hpp>
 #include <cd/editor/panel_cutscene_player/CutscenePlayerPanel.hpp>
+// phase785 / E5 — input recorder editor binding: Recorder + Replayer live
+// instances that back the InputRecorderPanel in apps/editor. The panel holds
+// non-owning pointers; the real objects live here in the compilation unit.
+#include <cd/game/input_recorder/InputRecorder.hpp>
 // phase679 / M13 W3 — three brand-new authoring panels wired into the dock:
 //   * vehicle_editor    -- tab-merged with material_editor on LEFT-lower
 //   * pathfinding_viz   -- standalone split beneath scene_tree on LEFT-top
@@ -429,6 +433,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>   // _dupenv_s (MSVC) / std::getenv (POSIX) in input_recording_save_path()
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -939,6 +944,12 @@ cd::editor::panel::light_editor::LightEditor                  g_light_editor_pan
 cd::editor::panel::input_recorder::InputRecorderPanel         g_input_recorder_panel;
 cd::editor::panel::dialog_tree_editor::DialogTreeEditor       g_dialog_tree_editor_panel;
 cd::editor::panel::cutscene_player::CutscenePlayerPanel       g_cutscene_player_panel;
+
+// phase785 / E5 — live Recorder + Replayer that back g_input_recorder_panel.
+// The panel holds non-owning pointers; these file-scope instances own the
+// data. set_recorder / set_replayer are called once at boot (section 5e).
+cd::game::input_recorder::Recorder                            g_input_recorder;
+cd::game::input_recorder::Replayer                            g_input_replayer;
 
 // phase679 / M13 W3 — three new panel instances wired into the dock.
 // File-scope storage so the ContentDrawer lambdas can capture them by
@@ -1494,6 +1505,58 @@ void draw_toasts(ur::DrawBatcher& batcher,
         out.push_back(kHex[u & 0x0FU]);
     }
     return out;
+}
+
+// phase785 / E5 — canonical path for the last input recording binary.
+// Mirrors the pattern used by default_cdproj_path() in cd::editor::cdproj:
+//   Windows : %APPDATA%\cd_editor\last_input_recording.bin
+//   macOS   : ~/Library/Application Support/cd_editor/last_input_recording.bin
+//   Linux   : ~/.local/share/cd_editor/last_input_recording.bin
+//   Fallback: <temp>/cd_editor/last_input_recording.bin
+//
+// Note: uses the same _dupenv_s / getenv pattern as cd::editor::cdproj
+// to avoid the MSVC _CRT_INSECURE_DEPRECATE(getenv) warning under /W4 -Werror.
+[[nodiscard]] std::filesystem::path input_recording_save_path()
+{
+    namespace fs = std::filesystem;
+
+    // Platform-safe env-var reader: returns nullopt if the variable is absent
+    // or empty.  On MSVC _dupenv_s is the non-deprecated alternative to
+    // getenv; on all other platforms we use getenv directly (no deprecation).
+    const auto read_env = [](const char* name) -> std::optional<std::string> {
+#if defined(_WIN32)
+        char*       buf  { nullptr };
+        std::size_t size { 0U };
+        if (_dupenv_s(&buf, &size, name) != 0 || buf == nullptr)
+            return std::nullopt;
+        std::string val(buf);
+        free(buf);  // _dupenv_s caller owns the buffer
+        if (val.empty()) { return std::nullopt; }
+        return val;
+#else
+        const char* v = std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
+        if (v && *v != '\0') { return std::string(v); }
+        return std::nullopt;
+#endif
+    };
+
+#if defined(_WIN32)
+    if (auto base = read_env("APPDATA"))
+        return fs::path(*base) / "cd_editor" / "last_input_recording.bin";
+    if (auto base = read_env("LOCALAPPDATA"))
+        return fs::path(*base) / "cd_editor" / "last_input_recording.bin";
+    if (auto up = read_env("USERPROFILE"))
+        return fs::path(*up) / "AppData" / "Roaming" / "cd_editor" / "last_input_recording.bin";
+#elif defined(__APPLE__)
+    if (auto home = read_env("HOME"))
+        return fs::path(*home) / "Library" / "Application Support" / "cd_editor" / "last_input_recording.bin";
+#else
+    if (auto xdg = read_env("XDG_DATA_HOME"))
+        return fs::path(*xdg) / "cd_editor" / "last_input_recording.bin";
+    if (auto home = read_env("HOME"))
+        return fs::path(*home) / ".local" / "share" / "cd_editor" / "last_input_recording.bin";
+#endif
+    return fs::temp_directory_path() / "cd_editor" / "last_input_recording.bin";
 }
 
 [[nodiscard]] std::vector<std::byte> dock_layout_from_hex(std::string_view hex)
@@ -3374,6 +3437,36 @@ int main(int argc, char** argv)
                 cd::editor::toast::ToastQueue::kMaxToasts);
     std::fflush(stdout);
 
+    // -- 5e. phase785 / E5 — input recorder + replayer boot wiring ------------
+    //
+    // Wire the live Recorder and Replayer into the InputRecorderPanel that
+    // already sits in the dock (input_recorder tile, BOTTOM strip far-right).
+    //
+    // The two file-scope instances (g_input_recorder / g_input_replayer) own
+    // the recording state; the panel holds non-owning raw pointers per the
+    // InputRecorderPanel lifetime contract.
+    //
+    // Per-frame loop contract (see the event loop below):
+    //   * RECORD   — every OSEvent pushed into `events` is translated to an
+    //                InputEvent and forwarded to g_input_recorder.record()
+    //                while is_recording() is true.
+    //   * STOP     — when is_recording() transitions false → the recording is
+    //                auto-saved to ~/.cd_editor/last_input_recording.bin.
+    //   * REPLAY   — g_input_replayer.next_event(elapsed_ms) is called each
+    //                frame to drain due events; the dispatcher logs them so
+    //                future code can route replayed events into the input
+    //                backend without any apps/editor change.
+    //
+    // MOMENT: a QA tester clicks Record, plays for 30 s, clicks Stop — the
+    // binary drops a .bin on disk they can share with a dev to reproduce a
+    // flaky interaction frame-accurately (HL2-style demo replay).
+    g_input_recorder_panel.set_recorder(&g_input_recorder);
+    g_input_recorder_panel.set_replayer(&g_input_replayer);
+    std::printf("editor: input_recorder wired (recorder @ %p, replayer @ %p).\n",
+                static_cast<const void*>(&g_input_recorder),
+                static_cast<const void*>(&g_input_replayer));
+    std::fflush(stdout);
+
     // -- 5b. Overlay instances (phase598 / M6 W3; phase631 / M9 W1A) --------
     //
     // CPU-marker bar chart   -> floating top-right (~300x120 px).
@@ -3884,8 +3977,15 @@ int main(int argc, char** argv)
             .count());
     };
 
-    bool          needs_rebuild { false };
-    std::uint32_t frame_idx     { 0U };
+    bool          needs_rebuild        { false };
+    std::uint32_t frame_idx            { 0U };
+    // phase785 / E5 — input recorder state tracking.
+    // was_recording: carry-forward of is_recording() from the previous frame so
+    // we detect the exact frame the user clicks Stop and trigger the auto-save.
+    // replay_elapsed_ms: monotonic replay cursor incremented per frame while
+    // the replayer is active, used to gate next_event() delivery.
+    bool   was_recording      { false };
+    double replay_elapsed_ms  { 0.0 };
     while (true)
     {
         std::uint32_t fb_w { 1280U };
@@ -3900,6 +4000,61 @@ int main(int argc, char** argv)
             for (const auto& e : events)
             {
                 apply_event(pointer, e);
+
+                // phase785 / E5 — feed live input events into the Recorder.
+                // Translate OSEvent to InputEvent when a recording is active.
+                // kResize / kClose / kFocus* / kTextChar are window-management or
+                // text-input signals; we do not record them (no user-input payload).
+                if (g_input_recorder.is_recording())
+                {
+                    using namespace cd::game::input_recorder;
+                    using K = platform::OSEventKind;
+                    InputEvent ie {};
+                    bool       capture { true };
+
+                    // Wall-clock ms: monotonically increasing timestamp recorded
+                    // with each event so the Replayer can gate delivery exactly.
+                    using fpdur = std::chrono::duration<double, std::milli>;
+                    ie.timestamp_ms = std::chrono::duration_cast<fpdur>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+                    switch (e.kind)
+                    {
+                        case K::kKeyDown:
+                            ie.kind = InputEventKind::kKeyDown;
+                            ie.code = static_cast<std::uint32_t>(e.key);
+                            break;
+                        case K::kKeyUp:
+                            ie.kind = InputEventKind::kKeyUp;
+                            ie.code = static_cast<std::uint32_t>(e.key);
+                            break;
+                        case K::kMouseButtonDown:
+                            ie.kind       = InputEventKind::kMouseDown;
+                            ie.code       = static_cast<std::uint32_t>(e.mouse_button);
+                            ie.payload[0] = e.mouse_x;
+                            ie.payload[1] = e.mouse_y;
+                            break;
+                        case K::kMouseButtonUp:
+                            ie.kind       = InputEventKind::kMouseUp;
+                            ie.code       = static_cast<std::uint32_t>(e.mouse_button);
+                            ie.payload[0] = e.mouse_x;
+                            ie.payload[1] = e.mouse_y;
+                            break;
+                        case K::kMouseMove:
+                            // OSEvent carries absolute cursor position in mouse_x/y.
+                            // Store as payload[0]/[1]; a replay consumer interprets
+                            // these as absolute coordinates (matching the capture-side
+                            // coordinate system).
+                            ie.kind       = InputEventKind::kMouseMove;
+                            ie.payload[0] = e.mouse_x;
+                            ie.payload[1] = e.mouse_y;
+                            break;
+                        default:
+                            capture = false;
+                            break;
+                    }
+                    if (capture) { g_input_recorder.record(ie); }
+                }
 
                 // Track Ctrl modifier state.
                 if (e.kind == platform::OSEventKind::kKeyDown &&
@@ -4006,6 +4161,82 @@ int main(int argc, char** argv)
         {
             if (window) { window->request_close(); }
             if (!window) { break; }
+        }
+
+        // -- phase785 / E5 — input recorder stop-detection + auto-save ----------
+        //
+        // Detect the Recording → Idle transition (was_recording true, now false)
+        // and auto-save the captured events to disk in the per-user cd_editor
+        // directory so the file persists across editor restarts.
+        //
+        // The save is best-effort: failure is logged but does NOT change the
+        // exit code or stop the editor (matches .cdproj auto-save policy).
+        {
+            const bool now_recording = g_input_recorder.is_recording();
+            if (was_recording && !now_recording)
+            {
+                const std::filesystem::path save_path = input_recording_save_path();
+                // Ensure parent directory exists (best-effort; ignore error).
+                std::error_code ec;
+                std::filesystem::create_directories(save_path.parent_path(), ec);
+
+                if (g_input_recorder.save_to_file(save_path))
+                {
+                    std::printf("editor: input_recording saved %zu events -> %s\n",
+                                g_input_recorder.event_count(),
+                                save_path.string().c_str());
+                }
+                else
+                {
+                    std::fprintf(stderr,
+                                 "editor: WARNING — input_recording save FAILED -> %s\n",
+                                 save_path.string().c_str());
+                }
+                std::fflush(stdout);
+            }
+            was_recording = now_recording;
+        }
+
+        // -- phase785 / E5 — replayer per-frame tick ----------------------------
+        //
+        // Advance the replayer cursor by the frame's wall-clock delta and drain
+        // all events that are due.  replay_elapsed_ms is reset to 0 when the
+        // replayer finishes (is_finished() true) so a future load + reset pair
+        // restarts playback from t=0 cleanly.
+        //
+        // The dispatcher loop logs each replayed event at a single summary line
+        // per batch.  Production wire-up: replace the printf with a call into
+        // the editor's input backend once the input routing layer exists.
+        if (!g_input_replayer.is_finished())
+        {
+            // Accumulate frame wall-clock delta into the replay cursor.
+            using fpdur = std::chrono::duration<double, std::milli>;
+            const auto now_tp    = std::chrono::steady_clock::now();
+            const double frame_ms = std::chrono::duration_cast<fpdur>(
+                now_tp - prev_tp).count();
+            replay_elapsed_ms += frame_ms;
+
+            std::size_t dispatched { 0U };
+            while (true)
+            {
+                const auto ev = g_input_replayer.next_event(replay_elapsed_ms);
+                if (!ev.has_value()) { break; }
+                ++dispatched;
+                // Hook point: route ev->kind / ev->code / ev->payload into the
+                // editor's input backend here.  Today we log at trace level
+                // (printf suppressed to avoid log spam; uncomment to debug).
+                // std::printf("editor: replay ev kind=%u code=%u\n",
+                //             static_cast<unsigned>(ev->kind), ev->code);
+            }
+            (void)dispatched;
+
+            if (g_input_replayer.is_finished())
+            {
+                replay_elapsed_ms = 0.0;
+                std::printf("editor: input_replay finished (%zu events).\n",
+                            g_input_replayer.event_count());
+                std::fflush(stdout);
+            }
         }
 
         // -- Dockspace layout + state tick --

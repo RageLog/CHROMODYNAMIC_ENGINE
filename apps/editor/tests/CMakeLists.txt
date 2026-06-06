@@ -26,3 +26,25 @@ if(TARGET cd_test_splash_audio_cue)
     FOLDER "tests/splash_audio_cue"
   )
 endif()
+
+# phase785 / E5 — input recorder editor binding smoke test.
+# Verifies: Recorder start/stop, save_to_file + Replayer load_from_file round-
+# trip, panel draw with live bindings, OSEvent→InputEvent translation logic,
+# and the was_recording stop-detection state machine.
+# Only depends on cd::game_input_recorder + cd::editor_panel_input_recorder +
+# cd::ui_renderer + cd::ui_widgets + cd::core; independent of Vulkan gate.
+cd_add_test(input_recorder_editor_binding
+  SOURCES test_input_recorder_editor_binding.cpp
+  DEPS
+    cd::game_input_recorder
+    cd::editor_panel_input_recorder
+    cd::ui_renderer
+    cd::ui_widgets
+    cd::core
+)
+
+if(TARGET cd_test_input_recorder_editor_binding)
+  set_target_properties(cd_test_input_recorder_editor_binding PROPERTIES
+    FOLDER "tests/input_recorder_editor_binding"
+  )
+endif()
