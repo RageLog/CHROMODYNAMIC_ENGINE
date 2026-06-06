@@ -66,49 +66,6 @@ if(_CD_UI_FONT_HAS_FT)
   endif()
 endif()
 
-# --- Tier 1.5: HarfBuzz FetchContent (CMake) when vcpkg HB absent ---------
-# vcpkg harfbuzz uses Meson which may hang on some CI/dev environments.
-# This fallback uses HarfBuzz's community-maintained CMakeLists.txt (CMake 3.14+)
-# and is activated when:
-#   - FreeType WAS resolved (tier 1 or 2 — we need FT for shaping) AND
-#   - HarfBuzz was NOT resolved via vcpkg/find_package AND
-#   - CD_UI_FONT_ENABLE_FETCHCONTENT_HB is ON (opt-in; OFF by default so
-#     clean CI without network access stays fast).
-# We build only the core harfbuzz target (no Graphite2, no GLib, no ICU,
-# no FreeType integration inside HB — HarfBuzz links our Freetype::Freetype
-# at the cd_ui_font level instead to avoid circular dep).
-option(CD_UI_FONT_ENABLE_FETCHCONTENT_HB
-       "Allow cd::ui_font to FetchContent harfbuzz@12.3.1 via CMake when find_package fails. Off by default; enable when vcpkg meson-based build hangs."
-       OFF)
-
-if(_CD_UI_FONT_HAS_FT AND NOT _CD_UI_FONT_HAS_HB AND CD_UI_FONT_ENABLE_FETCHCONTENT_HB)
-  message(STATUS "[cd] ui_font: HarfBuzz via FetchContent CMake (12.3.1)")
-  set(HB_HAVE_FREETYPE   OFF CACHE BOOL "" FORCE)  # no FT inside HB; we link separately
-  set(HB_HAVE_GLIB       OFF CACHE BOOL "" FORCE)
-  set(HB_HAVE_GOBJECT    OFF CACHE BOOL "" FORCE)
-  set(HB_HAVE_ICU        OFF CACHE BOOL "" FORCE)
-  set(HB_HAVE_GRAPHITE2  OFF CACHE BOOL "" FORCE)
-  set(HB_HAVE_DIRECTWRITE OFF CACHE BOOL "" FORCE)
-  set(HB_HAVE_CAIRO      OFF CACHE BOOL "" FORCE)
-  set(HB_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
-  set(HB_BUILD_SUBSET    OFF CACHE BOOL "" FORCE)
-  FetchContent_Declare(
-    harfbuzz
-    GIT_REPOSITORY https://github.com/harfbuzz/harfbuzz.git
-    GIT_TAG        12.3.1
-    GIT_SHALLOW    TRUE
-  )
-  FetchContent_MakeAvailable(harfbuzz)
-  # HarfBuzz CMake exports 'harfbuzz' target (no namespace in CMakeLists.txt)
-  if(TARGET harfbuzz)
-    set(_CD_UI_FONT_HAS_HB 1)
-    list(APPEND _CD_UI_FONT_HB_TARGETS harfbuzz)
-    if(NOT TARGET harfbuzz::harfbuzz)
-      add_library(harfbuzz::harfbuzz ALIAS harfbuzz)
-    endif()
-  endif()
-endif()
-
 # --- Tier 2: FetchContent fallback ----------------------------------------
 if(NOT _CD_UI_FONT_HAS_FT AND CD_UI_FONT_ENABLE_FETCHCONTENT_FT)
   message(STATUS "[cd] ui_font: FreeType via FetchContent (VER-2-13-3)")
