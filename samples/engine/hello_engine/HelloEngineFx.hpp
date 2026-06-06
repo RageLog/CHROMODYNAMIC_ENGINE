@@ -69,10 +69,12 @@ struct HelloEngineFx
     // sky projection) make the cloud overlay actually look like
     // clouds, so leaving it off on first boot wastes the work.
     float clouds_coverage { 0.45F };  // sky overlay (phase 853 fBm)
-    // phase857: fog_density 0.0 → 0.08 — very gentle exp fog adds
-    // atmospheric depth to long-distance Sponza shots without
-    // washing the scene out.
-    float fog_density { 0.08F };
+    // phase857: fog_density 0.0 → 0.08 — gentle exp fog. phase858b
+    // dialed down to 0.03 after the nave fixture showed too much
+    // haze in the midground (chrome probe + red box readability
+    // dropped). 0.03 gives a subtle "the air has weight" cue
+    // without killing contrast.
+    float fog_density { 0.03F };
     // phase512-volumetric-fog-wire: when true, composite uses the
     // Wronski 2014 integrated single-scatter path (16 quadratic-warped
     // slices, Beer-Lambert transmittance, HG phase) instead of the
@@ -81,8 +83,11 @@ struct HelloEngineFx
     // to pass the mode flag without expanding the 256-B push layout.
     bool volumetric_fog_on { false };
     // phase857: aerial_perspective 0.0 → 0.20 — distant Sponza geom
-    // picks up a slight blue tint, reads as "scene has air in it".
-    float aerial_perspective { 0.20F };
+    // picks up a slight blue tint. phase858b dialed down to 0.10
+    // after the nave fixture haze; combined with the fog_density
+    // bump this gives a subtle depth cue without washing the
+    // midground out.
+    float aerial_perspective { 0.10F };
     // phase857: chromab_strength 0.0 → 0.12 — barely-perceptible
     // radial RGB split adds lens character without distracting from
     // edges. The pc.lens.x * (4 + 28*r²) formula keeps the floor at
