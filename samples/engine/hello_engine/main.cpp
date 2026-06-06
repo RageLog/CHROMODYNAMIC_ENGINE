@@ -3179,10 +3179,10 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                 // screen was producing positive (CCW)
                                 // rotation. Negate to match user intent.
                                 float ang = a_anchor - a_now;
-                                while (ang > 3.1415926F)
-                                    ang -= 6.2831853F;
-                                while (ang < -3.1415926F)
-                                    ang += 6.2831853F;
+                                while (ang > std::numbers::pi_v<float>)
+                                    ang -= 2.0F * std::numbers::pi_v<float>;
+                                while (ang < -std::numbers::pi_v<float>)
+                                    ang += 2.0F * std::numbers::pi_v<float>;
                                 const float ca = std::cos(ang * 0.5F);
                                 const float sa = std::sin(ang * 0.5F);
                                 cd::math::Quatf q { 0, 0, 0, 1 };
@@ -5033,7 +5033,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         s.cam.eye    = { fx.eye[0],    fx.eye[1],    fx.eye[2] };
         s.cam.target = { fx.target[0], fx.target[1], fx.target[2] };
         // fov_y stored in radians inside cd::camera::Camera.
-        s.cam.fov_y  = fx.fov_y_deg * (3.14159265358979323846F / 180.0F);
+        s.cam.fov_y  = fx.fov_y_deg * (std::numbers::pi_v<float> / 180.0F);
         s.scene_cam.set_auto_spin(false);
         // phase797-rt-chrome-sponza-probe: manual_mode MUST be true so
         // update_free_look_camera() takes the manual branch (does nothing
