@@ -405,6 +405,50 @@ TEST(SponzaGoldenFixtures, ChromeProbeIsFixtureFiveAndCarriesProbeConstants)
     EXPECT_GT(kChromeProbeScale, 0.0F);
 }
 
+// phase829-fixture-lookup-by-slug: lock the slug-name lookup so
+// future renumbering does not silently change which slug returns
+// which index.
+TEST(SponzaGoldenFixtures, FixtureLookupBySlugMapsToKnownIndices)
+{
+    using cd::hello_engine::sponza_fixtures::find_fixture_index_by_slug;
+    using cd::hello_engine::sponza_fixtures::find_fixture_by_slug;
+
+    EXPECT_EQ(find_fixture_index_by_slug("entrance"),     std::optional<std::size_t>{0});
+    EXPECT_EQ(find_fixture_index_by_slug("nave"),         std::optional<std::size_t>{1});
+    EXPECT_EQ(find_fixture_index_by_slug("arch"),         std::optional<std::size_t>{2});
+    EXPECT_EQ(find_fixture_index_by_slug("vegetation"),   std::optional<std::size_t>{3});
+    EXPECT_EQ(find_fixture_index_by_slug("floor"),        std::optional<std::size_t>{4});
+    EXPECT_EQ(find_fixture_index_by_slug("chrome_probe"), std::optional<std::size_t>{5});
+
+    // Pointer variant returns the same Fixture as direct array access.
+    const auto* p = find_fixture_by_slug("chrome_probe");
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(p, &kFixtures[5]);
+}
+
+TEST(SponzaGoldenFixtures, FixtureLookupBySlugReturnsNulloptOnUnknown)
+{
+    using cd::hello_engine::sponza_fixtures::find_fixture_index_by_slug;
+    using cd::hello_engine::sponza_fixtures::find_fixture_by_slug;
+
+    EXPECT_FALSE(find_fixture_index_by_slug("does_not_exist").has_value());
+    EXPECT_FALSE(find_fixture_index_by_slug("").has_value());
+    // Substring-matching should NOT pass — slugs are exact.
+    EXPECT_FALSE(find_fixture_index_by_slug("nav").has_value());
+    EXPECT_FALSE(find_fixture_index_by_slug("naves").has_value());
+    EXPECT_EQ(find_fixture_by_slug("does_not_exist"), nullptr);
+}
+
+TEST(SponzaGoldenFixtures, FixtureLookupBySlugIsCaseSensitive)
+{
+    using cd::hello_engine::sponza_fixtures::find_fixture_index_by_slug;
+    // Lock the case-sensitive contract — case-insensitive matching
+    // would surprise the CLI parser path which feeds raw argv into
+    // the lookup.
+    EXPECT_FALSE(find_fixture_index_by_slug("NAVE").has_value());
+    EXPECT_FALSE(find_fixture_index_by_slug("Chrome_Probe").has_value());
+}
+
 TEST(SponzaGoldenSynth, IsDeterministicAcrossInvocations)
 {
     for (const auto& cam : kFixtures)

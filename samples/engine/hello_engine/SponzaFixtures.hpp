@@ -22,7 +22,9 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace cd::hello_engine::sponza_fixtures
@@ -97,5 +99,31 @@ inline constexpr float kChromeProbeScale       { 0.80F };
 
 /// Convenience: total fixture count for range checks at the CLI parsers.
 inline constexpr std::size_t kFixtureCount = kFixtures.size();
+
+// ---------------------------------------------------------------------------
+// phase829-fixture-lookup-by-slug: helper that maps a `--golden-fixture`
+// **slug** (entrance / nave / arch / vegetation / floor / chrome_probe)
+// to the corresponding index in kFixtures. Useful for debugging
+// loops + future tests that name fixtures rather than index them.
+// Returns std::nullopt on unknown slug (caller decides whether to
+// log + reject or fall back to a default).
+// ---------------------------------------------------------------------------
+[[nodiscard]] inline std::optional<std::size_t>
+find_fixture_index_by_slug(std::string_view slug) noexcept
+{
+    for (std::size_t i = 0; i < kFixtures.size(); ++i)
+    {
+        if (kFixtures[i].slug == slug)
+            return i;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] inline const Fixture* find_fixture_by_slug(std::string_view slug) noexcept
+{
+    if (const auto idx = find_fixture_index_by_slug(slug); idx.has_value())
+        return &kFixtures[*idx];
+    return nullptr;
+}
 
 }  // namespace cd::hello_engine::sponza_fixtures
