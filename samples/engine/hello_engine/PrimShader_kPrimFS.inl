@@ -616,7 +616,12 @@ void main() {
     // reflection and tinting it with F0 a second time, fading the curtain
     // reflections into the white-wall background. Drop the brdf_term for
     // the RT branch; keep it on the IBL fallback.
-    vec3 refl_color = hit_alb * pc.sun_color.rgb * 8.0;
+    // phase835-rt-chrome-sponza-tame-whitewash (auto-synced from .glsl):
+    // Post-phase833 the BLAS holds all 103 Sponza prims and rays land
+    // on EVERY surface — white sandstone walls were blowing out at 8x.
+    // 2.5x keeps walls visible-but-not-clipping while colored curtain
+    // prims stay saturated.
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * 4.0;
     float rough_blend = clamp(roughness * roughness, 0.0, 1.0);
     float metal_gate  = clamp(metallic, 0.0, 1.0);
     float blend_t     = mix(1.0, rough_blend, metal_gate);

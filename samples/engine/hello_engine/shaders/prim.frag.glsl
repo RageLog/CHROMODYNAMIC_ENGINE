@@ -664,7 +664,24 @@ void main() {
     // how the cubemap encodes interior brightness. Saturated per-prim
     // colours (red curtain, green curtain, sandstone wall) now actually
     // make it into the mirror image.
-    vec3 refl_color = hit_alb * pc.sun_color.rgb * 8.0;
+    // phase835-rt-chrome-sponza-tame-whitewash:
+    // After phase833 fixed the BLAS cap (Sponza was silently truncated
+    // to 32/103 prims), ray hits land on the FULL 103 prims. With the
+    // 8x sun-strength boost set when most hits were missing, the white
+    // sandstone walls now blow out post-ACES into a flat white wash —
+    // visible curtain colours got drowned out and prim-edge detail
+    // softened. 4x compromises between:
+    //   * dimmer overall (white sandstone walls render as bright but
+    //     not clipping the ACES knee),
+    //   * coloured curtain prims (R 0.85/0.12/0.08, G 0.15/0.6/0.1)
+    //     keep their saturation post-tonemap,
+    //   * chrome still reads as bright-mirror, not low-contrast plastic.
+    //
+    // The per-prim "average colour" return remains a known limit —
+    // prim-internal detail (curtain damask pattern, leaf texture)
+    // requires ray-side texture sampling (queued strand L-rt-tex,
+    // see ADR W8-BD rejected alternative #1).
+    vec3 refl_color = hit_alb * pc.sun_color.rgb * 4.0;
     // phase830-rt-chrome-sponza-visible-mirror:
     // For mirror reflections (perfect specular delta function) the BRDF
     // integral over the cone is unity at the reflection direction — so
