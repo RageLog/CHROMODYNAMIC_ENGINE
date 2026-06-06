@@ -3756,6 +3756,208 @@ public:
         accels_.erase(it);
     }
 
+    // ===== phase838-W8-BE-rt-bindless-texture-sampling ====================
+    //
+    // Each bindless texture array owns:
+    //   * VkDescriptorPool (UPDATE_AFTER_BIND_POOL flag).
+    //   * VkDescriptorSetLayout (binding 0, type COMBINED_IMAGE_SAMPLER,
+    //     count = slot_count, flags UPDATE_AFTER_BIND | PARTIALLY_BOUND |
+    //     VARIABLE_DESCRIPTOR_COUNT).
+    //   * VkDescriptorSet (allocated with VARIABLE_DESCRIPTOR_COUNT).
+    //   * VkSampler (caller-supplied; we hold a reference, not ownership).
+    //
+    // Per-slot writes go through `write_bindless_texture_slot` which
+    // re-uses the existing samplers_ + views_ caches.
+
+    [[nodiscard]] cd::core::Result<cd::rhi::BindlessTextureArrayHandle>
+    create_bindless_texture_array(
+        const cd::rhi::BindlessTextureArrayDesc& desc) override
+    {
+        if (!features_.bindless_resources)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_bindless_texture_array: device lacks descriptor_indexing"));
+        }
+        if (desc.slot_count == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_bindless_texture_array: slot_count must be > 0"));
+        }
+        auto smp_it = samplers_.find(desc.sampler.index());
+        if (smp_it == samplers_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_bindless_texture_array: unknown sampler"));
+        }
+
+        // 1. Descriptor pool (UPDATE_AFTER_BIND).
+        const VkDescriptorPoolSize pool_size {
+            .type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = desc.slot_count,
+        };
+        const VkDescriptorPoolCreateInfo pool_ci {
+            .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            .pNext         = nullptr,
+            .flags         = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+            .maxSets       = 1,
+            .poolSizeCount = 1,
+            .pPoolSizes    = &pool_size,
+        };
+        VkDescriptorPool pool { VK_NULL_HANDLE };
+        if (vkCreateDescriptorPool(device_, &pool_ci, nullptr, &pool) != VK_SUCCESS)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "create_bindless_texture_array: vkCreateDescriptorPool failed"));
+        }
+
+        // 2. Descriptor set layout (with binding flags).
+        const VkDescriptorBindingFlags binding_flag =
+              VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+            | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT
+            | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+        const VkDescriptorSetLayoutBindingFlagsCreateInfo flags_ci {
+            .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+            .pNext         = nullptr,
+            .bindingCount  = 1,
+            .pBindingFlags = &binding_flag,
+        };
+        const VkDescriptorSetLayoutBinding layout_binding {
+            .binding            = 0,
+            .descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount    = desc.slot_count,
+            .stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .pImmutableSamplers = nullptr,
+        };
+        const VkDescriptorSetLayoutCreateInfo layout_ci {
+            .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .pNext        = &flags_ci,
+            .flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
+            .bindingCount = 1,
+            .pBindings    = &layout_binding,
+        };
+        VkDescriptorSetLayout set_layout { VK_NULL_HANDLE };
+        if (vkCreateDescriptorSetLayout(device_, &layout_ci, nullptr, &set_layout) != VK_SUCCESS)
+        {
+            vkDestroyDescriptorPool(device_, pool, nullptr);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "create_bindless_texture_array: vkCreateDescriptorSetLayout failed"));
+        }
+
+        // 3. Allocate the descriptor set with VARIABLE_DESCRIPTOR_COUNT.
+        const VkDescriptorSetVariableDescriptorCountAllocateInfo var_count_ci {
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO,
+            .pNext              = nullptr,
+            .descriptorSetCount = 1,
+            .pDescriptorCounts  = &desc.slot_count,
+        };
+        const VkDescriptorSetAllocateInfo alloc_ci {
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .pNext              = &var_count_ci,
+            .descriptorPool     = pool,
+            .descriptorSetCount = 1,
+            .pSetLayouts        = &set_layout,
+        };
+        VkDescriptorSet set { VK_NULL_HANDLE };
+        if (vkAllocateDescriptorSets(device_, &alloc_ci, &set) != VK_SUCCESS)
+        {
+            vkDestroyDescriptorSetLayout(device_, set_layout, nullptr);
+            vkDestroyDescriptorPool(device_, pool, nullptr);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "create_bindless_texture_array: vkAllocateDescriptorSets failed"));
+        }
+
+        // 4. Stash + return handle.
+        const std::uint32_t id = next_bindless_id_++;
+        bindless_arrays_.emplace(id, BindlessTextureArrayRecord {
+            .pool       = pool,
+            .set_layout = set_layout,
+            .set        = set,
+            .sampler    = smp_it->second,
+            .slot_count = desc.slot_count,
+        });
+        return cd::rhi::BindlessTextureArrayHandle { id, 0u };
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    write_bindless_texture_slot(cd::rhi::BindlessTextureArrayHandle array,
+                                std::uint32_t                       slot,
+                                cd::rhi::TextureViewHandle          view) override
+    {
+        auto arr_it = bindless_arrays_.find(array.index());
+        if (arr_it == bindless_arrays_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: unknown bindless array handle"));
+        }
+        if (slot >= arr_it->second.slot_count)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: slot out of range"));
+        }
+        auto view_it = views_.find(view.index());
+        if (view_it == views_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: unknown texture view"));
+        }
+        const VkDescriptorImageInfo img {
+            .sampler     = arr_it->second.sampler,
+            .imageView   = view_it->second,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        const VkWriteDescriptorSet w {
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = arr_it->second.set,
+            .dstBinding       = 0,
+            .dstArrayElement  = slot,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo       = &img,
+            .pBufferInfo      = nullptr,
+            .pTexelBufferView = nullptr,
+        };
+        vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
+        return {};
+    }
+
+    void destroy_bindless_texture_array(cd::rhi::BindlessTextureArrayHandle h) override
+    {
+        auto it = bindless_arrays_.find(h.index());
+        if (it == bindless_arrays_.end()) return;
+        // VkDescriptorSet is freed transitively when the pool is destroyed.
+        if (it->second.set_layout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device_, it->second.set_layout, nullptr);
+        if (it->second.pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device_, it->second.pool, nullptr);
+        bindless_arrays_.erase(it);
+    }
+
+    // Internal accessors so the sample-side wiring can attach the array
+    // to a pipeline layout or query its set/layout.
+    [[nodiscard]] VkDescriptorSet bindless_descriptor_set(
+        cd::rhi::BindlessTextureArrayHandle h) const noexcept
+    {
+        auto it = bindless_arrays_.find(h.index());
+        return it == bindless_arrays_.end() ? VK_NULL_HANDLE : it->second.set;
+    }
+
+    [[nodiscard]] VkDescriptorSetLayout bindless_set_layout(
+        cd::rhi::BindlessTextureArrayHandle h) const noexcept
+    {
+        auto it = bindless_arrays_.find(h.index());
+        return it == bindless_arrays_.end() ? VK_NULL_HANDLE : it->second.set_layout;
+    }
+
     // ===== Phase 135 — Ray-tracing pipeline (Vulkan impl) =================
 
     [[nodiscard]] cd::core::Result<cd::rhi::RtPipelineHandle>
@@ -4035,6 +4237,16 @@ public:
         // either lights the bit.
         features_.mesh_shader = has_ext("VK_EXT_mesh_shader") ||
                                 has_ext("VK_NV_mesh_shader");
+        // phase838-W8-BE-rt-bindless-texture-sampling:
+        // VK_EXT_descriptor_indexing was promoted to Vulkan 1.2 core.
+        // The instance / device is created at API 1.3 (see vmaCreateAllocator
+        // call site `.vulkanApiVersion = VK_API_VERSION_1_3`), so a
+        // successful device creation guarantees the descriptor-indexing
+        // feature bits are honored. Light the bit unconditionally; a
+        // vendor / driver that lacks the bits would have failed
+        // vkCreateDevice with the enables we pushed (phase838 device
+        // creation path) and we would never reach this code.
+        features_.bindless_resources = true;
 
         // Phase 135 — probe RT pipeline properties (handle size +
         // alignment values needed for SBT authoring). Only meaningful
@@ -4148,6 +4360,26 @@ public:
         std::vector<std::uint32_t>                      vk_primitive_counts;
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
+
+    // phase838-W8-BE-rt-bindless-texture-sampling: bindless texture
+    // array storage. Each array owns its own VkDescriptorPool (so the
+    // UPDATE_AFTER_BIND flag lives at pool granularity),
+    // VkDescriptorSetLayout (with the descriptor-indexing binding
+    // flags), and VkDescriptorSet (allocated with
+    // VARIABLE_DESCRIPTOR_COUNT). Callers retrieve the descriptor set
+    // / layout / sampler through dedicated accessors when wiring it
+    // into a pipeline layout. The lifetime is owner-controlled via
+    // create_bindless_texture_array / destroy_bindless_texture_array.
+    struct BindlessTextureArrayRecord
+    {
+        VkDescriptorPool      pool       { VK_NULL_HANDLE };
+        VkDescriptorSetLayout set_layout { VK_NULL_HANDLE };
+        VkDescriptorSet       set        { VK_NULL_HANDLE };
+        VkSampler             sampler    { VK_NULL_HANDLE };
+        std::uint32_t         slot_count { 0 };
+    };
+    std::unordered_map<std::uint32_t, BindlessTextureArrayRecord> bindless_arrays_;
+    std::uint32_t next_bindless_id_ { 1 };
 
     // Phase 135 — RT pipeline storage + cached props.
     struct RtPipelineRecord
@@ -4379,6 +4611,30 @@ namespace
     // Enable it when RT was opted in; no-op otherwise.
     if (rt_enabled)
         f12.bufferDeviceAddress = VK_TRUE;
+    // phase838-W8-BE-rt-bindless-texture-sampling:
+    // VK_EXT_descriptor_indexing was promoted to Vulkan 1.2 core, so the
+    // feature bits live directly on f12 — no separate extension to push.
+    // We turn on the four bits required by ADR W8-BE's bindless
+    // texture-array path:
+    //   * runtimeDescriptorArray — sampler2D arrays sized at runtime.
+    //   * shaderSampledImageArrayNonUniformIndexing — runtime-indexed
+    //     reads with non-uniform indices (chrome reflections hit different
+    //     prims per pixel).
+    //   * descriptorBindingSampledImageUpdateAfterBind — write a slot
+    //     after the descriptor set is bound but before use.
+    //   * descriptorBindingPartiallyBound — keep empty slots valid.
+    //   * descriptorBindingVariableDescriptorCount — last binding's
+    //     descriptor count is set at allocation time.
+    //
+    // Drivers that don't expose VK_EXT_descriptor_indexing pre-1.2 are
+    // out of scope for the engine target matrix; the rhi falls back to
+    // kNotImplemented in `create_bindless_texture_array` and the chrome
+    // path falls back to the W8-BD per-prim avg-colour reflection.
+    f12.runtimeDescriptorArray                          = VK_TRUE;
+    f12.shaderSampledImageArrayNonUniformIndexing       = VK_TRUE;
+    f12.descriptorBindingSampledImageUpdateAfterBind    = VK_TRUE;
+    f12.descriptorBindingPartiallyBound                 = VK_TRUE;
+    f12.descriptorBindingVariableDescriptorCount        = VK_TRUE;
 
     // RT feature structs — only chained when rt_enabled. The driver
     // would reject vkCreateDevice if we requested a feature without
