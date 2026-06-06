@@ -4342,6 +4342,12 @@ struct HelloEngineApp::EngineState
     // SSBO so vegetation reflects green, fabric red, stone grey instead
     // of every Sponza hit sharing the single sandstone tint.
     std::vector<cd::math::Vec3f>             sponza_geom_albedos;
+    // phase843-W8-BE-rt-bindless-texture-sampling: parallel array to
+    // sponza_geom_albedos with the binding-13 slot index + binding-12
+    // index_offset for each Sponza prim. Populated once at boot
+    // (build path: after s.meshes loads) and stays static for the
+    // process lifetime.
+    std::vector<cd_sample::W8BEGeomMeta>     sponza_w8be_meta;
     std::vector<cd::math::Vec3f>             cesium_geom_albedos;
 
     // World / scene / history
@@ -4834,6 +4840,65 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     if (s.meshes.has_gltf_texture || s.meshes.has_cesium_texture)
         s.has_gltf_texture = true;
 
+    // phase843-W8-BE-rt-bindless-texture-sampling: host-side wiring for
+    // ray-side per-prim albedo texture sampling.
+    //
+    //   * Binding 11 ← Sponza vertex buffer (storage)
+    //   * Binding 12 ← Sponza index buffer  (storage)
+    //   * Binding 13 ← bindless sampler2D array; per-prim albedo views
+    //                   land in slot i for prim_ranges[i].
+    //
+    // When Sponza is not loaded, the prim_inst descriptor still needs
+    // SOMETHING in bindings 11/12 because the layout demands non-null
+    // storage-buffer writes. We default-point them at the procedural
+    // sphere mesh's VB/IB so the descriptor is valid; the shader
+    // never actually reads them in that case because the sentinel
+    // path (tex_slot == 0xFFFFFFFFu) is always taken when no Sponza
+    // per-prim metadata is written into the SSBO.
+    if (s.meshes.gltf.vb.is_valid() && s.meshes.gltf.ib.is_valid())
+    {
+        std::vector<cd::rhi::DescriptorWrite> dw_be {};
+        dw_be.reserve(2u + s.meshes.gltf_prim_ranges.size());
+        dw_be.push_back(cd::rhi::DescriptorWrite {
+            .binding = 11, .array_element = 0,
+            .type    = cd::rhi::DescriptorType::kStorageBuffer,
+            .buffer  = s.meshes.gltf.vb,
+        });
+        dw_be.push_back(cd::rhi::DescriptorWrite {
+            .binding = 12, .array_element = 0,
+            .type    = cd::rhi::DescriptorType::kStorageBuffer,
+            .buffer  = s.meshes.gltf.ib,
+        });
+        std::uint32_t slot_idx = 0u;
+        for (const auto& pr : s.meshes.gltf_prim_ranges)
+        {
+            if (!pr.has_texture) { ++slot_idx; continue; }
+            dw_be.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 13,
+                .array_element = slot_idx,
+                .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
+                .view          = pr.albedo_view,
+                .sampler       = s.albedo_sampler,
+            });
+            ++slot_idx;
+        }
+        (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_be));
+    }
+    else
+    {
+        // Fallback to procedural sphere VB/IB so the layout has
+        // non-null buffers for bindings 11/12.
+        const cd::rhi::DescriptorWrite dw_be_fb[2] = {
+            { .binding = 11, .array_element = 0,
+              .type = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer = s.meshes.sphere.vb },
+            { .binding = 12, .array_element = 0,
+              .type = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer = s.meshes.sphere.ib },
+        };
+        (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_be_fb));
+    }
+
     // phase-descriptor-sync: write global bindings (0,1,3,5,6,7,10) to every
     // per-prim descriptor set so textured Sponza/CesiumMan prims see valid
     // light, shadow, IBL, and reflection data on the GPU.  Binding 2 (TLAS)
@@ -4891,6 +4956,30 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         s.sponza_geom_albedos.push_back(near_white
             ? kSponzaSandstone
             : cd::math::Vec3f { r, g, b });
+    }
+
+    // phase843-W8-BE-rt-bindless-texture-sampling: parallel W8-BE
+    // metadata for each Sponza prim. albedo_tex_slot is the prim's
+    // slot index in the binding-13 bindless sampler2D array (set
+    // 1:1 with `gltf_prim_ranges`); index_offset is the prim's first
+    // index in the shared 32-bit index buffer. Sentinel slot value
+    // is reserved for prims without a per-prim texture; we still
+    // need the index_offset to land at the per-geom SSBO entry so
+    // the shader could choose to use it for procedural / debug paths.
+    s.sponza_w8be_meta.clear();
+    s.sponza_w8be_meta.reserve(s.meshes.gltf_prim_ranges.size());
+    {
+        std::uint32_t i = 0u;
+        for (const auto& pr : s.meshes.gltf_prim_ranges)
+        {
+            cd_sample::W8BEGeomMeta m {};
+            m.albedo_tex_slot = pr.has_texture
+                ? i
+                : cd::hello_engine::kBindlessAlbedoSlotNone;
+            m.index_offset    = pr.index_offset;
+            s.sponza_w8be_meta.push_back(m);
+            ++i;
+        }
     }
 
     s.cesium_geom_albedos.clear();
@@ -5969,6 +6058,19 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     return { s.sponza_geom_albedos };
                 if (e.kind == PrimitiveKind::kGltf)
                     return { s.cesium_geom_albedos };
+                return {};
+            },
+            // phase843-W8-BE-rt-bindless-texture-sampling: per-geom
+            // metadata. Sponza: albedo_tex_slot = slot index in the
+            // binding-13 sampler2D array (one per prim, set 1:1 with
+            // gltf_prim_ranges), index_offset = the prim's first
+            // index in the shared index buffer. Other entities:
+            // empty span -> sentinel path (W8-BD avg-colour
+            // fallback).
+            [&s](const SceneEntity& e) -> std::span<const cd_sample::W8BEGeomMeta>
+            {
+                if (e.kind == PrimitiveKind::kSponza)
+                    return { s.sponza_w8be_meta };
                 return {};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,

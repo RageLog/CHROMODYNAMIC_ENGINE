@@ -1294,6 +1294,19 @@ public:
         }
         const auto id = next_id_++;
         set_layouts_.emplace(id, layout);
+        // phase843-W8-BE: record whether the layout has a trailing
+        // variable-count binding so allocate_descriptor_set knows to
+        // chain VkDescriptorSetVariableDescriptorCountAllocateInfo.
+        std::uint32_t var_count = 0u;
+        if (!desc.bindings.empty()
+            && desc.bindings.back().bindless)
+        {
+            var_count = desc.bindings.back().count;
+        }
+        set_layout_meta_.emplace(id, DescriptorSetLayoutMeta {
+            .layout             = layout,
+            .variable_count_max = var_count,
+        });
         return cd::rhi::DescriptorSetLayoutHandle { id, 1u };
     }
 
@@ -2059,9 +2072,23 @@ public:
                 );
             }
         }
+        // phase843-W8-BE: chain VariableDescriptorCountAllocateInfo
+        // when the layout has a variable-count trailing binding.
+        VkDescriptorSetVariableDescriptorCountAllocateInfo var_count_ci {};
+        const void* alloc_pNext = nullptr;
+        if (auto meta_it = set_layout_meta_.find(layout.index());
+            meta_it != set_layout_meta_.end() &&
+            meta_it->second.variable_count_max > 0u)
+        {
+            var_count_ci.sType =
+                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+            var_count_ci.descriptorSetCount = 1u;
+            var_count_ci.pDescriptorCounts  = &meta_it->second.variable_count_max;
+            alloc_pNext = &var_count_ci;
+        }
         const VkDescriptorSetAllocateInfo ai {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .pNext = nullptr,
+            .pNext = alloc_pNext,
             .descriptorPool = descriptor_pool_,
             .descriptorSetCount = 1,
             .pSetLayouts = &layout_it->second,
@@ -2248,23 +2275,32 @@ public:
                 }
                 case cd::rhi::DescriptorType::kBindlessSampledImage:
                 {
-                    // phase837-W8-BE: Not routed through DescriptorWrite v1.
-                    // The bindless array lives behind its own
-                    // `IDevice::write_bindless_texture_slot` lifecycle —
-                    // per-slot writes happen there. The DescriptorWrite
-                    // table here would need a slot index + view list; that
-                    // expansion is queued for phase838 once the Vulkan
-                    // backend impl + descriptor layout flags land. For
-                    // now, return unimplemented at the v1 entry point so a
-                    // caller that accidentally routes a bindless-typed
-                    // write through update_descriptor_set fails LOUDLY
-                    // instead of silently writing nothing.
-                    return std::unexpected(make_err(
-                        cd::rhi::rhi_errors::Code::kNotImplemented,
-                        "update_descriptor_set: kBindlessSampledImage writes go through "
-                        "IDevice::write_bindless_texture_slot, not update_descriptor_set "
-                        "(see ADR W8-BE)"
-                    ));
+                    // phase843-W8-BE: write one slot of the bindless
+                    // sampler2D array. `array_element` is the slot
+                    // index in the array; `view` + `sampler` are the
+                    // texture-side handles. Falls back to LOUD failure
+                    // when either is missing (a misconfigured caller
+                    // would otherwise silently write a black sampled
+                    // image into the chrome reflection branch).
+                    auto view_it = views_.find(w.view.index());
+                    auto smp_it  = samplers_.find(w.sampler.index());
+                    if (view_it == views_.end() || smp_it == samplers_.end())
+                    {
+                        return std::unexpected(make_err(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: bindless write needs both view + sampler"
+                        ));
+                    }
+                    image_infos.push_back(
+                        VkDescriptorImageInfo {
+                            .sampler     = smp_it->second,
+                            .imageView   = view_it->second,
+                            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        }
+                    );
+                    entry.pImageInfo    = &image_infos.back();
+                    entry.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    break;
                 }
             }
             vk_writes.push_back(entry);
@@ -4354,7 +4390,15 @@ public:
     std::unordered_map<std::uint32_t, TextureMeta> image_meta_;
     std::unordered_map<std::uint32_t, VkImageView> views_;
     std::unordered_map<std::uint32_t, VkSampler> samplers_;
+    // phase843-W8-BE: per-layout metadata so allocate_descriptor_set knows
+    // whether to chain VkDescriptorSetVariableDescriptorCountAllocateInfo.
+    struct DescriptorSetLayoutMeta
+    {
+        VkDescriptorSetLayout layout                  { VK_NULL_HANDLE };
+        std::uint32_t         variable_count_max      { 0u };   // 0 = no variable binding
+    };
     std::unordered_map<std::uint32_t, VkDescriptorSetLayout> set_layouts_;
+    std::unordered_map<std::uint32_t, DescriptorSetLayoutMeta> set_layout_meta_;
     std::unordered_map<std::uint32_t, VkPipelineLayout> pipeline_layouts_;
     std::unordered_map<std::uint32_t, VkPipeline> compute_pipelines_;
     std::unordered_map<std::uint32_t, VkPipeline> graphics_pipelines_;

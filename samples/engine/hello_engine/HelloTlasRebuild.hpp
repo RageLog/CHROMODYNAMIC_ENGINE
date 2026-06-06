@@ -45,6 +45,20 @@
 
 namespace cd_sample {
 
+// phase843-W8-BE-rt-bindless-texture-sampling: per-geom metadata for
+// the bindless texture-sampling path. albedo_tex_slot is the slot
+// index into the binding-13 sampler2D array (or
+// `cd::hello_engine::kBindlessAlbedoSlotNone` when the geom has no
+// per-prim texture and the shader should fall through to the W8-BD
+// per-prim avg-colour reflection). index_offset is the base index in
+// the Sponza index buffer for this geom's triangles — used by the
+// shader to reconstruct triangle UVs at the ray hit.
+struct W8BEGeomMeta
+{
+    std::uint32_t albedo_tex_slot { cd::hello_engine::kBindlessAlbedoSlotNone };
+    std::uint32_t index_offset    { 0u };
+};
+
 // ---- rebuild_tlas_and_transition_depth ------------------------------------
 // Runs the Faz 1.7 per-frame TLAS rebuild followed by the depth-target
 // ring barrier. Both predicate on cmd already being in a begin()ed state.
@@ -57,7 +71,7 @@ namespace cd_sample {
 // uploaded to binding 10; the shader reads slot[inst*32 + geom].
 template <typename MaterialInstanceT, typename EntityT, typename BlasForKind,
           typename TintFor, typename KindFor, typename ModelFor,
-          typename GeomAlbedosFor>
+          typename GeomAlbedosFor, typename W8BEMetaFor>
 inline void
 rebuild_tlas_and_transition_depth(
     cd::rhi::IDevice&                       device,
@@ -72,6 +86,12 @@ rebuild_tlas_and_transition_depth(
     KindFor                                 kind_for,
     ModelFor                                model_for,
     GeomAlbedosFor                          geom_albedos_for,
+    // phase843-W8-BE-rt-bindless-texture-sampling: per-(entity, geom)
+    // metadata for the ray-side albedo texture-sampling path. The
+    // callback returns a span<W8BEGeomMeta> of length matching
+    // geom_albedos_for(ent), or an empty span when the entity has no
+    // W8-BE texture wiring (sentinel path = avg-colour fallback).
+    W8BEMetaFor                             w8be_metadata_for,
     cd::rhi::AccelStructureHandle           blas_floor,
     cd::rhi::AccelStructureHandle           blas_gltf,
     bool                                    skinned_valid,
@@ -221,10 +241,25 @@ rebuild_tlas_and_transition_depth(
                     const std::uint32_t gn = std::min<std::uint32_t>(
                         static_cast<std::uint32_t>(geom_albs.size()),
                         cd::hello_engine::kMaxGeomsPerInst);
+                    // phase843-W8-BE-rt-bindless-texture-sampling: also
+                    // capture index_offset + albedo_tex_slot from the
+                    // geom-range metadata so the fragment shader can
+                    // sample the bindless albedo texture at ray hits on
+                    // Sponza (or other multi-geom assets). The metadata
+                    // is sourced via `w8be_metadata_for(ent)` which
+                    // returns a span<W8BEGeomMeta> of length matching
+                    // geom_albs (or empty when the entity has no W8-BE
+                    // texture wiring — sentinel path).
+                    auto w8be_meta = w8be_metadata_for(ent);
                     for (std::uint32_t g = 0; g < gn; ++g)
                     {
                         cd::hello_engine::InstanceMatGpu im {};
                         cd::hello_engine::fill_inst_mat(im, geom_albs[g]);
+                        if (g < w8be_meta.size())
+                        {
+                            im.albedo_tex_slot = w8be_meta[g].albedo_tex_slot;
+                            im.index_offset    = w8be_meta[g].index_offset;
+                        }
                         expanded[static_cast<std::size_t>(tlas_idx)
                                  * cd::hello_engine::kMaxGeomsPerInst + g] = im;
                     }

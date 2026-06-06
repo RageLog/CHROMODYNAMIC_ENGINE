@@ -99,6 +99,24 @@ const int  kMaxInstMatSlots        = 8192;
 const float kIblMaxMipLod          = 5.0;
 const uint kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 
+// phase844-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
+// bindings 11/12/13 + PrimitiveVertexGpu struct + UV barycentric
+// interp + bindless texture sample. See prim.frag.glsl for the
+// full block-comment rationale.
+#extension GL_EXT_nonuniform_qualifier : require
+struct PrimitiveVertexGpu {
+  vec4 pos_x_y_z_nx;
+  vec4 ny_nz_u_v;
+  vec4 col_r_g_b_pad;
+};
+layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
+  PrimitiveVertexGpu verts[];
+} cd_sponza_vb;
+layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
+  uint idx[];
+} cd_sponza_ib;
+layout(set = 0, binding = 13) uniform sampler2D cd_bindless_albedo[];
+
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
 // Avoids needing per-vertex tangents - works for any UV-mapped mesh.
 mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
@@ -205,8 +223,13 @@ float reflection_hit(vec3 origin, vec3 N, vec3 dir, float tmax) {
 // The pseudo-normal used by sun-NoL shading at the hit point is just
 // -dir (surface-outward for a convex hit) — convex spheres ~exact,
 // cubes / Sponza walls approximate.
+// phase844-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
+// extended to also return the hit primitive (triangle) index AND
+// barycentrics so the caller can recover the per-vertex UV at the
+// hit point by indexing the Sponza VB/IB SSBOs.
 float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
-                        out int out_inst, out int out_geom) {
+                        out int  out_inst, out int  out_geom,
+                        out int  out_prim, out vec2 out_bary) {
   // phase451-rt: matched ray_visibility bias drop for Sponza scale.
   rayQueryEXT rq;
   rayQueryInitializeEXT(
@@ -220,6 +243,8 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
       gl_RayQueryCommittedIntersectionNoneEXT) {
     out_inst = -1;
     out_geom = -1;
+    out_prim = -1;
+    out_bary = vec2(0.0);
     return 0.0;
   }
   out_inst = rayQueryGetIntersectionInstanceIdEXT(rq, true);
@@ -228,6 +253,8 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
   // for Sponza's multi-geom BLAS this picks the prim sub-range that the
   // ray actually hit (vegetation / fabric / stone).
   out_geom = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
+  out_prim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+  out_bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
   return 1.0;
 }
 
@@ -607,8 +634,10 @@ void main() {
 
   int   hit_inst   = -1;
   int   hit_geom   = -1;
+  int   hit_prim   = -1;
+  vec2  hit_bary   = vec2(0.0);
   float scene_hit  = reflection_hit_id(v_world_pos, safe_N, Ri, 80.0,
-                                       hit_inst, hit_geom);
+                                       hit_inst, hit_geom, hit_prim, hit_bary);
   vec3  brdf_term  = F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
   vec3  ibl_spec_blended = ibl_spec_p;
   int hit_slot = -1;
@@ -620,7 +649,26 @@ void main() {
     if (hit_slot >= kMaxInstMatSlots) hit_slot = -1;
   }
   if (scene_hit > 0.5 && hit_slot >= 0) {
-    vec3 hit_alb   = cd_instance_mats.data[hit_slot].albedo.rgb;
+    vec3 hit_alb = cd_instance_mats.data[hit_slot].albedo.rgb;
+    // phase844-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
+    // When the per-prim metadata exposes a texture slot (!= sentinel),
+    // recover the per-vertex UV at the hit point via barycentric
+    // interpolation from the Sponza VB/IB SSBOs and sample the bindless
+    // sampler2D array. Falls back to the W8-BD avg-colour for prims
+    // without textures (CesiumMan, PBR grid, procedural seeds).
+    uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
+    uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
+    if (tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0) {
+      uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+      uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+      uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+      vec2 uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
+      vec2 uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
+      vec2 uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      float w0 = 1.0 - hit_bary.x - hit_bary.y;
+      vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
+      hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+    }
     // phase830-rt-chrome-sponza-visible-mirror (auto-synced from prim.frag.glsl):
     // For mirror reflections the BRDF integral at the reflection direction
     // is unity — multiplying by brdf_term was attenuating the chrome
