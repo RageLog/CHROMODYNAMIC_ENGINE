@@ -54,5 +54,14 @@ Aşağıdaki konular henüz ADR olarak yazılmadı; Phase 1 sonrası beklemede:
 ## Implementation-status ADRs
 
 | Date | Subject | Trigger |
-|---|---|---|
+| --- | --- | --- |
 | 2026-05-28 | [Job System Implementation Status & Header-Inline Pattern](ADR-20260528-job-system-design.md) | W8/phase283 - close STATUS_AND_PLAN_W8.md X1 BLOCKER with audit + test gap closure |
+| 2026-05-29 | [W8-AJ — LTC Corner Winding](ADR-20260529-W8-AJ-LTC-corner-winding.md) | LTC area light corner-case fix audit |
+| 2026-05-29 | [W8-AN — Karis MRP](ADR-20260529-W8-AN-Karis-MRP.md) | Microfacet roughness pre-multiply (Karis 2013) |
+| 2026-05-29 | [W8-AR — ECS-attribute PBR](ADR-20260529-W8-AR-ECS-attribute-PBR.md) | per-entity material override path |
+| 2026-05-29 | [W8-AY — Bake-budget revert](ADR-20260529-W8-AY-bake-budget-revert.md) | IBL bake-rules policy rollback rationale |
+| 2026-05-29 | [W8-AZ — Env-spec sun gate](ADR-20260529-W8-AZ-env-spec-sun-gate.md) | sun-direction gate on IBL specular |
+| 2026-05-29 | [W8-BA — RT reflection occlusion](ADR-20260529-W8-BA-RT-reflection-occlusion.md) | chrome silhouette-against-sky shadow path |
+| 2026-05-29 | [W8-BC — Per-instance albedo SSBO](ADR-20260529-W8-BC-per-instance-albedo-SSBO.md) | per-instance hit-colour SSBO (Option B from W8-BA) |
+| 2026-06-06 | [W8-BD — Per-(instance, geom) SSBO + curtain reflections](ADR-20260606-W8-BD-per-geom-albedo-SSBO-and-curtain-reflections.md) | per-prim 2D SSBO + `kMaxGeomsPerInst 32 -> 128` + texture-avg colour flow + grid relocation (Run 16 chrome-Sponza fix chain) |
+| 2026-06-06 | [Golden-fixture agent iteration loop](ADR-20260606-golden-fixture-agent-iteration-loop.md) | methodology ADR for closed-loop agent-driven visual debugging (Run 16 retrospective) |
