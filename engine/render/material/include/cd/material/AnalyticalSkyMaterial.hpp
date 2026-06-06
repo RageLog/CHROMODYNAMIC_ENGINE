@@ -143,9 +143,16 @@ static_assert(sizeof(AnalyticalSkyPush) == 80,
     // metallic reflections looked beige against a deep-blue sky.
     // Numbers are slightly muted vs the live sky so metal spheres
     // don't pick up an oversaturated blue tint on their dome.
-    const cd::math::Vec3f zenith  { 0.22F, 0.46F, 0.82F };
-    const cd::math::Vec3f horizon { 0.82F, 0.88F, 0.96F };
-    const cd::math::Vec3f ground  { 0.12F, 0.11F, 0.10F };
+    // phase858-sky-warm-horizon: nudged the horizon toward a warm
+    // cream tint and the zenith toward a richer cobalt so daylight
+    // bakes pick up a believable "afternoon under a real sky"
+    // gradient. Sponza's chrome spheres now read as standing in a
+    // warmer atmosphere; the IBL diffuse bake picks up enough warmth
+    // for the ambient bounce on the sandstone walls to feel sunlit
+    // instead of fluorescent.
+    const cd::math::Vec3f zenith  { 0.20F, 0.44F, 0.84F };
+    const cd::math::Vec3f horizon { 0.92F, 0.86F, 0.78F };
+    const cd::math::Vec3f ground  { 0.14F, 0.12F, 0.10F };
     auto mix3 = [](cd::math::Vec3f a, cd::math::Vec3f b, float t) {
         return cd::math::Vec3f { a.x + (b.x - a.x) * t,
                                   a.y + (b.y - a.y) * t,

@@ -557,7 +557,24 @@ void main() {
     // hard cloud line painted across it.
     // phase856a-clouds-world-anchor: horizon_fade cuts clouds
     // below the horizon line.
-    c = mix(c, cloud_lit, cloud * 0.85 * depth_gate * horizon_fade);
+    // phase858-clouds-color-stability: user-reported "hala kameraya
+    // gore renk degisor inverse oluyor gibi" — looking up vs across
+    // gave different cloud colours. Root cause: the previous
+    //   c = mix(c, cloud_lit, cloud * 0.85 * ...)
+    // mixed cloud_lit INTO the underlying sky `c`, which itself
+    // shifts brightness with view direction (analytical sky's
+    // zenith/horizon gradient). At low cloud density the result
+    // tracked the sky; at high density it still picked up a sky
+    // tint via the 0.85 ceiling. Replace with an OVER-blend at
+    // 1.0 ceiling so dense clouds fully cover the underlying sky
+    // colour — the cloud_lit term is direction-independent (only
+    // depends on pc.sun_col which is a CPU-side constant per frame),
+    // so the visible cloud colour is now stable across camera
+    // rotation. Light clouds still let some sky through, but the
+    // gradient is now caused only by their own density, not the
+    // sky behind them.
+    float cloud_mix = clamp(cloud * depth_gate * horizon_fade, 0.0, 1.0);
+    c = mix(c, cloud_lit, cloud_mix);
   }
 
   // AO
