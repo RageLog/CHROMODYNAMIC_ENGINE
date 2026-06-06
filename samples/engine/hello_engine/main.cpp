@@ -4870,12 +4870,28 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // texture sample.
     s.sponza_geom_albedos.clear();
     s.sponza_geom_albedos.reserve(s.meshes.gltf_prim_ranges.size());
+    // phase793-rt-chrome-sponza-fix: Sponza glTF authors most prims with
+    // base_color_factor = (1,1,1) (the real colour comes from a texture
+    // that the reflection SSBO path cannot sample). Pass-through of that
+    // pure-white factor makes every chrome reflection of Sponza look like
+    // a uniform white wall — washing out the entire mirror image. When
+    // the factor is near-white (any channel > 0.85), substitute the
+    // phase434 representative warm-sandstone fallback so chrome reflections
+    // recover the surrounding scene's characteristic look.
+    constexpr float kSponzaWhiteThreshold = 0.85F;
+    const cd::math::Vec3f kSponzaSandstone { 0.72F, 0.60F, 0.48F };
     for (const auto& pr : s.meshes.gltf_prim_ranges)
     {
-        s.sponza_geom_albedos.push_back(cd::math::Vec3f {
-            pr.base_color_factor[0],
-            pr.base_color_factor[1],
-            pr.base_color_factor[2] });
+        const float r = pr.base_color_factor[0];
+        const float g = pr.base_color_factor[1];
+        const float b = pr.base_color_factor[2];
+        const bool near_white =
+            r > kSponzaWhiteThreshold &&
+            g > kSponzaWhiteThreshold &&
+            b > kSponzaWhiteThreshold;
+        s.sponza_geom_albedos.push_back(near_white
+            ? kSponzaSandstone
+            : cd::math::Vec3f { r, g, b });
     }
 
     s.cesium_geom_albedos.clear();
@@ -6905,12 +6921,22 @@ int main(int argc, char** argv)
     // from each prim range's base_color_factor.
     std::vector<cd::math::Vec3f> sponza_geom_albedos;
     sponza_geom_albedos.reserve(meshes.gltf_prim_ranges.size());
+    // phase793-rt-chrome-sponza-fix: see SampleAppState path above for
+    // rationale — collapse near-white base_color_factor to warm sandstone.
+    constexpr float kSponzaWhiteThreshold2 = 0.85F;
+    const cd::math::Vec3f kSponzaSandstone2 { 0.72F, 0.60F, 0.48F };
     for (const auto& pr : meshes.gltf_prim_ranges)
     {
-        sponza_geom_albedos.push_back(cd::math::Vec3f {
-            pr.base_color_factor[0],
-            pr.base_color_factor[1],
-            pr.base_color_factor[2] });
+        const float r = pr.base_color_factor[0];
+        const float g = pr.base_color_factor[1];
+        const float b = pr.base_color_factor[2];
+        const bool near_white =
+            r > kSponzaWhiteThreshold2 &&
+            g > kSponzaWhiteThreshold2 &&
+            b > kSponzaWhiteThreshold2;
+        sponza_geom_albedos.push_back(near_white
+            ? kSponzaSandstone2
+            : cd::math::Vec3f { r, g, b });
     }
 
     std::vector<cd::math::Vec3f> cesium_geom_albedos;
