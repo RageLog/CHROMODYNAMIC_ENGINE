@@ -732,3 +732,136 @@ literal, and the rule would flag those too.
 - The 2 remaining Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
 
 ---
+
+## Marathon Run 18 close-out (phases 836-845, 2026-06-06)
+
+User-driven priority. The Run 17 close-out left chrome reflections
+working at the per-prim avg-colour resolution (W8-BD). User feedback:
+*"yansimalarda hal hicbir detay yok. obje texturleri gozukmuyor
+sanirim"* — the curtain damask, leaf veins, sandstone grain, and
+carved-stone detail were still missing. User chose **Yol 3**
+(engine-wide bindless texture infrastructure) and asked for a
+non-stop marathon. Run 18 ships the L-rt-tex strand end-to-end.
+
+### Strand A — ADR W8-BE (phase 836)
+
+`ADR-20260606-W8-BE-rt-texture-sampling-bindless.md` codifies the
+five-layer architecture. Lists four rejected alternatives (texture
+atlas, per-prim descriptor swap, hash-noise pseudo-detail,
+defer-until-path-tracer).
+
+### Strand B — RHI public surface (phase 837)
+
+| File | Change |
+| --- | --- |
+| `cd/rhi/Pipeline.hpp` | `DescriptorType::kBindlessSampledImage` + `DescriptorSetLayoutBinding::bindless` flag |
+| `cd/rhi/Handles.hpp` | `BindlessTextureArrayTag` + `BindlessTextureArrayHandle` |
+| `cd/rhi/Descriptors.hpp` | `BindlessTextureArrayDesc` POD |
+| `cd/rhi/IDevice.hpp` | 3 new virtuals — `create_bindless_texture_array`, `write_bindless_texture_slot`, `destroy_bindless_texture_array` |
+
+All three IDevice virtuals default to `kNotImplemented` so backends
+opt in. D3D12 / Metal will pick this surface up unchanged.
+
+### Strand C — Vulkan backend (phase 838 + 842a + 843)
+
+- `VK_EXT_descriptor_indexing` enabled at device creation via the
+  five core-1.2 feature bits (runtimeDescriptorArray,
+  shaderSampledImageArrayNonUniformIndexing,
+  descriptorBindingSampledImageUpdateAfterBind,
+  descriptorBindingPartiallyBound,
+  descriptorBindingVariableDescriptorCount).
+- `features_.bindless_resources = true` (instance is 1.3).
+- `BindlessTextureArrayRecord` carries VkDescriptorPool +
+  VkDescriptorSetLayout + VkDescriptorSet + sampler + slot_count.
+- `create_descriptor_set_layout` honors the per-binding `bindless`
+  flag — chains a VkDescriptorSetLayoutBindingFlagsCreateInfo,
+  applies UPDATE_AFTER_BIND_POOL on the layout, and lights
+  VARIABLE_DESCRIPTOR_COUNT on the trailing bindless binding.
+- `allocate_descriptor_set` chains
+  VkDescriptorSetVariableDescriptorCountAllocateInfo when the layout
+  records a non-zero variable_count_max.
+- Shared `descriptor_pool_` gains
+  VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT.
+- `update_descriptor_set(kBindlessSampledImage)` routes to a real
+  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER write at
+  `dstArrayElement = w.array_element` (the slot index).
+
+### Strand D — SSBO + shader (phases 840-842c, 844)
+
+- `InstanceMatGpu` grew 32 B → 48 B (+ `albedo_tex_slot` +
+  `index_offset` + 8 B pad). SSBO size 256 KiB → 384 KiB.
+- `fill_inst_mat` zero-inits the new fields with the sentinel slot
+  so non-Sponza prims keep the W8-BD avg-colour fallback path.
+- Shader (`prim.frag.glsl` + `PrimShader_kPrimFS.inl` lockstep):
+  bindings 11 (Sponza VB), 12 (Sponza IB), 13 (sampler2D[256]
+  bindless). `#extension GL_EXT_nonuniform_qualifier : require`.
+  `reflection_hit_id` returns `prim_index` + `barycentrics` in
+  addition to (instance, geom). The RT mirror branch's sentinel
+  check routes to `texture(cd_bindless_albedo[nonuniformEXT(slot)], uv)`
+  with UV recovered via barycentric interp over the VB.
+
+### Strand E — hello_engine wiring (phases 843 + 844)
+
+- `s.sponza_w8be_meta` parallel to `s.sponza_geom_albedos`,
+  populated at boot from `gltf_prim_ranges`.
+- main.cpp boot writes bindings 11/12 (Sponza VB/IB) + 103 slots
+  into binding 13 of the prim material's descriptor set.
+- `HelloTlasRebuild::rebuild_tlas_and_transition_depth` gained the
+  `w8be_metadata_for(ent)` callback parameter; the per-(instance,
+  geom) compaction loop writes `albedo_tex_slot` + `index_offset`
+  into each SSBO entry.
+
+### Strand F — Regression tests (phase 845)
+
+`test_hello_engine_w8be_layout.cpp` adds 9 cases covering
+`InstanceMatGpu` layout (size + field offsets), the sentinel
+contract, SSBO size math, and `W8BEGeomMeta` trivial-copyability.
+
+### User-visible result
+
+`--golden-fixture 5` capture taken after phase 844 shows:
+
+- **Curtain damask patterns** clearly visible on chrome spheres
+  (was: flat green/red/blue patches).
+- **Vegetation leaf textures** with visible veining (was: flat
+  green patches).
+- **Sandstone wall grain + carved relief** on the chrome surface
+  (was: flat white walls).
+- **Lion fountain stone detail** mirrored at the appropriate
+  chrome surface direction.
+
+Chrome reads as a polished metal mirror reflecting a richly
+textured cathedral interior, no longer as a polished plastic ball.
+
+### Run-level numbers
+
+- **Commits**: 10 on `dev` (phase 836 → 845; the host/wiring/inl
+  sync ships consolidated as one 843+844 commit).
+- **Tests**: 257 → **258**.
+- **Lines changed**: ~850 across rhi, samples, shader, tests, ADR.
+- No tag/push/force.
+
+### Lessons learned (queued to memory)
+
+- **Bindless on Vulkan is multi-layer.** Layout flags AND pool flags
+  AND set allocation chain AND write path AND descriptor type enum
+  AND feature bit enable AND driver version gate all have to land
+  together. None of them produces a useful error when missing.
+- **The .inl/.glsl drift guard is real.** The on-disk fragment
+  shader fell back to the embedded copy because the working
+  directory at agent-iteration runs was the repo root, not
+  `bin/Debug`. Keeping `.inl` in lockstep with `.glsl` is mandatory.
+- **`features_.bindless_resources` was already in the rhi feature
+  list** as a bool but had never been lit. Phase 838 was the first
+  consumer.
+
+### Run 19 candidate queue
+
+- USER-reported bugs queued for phase 847+:
+  - PBR M1R0 sphere visual artefact (bottom-left chrome sphere of
+    the grid).
+  - Black halo / silhouette artefact around scene objects.
+- L1 Metal backend (per ADR-20260530-metal-backend.md).
+- Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
+
+---
