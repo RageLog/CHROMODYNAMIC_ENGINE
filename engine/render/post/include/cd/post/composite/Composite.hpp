@@ -803,8 +803,15 @@ void main() {
   // TAA neighbourhood-clamp blend. Prefer the velocity G-Buffer for
   // reprojection (captures per-mesh animation), fall back to camera-
   // only via prev_world_to_uv when the velocity tap is empty.
-  float taa_alpha = clamp(pc.cam_fwd.w, 0.0, 0.97);
-  if (taa_alpha > 0.001 && center_d < 0.999) {
+  // phase855-taa-motion-decay: user-reported "TAA acinca harekete
+  // edince goruntu bulaniklasiyor" — constant high taa_alpha keeps
+  // mixing history when the camera moves, producing the classic
+  // ghosting/blur trail. Decay history weight by per-pixel motion
+  // magnitude (Karis 2014 / Lottes — "velocity-based history decay")
+  // so fast-moving pixels lean on the current frame and slow / still
+  // pixels keep their full temporal accumulation.
+  float taa_alpha_base = clamp(pc.cam_fwd.w, 0.0, 0.97);
+  if (taa_alpha_base > 0.001 && center_d < 0.999) {
     vec2 vel = texture(cd_gbuf_velocity, v_uv).rg;
     vec2 prev_uv;
     if (length(vel) > 1e-5) {
@@ -826,6 +833,13 @@ void main() {
         hi = max(hi, n);
       }
       hist = clamp(hist, lo, hi);
+      // Velocity in pixel units; e^(-2*px) so even ~1 px of motion
+      // halves the history weight, and any >2 px motion collapses
+      // taa_alpha towards 0.05 (just enough temporal stability to
+      // hide single-frame jitter without blurring the moving edge).
+      float vel_px = length(vel * vec2(textureSize(cd_hdr_color, 0)));
+      float motion_decay = exp(-vel_px * 2.0);
+      float taa_alpha = max(0.05, taa_alpha_base * motion_decay);
       c = mix(c, hist, taa_alpha);
     }
   }
