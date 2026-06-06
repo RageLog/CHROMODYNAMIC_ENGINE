@@ -1478,8 +1478,8 @@ inline void draw_selection_outline_overlay(const std::vector<SceneEntity>& entit
     outline.clamp_params();
     if (outline.style != cd::editor::OutlineStyle::kNone && !outline.empty())
     {
-        const float vw = static_cast<float>(extent.width);
-        const float vh = static_cast<float>(extent.height);
+        const auto vw = static_cast<float>(extent.width);
+        const auto vh = static_cast<float>(extent.height);
         // Background draw-list keeps gizmos BEHIND ImGui panels so
         // the selection ring doesn't bleed through Lights / Inspector
         // / Showcase windows (user-reported bug B01).
@@ -1531,8 +1531,8 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                                        const cd::math::Mat4f& vp,
                                        cd::rhi::Extent2D extent)
 {
-    const float vw = static_cast<float>(extent.width);
-    const float vh = static_cast<float>(extent.height);
+    const auto vw = static_cast<float>(extent.width);
+    const auto vh = static_cast<float>(extent.height);
     // Background draw-list - same fix as the outline drawlist
     // above. Light gizmos / cone edges / range rings no longer
     // bleed across the Lights/Inspector/Showcase panels.
@@ -1544,8 +1544,8 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
         for (std::size_t r = 0; r < 4; ++r)
             c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
         if (c[3] <= 0.0F)
-            return ImVec2(-1.0F, -1.0F);
-        return ImVec2((c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+            return { -1.0F, -1.0F };
+        return { (c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh };
     };
     for (std::size_t li = 0; li < lights.size(); ++li)
     {
@@ -1820,7 +1820,7 @@ inline void draw_command_palette_popup(cd::editor::CommandPalette& palette,
 {
     if (palette_visible)
     {
-        const float vw_p = static_cast<float>(extent.width);
+        const auto vw_p = static_cast<float>(extent.width);
         const float pw = 520.0F, ph = 360.0F;
         ImGui::SetNextWindowPos(ImVec2((vw_p - pw) * 0.5F, 80.0F), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
@@ -2685,8 +2685,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
         if (target_pos != nullptr)
         {
             gizmo.set_target(*target_pos);
-            const float vw = static_cast<float>(extent.width);
-            const float vh = static_cast<float>(extent.height);
+            const auto vw = static_cast<float>(extent.width);
+            const auto vh = static_cast<float>(extent.height);
             auto project = [&](const cd::math::Vec3f& p) -> ImVec2
             {
                 const cd::math::Vec4f wp { p.x, p.y, p.z, 1.0F };
@@ -2694,8 +2694,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 for (std::size_t r = 0; r < 4; ++r)
                     c[r] = vp[0][r] * wp[0] + vp[1][r] * wp[1] + vp[2][r] * wp[2] + vp[3][r] * wp[3];
                 if (c[3] <= 0.0F)
-                    return ImVec2(-1.0F, -1.0F);
-                return ImVec2((c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh);
+                    return { -1.0F, -1.0F };
+                return { (c[0] / c[3] * 0.5F + 0.5F) * vw, (1.0F - (c[1] / c[3] * 0.5F + 0.5F)) * vh };
             };
             const auto& tgt = gizmo.target();
             constexpr float kAxisLen = 1.5F;
@@ -2930,8 +2930,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                            ImVec2 mouse_pixel,
                                            cd::math::Vec3f world_start) -> std::optional<float>
                 {
-                    const float vw = static_cast<float>(window.width());
-                    const float vh = static_cast<float>(window.height());
+                    const auto vw = static_cast<float>(window.width());
+                    const auto vh = static_cast<float>(window.height());
                     if (vw < 1 || vh < 1)
                         return std::nullopt;
                     // Camera basis (same path as pick).
