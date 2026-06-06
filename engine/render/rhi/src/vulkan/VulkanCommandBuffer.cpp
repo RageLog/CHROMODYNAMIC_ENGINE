@@ -773,6 +773,18 @@ void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHa
     // BLAS-builder loop already supplies `triangle_primitive_counts` per
     // geometry up to whatever the caller passed.
     constexpr std::size_t kMaxBuildGeos = 128;
+    // phase833-rt-chrome-sponza-blas-geo-cap-128: compile-time floor.
+    // Khronos Sponza ships with 103 primitives; the cap must comfortably
+    // cover that and leave headroom for the next multi-geometry showcase
+    // mesh. If a future refactor pushes the cap back below the known
+    // geo count, the build fails with a pointer to this site so the
+    // regression is caught at compile time instead of as "silently
+    // missing Sponza prims in chrome reflections".
+    constexpr std::size_t kKhronosSponzaPrimCount = 103;
+    static_assert(kMaxBuildGeos >= kKhronosSponzaPrimCount,
+                  "kMaxBuildGeos must cover the Khronos Sponza primitive set "
+                  "so the multi-geometry BLAS does not silently drop prims. "
+                  "See ADR W8-BD and phase833.");
     VkAccelerationStructureBuildRangeInfoKHR ranges[kMaxBuildGeos] {};
     const VkAccelerationStructureBuildRangeInfoKHR* range_ptrs[1] { nullptr };
 
