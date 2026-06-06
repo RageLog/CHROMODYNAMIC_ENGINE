@@ -5929,8 +5929,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         if (s.app_state.pick.pending)
         {
             s.app_state.pick.pending = false;
-            const float vw = static_cast<float>(window.width());
-            const float vh = static_cast<float>(window.height());
+            const auto vw = static_cast<float>(window.width());
+            const auto vh = static_cast<float>(window.height());
             if (vw > 0 && vh > 0)
             {
                 const bool wasd_active =
@@ -6011,10 +6011,10 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             [&s](const SceneEntity& e) -> std::span<const cd::math::Vec3f>
             {
                 if (e.kind == PrimitiveKind::kSponza)
-                    return std::span<const cd::math::Vec3f>(s.sponza_geom_albedos);
+                    return { s.sponza_geom_albedos };
                 if (e.kind == PrimitiveKind::kGltf)
-                    return std::span<const cd::math::Vec3f>(s.cesium_geom_albedos);
-                return std::span<const cd::math::Vec3f>{};
+                    return { s.cesium_geom_albedos };
+                return {};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
             s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
