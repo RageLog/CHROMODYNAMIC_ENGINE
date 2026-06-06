@@ -358,10 +358,17 @@ boot_meshes(cd::rhi::IDevice&                device,
     // Sponza hit returning the same single sandstone tint.
     //
     // CesiumMan and procedural primitives stay single-geom: their
-    // glTF prim_ranges list is empty (CesiumMan) or N/A.  The Vulkan
-    // multi-geom build path caps at 32 geometries per call
-    // (VulkanCommandBuffer kMaxBuildGeos); Sponza ships with ~28
-    // prim ranges, well under the cap.
+    // glTF prim_ranges list is empty (CesiumMan) or N/A.
+    //
+    // phase833-rt-chrome-sponza-blas-geo-cap-128:
+    // VulkanCommandBuffer's kMaxBuildGeos was raised from 32 to 128 to
+    // fit Khronos Sponza's **103 primitives**. The original "Sponza
+    // ships with ~28 prim ranges, well under the cap" comment was
+    // wrong — the glTF revision actually has 103 prims; the previous
+    // 32-cap silently truncated the BLAS, dropping 71/103 prims out
+    // of the ray-query AS and breaking chrome reflections of the
+    // curtain panels / lion / vegetation. See the cap site for the
+    // full reasoning.
     out.blas_gltf = cd::rhi::AccelStructureHandle {};
     if (out.gltf.vb.is_valid())
     {

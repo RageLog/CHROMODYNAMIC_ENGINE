@@ -754,8 +754,25 @@ void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHa
         bgi.pGeometries   = view.triangle_geos;
     }
 
-    // BLAS may have multiple geometries; allocate a small stack array.
-    constexpr std::size_t kMaxBuildGeos = 32;
+    // BLAS may have multiple geometries; allocate a stack array.
+    //
+    // phase833-rt-chrome-sponza-blas-geo-cap-128:
+    // Cap raised from 32 -> 128 to match
+    // `cd::hello_engine::kMaxGeomsPerInst` (HelloRayQuery.hpp, bumped to
+    // 128 in phase798). Khronos Sponza ships **103 primitives**; the
+    // previous 32-cap was silently truncating the BLAS to the first 32
+    // prims, so 71/103 prims (most curtain panels, vegetation pots, the
+    // lion fountain, the lower arcade carving) were NEVER in the
+    // acceleration structure. Ray-query reflections from chrome
+    // surfaces had no way to hit those prims and the chrome spheres
+    // returned IBL sky / nearby small objects only — the user-reported
+    // "asla pbr kurelerde spanzaya ait bir yansima yok" symptom.
+    //
+    // 128 × 32-byte VkAccelerationStructureBuildRangeInfoKHR = 4 KiB on
+    // the stack; well under the typical 1 MiB stack limit. The host-side
+    // BLAS-builder loop already supplies `triangle_primitive_counts` per
+    // geometry up to whatever the caller passed.
+    constexpr std::size_t kMaxBuildGeos = 128;
     VkAccelerationStructureBuildRangeInfoKHR ranges[kMaxBuildGeos] {};
     const VkAccelerationStructureBuildRangeInfoKHR* range_ptrs[1] { nullptr };
 
