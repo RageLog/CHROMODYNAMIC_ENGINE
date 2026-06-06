@@ -142,8 +142,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -225,16 +227,29 @@ inline bool parse(int argc, char** argv) noexcept
 {
     auto& o = options();
     bool seen = false;
+    // phase816-clang-tidy-cert-err34-c: atoi() silently swallows
+    // conversion errors. strtol() reports them via end_ptr; we treat
+    // any non-numeric / out-of-range input as "flag not provided" so
+    // a typo like `--golden-fixture xyz` fails silently rather than
+    // landing on slot 0 by accident.
+    const auto parse_int = [](const char* arg) -> std::optional<long> {
+        char* end_ptr  = nullptr;
+        errno          = 0;
+        const long val = std::strtol(arg, &end_ptr, 10);
+        if (end_ptr == arg || *end_ptr != '\0' || errno != 0)
+            return std::nullopt;
+        return val;
+    };
     for (int i = 1; i < argc; ++i)
     {
         const std::string_view a { argv[i] };
         if (a == "--golden-fixture" && i + 1 < argc)
         {
-            const int n = std::atoi(argv[i + 1]);
-            if (n >= 0 && static_cast<std::size_t>(n)
-                          < cd::hello_engine::sponza_fixtures::kFixtureCount)
+            if (const auto n = parse_int(argv[i + 1]); n.has_value() &&
+                *n >= 0 && static_cast<std::size_t>(*n)
+                           < cd::hello_engine::sponza_fixtures::kFixtureCount)
             {
-                o.fixture_index = n;
+                o.fixture_index = static_cast<int>(*n);
                 seen = true;
             }
             ++i;
@@ -246,8 +261,8 @@ inline bool parse(int argc, char** argv) noexcept
         }
         else if (a == "--golden-frames" && i + 1 < argc)
         {
-            const int n = std::atoi(argv[i + 1]);
-            if (n >= 1) o.capture_at_frame = static_cast<std::uint32_t>(n - 1);
+            if (const auto n = parse_int(argv[i + 1]); n.has_value() && *n >= 1)
+                o.capture_at_frame = static_cast<std::uint32_t>(*n - 1);
             ++i;
         }
     }
