@@ -11,6 +11,7 @@
 # Does NOT depend on cd::rhi — stays in the asset tier.
 cd_add_library(asset_material_authoring
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::material is EXCLUDE_FROM_INSTALL
   SOURCES
     src/MaterialAuthoring.cpp
   PUBLIC_DEPS

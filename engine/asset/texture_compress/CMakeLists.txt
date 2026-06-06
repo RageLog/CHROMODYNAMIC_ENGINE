@@ -144,6 +144,7 @@ endif()
 
 cd_add_library(asset_texture_compress
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # bc7enc_rdo_lib + astcenc-none-static are FetchContent non-exportable
   SOURCES
     src/TextureCompress.cpp
   PUBLIC_DEPS

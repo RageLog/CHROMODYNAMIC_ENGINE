@@ -15,6 +15,7 @@
 
 cd_add_library(asset_shader_cache
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::shader is EXCLUDE_FROM_INSTALL (vendored glslang)
   SOURCES
     src/ShaderCache.cpp
   PUBLIC_DEPS

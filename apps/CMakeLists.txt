@@ -15,9 +15,11 @@ if(CD_ENABLE_VULKAN)
 endif()
 
 # Phase 771 — iOS demo application (Sprint-1 scaffold).
-# ios_demo/CMakeLists.txt contains an `if(NOT IOS) return()` guard so
-# this add_subdirectory is safe on Win11/macOS/Android/Web presets.
-add_subdirectory(ios_demo)
+# ios_demo directory only exists when committed; guard at parent level so
+# Win11/Linux configs don't fail when ios_demo/ is absent.
+if(IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ios_demo/CMakeLists.txt")
+  add_subdirectory(ios_demo)
+endif()
 
 # Phase 773 (FINALE-7 W2C Sprint-1) — Web demo (Emscripten only).
 # The subdirectory CMakeLists.txt contains an `if(NOT EMSCRIPTEN) return()`

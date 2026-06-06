@@ -8,6 +8,7 @@
 
 cd_add_library(render_scene_ingest
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::material is EXCLUDE_FROM_INSTALL
   SOURCES
     src/SceneIngest.cpp
   PUBLIC_DEPS

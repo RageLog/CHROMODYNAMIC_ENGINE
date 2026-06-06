@@ -56,8 +56,8 @@
     {
       "name": "harfbuzz",
       "version>=": "8.0.0",
-      "default-features": false,
-      "$comment": "OpenType shaping engine (BiDi / ligature / Indic conjunct) for cd_ui_font Phase 4 (ADR-20260530 + ADR-009). Resolved via find_package(harfbuzz CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback. When unavailable, Font::shape() degrades to a one-codepoint-per-glyph identity reorder so the public surface keeps compiling."
+      "features": ["freetype"],
+      "$comment": "OpenType shaping engine (BiDi / ligature / Indic conjunct) for cd_ui_font Phase 4. The 'freetype' feature provides hb-ft.h used by HarfBuzzShaping.cpp + FreeTypeBackend.cpp. Resolved via find_package(harfbuzz CONFIG) in engine/ui/font/CMakeLists.txt with FetchContent fallback."
     },
     {
       "name": "lz4",

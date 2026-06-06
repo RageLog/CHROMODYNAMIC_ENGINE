@@ -42,6 +42,7 @@
 #include <cd/ui/widgets/Widgets.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,54 @@ public:
 private:
     std::vector<Shortcut> shortcuts_; ///< All registered shortcuts (insertion order).
     bool                  visible_ { false };
+};
+
+// =============================================================================
+// Phase 776 (FINALE-8 W1C — close-out stub) — Chord state machine
+// Minimal so apps/editor compiles; full Sprint-2 deferred.
+// =============================================================================
+
+enum class ChordModifier : std::uint8_t
+{
+    kNone  = 0U,
+    kCtrl  = 1U,
+    kShift = 2U,
+    kAlt   = 4U,
+};
+
+class ChordStateMachine
+{
+public:
+    ChordStateMachine() noexcept = default;
+
+    [[nodiscard]] std::string feed_key(std::uint8_t mods, char key_char, std::int64_t now_ms) noexcept
+    {
+        const bool ctrl = (mods & static_cast<std::uint8_t>(ChordModifier::kCtrl)) != 0U;
+        if (!ctrl || key_char == '\0') { reset(); return {}; }
+        if (waiting_second_)
+        {
+            if (now_ms - first_ms_ > 500) { first_key_ = key_char; first_ms_ = now_ms; return {}; }
+            std::string chord; chord.reserve(20);
+            chord += "Ctrl+"; chord += first_key_;
+            chord += " Ctrl+"; chord += key_char;
+            reset();
+            return chord;
+        }
+        first_key_ = key_char; first_ms_ = now_ms; waiting_second_ = true;
+        return {};
+    }
+
+    void tick(std::int64_t now_ms) noexcept
+    {
+        if (waiting_second_ && (now_ms - first_ms_ > 500)) { reset(); }
+    }
+
+    void reset() noexcept { waiting_second_ = false; first_key_ = '\0'; first_ms_ = 0; }
+
+private:
+    bool         waiting_second_ { false };
+    char         first_key_      { '\0' };
+    std::int64_t first_ms_       { 0 };
 };
 
 }  // namespace cd::editor::panel::keyboard_shortcut_overlay

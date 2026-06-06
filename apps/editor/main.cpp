@@ -3947,7 +3947,7 @@ int main(int argc, char** argv)
                         key_char = static_cast<char>('A' + (kc - kFirstAlpha));
                     }
                     const std::uint8_t mods =
-                        ctrl_down ? kso_ns::ChordModifier::kCtrl
+                        ctrl_down ? static_cast<std::uint8_t>(kso_ns::ChordModifier::kCtrl)
                                   : std::uint8_t{0U};
                     const std::string chord =
                         chord_sm.feed_key(mods, key_char, now_ms());

@@ -35,8 +35,12 @@ set(SPIRV_CROSS_ENABLE_C_API         OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_ENABLE_UTIL          OFF CACHE BOOL "" FORCE)
 set(SPIRV_CROSS_SKIP_INSTALL         ON  CACHE BOOL "" FORCE)
 
-# Tier 1: vcpkg (only when toolchain is active)
+# Tier 1: vcpkg (only when toolchain is active) — vcpkg ships each spirv-cross-
+# backend as a separate Config package, so we look them all up.
 find_package(spirv_cross_core CONFIG QUIET)
+find_package(spirv_cross_glsl CONFIG QUIET)
+find_package(spirv_cross_hlsl CONFIG QUIET)
+find_package(spirv_cross_msl  CONFIG QUIET)
 if(spirv_cross_core_FOUND)
   message(STATUS "[cd] spirv_cross: vcpkg/find_package")
   set(_CD_SPIRV_CROSS_VIA_VCPKG TRUE)
@@ -53,31 +57,38 @@ else()
   set(_CD_SPIRV_CROSS_VIA_VCPKG FALSE)
 endif()
 
-# Silence vendor warnings on SPIRV-Cross targets
+# Silence vendor warnings on SPIRV-Cross targets (skip IMPORTED — only INTERFACE allowed there).
 foreach(_t spirv-cross-core spirv-cross-glsl spirv-cross-hlsl spirv-cross-msl
            spirv-cross-cpp spirv-cross-reflect spirv-cross-util)
   if(TARGET ${_t})
-    if(MSVC)
-      target_compile_options(${_t} PRIVATE /W0)
-    else()
-      target_compile_options(${_t} PRIVATE -w)
+    get_target_property(_t_imported ${_t} IMPORTED)
+    if(NOT _t_imported)
+      if(MSVC)
+        target_compile_options(${_t} PRIVATE /W0)
+      else()
+        target_compile_options(${_t} PRIVATE -w)
+      endif()
     endif()
   endif()
 endforeach()
 
-# vcpkg uses namespaced targets (spirv-cross-core::spirv-cross-core);
-# FetchContent uses plain targets (spirv-cross-core). Normalise here.
-if(_CD_SPIRV_CROSS_VIA_VCPKG)
-  set(_SPIRV_CORE  spirv-cross-core::spirv-cross-core)
-  set(_SPIRV_GLSL  spirv-cross-glsl::spirv-cross-glsl)
-  set(_SPIRV_HLSL  spirv-cross-hlsl::spirv-cross-hlsl)
-  set(_SPIRV_MSL   spirv-cross-msl::spirv-cross-msl)
-else()
-  set(_SPIRV_CORE  spirv-cross-core)
-  set(_SPIRV_GLSL  spirv-cross-glsl)
-  set(_SPIRV_HLSL  spirv-cross-hlsl)
-  set(_SPIRV_MSL   spirv-cross-msl)
-endif()
+# SPIRV-Cross targets — prefer namespaced (vcpkg) but fall back to plain
+# (FetchContent / older vcpkg). Handles both transparently.
+foreach(_pair "spirv-cross-core::spirv-cross-core;spirv-cross-core;_SPIRV_CORE"
+              "spirv-cross-glsl::spirv-cross-glsl;spirv-cross-glsl;_SPIRV_GLSL"
+              "spirv-cross-hlsl::spirv-cross-hlsl;spirv-cross-hlsl;_SPIRV_HLSL"
+              "spirv-cross-msl::spirv-cross-msl;spirv-cross-msl;_SPIRV_MSL")
+  list(GET _pair 0 _ns)
+  list(GET _pair 1 _plain)
+  list(GET _pair 2 _var)
+  if(TARGET ${_ns})
+    set(${_var} ${_ns})
+  elseif(TARGET ${_plain})
+    set(${_var} ${_plain})
+  else()
+    set(${_var} "")
+  endif()
+endforeach()
 
 # --- Library ---
 cd_add_library(spirv_cross_glue
