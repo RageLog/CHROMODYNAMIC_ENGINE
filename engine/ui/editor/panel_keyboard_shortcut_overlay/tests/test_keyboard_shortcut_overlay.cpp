@@ -4,6 +4,7 @@
 //
 // phase688 — unit tests for
 //   cd::editor::panel::keyboard_shortcut_overlay::KeyboardShortcutOverlay
+// phase776 — tests for ChordStateMachine + is_chord helper
 //
 // All tests are headless (no ImGui / no RHI). We verify:
 //
@@ -31,6 +32,23 @@
 //
 //   ZeroBoundsDrawDoesNotCrash
 //     — visible overlay with zero-size bounds must not crash.
+//
+// phase776 chord tests:
+//
+//   IsChordDetectsSpaceSeparatedKeys
+//     — is_chord("Ctrl+K Ctrl+S") == true; is_chord("Ctrl+S") == false.
+//
+//   SingleKeyShortcutStillWorks
+//     — ChordStateMachine does not interfere with direct (non-K-leader) keys.
+//
+//   ChordDetectionRoundTrip
+//     — Ctrl+K then Ctrl+S within timeout yields "Ctrl+K Ctrl+S".
+//
+//   ChordGapTimeoutCancels
+//     — Feeding second key after timeout_ms expires returns empty string.
+//
+//   ChordAllFourRegisteredKeys
+//     — S, L, T, H all complete correctly after Ctrl+K leader.
 // =============================================================================
 #include <cd/editor/panel_keyboard_shortcut_overlay/KeyboardShortcutOverlay.hpp>
 
@@ -219,4 +237,138 @@ TEST(KeyboardShortcutOverlay, ZeroBoundsDrawDoesNotCrash)
     batcher.begin_frame();
     // Must not crash with a zero-size framebuffer rect.
     ASSERT_NO_THROW(overlay.draw(batcher, theme, zero_bounds));
+}
+
+// ===========================================================================
+// phase776 — ChordStateMachine + is_chord helper tests
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// TEST(KeyboardChord, IsChordDetectsSpaceSeparatedKeys)
+// ---------------------------------------------------------------------------
+TEST(KeyboardChord, IsChordDetectsSpaceSeparatedKeys)
+{
+    // Chord syntax: space-separated two-key combo.
+    EXPECT_TRUE(kso::is_chord("Ctrl+K Ctrl+S"));
+    EXPECT_TRUE(kso::is_chord("Ctrl+K Ctrl+L"));
+    EXPECT_TRUE(kso::is_chord("Ctrl+K Ctrl+T"));
+    EXPECT_TRUE(kso::is_chord("Ctrl+K Ctrl+H"));
+
+    // Single-key shortcuts must NOT be detected as chords.
+    EXPECT_FALSE(kso::is_chord("Ctrl+S"));
+    EXPECT_FALSE(kso::is_chord("Ctrl+Z"));
+    EXPECT_FALSE(kso::is_chord("F5"));
+    EXPECT_FALSE(kso::is_chord("?"));
+    EXPECT_FALSE(kso::is_chord("Escape"));
+}
+
+// ---------------------------------------------------------------------------
+// TEST(KeyboardChord, SingleKeyShortcutStillWorks)
+//
+// Non-leader keys (not 'K' + Ctrl) must pass through without triggering
+// chord mode. The state machine must stay idle.
+// ---------------------------------------------------------------------------
+TEST(KeyboardChord, SingleKeyShortcutStillWorks)
+{
+    kso::ChordStateMachine sm;
+    constexpr std::int64_t t0 = 1000LL;
+
+    // Ctrl+S — not a chord leader; machine stays idle and returns empty.
+    const std::string result =
+        sm.feed_key(kso::ChordModifier::kCtrl, 'S', t0);
+    EXPECT_TRUE(result.empty());
+    EXPECT_FALSE(sm.chord_pending());
+
+    // Ctrl+Z — same.
+    const std::string result2 =
+        sm.feed_key(kso::ChordModifier::kCtrl, 'Z', t0 + 10LL);
+    EXPECT_TRUE(result2.empty());
+    EXPECT_FALSE(sm.chord_pending());
+
+    // A plain key without Ctrl.
+    const std::string result3 = sm.feed_key(0U, 'Q', t0 + 20LL);
+    EXPECT_TRUE(result3.empty());
+    EXPECT_FALSE(sm.chord_pending());
+}
+
+// ---------------------------------------------------------------------------
+// TEST(KeyboardChord, ChordDetectionRoundTrip)
+//
+// Ctrl+K (leader) → Ctrl+S (second key, within timeout) must yield
+// "Ctrl+K Ctrl+S". State machine returns to idle.
+// ---------------------------------------------------------------------------
+TEST(KeyboardChord, ChordDetectionRoundTrip)
+{
+    kso::ChordStateMachine sm;
+    constexpr std::int64_t t0 = 5000LL;
+
+    // Feed leader: Ctrl+K.
+    const std::string after_leader =
+        sm.feed_key(kso::ChordModifier::kCtrl, 'K', t0);
+    EXPECT_TRUE(after_leader.empty());      // No chord yet.
+    EXPECT_TRUE(sm.chord_pending());        // State machine waiting.
+
+    // Feed second key within 200 ms (well within 500 ms timeout): Ctrl+S.
+    const std::string chord =
+        sm.feed_key(kso::ChordModifier::kCtrl, 'S', t0 + 200LL);
+    EXPECT_EQ(chord, std::string{"Ctrl+K Ctrl+S"});
+    EXPECT_FALSE(sm.chord_pending());       // Back to idle.
+}
+
+// ---------------------------------------------------------------------------
+// TEST(KeyboardChord, ChordGapTimeoutCancels)
+//
+// When the second key arrives after 600 ms the chord must be cancelled and
+// the state machine must return to idle with an empty result.
+// ---------------------------------------------------------------------------
+TEST(KeyboardChord, ChordGapTimeoutCancels)
+{
+    kso::ChordStateMachine sm;
+    constexpr std::int64_t t0 = 10'000LL;
+
+    // Feed leader — must return empty (chord not yet complete).
+    EXPECT_TRUE(sm.feed_key(kso::ChordModifier::kCtrl, 'K', t0).empty());
+    EXPECT_TRUE(sm.chord_pending());
+
+    // Tick 600 ms later (beyond the 500 ms default timeout).
+    sm.tick(t0 + 600LL);
+    EXPECT_FALSE(sm.chord_pending());  // Expired.
+
+    // Feed the second key now — it must be ignored (returns empty).
+    const std::string result =
+        sm.feed_key(kso::ChordModifier::kCtrl, 'S', t0 + 600LL);
+    EXPECT_TRUE(result.empty());
+    EXPECT_FALSE(sm.chord_pending());
+}
+
+// ---------------------------------------------------------------------------
+// TEST(KeyboardChord, ChordAllFourRegisteredKeys)
+//
+// Verify that all four registered chord second-keys (S, L, T, H) complete
+// correctly after a Ctrl+K leader.
+// ---------------------------------------------------------------------------
+TEST(KeyboardChord, ChordAllFourRegisteredKeys)
+{
+    const std::pair<char, std::string> cases[] = {
+        { 'S', "Ctrl+K Ctrl+S" },
+        { 'L', "Ctrl+K Ctrl+L" },
+        { 'T', "Ctrl+K Ctrl+T" },
+        { 'H', "Ctrl+K Ctrl+H" },
+    };
+
+    for (const auto& [key, expected] : cases)
+    {
+        kso::ChordStateMachine sm;
+        constexpr std::int64_t t0 = 0LL;
+
+        // Feed leader — must return empty (chord not yet complete).
+        EXPECT_TRUE(sm.feed_key(kso::ChordModifier::kCtrl, 'K', t0).empty())
+            << "Leader returned non-empty for key " << key;
+        EXPECT_TRUE(sm.chord_pending()) << "Leader not pending for key " << key;
+
+        const std::string result =
+            sm.feed_key(kso::ChordModifier::kCtrl, key, t0 + 100LL);
+        EXPECT_EQ(result, expected) << "Failed for key " << key;
+        EXPECT_FALSE(sm.chord_pending()) << "Still pending after key " << key;
+    }
 }

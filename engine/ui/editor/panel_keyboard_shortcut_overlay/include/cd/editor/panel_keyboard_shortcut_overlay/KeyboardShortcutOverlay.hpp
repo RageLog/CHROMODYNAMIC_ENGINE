@@ -44,6 +44,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace cd::editor::panel::keyboard_shortcut_overlay
@@ -129,19 +130,32 @@ class ChordStateMachine
 public:
     ChordStateMachine() noexcept = default;
 
+    // Convenience overload: take ChordModifier enum directly (preferred at call sites).
+    [[nodiscard]] std::string feed_key(ChordModifier mod, char key_char, std::int64_t now_ms) noexcept
+    {
+        return feed_key(static_cast<std::uint8_t>(mod), key_char, now_ms);
+    }
+
+    [[nodiscard]] bool chord_pending() const noexcept { return waiting_second_; }
+
     [[nodiscard]] std::string feed_key(std::uint8_t mods, char key_char, std::int64_t now_ms) noexcept
     {
         const bool ctrl = (mods & static_cast<std::uint8_t>(ChordModifier::kCtrl)) != 0U;
         if (!ctrl || key_char == '\0') { reset(); return {}; }
         if (waiting_second_)
         {
-            if (now_ms - first_ms_ > 500) { first_key_ = key_char; first_ms_ = now_ms; return {}; }
+            // Second key arrived: either complete the chord (if within 500ms window)
+            // or cancel the chord and stay idle (return empty).
+            if (now_ms - first_ms_ > 500) { reset(); return {}; }
             std::string chord; chord.reserve(20);
             chord += "Ctrl+"; chord += first_key_;
             chord += " Ctrl+"; chord += key_char;
             reset();
             return chord;
         }
+        // Only the leader key 'K' starts a chord; other Ctrl+key combinations
+        // pass through transparently (not chord-shorthand-eligible).
+        if (key_char != 'K') { return {}; }
         first_key_ = key_char; first_ms_ = now_ms; waiting_second_ = true;
         return {};
     }
@@ -158,5 +172,12 @@ private:
     char         first_key_      { '\0' };
     std::int64_t first_ms_       { 0 };
 };
+
+// Free helper — true if the shortcut spec is a 2-key chord
+// (e.g. "Ctrl+K Ctrl+S"); false for single-key shortcuts (e.g. "Ctrl+S").
+[[nodiscard]] inline bool is_chord(std::string_view spec) noexcept
+{
+    return spec.find(' ') != std::string_view::npos;
+}
 
 }  // namespace cd::editor::panel::keyboard_shortcut_overlay
