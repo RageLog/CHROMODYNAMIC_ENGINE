@@ -183,6 +183,69 @@ TEST(HelloGltfTexAvg, OnePixelBufferWithLargeStrideStillSamples)
 // checkerboard, stride 1 must average exactly to the mid-grey midpoint.
 // ===========================================================================
 
+// ===========================================================================
+// fold_texture_avg_into_factor — the second-half of the chain that puts
+// (factor * texture-average) into the SSBO. Test the composition itself.
+// ===========================================================================
+
+TEST(HelloGltfTexAvg_Fold, NulloptAvgReturnsFactorUnchanged)
+{
+    const std::array<float, 4> factor { 0.5F, 0.7F, 0.9F, 1.0F };
+    const auto result =
+        cd_sample::fold_texture_avg_into_factor(factor, std::nullopt);
+    EXPECT_FLOAT_EQ(result[0], 0.5F);
+    EXPECT_FLOAT_EQ(result[1], 0.7F);
+    EXPECT_FLOAT_EQ(result[2], 0.9F);
+    EXPECT_FLOAT_EQ(result[3], 1.0F);
+}
+
+TEST(HelloGltfTexAvg_Fold, IdentityFactorReturnsTextureAvg)
+{
+    // The canonical Sponza case: factor=(1,1,1) with the real colour in
+    // the texture. Folding must return the texture-average verbatim.
+    const std::array<float, 4>                factor { 1.0F, 1.0F, 1.0F, 1.0F };
+    const std::optional<std::array<float, 4>> avg {
+        std::array<float, 4> { 0.85F, 0.12F, 0.08F, 1.0F }   // red curtain
+    };
+    const auto result =
+        cd_sample::fold_texture_avg_into_factor(factor, avg);
+    EXPECT_NEAR(result[0], 0.85F, 1e-6F);
+    EXPECT_NEAR(result[1], 0.12F, 1e-6F);
+    EXPECT_NEAR(result[2], 0.08F, 1e-6F);
+    EXPECT_FLOAT_EQ(result[3], 1.0F);
+}
+
+TEST(HelloGltfTexAvg_Fold, NonIdentityFactorMultipliesChannelWise)
+{
+    // Factor (0.5, 1.0, 2.0) applied to texture (0.6, 0.4, 0.2) →
+    // (0.30, 0.40, 0.40). Alpha pass-through stays at factor's alpha.
+    const std::array<float, 4>                factor { 0.5F, 1.0F, 2.0F, 0.75F };
+    const std::optional<std::array<float, 4>> avg {
+        std::array<float, 4> { 0.6F, 0.4F, 0.2F, 1.0F }
+    };
+    const auto result =
+        cd_sample::fold_texture_avg_into_factor(factor, avg);
+    EXPECT_NEAR(result[0], 0.30F, 1e-6F);
+    EXPECT_NEAR(result[1], 0.40F, 1e-6F);
+    EXPECT_NEAR(result[2], 0.40F, 1e-6F);
+    EXPECT_FLOAT_EQ(result[3], 0.75F);
+}
+
+TEST(HelloGltfTexAvg_Fold, AlphaChannelComesFromFactorNotTexture)
+{
+    // Lock the alpha-pass-through contract — caller's factor.a is the
+    // only alpha that lands in the SSBO; the texture average's alpha
+    // is collapsed to 1.0 at compute time anyway, but a future change
+    // shouldn't silently start propagating it.
+    const std::array<float, 4>                factor { 1.0F, 1.0F, 1.0F, 0.4F };
+    const std::optional<std::array<float, 4>> avg {
+        std::array<float, 4> { 0.5F, 0.5F, 0.5F, 1.0F }
+    };
+    const auto result =
+        cd_sample::fold_texture_avg_into_factor(factor, avg);
+    EXPECT_FLOAT_EQ(result[3], 0.4F);
+}
+
 TEST(HelloGltfTexAvg, CheckerboardStrideOneAveragesToMidpoint)
 {
     // 4x4 RGB checkerboard, even cells = (255, 0, 0), odd cells =

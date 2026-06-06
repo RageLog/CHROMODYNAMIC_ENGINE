@@ -183,8 +183,7 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // fabric) don't drag the mean towards black. If the texture
                 // is missing or unloadable, the fallback is the glTF
                 // base_color_factor (which is the legacy phase465 path).
-                std::array<float, 4> avg_texture_color { 1.0F, 1.0F, 1.0F, 1.0F };
-                bool                 avg_texture_valid { false };
+                std::optional<std::array<float, 4>> avg_texture_color {};
                 if (tex_idx >= 0 && tex_idx < static_cast<int>(loaded.textures.size()))
                 {
                     const auto& gt = loaded.textures[static_cast<std::size_t>(tex_idx)];
@@ -199,13 +198,9 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                         }
                         // phase822: delegate to the extracted free function
                         // (testable via test_hello_engine_tex_avg.cpp).
-                        if (const auto avg = compute_texture_average_alpha_weighted(
-                                std::span<const std::uint8_t> { gt.rgba.data(), gt.rgba.size() },
-                                gt.width, gt.height); avg.has_value())
-                        {
-                            avg_texture_color = *avg;
-                            avg_texture_valid = true;
-                        }
+                        avg_texture_color = compute_texture_average_alpha_weighted(
+                            std::span<const std::uint8_t> { gt.rgba.data(), gt.rgba.size() },
+                            gt.width, gt.height);
                     }
                 }
                 // phase456: per-prim normal texture upload. We reuse the
@@ -259,29 +254,19 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 range.roughness       = mat.roughness_factor;
                 // phase465-perprim: capture the glTF base color factor so
                 // per-prim RT reflections show the right material colour.
-                // phase796-rt-chrome-sponza-real-prim-color: when the
-                // texture-average colour is valid, use the PRODUCT of
-                // (factor * texture-average) — this is the same energy
-                // composition the raster path uses (texture sampled *
-                // factor) and means even a (1,1,1) factor returns the
-                // texture's actual dominant colour. Without this every
-                // (1,1,1)-factor prim collapsed to white on the RT side
-                // and lost the colour separation between curtain panels,
-                // vegetation, sandstone walls etc.
-                if (avg_texture_valid)
-                {
-                    range.base_color_factor[0] =
-                        mat.base_color_factor[0] * avg_texture_color[0];
-                    range.base_color_factor[1] =
-                        mat.base_color_factor[1] * avg_texture_color[1];
-                    range.base_color_factor[2] =
-                        mat.base_color_factor[2] * avg_texture_color[2];
-                    range.base_color_factor[3] = mat.base_color_factor[3];
-                }
-                else
-                {
-                    range.base_color_factor = mat.base_color_factor;
-                }
+                // phase796-rt-chrome-sponza-real-prim-color (phase823 refactor):
+                // when the texture-average colour is valid, store the PRODUCT
+                // of (factor * texture-average) — same per-channel composition
+                // the raster path uses (texture sampled * factor) so a
+                // (1,1,1) factor returns the texture's actual dominant colour.
+                // Without this every (1,1,1)-factor prim collapsed to white
+                // on the RT side and lost the colour separation between
+                // curtain panels, vegetation, sandstone walls etc. The
+                // optional-nullopt branch falls through to the unmodified
+                // factor, matching the legacy phase465 path.
+                range.base_color_factor =
+                    fold_texture_avg_into_factor(mat.base_color_factor,
+                                                 avg_texture_color);
                 // phase456: now that we ACTUALLY upload per-prim normal
                 // textures and bind them as the prim's own binding-8
                 // descriptor, we can finally enable the shader's
