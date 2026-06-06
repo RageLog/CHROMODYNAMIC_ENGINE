@@ -18,6 +18,7 @@
 
 #include <cd/editor/cdproj/CdprojFile.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -298,4 +299,82 @@ TEST_F(CdprojTest, EmptyDockLayoutRoundTrips)
     const auto loaded = cdproj::read_cdproj(path);
     ASSERT_TRUE(loaded.has_value());
     EXPECT_EQ(loaded->dock_layout, "");
+}
+
+// ---------------------------------------------------------------------------
+// TEST: UserCustomLayoutRoundTrips   (phase788 / H5)
+//
+// A non-empty user_custom_layout list must survive write + read intact.
+// Verifies that all selected panel IDs are preserved in order and that
+// panels not selected are absent.
+// ---------------------------------------------------------------------------
+TEST_F(CdprojTest, UserCustomLayoutRoundTrips)
+{
+    cdproj::CdprojData data;
+    data.schema_version  = 1;
+    data.user_custom_layout = {
+        "viewport",
+        "inspector",
+        "console",
+        "assets",
+        "scene_tree",
+    };
+
+    const auto path = cdproj_path("custom_layout.cdproj");
+    ASSERT_TRUE(cdproj::write_cdproj(data, path));
+
+    const auto loaded = cdproj::read_cdproj(path);
+    ASSERT_TRUE(loaded.has_value());
+
+    ASSERT_EQ(loaded->user_custom_layout.size(), static_cast<std::size_t>(5));
+    EXPECT_EQ(loaded->user_custom_layout[0], "viewport");
+    EXPECT_EQ(loaded->user_custom_layout[1], "inspector");
+    EXPECT_EQ(loaded->user_custom_layout[2], "console");
+    EXPECT_EQ(loaded->user_custom_layout[3], "assets");
+    EXPECT_EQ(loaded->user_custom_layout[4], "scene_tree");
+
+    // Panels NOT in the list must be absent.
+    const auto& cl = loaded->user_custom_layout;
+    EXPECT_EQ(std::ranges::find(cl, "animator"), cl.end())
+        << "animator was not selected — must be absent";
+}
+
+// ---------------------------------------------------------------------------
+// TEST: EmptyUserCustomLayoutRoundTrips   (phase788 / H5)
+//
+// When user_custom_layout is empty (non-Custom preset chosen), the field
+// must round-trip as an empty list — it must not be null/missing/corrupted.
+// This guards the forward-compat invariant: pre-788 files (which lack the
+// key) produce an empty list on read; post-788 files with [] also produce
+// an empty list.
+// ---------------------------------------------------------------------------
+TEST_F(CdprojTest, EmptyUserCustomLayoutRoundTrips)
+{
+    // Case 1: field explicitly set to empty.
+    {
+        cdproj::CdprojData data;
+        data.user_custom_layout.clear();
+
+        const auto path = cdproj_path("no_custom_layout.cdproj");
+        ASSERT_TRUE(cdproj::write_cdproj(data, path));
+
+        const auto loaded = cdproj::read_cdproj(path);
+        ASSERT_TRUE(loaded.has_value());
+        EXPECT_TRUE(loaded->user_custom_layout.empty())
+            << "empty user_custom_layout must round-trip as empty";
+    }
+
+    // Case 2: pre-788 .cdproj file that lacks the key entirely — must parse
+    // without error and yield an empty list (forward compat).
+    {
+        const auto path = cdproj_path("pre788.cdproj");
+        {
+            std::ofstream f(path);
+            f << R"({ "schema_version": 1, "theme_name": "dark" })";
+        }
+        const auto loaded = cdproj::read_cdproj(path);
+        ASSERT_TRUE(loaded.has_value()) << "pre-788 file without user_custom_layout must parse";
+        EXPECT_TRUE(loaded->user_custom_layout.empty())
+            << "missing user_custom_layout key must yield empty list";
+    }
 }

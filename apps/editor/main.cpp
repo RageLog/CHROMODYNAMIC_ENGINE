@@ -2327,31 +2327,101 @@ void draw_boot_splash(ur::DrawBatcher&                                  batcher,
 // phase685 / M13 W6B — shown ONCE after the boot splash finishes, if no
 // .cdproj existed when the editor started (first-launch detection).
 //
-// The dialog is a single centred panel (480 x 220 px) with three labelled
+// The dialog is a single centred panel (480 x 220 px) with four labelled
 // option buttons rendered as coloured quads. Clicking a button commits the
 // layout choice and the choice is written to .cdproj immediately so the next
 // launch skips the dialog.
 //
 // Layout presets:
-//   kDefault  — keep the existing 16-panel default layout built by
+//   kDefault  — keep the existing 24-panel default layout built by
 //               build_default_layout().
 //   kCompact  — collapse to 3 tiles: viewport (centre) + console (bottom) +
 //               inspector (right).  Ideal for focused scene work.
-//   kFull     — all 16 panels at equal weight, tiled in a 4-column grid.
+//   kFull     — all 24 panels at equal weight, tiled in a 4-column grid.
 //               Gives a power user everything visible at once.
+//   kCustom   — (phase788 / H5) Opens a two-phase picker: the user selects
+//               which panels to include via a checklist, then confirms.  The
+//               selection is saved to .cdproj as user_custom_layout so the
+//               power user's personal cockpit survives restarts.
+//               MOMENT: a power user picks exactly the 6 panels they need and
+//               never sees the rest — permanent, personal layout.
 
 enum class WelcomeChoice : std::uint8_t
 {
-    kNone    = 0,   ///< Dialog still open.
+    kNone    = 0,   ///< Dialog still open / picker open.
     kDefault = 1,
     kCompact = 2,
     kFull    = 3,
+    kCustom  = 4,   ///< User confirmed a custom panel selection.
+};
+
+// phase788 / H5 — All 24 dock-panel IDs (must mirror register_panel order).
+// Used by the Custom layout picker checklist.
+static constexpr std::array<std::string_view, 24> kAllPanelIds {{
+    "scene_tree",
+    "scene_navigator",
+    "viewport",
+    "inspector",
+    "settings_panel",
+    "scene_palette",
+    "console",
+    "build_panel",
+    "assets",
+    "asset_drop_target",
+    "material_editor",
+    "vehicle_editor",
+    "material_preview",
+    "animator",
+    "ik_chain_editor",
+    "behavior_designer",
+    "light_editor",
+    "perf_profiler",
+    "asset_pipeline_status",
+    "cutscene_player",
+    "dialog_tree_editor",
+    "input_recorder",
+    "pathfinding_viz",
+    "lobby_browser",
+}};
+
+/// phase788 / H5 — State for the two-phase Custom layout picker.
+/// Phase 1: draw_welcome_dialog shows 4 buttons; user clicks "Custom".
+/// Phase 2: draw_custom_picker shows a panel checklist; user confirms.
+struct CustomPickerState
+{
+    bool        active   { false };  ///< True while the picker panel is open.
+    /// Parallel bool array — checked[i] == true means kAllPanelIds[i] included.
+    std::array<bool, 24> checked {};
+
+    CustomPickerState()
+    {
+        // Default: all panels enabled.
+        checked.fill(true);
+    }
+
+    void open() noexcept { active = true; }
+
+    /// Return the list of selected panel IDs (preserves kAllPanelIds order).
+    [[nodiscard]] std::vector<std::string> selected_panels() const
+    {
+        std::vector<std::string> result;
+        result.reserve(kAllPanelIds.size());
+        for (std::size_t i = 0; i < kAllPanelIds.size(); ++i)
+        {
+            if (checked[i])
+            {
+                result.emplace_back(kAllPanelIds[i]);
+            }
+        }
+        return result;
+    }
 };
 
 struct FirstTimeWelcome
 {
-    bool         active { false };   ///< True while the dialog is visible.
+    bool          active { false };   ///< True while the dialog is visible.
     WelcomeChoice choice { WelcomeChoice::kNone };
+    CustomPickerState custom_picker {};
 
     void show() noexcept { active = true; }
 
@@ -2364,6 +2434,11 @@ struct FirstTimeWelcome
 
 /// Draw the welcome dialog into `batcher` and handle click input.
 /// Returns the chosen option if a button was clicked this frame, kNone otherwise.
+/// phase788 / H5: now has 4 buttons — Default / Compact / Full / Custom.
+/// Clicking Custom does NOT immediately return kCustom; the caller must then
+/// open the CustomPickerState before the next frame.  The return value
+/// kCustom signals "open the picker" — actual layout application happens
+/// after the user confirms in draw_custom_picker.
 [[nodiscard]] WelcomeChoice draw_welcome_dialog(
     ur::DrawBatcher&       batcher,
     const uw::Theme&       theme,
@@ -2371,11 +2446,11 @@ struct FirstTimeWelcome
     float                  fb_h,
     const uw::PointerState& ptr)
 {
-    // Dialog dimensions.
-    constexpr float kDlgW   = 480.0F;
+    // Dialog dimensions.  Widened from 480 -> 580 px to fit 4 buttons.
+    constexpr float kDlgW   = 580.0F;
     constexpr float kDlgH   = 220.0F;
     constexpr float kBtnH   =  40.0F;
-    constexpr float kBtnW   = 140.0F;
+    constexpr float kBtnW   = 120.0F;
     constexpr float kBtnGap =  12.0F;
     constexpr float kPad    =  20.0F;
 
@@ -2411,15 +2486,15 @@ struct FirstTimeWelcome
                  ur::Color { theme.text_dim.r, theme.text_dim.g,
                              theme.text_dim.b, 100U });
 
-    // --- 5. Three option buttons ---
-    //   Button layout: [Default Layout] [Compact Layout] [Full Layout]
+    // --- 5. Four option buttons ---
+    //   Layout: [Default Layout] [Compact Layout] [Full Layout] [Custom...]
     //   Centred horizontally; anchored near the dialog bottom.
-    const float total_btn_w = 3.0F * kBtnW + 2.0F * kBtnGap;
+    const float total_btn_w = 4.0F * kBtnW + 3.0F * kBtnGap;
     const float btn_row_x   = dlg_x + (kDlgW - total_btn_w) * 0.5F;
     const float btn_row_y   = dlg_y + kDlgH - kBtnH - kPad;
 
     struct BtnDesc { float x; ur::Color color; WelcomeChoice result; };
-    const std::array<BtnDesc, 3> buttons {{
+    const std::array<BtnDesc, 4> buttons {{
         { btn_row_x,
           ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 220U },
           WelcomeChoice::kDefault },
@@ -2431,6 +2506,11 @@ struct FirstTimeWelcome
           ur::Color { theme.surface_hover.r, theme.surface_hover.g,
                       theme.surface_hover.b, 220U },
           WelcomeChoice::kFull },
+        // phase788 / H5 — "Custom..." button: a warm amber tint so the power-
+        // user option stands out visually from the three presets.
+        { btn_row_x + (kBtnW + kBtnGap) * 3.0F,
+          ur::Color { 180U, 120U, 40U, 220U },
+          WelcomeChoice::kCustom },
     }};
 
     WelcomeChoice clicked = WelcomeChoice::kNone;
@@ -2462,6 +2542,16 @@ struct FirstTimeWelcome
                      kBtnW - 16.0F, kLabelH,
                      ur::Color { 220U, 220U, 220U, 200U });
 
+        // For the "Custom..." button, draw a second indicator dot stripe to
+        // signal "this leads somewhere" (2 lines = picker ahead).
+        if (btn.result == WelcomeChoice::kCustom)
+        {
+            batcher.quad(btn.x + 8.0F,
+                         btn_row_y + (kBtnH - kLabelH) * 0.5F + kLabelH + 3.0F,
+                         kBtnW * 0.5F - 8.0F, kLabelH,
+                         ur::Color { 240U, 200U, 100U, 180U });
+        }
+
         if (hovered && ptr.left_pressed)
         {
             clicked = btn.result;
@@ -2471,16 +2561,186 @@ struct FirstTimeWelcome
     return clicked;
 }
 
+/// phase788 / H5 — Draw the Custom layout picker panel.
+///
+/// Renders a full-screen modal (same dim-backdrop style as the welcome dialog)
+/// with a scrollable checklist of all 24 panels.  Each row is a small coloured
+/// toggle quad (filled = checked, hollow = unchecked) plus a label-stripe.
+/// A "Confirm" button at the bottom returns true when clicked; "Back" returns
+/// false (caller should re-show the welcome dialog and clear the picker).
+///
+/// @param picker     Mutable picker state (checked[] toggled in place).
+/// @param batcher    Destination draw batcher.
+/// @param theme      Active widget theme for colours.
+/// @param fb_w/fb_h  Framebuffer dimensions for centring.
+/// @param ptr        Current pointer state.
+/// @returns true if the user confirmed (caller should apply + persist layout).
+///          false if the user pressed Back.
+///          std::nullopt while the picker is still open.
+[[nodiscard]] std::optional<bool> draw_custom_picker(
+    CustomPickerState&     picker,
+    ur::DrawBatcher&       batcher,
+    const uw::Theme&       theme,
+    float                  fb_w,
+    float                  fb_h,
+    const uw::PointerState& ptr)
+{
+    // Picker panel dimensions.
+    constexpr float kPkW    = 480.0F;
+    constexpr float kPkH    = 520.0F;
+    constexpr float kPad    =  16.0F;
+    constexpr float kRowH   =  18.0F;   ///< Height per panel toggle row.
+    constexpr float kRowGap =   2.0F;
+    constexpr float kBoxSz  =  12.0F;   ///< Toggle checkbox size.
+    constexpr float kBtnH   =  36.0F;
+    constexpr float kBtnW   = 100.0F;
+    constexpr float kHeaderH = 32.0F;
+    // Rows area: from below header+pad to above buttons+pad.
+    constexpr float kRowsTop  = kHeaderH + kPad;
+    constexpr float kBtnAreaH = kBtnH + kPad * 2.0F;
+
+    const float pk_x = (fb_w - kPkW) * 0.5F;
+    const float pk_y = (fb_h - kPkH) * 0.5F;
+
+    // --- 1. Dim backdrop ---
+    batcher.quad(0.0F, 0.0F, fb_w, fb_h,
+                 ur::Color { 0U, 0U, 0U, 180U });
+
+    // --- 2. Panel background ---
+    batcher.quad(pk_x, pk_y, kPkW, kPkH,
+                 ur::Color { theme.surface.r, theme.surface.g,
+                             theme.surface.b, 248U });
+
+    // --- 3. Header strip ---
+    batcher.quad(pk_x, pk_y, kPkW, kHeaderH,
+                 ur::Color { theme.accent.r, theme.accent.g,
+                             theme.accent.b, 230U });
+
+    // Header label indicator (two stripes = "panel checklist").
+    constexpr float kSubH = 5.0F;
+    batcher.quad(pk_x + kPad, pk_y + (kHeaderH - kSubH * 2.0F - 3.0F) * 0.5F,
+                 kPkW * 0.40F, kSubH,
+                 ur::Color { 240U, 240U, 240U, 200U });
+    batcher.quad(pk_x + kPad,
+                 pk_y + (kHeaderH - kSubH * 2.0F - 3.0F) * 0.5F + kSubH + 3.0F,
+                 kPkW * 0.25F, kSubH * 0.7F,
+                 ur::Color { 200U, 200U, 200U, 150U });
+
+    // --- 4. Panel checklist rows (two columns to fit 24 panels) ---
+    // Split 24 panels into left column (12) and right column (12).
+    constexpr std::size_t kColSize  = 12U;
+    constexpr float       kColW     = kPkW * 0.5F - kPad;
+    const float rows_y0 = pk_y + kRowsTop;
+
+    for (std::size_t i = 0; i < kAllPanelIds.size(); ++i)
+    {
+        const bool   is_right_col = (i >= kColSize);
+        const float  col_x        = pk_x + kPad
+                                    + (is_right_col ? kPkW * 0.5F : 0.0F);
+        const auto   row_idx      = static_cast<float>(is_right_col ? i - kColSize : i);
+        const float  row_y        = rows_y0 + row_idx * (kRowH + kRowGap);
+
+        // Clamp: if row_y overflows the rows area, skip (shouldn't happen with 24 rows).
+        if (row_y + kRowH > pk_y + kPkH - kBtnAreaH) { break; }
+
+        const bool checked = picker.checked[i];
+
+        // Toggle checkbox quad.
+        const ur::Color box_fill = checked
+            ? ur::Color { theme.accent.r, theme.accent.g, theme.accent.b, 220U }
+            : ur::Color { static_cast<std::uint8_t>(theme.surface.r / 2U),
+                          static_cast<std::uint8_t>(theme.surface.g / 2U),
+                          static_cast<std::uint8_t>(theme.surface.b / 2U),
+                          180U };
+        batcher.quad(col_x, row_y + (kRowH - kBoxSz) * 0.5F,
+                     kBoxSz, kBoxSz, box_fill);
+
+        // Row label stripe (represents panel name; no glyph yet).
+        const float label_alpha = checked ? 200U : 100U;
+        batcher.quad(col_x + kBoxSz + 4.0F,
+                     row_y + (kRowH - 4.0F) * 0.5F,
+                     kColW - kBoxSz - 8.0F, 4.0F,
+                     ur::Color { theme.text_dim.r, theme.text_dim.g,
+                                 theme.text_dim.b,
+                                 static_cast<std::uint8_t>(label_alpha) });
+
+        // Click-to-toggle.
+        const bool row_hovered =
+            ptr.mouse_x >= col_x &&
+            ptr.mouse_x <= col_x + kColW &&
+            ptr.mouse_y >= row_y &&
+            ptr.mouse_y <= row_y + kRowH;
+
+        if (row_hovered && ptr.left_pressed)
+        {
+            picker.checked[i] = !picker.checked[i];
+        }
+    }
+
+    // --- 5. "Back" and "Confirm" buttons at the bottom ---
+    const float btn_y    = pk_y + kPkH - kBtnH - kPad;
+    const float back_x   = pk_x + kPad;
+    const float confirm_x = pk_x + kPkW - kBtnW - kPad;
+
+    // Back button.
+    const bool back_hovered =
+        ptr.mouse_x >= back_x && ptr.mouse_x <= back_x + kBtnW &&
+        ptr.mouse_y >= btn_y  && ptr.mouse_y <= btn_y + kBtnH;
+
+    {
+        ur::Color back_col { theme.surface_hover.r, theme.surface_hover.g,
+                             theme.surface_hover.b, 210U };
+        if (back_hovered)
+        {
+            back_col.r = static_cast<std::uint8_t>(
+                std::min(255, static_cast<int>(back_col.r) + 30));
+        }
+        batcher.quad(back_x, btn_y, kBtnW, kBtnH, back_col);
+        // Label stripe.
+        batcher.quad(back_x + 8.0F, btn_y + (kBtnH - 3.0F) * 0.5F,
+                     kBtnW - 16.0F, 3.0F,
+                     ur::Color { 200U, 200U, 200U, 180U });
+    }
+
+    // Confirm button (amber, matching the Custom button tint).
+    const bool confirm_hovered =
+        ptr.mouse_x >= confirm_x && ptr.mouse_x <= confirm_x + kBtnW &&
+        ptr.mouse_y >= btn_y     && ptr.mouse_y <= btn_y + kBtnH;
+
+    {
+        ur::Color conf_col { 180U, 120U, 40U, 220U };
+        if (confirm_hovered)
+        {
+            conf_col.r = static_cast<std::uint8_t>(
+                std::min(255, static_cast<int>(conf_col.r) + 30));
+            conf_col.g = static_cast<std::uint8_t>(
+                std::min(255, static_cast<int>(conf_col.g) + 30));
+        }
+        batcher.quad(confirm_x, btn_y, kBtnW, kBtnH, conf_col);
+        batcher.quad(confirm_x + 8.0F, btn_y + (kBtnH - 3.0F) * 0.5F,
+                     kBtnW - 16.0F, 3.0F,
+                     ur::Color { 240U, 220U, 140U, 200U });
+    }
+
+    if (back_hovered && ptr.left_pressed) { return false; }
+    if (confirm_hovered && ptr.left_pressed) { return true; }
+    return std::nullopt;
+}
+
 /// Apply the welcome choice to the live DockSpace.
 /// kDefault: no change (already built by build_default_layout).
 /// kCompact: collapse to viewport + console + inspector (3 tiles).
-/// kFull:    equal-weight 4-column split of all 16 panels.
+/// kFull:    equal-weight 4-column split of all 24 panels.
+/// kCustom:  viewport always centre; each additional selected panel is
+///           tab-merged onto viewport.  Simple "everything on one tile with
+///           tabs" approach — the user can drag panels out later.
 ///
 /// Strategy: build a temporary DockSpace with the desired topology, serialize
 /// it, then restore into the live `ds`.  Uses only the public DockSpace API
 /// (no "clear") and keeps all registered panel drawers intact because
 /// DockSpace::restore() replaces only the tree structure, not the panel map.
-void apply_welcome_layout(uw::DockSpace& ds, WelcomeChoice choice)
+void apply_welcome_layout(uw::DockSpace& ds, WelcomeChoice choice,
+                          const std::vector<std::string>& custom_panels = {})
 {
     if (choice == WelcomeChoice::kDefault) { return; }  // nothing to do
 
@@ -2508,11 +2768,12 @@ void apply_welcome_layout(uw::DockSpace& ds, WelcomeChoice choice)
         return;
     }
 
-    // kFull — all 16 panels in a 4-column layout built in a temporary DockSpace.
+    // kFull — all 24 panels in a 4-column layout built in a temporary DockSpace.
     // Column A (LEFT, 25%):    scene_tree / material_editor / cutscene_player
     // Column B (CENTRE, 37%):  viewport + console (bottom)
     // Column C (RIGHT-C, 20%): inspector / behavior_designer / light_editor
     // Column D (RIGHT, 18%):   assets / animator / input_recorder / (tab-merges)
+    if (choice == WelcomeChoice::kFull)
     {
         uw::DockSpace tmp;
         auto* root = tmp.root();
@@ -2587,6 +2848,35 @@ void apply_welcome_layout(uw::DockSpace& ds, WelcomeChoice choice)
         merge_into("material_editor", "material_preview");
         merge_into("cutscene_player", "dialog_tree_editor");
         merge_into("scene_tree",      "pathfinding_viz");
+
+        const auto bytes = tmp.serialize();
+        if (!bytes.empty())
+        {
+            (void)ds.restore(std::span<const std::byte>(bytes.data(), bytes.size()));
+        }
+        return;
+    }
+
+    // phase788 / H5 — kCustom: viewport is always the centre anchor; every
+    // other selected panel is tab-merged onto the viewport tile.  This gives
+    // the user a single "home" tile with tabs for every panel they picked;
+    // they can drag panels out to their preferred positions after first launch.
+    // viewport is always included regardless of the checklist (it is the
+    // mandatory anchor; an editor without a viewport is not useful).
+    {
+        uw::DockSpace tmp;
+        auto* root = tmp.root();
+        if (root == nullptr) { return; }
+        if (!tmp.tab_merge(root, "viewport")) { return; }
+
+        auto* vp = tmp.find_panel_owner("viewport");
+        if (vp == nullptr) { return; }
+
+        for (const auto& panel_id : custom_panels)
+        {
+            if (panel_id == "viewport") { continue; }  // already the anchor
+            (void)tmp.tab_merge(vp, panel_id.c_str());
+        }
 
         const auto bytes = tmp.serialize();
         if (!bytes.empty())
@@ -4987,40 +5277,111 @@ int main(int argc, char** argv)
                     std::fflush(stdout);
                 }
 
-                const WelcomeChoice chosen =
-                    draw_welcome_dialog(batcher, widget_theme,
-                                        static_cast<float>(fb_w),
-                                        static_cast<float>(fb_h),
-                                        flatten_pointer(pointer));
-
-                if (chosen != WelcomeChoice::kNone)
+                // phase788 / H5 — two-phase welcome:
+                //   Phase 1: main welcome dialog (4 buttons).
+                //   Phase 2: custom picker (only when Phase 1 returned kCustom).
+                if (welcome_dialog.custom_picker.active)
                 {
-                    welcome_dialog.choice = chosen;
+                    // --- Phase 2: Custom picker ---
+                    const auto picker_result =
+                        draw_custom_picker(welcome_dialog.custom_picker,
+                                           batcher, widget_theme,
+                                           static_cast<float>(fb_w),
+                                           static_cast<float>(fb_h),
+                                           flatten_pointer(pointer));
 
-                    // Apply the layout to the live DockSpace.
-                    apply_welcome_layout(dockspace, chosen);
+                    if (picker_result.has_value())
+                    {
+                        if (*picker_result)
+                        {
+                            // User confirmed — commit kCustom layout.
+                            welcome_dialog.choice = WelcomeChoice::kCustom;
+                            const std::vector<std::string> sel =
+                                welcome_dialog.custom_picker.selected_panels();
 
-                    // Write a starter .cdproj so the next launch skips the dialog.
-                    project_data.schema_version = 1;
-                    project_data.dock_layout =
-                        dock_layout_to_hex(dockspace.serialize());
-                    if (cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
-                    {
-                        const char* preset_name =
-                            (chosen == WelcomeChoice::kCompact) ? "Compact" :
-                            (chosen == WelcomeChoice::kFull)    ? "Full"    :
-                                                                   "Default";
-                        std::printf(
-                            "editor: welcome choice '%s' — starter .cdproj written to %s\n",
-                            preset_name, cdproj_path.string().c_str());
+                            apply_welcome_layout(dockspace,
+                                                 WelcomeChoice::kCustom, sel);
+
+                            // Persist: dock_layout + user_custom_layout in .cdproj.
+                            project_data.schema_version   = 1;
+                            project_data.dock_layout      =
+                                dock_layout_to_hex(dockspace.serialize());
+                            project_data.user_custom_layout = sel;
+
+                            if (cd::editor::cdproj::write_cdproj(
+                                    project_data, cdproj_path))
+                            {
+                                std::printf(
+                                    "editor: welcome choice 'Custom' (%zu panels) — "
+                                    "starter .cdproj written to %s\n",
+                                    sel.size(),
+                                    cdproj_path.string().c_str());
+                            }
+                            else
+                            {
+                                std::fprintf(stderr,
+                                    "editor: warning — could not write starter "
+                                    ".cdproj to %s\n",
+                                    cdproj_path.string().c_str());
+                            }
+                        }
+                        else
+                        {
+                            // User pressed Back — return to welcome dialog.
+                            welcome_dialog.custom_picker.active = false;
+                        }
+                        std::fflush(stdout);
                     }
-                    else
+                }
+                else
+                {
+                    // --- Phase 1: main welcome dialog ---
+                    const WelcomeChoice chosen =
+                        draw_welcome_dialog(batcher, widget_theme,
+                                            static_cast<float>(fb_w),
+                                            static_cast<float>(fb_h),
+                                            flatten_pointer(pointer));
+
+                    if (chosen == WelcomeChoice::kCustom)
                     {
-                        std::fprintf(stderr,
-                            "editor: warning — could not write starter .cdproj to %s\n",
-                            cdproj_path.string().c_str());
+                        // Open the panel-toggle picker next frame.
+                        welcome_dialog.custom_picker.open();
+                        std::printf("editor: Custom layout picker opened.\n");
+                        std::fflush(stdout);
                     }
-                    std::fflush(stdout);
+                    else if (chosen != WelcomeChoice::kNone)
+                    {
+                        welcome_dialog.choice = chosen;
+
+                        // Apply the layout to the live DockSpace.
+                        apply_welcome_layout(dockspace, chosen);
+
+                        // Write a starter .cdproj so the next launch skips the dialog.
+                        project_data.schema_version   = 1;
+                        project_data.dock_layout      =
+                            dock_layout_to_hex(dockspace.serialize());
+                        project_data.user_custom_layout.clear();  // not custom
+
+                        if (cd::editor::cdproj::write_cdproj(project_data, cdproj_path))
+                        {
+                            const char* preset_name =
+                                (chosen == WelcomeChoice::kCompact) ? "Compact" :
+                                (chosen == WelcomeChoice::kFull)    ? "Full"    :
+                                                                       "Default";
+                            std::printf(
+                                "editor: welcome choice '%s' — starter .cdproj "
+                                "written to %s\n",
+                                preset_name, cdproj_path.string().c_str());
+                        }
+                        else
+                        {
+                            std::fprintf(stderr,
+                                "editor: warning — could not write starter "
+                                ".cdproj to %s\n",
+                                cdproj_path.string().c_str());
+                        }
+                        std::fflush(stdout);
+                    }
                 }
             }
         }

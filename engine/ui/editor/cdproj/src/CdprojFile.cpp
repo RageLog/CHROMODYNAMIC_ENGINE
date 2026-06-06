@@ -117,7 +117,16 @@ void append_json_escaped(std::string& out, std::string_view value)
     // phase695 / M14 W6A — active theme name.
     out += "  \"theme_name\": ";
     append_json_escaped(out, d.theme_name.empty() ? "dark" : d.theme_name);
-    out += "\n";
+    out += ",\n";
+
+    // phase788 / H5 — Custom layout panel selection (empty array when absent).
+    out += "  \"user_custom_layout\": [";
+    for (std::size_t i = 0; i < d.user_custom_layout.size(); ++i)
+    {
+        if (i > 0) { out += ", "; }
+        append_json_escaped(out, d.user_custom_layout[i]);
+    }
+    out += "]\n";
 
     out += "}\n";
     return out;
@@ -416,6 +425,14 @@ void skip_ws(std::string_view text, std::size_t& i) noexcept
         {
             // phase695 / M14 W6A — active theme name; optional field.
             if (!parse_string(text, i, out.theme_name)) { return false; }
+        }
+        else if (key == "user_custom_layout")
+        {
+            // phase788 / H5 — Custom layout panel list; optional field.
+            if (!parse_string_array(text, i, out.user_custom_layout))
+            {
+                return false;
+            }
         }
         else
         {

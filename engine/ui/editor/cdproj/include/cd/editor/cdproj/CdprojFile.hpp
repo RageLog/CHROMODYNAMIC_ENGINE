@@ -73,6 +73,13 @@ struct CdprojData
     /// "high_contrast". Defaults to "dark" when the field is absent (forward
     /// compatibility with pre-695 .cdproj files).
     std::string              theme_name            { "dark" };
+    /// phase788 / H5 — Custom layout panel selection.
+    /// Non-empty when the user chose "Custom" in the first-launch welcome
+    /// dialog.  Contains the ordered list of panel IDs (matching those passed
+    /// to DockSpace::register_panel) that the user enabled.  An empty list
+    /// means the field is absent in the file (pre-788 .cdproj or a non-Custom
+    /// preset was chosen).  Forward-compatible: older readers skip the key.
+    std::vector<std::string> user_custom_layout;
 };
 
 // ---------------------------------------------------------------------------
