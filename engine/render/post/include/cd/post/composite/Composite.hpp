@@ -486,20 +486,37 @@ void main() {
   // when the gate flips at the grid-fade boundary.
   if (center_d >= 0.9985 && pc.sun_col.w > 0.001) {
     float depth_gate = smoothstep(0.9985, 0.9995, center_d);
-    // Map UV to a stable sky-projection plane. v_uv anchors per-pixel;
-    // small horizontal multiplier keeps cloud cells visually large.
-    // B09: scale 4x2 → 24x12 so cloud cells are detail-sized, not
-    // viewport-sized chunky blocks. Combined with a wider soft-step
-    // the result reads as broken cloud cover, not pixelated tiles.
-    // phase853-clouds-quality: tighter cell scale + STRONGER curl-
-    // style 2-step domain warp eliminates the axis-aligned tile look
-    // that 24x12 + single-step warp left behind. The first warp uses
-    // the previous density as a curl proxy; the second perturbs the
-    // sample plane along the warp direction so adjacent cells skew
-    // rather than line up on the underlying noise grid.
-    vec2 sky_uv = v_uv * vec2(14.0, 7.0);
+    // phase856a-clouds-world-anchor: user-reported "kameraya
+    // sabitlenmis durumda aslinda evrene sabitlenmis olmali"
+    // (clouds rotate with the camera, should be world-anchored).
+    // Reconstruct the world-space view direction at this pixel and
+    // ray-cast onto a virtual sky-plane at altitude `kSkyAltitude`.
+    // The intersection point's XZ becomes the noise sample
+    // coordinate — so the clouds are anchored to world space, the
+    // camera rotation slides the visible region across the cloud
+    // texture, and camera translation gives natural parallax.
+    //
+    // The "renk flip" on looking up was the v_uv-anchored sample
+    // plane making the density value snap as the pitch rolled past
+    // the horizon (different v_uv → different sky cell). With
+    // world anchoring, the density at a given direction is stable
+    // across camera moves and only the FOOTPRINT on the sky-plane
+    // changes smoothly.
+    vec2 ndc = v_uv * 2.0 - 1.0;
+    vec3 view_ray = pc.cam_fwd.xyz
+                  + ndc.x * pc.cam_right.w * pc.cam_right.xyz
+                  - ndc.y * pc.cam_up.w    * pc.cam_up.xyz;
+    vec3 dir_world = normalize(view_ray);
+    // Sky-plane intersection; clamp .y to avoid the horizon
+    // singularity at low pitches (clouds would diverge to infinity).
+    const float kSkyAltitude = 80.0;
+    float dy = max(dir_world.y, 0.08);
+    vec3 sky_pt = pc.cam_pos.xyz + dir_world * (kSkyAltitude / dy);
+    vec2 sky_uv = sky_pt.xz * 0.04;
     float t = pc.cam_pos.w;
-    // Step 1: rough density to drive curl.
+    // Step 1: rough density to drive curl (time-only drift, no
+    // longer mixed with the screen-space domain — that mix was a
+    // second contributor to the rotation-flip).
     vec2 q = vec2(cd_fbm4(sky_uv + vec2(0.0,  t * 0.05)),
                   cd_fbm4(sky_uv + vec2(5.2,  t * 0.05 + 1.3)));
     // Step 2: curl-skewed second warp.
@@ -507,6 +524,10 @@ void main() {
                   cd_fbm4(sky_uv + 4.0 * q + vec2(8.3, 2.8) + t * 0.03));
     float density = cd_fbm4(sky_uv + 4.0 * r + vec2(t * 0.06, t * 0.022));
     float cov = clamp(pc.sun_col.w, 0.0, 1.0);
+    // phase856a: smoothly fade clouds off as the view drops below
+    // the horizon — looking-down rays should NEVER carry a cloud
+    // overlay regardless of depth-gate (sky never visible there).
+    float horizon_fade = smoothstep(0.0, 0.25, dir_world.y);
     // W4-G: widen the smoothstep band so cloud edges fade smoothly
     // instead of stepping; combined with the 24x12 cell scale this
     // removes the pixelated-block look the user reported.
@@ -521,7 +542,9 @@ void main() {
     // phase854-clouds-grid-depth-order: depth_gate softens the
     // sky-vs-grid boundary so the grid horizon doesn't get a
     // hard cloud line painted across it.
-    c = mix(c, cloud_lit, cloud * 0.85 * depth_gate);
+    // phase856a-clouds-world-anchor: horizon_fade cuts clouds
+    // below the horizon line.
+    c = mix(c, cloud_lit, cloud * 0.85 * depth_gate * horizon_fade);
   }
 
   // AO
