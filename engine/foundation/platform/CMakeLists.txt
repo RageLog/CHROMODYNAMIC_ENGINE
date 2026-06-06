@@ -29,14 +29,17 @@ endif()
 # prevents UIKit inclusion; the if(IOS) split here avoids adding the
 # Sprint-1 .mm files that import UIKit headers absent from the macOS SDK.
 if(IOS)
+  # Phase 771: Sprint-1 full UIKit scaffold.
+  # src/platform/ios/IosWindow.mm = full CdMetalView + IosWindow impl.
+  # src/IosWindow.mm = Phase 15.F kNotImplemented stub, NOT compiled on iOS
+  # to avoid duplicate create_window() symbols.
   list(APPEND _platform_sources
-    src/IosWindow.mm
+    src/platform/ios/IosWindow.mm
     src/platform/ios/IosLifecycle.mm
     src/platform/ios/main_ios.mm
   )
 elseif(APPLE)
-  # macOS: legacy IosWindow.mm stub only (TARGET_OS_IPHONE guard ensures
-  # no UIKit symbols are compiled when building for macOS).
+  # macOS: Phase 15.F stub only (TARGET_OS_IPHONE=0 guard produces empty TU).
   list(APPEND _platform_sources src/IosWindow.mm)
 endif()
 
