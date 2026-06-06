@@ -4924,7 +4924,13 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                 s.meshes.gltf.vb.is_valid()
                     ? s.meshes.gltf.vb : s.meshes.sphere.vb,
                 s.meshes.gltf.ib.is_valid()
-                    ? s.meshes.gltf.ib : s.meshes.sphere.ib);
+                    ? s.meshes.gltf.ib : s.meshes.sphere.ib,
+                // phase849-W8-BE-perprim-bindless-slot-0-fallback:
+                // s.albedo_tex.view is the always-valid procedural
+                // Earth-like albedo loaded at boot. Writing it to
+                // binding-13 slot 0 of every per-prim set means any
+                // speculative bindless access has valid data.
+                s.albedo_tex.view, s.albedo_sampler);
         };
         sync(s.meshes.gltf_prim_ranges);
         sync(s.meshes.gltf_cesium_prim_ranges);
@@ -7049,7 +7055,8 @@ int main(int argc, char** argv)
                 gpu_diff_cube.view, gpu_brdf_lut.view,
                 inst_mat_ssbo, kInstMatBytes,
                 meshes.gltf.vb.is_valid() ? meshes.gltf.vb : meshes.sphere.vb,
-                meshes.gltf.ib.is_valid() ? meshes.gltf.ib : meshes.sphere.ib);
+                meshes.gltf.ib.is_valid() ? meshes.gltf.ib : meshes.sphere.ib,
+                albedo_tex.view, albedo_sampler);
         };
         sync(meshes.gltf_prim_ranges);
         sync(meshes.gltf_cesium_prim_ranges);

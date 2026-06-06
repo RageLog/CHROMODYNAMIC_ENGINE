@@ -550,13 +550,26 @@ sync_perprim_global_bindings(
     // only accesses it inside the sentinel-checked chrome branch
     // which is gated by metallic + scene_hit + albedo_tex_slot.
     cd::rhi::BufferHandle          sponza_vb,
-    cd::rhi::BufferHandle          sponza_ib)
+    cd::rhi::BufferHandle          sponza_ib,
+    // phase849-W8-BE-perprim-bindless-slot-0-fallback:
+    // Some glslang / driver combinations speculatively evaluate the
+    // bindless `texture(arr[slot], uv)` access in the chrome reflection
+    // branch even when the runtime guard (`metallic > 0.1` /
+    // `tex_slot != sentinel`) would skip it. PARTIALLY_BOUND keeps the
+    // unwritten slots safe in the abstract spec, but in practice the
+    // safer story is to write SLOT 0 to a known-valid view on every
+    // per-prim descriptor set so any speculative bindless access has
+    // valid data to read. The fallback view here is the per-prim's
+    // OWN albedo_view (always valid for textured prims that get into
+    // this loop).
+    cd::rhi::TextureViewHandle     bindless_fallback_view,
+    cd::rhi::SamplerHandle         bindless_fallback_sampler)
 {
     for (auto& pr : ranges)
     {
         if (!pr.prim_inst.is_valid())
             continue;
-        const std::array<cd::rhi::DescriptorWrite, 9> gw {
+        const std::array<cd::rhi::DescriptorWrite, 10> gw {
             cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kUniformBuffer,
                 .buffer = shadow_ubo, .buffer_offset = 0,
@@ -587,6 +600,10 @@ sync_perprim_global_bindings(
             cd::rhi::DescriptorWrite { .binding = 12, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kStorageBuffer,
                 .buffer = sponza_ib },
+            cd::rhi::DescriptorWrite { .binding = 13, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kBindlessSampledImage,
+                .view = bindless_fallback_view,
+                .sampler = bindless_fallback_sampler },
         };
         (void)pr.prim_inst.update(gw);
     }

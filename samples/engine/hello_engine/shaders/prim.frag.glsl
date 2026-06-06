@@ -711,7 +711,18 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    if (tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0) {
+    // phase849-W8-BE-disable-until-textures-uploaded: the Run 18
+    // L-rt-tex strand wired the bindless descriptor surface (layout +
+    // pool + variable-count alloc + per-prim write + slot-0 fallback)
+    // but NEVER actually uploaded the Sponza per-prim albedo textures
+    // into the bindless array. Sampling unwritten slots produces
+    // undefined behaviour that device-lost on NVIDIA — exactly the
+    // symptom user reported after right-click ("sağ tık ve objeler
+    // gözükünce crash"). Force-skip the bindless path until the
+    // texture-upload phase lands. Avg-colour (W8-BD) still gives
+    // recognisable per-prim reflection tinting.
+    tex_slot = kBindlessAlbedoSlotNone;
+    if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
       uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
       uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
       uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
