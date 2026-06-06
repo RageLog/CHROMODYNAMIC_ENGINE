@@ -33,6 +33,18 @@ cd_add_test(hello_engine_pbr_grid
   DEPS    cd::core cd::math
 )
 
+# phase845 — W8-BE layout regression nets. Locks InstanceMatGpu at 48 B
+# with the post-phase840 albedo_tex_slot + index_offset extension,
+# the kBindlessAlbedoSlotNone = 0xFFFFFFFFu sentinel contract, the
+# kInstMatBytes total size, and W8BEGeomMeta default-sentinel +
+# trivially-copyable contract. Wrong layout here = misaligned per-prim
+# SSBO reads = chrome reflections paint garbage. Caught at compile
+# time + ctest, not at render-time PNG inspection.
+cd_add_test(hello_engine_w8be_layout
+  SOURCES test_hello_engine_w8be_layout.cpp
+  DEPS    cd::core cd::math cd::rhi cd::concurrency
+)
+
 # T1.7 phase543 -- Sponza golden-image CI gate.
 #
 # Two tiers (see test source header for details):
