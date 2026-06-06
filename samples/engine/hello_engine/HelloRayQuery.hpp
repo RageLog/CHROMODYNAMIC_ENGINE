@@ -48,13 +48,34 @@ namespace cd::hello_engine
 // Filled host-side in the same loop that pushes TLAS instances, so the
 // GPU index returned by rayQueryGetIntersectionInstanceIdEXT lines up
 // 1:1 with cd_instance_mats.data[i] (binding 10 in PrimShader_kPrimFS.inl).
+//
+// phase840-W8-BE-rt-bindless-texture-sampling:
+// Two new fields added so the ray-side branch can sample the per-prim
+// albedo TEXTURE (binding 11 sampler2D array) rather than the per-prim
+// AVG colour. Layout grows 32 B -> 48 B (kInstMatBytes 256 KB -> 384 KB,
+// still trivial).
+//
+//   albedo_tex_slot  — index into the bindless sampler2D array
+//                      (binding 11). 0xFFFFFFFFu = "no per-prim texture,
+//                      fall back to the avg-colour path" (W8-BD).
+//   index_offset     — base index in the Sponza index buffer (binding 13)
+//                      for this prim's triangle list. Matches
+//                      GltfPrimRange::index_offset. Used by the shader to
+//                      reconstruct triangle UVs at the ray hit.
+//   _pad             — reserved for a future field (e.g. vertex_offset
+//                      when a future asset has multiple vertex buffers).
 struct InstanceMatGpu
 {
-    float albedo[4];
-    float emissive[4];
+    float         albedo[4];
+    float         emissive[4];
+    std::uint32_t albedo_tex_slot { 0xFFFFFFFFu };
+    std::uint32_t index_offset    { 0u };
+    std::uint32_t _pad[2]         { 0u, 0u };
 };
 
-static_assert(sizeof(InstanceMatGpu) == 32, "InstanceMatGpu must be 32 B");
+static_assert(sizeof(InstanceMatGpu) == 48,
+              "InstanceMatGpu must be 48 B after the phase840 W8-BE extension");
+static constexpr std::uint32_t kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 
 // phase465-perprim: per-(instance, geometry) SSBO layout for Sponza
 // multi-geometry BLAS reflections. See file header for the indexing
@@ -132,6 +153,14 @@ inline void fill_inst_mat(InstanceMatGpu& im, cd::math::Vec3f albedo) noexcept
     im.emissive[1] = 0.0F;
     im.emissive[2] = 0.0F;
     im.emissive[3] = 0.0F;
+    // phase840-W8-BE-rt-bindless-texture-sampling: sentinel slot value
+    // signals "no per-prim texture; fall back to the avg-colour path".
+    // The Sponza-side wiring (phase843) overwrites this for textured
+    // prims; CesiumMan, PBR grid, procedural seeds keep the sentinel.
+    im.albedo_tex_slot = kBindlessAlbedoSlotNone;
+    im.index_offset    = 0u;
+    im._pad[0]         = 0u;
+    im._pad[1]         = 0u;
 }
 
 }  // namespace cd::hello_engine
