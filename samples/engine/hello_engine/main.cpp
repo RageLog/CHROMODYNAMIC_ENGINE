@@ -1915,10 +1915,20 @@ inline void spawn_sponza_and_cesiumman_entities(cd::scene::Scene& scene,
         if (cesium_mesh.vb.is_valid())
         {
             ec.name = std::string { "CesiumMan (" } + std::string { cesium_loaded_name } + ")";
-            // Inside Sponza nave: near the centre of the atrium floor.
-            // Sponza is 0.01-scaled so 1 engine unit = 100 cm of Sponza space.
-            // CesiumMan is ~1.8 m tall at scale 2.2; position at nave centre.
-            scene.local(ec.handle)->value.position = { 0.0F, 0.0F, 0.0F };
+            // phase832-default-view-unblock-pbr-grid:
+            // CesiumMan was at world origin (0, 0, 0) which sat **directly
+            // in front of** the phase799-relocated PBR demo grid (at Z=0,
+            // X∈[-1.58,+1.58], Y∈[0.55,3.70]). The default M2 camera at
+            // (0, 2.5, +8) → (0, 1, 0) saw CesiumMan filling the centre
+            // of the view; the chrome grid behind it was invisible at
+            // app launch.
+            //
+            // Move CesiumMan to world (-4, 0, -1.5) — off to the entrance
+            // (-X) side of the nave, slightly toward the back wall. The
+            // character still inhabits Sponza, still casts shadows, still
+            // reflects on chrome (it is in the TLAS), but it no longer
+            // occludes the front of the grid from the default camera.
+            scene.local(ec.handle)->value.position = { -4.0F, 0.0F, -1.5F };
             scene.local(ec.handle)->value.scale    = { 2.2F, 2.2F, 2.2F };
             // X -90 deg rotation (CesiumMan.glb is Z-up -> engine Y-up).
             scene.local(ec.handle)->value.rotation = { -0.7071068F, 0.0F, 0.0F, 0.7071068F };
@@ -4964,9 +4974,17 @@ cd::core::Result<void> HelloEngineApp::on_boot()
 
     // Camera — positioned inside the Sponza nave looking toward the atrium.
     // Sponza vertices are in cm; with 0.01 entity scale one engine unit = 1 m.
-    // Camera sits at ~8 m depth looking at the atrium floor (y≈0, z=0).
+    // phase832-default-view-show-pbr-grid:
+    // Original default camera (Run 12 / W12-B) — restored after a brief
+    // (1.5, 2.0, 6.0) misadventure that sat outside the Sponza atrium's
+    // Z=+3.5 outer wall. Camera at (0, 2.5, +8) looking at (0, 1.5, 0)
+    // works because the PBR grid (phase799 mid-nave at Z=0) is now
+    // unblocked by CesiumMan — phase832 moved the character from world
+    // origin to (-4, 0, -1.5) so the centre-line of the M2 default view
+    // shows the chrome PBR demo grid (X∈[-1.58,+1.58]) instead of the
+    // 4 m glowing humanoid figure.
     s.cam.eye    = { 0.0F, 2.5F, 8.0F };
-    s.cam.target = { 0.0F, 1.0F, 0.0F };
+    s.cam.target = { 0.0F, 1.5F, 0.0F };
     s.cam.fov_y  = 0.9F;
     s.cam.near_z = 0.05F;
     s.cam.far_z  = 500.0F;  // phase424-vis1: 300->500 m; matches inline-main Sponza override
