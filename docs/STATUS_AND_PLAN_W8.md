@@ -656,3 +656,79 @@ Hard truth: the <500 main() body target stated in the Run 16 brief is **mechanic
 **Section C**: QUEUED for next sprint. Respect B-gap chain (SPIRV-Cross, ImGui DX12, image readback) before L1 Metal. Recommended order: L1 Metal (cross-platform claim) -> L2 Linux/macOS (runtime parity) -> L3 DDGI/ReSTIR (vision-tier GI) -> L4 Nanite (mesh shader / virtual geo) -> L5 Editor (standalone binary).
 
 ---
+
+## Marathon Run 16 close-out (phases 796-820, 2026-06-06)
+
+5-strand autonomous run driven by user-reported chrome-Sponza
+reflection bug. 25 commits on `dev`; 254/254 tests pass throughout;
+no tag/push (per `feedback-no-auto-tag`).
+
+### Strand A — RT chrome-Sponza fix chain (phases 796-799)
+
+User-visible bug: chrome PBR demo spheres did not show recognisable
+Sponza interior in their reflections — *"kureler spanza icinde
+degilmis gibi duruyor, perdeleri gormem gerekiyor"*. Root cause was
+**3 compounding bugs** found via a new closed-loop
+`--golden-fixture 5` capture path:
+
+|Phase|Fix|
+|-----|---|
+|`phase796`|`HelloGltf.hpp`: per-prim **texture-average colour** alpha-weighted, fold into `range.base_color_factor`. Sponza materials author `(1,1,1)` factors with colour in the texture; the RT reflection SSBO cannot sample textures.|
+|`phase798`|**`kMaxGeomsPerInst 32 -> 128`** in `HelloRayQuery.hpp` + shader + `.inl`. Khronos Sponza has 103 prims; the cap was silently clamping every prim past index 31 to slot 31. SSBO 64 KB -> 256 KB.|
+|`phase799`|**PBR demo grid relocated** from `Z=-4.5` (outside the atrium's `-Z` outer wall) to `Z=0` (mid-nave), so chrome `+Z` reflections actually bounce through the atrium interior.|
+|`phase797`|New **chrome-probe golden fixture** (`fixture #5`) + `manual_mode=true` pin fix (the pre-797 fixtures all silently drifted to walls every frame because `scene_cam.update()` overwrote the pose).|
+
+### Strand B — ADR backfills (phases 800 + 814)
+
+- **W8-BD** (`ADR-20260606-W8-BD-per-geom-albedo-SSBO-and-curtain-reflections.md`)
+  — backfills the 2D (instance, geometry) SSBO layout, the
+  `kMaxGeomsPerInst 32 -> 128` rationale, the per-tex avg colour flow,
+  and the grid relocation. Lists 3 rejected alternatives.
+- **agent-iteration-loop** (`ADR-20260606-golden-fixture-agent-iteration-loop.md`)
+  — methodology ADR for closed-loop agent-driven visual debugging.
+  Three sub-decisions (CLI surface, reserved iteration fixture slot,
+  test-side regression nets) + 3 rejected alternatives.
+
+### Strand C — Library README pass (phases 801-813)
+
+54 new READMEs across 13 batches. **Library README coverage
+34/110 -> 88/88 = 100%**. Categories: render / asset / game /
+foundation-profile / world / 22 editor panels / 2 umbrellas
+(foundation + world).
+
+### Strand D — Regression test layer (phase 807)
+
+- **`static_assert(kMaxGeomsPerInst >= kKhronosSponzaPrimCount)`**
+  in `HelloRayQuery.hpp` — compile-time floor. Future refactor that
+  pushes the cap back below the prim count fails to compile.
+- **`CameraSetIsExactlySixAndAllSlugsUnique`** — locks fixture count.
+- **`ChromeProbeIsFixtureFiveAndCarriesProbeConstants`** — locks slug
+  - atrium-volume bounds + `kChromeProbeScale > 0`.
+
+### Strand E — clang-tidy modernize cleanups (phases 815-820)
+
+41 sites fixed across the hello_engine sample:
+
+|Phase|Rule|Sites|
+|-----|----|-----|
+|`phase815`|`modernize-use-std-numbers`|3 PI literal sites|
+|`phase816`|`cert-err34-c`|2 `atoi` → `strtol` with error reporting|
+|`phase817`|`modernize-use-auto` + `return-braced-init-list`|8 + 4 sites in overlay / gizmo helpers|
+|`phase818`|`modernize-use-emplace`|13 sites in scene-save JSON arrays + cesium albedos|
+|`phase819`|`modernize-use-std-numbers` (more)|11 PI / 2π sites in HelloLighting + main.cpp|
+|`phase820`|`modernize-use-auto` + braced-init-list (final)|last 4 sites|
+
+`modernize-use-std-numbers` **cannot be promoted to WarningsAsErrors**
+yet — `cd::math::Constants.hpp` + `cd::asset::Primitives.hpp` own
+canonical constant definitions that necessarily contain the long-form
+literal, and the rule would flag those too.
+
+### Run 17 / Run 18 candidate queue
+
+- `HelloFrameLoop` extraction (continue main()<500 target).
+- L1 Metal backend (per Section C plan above).
+- `L-rt-tex` — ray-side texture sampling for chrome reflection
+  (alternative to per-tex avg colour, queued in ADR W8-BD).
+- The 2 remaining Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
+
+---
