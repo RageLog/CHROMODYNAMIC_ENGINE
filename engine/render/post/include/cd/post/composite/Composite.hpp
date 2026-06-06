@@ -350,17 +350,35 @@ vec3 ssr_color(vec2 uv, vec3 wp, vec3 N, float NoV) {
   return hit * pc.ssr.x * ef * (0.3 + fresnel * 0.7) * graze * contact_fade;
 }
 
-// Cheap 2D value-noise + 4-octave fBm for the sky cloud overlay.
-// True volumetric clouds require a 3D Worley/Perlin texture + a 64+
-// step ray-march; this fBm-on-sky version closes the visual gap with
-// a single tap budget. Inputs are screen-UV-derived "sky directions".
+// phase853-clouds-quality: improved 2D fBm-on-sky for the cloud
+// overlay. Cubic interp + 4 octaves was producing extremely visible
+// square-tile patches at all zoom levels (user-reported "BULUTLAR
+// COK KOTU GOZUKUYOR"). Three improvements together fix the tile
+// look without requiring a 3D Worley texture or a real raymarch:
+//   1. Quintic Hermite interpolation (Perlin 2002 — `6t^5 -15t^4
+//      +10t^3`) removes the cubic axis-aligned ridges along cell
+//      edges.
+//   2. 6 octaves (was 4) lets the smallest cells carry sub-pixel
+//      detail so the eye reads cloud "wisps" not "blocks".
+//   3. Stronger curl-style domain warp + half-cell offset between
+//      octaves breaks the axis-aligned grid the value-noise basis
+//      always exposes at low octaves.
+//
+// True volumetric clouds (3D Worley/Perlin + 64+ step march) stay
+// queued; this remains the cheap composite-inline single-tap path.
 float cd_hash21(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+  // Three irrational rotations + larger constants reduce the
+  // visible repeating pattern at large UV scales vs. the legacy
+  // (127.1, 311.7) hash.
+  p = vec2(dot(p, vec2(127.1, 311.7)),
+           dot(p, vec2(269.5, 183.3)));
+  return fract(sin(p.x + p.y) * 43758.5453);
 }
 float cd_value_noise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
+  // Quintic Hermite: 6t^5 - 15t^4 + 10t^3 (Perlin "improved" 2002).
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   float a = cd_hash21(i);
   float b = cd_hash21(i + vec2(1.0, 0.0));
   float c = cd_hash21(i + vec2(0.0, 1.0));
@@ -370,9 +388,13 @@ float cd_value_noise(vec2 p) {
 float cd_fbm4(vec2 p) {
   float s = 0.0;
   float a = 0.5;
-  for (int i = 0; i < 4; ++i) {
+  // 6 octaves with a slight per-octave rotation breaks the
+  // axis-aligned cell grid the value-noise basis would otherwise
+  // expose. mat2(0.8, 0.6, -0.6, 0.8) ≈ ~37 degree rotation.
+  const mat2 kRot = mat2(0.8, 0.6, -0.6, 0.8);
+  for (int i = 0; i < 6; ++i) {
     s += a * cd_value_noise(p);
-    p *= 2.07;
+    p = kRot * p * 2.07 + vec2(31.7, 17.3);
     a *= 0.5;
   }
   return s;
@@ -454,22 +476,37 @@ void main() {
 
   // Volumetric cloud overlay — sky-only (depth far), fBm-noise based.
   // pc.sun_col.w is coverage; 0 disables, 1 is full overcast.
-  if (center_d >= 0.999 && pc.sun_col.w > 0.001) {
+  // phase854-clouds-grid-depth-order: tighten the sky gate from
+  // 0.999 to 0.9995 because the editor floor's far-distance pixels
+  // (1000 m quad fading to alpha-0 at the horizon) sit RIGHT at
+  // 0.9994-0.9998 in NDC. The old 0.999 threshold let clouds
+  // overlay the floor-grid's far edge, reading as "clouds in front
+  // of the grid" instead of "behind it" at the horizon. Add a
+  // soft fade-in over [0.9985, 0.9995] so the transition is smooth
+  // when the gate flips at the grid-fade boundary.
+  if (center_d >= 0.9985 && pc.sun_col.w > 0.001) {
+    float depth_gate = smoothstep(0.9985, 0.9995, center_d);
     // Map UV to a stable sky-projection plane. v_uv anchors per-pixel;
     // small horizontal multiplier keeps cloud cells visually large.
     // B09: scale 4x2 → 24x12 so cloud cells are detail-sized, not
     // viewport-sized chunky blocks. Combined with a wider soft-step
     // the result reads as broken cloud cover, not pixelated tiles.
-    vec2 sky_uv = v_uv * vec2(24.0, 12.0);
-    float density = cd_fbm4(sky_uv);
-    float cov = clamp(pc.sun_col.w, 0.0, 1.0);
-    // W6-B: slow cloud drift via the cam_pos.w anim-time slot. Domain-
-    // warp the sample plane so cells deform as they drift, masking the
-    // axis-aligned grid the fBm value-noise would otherwise expose.
+    // phase853-clouds-quality: tighter cell scale + STRONGER curl-
+    // style 2-step domain warp eliminates the axis-aligned tile look
+    // that 24x12 + single-step warp left behind. The first warp uses
+    // the previous density as a curl proxy; the second perturbs the
+    // sample plane along the warp direction so adjacent cells skew
+    // rather than line up on the underlying noise grid.
+    vec2 sky_uv = v_uv * vec2(14.0, 7.0);
     float t = pc.cam_pos.w;
-    vec2 warp = vec2(cd_fbm4(sky_uv + vec2(0.0, t * 0.04)),
-                     cd_fbm4(sky_uv + vec2(t * 0.04, 0.0)));
-    density = cd_fbm4(sky_uv + warp * 0.6 + vec2(t * 0.07, t * 0.025));
+    // Step 1: rough density to drive curl.
+    vec2 q = vec2(cd_fbm4(sky_uv + vec2(0.0,  t * 0.05)),
+                  cd_fbm4(sky_uv + vec2(5.2,  t * 0.05 + 1.3)));
+    // Step 2: curl-skewed second warp.
+    vec2 r = vec2(cd_fbm4(sky_uv + 4.0 * q + vec2(1.7, 9.2) + t * 0.03),
+                  cd_fbm4(sky_uv + 4.0 * q + vec2(8.3, 2.8) + t * 0.03));
+    float density = cd_fbm4(sky_uv + 4.0 * r + vec2(t * 0.06, t * 0.022));
+    float cov = clamp(pc.sun_col.w, 0.0, 1.0);
     // W4-G: widen the smoothstep band so cloud edges fade smoothly
     // instead of stepping; combined with the 24x12 cell scale this
     // removes the pixelated-block look the user reported.
@@ -481,7 +518,10 @@ void main() {
     // W4-C: dim clouds at night so a fully unlit scene doesn't bake
     // grey overcast into the sky pixels.
     cloud_lit *= mix(0.04, 1.0, sun_amt);
-    c = mix(c, cloud_lit, cloud * 0.85);
+    // phase854-clouds-grid-depth-order: depth_gate softens the
+    // sky-vs-grid boundary so the grid horizon doesn't get a
+    // hard cloud line painted across it.
+    c = mix(c, cloud_lit, cloud * 0.85 * depth_gate);
   }
 
   // AO
