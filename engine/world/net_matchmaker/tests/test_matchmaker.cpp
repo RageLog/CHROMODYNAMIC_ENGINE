@@ -1,15 +1,20 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::net::matchmaker tests
 // Phase 563 / Sprint W5B
+// Phase 784 / FINALE-E4  — SkillScorer + FillStrategy tests
 //
-// Tests: 7
-//   1. LobbyLifecycle — create + join + leave round-trip
-//   2. FindMatchSkillWithinDelta — returns an open lobby when skill fits
-//   3. FindMatchSkillOutsideDelta — returns nullopt when skill is too far
-//   4. FindMatchRegionRespected — ignores lobby with mismatched region
-//   5. CloseLobbyRemovedFromActive — close_lobby marks lobby as not open
-//   6. FindMatchPrefersMostPopulated — pack-the-room heuristic
-//   7. FindMatchEmptyLobbyNoConstraints — empty lobby accepted regardless of skill
+// Tests: 11
+//   1.  LobbyLifecycle — create + join + leave round-trip
+//   2.  FindMatchSkillWithinDelta — returns an open lobby when skill fits
+//   3.  FindMatchSkillOutsideDelta — returns nullopt when skill is too far
+//   4.  FindMatchRegionRespected — ignores lobby with mismatched region
+//   5.  CloseLobbyRemovedFromActive — close_lobby marks lobby as not open
+//   6.  FindMatchPrefersMostPopulated — pack-the-room heuristic
+//   7.  FindMatchEmptyLobbyNoConstraints — empty lobby accepted regardless of skill
+//   8.  SkillScorer_HighSkillDeltaPenalised — large skill gap raises score
+//   9.  SkillScorer_RegionDistanceRespected — closer lobby wins kBalanced
+//  10.  FastFillReturnsFirstMatch — kFastFill bypasses scoring and returns first
+//  11.  SkillScorer_HistoryAvoidancePenalises — repeated pairing raises score
 // =============================================================================
 #include <cd/net/matchmaker/Matchmaker.hpp>
 #include <gtest/gtest.h>
@@ -20,10 +25,12 @@
 namespace
 {
 
+using cd::net::matchmaker::FillStrategy;
 using cd::net::matchmaker::Lobby;
 using cd::net::matchmaker::LobbyRegistry;
 using cd::net::matchmaker::PlayerProfile;
 using cd::net::matchmaker::SkillBasedFinder;
+using cd::net::matchmaker::SkillScorer;
 
 // ---------------------------------------------------------------------------
 // Helper factories
@@ -31,12 +38,16 @@ using cd::net::matchmaker::SkillBasedFinder;
 
 [[nodiscard]] PlayerProfile make_profile(std::uint64_t               id,
                                           float                       skill,
-                                          std::array<std::uint8_t, 4> region)
+                                          std::array<std::uint8_t, 4> region,
+                                          float                       lat = 0.0F,
+                                          float                       lon = 0.0F)
 {
     PlayerProfile p;
     p.id           = id;
     p.skill_rating = skill;
     p.region       = region;
+    p.lat_deg      = lat;
+    p.lon_deg      = lon;
     return p;
 }
 
@@ -223,4 +234,140 @@ TEST(SkillBasedFinder, FindMatchEmptyLobbyNoConstraints)
     const auto result = finder.find_match(candidate, reg);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(*result, lid);
+}
+
+// ---------------------------------------------------------------------------
+// 8. SkillScorer: large skill gap produces higher score than small gap
+// ---------------------------------------------------------------------------
+TEST(SkillScorer, HighSkillDeltaPenalised)
+{
+    SkillScorer scorer;
+    scorer.set_weights(1.0F, 0.0F, 0.0F);  // skill-only
+    scorer.set_max_skill_range(1000.0F);
+
+    // Player A: skill 500, at (0,0).
+    const PlayerProfile a = make_profile(1, 500.0F, kRegionEU, 0.0F, 0.0F);
+
+    // Close peer: delta = 20 → score ≈ 0.02.
+    const PlayerProfile close_peer = make_profile(2, 520.0F, kRegionEU, 0.0F, 0.0F);
+
+    // Far peer: delta = 400 → score ≈ 0.40.
+    const PlayerProfile far_peer   = make_profile(3, 900.0F, kRegionEU, 0.0F, 0.0F);
+
+    const float score_close = scorer.score_pair(a, close_peer);
+    const float score_far   = scorer.score_pair(a, far_peer);
+
+    EXPECT_LT(score_close, score_far)
+        << "Close skill peer must score better (lower) than far peer";
+
+    // Exact values within tolerance.
+    EXPECT_NEAR(score_close, 0.02F, 1e-4F);
+    EXPECT_NEAR(score_far,   0.40F, 1e-4F);
+}
+
+// ---------------------------------------------------------------------------
+// 9. SkillScorer: region distance respected — kBalanced picks closer lobby
+// ---------------------------------------------------------------------------
+TEST(SkillBasedFinder, RegionDistanceRespectedByBalancedStrategy)
+{
+    // Approximate real coords:
+    //   London:    51.5N,   0.0E
+    //   New York:  40.7N,  74.1W
+    //   Frankfurt: 50.1N,   8.7E  (close to London)
+
+    LobbyRegistry reg;
+    SkillBasedFinder finder;
+    // w_skill=0 so only distance matters in scoring; region bytes identical
+    // so the hard region-equality gate is bypassed (same region tag for all).
+    finder.configure(4, 500.0F,
+                     /*w_skill*/   0.0F,
+                     /*w_region*/  1.0F,
+                     /*w_history*/ 0.0F,
+                     FillStrategy::kBalanced);
+
+    // Lobby A — seed player in New York.
+    const PlayerProfile ny_seed = make_profile(1, 1000.0F, kRegionNA,
+                                                40.7F, -74.1F);
+    reg.register_player(ny_seed);
+    const std::uint64_t lid_a = reg.create_lobby("ranked");
+    ASSERT_TRUE(reg.join_lobby(lid_a, ny_seed.id));
+
+    // Lobby B — seed player in Frankfurt (much closer to London).
+    const PlayerProfile fra_seed = make_profile(2, 1000.0F, kRegionNA,
+                                                 50.1F,   8.7F);
+    reg.register_player(fra_seed);
+    const std::uint64_t lid_b = reg.create_lobby("ranked");
+    ASSERT_TRUE(reg.join_lobby(lid_b, fra_seed.id));
+
+    // Candidate in London — should prefer Frankfurt lobby.
+    const PlayerProfile london = make_profile(99, 1000.0F, kRegionNA,
+                                               51.5F,   0.0F);
+    const auto result = finder.find_match(london, reg);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, lid_b)
+        << "London candidate should be matched to Frankfurt lobby (closer)";
+}
+
+// ---------------------------------------------------------------------------
+// 10. kFastFill returns the first qualifying lobby without scoring
+// ---------------------------------------------------------------------------
+TEST(SkillBasedFinder, FastFillReturnsFirstMatch)
+{
+    LobbyRegistry reg;
+    SkillBasedFinder finder;
+    finder.configure(4, 500.0F,
+                     /*w_skill*/   1.0F,
+                     /*w_region*/  1.0F,
+                     /*w_history*/ 1.0F,
+                     FillStrategy::kFastFill);
+
+    // Lobby A — 1 player, skill 800 (farther from candidate than B).
+    const PlayerProfile seed_a = make_profile(1, 800.0F, kRegionEU);
+    reg.register_player(seed_a);
+    const std::uint64_t lid_a = reg.create_lobby("ranked");
+    ASSERT_TRUE(reg.join_lobby(lid_a, seed_a.id));
+
+    // Lobby B — 3 players, skill 505 (closer to candidate).
+    const std::uint64_t lid_b = reg.create_lobby("ranked");
+    for (std::uint64_t i = 10; i < 13; ++i)
+    {
+        const PlayerProfile pi = make_profile(i, 505.0F, kRegionEU);
+        reg.register_player(pi);
+        ASSERT_TRUE(reg.join_lobby(lid_b, pi.id));
+    }
+
+    // Candidate — within delta of both lobbies.
+    const PlayerProfile candidate = make_profile(99, 500.0F, kRegionEU);
+
+    // kFastFill must return the *first* qualifying lobby (lid_a, created first),
+    // regardless of score or population.
+    const auto result = finder.find_match(candidate, reg);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, lid_a)
+        << "kFastFill must return the first qualifying lobby, not the best-scored one";
+}
+
+// ---------------------------------------------------------------------------
+// 11. SkillScorer history avoidance penalises repeated pairing
+// ---------------------------------------------------------------------------
+TEST(SkillScorer, HistoryAvoidancePenalises)
+{
+    SkillScorer scorer;
+    scorer.set_weights(0.0F, 0.0F, 1.0F);  // history-only
+
+    const PlayerProfile a = make_profile(1, 500.0F, kRegionEU, 0.0F, 0.0F);
+    const PlayerProfile b = make_profile(2, 500.0F, kRegionEU, 0.0F, 0.0F);
+    const PlayerProfile c = make_profile(3, 500.0F, kRegionEU, 0.0F, 0.0F);
+
+    // a and b have played together; a and c have not.
+    scorer.add_history_pair(a.id, b.id);
+
+    const float score_ab = scorer.score_pair(a, b);
+    const float score_ac = scorer.score_pair(a, c);
+
+    EXPECT_GT(score_ab, score_ac)
+        << "Repeated a-b pairing must score worse (higher) than fresh a-c pairing";
+
+    EXPECT_NEAR(score_ab, 1.0F, 1e-5F);  // full penalty
+    EXPECT_NEAR(score_ac, 0.0F, 1e-5F);  // no penalty
 }
