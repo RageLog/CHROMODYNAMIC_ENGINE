@@ -1185,6 +1185,39 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
         static_cast<double>(cluster_desc.near_z),
         static_cast<double>(cluster_desc.far_z)
     );
+    // phase895-add-light-buttons: editor expansion row — spawn a new
+    // light at world origin (the inspector then lets the user move it
+    // via gizmo). Default intensities chosen so the new light is
+    // immediately visible without overpowering the scene.
+    ImGui::TextDisabled("Add light:");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Point"))
+    {
+        lights.push_back({ "Point (2700K)",
+            cd::light::point({ 0.0F, 1.5F, 0.0F }, { 1, 1, 1 }, 1500.0F, 6.0F),
+            true, 2700.0F });
+        selected = static_cast<int>(lights.size()) - 1;
+        selected_kind = SelKind::kLight;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Spot"))
+    {
+        lights.push_back({ "Spot (3200K)",
+            cd::light::spot({ 0.0F, 3.0F, 0.0F }, { 0.0F, -1.0F, 0.0F },
+                            { 1, 1, 1 }, 4000.0F, 8.0F, 0.30F, 0.50F),
+            true, 3200.0F });
+        selected = static_cast<int>(lights.size()) - 1;
+        selected_kind = SelKind::kLight;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Directional"))
+    {
+        lights.push_back({ "Directional (5500K)",
+            cd::light::directional({ -0.3F, -0.7F, -0.4F }, { 1, 1, 1 }, 50000.0F),
+            true, 5500.0F });
+        selected = static_cast<int>(lights.size()) - 1;
+        selected_kind = SelKind::kLight;
+    }
     ImGui::Separator();
 
     for (std::size_t i = 0; i < lights.size(); ++i)
