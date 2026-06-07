@@ -31,6 +31,16 @@ auto ssbo = device.create_buffer(bd);
 - Handle-based design: pipelines compare by `PipelineCacheKey` hash so duplicate descs alias the same backend object.
 - `NullDevice` + `NullCommandBuffer` provide a record-only backend for tests that exercise the engine without a real GPU.
 
+## Backend status (as of 2026-06-07, Run 23 close-out)
+
+| Backend | Status | Notes |
+|---|---|---|
+| **Vulkan 1.3** | Production primary | bindless / RT / mesh shader / async compute all live. Default for hello_engine. |
+| **D3D12** | Production-ready | RT (DXR Tier 1.0+) + mesh shader (Tier 1) gated on adapter capability. Remaining `kNotImplemented` returns are runtime capability gates / defensive enum guards, NOT unimplemented stubs (per phase 883 audit). |
+| **OpenGL 4.6** | Skeleton + triangle path | Triangle-clear sample boots; pipeline/material path stubbed. Maintained for vendor-matrix coverage; not on the dev hot path. |
+| **Metal** | Header stub only (`create_metal_device → kBackendError`) | Design + P1 task DAG documented in ADR-20260530-metal-backend.md §8. P1 implementation gated on user sign-off of the Fork-A-primary decision + 5-item pre-flight checklist. Estimated 3-4 weeks focused work. |
+| **WebGPU** | Out of scope v1 | Tracked in vendor matrix; future ADR will scope. |
+
 ## TLAS coverage contract (Phase 656 / T1.11)
 
 `ICommandBuffer::build_acceleration_structure` accepts ALL eligible
