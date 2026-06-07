@@ -95,7 +95,7 @@ public:
 
     [[nodiscard]] bool has(std::string_view key) const
     {
-        return values_.find(std::string { key }) != values_.end();
+        return values_.contains(std::string { key });
     }
 
     bool erase(std::string_view key)

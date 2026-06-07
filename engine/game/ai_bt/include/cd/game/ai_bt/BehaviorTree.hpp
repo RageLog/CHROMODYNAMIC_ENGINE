@@ -98,7 +98,7 @@ public:
     // ------- has / erase --------------------------------------------------
     [[nodiscard]] bool has(const std::string& key) const noexcept
     {
-        return values_.find(key) != values_.end();
+        return values_.contains(key);
     }
     bool erase(const std::string& key) { return values_.erase(key) != 0U; }
 

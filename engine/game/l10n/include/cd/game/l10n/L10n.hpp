@@ -265,7 +265,7 @@ public:
     /// True if a StringTable is registered for the given locale code.
     CD_NODISCARD bool has_locale(const std::string& code) const noexcept
     {
-        return tables_.find(code) != tables_.end();
+        return tables_.contains(code);
     }
 
     // ------- plural rules --------------------------------------------------

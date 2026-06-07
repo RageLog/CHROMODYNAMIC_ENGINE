@@ -93,7 +93,7 @@ public:
     // ------- query --------------------------------------------------------
     CD_NODISCARD bool has(const std::string& key) const noexcept
     {
-        return values_.find(key) != values_.end();
+        return values_.contains(key);
     }
 
     CD_NODISCARD bool get_bool(const std::string& key, bool fallback = false) const noexcept
