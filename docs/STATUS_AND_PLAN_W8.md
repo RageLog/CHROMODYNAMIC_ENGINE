@@ -898,6 +898,35 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
+## Run 25 multi-strand status (phases 918-932, 2026-06-08, 16 commits)
+
+Five concurrent strands, single dev branch, no tag / no push.
+
+| Strand | Goal                                | Phases   | Outcome |
+|--------|-------------------------------------|----------|---------|
+| A      | hello_engine collapser scaffold (path 38 → ≤10) | 918 | 4 new R-Showcase collapsing headers reserve real estate; fold-per-category deferred (invasive, needs scene-composition handles). |
+| B      | Per-library live CPU demos          | 919-932  | **17 visible demos shipped** -- DDGI/ReSTIR DI/NRC/vol-fog/clouds/texture-synth/decal/GPU particles/VG/VT/mesh-shader/sheen+clearcoat/SSS/atmo/shafts/LTC/ReSTIR GI. Every render-tier library in DEPS now has a visible toggle in hello_engine. |
+| C      | Metal ADR §8.5 close-out            | 922      | 6 audit-patch sub-sections inlined; verdict NEEDS-REVISION-FIRST → READY-TO-START pending **user sign-off Fork A primary** (the load-bearing remaining item). |
+| D      | Phase 2 architecture roadmap (X4/X5/X1-FU-F) | 921 | `docs/ROADMAP_PHASE_2.md` NEW (504 lines). §5 proposes serial ordering. §6 surfaces 6 open questions for the council. Two flagged risks: §6 Q1 (shader toolchain decision irreversible), §6 Q2 (secondary-cmd-buffer surface shape biggest cross-backend lever). |
+| E      | Clang-tidy bug-class promotion      | 928      | 9 additional rules promoted to WarningsAsErrors (9 → 18). |
+
+Tests: 260/260 PASS at every single commit checkpoint. Zero
+rendering regressions.
+
+**Run 25 close-out items deferred** (require dedicated next-marathon
+slot):
+
+- Strand A invasive fold of 28 category-(b) visual samples (samples/
+  editor/, samples/asset/ viewers, samples/render/, samples/rhi/).
+  Needs hello_engine to grow embedded scene-composition handles +
+  collapsing-header lifecycle.
+- L1 Metal P1 dispatch (gated on user Fork-A sign-off).
+- Phase 2 X5 → X1-FU-F → X4 milestones (gated on user ADR-acceptance
+  for the §2.6/§3.6/§4.6 recommended ADRs).
+- IBL + camera CPU demos (small follow-ons).
+
+---
+
 ## Sample consolidation status (Run 24, phases 900-916, 2026-06-07/08)
 
 **Baseline 106 -> 38 sample main.cpp files (-68, 64.2% reduction).**
