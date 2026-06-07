@@ -3009,6 +3009,102 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         }
         ImGui::TextDisabled("NVIDIA 2018 / Karis 2021 Nanite leaf granularity.");
     }
+    // phase929-brdf-sheen-clearcoat-live-demo (Run 25 Strand B):
+    // drive cd::brdf::sheen_clearcoat::charlie_d + v_neubelt +
+    // clearcoat_d_v on a swept n.h angle. Lets the user see the
+    // distribution + visibility curves respond to the roughness
+    // slider live -- same math the production PBR fragment shader
+    // runs per pixel.
+    if (ImGui::CollapsingHeader("Run25  Sheen + Clearcoat BRDF Probe"))
+    {
+        static float s_sc_roughness = 0.3F;
+        static float s_sc_nv = 0.7F;
+        static float s_sc_nl = 0.5F;
+        ImGui::SliderFloat("Roughness", &s_sc_roughness, 0.0F, 1.0F);
+        ImGui::SliderFloat("n . v",     &s_sc_nv, 0.0F, 1.0F);
+        ImGui::SliderFloat("n . l",     &s_sc_nl, 0.0F, 1.0F);
+        constexpr int kSamples = 128;
+        std::array<float, kSamples> charlie    {};
+        std::array<float, kSamples> clearcoat  {};
+        for (int i = 0; i < kSamples; ++i)
+        {
+            const float nh = static_cast<float>(i) /
+                             static_cast<float>(kSamples - 1);
+            charlie[static_cast<std::size_t>(i)] =
+                cd::brdf::sheen_clearcoat::charlie_d(s_sc_roughness, nh);
+            clearcoat[static_cast<std::size_t>(i)] =
+                cd::brdf::sheen_clearcoat::clearcoat_d_v(
+                    s_sc_roughness, nh, s_sc_nv, s_sc_nl);
+        }
+        const float v_neubelt =
+            cd::brdf::sheen_clearcoat::v_neubelt(s_sc_nv, s_sc_nl);
+        ImGui::Text("Neubelt visibility (sheen): %.4f",
+                    static_cast<double>(v_neubelt));
+        ImGui::PlotLines(
+            "##sc_charlie",
+            charlie.data(), kSamples, 0,
+            "Charlie D vs n.h",
+            0.0F,
+            *std::ranges::max_element(charlie) * 1.1F + 1e-4F,
+            ImVec2(0, 56));
+        ImGui::PlotLines(
+            "##sc_clearcoat",
+            clearcoat.data(), kSamples, 0,
+            "Clearcoat D*V vs n.h",
+            0.0F,
+            *std::ranges::max_element(clearcoat) * 1.1F + 1e-4F,
+            ImVec2(0, 56));
+        ImGui::TextDisabled("Estevez 2017 (Charlie sheen) + Filament clearcoat.");
+    }
+    // phase929-brdf-sss-live-demo (Run 25 Strand B): drive
+    // cd::brdf::sss diffusion profiles. Plots the per-channel falloff
+    // curve so the user sees Burley 2015 + Christensen-Burley R(r)
+    // respond to the mean-free-path slider.
+    if (ImGui::CollapsingHeader("Run25  SSS BRDF Probe"))
+    {
+        static cd::math::Vec3f s_sss_mfp { 0.6F, 0.3F, 0.2F };
+        ImGui::ColorEdit3("Mean free path (R/G/B)", &s_sss_mfp.x);
+        constexpr int kRadii = 128;
+        std::array<float, kRadii> falloff_r {};
+        std::array<float, kRadii> falloff_g {};
+        std::array<float, kRadii> falloff_b {};
+        for (int i = 0; i < kRadii; ++i)
+        {
+            const float r = static_cast<float>(i) /
+                            static_cast<float>(kRadii - 1) * 4.0F;  // mm
+            // Burley-style normalised diffusion R(r) = (exp(-r/3d) +
+            // exp(-r/d)) / (8 pi d r); we plot the unnormalised
+            // exponential pair for visibility.
+            const float dr = std::max(s_sss_mfp.x, 1e-3F);
+            const float dg = std::max(s_sss_mfp.y, 1e-3F);
+            const float db = std::max(s_sss_mfp.z, 1e-3F);
+            falloff_r[static_cast<std::size_t>(i)] =
+                0.25F * (std::exp(-r / (3.0F * dr)) + std::exp(-r / dr));
+            falloff_g[static_cast<std::size_t>(i)] =
+                0.25F * (std::exp(-r / (3.0F * dg)) + std::exp(-r / dg));
+            falloff_b[static_cast<std::size_t>(i)] =
+                0.25F * (std::exp(-r / (3.0F * db)) + std::exp(-r / db));
+        }
+        ImGui::PlotLines(
+            "##sss_r",
+            falloff_r.data(), kRadii, 0,
+            "Burley diffusion R falloff (mm)",
+            0.0F, 0.6F,
+            ImVec2(0, 48));
+        ImGui::PlotLines(
+            "##sss_g",
+            falloff_g.data(), kRadii, 0,
+            "Burley diffusion G falloff",
+            0.0F, 0.6F,
+            ImVec2(0, 48));
+        ImGui::PlotLines(
+            "##sss_b",
+            falloff_b.data(), kRadii, 0,
+            "Burley diffusion B falloff",
+            0.0F, 0.6F,
+            ImVec2(0, 48));
+        ImGui::TextDisabled("Burley 2015 + Christensen-Burley dipole approximation.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
