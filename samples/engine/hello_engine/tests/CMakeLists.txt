@@ -33,6 +33,16 @@ cd_add_test(hello_engine_pbr_grid
   DEPS    cd::core cd::math
 )
 
+# phase882 — first-boot HelloEngineFx default lock. Phase 875 + 876
+# converged on a clean-sky / no-haze first-boot look (fog 0, aerial 0,
+# clouds 0.20). The struct is header-only POD; this test simply
+# value-checks the in-class default initialisers so a future "subtle
+# atmosphere by default" PR has to pass a peer-reviewed test diff.
+cd_add_test(hello_engine_fx_defaults
+  SOURCES test_hello_engine_fx_defaults.cpp
+  DEPS    cd::core
+)
+
 # phase845 — W8-BE layout regression nets. Locks InstanceMatGpu at 48 B
 # with the post-phase840 albedo_tex_slot + index_offset extension,
 # the kBindlessAlbedoSlotNone = 0xFFFFFFFFu sentinel contract, the

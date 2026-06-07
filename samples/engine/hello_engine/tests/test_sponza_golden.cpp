@@ -364,15 +364,13 @@ synthesise(const Fixture& cam, std::uint32_t w, std::uint32_t h)
 // CPU-SYNTH tests -- always run, no GPU required.
 // ============================================================================
 
-TEST(SponzaGoldenFixtures, CameraSetIsExactlySixAndAllSlugsUnique)
+TEST(SponzaGoldenFixtures, CameraSetIsExactlyTenAndAllSlugsUnique)
 {
-    // phase797-rt-chrome-sponza-probe: cardinality bumped from 5 to 6
-    // when the chrome-probe diagnostic fixture landed. Fixture #5
-    // (slug "chrome_probe") drives the iteration loop for the RT
-    // reflection regression hunt.
+    // phase797-rt-chrome-sponza-probe: cardinality bumped 5 → 6
+    // when the chrome-probe diagnostic fixture landed (slot 5).
     // phase869-fix-verification-fixtures: 4 diagnostic poses added
-    // (sky_zenith, sky_yaw_a, sky_yaw_b, roof_down) for cloud +
-    // fog visible-quality iteration. 6 → 10.
+    // (sky_zenith #6, sky_yaw_a #7, sky_yaw_b #8, roof_down #9) for
+    // cloud + fog visible-quality iteration. 6 → 10.
     EXPECT_EQ(kFixtures.size(), 10U);
     for (std::size_t i = 0; i < kFixtures.size(); ++i)
     {
@@ -406,6 +404,35 @@ TEST(SponzaGoldenFixtures, ChromeProbeIsFixtureFiveAndCarriesProbeConstants)
     // Probe constants exposed as inline constexpr so the spawn site
     // in main.cpp and the fixture camera stay in lock-step.
     EXPECT_GT(kChromeProbeScale, 0.0F);
+}
+
+// phase882-diagnostic-fixtures-lock: pin the 4 visible-quality
+// diagnostic fixtures (sky_zenith #6, sky_yaw_a #7, sky_yaw_b #8,
+// roof_down #9) to their slot indices. Run 22 close-out captures
+// (build/probe/p876b_*.png) drove the cloud + fog iteration off
+// these specific poses; a slot shuffle would silently break the
+// capture-driven workflow rule documented in
+// [[feedback-capture-driven-visual-iteration]].
+TEST(SponzaGoldenFixtures, DiagnosticFixturesPinnedToSlotsSixThroughNine)
+{
+    ASSERT_GE(kFixtures.size(), 10U);
+    EXPECT_EQ(kFixtures[6].slug, "sky_zenith");
+    EXPECT_EQ(kFixtures[7].slug, "sky_yaw_a");
+    EXPECT_EQ(kFixtures[8].slug, "sky_yaw_b");
+    EXPECT_EQ(kFixtures[9].slug, "roof_down");
+    // sky_yaw_a and sky_yaw_b must be 180° opposites in yaw — their
+    // (target - eye) direction vectors must have opposite-sign x
+    // components while eye is shared.
+    EXPECT_FLOAT_EQ(kFixtures[7].eye[0], kFixtures[8].eye[0]);
+    EXPECT_FLOAT_EQ(kFixtures[7].eye[1], kFixtures[8].eye[1]);
+    EXPECT_FLOAT_EQ(kFixtures[7].eye[2], kFixtures[8].eye[2]);
+    const float a_dir_x = kFixtures[7].target[0] - kFixtures[7].eye[0];
+    const float b_dir_x = kFixtures[8].target[0] - kFixtures[8].eye[0];
+    EXPECT_LT(a_dir_x * b_dir_x, 0.0F)
+        << "sky_yaw_a / sky_yaw_b must look toward opposite +/- X "
+           "half-spaces for the 180° yaw direction-stability test "
+           "to be meaningful (a_dir_x=" << a_dir_x
+        << ", b_dir_x=" << b_dir_x << ")";
 }
 
 // phase829-fixture-lookup-by-slug: lock the slug-name lookup so
