@@ -752,6 +752,33 @@ void main() {
             vec3 miss_ibl = textureLod(cd_ibl_spec, Ri2, 0.0).rgb;
             hit_alb = mix(hit_alb, hit_alb * miss_ibl * 1.2, 0.35);
         }
+    } else if (tex_slot != kBindlessAlbedoSlotNone && hit_prim >= 0) {
+        // phase871-2-bounce-sponza-vb-normal: see prim.frag.glsl
+        uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+        uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+        uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+        vec3 n0 = vec3(cd_sponza_vb.verts[i0].pos_x_y_z_nx.w,
+                       cd_sponza_vb.verts[i0].ny_nz_u_v.x,
+                       cd_sponza_vb.verts[i0].ny_nz_u_v.y);
+        vec3 n1 = vec3(cd_sponza_vb.verts[i1].pos_x_y_z_nx.w,
+                       cd_sponza_vb.verts[i1].ny_nz_u_v.x,
+                       cd_sponza_vb.verts[i1].ny_nz_u_v.y);
+        vec3 n2 = vec3(cd_sponza_vb.verts[i2].pos_x_y_z_nx.w,
+                       cd_sponza_vb.verts[i2].ny_nz_u_v.x,
+                       cd_sponza_vb.verts[i2].ny_nz_u_v.y);
+        float w0 = 1.0 - hit_bary.x - hit_bary.y;
+        vec3 N_sponza = normalize(n0 * w0 + n1 * hit_bary.x + n2 * hit_bary.y);
+        vec3 hit_pos1 = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
+        vec3 Ri2 = reflect(Ri, N_sponza);
+        vec3 bounce_color = vec3(0.0);
+        float bounce_hit = reflection_hit_color(
+                             hit_pos1 + N_sponza * 0.02, Ri2, 60.0, bounce_color);
+        if (bounce_hit > 0.5) {
+            hit_alb = mix(hit_alb, hit_alb * (bounce_color + 0.25), 0.40);
+        } else {
+            vec3 miss_ibl = textureLod(cd_ibl_spec, Ri2, 0.0).rgb;
+            hit_alb = mix(hit_alb, hit_alb * miss_ibl * 1.15, 0.30);
+        }
     } else {
         vec3 second_bounce_ibl = textureLod(cd_ibl_spec, Ri,
                                             roughness * kIblMaxMipLod).rgb;
