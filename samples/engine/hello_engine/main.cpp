@@ -2764,6 +2764,46 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::TextDisabled("Quintic eliminates the cubic axis-aligned ridges");
         ImGui::TextDisabled("(Perlin 2002 improvement; clouds shader phase 853).");
     }
+    // phase926-decal-live-demo (Run 25 Strand B): CPU-side
+    // cd::decal::project_world_to_decal + decal_intersects_aabb
+    // probe. Lets the user drag a decal OBB centre / extents and
+    // a test point + sees inside/outside + local NDC + atlas UV
+    // resolve LIVE. Same math the GBuffer decal pass runs per
+    // pixel; here we make it click-debuggable.
+    if (ImGui::CollapsingHeader("Run25  Decal Projector Probe"))
+    {
+        static cd::decal::Decal s_decal {};
+        static cd::math::Vec3f  s_dp_point { 0.2F, 0.1F, 0.1F };
+        ImGui::SliderFloat3("Decal position",
+                            &s_decal.position.x, -4.0F, 4.0F);
+        ImGui::SliderFloat3("Decal half-extents",
+                            &s_decal.half_extents.x, 0.1F, 4.0F);
+        ImGui::SliderFloat3("Test point (world)",
+                            &s_dp_point.x, -4.0F, 4.0F);
+        cd::math::Vec3f local {};
+        std::array<float, 2> uv {};
+        const bool inside =
+            cd::decal::project_world_to_decal(s_decal, s_dp_point, local, uv);
+        ImGui::Text("Inside OBB: %s", inside ? "YES" : "NO");
+        ImGui::Text("Local NDC (right, up, fwd): (%.3f, %.3f, %.3f)",
+                    static_cast<double>(local.x),
+                    static_cast<double>(local.y),
+                    static_cast<double>(local.z));
+        ImGui::Text("Atlas UV: (%.3f, %.3f)",
+                    static_cast<double>(uv[0]),
+                    static_cast<double>(uv[1]));
+        // Fixed scene AABB so the user can also see the binning
+        // path's inside/outside result -- which clusters / tiles
+        // the production pass would touch.
+        constexpr cd::math::Vec3f kAabbMin { -1.0F, -1.0F, -1.0F };
+        constexpr cd::math::Vec3f kAabbMax {  1.0F,  1.0F,  1.0F };
+        const bool aabb_hit =
+            cd::decal::decal_intersects_aabb(s_decal, kAabbMin, kAabbMax);
+        ImGui::Text("Intersects scene AABB [-1, 1]^3: %s",
+                    aabb_hit ? "YES" : "NO");
+        ImGui::TextDisabled("Same math as the GBuffer decal pass.");
+        ImGui::TextDisabled("Persson 2009 / Filion 2012 cluster binning.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
