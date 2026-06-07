@@ -194,7 +194,7 @@ cd::core::Result<ObjMesh> parse_obj(std::string_view text)
             float z = 0.0F;
             if (!parse_float(line, pos, x) || !parse_float(line, pos, y) || !parse_float(line, pos, z))
                 return std::unexpected(obj_errors::make(obj_errors::Code::kParseFailed, "bad 'v' line"));
-            positions.push_back({ x, y, z });
+            positions.emplace_back(x, y, z);
         }
         else if (directive == "vn")
         {
@@ -203,7 +203,7 @@ cd::core::Result<ObjMesh> parse_obj(std::string_view text)
             float z = 0.0F;
             if (!parse_float(line, pos, x) || !parse_float(line, pos, y) || !parse_float(line, pos, z))
                 return std::unexpected(obj_errors::make(obj_errors::Code::kParseFailed, "bad 'vn' line"));
-            normals.push_back({ x, y, z });
+            normals.emplace_back(x, y, z);
         }
         else if (directive == "vt")
         {
@@ -211,7 +211,7 @@ cd::core::Result<ObjMesh> parse_obj(std::string_view text)
             float v = 0.0F;
             if (!parse_float(line, pos, u) || !parse_float(line, pos, v))
                 return std::unexpected(obj_errors::make(obj_errors::Code::kParseFailed, "bad 'vt' line"));
-            uvs.push_back({ u, v });
+            uvs.emplace_back(u, v);
         }
         else if (directive == "f")
         {

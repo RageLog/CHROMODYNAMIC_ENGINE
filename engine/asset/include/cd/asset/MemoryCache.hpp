@@ -70,7 +70,7 @@ public:
             if (freed >= release_bytes) break;
             const auto& e = entries_.at(id);
             freed += e.bytes;
-            out.push_back(AssetId { id });
+            out.emplace_back(id);
         }
         return out;
     }

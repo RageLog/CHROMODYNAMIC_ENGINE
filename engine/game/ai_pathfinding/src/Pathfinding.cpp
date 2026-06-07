@@ -193,7 +193,7 @@ PathResult Pathfinder::find_path(const PathRequest& req) const
 
     g_score[start_tri] = 0.0F;
     const float h_start = dist3(centroids_[start_tri], goal_centroid);
-    open_set.push({h_start, start_tri});
+    open_set.emplace(h_start, start_tri);
 
     uint32_t explored = 0U;
     bool     found    = false;
@@ -233,7 +233,7 @@ PathResult Pathfinder::find_path(const PathRequest& req) const
                 came_from[nb] = cur;
                 g_score[nb]   = tentative_g;
                 const float h_nb = dist3(centroids_[nb], goal_centroid);
-                open_set.push({tentative_g + h_nb, nb});
+                open_set.emplace(tentative_g + h_nb, nb);
             }
         }
     }

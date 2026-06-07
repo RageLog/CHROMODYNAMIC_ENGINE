@@ -1214,7 +1214,7 @@ public:
         for (const auto& va : desc.vertex_attributes)
         {
             D3D12_INPUT_ELEMENT_DESC e {};
-            semantic_storage.push_back("TEXCOORD");
+            semantic_storage.emplace_back("TEXCOORD");
             e.SemanticName = semantic_storage.back().c_str();
             e.SemanticIndex = va.location;
             e.Format = to_dxgi_format(va.format);

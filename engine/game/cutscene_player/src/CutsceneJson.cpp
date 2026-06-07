@@ -69,7 +69,7 @@ namespace
     events_arr.reserve(phase.events.size());
     for (const auto& ev : phase.events)
     {
-        events_arr.emplace_back(Value { event_to_json(ev) });
+        events_arr.emplace_back(event_to_json(ev));
     }
     obj["events"] = Value { std::move(events_arr) };
     return obj;
@@ -90,7 +90,7 @@ namespace
     phases_arr.reserve(cs.phases.size());
     for (const auto& ph : cs.phases)
     {
-        phases_arr.emplace_back(Value { phase_to_json(ph) });
+        phases_arr.emplace_back(phase_to_json(ph));
     }
     obj["phases"] = Value { std::move(phases_arr) };
     return obj;
