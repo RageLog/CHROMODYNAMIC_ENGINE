@@ -347,12 +347,24 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
 
     // 3) Pipeline layout.
     cd::rhi::PipelineLayoutDesc pld {};
-    std::span<const cd::rhi::DescriptorSetLayoutHandle> set_layout_span {};
+    // phase864-multi-set: build the set-layout span from the material's
+    // own descriptor set (when present) FOLLOWED BY any caller-supplied
+    // extra layouts. Owner of `all_layouts` storage is this stack frame;
+    // it lives until create_pipeline_layout returns, which is exactly
+    // when the device-side pipeline layout no longer needs the handles.
+    std::vector<cd::rhi::DescriptorSetLayoutHandle> all_layouts {};
+    all_layouts.reserve(static_cast<std::size_t>(m.has_descriptors_)
+                        + desc.extra_set_layouts.size());
     if (m.has_descriptors_)
     {
-        set_layout_span = std::span<const cd::rhi::DescriptorSetLayoutHandle>(&set_layout_handle, 1);
+        all_layouts.push_back(set_layout_handle);
     }
-    pld.set_layouts = set_layout_span;
+    for (const auto& l : desc.extra_set_layouts)
+    {
+        all_layouts.push_back(l);
+    }
+    pld.set_layouts = std::span<const cd::rhi::DescriptorSetLayoutHandle>(
+        all_layouts.data(), all_layouts.size());
     pld.push_constants = desc.push_constants;
     auto pl_r = device.create_pipeline_layout(pld);
     if (!pl_r.has_value())

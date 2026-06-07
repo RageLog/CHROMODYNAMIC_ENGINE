@@ -125,6 +125,16 @@ struct MaterialDesc
     /// color triangle).
     std::span<const cd::rhi::DescriptorSetLayoutBinding> descriptor_bindings {};
 
+    /// phase864-multi-set: extra descriptor set layouts appended AFTER the
+    /// material's own descriptor set (which always sits at set index 0).
+    /// Each entry becomes set index 1, 2, ... in the pipeline layout. Used
+    /// by the W8-BE bindless dedicated-set path so the bindless sampler2D
+    /// array can live on its own descriptor set, isolated from the shared
+    /// per-prim set (which phase 851 + 860 proved triggers a NVIDIA
+    /// dynamic-index crash). Caller owns the layouts and is responsible
+    /// for their lifetime — Material does NOT take ownership.
+    std::span<const cd::rhi::DescriptorSetLayoutHandle> extra_set_layouts {};
+
     /// Optional push-constant ranges. Each range declares the byte window
     /// of the user-provided constant block visible to the listed shader
     /// stages. Empty (default) means the pipeline layout has no push range.

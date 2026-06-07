@@ -79,15 +79,47 @@ inline constexpr std::string_view kShadowVertGlslPath =
 inline constexpr std::string_view kShadowFragGlslPath =
     "shaders/shadow.frag.glsl";
 
+/// phase864-bindless-dedicated-set: build the standalone descriptor set
+/// layout that hosts the bindless sampler2D array on its own set index
+/// (set=1 in the prim pipeline). Single binding (binding=0,
+/// kBindlessSampledImage, count=256, .bindless=true) so the trailing
+/// binding flag enables VARIABLE_DESCRIPTOR_COUNT for runtime sizing.
+[[nodiscard]] inline cd::rhi::DescriptorSetLayoutHandle
+make_prim_bindless_layout(cd::rhi::IDevice& device)
+{
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 1> kBindlessBindings {
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding  = 0,
+            .type     = cd::rhi::DescriptorType::kBindlessSampledImage,
+            .count    = 256,
+            .stages   = cd::rhi::ShaderStage::kFragment,
+            .bindless = true,
+        }
+    };
+    cd::rhi::DescriptorSetLayoutDesc dsld {};
+    dsld.bindings = kBindlessBindings;
+    auto r = device.create_descriptor_set_layout(dsld);
+    if (!r.has_value())
+    {
+        std::fprintf(stderr,
+            "hello_engine: prim bindless layout create failed: %.*s\n",
+            static_cast<int>(r.error().message.size()),
+            r.error().message.data());
+        return {};
+    }
+    return *r;
+}
+
 /// Build the full prim MaterialDesc and call Material::create. Shared
 /// between initial spawn (spawn_materials) and hot-reload (HelloShaderWatch).
 /// On success overwrites *prim_material and returns true; on failure
 /// leaves *prim_material untouched and returns false so the previous
 /// pipeline keeps rendering.
 [[nodiscard]] inline bool
-prim_recreate(cd::rhi::IDevice&         device,
-              cd::shader::ICompiler*    compiler,
-              cd::material::Material*   prim_material)
+prim_recreate(cd::rhi::IDevice&                       device,
+              cd::shader::ICompiler*                  compiler,
+              cd::material::Material*                 prim_material,
+              cd::rhi::DescriptorSetLayoutHandle      bindless_set_layout = {})
 {
     constexpr std::array<cd::rhi::Format, 4> kColorFmts {
         cd::rhi::Format::kRGBA16Float,
@@ -117,14 +149,18 @@ prim_recreate(cd::rhi::IDevice&         device,
     //        per-vertex UV at a ray hit.
     //   12 — Sponza index buffer (uint32) as storage buffer. Looks up
     //        the 3 vertex indices of the hit triangle.
-    //   13 — bindless sampler2D array (kBindlessSampledImage). Last
-    //        binding in the set; VARIABLE_DESCRIPTOR_COUNT lights up.
-    //        Per-prim albedo textures get written to slots by the
-    //        host-side wiring in phase843.
     //
-    // Non-Sponza prims keep the W8-BD avg-colour path; they never
-    // sample bindings 11-13.
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 14> kBindings {
+    // phase864-bindless-dedicated-set: binding 13 (the bindless
+    // sampler2D array) MOVED off this set and onto its own
+    // dedicated descriptor set at set index 1. Caused by the
+    // phase 851 + 860 diagnosis: NVIDIA's driver crashes
+    // dynamic-index reads on the shared per-prim set, even when
+    // every slot is populated. Isolating the bindless binding to a
+    // separate set lifts that constraint. The dedicated set's
+    // single layout entry (binding 0, count=256, .bindless=true)
+    // is built in `make_prim_bindless_layout` below and passed to
+    // Material::create via the new extra_set_layouts span.
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 13> kBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 1,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 2,  .type = cd::rhi::DescriptorType::kAccelerationStructure, .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
@@ -138,7 +174,6 @@ prim_recreate(cd::rhi::IDevice&         device,
         cd::rhi::DescriptorSetLayoutBinding { .binding = 10, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 11, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 12, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
-        cd::rhi::DescriptorSetLayoutBinding { .binding = 13, .type = cd::rhi::DescriptorType::kBindlessSampledImage,  .count = 256, .stages = cd::rhi::ShaderStage::kFragment, .bindless = true },
     };
 
     cd::material::MaterialDesc md {};
@@ -160,6 +195,16 @@ prim_recreate(cd::rhi::IDevice&         device,
     md.vertex_attributes  = kPrimAttrs;
     md.push_constants     = kPush;
     md.descriptor_bindings = kBindings;
+    // phase864-bindless-dedicated-set: when the caller supplies a
+    // dedicated bindless layout, append it as set index 1 in the
+    // pipeline layout. The shader uses (set=1, binding=0) for the
+    // bindless sampler2D array.
+    std::array<cd::rhi::DescriptorSetLayoutHandle, 1> extras { bindless_set_layout };
+    if (bindless_set_layout.is_valid())
+    {
+        md.extra_set_layouts =
+            std::span<const cd::rhi::DescriptorSetLayoutHandle>(extras);
+    }
     md.raster.cull = cd::rhi::CullMode::kNone;
     md.depth_stencil.depth_test = true;
     md.depth_stencil.depth_write = true;
