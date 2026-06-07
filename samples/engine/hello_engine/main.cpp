@@ -3649,12 +3649,27 @@ inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
     cp.sun_col[1] = 0.0F;
     cp.sun_col[2] = 0.0F;
     cp.sun_col[3] = fx.clouds_coverage;
+    // phase872-sun-col-direction-bug-fix: the loop below early-exits
+    // (break) on every "sun is behind camera" or "shafts geometry
+    // degenerate" branch, which left cp.sun_col at zero whenever the
+    // camera yawed past 90° from the sun. The composite shader's
+    // `sun_amt = length(sun_col.rgb) * 0.5` then collapsed to zero
+    // and `cloud_lit *= mix(0.04, 1.0, 0)` darkened the cloud overlay
+    // to near-black — exactly the user-reported "180° yaw colour
+    // flip". sun_col is now set UNCONDITIONALLY on the first enabled
+    // directional light below; the shafts geometry continues to
+    // gate the shafts amount, not the colour.
     for (const auto& lrow : lights)
     {
         if (!lrow.enabled)
             continue;
         if (lrow.light.type != cd::light::LightType::kDirectional)
             continue;
+        // Set the colour FIRST — this is the per-frame "sun is on"
+        // signal the composite needs regardless of view direction.
+        cp.sun_col[0] = lrow.light.color.x;
+        cp.sun_col[1] = lrow.light.color.y;
+        cp.sun_col[2] = lrow.light.color.z;
         const cd::math::Vec3f to_sun { -lrow.light.direction.x, -lrow.light.direction.y, -lrow.light.direction.z };
         // Compute camera basis (forward/right/up). Same construction
         // as the sky/PBR push setup right above.
@@ -3705,10 +3720,8 @@ inline void begin_composite_pass(cd::rhi::ICommandBuffer& cmd,
         // frame instead of dying within ~25% of UV distance from
         // sun. Was 3.5; 1.6 keeps shafts readable at the corners.
         cp.shafts[3] = 1.6F;  // decay (per UV distance)
-        cp.sun_col[0] = lrow.light.color.x;
-        cp.sun_col[1] = lrow.light.color.y;
-        cp.sun_col[2] = lrow.light.color.z;
-        // Preserve clouds_coverage (already set above before the loop).
+        // phase872: sun_col was already set at the top of the loop;
+        // no need to re-assign here.
         break;
     }
     // Atmospheric fog (uniform exp-haze) + aerial perspective (sky

@@ -628,10 +628,22 @@ void main() {
     // the lit-cloud term going dark; the base sky behind the
     // clouds should stay daylight-toned.
     vec3 stable_sky_base = vec3(0.55, 0.66, 0.84);
-    vec3 sky_with_clouds = mix(stable_sky_base, cloud_lit,
-                               clamp(cloud, 0.0, 1.0));
-    float overlay_mix = clamp(depth_gate * horizon_fade, 0.0, 1.0);
-    c = mix(c, sky_with_clouds, overlay_mix);
+    // phase872-sky-overlay-dominance: user reports the sky still
+    // shifts colour at 180° yaw / certain pitch — root cause is the
+    // analytical-sky pass's direction-dependent gradient (warm
+    // horizon ↔ cool zenith ↔ sun-side glow) bleeding through where
+    // overlay_mix is below 1.0. Decouple overlay_mix from
+    // horizon_fade: the overlay should FULLY replace the sky pixel
+    // any time depth_gate detects sky depth, regardless of pitch
+    // angle. Horizon attenuation is folded into the cloud-density
+    // term instead so light clouds taper toward the horizon (still
+    // see stable_sky_base, NOT the analytical sky).
+    float cloud_visible = clamp(cloud, 0.0, 1.0) *
+                          smoothstep(-0.10, 0.20, dir_world.y);
+    vec3 sky_with_clouds = mix(stable_sky_base, cloud_lit, cloud_visible);
+    // Sky pixels (depth_gate > 0) get fully overlaid; non-sky pixels
+    // (geometry hits) are untouched.
+    c = mix(c, sky_with_clouds, depth_gate);
   }
 
   // AO
