@@ -497,13 +497,19 @@ public:
         textures_.erase(h.index());
     }
 
-    // ---- Everything else: stubbed (Phase 13.C — out of scope) -------------
-
-#define CD_D3D12_NOT_IMPL_RESULT(rt)                                              \
-    return std::unexpected(cd::rhi::rhi_errors::make(                             \
-        cd::rhi::rhi_errors::Code::kNotImplemented,                               \
-        "D3D12 backend at v0.32.0 ships buffer/texture/swapchain only; "          \
-        "this entry point lands in a later phase"))
+    // phase883-d3d12-dead-scaffold-cleanup: the
+    // CD_D3D12_NOT_IMPL_RESULT macro and its "Everything else
+    // stubbed" comment are historical scaffold from the Phase 13.C
+    // parity sprint's early days. Every entry point that lived
+    // under that umbrella has since received a real implementation
+    // (texture views Phase 124, shader compile Phase 139, descriptor
+    // sets Phase 145+, RT path Phases M4A-M4H, etc.). The macro had
+    // zero call sites; removed along with the misleading header.
+    //
+    // The remaining `Code::kNotImplemented` returns in this file are
+    // runtime CAPABILITY GATES (mesh shaders + DXR on adapters that
+    // lack the feature) or defensive guards on unknown enum values,
+    // not "TODO: implement me later" stubs.
 
     // ---- Texture view (REAL — Phase 124 v0.99.51) -------------------------
     //
@@ -3072,8 +3078,6 @@ public:
     {
         accels_.erase(h.index());
     }
-
-#undef CD_D3D12_NOT_IMPL_RESULT
 
     // ---- Resource records (Phase 13.C) ------------------------------------
 

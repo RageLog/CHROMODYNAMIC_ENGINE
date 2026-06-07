@@ -952,8 +952,14 @@ The big-ticket items from phase 873's plan are still open:
    bindless write to additional VB/IB bindings, or a single
    merged VB/IB design.
 2. L1 Metal backend (per ADR-20260530-metal-backend.md).
-3. Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC,
-   Eberly LBS).
+3. ~~Remaining 2 Sponza-on-disk PDFs~~ — UPDATED at phase 879
+   close-out (commit e14ed83):
+   - Heitz 2016 LTC: VERIFIED by Run 30 / phase 375.
+   - Eberly LBS: declared non-recoverable in ATTEMPTS.md FINAL
+     verdict; SUBSTITUTE `kavan2007_dual_quaternion_skinning`
+     VERIFIED in phase 879 (bibkey `kavan2007dqs`). LBS theory
+     citations now point to Kavan.
+   - Demir Kural library now carries 5 VERIFIED entries.
 
 Phases 874-876 are tagged as "Run 22 partial" rather than a full
 close-out because the marathon agenda still has multi-week work
