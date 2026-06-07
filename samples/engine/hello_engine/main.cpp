@@ -88,6 +88,7 @@
 #include <cd/restir_di/Reservoir.hpp>
 #include <cd/restir_gi/GiReservoir.hpp>
 #include <cd/texture_synth/Earth.hpp>
+#include <cd/texture_synth/Noise.hpp>
 
 // W8-AR: <cd/material/StandardPbrMaterial.hpp> include REMOVED.
 // hello_engine no longer uses the dedicated StandardPbr pipeline;
@@ -2662,6 +2663,106 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::BulletText("hello_render_thread  - AsyncSubmit pattern");
         ImGui::TextDisabled("Fold strategy: per-demo toggle exposes the unique");
         ImGui::TextDisabled("technique through the existing R-Showcase panel.");
+    }
+    // phase925-texture-synth-live-demo (Run 25 Strand B): CPU
+    // noise-quality probe. Lets the user compare cubic vs quintic
+    // Hermite smoothing live across one row of a noise texture --
+    // the same fix that landed in phase 853 for the cloud shader.
+    // Useful when picking the right kernel for a CPU-baked detail
+    // map (e.g. an asset cooker that needs the edge-free quintic
+    // for diagonal seams).
+    if (ImGui::CollapsingHeader("Run25  Texture-Synth Noise Probe"))
+    {
+        static int s_ns_freq = 8;
+        static float s_ns_row_v = 0.5F;
+        ImGui::SliderInt("Noise frequency", &s_ns_freq, 2, 32);
+        ImGui::SliderFloat("Sample row v",  &s_ns_row_v, 0.0F, 1.0F);
+        constexpr int kCols = 256;
+        std::array<float, kCols> row_cubic  {};
+        std::array<float, kCols> row_quintic {};
+        std::array<float, kCols> row_fbm6   {};
+        for (int i = 0; i < kCols; ++i)
+        {
+            const float u = static_cast<float>(i) / static_cast<float>(kCols - 1);
+            row_cubic[static_cast<std::size_t>(i)] =
+                cd::texture_synth::value_noise2(u, s_ns_row_v,
+                                                static_cast<float>(s_ns_freq));
+            row_quintic[static_cast<std::size_t>(i)] =
+                cd::texture_synth::value_noise2_quintic(u, s_ns_row_v,
+                                                        static_cast<float>(s_ns_freq));
+            row_fbm6[static_cast<std::size_t>(i)] =
+                cd::texture_synth::fbm2_quintic_6oct(u, s_ns_row_v,
+                                                    static_cast<float>(s_ns_freq));
+        }
+        ImGui::PlotLines(
+            "##ns_cubic",
+            row_cubic.data(), kCols, 0,
+            "Cubic Hermite (3t^2 - 2t^3)",
+            0.0F, 1.0F, ImVec2(0, 56));
+        ImGui::PlotLines(
+            "##ns_quintic",
+            row_quintic.data(), kCols, 0,
+            "Quintic Hermite (6t^5 - 15t^4 + 10t^3)",
+            0.0F, 1.0F, ImVec2(0, 56));
+        ImGui::PlotLines(
+            "##ns_fbm6",
+            row_fbm6.data(), kCols, 0,
+            "fBm 6-oct quintic",
+            0.0F, 1.0F, ImVec2(0, 56));
+        // Earth procedural single-pixel preview -- runs the same
+        // fbm2 + colour ramp the bake_earth_albedo_rgba8 baker uses,
+        // proves the cd::texture_synth::Earth module compiles +
+        // is reachable from hello_engine without baking a full
+        // texture every frame.
+        static float s_ns_earth_u = 0.30F;
+        static float s_ns_earth_v = 0.55F;
+        ImGui::SliderFloat("Earth sample u", &s_ns_earth_u, 0.0F, 1.0F);
+        ImGui::SliderFloat("Earth sample v", &s_ns_earth_v, 0.0F, 1.0F);
+        const float lat = (s_ns_earth_v - 0.5F) * std::numbers::pi_v<float>;
+        const float pole_falloff = std::cos(lat);
+        float n = cd::texture_synth::fbm2(s_ns_earth_u, s_ns_earth_v, 6.0F);
+        n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
+        const bool is_land = n > 0.48F;
+        cd::math::Vec3f earth {};
+        if (is_land)
+        {
+            const float t = std::clamp((n - 0.48F) / 0.52F, 0.0F, 1.0F);
+            cd::math::Vec3f low  { 0.30F, 0.55F, 0.18F };
+            cd::math::Vec3f mid  { 0.55F, 0.45F, 0.20F };
+            cd::math::Vec3f high { 0.90F, 0.88F, 0.82F };
+            if (t < 0.5F)
+            {
+                const float k = t * 2.0F;
+                earth = { low.x + (mid.x - low.x) * k,
+                          low.y + (mid.y - low.y) * k,
+                          low.z + (mid.z - low.z) * k };
+            }
+            else
+            {
+                const float k = (t - 0.5F) * 2.0F;
+                earth = { mid.x + (high.x - mid.x) * k,
+                          mid.y + (high.y - mid.y) * k,
+                          mid.z + (high.z - mid.z) * k };
+            }
+        }
+        else
+        {
+            const float ocean_depth = std::clamp((0.48F - n) / 0.48F, 0.0F, 1.0F);
+            earth = { 0.08F + (0.20F - 0.08F) * (1.0F - ocean_depth),
+                      0.25F + (0.50F - 0.25F) * (1.0F - ocean_depth),
+                      0.50F + (0.78F - 0.50F) * (1.0F - ocean_depth) };
+        }
+        if (pole_falloff < 0.18F)
+            earth = { 0.92F, 0.94F, 0.97F };
+        ImGui::ColorButton("Earth sample",
+                           { earth.x, earth.y, earth.z, 1.0F },
+                           ImGuiColorEditFlags_NoAlpha, ImVec2(64, 24));
+        ImGui::SameLine();
+        ImGui::Text("Earth (%s) noise=%.3f",
+                    is_land ? "land" : (pole_falloff < 0.18F ? "snow" : "sea"),
+                    static_cast<double>(n));
+        ImGui::TextDisabled("Quintic eliminates the cubic axis-aligned ridges");
+        ImGui::TextDisabled("(Perlin 2002 improvement; clouds shader phase 853).");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
