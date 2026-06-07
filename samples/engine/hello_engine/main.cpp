@@ -4323,6 +4323,12 @@ struct HelloEngineApp::EngineState
 
     // Material instances
     cd::material::MaterialInstance           prim_inst;
+    // phase864-bindless-dedicated-set: one descriptor set allocated
+    // from materials.prim_bindless_layout, populated at boot with
+    // Sponza per-prim albedos + fallback for unused slots. Bound as
+    // set index 1 alongside prim_inst (set 0) when the chrome
+    // reflection branch needs to sample the bindless array.
+    cd::rhi::DescriptorSetHandle             prim_bindless_set {};
     std::array<cd::material::MaterialInstance, 2> composite_insts;
     cd::material::MaterialInstance           bloom_prefilter_inst;
     std::array<cd::material::MaterialInstance, 3> bloom_down_insts;
@@ -4857,54 +4863,63 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // per-prim metadata is written into the SSBO.
     if (s.meshes.gltf.vb.is_valid() && s.meshes.gltf.ib.is_valid())
     {
-        // phase860-W8-BE-fill-all-bindless-slots: write EVERY slot 0..255
-        // with either the real Sponza prim albedo view (for textured
-        // prims) or the procedural Earth albedo fallback (slot_idx with
-        // no texture). Hypothesis from phase 851 diagnostics: NVIDIA's
-        // dynamic-index crash may be driver speculation across UNWRITTEN
-        // slots that PARTIALLY_BOUND only documents as undefined.
-        // Eliminating unwritten slots from the descriptor surface tests
-        // whether the dynamic-index branch becomes stable.
-        std::vector<cd::rhi::DescriptorWrite> dw_be {};
-        dw_be.reserve(2u + 256u);
-        dw_be.push_back(cd::rhi::DescriptorWrite {
-            .binding = 11, .array_element = 0,
-            .type    = cd::rhi::DescriptorType::kStorageBuffer,
-            .buffer  = s.meshes.gltf.vb,
-        });
-        dw_be.push_back(cd::rhi::DescriptorWrite {
-            .binding = 12, .array_element = 0,
-            .type    = cd::rhi::DescriptorType::kStorageBuffer,
-            .buffer  = s.meshes.gltf.ib,
-        });
-        std::uint32_t slot_idx = 0u;
-        for (const auto& pr : s.meshes.gltf_prim_ranges)
+        // phase864-bindless-dedicated-set: write bindings 11 + 12
+        // (Sponza VB / IB SSBOs) to the SHARED prim_inst set, but
+        // write the bindless slots to the DEDICATED bindless set
+        // (allocated from materials.prim_bindless_layout) on its own
+        // binding 0. The shared set no longer carries binding 13.
+        const cd::rhi::DescriptorWrite dw_shared[2] = {
+            { .binding = 11, .array_element = 0,
+              .type    = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer  = s.meshes.gltf.vb },
+            { .binding = 12, .array_element = 0,
+              .type    = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer  = s.meshes.gltf.ib },
+        };
+        (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_shared));
+
+        // Allocate the dedicated bindless descriptor set + populate
+        // all 256 slots (Sponza prim albedos + fallback).
+        if (auto bs_r = device.allocate_descriptor_set(
+                s.materials.prim_bindless_layout); bs_r.has_value())
         {
-            const cd::rhi::TextureViewHandle view_to_write =
-                pr.has_texture ? pr.albedo_view : s.albedo_tex.view;
-            dw_be.push_back(cd::rhi::DescriptorWrite {
-                .binding       = 13,
-                .array_element = slot_idx,
-                .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
-                .view          = view_to_write,
-                .sampler       = s.albedo_sampler,
-            });
-            ++slot_idx;
+            s.prim_bindless_set = *bs_r;
+            std::vector<cd::rhi::DescriptorWrite> dw_b {};
+            dw_b.reserve(256u);
+            std::uint32_t slot_idx = 0u;
+            for (const auto& pr : s.meshes.gltf_prim_ranges)
+            {
+                const cd::rhi::TextureViewHandle view_to_write =
+                    pr.has_texture ? pr.albedo_view : s.albedo_tex.view;
+                dw_b.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 0,
+                    .array_element = slot_idx,
+                    .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
+                    .view          = view_to_write,
+                    .sampler       = s.albedo_sampler,
+                });
+                ++slot_idx;
+            }
+            for (; slot_idx < 256u; ++slot_idx)
+            {
+                dw_b.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 0,
+                    .array_element = slot_idx,
+                    .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
+                    .view          = s.albedo_tex.view,
+                    .sampler       = s.albedo_sampler,
+                });
+            }
+            (void)device.update_descriptor_set(
+                s.prim_bindless_set,
+                std::span<const cd::rhi::DescriptorWrite>(dw_b));
         }
-        // Fill the remaining slots (N..255) with the fallback view so
-        // every slot is populated — the descriptor array has zero
-        // unwritten entries.
-        for (; slot_idx < 256u; ++slot_idx)
+        else
         {
-            dw_be.push_back(cd::rhi::DescriptorWrite {
-                .binding       = 13,
-                .array_element = slot_idx,
-                .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
-                .view          = s.albedo_tex.view,
-                .sampler       = s.albedo_sampler,
-            });
+            std::fprintf(stderr,
+                "hello_engine: prim_bindless_set allocate failed; "
+                "chrome reflection texture path stays disabled\n");
         }
-        (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_be));
     }
     else
     {
@@ -6146,6 +6161,11 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         upload_multi_light_ubo(device, s.lights_ubo, s.lights, s.counters);
         s.materials.prim.apply(cmd);
         s.prim_inst.bind(cmd, 0);
+        // phase864-bindless-dedicated-set: bind the dedicated bindless
+        // descriptor set at set index 1 alongside the per-prim set 0.
+        // The shader reads cd_bindless_albedo from (set=1, binding=0).
+        if (s.prim_bindless_set.is_valid())
+            cmd.bind_descriptor_set(1, s.prim_bindless_set);
 
         draw_floor_and_entities(cmd, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
                                 s.entities, s.scene, s.has_gltf_texture,

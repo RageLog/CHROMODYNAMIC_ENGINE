@@ -120,7 +120,8 @@ layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
 layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
   uint idx[];
 } cd_sponza_ib;
-layout(set = 0, binding = 13) uniform sampler2D cd_bindless_albedo[];
+// phase864-bindless-dedicated-set: see prim.frag.glsl
+layout(set = 1, binding = 0) uniform sampler2D cd_bindless_albedo[];
 
 // Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
 // Avoids needing per-vertex tangents - works for any UV-mapped mesh.
@@ -667,8 +668,7 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase860-NEGATIVE: see prim.frag.glsl
-    tex_slot = kBindlessAlbedoSlotNone;
+    // phase865-bindless-revive-via-dedicated-set: see prim.frag.glsl
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
       uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
       uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];

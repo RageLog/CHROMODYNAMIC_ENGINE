@@ -569,7 +569,7 @@ sync_perprim_global_bindings(
     {
         if (!pr.prim_inst.is_valid())
             continue;
-        const std::array<cd::rhi::DescriptorWrite, 10> gw {
+        const std::array<cd::rhi::DescriptorWrite, 9> gw {
             cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kUniformBuffer,
                 .buffer = shadow_ubo, .buffer_offset = 0,
@@ -600,11 +600,11 @@ sync_perprim_global_bindings(
             cd::rhi::DescriptorWrite { .binding = 12, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kStorageBuffer,
                 .buffer = sponza_ib },
-            cd::rhi::DescriptorWrite { .binding = 13, .array_element = 0,
-                .type = cd::rhi::DescriptorType::kBindlessSampledImage,
-                .view = bindless_fallback_view,
-                .sampler = bindless_fallback_sampler },
+            // phase864-bindless-dedicated-set: binding 13 removed —
+            // bindless is now on its own descriptor set 1.
         };
+        (void)bindless_fallback_view;     // silence unused
+        (void)bindless_fallback_sampler;
         (void)pr.prim_inst.update(gw);
     }
 }

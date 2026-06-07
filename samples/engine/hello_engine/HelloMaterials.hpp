@@ -53,6 +53,11 @@ struct MaterialBundle
     cd::material::Material prim              {};
     cd::material::Material velocity          {};
     cd::material::Material shadow            {};
+    /// phase864-bindless-dedicated-set: descriptor set layout for the
+    /// bindless sampler2D array (set index 1 of the prim pipeline).
+    /// Owned by the bundle; freed in shutdown via
+    /// `destroy_material_bundle`.
+    cd::rhi::DescriptorSetLayoutHandle prim_bindless_layout {};
 };
 
 struct MaterialSpawnError
@@ -456,10 +461,17 @@ spawn_materials(cd::rhi::IDevice&             device,
         cd::rhi::VertexAttribute { 2, 0, cd::rhi::Format::kRG32Float,  offsetof(cd::asset::PrimitiveVertex, uv)     },
         cd::rhi::VertexAttribute { 3, 0, cd::rhi::Format::kRGB32Float, offsetof(cd::asset::PrimitiveVertex, color)  }
     };
+    // phase864-bindless-dedicated-set: build the bindless layout BEFORE
+    // prim_recreate so the prim pipeline knows about set index 1.
+    out.prim_bindless_layout = make_prim_bindless_layout(device);
+    if (!out.prim_bindless_layout.is_valid())
+    {
+        return std::unexpected(MaterialSpawnError { 9, "prim_bindless_layout" });
+    }
     // Single source of truth for the prim MaterialDesc lives in
     // prim_recreate() above so the X5/M1 hot-reload path (invoked from
     // HelloShaderWatch) rebuilds it the same way.
-    if (!prim_recreate(device, compiler, &out.prim))
+    if (!prim_recreate(device, compiler, &out.prim, out.prim_bindless_layout))
     {
         return std::unexpected(MaterialSpawnError { 9, "prim" });
     }
