@@ -11,14 +11,19 @@
 #   * hello_asset_validator   → engine/asset/validator/tests/test_validator.cpp (16 cases)
 # Source directories deleted in the same commit.
 #
+# Retired in phase 905:
+#   * hello_scene_save → engine/world/scene/tests/test_scene.cpp
+#     (86 cases incl. SceneSerializer round-trip + parent re-link).
+#     Phase 902 audit missed test_scene.cpp because it lives at
+#     engine/world/scene/tests/ not engine/scene/tests/.
+#
 # Retained (no library tests yet OR substantive interactive demo):
-#   * hello_asset_registry        — no library tests; queue for tests/ migration
-#   * hello_scene_save            — no library tests; queue for tests/ migration
+#   * hello_asset_registry        — no library tests yet; queue for
+#     a new engine/asset/tests/test_asset_registry.cpp
 #   * hello_texture_compress_ratio — texture cooker tool (category c)
 #
 # Headless asset samples first.
 add_subdirectory(hello_asset_registry)
-add_subdirectory(hello_scene_save)
 add_subdirectory(hello_texture_compress_ratio)
 # Vulkan-gated samples that need rendering to visualize the imported asset.
 if(CD_ENABLE_VULKAN)
