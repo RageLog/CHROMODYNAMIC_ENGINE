@@ -87,17 +87,38 @@ citation. Recommended substitute: Kavan et al. 2007 "Skinning with Dual Quaterni
 access, peer-reviewed, covers LBS as its explicit baseline. Acquire that PDF via a fresh
 `academic-researcher` session before citing LBS theory in any ADR or shader comment.
 
-## Demir Kural status -- updated Run 30
+## Demir Kural status -- updated 2026-06-07
 
 `heitz2016ltc` -- VERIFIED as of 2026-05-29. May be cited freely in ADRs and shader comments.
 
-`eberlylbs` -- STAGED / PENDING\_PDF. Citation still blocked. Substitute needed.
+`eberlylbs` -- STAGED / PENDING_PDF. Citation still blocked. Substitute acquired below.
+
+`kavan2007_dual_quaternion_skinning` -- VERIFIED as of 2026-06-07. Fully replaces `eberlylbs`
+as LBS-baseline reference in skinning ADRs and shader comments. DOI: 10.1145/1230100.1230107.
+SHA-256: e6d12e076d4ddee4206d43bd57d7bda6c5ca2bc14b794332f85b55f2010faeff.
+
+## eberlylbs substitute -- CLOSED
+
+The substitute recommended in the Run 30 verdict has been acquired:
+
+- bibkey: `kavan2007_dual_quaternion_skinning`
+- BibTeX anchor: `kavan2007dqs`
+- PDF: research/library/pdf/kavan2007_dual_quaternion_skinning.pdf (8 pages, 4.5 MB)
+- Source: [kavan07skinning.pdf](https://users.cs.utah.edu/~ladislav/kavan07skinning/kavan07skinning.pdf) (author hosting)
+- Verified: pdftotext title match, Crossref DOI metadata, Semantic Scholar 356 citations.
+- MANIFEST row: status=VERIFIED, downloaded_at=2026-06-07T14:36:24Z.
+
+Any ADR or shader comment that previously referenced `eberlylbs` for LBS theory should now
+cite `kavan2007dqs` instead. The Kavan 2007 I3D paper covers LBS as its explicit baseline
+(Section 3.2, eq.1) and is open-access, peer-reviewed, and fully citable.
 
 ## Citation-verifier handoff -- eberlylbs only
 
-When a future session re-attempts this paper or its substitute, the verifier must confirm:
+When a future session re-attempts this paper (if ever needed), the verifier must confirm:
 
 1. PDF magic bytes (`file pdf/BIBKEY.pdf` reports `PDF document`).
 2. SHA-256 matches a recomputed digest.
 3. The notes/BIBKEY.md claim text quotes appear in the PDF body.
 4. BibTeX `note = {DEMIR_KURAL_PENDING_PDF ...}` is removed and the entry is left clean.
+
+For `kavan2007dqs`: all four criteria are already satisfied as of 2026-06-07.

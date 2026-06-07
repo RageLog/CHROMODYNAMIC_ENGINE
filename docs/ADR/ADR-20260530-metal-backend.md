@@ -272,6 +272,76 @@ Hard rule: **no phase ships without a golden-image regression test** added to th
 
 ---
 
+## 8. P1 Implementation Task DAG (Run 22 follow-on planning)
+
+**Status as of 2026-06-07 (Run 22 partial)**: ADR remains in
+"Proposed (Design-only)" status — the §2 decision stands, the
+§2.4 Phased delivery acceptance criteria are intact, but no P1
+code has been written yet. The Vulkan path (`cd_rhi_vulkan`) is
+production and the D3D12 path (`cd_rhi_d3d12`) is parity-driven
+to ~3 kNotImpl gaps. Metal is the last platform fork to light.
+
+This section breaks P1's "Basic raster + texture" acceptance into
+concrete sub-tasks suitable for a future implementation session.
+Each task is sized for one focused work-block; the dependencies
+form the DAG below.
+
+### 8.1 P1 sub-task list (file-by-file)
+
+| ID | Sub-task | New file(s) | Edits | Acceptance |
+|---|---|---|---|---|
+| M1.1 | CMake target `cd_rhi_metal` (Apple-only, gated on `CMAKE_SYSTEM_NAME STREQUAL Darwin` or iOS toolchain). Wired into the same TARGET_OBJECTS/INTERFACE the existing Vulkan / D3D12 backends use. | `engine/render/rhi/CMakeLists.txt` patch | none | `cmake --build --preset xcode-debug` succeeds on macOS host; non-Apple builds skip the target with no warning. |
+| M1.2 | `MetalDevice.mm` (Objective-C++) implementing `cd::rhi::IDevice` factory. Acquires `MTLDevice` (`MTLCreateSystemDefaultDevice()`), `MTLCommandQueue`, one `MTLLibrary` slot. Capability advertisement matches §2.3. | `engine/render/rhi/src/metal/MetalDevice.mm`, `.hpp` (small public header is already in tree as Wave 97 stub — keep it, fill the `.mm`) | `engine/render/rhi/include/cd/rhi/metal/MetalDevice.hpp` (replace the `kBackendError` factory body with real construction) | `cd::rhi::create_metal_device()` returns a usable `IDevice` on macOS 14+; old `kBackendError` path retained on non-Apple via `#if !__APPLE__`. |
+| M1.3 | SPIRV→MSL translation glue inline call site. Reuse `engine/render/spirv_cross_glue` API. Output cached per (hash, target_family). | `engine/render/rhi/src/metal/MetalShader.mm` | none | First SPIRV blob handed to `create_shader_module` returns a valid `MTLLibrary` + function reference; second call hits the cache. |
+| M1.4 | `MTLHeap` allocator for buffer + texture handles. Tier-2 placed-resource layout. | `engine/render/rhi/src/metal/MetalHeap.mm` | none | `create_buffer` / `create_texture` for the existing IDevice contract round-trip through the heap; no naked `MTLBuffer` / `MTLTexture` allocations in the backend. |
+| M1.5 | Argument-buffer tier-2 descriptor binding. Maps `cd::rhi::DescriptorSetLayout` → `MTLArgumentBuffer` slot layout 1:1. | `engine/render/rhi/src/metal/MetalDescriptor.mm` | none | A `DescriptorSet` allocated via the existing IDevice contract resolves to one `MTLArgumentBuffer`; `bind_descriptor_set` writes the buffer's address into the command encoder slot. |
+| M1.6 | Minimal `MetalCommandBuffer` implementing `begin_render_pass`, `bind_pipeline`, `bind_descriptor_set`, `bind_vertex_buffer`, `bind_index_buffer`, `draw_indexed`, `end_render_pass`. | `engine/render/rhi/src/metal/MetalCommandBuffer.mm` | none | Renders one full-screen quad with a texture; capture via Xcode GPU Frame Debugger shows the expected output. |
+| M1.7 | Swapchain via `CAMetalLayer`. `present()` hooked to `MTLDrawable`. | `engine/render/rhi/src/metal/MetalSwapchain.mm` | needs a tiny `Project/HelloEngine` glue patch to feed the `CAMetalLayer` from the AppKit/UIKit window | A black window opens on macOS 14, swapchain rotates 3 frames per second under `present()` polling. |
+| M1.8 | Wire `Project/HelloEngine` boot to select `create_metal_device()` on Apple platforms via the existing backend selection switch. | none | `Project/HelloEngine/main.cpp` factory selector | hello_engine launches on macOS 14 / M1 with no validation errors, draws floor mesh. |
+| M1.9 | Sponza glTF load → Metal pipeline → first textured render. End-to-end smoke. | new test `tests/metal/test_hello_engine_metal_sponza.mm` | none | Capture matches Vulkan reference within ΔE ≤ 1.5 on the equivalent fixture. |
+
+### 8.2 Dependency DAG
+
+```
+M1.1 ────┬─→ M1.2 ─→ M1.3 ─┬─→ M1.4 ─→ M1.5 ─→ M1.6 ─→ M1.7 ─→ M1.8 ─→ M1.9 ✓
+         │                 │
+         │                 └─→ tests/metal/test_metal_shader_translate.mm  (M1.3 unit cover)
+         │
+         └─→ tests/metal/test_metal_device_capability.mm  (M1.2 unit cover)
+```
+
+Two unit-coverage tasks fan off the longer hot path:
+- **U1**: `test_metal_device_capability.mm` (gated on M1.2). Confirms the §2.3 capability advertisement matches macOS 14 / Apple Silicon's actual feature set.
+- **U2**: `test_metal_shader_translate.mm` (gated on M1.3). Round-trips a fixed SPIRV blob through SPIRV-Cross and locks the MSL output against a checked-in golden string.
+
+The integration golden (M1.9) is the §2.4 P1 acceptance gate.
+
+### 8.3 Effort sizing (calendar weeks)
+
+Per §1.4 Fork A estimate (12-16 weeks for full parity), P1 itself
+sizes at **3-4 weeks of focused work** for a single engineer with
+prior Vulkan / D3D12 backend experience. Parallel paths:
+
+| Track | Tasks | Approx weeks |
+|---|---|---|
+| Build + device + shader (M1.1 .. M1.3 + U1 + U2) | 5 | 1.0 |
+| Heap + descriptor + command (M1.4 .. M1.6) | 3 | 1.0 |
+| Swapchain + boot + smoke (M1.7 .. M1.9) | 3 | 1.5 |
+| Buffer / contingency | — | 0.5 |
+
+### 8.4 Pre-flight checklist (before opening Phase P1)
+
+- [ ] Confirm Xcode 15.x toolchain available on the dev macOS host.
+- [ ] Confirm `vcpkg` triplet `x64-osx` or `arm64-osx` builds the existing manifest without errors.
+- [ ] Confirm the SPIRV-Cross MSL backend in `engine/render/spirv_cross_glue` round-trips one of the existing prim-material SPIRV blobs to clean MSL (no `// unimplemented` markers in the output).
+- [ ] Confirm the Vulkan reference golden capture for the chosen P1 acceptance fixture exists at the canonical path and is byte-stable across two `cmake --build` runs.
+- [ ] **User sign-off** that the §2 decision still holds: Fork A (native Metal) as primary, Fork B (MoltenVK) as opt-in fallback. The fork choice is the most expensive thing to change later.
+
+When all five boxes tick, dispatch a `developer` subagent on M1.1
+and follow the §8.2 DAG.
+
+---
+
 ## 7. Kanıt (Evidence)
 
 - Apple Metal Feature Set Tables — https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf (acc 2026-05-30)
