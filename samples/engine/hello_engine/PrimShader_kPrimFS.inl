@@ -94,7 +94,8 @@ struct InstanceMat {
   uint index_offset;
   // phase866 see prim.frag.glsl
   uint is_sphere;
-  uint _pad0;
+  // phase886: see prim.frag.glsl
+  uint mesh_id;
   vec4 sphere_center_radius;
 };
 layout(set = 0, binding = 10) readonly buffer InstanceMats {

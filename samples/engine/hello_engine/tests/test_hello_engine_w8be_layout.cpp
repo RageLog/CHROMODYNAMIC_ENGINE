@@ -24,9 +24,12 @@
 
 // ===========================================================================
 // InstanceMatGpu layout — must match shader's GLSL `struct InstanceMat`.
-// phase866-2-bounce-sphere-normal: extended to 64 B
-// (vec4 albedo + vec4 emissive + uint albedo_tex_slot + uint
-// index_offset + uint is_sphere + uint _pad0 + vec4 sphere_center_radius).
+// phase866-2-bounce-sphere-normal: extended to 64 B (vec4 albedo
+// + vec4 emissive + uint albedo_tex_slot + uint index_offset +
+// uint is_sphere + uint mesh_id + vec4 sphere_center_radius).
+// phase886-non-sponza-bindless-prep: the trailing 4-byte slot was
+// `_pad0` until phase886 repurposed it for `mesh_id` (host-side
+// hint for which VB/IB the shader's bindless UV interp targets).
 // ===========================================================================
 
 TEST(HelloEngineW8BELayout, InstanceMatGpuIsSixtyFourBytes)
@@ -42,7 +45,7 @@ TEST(HelloEngineW8BELayout, InstanceMatGpuFieldOffsetsMatchShader)
     EXPECT_EQ(offsetof(IM, albedo_tex_slot),      32U);
     EXPECT_EQ(offsetof(IM, index_offset),         36U);
     EXPECT_EQ(offsetof(IM, is_sphere),            40U);
-    EXPECT_EQ(offsetof(IM, _pad0),                44U);
+    EXPECT_EQ(offsetof(IM, mesh_id),              44U);
     EXPECT_EQ(offsetof(IM, sphere_center_radius), 48U);
 }
 

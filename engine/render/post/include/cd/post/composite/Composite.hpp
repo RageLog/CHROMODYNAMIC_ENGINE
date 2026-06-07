@@ -697,7 +697,8 @@ void main() {
     vec3 horizon_lit  = mix(horizon_base, pc.sun_col.rgb, 0.35 * sun_amt);
 
     // Single-scatter sun in-scatter colour. Henyey-Greenstein phase
-    // (g=0.6 — forward-scattering haze) modulates by view·-sun.
+    // (g=0.15 — near-isotropic post-phase874; see §874 comment
+    // below for why 0.6 → 0.15) modulates by view·-sun.
     vec3 wp_end = world_pos_from_uv(v_uv, center_d);
     vec3 view_dir = normalize(wp_end - pc.cam_pos.xyz);
     vec3 sun_dir_world = pc.lens.yzw;

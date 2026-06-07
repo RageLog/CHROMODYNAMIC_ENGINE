@@ -89,7 +89,11 @@ struct InstanceMat {
   // analytical-normal 2-bounce path; sphere_center_radius carries
   // the world-space centre + radius for that path.
   uint is_sphere;
-  uint _pad0;
+  // phase886-non-sponza-bindless-prep: 0 = Sponza (sponza_vb/ib
+  // bindings 11/12), 1 = future CesiumMan binding. Shader uses
+  // it as a hint; texture-UV interp still uses Sponza VB/IB
+  // until a future phase wires the multi-mesh selection.
+  uint mesh_id;
   vec4 sphere_center_radius;
 };
 layout(set = 0, binding = 10) readonly buffer InstanceMats {

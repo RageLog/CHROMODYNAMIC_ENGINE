@@ -77,7 +77,15 @@ struct InstanceMatGpu
     // recursive "yansımanın yansıması" path. is_sphere = 0 keeps
     // the legacy single-bounce + IBL-shine path.
     std::uint32_t is_sphere       { 0u };
-    std::uint32_t _pad0           { 0u };
+    // phase886-non-sponza-bindless-prep: mesh_id selects which
+    // global VB/IB the shader's bindless texture-UV interpolation
+    // should index into. 0 = Sponza (sponza_vb/ib bindings 11/12),
+    // 1 = CesiumMan (queued binding 14/15 in a future shader
+    // extension). For now the host fills this so the SSBO carries
+    // the right hint; the shader change to actually USE it is
+    // queued. Sentinel/default 0 = Sponza so existing chrome
+    // reflections stay correct.
+    std::uint32_t mesh_id          { 0u };
     float         sphere_center_radius[4] { 0.0F, 0.0F, 0.0F, 1.0F };
 };
 
@@ -168,7 +176,7 @@ inline void fill_inst_mat(InstanceMatGpu& im, cd::math::Vec3f albedo) noexcept
     im.albedo_tex_slot = kBindlessAlbedoSlotNone;
     im.index_offset    = 0u;
     im.is_sphere       = 0u;
-    im._pad0           = 0u;
+    im.mesh_id         = 0u;  // phase886: 0 = Sponza (default)
     im.sphere_center_radius[0] = 0.0F;
     im.sphere_center_radius[1] = 0.0F;
     im.sphere_center_radius[2] = 0.0F;

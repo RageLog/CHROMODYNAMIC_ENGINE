@@ -2163,7 +2163,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextDisabled("Composite-inline (cheap) and lib-level (CPU smoke):");
-        ImGui::BulletText("Sun in-scatter fog (HG g=0.6) - live in composite");
+        ImGui::BulletText("Sun in-scatter fog (HG g=0.15) - live in composite");
         ImGui::BulletText("fBm sky cloud overlay - live in composite");
         ImGui::BulletText("hello_volumetric_fog - Wronski 2014 froxel grid (CPU)");
         ImGui::BulletText("hello_volumetric_clouds - Schneider 2017 march (CPU)");
