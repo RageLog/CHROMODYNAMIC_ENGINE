@@ -1,15 +1,36 @@
 # samples/render — render-tier showcase samples (Vulkan-gated).
+#
+# phase915-sample-consolidation: per
+# [[feedback-sample-consolidation-and-per-feature-demo]], headless
+# CPU "console proof" render smokes folded into library gtests.
+# Source directories deleted in this commit.
+#
+# Retired in phase 915:
+#   * hello_lit_pbr           -- orphan stub (CMakeLists.txt without
+#       main.cpp). Dead infrastructure removed entirely.
+#   * hello_clustered_lights  -> engine/render/cluster/tests/core/test_cluster.cpp (13)
+#       (ClusterGrid + assign + finalise + histogram coverage).
+#   * hello_compute_cluster   -> engine/render/cluster/tests/core/test_cluster.cpp (13)
+#       (run_reference_compute CPU-CPU parity covered as part of the same suite).
+#   * hello_ddgi              -> engine/render/ddgi/tests/test_ddgi.cpp (20)
+#       (probe placement + irradiance accumulation + dispatch budget).
+#   * hello_restir            -> engine/render/restir_di/tests/test_restir_di.cpp (6)
+#       (reservoir + spatial reuse + sample weight invariants).
+#
+# Retained (all category b Vulkan / D3D12 visual demos):
+#   hello_pbr           - canonical PBR sphere grid visual
+#   hello_d3d12_pbr     - D3D12 backend PBR demo (Win32 only)
+#   hello_skybox        - analytical procedural sky visual
+#   hello_framegraph    - framegraph end-to-end visual
+#   hello_gpu_cluster   - Forward+ GPU dispatch + GPU/CPU parity (compute-gated)
+#   hello_imgui         - first end-to-end ImGui visual
+#   hello_render_thread - render-thread submit/present pattern visual
 add_subdirectory(hello_pbr)
 if(WIN32)
   add_subdirectory(hello_d3d12_pbr)
 endif()
-# hello_lit_pbr — orphan stub (CMakeLists without a main.cpp). Skipped.
 add_subdirectory(hello_skybox)
 add_subdirectory(hello_framegraph)
-add_subdirectory(hello_clustered_lights)
-add_subdirectory(hello_compute_cluster)
 add_subdirectory(hello_gpu_cluster)
 add_subdirectory(hello_imgui)
 add_subdirectory(hello_render_thread)
-add_subdirectory(hello_restir)
-add_subdirectory(hello_ddgi)   # phase565 — GPU dispatch DDGI demo (cd::ddgi::DispatchPass)
