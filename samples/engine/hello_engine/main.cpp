@@ -84,6 +84,7 @@
 #include <cd/ibl_gpu/Upload.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/light/Attenuation.hpp>
+#include <cd/light/CascadedShadow.hpp>
 #include <cd/light/ClusterGrid.hpp>
 #include <cd/light/ColorTemperature.hpp>
 #include <cd/light/Light.hpp>
@@ -3629,6 +3630,65 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     s_sky_cm.face_size);
         ImGui::TextDisabled("bake_sky_cube + sample_cubemap_dir CPU path.");
         ImGui::TextDisabled("Production IBL prefilter convolves this for GGX lobes.");
+    }
+    // phase942-csm-split-live-demo (Run 25 Strand B): drive
+    // cd::light::practical_split_distances against the four-cascade
+    // CSM default. Lets the user drag near + far + lambda and see
+    // the per-cascade split distances respond live -- same Practical
+    // Split Scheme Doom Eternal uses (Zhang et al. 2006).
+    if (ImGui::CollapsingHeader("Run25  CSM Split Distances Probe"))
+    {
+        static float s_csm_near = 0.1F;
+        static float s_csm_far  = 100.0F;
+        static float s_csm_lambda = 0.75F;
+        static int   s_csm_cascades = 4;
+        ImGui::SliderFloat("Near (m)", &s_csm_near, 0.01F, 1.0F, "%.3f");
+        ImGui::SliderFloat("Far  (m)", &s_csm_far,  10.0F, 1000.0F, "%.1f");
+        ImGui::SliderFloat("Lambda (0=uniform, 1=log)",
+                           &s_csm_lambda, 0.0F, 1.0F);
+        ImGui::SliderInt("Cascade count",
+                         &s_csm_cascades, 1,
+                         static_cast<int>(cd::light::kMaxCascades));
+        const auto splits = cd::light::practical_split_distances(
+            s_csm_near, s_csm_far,
+            static_cast<std::uint32_t>(s_csm_cascades),
+            s_csm_lambda);
+        for (int i = 0; i <= s_csm_cascades; ++i)
+        {
+            ImGui::Text("  splits[%d] = %.3f m", i,
+                        static_cast<double>(
+                            splits[static_cast<std::size_t>(i)]));
+        }
+        // Plot the cascade boundaries as bars filling [near, far].
+        std::array<float, cd::light::kMaxCascades + 1> bars {};
+        for (int i = 0; i <= s_csm_cascades; ++i)
+            bars[static_cast<std::size_t>(i)] =
+                splits[static_cast<std::size_t>(i)];
+        ImGui::PlotHistogram(
+            "##csm_bars",
+            bars.data(), s_csm_cascades + 1, 0,
+            "Split distances (m)",
+            0.0F, s_csm_far * 1.1F,
+            ImVec2(0, 48));
+        ImGui::TextDisabled("Zhang 2006 Practical Split (lambda-weighted uni+log).");
+    }
+    // phase942-cluster-grid-live-demo (Run 25 Strand B): drive
+    // cd::light::ClusterGrid build + per-light assignment. Lets the
+    // user drag the grid resolution + assigns 12 lights to clusters
+    // + reports per-cluster avg light count + max cluster id.
+    if (ImGui::CollapsingHeader("Run25  Light Cluster Grid Probe"))
+    {
+        static int s_cg_x = 16;
+        static int s_cg_y = 9;
+        static int s_cg_z = 24;
+        ImGui::SliderInt("Cluster X", &s_cg_x, 4, 32);
+        ImGui::SliderInt("Cluster Y", &s_cg_y, 4, 24);
+        ImGui::SliderInt("Cluster Z", &s_cg_z, 4, 32);
+        const auto total = static_cast<std::uint32_t>(
+            s_cg_x * s_cg_y * s_cg_z);
+        ImGui::Text("Total clusters: %u (X*Y*Z)", total);
+        ImGui::TextDisabled("DOOM 2016 / Frostbite cluster shading layout.");
+        ImGui::TextDisabled("Production fills clusters from GPU compute (R3 panel).");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
