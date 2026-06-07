@@ -898,23 +898,50 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
-## Forward-plan items (recorded during Run 24, 2026-06-07)
+## Sample consolidation status (Run 24, phases 900-916, 2026-06-07/08)
 
-User added two persistent goals to the future work queue:
+**Baseline 106 -> 38 sample main.cpp files (-68, 64.2% reduction).**
+68 retirements across 13 phases (900-916) folded headless smokes into
+the source libraries' gtests; 260/260 ctest PASS at every checkpoint;
+zero rendering regressions.
 
-1. **Sample consolidation** — The repo currently carries
-   **106 `main.cpp` sample executables** spread across
-   `samples/asset/`, `samples/audio/`, `samples/editor/`,
-   `samples/engine/`, `samples/lib_smokes/` etc. Each one is a
-   separate target with its own build cost. The user wants
-   these merged / pruned. Strategy candidates:
-   - Per-library "smoke" tests folded into the library's own
-     `tests/` (no separate sample binary).
-   - Per-feature interactive demos consolidated INTO
-     `hello_engine` as toggleable scenes / panel modes.
-   - Genuine standalone tools (asset cookers, validators) kept
-     as separate `.exe` but cleaner CMake gating.
-   - Final delivery: probably ≤ 10 sample binaries total.
+| Category   | Before | After | Phase(s)      |
+|------------|--------|-------|---------------|
+| lib_smokes | 10     | 0     | 900-904       |
+| asset      | 14     | 6     | 902, 905, 916 |
+| audio      | 7      | 1     | 906           |
+| editor     | 6      | 5     | 903           |
+| foundation | 12     | 1     | 908           |
+| net        | 5      | 0     | 911           |
+| physics    | 5      | 0     | 912           |
+| profile    | 2      | 0     | 913           |
+| script     | 2      | 0     | 913           |
+| ui         | 2      | 1     | 913           |
+| world      | 9      | 4     | 910           |
+| rhi        | 12     | 11    | 909           |
+| render     | 12     | 7     | 915           |
+| game       | 8      | 1     | 914           |
+| engine     | 1      | 1     | -             |
+| **Total**  | 106    | 38    | -             |
+
+**Retained 38 are all category (b) Vulkan / D3D12 / ImGui visual demos
+or category (c) standalone tools** (hello_audio_wasapi platform audio,
+hello_stress 24h CI harness, bench_archetype microbench, hello_rhi_features
+capability diagnostic). They are NOT printf-only smokes.
+
+**Path from 38 to ≤10 is invasive**: requires hello_engine to grow
+collapsing-header surfaces:
+
+- "Editor panels" (folds 5 samples/editor/ + hello_inspector + hello_widgets_table)
+- "Asset viewer" (folds 6 samples/asset/ visual viewers + hello_imgui-like)
+- "Render demos" (folds 7 samples/render/ visual demos + hello_skybox etc)
+- "Backend switcher" (folds 11 samples/rhi/ per-backend boots/triangles)
+
+Each fold needs aggregated control state + scene-composition handles
+that don't exist yet in hello_engine. Queued for a dedicated sprint
+after Phase 2 architecture milestones (X4/X5/X1-FU-F) land.
+
+### Original forward-plan items (recorded Run 24, 2026-06-07)
 
 2. **Per-feature visible/auditory demo in hello_engine** — Every
    library feature the engine ships should have a SIMPLE,
