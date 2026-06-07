@@ -108,7 +108,20 @@ Checks: >
 # in main.cpp + the engine/ tree are promoted to errors so they cannot
 # regress. The site fixes landed in this same commit (see fix list in the
 # commit message).
-WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer'
+# Run 25 phase 928: nine additional bug-class rules probed across the
+# engine + samples tree returned zero diagnostics under the existing
+# tree; promoted to WarningsAsErrors so future regressions land as
+# compile-time failures rather than silent warnings:
+#   * bugprone-use-after-move
+#   * bugprone-dangling-handle
+#   * bugprone-string-constructor
+#   * bugprone-suspicious-memset-usage
+#   * bugprone-undelegated-constructor
+#   * bugprone-throw-keyword-missing
+#   * bugprone-not-null-terminated-result
+#   * cppcoreguidelines-slicing
+#   * cppcoreguidelines-pro-type-static-cast-downcast
+WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer,bugprone-use-after-move,bugprone-dangling-handle,bugprone-string-constructor,bugprone-suspicious-memset-usage,bugprone-undelegated-constructor,bugprone-throw-keyword-missing,bugprone-not-null-terminated-result,cppcoreguidelines-slicing,cppcoreguidelines-pro-type-static-cast-downcast'
 
 # Analyse only OUR code. Engine + samples; never third-party headers via
 # FetchContent (those live under build/*/_deps/) and never legacy code
