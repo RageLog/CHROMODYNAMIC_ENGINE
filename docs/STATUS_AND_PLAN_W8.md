@@ -898,6 +898,92 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
+## Marathon Run 21 close-out (2026-06-07 dev branch, phases 868-872)
+
+5 commits, all 258/258 ctest PASS at every checkpoint, no
+rendering regressions, working tree clean before and after.
+
+### Capture-driven visible-quality iteration
+
+After Run 19+20 produced multiple "fix" commits for the same
+user-reported cloud bug that the user kept re-reporting,
+Run 21 introduced dedicated diagnostic fixtures and a
+before-after capture workflow.
+
+- **phase 868 (ead0f00)** — Fog cos_th sun-coupling 0.25 → 0.05;
+  cloud overlay computes direction-independent sky_with_clouds.
+- **phase 869 + 870 (c57ee9f)** — 4 diagnostic fixtures
+  appended to `kFixtures`:
+  - #6 `sky_zenith` (outside Sponza, look straight up)
+  - #7 `sky_yaw_a` (outside, look +X 30° up)
+  - #8 `sky_yaw_b` (outside, look -X 30° up — 180° yaw of #7)
+  - #9 `roof_down` (mid-altitude, look down at Sponza roof)
+
+  Within one capture-analyse-patch loop these surfaced:
+  - Octahedral STILL had a zenith pinch (oct = (0,0) for all
+    zenith rays). Replaced with **triplanar 3-tap fBm** —
+    each axis pair is well-defined for any direction, no
+    singularities. Plus contrast stretch
+    `(density - 0.4) * 2.2 + 0.4`.
+  - Phase 868's fog floor `density * 12 cap 0.50` was way too
+    aggressive — roof_down fixture showed uniform gray. Dialed
+    back to `density * 6 cap 0.20`.
+
+### True 2-bounce on Sponza hits
+
+- **phase 871 (d1bcde7)** — When the chrome reflection's first
+  hit is on a Sponza prim, interpolate per-vertex normals from
+  SponzaVB via barycentrics, fire a second ray with
+  `reflect(Ri, N_sponza)`, mix into hit_alb at 40% chrome
+  strength. Replaces the IBL-shine stand-in. CesiumMan /
+  floor keep the stand-in.
+
+### THE 180° colour flip ROOT CAUSE (multi-run mystery)
+
+- **phase 872 (73703b2)** — `cp.sun_col` was left at `(0, 0, 0)`
+  by main.cpp's composite-push fill loop when the sun was
+  behind the camera (the shafts-geometry "break" paths
+  skipped past the sun_col assign at the bottom). Composite's
+  `sun_amt = length(sun_col) * 0.5` collapsed to 0,
+  `cloud_lit *= mix(0.04, 1.0, 0) = 0.04` darkened the cloud
+  overlay to near-black — THIS was the "180° yaw flip" Run 19
+  + 20 + early Run 21 patched in the shader, treating
+  symptoms instead of cause.
+
+  Fix: set `cp.sun_col` UNCONDITIONALLY on the first enabled
+  directional light, BEFORE the shafts geometry math. The
+  shafts gating continues to suppress shafts strength + on-
+  screen position; the sun-colour signal that drives cloud /
+  sky tinting is now view-direction independent.
+
+  Plus composite-shader cleanup: overlay_mix uses depth_gate
+  alone; horizon attenuation folded into cloud-density term so
+  stable_sky_base shows everywhere over sky pixels.
+
+### Memory updates this run
+
+- `project_marathon_run21.md` new entry.
+- `feedback_capture_driven_visual_iteration.md` new workflow rule.
+- `MEMORY.md` index updated with Run 21 entry + workflow rule.
+
+### Tests + binaries
+
+- 258/258 ctest PASS at every commit checkpoint.
+- 1 test contract changed: `test_sponza_golden`
+  `kFixtures.size() == 10U` (was 6U; 4 diagnostic fixtures
+  appended).
+- No new test binaries, no new libraries.
+
+### Run 22 queue
+
+- Non-Sponza glTF bindless texture upload (CesiumMan,
+  arbitrary `--gltf-load` content) so they ALSO show real
+  texture detail in chrome reflections.
+- L1 Metal backend (per ADR-20260530-metal-backend.md).
+- Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
+
+---
+
 ## Marathon Run 20 close-out (2026-06-07 dev branch, phases 862-866)
 
 5 substantive commits landed in the autonomous overnight stretch
