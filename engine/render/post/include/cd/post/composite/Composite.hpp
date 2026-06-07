@@ -543,23 +543,28 @@ void main() {
     float t = pc.cam_pos.w;
     // phase870-clouds-triplanar: 3 axis-pair noise taps, averaged.
     // Each pair is well-defined for any direction (no singularity).
+    // phase874-clouds-visible-drift: user reports clouds look
+    // motionless. Phase 859b dropped time scales ~5× to match the
+    // user's "yavas + katman katman" request; that was overshoot —
+    // at interactive frame rates the visible drift was invisible to
+    // the eye over typical "look around" timeframes. Bump 3× so
+    // motion is perceptible without going back to the original
+    // "sliding" feel.
     vec2 uv_xz = dir_world.xz * 4.0;
     vec2 uv_xy = dir_world.xy * 4.0 + vec2(17.3, 6.1);
     vec2 uv_yz = dir_world.yz * 4.0 + vec2(31.2, 9.7);
-    // ---- Low cloud layer (slow time drift) ----
-    float n_xz_lo = cd_fbm4(uv_xz + vec2(t * 0.010, t * 0.0045));
-    float n_xy_lo = cd_fbm4(uv_xy + vec2(t * 0.008, t * 0.005));
-    float n_yz_lo = cd_fbm4(uv_yz + vec2(t * 0.006, t * 0.009));
+    // ---- Low cloud layer ----
+    float n_xz_lo = cd_fbm4(uv_xz + vec2(t * 0.030, t * 0.0135));
+    float n_xy_lo = cd_fbm4(uv_xy + vec2(t * 0.024, t * 0.015));
+    float n_yz_lo = cd_fbm4(uv_yz + vec2(t * 0.018, t * 0.027));
     float density_lo = (n_xz_lo + n_xy_lo + n_yz_lo) / 3.0;
-    // ---- High cloud layer (cirrus, smaller scale, slight extra
-    // drift). 0.55× the low frequency so it reads as a separate
-    // stratum.
+    // ---- High cloud layer ----
     vec2 uv_xz_hi = uv_xz * 0.55;
     vec2 uv_xy_hi = uv_xy * 0.55;
     vec2 uv_yz_hi = uv_yz * 0.55;
-    float n_xz_hi = cd_fbm4(uv_xz_hi + vec2(t * 0.018, 0.0));
-    float n_xy_hi = cd_fbm4(uv_xy_hi + vec2(0.0, t * 0.018));
-    float n_yz_hi = cd_fbm4(uv_yz_hi + vec2(t * 0.014, t * 0.012));
+    float n_xz_hi = cd_fbm4(uv_xz_hi + vec2(t * 0.054, 0.0));
+    float n_xy_hi = cd_fbm4(uv_xy_hi + vec2(0.0, t * 0.054));
+    float n_yz_hi = cd_fbm4(uv_yz_hi + vec2(t * 0.042, t * 0.036));
     float density_hi = (n_xz_hi + n_xy_hi + n_yz_hi) / 3.0;
     // Layer composite: low layer dominates, high layer adds 35%.
     // phase870-cloud-contrast: triplanar averaging compressed the
@@ -686,7 +691,17 @@ void main() {
     vec3 view_dir = normalize(wp_end - pc.cam_pos.xyz);
     vec3 sun_dir_world = pc.lens.yzw;
     float cos_th = max(0.0, dot(view_dir, -normalize(sun_dir_world)));
-    const float g  = 0.6;
+    // phase874-fog-isotropic-phase: user-reported a dark oval shape
+    // dragging across the screen when the camera moves with fog on.
+    // Root cause: the HG phase function at g=0.6 gave inscatter a
+    // ~25× ratio between toward-sun and away-from-sun directions.
+    // Combined with the volumetric march's `c * transmittance +
+    // inscatter` composite, the away-from-sun hemisphere dimmed
+    // without enough inscatter to compensate — reading as a moving
+    // dark blob in screen space. Drop g to 0.15 (almost isotropic):
+    // phase becomes ~uniform across all view directions, the dark
+    // oval vanishes, and the fog reads as flat haze.
+    const float g  = 0.15;
     const float g2 = g * g;
     float phase = (1.0 - g2) / (4.0 * 3.14159265 *
                   pow(1.0 + g2 - 2.0 * g * cos_th, 1.5));
@@ -739,23 +754,27 @@ void main() {
       // Aerial perspective still applies on top — paints the horizon
       // tint over the integrated fog so the far-distance haze matches
       // the sky band.
-      // phase870-fog-floor-rebalance: see else-branch.
+      // phase874-fog-aerial-couple: see else-branch comment.
       float aer_t = 1.0 - exp(-lz * 0.08);
-      float aer_floor = clamp(pc.atmo.y * 0.15, 0.0, 0.18);
+      float aer_floor_couple = clamp(vol_fog_density * 3.0, 0.0, 1.0);
+      float aer_floor = clamp(pc.atmo.y * 0.15 * aer_floor_couple, 0.0, 0.18);
       aer_t = max(aer_t, aer_floor);
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
     } else {
-      // phase870-fog-floor-rebalance: phase 868's bump 12× density
-      // capped at 0.50 was way too aggressive — roof_down fixture
-      // showed the entire scene replaced with horizon_lit (uniform
-      // gray). Drop to 6× density capped at 0.20 — enough to keep
-      // close-up haze visible without killing the underlying scene
-      // colour. Aerial perspective: 0.35 → 0.15, cap 0.18.
+      // phase874-fog-aerial-couple: user reports "fog birkere
+      // acilinca kapanmiyor" — fog seems not to turn off. Real
+      // cause: phase 870's constant aerial floor `atmo.y * 0.15`
+      // was independent of vol_fog_density. When the user moved the
+      // fog density slider to 0, aerial perspective kept painting
+      // the constant floor onto every pixel — reading as "fog still
+      // on". Couple aerial floor to vol_fog_density so when density
+      // = 0, both fog AND aerial floor go to 0.
       float fog_t = 1.0 - exp(-lz * max(vol_fog_density, 0.0));
       float fog_floor = clamp(vol_fog_density * 6.0, 0.0, 0.20);
       fog_t = max(fog_t, fog_floor);
       float aer_t = 1.0 - exp(-lz * 0.08);
-      float aer_floor = clamp(pc.atmo.y * 0.15, 0.0, 0.18);
+      float aer_floor_couple = clamp(vol_fog_density * 3.0, 0.0, 1.0);
+      float aer_floor = clamp(pc.atmo.y * 0.15 * aer_floor_couple, 0.0, 0.18);
       aer_t = max(aer_t, aer_floor);
       c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
