@@ -19,7 +19,8 @@ CameraBrain::Id CameraBrain::add_vcam(VirtualCamera vcam, std::int32_t priority)
 {
     vcam.set_priority(priority);
     const Id id = next_id_++;
-    vcams_.push_back(Entry {id, std::move(vcam)});
+    // VirtualCamera is trivially-copyable; std::move() would be a no-op.
+    vcams_.push_back(Entry {id, vcam});
     return id;
 }
 

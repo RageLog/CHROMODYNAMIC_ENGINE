@@ -220,8 +220,8 @@ public:
 
     QuestLog(const QuestLog&)            = delete;
     QuestLog& operator=(const QuestLog&) = delete;
-    QuestLog(QuestLog&&)                 = default;
-    QuestLog& operator=(QuestLog&&)      = default;
+    QuestLog(QuestLog&&) noexcept            = default;
+    QuestLog& operator=(QuestLog&&) noexcept = default;
 
     ~QuestLog() = default;
 

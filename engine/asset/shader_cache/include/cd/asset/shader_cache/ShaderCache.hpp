@@ -164,8 +164,8 @@ public:
     // Non-copyable; movable.
     ShaderCache(const ShaderCache&)            = delete;
     ShaderCache& operator=(const ShaderCache&) = delete;
-    ShaderCache(ShaderCache&&)                 = default;
-    ShaderCache& operator=(ShaderCache&&)      = default;
+    ShaderCache(ShaderCache&&) noexcept            = default;
+    ShaderCache& operator=(ShaderCache&&) noexcept = default;
 
     // -------------------------------------------------------------------------
     // Core operations

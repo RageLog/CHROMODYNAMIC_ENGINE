@@ -241,7 +241,7 @@ Denoiser::configure(cd::rhi::IDevice& device, const DenoiserConfig& cfg)
     auto sm = device.create_shader_module(sm_desc);
     if (!sm.has_value())
     {
-        const auto err = sm.error();
+        const auto& err = sm.error();
         shutdown();
         return std::unexpected(err);
     }
@@ -263,7 +263,7 @@ Denoiser::configure(cd::rhi::IDevice& device, const DenoiserConfig& cfg)
     auto dsl = device.create_descriptor_set_layout(dsl_desc);
     if (!dsl.has_value())
     {
-        const auto err = dsl.error();
+        const auto& err = dsl.error();
         shutdown();
         return std::unexpected(err);
     }
@@ -282,7 +282,7 @@ Denoiser::configure(cd::rhi::IDevice& device, const DenoiserConfig& cfg)
     auto pl = device.create_pipeline_layout(pl_desc);
     if (!pl.has_value())
     {
-        const auto err = pl.error();
+        const auto& err = pl.error();
         shutdown();
         return std::unexpected(err);
     }
@@ -295,7 +295,7 @@ Denoiser::configure(cd::rhi::IDevice& device, const DenoiserConfig& cfg)
     auto cp = device.create_compute_pipeline(cp_desc);
     if (!cp.has_value())
     {
-        const auto err = cp.error();
+        const auto& err = cp.error();
         shutdown();
         return std::unexpected(err);
     }
@@ -305,7 +305,7 @@ Denoiser::configure(cd::rhi::IDevice& device, const DenoiserConfig& cfg)
     auto ds_a = device.allocate_descriptor_set(dsl_);
     if (!ds_a.has_value())
     {
-        const auto err = ds_a.error();
+        const auto& err = ds_a.error();
         shutdown();
         return std::unexpected(err);
     }
@@ -314,7 +314,7 @@ Denoiser::configure(cd::rhi::IDevice& device, const DenoiserConfig& cfg)
     auto ds_b = device.allocate_descriptor_set(dsl_);
     if (!ds_b.has_value())
     {
-        const auto err = ds_b.error();
+        const auto& err = ds_b.error();
         shutdown();
         return std::unexpected(err);
     }

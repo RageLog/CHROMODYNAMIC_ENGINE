@@ -99,8 +99,8 @@ public:
 
     Settings(const Settings&)            = delete;
     Settings& operator=(const Settings&) = delete;
-    Settings(Settings&&)                 = default;
-    Settings& operator=(Settings&&)      = default;
+    Settings(Settings&&) noexcept            = default;
+    Settings& operator=(Settings&&) noexcept = default;
 
     // -------------------------------------------------------------------------
     // Typed accessors.

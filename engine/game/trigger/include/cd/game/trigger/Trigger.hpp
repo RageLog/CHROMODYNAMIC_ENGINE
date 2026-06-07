@@ -152,8 +152,8 @@ public:
 
     TriggerWorld(const TriggerWorld&)            = delete;
     TriggerWorld& operator=(const TriggerWorld&) = delete;
-    TriggerWorld(TriggerWorld&&)                 = default;
-    TriggerWorld& operator=(TriggerWorld&&)      = default;
+    TriggerWorld(TriggerWorld&&) noexcept            = default;
+    TriggerWorld& operator=(TriggerWorld&&) noexcept = default;
 
     // -- structure ----------------------------------------------------------
 

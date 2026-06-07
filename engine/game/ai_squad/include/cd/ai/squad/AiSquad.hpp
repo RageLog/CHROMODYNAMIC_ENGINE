@@ -165,8 +165,8 @@ public:
 
     Squad(const Squad&)            = delete;
     Squad& operator=(const Squad&) = delete;
-    Squad(Squad&&)                 = default;
-    Squad& operator=(Squad&&)      = default;
+    Squad(Squad&&) noexcept            = default;
+    Squad& operator=(Squad&&) noexcept = default;
 
     ~Squad() = default;
 

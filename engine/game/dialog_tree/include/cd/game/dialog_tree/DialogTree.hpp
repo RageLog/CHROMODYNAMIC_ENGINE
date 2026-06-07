@@ -142,8 +142,8 @@ public:
 
     DialogTreeRuntime(const DialogTreeRuntime&)            = delete;
     DialogTreeRuntime& operator=(const DialogTreeRuntime&) = delete;
-    DialogTreeRuntime(DialogTreeRuntime&&)                 = default;
-    DialogTreeRuntime& operator=(DialogTreeRuntime&&)      = default;
+    DialogTreeRuntime(DialogTreeRuntime&&) noexcept            = default;
+    DialogTreeRuntime& operator=(DialogTreeRuntime&&) noexcept = default;
 
     ~DialogTreeRuntime() = default;
 

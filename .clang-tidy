@@ -154,7 +154,16 @@ Checks: >
 # performance-unnecessary-copy-initialization (~10 sites in
 # lighting_clusters and restir_di) deliberately skipped this round
 # until site-by-site fixes land.
-WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer,bugprone-use-after-move,bugprone-dangling-handle,bugprone-string-constructor,bugprone-suspicious-memset-usage,bugprone-undelegated-constructor,bugprone-throw-keyword-missing,bugprone-not-null-terminated-result,cppcoreguidelines-slicing,cppcoreguidelines-pro-type-static-cast-downcast,bugprone-empty-catch,bugprone-signal-handler,bugprone-bool-pointer-implicit-conversion,bugprone-multiple-statement-macro,bugprone-sizeof-container,bugprone-sizeof-expression,bugprone-string-literal-with-embedded-nul,bugprone-suspicious-include,bugprone-suspicious-missing-comma,bugprone-suspicious-semicolon,cert-msc50-cpp,cert-msc30-c,performance-faster-string-find,performance-for-range-copy,performance-inefficient-vector-operation,performance-trivially-destructible,performance-type-promotion-in-math-fn,misc-misplaced-const,misc-misleading-bidirectional,misc-static-assert,readability-redundant-string-init,readability-string-compare,readability-redundant-string-cstr'
+# Run 25 phase 941: site-by-site fixes for the three skipped rules
+# above have landed. ShaderCache + Squad + DialogTreeRuntime +
+# DialogueVM + QuestLog + Settings + TriggerWorld now declare
+# explicit noexcept move ctor / op=. Dialogue.hpp get_string's
+# move-into-ternary collapsed-to-const-ref is split into an
+# if-branch so the move actually fires on the fallback path.
+# VirtualCamera.cpp drops the no-op std::move on a trivially-copyable
+# vcam. DispatchPass.cpp + Denoiser.cpp tighten 15 const-by-value
+# error copies to const-ref.
+WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer,bugprone-use-after-move,bugprone-dangling-handle,bugprone-string-constructor,bugprone-suspicious-memset-usage,bugprone-undelegated-constructor,bugprone-throw-keyword-missing,bugprone-not-null-terminated-result,cppcoreguidelines-slicing,cppcoreguidelines-pro-type-static-cast-downcast,bugprone-empty-catch,bugprone-signal-handler,bugprone-bool-pointer-implicit-conversion,bugprone-multiple-statement-macro,bugprone-sizeof-container,bugprone-sizeof-expression,bugprone-string-literal-with-embedded-nul,bugprone-suspicious-include,bugprone-suspicious-missing-comma,bugprone-suspicious-semicolon,cert-msc50-cpp,cert-msc30-c,performance-faster-string-find,performance-for-range-copy,performance-inefficient-vector-operation,performance-trivially-destructible,performance-type-promotion-in-math-fn,misc-misplaced-const,misc-misleading-bidirectional,misc-static-assert,readability-redundant-string-init,readability-string-compare,readability-redundant-string-cstr,performance-noexcept-move-constructor,performance-move-const-arg,performance-unnecessary-copy-initialization'
 
 # Analyse only OUR code. Engine + samples; never third-party headers via
 # FetchContent (those live under build/*/_deps/) and never legacy code

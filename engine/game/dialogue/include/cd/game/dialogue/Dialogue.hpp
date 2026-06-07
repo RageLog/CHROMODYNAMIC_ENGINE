@@ -137,8 +137,14 @@ public:
         {
             return fallback;
         }
+        // Branch around the ternary so the move actually fires for the
+        // fallback path (the ternary's other branch returns a *const ref*,
+        // forcing the deduced type to const& and silently disabling the
+        // move on the moved branch).
         const auto* p = std::get_if<std::string>(&it->second);
-        return p != nullptr ? *p : std::move(fallback);
+        if (p != nullptr)
+            return *p;
+        return fallback;
     }
 
     void erase(const std::string& key) { values_.erase(key); }
@@ -260,8 +266,8 @@ public:
 
     DialogueVM(const DialogueVM&)            = delete;
     DialogueVM& operator=(const DialogueVM&) = delete;
-    DialogueVM(DialogueVM&&)                 = default;
-    DialogueVM& operator=(DialogueVM&&)      = default;
+    DialogueVM(DialogueVM&&) noexcept            = default;
+    DialogueVM& operator=(DialogueVM&&) noexcept = default;
 
     ~DialogueVM() = default;
 
