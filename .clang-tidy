@@ -121,7 +121,22 @@ Checks: >
 #   * bugprone-not-null-terminated-result
 #   * cppcoreguidelines-slicing
 #   * cppcoreguidelines-pro-type-static-cast-downcast
-WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer,bugprone-use-after-move,bugprone-dangling-handle,bugprone-string-constructor,bugprone-suspicious-memset-usage,bugprone-undelegated-constructor,bugprone-throw-keyword-missing,bugprone-not-null-terminated-result,cppcoreguidelines-slicing,cppcoreguidelines-pro-type-static-cast-downcast'
+# Run 25 phase 936: eleven more bug-class rules probed against the
+# engine + samples tree returned zero diagnostics under the existing
+# tree; promoted:
+#   * bugprone-empty-catch                    (silent catch(...) swallow defence)
+#   * bugprone-signal-handler                 (async-unsafe call inside handler)
+#   * bugprone-bool-pointer-implicit-conversion
+#   * bugprone-multiple-statement-macro
+#   * bugprone-sizeof-container               (sizeof(std::vector) is rarely meant)
+#   * bugprone-sizeof-expression
+#   * bugprone-string-literal-with-embedded-nul
+#   * bugprone-suspicious-include
+#   * bugprone-suspicious-missing-comma
+#   * bugprone-suspicious-semicolon
+#   * cert-msc50-cpp                          (rand() weak; use <random> family)
+#   * cert-msc30-c                            (same surface, C dialect)
+WarningsAsErrors: 'modernize-use-scoped-lock,bugprone-misplaced-widening-cast,bugprone-implicit-widening-of-multiplication-result,bugprone-integer-division,readability-misleading-indentation,bugprone-suspicious-stringview-data-usage,bugprone-unhandled-exception-at-new,cert-flp30-c,cppcoreguidelines-prefer-member-initializer,bugprone-use-after-move,bugprone-dangling-handle,bugprone-string-constructor,bugprone-suspicious-memset-usage,bugprone-undelegated-constructor,bugprone-throw-keyword-missing,bugprone-not-null-terminated-result,cppcoreguidelines-slicing,cppcoreguidelines-pro-type-static-cast-downcast,bugprone-empty-catch,bugprone-signal-handler,bugprone-bool-pointer-implicit-conversion,bugprone-multiple-statement-macro,bugprone-sizeof-container,bugprone-sizeof-expression,bugprone-string-literal-with-embedded-nul,bugprone-suspicious-include,bugprone-suspicious-missing-comma,bugprone-suspicious-semicolon,cert-msc50-cpp,cert-msc30-c'
 
 # Analyse only OUR code. Engine + samples; never third-party headers via
 # FetchContent (those live under build/*/_deps/) and never legacy code
