@@ -1,10 +1,30 @@
 # samples/world — ECS / anim / events / replication / scene-graph samples.
-add_subdirectory(hello_ecs)
+#
+# phase910-sample-consolidation: per
+# [[feedback-sample-consolidation-and-per-feature-demo]], 5 headless
+# world-tier smokes have been folded into the source libraries' gtests.
+# Source directories deleted in this commit.
+#
+# Retired in phase 910:
+#   * hello_ecs              -> engine/world/ecs/tests/test_ecs.cpp (44 incl.
+#       BulkLifecycleStress + MultiComponentEach*) + test_archetype_world.cpp (11)
+#       + test_scheduler.cpp (11) + test_query_cache.cpp + test_sphere_query.cpp.
+#       The 10 000-entity sample stress N is a perf datapoint that is best
+#       reproduced by the bench_archetype microbench (retained below).
+#   * hello_events           -> engine/foundation/events/tests/test_events.cpp (14)
+#   * hello_replication      -> engine/world/net/tests/test_net*.cpp (4 files,
+#       ChannelMux + loopback_pair + reliable ordering) + scene serialize tests.
+#   * hello_particles        -> engine/world/particle_system/tests/test_particle_system.cpp (7)
+#       + engine/world/scene/tests/test_scene.cpp (3 ParticleSystem cases).
+#   * hello_particle_system  -> engine/world/particle_system/tests/test_particle_system.cpp (7)
+#
+# Retained:
+#   * bench_archetype           - SparseSetWorld vs ArchetypeWorld 1000-entity
+#       microbenchmark. Category (c) standalone tool (perf datapoint).
+#   * hello_anim, hello_inspector, hello_scene_graph - Vulkan+ImGui visual
+#       demos (category b). Should fold into hello_engine as panel toggles
+#       in a later wave once hello_engine grows an Editor Panels collapser.
 add_subdirectory(bench_archetype)
-add_subdirectory(hello_events)
-add_subdirectory(hello_replication)
-add_subdirectory(hello_particles)
-add_subdirectory(hello_particle_system)
 if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_anim)
   add_subdirectory(hello_inspector)
