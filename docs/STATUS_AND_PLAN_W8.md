@@ -898,6 +898,70 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
+## Marathon Run 22 partial (2026-06-07 dev branch, phases 874-876)
+
+5 follow-up commits after Run 21 closed, addressing user-perceived
+visible-quality bugs that re-emerged with fresh interactive captures.
+All 258/258 ctest PASS, no rendering regressions.
+
+### Visual polish iterations
+
+- **phase 874 (3b688fb)** — Volumetric fog HG anisotropy
+  (`g=0.6` → `g=0.15`) eliminated the screen-following dark oval
+  the user reported. Aerial perspective floor coupled to
+  `vol_fog_density` so the fog slider acts as the single
+  off-switch. Cloud time scales bumped 3× to make drift
+  perceptible (phase 859b's 5× slow-down was too far).
+- **phase 875 (661eb29)** — `fog_density 0.03 → 0.0` and
+  `aerial_perspective 0.10 → 0.0` defaults — the prior values
+  painted a constant haze on every distant pixel even when the
+  user expected "fog off". `cloud_lit` brightened toward
+  near-white so the clouds slider has dramatic visible effect
+  (pale-blue ↔ white as density moves 0 → 1).
+- **phase 876 (face54b)** — Analytical sky horizon palette swept
+  `(0.78, 0.86, 0.96)` (near-white = pale haze post-tonemap) →
+  `(0.48, 0.62, 0.82)` (saturated blue). Phase 858's warm-cream
+  was the WORST direction — fully reverted. Composite
+  `stable_sky_base (0.55, 0.66, 0.84)` → `(0.32, 0.51, 0.84)` so
+  the cloud overlay can't pale the new saturated sky.
+  `clouds_coverage` default 0.45 → 0.20 — clouds visible as light
+  wisps, analytical sky dominantly shows through.
+
+### Verification
+
+All 10 fixtures captured + visually verified:
+
+- #0 entrance, #1 nave, #2 arch, #3 vegetation, #4 floor: scenes
+  read with vivid Sponza colour, no persistent haze, chrome
+  reflections show real Sponza textures + 2-bounce.
+- #5 chrome_probe: chrome PBR spheres show curtain damask /
+  vegetation veins / column relief in reflections.
+- #6 sky_zenith: saturated blue with white cloud wisps —
+  EXACTLY the look the user requested after multiple iterations.
+- #7 / #8 sky_yaw_a/b: direction-independent, cloud structure
+  similar across 180° yaw.
+- #9 roof_down: Sponza tile detail visible from above, no
+  persistent haze.
+
+### Run 22 remaining queue
+
+The big-ticket items from phase 873's plan are still open:
+
+1. Non-Sponza glTF bindless texture upload (CesiumMan, arbitrary
+   `--gltf-load`). Requires extending the prim shader's
+   bindless write to additional VB/IB bindings, or a single
+   merged VB/IB design.
+2. L1 Metal backend (per ADR-20260530-metal-backend.md).
+3. Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC,
+   Eberly LBS).
+
+Phases 874-876 are tagged as "Run 22 partial" rather than a full
+close-out because the marathon agenda still has multi-week work
+on it; visual-quality polish landed first because user reports
+kept surfacing during interactive use.
+
+---
+
 ## Marathon Run 21 close-out (2026-06-07 dev branch, phases 868-872)
 
 5 commits, all 258/258 ctest PASS at every checkpoint, no
