@@ -3249,6 +3249,75 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             ImVec2(0, 56));
         ImGui::TextDisabled("Heitz 2016 LTC closed-form polygon irradiance.");
     }
+    // phase932-restir-gi-live-demo (Run 25 Strand B): drive
+    // cd::restir_gi::Reservoir + update. Streams synthetic indirect
+    // bounce samples (point + normal + incoming radiance) through
+    // a per-pixel reservoir + reports the survivor + final weight
+    // live. Same shape as the DI reservoir (phase 920) but the
+    // survivor carries world-space geometry instead of a light id
+    // -- Ouyang 2021 ReSTIR GI.
+    if (ImGui::CollapsingHeader("Run25  ReSTIR GI Live Demo"))
+    {
+        static int s_rgi_samples = 32;
+        static std::uint32_t s_rgi_seed = 0xC1DDF1U;
+        ImGui::SliderInt("Candidate bounces / pixel",
+                         &s_rgi_samples, 1, 128);
+        ImGui::InputScalar("Seed (PCG32)",
+                           ImGuiDataType_U32, &s_rgi_seed);
+        cd::restir_gi::Reservoir res {};
+        std::uint32_t rng = s_rgi_seed;
+        auto next_u32 = [&rng]() noexcept -> std::uint32_t
+        {
+            rng = rng * 1664525U + 1013904223U;
+            return rng;
+        };
+        auto next_unit = [&next_u32]() noexcept -> float
+        {
+            return static_cast<float>(next_u32() & 0xFFFFFFU)
+                 / static_cast<float>(0xFFFFFFU);
+        };
+        for (int i = 0; i < s_rgi_samples; ++i)
+        {
+            cd::restir_gi::Sample s {};
+            // Synthetic bounce: point on a small jittered sphere around the
+            // origin, normal toward camera, incoming colour wave drifting
+            // toward warm.
+            const float a = next_unit() * std::numbers::pi_v<float> * 2.0F;
+            const float r = next_unit() * 1.5F;
+            s.point  = { std::cos(a) * r, std::sin(a) * r, 1.0F + next_unit() };
+            s.normal = { 0.0F, 0.0F, 1.0F };
+            s.incoming = {
+                0.4F + next_unit() * 0.6F,
+                0.3F + next_unit() * 0.6F,
+                0.1F + next_unit() * 0.4F };
+            // target_pdf ~ incoming luminance (max channel proxy).
+            const float lum = std::max({ s.incoming.x, s.incoming.y, s.incoming.z });
+            cd::restir_gi::update(res, s, lum, next_unit());
+        }
+        ImGui::Text("Reservoir.M (samples streamed): %u", res.M);
+        ImGui::Text("Reservoir.weight_sum: %.3f",
+                    static_cast<double>(res.weight_sum));
+        const float fw = res.final_weight(std::max(
+            { res.selected.incoming.x,
+              res.selected.incoming.y,
+              res.selected.incoming.z }));
+        ImGui::Text("Survivor point: (%.3f, %.3f, %.3f)",
+                    static_cast<double>(res.selected.point.x),
+                    static_cast<double>(res.selected.point.y),
+                    static_cast<double>(res.selected.point.z));
+        ImGui::Text("Survivor incoming RGB: (%.3f, %.3f, %.3f)",
+                    static_cast<double>(res.selected.incoming.x),
+                    static_cast<double>(res.selected.incoming.y),
+                    static_cast<double>(res.selected.incoming.z));
+        ImGui::Text("Survivor final_weight: %.4f",
+                    static_cast<double>(fw));
+        ImGui::ColorButton("Survivor radiance",
+                           { res.selected.incoming.x,
+                             res.selected.incoming.y,
+                             res.selected.incoming.z, 1.0F },
+                           ImGuiColorEditFlags_NoAlpha, ImVec2(64, 24));
+        ImGui::TextDisabled("Ouyang 2021 ReSTIR GI WRS streaming.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
