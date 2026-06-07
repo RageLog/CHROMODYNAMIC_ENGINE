@@ -370,7 +370,10 @@ TEST(SponzaGoldenFixtures, CameraSetIsExactlySixAndAllSlugsUnique)
     // when the chrome-probe diagnostic fixture landed. Fixture #5
     // (slug "chrome_probe") drives the iteration loop for the RT
     // reflection regression hunt.
-    EXPECT_EQ(kFixtures.size(), 6U);
+    // phase869-fix-verification-fixtures: 4 diagnostic poses added
+    // (sky_zenith, sky_yaw_a, sky_yaw_b, roof_down) for cloud +
+    // fog visible-quality iteration. 6 → 10.
+    EXPECT_EQ(kFixtures.size(), 10U);
     for (std::size_t i = 0; i < kFixtures.size(); ++i)
     {
         EXPECT_FALSE(kFixtures[i].slug.empty()) << "fixture " << i;

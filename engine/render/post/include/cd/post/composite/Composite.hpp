@@ -520,26 +520,19 @@ void main() {
                   + ndc.x * pc.cam_right.w * pc.cam_right.xyz
                   - ndc.y * pc.cam_up.w    * pc.cam_up.xyz;
     vec3 dir_world = normalize(view_ray);
-    // phase862-clouds-octahedral: replace the atan2/asin spherical
-    // projection (which had two visible artefacts: a vertical seam
-    // running down the south meridian where atan2 wraps from -π to
-    // +π, and a radial pinch at the zenith where asin's derivative
-    // diverges) with the OCTAHEDRAL parameterisation. Octahedral
-    // maps the unit sphere to [-1, 1]² with NO singularities and a
-    // bounded distortion factor ~1.4× — ideal for cloud textures
-    // that need to look continuous when the camera spins. Each
-    // hemisphere unfolds onto the unit square; the upper hemisphere
-    // (where clouds live) takes the centred diamond region |x|+|z| ≤
-    // 1; the lower hemisphere wraps around the corners, but we
-    // already gate clouds with horizon_fade so the wrap is invisible
-    // in practice.
-    vec2 oct = dir_world.xz / (abs(dir_world.x) + abs(dir_world.y) + abs(dir_world.z));
-    if (dir_world.y < 0.0) {
-        oct = (vec2(1.0) - abs(oct.yx)) *
-              vec2(oct.x >= 0.0 ? 1.0 : -1.0,
-                   oct.y >= 0.0 ? 1.0 : -1.0);
-    }
-    vec2 sky_uv = oct * 10.0;
+    // phase870-clouds-triplanar: octahedral (phase 862) eliminated
+    // the south-meridian seam but the zenith pinch persisted —
+    // octahedral compresses the upper hemisphere into the diamond
+    // |x|+|z| ≤ 1, so all near-zenith rays sample similar
+    // (oct.x, oct.z) values and the cloud cells visibly converge
+    // into a radial "star" at the zenith.
+    //
+    // Triplanar replaces the single 2D projection with THREE 2D
+    // noise samples — one per axis pair — averaged into one
+    // density. Each tap is well-defined for ANY direction (no
+    // singularities) and the composite of three taps smooths out
+    // any per-tap distortion. The result is uniform cloud
+    // resolution at every pitch including the zenith.
     // phase859b-clouds-slower-layered: user-requested "bulutlar hizli
     // akiyor daha yavas olmali ve daha katman katman gozukmeli"
     // (clouds drift too fast; should be slower and more layered).
@@ -548,21 +541,33 @@ void main() {
     // so the visible cover looks like real clouds in multiple
     // strata, not a single fBm field.
     float t = pc.cam_pos.w;
-    // ---- Low cloud layer ----
-    vec2 q = vec2(cd_fbm4(sky_uv + vec2(0.0,  t * 0.010)),
-                  cd_fbm4(sky_uv + vec2(5.2,  t * 0.010 + 1.3)));
-    vec2 r = vec2(cd_fbm4(sky_uv + 4.0 * q + vec2(1.7, 9.2) + t * 0.006),
-                  cd_fbm4(sky_uv + 4.0 * q + vec2(8.3, 2.8) + t * 0.006));
-    float density_lo = cd_fbm4(sky_uv + 4.0 * r + vec2(t * 0.012, t * 0.0045));
-    // ---- High cloud layer (cirrus-like, drifts faster but smaller
-    // amplitude — gives parallax + visible second stratum). Scale
-    // the sky_uv 0.55× so the high layer reads as a different size.
-    vec2 sky_uv_hi = sky_uv * 0.55 + vec2(31.7, 13.9);
-    vec2 r_hi = vec2(cd_fbm4(sky_uv_hi + vec2(t * 0.018, 0.0)),
-                     cd_fbm4(sky_uv_hi + vec2(0.0, t * 0.018)));
-    float density_hi = cd_fbm4(sky_uv_hi + 2.0 * r_hi);
+    // phase870-clouds-triplanar: 3 axis-pair noise taps, averaged.
+    // Each pair is well-defined for any direction (no singularity).
+    vec2 uv_xz = dir_world.xz * 4.0;
+    vec2 uv_xy = dir_world.xy * 4.0 + vec2(17.3, 6.1);
+    vec2 uv_yz = dir_world.yz * 4.0 + vec2(31.2, 9.7);
+    // ---- Low cloud layer (slow time drift) ----
+    float n_xz_lo = cd_fbm4(uv_xz + vec2(t * 0.010, t * 0.0045));
+    float n_xy_lo = cd_fbm4(uv_xy + vec2(t * 0.008, t * 0.005));
+    float n_yz_lo = cd_fbm4(uv_yz + vec2(t * 0.006, t * 0.009));
+    float density_lo = (n_xz_lo + n_xy_lo + n_yz_lo) / 3.0;
+    // ---- High cloud layer (cirrus, smaller scale, slight extra
+    // drift). 0.55× the low frequency so it reads as a separate
+    // stratum.
+    vec2 uv_xz_hi = uv_xz * 0.55;
+    vec2 uv_xy_hi = uv_xy * 0.55;
+    vec2 uv_yz_hi = uv_yz * 0.55;
+    float n_xz_hi = cd_fbm4(uv_xz_hi + vec2(t * 0.018, 0.0));
+    float n_xy_hi = cd_fbm4(uv_xy_hi + vec2(0.0, t * 0.018));
+    float n_yz_hi = cd_fbm4(uv_yz_hi + vec2(t * 0.014, t * 0.012));
+    float density_hi = (n_xz_hi + n_xy_hi + n_yz_hi) / 3.0;
     // Layer composite: low layer dominates, high layer adds 35%.
+    // phase870-cloud-contrast: triplanar averaging compressed the
+    // fBm dynamic range toward the mean (~0.5), making clouds
+    // appear uniform and washed-out. Apply a contrast stretch
+    // post-average so the visible cloud structure pops again.
     float density = density_lo * 0.65 + density_hi * 0.45;
+    density = clamp((density - 0.40) * 2.2 + 0.40, 0.0, 1.0);
     float cov = clamp(pc.sun_col.w, 0.0, 1.0);
     // phase856a: smoothly fade clouds off as the view drops below
     // the horizon — looking-down rays should NEVER carry a cloud
@@ -615,8 +620,14 @@ void main() {
     // any residue from the analytical sky pass cannot tint the
     // overlay. The visible variation is now PURELY cloud density,
     // not the analytical sky behind.
-    vec3 stable_sky_base = vec3(0.55, 0.62, 0.78) *
-                           mix(0.10, 1.0, sun_amt);
+    // phase870-stable-sky-bright: stable_sky_base now hard-coded
+    // at full brightness — the sun_amt multiplier was crushing the
+    // overlay to near-black on fixture captures even when the sky
+    // pass clearly drew bright daylight. Night gating happens via
+    // cloud_lit *= mix(0.04, 1.0, sun_amt) which already handles
+    // the lit-cloud term going dark; the base sky behind the
+    // clouds should stay daylight-toned.
+    vec3 stable_sky_base = vec3(0.55, 0.66, 0.84);
     vec3 sky_with_clouds = mix(stable_sky_base, cloud_lit,
                                clamp(cloud, 0.0, 1.0));
     float overlay_mix = clamp(depth_gate * horizon_fade, 0.0, 1.0);
@@ -716,22 +727,23 @@ void main() {
       // Aerial perspective still applies on top — paints the horizon
       // tint over the integrated fog so the far-distance haze matches
       // the sky band.
-      // phase868-fog-floor-bump: see else-branch.
+      // phase870-fog-floor-rebalance: see else-branch.
       float aer_t = 1.0 - exp(-lz * 0.08);
-      float aer_floor = clamp(pc.atmo.y * 0.35, 0.0, 0.45);
+      float aer_floor = clamp(pc.atmo.y * 0.15, 0.0, 0.18);
       aer_t = max(aer_t, aer_floor);
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
     } else {
-      // phase868-fog-floor-bump: user reports fog STILL disappears
-      // looking down (phase 863's 0.20-cap floor was too small to
-      // see at fog_density = 0.03 default). Bump fog_floor's
-      // coefficient AND cap so that even close-up pixels carry
-      // visible haze when the slider is on at all.
+      // phase870-fog-floor-rebalance: phase 868's bump 12× density
+      // capped at 0.50 was way too aggressive — roof_down fixture
+      // showed the entire scene replaced with horizon_lit (uniform
+      // gray). Drop to 6× density capped at 0.20 — enough to keep
+      // close-up haze visible without killing the underlying scene
+      // colour. Aerial perspective: 0.35 → 0.15, cap 0.18.
       float fog_t = 1.0 - exp(-lz * max(vol_fog_density, 0.0));
-      float fog_floor = clamp(vol_fog_density * 12.0, 0.0, 0.50);
+      float fog_floor = clamp(vol_fog_density * 6.0, 0.0, 0.20);
       fog_t = max(fog_t, fog_floor);
       float aer_t = 1.0 - exp(-lz * 0.08);
-      float aer_floor = clamp(pc.atmo.y * 0.35, 0.0, 0.45);
+      float aer_floor = clamp(pc.atmo.y * 0.15, 0.0, 0.18);
       aer_t = max(aer_t, aer_floor);
       c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));

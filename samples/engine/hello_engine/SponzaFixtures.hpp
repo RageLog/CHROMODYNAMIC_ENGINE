@@ -59,7 +59,7 @@ inline constexpr std::uint32_t kFixtureHeight = 144U;
 /// Sponza geometry (curtains, columns, vegetation) framed behind the
 /// probe. The mirror reflection on the probe should paint the framed
 /// Sponza geometry — when it doesn't, the RT path is broken.
-inline constexpr std::array<Fixture, 6> kFixtures { {
+inline constexpr std::array<Fixture, 10> kFixtures { {
     { "entrance",   "Sponza main entrance looking down the nave",
       { -11.50F, 1.60F,  0.00F }, {  0.00F, 1.60F,  0.00F }, 60.0F,
       { 1.00F, 0.85F, 0.60F } },
@@ -78,6 +78,40 @@ inline constexpr std::array<Fixture, 6> kFixtures { {
     { "chrome_probe", "Probe in Sponza nave, framed clear of the PBR grid for isolated reflection inspection",
       {  -3.00F, 2.20F, -2.00F }, {  4.00F, 2.20F,  0.00F }, 50.0F,
       { 0.85F, 0.75F, 0.65F } },
+    // phase869-fix-verification-fixtures: dedicated camera poses
+    // that reproduce the user-reported visible-quality bug surfaces
+    // (cloud direction-flip, zenith pinch, fog asymmetry).
+    // Run `--golden-fixture N --golden-out X.png` for each and
+    // visually diff captures across phases.
+    //
+    // #6 — sky_zenith — eye inside nave, target straight up. Tests
+    //      the cloud zenith pinch / split-seam artefact and
+    //      direction-independent overlay colour.
+    { "sky_zenith", "OUTSIDE Sponza, eye at high altitude, look straight up — clean sky test for zenith pinch + cloud overlay stability",
+      {  30.00F,30.00F, 30.00F }, { 30.00F, 80.00F, 30.00F }, 80.0F,
+      { 0.40F, 0.55F, 0.85F } },
+    // #7 / #8 — sky_yaw_a / sky_yaw_b — same eye, target rotated
+    //      180° in yaw (looking +X vs -X at 30° pitch). With phase
+    //      856a/862's world-anchored octahedral sampling the SAME
+    //      world clouds should be visible in both — just from
+    //      different angles. If the captures show wildly different
+    //      cloud densities or colours, world-anchoring is broken.
+    // sky_yaw_a / sky_yaw_b: eye at high altitude above any geometry,
+    // target points upward at 70° pitch toward opposing yaws. Both
+    // captures should show ONLY sky — no Sponza arches.
+    { "sky_yaw_a",  "OUTSIDE Sponza, eye high, looking +X at ~30° pitch — pair with sky_yaw_b for direction stability",
+      {  30.00F,30.00F, 30.00F }, { 60.00F, 50.00F, 30.00F }, 70.0F,
+      { 0.85F, 0.55F, 0.40F } },
+    { "sky_yaw_b",  "OUTSIDE Sponza, eye high, looking -X at ~30° pitch — 180° yaw of sky_yaw_a (clouds MUST match)",
+      {  30.00F,30.00F, 30.00F }, {  0.00F, 50.00F, 30.00F }, 70.0F,
+      { 0.40F, 0.55F, 0.85F } },
+    // #9 — roof_down — eye high above Sponza, target on roof.
+    //      Tests fog floor: the close-up surface depth is small
+    //      so depth-proportional fog reads ~0. If the captured
+    //      roof carries no haze the fog floor is too small.
+    { "roof_down",  "Mid-altitude eye, look down at Sponza roof tiles — tests fog floor / asymmetry",
+      {   3.00F, 8.00F,  3.00F }, {  0.00F, 3.50F,  0.00F }, 60.0F,
+      { 0.65F, 0.55F, 0.45F } },
 } };
 
 // ---------------------------------------------------------------------------
