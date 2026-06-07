@@ -604,8 +604,23 @@ void main() {
     // rotation. Light clouds still let some sky through, but the
     // gradient is now caused only by their own density, not the
     // sky behind them.
-    float cloud_mix = clamp(cloud * depth_gate * horizon_fade, 0.0, 1.0);
-    c = mix(c, cloud_lit, cloud_mix);
+    // phase868-clouds-fully-replace-sky: user still reports cloud
+    // colour flips with camera direction. Root cause: when cloud
+    // density is <1.0 the previous mix(c, cloud_lit, cloud_mix)
+    // let some of the analytical-sky `c` (horizon vs zenith
+    // gradient) show through, and `c` IS direction-dependent.
+    // Compute a fully-direction-INDEPENDENT sky pixel
+    // (stable_sky_base blended with cloud_lit by cloud density),
+    // then mix THAT into `c` based on depth_gate/horizon_fade so
+    // any residue from the analytical sky pass cannot tint the
+    // overlay. The visible variation is now PURELY cloud density,
+    // not the analytical sky behind.
+    vec3 stable_sky_base = vec3(0.55, 0.62, 0.78) *
+                           mix(0.10, 1.0, sun_amt);
+    vec3 sky_with_clouds = mix(stable_sky_base, cloud_lit,
+                               clamp(cloud, 0.0, 1.0));
+    float overlay_mix = clamp(depth_gate * horizon_fade, 0.0, 1.0);
+    c = mix(c, sky_with_clouds, overlay_mix);
   }
 
   // AO
@@ -652,17 +667,15 @@ void main() {
     const float g2 = g * g;
     float phase = (1.0 - g2) / (4.0 * 3.14159265 *
                   pow(1.0 + g2 - 2.0 * g * cos_th, 1.5));
-    // phase859-fog-direction-stability: user-reported "bakisima gore
-    // gorseller fog seviye bulut rengleri vb gibi seyler degisiyor".
-    // The previous `clamp(cos_th * 0.8, 0, 1)` mix coupling made fog
-    // colour swing from cream (away from sun) to bright sun glow
-    // (toward sun) as the camera rotated, which read as the entire
-    // scene tint "flipping" by direction. Dial the coupling down to
-    // 0.25 so the inscatter sun-tint stays as a subtle directional
-    // accent on top of the stable horizon-lit fog base.
+    // phase868-fog-direction-flat: user-reported the cos_th coupling
+    // STILL caused fog colour to flip between camera orientations
+    // even after phase 859 dialed it 0.8 → 0.25. Drop the coupling
+    // to 0.05 — effectively flat fog colour across all view
+    // directions. The HG sun glow becomes a faint highlight near
+    // the sun only, no longer dominating the fog tint at 180°.
     vec3 fog_colour = mix(horizon_lit,
                           pc.sun_col.rgb * (phase * 6.0 + 0.5),
-                          clamp(cos_th * 0.25, 0.0, 1.0));
+                          clamp(cos_th * 0.05, 0.0, 1.0));
 
     if (vol_fog_on) {
       // Wronski integrated single-scatter — front-to-back march.
@@ -703,26 +716,22 @@ void main() {
       // Aerial perspective still applies on top — paints the horizon
       // tint over the integrated fog so the far-distance haze matches
       // the sky band.
-      // phase863-fog-symmetric: see else-branch comment.
+      // phase868-fog-floor-bump: see else-branch.
       float aer_t = 1.0 - exp(-lz * 0.08);
-      float aer_floor = clamp(pc.atmo.y * 0.10, 0.0, 0.15);
+      float aer_floor = clamp(pc.atmo.y * 0.35, 0.0, 0.45);
       aer_t = max(aer_t, aer_floor);
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
     } else {
-      // phase863-fog-symmetric: user-reported "fogla ilgili problemim
-      // var asagi bakinca fok gidiyor" (fog disappears when looking
-      // down). Root cause: both fog_t and aer_t are `1 - exp(-lz *
-      // density)` — they're DEPTH-PROPORTIONAL. Looking down at the
-      // floor (lz < 5 m), the exp is ≈1 and fog_t ≈ 0, so no haze.
-      // Looking up at sky (lz = far_z), fog_t saturates. Fog should
-      // be UNIFORMLY present in the air, not just on far surfaces.
-      // Add a constant FLOOR so even near-surface pixels carry a
-      // small fog presence proportional to the density slider.
+      // phase868-fog-floor-bump: user reports fog STILL disappears
+      // looking down (phase 863's 0.20-cap floor was too small to
+      // see at fog_density = 0.03 default). Bump fog_floor's
+      // coefficient AND cap so that even close-up pixels carry
+      // visible haze when the slider is on at all.
       float fog_t = 1.0 - exp(-lz * max(vol_fog_density, 0.0));
-      float fog_floor = clamp(vol_fog_density * 4.0, 0.0, 0.20);
+      float fog_floor = clamp(vol_fog_density * 12.0, 0.0, 0.50);
       fog_t = max(fog_t, fog_floor);
       float aer_t = 1.0 - exp(-lz * 0.08);
-      float aer_floor = clamp(pc.atmo.y * 0.10, 0.0, 0.15);
+      float aer_floor = clamp(pc.atmo.y * 0.35, 0.0, 0.45);
       aer_t = max(aer_t, aer_floor);
       c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
