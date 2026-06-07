@@ -586,9 +586,14 @@ void main() {
     // instead of stepping; combined with the 24x12 cell scale this
     // removes the pixelated-block look the user reported.
     float cloud = smoothstep(0.42 - cov * 0.36, 0.82, density);
-    // Cloud colour — lit side toward sun_col, shaded base mid-grey.
-    vec3 cloud_lit = mix(vec3(0.55, 0.55, 0.60),
-                         pc.sun_col.rgb * 1.2 + vec3(0.05),
+    // phase875-cloud-lit-bright-white: user reports the clouds
+    // slider has barely-visible effect. Root cause: cloud_lit was
+    // pale-grey (~0.85) and stable_sky_base was pale-blue (~0.66),
+    // making `mix(base, lit, density)` only swing the result a
+    // small amount. Brighten cloud_lit toward white so dense
+    // clouds clearly stand out against the sky.
+    vec3 cloud_lit = mix(vec3(0.85, 0.85, 0.90),
+                         pc.sun_col.rgb * 1.4 + vec3(0.20),
                          0.6);
     // W4-C: dim clouds at night so a fully unlit scene doesn't bake
     // grey overcast into the sky pixels.
