@@ -3483,6 +3483,44 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::BulletText("kInside      : %u", inside);
         ImGui::TextDisabled("p-vertex / n-vertex two-corner cull (Akenine 2018).");
     }
+    // phase937-light-cct-live-demo (Run 25 Strand B): drive
+    // cd::light::cct_to_linear_rgb across the 1000..15000 K range.
+    // Lets the user drag the CCT slider + see the linear-sRGB
+    // colour respond live, with the canonical presets called out
+    // (tungsten / daylight / overcast).
+    if (ImGui::CollapsingHeader("Run25  Light CCT Probe"))
+    {
+        static float s_cct_k = 6500.0F;
+        ImGui::SliderFloat("CCT (Kelvin)", &s_cct_k, 1000.0F, 15000.0F, "%.0f K");
+        const auto rgb = cd::light::cct_to_linear_rgb(s_cct_k);
+        ImGui::ColorButton("CCT colour",
+                           { rgb.x, rgb.y, rgb.z, 1.0F },
+                           ImGuiColorEditFlags_NoAlpha, ImVec2(72, 24));
+        ImGui::SameLine();
+        ImGui::Text("RGB linear: (%.3f, %.3f, %.3f)",
+                    static_cast<double>(rgb.x),
+                    static_cast<double>(rgb.y),
+                    static_cast<double>(rgb.z));
+        // Sweep CCT across the artist range so the user sees the
+        // gradient strip.
+        constexpr int kSwatches = 16;
+        for (int i = 0; i < kSwatches; ++i)
+        {
+            const float t = static_cast<float>(i) /
+                            static_cast<float>(kSwatches - 1);
+            const float k = 1500.0F + t * (15000.0F - 1500.0F);
+            const auto sw = cd::light::cct_to_linear_rgb(k);
+            char id[24] {};
+            std::snprintf(id, sizeof(id), "##sw_%d", i);
+            ImGui::ColorButton(id,
+                               { sw.x, sw.y, sw.z, 1.0F },
+                               ImGuiColorEditFlags_NoAlpha, ImVec2(24, 16));
+            if ((i % kSwatches) != (kSwatches - 1))
+                ImGui::SameLine();
+        }
+        ImGui::TextDisabled("1500K (firelight) -> 15000K (blue sky shade).");
+        ImGui::TextDisabled("Krystek 1985 + Bruce Lindbloom XYZ -> sRGB.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
