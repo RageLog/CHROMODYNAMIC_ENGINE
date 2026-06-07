@@ -898,6 +898,50 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
+## Forward-plan items (recorded during Run 24, 2026-06-07)
+
+User added two persistent goals to the future work queue:
+
+1. **Sample consolidation** — The repo currently carries
+   **106 `main.cpp` sample executables** spread across
+   `samples/asset/`, `samples/audio/`, `samples/editor/`,
+   `samples/engine/`, `samples/lib_smokes/` etc. Each one is a
+   separate target with its own build cost. The user wants
+   these merged / pruned. Strategy candidates:
+   - Per-library "smoke" tests folded into the library's own
+     `tests/` (no separate sample binary).
+   - Per-feature interactive demos consolidated INTO
+     `hello_engine` as toggleable scenes / panel modes.
+   - Genuine standalone tools (asset cookers, validators) kept
+     as separate `.exe` but cleaner CMake gating.
+   - Final delivery: probably ≤ 10 sample binaries total.
+
+2. **Per-feature visible/auditory demo in hello_engine** — Every
+   library feature the engine ships should have a SIMPLE,
+   built-in interactive demo in `hello_engine` (panel toggle or
+   keyboard shortcut). Not a full standalone exe — just a
+   small visual / audio cue the user can flip on to confirm a
+   feature works. The user explicitly noted this can be in
+   hello_engine even though hello_engine is otherwise the
+   "test bench" and won't ship.
+
+These two items are CONNECTED: feature demos in hello_engine are
+how the sample binaries get retired without losing visibility.
+
+**Sequencing:**
+- Each new library feature lands with a tiny hello_engine demo
+  hook (panel toggle / log line / on-screen indicator). No
+  separate `samples/lib_smokes/hello_X/` directory created.
+- Existing samples/lib_smokes/hello_X/ binaries audited in a
+  dedicated phase — each one classified: (a) move smoke into
+  library tests, (b) fold interactive part into hello_engine,
+  (c) keep as standalone tool. Then delete the source dirs.
+
+This forward-plan section lives at the TOP of the Marathon
+Runs list deliberately so a future session can't miss it.
+
+---
+
 ## Marathon Run 23 close-out (2026-06-07 dev branch, phases 882-893)
 
 7 commits, 259/259 ctest PASS at every checkpoint, 0 rendering
