@@ -340,6 +340,166 @@ prior Vulkan / D3D12 backend experience. Parallel paths:
 When all five boxes tick, dispatch a `developer` subagent on M1.1
 and follow the §8.2 DAG.
 
+### 8.5 Sign-off close-out addendum (phase 922, 2026-06-08)
+
+The §9 architect audit (2026-06-08) marked the §8 DAG
+**NEEDS-REVISION-FIRST** with six closable patches. This sub-
+section ships those patches inline so the audit's verdict can flip
+to **READY-TO-START** without disturbing §1-§8 prose.
+
+#### 8.5.1 M1.5 close-out — W8-BE bindless cross-encoder visibility
+
+`ADR-20260606-W8-BE` (Run 18 bindless texture-array set, post-dates
+§2.1's argument-buffer description by ~7 days) introduces a
+*dedicated* descriptor set at a separate set index for bindless
+textures, used by the chrome RT-reflection path on Vulkan. The
+naive §2.1 mapping (one root argument buffer per Vulkan set, tier-2
+argument buffers for table contents) extends cleanly to a second
+root AB for the bindless set — but **only if every encoder that
+reads from it calls `useResource:usage:stages:` on the bindless
+heap-resident textures**. Missing any one encoder = silent tile-GPU
+hazard with the same "no validation error, garbled pixels"
+symptomatology as the Vulkan-side
+[[vulkan-bindless-multi-layer-checklist]] incident (Phase 847+848).
+
+M1.5 acceptance amendment:
+
+- (a) The bindless argument buffer is its OWN root AB at the same
+  set index Vulkan uses (mirror, not flatten).
+- (b) The render command encoder, the compute command encoder, and
+  the ray-tracing intersector path each call `useResource:`
+  (`MTLResourceUsageRead`, `MTLRenderStageFragment |
+  MTLRenderStageVertex`) on every bindless texture before draw /
+  dispatch.
+- (c) An end-to-end test loads the Sponza chrome fixture, runs the
+  RT reflection path on Metal, and asserts the curtain damask
+  texture detail is visible (gate: re-use the `chrome_sponza_baseline`
+  golden fixture named in §8.5.5).
+
+A Metal-specific bindless-multi-layer checklist is to be added to
+`MEMORY.md` mirroring the Vulkan one, with the encoder list as a
+**SIX**-piece checklist (Apple's tile-GPU residency model has one
+extra "useResource on the heap object itself" step beyond Vulkan's
+five).
+
+#### 8.5.2 M1.7 close-out — AppKit/UIKit shell delegation
+
+`ADR-20260531-ios-platform` §D specifies the UIKit `UIWindow +
+CAMetalLayer` pattern with a `MetalSampleViewController` + a
+sample-driven `UIApplicationDelegate`. M1.7 **must not respec**
+that decision; instead M1.7 ships the *macOS-only* AppKit
+counterpart (`NSWindow + NSView + CAMetalLayer`) and delegates iOS
+shell delivery to its own implementation phase tied to
+`ADR-20260531`.
+
+M1.7 acceptance amendment:
+
+- (a) The implementation lives in `engine/render/rhi/src/metal/shell_macos.mm`
+  (NSApplication / NSWindow / NSView path).
+- (b) `Project/HelloEngine` reuses the existing
+  `cd::platform::WindowDesc` interface; the macOS shell registers
+  itself behind the same factory as the Win32 shell.
+- (c) UIKit shell is left as a stub
+  (`shell_ios.mm` returning `kPlatformShellNotYetImplemented`); the
+  ticket lands in P2 tracked via ADR-20260531.
+
+#### 8.5.3 Three new CI gates (G1 / G2 / G3 from §9.4)
+
+The §8.2 DAG's U1 / U2 tests both require an Apple host. Until
+self-hosted Mac CI lands (deferred to P2 acceptance per §5),
+three host-portable gates close the cross-platform-correctness
+loop:
+
+- **G1 — Header-compile** (`tests/metal/test_metal_headers_compile.cpp`,
+  any C++ host). Blocks public-Metal-header drift before Mac CI lands.
+- **G2 — Static lint** (`clang-tidy` rule in `.clang-tidy`, any C++ host).
+  Blocks `@interface` / `id<` / `__bridge` leaking into public `.hpp`.
+- **G3 — SPIRV→MSL golden** (`tests/metal/test_msl_translate_goldens.cpp`,
+  any C++ host). Blocks SPIRV-Cross version bumps breaking the 5
+  shader-family fixtures (prim / sky / composite / IBL bake / RT
+  reflection).
+
+G1 + G2 + G3 are added to `tests/CMakeLists.txt` as part of M1.1
+acceptance so the gate is *live before* the first `.mm` file is
+written. G3's 5-fixture set replaces U2 as the on-host SPIRV→MSL
+gate; U2 is renamed U2-device (Apple host only).
+
+#### 8.5.4 Five additional pre-flight items (§9.5 promotion)
+
+The §8.4 checklist gains five items (renumbered to keep the user-
+sign-off bullet at the end since it's the most expensive to
+revisit):
+
+- [ ] **Item 6** — `CD_RHI_METAL_ENABLED` CMake option exists and
+  defaults `OFF` on non-Apple. `cmake --build --preset ninja-debug`
+  on the Win11 dev box succeeds with the option absent. *Blocks
+  G1 + the entire cross-platform contract.*
+- [ ] **Item 7** — `cd_rhi_metal` link line does NOT reference
+  `MoltenVK`. (MoltenVK is the §2.2 Fork-B fallback, never on the
+  native-Metal critical path.)
+- [ ] **Item 8** — AppKit (macOS) and UIKit (iOS) shell delegation
+  is to ADR-20260531-ios-platform; M1.7 does NOT respec.
+- [ ] **Item 9** — `@autoreleasepool` discipline is documented in
+  `MEMORY.md` as a first-class feedback memory before M1.2 starts
+  (worker-thread descriptor allocations from the job system must
+  scope-release per Risk #2 of §9.3).
+- [ ] **Item 10** — `MTL_DEBUG_LAYER=1` runtime toggle AND the
+  structured RHI-call logger from §4.2 are both planned as P1
+  deliverables. The logger is tracked as a new M1.8a sub-task
+  (§8.5.6).
+
+#### 8.5.5 Canonical fixture slug for M1.9
+
+M1.9's "ΔE ≤ 1.5 vs Vulkan reference" gates against fixture slug
+**`chrome_sponza_baseline`** — the Run 18/20 chrome PBR spheres in
+the Sponza nave with bindless texture detail visible in the RT
+reflection. The reference capture lives at
+`tests/golden/chrome_sponza_baseline.png`; the fixture-by-slug
+helper from phase 827 resolves it via
+`cd_sample::resolve_fixture_by_slug("chrome_sponza_baseline")`.
+
+A future revision may add a second fixture (e.g.
+`pbr_sphere_grid_baseline` for non-Sponza) but `chrome_sponza_baseline`
+is M1.9's load-bearing gate because it exercises the bindless
+texture-array set on top of the basic raster path.
+
+#### 8.5.6 First-class M1.2 / M1.8a additions
+
+- **M1.2 acceptance amendment**: Every public-API method on
+  `cd::rhi::metal::MetalDevice` (and equivalents on `MetalHeap`,
+  `MetalCommandList`, etc.) that may be reached from a job-system
+  worker thread enters via `cd::rhi::metal::AutoreleaseScope`
+  (RAII wrapper in `MetalDevice.hpp`). Source-level convention
+  check (`Grep` for autoreleasepool/AutoreleaseScope in every
+  `.mm` public entry) gates merge. *Maps to Risk #2.*
+- **M1.8a (new) — Structured RHI-call logger**: A `cd::rhi::metal::
+  CallLogger` records every backend entry-point call with timestamp,
+  thread-id, MTLObject pointer, and result. Replaces Apple's weaker
+  `MTL_DEBUG_LAYER=1` text output as the source-of-truth gate for
+  M1.8's "no validation errors" acceptance. Lives in
+  `engine/render/rhi/src/metal/CallLogger.mm`; the structured
+  events are consumable by gtest harnesses for negative tests.
+  Acceptance: floor-mesh M1.8 test asserts zero `Severity::Error`
+  records in the logger.
+
+### 8.6 Verdict after §8.5 patches
+
+With the §8.5 sub-sections in place, the §9 audit's six blocker
+patches are addressed:
+
+1. §8.5.1 closes M1.5 (W8-BE bindless cross-encoder visibility).
+2. §8.5.2 closes M1.7 (AppKit/UIKit shell delegation).
+3. §8.5.3 adds the three host-portable CI gates G1/G2/G3.
+4. §8.5.4 adds the five additional pre-flight items.
+5. §8.5.5 names the `chrome_sponza_baseline` canonical fixture
+   slug for M1.9.
+6. §8.5.6 promotes autorelease + RHI-logger to first-class tasks
+   (M1.2 amendment + new M1.8a).
+
+The §9.6 verdict flips to **READY-TO-START** pending one remaining
+external dependency: Pre-flight Item 5 (user sign-off Fork A
+primary). When the user confirms in chat, M1.1 dispatches.
+
 ---
 
 ## 7. Kanıt (Evidence)
