@@ -3420,6 +3420,69 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     static_cast<double>(s_cam_pos.z));
         ImGui::TextDisabled("Free-look basis identical to FreeLookController.");
     }
+    // phase935-frustum-cull-live-demo (Run 25 Strand B): drive
+    // cd::camera::extract_frustum + test_aabb against a sliding
+    // AABB cluster. Lets the user drag the camera + cluster
+    // separately and SEE the 3-valued cull result + per-cluster
+    // tally live -- same path the production scene_ingest cull
+    // pass runs per draw bucket.
+    if (ImGui::CollapsingHeader("Run25  Frustum Cull Probe"))
+    {
+        static cd::math::Vec3f s_fc_cam_pos { 0.0F, 1.5F, 6.0F };
+        static cd::math::Vec3f s_fc_cluster_centre { 0.0F, 0.0F, 0.0F };
+        static float s_fc_cluster_extent = 0.5F;
+        static float s_fc_fov_deg = 60.0F;
+        ImGui::SliderFloat3("Camera pos",      &s_fc_cam_pos.x, -10.0F, 10.0F);
+        ImGui::SliderFloat3("Cluster centre",  &s_fc_cluster_centre.x, -10.0F, 10.0F);
+        ImGui::SliderFloat("Cluster extent",   &s_fc_cluster_extent, 0.05F, 4.0F);
+        ImGui::SliderFloat("Camera FOV (deg)", &s_fc_fov_deg, 10.0F, 120.0F);
+        cd::camera::Camera cam {};
+        cam.eye    = s_fc_cam_pos;
+        cam.target = { 0.0F, 0.0F, 0.0F };
+        cam.up     = { 0.0F, 1.0F, 0.0F };
+        cam.fov_y  = s_fc_fov_deg * std::numbers::pi_v<float> / 180.0F;
+        cam.near_z = 0.1F;
+        cam.far_z  = 100.0F;
+        const auto frustum = cd::camera::extract_frustum(cam, 16.0F / 9.0F);
+        // Build a 3x3 cluster grid centred on s_fc_cluster_centre +
+        // count outside/intersect/inside results.
+        std::uint32_t outside = 0;
+        std::uint32_t intersect = 0;
+        std::uint32_t inside = 0;
+        for (int gz = -1; gz <= 1; ++gz)
+        {
+            for (int gy = -1; gy <= 1; ++gy)
+            {
+                for (int gx = -1; gx <= 1; ++gx)
+                {
+                    const cd::math::Vec3f centre {
+                        s_fc_cluster_centre.x + static_cast<float>(gx) * 2.0F,
+                        s_fc_cluster_centre.y + static_cast<float>(gy) * 2.0F,
+                        s_fc_cluster_centre.z + static_cast<float>(gz) * 2.0F };
+                    const cd::math::Vec3f mn {
+                        centre.x - s_fc_cluster_extent,
+                        centre.y - s_fc_cluster_extent,
+                        centre.z - s_fc_cluster_extent };
+                    const cd::math::Vec3f mx {
+                        centre.x + s_fc_cluster_extent,
+                        centre.y + s_fc_cluster_extent,
+                        centre.z + s_fc_cluster_extent };
+                    const auto r = cd::camera::test_aabb(frustum, mn, mx);
+                    switch (r)
+                    {
+                        case cd::camera::CullResult::kOutside:      ++outside; break;
+                        case cd::camera::CullResult::kIntersecting: ++intersect; break;
+                        case cd::camera::CullResult::kInside:       ++inside; break;
+                    }
+                }
+            }
+        }
+        ImGui::Text("3x3x3 cluster tally (27 total):");
+        ImGui::BulletText("kOutside     : %u", outside);
+        ImGui::BulletText("kIntersecting: %u", intersect);
+        ImGui::BulletText("kInside      : %u", inside);
+        ImGui::TextDisabled("p-vertex / n-vertex two-corner cull (Akenine 2018).");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
