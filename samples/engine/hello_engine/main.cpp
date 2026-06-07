@@ -2460,6 +2460,72 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                         &vol_fog_albedo_tinted);
         ImGui::TextDisabled("3D froxel GPU compute path queued; inline");
         ImGui::TextDisabled("Wronski integrator matches phase 469 CPU LUT.");
+        // phase923-volfog-live-demo (Run 25 Strand B): CPU-side
+        // Wronski 2014 froxel grid + front-to-back integration.
+        // The user picks Z-slices + sigma + scatter colour; the
+        // demo builds a tiny 8x8xN grid, runs cd::volumetric::fog::
+        // integrate_view_ray for the centre tile, and plots the
+        // transmittance curve (Beer-Lambert exponential decay) +
+        // accumulated RGB scatter. Same math the GPU compute pass
+        // runs per (x, y, z) cell.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Vol fog froxel demo (CPU API):");
+        static int s_vf_z_slices = 32;
+        static float s_vf_sigma = 0.05F;
+        static cd::math::Vec3f s_vf_scatter { 0.9F, 0.95F, 1.0F };
+        ImGui::SliderInt("Froxel Z slices", &s_vf_z_slices, 4, 128);
+        ImGui::SliderFloat("Extinction sigma (km^-1)",
+                           &s_vf_sigma, 0.0F, 0.5F, "%.3f");
+        ImGui::ColorEdit3("Scatter colour", &s_vf_scatter.x);
+        cd::volumetric::fog::FroxelGrid grid {};
+        grid.config.x = 8;
+        grid.config.y = 8;
+        grid.config.z = static_cast<std::uint32_t>(s_vf_z_slices);
+        grid.config.near_z = 0.1F;
+        grid.config.far_z  = 64.0F;
+        grid.resize();
+        // Fill every cell with the constant analytical density (same
+        // shape kFogInjectionCS uses without HG-phase modulation).
+        for (auto& c : grid.cells)
+        {
+            c.x = s_vf_scatter.x;
+            c.y = s_vf_scatter.y;
+            c.z = s_vf_scatter.z;
+            c.w = s_vf_sigma;
+        }
+        std::vector<cd::math::Vec4f> integrated(grid.config.z, { 0, 0, 0, 1 });
+        cd::volumetric::fog::integrate_view_ray(grid, 4U, 4U,
+                                                std::span<cd::math::Vec4f>(integrated));
+        // Plot transmittance along view ray (A channel of integrated).
+        std::vector<float> trans(grid.config.z, 1.0F);
+        std::vector<float> in_scatter_r(grid.config.z, 0.0F);
+        for (std::size_t z = 0; z < grid.config.z; ++z)
+        {
+            trans[z]        = integrated[z].w;
+            in_scatter_r[z] = integrated[z].x;
+        }
+        ImGui::Text("Far-slice transmittance: %.4f  (Beer-Lambert near->far)",
+                    static_cast<double>(trans.back()));
+        ImGui::Text("Far-slice in-scatter R:  %.4f",
+                    static_cast<double>(in_scatter_r.back()));
+        ImGui::PlotLines(
+            "##vf_transmittance",
+            trans.data(),
+            static_cast<int>(trans.size()),
+            0,
+            "Transmittance vs depth",
+            0.0F,
+            1.0F,
+            ImVec2(0, 64));
+        ImGui::PlotLines(
+            "##vf_inscatter",
+            in_scatter_r.data(),
+            static_cast<int>(in_scatter_r.size()),
+            0,
+            "In-scatter R accumulator",
+            0.0F,
+            in_scatter_r.back() > 0.0F ? in_scatter_r.back() * 1.1F : 1.0F,
+            ImVec2(0, 64));
     }
     if (ImGui::CollapsingHeader("R8  HDR10 display output"))
     {
