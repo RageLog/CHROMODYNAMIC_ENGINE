@@ -1,18 +1,29 @@
-# samples/physics — Phase 530 / T3.3 physics demo bundle.
+# samples/physics — Phase 530 / T3.3 physics demo bundle (retired).
 #
-# Five console-only samples exercising cd::physics (built-in Euler integrator,
-# aligned with the cd::physics_jolt stub API from Phase 525 / W4). Each sample
-# is headless and always compiled regardless of CD_ENABLE_VULKAN.
+# phase912-sample-consolidation: per
+# [[feedback-sample-consolidation-and-per-feature-demo]], all 5 headless
+# physics console smokes have been folded into the source libraries'
+# gtests. Source directories deleted in this commit.
 #
-# Samples:
-#   hello_falling_box        — dynamic box + static plane, manual bounce
-#   hello_pile               — 50 dynamic balls settling with damping
-#   hello_ragdoll            — 6-segment spring-joint constraint chain
-#   hello_character_controller — kinematic capsule on slopes + steps
-#   hello_raycast            — ray queries vs static AABBs + dynamic spheres
-
-add_subdirectory(hello_falling_box)
-add_subdirectory(hello_pile)
-add_subdirectory(hello_ragdoll)
-add_subdirectory(hello_character_controller)
-add_subdirectory(hello_raycast)
+# Retired in phase 912:
+#   * hello_falling_box        -> engine/world/physics/tests/test_physics.cpp
+#       (GravityIntegratesDynamicBody + ImpulseChangesVelocityWithMassInverse
+#        + StaticBodyIgnoresImpulse) + engine/world/physics_jolt/tests/
+#       test_jolt_world.cpp (StaticBoxAndDynamicBallFallsUnderGravity).
+#   * hello_pile               -> engine/world/physics/tests/test_physics.cpp
+#       (LinearDampingReducesVelocityOverTime + GravityIntegratesDynamicBody
+#        x N) + JoltWorld.TwoBodiesWithRestitutionExchangeImpulse.
+#   * hello_ragdoll            -> engine/world/physics/tests/test_physics.cpp
+#       (SpringJoint.DefaultStiffnessSane) + JoltWorld.HingeJointRegistration*.
+#       NOTE: sample's manual enforce_spring impulse pattern is documented
+#       only inline -- if a future user needs the multi-body spring-chain
+#       recipe, lift it into engine/world/physics/docs/ or a hello_engine
+#       physics-demo panel (per feature-demo half of the consolidation rule).
+#   * hello_character_controller -> JoltWorld.KinematicCapsuleStaysGroundedOnFlatStep
+#       + Physics.KinematicBodyMovesByVelocityNotByImpulse.
+#   * hello_raycast            -> engine/world/physics/tests/test_physics.cpp
+#       (Ray.IntersectsAabbFromOutside / .MissesAabb / .InsideAabbReturnsZero,
+#        plus RaySphere.HitsSphereInFront / .MissesWhenOffset / .BehindOriginReturnsNullopt
+#        / .InsideSphereReturnsZero).
+#
+# samples/physics/ is now empty (CMakeLists header documents retirements).
