@@ -3587,6 +3587,49 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             ImVec2(0, 56));
         ImGui::TextDisabled("Frostbite 2014 windowed inverse-square + smoothstep-squared cone.");
     }
+    // phase939-ibl-cubemap-sample-live-demo (Run 25 Strand B): drive
+    // cd::ibl::bake_sky_cube + sample_cubemap_dir against a tiny
+    // (16-pixel face) synthetic sky. Lets the user drag a sample
+    // direction + watch the sampled RGB respond live -- proves the
+    // CPU cubemap addressing + bilinear path that the IBL bake
+    // pipeline depends on.
+    if (ImGui::CollapsingHeader("Run25  IBL Cubemap Sample Probe"))
+    {
+        static cd::math::Vec3f s_cm_dir { 0.0F, 1.0F, 0.0F };
+        static cd::ibl::CubeMapRgbF s_sky_cm = []() {
+            // Bake a tiny analytical sky once per program: blue zenith,
+            // warm horizon. Same shape as the engine's procedural-sky
+            // fallback.
+            return cd::ibl::bake_sky_cube(16, [](cd::math::Vec3f d) -> cd::math::Vec3f {
+                const float ln = 1.0F / std::max(std::sqrt(
+                    d.x * d.x + d.y * d.y + d.z * d.z), 1e-3F);
+                const cd::math::Vec3f n { d.x * ln, d.y * ln, d.z * ln };
+                const float t = std::clamp(n.y * 0.5F + 0.5F, 0.0F, 1.0F);
+                cd::math::Vec3f horizon { 0.95F, 0.65F, 0.40F };
+                cd::math::Vec3f zenith  { 0.30F, 0.55F, 0.95F };
+                return { horizon.x + (zenith.x - horizon.x) * t,
+                         horizon.y + (zenith.y - horizon.y) * t,
+                         horizon.z + (zenith.z - horizon.z) * t };
+            });
+        }();
+        ImGui::SliderFloat("Sample dir x", &s_cm_dir.x, -1.0F, 1.0F);
+        ImGui::SliderFloat("Sample dir y", &s_cm_dir.y, -1.0F, 1.0F);
+        ImGui::SliderFloat("Sample dir z", &s_cm_dir.z, -1.0F, 1.0F);
+        const auto sample =
+            cd::ibl::sample_cubemap_dir(s_sky_cm, s_cm_dir);
+        ImGui::ColorButton("Sky sample",
+                           { sample.x, sample.y, sample.z, 1.0F },
+                           ImGuiColorEditFlags_NoAlpha, ImVec2(72, 24));
+        ImGui::SameLine();
+        ImGui::Text("RGB: (%.3f, %.3f, %.3f)",
+                    static_cast<double>(sample.x),
+                    static_cast<double>(sample.y),
+                    static_cast<double>(sample.z));
+        ImGui::Text("Cube face_size: %u  (16 face_size = 6 faces x 256 texels)",
+                    s_sky_cm.face_size);
+        ImGui::TextDisabled("bake_sky_cube + sample_cubemap_dir CPU path.");
+        ImGui::TextDisabled("Production IBL prefilter convolves this for GGX lobes.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
