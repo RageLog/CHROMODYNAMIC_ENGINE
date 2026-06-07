@@ -2216,6 +2216,70 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::BulletText("DDGI      - engine/render/ddgi/tests/test_ddgi.cpp (20)");
         ImGui::BulletText("NRC       - engine/render/nrc/tests/test_nrc.cpp (3)");
         ImGui::TextDisabled("GPU pipeline wiring queued - needs RT compute pipe.");
+        // phase919-ddgi-live-demo (Run 25 Strand B): CPU-side DDGI
+        // probe-grid + trilinear weights demo running off the public
+        // cd::ddgi:: API (no GPU dispatch needed). Lets the user
+        // visualise probe layout + sample-point trilinear weights
+        // live -- the same math the GPU dispatch pass will execute
+        // against the RT-traced atlas once the compute pipeline lands.
+        ImGui::Separator();
+        ImGui::TextUnformatted("DDGI live demo (CPU API only):");
+        static cd::ddgi::ProbeGrid s_ddgi_grid {};
+        static cd::math::Vec3f s_ddgi_sample_pos { 3.5F, 1.5F, 3.5F };
+        static int s_ddgi_px = 8;
+        static int s_ddgi_py = 4;
+        static int s_ddgi_pz = 8;
+        static float s_ddgi_spacing = 1.0F;
+        bool dirty = false;
+        if (ImGui::SliderInt("Probes X", &s_ddgi_px, 2, 32))
+            dirty = true;
+        if (ImGui::SliderInt("Probes Y", &s_ddgi_py, 2, 16))
+            dirty = true;
+        if (ImGui::SliderInt("Probes Z", &s_ddgi_pz, 2, 32))
+            dirty = true;
+        if (ImGui::SliderFloat("Probe spacing (m)", &s_ddgi_spacing, 0.25F, 4.0F, "%.2f"))
+            dirty = true;
+        ImGui::SliderFloat3("Sample point (xyz)", &s_ddgi_sample_pos.x, -8.0F, 32.0F);
+        if (dirty)
+        {
+            s_ddgi_grid.probes_x = static_cast<std::uint32_t>(s_ddgi_px);
+            s_ddgi_grid.probes_y = static_cast<std::uint32_t>(s_ddgi_py);
+            s_ddgi_grid.probes_z = static_cast<std::uint32_t>(s_ddgi_pz);
+            s_ddgi_grid.spacing  = { s_ddgi_spacing, s_ddgi_spacing, s_ddgi_spacing };
+        }
+        ImGui::Text("Total probes: %u  (8 x 4 x 8 = 256 is Majercik 2019 §4 starter)",
+                    s_ddgi_grid.probe_count());
+        std::array<float, 8> w {};
+        std::array<std::array<std::uint32_t, 3>, 8> corners {};
+        cd::ddgi::trilinear_probe_weights(s_ddgi_grid, s_ddgi_sample_pos, w, corners);
+        float wsum = 0.0F;
+        for (auto wi : w)
+            wsum += wi;
+        ImGui::Text("Trilinear weight sum: %.4f  (interior = 1.0; edge clamped)",
+                    static_cast<double>(wsum));
+        // Plot the 8 weights as a tiny histogram so the user sees the
+        // dominant corner shift as they drag the sample point.
+        ImGui::PlotHistogram(
+            "##ddgi_weights",
+            w.data(),
+            static_cast<int>(w.size()),
+            0,
+            "8 corner weights",
+            0.0F,
+            1.0F,
+            ImVec2(0, 48));
+        // Octahedral encode round-trip on a canonical direction --
+        // proves the Cigolle 2014 enc/dec invariant is wired.
+        // Use std::numbers::inv_sqrt3_v for the (1,1,1)/sqrt(3) normalised
+        // diagonal.
+        constexpr float kInvSqrt3 { std::numbers::inv_sqrt3_v<float> };
+        const cd::math::Vec3f dir { kInvSqrt3, kInvSqrt3, kInvSqrt3 };
+        const auto uv = cd::ddgi::octahedral_encode(dir);
+        const auto dec = cd::ddgi::octahedral_decode(uv);
+        ImGui::Text("Octahedral enc/dec round-trip: dir(%.2f,%.2f,%.2f) -> uv(%.3f,%.3f) -> dir(%.2f,%.2f,%.2f)",
+                    static_cast<double>(dir.x), static_cast<double>(dir.y), static_cast<double>(dir.z),
+                    static_cast<double>(uv.x),  static_cast<double>(uv.y),
+                    static_cast<double>(dec.x), static_cast<double>(dec.y), static_cast<double>(dec.z));
         ImGui::TextDisabled("In-engine visual demos queued (Strand B Run 25).");
     }
     if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
