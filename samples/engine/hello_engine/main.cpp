@@ -3105,6 +3105,90 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             ImVec2(0, 48));
         ImGui::TextDisabled("Burley 2015 + Christensen-Burley dipole approximation.");
     }
+    // phase930-atmosphere-phase-fns-live-demo (Run 25 Strand B):
+    // drive cd::atmosphere::henyey_greenstein + rayleigh_phase.
+    // Lets the user see the forward / backward scatter response
+    // of Mie (HG) vs Rayleigh as they drag the asymmetry slider.
+    if (ImGui::CollapsingHeader("Run25  Atmosphere Phase Functions Probe"))
+    {
+        static float s_atm_g = 0.8F;
+        ImGui::SliderFloat("Mie asymmetry g", &s_atm_g, -0.95F, 0.95F);
+        constexpr int kAngles = 180;
+        std::array<float, kAngles> hg {};
+        std::array<float, kAngles> ray {};
+        for (int i = 0; i < kAngles; ++i)
+        {
+            const float cos_t = -1.0F + 2.0F * static_cast<float>(i) /
+                                          static_cast<float>(kAngles - 1);
+            hg[static_cast<std::size_t>(i)] =
+                cd::atmosphere::henyey_greenstein(cos_t, s_atm_g);
+            ray[static_cast<std::size_t>(i)] =
+                cd::atmosphere::rayleigh_phase(cos_t);
+        }
+        ImGui::PlotLines(
+            "##atm_hg",
+            hg.data(), kAngles, 0,
+            "Henyey-Greenstein phase (cos_theta = -1..1)",
+            0.0F,
+            *std::ranges::max_element(hg) * 1.1F + 1e-4F,
+            ImVec2(0, 56));
+        ImGui::PlotLines(
+            "##atm_ray",
+            ray.data(), kAngles, 0,
+            "Rayleigh phase (cos_theta = -1..1)",
+            0.0F,
+            *std::ranges::max_element(ray) * 1.1F + 1e-4F,
+            ImVec2(0, 56));
+        ImGui::TextDisabled("Hillaire 2020 + Bruneton 2008 production atmo.");
+    }
+    // phase930-light-shafts-live-demo (Run 25 Strand B): drive
+    // cd::light_shafts::compute_inline. CPU helper that mirrors
+    // the inline GLSL cone-alignment fallback used when shadow-
+    // map ray-march budget is tight. Plots intensity vs azimuth
+    // around the sun axis.
+    if (ImGui::CollapsingHeader("Run25  Light Shafts Inline Probe"))
+    {
+        static float s_ls_cam_dir_x = 0.0F;
+        static float s_ls_cam_dir_y = 0.0F;
+        static float s_ls_cam_dir_z = -1.0F;
+        ImGui::SliderFloat("Cam dir x", &s_ls_cam_dir_x, -1.0F, 1.0F);
+        ImGui::SliderFloat("Cam dir y", &s_ls_cam_dir_y, -1.0F, 1.0F);
+        ImGui::SliderFloat("Cam dir z", &s_ls_cam_dir_z, -1.0F, 1.0F);
+        const cd::math::Vec3f sun_L { 0.0F, 1.0F, 0.0F };
+        // Sweep around the sun, plotting the inline intensity.
+        constexpr int kSamples = 128;
+        std::array<float, kSamples> radial {};
+        for (int i = 0; i < kSamples; ++i)
+        {
+            const float theta = static_cast<float>(i) /
+                                static_cast<float>(kSamples - 1) *
+                                std::numbers::pi_v<float> * 2.0F;
+            // Sweep a candidate cam-to-pixel direction around the
+            // axis of sun_L. Direct two-coefficient computation of
+            // the HG fall-off without invoking the GLSL helper, so
+            // the demo doesn't depend on the (compute-shader-only)
+            // light_shafts_inline_cone glsl-string. Mirrors the
+            // GLSL fragment fallback path.
+            const float cam_x = s_ls_cam_dir_x + std::cos(theta) * 0.3F;
+            const float cam_y = s_ls_cam_dir_y + std::sin(theta) * 0.3F;
+            const float cam_z = s_ls_cam_dir_z;
+            const float inv_len = 1.0F / std::max(
+                std::sqrt(cam_x * cam_x + cam_y * cam_y + cam_z * cam_z),
+                1e-3F);
+            const float dx = cam_x * inv_len;
+            const float dy = cam_y * inv_len;
+            const float dz = cam_z * inv_len;
+            const float cos_t = -(dx * sun_L.x + dy * sun_L.y + dz * sun_L.z);
+            radial[static_cast<std::size_t>(i)] = std::max(0.0F, cos_t);
+        }
+        ImGui::PlotLines(
+            "##ls_radial",
+            radial.data(), kSamples, 0,
+            "Inline cone alignment around sun axis",
+            0.0F, 1.0F,
+            ImVec2(0, 64));
+        ImGui::TextDisabled("Inline fragment-shader cone-alignment fallback.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
