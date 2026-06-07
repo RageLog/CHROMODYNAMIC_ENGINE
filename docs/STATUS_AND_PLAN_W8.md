@@ -898,6 +898,99 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
+## Marathon Run 20 close-out (2026-06-07 dev branch, phases 862-866)
+
+5 substantive commits landed in the autonomous overnight stretch
+after Run 19. All 258/258 ctest PASS at every checkpoint, no
+rendering regressions, working tree clean before and after.
+
+### Visible-quality polish
+
+- **phase 862 (373cf80)** — Cloud projection switched from
+  `atan(xz)/asin(y)` spherical to OCTAHEDRAL parameterisation.
+  Killed the vertical seam down the south meridian (atan2 wrap
+  discontinuity) AND the radial pinch at the zenith (asin
+  derivative singularity).
+- **phase 863 (373cf80)** — Fog symmetric floor: both `fog_t` and
+  `aer_t` now `max(depth_proportional, constant_floor)` so a near-
+  surface look-down pixel still carries the haze a sky-looking
+  pixel does. User-reported "fog disappears looking down" gone.
+
+### Major architecture: bindless texture path FINALLY UNLOCKED
+
+After phase 851 + 860 ruled out unwritten-slot speculation as the
+cause of the bindless dynamic-index crash, the path forward was a
+dedicated descriptor SET separate from the shared per-prim set.
+
+- **phase 864 (fa39d2a)** — MaterialDesc API: new
+  `extra_set_layouts` span. Caller-owned descriptor set layouts
+  get appended to the pipeline layout AFTER the material's own
+  set. Backwards-compatible default (empty span = legacy single-
+  set path).
+- **phase 865 (5742a69)** — Hello_engine fully wired:
+  * `MaterialBundle::prim_bindless_layout` owns the dedicated
+    layout (binding 0, kBindlessSampledImage, count=256).
+  * `SampleAppState::prim_bindless_set` allocated at boot,
+    populated with Sponza per-prim albedos + procedural Earth
+    fallback for unused slots.
+  * Render loop binds the set at index 1 alongside prim_inst at
+    index 0.
+  * Shader `cd_bindless_albedo` moved to (set=1, binding=0).
+  * `tex_slot = sentinel;` override removed from prim.frag.glsl
+    + .inl. Bindless dynamic-index path runs.
+  * Per-prim set layout dropped 14 → 13 bindings. Per-prim binding
+    13 fallback writes removed from sync_perprim_global_bindings.
+  * **8/8 fixture-5 captures clean** after revival (vs. 0/8
+    crashes in phase 860 with the same shader on the shared set).
+  * Chrome PBR spheres now show real Sponza texture detail
+    (curtain damask, leaf veins, sandstone grain).
+
+### Major feature: true 2-bounce recursive reflection
+
+- **phase 866 (428d0fe)** — User-requested "yansımanın yansıması"
+  delivered for sphere primitives:
+  * `InstanceMatGpu` extended 48 → 64 B with `is_sphere` flag +
+    `sphere_center_radius` vec4. Layout test updated.
+  * `rebuild_tlas_and_transition_depth` new optional `IsSphereFor`
+    callback; the per-geom override loop stamps the sphere data
+    when `kind == kSphere`.
+  * Shader: `reflection_hit_id_t` + `reflection_hit_color`
+    helpers re-added. Chrome reflection path computes
+    `N1 = normalize(hit_pos - sphere_center)` for sphere hits,
+    fires a second ray with `reflect(Ri, N1)`, mixes the
+    second-bounce avg-colour into hit_alb at chrome strength.
+  * Non-sphere hits keep the IBL-shine stand-in.
+  * 5/5 fixture-1 captures clean; chrome-on-chrome reads as
+    recursively reflective.
+
+### Memory updates this run
+
+- `project_marathon_run20.md` new entry (commits 373cf80..428d0fe).
+- `feedback-vulkan-bindless-multi-layer-checklist.md` rule 9 added
+  (dynamic-index dedicated-set requirement).
+- `MEMORY.md` index updated with Run 20 entry.
+
+### Tests + binaries
+
+- 258/258 ctest PASS at every commit checkpoint.
+- 1 test contract changed: `test_hello_engine_w8be_layout`
+  sizeof/offsets updated for the InstanceMatGpu 48 → 64 B
+  extension.
+- No new test binaries, no new libraries.
+
+### Run 21 candidate queue
+
+- Sponza vertex-normal interpolation for 2-bounce on NON-sphere
+  hits (would replace the IBL-shine stand-in on Sponza hits with
+  a genuine second ray).
+- L1 Metal backend (per ADR-20260530-metal-backend.md).
+- Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
+- Bindless texture upload for non-Sponza glTF assets (CesiumMan,
+  arbitrary --gltf-load) so they ALSO show real texture in
+  chrome reflections instead of avg colour.
+
+---
+
 ## Marathon Run 19 close-out (2026-06-07 dev branch, phases 849-860)
 
 10 substantive commits landed across two user-supervised sessions
