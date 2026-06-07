@@ -12,7 +12,7 @@
 # until the directories are physically removed in a follow-on
 # cleanup PR.
 #
-# Retired in phase 900/901 (each retirement's invariants are
+# Retired in phase 900-904 (each retirement's invariants are
 # already covered by the library's own gtests):
 #   * hello_ddgi              → engine/render/ddgi/tests/test_ddgi.cpp (20+ cases)
 #   * hello_gpu_particles     → engine/render/gpu_particles/tests/test_gpu_particles.cpp (6 cases)
@@ -20,16 +20,18 @@
 #   * hello_mesh_shader       → engine/render/mesh_shader/tests/test_mesh_shader.cpp (6 cases)
 #   * hello_virtual_geometry  → engine/render/virtual_geometry/tests/test_cluster_dag.cpp (6 cases)
 #   * hello_virtual_textures  → engine/render/virtual_textures/tests/test_virtual_textures.cpp (5 cases)
-# Source directories deleted in the same commit (phase 901).
+#   * hello_volumetric_fog    → engine/render/volumetric/tests/fog/test_volumetric_fog.cpp (6) + _froxel.cpp (20) — 26 cases total
+#   * hello_volumetric_clouds → engine/render/volumetric/tests/clouds/test_volumetric_clouds.cpp (6 cases)
+#   * hello_decals            → engine/render/decal/tests/test_decal.cpp (6 cases)
+#   * hello_nrc               → engine/render/nrc/tests/test_nrc.cpp (3 cases including TrainingReducesError)
+# All source directories deleted. samples/lib_smokes/ is now EMPTY.
 #
-# Retained until library gtest coverage exists OR until the
-# interactive demo path lands in hello_engine:
-#   * hello_volumetric_fog    — no library tests yet (queue: migrate to engine/render/volumetric/tests/)
-#   * hello_volumetric_clouds — no library tests yet (queue: same)
-#   * hello_decals            — no library tests yet (queue: same)
-#   * hello_nrc               — only 3 library tests; sample exercises extra surface (queue: expand tests)
-#
-add_subdirectory(hello_volumetric_fog)
-add_subdirectory(hello_volumetric_clouds)
-add_subdirectory(hello_decals)
-add_subdirectory(hello_nrc)
+# The phase 901 audit missed the volumetric/decal tests because they
+# live under nested test subdirs (engine/render/volumetric/tests/fog/
+# not engine/render/volumetric/fog/tests/). Phase 904 corrected the
+# coverage check + retired the 4 lingering entries in one batch.
+
+# Empty — see retirement notes above. Directory kept as a place-
+# holder so the consolidation policy stays discoverable; will be
+# deleted entirely when samples/asset + samples/audio + samples/
+# editor follow the same pattern.
