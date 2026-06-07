@@ -76,11 +76,17 @@ vec3 ray_dir(vec2 ndc) {
 }
 
 vec3 sample_env(vec3 dir, vec3 sky_tint) {
-  // Base palette + per-frame sky tint from the sun's color. The
-  // horizon gets a small fraction of sky_tint so sunsets show warm
-  // glow, daylight stays neutral, night under blue moon stays cool.
-  vec3 zenith  = mix(vec3(0.18, 0.42, 0.85), sky_tint * 0.30, 0.20);
-  vec3 horizon = mix(vec3(0.78, 0.86, 0.96), sky_tint, 0.35);
+  // phase876-sky-saturated-horizon: user reports a persistent "fog"
+  // haze even with every fog/aerial/cloud slider at zero. Root
+  // cause: horizon was painted near-white (0.78, 0.86, 0.96)
+  // which after tonemap reads as pale-gray = "haze". Real daylight
+  // sky at horizon altitude is still distinctly BLUE, not white.
+  // Drop horizon brightness + saturate toward blue; drop the
+  // sky_tint blend 0.35 → 0.15 so warm sun colour doesn't drag the
+  // horizon back toward cream. Zenith stays at the previous rich
+  // cobalt — the up-direction view was already in a good range.
+  vec3 zenith  = mix(vec3(0.16, 0.40, 0.86), sky_tint * 0.30, 0.15);
+  vec3 horizon = mix(vec3(0.48, 0.62, 0.82), sky_tint, 0.15);
   vec3 ground  = vec3(0.10, 0.10, 0.14);
   float h = dir.y;
   if (h >= 0.0) return mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.6));
@@ -143,16 +149,13 @@ static_assert(sizeof(AnalyticalSkyPush) == 80,
     // metallic reflections looked beige against a deep-blue sky.
     // Numbers are slightly muted vs the live sky so metal spheres
     // don't pick up an oversaturated blue tint on their dome.
-    // phase858-sky-warm-horizon: nudged the horizon toward a warm
-    // cream tint and the zenith toward a richer cobalt so daylight
-    // bakes pick up a believable "afternoon under a real sky"
-    // gradient. Sponza's chrome spheres now read as standing in a
-    // warmer atmosphere; the IBL diffuse bake picks up enough warmth
-    // for the ambient bounce on the sandstone walls to feel sunlit
-    // instead of fluorescent.
-    const cd::math::Vec3f zenith  { 0.20F, 0.44F, 0.84F };
-    const cd::math::Vec3f horizon { 0.92F, 0.86F, 0.78F };
-    const cd::math::Vec3f ground  { 0.14F, 0.12F, 0.10F };
+    // phase876-sky-saturated-horizon: see GLSL sample_env above.
+    // Horizon (0.92, 0.86, 0.78) read as pale haze post-tonemap;
+    // dropped to (0.48, 0.62, 0.82) so the IBL diffuse bake picks
+    // up a CLEAN blue ambient bounce instead of a warm-cream wash.
+    const cd::math::Vec3f zenith  { 0.16F, 0.40F, 0.86F };
+    const cd::math::Vec3f horizon { 0.48F, 0.62F, 0.82F };
+    const cd::math::Vec3f ground  { 0.10F, 0.10F, 0.14F };
     auto mix3 = [](cd::math::Vec3f a, cd::math::Vec3f b, float t) {
         return cd::math::Vec3f { a.x + (b.x - a.x) * t,
                                   a.y + (b.y - a.y) * t,

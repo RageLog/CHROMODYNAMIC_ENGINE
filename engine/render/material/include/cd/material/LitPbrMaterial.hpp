@@ -175,9 +175,10 @@ layout(set = 0, binding = 2) uniform samplerCube u_prefiltered;
 layout(set = 0, binding = 3) uniform sampler2D   u_brdf_lut;
 
 // Analytical sky fallback (when IBL textures aren't bound / strength=0).
+// phase876-sky-saturated-horizon: kept in sync with AnalyticalSkyMaterial.
 vec3 sample_env_analytical(vec3 dir) {
-  vec3 zenith  = vec3(0.18, 0.42, 0.85);
-  vec3 horizon = vec3(0.78, 0.86, 0.96);
+  vec3 zenith  = vec3(0.16, 0.40, 0.86);
+  vec3 horizon = vec3(0.48, 0.62, 0.82);
   vec3 ground  = vec3(0.10, 0.10, 0.14);
   float h = dir.y;
   if (h >= 0.0) return mix(horizon, zenith, pow(clamp(h, 0.0, 1.0), 0.6));

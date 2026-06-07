@@ -64,11 +64,12 @@ struct HelloEngineFx
     // movement blur user reported is no longer an issue and the
     // anti-aliasing benefit is significant on static frames.
     float taa_amount { 0.85F };       // composite TAA ping-pong (phase 216-217)
-    // phase857: clouds_coverage 0.0 → 0.45 — clouds visible by
-    // default; phase 853-856a fixes (quintic Hermite + world-anchor
-    // sky projection) make the cloud overlay actually look like
-    // clouds, so leaving it off on first boot wastes the work.
-    float clouds_coverage { 0.45F };  // sky overlay (phase 853 fBm)
+    // phase876-clouds-coverage-dropped: 0.45 default meant the cloud
+    // overlay always fired at boot, painting stable_sky_base on top
+    // of the analytical sky and hiding the new (phase 876) saturated
+    // blue horizon. Drop to 0.20 — clouds visible as light wisps,
+    // but the analytical sky tone shows through dominantly.
+    float clouds_coverage { 0.20F };  // sky overlay (phase 853 fBm)
     // phase875-fog-off-by-default: user reports persistent haze even
     // with the volumetric-fog checkbox off and clouds slider at 0.
     // Root: aerial_perspective default 0.10 + fog floor were

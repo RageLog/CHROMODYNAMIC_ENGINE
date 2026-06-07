@@ -637,7 +637,13 @@ void main() {
     // cloud_lit *= mix(0.04, 1.0, sun_amt) which already handles
     // the lit-cloud term going dark; the base sky behind the
     // clouds should stay daylight-toned.
-    vec3 stable_sky_base = vec3(0.55, 0.66, 0.84);
+    // phase876-stable-sky-saturated: match the new analytical-sky
+    // palette (horizon 0.48,0.62,0.82 ↔ zenith 0.16,0.40,0.86).
+    // The previous (0.55, 0.66, 0.84) was a pale-gray-blue that read
+    // as haze when it replaced the analytical sky under the cloud
+    // overlay. Use a mid-tone of the new palette so the overlay
+    // doesn't pull the sky toward pale.
+    vec3 stable_sky_base = vec3(0.32, 0.51, 0.84);
     // phase872-sky-overlay-dominance: user reports the sky still
     // shifts colour at 180° yaw / certain pitch — root cause is the
     // analytical-sky pass's direction-dependent gradient (warm
