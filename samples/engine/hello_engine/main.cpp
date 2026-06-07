@@ -3189,6 +3189,66 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             ImVec2(0, 64));
         ImGui::TextDisabled("Inline fragment-shader cone-alignment fallback.");
     }
+    // phase931-ltc-area-light-live-demo (Run 25 Strand B): drive
+    // cd::brdf::ltc::polygon_irradiance against a unit square area
+    // light. Lets the user drag roughness + n.v + light-size + light
+    // distance and watch the analytic irradiance respond live --
+    // Heitz 2016 polygon LTC closed form, the same math the
+    // PBR fragment shader runs per pixel for area lights.
+    if (ImGui::CollapsingHeader("Run25  LTC Area Light Probe"))
+    {
+        static float s_ltc_roughness = 0.4F;
+        static float s_ltc_nv = 0.85F;
+        static float s_ltc_half = 1.0F;
+        static float s_ltc_dist = 2.0F;
+        ImGui::SliderFloat("Roughness", &s_ltc_roughness, 0.01F, 1.0F);
+        ImGui::SliderFloat("n . v",     &s_ltc_nv, 0.05F, 1.0F);
+        ImGui::SliderFloat("Light half-extent",
+                           &s_ltc_half, 0.1F, 4.0F);
+        ImGui::SliderFloat("Light distance Z", &s_ltc_dist, 0.5F, 10.0F);
+        const auto m = cd::brdf::ltc::ltc_inverse_matrix(s_ltc_roughness, s_ltc_nv);
+        // Square light at +Z facing the shading point.
+        const float h = s_ltc_half;
+        const float z = s_ltc_dist;
+        std::array<cd::math::Vec3f, 4> corners {{
+            { -h,  h, z }, {  h,  h, z }, {  h, -h, z }, { -h, -h, z }
+        }};
+        // Normalise vertices to unit sphere directions (tangent-space
+        // shading-point at origin, +Z surface normal).
+        for (auto& c : corners)
+        {
+            const float ln = 1.0F / std::max(
+                std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z), 1e-3F);
+            c = { c.x * ln, c.y * ln, c.z * ln };
+        }
+        const float irr =
+            cd::brdf::ltc::polygon_irradiance(corners, m);
+        ImGui::Text("LTC matrix (sparse abcd): (%.3f, %.3f, %.3f, %.3f)",
+                    static_cast<double>(m.a),
+                    static_cast<double>(m.b),
+                    static_cast<double>(m.c),
+                    static_cast<double>(m.d));
+        ImGui::Text("Polygon irradiance: %.4f", static_cast<double>(irr));
+        // Sweep roughness for the same light to give a curve.
+        constexpr int kSweep = 64;
+        std::array<float, kSweep> sweep {};
+        for (int i = 0; i < kSweep; ++i)
+        {
+            const float r = static_cast<float>(i) /
+                            static_cast<float>(kSweep - 1);
+            const auto mr = cd::brdf::ltc::ltc_inverse_matrix(r, s_ltc_nv);
+            sweep[static_cast<std::size_t>(i)] =
+                cd::brdf::ltc::polygon_irradiance(corners, mr);
+        }
+        ImGui::PlotLines(
+            "##ltc_sweep",
+            sweep.data(), kSweep, 0,
+            "Irradiance vs roughness [0..1]",
+            0.0F,
+            *std::ranges::max_element(sweep) * 1.1F + 1e-4F,
+            ImVec2(0, 56));
+        ImGui::TextDisabled("Heitz 2016 LTC closed-form polygon irradiance.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
