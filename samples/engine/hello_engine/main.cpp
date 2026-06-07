@@ -2280,6 +2280,79 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     static_cast<double>(dir.x), static_cast<double>(dir.y), static_cast<double>(dir.z),
                     static_cast<double>(uv.x),  static_cast<double>(uv.y),
                     static_cast<double>(dec.x), static_cast<double>(dec.y), static_cast<double>(dec.z));
+        // phase920-restir-di-live-demo (Run 25 Strand B): CPU-side
+        // ReSTIR DI reservoir sweep. Streams N candidate samples
+        // (light_index 0..7, radiance from a fixed table) through
+        // cd::restir_di::update via a deterministic PCG32 stream,
+        // shows survivor index + final weight + M count live. Same
+        // math the GPU sampling pass runs per pixel; here we render
+        // it once per UI frame at sample-budget 32 so the user can
+        // SEE which candidate wins under the WRS estimator.
+        ImGui::Separator();
+        ImGui::TextUnformatted("ReSTIR DI live demo (CPU API only):");
+        static int s_restir_samples_per_pixel = 32;
+        static std::uint32_t s_restir_seed = 0xC0FFEEU;
+        ImGui::SliderInt("Candidates / pixel (M cap)",
+                         &s_restir_samples_per_pixel, 1, 128);
+        ImGui::InputScalar("Seed (PCG32)",
+                           ImGuiDataType_U32, &s_restir_seed);
+        cd::restir_di::Reservoir res {};
+        // Deterministic PCG32-like stream of (rand_01, light_idx) pairs.
+        // We avoid cd::math::Random's per-instance state here so the
+        // demo is reproducible -- same seed = same survivor.
+        std::uint32_t rng = s_restir_seed;
+        auto next_u32 = [&rng]() noexcept -> std::uint32_t
+        {
+            // splitmix-ish — deterministic, non-cryptographic. Demo only.
+            rng = rng * 1664525U + 1013904223U;
+            return rng;
+        };
+        auto next_unit = [&next_u32]() noexcept -> float
+        {
+            return static_cast<float>(next_u32() & 0xFFFFFFU)
+                 / static_cast<float>(0xFFFFFFU);
+        };
+        // Eight synthetic light candidates with monotonically decreasing
+        // luminance so the survivor distribution is non-trivial.
+        std::array<cd::math::Vec3f, 8> light_radiance {{
+            { 8.0F, 8.0F, 8.0F }, { 4.0F, 4.0F, 4.0F },
+            { 2.0F, 2.0F, 2.0F }, { 1.0F, 1.0F, 1.0F },
+            { 0.5F, 0.5F, 0.5F }, { 0.25F, 0.25F, 0.25F },
+            { 0.125F, 0.125F, 0.125F }, { 0.0625F, 0.0625F, 0.0625F },
+        }};
+        std::array<std::uint32_t, 8> survivor_hist {};
+        for (int i = 0; i < s_restir_samples_per_pixel; ++i)
+        {
+            const auto light_idx = static_cast<std::uint32_t>(next_u32() & 7U);
+            cd::restir_di::Sample s {};
+            s.light_index = light_idx;
+            s.radiance    = light_radiance[light_idx];
+            s.target_pdf  = std::max({ s.radiance.x, s.radiance.y, s.radiance.z });
+            const float weight = s.target_pdf;  // proposal_pdf = 1 / 8 → ignored constant
+            cd::restir_di::update(res, s, weight, next_unit());
+            if (light_idx < 8U)
+                survivor_hist[light_idx] += 1U;
+        }
+        ImGui::Text("Reservoir.M (samples streamed): %u", res.M);
+        ImGui::Text("Reservoir.weight_sum (sum w_i): %.3f", static_cast<double>(res.weight_sum));
+        ImGui::Text("Survivor: light_index = %u  target_pdf = %.3f  final_weight = %.4f",
+                    res.selected.light_index,
+                    static_cast<double>(res.selected.target_pdf),
+                    static_cast<double>(res.final_weight()));
+        // Candidate histogram (input distribution) — survivor should
+        // be biased toward bright lights even though pickup was uniform.
+        std::array<float, 8> hist_f {};
+        for (std::size_t i = 0; i < 8; ++i)
+            hist_f[i] = static_cast<float>(survivor_hist[i]);
+        ImGui::PlotHistogram(
+            "##restir_candidates",
+            hist_f.data(),
+            static_cast<int>(hist_f.size()),
+            0,
+            "Candidate counts (uniform proposal)",
+            0.0F,
+            static_cast<float>(s_restir_samples_per_pixel),
+            ImVec2(0, 48));
         ImGui::TextDisabled("In-engine visual demos queued (Strand B Run 25).");
     }
     if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
