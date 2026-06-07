@@ -33,6 +33,7 @@ mat->apply(cmd);
 - Material is move-only (owns RHI handles); MaterialInstance is move-only and bound 1:1 to a Material layout.
 - hello_engine bundles its 7 sample materials into `cd_sample::MaterialBundle` (samples/engine/hello_engine/HelloMaterials.hpp).
 - The prebuilt analytical sky + PBR variants are stable references; user code can supply arbitrary GLSL via MaterialDesc.
+- **Multi-set pipelines (phase 864)**: `MaterialDesc::extra_set_layouts` carries an optional span of caller-owned `DescriptorSetLayoutHandle` values. Each entry becomes a descriptor set in the pipeline layout AFTER the material's own descriptor set (which always sits at set index 0). Used by hello_engine's W8-BE bindless dedicated-set path so a bindless sampler2D array can live on its own descriptor set, isolated from the shared per-prim set that NVIDIA's driver fails to dynamic-index correctly. Caller owns the layouts; Material does NOT take ownership.
 
 ## G-buffer MRT channel contract (T1.9)
 
