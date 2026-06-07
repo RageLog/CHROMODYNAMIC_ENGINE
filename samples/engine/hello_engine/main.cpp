@@ -2353,6 +2353,81 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F,
             static_cast<float>(s_restir_samples_per_pixel),
             ImVec2(0, 48));
+        // phase921-nrc-live-demo (Run 25 Strand B): CPU CpuReferenceMlp
+        // trains live on a synthetic radiance target. The user clicks
+        // "Train 100 steps" and watches MSE drop on a fixed validation
+        // input. Same training loop the engine/render/nrc/tests/test_nrc.cpp
+        // TrainingReducesError case asserts numerically; here the user
+        // SEES the curve descend so they know the production MLP
+        // backend wiring will not be a leap in the dark.
+        ImGui::Separator();
+        ImGui::TextUnformatted("NRC live demo (CpuReferenceMlp + SGD):");
+        static cd::nrc::Config s_nrc_cfg {};
+        static std::unique_ptr<cd::nrc::CpuReferenceMlp> s_nrc_mlp =
+            std::make_unique<cd::nrc::CpuReferenceMlp>(s_nrc_cfg);
+        static std::vector<float> s_nrc_mse_history;
+        static std::array<float, cd::nrc::kInputDim> s_nrc_feature {};
+        static cd::math::Vec3f s_nrc_target { 0.8F, 0.4F, 0.2F };
+        static bool s_nrc_initialised = false;
+        if (!s_nrc_initialised)
+        {
+            // Reasonably-distributed feature vector so the MLP isn't
+            // trained on all-zeros (which converges trivially).
+            for (std::size_t i = 0; i < s_nrc_feature.size(); ++i)
+                s_nrc_feature[i] = static_cast<float>((i % 5) - 2) * 0.1F;
+            s_nrc_initialised = true;
+        }
+        ImGui::ColorEdit3("Target radiance (RGB)", &s_nrc_target.x);
+        if (ImGui::Button("Train 100 steps"))
+        {
+            for (int step = 0; step < 100; ++step)
+            {
+                std::span<const float, cd::nrc::kInputDim> sp { s_nrc_feature };
+                s_nrc_mlp->train_step(sp, s_nrc_target);
+                const auto pred = s_nrc_mlp->query(sp);
+                const float ex = pred.x - s_nrc_target.x;
+                const float ey = pred.y - s_nrc_target.y;
+                const float ez = pred.z - s_nrc_target.z;
+                const float mse = (ex * ex + ey * ey + ez * ez) / 3.0F;
+                s_nrc_mse_history.push_back(mse);
+                if (s_nrc_mse_history.size() > 1024U)
+                    s_nrc_mse_history.erase(s_nrc_mse_history.begin());
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset MLP"))
+        {
+            s_nrc_mlp = std::make_unique<cd::nrc::CpuReferenceMlp>(s_nrc_cfg);
+            s_nrc_mse_history.clear();
+        }
+        // Live inference + MSE readout.
+        {
+            std::span<const float, cd::nrc::kInputDim> sp { s_nrc_feature };
+            const auto pred = s_nrc_mlp->query(sp);
+            const float ex = pred.x - s_nrc_target.x;
+            const float ey = pred.y - s_nrc_target.y;
+            const float ez = pred.z - s_nrc_target.z;
+            const float mse = (ex * ex + ey * ey + ez * ez) / 3.0F;
+            ImGui::Text("Predicted RGB: (%.3f, %.3f, %.3f)",
+                        static_cast<double>(pred.x),
+                        static_cast<double>(pred.y),
+                        static_cast<double>(pred.z));
+            ImGui::Text("Validation MSE: %.6f  (training steps: %zu)",
+                        static_cast<double>(mse),
+                        s_nrc_mse_history.size());
+        }
+        if (!s_nrc_mse_history.empty())
+        {
+            ImGui::PlotLines(
+                "##nrc_mse",
+                s_nrc_mse_history.data(),
+                static_cast<int>(s_nrc_mse_history.size()),
+                0,
+                "MSE (per-step)",
+                0.0F,
+                s_nrc_mse_history.front() > 0.0F ? s_nrc_mse_history.front() : 1.0F,
+                ImVec2(0, 80));
+        }
         ImGui::TextDisabled("In-engine visual demos queued (Strand B Run 25).");
     }
     if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
