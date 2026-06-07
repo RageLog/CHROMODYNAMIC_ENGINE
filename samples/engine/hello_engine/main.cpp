@@ -2526,6 +2526,82 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F,
             in_scatter_r.back() > 0.0F ? in_scatter_r.back() * 1.1F : 1.0F,
             ImVec2(0, 64));
+        // phase924-clouds-live-demo (Run 25 Strand B): Schneider
+        // 2017 height-fraction + density profile. CPU-only demo
+        // built on cd::volumetric::clouds::Settings + height_fraction
+        // + density. Plots density(altitude) for a fixed noise=0.5
+        // so the user SEES how the bell-shape height fraction
+        // shapes the cloud band as they drag coverage / layer
+        // bottom / layer top sliders.
+        ImGui::Separator();
+        ImGui::TextUnformatted("Volumetric clouds demo (CPU API):");
+        static cd::volumetric::clouds::Settings s_clouds {};
+        ImGui::SliderFloat("Layer bottom (km)",
+                           &s_clouds.layer_bottom_km, 0.5F, 4.0F, "%.2f");
+        ImGui::SliderFloat("Layer top (km)",
+                           &s_clouds.layer_top_km, 2.0F, 8.0F, "%.2f");
+        ImGui::SliderFloat("Coverage [0,1]",
+                           &s_clouds.coverage, 0.0F, 1.0F, "%.2f");
+        ImGui::SliderFloat("Density scale",
+                           &s_clouds.density_scale, 0.0F, 0.2F, "%.3f");
+        // Sample density across altitude 0..8 km with three constant
+        // noise values so user sees how cover slider gates each.
+        constexpr int kAltSamples = 64;
+        std::array<float, kAltSamples> dens_lo {};
+        std::array<float, kAltSamples> dens_md {};
+        std::array<float, kAltSamples> dens_hi {};
+        std::array<float, kAltSamples> bell    {};
+        for (int i = 0; i < kAltSamples; ++i)
+        {
+            const float alt =
+                static_cast<float>(i) / static_cast<float>(kAltSamples - 1) * 8.0F;
+            dens_lo[static_cast<std::size_t>(i)] =
+                cd::volumetric::clouds::density(alt, 0.30F, s_clouds);
+            dens_md[static_cast<std::size_t>(i)] =
+                cd::volumetric::clouds::density(alt, 0.55F, s_clouds);
+            dens_hi[static_cast<std::size_t>(i)] =
+                cd::volumetric::clouds::density(alt, 0.80F, s_clouds);
+            bell[static_cast<std::size_t>(i)] =
+                cd::volumetric::clouds::height_fraction(alt, s_clouds);
+        }
+        ImGui::PlotLines(
+            "##clouds_bell",
+            bell.data(),
+            kAltSamples,
+            0,
+            "Height-fraction bell (0..8 km)",
+            0.0F,
+            1.0F,
+            ImVec2(0, 56));
+        ImGui::PlotLines(
+            "##clouds_dens_lo",
+            dens_lo.data(),
+            kAltSamples,
+            0,
+            "Density @ noise=0.30",
+            0.0F,
+            s_clouds.density_scale,
+            ImVec2(0, 48));
+        ImGui::PlotLines(
+            "##clouds_dens_md",
+            dens_md.data(),
+            kAltSamples,
+            0,
+            "Density @ noise=0.55",
+            0.0F,
+            s_clouds.density_scale,
+            ImVec2(0, 48));
+        ImGui::PlotLines(
+            "##clouds_dens_hi",
+            dens_hi.data(),
+            kAltSamples,
+            0,
+            "Density @ noise=0.80",
+            0.0F,
+            s_clouds.density_scale,
+            ImVec2(0, 48));
+        ImGui::TextDisabled("Each row applies the (noise - (1 - coverage)) * hf");
+        ImGui::TextDisabled("Schneider 2017 §3.3 density formula.");
     }
     if (ImGui::CollapsingHeader("R8  HDR10 display output"))
     {
