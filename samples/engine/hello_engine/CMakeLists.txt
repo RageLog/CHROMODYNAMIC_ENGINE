@@ -34,7 +34,10 @@ cd_add_sample(hello_engine
     cd::texture_synth
     cd::gpu_particles
     cd::light_shafts
+    cd::mesh_shader
     cd::nrc
+    cd::virtual_geometry
+    cd::virtual_textures
     cd::physics
     cd::restir_di
     cd::restir_gi

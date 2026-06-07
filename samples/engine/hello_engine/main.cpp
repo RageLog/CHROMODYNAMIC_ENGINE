@@ -71,6 +71,12 @@
 #include <cd/editor/panel/CompositePresetButtonsImGui.hpp>
 #include <cd/frame_timing/FrameTimeRing.hpp>
 #include <cd/gpu_particles/GpuParticles.hpp>
+// phase927 deps wired: cd::mesh_shader / cd::virtual_geometry /
+// cd::virtual_textures added to CMakeLists DEPS so the live demos
+// below can call into their public CPU APIs.
+#include <cd/mesh_shader/Meshlet.hpp>
+#include <cd/virtual_geometry/VirtualGeometry.hpp>
+#include <cd/virtual_textures/VirtualTextures.hpp>
 #include <cd/ibl/BrdfLut.hpp>
 #include <cd/ibl/Cubemap.hpp>
 #include <cd/ibl/IrradianceConvolution.hpp>
@@ -2803,6 +2809,205 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     aabb_hit ? "YES" : "NO");
         ImGui::TextDisabled("Same math as the GBuffer decal pass.");
         ImGui::TextDisabled("Persson 2009 / Filion 2012 cluster binning.");
+    }
+    // phase927-gpu-particles-live-demo (Run 25 Strand B): drive
+    // cd::gpu_particles::advance + compact_alive on a small CPU
+    // particle pool. Lets the user click "Step 1 dt" repeatedly and
+    // watch the live count drop as particles die + plot the count
+    // history. Same advance + compact path the kSimulateCS kernel
+    // runs per particle on the GPU.
+    if (ImGui::CollapsingHeader("Run25  GPU Particles Probe"))
+    {
+        constexpr int kCapacity = 64;
+        static std::array<cd::gpu_particles::Particle, kCapacity> s_particles {};
+        static std::vector<float> s_alive_history;
+        static bool s_initialised = false;
+        static float s_dt = 0.05F;
+        static cd::math::Vec3f s_gravity { 0.0F, -9.81F, 0.0F };
+        if (!s_initialised)
+        {
+            for (std::size_t i = 0; i < kCapacity; ++i)
+            {
+                s_particles[i].life = 1.0F;
+                s_particles[i].max_life = 1.0F;
+                s_particles[i].velocity = {
+                    static_cast<float>(i % 4) - 1.5F,
+                    static_cast<float>((i / 4) % 4) * 0.5F,
+                    static_cast<float>(i % 3) - 1.0F };
+            }
+            s_initialised = true;
+        }
+        ImGui::SliderFloat("dt (s)",      &s_dt, 0.01F, 0.5F);
+        ImGui::SliderFloat3("Gravity",    &s_gravity.x, -20.0F, 20.0F);
+        if (ImGui::Button("Step 1 dt"))
+        {
+            cd::gpu_particles::advance(
+                std::span<cd::gpu_particles::Particle>(s_particles),
+                s_dt,
+                s_gravity);
+            const auto alive = cd::gpu_particles::compact_alive(
+                std::span<cd::gpu_particles::Particle>(s_particles));
+            s_alive_history.push_back(static_cast<float>(alive));
+            if (s_alive_history.size() > 256U)
+                s_alive_history.erase(s_alive_history.begin());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset particles"))
+        {
+            s_initialised = false;
+            s_alive_history.clear();
+        }
+        const auto alive_now = cd::gpu_particles::compact_alive(
+            std::span<cd::gpu_particles::Particle>(s_particles));
+        ImGui::Text("Live particles: %u / %d", alive_now, kCapacity);
+        if (!s_alive_history.empty())
+        {
+            ImGui::PlotLines(
+                "##gp_alive",
+                s_alive_history.data(),
+                static_cast<int>(s_alive_history.size()),
+                0,
+                "Live count history",
+                0.0F,
+                static_cast<float>(kCapacity),
+                ImVec2(0, 64));
+        }
+        ImGui::TextDisabled("advance() ticks position + velocity + life;");
+        ImGui::TextDisabled("compact_alive() rearranges to drive indirect draw.");
+    }
+    // phase927-virtual-geometry-live-demo (Run 25 Strand B): drive
+    // cd::virtual_geometry::projected_error_pixels +
+    // is_lod_frontier with a synthetic 4-node DAG. Lets the user
+    // drag the camera back / forth and watch which cluster IDs the
+    // LOD picker keeps as the frontier.
+    if (ImGui::CollapsingHeader("Run25  Virtual Geometry LOD Probe"))
+    {
+        static float s_vg_cam_z = 6.0F;
+        static float s_vg_threshold = 4.0F;
+        static int s_vg_vp_h = 720;
+        ImGui::SliderFloat("Camera Z (back from origin)",
+                           &s_vg_cam_z, 1.0F, 100.0F, "%.2f");
+        ImGui::SliderFloat("LOD threshold (px error)",
+                           &s_vg_threshold, 0.5F, 32.0F, "%.2f");
+        ImGui::SliderInt("Viewport height (px)",
+                         &s_vg_vp_h, 240, 2160);
+        // Build a 4-node synthetic DAG: 1 coarse parent + 3 finer
+        // children with successively smaller self_error.
+        std::array<cd::virtual_geometry::ClusterNode, 4> dag {};
+        dag[0].bounds_sphere   = { 0.0F, 0.0F, 0.0F, 1.0F };
+        dag[0].self_error      = 0.5F;
+        dag[0].parent_error    = 2.0F;
+        dag[1].bounds_sphere   = { 0.4F, 0.0F, 0.0F, 0.4F };
+        dag[1].self_error      = 0.2F;
+        dag[1].parent_error    = 0.5F;
+        dag[2].bounds_sphere   = { 0.0F, 0.4F, 0.0F, 0.4F };
+        dag[2].self_error      = 0.2F;
+        dag[2].parent_error    = 0.5F;
+        dag[3].bounds_sphere   = { 0.0F, 0.0F, 0.4F, 0.4F };
+        dag[3].self_error      = 0.1F;
+        dag[3].parent_error    = 0.2F;
+        const cd::math::Vec3f cam_eye { 0.0F, 0.0F, s_vg_cam_z };
+        // 60 deg horizontal FOV -> half_fov ~ 0.5236 rad.
+        constexpr float half_fov = 0.5236F;
+        const auto picks = cd::virtual_geometry::pick_clusters(
+            std::span<const cd::virtual_geometry::ClusterNode>(dag),
+            s_vg_threshold,
+            cam_eye, half_fov,
+            static_cast<std::uint32_t>(s_vg_vp_h));
+        ImGui::Text("Picked cluster IDs (%zu): %s%s%s%s",
+                    picks.size(),
+                    picks.size() > 0 ? std::to_string(picks[0]).c_str() : "",
+                    picks.size() > 1 ? (", " + std::to_string(picks[1])).c_str() : "",
+                    picks.size() > 2 ? (", " + std::to_string(picks[2])).c_str() : "",
+                    picks.size() > 3 ? (", " + std::to_string(picks[3])).c_str() : "");
+        for (std::size_t i = 0; i < dag.size(); ++i)
+        {
+            const auto err_px = cd::virtual_geometry::projected_error_pixels(
+                cd::math::Vec3f { dag[i].bounds_sphere.x,
+                                  dag[i].bounds_sphere.y,
+                                  dag[i].bounds_sphere.z },
+                dag[i].self_error,
+                cam_eye, half_fov,
+                static_cast<std::uint32_t>(s_vg_vp_h));
+            ImGui::Text("  node[%zu] self_err=%.4f  proj=%.2f px",
+                        i,
+                        static_cast<double>(dag[i].self_error),
+                        static_cast<double>(err_px));
+        }
+        ImGui::TextDisabled("Karis 2021 Nanite-style LOD picker.");
+    }
+    // phase927-virtual-textures-live-demo (Run 25 Strand B): drive
+    // cd::virtual_textures::PageTable in a tight loop. Lets the
+    // user request virtual pages by (x, y, mip) and SEE the FIFO
+    // eviction behaviour as the atlas fills.
+    if (ImGui::CollapsingHeader("Run25  Virtual Textures Probe"))
+    {
+        static cd::virtual_textures::PageTable s_pt { 4, 4 };  // 4x4 = 16 slots
+        static int s_vt_req_x = 0;
+        static int s_vt_req_y = 0;
+        static int s_vt_req_mip = 0;
+        ImGui::SliderInt("Request page X", &s_vt_req_x, 0, 31);
+        ImGui::SliderInt("Request page Y", &s_vt_req_y, 0, 31);
+        ImGui::SliderInt("Request page mip", &s_vt_req_mip, 0, 4);
+        if (ImGui::Button("Request page"))
+        {
+            cd::virtual_textures::PageId pid {};
+            pid.x   = static_cast<std::uint16_t>(s_vt_req_x);
+            pid.y   = static_cast<std::uint16_t>(s_vt_req_y);
+            pid.mip = static_cast<std::uint8_t>(s_vt_req_mip);
+            (void)s_pt.allocate(pid);
+        }
+        ImGui::Text("Resident pages: %zu / 16 (atlas 4x4)",
+                    s_pt.resident_count());
+        // Look up the requested page so the user sees if it's already in.
+        cd::virtual_textures::PageId q {};
+        q.x   = static_cast<std::uint16_t>(s_vt_req_x);
+        q.y   = static_cast<std::uint16_t>(s_vt_req_y);
+        q.mip = static_cast<std::uint8_t>(s_vt_req_mip);
+        const auto* slot = s_pt.lookup(q);
+        if (slot != nullptr)
+            ImGui::Text("Requested page resident @ slot (%u, %u)",
+                        slot->slot_x, slot->slot_y);
+        else
+            ImGui::TextDisabled("Requested page NOT resident (Request to allocate)");
+        ImGui::TextDisabled("Mittring 2008 page-allocator + FIFO eviction.");
+    }
+    // phase927-mesh-shader-live-demo (Run 25 Strand B): drive
+    // cd::mesh_shader::build_meshlets on a synthetic 100-triangle
+    // mesh + report the meshlet count + per-meshlet vertex / triangle
+    // counts. Same greedy clustering Meshoptimizer starts with.
+    if (ImGui::CollapsingHeader("Run25  Mesh Shader Meshlet Builder Probe"))
+    {
+        static int s_ms_tri_count = 100;
+        ImGui::SliderInt("Source triangle count", &s_ms_tri_count, 8, 500);
+        // Build a synthetic triangle-strip-like flat indexed mesh.
+        const auto n = static_cast<std::uint32_t>(s_ms_tri_count);
+        std::vector<cd::math::Vec3f> positions(n + 2);
+        std::vector<std::uint32_t> indices;
+        indices.reserve(static_cast<std::size_t>(n) * 3U);
+        for (std::uint32_t i = 0; i < positions.size(); ++i)
+            positions[i] = { static_cast<float>(i) * 0.1F,
+                             static_cast<float>(i & 1U) * 0.1F,
+                             0.0F };
+        for (std::uint32_t i = 0; i < n; ++i)
+        {
+            indices.push_back(i);
+            indices.push_back(i + 1U);
+            indices.push_back(i + 2U);
+        }
+        const auto data = cd::mesh_shader::build_meshlets(
+            std::span<const std::uint32_t>(indices),
+            std::span<const cd::math::Vec3f>(positions));
+        ImGui::Text("Meshlets produced: %zu  (cap 64 verts / 124 tris each)",
+                    data.meshlets.size());
+        for (std::size_t i = 0; i < data.meshlets.size() && i < 8U; ++i)
+        {
+            ImGui::Text("  meshlet[%zu]: %u verts, %u tris",
+                        i,
+                        data.meshlets[i].vertex_count,
+                        data.meshlets[i].triangle_count);
+        }
+        ImGui::TextDisabled("NVIDIA 2018 / Karis 2021 Nanite leaf granularity.");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
