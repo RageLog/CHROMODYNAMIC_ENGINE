@@ -3521,6 +3521,72 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::TextDisabled("1500K (firelight) -> 15000K (blue sky shade).");
         ImGui::TextDisabled("Krystek 1985 + Bruce Lindbloom XYZ -> sRGB.");
     }
+    // phase938-light-attenuation-live-demo (Run 25 Strand B): drive
+    // cd::light::distance_attenuation + cone_attenuation. Plots the
+    // Frostbite windowed inverse-square distance falloff + the
+    // smoothstep-squared cone falloff so the user can see how range
+    // / inner-half-angle / outer-half-angle reshape light response
+    // live.
+    if (ImGui::CollapsingHeader("Run25  Light Attenuation Probe"))
+    {
+        static float s_la_range = 8.0F;
+        static float s_la_inner_deg = 15.0F;
+        static float s_la_outer_deg = 30.0F;
+        static float s_la_lumens = 1500.0F;
+        ImGui::SliderFloat("Range (m)",
+                           &s_la_range, 0.5F, 32.0F, "%.2f");
+        ImGui::SliderFloat("Spot inner half-angle (deg)",
+                           &s_la_inner_deg, 1.0F, 60.0F);
+        ImGui::SliderFloat("Spot outer half-angle (deg)",
+                           &s_la_outer_deg, 5.0F, 89.0F);
+        ImGui::SliderFloat("Luminous flux (lumens)",
+                           &s_la_lumens, 0.0F, 5000.0F);
+        constexpr int kDistSamples = 128;
+        std::array<float, kDistSamples> dist_fall {};
+        for (int i = 0; i < kDistSamples; ++i)
+        {
+            const float d = static_cast<float>(i) /
+                            static_cast<float>(kDistSamples - 1) *
+                            (s_la_range * 1.5F);
+            dist_fall[static_cast<std::size_t>(i)] =
+                cd::light::distance_attenuation(d, s_la_range);
+        }
+        const float cos_in  = std::cos(s_la_inner_deg *
+                                       std::numbers::pi_v<float> / 180.0F);
+        const float cos_out = std::cos(s_la_outer_deg *
+                                       std::numbers::pi_v<float> / 180.0F);
+        constexpr int kConeSamples = 128;
+        std::array<float, kConeSamples> cone_fall {};
+        for (int i = 0; i < kConeSamples; ++i)
+        {
+            const float ang = static_cast<float>(i) /
+                              static_cast<float>(kConeSamples - 1) * 90.0F;
+            const float c = std::cos(ang *
+                                     std::numbers::pi_v<float> / 180.0F);
+            cone_fall[static_cast<std::size_t>(i)] =
+                cd::light::cone_attenuation(c, cos_in, cos_out);
+        }
+        const float point_i = cd::light::lumens_to_point_intensity(s_la_lumens);
+        const float spot_i  = cd::light::lumens_to_spot_intensity(s_la_lumens, cos_out);
+        ImGui::Text("Point intensity:  %.3f cd  (Phi / 4 pi)",
+                    static_cast<double>(point_i));
+        ImGui::Text("Spot intensity:   %.3f cd  (Phi / 2 pi (1 - cos_outer))",
+                    static_cast<double>(spot_i));
+        ImGui::PlotLines(
+            "##la_dist",
+            dist_fall.data(), kDistSamples, 0,
+            "Distance attenuation (0..1.5x range)",
+            0.0F,
+            *std::ranges::max_element(dist_fall) * 1.1F + 1e-4F,
+            ImVec2(0, 56));
+        ImGui::PlotLines(
+            "##la_cone",
+            cone_fall.data(), kConeSamples, 0,
+            "Cone attenuation (0..90 deg)",
+            0.0F, 1.0F,
+            ImVec2(0, 56));
+        ImGui::TextDisabled("Frostbite 2014 windowed inverse-square + smoothstep-squared cone.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
