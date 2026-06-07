@@ -6128,7 +6128,14 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
             s.meshes.cesium_skinned.valid, s.inst_mat_ssbo,
-            s.rts.depth.image, s.depth_initialised_on_gpu);
+            s.rts.depth.image, s.depth_initialised_on_gpu,
+            // phase866-2-bounce-sphere-normal: flag sphere primitives
+            // (PBR grid + procedural sphere seeds) so the per-geom
+            // SSBO row carries the analytical centre + radius the
+            // shader needs for the 2-bounce reflection path.
+            [](const SceneEntity& e) -> bool {
+                return e.kind == PrimitiveKind::kSphere;
+            });
 
         // phase-descriptor-sync: propagate per-frame TLAS + inst_mat SSBO
         // writes to every per-prim descriptor set (binding 2 + 10).

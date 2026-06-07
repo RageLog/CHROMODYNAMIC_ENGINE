@@ -23,24 +23,27 @@
 #include <type_traits>
 
 // ===========================================================================
-// InstanceMatGpu layout — must match shader's GLSL `struct InstanceMat`
+// InstanceMatGpu layout — must match shader's GLSL `struct InstanceMat`.
+// phase866-2-bounce-sphere-normal: extended to 64 B
 // (vec4 albedo + vec4 emissive + uint albedo_tex_slot + uint
-// index_offset + uint _pad0 + uint _pad1 = 48 B std430).
+// index_offset + uint is_sphere + uint _pad0 + vec4 sphere_center_radius).
 // ===========================================================================
 
-TEST(HelloEngineW8BELayout, InstanceMatGpuIsFortyEightBytes)
+TEST(HelloEngineW8BELayout, InstanceMatGpuIsSixtyFourBytes)
 {
-    EXPECT_EQ(sizeof(cd::hello_engine::InstanceMatGpu), 48U);
+    EXPECT_EQ(sizeof(cd::hello_engine::InstanceMatGpu), 64U);
 }
 
 TEST(HelloEngineW8BELayout, InstanceMatGpuFieldOffsetsMatchShader)
 {
     using IM = cd::hello_engine::InstanceMatGpu;
-    EXPECT_EQ(offsetof(IM, albedo),          0U);
-    EXPECT_EQ(offsetof(IM, emissive),        16U);
-    EXPECT_EQ(offsetof(IM, albedo_tex_slot), 32U);
-    EXPECT_EQ(offsetof(IM, index_offset),    36U);
-    EXPECT_EQ(offsetof(IM, _pad),            40U);
+    EXPECT_EQ(offsetof(IM, albedo),               0U);
+    EXPECT_EQ(offsetof(IM, emissive),             16U);
+    EXPECT_EQ(offsetof(IM, albedo_tex_slot),      32U);
+    EXPECT_EQ(offsetof(IM, index_offset),         36U);
+    EXPECT_EQ(offsetof(IM, is_sphere),            40U);
+    EXPECT_EQ(offsetof(IM, _pad0),                44U);
+    EXPECT_EQ(offsetof(IM, sphere_center_radius), 48U);
 }
 
 TEST(HelloEngineW8BELayout, InstanceMatGpuDefaultsToSentinel)
@@ -92,8 +95,8 @@ TEST(HelloEngineW8BELayout, SsboTotalSizeIsConsistent)
     EXPECT_EQ(cd::hello_engine::kInstMatBytes,
               cd::hello_engine::kMaxInstMats *
               sizeof(cd::hello_engine::InstanceMatGpu));
-    // The 384 KiB figure cited in ADR W8-BE.
-    EXPECT_EQ(cd::hello_engine::kInstMatBytes, 8192U * 48U);
+    // phase866 bumped per-slot 48 → 64 B (sphere centre fields).
+    EXPECT_EQ(cd::hello_engine::kInstMatBytes, 8192U * 64U);
 }
 
 // ===========================================================================

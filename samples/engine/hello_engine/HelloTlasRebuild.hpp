@@ -71,7 +71,8 @@ struct W8BEGeomMeta
 // uploaded to binding 10; the shader reads slot[inst*32 + geom].
 template <typename MaterialInstanceT, typename EntityT, typename BlasForKind,
           typename TintFor, typename KindFor, typename ModelFor,
-          typename GeomAlbedosFor, typename W8BEMetaFor>
+          typename GeomAlbedosFor, typename W8BEMetaFor,
+          typename IsSphereFor = decltype([](const auto&) { return false; })>
 inline void
 rebuild_tlas_and_transition_depth(
     cd::rhi::IDevice&                       device,
@@ -97,7 +98,16 @@ rebuild_tlas_and_transition_depth(
     bool                                    skinned_valid,
     cd::rhi::BufferHandle                   inst_mat_ssbo,
     cd::rhi::TextureHandle                  depth_image,
-    bool&                                   depth_initialised_on_gpu)
+    bool&                                   depth_initialised_on_gpu,
+    // phase866-2-bounce-sphere-normal: optional callback returning
+    // true when the entity is a unit-sphere primitive whose hit
+    // normal can be computed analytically. When provided, the per-
+    // geom override loop fills `is_sphere = 1` and
+    // `sphere_center_radius = vec4(m[3].xyz, m[0][0])` for that
+    // instance so the shader's 2-bounce path can fire a second
+    // reflection ray with a meaningful normal. Default is "never a
+    // sphere" so the legacy single-bounce + IBL-shine path stays.
+    IsSphereFor                             is_sphere_for = {})
 {
     // 1) tick deferred destroy queue (3-frame margin beyond fif=2).
     while (!destroy_queue.empty()
@@ -235,6 +245,27 @@ rebuild_tlas_and_transition_depth(
             // This entity contributed instances[tlas_idx]; check for per-geom data.
             if (tlas_idx < inst_n)
             {
+                // phase866-2-bounce-sphere-normal: stamp the analytical-
+                // normal hint across every geom slot of this entity when
+                // the caller flags it as sphere-shaped. World centre +
+                // radius come from the model matrix: m[3].xyz is the
+                // translation; m[0][0] is the uniform scale (= radius for
+                // a unit-sphere mesh).
+                if (is_sphere_for(ent))
+                {
+                    const auto& m = *model_opt;
+                    for (std::uint32_t g = 0; g < cd::hello_engine::kMaxGeomsPerInst; ++g)
+                    {
+                        auto& im = expanded[
+                            static_cast<std::size_t>(tlas_idx)
+                            * cd::hello_engine::kMaxGeomsPerInst + g];
+                        im.is_sphere = 1u;
+                        im.sphere_center_radius[0] = m[3][0];
+                        im.sphere_center_radius[1] = m[3][1];
+                        im.sphere_center_radius[2] = m[3][2];
+                        im.sphere_center_radius[3] = m[0][0];
+                    }
+                }
                 auto geom_albs = geom_albedos_for(ent);
                 if (!geom_albs.empty())
                 {

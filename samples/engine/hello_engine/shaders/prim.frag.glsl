@@ -85,8 +85,12 @@ struct InstanceMat {
   vec4 emissive;
   uint albedo_tex_slot;
   uint index_offset;
+  // phase866-2-bounce-sphere-normal: is_sphere = 1 enables the
+  // analytical-normal 2-bounce path; sphere_center_radius carries
+  // the world-space centre + radius for that path.
+  uint is_sphere;
   uint _pad0;
-  uint _pad1;
+  vec4 sphere_center_radius;
 };
 layout(set = 0, binding = 10) readonly buffer InstanceMats {
   InstanceMat data[];
@@ -274,12 +278,66 @@ float reflection_hit_id(vec3 origin, vec3 N, vec3 dir, float tmax,
   return 1.0;
 }
 
-// (phase852 reflection_hit_id_t + reflection_hit_color helpers were
-// drafted for a true 2-bounce ray query but removed once it became
-// clear we have no reliable per-hit-normal source for procedural
-// geometry. The IBL-shine stand-in in the main FS path does NOT need
-// either helper. Kept the prior `reflection_hit_id` for the existing
-// 1-bounce flow above.)
+// phase866-2-bounce-sphere-normal: t-returning variant of
+// reflection_hit_id. Same logic but also exposes the hit-t so the
+// caller can recover the hit world position via origin + dir * t.
+float reflection_hit_id_t(vec3 origin, vec3 N, vec3 dir, float tmax,
+                          out int  out_inst, out int  out_geom,
+                          out int  out_prim, out vec2 out_bary,
+                          out float out_t) {
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(
+      rq, cd_tlas,
+      gl_RayFlagsOpaqueEXT,
+      0xFFu,
+      origin + N * 0.01,
+      0.01, dir, tmax);
+  while (rayQueryProceedEXT(rq)) {}
+  if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+      gl_RayQueryCommittedIntersectionNoneEXT) {
+    out_inst = -1; out_geom = -1; out_prim = -1;
+    out_bary = vec2(0.0); out_t = 0.0;
+    return 0.0;
+  }
+  out_inst = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+  out_geom = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
+  out_prim = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+  out_bary = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+  out_t    = rayQueryGetIntersectionTEXT(rq, true);
+  return 1.0;
+}
+
+// phase866-2-bounce-sphere-normal: lightweight second-bounce query.
+// Reads the hit instance's avg-colour from the SSBO and returns it
+// — used by the 2-bounce path when the first hit's analytical normal
+// (from is_sphere data) gives a meaningful second-ray direction.
+float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
+                           out vec3 out_color) {
+  rayQueryEXT rq;
+  rayQueryInitializeEXT(
+      rq, cd_tlas,
+      gl_RayFlagsOpaqueEXT,
+      0xFFu,
+      origin,
+      0.01, dir, tmax);
+  while (rayQueryProceedEXT(rq)) {}
+  if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+      gl_RayQueryCommittedIntersectionNoneEXT) {
+    out_color = vec3(0.0);
+    return 0.0;
+  }
+  int inst2 = rayQueryGetIntersectionInstanceIdEXT(rq, true);
+  int geom2 = rayQueryGetIntersectionGeometryIndexEXT(rq, true);
+  if (geom2 < 0) geom2 = 0;
+  if (geom2 >= kMaxGeomsPerInst) geom2 = kMaxGeomsPerInst - 1;
+  int slot2 = inst2 * kMaxGeomsPerInst + geom2;
+  if (slot2 < 0 || slot2 >= kMaxInstMatSlots) {
+    out_color = vec3(0.0);
+    return 0.0;
+  }
+  out_color = cd_instance_mats.data[slot2].albedo.rgb;
+  return 1.0;
+}
 
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
 // occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
@@ -701,9 +759,11 @@ void main() {
   // the performance cost AND the visual artifact of dielectric surfaces
   // mirroring scene objects like chrome.
   float scene_hit  = 0.0;
+  float hit_t      = 0.0;
   if (metallic > 0.1)
-    scene_hit = reflection_hit_id(v_world_pos, safe_N, Ri, 80.0,
-                                  hit_inst, hit_geom, hit_prim, hit_bary);
+    scene_hit = reflection_hit_id_t(v_world_pos, safe_N, Ri, 80.0,
+                                    hit_inst, hit_geom, hit_prim, hit_bary,
+                                    hit_t);
   vec3  brdf_term  = F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p;
   vec3  ibl_spec_blended = ibl_spec_p;
   int hit_slot = -1;
@@ -740,22 +800,43 @@ void main() {
       vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
       hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
     }
-    // phase852b-rt-chrome-second-bounce-ibl-shine: User asked for
-    // "yansımanın yansıması" — the recursive shine you'd see when
-    // chrome reflects chrome. A proper 2-bounce ray query needs a
-    // hit-normal source at the first hit (so the second ray direction
-    // is meaningful). For procedural sphere geometry that requires
-    // per-instance center data in the SSBO, and for Sponza requires
-    // safe access to SponzaVB normals — both multi-week additions
-    // (see phase851 bindless investigation). As a CHEAP STAND-IN,
-    // sample the IBL specular cubemap at the FIRST-bounce reflection
-    // direction (Ri) and mix it into the hit colour. This is what
-    // a fully-reflective surface at the first hit WOULD see in the
-    // distant environment — close enough to "shine of the reflection"
-    // for chrome-on-chrome to read as glossy instead of opaque.
-    vec3 second_bounce_ibl = textureLod(cd_ibl_spec, Ri,
-                                        roughness * kIblMaxMipLod).rgb;
-    hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.5, 0.4);
+    // phase866-2-bounce-sphere-normal: when the first-hit instance is
+    // an analytical sphere (`is_sphere == 1`), compute the surface
+    // normal at the hit point analytically (radial from centre) and
+    // fire a SECOND reflection ray — this is the genuine "yansımanın
+    // yansıması" (reflection of reflection) the user asked for.
+    // For non-sphere hits, fall back to the cheap IBL-shine stand-in
+    // (phase 852b).
+    uint  hit_is_sphere = cd_instance_mats.data[hit_slot].is_sphere;
+    vec4  hit_sc        = cd_instance_mats.data[hit_slot].sphere_center_radius;
+    if (hit_is_sphere == 1u) {
+        vec3 hit_pos1 = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
+        vec3 N1       = normalize(hit_pos1 - hit_sc.xyz);
+        vec3 Ri2      = reflect(Ri, N1);
+        vec3 bounce_color = vec3(0.0);
+        float bounce_hit  = reflection_hit_color(
+                              hit_pos1 + N1 * 0.02,
+                              Ri2, 60.0,
+                              bounce_color);
+        if (bounce_hit > 0.5) {
+            // Mix in the second-bounce colour — chrome-on-chrome now
+            // shows what the second sphere itself is reflecting.
+            hit_alb = mix(hit_alb, hit_alb * (bounce_color + 0.2), 0.55);
+        } else {
+            // Second ray missed the scene → returned IBL would be
+            // direct sky; use that as the bounce contribution.
+            vec3 miss_ibl = textureLod(cd_ibl_spec, Ri2, 0.0).rgb;
+            hit_alb = mix(hit_alb, hit_alb * miss_ibl * 1.2, 0.35);
+        }
+    } else {
+        // phase852b-rt-chrome-second-bounce-ibl-shine: cheap stand-in
+        // for non-sphere hits (Sponza geometry, CesiumMan, floor).
+        // Sampling the IBL at the first-bounce reflection direction
+        // approximates "what the hit point sees in the environment".
+        vec3 second_bounce_ibl = textureLod(cd_ibl_spec, Ri,
+                                            roughness * kIblMaxMipLod).rgb;
+        hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.5, 0.4);
+    }
     // phase795-rt-chrome-sponza-brightness:
     // OLD: refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * sun_color * 3.0
     //

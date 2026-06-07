@@ -70,11 +70,19 @@ struct InstanceMatGpu
     float         emissive[4];
     std::uint32_t albedo_tex_slot { 0xFFFFFFFFu };
     std::uint32_t index_offset    { 0u };
-    std::uint32_t _pad[2]         { 0u, 0u };
+    // phase866-2-bounce-sphere-normal: when is_sphere = 1, the
+    // shader can compute an analytical hit normal as
+    // `normalize(hit_pos - sphere_center_radius.xyz)` and fire a
+    // SECOND reflection ray query along reflect(Ri, N) — the
+    // recursive "yansımanın yansıması" path. is_sphere = 0 keeps
+    // the legacy single-bounce + IBL-shine path.
+    std::uint32_t is_sphere       { 0u };
+    std::uint32_t _pad0           { 0u };
+    float         sphere_center_radius[4] { 0.0F, 0.0F, 0.0F, 1.0F };
 };
 
-static_assert(sizeof(InstanceMatGpu) == 48,
-              "InstanceMatGpu must be 48 B after the phase840 W8-BE extension");
+static_assert(sizeof(InstanceMatGpu) == 64,
+              "InstanceMatGpu must be 64 B after the phase866 sphere extension");
 static constexpr std::uint32_t kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 
 // phase465-perprim: per-(instance, geometry) SSBO layout for Sponza
@@ -159,8 +167,12 @@ inline void fill_inst_mat(InstanceMatGpu& im, cd::math::Vec3f albedo) noexcept
     // prims; CesiumMan, PBR grid, procedural seeds keep the sentinel.
     im.albedo_tex_slot = kBindlessAlbedoSlotNone;
     im.index_offset    = 0u;
-    im._pad[0]         = 0u;
-    im._pad[1]         = 0u;
+    im.is_sphere       = 0u;
+    im._pad0           = 0u;
+    im.sphere_center_radius[0] = 0.0F;
+    im.sphere_center_radius[1] = 0.0F;
+    im.sphere_center_radius[2] = 0.0F;
+    im.sphere_center_radius[3] = 1.0F;
 }
 
 }  // namespace cd::hello_engine
