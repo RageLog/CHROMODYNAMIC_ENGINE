@@ -2126,6 +2126,25 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             .tonemap_op         = &fx.tonemap_op,
         };
         cd::editor::panel::draw_composite_preset_buttons(fx_binding, log_push);
+        // phase893-tonemap-selector: live combo so user can A/B
+        // Narkowicz ACES / Hill ACES / Hable / AGX / HDR10 PQ
+        // without round-tripping through the preset buttons.
+        {
+            const char* kTonemapNames[5] = {
+                "0 — Narkowicz ACES",
+                "1 — Hill ACES",
+                "2 — Hable / Uncharted 2 (default)",
+                "3 — AGX (Sobotka)",
+                "4 — HDR10 PQ (ST.2084 — needs HDR swapchain)"
+            };
+            int op_clamped = (fx.tonemap_op < 0) ? 0 :
+                             (fx.tonemap_op > 4) ? 4 : fx.tonemap_op;
+            if (ImGui::Combo("Tonemap operator", &op_clamped,
+                             kTonemapNames, 5))
+            {
+                fx.tonemap_op = op_clamped;
+            }
+        }
         ImGui::SliderFloat("Exposure", &fx.exposure, 0.1F, 10.0F);
         ImGui::SliderFloat("Saturation boost", &fx.saturation_boost, 0.5F, 2.5F);
         ImGui::SliderFloat("Bloom strength", &fx.bloom_post, 0.0F, 0.30F);

@@ -109,16 +109,23 @@ TEST(HelloEngineW8BELayout, SsboTotalSizeIsConsistent)
 // active for non-Sponza prims.
 // ===========================================================================
 
-TEST(HelloEngineW8BELayout, W8BEGeomMetaIsEightBytes)
+TEST(HelloEngineW8BELayout, W8BEGeomMetaIsTwelveBytes)
 {
-    EXPECT_EQ(sizeof(cd_sample::W8BEGeomMeta), 8U);
+    // phase890-cesium-bindless-textures: extended 8 → 12 B with the
+    // mesh_id field. Pin the size so a future "let's add another
+    // 4-byte hint" PR has to update this test and the GPU-side
+    // InstanceMatGpu mesh_id offset in lockstep.
+    EXPECT_EQ(sizeof(cd_sample::W8BEGeomMeta), 12U);
 }
 
-TEST(HelloEngineW8BELayout, W8BEGeomMetaDefaultsToSentinel)
+TEST(HelloEngineW8BELayout, W8BEGeomMetaDefaultsToSentinelAndSponza)
 {
     cd_sample::W8BEGeomMeta m {};
     EXPECT_EQ(m.albedo_tex_slot, cd::hello_engine::kBindlessAlbedoSlotNone);
     EXPECT_EQ(m.index_offset,    0U);
+    // phase890-cesium-bindless-textures: mesh_id default 0 = Sponza
+    // VB/IB. CesiumMan w8be_meta entries explicitly set this to 1.
+    EXPECT_EQ(m.mesh_id,         0U);
 }
 
 TEST(HelloEngineW8BELayout, W8BEGeomMetaIsTriviallyCopyable)
