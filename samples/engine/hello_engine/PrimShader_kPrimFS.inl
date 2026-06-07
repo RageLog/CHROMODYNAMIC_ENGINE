@@ -667,7 +667,7 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase851b: bindless dynamic-index broken (see prim.frag.glsl).
+    // phase860-NEGATIVE: see prim.frag.glsl
     tex_slot = kBindlessAlbedoSlotNone;
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
       uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];

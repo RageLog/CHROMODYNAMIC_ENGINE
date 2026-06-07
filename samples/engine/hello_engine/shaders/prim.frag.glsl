@@ -718,16 +718,15 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase851b-W8-BE-bindless-dynamic-index-broken: phase 851 proved
-    // (a) host writes 103 slots OK, (b) shader fixed-slot reads work,
-    // (c) dynamic SSBO-driven slot reads crash 3-15 frames in. Root
-    // cause is non-trivial — likely NVIDIA driver behaviour on the
-    // descriptor pool we share between bindless + classic sets, or
-    // the per-prim sets carrying unwritten binding-13 slots that the
-    // driver speculatively touches. Multi-week to resolve cleanly
-    // (likely needs a separate dedicated bindless descriptor SET on
-    // a different set index, not a binding in the per-prim set).
-    // Bindless branch stays gated off; avg-colour W8-BD path remains.
+    // phase860-W8-BE-revive-attempt-NEGATIVE: filled ALL 256 slots at
+    // boot (no unwritten slots remain) but the dynamic-index crash
+    // STILL reproduces 3-71 frames in (8/8 captures crashed). So the
+    // unwritten-slot hypothesis was wrong — the issue is the
+    // dynamic-index path on the shared prim_inst set itself,
+    // independently of slot population. The host-side all-slot fill
+    // is kept (cheap, no downside, helps when the dedicated-set
+    // architecture lands), but the shader stays gated until the
+    // bindless binding moves to its own descriptor set (phase 870+).
     tex_slot = kBindlessAlbedoSlotNone;
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
       uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];

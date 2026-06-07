@@ -4857,8 +4857,16 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // per-prim metadata is written into the SSBO.
     if (s.meshes.gltf.vb.is_valid() && s.meshes.gltf.ib.is_valid())
     {
+        // phase860-W8-BE-fill-all-bindless-slots: write EVERY slot 0..255
+        // with either the real Sponza prim albedo view (for textured
+        // prims) or the procedural Earth albedo fallback (slot_idx with
+        // no texture). Hypothesis from phase 851 diagnostics: NVIDIA's
+        // dynamic-index crash may be driver speculation across UNWRITTEN
+        // slots that PARTIALLY_BOUND only documents as undefined.
+        // Eliminating unwritten slots from the descriptor surface tests
+        // whether the dynamic-index branch becomes stable.
         std::vector<cd::rhi::DescriptorWrite> dw_be {};
-        dw_be.reserve(2u + s.meshes.gltf_prim_ranges.size());
+        dw_be.reserve(2u + 256u);
         dw_be.push_back(cd::rhi::DescriptorWrite {
             .binding = 11, .array_element = 0,
             .type    = cd::rhi::DescriptorType::kStorageBuffer,
@@ -4872,15 +4880,29 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         std::uint32_t slot_idx = 0u;
         for (const auto& pr : s.meshes.gltf_prim_ranges)
         {
-            if (!pr.has_texture) { ++slot_idx; continue; }
+            const cd::rhi::TextureViewHandle view_to_write =
+                pr.has_texture ? pr.albedo_view : s.albedo_tex.view;
             dw_be.push_back(cd::rhi::DescriptorWrite {
                 .binding       = 13,
                 .array_element = slot_idx,
                 .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
-                .view          = pr.albedo_view,
+                .view          = view_to_write,
                 .sampler       = s.albedo_sampler,
             });
             ++slot_idx;
+        }
+        // Fill the remaining slots (N..255) with the fallback view so
+        // every slot is populated — the descriptor array has zero
+        // unwritten entries.
+        for (; slot_idx < 256u; ++slot_idx)
+        {
+            dw_be.push_back(cd::rhi::DescriptorWrite {
+                .binding       = 13,
+                .array_element = slot_idx,
+                .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
+                .view          = s.albedo_tex.view,
+                .sampler       = s.albedo_sampler,
+            });
         }
         (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_be));
     }
