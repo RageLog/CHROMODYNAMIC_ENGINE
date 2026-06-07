@@ -898,6 +898,79 @@ textured cathedral interior, no longer as a polished plastic ball.
 
 ---
 
+## Marathon Run 23 close-out (2026-06-07 dev branch, phases 882-893)
+
+7 commits, 259/259 ctest PASS at every checkpoint, 0 rendering
+regressions. Strategic gap-clearing: regression nets locking
+recent fixes → staleness + dead-code cleanup → non-Sponza glTF
+bindless shader extension end-to-end.
+
+### Regression nets
+
+- **phase 882 (a905ff6)** — Diagnostic fixtures #6-9 pinned by
+  slug (sky_zenith / sky_yaw_a / sky_yaw_b / roof_down) +
+  HelloEngineFx first-boot defaults locked (`fog 0`,
+  `aerial 0`, `clouds 0.20`, `taa 0.85`, `exposure 1.0`,
+  `tonemap Hable`). New test binary, 4 cases.
+
+### Staleness / dead-code
+
+- **phase 883+884 (71d2b73)** — D3D12 `CD_D3D12_NOT_IMPL_RESULT`
+  macro deleted (0 call sites; dead scaffold). Remaining
+  `kNotImplemented` returns surveyed: all capability gates or
+  defensive enum guards. STATUS_AND_PLAN's "2 remaining PDFs"
+  marked resolved.
+
+- **phase 885+886 (532b4b0)** — `HG g=0.6` → `g=0.15` comment
+  fix (panel + Composite). `_pad0` → `mesh_id` rename in
+  InstanceMatGpu (host-side prep for non-Sponza bindless).
+
+- **phase 887 (c5fe46a)** — `cd::material` README documents
+  `MaterialDesc::extra_set_layouts`.
+
+### Non-Sponza glTF bindless shader (the big delivery)
+
+- **phase 888-891 (b303037)** — Multi-mesh shader extension
+  shipped end-to-end:
+  - Bindings 14/15 added to prim layout (cesium_vb + cesium_ib).
+  - W8BEGeomMeta extended with `mesh_id`.
+  - `sync_perprim_global_bindings` extended; both call sites
+    updated.
+  - Bindless slot fill packs CesiumMan albedos after Sponza.
+  - `cesium_w8be_meta` populated with `mesh_id=1`,
+    `albedo_tex_slot = base + i`.
+  - Shader UV interp branches on `mesh_id`: 1 →
+    `cesium_vb/ib`, else `sponza_vb/ib`.
+  - Result: CesiumMan's astronaut texture detail visible in
+    chrome reflections (previously W8-BD avg-colour patches).
+
+### Minor polish
+
+- **phase 892-893 (df0208e)** — W8BEGeomMeta test bumped to
+  12 B + mesh_id default check; R-Showcase Composite section
+  gained live tonemap operator combo (Narkowicz / Hill /
+  Hable / AGX / HDR10 PQ).
+
+### Run 24+ blocked items
+
+Following the "kalan açıkları kapatma, blocksuz git" mandate
+from this marathon's start prompt, every unblocked item closed.
+Remaining work needs gates:
+
+- **L1 Metal P1 implementation** — ADR-20260530 §8 DAG ready
+  but pre-flight checklist requires user sign-off on Fork A
+  (native Metal primary) vs Fork B (MoltenVK fallback). 3-4
+  weeks focused work.
+- **DDGI / ReSTIR / NRC sample-level wiring** — R4 GI panel
+  section is placeholder; library code exists (cd_ddgi,
+  cd_restir_di) but sample integration deferred.
+- **Editor expansion** — material / light / scene editor on
+  top of the ImGui prototype. User-driven priority.
+- **Production readiness** — D3D12 runtime-gate audit (capability
+  matrix), CMake release preset, code signing + installer.
+
+---
+
 ## Marathon Run 22 partial (2026-06-07 dev branch, phases 874-876)
 
 5 follow-up commits after Run 21 closed, addressing user-perceived
