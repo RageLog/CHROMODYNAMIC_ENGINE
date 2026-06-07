@@ -359,3 +359,85 @@ and follow the §8.2 DAG.
 - Engine-local SPIRV-Cross glue: `engine/render/spirv_cross_glue/include/cd/spirv_cross_glue/Translate.hpp` (read 2026-05-30)
 - Engine-local Metal stub: `engine/render/rhi/include/cd/rhi/metal/MetalDevice.hpp` (read 2026-05-30, Wave 97)
 - Engine-local IDevice contract: `engine/render/rhi/include/cd/rhi/IDevice.hpp` (read 2026-05-30)
+
+---
+
+## 9. Sign-off review (2026-06-08)
+
+- **Reviewer**: architect subagent (sign-off pass on §8 P1 DAG)
+- **Inputs read**: §1-§8 of this ADR; ADR-001 RHI architecture; ADR-003 shader pipeline; ADR-20260529-X4 (D3D12 kNotImpl precedent); ADR-20260531-ios-platform (UIKit + CAMetalLayer shell pattern); ADR-20260606 W8-BE bindless texture sampling (the most recent live binding-layer change Metal must mirror); existing `MetalDevice.hpp` stub header.
+- **Charter constraints reaffirmed**: implementation is Apple-host only; non-Apple builds keep the stub returning `kBackendError`; the Win11 dev box gate remains `CD_RHI_METAL_ENABLED=OFF` by default and CMake configure must succeed with the option absent. No Mac CI hardware available at sign-off — gating strategy below is dictated by that fact.
+
+### 9.1 Audit summary
+
+The §8 nine-task DAG is **structurally sound and topologically correct** for an MVP "Basic raster + texture" P1, but it is **not ready to dispatch as-written**. Five of nine sub-tasks (M1.1, M1.2, M1.4, M1.7, M1.9) have under-specified acceptance criteria — they read like phase goals rather than "done when X verifiable thing happens". The biggest delivery risks are concentrated in three places: (a) argument-buffer tier-2 layout policy in M1.5 has no documented mapping for the new W8-BE bindless texture-array set (which post-dates this ADR by ~7 days and changes the binding-set shape), (b) M1.7 swapchain task papers over a non-trivial AppKit/UIKit shell decision that ADR-20260531-ios-platform already opened, and (c) the two unit tests in §8.2 do not constitute a CI gate on Windows hosts — they require an Apple device to run, and the DAG never names a *compile-only* gate that the existing Windows / Linux CI can actually exercise. Verdict: **NEEDS-REVISION-FIRST** — small, targeted patches (six sub-task clarifications + one new compile-only test + one cross-ref to W8-BE + one cross-ref to ADR-20260531) close all blockers; no §1-§8 content needs to change, only an addendum §8.5/§8.6.
+
+### 9.2 Sub-task readiness table
+
+| ID | Actionable Y/N | Blocker if N |
+|---|---|---|
+| M1.1 | **Partial** | "TARGET_OBJECTS/INTERFACE the existing Vulkan / D3D12 backends use" is hand-wavy — needs explicit named pattern. Also: no statement that the target must be *configurable but excluded by default* on non-Apple hosts via a new `CD_RHI_METAL_ENABLED` option (mirroring `CD_RHI_VULKAN_ENABLED`). Without that, the compile-only Windows gate (§9.4) cannot exist. |
+| M1.2 | **Partial** | The "capability advertisement matches §2.3" acceptance is testable only on an Apple device. Needs an additional acceptance bullet: "on non-Apple, the `#if !__APPLE__` factory path still compiles and returns `kBackendError` with the existing error code — verified by the Windows CI build." Also missing: explicit ARC vs MRC decision (`-fobjc-arc` on, no manual `retain`/`release` in `.mm`). |
+| M1.3 | **Yes** | Acceptance is concrete (cache-hit on second call, valid `MTLLibrary`). Minor: name the canonical hash function (`cd::core::Fnv1a64` is the engine standard) so the cache key isn't reinvented. |
+| M1.4 | **Partial** | "no naked `MTLBuffer` / `MTLTexture` allocations in the backend" is a *negative* assertion that's hard to gate. Needs a static assertion or a code-search test (`Grep` for `newBufferWithLength` outside `MetalHeap.mm` returns zero). Also: heap residency class enum (`transient / per-frame / static / staging`) is named in §2.1 but not bound to a concrete `MTLHeapDescriptor.storageMode` table — that table belongs in M1.4. |
+| M1.5 | **No — blocker** | The argument-buffer tier-2 layout in §2.1 ("one root argument buffer per descriptor space") **predates** ADR-20260606-W8-BE, which introduced a dedicated bindless texture-array set at a separate set index. The mapping for that dedicated set onto Metal argument buffers (one extra root AB? nested AB? tier-2 hierarchical?) is not specified. Without it, the chrome-texture-in-RT-reflection path (Run 18/20 Sponza demo) cannot be reproduced on Metal. Needs a §8.5 addendum cross-referencing W8-BE. |
+| M1.6 | **Yes** | "renders a full-screen quad with a texture, Xcode GPU Frame Debugger capture shows expected output" is concrete. Minor: name which existing test fixture's expected output (e.g. `tests/golden/quad_baseline.png`) so it isn't reinvented. |
+| M1.7 | **No — blocker** | "tiny `Project/HelloEngine` glue patch to feed the `CAMetalLayer`" elides the AppKit (macOS) vs UIKit (iOS) shell split. ADR-20260531-ios-platform §D already specified a UIKit AppDelegate + ViewController pattern; M1.7 must reference it and add the macOS NSWindow + NSView path explicitly. Without that, M1.7 either picks one (breaking the other) or stalls on a shell-architecture micro-decision. |
+| M1.8 | **Partial** | "draws floor mesh, no validation errors" — but Metal validation layer (`MTL_DEBUG_LAYER=1`) verbosity is documented in §4.2 as weaker than Vulkan validation. Acceptance should be tightened: "no entries in the structured RHI-call logger from §4.2 mitigation marked `Severity::Error` or higher". The structured logger itself is mentioned in §4.2 as a P1 deliverable but is not in the §8 DAG — it should be an explicit sub-task (proposed M1.8a). |
+| M1.9 | **Partial** | "ΔE ≤ 1.5 vs Vulkan reference" matches §2.4 acceptance — but the Vulkan reference for Sponza-with-W8-BE bindless texture detail (Run 18 chrome-fix surface) lives in a fixture not named here. The §8.4 pre-flight item *"Confirm the Vulkan reference golden capture for the chosen P1 acceptance fixture exists at the canonical path"* identifies the gap but does not name the canonical path. Needs an explicit fixture slug (e.g. `chrome_sponza_baseline`) so the test isn't ambiguous. |
+
+### 9.3 Top-3 risks with proposed mitigations
+
+1. **Argument-buffer tier-2 + W8-BE bindless texture-array set interaction (M1.5)** — Vulkan ships a dedicated descriptor set at a separate set index for bindless textures, used by the RT reflection path. Metal's argument-buffer tier-2 maps "set" → "root argument buffer", but the engine now has two distinct binding domains (per-prim + bindless) that on Vulkan live on different sets. The naive mapping (one root AB per set) works, but the *cross-encoder visibility* of the bindless AB — render encoder, compute encoder, ray-query path — must be explicit (`useResource:usage:stages:` on every encoder). Missing any one stage = silent texture-not-resident hazard on tile-based GPUs (the Vulkan-side bindless-multi-layer-checklist memory bullet applies here too: "missing any one piece = silent device-lost"). **Mitigation**: before M1.5 begins, append a sub-section §8.5 cross-referencing ADR-20260606-W8-BE and naming the four encoders that must call `useResource:` on the bindless argument buffer. Optionally add a Metal-specific bindless-multi-layer checklist to MEMORY.md mirroring the Vulkan one.
+
+2. **Threading model / autorelease pool semantics across the job system** — Objective-C++ `.mm` files allocate NSObject-derived types (every `MTLBuffer`, `MTLTexture`, `MTLLibrary` descriptor is one). ARC + the job system (ADR-20260528-job-system-design) interact: a worker thread that allocates an `MTLBufferDescriptor` *must* be inside an `@autoreleasepool` block or temporary objects leak until thread exit. The §8 DAG never names this. M1.2 / M1.4 / M1.6 all create descriptor objects from worker threads. **Mitigation**: standardise a `cd::rhi::metal::AutoreleaseScope` RAII wrapper (header in `MetalDevice.hpp`) and require its use at every public-API entry point that constructs descriptors. Add to M1.2 acceptance: "every public-API method that may be called from a job system worker installs an autorelease scope at entry; verified by source-level convention check." This is cheaper to enforce now than to retrofit when leaks show up at P2.
+
+3. **Build-system cross-platform gate without Mac CI hardware (M1.1 + all .mm sources)** — the Win11 dev box and the existing GitHub Actions matrix can compile-test C++ but cannot compile `.mm`. If `cd_rhi_metal` is added as a conditional target gated only on `CMAKE_SYSTEM_NAME STREQUAL Darwin`, the non-Apple builds will simply skip the code path entirely — meaning a developer can break the Metal build with a Foundation/header refactor on a Windows PR and CI won't notice until someone runs `xcodebuild` weeks later. This is the dominant *integration* risk for a stub-with-no-CI backend. **Mitigation**: split each `.mm` file's header (`MetalDevice.hpp`, `MetalHeap.hpp`, etc.) so it contains only forward-declared C++ classes with opaque PIMPL handles for the Apple types. Headers compile on Windows. Add a new `tests/metal/test_metal_headers_compile.cpp` (note: `.cpp`, not `.mm`) that includes every public Metal header from non-Apple compiler — proves the cross-platform façade. Gate this test in the existing Windows CI matrix.
+
+### 9.4 Test gate recommendations
+
+The §8.2 DAG's two unit tests (U1 capability + U2 shader translate) are both `.mm` files that **require an Apple host to run**. Until self-hosted Mac CI lands (Q M-Q6, deferred to P1 acceptance), these tests cannot gate PRs from Windows-only contributors. The DAG needs three additional gates:
+
+- **G1 — Header-compile gate on Windows / Linux** (new, blocking, no Apple host needed). `tests/metal/test_metal_headers_compile.cpp` — pure C++, includes every public Metal header behind `#if defined(__APPLE__) || defined(CD_RHI_METAL_HEADER_ONLY)`. Build matrix: Windows MSVC, Windows Clang-cl, Linux GCC. Catches public-API drift before a Mac dev sees it. *Maps to risk #3 above.*
+- **G2 — Static lint gate** (new, blocking). `clang-tidy` rule check that no `.hpp` under `engine/render/rhi/include/cd/rhi/metal/` contains `@interface`, `@protocol`, `id<`, or `__bridge`. Enforces the §1.8 constraint "no `__OBJC__` leakage into public headers" mechanically rather than by convention.
+- **G3 — SPIRV→MSL golden lock** (extend U2). U2 as written round-trips one fixed SPIRV blob and locks against a checked-in golden MSL string — good. Extend to lock at least one fixture from each shader family the engine uses today: prim, sky, composite, IBL bake, RT reflection (5 fixtures). This makes SPIRV-Cross version bumps surface as test diffs rather than runtime Metal compile failures. *Runs on any host since SPIRV-Cross translation is host-side.*
+
+For the actual on-device tests (U1, U2-core, M1.9 golden), the recommended CI strategy until self-hosted Mac hardware lands:
+
+- Mark them `[device]`-tagged in gtest.
+- The `ninja-debug` Windows preset filters `-` `[device]` (existing pattern from `[rt-pipeline]` and `[d3d12]` tags).
+- A new `xcode-debug` preset (out of ADR scope, flagged for the implementation PR) runs them when a developer has a Mac.
+- Document that PRs touching `engine/render/rhi/src/metal/` *should* include a `make-on-mac` log paste from the contributor; absence is a yellow flag, not a block (until self-hosted CI arrives).
+
+This is the same staged-CI pattern used for the NVIDIA RT tests pre-X3-self-hosted-runner; precedent exists in ADR-20260606 sample helper extract pattern's discussion of platform-tagged gates.
+
+### 9.5 Pre-flight checklist audit (§8.4)
+
+The five items in §8.4 are practical but **incomplete** for the current state:
+
+- **Item 1 (Xcode 15.x)** — fine.
+- **Item 2 (`vcpkg` triplet `x64-osx` / `arm64-osx`)** — fine, but should also confirm vcpkg manifest *baseline* is one that already publishes arm64-osx binaries (not all are cached).
+- **Item 3 (SPIRV-Cross MSL round-trip)** — fine; the engine-local glue already exists per §1.5.
+- **Item 4 (Vulkan reference golden exists)** — vague (called out in §9.2 M1.9 row); needs the canonical fixture slug named explicitly.
+- **Item 5 (User sign-off Fork A primary)** — fine, that is the load-bearing question.
+
+**Three additional items recommended** (proposed §8.4 amendments, not patched here):
+
+- **Item 6**: Confirm a `CD_RHI_METAL_ENABLED` CMake option exists *and defaults OFF on non-Apple*. Verify `cmake --build --preset ninja-debug` on the existing Windows dev box succeeds with the option absent (the load-bearing cross-platform guarantee).
+- **Item 7**: Confirm MoltenVK is not on the P1 critical path. §2.2 makes it secondary, but the §8 DAG should never reference MoltenVK linkage — if it does, M1.1's CMake patch will accidentally pull `libMoltenVK.dylib` into the link line of the native Metal target. Quick read-back.
+- **Item 8**: Confirm the AppKit (macOS) and UIKit (iOS) shell decision is delegated to ADR-20260531-ios-platform (already proposed) — not invented inside M1.7. M1.7 should cross-ref, not respec.
+- **Item 9 (optional)**: Confirm `@autoreleasepool` discipline is documented in `MEMORY.md` before M1.2 starts, so worker-thread allocations from the job system don't leak (risk #2 above).
+- **Item 10 (optional)**: Confirm the `MTL_DEBUG_LAYER=1` runtime toggle and the structured RHI-call logger from §4.2 mitigation are both planned as P1 deliverables (currently §4.2 mentions the logger as a mitigation but §8 omits it).
+
+### 9.6 Verdict
+
+**NEEDS-REVISION-FIRST.** The DAG topology is correct and the §2 fork decision is sound; the gaps are tactical and all closable inside a §8.5 / §8.6 addendum without disturbing §1-§8. Recommended next step (before dispatching `developer` on M1.1): an architect-authored §8.5 addendum that
+
+1. cross-references ADR-20260606-W8-BE for the bindless argument-buffer layout (closes M1.5 blocker),
+2. cross-references ADR-20260531-ios-platform for the swapchain shell (closes M1.7 blocker),
+3. adds the three new CI gates G1/G2/G3 from §9.4,
+4. adds the five additional pre-flight items from §9.5,
+5. names the canonical Vulkan reference fixture slug for M1.9,
+6. promotes the `@autoreleasepool` and structured RHI-logger conventions to first-class sub-tasks (M1.2 acceptance amendment + new M1.8a logger task).
+
+Once those six small additions land and the user re-confirms item 5 (Fork A primary), the DAG is **READY-TO-START**. Estimated rev cost: a single architect work-block, no new ADR file, no §1-§8 disturbance.
