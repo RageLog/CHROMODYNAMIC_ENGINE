@@ -4368,6 +4368,12 @@ struct HelloEngineApp::EngineState
     // process lifetime.
     std::vector<cd_sample::W8BEGeomMeta>     sponza_w8be_meta;
     std::vector<cd::math::Vec3f>             cesium_geom_albedos;
+    // phase890-cesium-bindless-textures: per-geom W8BEGeomMeta for
+    // CesiumMan prims (mesh_id=1) and the bindless-array slot index
+    // where CesiumMan's albedos start. The shader uses
+    // (albedo_tex_slot, mesh_id) to pick (slot, VB/IB pair).
+    std::vector<cd_sample::W8BEGeomMeta>     cesium_w8be_meta;
+    std::uint32_t                            cesium_bindless_slot_base { 0u };
 
     // World / scene / history
     cd::ecs::World                           ecs_world;
@@ -4881,13 +4887,31 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         // write the bindless slots to the DEDICATED bindless set
         // (allocated from materials.prim_bindless_layout) on its own
         // binding 0. The shared set no longer carries binding 13.
-        const cd::rhi::DescriptorWrite dw_shared[2] = {
+        // phase888-non-sponza-bindless-shader: also wire bindings
+        // 14/15 with CesiumMan VB/IB so the shader can read the
+        // cesium mesh's per-vertex UVs when mesh_id == 1 in the
+        // per-prim SSBO row. If CesiumMan isn't loaded, point at
+        // Sponza's VB/IB as a non-null fallback (the shader gates
+        // on mesh_id and never reaches the cesium read in that case).
+        const auto cesium_vb_to_write = s.meshes.gltf_cesium.vb.is_valid()
+                                            ? s.meshes.gltf_cesium.vb
+                                            : s.meshes.gltf.vb;
+        const auto cesium_ib_to_write = s.meshes.gltf_cesium.ib.is_valid()
+                                            ? s.meshes.gltf_cesium.ib
+                                            : s.meshes.gltf.ib;
+        const cd::rhi::DescriptorWrite dw_shared[4] = {
             { .binding = 11, .array_element = 0,
               .type    = cd::rhi::DescriptorType::kStorageBuffer,
               .buffer  = s.meshes.gltf.vb },
             { .binding = 12, .array_element = 0,
               .type    = cd::rhi::DescriptorType::kStorageBuffer,
               .buffer  = s.meshes.gltf.ib },
+            { .binding = 14, .array_element = 0,
+              .type    = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer  = cesium_vb_to_write },
+            { .binding = 15, .array_element = 0,
+              .type    = cd::rhi::DescriptorType::kStorageBuffer,
+              .buffer  = cesium_ib_to_write },
         };
         (void)s.prim_inst.update(std::span<const cd::rhi::DescriptorWrite>(dw_shared));
 
@@ -4902,6 +4926,26 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             std::uint32_t slot_idx = 0u;
             for (const auto& pr : s.meshes.gltf_prim_ranges)
             {
+                const cd::rhi::TextureViewHandle view_to_write =
+                    pr.has_texture ? pr.albedo_view : s.albedo_tex.view;
+                dw_b.push_back(cd::rhi::DescriptorWrite {
+                    .binding       = 0,
+                    .array_element = slot_idx,
+                    .type          = cd::rhi::DescriptorType::kBindlessSampledImage,
+                    .view          = view_to_write,
+                    .sampler       = s.albedo_sampler,
+                });
+                ++slot_idx;
+            }
+            // phase890-cesium-bindless-textures: cesium per-prim
+            // albedos follow Sponza in the slot array. The slot
+            // INDEX where CesiumMan starts is captured in
+            // s.cesium_bindless_slot_base so the per-frame SSBO
+            // fill can stamp the right tex_slot on cesium hits.
+            s.cesium_bindless_slot_base = slot_idx;
+            for (const auto& pr : s.meshes.gltf_cesium_prim_ranges)
+            {
+                if (slot_idx >= 256u) break;
                 const cd::rhi::TextureViewHandle view_to_write =
                     pr.has_texture ? pr.albedo_view : s.albedo_tex.view;
                 dw_b.push_back(cd::rhi::DescriptorWrite {
@@ -4975,12 +5019,19 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                     ? s.meshes.gltf.vb : s.meshes.sphere.vb,
                 s.meshes.gltf.ib.is_valid()
                     ? s.meshes.gltf.ib : s.meshes.sphere.ib,
-                // phase849-W8-BE-perprim-bindless-slot-0-fallback:
-                // s.albedo_tex.view is the always-valid procedural
-                // Earth-like albedo loaded at boot. Writing it to
-                // binding-13 slot 0 of every per-prim set means any
-                // speculative bindless access has valid data.
-                s.albedo_tex.view, s.albedo_sampler);
+                // phase849-W8-BE-perprim-bindless-slot-0-fallback
+                s.albedo_tex.view, s.albedo_sampler,
+                // phase888-non-sponza-bindless-shader: cesium VB/IB
+                // bindings 14/15 — fall back to Sponza when not
+                // loaded (shader gates on mesh_id so safe).
+                s.meshes.gltf_cesium.vb.is_valid()
+                    ? s.meshes.gltf_cesium.vb
+                    : (s.meshes.gltf.vb.is_valid() ? s.meshes.gltf.vb
+                                                    : s.meshes.sphere.vb),
+                s.meshes.gltf_cesium.ib.is_valid()
+                    ? s.meshes.gltf_cesium.ib
+                    : (s.meshes.gltf.ib.is_valid() ? s.meshes.gltf.ib
+                                                    : s.meshes.sphere.ib));
         };
         sync(s.meshes.gltf_prim_ranges);
         sync(s.meshes.gltf_cesium_prim_ranges);
@@ -5056,6 +5107,30 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             pr.base_color_factor[0],
             pr.base_color_factor[1],
             pr.base_color_factor[2]);
+    }
+
+    // phase890-cesium-bindless-textures: build cesium_w8be_meta in
+    // parallel with the cesium albedos. The slot index points into
+    // the dedicated bindless set's binding 0, OFFSET by the
+    // cesium_bindless_slot_base captured during the slot fill.
+    // index_offset stays at the prim's first-index inside
+    // gltf_cesium.ib so the shader's barycentric UV reconstruction
+    // hits the right triangle.
+    s.cesium_w8be_meta.clear();
+    s.cesium_w8be_meta.reserve(s.meshes.gltf_cesium_prim_ranges.size());
+    {
+        std::uint32_t i = 0u;
+        for (const auto& pr : s.meshes.gltf_cesium_prim_ranges)
+        {
+            cd_sample::W8BEGeomMeta m {};
+            m.albedo_tex_slot = pr.has_texture
+                ? (s.cesium_bindless_slot_base + i)
+                : cd::hello_engine::kBindlessAlbedoSlotNone;
+            m.index_offset    = pr.index_offset;
+            m.mesh_id         = 1u;  // phase890: 1 = CesiumMan VB/IB
+            s.cesium_w8be_meta.push_back(m);
+            ++i;
+        }
     }
 
     // World / scene / ECS
@@ -6137,6 +6212,11 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             {
                 if (e.kind == PrimitiveKind::kSponza)
                     return { s.sponza_w8be_meta };
+                // phase890-cesium-bindless-textures: CesiumMan
+                // gets its own per-prim metadata pointing at the
+                // bindless slots N..N+M reserved for cesium albedos.
+                if (e.kind == PrimitiveKind::kGltf)
+                    return { s.cesium_w8be_meta };
                 return {};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
@@ -7118,7 +7198,16 @@ int main(int argc, char** argv)
                 inst_mat_ssbo, kInstMatBytes,
                 meshes.gltf.vb.is_valid() ? meshes.gltf.vb : meshes.sphere.vb,
                 meshes.gltf.ib.is_valid() ? meshes.gltf.ib : meshes.sphere.ib,
-                albedo_tex.view, albedo_sampler);
+                albedo_tex.view, albedo_sampler,
+                // phase888 cesium VB/IB fallback chain
+                meshes.gltf_cesium.vb.is_valid()
+                    ? meshes.gltf_cesium.vb
+                    : (meshes.gltf.vb.is_valid() ? meshes.gltf.vb
+                                                  : meshes.sphere.vb),
+                meshes.gltf_cesium.ib.is_valid()
+                    ? meshes.gltf_cesium.ib
+                    : (meshes.gltf.ib.is_valid() ? meshes.gltf.ib
+                                                  : meshes.sphere.ib));
         };
         sync(meshes.gltf_prim_ranges);
         sync(meshes.gltf_cesium_prim_ranges);

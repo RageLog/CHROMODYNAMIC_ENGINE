@@ -165,7 +165,7 @@ prim_recreate(cd::rhi::IDevice&                       device,
     // single layout entry (binding 0, count=256, .bindless=true)
     // is built in `make_prim_bindless_layout` below and passed to
     // Material::create via the new extra_set_layouts span.
-    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 13> kBindings {
+    constexpr std::array<cd::rhi::DescriptorSetLayoutBinding, 15> kBindings {
         cd::rhi::DescriptorSetLayoutBinding { .binding = 0,  .type = cd::rhi::DescriptorType::kUniformBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 1,  .type = cd::rhi::DescriptorType::kCombinedImageSampler,  .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 2,  .type = cd::rhi::DescriptorType::kAccelerationStructure, .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
@@ -179,6 +179,13 @@ prim_recreate(cd::rhi::IDevice&                       device,
         cd::rhi::DescriptorSetLayoutBinding { .binding = 10, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 11, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
         cd::rhi::DescriptorSetLayoutBinding { .binding = 12, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        // phase888-non-sponza-bindless-shader: bindings 14/15 carry
+        // the CesiumMan (gltf_cesium) VB / IB SSBOs. The shader's
+        // chrome reflection branch reads from sponza_vb/ib when
+        // mesh_id == 0, from cesium_vb/ib when mesh_id == 1. Same
+        // shape as bindings 11/12 (StorageBuffer, single descriptor).
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 14, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
+        cd::rhi::DescriptorSetLayoutBinding { .binding = 15, .type = cd::rhi::DescriptorType::kStorageBuffer,         .count = 1, .stages = cd::rhi::ShaderStage::kFragment },
     };
 
     cd::material::MaterialDesc md {};

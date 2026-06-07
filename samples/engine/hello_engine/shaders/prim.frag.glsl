@@ -133,6 +133,16 @@ layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
 layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
   uint idx[];
 } cd_sponza_ib;
+// phase888-non-sponza-bindless-shader: bindings 14/15 carry the
+// CesiumMan VB/IB. mesh_id == 1 in the per-prim SSBO entry
+// selects this pair instead of sponza_vb/ib for the chrome
+// reflection UV interpolation.
+layout(set = 0, binding = 14, std430) readonly buffer CesiumVB {
+  PrimitiveVertexGpu verts[];
+} cd_cesium_vb;
+layout(set = 0, binding = 15, std430) readonly buffer CesiumIB {
+  uint idx[];
+} cd_cesium_ib;
 // phase864-bindless-dedicated-set: bindless sampler2D array moved
 // onto its own descriptor set at index 1. The shared per-prim set 0
 // no longer carries binding 13 — phase 851 + 860 proved NVIDIA
@@ -794,12 +804,28 @@ void main() {
     // stability holds, chrome reflections finally show real Sponza
     // texture detail (curtain damask, leaf veins, sandstone grain).
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
-      uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-      uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-      uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-      vec2 uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;  // .uv lives at .zw
-      vec2 uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
-      vec2 uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      // phase888-non-sponza-bindless-shader: mesh_id selects which
+      // VB/IB pair to read for the UV interp. 0 = Sponza (bindings
+      // 11/12), 1 = CesiumMan (bindings 14/15). Same bindless slot
+      // array is shared (cesium slots follow sponza).
+      uint mesh_id = cd_instance_mats.data[hit_slot].mesh_id;
+      uint i0, i1, i2;
+      vec2 uv0, uv1, uv2;
+      if (mesh_id == 1u) {
+        i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+        i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+        i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+        uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
+        uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
+        uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
+      } else {
+        i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+        i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+        i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+        uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
+        uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
+        uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      }
       float w0 = 1.0 - hit_bary.x - hit_bary.y;
       vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
       hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;

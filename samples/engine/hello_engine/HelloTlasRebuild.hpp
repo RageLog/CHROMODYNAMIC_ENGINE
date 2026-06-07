@@ -57,6 +57,12 @@ struct W8BEGeomMeta
 {
     std::uint32_t albedo_tex_slot { cd::hello_engine::kBindlessAlbedoSlotNone };
     std::uint32_t index_offset    { 0u };
+    // phase890-cesium-bindless-textures: mesh_id picks which
+    // VB/IB binding pair the shader's bindless UV interp reads
+    // from. 0 = Sponza (bindings 11/12), 1 = CesiumMan
+    // (bindings 14/15). The host fills this when populating the
+    // sponza_w8be_meta + cesium_w8be_meta arrays.
+    std::uint32_t mesh_id          { 0u };
 };
 
 // ---- rebuild_tlas_and_transition_depth ------------------------------------
@@ -290,6 +296,8 @@ rebuild_tlas_and_transition_depth(
                         {
                             im.albedo_tex_slot = w8be_meta[g].albedo_tex_slot;
                             im.index_offset    = w8be_meta[g].index_offset;
+                            // phase890-cesium-bindless-textures
+                            im.mesh_id         = w8be_meta[g].mesh_id;
                         }
                         expanded[static_cast<std::size_t>(tlas_idx)
                                  * cd::hello_engine::kMaxGeomsPerInst + g] = im;

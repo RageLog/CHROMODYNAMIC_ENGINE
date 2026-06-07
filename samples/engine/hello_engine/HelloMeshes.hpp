@@ -563,13 +563,21 @@ sync_perprim_global_bindings(
     // OWN albedo_view (always valid for textured prims that get into
     // this loop).
     cd::rhi::TextureViewHandle     bindless_fallback_view,
-    cd::rhi::SamplerHandle         bindless_fallback_sampler)
+    cd::rhi::SamplerHandle         bindless_fallback_sampler,
+    // phase888-non-sponza-bindless-shader: CesiumMan VB/IB get
+    // propagated to bindings 14/15 of every per-prim set so the
+    // shader's mesh_id-aware UV interp branch never reads an
+    // unwritten slot. When CesiumMan isn't loaded, the caller
+    // can pass the Sponza buffers here as a safe fallback (shader
+    // never enters the cesium branch in that case).
+    cd::rhi::BufferHandle          cesium_vb,
+    cd::rhi::BufferHandle          cesium_ib)
 {
     for (auto& pr : ranges)
     {
         if (!pr.prim_inst.is_valid())
             continue;
-        const std::array<cd::rhi::DescriptorWrite, 9> gw {
+        const std::array<cd::rhi::DescriptorWrite, 11> gw {
             cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
                 .type = cd::rhi::DescriptorType::kUniformBuffer,
                 .buffer = shadow_ubo, .buffer_offset = 0,
@@ -602,6 +610,12 @@ sync_perprim_global_bindings(
                 .buffer = sponza_ib },
             // phase864-bindless-dedicated-set: binding 13 removed —
             // bindless is now on its own descriptor set 1.
+            cd::rhi::DescriptorWrite { .binding = 14, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = cesium_vb },
+            cd::rhi::DescriptorWrite { .binding = 15, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = cesium_ib },
         };
         (void)bindless_fallback_view;     // silence unused
         (void)bindless_fallback_sampler;

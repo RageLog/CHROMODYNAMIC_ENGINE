@@ -123,6 +123,13 @@ layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
 layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
   uint idx[];
 } cd_sponza_ib;
+// phase888-non-sponza-bindless-shader: see prim.frag.glsl
+layout(set = 0, binding = 14, std430) readonly buffer CesiumVB {
+  PrimitiveVertexGpu verts[];
+} cd_cesium_vb;
+layout(set = 0, binding = 15, std430) readonly buffer CesiumIB {
+  uint idx[];
+} cd_cesium_ib;
 // phase864-bindless-dedicated-set: see prim.frag.glsl
 layout(set = 1, binding = 0) uniform sampler2D cd_bindless_albedo[];
 
@@ -725,14 +732,26 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase865-bindless-revive-via-dedicated-set: see prim.frag.glsl
+    // phase865 + phase888: see prim.frag.glsl
     if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
-      uint i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-      uint i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-      uint i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-      vec2 uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
-      vec2 uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
-      vec2 uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      uint mesh_id = cd_instance_mats.data[hit_slot].mesh_id;
+      uint i0, i1, i2;
+      vec2 uv0, uv1, uv2;
+      if (mesh_id == 1u) {
+        i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+        i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+        i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+        uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
+        uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
+        uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
+      } else {
+        i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+        i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+        i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+        uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
+        uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
+        uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      }
       float w0 = 1.0 - hit_bary.x - hit_bary.y;
       vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
       hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
