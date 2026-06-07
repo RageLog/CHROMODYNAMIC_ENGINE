@@ -12,18 +12,24 @@
 # until the directories are physically removed in a follow-on
 # cleanup PR.
 #
-# Retired (covered by library gtests):
-#   * hello_ddgi — phase 900. Probe-weight invariants already in
-#     `engine/render/ddgi/tests/test_ddgi.cpp` (20+ cases incl.
-#     BlendWeightsSumToOneInsideGrid + BlendWeightsSumToZeroOutsideGrid).
-#     Source directory deleted in the same commit.
+# Retired in phase 900/901 (each retirement's invariants are
+# already covered by the library's own gtests):
+#   * hello_ddgi              → engine/render/ddgi/tests/test_ddgi.cpp (20+ cases)
+#   * hello_gpu_particles     → engine/render/gpu_particles/tests/test_gpu_particles.cpp (6 cases)
+#   * hello_restir            → engine/render/restir_di/tests/test_restir_di.cpp (6 cases)
+#   * hello_mesh_shader       → engine/render/mesh_shader/tests/test_mesh_shader.cpp (6 cases)
+#   * hello_virtual_geometry  → engine/render/virtual_geometry/tests/test_cluster_dag.cpp (6 cases)
+#   * hello_virtual_textures  → engine/render/virtual_textures/tests/test_virtual_textures.cpp (5 cases)
+# Source directories deleted in the same commit (phase 901).
+#
+# Retained until library gtest coverage exists OR until the
+# interactive demo path lands in hello_engine:
+#   * hello_volumetric_fog    — no library tests yet (queue: migrate to engine/render/volumetric/tests/)
+#   * hello_volumetric_clouds — no library tests yet (queue: same)
+#   * hello_decals            — no library tests yet (queue: same)
+#   * hello_nrc               — only 3 library tests; sample exercises extra surface (queue: expand tests)
 #
 add_subdirectory(hello_volumetric_fog)
 add_subdirectory(hello_volumetric_clouds)
-add_subdirectory(hello_gpu_particles)
 add_subdirectory(hello_decals)
-add_subdirectory(hello_restir)
-add_subdirectory(hello_mesh_shader)
 add_subdirectory(hello_nrc)
-add_subdirectory(hello_virtual_geometry)
-add_subdirectory(hello_virtual_textures)
