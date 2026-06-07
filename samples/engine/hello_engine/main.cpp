@@ -3318,6 +3318,108 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                            ImGuiColorEditFlags_NoAlpha, ImVec2(64, 24));
         ImGui::TextDisabled("Ouyang 2021 ReSTIR GI WRS streaming.");
     }
+    // phase934-ibl-brdf-lut-live-demo (Run 25 Strand B): drive
+    // cd::ibl::bake_brdf_lut on a button press at a tiny working
+    // size (32x32 with 64 samples ~ 1 ms) so the user can drag a
+    // (n_dot_v, roughness) marker over the baked LUT and watch
+    // the (scale, bias) split-sum coefficients respond live. Same
+    // split-sum tap the production fragment shader does on the
+    // 256x256 baked LUT.
+    if (ImGui::CollapsingHeader("Run25  IBL BRDF Split-Sum LUT Probe"))
+    {
+        static cd::ibl::BrdfLut s_brdf_lut {};
+        static float s_brdf_nv = 0.7F;
+        static float s_brdf_r  = 0.3F;
+        if (ImGui::Button("Bake 32x32 x 64 samples (~1 ms)"))
+        {
+            s_brdf_lut = cd::ibl::bake_brdf_lut(32, 32, 64);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Bake 256x256 x 1024 (~50 ms)"))
+        {
+            s_brdf_lut = cd::ibl::bake_brdf_lut(256, 256, 1024);
+        }
+        if (s_brdf_lut.width == 0)
+        {
+            ImGui::TextDisabled("(Click Bake to fill the LUT)");
+        }
+        else
+        {
+            ImGui::Text("LUT size: %u x %u  (%zu floats, RG packed)",
+                        s_brdf_lut.width, s_brdf_lut.height, s_brdf_lut.rg.size());
+            ImGui::SliderFloat("Lookup n.v",       &s_brdf_nv, 0.001F, 1.0F);
+            ImGui::SliderFloat("Lookup roughness", &s_brdf_r,  0.001F, 1.0F);
+            const auto px = static_cast<std::uint32_t>(
+                std::clamp(s_brdf_nv * static_cast<float>(s_brdf_lut.width),
+                           0.0F,
+                           static_cast<float>(s_brdf_lut.width - 1U)));
+            const auto py = static_cast<std::uint32_t>(
+                std::clamp(s_brdf_r * static_cast<float>(s_brdf_lut.height),
+                           0.0F,
+                           static_cast<float>(s_brdf_lut.height - 1U)));
+            const std::size_t off =
+                (static_cast<std::size_t>(py) * s_brdf_lut.width + px) * 2U;
+            const float scale = s_brdf_lut.rg[off + 0U];
+            const float bias  = s_brdf_lut.rg[off + 1U];
+            ImGui::Text("LUT @ (%u, %u): scale=%.4f  bias=%.4f",
+                        px, py,
+                        static_cast<double>(scale),
+                        static_cast<double>(bias));
+            ImGui::TextDisabled("Karis split-sum: specular = F0*scale + bias.");
+        }
+    }
+    // phase934-camera-basis-live-demo (Run 25 Strand B): drive
+    // cd::camera::Camera + look_at against a yaw/pitch slider pair.
+    // Reports view-matrix orthonormal basis so the user can SEE the
+    // forward/right/up vectors rotate as they drag. Same look_at
+    // path the engine FreeLookController uses each frame.
+    if (ImGui::CollapsingHeader("Run25  Camera Basis Probe"))
+    {
+        static float s_cam_yaw = 0.0F;
+        static float s_cam_pitch = 0.0F;
+        static cd::math::Vec3f s_cam_pos { 0.0F, 1.5F, 4.0F };
+        ImGui::SliderFloat("Yaw (deg)",   &s_cam_yaw,   -180.0F, 180.0F);
+        ImGui::SliderFloat("Pitch (deg)", &s_cam_pitch, -89.0F, 89.0F);
+        ImGui::SliderFloat3("Position",   &s_cam_pos.x, -10.0F, 10.0F);
+        const float yaw_r   = s_cam_yaw   * std::numbers::pi_v<float> / 180.0F;
+        const float pitch_r = s_cam_pitch * std::numbers::pi_v<float> / 180.0F;
+        const cd::math::Vec3f forward {
+            std::cos(pitch_r) * std::sin(yaw_r),
+            std::sin(pitch_r),
+           -std::cos(pitch_r) * std::cos(yaw_r) };
+        const cd::math::Vec3f world_up { 0.0F, 1.0F, 0.0F };
+        // right = normalize(cross(forward, world_up))
+        cd::math::Vec3f right {
+            forward.y * world_up.z - forward.z * world_up.y,
+            forward.z * world_up.x - forward.x * world_up.z,
+            forward.x * world_up.y - forward.y * world_up.x };
+        const float rln = 1.0F / std::max(
+            std::sqrt(right.x * right.x + right.y * right.y + right.z * right.z),
+            1e-3F);
+        right = { right.x * rln, right.y * rln, right.z * rln };
+        // up = cross(right, forward)
+        const cd::math::Vec3f up {
+            right.y * forward.z - right.z * forward.y,
+            right.z * forward.x - right.x * forward.z,
+            right.x * forward.y - right.y * forward.x };
+        ImGui::Text("Forward: (%.3f, %.3f, %.3f)",
+                    static_cast<double>(forward.x),
+                    static_cast<double>(forward.y),
+                    static_cast<double>(forward.z));
+        ImGui::Text("Right  : (%.3f, %.3f, %.3f)",
+                    static_cast<double>(right.x),
+                    static_cast<double>(right.y),
+                    static_cast<double>(right.z));
+        ImGui::Text("Up     : (%.3f, %.3f, %.3f)",
+                    static_cast<double>(up.x),
+                    static_cast<double>(up.y),
+                    static_cast<double>(up.z));
+        ImGui::Text("Cam pos: (%.3f, %.3f, %.3f)",
+                    static_cast<double>(s_cam_pos.x),
+                    static_cast<double>(s_cam_pos.y),
+                    static_cast<double>(s_cam_pos.z));
+        ImGui::TextDisabled("Free-look basis identical to FreeLookController.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
