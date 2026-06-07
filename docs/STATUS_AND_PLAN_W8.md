@@ -858,35 +858,141 @@ textured cathedral interior, no longer as a polished plastic ball.
 ### Run 19 candidate queue
 
 - USER-reported bugs queued for phase 847+:
-  - PBR M1R0 sphere visual artefact (bottom-left chrome sphere of
-    the grid). NOTE: phase 850 baseline capture shows this is most
-    likely the W8-BD avg-colour reflection path expressing flat
-    per-prim colours through a roughness=0.04 mirror, NOT a code
+  - PBR M1R0 sphere visual artefact: phase 850 baseline capture
+    confirmed this is the W8-BD avg-colour reflection path expressing
+    flat per-prim colours through a roughness=0.04 mirror, NOT a code
     bug — same "stained-glass" pattern affects all top-row spheres
-    (M0R0..M3R0) which all share roughness=0.04. Resolution path:
-    the texture-upload follow-on to phase 849 W8-BE infrastructure
-    (decode Sponza GltfTexture::rgba arrays + create per-tex Vulkan
-    Texture+View + write_bindless_texture_slot for each prim,
-    then revive the shader bindless branch). Multi-week, not a
-    single-phase fix. User-visual reference image needed to
-    confirm whether M1R0 specifically has a deeper artefact above
-    the shared-mirror-path symptom.
-  - Black halo / silhouette artefact around scene objects.
-    NOTE: GTAO crease-AO is already reduced to 0.35x in phase 849
-    baseline (prim.frag.glsl:831 — "Reduce crease-AO intensity to
-    avoid dark halos around objects"). No other systemic halo path
-    found in code inspection. User-visual reference image needed
-    to pinpoint exact halo (TAA history mismatch? bloom threshold?
-    SSR edge? volumetric edge?).
-- Wire actual Sponza per-prim albedo texture upload through the
-  W8-BE bindless array. Once slots 0..102 are written with real
-  textures, revert phase849-W8-BE-disable's `tex_slot =
-  kBindlessAlbedoSlotNone;` line in prim.frag.glsl + .inl so the
-  bindless branch runs again. Acceptance test:
-  test_hello_engine_w8be_layout already covers the host-side
-  contract; add a runtime-only capture diff to confirm chrome
-  spheres show real damask / leaf-vein / sandstone detail.
+    (M0R0..M3R0). Resolution gates on bindless dedicated-set work
+    (queued below).
+  - Black halo around scene objects — ROOT-CAUSE FOUND + FIXED
+    in phase 856b. The `depth_ao` ring-loop's saturating ramp
+    (`clamp((dz-bias)/0.5, 0, 1)`) was contributing full occlusion
+    on background pixels behind foreground silhouettes. Bell-curve
+    weighting (`smoothstep(bias, bias+0.05, dz) * (1 - smoothstep
+    (0.30, 0.80, dz))`) kills the halo while preserving local
+    contact AO. Committed 06e881c.
+- Wire actual Sponza per-prim albedo texture upload through a
+  DEDICATED bindless descriptor set (not the shared prim_inst
+  set — phase 851/860 proved the dynamic-index crash is a
+  property of the shared set itself, NOT of unwritten slots).
+  Architecture: add set index 1 to the prim pipeline layout,
+  carrying only binding 0 (kBindlessSampledImage, count=256,
+  .bindless=true). One global bindless set created at boot,
+  populated with all Sponza albedos + fallback for unused slots
+  (the all-slot fill landed in phase 860 stays as the population
+  template). Shader binding 13 → moves to (set=1, binding=0).
+  Once committed, revert the `tex_slot = kBindlessAlbedoSlotNone;`
+  sentinel override in prim.frag.glsl + .inl.
+- True 2-bounce recursive reflection (user-requested "yansımanın
+  yansıması"): needs per-instance hit-normal source. Cheapest path
+  is extending InstanceMatGpu 48 → 64 B with sphere_center+radius
+  (filled by HelloTlasRebuild for sphere primitives, sentinel
+  for non-sphere). Shader computes analytical normal at hit point
+  `N = normalize(hit_pos - sphere_center)`, then fires a second
+  reflection ray query with `reflect(Ri, N)`. The
+  reflection_hit_id_t + reflection_hit_color helpers were drafted
+  + reverted in phase 852 — they're ready to come back in when the
+  normal source lands.
 - L1 Metal backend (per ADR-20260530-metal-backend.md).
 - Remaining 2 Sponza-on-disk PDFs (Heitz 2016 LTC, Eberly LBS).
+
+---
+
+## Marathon Run 19 close-out (2026-06-07 dev branch, phases 849-860)
+
+10 substantive commits landed across two user-supervised sessions
++ one autonomous overnight stretch. All 258/258 ctest PASS at
+every checkpoint, no rendering regressions, working tree clean
+before and after.
+
+### Quality / stability fixes
+
+- **phase 849 (2f4283e)** — Bindless sample force-skipped via shader
+  sentinel; stabilised the 5–80 frame intermittent crash from
+  unwritten / driver-speculative slot access. 8/8 fixture stable
+  after the change.
+- **phase 855 (33f5022)** — TAA velocity-based history decay
+  (Karis 2014 / Lottes): per-pixel `motion_decay = exp(-vel_px*2)`
+  collapses history weight on fast-moving pixels, killing the
+  ghosting/blur trail the constant-alpha TAA produced.
+- **phase 856b (06e881c)** — `depth_ao` bell-curve `dz_w` weight
+  kills the dark halo every foreground silhouette painted on its
+  background. Local contact AO preserved at full strength.
+- **phase 860 (a4c3e38)** — All 256 bindless slots populated at
+  boot (real Sponza albedos for textured prims + procedural Earth
+  fallback for unused). Diagnostic test of "unwritten slots cause
+  crash" hypothesis: NEGATIVE. Confirms the dedicated-set
+  architecture is required.
+
+### Visible-quality polish
+
+- **phase 853 (20260d7)** — Cloud noise quality: quintic Hermite
+  interp + 6 octaves + per-octave rotation + 2-step curl-style
+  domain warp. Tile-block artefact eliminated.
+- **phase 854 (20260d7)** — Cloud `depth_gate = smoothstep(0.9985,
+  0.9995, depth)` softens the sky/grid boundary at the 1000 m
+  floor's far edge.
+- **phase 856a (5fb652b)** — Clouds world-anchored via per-pixel
+  ray-cast onto a virtual sky plane at altitude 80 m. Camera
+  rotation no longer slides the cloud pattern with the view.
+  `horizon_fade = smoothstep(0, 0.25, dir_world.y)` drops clouds
+  below the horizon line.
+- **phase 858 (5e68022)** — Sky horizon warmed to cream (0.92,
+  0.86, 0.78); zenith pushed to richer cobalt (0.20, 0.44, 0.84);
+  cloud mix ceiling dropped from 0.85 → 1.0 so dense clouds fully
+  cover the underlying sky colour — cloud colour stable across
+  camera rotation.
+- **phase 858b (23b49b7)** — fog_density 0.08 → 0.03 and
+  aerial_perspective 0.20 → 0.10 after nave capture showed
+  the original phase-857 defaults washing out midground contrast.
+- **phase 859 (e8e2d28)** — Fog `cos_th` sun-coupling 0.8 → 0.25
+  (kills the "scene tint flips by direction" complaint); cloud
+  projection switched from sky-plane to pure SPHERICAL/ANGULAR
+  coordinates (uniform resolution at every pitch); cloud
+  horizon_fade widened to `smoothstep(-0.05, 0.40, dir_world.y)`
+  (kills the visible 14.5° transition band); 2-layer cloud
+  composite (low @ 0.65 + high @ 0.45) with 5× slower drift.
+
+### First-boot defaults
+
+- **phase 857 (f9e1273)** — HelloEngineFx cinematic defaults
+  applied so the engine looks polished out of the box:
+  - taa_amount        0.0  → 0.85
+  - motion_blur       0.0  → 0.20
+  - clouds_coverage   0.0  → 0.45
+  - chromab_strength  0.0  → 0.12
+  - film_grain        0.0  → 0.08
+  - vignette          0.25 → 0.32
+  - bloom_post        0.02 → 0.035
+  - (fog + aerial later dialed in 858b)
+
+### Investigation logs (negative results)
+
+- **phase 851 (8f2ea5f)** — Diagnostic instrumentation around the
+  bindless dynamic-index crash: confirmed host writes (103/103
+  OK), fixed-slot shader reads stable (8/8 @ slot 0, 3/3 @ slot
+  50), but `tex_slot = uint(hit_inst) % 100u` crashes
+  reproducibly. Pool size bumped 1024 → 65536 to rule out pool
+  exhaustion. Cause is dynamic-index ON THE SHARED prim_inst
+  set, not slot population or pool size.
+- **phase 852 (8f2ea5f)** — Cheap IBL-shine stand-in for the
+  "yansımanın yansıması" request after the true 2-bounce work
+  proved blocked by missing per-prim normal source. Mixes IBL
+  sample at Ri direction into hit_alb at chrome strength.
+
+### Memory updates this run
+
+- `feedback-vulkan-bindless-multi-layer-checklist.md` rule 8 added
+  (descriptor surface ≠ texture upload, slot fill alone doesn't
+  unlock the dynamic-index path).
+
+### Tests + binaries
+
+- 258/258 ctest PASS at every commit checkpoint.
+- No new test binaries; no new libraries.
+- hello_engine.exe stable on 8/8 fixture-5 captures at every
+  release-candidate commit.
+
+---
 
 ---
