@@ -6,7 +6,11 @@ add_subdirectory(hello_cube)
 add_subdirectory(hello_rhi_features)
 
 if(WIN32)
-  add_subdirectory(hello_d3d12_boot)
+  # phase909-sample-consolidation: hello_d3d12_boot retired. Its 4-step
+  # smoke (create_d3d12_device + adapter_name + Backend::kD3D12 +
+  # wait_idle) is fully covered by GTEST_SKIP-on-no-adapter prologues
+  # in engine/render/rhi/tests/test_d3d12_mesh_shader.cpp (9) +
+  # test_d3d12_parity_m4.cpp (14). Source directory deleted.
   add_subdirectory(hello_d3d12_clear)
   add_subdirectory(hello_d3d12_triangle)
   add_subdirectory(hello_opengl_boot)
