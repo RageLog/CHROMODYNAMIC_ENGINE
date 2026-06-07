@@ -520,19 +520,26 @@ void main() {
                   + ndc.x * pc.cam_right.w * pc.cam_right.xyz
                   - ndc.y * pc.cam_up.w    * pc.cam_up.xyz;
     vec3 dir_world = normalize(view_ray);
-    // phase859-clouds-angular: switch from sky-plane intersection
-    // (which gave wildly different angular resolution at high vs
-    // low pitch — high-pitch clouds were coarse blobs, low-pitch
-    // clouds were tight wisps because the 1/dy projection stretched
-    // them differently) to a pure SPHERICAL/ANGULAR coordinate
-    // system. The longitude (atan2 of XZ) + latitude (Y, mapped
-    // through asin) feed the fBm directly, giving identical cloud
-    // resolution at every pitch. World position drops out of the
-    // coordinate entirely → no per-pixel position dependence on the
-    // camera origin. Drift is purely a time-driven sky animation.
-    float longi = atan(dir_world.x, dir_world.z);  // [-π, π]
-    float lat   = asin(clamp(dir_world.y, -1.0, 1.0)); // [-π/2, π/2]
-    vec2 sky_uv = vec2(longi * 2.5, lat * 4.0);
+    // phase862-clouds-octahedral: replace the atan2/asin spherical
+    // projection (which had two visible artefacts: a vertical seam
+    // running down the south meridian where atan2 wraps from -π to
+    // +π, and a radial pinch at the zenith where asin's derivative
+    // diverges) with the OCTAHEDRAL parameterisation. Octahedral
+    // maps the unit sphere to [-1, 1]² with NO singularities and a
+    // bounded distortion factor ~1.4× — ideal for cloud textures
+    // that need to look continuous when the camera spins. Each
+    // hemisphere unfolds onto the unit square; the upper hemisphere
+    // (where clouds live) takes the centred diamond region |x|+|z| ≤
+    // 1; the lower hemisphere wraps around the corners, but we
+    // already gate clouds with horizon_fade so the wrap is invisible
+    // in practice.
+    vec2 oct = dir_world.xz / (abs(dir_world.x) + abs(dir_world.y) + abs(dir_world.z));
+    if (dir_world.y < 0.0) {
+        oct = (vec2(1.0) - abs(oct.yx)) *
+              vec2(oct.x >= 0.0 ? 1.0 : -1.0,
+                   oct.y >= 0.0 ? 1.0 : -1.0);
+    }
+    vec2 sky_uv = oct * 10.0;
     // phase859b-clouds-slower-layered: user-requested "bulutlar hizli
     // akiyor daha yavas olmali ve daha katman katman gozukmeli"
     // (clouds drift too fast; should be slower and more layered).
@@ -696,11 +703,27 @@ void main() {
       // Aerial perspective still applies on top — paints the horizon
       // tint over the integrated fog so the far-distance haze matches
       // the sky band.
+      // phase863-fog-symmetric: see else-branch comment.
       float aer_t = 1.0 - exp(-lz * 0.08);
+      float aer_floor = clamp(pc.atmo.y * 0.10, 0.0, 0.15);
+      aer_t = max(aer_t, aer_floor);
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
     } else {
+      // phase863-fog-symmetric: user-reported "fogla ilgili problemim
+      // var asagi bakinca fok gidiyor" (fog disappears when looking
+      // down). Root cause: both fog_t and aer_t are `1 - exp(-lz *
+      // density)` — they're DEPTH-PROPORTIONAL. Looking down at the
+      // floor (lz < 5 m), the exp is ≈1 and fog_t ≈ 0, so no haze.
+      // Looking up at sky (lz = far_z), fog_t saturates. Fog should
+      // be UNIFORMLY present in the air, not just on far surfaces.
+      // Add a constant FLOOR so even near-surface pixels carry a
+      // small fog presence proportional to the density slider.
       float fog_t = 1.0 - exp(-lz * max(vol_fog_density, 0.0));
+      float fog_floor = clamp(vol_fog_density * 4.0, 0.0, 0.20);
+      fog_t = max(fog_t, fog_floor);
       float aer_t = 1.0 - exp(-lz * 0.08);
+      float aer_floor = clamp(pc.atmo.y * 0.10, 0.0, 0.15);
+      aer_t = max(aer_t, aer_floor);
       c = mix(c, fog_colour,  clamp(fog_t, 0.0, 1.0));
       c = mix(c, horizon_lit, clamp(aer_t * pc.atmo.y, 0.0, 1.0));
     }
