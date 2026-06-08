@@ -117,7 +117,7 @@ struct ProbeGrid
                 static_cast<std::uint32_t>(cy) < probes_y &&
                 static_cast<std::uint32_t>(cz) < probes_z;
 
-            const std::size_t i = static_cast<std::size_t>(idx);
+            const auto i = static_cast<std::size_t>(idx);
             weights_out[i] = in_bounds ? (wx * wy * wz) : 0.0F;
             indices[i]     = in_bounds
                 ? flat_index(static_cast<std::uint32_t>(cx),
@@ -204,8 +204,8 @@ struct ProbeAtlas
         const float tile_x = static_cast<float>(px + pz * g.probes_x) + fu;
         const float tile_y = static_cast<float>(py) + fv;
 
-        const float atlas_w = static_cast<float>(irradiance_width);
-        const float atlas_h = static_cast<float>(irradiance_height);
+        const auto atlas_w = static_cast<float>(irradiance_width);
+        const auto atlas_h = static_cast<float>(irradiance_height);
         // Guard against zero-size atlas (uninitialised).
         if (atlas_w < 1.0F || atlas_h < 1.0F)
             return { fu, fv };
@@ -339,7 +339,7 @@ trilinear_probe_weights(const ProbeGrid& g,
             static_cast<std::uint32_t>(cx) < g.probes_x &&
             static_cast<std::uint32_t>(cy) < g.probes_y &&
             static_cast<std::uint32_t>(cz) < g.probes_z;
-        const std::size_t i = static_cast<std::size_t>(idx);
+        const auto i = static_cast<std::size_t>(idx);
         weights[i] = in_bounds ? (wx * wy * wz) : 0.0F;
         corners[i] = {
             static_cast<std::uint32_t>(std::max(0, cx)),

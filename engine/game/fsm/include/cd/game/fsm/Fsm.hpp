@@ -179,7 +179,7 @@ public:
     // -- structure ----------------------------------------------------------
     StateId add_state(std::unique_ptr<State<TContext>> state, bool mark_initial = false)
     {
-        const StateId id = static_cast<StateId>(states_.size());
+        const auto id = static_cast<StateId>(states_.size());
         states_.push_back(std::move(state));
         if (mark_initial || initial_ == kInvalidStateId)
         {

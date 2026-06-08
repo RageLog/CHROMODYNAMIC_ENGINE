@@ -84,7 +84,7 @@ struct FaceTripleHash
     [[nodiscard]] std::size_t operator()(const FaceTriple& t) const noexcept
     {
         // splitmix64-flavoured mix; cheap, no collisions for typical mesh sizes.
-        std::uint64_t h = static_cast<std::uint64_t>(t.v);
+        auto h = static_cast<std::uint64_t>(t.v);
         h = (h * 0x9E3779B97F4A7C15ULL) ^ static_cast<std::uint64_t>(t.vt);
         h = (h * 0x9E3779B97F4A7C15ULL) ^ static_cast<std::uint64_t>(t.vn);
         // We only target 64-bit hosts. size_t == uint64_t on every supported

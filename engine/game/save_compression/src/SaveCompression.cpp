@@ -171,7 +171,7 @@ decompress_rle(const CompressedSave& compressed)
     {
         const std::uint8_t header = *pos++;
         const bool         is_repeat = (header & kRepeatFlag) != 0U;
-        const std::uint8_t count     = static_cast<std::uint8_t>((header & 0x7FU) + 1U);
+        const auto         count     = static_cast<std::uint8_t>((header & 0x7FU) + 1U);
 
         if (is_repeat)
         {

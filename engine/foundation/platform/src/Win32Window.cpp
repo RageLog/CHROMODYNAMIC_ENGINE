@@ -391,7 +391,7 @@ private:
                 // wide window class, so Win32 calls WM_CHAR not
                 // WM_UNICHAR). Skip control characters except for the
                 // ones ImGui expects (tab=9, newline=10, return=13).
-                const std::uint32_t cp = static_cast<std::uint32_t>(w);
+                const auto cp = static_cast<std::uint32_t>(w);
                 if (cp == 0 || (cp < 32 && cp != 9 && cp != 10 && cp != 13))
                     return 0;
                 OSEvent e {};

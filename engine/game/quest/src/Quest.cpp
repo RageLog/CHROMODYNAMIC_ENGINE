@@ -586,7 +586,7 @@ RestoreResult QuestLog::restore(std::span<const std::byte> bytes)
         {
             return RestoreResult::kCorrupt;
         }
-        const QuestStatus q_status = static_cast<QuestStatus>(status_byte);
+        const auto q_status = static_cast<QuestStatus>(status_byte);
 
         std::uint32_t obj_count = 0;
         if (!read_u32(bytes, pos, obj_count))       { return RestoreResult::kTruncated; }
@@ -606,7 +606,7 @@ RestoreResult QuestLog::restore(std::span<const std::byte> bytes)
             {
                 return RestoreResult::kCorrupt;
             }
-            const ObjectiveStatus o_status = static_cast<ObjectiveStatus>(o_status_byte);
+            const auto o_status = static_cast<ObjectiveStatus>(o_status_byte);
 
             if (!read_i32(bytes, pos, o.progress))       { return RestoreResult::kTruncated; }
             if (!read_i32(bytes, pos, o.target))         { return RestoreResult::kTruncated; }

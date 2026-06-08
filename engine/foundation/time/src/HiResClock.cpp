@@ -54,8 +54,8 @@ std::uint64_t hires_now_ns() noexcept
     const std::int64_t freq = qpc_freq().hz();
     // counter * (1e9 / freq), computed carefully to avoid 64-bit overflow.
     // For typical freq (10 MHz on modern x64), counter fits in 47 bits per year.
-    const std::uint64_t seconds = static_cast<std::uint64_t>(counter.QuadPart / freq);
-    const std::uint64_t remainder = static_cast<std::uint64_t>(counter.QuadPart % freq);
+    const auto seconds = static_cast<std::uint64_t>(counter.QuadPart / freq);
+    const auto remainder = static_cast<std::uint64_t>(counter.QuadPart % freq);
     return seconds * 1'000'000'000ull + (remainder * 1'000'000'000ull) / static_cast<std::uint64_t>(freq);
 #elif CD_OS_MACOS || CD_OS_IOS || CD_OS_TVOS || CD_OS_WATCHOS
     std::timespec ts {};
