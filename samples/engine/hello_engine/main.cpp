@@ -3976,6 +3976,56 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::TextDisabled(".cdmesh -> cdmesh, .cdtex -> cdtex,");
         ImGui::TextDisabled(".wav -> wav, .json -> json.");
     }
+    // phase970-random-pcg32-distribution-probe (Run 25 Strand B):
+    // drive cd::math::Random + plot a 32-bin histogram of next_float()
+    // samples. Lets the user click "Generate N samples" and SEE the
+    // uniform distribution flatten out as N grows.
+    if (ImGui::CollapsingHeader("Run25  Random Distribution Probe"))
+    {
+        static cd::math::Random s_rng { 0x9E3779B97F4A7C15ULL };
+        static int s_rng_samples_per_click = 256;
+        static std::array<std::uint32_t, 32> s_rng_hist {};
+        static std::uint64_t s_rng_total = 0;
+        ImGui::SliderInt("Samples per click", &s_rng_samples_per_click, 16, 4096);
+        if (ImGui::Button("Generate samples"))
+        {
+            for (int i = 0; i < s_rng_samples_per_click; ++i)
+            {
+                const float v = s_rng.next_float();
+                const auto bin = static_cast<std::size_t>(
+                    std::clamp(v * 32.0F, 0.0F, 31.999F));
+                ++s_rng_hist[bin];
+                ++s_rng_total;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset histogram"))
+        {
+            s_rng_hist = {};
+            s_rng_total = 0;
+        }
+        std::array<float, 32> hist_f {};
+        std::uint32_t hist_max = 1;
+        for (std::size_t i = 0; i < 32; ++i)
+        {
+            hist_f[i] = static_cast<float>(s_rng_hist[i]);
+            if (s_rng_hist[i] > hist_max)
+                hist_max = s_rng_hist[i];
+        }
+        ImGui::Text("Total samples: %llu",
+                    static_cast<unsigned long long>(s_rng_total));
+        const float expected = s_rng_total > 0
+                                   ? static_cast<float>(s_rng_total) / 32.0F
+                                   : 1.0F;
+        ImGui::Text("Expected per bin (uniform): %.1f", static_cast<double>(expected));
+        ImGui::PlotHistogram("##rng_hist",
+                             hist_f.data(),
+                             32, 0,
+                             "Bins across [0, 1) (PCG32 next_float)",
+                             0.0F, static_cast<float>(hist_max),
+                             ImVec2(0, 64));
+        ImGui::TextDisabled("PCG32 deterministic stream; large N converges to uniform.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
