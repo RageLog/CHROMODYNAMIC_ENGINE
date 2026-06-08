@@ -86,7 +86,7 @@ void Console::draw(cd::ui::renderer::DrawBatcher& batcher,
             break;  // No more vertical space.
 
         // Row background (alternating subtle tint using index parity).
-        const std::size_t idx = static_cast<std::size_t>(
+        const auto idx = static_cast<std::size_t>(
             std::distance(entries_.crbegin(), it));
         const bool even = (idx % 2U) == 0U;
 

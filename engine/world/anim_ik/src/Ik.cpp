@@ -144,7 +144,7 @@ IkResult CcdSolver::solve(const IkChain& chain) const
                 return result;
             }
 
-            const std::size_t i = static_cast<std::size_t>(ji);
+            const auto i = static_cast<std::size_t>(ji);
             const std::array<float, 3>& joint_pos = world_pos[i];
 
             // Direction from this joint to end effector (current)

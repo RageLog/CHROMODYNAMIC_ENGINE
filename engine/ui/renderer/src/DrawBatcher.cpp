@@ -69,7 +69,7 @@ void DrawBatcher::emit_quad_(float x, float y, float w, float h,
     // Reject empty quads up-front so the batch + index buffers stay tight.
     if (w <= 0.0F || h <= 0.0F) return;
 
-    const std::uint16_t base = static_cast<std::uint16_t>(vertices_.size());
+    const auto base = static_cast<std::uint16_t>(vertices_.size());
     // top-left, top-right, bottom-right, bottom-left
     Vertex v0 { x,     y,     uv.u0, uv.v0, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
     Vertex v1 { x + w, y,     uv.u1, uv.v0, color.r, color.g, color.b, color.a, variant, 0U, 0U, 0U };
@@ -81,9 +81,9 @@ void DrawBatcher::emit_quad_(float x, float y, float w, float h,
     vertices_.push_back(v3);
 
     const std::uint16_t i0 = base;
-    const std::uint16_t i1 = static_cast<std::uint16_t>(base + 1U);
-    const std::uint16_t i2 = static_cast<std::uint16_t>(base + 2U);
-    const std::uint16_t i3 = static_cast<std::uint16_t>(base + 3U);
+    const auto i1 = static_cast<std::uint16_t>(base + 1U);
+    const auto i2 = static_cast<std::uint16_t>(base + 2U);
+    const auto i3 = static_cast<std::uint16_t>(base + 3U);
     indices_.push_back(i0);
     indices_.push_back(i1);
     indices_.push_back(i2);

@@ -479,7 +479,7 @@ public:
             const char* p = v;
             while (*p >= '0' && *p <= '9') { major = major * 10 + (*p - '0'); ++p; }
             if (*p == '.') { ++p; while (*p >= '0' && *p <= '9') { minor = minor * 10 + (*p - '0'); ++p; } }
-            const std::uint32_t got = static_cast<std::uint32_t>(major * 10 + minor);
+            const auto got = static_cast<std::uint32_t>(major * 10 + minor);
             if (got < info.min_version) return false;
         }
         return true;

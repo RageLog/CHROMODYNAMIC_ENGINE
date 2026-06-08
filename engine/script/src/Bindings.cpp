@@ -596,7 +596,7 @@ extern "C" int cd_register_handler(lua_State* L)
         ::lua_setfield(L, -3, name);
     }
     // stack: [events, list]
-    const lua_Integer list_len = static_cast<lua_Integer>(::lua_rawlen(L, -1));
+    const auto list_len = static_cast<lua_Integer>(::lua_rawlen(L, -1));
     ::lua_createtable(L, 0, 2);                      // [events, list, entry]
     ::lua_pushvalue(L, 2);                           // function
     const int ref = ::luaL_ref(L, LUA_REGISTRYINDEX);
@@ -624,7 +624,7 @@ extern "C" int cd_unregister_handler(lua_State* L)
         ::lua_pushboolean(L, 0);
         return 1;
     }
-    const lua_Integer n = static_cast<lua_Integer>(::lua_rawlen(L, -1));
+    const auto n = static_cast<lua_Integer>(::lua_rawlen(L, -1));
     bool removed = false;
     for (lua_Integer i = 1; i <= n; ++i)
     {
@@ -816,7 +816,7 @@ std::uint32_t fire_event(BindingState* state, std::string_view event_name)
         ::lua_pop(L, 2);
         return 0;
     }
-    const lua_Integer n = static_cast<lua_Integer>(::lua_rawlen(L, -1));
+    const auto n = static_cast<lua_Integer>(::lua_rawlen(L, -1));
     std::uint32_t fired = 0;
     for (lua_Integer i = 1; i <= n; ++i)
     {

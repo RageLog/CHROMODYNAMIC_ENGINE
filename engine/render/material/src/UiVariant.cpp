@@ -65,7 +65,7 @@ constexpr std::uint32_t kUiDefaultVertexStride = 24U;
     constexpr std::uint64_t kSprint2Tag = 0x02ULL << 56;
     const std::uint64_t tex  = static_cast<std::uint64_t>(spec.texture_count & 0xFFU) << 16;
     const std::uint64_t ubo  = static_cast<std::uint64_t>(spec.theme_palette_ubo_slot & 0xFFU) << 8;
-    const std::uint64_t sdf  = static_cast<std::uint64_t>(spec.sdf_font_sampler_slot & 0xFFU);
+    const auto sdf  = static_cast<std::uint64_t>(spec.sdf_font_sampler_slot & 0xFFU);
     const std::uint64_t flag = has_theme_ubo ? (1ULL << 32) : 0ULL;
     return kSprint2Tag | flag | tex | ubo | sdf;
 }

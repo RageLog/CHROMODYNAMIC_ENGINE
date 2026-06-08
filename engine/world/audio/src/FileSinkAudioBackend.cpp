@@ -211,7 +211,7 @@ public:
         }
 
         // 16-bit interleaved PCM WAV. Convert float [-1,1] → int16 [-32768,32767].
-        const std::uint32_t data_size = static_cast<std::uint32_t>(rendered_.size() * sizeof(std::int16_t));
+        const auto data_size = static_cast<std::uint32_t>(rendered_.size() * sizeof(std::int16_t));
         const std::uint32_t fmt_size = 16;
         const std::uint32_t riff_size = 4 + 8 + fmt_size + 8 + data_size;
 

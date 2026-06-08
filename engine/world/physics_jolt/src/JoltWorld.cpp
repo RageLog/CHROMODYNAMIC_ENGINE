@@ -737,8 +737,8 @@ std::uint64_t hash_shape_desc(const components::ShapeDesc& shape) noexcept
                 std::uint64_t h = fnv1a64_step(kFnvOffsetBasis, static_cast<std::uint8_t>(kMeshTag));
                 h = fnv1a64_bytes(&s.vertex_count, sizeof(s.vertex_count), h);
                 h = fnv1a64_bytes(&s.index_count, sizeof(s.index_count), h);
-                const std::uintptr_t v_addr = reinterpret_cast<std::uintptr_t>(s.vertices);
-                const std::uintptr_t i_addr = reinterpret_cast<std::uintptr_t>(s.indices);
+                const auto v_addr = reinterpret_cast<std::uintptr_t>(s.vertices);
+                const auto i_addr = reinterpret_cast<std::uintptr_t>(s.indices);
                 h = fnv1a64_bytes(&v_addr, sizeof(v_addr), h);
                 return fnv1a64_bytes(&i_addr, sizeof(i_addr), h);
             }
@@ -1050,8 +1050,8 @@ std::uint64_t hash_shape_desc(const components::ShapeDesc& shape) noexcept
                 std::uint64_t h = fnv1a64_step(kFnvOffsetBasis, static_cast<std::uint8_t>(kMeshTag));
                 h = fnv1a64_bytes(&s.vertex_count, sizeof(s.vertex_count), h);
                 h = fnv1a64_bytes(&s.index_count, sizeof(s.index_count), h);
-                const std::uintptr_t v_addr = reinterpret_cast<std::uintptr_t>(s.vertices);
-                const std::uintptr_t i_addr = reinterpret_cast<std::uintptr_t>(s.indices);
+                const auto v_addr = reinterpret_cast<std::uintptr_t>(s.vertices);
+                const auto i_addr = reinterpret_cast<std::uintptr_t>(s.indices);
                 h = fnv1a64_bytes(&v_addr, sizeof(v_addr), h);
                 return fnv1a64_bytes(&i_addr, sizeof(i_addr), h);
             }

@@ -192,7 +192,7 @@ public:
         // typical clamp limits (uniforms, attributes, …) that hand-rolled
         // shaders never exceed. Engines that ship many shaders typically wrap
         // this with device-reported limits — we leave that to a future sprint.
-        EShMessages messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
+        auto messages = static_cast<EShMessages>(EShMsgSpvRules | EShMsgVulkanRules);
         if (desc.lang == ShaderLanguage::kHlsl)
         {
             messages = static_cast<EShMessages>(messages | EShMsgReadHlsl);

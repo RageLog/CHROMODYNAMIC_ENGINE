@@ -79,7 +79,7 @@ bool load(FreeTypeBackend& ft, std::span<const std::uint8_t> data, float pixel_s
         return false;
     }
 
-    const FT_F26Dot6 size_26dot6 = static_cast<FT_F26Dot6>(pixel_size * 64.0F);
+    const auto size_26dot6 = static_cast<FT_F26Dot6>(pixel_size * 64.0F);
     if (FT_Set_Char_Size(ft.face, 0, size_26dot6, 96, 96) != 0)
     {
         // Fall back to pixel sizes if metric resolution can't be set.

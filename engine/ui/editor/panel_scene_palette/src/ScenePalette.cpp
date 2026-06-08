@@ -56,8 +56,8 @@ ScenePalette::swatch_rect(std::size_t i,
 {
     const float cols      = kCols;
     const float cell_w    = (bounds.w - 2.0F * kPad - (cols - 1.0F) * kGap) / cols;
-    const float col       = static_cast<float>(i % static_cast<std::size_t>(kCols));
-    const float row       = static_cast<float>(i / static_cast<std::size_t>(kCols));
+    const auto col       = static_cast<float>(i % static_cast<std::size_t>(kCols));
+    const auto row       = static_cast<float>(i / static_cast<std::size_t>(kCols));
 
     const float x = bounds.x + kPad + col * (cell_w + kGap);
     const float y = bounds.y + kPad + row * (kSwatchH + kGap);

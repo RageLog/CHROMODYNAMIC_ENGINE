@@ -175,7 +175,7 @@ public:
             // Probe whether this adapter can create a D3D12 device at the
             // requested feature level. We pass nullptr to skip actual
             // device creation; we'll create the real one below once chosen.
-            const D3D_FEATURE_LEVEL fl =
+            const auto fl =
                 static_cast<D3D_FEATURE_LEVEL>(info.min_feature_level);
             hr = D3D12CreateDevice(next.Get(), fl, _uuidof(ID3D12Device), nullptr);
             if (SUCCEEDED(hr))

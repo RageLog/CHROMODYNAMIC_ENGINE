@@ -62,7 +62,7 @@ void Table::set_columns(std::span<const Column> cols)
     const std::size_t ncols = columns_.size();
     // Evict cells that refer to columns beyond the new count.
     std::erase_if(cells_, [ncols](const auto& kv) {
-        const std::size_t col = static_cast<std::size_t>(kv.first & 0xFFFFFFFFULL);
+        const auto col = static_cast<std::size_t>(kv.first & 0xFFFFFFFFULL);
         return col >= ncols;
     });
 
@@ -85,7 +85,7 @@ void Table::set_row_count(std::size_t n)
 
     // Evict cells for rows that no longer exist.
     std::erase_if(cells_, [n](const auto& kv) {
-        const std::size_t row = static_cast<std::size_t>(kv.first >> 32U);
+        const auto row = static_cast<std::size_t>(kv.first >> 32U);
         return row >= n;
     });
 

@@ -51,8 +51,8 @@ namespace
 /// Linear blend between two 8-bit colour channels by t in [0..1].
 [[nodiscard]] std::uint8_t blend_channel(std::uint8_t a, std::uint8_t b, float t) noexcept
 {
-    const float ta = static_cast<float>(a);
-    const float tb = static_cast<float>(b);
+    const auto ta = static_cast<float>(a);
+    const auto tb = static_cast<float>(b);
     const float u  = std::clamp(t, 0.0F, 1.0F);
     const float r  = ta + (tb - ta) * u;
     return static_cast<std::uint8_t>(std::clamp(r, 0.0F, 255.0F));
@@ -155,7 +155,7 @@ float draw_text_line(cd::ui::renderer::DrawBatcher& batcher,
         // Phase 2.2 ASCII / Latin-1 fast path. Wide codepoint decoding
         // is Phase 4 with HarfBuzz; this matches the font atlas which
         // is only rasterized over BMP slices for now.
-        const std::uint32_t cp = static_cast<std::uint32_t>(static_cast<unsigned char>(ch));
+        const auto cp = static_cast<std::uint32_t>(static_cast<unsigned char>(ch));
         const std::optional<cd::ui::font::GlyphInfo> g = font->glyph_uv(cp);
         if (!g.has_value())
         {
@@ -455,7 +455,7 @@ void TextInput::draw(cd::ui::renderer::DrawBatcher& batcher,
         std::uint32_t prev_cp = 0U;
         for (std::size_t i = 0U; i < cursor_ && i < text_.size(); ++i)
         {
-            const std::uint32_t cp = static_cast<std::uint32_t>(
+            const auto cp = static_cast<std::uint32_t>(
                 static_cast<unsigned char>(text_[i]));
             const std::optional<cd::ui::font::GlyphInfo> g = font->glyph_uv(cp);
             if (!g.has_value())
@@ -835,7 +835,7 @@ bool Dropdown::tick(const InputState& input)
         list.contains(input.pointer.mouse_x, input.pointer.mouse_y))
     {
         const float local_y = input.pointer.mouse_y - list_y;
-        const std::size_t idx = static_cast<std::size_t>(local_y / option_height_);
+        const auto idx = static_cast<std::size_t>(local_y / option_height_);
         if (idx < options_.size())
         {
             hovered_option_ = idx;

@@ -299,7 +299,7 @@ bool DockSpace::remove_panel_from_tab_(DockNode* tab_node, std::string_view pane
     if (tab_node == nullptr || tab_node->kind() != DockNodeKind::kTabGroup) { return false; }
     auto it = std::ranges::find(tab_node->panels_, panel_id);
     if (it == tab_node->panels_.end()) { return false; }
-    const std::size_t removed_idx = static_cast<std::size_t>(
+    const auto removed_idx = static_cast<std::size_t>(
         std::distance(tab_node->panels_.begin(), it));
     tab_node->panels_.erase(it);
     if (tab_node->panels_.empty())
