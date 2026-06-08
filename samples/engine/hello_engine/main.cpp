@@ -3778,6 +3778,20 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F, s_csm_far * 1.1F,
             ImVec2(0, 48));
         ImGui::TextDisabled("Zhang 2006 Practical Split (lambda-weighted uni+log).");
+        // phase1010-3d-viewport-csm-cascade-depth: render 4 spheres
+        // along the camera view-direction at the centre depth of each
+        // cascade, computed from the camera's REAL near_z/far_z (not
+        // the panel sliders -- that way the visual shows the actual
+        // shadow distribution the engine uses). Tinted red→yellow→
+        // green→blue by cascade index, the textbook SDSM debug palette.
+        ImGui::Separator();
+        ImGui::Checkbox("Show CSM cascade depth in 3D viewport",
+                        &fx.csm_show_cascade_depth_3d);
+        if (fx.csm_show_cascade_depth_3d)
+        {
+            ImGui::TextDisabled("  4 spheres along camera forward at cascade centre depths");
+            ImGui::TextDisabled("  red=near, yellow, green, blue=far");
+        }
     }
     // phase942-cluster-grid-live-demo (Run 25 Strand B): drive
     // cd::light::ClusterGrid build + per-light assignment. Lets the
@@ -8581,6 +8595,84 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_decal_gizmo");
+                }
+            }
+        }
+        // phase1010-3d-viewport-csm-cascade-depth: 5th application of
+        // the canonical sphere-at-position pattern. Renders 1 sphere
+        // along the camera view-direction at the centre depth of each
+        // of the 4 CSM cascades computed via Zhang 2006 Practical
+        // Split Scheme with lambda=0.75 (Doom Eternal default).
+        // Tinted by cascade index (red=near, yellow, green, blue=far)
+        // so the user can SEE how the cascade boundaries distribute
+        // along view depth. The split distance bars in the
+        // "Run25 CSM Split Distances Probe" panel give the numbers;
+        // this overlay gives the visual along the actual view ray.
+        if (s.fx.csm_show_cascade_depth_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr std::uint32_t kCascades = 4;
+                const auto splits = cd::light::practical_split_distances(
+                    s.cam.near_z, s.cam.far_z, kCascades, 0.75F);
+                const cd::math::Vec3f view_vec {
+                    s.cam.target.x - s.cam.eye.x,
+                    s.cam.target.y - s.cam.eye.y,
+                    s.cam.target.z - s.cam.eye.z };
+                const float view_len = std::sqrt(
+                    view_vec.x * view_vec.x +
+                    view_vec.y * view_vec.y +
+                    view_vec.z * view_vec.z);
+                if (view_len > 1e-4F)
+                {
+                    const cd::math::Vec3f view_dir {
+                        view_vec.x / view_len,
+                        view_vec.y / view_len,
+                        view_vec.z / view_len };
+                    constexpr std::array<cd::math::Vec3f, 4> kCascadeTints {{
+                        { 0.95F, 0.18F, 0.18F },  // red
+                        { 0.95F, 0.85F, 0.18F },  // yellow
+                        { 0.20F, 0.95F, 0.30F },  // green
+                        { 0.30F, 0.45F, 0.95F } }};// blue
+                    constexpr float kRadius = 0.22F;
+                    for (std::uint32_t ci = 0; ci < kCascades; ++ci)
+                    {
+                        const float n = splits[ci];
+                        const float f = splits[ci + 1];
+                        const float mid = 0.5F * (n + f);
+                        const cd::math::Vec3f pos {
+                            s.cam.eye.x + view_dir.x * mid,
+                            s.cam.eye.y + view_dir.y * mid,
+                            s.cam.eye.z + view_dir.z * mid };
+                        const auto& tint = kCascadeTints[ci];
+                        PrimPush pp {};
+                        cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                        model[0][0] = kRadius;
+                        model[1][1] = kRadius;
+                        model[2][2] = kRadius;
+                        model[3][0] = pos.x;
+                        model[3][1] = pos.y;
+                        model[3][2] = pos.z;
+                        pp.model = model;
+                        pp.mvp = vp * model;
+                        pp.tint[0] = tint.x;
+                        pp.tint[1] = tint.y;
+                        pp.tint[2] = tint.z;
+                        pp.tint[3] = 1.0F;
+                        fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                        pp.fx_params[1]  = 0.0F;
+                        pp.fx_params4[0] = 0.0F;
+                        pp.fx_params4[1] = 0.5F;
+                        cmd.push_constants(
+                            s.materials.prim.pipeline_layout(),
+                            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                            0, sizeof(pp), &pp);
+                        cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                        s.counters.increment("draws_csm_cascade");
+                    }
                 }
             }
         }

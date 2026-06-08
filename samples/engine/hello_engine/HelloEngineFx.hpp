@@ -187,6 +187,15 @@ struct HelloEngineFx
     std::array<float, 3> decal_demo_half_extents { 0.5F, 0.5F, 0.5F };
     std::array<float, 3> decal_demo_test_point  { 0.2F, 0.1F, 0.1F };
     bool decal_show_obb_3d { false };
+    // phase1010-3d-viewport-csm-cascade-depth: when true, hello_engine
+    // renders 4 spheres along the camera view-direction at the centre
+    // depth of each CSM cascade computed via
+    // cd::light::practical_split_distances. Cascade index sets the
+    // tint (0=red, 1=yellow, 2=green, 3=blue, matching the textbook
+    // SDSM debug palette). Lets the user SEE how the cascade splits
+    // distribute along view depth, which is invisible from the atlas
+    // bitmap view alone.
+    bool csm_show_cascade_depth_3d { false };
 };
 
 }  // namespace cd_sample
