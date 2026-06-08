@@ -207,7 +207,10 @@ void to_msdf_multi(FreeTypeBackend&           ft,
     msdfgen::edgeColoringSimple(shape, /* angleThreshold = */ 3.0);
 
     // ---- 4. Compute bounds and build the SDFTransformation. --------------
-    double xMin = 0.0, yMin = 0.0, xMax = 0.0, yMax = 0.0;
+    double xMin = 0.0;
+    double yMin = 0.0;
+    double xMax = 0.0;
+    double yMax = 0.0;
     shape.bound(xMin, yMin, xMax, yMax);
 
     // The SDF range (in pixel units): how far outside/inside the glyph the

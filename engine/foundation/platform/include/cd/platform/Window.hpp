@@ -100,8 +100,17 @@ enum class KeyCode : std::uint16_t
     kX,
     kY,
     kZ,
-    k0,
-    k1,
+    // phase993-misc-confusable-suppress: NOLINT on the digit-key
+    // declarations that trigger the rule (k0 vs kO 'oh' letter,
+    // k1 vs kI 'eye' letter). This is the canonical keyboard-key
+    // enum convention -- renaming to kDigit0 would diverge from
+    // every engine SDK in the ecosystem (Win32 VK_0, GLFW
+    // GLFW_KEY_0, SDL2 SDLK_0, Unity KeyCode.Alpha0). The
+    // suppressions are SPECIFIC rather than blanket-disabling the
+    // rule so future identifier collisions in OTHER namespaces are
+    // still caught.
+    k0,  // NOLINT(misc-confusable-identifiers)  -- vs kO
+    k1,  // NOLINT(misc-confusable-identifiers)  -- vs kI
     k2,
     k3,
     k4,

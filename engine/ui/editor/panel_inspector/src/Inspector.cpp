@@ -446,10 +446,15 @@ bool Inspector::draw_imgui(cd::scene::Scene&      scene,
             return std::array<float, 3> { roll, pitch, yaw };
         };
         auto euler_to_quat = [](float ex, float ey, float ez) {
-            const float hx = ex * 0.5F, hy = ey * 0.5F, hz = ez * 0.5F;
-            const float cx = std::cos(hx), sx = std::sin(hx);
-            const float cy = std::cos(hy), sy = std::sin(hy);
-            const float cz = std::cos(hz), szl = std::sin(hz);
+            const float hx = ex * 0.5F;
+            const float hy = ey * 0.5F;
+            const float hz = ez * 0.5F;
+            const float cx = std::cos(hx);
+            const float sx = std::sin(hx);
+            const float cy = std::cos(hy);
+            const float sy = std::sin(hy);
+            const float cz = std::cos(hz);
+            const float szl = std::sin(hz);
             cd::math::Quatf q;
             q.w = cz * cy * cx + szl * sy * sx;
             q.x = cz * cy * sx - szl * sy * cx;

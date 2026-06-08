@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <cstring>
 #include <fstream>
 #include <ios>
@@ -380,27 +381,22 @@ void skip_ws(const std::string& text, std::size_t& i)
 // "unset OR empty" so callers can chain fallbacks naturally.
 [[nodiscard]] std::optional<std::string> get_env(const char* name)
 {
-#if defined(_WIN32) && defined(_MSC_VER)
-    char*   buf = nullptr;
-    std::size_t sz = 0;
-    if (_dupenv_s(&buf, &sz, name) != 0 || buf == nullptr)
-    {
-        return std::nullopt;
-    }
-    std::string value(buf);
-    std::free(buf);
-    if (value.empty()) return std::nullopt;
-    return value;
-#elif defined(_WIN32)
-    // clang-cl / mingw on Windows: _dupenv_s exists but is in the MS CRT.
-    char*       buf = nullptr;
+#if defined(_WIN32)
+    // phase992-cgl-no-malloc-fix: wrap the _dupenv_s CRT-allocated
+    // buffer in std::unique_ptr<char, decltype(&std::free)> so the
+    // free() call is RAII-driven and clang-tidy's cppcoreguidelines-
+    // no-malloc rule (now promoted to WarningsAsErrors at phase 995)
+    // stops flagging the manual std::free site. Pure refactor; same
+    // observable behaviour.
+    char*       raw = nullptr;
     std::size_t sz  = 0;
-    if (::_dupenv_s(&buf, &sz, name) != 0 || buf == nullptr)
+    if (::_dupenv_s(&raw, &sz, name) != 0 || raw == nullptr)
     {
         return std::nullopt;
     }
-    std::string value(buf);
-    std::free(buf);
+    const std::unique_ptr<char, decltype(&std::free)> buf {
+        raw, &std::free };
+    const std::string value { buf.get() };
     if (value.empty()) return std::nullopt;
     return value;
 #else

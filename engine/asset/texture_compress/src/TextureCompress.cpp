@@ -102,8 +102,12 @@ void encode_bc1_block(const std::uint8_t* block_rgba,  // 16 texels × 4 bytes
     noexcept
 {
     // --- Step 1: find per-channel min / max (8-bit space) -------------------
-    std::uint8_t min_r = 255U, min_g = 255U, min_b = 255U;
-    std::uint8_t max_r = 0U,   max_g = 0U,   max_b = 0U;
+    std::uint8_t min_r = 255U;
+    std::uint8_t min_g = 255U;
+    std::uint8_t min_b = 255U;
+    std::uint8_t max_r = 0U;
+    std::uint8_t max_g = 0U;
+    std::uint8_t max_b = 0U;
 
     for (int t = 0; t < 16; ++t)
     {

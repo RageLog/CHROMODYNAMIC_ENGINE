@@ -49,9 +49,15 @@ struct Transform
 template <class T>
 [[nodiscard]] Mat<T, 3> to_mat3(const Quat<T>& q) noexcept
 {
-    const T xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
-    const T xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
-    const T wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    const T xx = q.x * q.x;
+    const T yy = q.y * q.y;
+    const T zz = q.z * q.z;
+    const T xy = q.x * q.y;
+    const T xz = q.x * q.z;
+    const T yz = q.y * q.z;
+    const T wx = q.w * q.x;
+    const T wy = q.w * q.y;
+    const T wz = q.w * q.z;
     return Mat<T, 3> {
         { T { 1 } - T { 2 } * (yy + zz), T { 2 } * (xy + wz),           T { 2 } * (xz - wy)           },
         { T { 2 } * (xy - wz),           T { 1 } - T { 2 } * (xx + zz), T { 2 } * (yz + wx)           },

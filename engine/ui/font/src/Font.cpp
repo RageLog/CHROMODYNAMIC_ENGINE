@@ -87,7 +87,8 @@ public:
     {
         if (w > width_ || h > height_) return std::nullopt;
 
-        std::uint32_t best_x = 0U, best_y = height_;
+        std::uint32_t best_x = 0U;
+        std::uint32_t best_y = height_;
         std::size_t   best_idx = skyline_.size();
         for (std::size_t i = 0; i < skyline_.size(); ++i)
         {
@@ -471,8 +472,11 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
 
         // ---- Per-backend rasterization into a TEMP alpha bitmap.
         std::vector<std::uint8_t> tmp;
-        int                       w = 0, h = 0;
-        float                     bx = 0.0F, by = 0.0F, adv = 0.0F;
+        int                       w = 0;
+        int                       h = 0;
+        float                     bx = 0.0F;
+        float                     by = 0.0F;
+        float                     adv = 0.0F;
         bool                      have_glyph = false;
 
         if (active_backend_ == Backend::kFreeType && impl_->ft)
@@ -486,12 +490,16 @@ bool Font::rasterize_range(std::uint32_t first_codepoint,
             const int gi = stbtt_FindGlyphIndex(&impl_->stb_info, static_cast<int>(cp));
             if (gi == 0) continue;  // not in font
 
-            int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            int x0 = 0;
+            int y0 = 0;
+            int x1 = 0;
+            int y1 = 0;
             stbtt_GetGlyphBitmapBox(&impl_->stb_info, gi, scale, scale, &x0, &y0, &x1, &y1);
             w = std::max(0, x1 - x0);
             h = std::max(0, y1 - y0);
 
-            int advance_i = 0, lsb = 0;
+            int advance_i = 0;
+            int lsb = 0;
             stbtt_GetGlyphHMetrics(&impl_->stb_info, gi, &advance_i, &lsb);
             bx  = static_cast<float>(x0);
             by  = static_cast<float>(-y0);
@@ -634,7 +642,8 @@ std::vector<ShapedGlyph> Font::shape(std::string_view text,
     {
         ShapedGlyph g {};
         g.glyph_id = cp;
-        int adv_i = 0, lsb = 0;
+        int adv_i = 0;
+        int lsb = 0;
         stbtt_GetCodepointHMetrics(&impl_->stb_info, static_cast<int>(cp),
                                    &adv_i, &lsb);
         g.advance_x = static_cast<float>(adv_i) * impl_->scale;

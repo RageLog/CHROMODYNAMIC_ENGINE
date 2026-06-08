@@ -303,8 +303,14 @@ std::array<float, 4> CcdSolver::quat_mul(
 {
     // Hamilton product: q_b * q_a  (q_a applied first)
     // [x, y, z, w] convention
-    const float ax = q_a[0], ay = q_a[1], az = q_a[2], aw = q_a[3];
-    const float bx = q_b[0], by = q_b[1], bz = q_b[2], bw = q_b[3];
+    const float ax = q_a[0];
+    const float ay = q_a[1];
+    const float az = q_a[2];
+    const float aw = q_a[3];
+    const float bx = q_b[0];
+    const float by = q_b[1];
+    const float bz = q_b[2];
+    const float bw = q_b[3];
 
     return {
         aw * bx + ax * bw + ay * bz - az * by,
@@ -319,7 +325,10 @@ std::array<float, 3> CcdSolver::quat_rotate(
     std::array<float, 3> v) noexcept
 {
     // Rodrigues rotation: v' = v + 2w*(q_xyz x v) + 2*(q_xyz x (q_xyz x v))
-    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const float qx = q[0];
+    const float qy = q[1];
+    const float qz = q[2];
+    const float qw = q[3];
 
     const float tx = 2.0F * (qy * v[2] - qz * v[1]);
     const float ty = 2.0F * (qz * v[0] - qx * v[2]);
@@ -388,7 +397,10 @@ std::array<float, 4> CcdSolver::quat_from_two_vectors(
 // yaw=0 in the degenerate case (safe default for IK clamping).
 std::array<float, 3> CcdSolver::quat_to_euler_xyz(std::array<float, 4> q) noexcept
 {
-    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const float qx = q[0];
+    const float qy = q[1];
+    const float qz = q[2];
+    const float qw = q[3];
 
     // Rotation matrix elements needed for XYZ Euler extraction
     // R = Rz * Ry * Rx  (intrinsic XYZ = extrinsic ZYX)
@@ -443,9 +455,12 @@ std::array<float, 4> CcdSolver::euler_xyz_to_quat(std::array<float, 3> euler) no
     const float hy = euler[1] * 0.5F;
     const float hz = euler[2] * 0.5F;
 
-    const float cx = std::cos(hx), sx = std::sin(hx);
-    const float cy = std::cos(hy), sy = std::sin(hy);
-    const float cz = std::cos(hz), sz = std::sin(hz);
+    const float cx = std::cos(hx);
+    const float sx = std::sin(hx);
+    const float cy = std::cos(hy);
+    const float sy = std::sin(hy);
+    const float cz = std::cos(hz);
+    const float sz = std::sin(hz);
 
     // q = qx * qy * qz  (intrinsic XYZ)
     return {

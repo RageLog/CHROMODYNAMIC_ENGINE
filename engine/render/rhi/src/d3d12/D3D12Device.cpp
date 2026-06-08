@@ -1696,7 +1696,8 @@ public:
             // Minimal empty root signature for RTPSO.
             D3D12_ROOT_SIGNATURE_DESC rsd {};
             rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
-            ComPtr<ID3DBlob> blob, err;
+            ComPtr<ID3DBlob> blob;
+            ComPtr<ID3DBlob> err;
             if (SUCCEEDED(D3D12SerializeRootSignature(
                     &rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)))
             {

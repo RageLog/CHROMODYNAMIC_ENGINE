@@ -351,7 +351,10 @@ public:
 
     void set_viewport(const cd::rhi::Viewport& vp) override
     {
-        const float x = vp.x, y = vp.y, w = vp.width, h = vp.height;
+        const float x = vp.x;
+        const float y = vp.y;
+        const float w = vp.width;
+        const float h = vp.height;
         cmds_.emplace_back([g_ = gl_, x, y, w, h]() {
             if (g_->glViewport)
                 g_->glViewport(static_cast<int>(x), static_cast<int>(y),
@@ -360,8 +363,10 @@ public:
     }
     void set_scissor(const cd::rhi::Rect2D& r) override
     {
-        const auto x = r.offset.x, y = r.offset.y;
-        const auto w = r.extent.width, h = r.extent.height;
+        const auto x = r.offset.x;
+        const auto y = r.offset.y;
+        const auto w = r.extent.width;
+        const auto h = r.extent.height;
         cmds_.emplace_back([g_ = gl_, x, y, w, h]() {
             if (g_->glScissor)
                 g_->glScissor(x, y, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
@@ -372,7 +377,8 @@ public:
               std::uint32_t first_vertex, std::uint32_t first_instance) override
     {
         (void)instance_count; (void)first_instance;  // instanced draw is v1.4
-        const auto fv = first_vertex, vc = vertex_count;
+        const auto fv = first_vertex;
+        const auto vc = vertex_count;
         cmds_.emplace_back([g_ = gl_, fv, vc]() {
             if (g_->glDrawArrays)
                 g_->glDrawArrays(kGL_TRIANGLES, static_cast<int>(fv), static_cast<GLsizei>(vc));
@@ -475,7 +481,8 @@ public:
             const char* v = reinterpret_cast<const char*>(version);
             // Manual digit parse so MSVC's deprecated-sscanf warning
             // doesn't fire under -Werror.
-            int major = 0, minor = 0;
+            int major = 0;
+            int minor = 0;
             const char* p = v;
             while (*p >= '0' && *p <= '9') { major = major * 10 + (*p - '0'); ++p; }
             if (*p == '.') { ++p; while (*p >= '0' && *p <= '9') { minor = minor * 10 + (*p - '0'); ++p; } }

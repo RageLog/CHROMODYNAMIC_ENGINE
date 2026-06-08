@@ -16,6 +16,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <filesystem>
 #include <fstream>
 #include <ios>
@@ -504,18 +505,24 @@ void skip_ws(std::string_view text, std::size_t& i) noexcept
     return true;
 }
 
-// Portable getenv — mirrors cd::game_save pattern.
+// Portable getenv — mirrors cd::game_save pattern with RAII wrapper.
 [[nodiscard]] std::optional<std::string> get_env(const char* name)
 {
 #if defined(_WIN32)
-    char*       buf = nullptr;
+    // phase992-cgl-no-malloc-fix: same RAII pattern as
+    // engine/game/save/src/Save.cpp -- _dupenv_s allocates from
+    // the CRT, must be freed with std::free, wrap in unique_ptr
+    // so cppcoreguidelines-no-malloc stops flagging the manual
+    // std::free call.
+    char*       raw = nullptr;
     std::size_t sz  = 0;
-    if (::_dupenv_s(&buf, &sz, name) != 0 || buf == nullptr)
+    if (::_dupenv_s(&raw, &sz, name) != 0 || raw == nullptr)
     {
         return std::nullopt;
     }
-    std::string value(buf);
-    std::free(buf);
+    const std::unique_ptr<char, decltype(&std::free)> buf {
+        raw, &std::free };
+    const std::string value { buf.get() };
     if (value.empty()) { return std::nullopt; }
     return value;
 #else

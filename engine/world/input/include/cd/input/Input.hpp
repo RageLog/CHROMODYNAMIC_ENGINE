@@ -57,8 +57,11 @@ enum class KeyCode : std::uint16_t
     kX,
     kY,
     kZ,
-    k0,
-    k1,
+    // phase993-misc-confusable-suppress: NOLINT on digit keys
+    // (k0 vs kO 'oh', k1 vs kI 'eye'). Canonical keyboard convention
+    // matches Win32 VK_0, GLFW_KEY_0, SDLK_0; renaming would diverge.
+    k0,  // NOLINT(misc-confusable-identifiers)  -- vs kO
+    k1,  // NOLINT(misc-confusable-identifiers)  -- vs kI
     k2,
     k3,
     k4,
