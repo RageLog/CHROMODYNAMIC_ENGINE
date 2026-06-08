@@ -104,6 +104,7 @@
 // library header stays available for hello_pbr and external samples.
 #include <cd/framegraph/Targets.hpp>
 #include <cd/math/Matrix.hpp>
+#include <cd/math/QuatSlerp.hpp>
 #include <cd/math/Quaternion.hpp>
 #include <cd/math/Random.hpp>
 #include <cd/math/Transform.hpp>
@@ -3835,6 +3836,29 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         // Just-RMS readout; full DSP chain runs in the main Audio panel.
         ImGui::TextDisabled("Full Compressor->LowPass->Limiter chain runs in Audio panel.");
         ImGui::TextDisabled("This probe shows the raw synthesized block.");
+    }
+    // phase962-quaternion-slerp-live-demo (Run 25 Strand B): drive
+    // cd::math::slerp between two quaternions. Lets the user drag a t
+    // parameter + see the interpolated quat respond live -- same path
+    // the animation runtime uses for skin-pose interpolation.
+    if (ImGui::CollapsingHeader("Run25  Quaternion Slerp Probe"))
+    {
+        static float s_qs_t = 0.5F;
+        static cd::math::Quatf s_qs_a { 1.0F, 0.0F, 0.0F, 0.0F };
+        // 90-degree rotation around Z: (cos(45), 0, 0, sin(45)).
+        static cd::math::Quatf s_qs_b { 0.7071F, 0.0F, 0.0F, 0.7071F };
+        ImGui::SliderFloat("t [0, 1]", &s_qs_t, 0.0F, 1.0F);
+        ImGui::SliderFloat4("Quat A (x, y, z, w)", &s_qs_a.x, -1.0F, 1.0F);
+        ImGui::SliderFloat4("Quat B (x, y, z, w)", &s_qs_b.x, -1.0F, 1.0F);
+        const auto q = cd::math::slerp(s_qs_a, s_qs_b, s_qs_t);
+        ImGui::Text("Result: (%.3f, %.3f, %.3f, %.3f)",
+                    static_cast<double>(q.x),
+                    static_cast<double>(q.y),
+                    static_cast<double>(q.z),
+                    static_cast<double>(q.w));
+        const float magnitude = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+        ImGui::Text("Magnitude (should be ~1.0): %.4f", static_cast<double>(magnitude));
+        ImGui::TextDisabled("Spherical-linear quaternion interpolation; great-circle path.");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
