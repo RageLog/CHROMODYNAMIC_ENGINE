@@ -4047,11 +4047,19 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // respond to the 4 control points live.
     if (ImGui::CollapsingHeader("Run25  Cubic Bezier Probe"))
     {
-        static cd::math::CubicBezier s_cb {};
-        ImGui::SliderFloat3("P0", &s_cb.p0.x, -4.0F, 4.0F);
-        ImGui::SliderFloat3("P1", &s_cb.p1.x, -4.0F, 4.0F);
-        ImGui::SliderFloat3("P2", &s_cb.p2.x, -4.0F, 4.0F);
-        ImGui::SliderFloat3("P3", &s_cb.p3.x, -4.0F, 4.0F);
+        // phase1012-3d-viewport-cubic-bezier-curve: control points
+        // migrated off function-statics onto HelloEngineFx so the
+        // 3D-viewport overlay (below + render loop) reads the SAME
+        // values the user is dragging here.
+        ImGui::SliderFloat3("P0", fx.bezier_p0.data(), -4.0F, 4.0F);
+        ImGui::SliderFloat3("P1", fx.bezier_p1.data(), -4.0F, 4.0F);
+        ImGui::SliderFloat3("P2", fx.bezier_p2.data(), -4.0F, 4.0F);
+        ImGui::SliderFloat3("P3", fx.bezier_p3.data(), -4.0F, 4.0F);
+        cd::math::CubicBezier s_cb {};
+        s_cb.p0 = { fx.bezier_p0[0], fx.bezier_p0[1], fx.bezier_p0[2] };
+        s_cb.p1 = { fx.bezier_p1[0], fx.bezier_p1[1], fx.bezier_p1[2] };
+        s_cb.p2 = { fx.bezier_p2[0], fx.bezier_p2[1], fx.bezier_p2[2] };
+        s_cb.p3 = { fx.bezier_p3[0], fx.bezier_p3[1], fx.bezier_p3[2] };
         constexpr int kSweep = 64;
         std::array<float, kSweep> xs {};
         std::array<float, kSweep> ys {};
@@ -4079,6 +4087,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::PlotLines("##cb_z", zs.data(), kSweep, 0, "Bezier z(t)",
                          zs_lo - 0.1F, zs_hi + 0.1F, ImVec2(0, 48));
         ImGui::TextDisabled("Same CubicBezier used by camera-path / anim splines.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show Bezier curve in 3D viewport",
+                        &fx.bezier_show_curve_3d);
+        if (fx.bezier_show_curve_3d)
+        {
+            ImGui::TextDisabled("  4 white control spheres + 32 magenta curve samples");
+        }
     }
     // phase968-asset-registry-tag-from-extension-probe (Run 25 Strand B):
     // drive cd::asset::AssetRegistry::tag_from_extension. Lets the user
@@ -8764,6 +8779,88 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_cluster_cell");
+                }
+            }
+        }
+        // phase1012-3d-viewport-cubic-bezier-curve: 7th application
+        // of the canonical sphere-at-position template. Renders 4
+        // larger white spheres at the bezier control points + 32
+        // smaller magenta spheres sampled along t in [0, 1] via
+        // cd::math::CubicBezier::at. Lets the user SEE the curve
+        // shape in the 3D scene while dragging the panel sliders.
+        if (s.fx.bezier_show_curve_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                cd::math::CubicBezier cb {};
+                cb.p0 = { s.fx.bezier_p0[0], s.fx.bezier_p0[1], s.fx.bezier_p0[2] };
+                cb.p1 = { s.fx.bezier_p1[0], s.fx.bezier_p1[1], s.fx.bezier_p1[2] };
+                cb.p2 = { s.fx.bezier_p2[0], s.fx.bezier_p2[1], s.fx.bezier_p2[2] };
+                cb.p3 = { s.fx.bezier_p3[0], s.fx.bezier_p3[1], s.fx.bezier_p3[2] };
+                constexpr int kSamples = 32;
+                constexpr float kCpRadius     = 0.18F;
+                constexpr float kSampleRadius = 0.07F;
+                const std::array<cd::math::Vec3f, 4> cps {{
+                    cb.p0, cb.p1, cb.p2, cb.p3 }};
+                for (const auto& cp : cps)
+                {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kCpRadius;
+                    model[1][1] = kCpRadius;
+                    model[2][2] = kCpRadius;
+                    model[3][0] = cp.x;
+                    model[3][1] = cp.y;
+                    model[3][2] = cp.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = 0.95F;
+                    pp.tint[1] = 0.95F;
+                    pp.tint[2] = 0.95F;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.45F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_bezier_cp");
+                }
+                for (int i = 0; i < kSamples; ++i)
+                {
+                    const float t = static_cast<float>(i) /
+                                    static_cast<float>(kSamples - 1);
+                    const auto p = cb.at(t);
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kSampleRadius;
+                    model[1][1] = kSampleRadius;
+                    model[2][2] = kSampleRadius;
+                    model[3][0] = p.x;
+                    model[3][1] = p.y;
+                    model[3][2] = p.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = 0.95F;
+                    pp.tint[1] = 0.18F;
+                    pp.tint[2] = 0.78F;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_bezier_sample");
                 }
             }
         }

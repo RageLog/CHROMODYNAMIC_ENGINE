@@ -205,6 +205,18 @@ struct HelloEngineFx
     // talks) so the user can SEE which regions of the scene the
     // clustered-deferred light culling would consider hot.
     bool cluster_show_density_3d { false };
+    // phase1012-3d-viewport-cubic-bezier-curve: 4 control points
+    // (std::array<float,3> keeps the header zero-dep) for the
+    // "Run25 Cubic Bezier Probe" panel. The 3D viz emits 4 control-
+    // point spheres (large, white) plus 32 curve-sample spheres
+    // (small, magenta) so the user sees the curve shape evolve
+    // live in the 3D scene as they drag the sliders -- not just the
+    // x/y/z PlotLines in the panel.
+    std::array<float, 3> bezier_p0 { -1.5F, 0.5F, -1.0F };
+    std::array<float, 3> bezier_p1 { -0.5F, 2.5F, -1.0F };
+    std::array<float, 3> bezier_p2 {  0.5F, 2.5F,  1.0F };
+    std::array<float, 3> bezier_p3 {  1.5F, 0.5F,  1.0F };
+    bool bezier_show_curve_3d { false };
 };
 
 }  // namespace cd_sample
