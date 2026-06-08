@@ -79,6 +79,14 @@ inline constexpr float kPbrGridZ       = 0.00F;
 inline constexpr float kPbrGridScale   = 0.42F;
 inline constexpr cd::math::Vec3f kPbrGridChromeAlbedo { 0.95F, 0.93F, 0.88F };
 
+// phase986-pbr-texture-fix-constant: the column whose spheres opt into
+// the albedo-texture sampling path by default. The right-most column
+// (kPbrGridCols - 1) is fully dielectric (metallic = 0) which lets the
+// earth_albedo colour read clearly without the F0 chrome path swallowing
+// the diffuse hue. The spawn helper (spawn_pbr_grid_entities in
+// main.cpp) consults this constant when seeding SceneEntity::use_texture.
+inline constexpr int kPbrGridTexturedColumn = kPbrGridCols - 1;
+
 // ---- build_pbr_demo_grid --------------------------------------------------
 // Compute the 16 PbrGridSlot records for the standard 4x4 metal/rough
 // gradient grid used by hello_engine's PBR showcase. Returns by value;

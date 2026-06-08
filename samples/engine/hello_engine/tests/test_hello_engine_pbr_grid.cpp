@@ -222,3 +222,33 @@ TEST(HelloEnginePbrGrid, XPositionsAreSymmetricAboutZero)
             << "row " << row << " inner columns should mirror about 0";
     }
 }
+
+// ===========================================================================
+// phase986-pbr-texture-fix: lock the textured-column constant + its
+// dielectric invariant. Regressions where the column index drifts off
+// the dielectric edge (metallic=0) would cause the albedo texture to be
+// occluded by the metallic F0 path -- breaking the visible-quality
+// expectation of "the right column of spheres shows earth texture
+// detail".
+// ===========================================================================
+
+TEST(HelloEnginePbrGrid, TexturedColumnConstantIsTheRightEdge)
+{
+    EXPECT_EQ(cd::hello_engine::kPbrGridTexturedColumn,
+              cd::hello_engine::kPbrGridCols - 1);
+}
+
+TEST(HelloEnginePbrGrid, TexturedColumnIsFullyDielectric)
+{
+    const auto grid = build_pbr_demo_grid();
+    for (int row = 0; row < kPbrGridRows; ++row)
+    {
+        const auto& slot = grid[static_cast<std::size_t>(
+            row * kPbrGridCols + cd::hello_engine::kPbrGridTexturedColumn)];
+        EXPECT_FLOAT_EQ(slot.metallic, 0.0F)
+            << "Textured column row " << row
+            << " must stay dielectric -- otherwise the earth_albedo "
+            << "sample is multiplied by an F0 chrome path and the "
+            << "user-visible texture detail collapses.";
+    }
+}

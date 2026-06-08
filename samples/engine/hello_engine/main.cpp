@@ -2088,11 +2088,13 @@ inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
         e.is_pbr = true;
         e.metallic = slot.metallic;
         e.roughness = slot.roughness;
-        // Column 3 (right edge) is fully dielectric (metallic=0) -- the
-        // best column to showcase albedo-texture detail without metallic
-        // F0 swallowing the diffuse colour.
+        // Column kPbrGridTexturedColumn (right edge, fully dielectric
+        // metallic=0) opts into the albedo-texture sampling path so the
+        // user sees earth_albedo detail without the F0 chrome path
+        // swallowing the diffuse hue. Single source of truth for the
+        // column index lives in HelloPbrGrid.hpp.
         e.use_texture = (slot_idx % static_cast<std::size_t>(cd::hello_engine::kPbrGridCols))
-                        == static_cast<std::size_t>(cd::hello_engine::kPbrGridCols - 1);
+                        == static_cast<std::size_t>(cd::hello_engine::kPbrGridTexturedColumn);
         scene.local(e.handle)->value.position = slot.position;
         scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
         entities.push_back(std::move(e));
@@ -2121,6 +2123,8 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  Material textures");
     ImGui::SameLine();
     ImGui::TextDisabled("(albedo + normal + MR + AO)");
+    ImGui::TextDisabled("  phase985: PBR grid right column (metallic=0) shows");
+    ImGui::TextDisabled("  earth_albedo via Inspector \"use_texture\" checkbox.");
     if (ImGui::CollapsingHeader("R2-Debug  View modes (see each map)"))
     {
         const char* labels[] = { "Final", "Albedo",           "World normal", "MR (G=rough,B=metal)",
