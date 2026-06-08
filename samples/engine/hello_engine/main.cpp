@@ -8444,6 +8444,64 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_light_gizmo");
+                    // phase1009-3d-viewport-area-light-polygon-gizmo:
+                    // for kRectArea / kDiskArea lights, also emit 4
+                    // small spheres at the polygon corners so the user
+                    // can SEE the rectangle / disk extent in the 3D
+                    // scene (not just the centre proxy). For rectangles
+                    // we use position ± tangent*(width/2) ± bitangent*
+                    // (height/2). For disks we approximate with 4
+                    // cardinal-direction points on the perimeter (tangent
+                    // ±radius, bitangent ±radius). True wireframe outline
+                    // is queued for the line renderer (researcher §12
+                    // Tier-2). Same tint as the centre sphere.
+                    const auto lt = row.light.type;
+                    if (lt == cd::light::LightType::kRectArea ||
+                        lt == cd::light::LightType::kDiskArea)
+                    {
+                        constexpr float kCornerRadius = 0.08F;
+                        const float hw = (lt == cd::light::LightType::kRectArea)
+                            ? (row.light.area_width  * 0.5F)
+                            :  row.light.area_width;
+                        const float hh = (lt == cd::light::LightType::kRectArea)
+                            ? (row.light.area_height * 0.5F)
+                            :  row.light.area_height;
+                        for (int sj = -1; sj <= 1; sj += 2)
+                        for (int si = -1; si <= 1; si += 2)
+                        {
+                            const cd::math::Vec3f cp {
+                                pos.x + static_cast<float>(si) * hw * row.light.area_tangent.x
+                                      + static_cast<float>(sj) * hh * row.light.area_bitangent.x,
+                                pos.y + static_cast<float>(si) * hw * row.light.area_tangent.y
+                                      + static_cast<float>(sj) * hh * row.light.area_bitangent.y,
+                                pos.z + static_cast<float>(si) * hw * row.light.area_tangent.z
+                                      + static_cast<float>(sj) * hh * row.light.area_bitangent.z };
+                            PrimPush cp_pp {};
+                            cd::math::Mat4f cp_model { cd::math::Mat4f::identity() };
+                            cp_model[0][0] = kCornerRadius;
+                            cp_model[1][1] = kCornerRadius;
+                            cp_model[2][2] = kCornerRadius;
+                            cp_model[3][0] = cp.x;
+                            cp_model[3][1] = cp.y;
+                            cp_model[3][2] = cp.z;
+                            cp_pp.model = cp_model;
+                            cp_pp.mvp = vp * cp_model;
+                            cp_pp.tint[0] = tint.x;
+                            cp_pp.tint[1] = tint.y;
+                            cp_pp.tint[2] = tint.z;
+                            cp_pp.tint[3] = 1.0F;
+                            fill_prim_push_shared(cp_pp, s.fx, sun, s.cam);
+                            cp_pp.fx_params[1]  = 0.0F;
+                            cp_pp.fx_params4[0] = 0.0F;
+                            cp_pp.fx_params4[1] = 0.5F;
+                            cmd.push_constants(
+                                s.materials.prim.pipeline_layout(),
+                                cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                0, sizeof(cp_pp), &cp_pp);
+                            cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                            s.counters.increment("draws_area_light_corner");
+                        }
+                    }
                 }
             }
         }
