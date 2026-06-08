@@ -2116,16 +2116,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                                   const std::function<void(std::string)>& log_push)
 {
     ImGui::Begin("R-Showcase");
-    ImGui::TextDisabled("CHROMODYNAMIC realism roadmap (live)");
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R1  HDR cubemap IBL");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(spec 6mip + diff 16 + brdf 64x64)");
-    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  Material textures");
-    ImGui::SameLine();
-    ImGui::TextDisabled("(albedo + normal + MR + AO)");
-    ImGui::TextDisabled("  phase985: PBR grid right column (metallic=0) shows");
-    ImGui::TextDisabled("  earth_albedo via Inspector \"use_texture\" checkbox.");
+    // phase991-r-showcase-passive-cleanup: removed the R1 HDR cubemap
+    // IBL pure-text label (no controls), the R2 phase985 explanatory
+    // hint pair (Inspector checkbox is self-explanatory), and several
+    // other passive blocks below. Live R2 PBR-grid blanket toggle
+    // buttons follow immediately so the section still has interactive
+    // surface area.
+    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  PBR grid albedo texture");
     // phase988-pbr-texture-blanket-toggle: 3 buttons for whole-grid
     // experimentation without clicking through every sphere in the
     // Inspector. "Textured ALL" turns the gate on for every is_pbr
@@ -2225,18 +2222,11 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::SliderFloat("ChromAberration", &fx.chromab_strength, 0.0F, 1.0F);
         ImGui::SliderFloat("Film grain", &fx.film_grain, 0.0F, 1.0F);
     }
-    if (ImGui::CollapsingHeader("R4-FX  Inline scene post-fx (legacy)"))
-    {
-        ImGui::TextDisabled("DEPRECATED - composite owns the real versions.");
-        ImGui::TextDisabled("Sliders disabled. Use R3 Composite post-fx panel.");
-        ImGui::BeginDisabled();
-        ImGui::SliderFloat("GTAO inline", &fx.gtao_strength, 0.0F, 1.0F);
-        ImGui::SliderFloat("Bloom inline", &fx.bloom_strength, 0.0F, 1.0F);
-        ImGui::SliderFloat("SMAA inline", &fx.smaa_strength, 0.0F, 1.0F);
-        ImGui::SliderFloat("Height fog", &fx.fog_density, 0.0F, 1.0F);
-        ImGui::SliderFloat("Aerial persp", &fx.aerial_perspective, 0.0F, 1.0F);
-        ImGui::EndDisabled();
-    }
+    // phase991-r-showcase-passive-cleanup: removed the
+    // "R4-FX Inline scene post-fx (legacy)" collapser entirely. It was
+    // explicitly marked DEPRECATED with all 5 sliders disabled --
+    // pure visual debris. The real controls live in the R3 Composite
+    // post-fx (live) collapser immediately below.
     if (ImGui::CollapsingHeader("R3  Composite post-fx (live)", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextDisabled("single composite pass - AO/DOF/shafts/bloom/atmo");
@@ -2298,32 +2288,17 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::SliderFloat("Clouds coverage", &fx.clouds_coverage, 0.0F, 1.0F);
         ImGui::TextDisabled("TAA: camera-velocity reprojection + 3x3 neighbourhood clamp");
     }
-    if (ImGui::CollapsingHeader("R3  Frame-graph + advanced post-fx"))
-    {
-        ImGui::TextDisabled("Live composite stack:");
-        ImGui::BulletText("AO  (depth + G-Buffer-normal 8-ring scan)");
-        ImGui::BulletText("SSR (24-step world-space ray-march)");
-        ImGui::BulletText("DOF (8-tap bokeh, focus = cam target)");
-        ImGui::BulletText("Light shafts (16-tap Mitchell god rays)");
-        ImGui::BulletText("Motion blur (velocity G-Buffer + camera fallback)");
-        ImGui::BulletText("TAA (history ping-pong + Halton(2,3) jitter)");
-        ImGui::BulletText("Atmo fog + aerial perspective + sun in-scatter");
-        ImGui::BulletText("Vignette + film grain + ChromAB");
-        ImGui::TextDisabled("All tunable via R3 Composite post-fx (live) panel.");
-    }
+    // phase991-r-showcase-passive-cleanup: removed the "R3 Frame-graph
+    // + advanced post-fx" collapser. Its 8 BulletText lines were pure
+    // documentation of effects that are already tunable in the R3
+    // Composite post-fx (live) collapser right above. Zero interactive
+    // surface; the documentation belongs in a README, not a per-frame
+    // ImGui panel.
     if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
     {
-        // phase918-collapser-scaffold: post-Run-24 the standalone
-        // hello_{restir,ddgi,nrc} smokes have been retired (folded
-        // into engine/render/{restir_di,ddgi,nrc}/tests/). Stale
-        // "Run samples/lib_smokes/..." hint replaced with gtest
-        // pointers; live in-engine visual demos queued (Strand B,
-        // phases 919-921).
-        ImGui::TextDisabled("Library API live: covered by lib gtests.");
-        ImGui::BulletText("ReSTIR DI - engine/render/restir_di/tests/test_restir_di.cpp (6)");
-        ImGui::BulletText("DDGI      - engine/render/ddgi/tests/test_ddgi.cpp (20)");
-        ImGui::BulletText("NRC       - engine/render/nrc/tests/test_nrc.cpp (3)");
-        ImGui::TextDisabled("GPU pipeline wiring queued - needs RT compute pipe.");
+        // phase991-r-showcase-passive-cleanup: removed the 4 BulletText
+        // gtest pointer lines (pure docs); the live CPU demos below
+        // are the active surface.
         // phase919-ddgi-live-demo (Run 25 Strand B): CPU-side DDGI
         // probe-grid + trilinear weights demo running off the public
         // cd::ddgi:: API (no GPU dispatch needed). Lets the user
@@ -2540,14 +2515,10 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     }
     if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextDisabled("Composite-inline (cheap) and lib-level (CPU smoke):");
-        ImGui::BulletText("Sun in-scatter fog (HG g=0.15) - live in composite");
-        ImGui::BulletText("fBm sky cloud overlay - live in composite");
-        // phase918-collapser-scaffold: post-Run-24 the standalone
-        // hello_volumetric_{fog,clouds} smokes have been retired
-        // (folded into engine/render/volumetric/tests/fog/ + clouds/).
-        ImGui::BulletText("Vol fog/clouds - engine/render/volumetric/tests/{fog,clouds}/*.cpp (32)");
-        ImGui::BulletText("Wronski 2014 fog + Schneider 2017 clouds CPU parity");
+        // phase991-r-showcase-passive-cleanup: removed 5 BulletText
+        // top-of-collapser doc lines (pure documentation of where the
+        // library lives + its gtest path). Live controls (checkboxes,
+        // sliders) start below at the phase 512 wire-up.
         // phase512-volumetric-fog-wire: live toggle between the legacy
         // single-tap exp fog and the Wronski 2014 integrated single-
         // scatter path. Density slider drives both modes so the user
@@ -2713,64 +2684,23 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     }
     if (ImGui::CollapsingHeader("R8  HDR10 display output"))
     {
+        // phase991-r-showcase-passive-cleanup: 4 TextDisabled lines
+        // trimmed to 1. The checkbox is self-explanatory; deep
+        // swapchain colour-space setup details belong in a README.
         ImGui::Checkbox("HDR10 request (composite op 4 ready; needs HDR display)", &fx.hdr10_request);
-        ImGui::TextDisabled("Tonemap operator 4 = ST.2084 PQ encode (Rec.2020).");
-        ImGui::TextDisabled("Swapchain colour-space already exposed via");
-        ImGui::TextDisabled("rhi::ColorSpace::kHdr10St2084; activate by setting");
-        ImGui::TextDisabled("rd.swapchain.colour_space at startup + restarting.");
+        ImGui::TextDisabled("Tonemap op 4 = ST.2084 PQ encode (needs HDR swapchain).");
     }
 
-    // ---- Run 25 collapsing-header scaffolds --------------------------------
-    // phase918-collapser-scaffold (Run 25 Strand A): 4 new collapsing
-    // headers reserve real estate inside hello_engine for the
-    // category-(b) sample-fold targets queued by
-    // [[feedback-sample-consolidation-and-per-feature-demo]]. The
-    // path from 38 retained samples to <=10 lands one fold at a time
-    // into these headers; for now each header documents what it WILL
-    // fold + which gtests already cover the public API surface.
-    if (ImGui::CollapsingHeader("Run25  Editor Panels (sample-fold queue)"))
-    {
-        ImGui::TextDisabled("Folds 5 samples/editor/ + hello_inspector +");
-        ImGui::TextDisabled("hello_widgets_table-style demos into one panel.");
-        ImGui::Separator();
-        ImGui::BulletText("hello_editor             - main editor visual demo");
-        ImGui::BulletText("hello_hot_reload         - live shader hot reload");
-        ImGui::BulletText("hello_material_editor    - cd::ui_* material editor");
-        ImGui::BulletText("hello_animator           - cd::editor::panel::animator");
-        ImGui::BulletText("hello_behavior_designer  - cd::editor::panel::behavior_designer");
-        ImGui::BulletText("hello_inspector          - cd::scene tree + properties");
-        ImGui::TextDisabled("Each samples currently builds as standalone .exe;");
-        ImGui::TextDisabled("fold = ImGui::TreeNode + scene-share with hello_engine.");
-    }
-    if (ImGui::CollapsingHeader("Run25  Asset Viewer (sample-fold queue)"))
-    {
-        ImGui::TextDisabled("Folds 6 samples/asset/ Vulkan viewers into one");
-        ImGui::TextDisabled("collapsing tree of importable asset categories.");
-        ImGui::Separator();
-        ImGui::BulletText("hello_mesh            - cd::asset::cdmesh viewer");
-        ImGui::BulletText("hello_texture         - cd::asset::cdtex viewer");
-        ImGui::BulletText("hello_gltf            - glTF auto-load + skinning");
-        ImGui::BulletText("hello_obj             - Wavefront .obj viewer");
-        ImGui::BulletText("hello_cooked          - cdmesh + cdtex bake roundtrip");
-        ImGui::BulletText("hello_textured_cooked - cooked PBR materials");
-        ImGui::TextDisabled("Lib gtests already cover decode/encode parity;");
-        ImGui::TextDisabled("fold = drag-and-drop slot inside hello_engine.");
-    }
-    if (ImGui::CollapsingHeader("Run25  Render Demos (sample-fold queue)"))
-    {
-        ImGui::TextDisabled("Folds 7 samples/render/ visual demos into the");
-        ImGui::TextDisabled("hello_engine R-Showcase tree (extends R1..R8).");
-        ImGui::Separator();
-        ImGui::BulletText("hello_pbr            - PBR sphere grid (covered by R6)");
-        ImGui::BulletText("hello_d3d12_pbr      - D3D12 PBR (needs backend switcher)");
-        ImGui::BulletText("hello_skybox         - analytical sky (covered by R5)");
-        ImGui::BulletText("hello_framegraph     - framegraph orchestration");
-        ImGui::BulletText("hello_gpu_cluster    - Forward+ GPU/CPU parity");
-        ImGui::BulletText("hello_imgui          - ImGui bring-up (already integrated)");
-        ImGui::BulletText("hello_render_thread  - AsyncSubmit pattern");
-        ImGui::TextDisabled("Fold strategy: per-demo toggle exposes the unique");
-        ImGui::TextDisabled("technique through the existing R-Showcase panel.");
-    }
+    // phase991-r-showcase-passive-cleanup: removed 3 of the 4 Run 25
+    // sample-fold scaffold collapsers ("Run25 Editor Panels",
+    // "Run25 Asset Viewer", "Run25 Render Demos"). They held only
+    // TextDisabled + BulletText catalogs of future-fold targets --
+    // pure planning documentation that belongs in
+    // docs/STATUS_AND_PLAN_W8.md, not the runtime panel. The 4th
+    // scaffold ("Run25 Backend Switcher") is removed below at its
+    // original site to keep the cleanup local. The 23 live Run 25
+    // CPU demos (DDGI / ReSTIR / NRC / vol-fog / clouds / ...) are
+    // all preserved -- they have interactive surface area.
     // phase925-texture-synth-live-demo (Run 25 Strand B): CPU
     // noise-quality probe. Lets the user compare cubic vs quintic
     // Hermite smoothing live across one row of a noise texture --
@@ -4122,20 +4052,11 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                              ImVec2(0, 64));
         ImGui::TextDisabled("PCG32 deterministic stream; large N converges to uniform.");
     }
-    if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
-    {
-        ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
-        ImGui::TextDisabled("into one runtime backend-select dropdown.");
-        ImGui::Separator();
-        ImGui::BulletText("Vulkan:  hello_triangle / hello_cube / hello_rt /");
-        ImGui::BulletText("         hello_path_trace / hello_rhi_features");
-        ImGui::BulletText("D3D12:   hello_d3d12_clear / hello_d3d12_triangle");
-        ImGui::BulletText("OpenGL:  hello_opengl_boot / hello_opengl_resources /");
-        ImGui::BulletText("         hello_opengl_triangle");
-        ImGui::BulletText("Metal:   hello_metal (gated by CD_RHI_METAL_ENABLED)");
-        ImGui::TextDisabled("Switch demands swapchain teardown + re-create;");
-        ImGui::TextDisabled("blocked on cd::rhi backend-hot-swap policy ADR.");
-    }
+    // phase991-r-showcase-passive-cleanup: removed the 4th Run 25
+    // sample-fold scaffold ("Run25 Backend Switcher"). Pure
+    // BulletText catalog of per-backend rhi samples + a blocked-on-
+    // ADR note. Belongs in samples/rhi/CMakeLists.txt header (where
+    // it already lives), not the runtime panel.
     ImGui::End();
 
 }
