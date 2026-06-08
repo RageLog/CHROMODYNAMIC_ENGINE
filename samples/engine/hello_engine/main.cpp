@@ -3690,6 +3690,37 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::TextDisabled("DOOM 2016 / Frostbite cluster shading layout.");
         ImGui::TextDisabled("Production fills clusters from GPU compute (R3 panel).");
     }
+    // phase949-velocity-motion-vector-live-demo (Run 25 Strand B):
+    // drive cd::velocity::motion_vector_uv + motion_pixels. Lets the
+    // user pick prev/curr clip-space positions and SEE the
+    // screen-space UV delta + pixel-magnitude live -- same math the
+    // TAA + per-object motion blur paths consume per pixel.
+    if (ImGui::CollapsingHeader("Run25  Motion Vector Probe"))
+    {
+        static cd::math::Vec4f s_v_prev { 0.0F, 0.0F, 0.0F, 1.0F };
+        static cd::math::Vec4f s_v_curr { 0.05F, 0.02F, 0.0F, 1.0F };
+        static int s_v_width = 1920;
+        static int s_v_height = 1080;
+        ImGui::SliderFloat3("Prev clip (x, y, z) / w=1",
+                            &s_v_prev.x, -1.0F, 1.0F);
+        ImGui::SliderFloat3("Curr clip (x, y, z) / w=1",
+                            &s_v_curr.x, -1.0F, 1.0F);
+        ImGui::SliderInt("Viewport width (px)",  &s_v_width,  64, 4096);
+        ImGui::SliderInt("Viewport height (px)", &s_v_height, 64, 2160);
+        const auto uv_delta =
+            cd::velocity::motion_vector_uv(s_v_prev, s_v_curr);
+        const auto motion_px =
+            cd::velocity::motion_pixels(
+                uv_delta,
+                static_cast<std::uint32_t>(s_v_width),
+                static_cast<std::uint32_t>(s_v_height));
+        ImGui::Text("UV delta: (%.4f, %.4f)",
+                    static_cast<double>(uv_delta.x),
+                    static_cast<double>(uv_delta.y));
+        ImGui::Text("Pixel magnitude: %.3f px",
+                    static_cast<double>(motion_px));
+        ImGui::TextDisabled("Motion vectors drive TAA + motion blur + ReSTIR.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
