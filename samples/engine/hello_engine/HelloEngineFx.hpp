@@ -217,6 +217,13 @@ struct HelloEngineFx
     std::array<float, 3> bezier_p2 {  0.5F, 2.5F,  1.0F };
     std::array<float, 3> bezier_p3 {  1.5F, 0.5F,  1.0F };
     bool bezier_show_curve_3d { false };
+    // phase1013-3d-viewport-gpu-particles: toggle for the live
+    // particle simulation overlay. The render loop maintains its
+    // own 64-particle pool (independent from the panel's "Step 1
+    // dt" probe) and drives cd::gpu_particles::advance +
+    // compact_alive every frame so the user sees particles emit,
+    // arc under gravity, and die in the 3D scene.
+    bool gpu_particles_show_3d { false };
 };
 
 }  // namespace cd_sample

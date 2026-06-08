@@ -2982,6 +2982,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         }
         ImGui::TextDisabled("advance() ticks position + velocity + life;");
         ImGui::TextDisabled("compact_alive() rearranges to drive indirect draw.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show GPU particles in 3D viewport",
+                        &fx.gpu_particles_show_3d);
+        if (fx.gpu_particles_show_3d)
+        {
+            ImGui::TextDisabled("  live 64-particle pool, auto-stepped @ dt=1/60; -y gravity");
+            ImGui::TextDisabled("  pool auto-respawns when fully dead");
+        }
     }
     // phase927-virtual-geometry-live-demo (Run 25 Strand B): drive
     // cd::virtual_geometry::projected_error_pixels +
@@ -8861,6 +8869,82 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_bezier_sample");
+                }
+            }
+        }
+        // phase1013-3d-viewport-gpu-particles: 8th application of
+        // the canonical sphere-at-position template. Maintains a
+        // render-loop-local 64-particle pool driven every frame by
+        // cd::gpu_particles::advance + compact_alive. Each alive
+        // particle becomes one tiny sphere at its position, tinted
+        // by remaining life (warm-yellow at life=1, deep-red as
+        // it fades). When all particles die, the pool auto-
+        // respawns so the animation never stops. Independent from
+        // the "Step 1 dt" probe (which exercises a one-shot
+        // discrete sim).
+        if (s.fx.gpu_particles_show_3d)
+        {
+            constexpr std::size_t kPoolSize = 64;
+            static std::array<cd::gpu_particles::Particle, kPoolSize> sp_pool {};
+            static bool sp_init = false;
+            const auto sp_seed = [&]() {
+                for (std::size_t i = 0; i < kPoolSize; ++i)
+                {
+                    sp_pool[i].life = 1.0F;
+                    sp_pool[i].max_life = 1.0F;
+                    const auto fi = static_cast<float>(i);
+                    sp_pool[i].position = { 0.0F, 1.0F, 0.0F };
+                    sp_pool[i].velocity = {
+                        std::sin(fi * 0.27F) * 2.5F,
+                        2.5F + std::cos(fi * 0.13F) * 1.0F,
+                        std::cos(fi * 0.31F) * 2.5F };
+                }
+            };
+            if (!sp_init) { sp_seed(); sp_init = true; }
+            constexpr cd::math::Vec3f kGravity { 0.0F, -6.0F, 0.0F };
+            constexpr float kDt = 1.0F / 60.0F;
+            cd::gpu_particles::advance(
+                std::span<cd::gpu_particles::Particle>(sp_pool),
+                kDt, kGravity);
+            const auto alive = cd::gpu_particles::compact_alive(
+                std::span<cd::gpu_particles::Particle>(sp_pool));
+            if (alive == 0U) { sp_seed(); }
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr float kRadius = 0.06F;
+                for (std::uint32_t i = 0; i < alive; ++i)
+                {
+                    const auto& pt = sp_pool[i];
+                    const float life01 = (pt.max_life > 1e-4F)
+                        ? std::clamp(pt.life / pt.max_life, 0.0F, 1.0F)
+                        : 0.0F;
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kRadius;
+                    model[1][1] = kRadius;
+                    model[2][2] = kRadius;
+                    model[3][0] = pt.position.x;
+                    model[3][1] = pt.position.y;
+                    model[3][2] = pt.position.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = 0.95F * life01 + 0.95F * (1.0F - life01);
+                    pp.tint[1] = 0.75F * life01 + 0.15F * (1.0F - life01);
+                    pp.tint[2] = 0.18F * life01 + 0.05F * (1.0F - life01);
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_gpu_particle");
                 }
             }
         }
