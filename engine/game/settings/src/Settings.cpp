@@ -321,10 +321,10 @@ bool Settings::save(const std::string& path) const
     for (const auto& [k, v] : values_)
     {
         const bool already_emitted =
-            std::any_of(layout_.begin(), layout_.end(),
-                        [&k](const PreservedLine& l) {
-                            return l.kind == LineKind::kKey && l.text == k;
-                        });
+            std::ranges::any_of(layout_,
+                                [&k](const PreservedLine& l) {
+                                    return l.kind == LineKind::kKey && l.text == k;
+                                });
         if (!already_emitted)
         {
             out << k << '=' << format_value(v) << '\n';

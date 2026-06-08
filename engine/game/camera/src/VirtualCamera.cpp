@@ -26,8 +26,8 @@ CameraBrain::Id CameraBrain::add_vcam(VirtualCamera vcam, std::int32_t priority)
 
 bool CameraBrain::remove_vcam(Id id)
 {
-    const auto it = std::find_if(vcams_.begin(), vcams_.end(),
-                                 [id](const Entry& e) { return e.id == id; });
+    const auto it = std::ranges::find_if(vcams_,
+                                         [id](const Entry& e) { return e.id == id; });
     if (it == vcams_.end())
     {
         return false;
@@ -51,15 +51,15 @@ bool CameraBrain::remove_vcam(Id id)
 
 VirtualCamera* CameraBrain::vcam(Id id) noexcept
 {
-    const auto it = std::find_if(vcams_.begin(), vcams_.end(),
-                                 [id](const Entry& e) { return e.id == id; });
+    const auto it = std::ranges::find_if(vcams_,
+                                         [id](const Entry& e) { return e.id == id; });
     return it == vcams_.end() ? nullptr : &it->vcam;
 }
 
 const VirtualCamera* CameraBrain::vcam(Id id) const noexcept
 {
-    const auto it = std::find_if(vcams_.cbegin(), vcams_.cend(),
-                                 [id](const Entry& e) { return e.id == id; });
+    const auto it = std::ranges::find_if(vcams_,
+                                         [id](const Entry& e) { return e.id == id; });
     return it == vcams_.cend() ? nullptr : &it->vcam;
 }
 
