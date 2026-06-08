@@ -2260,6 +2260,23 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             .tonemap_op         = &fx.tonemap_op,
         };
         cd::editor::panel::draw_composite_preset_buttons(fx_binding, log_push);
+        // phase1002-stable-mode-preset: user feedback #2 reports flicker
+        // on noise + text. To isolate the source, this button kills
+        // every per-frame temporal/animated source in one click: TAA
+        // jitter (Halton offsets disappear), clouds drift (procedural
+        // animation freezes), motion blur, film grain. If the user
+        // still sees flicker after Stable Mode, the source is NOT in
+        // the post-fx temporal stack and the search moves to the raster
+        // pass (e.g. fBm noise per-frame phase) or ImGui draw.
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Stable Mode (no jitter)"))
+        {
+            fx.taa_amount       = 0.0F;
+            fx.motion_blur      = 0.0F;
+            fx.film_grain       = 0.0F;
+            fx.clouds_coverage  = 0.0F;
+            log_push("Stable Mode: TAA + motion blur + grain + clouds = 0 (flicker isolation preset)");
+        }
         // phase893-tonemap-selector: live combo so user can A/B
         // Narkowicz ACES / Hill ACES / Hable / AGX / HDR10 PQ
         // without round-tripping through the preset buttons.
