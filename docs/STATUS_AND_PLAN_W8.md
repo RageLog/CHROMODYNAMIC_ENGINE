@@ -905,10 +905,10 @@ Five concurrent strands, single dev branch, no tag / no push.
 | Strand | Goal                                | Phases   | Outcome |
 |--------|-------------------------------------|----------|---------|
 | A      | hello_engine collapser scaffold (path 38 → ≤10) | 918 | 4 new R-Showcase collapsing headers reserve real estate; fold-per-category deferred (invasive, needs scene-composition handles). |
-| B      | Per-library live CPU demos          | 919-932  | **17 visible demos shipped** -- DDGI/ReSTIR DI/NRC/vol-fog/clouds/texture-synth/decal/GPU particles/VG/VT/mesh-shader/sheen+clearcoat/SSS/atmo/shafts/LTC/ReSTIR GI. Every render-tier library in DEPS now has a visible toggle in hello_engine. |
+| B      | Per-library live CPU demos          | 919-942  | **26 visible demos shipped** -- DDGI/ReSTIR DI/NRC/vol-fog/clouds/texture-synth/decal/GPU particles/VG/VT/mesh-shader/sheen+clearcoat/SSS/atmo/shafts/LTC/ReSTIR GI/IBL split-sum/camera basis/frustum cull/light CCT/light attenuation/IBL cubemap/CSM splits/cluster grid. Every render-tier library in DEPS now has a visible toggle in hello_engine. |
 | C      | Metal ADR §8.5 close-out            | 922      | 6 audit-patch sub-sections inlined; verdict NEEDS-REVISION-FIRST → READY-TO-START pending **user sign-off Fork A primary** (the load-bearing remaining item). |
 | D      | Phase 2 architecture roadmap (X4/X5/X1-FU-F) | 921 | `docs/ROADMAP_PHASE_2.md` NEW (504 lines). §5 proposes serial ordering. §6 surfaces 6 open questions for the council. Two flagged risks: §6 Q1 (shader toolchain decision irreversible), §6 Q2 (secondary-cmd-buffer surface shape biggest cross-backend lever). |
-| E      | Clang-tidy bug-class promotion      | 928      | 9 additional rules promoted to WarningsAsErrors (9 → 18). |
+| E      | Clang-tidy rule promotion           | 928, 936, 940, 941, 943, 944, 945, 947 | **75 additional rules** swept through bugprone + cert + cppcoreguidelines + hicpp + modernize + performance + portability + readability families. **9 → 84** in WarningsAsErrors (9.3x). Each promotion preceded by a probe pass; rules with warnings get site-by-site fixes (~30 fix sites across phases 941/943/944/945) before promotion. |
 
 Tests: 260/260 PASS at every single commit checkpoint. Zero
 rendering regressions.
