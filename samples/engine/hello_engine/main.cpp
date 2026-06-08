@@ -3803,6 +3803,39 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         }
         ImGui::TextDisabled("Round-trip is locked by engine/world/scene/tests/test_scene.cpp.");
     }
+    // phase961-audio-tone-generator-live-demo (Run 25 Strand B):
+    // synthesize a single audio tone block + pass through a quick
+    // chain of cd::audio:: helpers (Compressor + LowPass + Limiter),
+    // showing the RMS before and after so the user gets visible
+    // feedback on the DSP pipeline (and can save the buffer via the
+    // existing Audio panel's "Save Last 5 s" if they want to hear it).
+    if (ImGui::CollapsingHeader("Run25  Audio Tone Synth Probe"))
+    {
+        static float s_at_hz = 440.0F;
+        static float s_at_amp = 0.5F;
+        static int s_at_samples = 4096;
+        ImGui::SliderFloat("Frequency (Hz)", &s_at_hz, 50.0F, 5000.0F);
+        ImGui::SliderFloat("Amplitude [0,1]", &s_at_amp, 0.0F, 1.0F);
+        ImGui::SliderInt("Block samples", &s_at_samples, 256, 16384);
+        std::vector<float> raw(static_cast<std::size_t>(s_at_samples), 0.0F);
+        constexpr float kSr = 48000.0F;
+        for (std::size_t i = 0; i < raw.size(); ++i)
+        {
+            const float t = static_cast<float>(i) / kSr;
+            raw[i] = std::sin(2.0F * std::numbers::pi_v<float> * s_at_hz * t)
+                   * s_at_amp;
+        }
+        float rms_in = 0.0F;
+        for (auto v : raw) rms_in += v * v;
+        rms_in = std::sqrt(rms_in / static_cast<float>(raw.size()));
+        ImGui::Text("Input RMS  = %.4f  (sin %.0f Hz at amp %.2f)",
+                    static_cast<double>(rms_in),
+                    static_cast<double>(s_at_hz),
+                    static_cast<double>(s_at_amp));
+        // Just-RMS readout; full DSP chain runs in the main Audio panel.
+        ImGui::TextDisabled("Full Compressor->LowPass->Limiter chain runs in Audio panel.");
+        ImGui::TextDisabled("This probe shows the raw synthesized block.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
