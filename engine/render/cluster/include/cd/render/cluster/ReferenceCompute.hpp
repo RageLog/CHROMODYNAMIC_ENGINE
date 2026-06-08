@@ -120,8 +120,8 @@ run_reference_compute(const ClusterConfig& cfg, std::span<const LightSphere> lig
                 const std::size_t cid =
                     (static_cast<std::size_t>(cz) * cfg.cells_y + cy) * cfg.cells_x + cx;
                 std::uint32_t count = 0;
-                for (std::uint32_t i = 0; i < lights.size(); ++i)
-                    if (ref_detail::light_overlaps_cluster(lights[i], cfg, cx, cy, cz))
+                for (const auto& light : lights)
+                    if (ref_detail::light_overlaps_cluster(light, cfg, cx, cy, cz))
                         ++count;
                 out.cluster_counts[cid] = count;
             }

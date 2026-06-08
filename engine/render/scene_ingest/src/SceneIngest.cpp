@@ -217,12 +217,12 @@ ingest_gltf_scene(cd::rhi::IDevice&                          device,
         // Create node entities first (without attachment) so child index
         // references resolve regardless of walk order.
         r.node_entities.reserve(src.nodes.size());
-        for (std::size_t i = 0; i < src.nodes.size(); ++i)
+        for (const auto& node : src.nodes)
         {
             const auto e = scene_tree.create_node();
             if (auto* lt = world.get<::cd::scene::LocalTransform>(e))
             {
-                lt->value = decompose_mat4(src.nodes[i].local_transform);
+                lt->value = decompose_mat4(node.local_transform);
             }
             r.node_entities.push_back(e);
         }

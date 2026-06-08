@@ -210,7 +210,7 @@ public:
     /// invalidate on the next `fire()` / `tick()`.
     CD_NODISCARD std::span<const ActiveBurst> active_bursts() const noexcept
     {
-        return std::span<const ActiveBurst>(active_);
+        return { active_ };
     }
 
     /// Current live-burst count.

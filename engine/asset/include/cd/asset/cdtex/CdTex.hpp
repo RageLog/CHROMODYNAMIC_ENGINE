@@ -118,6 +118,4 @@ struct CdTex
 /// error codes.
 [[nodiscard]] cd::core::Result<CdTex> decode(const std::uint8_t* bytes, std::size_t size);
 
-[[nodiscard]] cd::core::Result<CdTex> load(std::string_view path);
-
 }  // namespace cd::asset::cdtex

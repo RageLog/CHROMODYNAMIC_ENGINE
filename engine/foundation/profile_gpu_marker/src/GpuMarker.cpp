@@ -165,8 +165,7 @@ void Recorder::resolve(cd::rhi::IDevice& /*device*/)
 
 std::span<const GpuMarkerSample> Recorder::samples() const noexcept
 {
-    return std::span<const GpuMarkerSample>(impl_->resolved.data(),
-                                            impl_->resolved.size());
+    return { impl_->resolved.data(), impl_->resolved.size() };
 }
 
 void Recorder::clear() noexcept

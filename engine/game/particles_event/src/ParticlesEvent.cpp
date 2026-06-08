@@ -142,11 +142,11 @@ ParticleEventDispatcher::fire(std::string_view       name,
     // index instead of iterators in case a callback mutates the registry
     // (e.g. by detaching itself).
     const ActiveBurst& published = active_.back();
-    for (std::size_t i = 0; i < callbacks_.size(); ++i)
+    for (const auto& entry : callbacks_)
     {
-        if (callbacks_[i].cb)
+        if (entry.cb)
         {
-            callbacks_[i].cb(published);
+            entry.cb(published);
         }
     }
 

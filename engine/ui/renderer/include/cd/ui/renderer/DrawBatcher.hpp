@@ -158,20 +158,20 @@ public:
     /// Vertex buffer ready for upload.
     [[nodiscard]] std::span<const Vertex> vertices() const noexcept
     {
-        return std::span<const Vertex>(vertices_.data(), vertices_.size());
+        return { vertices_.data(), vertices_.size() };
     }
 
     /// Index buffer ready for upload.
     [[nodiscard]] std::span<const std::uint16_t> indices() const noexcept
     {
-        return std::span<const std::uint16_t>(indices_.data(), indices_.size());
+        return { indices_.data(), indices_.size() };
     }
 
     /// Draw commands in submission order. The renderer iterates these
     /// and binds scissor / texture / pipeline for each before draw_indexed.
     [[nodiscard]] std::span<const DrawCommand> commands() const noexcept
     {
-        return std::span<const DrawCommand>(commands_.data(), commands_.size());
+        return { commands_.data(), commands_.size() };
     }
 
     [[nodiscard]] std::size_t vertex_count() const noexcept { return vertices_.size(); }
