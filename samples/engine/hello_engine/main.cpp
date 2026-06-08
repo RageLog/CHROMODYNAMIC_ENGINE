@@ -2112,6 +2112,7 @@ inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
 // the Edit History panel.
 inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                                   std::vector<LightRow>& lights,
+                                  std::vector<SceneEntity>& entities,
                                   const std::function<void(std::string)>& log_push)
 {
     ImGui::Begin("R-Showcase");
@@ -2125,6 +2126,51 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     ImGui::TextDisabled("(albedo + normal + MR + AO)");
     ImGui::TextDisabled("  phase985: PBR grid right column (metallic=0) shows");
     ImGui::TextDisabled("  earth_albedo via Inspector \"use_texture\" checkbox.");
+    // phase988-pbr-texture-blanket-toggle: 3 buttons for whole-grid
+    // experimentation without clicking through every sphere in the
+    // Inspector. "Textured ALL" turns the gate on for every is_pbr
+    // entity (chrome columns get earth-tex stamped on too -- great
+    // for stress-testing the gate). "Textured RIGHT COL" returns to
+    // the phase 986 default (only the dielectric column textured).
+    // "Procedural ALL" forces the original procedural-color path
+    // across the grid (the pre-phase-985 baseline).
+    if (ImGui::SmallButton("Textured ALL"))
+    {
+        std::size_t n = 0;
+        for (auto& ent : entities)
+        {
+            if (ent.is_pbr && !ent.use_texture) { ent.use_texture = true; ++n; }
+        }
+        if (n > 0) log_push("PBR R2: textured ALL (" + std::to_string(n) + " spheres flipped on)");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Textured RIGHT COL"))
+    {
+        std::size_t n = 0;
+        const auto right_col = static_cast<std::size_t>(
+            cd::hello_engine::kPbrGridTexturedColumn);
+        const auto cols      = static_cast<std::size_t>(
+            cd::hello_engine::kPbrGridCols);
+        std::size_t pbr_idx = 0;
+        for (auto& ent : entities)
+        {
+            if (!ent.is_pbr) continue;
+            const bool want = (pbr_idx % cols) == right_col;
+            if (ent.use_texture != want) { ent.use_texture = want; ++n; }
+            ++pbr_idx;
+        }
+        if (n > 0) log_push("PBR R2: textured RIGHT COL (" + std::to_string(n) + " spheres updated)");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Procedural ALL"))
+    {
+        std::size_t n = 0;
+        for (auto& ent : entities)
+        {
+            if (ent.is_pbr && ent.use_texture) { ent.use_texture = false; ++n; }
+        }
+        if (n > 0) log_push("PBR R2: procedural ALL (" + std::to_string(n) + " spheres flipped off)");
+    }
     if (ImGui::CollapsingHeader("R2-Debug  View modes (see each map)"))
     {
         const char* labels[] = { "Final", "Albedo",           "World normal", "MR (G=rough,B=metal)",
@@ -8255,7 +8301,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
 
         draw_scene_tree_panel(s.entities, s.selected);
         draw_inspector_panel(s.entities, s.selected, s.scene, s.history, log_push_fn);
-        draw_r_showcase_panel(s.fx, s.lights, log_push_fn);
+        draw_r_showcase_panel(s.fx, s.lights, s.entities, log_push_fn);
 
         // phase435-vis8: editor floor toggle. Shown as a small checkbox in the
         // R-Showcase window so the user can re-enable the grid at any time.
@@ -10745,7 +10791,7 @@ int main(int argc, char** argv)
         draw_inspector_panel(entities, selected, scene, history, log_push);
 
         // ---- R-Showcase panel (unified R1..R8 toggles) ----
-        draw_r_showcase_panel(fx, lights, log_push);
+        draw_r_showcase_panel(fx, lights, entities, log_push);
 
         // ---- Counters ----
         draw_counters_panel(counters, dt, frame_idx);
