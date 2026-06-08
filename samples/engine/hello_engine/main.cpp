@@ -71,6 +71,7 @@
 #include <cd/editor/panel/CompositePresetButtonsImGui.hpp>
 #include <cd/frame_timing/FrameTimeRing.hpp>
 #include <cd/gpu_particles/GpuParticles.hpp>
+#include <cd/input/Axis.hpp>
 // phase927 deps wired: cd::mesh_shader / cd::virtual_geometry /
 // cd::virtual_textures added to CMakeLists DEPS so the live demos
 // below can call into their public CPU APIs.
@@ -3720,6 +3721,35 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::Text("Pixel magnitude: %.3f px",
                     static_cast<double>(motion_px));
         ImGui::TextDisabled("Motion vectors drive TAA + motion blur + ReSTIR.");
+    }
+    // phase954-input-axis-live-demo (Run 25 Strand B): drive
+    // cd::input::Axis. Lets the user click "neg" and "pos" buttons
+    // (sim of two key holds) + see how the axis maps the pair to a
+    // scalar in [-1, 1]. Also exposes the analog override slider.
+    if (ImGui::CollapsingHeader("Run25  Input Axis Probe"))
+    {
+        static cd::input::Axis s_axis {};
+        static bool s_axis_neg = false;
+        static bool s_axis_pos = false;
+        static float s_axis_analog = 0.0F;
+        ImGui::Checkbox("Negative key held", &s_axis_neg);
+        ImGui::SameLine();
+        ImGui::Checkbox("Positive key held", &s_axis_pos);
+        if (ImGui::Button("set_keys(neg, pos)"))
+            (void)s_axis.set_keys(s_axis_neg, s_axis_pos);
+        ImGui::SliderFloat("Analog override", &s_axis_analog, -1.0F, 1.0F);
+        ImGui::SameLine();
+        if (ImGui::Button("set_analog"))
+            s_axis.set_analog(s_axis_analog);
+        ImGui::Text("Axis value: %.3f", static_cast<double>(s_axis.value()));
+        // A coloured bar visualises the [-1, 1] sign + magnitude.
+        const float v = s_axis.value();
+        ImGui::TextColored(v >= 0.0F ? ImVec4(0.4F, 1.0F, 0.4F, 1.0F)
+                                     : ImVec4(1.0F, 0.4F, 0.4F, 1.0F),
+                           "%c bar: %.2f",
+                           v >= 0.0F ? '+' : '-',
+                           static_cast<double>(std::abs(v)));
+        ImGui::TextDisabled("[neg, pos] -> [-1, 0, 1] with both = 0 dead zone.");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
