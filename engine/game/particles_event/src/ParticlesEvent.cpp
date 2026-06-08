@@ -142,7 +142,14 @@ ParticleEventDispatcher::fire(std::string_view       name,
     // index instead of iterators in case a callback mutates the registry
     // (e.g. by detaching itself).
     const ActiveBurst& published = active_.back();
-    for (const auto& entry : callbacks_)
+    // Snapshot the callback list before dispatch so a callback that
+    // mutates `callbacks_` (e.g. detaches itself) cannot invalidate
+    // our iteration or cause use-after-free. The snapshot copy also
+    // defines clear semantics: callbacks added during dispatch fire
+    // on the NEXT publication, callbacks removed during dispatch still
+    // get their final call from this publication's snapshot.
+    const auto snapshot = callbacks_;
+    for (const auto& entry : snapshot)
     {
         if (entry.cb)
         {
