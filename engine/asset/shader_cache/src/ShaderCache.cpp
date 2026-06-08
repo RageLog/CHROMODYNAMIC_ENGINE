@@ -116,11 +116,7 @@ void write_str(std::ostream& out, const std::string& s)
         return false;
     }
     out_s.resize(len);
-    if (len > 0 && !in.read(out_s.data(), static_cast<std::streamsize>(len)))
-    {
-        return false;
-    }
-    return true;
+    return len == 0 || in.read(out_s.data(), static_cast<std::streamsize>(len)).good();
 }
 
 }  // namespace
