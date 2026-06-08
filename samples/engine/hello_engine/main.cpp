@@ -2070,14 +2070,12 @@ inline void spawn_chrome_probe_entity(cd::scene::Scene&         scene,
 inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
                                     std::vector<SceneEntity>& entities)
 {
-    // phase983-pbr-texture-fix: pre-mark the dielectric column (metallic=0)
-    // of the 4x4 PBR grid to use the albedo texture path so the user sees
-    // texture detail on at least one row of spheres out of the box. The
-    // chrome columns (metallic > 0) stay procedural-color so the chrome
-    // RT-reflection demo still reads as polished metal at first glance.
-    // Per-entity texture toggle is also exposed via R-Showcase R2 panel
-    // for live experimentation across the whole grid.
-    std::size_t slot_idx = 0;
+    // phase999-pbr-default-texture-off (was phase983): spawn the PBR
+    // grid with EVERY sphere starting on the procedural-color path.
+    // The user opts into the albedo texture path per-entity via the
+    // Inspector "Albedo texture (PBR opt-in)" checkbox or grid-wide
+    // via the R-Showcase R2 panel buttons. See phase999 comment in
+    // the loop body for the user-feedback rationale.
     for (const auto& slot : cd::hello_engine::build_pbr_demo_grid())
     {
         SceneEntity e;
@@ -2088,17 +2086,22 @@ inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
         e.is_pbr = true;
         e.metallic = slot.metallic;
         e.roughness = slot.roughness;
-        // Column kPbrGridTexturedColumn (right edge, fully dielectric
-        // metallic=0) opts into the albedo-texture sampling path so the
-        // user sees earth_albedo detail without the F0 chrome path
-        // swallowing the diffuse hue. Single source of truth for the
-        // column index lives in HelloPbrGrid.hpp.
-        e.use_texture = (slot_idx % static_cast<std::size_t>(cd::hello_engine::kPbrGridCols))
-                        == static_cast<std::size_t>(cd::hello_engine::kPbrGridTexturedColumn);
+        // phase999-pbr-default-texture-off: user feedback (Run 26)
+        // pointed out that auto-texturing the dielectric column makes
+        // the non-metallic spheres look WRONG ("metalic olmayan
+        // objelerde kendi textureleri varmış gibi gördüm"). Roll
+        // back the default seed -- every PBR sphere starts with
+        // use_texture = false (procedural color). The user opts in
+        // per-entity via the Inspector "Albedo texture (PBR opt-in)"
+        // checkbox or grid-wide via the R-Showcase R2 panel buttons
+        // (Textured ALL / Textured RIGHT COL). kPbrGridTexturedColumn
+        // constant in HelloPbrGrid.hpp remains as the documented
+        // default-on column for the RIGHT COL preset, but no longer
+        // applied at spawn time.
+        e.use_texture = false;
         scene.local(e.handle)->value.position = slot.position;
         scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
         entities.push_back(std::move(e));
-        ++slot_idx;
     }
 }
 
@@ -2122,7 +2125,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // other passive blocks below. Live R2 PBR-grid blanket toggle
     // buttons follow immediately so the section still has interactive
     // surface area.
-    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  PBR grid albedo texture");
+    ImGui::TextColored(ImVec4(0.4F, 0.9F, 0.4F, 1), "R2  PBR grid albedo texture (opt-in)");
     // phase988-pbr-texture-blanket-toggle: 3 buttons for whole-grid
     // experimentation without clicking through every sphere in the
     // Inspector. "Textured ALL" turns the gate on for every is_pbr
