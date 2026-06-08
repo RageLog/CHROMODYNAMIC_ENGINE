@@ -3751,6 +3751,37 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                            static_cast<double>(std::abs(v)));
         ImGui::TextDisabled("[neg, pos] -> [-1, 0, 1] with both = 0 dead zone.");
     }
+    // phase959-ecs-world-live-demo (Run 25 Strand B): drive cd::ecs::World.
+    // Lets the user spawn N entities into a throw-away world + see the
+    // create/destroy counts. Mirrors the test_ecs.cpp BulkLifecycleStress
+    // case at smaller N for UI responsiveness.
+    if (ImGui::CollapsingHeader("Run25  ECS World Stress Probe"))
+    {
+        static cd::ecs::World s_demo_world {};
+        static int s_demo_spawn_count = 64;
+        static std::uint32_t s_demo_total_created = 0;
+        static std::uint32_t s_demo_total_destroyed = 0;
+        ImGui::SliderInt("Spawn batch size", &s_demo_spawn_count, 1, 1024);
+        if (ImGui::Button("Spawn batch"))
+        {
+            for (int i = 0; i < s_demo_spawn_count; ++i)
+            {
+                (void)s_demo_world.create();
+                ++s_demo_total_created;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset world"))
+        {
+            const auto destroyed_now = s_demo_world.alive_count();
+            s_demo_total_destroyed += static_cast<std::uint32_t>(destroyed_now);
+            s_demo_world = cd::ecs::World{};
+        }
+        ImGui::Text("Alive entities: %zu", s_demo_world.alive_count());
+        ImGui::Text("Total created : %u", s_demo_total_created);
+        ImGui::Text("Total destroyed: %u", s_demo_total_destroyed);
+        ImGui::TextDisabled("cd::ecs::World sparse-set + generation handles.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
