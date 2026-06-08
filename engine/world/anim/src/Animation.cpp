@@ -44,17 +44,13 @@ cd::math::Transformf AnimationClip::sample(float t) const noexcept
         return frames_.back().value;
 
     // Binary search for the upper bound, then interpolate against the
-    // preceding frame. std::upper_bound on a small sorted vector keeps the
-    // sample call O(log N) without overhead from a custom binary loop.
-    auto it = std::upper_bound(
-        frames_.begin(),
-        frames_.end(),
-        t,
-        [](float v, const Keyframe& k)
-        {
-            return v < k.time;
-        }
-    );
+    // preceding frame. std::ranges::upper_bound on a small sorted vector
+    // keeps the sample call O(log N) without overhead from a custom binary
+    // loop. The projection is identity over Keyframe::time so the lambda
+    // sees `t` as the lhs and the projected `k.time` as the rhs.
+    auto it = std::ranges::upper_bound(
+        frames_, t, std::less<>{},
+        &Keyframe::time);
     const auto& hi = *it;
     const auto& lo = *(it - 1);
     const float span = hi.time - lo.time;
@@ -145,12 +141,9 @@ cd::math::Transformf SkinnedClip::sample_track_(const std::vector<Keyframe>& fra
     if (t >= frames.back().time)
         return frames.back().value;
 
-    auto it = std::upper_bound(
-        frames.begin(),
-        frames.end(),
-        t,
-        [](float v, const Keyframe& k) { return v < k.time; }
-    );
+    auto it = std::ranges::upper_bound(
+        frames, t, std::less<>{},
+        &Keyframe::time);
     const auto& b = *it;
     const auto& a = *(it - 1);
     const float span = b.time - a.time;

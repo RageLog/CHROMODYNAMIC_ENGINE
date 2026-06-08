@@ -350,14 +350,12 @@ public:
             rigid_components_.erase(h.index());
             colliders_.erase(h.index());
         }
-        // Remove joints referencing this body
-        joints_.erase(
-            std::remove_if(
-                joints_.begin(), joints_.end(),
-                [&](const components::JointComponent& j) noexcept {
-                    return j.body_a.index() == h.index() || j.body_b.index() == h.index();
-                }),
-            joints_.end());
+        // Remove joints referencing this body.
+        const auto removed = std::ranges::remove_if(joints_,
+            [&](const components::JointComponent& j) noexcept {
+                return j.body_a.index() == h.index() || j.body_b.index() == h.index();
+            });
+        joints_.erase(removed.begin(), removed.end());
     }
 
     [[nodiscard]] std::size_t body_count() const noexcept override

@@ -327,13 +327,13 @@ void SoftBody::solve_self_collisions() noexcept
     }
 
     // ---- 2. Sort indices by hash (stable not required) -----------------------
-    std::sort(m_hash_index.begin(), m_hash_index.end(),
-              [&](uint32_t a, uint32_t b) noexcept {
-                  return m_cell_hash[a] < m_cell_hash[b];
-              });
+    std::ranges::sort(m_hash_index,
+                      [&](uint32_t a, uint32_t b) noexcept {
+                          return m_cell_hash[a] < m_cell_hash[b];
+                      });
 
     // ---- 3. Build CSR bucket_start (counting + prefix sum) -------------------
-    std::fill(m_bucket_start.begin(), m_bucket_start.end(), 0U);
+    std::ranges::fill(m_bucket_start, 0U);
     for (std::size_t i = 0; i < n; ++i)
     {
         ++m_bucket_start[m_cell_hash[i] + 1U];

@@ -102,8 +102,7 @@ ParticleEventDispatcher::add_on_emit(OnEmitCallback cb)
 
 void ParticleEventDispatcher::remove_on_emit(std::uint32_t id) noexcept
 {
-    const auto it = std::find_if(
-        callbacks_.begin(), callbacks_.end(),
+    const auto it = std::ranges::find_if(callbacks_,
         [id](const CallbackEntry& e) noexcept { return e.id == id; });
     if (it != callbacks_.end())
     {

@@ -79,7 +79,8 @@ void Scene::detach(cd::ecs::Entity child)
     if (kids != nullptr)
     {
         auto& v = kids->entities;
-        v.erase(std::remove(v.begin(), v.end(), child), v.end());
+        const auto removed = std::ranges::remove(v, child);
+        v.erase(removed.begin(), removed.end());
         if (v.empty())
             world_->remove<Children>(parent_e);
     }
