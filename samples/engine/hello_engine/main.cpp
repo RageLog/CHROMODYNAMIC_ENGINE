@@ -2861,18 +2861,32 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // pixel; here we make it click-debuggable.
     if (ImGui::CollapsingHeader("Run25  Decal Projector Probe"))
     {
-        static cd::decal::Decal s_decal {};
-        static cd::math::Vec3f  s_dp_point { 0.2F, 0.1F, 0.1F };
+        // phase1008-3d-viewport-decal-obb-gizmo: decal state migrated
+        // off function-statics onto HelloEngineFx so the 3D-viewport
+        // overlay (added below + in the render loop) can read the
+        // SAME values the user is dragging here. fx stores std::array
+        // for include-light test target; we shadow into a Decal here.
         ImGui::SliderFloat3("Decal position",
-                            &s_decal.position.x, -4.0F, 4.0F);
+                            fx.decal_demo_position.data(), -4.0F, 4.0F);
         ImGui::SliderFloat3("Decal half-extents",
-                            &s_decal.half_extents.x, 0.1F, 4.0F);
+                            fx.decal_demo_half_extents.data(), 0.1F, 4.0F);
         ImGui::SliderFloat3("Test point (world)",
-                            &s_dp_point.x, -4.0F, 4.0F);
+                            fx.decal_demo_test_point.data(), -4.0F, 4.0F);
+        cd::decal::Decal s_decal {};
+        s_decal.position     = { fx.decal_demo_position[0],
+                                 fx.decal_demo_position[1],
+                                 fx.decal_demo_position[2] };
+        s_decal.half_extents = { fx.decal_demo_half_extents[0],
+                                 fx.decal_demo_half_extents[1],
+                                 fx.decal_demo_half_extents[2] };
+        const cd::math::Vec3f test_point {
+            fx.decal_demo_test_point[0],
+            fx.decal_demo_test_point[1],
+            fx.decal_demo_test_point[2] };
         cd::math::Vec3f local {};
         std::array<float, 2> uv {};
         const bool inside =
-            cd::decal::project_world_to_decal(s_decal, s_dp_point, local, uv);
+            cd::decal::project_world_to_decal(s_decal, test_point, local, uv);
         ImGui::Text("Inside OBB: %s", inside ? "YES" : "NO");
         ImGui::Text("Local NDC (right, up, fwd): (%.3f, %.3f, %.3f)",
                     static_cast<double>(local.x),
@@ -2890,6 +2904,17 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             cd::decal::decal_intersects_aabb(s_decal, kAabbMin, kAabbMax);
         ImGui::Text("Intersects scene AABB [-1, 1]^3: %s",
                     aabb_hit ? "YES" : "NO");
+        // phase1008: 3D viewport gizmo. When checked, the render loop
+        // emits 1 sphere at the OBB centre + 8 spheres at the OBB
+        // corners. Centre tint encodes the AABB-intersect result
+        // (green=hits scene AABB, red=miss); corner tint is white.
+        ImGui::Separator();
+        ImGui::Checkbox("Show decal OBB in 3D viewport",
+                        &fx.decal_show_obb_3d);
+        if (fx.decal_show_obb_3d)
+        {
+            ImGui::TextDisabled("  centre tint = AABB-hit (green) / miss (red); corners = white");
+        }
         ImGui::TextDisabled("Same math as the GBuffer decal pass.");
         ImGui::TextDisabled("Persson 2009 / Filion 2012 cluster binning.");
     }
@@ -8419,6 +8444,85 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_light_gizmo");
+                }
+            }
+        }
+        // phase1008-3d-viewport-decal-obb-gizmo: 4th application of the
+        // canonical sphere-at-position pattern. Renders 1 sphere at the
+        // decal centre (tinted green if the decal OBB intersects the
+        // fixed scene AABB [-1,1]^3, red if it misses -- matches what
+        // the "Run25 Decal Projector Probe" panel reports textually)
+        // plus 8 small white spheres at the OBB corners. Lets the user
+        // SEE in the 3D scene where the decal volume sits while
+        // dragging the position / half-extents sliders.
+        if (s.fx.decal_show_obb_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                cd::decal::Decal probe {};
+                probe.position     = { s.fx.decal_demo_position[0],
+                                       s.fx.decal_demo_position[1],
+                                       s.fx.decal_demo_position[2] };
+                probe.half_extents = { s.fx.decal_demo_half_extents[0],
+                                       s.fx.decal_demo_half_extents[1],
+                                       s.fx.decal_demo_half_extents[2] };
+                constexpr cd::math::Vec3f kAabbMin { -1.0F, -1.0F, -1.0F };
+                constexpr cd::math::Vec3f kAabbMax {  1.0F,  1.0F,  1.0F };
+                const bool aabb_hit =
+                    cd::decal::decal_intersects_aabb(probe, kAabbMin, kAabbMax);
+                const cd::math::Vec3f centre_tint = aabb_hit
+                    ? cd::math::Vec3f { 0.20F, 0.95F, 0.30F }   // green
+                    : cd::math::Vec3f { 0.95F, 0.18F, 0.18F };  // red
+                struct DecalGizmoSphere
+                {
+                    cd::math::Vec3f pos;
+                    cd::math::Vec3f tint;
+                    float radius;
+                };
+                std::array<DecalGizmoSphere, 9> gizmo {};
+                gizmo[0] = { probe.position, centre_tint, 0.18F };
+                std::size_t idx = 1;
+                for (int sz = -1; sz <= 1; sz += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                for (int sx = -1; sx <= 1; sx += 2)
+                {
+                    gizmo[idx].pos = {
+                        probe.position.x + static_cast<float>(sx) * probe.half_extents.x,
+                        probe.position.y + static_cast<float>(sy) * probe.half_extents.y,
+                        probe.position.z + static_cast<float>(sz) * probe.half_extents.z };
+                    gizmo[idx].tint   = { 0.95F, 0.95F, 0.95F };
+                    gizmo[idx].radius = 0.10F;
+                    ++idx;
+                }
+                for (const auto& g : gizmo)
+                {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = g.radius;
+                    model[1][1] = g.radius;
+                    model[2][2] = g.radius;
+                    model[3][0] = g.pos.x;
+                    model[3][1] = g.pos.y;
+                    model[3][2] = g.pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = g.tint.x;
+                    pp.tint[1] = g.tint.y;
+                    pp.tint[2] = g.tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.55F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_decal_gizmo");
                 }
             }
         }

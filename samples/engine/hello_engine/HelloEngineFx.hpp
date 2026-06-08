@@ -25,6 +25,8 @@
 // =============================================================================
 #pragma once
 
+#include <array>
+
 namespace cd_sample {
 
 struct HelloEngineFx
@@ -168,6 +170,23 @@ struct HelloEngineFx
     // (area light polygon visualisation), centre-sphere proxy first;
     // full polygon outline once the line renderer ships.
     bool lights_show_gizmos_3d { false };
+    // phase1008-3d-viewport-decal-obb-gizmo: shared state for the
+    // "Run25 Decal Projector Probe" panel and the 3D viewport decal-
+    // OBB overlay. The panel writes these via sliders; the render
+    // loop reads them to materialise a cd::decal::Decal each frame
+    // (axis-aligned defaults; rotation extension queued — see
+    // docs/RESEARCH_3D_VIEWPORT_DEBUG_VIZ.md §11). When
+    // decal_show_obb_3d is on, the render loop emits 1 sphere at
+    // the centre + 8 spheres at the OBB corners, tinted by the
+    // cd::decal::decal_intersects_aabb result against the fixed
+    // scene AABB [-1, 1]^3 (same probe the panel reports textually).
+    // Plain std::array<float,3> instead of cd::math::Vec3f keeps
+    // this header zero-dependency (the fx_defaults gtest target does
+    // not link cd::math).
+    std::array<float, 3> decal_demo_position    { 0.0F, 0.0F, 0.0F };
+    std::array<float, 3> decal_demo_half_extents { 0.5F, 0.5F, 0.5F };
+    std::array<float, 3> decal_demo_test_point  { 0.2F, 0.1F, 0.1F };
+    bool decal_show_obb_3d { false };
 };
 
 }  // namespace cd_sample
