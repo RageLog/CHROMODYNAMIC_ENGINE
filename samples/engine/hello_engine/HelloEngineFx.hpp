@@ -158,6 +158,16 @@ struct HelloEngineFx
     // lands; the centre-sphere proxy is the fastest visible-quality
     // path with zero new pipelines.
     bool frustum_cull_show_aabbs_3d { false };
+    // phase1007-3d-viewport-light-position-gizmo: when true, every
+    // non-directional light in the scene is rendered as a sphere at
+    // its world position, tinted by the light's CCT-derived colour
+    // (so a 2700 K warm-tungsten lantern reads orange and a 25 000 K
+    // cool-zenith fill reads blue). Directional lights are skipped
+    // (they have no position). Toggled live from R-Showcase R4 GI
+    // panel. Per docs/RESEARCH_3D_VIEWPORT_DEBUG_VIZ.md §10 Tier-2
+    // (area light polygon visualisation), centre-sphere proxy first;
+    // full polygon outline once the line renderer ships.
+    bool lights_show_gizmos_3d { false };
 };
 
 }  // namespace cd_sample

@@ -2409,6 +2409,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         {
             ImGui::TextDisabled("  3x3x3 cluster grid, sphere @ centre, green/yellow/red by cull state");
         }
+        ImGui::Checkbox("Show light position gizmos in 3D viewport",
+                        &fx.lights_show_gizmos_3d);
+        if (fx.lights_show_gizmos_3d)
+        {
+            ImGui::TextDisabled("  sphere at each non-directional light pos, tinted by light colour");
+        }
         // phase920-restir-di-live-demo (Run 25 Strand B): CPU-side
         // ReSTIR DI reservoir sweep. Streams N candidate samples
         // (light_index 0..7, radiance from a fixed table) through
@@ -8363,6 +8369,56 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_frustum_aabb");
+                }
+            }
+        }
+        // phase1007-3d-viewport-light-position-gizmo: render a small
+        // sphere at each non-directional light's world position,
+        // tinted by the light's authored colour (either explicit RGB
+        // or the kelvin → linear sRGB conversion). Directional lights
+        // are skipped (no position). Useful for "where exactly is my
+        // 2700K lantern in Sponza" without opening the gizmo manipulator.
+        if (s.fx.lights_show_gizmos_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr float kRadius = 0.18F;
+                for (const auto& row : s.lights)
+                {
+                    if (!row.enabled) continue;
+                    if (row.light.type == cd::light::LightType::kDirectional)
+                        continue;
+                    const auto pos = row.light.position;
+                    cd::math::Vec3f tint = row.light.color;
+                    if (row.light.color_kelvin > 100.0F)
+                        tint = cd::light::cct_to_linear_rgb(row.light.color_kelvin);
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kRadius;
+                    model[1][1] = kRadius;
+                    model[2][2] = kRadius;
+                    model[3][0] = pos.x;
+                    model[3][1] = pos.y;
+                    model[3][2] = pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = tint.x;
+                    pp.tint[1] = tint.y;
+                    pp.tint[2] = tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_light_gizmo");
                 }
             }
         }
