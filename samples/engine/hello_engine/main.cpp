@@ -3782,6 +3782,27 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::Text("Total destroyed: %u", s_demo_total_destroyed);
         ImGui::TextDisabled("cd::ecs::World sparse-set + generation handles.");
     }
+    // phase960-scene-serializer-live-demo (Run 25 Strand B): drive
+    // cd::scene::serialize_scene on a small ad-hoc scene + display
+    // the JSON byte size. Lets the user spawn N nodes and see the
+    // serialized payload grow live.
+    if (ImGui::CollapsingHeader("Run25  Scene Serializer Probe"))
+    {
+        static int s_ss_nodes = 8;
+        ImGui::SliderInt("Demo scene node count", &s_ss_nodes, 0, 256);
+        if (ImGui::Button("Serialize"))
+        {
+            cd::ecs::World w {};
+            cd::scene::Scene s { w };
+            for (int i = 0; i < s_ss_nodes; ++i)
+                (void)s.create_node();
+            const auto val = cd::scene::serialize_scene(s);
+            const auto bytes = cd::asset::json::serialize(val);
+            ImGui::TextDisabled("(re-click to refresh)");
+            ImGui::Text("Last serialize: %zu chars", bytes.size());
+        }
+        ImGui::TextDisabled("Round-trip is locked by engine/world/scene/tests/test_scene.cpp.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
