@@ -803,32 +803,57 @@ void main() {
     // crash phase 851 + 860 reproduced should no longer fire. If
     // stability holds, chrome reflections finally show real Sponza
     // texture detail (curtain damask, leaf veins, sandstone grain).
-    if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
+    if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u) {
       // phase888-non-sponza-bindless-shader: mesh_id selects which
       // VB/IB pair to read for the UV interp. 0 = Sponza (bindings
-      // 11/12), 1 = CesiumMan (bindings 14/15). Same bindless slot
-      // array is shared (cesium slots follow sponza).
+      // 11/12), 1 = CesiumMan (bindings 14/15), 2 = analytical
+      // sphere (no VB/IB; spherical UV from hit-pos vs centre,
+      // phase1000-pbr-sphere-rt-texture). Same bindless slot array
+      // is shared.
       uint mesh_id = cd_instance_mats.data[hit_slot].mesh_id;
-      uint i0, i1, i2;
-      vec2 uv0, uv1, uv2;
-      if (mesh_id == 1u) {
-        i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-        i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-        i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-        uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
-        uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
-        uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
-      } else {
-        i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-        i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-        i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-        uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
-        uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
-        uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      vec2 uv = vec2(0.0);
+      bool uv_ok = false;
+      if (mesh_id == 2u) {
+        // phase1000-pbr-sphere-rt-texture: analytical spherical UV
+        // for sphere hits. Required because sphere primitives don't
+        // expose VB/IB UVs -- the shader has to derive them from the
+        // hit point itself. Standard spherical equirectangular
+        // mapping: u = atan2(z, x) / (2 pi) + 0.5, v = asin(y) / pi +
+        // 0.5. Object-space radial direction = normalize(hit_pos -
+        // sphere_center) (the analytical normal added in phase 866).
+        vec4  sphc       = cd_instance_mats.data[hit_slot].sphere_center_radius;
+        vec3  hit_pos    = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
+        vec3  obj_radial = normalize(hit_pos - sphc.xyz);
+        const float kInv2Pi = 0.15915494;  // 1 / (2 * pi)
+        const float kInvPi  = 0.31830989;  // 1 / pi
+        uv = vec2(atan(obj_radial.z, obj_radial.x) * kInv2Pi + 0.5,
+                  asin(clamp(obj_radial.y, -1.0, 1.0)) * kInvPi + 0.5);
+        uv_ok = true;
+      } else if (hit_prim >= 0) {
+        uint i0, i1, i2;
+        vec2 uv0, uv1, uv2;
+        if (mesh_id == 1u) {
+          i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+          i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+          i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+          uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
+          uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
+          uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
+        } else {
+          i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+          i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+          i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+          uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
+          uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
+          uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+        }
+        float w0 = 1.0 - hit_bary.x - hit_bary.y;
+        uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
+        uv_ok = true;
       }
-      float w0 = 1.0 - hit_bary.x - hit_bary.y;
-      vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
-      hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+      if (uv_ok) {
+        hit_alb = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+      }
     }
     // phase866-2-bounce-sphere-normal: when the first-hit instance is
     // an analytical sphere (`is_sphere == 1`), compute the surface

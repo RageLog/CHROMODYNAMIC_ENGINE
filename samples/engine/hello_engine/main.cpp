@@ -6246,6 +6246,14 @@ struct HelloEngineApp::EngineState
     // (albedo_tex_slot, mesh_id) to pick (slot, VB/IB pair).
     std::vector<cd_sample::W8BEGeomMeta>     cesium_w8be_meta;
     std::uint32_t                            cesium_bindless_slot_base { 0u };
+    // phase1000-pbr-sphere-rt-texture: 1-element span returned by
+    // w8be_metadata_for() for PBR sphere entities that have
+    // ent.use_texture == true. mesh_id == 2 selects the shader's
+    // analytical spherical-UV bindless-sample path; albedo_tex_slot
+    // points at a known earth_albedo fallback slot in the bindless
+    // array. Filled at bindless-slot build time below (right after
+    // the fallback slot loop fills 255 with earth_albedo).
+    std::vector<cd_sample::W8BEGeomMeta>     pbr_sphere_textured_meta;
 
     // World / scene / history
     cd::ecs::World                           ecs_world;
@@ -6842,6 +6850,20 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             (void)device.update_descriptor_set(
                 s.prim_bindless_set,
                 std::span<const cd::rhi::DescriptorWrite>(dw_b));
+            // phase1000-pbr-sphere-rt-texture: seed the per-entity
+            // span returned by w8be_metadata_for() for PBR spheres
+            // that have ent.use_texture == true. Slot 255 (the last
+            // bindless slot) was filled above with the earth_albedo
+            // view in the fallback loop, so it's a guaranteed-safe
+            // target. mesh_id == 2 routes the shader into the
+            // analytical spherical-UV branch added in the same
+            // phase 1000 shader edit. index_offset is unused for
+            // sphere hits (no IB needed).
+            cd_sample::W8BEGeomMeta sphere_meta {};
+            sphere_meta.albedo_tex_slot = 255U;
+            sphere_meta.index_offset    = 0U;
+            sphere_meta.mesh_id         = 2U;
+            s.pbr_sphere_textured_meta.assign(1, sphere_meta);
         }
         else
         {
@@ -8089,6 +8111,18 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 // bindless slots N..N+M reserved for cesium albedos.
                 if (e.kind == PrimitiveKind::kGltf)
                     return { s.cesium_w8be_meta };
+                // phase1000-pbr-sphere-rt-texture: a PBR sphere
+                // entity that has opted into texture sampling (via
+                // the Inspector "Albedo texture (PBR opt-in)"
+                // checkbox or the R-Showcase R2 blanket toggle)
+                // gets the 1-element span with mesh_id=2 + slot 255
+                // so the chrome RT reflection branch in
+                // prim.frag.glsl computes an analytical spherical UV
+                // from the hit position and samples earth_albedo.
+                // Sphere entities without use_texture stay on the
+                // empty-span (W8-BD avg-colour) path.
+                if (e.kind == PrimitiveKind::kSphere && e.is_pbr && e.use_texture)
+                    return { s.pbr_sphere_textured_meta };
                 return {};
             },
             s.meshes.blas_floor, s.meshes.blas_cesium,
