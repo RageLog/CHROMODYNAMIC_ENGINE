@@ -3810,6 +3810,20 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::Text("Total clusters: %u (X*Y*Z)", total);
         ImGui::TextDisabled("DOOM 2016 / Frostbite cluster shading layout.");
         ImGui::TextDisabled("Production fills clusters from GPU compute (R3 panel).");
+        // phase1011-3d-viewport-cluster-density-heatmap: emit one
+        // sphere per cell of a small world-space grid, tinted by
+        // the number of scene lights whose range sphere covers that
+        // cell. Lets the user SEE which regions of the scene cluster
+        // shading would consider hot, without needing a viewport-
+        // aligned GPU dispatch.
+        ImGui::Separator();
+        ImGui::Checkbox("Show cluster density heat-map in 3D viewport",
+                        &fx.cluster_show_density_3d);
+        if (fx.cluster_show_density_3d)
+        {
+            ImGui::TextDisabled("  8x4x8 world grid (spacing 2 m), tint = # lights covering cell");
+            ImGui::TextDisabled("  dim=0, green=1, yellow=2, red=3+");
+        }
     }
     // phase949-velocity-motion-vector-live-demo (Run 25 Strand B):
     // drive cd::velocity::motion_vector_uv + motion_pixels. Lets the
@@ -8673,6 +8687,83 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                         s.counters.increment("draws_csm_cascade");
                     }
+                }
+            }
+        }
+        // phase1011-3d-viewport-cluster-density-heatmap: 6th
+        // application of the canonical sphere-at-position template.
+        // 8x4x8 world-space grid centred at origin with 2 m spacing;
+        // per-cell sphere tint encodes the number of scene lights
+        // whose (position, range) sphere covers that cell. Mirrors
+        // the production cluster-shading heat-map (Olsson 2012 +
+        // DOOM 2016 talks) but in world space + with scene lights
+        // (s.lights) instead of the viewport-aligned GPU grid.
+        if (s.fx.cluster_show_density_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr int kCellsX = 8;
+                constexpr int kCellsY = 4;
+                constexpr int kCellsZ = 8;
+                constexpr float kSpacing = 2.0F;
+                constexpr float kRadius  = 0.12F;
+                constexpr cd::math::Vec3f kOrigin {
+                    -(static_cast<float>(kCellsX - 1) * 0.5F) * kSpacing,
+                    0.5F,
+                    -(static_cast<float>(kCellsZ - 1) * 0.5F) * kSpacing };
+                for (int cz = 0; cz < kCellsZ; ++cz)
+                for (int cy = 0; cy < kCellsY; ++cy)
+                for (int cx = 0; cx < kCellsX; ++cx)
+                {
+                    const cd::math::Vec3f centre {
+                        kOrigin.x + static_cast<float>(cx) * kSpacing,
+                        kOrigin.y + static_cast<float>(cy) * kSpacing,
+                        kOrigin.z + static_cast<float>(cz) * kSpacing };
+                    std::uint32_t hits = 0;
+                    for (const auto& row : s.lights)
+                    {
+                        if (!row.enabled) continue;
+                        if (row.light.type == cd::light::LightType::kDirectional)
+                            continue;
+                        const float dx = centre.x - row.light.position.x;
+                        const float dy = centre.y - row.light.position.y;
+                        const float dz = centre.z - row.light.position.z;
+                        const float d2 = dx*dx + dy*dy + dz*dz;
+                        const float r  = row.light.range;
+                        if (d2 <= r * r) ++hits;
+                    }
+                    cd::math::Vec3f tint;
+                    if      (hits == 0) tint = { 0.18F, 0.18F, 0.20F };  // dim
+                    else if (hits == 1) tint = { 0.20F, 0.95F, 0.30F };  // green
+                    else if (hits == 2) tint = { 0.95F, 0.85F, 0.18F };  // yellow
+                    else                tint = { 0.95F, 0.20F, 0.18F };  // red
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kRadius;
+                    model[1][1] = kRadius;
+                    model[2][2] = kRadius;
+                    model[3][0] = centre.x;
+                    model[3][1] = centre.y;
+                    model[3][2] = centre.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = tint.x;
+                    pp.tint[1] = tint.y;
+                    pp.tint[2] = tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.6F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_cluster_cell");
                 }
             }
         }

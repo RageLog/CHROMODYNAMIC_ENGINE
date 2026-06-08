@@ -196,6 +196,15 @@ struct HelloEngineFx
     // distribute along view depth, which is invisible from the atlas
     // bitmap view alone.
     bool csm_show_cascade_depth_3d { false };
+    // phase1011-3d-viewport-cluster-density-heatmap: when true,
+    // hello_engine renders a sphere at the centre of each cell in
+    // an 8x4x8 world-space grid (spacing 2 m), tinted by the number
+    // of scene lights (s.lights) whose position+range sphere covers
+    // the cell centre. The dim/green/yellow/red palette mirrors the
+    // production cluster shading heat-map (Olsson 2012 + DOOM 2016
+    // talks) so the user can SEE which regions of the scene the
+    // clustered-deferred light culling would consider hot.
+    bool cluster_show_density_3d { false };
 };
 
 }  // namespace cd_sample
