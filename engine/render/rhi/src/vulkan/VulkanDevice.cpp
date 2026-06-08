@@ -4527,6 +4527,9 @@ namespace
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 #endif
+    // std::getenv is concurrency-mt-unsafe, but we only call it once during
+    // device init from the main thread before any worker threads exist.
+    // NOLINTNEXTLINE(concurrency-mt-unsafe)
     const char* env_index = std::getenv("CD_VULKAN_DEVICE_INDEX");
 #if defined(_MSC_VER) || defined(__clang__)
     #pragma clang diagnostic pop
