@@ -178,7 +178,7 @@ PathResult Pathfinder::find_path(const PathRequest& req) const
     using AStarNode = std::pair<float, uint32_t>;
     std::priority_queue<AStarNode,
                         std::vector<AStarNode>,
-                        std::greater<AStarNode>> open_set;
+                        std::greater<>> open_set;
 
     const auto num_tris = static_cast<uint32_t>(centroids_.size());
 
