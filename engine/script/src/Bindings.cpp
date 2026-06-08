@@ -192,13 +192,13 @@ extern "C" int vec3_mul(lua_State* L)
     }
     if (a != nullptr && ::lua_isnumber(L, 2) != 0)
     {
-        const float s = static_cast<float>(::lua_tonumber(L, 2));
+        const auto s = static_cast<float>(::lua_tonumber(L, 2));
         push_userdata<Vec3f>(L, kVec3MetaKey, *a * s);
         return 1;
     }
     if (b != nullptr && ::lua_isnumber(L, 1) != 0)
     {
-        const float s = static_cast<float>(::lua_tonumber(L, 1));
+        const auto s = static_cast<float>(::lua_tonumber(L, 1));
         push_userdata<Vec3f>(L, kVec3MetaKey, s * *b);
         return 1;
     }
@@ -220,7 +220,7 @@ extern "C" int vec3_newindex(lua_State* L)
 {
     auto* v = check_userdata<Vec3f>(L, 1, kVec3MetaKey);
     const char* key = luaL_checkstring(L, 2);
-    const float n = static_cast<float>(::luaL_checknumber(L, 3));
+    const auto n = static_cast<float>(::luaL_checknumber(L, 3));
     if (std::strcmp(key, "x") == 0) v->x = n;
     else if (std::strcmp(key, "y") == 0) v->y = n;
     else if (std::strcmp(key, "z") == 0) v->z = n;
@@ -277,13 +277,13 @@ extern "C" int vec4_mul(lua_State* L)
     }
     if (a != nullptr && ::lua_isnumber(L, 2) != 0)
     {
-        const float s = static_cast<float>(::lua_tonumber(L, 2));
+        const auto s = static_cast<float>(::lua_tonumber(L, 2));
         push_userdata<Vec4f>(L, kVec4MetaKey, *a * s);
         return 1;
     }
     if (b != nullptr && ::lua_isnumber(L, 1) != 0)
     {
-        const float s = static_cast<float>(::lua_tonumber(L, 1));
+        const auto s = static_cast<float>(::lua_tonumber(L, 1));
         push_userdata<Vec4f>(L, kVec4MetaKey, s * *b);
         return 1;
     }
@@ -306,7 +306,7 @@ extern "C" int vec4_newindex(lua_State* L)
 {
     auto* v = check_userdata<Vec4f>(L, 1, kVec4MetaKey);
     const char* key = luaL_checkstring(L, 2);
-    const float n = static_cast<float>(::luaL_checknumber(L, 3));
+    const auto n = static_cast<float>(::luaL_checknumber(L, 3));
     if (std::strcmp(key, "x") == 0) v->x = n;
     else if (std::strcmp(key, "y") == 0) v->y = n;
     else if (std::strcmp(key, "z") == 0) v->z = n;
