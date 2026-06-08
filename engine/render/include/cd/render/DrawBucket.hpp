@@ -63,7 +63,7 @@ public:
     void sort()
     {
         if (sorted_) return;
-        std::stable_sort(items_.begin(), items_.end(),
+        std::ranges::stable_sort(items_,
             [](const DrawItem& a, const DrawItem& b) noexcept {
                 return a.key.value < b.key.value;
             });

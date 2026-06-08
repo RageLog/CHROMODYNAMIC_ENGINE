@@ -77,7 +77,7 @@ public:
     {
         buckets_.clear();
         light_indices_.clear();
-        std::fill(cluster_offsets_.begin(), cluster_offsets_.end(), 0U);
+        std::ranges::fill(cluster_offsets_, 0U);
         finalized_ = false;
     }
 
@@ -137,12 +137,12 @@ public:
     /// expected to return non-empty results.
     void finalize()
     {
-        std::sort(buckets_.begin(), buckets_.end(),
-                  [](const Bucket& a, const Bucket& b) {
-                      return a.cluster_id < b.cluster_id;
-                  });
+        std::ranges::sort(buckets_,
+                          [](const Bucket& a, const Bucket& b) {
+                              return a.cluster_id < b.cluster_id;
+                          });
         // Build offsets via cumulative count.
-        std::fill(cluster_offsets_.begin(), cluster_offsets_.end(), 0U);
+        std::ranges::fill(cluster_offsets_, 0U);
         for (const auto& b : buckets_)
             ++cluster_offsets_[b.cluster_id + 1U];
         for (std::size_t i = 1; i < cluster_offsets_.size(); ++i)

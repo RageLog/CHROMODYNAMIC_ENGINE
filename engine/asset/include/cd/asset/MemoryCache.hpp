@@ -61,8 +61,8 @@ public:
         sorted.reserve(entries_.size());
         for (const auto& [id, e] : entries_) sorted.emplace_back(e.last_use, id);
         // Ascending last_use → oldest first.
-        std::sort(sorted.begin(), sorted.end(),
-                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::ranges::sort(sorted,
+                          [](const auto& a, const auto& b) { return a.first < b.first; });
         std::vector<AssetId> out;
         std::uint64_t freed = 0;
         for (auto [_, id] : sorted)
