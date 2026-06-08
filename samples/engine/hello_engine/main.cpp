@@ -104,6 +104,7 @@
 // library header stays available for hello_pbr and external samples.
 #include <cd/framegraph/Targets.hpp>
 #include <cd/math/Matrix.hpp>
+#include <cd/math/CubicBezier.hpp>
 #include <cd/math/QuatSlerp.hpp>
 #include <cd/math/Quaternion.hpp>
 #include <cd/math/Random.hpp>
@@ -3907,6 +3908,45 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     static_cast<double>(cd::math::clamp(7.5F, -1.0F, 1.0F)),
                     static_cast<double>(cd::math::saturate(-0.3F)));
         ImGui::TextDisabled("Foundation math helpers used everywhere in render + gameplay.");
+    }
+    // phase967-cubic-bezier-live-demo (Run 25 Strand B): drive
+    // cd::math::CubicBezier::at across t in [0, 1] + plot x/y/z
+    // coordinates separately so the user sees the cubic curve shape
+    // respond to the 4 control points live.
+    if (ImGui::CollapsingHeader("Run25  Cubic Bezier Probe"))
+    {
+        static cd::math::CubicBezier s_cb {};
+        ImGui::SliderFloat3("P0", &s_cb.p0.x, -4.0F, 4.0F);
+        ImGui::SliderFloat3("P1", &s_cb.p1.x, -4.0F, 4.0F);
+        ImGui::SliderFloat3("P2", &s_cb.p2.x, -4.0F, 4.0F);
+        ImGui::SliderFloat3("P3", &s_cb.p3.x, -4.0F, 4.0F);
+        constexpr int kSweep = 64;
+        std::array<float, kSweep> xs {};
+        std::array<float, kSweep> ys {};
+        std::array<float, kSweep> zs {};
+        for (int i = 0; i < kSweep; ++i)
+        {
+            const float t = static_cast<float>(i) / static_cast<float>(kSweep - 1);
+            const auto p = s_cb.at(t);
+            xs[static_cast<std::size_t>(i)] = p.x;
+            ys[static_cast<std::size_t>(i)] = p.y;
+            zs[static_cast<std::size_t>(i)] = p.z;
+        }
+        ImGui::Text("Arc length (32-sample est.): %.4f",
+                    static_cast<double>(s_cb.arc_length()));
+        const auto xs_lo = *std::ranges::min_element(xs);
+        const auto xs_hi = *std::ranges::max_element(xs);
+        const auto ys_lo = *std::ranges::min_element(ys);
+        const auto ys_hi = *std::ranges::max_element(ys);
+        const auto zs_lo = *std::ranges::min_element(zs);
+        const auto zs_hi = *std::ranges::max_element(zs);
+        ImGui::PlotLines("##cb_x", xs.data(), kSweep, 0, "Bezier x(t)",
+                         xs_lo - 0.1F, xs_hi + 0.1F, ImVec2(0, 48));
+        ImGui::PlotLines("##cb_y", ys.data(), kSweep, 0, "Bezier y(t)",
+                         ys_lo - 0.1F, ys_hi + 0.1F, ImVec2(0, 48));
+        ImGui::PlotLines("##cb_z", zs.data(), kSweep, 0, "Bezier z(t)",
+                         zs_lo - 0.1F, zs_hi + 0.1F, ImVec2(0, 48));
+        ImGui::TextDisabled("Same CubicBezier used by camera-path / anim splines.");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
