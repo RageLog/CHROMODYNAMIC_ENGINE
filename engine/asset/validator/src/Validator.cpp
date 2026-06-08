@@ -176,8 +176,8 @@ Validator::validate_gltf_blob(std::span<const std::uint8_t> blob,
     else
     {
         // JSON .gltf: skip leading whitespace then expect '{'.
-        const auto first_non_ws = std::find_if(
-            blob.begin(), blob.end(),
+        const auto first_non_ws = std::ranges::find_if(
+            blob,
             [](const std::uint8_t b) noexcept
             {
                 return b != static_cast<std::uint8_t>(' ')  &&

@@ -95,9 +95,8 @@ void AudioStreamer::tick_sync_impl()
     }
 
     // Select the highest-priority pending entry (O(n), acceptable for Sprint-1).
-    const auto best = std::max_element(
-        pending_map_.cbegin(),
-        pending_map_.cend(),
+    const auto best = std::ranges::max_element(
+        pending_map_,
         [](const auto& lhs, const auto& rhs) noexcept {
             return lhs.second.priority < rhs.second.priority;
         });

@@ -90,9 +90,8 @@ void SceneStreamer::tick_sync_impl()
     // Select the highest-priority pending entry.
     // std::max_element over an unordered_map range — O(n) per tick,
     // acceptable for Sprint-1. Sprint-2 uses the worker pool.
-    const auto best = std::max_element(
-        pending_map_.cbegin(),
-        pending_map_.cend(),
+    const auto best = std::ranges::max_element(
+        pending_map_,
         [](const auto& lhs, const auto& rhs) noexcept {
             return lhs.second.priority < rhs.second.priority;
         });

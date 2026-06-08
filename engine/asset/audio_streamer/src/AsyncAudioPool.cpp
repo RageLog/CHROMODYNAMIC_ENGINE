@@ -157,9 +157,8 @@ void AsyncAudioPool::worker_loop()
 
             // Pick highest-priority entry (O(n); acceptable — queue is small
             // per-worker and this runs outside the main thread hot path).
-            const auto best = std::max_element(
-                pending_queue_.begin(),
-                pending_queue_.end(),
+            const auto best = std::ranges::max_element(
+                pending_queue_,
                 [](const PendingEntry& a, const PendingEntry& b) noexcept {
                     return a.priority < b.priority;
                 });
