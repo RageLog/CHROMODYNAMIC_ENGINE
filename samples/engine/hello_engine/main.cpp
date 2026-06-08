@@ -34,6 +34,7 @@
 #include <cd/anim/GpuSkinning.hpp>
 #include <cd/anim/Skeleton.hpp>
 #include <cd/asset/AssetId.hpp>
+#include <cd/asset/AssetRegistry.hpp>
 #include <cd/asset/AsyncStreamer.hpp>
 #include <cd/asset/Primitives.hpp>
 #include <cd/asset/image/Image.hpp>
@@ -3947,6 +3948,33 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::PlotLines("##cb_z", zs.data(), kSweep, 0, "Bezier z(t)",
                          zs_lo - 0.1F, zs_hi + 0.1F, ImVec2(0, 48));
         ImGui::TextDisabled("Same CubicBezier used by camera-path / anim splines.");
+    }
+    // phase968-asset-registry-tag-from-extension-probe (Run 25 Strand B):
+    // drive cd::asset::AssetRegistry::tag_from_extension. Lets the user
+    // type any path and SEE which loader tag (json / wav / gltf / obj /
+    // image / etc) the registry would auto-dispatch to. Same mapping the
+    // load_auto() helper uses.
+    if (ImGui::CollapsingHeader("Run25  Asset Registry Tag Probe"))
+    {
+        static char s_ar_path[256] = "shaders/x.frag.spv";
+        ImGui::InputText("Path (extension only matters)",
+                         s_ar_path, sizeof(s_ar_path));
+        const auto tag = cd::asset::AssetRegistry::tag_from_extension(s_ar_path);
+        if (tag.empty())
+        {
+            ImGui::TextColored(ImVec4(1.0F, 0.5F, 0.3F, 1.0F),
+                               "No loader tag matches this extension.");
+        }
+        else
+        {
+            ImGui::TextColored(ImVec4(0.4F, 1.0F, 0.4F, 1.0F),
+                               "Loader tag: \"%.*s\"",
+                               static_cast<int>(tag.size()), tag.data());
+        }
+        ImGui::TextDisabled("Built-in mapping: .png/.jpg/.bmp/.tga/.hdr -> image;");
+        ImGui::TextDisabled(".obj -> obj, .ktx2 -> ktx2, .gltf/.glb -> gltf,");
+        ImGui::TextDisabled(".cdmesh -> cdmesh, .cdtex -> cdtex,");
+        ImGui::TextDisabled(".wav -> wav, .json -> json.");
     }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
