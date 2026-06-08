@@ -135,6 +135,14 @@ struct HelloEngineFx
     bool restir_gi_on { false };
     bool ddgi_on { false };
     bool nrc_on { false };
+    // phase1005-3d-viewport-ddgi-probe-debug: when true, hello_engine
+    // renders one small sphere per DDGI probe at its world position
+    // (per docs/RESEARCH_3D_VIEWPORT_DEBUG_VIZ.md §2 Tier-1 #2).
+    // Probes are colour-coded by their grid index hash so the user
+    // can SEE the probe layout in the 3D scene, not just in the
+    // R-Showcase R4 GI panel's ImGui plot. Toggled live from the
+    // R4 GI panel.
+    bool ddgi_show_probes_3d { false };
 };
 
 }  // namespace cd_sample

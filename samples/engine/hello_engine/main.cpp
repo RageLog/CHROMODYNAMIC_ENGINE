@@ -2383,6 +2383,21 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     static_cast<double>(dir.x), static_cast<double>(dir.y), static_cast<double>(dir.z),
                     static_cast<double>(uv.x),  static_cast<double>(uv.y),
                     static_cast<double>(dec.x), static_cast<double>(dec.y), static_cast<double>(dec.z));
+        // phase1005-3d-viewport-ddgi-probe-overlay: per
+        // docs/RESEARCH_3D_VIEWPORT_DEBUG_VIZ.md §2 Tier-1 #2, render
+        // the probe grid as actual coloured spheres in the 3D viewport
+        // (not just an ImGui histogram). The checkbox below toggles
+        // fx.ddgi_show_probes_3d; when on, draw_ddgi_probe_overlay
+        // (added in the render loop) emits one sphere per probe at the
+        // grid position, hash-coloured by flat index so adjacent probes
+        // read distinctly.
+        ImGui::Separator();
+        ImGui::Checkbox("Show DDGI probes in 3D viewport",
+                        &fx.ddgi_show_probes_3d);
+        if (fx.ddgi_show_probes_3d)
+        {
+            ImGui::TextDisabled("  default 8x4x8 grid @ origin, spacing 1m, radius 0.15m");
+        }
         // phase920-restir-di-live-demo (Run 25 Strand B): CPU-side
         // ReSTIR DI reservoir sweep. Streams N candidate samples
         // (light_index 0..7, radiance from a fixed table) through
@@ -8203,6 +8218,72 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                 s.show_editor_floor);  // phase435-vis8
         draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, s.entities,
                             s.scene, vp, s.materials.prim, s.counters, mesh_for);
+        // phase1005-3d-viewport-ddgi-probe-overlay: when toggled on
+        // (R-Showcase R4 GI "Show DDGI probes in 3D viewport"), emit
+        // one small sphere per probe in an 8x4x8 grid centred at the
+        // origin with 1 m spacing. Each probe is a normal prim draw
+        // through s.materials.prim so it inherits lighting + shadows
+        // + composite without a custom shader. Tint is a per-probe
+        // hash so adjacent probes read distinctly (Godot SDFGI mode).
+        if (s.fx.ddgi_show_probes_3d)
+        {
+            constexpr std::uint32_t kProbesX = 8;
+            constexpr std::uint32_t kProbesY = 4;
+            constexpr std::uint32_t kProbesZ = 8;
+            constexpr float kSpacing = 1.0F;
+            constexpr float kRadius  = 0.15F;
+            constexpr cd::math::Vec3f kOrigin {
+                -(static_cast<float>(kProbesX - 1) * 0.5F) * kSpacing,
+                0.5F,
+                -(static_cast<float>(kProbesZ - 1) * 0.5F) * kSpacing };
+            const auto& probe_mesh = s.meshes.sphere;
+            if (probe_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, probe_mesh.vb, 0);
+                cmd.bind_index_buffer(probe_mesh.ib, 0, probe_mesh.index_type);
+                for (std::uint32_t pz = 0; pz < kProbesZ; ++pz)
+                for (std::uint32_t py = 0; py < kProbesY; ++py)
+                for (std::uint32_t px = 0; px < kProbesX; ++px)
+                {
+                    const cd::math::Vec3f pos {
+                        kOrigin.x + static_cast<float>(px) * kSpacing,
+                        kOrigin.y + static_cast<float>(py) * kSpacing,
+                        kOrigin.z + static_cast<float>(pz) * kSpacing };
+                    const std::uint32_t idx = px + kProbesX * (py + kProbesY * pz);
+                    // Probe hash → distinguishable tint (Wong palette
+                    // approximation). Different from neighbour to
+                    // surface grid topology in the visual.
+                    const auto h = idx * 2654435761U;
+                    const float r = static_cast<float>((h >>  0U) & 0xFFU) / 255.0F;
+                    const float g = static_cast<float>((h >>  8U) & 0xFFU) / 255.0F;
+                    const float b = static_cast<float>((h >> 16U) & 0xFFU) / 255.0F;
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kRadius;
+                    model[1][1] = kRadius;
+                    model[2][2] = kRadius;
+                    model[3][0] = pos.x;
+                    model[3][1] = pos.y;
+                    model[3][2] = pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = r;
+                    pp.tint[1] = g;
+                    pp.tint[2] = b;
+                    pp.tint[3] = 1.0F;  // standard Lit path
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;  // no texture
+                    pp.fx_params4[0] = 0.0F;  // dielectric
+                    pp.fx_params4[1] = 0.7F;  // somewhat matte
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(probe_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_ddgi_probe");
+                }
+            }
+        }
 
         ctx.new_frame();
 
