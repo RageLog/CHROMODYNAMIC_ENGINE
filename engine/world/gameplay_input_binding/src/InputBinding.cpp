@@ -108,7 +108,7 @@ bool ActionMap::bind(const std::string& action_name, const InputBinding& binding
         return b.device == binding.device
             && b.scancode_or_button == binding.scancode_or_button;
     };
-    if (std::any_of(rec.bindings.begin(), rec.bindings.end(), same))
+    if (std::ranges::any_of(rec.bindings, same))
     {
         return false;
     }

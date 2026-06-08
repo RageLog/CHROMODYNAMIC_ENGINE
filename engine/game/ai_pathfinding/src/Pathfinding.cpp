@@ -252,7 +252,7 @@ PathResult Pathfinder::find_path(const PathRequest& req) const
             tri_chain.push_back(cur);
             cur = came_from[cur];
         }
-        std::reverse(tri_chain.begin(), tri_chain.end());
+        std::ranges::reverse(tri_chain);
     }
 
     // Build waypoints: centroid for each triangle in the chain, then replace

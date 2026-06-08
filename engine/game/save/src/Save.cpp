@@ -440,8 +440,8 @@ bool is_valid_slot_id(std::string_view id) noexcept
         "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
     };
     std::string lower(id);
-    std::transform(lower.begin(), lower.end(), lower.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::ranges::transform(lower, lower.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     for (auto r : kReserved)
     {
         if (lower == r) return false;
@@ -739,10 +739,10 @@ std::vector<SaveSlot> SaveSystem::list_slots() const
     }
 
     // Most-recently saved first.
-    std::sort(out.begin(), out.end(),
-              [](const SaveSlot& a, const SaveSlot& b) {
-                  return a.timestamp > b.timestamp;
-              });
+    std::ranges::sort(out,
+                      [](const SaveSlot& a, const SaveSlot& b) {
+                          return a.timestamp > b.timestamp;
+                      });
     return out;
 }
 

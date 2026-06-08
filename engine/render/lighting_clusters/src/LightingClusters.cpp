@@ -280,7 +280,7 @@ LightAssignment Clusterer::assign(
     }
 
     // Build LightAssignment: sort by cluster_id, prefix-sum offsets.
-    std::stable_sort(buckets.begin(), buckets.end(),
+    std::ranges::stable_sort(buckets,
         [](const Bucket& a, const Bucket& b) noexcept {
             return a.cluster_id < b.cluster_id;
         });

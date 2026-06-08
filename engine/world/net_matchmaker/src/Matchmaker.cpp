@@ -77,9 +77,7 @@ bool LobbyRegistry::leave_lobby(std::uint64_t lobby_id, std::uint64_t player_id)
     if (lobby == nullptr)
         return false;
 
-    const auto it = std::find(lobby->player_ids.begin(),
-                              lobby->player_ids.end(),
-                              player_id);
+    const auto it = std::ranges::find(lobby->player_ids, player_id);
     if (it == lobby->player_ids.end())
         return false;
 

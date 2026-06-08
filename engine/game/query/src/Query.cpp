@@ -169,10 +169,9 @@ void QueryWorld::add_entity(cd::ecs::Entity e, const cd::math::Vec3f& pos,
 
 void QueryWorld::remove_entity(cd::ecs::Entity e) noexcept
 {
-    records_.erase(
-        std::remove_if(records_.begin(), records_.end(),
-                       [&](const Record& r) { return r.entity == e; }),
-        records_.end());
+    const auto removed = std::ranges::remove_if(records_,
+                                                 [&](const Record& r) { return r.entity == e; });
+    records_.erase(removed.begin(), removed.end());
 }
 
 void QueryWorld::rebuild()
@@ -336,9 +335,9 @@ QueryWorld::sphere_query(const cd::math::Vec3f& center, float radius) const
         out.push_back(SphereOverlap { e, std::sqrt(d2) });
     }
 
-    std::sort(out.begin(), out.end(),
-              [](const SphereOverlap& a, const SphereOverlap& b)
-              { return a.distance < b.distance; });
+    std::ranges::sort(out,
+                      [](const SphereOverlap& a, const SphereOverlap& b)
+                      { return a.distance < b.distance; });
     return out;
 }
 

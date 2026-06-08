@@ -26,9 +26,8 @@ void A11yTree::unregister_widget(WidgetId widget_id)
     metas_.erase(widget_id);
 
     // Drop from tab_order_ so focus_next() never lands on a removed id.
-    tab_order_.erase(
-        std::remove(tab_order_.begin(), tab_order_.end(), widget_id),
-        tab_order_.end());
+    const auto removed = std::ranges::remove(tab_order_, widget_id);
+    tab_order_.erase(removed.begin(), removed.end());
 
     if (focused_ && *focused_ == widget_id)
     {

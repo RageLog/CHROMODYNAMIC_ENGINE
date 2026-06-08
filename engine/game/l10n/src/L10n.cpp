@@ -449,10 +449,9 @@ L10nManager::ObserverId L10nManager::on_locale_change(LocaleChangeCallback cb)
 
 void L10nManager::remove_observer(ObserverId id)
 {
-    observers_.erase(
-        std::remove_if(observers_.begin(), observers_.end(),
-                       [id](const Observer& o) { return o.id == id; }),
-        observers_.end());
+    const auto removed = std::ranges::remove_if(observers_,
+                                                 [id](const Observer& o) { return o.id == id; });
+    observers_.erase(removed.begin(), removed.end());
 }
 
 }  // namespace cd::game::l10n

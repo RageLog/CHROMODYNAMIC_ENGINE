@@ -99,9 +99,9 @@ bool Lobby::leave_room(RoomId room_id, uint64_t player_id)
         return false;
 
     auto& players = rs->players;
-    const auto it = std::find_if(players.begin(), players.end(),
-                                  [player_id](const PlayerState& p)
-                                  { return p.player_id == player_id; });
+    const auto it = std::ranges::find_if(players,
+                                         [player_id](const PlayerState& p)
+                                         { return p.player_id == player_id; });
     if (it == players.end())
         return false;
 
@@ -145,9 +145,9 @@ bool Lobby::start_game(RoomId room_id, uint64_t host_player_id)
         return false;
 
     // All players must be ready.
-    const bool all_ready = std::all_of(rs->players.begin(), rs->players.end(),
-                                        [](const PlayerState& p)
-                                        { return p.is_ready; });
+    const bool all_ready = std::ranges::all_of(rs->players,
+                                                [](const PlayerState& p)
+                                                { return p.is_ready; });
     if (!all_ready)
         return false;
 

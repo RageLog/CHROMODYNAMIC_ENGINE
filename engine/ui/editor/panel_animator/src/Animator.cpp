@@ -28,13 +28,14 @@ ClipId Animator::clip_id() const noexcept
 void Animator::add_clip(ClipId id)
 {
     // Ignore duplicates.
-    if (std::find(clips_.begin(), clips_.end(), id) == clips_.end())
+    if (std::ranges::find(clips_, id) == clips_.end())
         clips_.push_back(id);
 }
 
 void Animator::remove_clip(ClipId id)
 {
-    clips_.erase(std::remove(clips_.begin(), clips_.end(), id), clips_.end());
+    const auto removed = std::ranges::remove(clips_, id);
+    clips_.erase(removed.begin(), removed.end());
 }
 
 std::size_t Animator::clip_count() const noexcept
