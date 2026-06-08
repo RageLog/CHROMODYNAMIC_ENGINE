@@ -254,6 +254,15 @@ struct SceneEntity
     float roughness { 0.5F };
     PrimitiveKind kind { PrimitiveKind::kCube };
     bool is_pbr { false };
+    // phase983-pbr-texture-fix: per-entity opt-in for albedo texture
+    // sampling on PBR entities. The PBR grid path used to hard-gate
+    // fx_params[1] = 0 for is_pbr=true draws, which silently disabled
+    // texture sampling for every PBR sphere. Setting use_texture=true
+    // (via the R-Showcase R2 panel or default for designated spheres)
+    // flips fx_params[1] to 1.0 so the shader samples cd_albedo_tex
+    // and multiplies by tint instead of using the vertex-coloured
+    // procedural path.
+    bool use_texture { false };
     cd::math::Mat4f prev_model { cd::math::Mat4f::identity() };
     bool prev_model_valid { false };
 };
@@ -1036,6 +1045,29 @@ inline void draw_inspector_panel(std::vector<SceneEntity>& entities,
                 {
                     ent.tint = { rgb[0], rgb[1], rgb[2] };
                 }
+            }
+            // phase985-pbr-texture-toggle: per-entity opt-in for the
+            // albedo-texture sampling path. When checked AND ent.is_pbr,
+            // the per-entity draw flips fx_params[1] to 1.0 and the
+            // shader samples cd_albedo_tex (the earth_albedo bound at
+            // descriptor binding 4) multiplied by tint. Lets the user
+            // toggle ANY PBR sphere into the texture path live without
+            // editing source. Non-PBR entities ignore this flag (their
+            // texture path is dispatched elsewhere -- per-prim Sponza
+            // textures or the kGltf single-texture branch).
+            ImGui::SeparatorText("Albedo texture (PBR opt-in)");
+            {
+                if (ImGui::Checkbox("##use_tex", &ent.use_texture))
+                {
+                    log_push("toggle: use_texture " + ent.name + " = " +
+                             (ent.use_texture ? "ON" : "OFF"));
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled(ent.is_pbr
+                                        ? (ent.use_texture
+                                               ? "sampling earth_albedo (texture * tint)"
+                                               : "procedural color (tint only)")
+                                        : "flag only honoured on is_pbr entities");
             }
             ImGui::PopItemWidth();
         }
@@ -2038,6 +2070,14 @@ inline void spawn_chrome_probe_entity(cd::scene::Scene&         scene,
 inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
                                     std::vector<SceneEntity>& entities)
 {
+    // phase983-pbr-texture-fix: pre-mark the dielectric column (metallic=0)
+    // of the 4x4 PBR grid to use the albedo texture path so the user sees
+    // texture detail on at least one row of spheres out of the box. The
+    // chrome columns (metallic > 0) stay procedural-color so the chrome
+    // RT-reflection demo still reads as polished metal at first glance.
+    // Per-entity texture toggle is also exposed via R-Showcase R2 panel
+    // for live experimentation across the whole grid.
+    std::size_t slot_idx = 0;
     for (const auto& slot : cd::hello_engine::build_pbr_demo_grid())
     {
         SceneEntity e;
@@ -2048,9 +2088,15 @@ inline void spawn_pbr_grid_entities(cd::scene::Scene& scene,
         e.is_pbr = true;
         e.metallic = slot.metallic;
         e.roughness = slot.roughness;
+        // Column 3 (right edge) is fully dielectric (metallic=0) -- the
+        // best column to showcase albedo-texture detail without metallic
+        // F0 swallowing the diffuse colour.
+        e.use_texture = (slot_idx % static_cast<std::size_t>(cd::hello_engine::kPbrGridCols))
+                        == static_cast<std::size_t>(cd::hello_engine::kPbrGridCols - 1);
         scene.local(e.handle)->value.position = slot.position;
         scene.local(e.handle)->value.scale = { slot.scale, slot.scale, slot.scale };
         entities.push_back(std::move(e));
+        ++slot_idx;
     }
 }
 
@@ -5953,7 +5999,15 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             // ECS override: per-entity texture-path flag in fx_params[1]
             // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
             // kGltf (CesiumMan): single texture if available.
-            pp.fx_params[1] = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture) ? 1.0F : 0.0F;
+            // phase983-pbr-texture-fix: PBR entities (is_pbr) can now opt in
+            // via ent.use_texture. The shader's pc.fx_params.y > 0.5 gate then
+            // samples cd_albedo_tex (bound at descriptor binding 4 -- the
+            // earth_albedo texture) and multiplies by ent.tint. Without this
+            // gate every PBR sphere was procedural-color-only despite the
+            // texture descriptor being live.
+            const bool gltf_tex_path = (!ent.is_pbr && (ent.kind == PrimitiveKind::kGltf) && has_gltf_texture);
+            const bool pbr_tex_path  = (ent.is_pbr && ent.use_texture);
+            pp.fx_params[1] = (gltf_tex_path || pbr_tex_path) ? 1.0F : 0.0F;
             // phase448-arch: fx_params4 reinterpretation matrix —
             //   tint.w==3.0 (PBR demo sphere): (metallic, roughness, 0, view_mode)
             //   tint.w==4.0 (glTF prim, data-driven): (metallic, roughness, normal_strength, view_mode)
