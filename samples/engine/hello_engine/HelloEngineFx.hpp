@@ -143,6 +143,21 @@ struct HelloEngineFx
     // R-Showcase R4 GI panel's ImGui plot. Toggled live from the
     // R4 GI panel.
     bool ddgi_show_probes_3d { false };
+    // phase1006-3d-viewport-frustum-cull-debug: when true,
+    // hello_engine renders a sphere at each cluster AABB centre in
+    // a synthetic 3x3x3 grid centred on the origin. Spheres are
+    // colour-coded by the cull result returned by
+    // cd::camera::test_aabb against the current camera frustum:
+    //   kInside       -> green
+    //   kIntersecting -> yellow
+    //   kOutside      -> red
+    // Toggled live from the R-Showcase R4 GI / Frustum panel
+    // (per docs/RESEARCH_3D_VIEWPORT_DEBUG_VIZ.md §3 Tier-1 #3).
+    // True wireframe AABB edges are deferred until a line-list
+    // pipeline + dedicated debug line renderer lib (§12 Tier-2)
+    // lands; the centre-sphere proxy is the fastest visible-quality
+    // path with zero new pipelines.
+    bool frustum_cull_show_aabbs_3d { false };
 };
 
 }  // namespace cd_sample

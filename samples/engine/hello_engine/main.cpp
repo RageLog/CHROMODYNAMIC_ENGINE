@@ -2398,6 +2398,17 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         {
             ImGui::TextDisabled("  default 8x4x8 grid @ origin, spacing 1m, radius 0.15m");
         }
+        // phase1006-3d-viewport-frustum-cull-overlay (Run 27 Strand C):
+        // companion to the DDGI probe overlay above. Same checkbox
+        // pattern; when on, hello_engine renders a sphere at each
+        // cluster centre in a 3x3x3 cluster grid (27 cells around
+        // origin) coloured by cd::camera::test_aabb result.
+        ImGui::Checkbox("Show frustum cull AABBs in 3D viewport",
+                        &fx.frustum_cull_show_aabbs_3d);
+        if (fx.frustum_cull_show_aabbs_3d)
+        {
+            ImGui::TextDisabled("  3x3x3 cluster grid, sphere @ centre, green/yellow/red by cull state");
+        }
         // phase920-restir-di-live-demo (Run 25 Strand B): CPU-side
         // ReSTIR DI reservoir sweep. Streams N candidate samples
         // (light_index 0..7, radiance from a fixed table) through
@@ -8281,6 +8292,77 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(probe_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_ddgi_probe");
+                }
+            }
+        }
+        // phase1006-3d-viewport-frustum-cull-overlay: same draw pattern
+        // as the DDGI probe overlay above but the per-cluster tint
+        // encodes cd::camera::test_aabb result instead of an index hash.
+        if (s.fx.frustum_cull_show_aabbs_3d)
+        {
+            cd::camera::Camera cull_cam {};
+            cull_cam.eye    = s.cam.eye;
+            cull_cam.target = s.cam.target;
+            cull_cam.up     = s.cam.up;
+            cull_cam.fov_y  = s.cam.fov_y;
+            cull_cam.near_z = s.cam.near_z;
+            cull_cam.far_z  = s.cam.far_z;
+            const auto frustum = cd::camera::extract_frustum(cull_cam, aspect);
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr float kSpacing = 2.0F;
+                constexpr float kExtent  = 0.5F;
+                constexpr float kRadius  = 0.25F;
+                for (int gz = -1; gz <= 1; ++gz)
+                for (int gy = -1; gy <= 1; ++gy)
+                for (int gx = -1; gx <= 1; ++gx)
+                {
+                    const cd::math::Vec3f centre {
+                        static_cast<float>(gx) * kSpacing,
+                        static_cast<float>(gy) * kSpacing + 1.0F,
+                        static_cast<float>(gz) * kSpacing };
+                    const cd::math::Vec3f bmin {
+                        centre.x - kExtent, centre.y - kExtent, centre.z - kExtent };
+                    const cd::math::Vec3f bmax {
+                        centre.x + kExtent, centre.y + kExtent, centre.z + kExtent };
+                    const auto r = cd::camera::test_aabb(frustum, bmin, bmax);
+                    cd::math::Vec3f tint;
+                    switch (r)
+                    {
+                        case cd::camera::CullResult::kOutside:
+                            tint = { 0.95F, 0.18F, 0.18F }; break;  // red
+                        case cd::camera::CullResult::kIntersecting:
+                            tint = { 0.95F, 0.85F, 0.18F }; break;  // yellow
+                        case cd::camera::CullResult::kInside:
+                            tint = { 0.20F, 0.95F, 0.30F }; break;  // green
+                    }
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kRadius;
+                    model[1][1] = kRadius;
+                    model[2][2] = kRadius;
+                    model[3][0] = centre.x;
+                    model[3][1] = centre.y;
+                    model[3][2] = centre.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = tint.x;
+                    pp.tint[1] = tint.y;
+                    pp.tint[2] = tint.z;
+                    pp.tint[3] = 1.0F;  // standard Lit
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.7F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_frustum_aabb");
                 }
             }
         }
