@@ -26,9 +26,8 @@
 #include <string_view>
 #include <vector>
 
-namespace cd::ui::font
-{
-namespace hb_shape
+
+namespace cd::ui::font::hb_shape
 {
 
 std::vector<ShapedGlyph> shape(const FreeTypeBackend& ft,
@@ -83,7 +82,7 @@ std::vector<ShapedGlyph> shape(const FreeTypeBackend& ft,
     return out;
 }
 
-}  // namespace hb_shape
-}  // namespace cd::ui::font
+} // namespace cd::ui::font::hb_shape
+
 
 #endif  // CD_UI_FONT_HAVE_FREETYPE && CD_UI_FONT_HAVE_HARFBUZZ

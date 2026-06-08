@@ -9,14 +9,13 @@
 // =============================================================================
 #include <cd/game/fsm/Fsm.hpp>
 
-namespace cd::game::fsm
-{
+
 
 // Translation-unit anchor. Touching nothing here ensures the symbol table
 // for cd_game_fsm.lib is not empty under MSVC's /OPT:REF.
-namespace detail
+namespace cd::game::fsm::detail
 {
 [[maybe_unused]] inline void anchor() noexcept {}
-}  // namespace detail
+} // namespace cd::game::fsm::detail
 
-}  // namespace cd::game::fsm
+
