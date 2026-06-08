@@ -3860,6 +3860,54 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::Text("Magnitude (should be ~1.0): %.4f", static_cast<double>(magnitude));
         ImGui::TextDisabled("Spherical-linear quaternion interpolation; great-circle path.");
     }
+    // phase964-math-helpers-live-demo (Run 25 Strand B): drive
+    // cd::math::lerp + smoothstep + remap on a swept x parameter and
+    // plot the three curves. Lets the user see how the smooth-step
+    // shape (Hermite) compares to plain linear-interp + the bounded
+    // remap mapping.
+    if (ImGui::CollapsingHeader("Run25  Math Helpers Probe (lerp / smoothstep / remap)"))
+    {
+        static float s_mh_a = 0.0F;
+        static float s_mh_b = 1.0F;
+        static float s_mh_remap_lo = -2.0F;
+        static float s_mh_remap_hi = 5.0F;
+        ImGui::SliderFloat("Lerp a",   &s_mh_a, -2.0F, 2.0F);
+        ImGui::SliderFloat("Lerp b",   &s_mh_b, -2.0F, 2.0F);
+        ImGui::SliderFloat("Remap target lo", &s_mh_remap_lo, -8.0F, 8.0F);
+        ImGui::SliderFloat("Remap target hi", &s_mh_remap_hi, -8.0F, 8.0F);
+        constexpr int kSweep = 128;
+        std::array<float, kSweep> ll {};
+        std::array<float, kSweep> ss {};
+        std::array<float, kSweep> rr {};
+        for (int i = 0; i < kSweep; ++i)
+        {
+            const float t = static_cast<float>(i) / static_cast<float>(kSweep - 1);
+            ll[static_cast<std::size_t>(i)] =
+                cd::math::lerp(s_mh_a, s_mh_b, t);
+            ss[static_cast<std::size_t>(i)] =
+                cd::math::smoothstep(0.0F, 1.0F, t);
+            rr[static_cast<std::size_t>(i)] =
+                cd::math::remap(0.0F, 1.0F, s_mh_remap_lo, s_mh_remap_hi, t);
+        }
+        const auto rr_lo = *std::ranges::min_element(rr);
+        const auto rr_hi = *std::ranges::max_element(rr);
+        ImGui::PlotLines("##mh_lerp", ll.data(), kSweep, 0,
+                         "lerp(a, b, t)", s_mh_a - 0.1F, s_mh_b + 0.1F,
+                         ImVec2(0, 48));
+        ImGui::PlotLines("##mh_ss",   ss.data(), kSweep, 0,
+                         "smoothstep(0, 1, t) (Hermite)", 0.0F, 1.0F,
+                         ImVec2(0, 48));
+        ImGui::PlotLines("##mh_rr",   rr.data(), kSweep, 0,
+                         "remap(0..1, lo..hi, t)",
+                         rr_lo - 0.1F, rr_hi + 0.1F,
+                         ImVec2(0, 48));
+        ImGui::Text("approx_equal(0.1+0.2, 0.3): %s",
+                    cd::math::approx_equal(0.1F + 0.2F, 0.3F) ? "true" : "false");
+        ImGui::Text("clamp(7.5, -1, 1) = %.3f  saturate(-0.3) = %.3f",
+                    static_cast<double>(cd::math::clamp(7.5F, -1.0F, 1.0F)),
+                    static_cast<double>(cd::math::saturate(-0.3F)));
+        ImGui::TextDisabled("Foundation math helpers used everywhere in render + gameplay.");
+    }
     if (ImGui::CollapsingHeader("Run25  Backend Switcher (sample-fold queue)"))
     {
         ImGui::TextDisabled("Folds 11 samples/rhi/ per-backend boots + triangles");
