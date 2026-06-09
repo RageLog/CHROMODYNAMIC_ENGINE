@@ -2277,6 +2277,55 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             fx.clouds_coverage  = 0.0F;
             log_push("Stable Mode: TAA + motion blur + grain + clouds = 0 (flicker isolation preset)");
         }
+        // phase1016-flicker-isolation-toggles (Run 28 item #1): user
+        // confirmed Stable Mode kills the flicker but cannot tell WHICH
+        // of the 4 sources is responsible ("ise yariyor ama neyin
+        // kestigini bilemedim"). These 4 individual toggles let the
+        // user flip ONE source at a time: each button stashes the
+        // current amount on disable and restores the stashed (or
+        // first-boot default) amount on re-enable, so true A/B
+        // isolation is two clicks. Once the user names the source,
+        // the root-cause fix targets THAT layer only — per
+        // capture-driven-visual-iteration discipline.
+        {
+            struct FlickerToggle
+            {
+                const char* on_label;
+                const char* off_label;
+                float*      value;
+                float       stash;
+                float       fallback;  // first-boot default if stash empty
+            };
+            static FlickerToggle s_toggles[4] = {
+                { "TAA: ON##flick",    "TAA: off##flick",    nullptr, 0.0F, 0.85F },
+                { "MBlur: ON##flick",  "MBlur: off##flick",  nullptr, 0.0F, 0.20F },
+                { "Grain: ON##flick",  "Grain: off##flick",  nullptr, 0.0F, 0.08F },
+                { "Clouds: ON##flick", "Clouds: off##flick", nullptr, 0.0F, 0.20F },
+            };
+            s_toggles[0].value = &fx.taa_amount;
+            s_toggles[1].value = &fx.motion_blur;
+            s_toggles[2].value = &fx.film_grain;
+            s_toggles[3].value = &fx.clouds_coverage;
+            ImGui::TextDisabled("Flicker isolation (flip ONE at a time):");
+            for (int ti = 0; ti < 4; ++ti)
+            {
+                auto& t = s_toggles[ti];
+                if (ti > 0) ImGui::SameLine();
+                const bool is_on = (*t.value > 0.0F);
+                if (ImGui::SmallButton(is_on ? t.on_label : t.off_label))
+                {
+                    if (is_on)
+                    {
+                        t.stash  = *t.value;
+                        *t.value = 0.0F;
+                    }
+                    else
+                    {
+                        *t.value = (t.stash > 0.0F) ? t.stash : t.fallback;
+                    }
+                }
+            }
+        }
         // phase893-tonemap-selector: live combo so user can A/B
         // Narkowicz ACES / Hill ACES / Hable / AGX / HDR10 PQ
         // without round-tripping through the preset buttons.
