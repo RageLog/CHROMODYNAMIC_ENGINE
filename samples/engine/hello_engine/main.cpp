@@ -2457,7 +2457,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                         &fx.frustum_cull_show_aabbs_3d);
         if (fx.frustum_cull_show_aabbs_3d)
         {
-            ImGui::TextDisabled("  3x3x3 cluster grid, sphere @ centre, green/yellow/red by cull state");
+            ImGui::TextDisabled("  3x3x3 cluster grid, 8 corner spheres per AABB, green/yellow/red by cull state");
         }
         ImGui::Checkbox("Show light position gizmos in 3D viewport",
                         &fx.lights_show_gizmos_3d);
@@ -3848,7 +3848,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         if (fx.csm_show_cascade_depth_3d)
         {
             ImGui::TextDisabled("  4 spheres along camera forward at cascade centre depths");
-            ImGui::TextDisabled("  red=near, yellow, green, blue=far");
+            ImGui::TextDisabled("  red=near, yellow, green, blue=far; radius = slice depth extent");
         }
     }
     // phase942-cluster-grid-live-demo (Run 25 Strand B): drive
@@ -8453,7 +8453,6 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
                 constexpr float kSpacing = 2.0F;
                 constexpr float kExtent  = 0.5F;
-                constexpr float kRadius  = 0.25F;
                 for (int gz = -1; gz <= 1; ++gz)
                 for (int gy = -1; gy <= 1; ++gy)
                 for (int gx = -1; gx <= 1; ++gx)
@@ -8477,30 +8476,48 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         case cd::camera::CullResult::kInside:
                             tint = { 0.20F, 0.95F, 0.30F }; break;  // green
                     }
-                    PrimPush pp {};
-                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
-                    model[0][0] = kRadius;
-                    model[1][1] = kRadius;
-                    model[2][2] = kRadius;
-                    model[3][0] = centre.x;
-                    model[3][1] = centre.y;
-                    model[3][2] = centre.z;
-                    pp.model = model;
-                    pp.mvp = vp * model;
-                    pp.tint[0] = tint.x;
-                    pp.tint[1] = tint.y;
-                    pp.tint[2] = tint.z;
-                    pp.tint[3] = 1.0F;  // standard Lit
-                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
-                    pp.fx_params[1]  = 0.0F;
-                    pp.fx_params4[0] = 0.0F;
-                    pp.fx_params4[1] = 0.7F;
-                    cmd.push_constants(
-                        s.materials.prim.pipeline_layout(),
-                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                        0, sizeof(pp), &pp);
-                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
-                    s.counters.increment("draws_frustum_aabb");
+                    // phase1018-frustum-aabb-corner-spheres (Run 28
+                    // item #3): user feedback — a single centre sphere
+                    // per cell reads as a 27-point dot cloud, not as
+                    // BOXES. Render 8 smaller spheres at the AABB
+                    // corners instead; the implied cube silhouette is
+                    // unmistakable, and the cull-state tint stays on
+                    // every corner. True wireframe edges remain queued
+                    // for the cd::debug::LineRenderer lib.
+                    constexpr float kCornerR = 0.10F;
+                    for (int csz = 0; csz <= 1; ++csz)
+                    for (int csy = 0; csy <= 1; ++csy)
+                    for (int csx = 0; csx <= 1; ++csx)
+                    {
+                        const cd::math::Vec3f cpos {
+                            (csx != 0) ? bmax.x : bmin.x,
+                            (csy != 0) ? bmax.y : bmin.y,
+                            (csz != 0) ? bmax.z : bmin.z };
+                        PrimPush pp {};
+                        cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                        model[0][0] = kCornerR;
+                        model[1][1] = kCornerR;
+                        model[2][2] = kCornerR;
+                        model[3][0] = cpos.x;
+                        model[3][1] = cpos.y;
+                        model[3][2] = cpos.z;
+                        pp.model = model;
+                        pp.mvp = vp * model;
+                        pp.tint[0] = tint.x;
+                        pp.tint[1] = tint.y;
+                        pp.tint[2] = tint.z;
+                        pp.tint[3] = 1.0F;  // standard Lit
+                        fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                        pp.fx_params[1]  = 0.0F;
+                        pp.fx_params4[0] = 0.0F;
+                        pp.fx_params4[1] = 0.7F;
+                        cmd.push_constants(
+                            s.materials.prim.pipeline_layout(),
+                            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                            0, sizeof(pp), &pp);
+                        cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                        s.counters.increment("draws_frustum_aabb");
+                    }
                 }
             }
         }
@@ -8730,12 +8747,25 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         { 0.95F, 0.85F, 0.18F },  // yellow
                         { 0.20F, 0.95F, 0.30F },  // green
                         { 0.30F, 0.45F, 0.95F } }};// blue
-                    constexpr float kRadius = 0.22F;
                     for (std::uint32_t ci = 0; ci < kCascades; ++ci)
                     {
                         const float n = splits[ci];
                         const float f = splits[ci + 1];
                         const float mid = 0.5F * (n + f);
+                        // phase1018-csm-radius-encodes-slice-depth
+                        // (Run 28 item #3): user feedback — 4 equal
+                        // spheres show the cascade POSITIONS but not
+                        // that each successive cascade covers a much
+                        // LARGER depth range (Practical Split is
+                        // log-weighted). Scale the sphere radius by
+                        // the slice extent (normalised to far_z), so
+                        // cascade 0 is a small marble and cascade 3 a
+                        // large ball — radius now encodes shadow-map
+                        // texel stretch per cascade.
+                        const float slice_norm =
+                            (f - n) / std::max(s.cam.far_z, 1.0F);
+                        const float radius =
+                            0.15F + 0.85F * std::sqrt(slice_norm);
                         const cd::math::Vec3f pos {
                             s.cam.eye.x + view_dir.x * mid,
                             s.cam.eye.y + view_dir.y * mid,
@@ -8743,9 +8773,9 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         const auto& tint = kCascadeTints[ci];
                         PrimPush pp {};
                         cd::math::Mat4f model { cd::math::Mat4f::identity() };
-                        model[0][0] = kRadius;
-                        model[1][1] = kRadius;
-                        model[2][2] = kRadius;
+                        model[0][0] = radius;
+                        model[1][1] = radius;
+                        model[2][2] = radius;
                         model[3][0] = pos.x;
                         model[3][1] = pos.y;
                         model[3][2] = pos.z;
