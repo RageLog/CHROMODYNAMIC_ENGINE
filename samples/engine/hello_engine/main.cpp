@@ -2446,6 +2446,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         if (fx.ddgi_show_probes_3d)
         {
             ImGui::TextDisabled("  default 8x4x8 grid @ origin, spacing 1m, radius 0.15m");
+            ImGui::TextDisabled("  tint = probe layer altitude: blue=floor, green=mid, amber=top");
         }
         // phase1006-3d-viewport-frustum-cull-overlay (Run 27 Strand C):
         // companion to the DDGI probe overlay above. Same checkbox
@@ -3879,7 +3880,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         if (fx.cluster_show_density_3d)
         {
             ImGui::TextDisabled("  8x4x8 world grid (spacing 2 m), tint = # lights covering cell");
-            ImGui::TextDisabled("  dim=0, green=1, yellow=2, red=3+");
+            ImGui::TextDisabled("  empty cells hidden; green=1, yellow=2, red=3+");
         }
     }
     // phase949-velocity-motion-vector-live-demo (Run 25 Strand B):
@@ -8391,14 +8392,20 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         kOrigin.x + static_cast<float>(px) * kSpacing,
                         kOrigin.y + static_cast<float>(py) * kSpacing,
                         kOrigin.z + static_cast<float>(pz) * kSpacing };
-                    const std::uint32_t idx = px + kProbesX * (py + kProbesY * pz);
-                    // Probe hash → distinguishable tint (Wong palette
-                    // approximation). Different from neighbour to
-                    // surface grid topology in the visual.
-                    const auto h = idx * 2654435761U;
-                    const float r = static_cast<float>((h >>  0U) & 0xFFU) / 255.0F;
-                    const float g = static_cast<float>((h >>  8U) & 0xFFU) / 255.0F;
-                    const float b = static_cast<float>((h >> 16U) & 0xFFU) / 255.0F;
+                    // phase1017-ddgi-tint-semantics (Run 28 item #3):
+                    // user feedback — 256 hash-coloured spheres read as
+                    // NOISE, not information. Replace the index hash
+                    // with a Y-layer altitude ramp (deep blue at floor
+                    // layer -> green at mid -> warm amber at top) so the
+                    // tint now answers "which probe LAYER am I looking
+                    // at" at a glance — the same vertical-slice reading
+                    // RTXGI's probe debug view gives.
+                    const float layer_t = (kProbesY > 1)
+                        ? static_cast<float>(py) / static_cast<float>(kProbesY - 1)
+                        : 0.0F;
+                    const float r = 0.15F + 0.80F * layer_t;
+                    const float g = 0.35F + 0.45F * (1.0F - std::abs(layer_t - 0.5F) * 2.0F);
+                    const float b = 0.90F - 0.75F * layer_t;
                     PrimPush pp {};
                     cd::math::Mat4f model { cd::math::Mat4f::identity() };
                     model[0][0] = kRadius;
@@ -8807,9 +8814,16 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         const float r  = row.light.range;
                         if (d2 <= r * r) ++hits;
                     }
+                    // phase1017-cluster-hide-empty (Run 28 item #3):
+                    // user feedback — 200+ dim grey "0 lights" spheres
+                    // drowned the handful of hot cells. Empty cells are
+                    // now SKIPPED entirely; what remains is exactly the
+                    // light-coverage hot-spot map (green=1, yellow=2,
+                    // red=3+), matching how DOOM Eternal's cluster debug
+                    // view only paints occupied clusters.
+                    if (hits == 0) continue;
                     cd::math::Vec3f tint;
-                    if      (hits == 0) tint = { 0.18F, 0.18F, 0.20F };  // dim
-                    else if (hits == 1) tint = { 0.20F, 0.95F, 0.30F };  // green
+                    if      (hits == 1) tint = { 0.20F, 0.95F, 0.30F };  // green
                     else if (hits == 2) tint = { 0.95F, 0.85F, 0.18F };  // yellow
                     else                tint = { 0.95F, 0.20F, 0.18F };  // red
                     PrimPush pp {};
