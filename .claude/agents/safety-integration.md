@@ -2,7 +2,7 @@
 name: safety-integration
 description: Concurrency, race condition, deadlock, use-after-free, buffer overflow, lifetime sorunları için "düşmanca" güvenlik denetimi. Multithread/async kod, callback, lambda capture içeren değişiklikler için çağır.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Safety & Integration — Hardened Analyst

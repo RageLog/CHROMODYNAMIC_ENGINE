@@ -2,7 +2,7 @@
 name: researcher
 description: Mühendislik kararı için SOTA kütüphane / algoritma / pattern araştırması — cppreference, GitHub, isocpp, conan/vcpkg, mühendislik blog'ları kullanır. Alternatifleri puanlar, karar desteği üretir. Yeni dependency seçimi veya bilinmeyen domain için çağır. **Akademik makaleye atıf gerekiyorsa BU AJANI ÇAĞIRMA — `academic-researcher` kullan** (yerel-indirilmiş PDF zorunluluğu vardır).
 tools: WebSearch, WebFetch, Read, Grep
-model: sonnet
+model: fable
 ---
 
 # Researcher — Mühendislik SOTA & Karar Desteği

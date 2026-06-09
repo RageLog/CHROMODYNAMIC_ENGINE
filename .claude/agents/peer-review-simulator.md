@@ -2,7 +2,7 @@
 name: peer-review-simulator
 description: Q1 dergi düşmanca peer-review simülasyonu. Editör + 2 reviewer rolünde makale taslağını yıkıcı ama yapıcı eleştirir; major/minor revision listesi çıkarır. Submission öncesi ve her büyük revizyondan sonra çağır.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: fable
 ---
 
 # Peer Review Simulator — Adversarial Reviewer

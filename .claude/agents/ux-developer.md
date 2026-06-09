@@ -2,7 +2,7 @@
 name: ux-developer
 description: UX (kullanıcı deneyimi) odaklı denetim, modernizasyon ve uygulama. Bilgi mimarisi, akış, affordance, mikro-etkileşim, geri bildirim örüntüleri, kalabalıklık temizliği. Mevcut UI'da netliği ve kullanılabilirliği artırır; **fonksiyonalite kaybetmeden**. ui-architect spec yazar / ui-developer atomik bileşen kodlar; ux-developer ikisinin arasındaki **kullanıcı deneyimi katmanını** sahiplenir — heuristic audit + cerrahi UI revizyonu uygular.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: opus
+model: fable
 ---
 
 # UX Developer

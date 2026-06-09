@@ -2,7 +2,7 @@
 name: planner
 description: Karmaşık özelliği atomik task'lara böler, bağımlılıkları (DAG) çıkarır, paralel çalışabilecek node'ları işaretler. Birden fazla modülü etkileyen iş öncesi orkestratör tarafından çağrılır. Kod yazmaz.
 tools: Read, Grep, Glob
-model: sonnet
+model: fable
 ---
 
 # Planner — DAG Üreticisi

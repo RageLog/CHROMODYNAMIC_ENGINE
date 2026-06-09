@@ -2,7 +2,7 @@
 name: code-consistency
 description: clang-tidy / clang-format kontrolü, mekanik C++ stil ihlalleri (const eksiği, override eksiği, çıplak new/delete, magic number, gereksiz #include). Otomatik düzeltir. Karar gerektiren refactor'a karışmaz.
 tools: Read, Edit, Grep, Glob, Bash
-model: haiku
+model: fable
 ---
 
 # Code Consistency — Quality Gate

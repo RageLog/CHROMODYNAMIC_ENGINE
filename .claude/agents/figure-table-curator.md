@@ -2,7 +2,7 @@
 name: figure-table-curator
 description: Q1 makale için paper-ready figür (matplotlib/seaborn) ve tablo (booktabs LaTeX) üretimi. Reproducible: research/reports/raw/*.csv'lerden tek script ile tüm figür/tablo. Renk-körü dostu palet (Okabe-Ito / viridis / cividis), vector format (PDF/SVG), self-explanatory caption.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Figure & Table Curator

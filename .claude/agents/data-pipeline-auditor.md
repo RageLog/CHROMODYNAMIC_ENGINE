@@ -2,7 +2,7 @@
 name: data-pipeline-auditor
 description: HIL senaryo bütünlüğü, train/val/test split fairness, leakage tespit (sensor/temporal/augmentation), event dengesi, label noise, preprocessing reproducibility. Yeni senaryo kümesi eklenirken, split kodu değişirken, methodology audit'inde çağrılır.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Data Pipeline Auditor

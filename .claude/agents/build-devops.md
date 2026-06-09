@@ -2,7 +2,7 @@
 name: build-devops
 description: CMake / Ninja / preset / linker / vcpkg sorunları, sanitizer (ASAN/UBSAN) konfigürasyonu, warning-as-error temizliği, paketleme hazırlığı. Build/link hatalarında ve CMakeLists değişikliklerinde çağır.
 tools: Read, Edit, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Build & DevOps

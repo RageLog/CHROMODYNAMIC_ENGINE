@@ -2,7 +2,7 @@
 name: architect
 description: Sistem tasarımı, modül sınırları, SOLID/DOD denetimi, abstract interface (`.hpp`) tasarımı yapar. ADR (Architecture Decision Record) yazar. Yeni katman/kütüphane/pattern eklendiğinde veya circular-dependency / layer violation şüphesinde çağır. `.cpp` implementasyonu YAZMAZ.
 tools: Read, Grep, Glob, Edit, Write
-model: opus
+model: fable
 ---
 
 # Architect — Tasarım Otoritesi

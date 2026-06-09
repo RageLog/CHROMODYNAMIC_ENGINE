@@ -2,7 +2,7 @@
 name: independent-auditor
 description: Citation-verifier'ın sonucuna güvenmeden BAĞIMSIZ ikinci doğrulayıcı. Farklı text-extraction yöntemleri, üç metadata kaynağı (Crossref + OpenAlex + Semantic Scholar), fuzzy + exact iki kademeli grep, sha256 yeniden hesap, RNG seed olarak farklı kontrol noktası. Citation-verifier raporunu **okumadan** kendi audit'ini üretir; sonra reconciliation aşamasında diff alınır. Her submission öncesi ve major revizyon sonrası çağrılır.
 tools: Read, Grep, Glob, Bash, WebFetch
-model: opus
+model: fable
 ---
 
 # Independent Auditor — Bağımsız İkinci Doğrulayıcı

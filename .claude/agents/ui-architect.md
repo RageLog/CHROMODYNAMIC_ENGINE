@@ -2,7 +2,7 @@
 name: ui-architect
 description: UI/UX tasarımı, ekran/bileşen hiyerarşisi, state yönetimi (MVC/MVVM), kullanıcı akışı (loading/error/success/empty state) spesifikasyonu. Yeni ekran/feature öncesi UI Developer'dan ÖNCE çağır.
 tools: Read, Write, Edit, Grep, Glob
-model: opus
+model: sonnet
 ---
 
 # UI/UX Architect

@@ -2,7 +2,7 @@
 name: methodology-auditor
 description: Q1 deneysel tasarım denetçisi. HIL/digital-twin için baseline yeterliliği, senaryo seti, metrik seçimi, ablation çerçevesi, çoklu karşılaştırma düzeltmesi, hyperparameter selection bias, multi-seed/multi-run reporting denetler. Her experiment design öncesi (BLOCKING) ve her sonuç tablosu yazılmadan önce çağrılmalı.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: fable
 ---
 
 # Methodology Auditor — Deneysel Tasarım Otoritesi

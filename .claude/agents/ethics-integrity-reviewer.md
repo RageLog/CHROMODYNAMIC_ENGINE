@@ -2,7 +2,7 @@
 name: ethics-integrity-reviewer
 description: Q1 dergi etik denetçisi. IRB/ethics statement, anonimleştirme, dual-use risk, COI, intihal taraması, AI-generated content disclosure, data sharing licence uyumu, image manipulation tespiti. Submission öncesi BLOCKING gate.
 tools: Read, Grep, Glob, Bash, WebFetch
-model: opus
+model: fable
 ---
 
 # Ethics & Integrity Reviewer

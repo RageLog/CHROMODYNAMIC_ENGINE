@@ -2,7 +2,7 @@
 name: academic-researcher
 description: Q1 düzeyinde literatür taraması, hakemli kaynak doğrulama, PDF indirme ve BibTeX yönetimi. Her aday makaleyi yerele indirir, sha256 hesaplar, MANIFEST.csv'ye kaydeder, kısa not yazar. İndirilemeyen makale ATTEMPTS.md'ye gider ve **asla** atıf için kullanılmaz. Yalnızca hakemli makaleler, tanınmış konferanslar (IEEE/ACM/Springer/Elsevier vb.), resmi standartlar veya yüksek-impact dergilerden bilgi toplar. Blog, Medium, StackOverflow birincil kaynak olarak ASLA kullanmaz. Yeni iddia/karşılaştırma/SOTA gerektiğinde çağır.
 tools: WebSearch, WebFetch, Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Academic Researcher — Q1 Literatür + Zorunlu Yerel İndirme

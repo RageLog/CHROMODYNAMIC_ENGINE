@@ -40,44 +40,58 @@ research/
 
 `docs/ADR/` — kalıcı mimari karar kayıtları (Iglberger formatı).
 
-## Tier ve Model Dağılımı
+## Tier ve Model Dağılımı (Fable 5 optimizasyonu — 2026-06-08)
 
 | Tier                    | Ajan                      | Model  | Yazma yetkisi                                                  |
 | ----------------------- | ------------------------- | ------ | -------------------------------------------------------------- |
-| Orchestration           | team-lead                 | opus   | sadece Agent dispatch + TodoWrite                              |
-| Engine Engineering      | analyst                   | sonnet | sadece rapor (etki/risk haritası, kod tabanı)                  |
-|                         | architect                 | opus   | `.hpp` / interface + `docs/ADR/`                               |
-|                         | planner                   | sonnet | TodoWrite WBS                                                  |
-|                         | developer                 | sonnet | C++23 implementasyon                                           |
+| Orchestration           | team-lead                 | fable  | sadece Agent dispatch + TodoWrite                              |
+| Engine Engineering      | analyst                   | fable  | sadece rapor (etki/risk haritası, kod tabanı)                  |
+|                         | architect                 | fable  | `.hpp` / interface + `docs/ADR/`                               |
+|                         | planner                   | fable  | TodoWrite WBS                                                  |
+|                         | developer                 | fable  | C++23 implementasyon                                           |
 |                         | tester                    | sonnet | gtest/catch2 tests + golden image diff hazır                   |
-|                         | build-devops              | sonnet | CMakeLists.txt, presets, vcpkg, Conan, CI                      |
-|                         | safety-integration        | opus   | concurrency / lifetime / UB denetim (BLOCKING, engine kritik)  |
-|                         | code-consistency          | haiku  | clang-tidy / clang-format mekanik fix                          |
-|                         | troubleshooter            | sonnet | RCA reçete                                                     |
-|                         | researcher                | sonnet | rapor (engine/graphics SOTA: Filament/bgfx/EnTT/Bevy)   |
-| Academic Research       | academic-researcher       | sonnet | `research/library/{pdf,notes,bibliography.bib,MANIFEST.csv}`    |
-|                         | citation-verifier         | sonnet | `research/reports/verification_*` (BLOCKING)                    |
-|                         | independent-auditor       | opus   | `research/reports/independent_audit_*` (BAĞIMSIZ DOUBLE-CHECK)  |
-|                         | peer-review-simulator     | opus   | `research/reports/peer_review_*` (RFC veya tez modunda)        |
-| Methodology & Stats     | methodology-auditor       | opus   | `research/reports/methodology_audit_*` (BLOCKING — benchmark)   |
+|                         | build-devops              | fable  | CMakeLists.txt, presets, vcpkg, Conan, CI                      |
+|                         | safety-integration        | fable  | concurrency / lifetime / UB denetim (BLOCKING, engine kritik)  |
+|                         | code-consistency          | fable  | clang-tidy / clang-format mekanik fix                          |
+|                         | troubleshooter            | fable  | RCA reçete                                                     |
+|                         | researcher                | fable  | rapor (engine/graphics SOTA: Filament/bgfx/EnTT/Bevy)   |
+| Academic Research       | academic-researcher       | fable  | `research/library/{pdf,notes,bibliography.bib,MANIFEST.csv}`    |
+|                         | citation-verifier         | fable  | `research/reports/verification_*` (BLOCKING)                    |
+|                         | independent-auditor       | fable  | `research/reports/independent_audit_*` (BAĞIMSIZ DOUBLE-CHECK)  |
+|                         | peer-review-simulator     | fable  | `research/reports/peer_review_*` (RFC veya tez modunda)        |
+| Methodology & Stats     | methodology-auditor       | fable  | `research/reports/methodology_audit_*` (BLOCKING — benchmark)   |
 |                         | statistical-analyst       | sonnet | `research/reports/stats/*` (benchmark anlamlılık)               |
-|                         | reproducibility-engineer  | sonnet | config/seed, repro script (benchmark + render test)            |
-|                         | data-pipeline-auditor     | sonnet | `research/reports/data_pipeline_audit_*` (asset pipeline)       |
+|                         | reproducibility-engineer  | fable  | config/seed, repro script (benchmark + render test)            |
+|                         | data-pipeline-auditor     | fable  | `research/reports/data_pipeline_audit_*` (asset pipeline)       |
 | Writing & Visualization | latex-writer              | sonnet | `paper/sections/*.tex` (opsiyonel: tez veya whitepaper)        |
-|                         | figure-table-curator      | sonnet | `paper/figures/`, `paper/tables/`, scripts                     |
-|                         | doc-writer                | haiku  | docstring, README, ADR rendering, Doxygen comments             |
+|                         | figure-table-curator      | fable  | `paper/figures/`, `paper/tables/`, scripts                     |
+|                         | doc-writer                | fable  | docstring, README, ADR rendering, Doxygen comments             |
 | UI                      | ui-architect              | sonnet | UI spec (engine UI + editor UI)                                |
-|                         | ui-developer              | sonnet | UI kod (custom IMGUI / retained, kararlaştırılacak)            |
-|                         | ui-tester                 | sonnet | UI test (visual regression)                                    |
-|                         | ux-developer              | sonnet | UX revizyon (editor workflow, panel layout)                    |
+|                         | ui-developer              | fable  | UI kod (custom IMGUI / retained, kararlaştırılacak)            |
+|                         | ui-tester                 | fable  | UI test (visual regression)                                    |
+|                         | ux-developer              | fable  | UX revizyon (editor workflow, panel layout)                    |
 | Templates               | slide-builder             | sonnet | `research/templates/beamer/<template>/` (sunum/RFC modu)        |
-| Governance & Release    | ethics-integrity-reviewer | opus   | `research/reports/ethics_integrity_*` (lisans + dual-use)       |
-|                         | branch-strategy           | haiku  | git ops                                                        |
-|                         | release-manager           | sonnet | SemVer/CalVer, changelog, tag                                  |
-|                         | installer-maker           | sonnet | CPack/NSIS/WiX/AppImage paketleme                              |
-|                         | deploy-operator           | sonnet | dağıtım (kullanıcı onayı şart)                                  |
+| Governance & Release    | ethics-integrity-reviewer | fable  | `research/reports/ethics_integrity_*` (lisans + dual-use)       |
+|                         | branch-strategy           | fable  | git ops                                                        |
+|                         | release-manager           | haiku  | SemVer/CalVer, changelog, tag                                  |
+|                         | installer-maker           | fable  | CPack/NSIS/WiX/AppImage paketleme                              |
+|                         | deploy-operator           | fable  | dağıtım (kullanıcı onayı şart)                                  |
 
-**Opus** sadece üst düzey karar/orkestrasyon/etik için. **Haiku** mekanik işler. Geri kalan ana iş yükü **sonnet**.
+**Fable 5** = varsayılan motor: ana loop ile aynı flagship; ağır akıl yürütme + cerrahi implementasyon + orkestrasyon hepsinde doğruluk-öncelikli. **Sonnet** = token optimizasyonu hâlâ anlamlı olan orta-yoğunluk yazım/test işleri. **Haiku** = trivial mekanik (release bump).
+
+### Dinamik Model Override (token + doğruluk optimizasyonu)
+
+Frontmatter `model:` alanı **varsayılandır**, sözleşme değildir. Orkestratör
+(`team-lead` veya ana loop) her `Agent` dispatch'inde `model` parametresiyle
+görev-bazlı override yapabilir:
+
+- **Yukarı** (`fable`): sonnet/haiku ajanına adversarial / çok-dosyalı /
+  belirsiz-kapsamlı bir iş düşerse (ör. tester'a flaky-test RCA'sı).
+- **Aşağı** (`haiku` / `sonnet`): fable ajanına tek-dosya trivial recall,
+  format taraması, mekanik liste üretimi düşerse. Token bütçesi kritikse
+  (uzun marathon gece koşusu) mekanik alt-görevler aşağı kaydırılır.
+- Kural: **belirsizse default'ta bırak** — frontmatter zaten görevin tipik
+  yüküne göre kalibre edildi. Override karara log/rapor satırında not düşülür.
 
 ## Sıfır-Tolerans Prensipleri (TÜM AJANLAR)
 

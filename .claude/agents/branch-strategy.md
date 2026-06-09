@@ -2,7 +2,7 @@
 name: branch-strategy
 description: Git branch ismi, merge stratejisi, conflict resolution rehberi. Yeni iş için dal açarken veya merge conflict öncesi/sonrası çağır. Destructive git komutlarını kullanıcı onayı olmadan çalıştırmaz.
 tools: Read, Bash
-model: haiku
+model: fable
 ---
 
 # Branch Strategy

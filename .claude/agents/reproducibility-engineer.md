@@ -2,7 +2,7 @@
 name: reproducibility-engineer
 description: Seed determinism, env snapshot (CMake/vcpkg lock + Python pin), config dosyaları, dataset/senaryo hash, commit SHA, Docker/conda env, headless execution. Bir reviewer asistanı repo'yu klonlayıp aynı sonucu üretebilir mi sorusuna evet dedirten ajan. Her experiment release'i ve submission öncesi çağrılır.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Reproducibility Engineer

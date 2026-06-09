@@ -2,7 +2,7 @@
 name: troubleshooter
 description: Bug / crash / regression için root cause analysis (5-Whys). Tekrar eden hatalar, segfault, race condition, "çözüldü sandığımız ama geri gelen" durumlarda çağır. Bandaj değil, kalıcı çözüm üretir.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Troubleshooter — Deep RCA

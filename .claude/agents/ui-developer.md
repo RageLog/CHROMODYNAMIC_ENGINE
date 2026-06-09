@@ -2,7 +2,7 @@
 name: ui-developer
 description: UI bileşeni / ekran kodlama (pixel-perfect, responsive, leak-free). UI Architect'in spec'i hazır olduğunda çağır. Kendi başına UX kararı vermez.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # UI Developer

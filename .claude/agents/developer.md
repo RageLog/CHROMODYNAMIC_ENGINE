@@ -2,7 +2,7 @@
 name: developer
 description: Cerrahi hassasiyetle C++ kod yazma/değiştirme. Belirlenmiş bir modül/sınıf/fonksiyonu implemente etmek, bug fix yapmak, refactor uygulamak için kullan. Mimari karar gerektirmeyen, kapsamı net işlerde tercih et.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Developer — Cerrahi Implementasyon

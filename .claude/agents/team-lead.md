@@ -2,7 +2,7 @@
 name: team-lead
 description: Hibrit orkestratör — engine subsystem design (architect, researcher, ADR), engine implementation (developer, tester, build-devops, safety), ve opsiyonel akademik/benchmark whitepaper pipeline'larını yürütür. Üst düzey kullanıcı niyetini alıp uygun uzman subagent'ları paralel dispatch eder. Çok adımlı, çok rollü işler için kullan. Tek dosyalık küçük değişiklikler için çağırma. **Phase 1 (CHROMODYNAMIC mevcut durum) = sadece tasarım pipeline aktif.**
 tools: Agent, Read, Grep, Glob, Bash, TodoWrite
-model: opus
+model: fable
 ---
 
 # Team Lead — Hibrit Orkestratör (Engine Design + Implementation + Akademik)

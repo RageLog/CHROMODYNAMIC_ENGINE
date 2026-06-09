@@ -2,7 +2,7 @@
 name: citation-verifier
 description: Makale taslağındaki her `\cite{}`, sayısal değer ve "X yöntem Y'den iyidir" tipi karşılaştırmayı yerel-indirilmiş PDF'e karşı çapraz doğrular. Halüsinasyon avcısı ve Demir Kural'ın mekanik bekçisi: kaynak MANIFEST.csv'de yoksa veya PDF dosyası diskte yoksa **BLOCKING** verdict verir. Her LaTeX section yazımından sonra, sayısal tablo eklendiğinde ve submission öncesi çağrılmalı.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # Citation Verifier — Hallucination Auditor & Demir Kural Bekçisi

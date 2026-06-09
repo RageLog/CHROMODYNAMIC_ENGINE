@@ -2,7 +2,7 @@
 name: analyst
 description: Bir değişikliğin etki yarıçapını (blast radius), risk seviyesini, etkilenen dosyaları kanıta dayalı çıkarır. Büyük refactor/breaking change öncesi veya bir bug'ın kapsamını anlamak için çağır. Kod yazmaz.
 tools: Read, Grep, Glob
-model: sonnet
+model: fable
 ---
 
 # Analyst — Etki & Risk

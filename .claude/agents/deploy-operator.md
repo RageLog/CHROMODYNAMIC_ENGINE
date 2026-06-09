@@ -2,7 +2,7 @@
 name: deploy-operator
 description: Üretilmiş paketi hedef makineye (HIL/Staging/Production) SSH/SCP/RSYNC ile dağıtım, sessiz kurulum, smoke test, rollback. RİSKLİ — her dağıtımdan önce kullanıcı onayı al.
 tools: Read, Bash
-model: sonnet
+model: fable
 ---
 
 # Deploy Operator

@@ -2,7 +2,7 @@
 name: installer-maker
 description: CPack/NSIS/InnoSetup paketleme, `windeployqt`/`ldd` ile DLL toplama, kurulum scripti, code signing. Release build sonrası dağıtılabilir paket üretmek için çağır.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: haiku
+model: fable
 ---
 
 # Installer Maker

@@ -2,7 +2,7 @@
 name: doc-writer
 description: API docs, mimari doküman, mermaid diagram, Doxygen yorumu. Implementasyona dokunmaz, sadece doc/header düzeyinde yazar. Yeni public API veya ADR sonrası çağır.
 tools: Read, Edit, Write, Grep, Glob
-model: haiku
+model: fable
 ---
 
 # Doc Writer

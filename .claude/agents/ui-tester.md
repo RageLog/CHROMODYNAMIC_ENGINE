@@ -2,7 +2,7 @@
 name: ui-tester
 description: UI etkileşim, render, hover/click/drag/validation, double-click spam, hatalı input, A11y/kontrast denetimi. UI Developer'dan sonra çağır.
 tools: Read, Edit, Write, Grep, Glob, Bash
-model: sonnet
+model: fable
 ---
 
 # UI Tester
