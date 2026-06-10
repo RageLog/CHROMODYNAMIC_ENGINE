@@ -3747,10 +3747,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // live.
     if (ImGui::CollapsingHeader("Run25  Light Attenuation Probe"))
     {
-        static float s_la_range = 8.0F;
+        // phase1029-3d-viewport-attenuation-rail: range migrated onto
+        // HelloEngineFx so the 3D rail stretches with the SAME value.
         static float s_la_inner_deg = 15.0F;
         static float s_la_outer_deg = 30.0F;
         static float s_la_lumens = 1500.0F;
+        float& s_la_range = fx.atten_range;
         ImGui::SliderFloat("Range (m)",
                            &s_la_range, 0.5F, 32.0F, "%.2f");
         ImGui::SliderFloat("Spot inner half-angle (deg)",
@@ -3804,6 +3806,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F, 1.0F,
             ImVec2(0, 56));
         ImGui::TextDisabled("Frostbite 2014 windowed inverse-square + smoothstep-squared cone.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show attenuation rail in 3D viewport",
+                        &fx.atten_show_rail_3d);
+        if (fx.atten_show_rail_3d)
+        {
+            ImGui::TextDisabled("  warm light marker + 20 spheres; brightness = falloff at distance");
+        }
     }
     // phase939-ibl-cubemap-sample-live-demo (Run 25 Strand B): drive
     // cd::ibl::bake_sky_cube + sample_cubemap_dir against a tiny
@@ -9902,6 +9911,75 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 const float marker_t = std::clamp(
                     (s.fx.cct_kelvin - kLoK) / (kHiK - kLoK), 0.0F, 1.0F);
                 draw_cct_sphere(marker_t, 0.14F, s.fx.cct_kelvin);
+            }
+        }
+        // phase1029-3d-viewport-attenuation-rail: 18th application of
+        // the canonical sphere-at-position template. A warm "light"
+        // marker sphere plus a 20-sphere rail marching away from it
+        // over 1.5x range; each sphere's brightness encodes
+        // cd::light::distance_attenuation(d, range) — the Frostbite
+        // 2014 windowed inverse-square. The spheres past `range`
+        // going black make the window cutoff physically visible.
+        if (s.fx.atten_show_rail_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr cd::math::Vec3f kLightPos { -3.5F, 0.6F, 1.5F };
+                constexpr float kRailWorldLen = 4.0F;
+                constexpr int kRailCount = 20;
+                const auto draw_atten_sphere =
+                    [&](const cd::math::Vec3f& pos, float radius,
+                        const cd::math::Vec3f& tint) {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = radius;
+                    model[1][1] = radius;
+                    model[2][2] = radius;
+                    model[3][0] = pos.x;
+                    model[3][1] = pos.y;
+                    model[3][2] = pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = tint.x;
+                    pp.tint[1] = tint.y;
+                    pp.tint[2] = tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_atten_rail");
+                };
+                draw_atten_sphere(kLightPos, 0.14F,
+                                  { 0.95F, 0.80F, 0.35F });  // light marker
+                for (int i = 1; i <= kRailCount; ++i)
+                {
+                    const float t = static_cast<float>(i) /
+                                    static_cast<float>(kRailCount);
+                    const float d = t * s.fx.atten_range * 1.5F;
+                    const float a = cd::light::distance_attenuation(
+                        d, s.fx.atten_range);
+                    // Normalise against the first rail sample so the
+                    // near end reads bright regardless of range.
+                    const float a0 = cd::light::distance_attenuation(
+                        (1.0F / static_cast<float>(kRailCount)) *
+                            s.fx.atten_range * 1.5F,
+                        s.fx.atten_range);
+                    const float shade = 0.04F + 0.92F *
+                        std::clamp(a / std::max(a0, 1e-4F), 0.0F, 1.0F);
+                    draw_atten_sphere(
+                        { kLightPos.x + t * kRailWorldLen,
+                          kLightPos.y, kLightPos.z },
+                        0.07F, { shade, shade * 0.92F, shade * 0.70F });
+                }
             }
         }
 

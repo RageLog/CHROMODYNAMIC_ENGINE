@@ -319,6 +319,16 @@ struct HelloEngineFx
     // the user's current Kelvin slider position.
     float cct_kelvin { 6500.0F };
     bool  cct_show_sweep_3d { false };
+    // phase1029-3d-viewport-attenuation-rail: shared state for the
+    // "Run25 Light Attenuation Probe" panel and its 3D overlay. The
+    // overlay renders a warm "light" marker plus a 20-sphere rail
+    // marching away from it; each sphere's brightness encodes
+    // cd::light::distance_attenuation(d, range) (Frostbite 2014
+    // windowed inverse-square). Dragging range stretches the visible
+    // falloff live; the sphere just past `range` going black makes
+    // the window function's hard cutoff obvious.
+    float atten_range { 8.0F };
+    bool  atten_show_rail_3d { false };
 };
 
 }  // namespace cd_sample
