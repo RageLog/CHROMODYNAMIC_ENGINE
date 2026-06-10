@@ -226,6 +226,106 @@ public:
                  { centre.x, centre.y, centre.z + half_size }, color);
     }
 
+    /// phase1042: append a wireframe sphere as 3 orthogonal great
+    /// circles (XY / XZ / YZ planes) — the standard light-range /
+    /// bounding-sphere debug proxy. Segments per circle clamp to 3.
+    void add_sphere(const cd::math::Vec3f& centre,
+                    float radius,
+                    int segments,
+                    const cd::math::Vec4f& color)
+    {
+        add_circle(centre, { 0.0F, 0.0F, 1.0F }, radius, segments, color);
+        add_circle(centre, { 0.0F, 1.0F, 0.0F }, radius, segments, color);
+        add_circle(centre, { 1.0F, 0.0F, 0.0F }, radius, segments, color);
+    }
+
+    /// phase1042: append an arrow from `from` to `to` — shaft plus a
+    /// 4-line pyramid head sized as `head_frac` of the arrow length
+    /// (clamped to [0.05, 0.5]). Degenerate arrows (length < 1e-6)
+    /// are no-ops. The head basis is built perpendicular to the
+    /// shaft, so the arrow reads from any view direction.
+    void add_arrow(const cd::math::Vec3f& from,
+                   const cd::math::Vec3f& to,
+                   const cd::math::Vec4f& color,
+                   float head_frac = 0.18F)
+    {
+        const cd::math::Vec3f d { to.x - from.x,
+                                  to.y - from.y,
+                                  to.z - from.z };
+        const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (len < 1e-6F) return;
+        const cd::math::Vec3f n { d.x / len, d.y / len, d.z / len };
+        add_line(from, to, color);
+        head_frac = std::clamp(head_frac, 0.05F, 0.5F);
+        const float head_len = len * head_frac;
+        const float head_r   = head_len * 0.45F;
+        const cd::math::Vec3f base {
+            to.x - n.x * head_len,
+            to.y - n.y * head_len,
+            to.z - n.z * head_len };
+        // Perpendicular basis around the shaft (same fallback rule
+        // as add_circle).
+        const cd::math::Vec3f helper =
+            (std::abs(n.y) < 0.99F) ? cd::math::Vec3f { 0.0F, 1.0F, 0.0F }
+                                    : cd::math::Vec3f { 1.0F, 0.0F, 0.0F };
+        cd::math::Vec3f t {
+            n.y * helper.z - n.z * helper.y,
+            n.z * helper.x - n.x * helper.z,
+            n.x * helper.y - n.y * helper.x };
+        const float tl = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+        t = { t.x / tl, t.y / tl, t.z / tl };
+        const cd::math::Vec3f b {
+            n.y * t.z - n.z * t.y,
+            n.z * t.x - n.x * t.z,
+            n.x * t.y - n.y * t.x };
+        const std::array<cd::math::Vec3f, 4> wings {{
+            { base.x + t.x * head_r, base.y + t.y * head_r, base.z + t.z * head_r },
+            { base.x - t.x * head_r, base.y - t.y * head_r, base.z - t.z * head_r },
+            { base.x + b.x * head_r, base.y + b.y * head_r, base.z + b.z * head_r },
+            { base.x - b.x * head_r, base.y - b.y * head_r, base.z - b.z * head_r } }};
+        for (const auto& w : wings)
+            add_line(to, w, color);
+    }
+
+    /// phase1042: append a flat reference grid centred at `centre`,
+    /// lying in the plane spanned by `axis_a` x `axis_b` (callers
+    /// pass unit axes; the classic editor floor grid is
+    /// axis_a = +X, axis_b = +Z). `half_lines` lines run each side
+    /// of the two centre lines, `spacing` apart — total
+    /// 2 * (2 * half_lines + 1) segments.
+    void add_grid(const cd::math::Vec3f& centre,
+                  const cd::math::Vec3f& axis_a,
+                  const cd::math::Vec3f& axis_b,
+                  int half_lines,
+                  float spacing,
+                  const cd::math::Vec4f& color)
+    {
+        half_lines = std::max(half_lines, 0);
+        const float extent = static_cast<float>(half_lines) * spacing;
+        for (int i = -half_lines; i <= half_lines; ++i)
+        {
+            const float o = static_cast<float>(i) * spacing;
+            // Lines along axis_a, offset along axis_b.
+            add_line(
+                { centre.x - axis_a.x * extent + axis_b.x * o,
+                  centre.y - axis_a.y * extent + axis_b.y * o,
+                  centre.z - axis_a.z * extent + axis_b.z * o },
+                { centre.x + axis_a.x * extent + axis_b.x * o,
+                  centre.y + axis_a.y * extent + axis_b.y * o,
+                  centre.z + axis_a.z * extent + axis_b.z * o },
+                color);
+            // Lines along axis_b, offset along axis_a.
+            add_line(
+                { centre.x + axis_a.x * o - axis_b.x * extent,
+                  centre.y + axis_a.y * o - axis_b.y * extent,
+                  centre.z + axis_a.z * o - axis_b.z * extent },
+                { centre.x + axis_a.x * o + axis_b.x * extent,
+                  centre.y + axis_a.y * o + axis_b.y * extent,
+                  centre.z + axis_a.z * o + axis_b.z * extent },
+                color);
+        }
+    }
+
     [[nodiscard]] std::span<const LineVertex> vertices() const noexcept
     {
         return { verts_.data(), verts_.size() };

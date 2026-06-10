@@ -244,6 +244,77 @@ TEST(DebugLineBatch, CrossProducesThreeAxisSegments)
     EXPECT_TRUE(contains_position(b, { 1.0F, 2.0F, 3.5F }));
 }
 
+TEST(DebugLineBatch, SphereIsThreeOrthogonalCircles)
+{
+    LineBatch b {};
+    const Vec3f centre { 1.0F, 2.0F, 3.0F };
+    const float radius = 0.5F;
+
+    b.add_sphere(centre, radius, 12, kRed);
+
+    EXPECT_EQ(b.line_count(), 36U);  // 3 circles x 12 segments
+    for (const auto& v : b.vertices())
+    {
+        const float dx = v.position.x - centre.x;
+        const float dy = v.position.y - centre.y;
+        const float dz = v.position.z - centre.z;
+        EXPECT_NEAR(std::sqrt(dx * dx + dy * dy + dz * dz), radius, 1e-4F);
+    }
+}
+
+TEST(DebugLineBatch, ArrowHasShaftPlusFourHeadWings)
+{
+    LineBatch b {};
+    const Vec3f from { 0, 0, 0 };
+    const Vec3f to { 2, 0, 0 };
+
+    b.add_arrow(from, to, kGreen);
+
+    EXPECT_EQ(b.line_count(), 5U);  // shaft + 4 wings
+    EXPECT_TRUE(contains_position(b, from));
+    EXPECT_TRUE(contains_position(b, to));
+    // Head wings start at the tip and end behind it.
+    const auto verts = b.vertices();
+    for (std::size_t i = 2; i < verts.size(); i += 2)
+    {
+        EXPECT_FLOAT_EQ(verts[i].position.x, to.x);       // wing start = tip
+        EXPECT_LT(verts[i + 1].position.x, to.x);          // wing end behind
+    }
+}
+
+TEST(DebugLineBatch, ArrowDegenerateIsNoOp)
+{
+    LineBatch b {};
+
+    b.add_arrow({ 1, 1, 1 }, { 1, 1, 1 }, kGreen);
+
+    EXPECT_TRUE(b.empty());
+}
+
+TEST(DebugLineBatch, GridLineCountAndExtents)
+{
+    LineBatch b {};
+
+    // half_lines=2 -> 5 lines per direction -> 10 segments.
+    b.add_grid({ 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 }, 2, 1.0F, kRed);
+
+    EXPECT_EQ(b.line_count(), 10U);
+    EXPECT_TRUE(contains_position(b, { -2.0F, 0.0F, -2.0F }));
+    EXPECT_TRUE(contains_position(b, {  2.0F, 0.0F,  2.0F }));
+    for (const auto& v : b.vertices())
+        EXPECT_FLOAT_EQ(v.position.y, 0.0F);  // stays in the XZ plane
+}
+
+TEST(DebugLineBatch, GridZeroHalfLinesIsJustTheTwoCentreLines)
+{
+    LineBatch b {};
+
+    b.add_grid({ 0, 1, 0 }, { 1, 0, 0 }, { 0, 0, 1 }, 0, 1.0F, kRed);
+
+    // extent = 0 -> two degenerate (zero-length) centre segments.
+    EXPECT_EQ(b.line_count(), 2U);
+}
+
 TEST(DebugLineBatch, MixedShapesAccumulateAndColoursStayPerVertex)
 {
     LineBatch b {};
