@@ -224,6 +224,18 @@ struct HelloEngineFx
     // compact_alive every frame so the user sees particles emit,
     // arc under gravity, and die in the 3D scene.
     bool gpu_particles_show_3d { false };
+    // phase1019-3d-viewport-quat-slerp-triad: shared state for the
+    // "Run25 Quaternion Slerp Probe" panel and its 3D overlay. The
+    // overlay renders an orientation TRIAD (3 spheres at the rotated
+    // X/Y/Z axis tips, tinted red/green/blue) for slerp(A, B, t),
+    // plus a 16-sample great-circle path of the X-axis tip from A to
+    // B so the user SEES the spherical interpolation arc — the same
+    // path the animation runtime walks for skin-pose blending.
+    // (std::array keeps the header zero-dep; x,y,z,w order.)
+    std::array<float, 4> quat_slerp_a { 1.0F, 0.0F, 0.0F, 0.0F };
+    std::array<float, 4> quat_slerp_b { 0.7071F, 0.0F, 0.0F, 0.7071F };
+    float quat_slerp_t { 0.5F };
+    bool quat_slerp_show_3d { false };
 };
 
 }  // namespace cd_sample

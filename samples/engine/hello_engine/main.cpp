@@ -4034,14 +4034,19 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // the animation runtime uses for skin-pose interpolation.
     if (ImGui::CollapsingHeader("Run25  Quaternion Slerp Probe"))
     {
-        static float s_qs_t = 0.5F;
-        static cd::math::Quatf s_qs_a { 1.0F, 0.0F, 0.0F, 0.0F };
-        // 90-degree rotation around Z: (cos(45), 0, 0, sin(45)).
-        static cd::math::Quatf s_qs_b { 0.7071F, 0.0F, 0.0F, 0.7071F };
-        ImGui::SliderFloat("t [0, 1]", &s_qs_t, 0.0F, 1.0F);
-        ImGui::SliderFloat4("Quat A (x, y, z, w)", &s_qs_a.x, -1.0F, 1.0F);
-        ImGui::SliderFloat4("Quat B (x, y, z, w)", &s_qs_b.x, -1.0F, 1.0F);
-        const auto q = cd::math::slerp(s_qs_a, s_qs_b, s_qs_t);
+        // phase1019-3d-viewport-quat-slerp-triad: state migrated off
+        // function-statics onto HelloEngineFx so the 3D overlay reads
+        // the SAME values the user drags here.
+        ImGui::SliderFloat("t [0, 1]", &fx.quat_slerp_t, 0.0F, 1.0F);
+        ImGui::SliderFloat4("Quat A (x, y, z, w)", fx.quat_slerp_a.data(), -1.0F, 1.0F);
+        ImGui::SliderFloat4("Quat B (x, y, z, w)", fx.quat_slerp_b.data(), -1.0F, 1.0F);
+        const cd::math::Quatf s_qs_a {
+            fx.quat_slerp_a[0], fx.quat_slerp_a[1],
+            fx.quat_slerp_a[2], fx.quat_slerp_a[3] };
+        const cd::math::Quatf s_qs_b {
+            fx.quat_slerp_b[0], fx.quat_slerp_b[1],
+            fx.quat_slerp_b[2], fx.quat_slerp_b[3] };
+        const auto q = cd::math::slerp(s_qs_a, s_qs_b, fx.quat_slerp_t);
         ImGui::Text("Result: (%.3f, %.3f, %.3f, %.3f)",
                     static_cast<double>(q.x),
                     static_cast<double>(q.y),
@@ -4050,6 +4055,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         const float magnitude = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
         ImGui::Text("Magnitude (should be ~1.0): %.4f", static_cast<double>(magnitude));
         ImGui::TextDisabled("Spherical-linear quaternion interpolation; great-circle path.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show slerp triad in 3D viewport",
+                        &fx.quat_slerp_show_3d);
+        if (fx.quat_slerp_show_3d)
+        {
+            ImGui::TextDisabled("  RGB triad = slerp(A,B,t) axes; small spheres = X-tip arc A->B");
+        }
     }
     // phase964-math-helpers-live-demo (Run 25 Strand B): drive
     // cd::math::lerp + smoothstep + remap on a swept x parameter and
@@ -9038,6 +9050,101 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_gpu_particle");
+                }
+            }
+        }
+        // phase1019-3d-viewport-quat-slerp-triad: 9th application of
+        // the canonical sphere-at-position template. Renders, anchored
+        // at a fixed point above the origin:
+        //   - 1 white sphere at the anchor (rotation centre);
+        //   - 3 spheres at the slerp(A,B,t)-rotated X/Y/Z axis tips,
+        //     tinted red/green/blue (standard axis colours) — the
+        //     live orientation TRIAD;
+        //   - 16 small spheres tracing the X-axis tip along
+        //     slerp(A,B,ti) for ti in [0,1] — the great-circle arc,
+        //     fading dark->bright with t so direction A->B reads.
+        if (s.fx.quat_slerp_show_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr cd::math::Vec3f kAnchor { 0.0F, 2.5F, 0.0F };
+                constexpr float kAxisLen = 1.2F;
+                const cd::math::Quatf qa {
+                    s.fx.quat_slerp_a[0], s.fx.quat_slerp_a[1],
+                    s.fx.quat_slerp_a[2], s.fx.quat_slerp_a[3] };
+                const cd::math::Quatf qb {
+                    s.fx.quat_slerp_b[0], s.fx.quat_slerp_b[1],
+                    s.fx.quat_slerp_b[2], s.fx.quat_slerp_b[3] };
+                struct TriadSphere
+                {
+                    cd::math::Vec3f pos;
+                    cd::math::Vec3f tint;
+                    float radius;
+                };
+                std::vector<TriadSphere> spheres;
+                spheres.reserve(20);
+                spheres.push_back({ kAnchor, { 0.95F, 0.95F, 0.95F }, 0.10F });
+                const auto qt = cd::math::slerp(qa, qb, s.fx.quat_slerp_t);
+                constexpr std::array<cd::math::Vec3f, 3> kAxes {{
+                    { 1.0F, 0.0F, 0.0F },
+                    { 0.0F, 1.0F, 0.0F },
+                    { 0.0F, 0.0F, 1.0F } }};
+                constexpr std::array<cd::math::Vec3f, 3> kAxisTints {{
+                    { 0.95F, 0.18F, 0.18F },   // X = red
+                    { 0.20F, 0.95F, 0.30F },   // Y = green
+                    { 0.30F, 0.45F, 0.95F } }};// Z = blue
+                for (std::size_t ai = 0; ai < 3; ++ai)
+                {
+                    const auto tip = cd::math::rotate(qt, kAxes[ai]);
+                    spheres.push_back({
+                        { kAnchor.x + tip.x * kAxisLen,
+                          kAnchor.y + tip.y * kAxisLen,
+                          kAnchor.z + tip.z * kAxisLen },
+                        kAxisTints[ai], 0.12F });
+                }
+                constexpr int kArcSamples = 16;
+                for (int si = 0; si < kArcSamples; ++si)
+                {
+                    const float ti = static_cast<float>(si) /
+                                     static_cast<float>(kArcSamples - 1);
+                    const auto qi = cd::math::slerp(qa, qb, ti);
+                    const auto tip = cd::math::rotate(qi, kAxes[0]);
+                    const float fade = 0.35F + 0.60F * ti;
+                    spheres.push_back({
+                        { kAnchor.x + tip.x * kAxisLen,
+                          kAnchor.y + tip.y * kAxisLen,
+                          kAnchor.z + tip.z * kAxisLen },
+                        { fade, fade * 0.55F, fade * 0.85F }, 0.045F });
+                }
+                for (const auto& sp : spheres)
+                {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = sp.radius;
+                    model[1][1] = sp.radius;
+                    model[2][2] = sp.radius;
+                    model[3][0] = sp.pos.x;
+                    model[3][1] = sp.pos.y;
+                    model[3][2] = sp.pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = sp.tint.x;
+                    pp.tint[1] = sp.tint.y;
+                    pp.tint[2] = sp.tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_quat_triad");
                 }
             }
         }
