@@ -3048,15 +3048,17 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // LOD picker keeps as the frontier.
     if (ImGui::CollapsingHeader("Run25  Virtual Geometry LOD Probe"))
     {
-        static float s_vg_cam_z = 6.0F;
-        static float s_vg_threshold = 4.0F;
-        static int s_vg_vp_h = 720;
+        // phase1023-3d-viewport-vg-lod-frontier: state migrated onto
+        // HelloEngineFx so the 3D overlay picks with the SAME values.
+        const float s_vg_cam_z     = fx.vg_lod_cam_z;
+        const float s_vg_threshold = fx.vg_lod_threshold;
+        const int   s_vg_vp_h      = fx.vg_lod_vp_h;
         ImGui::SliderFloat("Camera Z (back from origin)",
-                           &s_vg_cam_z, 1.0F, 100.0F, "%.2f");
+                           &fx.vg_lod_cam_z, 1.0F, 100.0F, "%.2f");
         ImGui::SliderFloat("LOD threshold (px error)",
-                           &s_vg_threshold, 0.5F, 32.0F, "%.2f");
+                           &fx.vg_lod_threshold, 0.5F, 32.0F, "%.2f");
         ImGui::SliderInt("Viewport height (px)",
-                         &s_vg_vp_h, 240, 2160);
+                         &fx.vg_lod_vp_h, 240, 2160);
         // Build a 4-node synthetic DAG: 1 coarse parent + 3 finer
         // children with successively smaller self_error.
         std::array<cd::virtual_geometry::ClusterNode, 4> dag {};
@@ -3101,6 +3103,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                         static_cast<double>(err_px));
         }
         ImGui::TextDisabled("Karis 2021 Nanite-style LOD picker.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show LOD frontier in 3D viewport",
+                        &fx.vg_show_lod_3d);
+        if (fx.vg_show_lod_3d)
+        {
+            ImGui::TextDisabled("  green = node in picked frontier; grey = refined away");
+            ImGui::TextDisabled("  white marker = virtual camera distance (clamped)");
+        }
     }
     // phase927-virtual-textures-live-demo (Run 25 Strand B): drive
     // cd::virtual_textures::PageTable in a tight loop. Lets the
@@ -9348,6 +9358,91 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                       s.fx.cubemap_sample_dir[1],
                       s.fx.cubemap_sample_dir[2] },
                     0.16F, true);
+            }
+        }
+        // phase1023-3d-viewport-vg-lod-frontier: 12th application of
+        // the canonical sphere-at-position template. Rebuilds the
+        // probe panel's synthetic 4-node DAG, runs pick_clusters with
+        // the SAME fx slider values, and renders each node's bounds
+        // sphere at a fixed anchor: bright green = in the picked LOD
+        // frontier; dim grey = refined away (parent too coarse or
+        // children picked instead). A white marker sphere shows the
+        // virtual camera distance along -Z (clamped for visibility).
+        if (s.fx.vg_show_lod_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                std::array<cd::virtual_geometry::ClusterNode, 4> dag {};
+                dag[0].bounds_sphere = { 0.0F, 0.0F, 0.0F, 1.0F };
+                dag[0].self_error    = 0.5F;
+                dag[0].parent_error  = 2.0F;
+                dag[1].bounds_sphere = { 0.4F, 0.0F, 0.0F, 0.4F };
+                dag[1].self_error    = 0.2F;
+                dag[1].parent_error  = 0.5F;
+                dag[2].bounds_sphere = { 0.0F, 0.4F, 0.0F, 0.4F };
+                dag[2].self_error    = 0.2F;
+                dag[2].parent_error  = 0.5F;
+                dag[3].bounds_sphere = { 0.0F, 0.0F, 0.4F, 0.4F };
+                dag[3].self_error    = 0.1F;
+                dag[3].parent_error  = 0.2F;
+                const cd::math::Vec3f vg_eye { 0.0F, 0.0F, s.fx.vg_lod_cam_z };
+                constexpr float kHalfFov = 0.5236F;  // 60 deg horizontal
+                const auto picks = cd::virtual_geometry::pick_clusters(
+                    std::span<const cd::virtual_geometry::ClusterNode>(dag),
+                    s.fx.vg_lod_threshold,
+                    vg_eye, kHalfFov,
+                    static_cast<std::uint32_t>(s.fx.vg_lod_vp_h));
+                constexpr cd::math::Vec3f kAnchor { 3.5F, 2.0F, 0.0F };
+                const auto draw_vg_sphere =
+                    [&](const cd::math::Vec3f& pos, float radius,
+                        const cd::math::Vec3f& tint) {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = radius;
+                    model[1][1] = radius;
+                    model[2][2] = radius;
+                    model[3][0] = pos.x;
+                    model[3][1] = pos.y;
+                    model[3][2] = pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = tint.x;
+                    pp.tint[1] = tint.y;
+                    pp.tint[2] = tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.6F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_vg_lod");
+                };
+                for (std::size_t ni = 0; ni < dag.size(); ++ni)
+                {
+                    const bool picked = std::ranges::find(
+                        picks, static_cast<std::uint32_t>(ni)) != picks.end();
+                    const cd::math::Vec3f pos {
+                        kAnchor.x + dag[ni].bounds_sphere.x,
+                        kAnchor.y + dag[ni].bounds_sphere.y,
+                        kAnchor.z + dag[ni].bounds_sphere.z };
+                    const cd::math::Vec3f tint = picked
+                        ? cd::math::Vec3f { 0.20F, 0.95F, 0.30F }   // frontier
+                        : cd::math::Vec3f { 0.30F, 0.30F, 0.34F };  // refined away
+                    draw_vg_sphere(pos, dag[ni].bounds_sphere.w * 0.35F, tint);
+                }
+                // Virtual camera marker along -Z from the anchor,
+                // clamped so it stays in frame at cam_z up to 100.
+                const float cam_off = std::min(s.fx.vg_lod_cam_z, 8.0F) * 0.4F;
+                draw_vg_sphere(
+                    { kAnchor.x, kAnchor.y, kAnchor.z + cam_off },
+                    0.08F, { 0.95F, 0.95F, 0.95F });
             }
         }
 

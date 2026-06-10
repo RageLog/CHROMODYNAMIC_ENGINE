@@ -258,6 +258,19 @@ struct HelloEngineFx
     // the same globe, so "which direction am I sampling" is obvious.
     std::array<float, 3> cubemap_sample_dir { 0.0F, 1.0F, 0.0F };
     bool cubemap_show_globe_3d { false };
+    // phase1023-3d-viewport-vg-lod-frontier: shared state for the
+    // "Run25 Virtual Geometry LOD Probe" panel and its 3D overlay.
+    // The overlay rebuilds the same synthetic 4-node DAG, runs
+    // cd::virtual_geometry::pick_clusters with THESE values, and
+    // renders each node's bounds sphere at a fixed anchor — bright
+    // green when the node is in the picked LOD frontier, dim grey
+    // when culled/refined away. A white marker shows the virtual
+    // camera distance. Dragging the sliders makes nodes light up /
+    // drop out live (Karis 2021 Nanite-style picker).
+    float vg_lod_cam_z { 6.0F };
+    float vg_lod_threshold { 4.0F };
+    int   vg_lod_vp_h { 720 };
+    bool  vg_show_lod_3d { false };
 };
 
 }  // namespace cd_sample
