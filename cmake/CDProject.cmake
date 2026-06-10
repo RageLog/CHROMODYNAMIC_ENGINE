@@ -184,6 +184,20 @@ function(cd_add_test short_name)
 
   add_test(NAME ${target_name} COMMAND ${target_name})
 
+  # phase1047: default per-test TIMEOUT. cd_test_job_graph deadlocked
+  # 107 minutes inside a `ctest -j8` run (2026-06-11) because no test
+  # carried a timeout — a single hung concurrency test blocks CI
+  # forever and leaves a zombie process holding the exe lock (which
+  # then breaks the next relink with "permission denied"). 120 s is
+  # ~50x the slowest healthy test (cd_test_ddgi_dispatch ~30 s gets
+  # an explicit 300 s below); a timeout converts a deadlock into a
+  # visible ctest FAILURE with a killed process instead of a wedge.
+  if(short_name STREQUAL "ddgi_dispatch")
+    set_tests_properties(${target_name} PROPERTIES TIMEOUT 300)
+  else()
+    set_tests_properties(${target_name} PROPERTIES TIMEOUT 120)
+  endif()
+
   set_target_properties(${target_name} PROPERTIES
     FOLDER "tests/${short_name}"
   )
