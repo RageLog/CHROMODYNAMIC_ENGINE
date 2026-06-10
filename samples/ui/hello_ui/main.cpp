@@ -77,7 +77,6 @@ namespace ll       = cd::ui::layout;
 namespace uf       = cd::ui::font;
 namespace ur       = cd::ui::renderer;
 namespace urr      = cd::ui::renderer_rhi;
-namespace ui_in    = cd::ui::input;
 namespace w        = cd::ui::widgets;
 
 // ---- Argv flag parser ------------------------------------------------------
@@ -113,7 +112,6 @@ struct LocalArgs
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     };
-    namespace fs = std::filesystem;
     for (const char* p : kCandidates)
     {
         std::ifstream f(p, std::ios::binary | std::ios::ate);
@@ -251,7 +249,7 @@ void apply_event(PointerAccumulator& a, const platform::OSEvent& e) noexcept
     std::uint32_t prev_cp = 0U;
     for (const char ch : text)
     {
-        const std::uint32_t cp =
+        const auto cp =
             static_cast<std::uint32_t>(static_cast<unsigned char>(ch));
         const std::optional<uf::GlyphInfo> g = font.glyph_uv(cp);
         if (!g.has_value())

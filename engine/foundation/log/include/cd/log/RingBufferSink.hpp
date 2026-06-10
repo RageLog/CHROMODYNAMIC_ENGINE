@@ -51,7 +51,7 @@ public:
 
     void on_log_record(const LogRecord& record) override
     {
-        std::lock_guard lk { mu_ };
+        std::scoped_lock lk { mu_ };
         if (slots_.size() < capacity_)
         {
             slots_.push_back(record);
@@ -65,7 +65,7 @@ public:
     /// Snapshot of the buffer, oldest record first.
     [[nodiscard]] std::vector<LogRecord> snapshot() const
     {
-        std::lock_guard lk { mu_ };
+        std::scoped_lock lk { mu_ };
         std::vector<LogRecord> out;
         out.reserve(slots_.size());
         if (!wrapped_)
@@ -84,7 +84,7 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept
     {
-        std::lock_guard lk { mu_ };
+        std::scoped_lock lk { mu_ };
         return slots_.size();
     }
 
@@ -95,13 +95,13 @@ public:
 
     [[nodiscard]] bool wrapped() const noexcept
     {
-        std::lock_guard lk { mu_ };
+        std::scoped_lock lk { mu_ };
         return wrapped_;
     }
 
     void clear() noexcept
     {
-        std::lock_guard lk { mu_ };
+        std::scoped_lock lk { mu_ };
         slots_.clear();
         head_ = 0;
         wrapped_ = false;

@@ -102,7 +102,7 @@ double luminance_variance(const std::vector<cd::restir_di::GpuReservoir>& r)
         sum  += l;
         sum2 += l * l;
     }
-    const double n   = static_cast<double>(r.size());
+    const auto n     = static_cast<double>(r.size());
     const double mu  = sum / n;
     const double var = std::max(sum2 / n - mu * mu, 0.0);
     return var;

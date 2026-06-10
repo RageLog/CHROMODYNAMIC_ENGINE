@@ -534,7 +534,7 @@ public:
     void set_options(std::vector<std::string> opts);
     [[nodiscard]] std::span<const std::string> options() const noexcept
     {
-        return std::span<const std::string>(options_.data(), options_.size());
+        return { options_.data(), options_.size() };
     }
 
     void set_selected(std::size_t idx) noexcept;

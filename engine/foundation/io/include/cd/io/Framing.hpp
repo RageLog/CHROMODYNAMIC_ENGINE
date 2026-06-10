@@ -76,7 +76,7 @@ public:
         }
         if (buffer_.size() < kHeaderSize)
             return std::nullopt;
-        std::uint32_t len = load_le<std::uint32_t>(buffer_.data());
+        auto len = load_le<std::uint32_t>(buffer_.data());
         if (len > max_frame_bytes_)
         {
             errored_ = true;

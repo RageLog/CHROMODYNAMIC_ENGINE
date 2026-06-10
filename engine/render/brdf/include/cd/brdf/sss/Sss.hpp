@@ -37,9 +37,9 @@ burley_diffusion_profile(float r, float s) noexcept
 {
     if (s < 1e-5F) return 0.0F;
     const float d = std::max(1e-5F, s);
-    const float exp1 = std::exp(-r / d);
-    const float exp3 = std::exp(-r / (3.0F * d));
-    return (exp1 + exp3) / (8.0F * 3.14159265F * d * r + 1e-5F);
+    const float exp_a = std::exp(-r / d);
+    const float exp_b = std::exp(-r / (3.0F * d));
+    return (exp_a + exp_b) / (8.0F * 3.14159265F * d * r + 1e-5F);
 }
 
 struct Kernel1D

@@ -43,13 +43,13 @@ public:
     {
         if (observer == nullptr)
             return;
-        std::lock_guard guard { observers_lock_ };
+        std::scoped_lock guard { observers_lock_ };
         observers_.push_back(observer);
     }
 
     void remove_observer(ILogObserver* observer) override
     {
-        std::lock_guard guard { observers_lock_ };
+        std::scoped_lock guard { observers_lock_ };
         std::erase(observers_, observer);
     }
 
@@ -80,7 +80,7 @@ protected:
             std::fflush(stream);
 
         // Observers
-        std::lock_guard guard { observers_lock_ };
+        std::scoped_lock guard { observers_lock_ };
         if (!observers_.empty())
         {
             LogRecord rec;

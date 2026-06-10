@@ -13,8 +13,9 @@ constexpr float kEps = 1e-3F;
 TEST(BrdfSss, ProfileDecaysWithDistance)
 {
     float prev = std::numeric_limits<float>::infinity();
-    for (float r = 0.1F; r < 10.0F; r += 0.5F)
+    for (int i = 0; i < 20; ++i)  // r = 0.1, 0.6, ..., 9.6 (< 10.0)
     {
+        const float r = 0.1F + (static_cast<float>(i) * 0.5F);
         const float p = burley_diffusion_profile(r, 1.0F);
         EXPECT_LE(p, prev + kEps);
         EXPECT_GE(p, 0.0F);
@@ -28,8 +29,9 @@ TEST(BrdfSss, ProfileFiniteAndNonNegativeAcrossMeanFreePath)
     // a particular monotonicity here — just that values stay finite
     // and non-negative across a sweep of mean-free-path values.
     const float r = 1.0F;
-    for (float d = 0.1F; d <= 5.0F; d += 0.5F)
+    for (int i = 0; i < 10; ++i)  // d = 0.1, 0.6, ..., 4.6 (last value <= 5.0)
     {
+        const float d = 0.1F + (static_cast<float>(i) * 0.5F);
         const float p = burley_diffusion_profile(r, d);
         EXPECT_GE(p, 0.0F);
         EXPECT_TRUE(std::isfinite(p));

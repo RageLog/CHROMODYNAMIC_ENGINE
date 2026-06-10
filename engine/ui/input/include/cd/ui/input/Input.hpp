@@ -216,7 +216,7 @@ public:
     /// Read-only view of the focus chain (tab order).
     [[nodiscard]] FocusChain focus_chain() const noexcept
     {
-        return FocusChain(chain_.data(), chain_.size());
+        return { chain_.data(), chain_.size() };
     }
 
     // ---- Focus state -------------------------------------------------------

@@ -29,7 +29,7 @@ public:
 
     void on_log_record(const LogRecord& r) override
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         entries_.push_back(r);
         while (entries_.size() > capacity_)
             entries_.pop_front();
@@ -37,13 +37,13 @@ public:
 
     [[nodiscard]] std::vector<LogRecord> snapshot() const
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         return { entries_.begin(), entries_.end() };
     }
 
     [[nodiscard]] std::size_t size() const
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         return entries_.size();
     }
 
@@ -54,7 +54,7 @@ public:
 
     void clear() noexcept
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         entries_.clear();
     }
 

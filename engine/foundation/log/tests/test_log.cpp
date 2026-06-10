@@ -6,6 +6,7 @@
 // deprecated in favour of fopen_s but the test is the only consumer and
 // the codepath is clearly bracketed.
 #if defined(_MSC_VER)
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) -- documented MSVC CRT opt-out macro; must use the reserved name.
 #    define _CRT_SECURE_NO_WARNINGS 1
 #endif
 
@@ -216,7 +217,7 @@ TEST(JsonLogger, EmitsOneJsonObjectPerCall)
         logger.warn(std::source_location::current(), "second");
         logger.flush();
     }
-    std::rewind(tmp);
+    (void)std::fseek(tmp, 0, SEEK_SET);
     std::string contents;
     int c = 0;
     while ((c = std::fgetc(tmp)) != EOF)
@@ -249,9 +250,9 @@ TEST(JsonLogger, EscapesQuotesAndBackslashes)
     ASSERT_NE(tmp, nullptr);
     {
         cd::log::JsonLogger logger { tmp, cd::log::LogLevel::Info };
-        logger.info(std::source_location::current(), "a \"quoted\" and \\backslash");
+        logger.info(std::source_location::current(), R"(a "quoted" and \backslash)");
     }
-    std::rewind(tmp);
+    (void)std::fseek(tmp, 0, SEEK_SET);
     std::string contents;
     int c = 0;
     while ((c = std::fgetc(tmp)) != EOF)
@@ -282,7 +283,7 @@ TEST(JsonLogger, RespectsLevelFilter)
         logger.info(std::source_location::current(), "should drop");
         logger.error(std::source_location::current(), "kept");
     }
-    std::rewind(tmp);
+    (void)std::fseek(tmp, 0, SEEK_SET);
     std::string contents;
     int c = 0;
     while ((c = std::fgetc(tmp)) != EOF)
@@ -415,6 +416,7 @@ struct PanicException
 
 void throwing_panic_handler(const cd::diag::PanicInfo& info)
 {
+    // NOLINTNEXTLINE(hicpp-exception-baseclass) -- test-local carrier type intentionally non-std; deriving from std::exception would break the aggregate init and change nothing the test observes.
     throw PanicException { info };
 }
 

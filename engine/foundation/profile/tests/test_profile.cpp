@@ -235,7 +235,7 @@ TEST(ChromeTraceSink, EmitsValidArrayWithDurationEvents)
     const auto text = slurp(path);
     // Sanity: starts with [, ends with ], two ph:X entries, microseconds correctly scaled.
     EXPECT_EQ(text.front(), '[');
-    EXPECT_NE(text.find("]"), std::string::npos);
+    EXPECT_NE(text.find(']'), std::string::npos);
     EXPECT_NE(text.find("\"ph\":\"X\""), std::string::npos);
     EXPECT_NE(text.find("\"name\":\"frame\""), std::string::npos);
     EXPECT_NE(text.find("\"name\":\"post\""), std::string::npos);

@@ -100,32 +100,32 @@ struct ProbeGrid
         std::array<std::uint32_t, 8> indices {};
         int idx = 0;
         for (int dz = 0; dz <= 1; ++dz)
-        for (int dy = 0; dy <= 1; ++dy)
-        for (int dx = 0; dx <= 1; ++dx)
-        {
-            const float wx = (dx == 0) ? (1.0F - fx) : fx;
-            const float wy = (dy == 0) ? (1.0F - fy) : fy;
-            const float wz = (dz == 0) ? (1.0F - fz) : fz;
+            for (int dy = 0; dy <= 1; ++dy)
+                for (int dx = 0; dx <= 1; ++dx)
+                {
+                    const float wx = (dx == 0) ? (1.0F - fx) : fx;
+                    const float wy = (dy == 0) ? (1.0F - fy) : fy;
+                    const float wz = (dz == 0) ? (1.0F - fz) : fz;
 
-            const std::int32_t cx = x0 + dx;
-            const std::int32_t cy = y0 + dy;
-            const std::int32_t cz = z0 + dz;
+                    const std::int32_t cx = x0 + dx;
+                    const std::int32_t cy = y0 + dy;
+                    const std::int32_t cz = z0 + dz;
 
-            const bool in_bounds =
-                cx >= 0 && cy >= 0 && cz >= 0 &&
-                static_cast<std::uint32_t>(cx) < probes_x &&
-                static_cast<std::uint32_t>(cy) < probes_y &&
-                static_cast<std::uint32_t>(cz) < probes_z;
+                    const bool in_bounds =
+                        cx >= 0 && cy >= 0 && cz >= 0 &&
+                        static_cast<std::uint32_t>(cx) < probes_x &&
+                        static_cast<std::uint32_t>(cy) < probes_y &&
+                        static_cast<std::uint32_t>(cz) < probes_z;
 
-            const auto i = static_cast<std::size_t>(idx);
-            weights_out[i] = in_bounds ? (wx * wy * wz) : 0.0F;
-            indices[i]     = in_bounds
-                ? flat_index(static_cast<std::uint32_t>(cx),
-                             static_cast<std::uint32_t>(cy),
-                             static_cast<std::uint32_t>(cz))
-                : 0U;
-            ++idx;
-        }
+                    const auto i = static_cast<std::size_t>(idx);
+                    weights_out[i] = in_bounds ? (wx * wy * wz) : 0.0F;
+                    indices[i]     = in_bounds
+                        ? flat_index(static_cast<std::uint32_t>(cx),
+                                     static_cast<std::uint32_t>(cy),
+                                     static_cast<std::uint32_t>(cz))
+                        : 0U;
+                    ++idx;
+                }
         return indices;
     }
 };

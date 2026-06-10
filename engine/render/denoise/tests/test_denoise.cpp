@@ -33,11 +33,12 @@ TEST(Denoise, EdgeWeightDropsWithLargeColorDelta)
 
 TEST(Denoise, AtrousPreservesConstantImage)
 {
-    const std::uint32_t W = 16, H = 16;
-    std::vector<cd::math::Vec3f> color(W * H, { 0.5F, 0.5F, 0.5F });
-    std::vector<cd::math::Vec3f> albedo(W * H);
-    std::vector<cd::math::Vec3f> normal(W * H, { 0, 0, 1 });
-    std::vector<float> depth(W * H, 0.5F);
+    const std::uint32_t W = 16;
+    const std::uint32_t H = 16;
+    std::vector<cd::math::Vec3f> color(static_cast<std::size_t>(W) * H, { 0.5F, 0.5F, 0.5F });
+    std::vector<cd::math::Vec3f> albedo(static_cast<std::size_t>(W) * H);
+    std::vector<cd::math::Vec3f> normal(static_cast<std::size_t>(W) * H, { 0, 0, 1 });
+    std::vector<float> depth(static_cast<std::size_t>(W) * H, 0.5F);
     AuxBuffers aux { W, H, color, albedo, normal, depth };
     const auto out = denoise_atrous(aux, {});
     for (const auto& p : out)
@@ -50,14 +51,15 @@ TEST(Denoise, AtrousPreservesConstantImage)
 
 TEST(Denoise, AtrousReducesGaussianNoiseVariance)
 {
-    const std::uint32_t W = 32, H = 32;
+    const std::uint32_t W = 32;
+    const std::uint32_t H = 32;
     std::mt19937 rng(7);
     std::normal_distribution<float> n(0.5F, 0.2F);
-    std::vector<cd::math::Vec3f> color(W * H);
+    std::vector<cd::math::Vec3f> color(static_cast<std::size_t>(W) * H);
     for (auto& p : color) p = { n(rng), n(rng), n(rng) };
-    std::vector<cd::math::Vec3f> albedo(W * H);
-    std::vector<cd::math::Vec3f> normal(W * H, { 0, 0, 1 });
-    std::vector<float> depth(W * H, 0.5F);
+    std::vector<cd::math::Vec3f> albedo(static_cast<std::size_t>(W) * H);
+    std::vector<cd::math::Vec3f> normal(static_cast<std::size_t>(W) * H, { 0, 0, 1 });
+    std::vector<float> depth(static_cast<std::size_t>(W) * H, 0.5F);
     AuxBuffers aux { W, H, color, albedo, normal, depth };
     const auto out = denoise_atrous(aux, {});
     // Variance after denoise should be lower than before.

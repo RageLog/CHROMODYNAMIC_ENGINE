@@ -179,7 +179,7 @@ TEST(TrackingAllocator, TagPreserved)
 // ---------- PmrAdapter ------------------------------------------------------
 TEST(PmrAdapter, FeedsStdPmrVector)
 {
-    cd::mem::LinearAllocator arena { 16 * 1024 };
+    cd::mem::LinearAllocator arena { static_cast<std::size_t>(16) * 1024 };
     cd::mem::PmrAdapter pmr { arena };
     std::pmr::vector<int> v { &pmr };
     for (int i = 0; i < 100; ++i)

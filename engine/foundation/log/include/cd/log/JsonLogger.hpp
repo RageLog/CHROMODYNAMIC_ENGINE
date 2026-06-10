@@ -70,12 +70,12 @@ public:
     {
         if (observer == nullptr)
             return;
-        std::lock_guard guard { observers_lock_ };
+        std::scoped_lock guard { observers_lock_ };
         observers_.push_back(observer);
     }
     void remove_observer(ILogObserver* observer) override
     {
-        std::lock_guard guard { observers_lock_ };
+        std::scoped_lock guard { observers_lock_ };
         std::erase(observers_, observer);
     }
 
@@ -97,29 +97,29 @@ protected:
         out.reserve(msg.size() + 96);
         out.append("{\"ts_us\":");
         out.append(std::to_string(us));
-        out.append(",\"level\":\"");
+        out.append(R"(,"level":")");
         out.append(level_str);
         out.append("\"");
         if (loc != nullptr)
         {
-            out.append(",\"file\":\"");
+            out.append(R"(,"file":")");
             append_json_escaped_(out, loc->file_name());
-            out.append("\",\"line\":");
+            out.append(R"(","line":)");
             out.append(std::to_string(loc->line()));
         }
-        out.append(",\"message\":\"");
+        out.append(R"(,"message":")");
         append_json_escaped_(out, msg);
         out.append("\"}\n");
 
         // One fwrite for the whole record — keeps the per-line atomic
         // on POSIX (line ≤ PIPE_BUF) so concurrent loggers don't tear.
-        std::lock_guard guard { write_lock_ };
+        std::scoped_lock guard { write_lock_ };
         std::fwrite(out.data(), 1, out.size(), stream_);
         if (l >= LogLevel::Warning)
             std::fflush(stream_);
 
         // Observers — same hook as ConsoleLogger.
-        std::lock_guard obs_guard { observers_lock_ };
+        std::scoped_lock obs_guard { observers_lock_ };
         if (!observers_.empty())
         {
             LogRecord rec;

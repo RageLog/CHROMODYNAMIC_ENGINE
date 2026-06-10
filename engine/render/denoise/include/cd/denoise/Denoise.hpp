@@ -108,8 +108,8 @@ atrous_iteration(const AuxBuffers& src_aux,
                     const cd::math::Vec3f dc { c0.x - c1.x, c0.y - c1.y, c0.z - c1.z };
                     const cd::math::Vec3f dn { n0.x - n1.x, n0.y - n1.y, n0.z - n1.z };
                     const float w = edge_weight(dc, dn, d0 - d1, s) *
-                                    kKernel[static_cast<std::size_t>(dy + 2)] *
-                                    kKernel[static_cast<std::size_t>(dx + 2)];
+                                    kKernel[static_cast<std::size_t>(dy) + 2] *
+                                    kKernel[static_cast<std::size_t>(dx) + 2];
                     sum.x += c1.x * w; sum.y += c1.y * w; sum.z += c1.z * w;
                     wsum += w;
                 }

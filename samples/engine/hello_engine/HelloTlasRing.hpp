@@ -26,7 +26,7 @@ namespace cd_sample {
 struct DeferredTlas
 {
     cd::rhi::AccelStructureHandle h;
-    std::uint32_t destroy_at_frame;
+    std::uint32_t destroy_at_frame { 0 };
 };
 
 // phase1034-deferred-buffer-destroy: same convention for plain
@@ -38,7 +38,7 @@ struct DeferredTlas
 struct DeferredBuffer
 {
     cd::rhi::BufferHandle h;
-    std::uint32_t destroy_at_frame;
+    std::uint32_t destroy_at_frame { 0 };
 };
 
 }  // namespace cd_sample

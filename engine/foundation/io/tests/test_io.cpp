@@ -101,7 +101,7 @@ TEST(BinaryStream, SeekAndPosition)
         w.write<std::uint32_t>(i * 7);
 
     cd::io::BinaryReader r { w.data() };
-    r.seek(4 * 3);  // skip first 3
+    r.seek(static_cast<std::size_t>(4) * 3);  // skip first 3
     EXPECT_EQ(r.position(), 12u);
     EXPECT_EQ(*r.read<std::uint32_t>(), 3u * 7u);
 

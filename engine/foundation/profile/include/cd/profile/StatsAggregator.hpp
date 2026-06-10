@@ -68,9 +68,8 @@ public:
         out.reserve(rows_.size());
         for (const auto& [_, row] : rows_)
             out.push_back(row);
-        std::sort(
-            out.begin(),
-            out.end(),
+        std::ranges::sort(
+            out,
             [](const StatRow& a, const StatRow& b)
             {
                 return a.total_ns > b.total_ns;
