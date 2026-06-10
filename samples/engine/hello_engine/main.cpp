@@ -3700,9 +3700,10 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // (tungsten / daylight / overcast).
     if (ImGui::CollapsingHeader("Run25  Light CCT Probe"))
     {
-        static float s_cct_k = 6500.0F;
-        ImGui::SliderFloat("CCT (Kelvin)", &s_cct_k, 1000.0F, 15000.0F, "%.0f K");
-        const auto rgb = cd::light::cct_to_linear_rgb(s_cct_k);
+        // phase1028-3d-viewport-cct-sweep: kelvin migrated onto
+        // HelloEngineFx so the 3D rail marker rides the SAME value.
+        ImGui::SliderFloat("CCT (Kelvin)", &fx.cct_kelvin, 1000.0F, 15000.0F, "%.0f K");
+        const auto rgb = cd::light::cct_to_linear_rgb(fx.cct_kelvin);
         ImGui::ColorButton("CCT colour",
                            { rgb.x, rgb.y, rgb.z, 1.0F },
                            ImGuiColorEditFlags_NoAlpha, ImVec2(72, 24));
@@ -3730,6 +3731,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         }
         ImGui::TextDisabled("1500K (firelight) -> 15000K (blue sky shade).");
         ImGui::TextDisabled("Krystek 1985 + Bruce Lindbloom XYZ -> sRGB.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show CCT sweep in 3D viewport",
+                        &fx.cct_show_sweep_3d);
+        if (fx.cct_show_sweep_3d)
+        {
+            ImGui::TextDisabled("  16-sphere rail 1500K->15000K; big sphere = your Kelvin");
+        }
     }
     // phase938-light-attenuation-live-demo (Run 25 Strand B): drive
     // cd::light::distance_attenuation + cone_attenuation. Plots the
@@ -9836,6 +9844,64 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_camera_basis");
                 }
+            }
+        }
+        // phase1028-3d-viewport-cct-sweep: 17th application of the
+        // canonical sphere-at-position template. A 16-sphere rail
+        // sweeps 1500 K -> 15000 K through cct_to_linear_rgb; a
+        // larger marker sphere rides the rail at the panel's Kelvin
+        // slider position (tinted with its own CCT colour). Firelight
+        // orange -> tungsten -> noon white -> sky-shade blue becomes a
+        // physical colour ramp in the scene.
+        if (s.fx.cct_show_sweep_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr cd::math::Vec3f kRailStart { -3.5F, 0.6F, -1.5F };
+                constexpr float kRailLen = 4.0F;
+                constexpr float kLoK = 1500.0F;
+                constexpr float kHiK = 15000.0F;
+                const auto draw_cct_sphere =
+                    [&](float t01, float radius, float kelvin) {
+                    const auto col = cd::light::cct_to_linear_rgb(kelvin);
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = radius;
+                    model[1][1] = radius;
+                    model[2][2] = radius;
+                    model[3][0] = kRailStart.x + t01 * kRailLen;
+                    model[3][1] = kRailStart.y + ((radius > 0.10F) ? 0.35F : 0.0F);
+                    model[3][2] = kRailStart.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = col.x;
+                    pp.tint[1] = col.y;
+                    pp.tint[2] = col.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.45F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_cct_sweep");
+                };
+                constexpr int kSweep = 16;
+                for (int i = 0; i < kSweep; ++i)
+                {
+                    const float t = static_cast<float>(i) /
+                                    static_cast<float>(kSweep - 1);
+                    draw_cct_sphere(t, 0.08F, kLoK + t * (kHiK - kLoK));
+                }
+                const float marker_t = std::clamp(
+                    (s.fx.cct_kelvin - kLoK) / (kHiK - kLoK), 0.0F, 1.0F);
+                draw_cct_sphere(marker_t, 0.14F, s.fx.cct_kelvin);
             }
         }
 

@@ -311,6 +311,14 @@ struct HelloEngineFx
     float camera_basis_pitch_deg { 0.0F };
     std::array<float, 3> camera_basis_pos { 0.0F, 1.5F, 4.0F };
     bool camera_basis_show_3d { false };
+    // phase1028-3d-viewport-cct-sweep: shared state for the "Run25
+    // Light CCT Probe" panel and its 3D overlay. The overlay renders
+    // a 16-sphere rail sweeping 1500 K -> 15000 K through
+    // cd::light::cct_to_linear_rgb (firelight orange -> noon white ->
+    // sky-shade blue) with a larger marker sphere riding the rail at
+    // the user's current Kelvin slider position.
+    float cct_kelvin { 6500.0F };
+    bool  cct_show_sweep_3d { false };
 };
 
 }  // namespace cd_sample
