@@ -339,6 +339,16 @@ struct HelloEngineFx
     // A grey unit circle gives the isotropic reference.
     float atmo_phase_g { 0.8F };
     bool  atmo_show_polar_3d { false };
+    // phase1036-3d-viewport-audio-waveform: shared state for the
+    // "Run25 Audio Tone Synth Probe" panel and its 3D overlay. The
+    // overlay renders ~2.5 cycles of the synthesized sine as a
+    // cd::debug_line polyline ribbon at a fixed anchor (x = time,
+    // y = sample value * amplitude) over a grey zero-axis line.
+    // Dragging frequency compresses the ribbon, amplitude scales it
+    // — the panel's RMS number becomes a visible wave.
+    float audio_tone_hz { 440.0F };
+    float audio_tone_amp { 0.5F };
+    bool  audio_show_wave_3d { false };
 };
 
 }  // namespace cd_sample

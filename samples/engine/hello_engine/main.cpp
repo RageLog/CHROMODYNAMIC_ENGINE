@@ -4103,12 +4103,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // existing Audio panel's "Save Last 5 s" if they want to hear it).
     if (ImGui::CollapsingHeader("Run25  Audio Tone Synth Probe"))
     {
-        static float s_at_hz = 440.0F;
-        static float s_at_amp = 0.5F;
+        // phase1036-3d-viewport-audio-waveform: hz/amp migrated onto
+        // HelloEngineFx so the 3D ribbon reshapes with the SAME tone.
         static int s_at_samples = 4096;
-        ImGui::SliderFloat("Frequency (Hz)", &s_at_hz, 50.0F, 5000.0F);
-        ImGui::SliderFloat("Amplitude [0,1]", &s_at_amp, 0.0F, 1.0F);
+        ImGui::SliderFloat("Frequency (Hz)", &fx.audio_tone_hz, 50.0F, 5000.0F);
+        ImGui::SliderFloat("Amplitude [0,1]", &fx.audio_tone_amp, 0.0F, 1.0F);
         ImGui::SliderInt("Block samples", &s_at_samples, 256, 16384);
+        const float s_at_hz  = fx.audio_tone_hz;
+        const float s_at_amp = fx.audio_tone_amp;
         std::vector<float> raw(static_cast<std::size_t>(s_at_samples), 0.0F);
         constexpr float kSr = 48000.0F;
         for (std::size_t i = 0; i < raw.size(); ++i)
@@ -4127,6 +4129,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         // Just-RMS readout; full DSP chain runs in the main Audio panel.
         ImGui::TextDisabled("Full Compressor->LowPass->Limiter chain runs in Audio panel.");
         ImGui::TextDisabled("This probe shows the raw synthesized block.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show waveform in 3D viewport",
+                        &fx.audio_show_wave_3d);
+        if (fx.audio_show_wave_3d)
+        {
+            ImGui::TextDisabled("  ~2.5 cycles as a polyline ribbon; grey line = zero axis");
+        }
     }
     // phase962-quaternion-slerp-live-demo (Run 25 Strand B): drive
     // cd::math::slerp between two quaternions. Lets the user drag a t
@@ -10154,6 +10163,42 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             s.debug_lines.add_circle(
                 kAnchor, { 0.0F, 0.0F, 1.0F }, iso_r, 48,
                 { 0.50F, 0.50F, 0.55F, 1.0F });
+        }
+        // phase1036-3d-viewport-audio-waveform: second pure-line demo.
+        // ~2.5 cycles of the tone-synth sine as a polyline ribbon:
+        // x = time across a 4 m span, y = sample * amplitude. The
+        // grey base line is the zero axis. Frequency compresses the
+        // ribbon (more cycles fit the fixed time window scaled to
+        // 2.5 cycles of a 440 Hz reference), amplitude scales it —
+        // the panel's RMS readout becomes a visible wave.
+        if (s.fx.audio_show_wave_3d)
+        {
+            constexpr cd::math::Vec3f kAnchor { 0.0F, 4.0F, 0.0F };
+            constexpr float kSpanX = 4.0F;
+            constexpr float kAmpY  = 0.8F;
+            constexpr int kWaveSamples = 128;
+            // Fixed time window = 2.5 cycles at the 440 Hz reference,
+            // so the visible cycle count scales with the actual hz.
+            constexpr float kWindowSec = 2.5F / 440.0F;
+            std::array<cd::math::Vec3f, kWaveSamples> wave {};
+            for (int i = 0; i < kWaveSamples; ++i)
+            {
+                const float t01 = static_cast<float>(i) /
+                                  static_cast<float>(kWaveSamples - 1);
+                const float t = t01 * kWindowSec;
+                const float v = std::sin(2.0F * std::numbers::pi_v<float> *
+                                         s.fx.audio_tone_hz * t) *
+                                s.fx.audio_tone_amp;
+                wave[static_cast<std::size_t>(i)] = {
+                    kAnchor.x - kSpanX * 0.5F + t01 * kSpanX,
+                    kAnchor.y + v * kAmpY,
+                    kAnchor.z };
+            }
+            s.debug_lines.add_polyline(wave, { 0.25F, 0.90F, 0.65F, 1.0F });
+            s.debug_lines.add_line(
+                { kAnchor.x - kSpanX * 0.5F, kAnchor.y, kAnchor.z },
+                { kAnchor.x + kSpanX * 0.5F, kAnchor.y, kAnchor.z },
+                { 0.45F, 0.45F, 0.50F, 1.0F });
         }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
