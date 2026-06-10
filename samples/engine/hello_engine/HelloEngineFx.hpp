@@ -26,6 +26,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 
 namespace cd_sample {
 
@@ -280,6 +281,17 @@ struct HelloEngineFx
     // quintic kernel the phase-853 cloud shader uses).
     int  noise_freq { 8 };
     bool noise_show_field_3d { false };
+    // phase1025-3d-viewport-restir-reservoir: shared state for the
+    // ReSTIR DI live demo and its 3D overlay. The overlay re-runs the
+    // SAME deterministic WRS stream (same seed + sample budget) and
+    // renders the 8 light candidates as a sphere row — brightness =
+    // candidate radiance (log-scaled), radius = how often that
+    // candidate was streamed, and a large warm sphere floats above
+    // the WRS survivor. Dragging seed / budget shows the estimator
+    // re-picking live.
+    int           restir_samples { 32 };
+    std::uint32_t restir_seed { 0xC0FFEEU };
+    bool          restir_show_3d { false };
 };
 
 }  // namespace cd_sample

@@ -2475,12 +2475,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         // SEE which candidate wins under the WRS estimator.
         ImGui::Separator();
         ImGui::TextUnformatted("ReSTIR DI live demo (CPU API only):");
-        static int s_restir_samples_per_pixel = 32;
-        static std::uint32_t s_restir_seed = 0xC0FFEEU;
+        // phase1025-3d-viewport-restir-reservoir: state migrated onto
+        // HelloEngineFx so the 3D overlay re-runs the SAME stream.
         ImGui::SliderInt("Candidates / pixel (M cap)",
-                         &s_restir_samples_per_pixel, 1, 128);
+                         &fx.restir_samples, 1, 128);
         ImGui::InputScalar("Seed (PCG32)",
-                           ImGuiDataType_U32, &s_restir_seed);
+                           ImGuiDataType_U32, &fx.restir_seed);
+        const int s_restir_samples_per_pixel = fx.restir_samples;
+        const std::uint32_t s_restir_seed = fx.restir_seed;
         cd::restir_di::Reservoir res {};
         // Deterministic PCG32-like stream of (rand_01, light_idx) pairs.
         // We avoid cd::math::Random's per-instance state here so the
@@ -2538,6 +2540,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F,
             static_cast<float>(s_restir_samples_per_pixel),
             ImVec2(0, 48));
+        ImGui::Checkbox("Show reservoir in 3D viewport",
+                        &fx.restir_show_3d);
+        if (fx.restir_show_3d)
+        {
+            ImGui::TextDisabled("  8-sphere row: brightness=radiance, radius=stream count");
+            ImGui::TextDisabled("  warm sphere above = WRS survivor");
+        }
         // phase921-nrc-live-demo (Run 25 Strand B): CPU CpuReferenceMlp
         // trains live on a synthetic radiance target. The user clicks
         // "Train 100 steps" and watches MSE drop on a fixed validation
@@ -9511,6 +9520,102 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_noise_field");
+                }
+            }
+        }
+        // phase1025-3d-viewport-restir-reservoir: 14th application of
+        // the canonical sphere-at-position template. Re-runs the ReSTIR
+        // DI panel's deterministic WRS stream (same seed + budget via
+        // fx) and renders the 8 light candidates as a sphere row:
+        //   - brightness = candidate radiance, log2-scaled over the
+        //     8.0 .. 0.0625 table range;
+        //   - radius     = how often that candidate was streamed
+        //     (uniform proposal -> roughly equal, jitter visible);
+        //   - large warm sphere floating above a column = the WRS
+        //     survivor. Same seed = same survivor (reproducible).
+        if (s.fx.restir_show_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                cd::restir_di::Reservoir res {};
+                std::uint32_t rng = s.fx.restir_seed;
+                const auto next_u32 = [&rng]() noexcept -> std::uint32_t
+                {
+                    rng = rng * 1664525U + 1013904223U;
+                    return rng;
+                };
+                const auto next_unit = [&next_u32]() noexcept -> float
+                {
+                    return static_cast<float>(next_u32() & 0xFFFFFFU)
+                         / static_cast<float>(0xFFFFFFU);
+                };
+                constexpr std::array<float, 8> kRad {
+                    8.0F, 4.0F, 2.0F, 1.0F, 0.5F, 0.25F, 0.125F, 0.0625F };
+                std::array<std::uint32_t, 8> hist {};
+                for (int i = 0; i < s.fx.restir_samples; ++i)
+                {
+                    const auto li = static_cast<std::uint32_t>(next_u32() & 7U);
+                    cd::restir_di::Sample smp {};
+                    smp.light_index = li;
+                    smp.radiance    = { kRad[li], kRad[li], kRad[li] };
+                    smp.target_pdf  = kRad[li];
+                    cd::restir_di::update(res, smp, smp.target_pdf, next_unit());
+                    hist[li] += 1U;
+                }
+                const auto total = static_cast<float>(
+                    std::max(s.fx.restir_samples, 1));
+                constexpr cd::math::Vec3f kAnchor { 3.5F, 1.0F, 3.0F };
+                constexpr float kColSpacing = 0.45F;
+                const auto draw_restir_sphere =
+                    [&](const cd::math::Vec3f& pos, float radius,
+                        const cd::math::Vec3f& tint) {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = radius;
+                    model[1][1] = radius;
+                    model[2][2] = radius;
+                    model[3][0] = pos.x;
+                    model[3][1] = pos.y;
+                    model[3][2] = pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = tint.x;
+                    pp.tint[1] = tint.y;
+                    pp.tint[2] = tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.55F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_restir");
+                };
+                for (std::size_t li = 0; li < 8; ++li)
+                {
+                    // log2 maps the 8.0 .. 0.0625 table onto [1, 0].
+                    const float shade = 0.18F + 0.77F *
+                        ((std::log2(kRad[li]) + 4.0F) / 7.0F);
+                    const float radius = 0.06F + 0.10F *
+                        (static_cast<float>(hist[li]) / total) * 8.0F * 0.5F;
+                    draw_restir_sphere(
+                        { kAnchor.x + static_cast<float>(li) * kColSpacing,
+                          kAnchor.y, kAnchor.z },
+                        radius, { shade, shade, shade });
+                }
+                const auto win = res.selected.light_index;
+                if (win < 8U)
+                {
+                    draw_restir_sphere(
+                        { kAnchor.x + static_cast<float>(win) * kColSpacing,
+                          kAnchor.y + 0.45F, kAnchor.z },
+                        0.14F, { 0.95F, 0.75F, 0.18F });
                 }
             }
         }
