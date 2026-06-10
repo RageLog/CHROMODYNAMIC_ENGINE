@@ -3890,16 +3890,23 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // TAA + per-object motion blur paths consume per pixel.
     if (ImGui::CollapsingHeader("Run25  Motion Vector Probe"))
     {
-        static cd::math::Vec4f s_v_prev { 0.0F, 0.0F, 0.0F, 1.0F };
-        static cd::math::Vec4f s_v_curr { 0.05F, 0.02F, 0.0F, 1.0F };
+        // phase1021-3d-viewport-motion-vector: prev/curr migrated off
+        // function-statics onto HelloEngineFx so the 3D overlay reads
+        // the SAME values the user drags here.
         static int s_v_width = 1920;
         static int s_v_height = 1080;
         ImGui::SliderFloat3("Prev clip (x, y, z) / w=1",
-                            &s_v_prev.x, -1.0F, 1.0F);
+                            fx.mvec_prev.data(), -1.0F, 1.0F);
         ImGui::SliderFloat3("Curr clip (x, y, z) / w=1",
-                            &s_v_curr.x, -1.0F, 1.0F);
+                            fx.mvec_curr.data(), -1.0F, 1.0F);
         ImGui::SliderInt("Viewport width (px)",  &s_v_width,  64, 4096);
         ImGui::SliderInt("Viewport height (px)", &s_v_height, 64, 2160);
+        const cd::math::Vec4f s_v_prev {
+            fx.mvec_prev[0], fx.mvec_prev[1],
+            fx.mvec_prev[2], fx.mvec_prev[3] };
+        const cd::math::Vec4f s_v_curr {
+            fx.mvec_curr[0], fx.mvec_curr[1],
+            fx.mvec_curr[2], fx.mvec_curr[3] };
         const auto uv_delta =
             cd::velocity::motion_vector_uv(s_v_prev, s_v_curr);
         const auto motion_px =
@@ -3913,6 +3920,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::Text("Pixel magnitude: %.3f px",
                     static_cast<double>(motion_px));
         ImGui::TextDisabled("Motion vectors drive TAA + motion blur + ReSTIR.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show motion vector in 3D viewport",
+                        &fx.mvec_show_3d);
+        if (fx.mvec_show_3d)
+        {
+            ImGui::TextDisabled("  clip XY mapped to 2x2 m panel: red=prev, green=curr, dots=path");
+        }
     }
     // phase954-input-axis-live-demo (Run 25 Strand B): drive
     // cd::input::Axis. Lets the user click "neg" and "pos" buttons
@@ -9145,6 +9159,88 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_quat_triad");
+                }
+            }
+        }
+        // phase1021-3d-viewport-motion-vector: 10th application of the
+        // canonical sphere-at-position template. Maps the clip-space
+        // (x, y) plane onto a fixed 2x2 m world panel above the origin
+        // (clip x -> world X, clip y -> world Y, panel centre at
+        // (0, 2.5, -3)) and renders:
+        //   - red sphere   = prev-frame clip position;
+        //   - green sphere = curr-frame clip position;
+        //   - 8 small fading spheres between them = the motion path.
+        // The user drags the panel sliders and SEES the TAA/blur
+        // motion vector as a physical arrow instead of 2 numbers.
+        if (s.fx.mvec_show_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr cd::math::Vec3f kPanelCentre { 0.0F, 2.5F, -3.0F };
+                constexpr float kPanelHalf = 1.0F;  // clip [-1,1] -> ±1 m
+                const auto clip_to_world = [&](float cx, float cy) {
+                    return cd::math::Vec3f {
+                        kPanelCentre.x + cx * kPanelHalf,
+                        kPanelCentre.y + cy * kPanelHalf,
+                        kPanelCentre.z };
+                };
+                struct MvecSphere
+                {
+                    cd::math::Vec3f pos;
+                    cd::math::Vec3f tint;
+                    float radius;
+                };
+                std::vector<MvecSphere> spheres;
+                spheres.reserve(10);
+                spheres.push_back({
+                    clip_to_world(s.fx.mvec_prev[0], s.fx.mvec_prev[1]),
+                    { 0.95F, 0.18F, 0.18F }, 0.10F });   // prev = red
+                spheres.push_back({
+                    clip_to_world(s.fx.mvec_curr[0], s.fx.mvec_curr[1]),
+                    { 0.20F, 0.95F, 0.30F }, 0.10F });   // curr = green
+                constexpr int kPathSamples = 8;
+                for (int pi = 1; pi <= kPathSamples; ++pi)
+                {
+                    const float t = static_cast<float>(pi) /
+                                    static_cast<float>(kPathSamples + 1);
+                    const float cx = s.fx.mvec_prev[0] +
+                        (s.fx.mvec_curr[0] - s.fx.mvec_prev[0]) * t;
+                    const float cy = s.fx.mvec_prev[1] +
+                        (s.fx.mvec_curr[1] - s.fx.mvec_prev[1]) * t;
+                    const float fade = 0.35F + 0.55F * t;
+                    spheres.push_back({
+                        clip_to_world(cx, cy),
+                        { fade, fade, fade * 0.4F }, 0.04F });
+                }
+                for (const auto& sp : spheres)
+                {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = sp.radius;
+                    model[1][1] = sp.radius;
+                    model[2][2] = sp.radius;
+                    model[3][0] = sp.pos.x;
+                    model[3][1] = sp.pos.y;
+                    model[3][2] = sp.pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = sp.tint.x;
+                    pp.tint[1] = sp.tint.y;
+                    pp.tint[2] = sp.tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_mvec");
                 }
             }
         }

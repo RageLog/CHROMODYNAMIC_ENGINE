@@ -236,6 +236,18 @@ struct HelloEngineFx
     std::array<float, 4> quat_slerp_b { 0.7071F, 0.0F, 0.0F, 0.7071F };
     float quat_slerp_t { 0.5F };
     bool quat_slerp_show_3d { false };
+    // phase1021-3d-viewport-motion-vector: shared state for the
+    // "Run25 Motion Vector Probe" panel and its 3D overlay. The
+    // overlay maps the clip-space (x, y) plane onto a fixed 2x2 m
+    // world panel above the origin and renders the prev position
+    // (red sphere), curr position (green sphere) and 8 interpolated
+    // samples between them (small fading spheres) so the user SEES
+    // the screen-space motion vector as an arrow — the same delta
+    // TAA reprojection + per-object motion blur consume per pixel.
+    // (x, y, z, w; w stays 1 for the demo.)
+    std::array<float, 4> mvec_prev { 0.0F, 0.0F, 0.0F, 1.0F };
+    std::array<float, 4> mvec_curr { 0.05F, 0.02F, 0.0F, 1.0F };
+    bool mvec_show_3d { false };
 };
 
 }  // namespace cd_sample
