@@ -68,8 +68,8 @@ void write_u16(std::ofstream& f, std::uint16_t v)
 
 void write_valid_cdtex(const fs::path& p, std::uint32_t w, std::uint32_t h, std::uint8_t fill = 0xAA)
 {
-    const std::uint16_t bw = static_cast<std::uint16_t>((w + 3) / 4);
-    const std::uint16_t bh = static_cast<std::uint16_t>((h + 3) / 4);
+    const auto bw = static_cast<std::uint16_t>((w + 3) / 4);
+    const auto bh = static_cast<std::uint16_t>((h + 3) / 4);
     std::ofstream f(p, std::ios::binary | std::ios::trunc);
     f.write("CDBC7", 5);
     const std::uint8_t version = 1;
@@ -247,8 +247,8 @@ namespace
 
 std::vector<std::byte> build_minimal_cdtex_bytes(std::uint32_t w, std::uint32_t h, std::uint8_t fill = 0xAA)
 {
-    const std::uint16_t bw = static_cast<std::uint16_t>((w + 3) / 4);
-    const std::uint16_t bh = static_cast<std::uint16_t>((h + 3) / 4);
+    const auto bw = static_cast<std::uint16_t>((w + 3) / 4);
+    const auto bh = static_cast<std::uint16_t>((h + 3) / 4);
     std::vector<std::byte> bytes;
     auto put = [&](const void* p, std::size_t n)
     {

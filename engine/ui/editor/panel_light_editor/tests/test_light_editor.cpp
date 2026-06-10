@@ -126,6 +126,7 @@ TEST(LightEditorPanel, DrawEmitsCommandsProportionalToLightCount)
     // so total vertex count must be strictly greater than with 0 lights.
     le::LightEditor editor_five;
     std::vector<lc::PointLight> lights;
+    lights.reserve(5U);
     for (int i = 0; i < 5; ++i)
         lights.push_back(make_light(static_cast<float>(i), 0.0F, 0.0F));
     editor_five.set_lights(lights);
@@ -169,6 +170,7 @@ TEST(LightEditorPanel, SimulateClickSelectsCorrectRow)
     le::LightEditor editor;
 
     std::vector<lc::PointLight> lights;
+    lights.reserve(10U);
     for (int i = 0; i < 10; ++i)
         lights.push_back(make_light(static_cast<float>(i) * 10.0F, 0.0F, 0.0F));
     editor.set_lights(lights);
@@ -218,6 +220,7 @@ TEST(LightEditorPanel, SelectionInvalidatedWhenLightCountShrinks)
 
     // Set 5 lights and select index 4.
     std::vector<lc::PointLight> lights5;
+    lights5.reserve(5U);
     for (int i = 0; i < 5; ++i)
         lights5.push_back(make_light(static_cast<float>(i), 0.0F, 0.0F));
     editor.set_lights(lights5);
@@ -234,6 +237,7 @@ TEST(LightEditorPanel, SelectionInvalidatedWhenLightCountShrinks)
 
     // Shrink to 3 lights — index 4 is out of range.
     std::vector<lc::PointLight> lights3;
+    lights3.reserve(3U);
     for (int i = 0; i < 3; ++i)
         lights3.push_back(make_light(static_cast<float>(i), 0.0F, 0.0F));
     editor.set_lights(lights3);

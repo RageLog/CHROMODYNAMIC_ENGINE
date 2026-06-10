@@ -58,6 +58,11 @@
 #                                    if/else is hot-path convention.
 #   -readability-suspicious-call-argument Run12 B1: FP-prone on math arg
 #                                    shuffles reusing x/y/z names.
+#   -readability-math-missing-parentheses phase1046d: `a + b * c` is the
+#                                    standard idiom in a graphics engine;
+#                                    the rule fired on ~20 correct sites in
+#                                    the first revived sweep alone and
+#                                    catches no real defect class for us.
 #   google/fuchsia/llvm/zircon       the 11 Run27-promoted rules are enabled
 #                                    EXPLICITLY (no family globs) so the 12
 #                                    deferred siblings (google-build-using-
@@ -155,6 +160,7 @@ Checks: >
   -readability-redundant-member-init,
   -readability-braces-around-statements,
   -readability-suspicious-call-argument,
+  -readability-math-missing-parentheses,
   google-build-explicit-make-pair,
   google-build-namespaces,
   google-global-names-in-headers,

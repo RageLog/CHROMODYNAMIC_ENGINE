@@ -116,17 +116,17 @@ struct BucketedPrims
 
     [[nodiscard]] std::span<const PrimHandle> opaque_prims() const noexcept
     {
-        return std::span<const PrimHandle>(buckets[static_cast<std::size_t>(RenderBucket::kOpaque)]);
+        return { buckets[static_cast<std::size_t>(RenderBucket::kOpaque)] };
     }
 
     [[nodiscard]] std::span<const PrimHandle> alpha_mask_prims() const noexcept
     {
-        return std::span<const PrimHandle>(buckets[static_cast<std::size_t>(RenderBucket::kAlphaMask)]);
+        return { buckets[static_cast<std::size_t>(RenderBucket::kAlphaMask)] };
     }
 
     [[nodiscard]] std::span<const PrimHandle> alpha_blend_prims() const noexcept
     {
-        return std::span<const PrimHandle>(buckets[static_cast<std::size_t>(RenderBucket::kAlphaBlend)]);
+        return { buckets[static_cast<std::size_t>(RenderBucket::kAlphaBlend)] };
     }
 
     [[nodiscard]] std::size_t size() const noexcept

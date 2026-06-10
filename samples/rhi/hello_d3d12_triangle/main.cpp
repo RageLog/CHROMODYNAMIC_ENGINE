@@ -288,8 +288,10 @@ int main()
 #elif defined(_MSC_VER)
     #pragma warning(pop)
 #endif
+    // cert-err34-c: strtol reports conversion errors (atoi cannot);
+    // base-10, endptr unused. ::strtol (not std::) for MinGW libc parity.
     const std::uint32_t max_frames = (cap_env && *cap_env)
-        ? static_cast<std::uint32_t>(std::atoi(cap_env)) : 0u;
+        ? static_cast<std::uint32_t>(::strtol(cap_env, nullptr, 10)) : 0u;
     std::uint32_t frame = 0;
     while (!g_quit)
     {

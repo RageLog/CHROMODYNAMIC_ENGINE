@@ -82,7 +82,7 @@ public:
 
     [[nodiscard]] cd::core::Result<VoiceHandle> play(ClipHandle clip, float volume, bool looping) override
     {
-        if (clips_.find(clip.index()) == clips_.end())
+        if (!clips_.contains(clip.index()))
         {
             return std::unexpected(audio_errors::make(audio_errors::Code::kUnknownClip, "play: unknown clip"));
         }

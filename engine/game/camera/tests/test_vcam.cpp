@@ -30,7 +30,6 @@ namespace
 using cd::camera::Camera;
 using cd::ecs::Entity;
 using cd::game::camera::CameraBrain;
-using cd::game::camera::VCamSettings;
 using cd::game::camera::VirtualCamera;
 using cd::math::Vec3f;
 

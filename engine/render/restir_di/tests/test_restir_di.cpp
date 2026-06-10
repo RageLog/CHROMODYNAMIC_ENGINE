@@ -41,7 +41,8 @@ TEST(RestirDi, UpdateProbabilityMatchesWeightRatio)
     for (int trial = 0; trial < 1000; ++trial)
     {
         Reservoir r {};
-        Sample a { 1, {}, 1.0F }, b { 2, {}, 1.0F };
+        Sample a { 1, {}, 1.0F };
+        Sample b { 2, {}, 1.0F };
         update(r, a, 1.0F, u(rng));
         update(r, b, 3.0F, u(rng));
         if (r.selected.light_index == 2U) ++picked_b;
@@ -62,7 +63,8 @@ TEST(RestirDi, ClampHistoryLimitsM)
 
 TEST(RestirDi, CombineMergesDonorContribution)
 {
-    Reservoir a {}, b {};
+    Reservoir a {};
+    Reservoir b {};
     update(a, Sample { 1, { 1, 0, 0 }, 1.0F }, 1.0F, 0.5F);
     update(b, Sample { 2, { 0, 1, 0 }, 1.0F }, 1.0F, 0.5F);
     combine(a, b, 0.99F, [](const Sample& s) { return s.target_pdf; });

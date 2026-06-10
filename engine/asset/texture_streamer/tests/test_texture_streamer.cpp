@@ -29,7 +29,6 @@
 namespace
 {
 
-using cd::asset::texture_streamer::StreamRequest;
 using cd::asset::texture_streamer::TextureStreamer;
 
 // ---- T1: enqueue + tick + is_loaded round-trip (NullDevice) -----------------

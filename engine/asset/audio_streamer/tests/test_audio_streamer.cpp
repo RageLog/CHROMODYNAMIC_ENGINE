@@ -28,7 +28,6 @@ namespace
 {
 
 using cd::asset::audio_streamer::AudioStreamer;
-using cd::asset::audio_streamer::StreamRequest;
 
 // ---- T1: enqueue + tick + is_loaded round-trip (happy path) -----------------
 //

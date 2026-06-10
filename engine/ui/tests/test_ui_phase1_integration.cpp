@@ -21,7 +21,6 @@
 #include <fstream>
 #include <vector>
 
-namespace fs = std::filesystem;
 namespace ll = cd::ui::layout;
 namespace uf = cd::ui::font;
 namespace ur = cd::ui::renderer;

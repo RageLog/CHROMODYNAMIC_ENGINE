@@ -62,7 +62,7 @@ TEST(Bc7, NonMultipleOf4DimensionsRoundUp)
 TEST(Bc7, FastVsHighQualityProducesDifferentOutput)
 {
     // Use a gradient so the encoder has interesting work to do.
-    std::vector<std::uint8_t> rgba(16U * 16U * 4U);
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(16U) * 16U * 4U);
     for (std::uint32_t y = 0; y < 16; ++y)
     {
         for (std::uint32_t x = 0; x < 16; ++x)

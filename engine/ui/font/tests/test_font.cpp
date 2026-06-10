@@ -424,7 +424,8 @@ TEST(Font, MsdfMultiAtlasIsThreeChannelWithEdgeTransition)
     const auto gh  = static_cast<std::uint32_t>(g->height);
     const auto cy  = py + gh / 2U;   // vertical midpoint of glyph slot
 
-    std::uint8_t min_val = 255U, max_val = 0U;
+    std::uint8_t min_val = 255U;
+    std::uint8_t max_val = 0U;
     for (std::uint32_t x = px; x < px + gw; ++x)
     {
         // kMsdfMulti: 3 bytes per texel, row-stride = atlas.width * 3

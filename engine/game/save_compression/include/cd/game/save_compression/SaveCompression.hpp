@@ -79,9 +79,9 @@ namespace cd::game::save_compression
 // =============================================================================
 struct CompressedSave
 {
-    std::vector<std::uint8_t> blob;          ///< Opaque compressed bytes.
-    std::uint64_t             original_size; ///< Byte count before compression.
-    double                    ratio;         ///< blob.size() / original_size (NaN if input empty).
+    std::vector<std::uint8_t> blob;                ///< Opaque compressed bytes.
+    std::uint64_t             original_size = 0U;  ///< Byte count before compression.
+    double                    ratio         = 0.0; ///< blob.size() / original_size (NaN if input empty).
 };
 
 // =============================================================================

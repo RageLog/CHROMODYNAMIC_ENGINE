@@ -60,7 +60,7 @@ namespace cd::ecs
 
 namespace detail
 {
-inline constexpr std::size_t kArchetypeChunkPayloadTargetBytes = 16U * 1024U;
+inline constexpr std::size_t kArchetypeChunkPayloadTargetBytes = static_cast<std::size_t>(16U) * 1024U;
 inline constexpr std::size_t kArchetypeChunkMinCapacity = 4U;
 }  // namespace detail
 

@@ -105,11 +105,16 @@ TEST(VolFogFroxel, SliceRoundTrip)
 {
     FroxelGridDesc d {};
     d.near_z = 0.1F; d.far_z = 100.0F;
-    for (float s = 0.0F; s <= 1.0F; s += 0.1F)
+    // cert-flp30-c: int induction; `s` accumulates `+= 0.1F` in the body so
+    // the sample points are bit-identical to the former float-counter loop
+    // (which ran 10 iterations: the accumulated 10th step exceeds 1.0F).
+    float s = 0.0F;
+    for (int i = 0; i < 10; ++i)
     {
         const float vz = slice_to_view_z(s, d);
         const float back = view_z_to_slice(vz, d);
         EXPECT_NEAR(back, s, kEps);
+        s += 0.1F;
     }
 }
 

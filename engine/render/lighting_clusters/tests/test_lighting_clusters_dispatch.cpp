@@ -162,7 +162,7 @@ TEST(LightingClustersDispatch, TenLightsFourCubeGridProducesNonZeroOffsets)
     lights.reserve(10U);
     for (std::uint32_t i = 0U; i < 10U; ++i)
     {
-        const float fi    = static_cast<float>(i);
+        const auto fi     = static_cast<float>(i);
         const float depth = -(2.0F + fi * 0.5F);  // depths 2..6.5 (camera looks -Z)
         const float off   = (fi - 5.0F) * 0.1F;
         lights.push_back(make_light(off, off, depth, 1.5F));

@@ -38,8 +38,7 @@ struct Obb
     const float dy = d.x * b.axis_y.x + d.y * b.axis_y.y + d.z * b.axis_y.z;
     if (std::abs(dy) > b.half_extents.y) return false;
     const float dz = d.x * b.axis_z.x + d.y * b.axis_z.y + d.z * b.axis_z.z;
-    if (std::abs(dz) > b.half_extents.z) return false;
-    return true;
+    return !(std::abs(dz) > b.half_extents.z);
 }
 
 }  // namespace cd::physics

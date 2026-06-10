@@ -227,7 +227,7 @@ TEST(SaveCompressionRle, DecompressRejectsOriginalSizeMismatch)
 TEST(SaveCompressionRle, BenchmarkReturnsSaneStats)
 {
     // Arrange: 64 KiB all-zero buffer (compresses well).
-    constexpr std::size_t kSize = 64U * 1024U;
+    constexpr std::size_t kSize = static_cast<std::size_t>(64U) * 1024U;
     const std::vector<std::uint8_t> raw(kSize, 0x00U);
 
     // Act
@@ -344,7 +344,7 @@ TEST(SaveCompressionLz4, DecompressRejectsCorruptBlob)
 TEST(SaveCompressionLz4, BenchmarkReturnsSaneStats)
 {
     // Arrange: 64 KiB all-zero buffer (compresses well for both codecs).
-    constexpr std::size_t kSize = 64U * 1024U;
+    constexpr std::size_t kSize = static_cast<std::size_t>(64U) * 1024U;
     const std::vector<std::uint8_t> raw(kSize, 0x00U);
 
     // Act

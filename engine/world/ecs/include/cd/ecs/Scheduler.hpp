@@ -325,13 +325,13 @@ private:
         // A writes ∩ B reads
         for (const auto& t : a.write_set())
         {
-            if (b.read_set().count(t) != 0 || b.write_set().count(t) != 0)
+            if (b.read_set().contains(t) || b.write_set().contains(t))
                 return true;
         }
         // A reads ∩ B writes (commutative half)
         for (const auto& t : a.read_set())
         {
-            if (b.write_set().count(t) != 0)
+            if (b.write_set().contains(t))
                 return true;
         }
         return false;
@@ -382,7 +382,7 @@ private:
                     scheduler_errors::make(scheduler_errors::Code::kCycleDetected, "scheduler: dependency cycle")
                 );
             }
-            std::sort(stage.begin(), stage.end());  // registration-order stable.
+            std::ranges::sort(stage);  // registration-order stable.
             for (auto u : stage)
             {
                 processed[u] = true;

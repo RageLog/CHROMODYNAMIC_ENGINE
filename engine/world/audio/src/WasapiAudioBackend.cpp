@@ -65,6 +65,7 @@ struct ComPtr
         if (p != nullptr)
             p->Release();
     }
+    // NOLINTNEXTLINE(google-runtime-operator) — COM out-param idiom; &ptr must yield T** for WASAPI factory calls
     T** operator&() noexcept { return &p; }
     T* operator->() const noexcept { return p; }
     explicit operator bool() const noexcept { return p != nullptr; }
@@ -210,7 +211,7 @@ public:
         rec.channels = desc.channels;
         rec.sample_rate = desc.sample_rate;
         rec.samples.assign(desc.samples.begin(), desc.samples.end());
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         const auto id = next_clip_id_++;
         clips_.emplace(id, std::move(rec));
         return ClipHandle { static_cast<std::uint32_t>(id), 1u };
@@ -218,7 +219,7 @@ public:
 
     void destroy_clip(ClipHandle h) override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         clips_.erase(h.index());
         for (auto it = voices_.begin(); it != voices_.end();)
         {
@@ -231,15 +232,15 @@ public:
 
     [[nodiscard]] std::size_t clip_count() const noexcept override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         return clips_.size();
     }
 
     [[nodiscard]] cd::core::Result<VoiceHandle>
     play(ClipHandle clip, float volume, bool looping) override
     {
-        std::lock_guard guard { state_mu_ };
-        if (clips_.find(clip.index()) == clips_.end())
+        std::scoped_lock guard { state_mu_ };
+        if (!clips_.contains(clip.index()))
             return std::unexpected(audio_errors::make(audio_errors::Code::kUnknownClip, "clip"));
         VoiceRec v;
         v.clip = clip;
@@ -252,13 +253,13 @@ public:
 
     void stop(VoiceHandle voice) override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         voices_.erase(voice.index());
     }
 
     void set_volume(VoiceHandle voice, float volume) override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         auto it = voices_.find(voice.index());
         if (it != voices_.end())
             it->second.volume = volume;
@@ -266,14 +267,14 @@ public:
 
     [[nodiscard]] bool is_playing(VoiceHandle voice) const noexcept override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         const auto it = voices_.find(voice.index());
         return it != voices_.end() && it->second.playing;
     }
 
     [[nodiscard]] std::size_t voice_count() const noexcept override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         return voices_.size();
     }
 
@@ -294,7 +295,7 @@ public:
                 audio_errors::Code::kInvalidArgument,
                 "create_stream: channels / sample_rate must be > 0"));
         }
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         const auto id = static_cast<std::uint32_t>(next_stream_id_++);
         StreamRec rec;
         rec.channels = channels;
@@ -307,7 +308,7 @@ public:
     [[nodiscard]] cd::core::Result<void>
     push_stream_samples(StreamHandle stream, std::span<const float> samples) override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         auto it = streams_.find(stream.index());
         if (it == streams_.end())
         {
@@ -321,13 +322,13 @@ public:
 
     void destroy_stream(StreamHandle stream) override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         streams_.erase(stream.index());
     }
 
     [[nodiscard]] std::size_t stream_pending_frames(StreamHandle stream) const noexcept override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         auto it = streams_.find(stream.index());
         if (it == streams_.end() || it->second.channels == 0) return 0;
         const auto remaining = it->second.queue.size() > it->second.read_offset
@@ -337,7 +338,7 @@ public:
 
     [[nodiscard]] std::size_t stream_count() const noexcept override
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         return streams_.size();
     }
 
@@ -404,7 +405,7 @@ private:
 
     void mix_frames_(std::vector<float>& out, std::uint32_t frames) noexcept
     {
-        std::lock_guard guard { state_mu_ };
+        std::scoped_lock guard { state_mu_ };
         const float master = master_.load(std::memory_order_acquire);
         for (std::uint32_t i = 0; i < frames; ++i)
         {

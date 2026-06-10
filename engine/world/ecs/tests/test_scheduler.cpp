@@ -47,7 +47,7 @@ TEST(Scheduler, NonConflictingSystemsKeepRegistrationOrder)
         cd::ecs::SystemDesc { "a" }.reads<Pos>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("a");
+                hits.emplace_back("a");
             }
         )
     );
@@ -55,7 +55,7 @@ TEST(Scheduler, NonConflictingSystemsKeepRegistrationOrder)
         cd::ecs::SystemDesc { "b" }.reads<Vel>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("b");
+                hits.emplace_back("b");
             }
         )
     );
@@ -63,7 +63,7 @@ TEST(Scheduler, NonConflictingSystemsKeepRegistrationOrder)
         cd::ecs::SystemDesc { "c" }.reads<Tag>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("c");
+                hits.emplace_back("c");
             }
         )
     );
@@ -86,7 +86,7 @@ TEST(Scheduler, WriteForcesBeforeReadOfSameType)
         cd::ecs::SystemDesc { "write_pos" }.writes<Pos>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("write_pos");
+                hits.emplace_back("write_pos");
             }
         )
     );
@@ -94,7 +94,7 @@ TEST(Scheduler, WriteForcesBeforeReadOfSameType)
         cd::ecs::SystemDesc { "read_pos" }.reads<Pos>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("read_pos");
+                hits.emplace_back("read_pos");
             }
         )
     );
@@ -145,7 +145,7 @@ TEST(Scheduler, ConflictChainOrdersCorrectly)
         cd::ecs::SystemDesc { "sense" }.writes<Pos>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("sense");
+                hits.emplace_back("sense");
             }
         )
     );
@@ -153,7 +153,7 @@ TEST(Scheduler, ConflictChainOrdersCorrectly)
         cd::ecs::SystemDesc { "move" }.reads<Pos>().writes<Vel>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("move");
+                hits.emplace_back("move");
             }
         )
     );
@@ -161,7 +161,7 @@ TEST(Scheduler, ConflictChainOrdersCorrectly)
         cd::ecs::SystemDesc { "render" }.reads<Pos>().reads<Vel>().fn(
             [&](cd::ecs::World&)
             {
-                hits.push_back("render");
+                hits.emplace_back("render");
             }
         )
     );
