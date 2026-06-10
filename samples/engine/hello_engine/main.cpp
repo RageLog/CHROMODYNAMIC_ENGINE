@@ -3313,8 +3313,10 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // of Mie (HG) vs Rayleigh as they drag the asymmetry slider.
     if (ImGui::CollapsingHeader("Run25  Atmosphere Phase Functions Probe"))
     {
-        static float s_atm_g = 0.8F;
-        ImGui::SliderFloat("Mie asymmetry g", &s_atm_g, -0.95F, 0.95F);
+        // phase1035-3d-viewport-phase-function-polar: g migrated onto
+        // HelloEngineFx so the 3D polar lobes reshape with the SAME g.
+        ImGui::SliderFloat("Mie asymmetry g", &fx.atmo_phase_g, -0.95F, 0.95F);
+        const float s_atm_g = fx.atmo_phase_g;
         constexpr int kAngles = 180;
         std::array<float, kAngles> hg {};
         std::array<float, kAngles> ray {};
@@ -3342,6 +3344,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             *std::ranges::max_element(ray) * 1.1F + 1e-4F,
             ImVec2(0, 56));
         ImGui::TextDisabled("Hillaire 2020 + Bruneton 2008 production atmo.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show phase-function polar plot in 3D viewport",
+                        &fx.atmo_show_polar_3d);
+        if (fx.atmo_show_polar_3d)
+        {
+            ImGui::TextDisabled("  warm lobe = HG(g), cool = Rayleigh, grey ring = isotropic ref");
+            ImGui::TextDisabled("  +X = forward scatter direction (light travel)");
+        }
     }
     // phase930-light-shafts-live-demo (Run 25 Strand B): drive
     // cd::light_shafts::compute_inline. CPU helper that mirrors
@@ -10086,6 +10096,65 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         // consumers. VB is host-visible (kCpuToGpu) and grows by
         // doubling when a frame outgrows it; upload_buffer handles
         // host->device sync per the IDevice contract.
+        // phase1035-3d-viewport-phase-function-polar: first PURE-line
+        // demo (no sphere proxies at all — everything rides the
+        // cd::debug_line batch). Polar plots of the two scattering
+        // phase functions in the XY plane at a fixed anchor:
+        // radius(theta) = normalised phase value, +X = forward
+        // scatter. Warm lobe = Henyey-Greenstein at the panel's g
+        // (stretches toward +X as g -> 1, flips to back-scatter for
+        // g < 0); cool dumbbell = Rayleigh; grey ring = isotropic
+        // reference under the HG normalisation.
+        if (s.fx.atmo_show_polar_3d)
+        {
+            constexpr cd::math::Vec3f kAnchor { 3.5F, 2.5F, -3.0F };
+            constexpr int kPolarSamples = 96;
+            constexpr float kBaseR = 0.15F;
+            constexpr float kSpanR = 1.05F;
+            constexpr float kTwoPi = 6.28318530717958647692F;
+            std::array<cd::math::Vec3f, kPolarSamples + 1> hg_pts {};
+            std::array<cd::math::Vec3f, kPolarSamples + 1> ray_pts {};
+            float hg_max = 1e-6F;
+            float ray_max = 1e-6F;
+            std::array<float, kPolarSamples> hg_v {};
+            std::array<float, kPolarSamples> ray_v {};
+            for (int i = 0; i < kPolarSamples; ++i)
+            {
+                const float th = kTwoPi * static_cast<float>(i) /
+                                 static_cast<float>(kPolarSamples);
+                const float ct = std::cos(th);
+                hg_v[static_cast<std::size_t>(i)] =
+                    cd::atmosphere::henyey_greenstein(ct, s.fx.atmo_phase_g);
+                ray_v[static_cast<std::size_t>(i)] =
+                    cd::atmosphere::rayleigh_phase(ct);
+                hg_max  = std::max(hg_max,  hg_v[static_cast<std::size_t>(i)]);
+                ray_max = std::max(ray_max, ray_v[static_cast<std::size_t>(i)]);
+            }
+            for (int i = 0; i < kPolarSamples; ++i)
+            {
+                const float th = kTwoPi * static_cast<float>(i) /
+                                 static_cast<float>(kPolarSamples);
+                const float ca = std::cos(th);
+                const float sa = std::sin(th);
+                const float hr = kBaseR + kSpanR *
+                    (hg_v[static_cast<std::size_t>(i)] / hg_max);
+                const float rr = kBaseR + kSpanR *
+                    (ray_v[static_cast<std::size_t>(i)] / ray_max);
+                hg_pts[static_cast<std::size_t>(i)] = {
+                    kAnchor.x + ca * hr, kAnchor.y + sa * hr, kAnchor.z };
+                ray_pts[static_cast<std::size_t>(i)] = {
+                    kAnchor.x + ca * rr, kAnchor.y + sa * rr, kAnchor.z };
+            }
+            hg_pts[kPolarSamples]  = hg_pts[0];   // close the loops
+            ray_pts[kPolarSamples] = ray_pts[0];
+            s.debug_lines.add_polyline(hg_pts,  { 0.95F, 0.60F, 0.20F, 1.0F });
+            s.debug_lines.add_polyline(ray_pts, { 0.30F, 0.60F, 0.95F, 1.0F });
+            constexpr float kInv4Pi = 0.07957747F;  // 1 / (4 pi)
+            const float iso_r = kBaseR + kSpanR * (kInv4Pi / hg_max);
+            s.debug_lines.add_circle(
+                kAnchor, { 0.0F, 0.0F, 1.0F }, iso_r, 48,
+                { 0.50F, 0.50F, 0.55F, 1.0F });
+        }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
         while (!s.buffer_destroy_queue.empty() &&

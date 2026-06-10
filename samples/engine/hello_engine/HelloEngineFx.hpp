@@ -329,6 +329,16 @@ struct HelloEngineFx
     // the window function's hard cutoff obvious.
     float atten_range { 8.0F };
     bool  atten_show_rail_3d { false };
+    // phase1035-3d-viewport-phase-function-polar: shared state for
+    // the "Run25 Atmosphere Phase Functions Probe" panel and its 3D
+    // overlay. The overlay renders POLAR plots of the two scattering
+    // phase functions as cd::debug_line polylines around a fixed
+    // anchor: radius(theta) = normalised phase value. Warm curve =
+    // Henyey-Greenstein at the panel's g (forward lobe stretches
+    // toward +X as g -> 1); cool curve = Rayleigh (symmetric dumbbell).
+    // A grey unit circle gives the isotropic reference.
+    float atmo_phase_g { 0.8F };
+    bool  atmo_show_polar_3d { false };
 };
 
 }  // namespace cd_sample
