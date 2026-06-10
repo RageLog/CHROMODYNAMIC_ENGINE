@@ -359,6 +359,17 @@ struct HelloEngineFx
     std::array<std::uint32_t, 32> rng_hist {};
     std::uint64_t rng_total { 0 };
     bool rng_show_hist_3d { false };
+    // phase1038-3d-viewport-brdf-lut-surface: shared state for the
+    // "Run25 IBL BRDF Split-Sum LUT Probe" panel and its 3D overlay.
+    // The overlay lazily bakes a small 16x16 LUT and renders the
+    // SCALE channel as a wireframe height surface over the
+    // (n.v, roughness) plane via cd::debug_line polylines, with a
+    // warm marker cross at the panel's lookup point. The Karis
+    // split-sum table stops being an abstract 2D texture and reads
+    // as the "Fresnel-scale terrain" it actually is.
+    float brdf_lut_nv { 0.7F };
+    float brdf_lut_r  { 0.3F };
+    bool  brdf_show_lut_3d { false };
 };
 
 }  // namespace cd_sample

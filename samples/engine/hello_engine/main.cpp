@@ -3540,8 +3540,8 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     if (ImGui::CollapsingHeader("Run25  IBL BRDF Split-Sum LUT Probe"))
     {
         static cd::ibl::BrdfLut s_brdf_lut {};
-        static float s_brdf_nv = 0.7F;
-        static float s_brdf_r  = 0.3F;
+        const float s_brdf_nv = fx.brdf_lut_nv;
+        const float s_brdf_r  = fx.brdf_lut_r;
         if (ImGui::Button("Bake 32x32 x 64 samples (~1 ms)"))
         {
             s_brdf_lut = cd::ibl::bake_brdf_lut(32, 32, 64);
@@ -3559,8 +3559,10 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         {
             ImGui::Text("LUT size: %u x %u  (%zu floats, RG packed)",
                         s_brdf_lut.width, s_brdf_lut.height, s_brdf_lut.rg.size());
-            ImGui::SliderFloat("Lookup n.v",       &s_brdf_nv, 0.001F, 1.0F);
-            ImGui::SliderFloat("Lookup roughness", &s_brdf_r,  0.001F, 1.0F);
+            // phase1038-3d-viewport-brdf-lut-surface: lookup point
+            // migrated onto HelloEngineFx so the 3D marker rides it.
+            ImGui::SliderFloat("Lookup n.v",       &fx.brdf_lut_nv, 0.001F, 1.0F);
+            ImGui::SliderFloat("Lookup roughness", &fx.brdf_lut_r,  0.001F, 1.0F);
             const auto px = static_cast<std::uint32_t>(
                 std::clamp(s_brdf_nv * static_cast<float>(s_brdf_lut.width),
                            0.0F,
@@ -3578,6 +3580,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                         static_cast<double>(scale),
                         static_cast<double>(bias));
             ImGui::TextDisabled("Karis split-sum: specular = F0*scale + bias.");
+        }
+        ImGui::Separator();
+        ImGui::Checkbox("Show LUT surface in 3D viewport",
+                        &fx.brdf_show_lut_3d);
+        if (fx.brdf_show_lut_3d)
+        {
+            ImGui::TextDisabled("  wireframe terrain: x=n.v, z=roughness, height=scale");
+            ImGui::TextDisabled("  warm cross = your lookup point");
         }
     }
     // phase934-camera-basis-live-demo (Run 25 Strand B): drive
@@ -10241,6 +10251,66 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 { kAnchor.x - kSpanX * 0.5F, kAnchor.y + expected_h, kAnchor.z },
                 { kAnchor.x + kSpanX * 0.5F, kAnchor.y + expected_h, kAnchor.z },
                 { 0.55F, 0.55F, 0.60F, 1.0F });
+        }
+        // phase1038-3d-viewport-brdf-lut-surface: fourth pure-line
+        // demo. Lazily bakes a 16x16x32 split-sum LUT (one-time,
+        // ~sub-ms) and renders the SCALE channel as a wireframe
+        // height surface over the (n.v, roughness) plane: 16 + 16
+        // grid polylines, x = n.v, z = roughness, y = scale. A warm
+        // cross marks the panel's lookup point at its surface height.
+        // The "Fresnel-scale terrain" shape (rising toward grazing
+        // n.v, flattening with roughness) is the visual essence of
+        // Karis 2013 split-sum.
+        if (s.fx.brdf_show_lut_3d)
+        {
+            static const cd::ibl::BrdfLut s_lut3d =
+                cd::ibl::bake_brdf_lut(16, 16, 32);
+            constexpr cd::math::Vec3f kAnchor { 3.5F, 3.8F, 3.0F };
+            constexpr float kSpan = 2.4F;
+            constexpr float kHeight = 1.0F;
+            const auto lut_scale_at = [&](std::uint32_t px,
+                                          std::uint32_t py) {
+                const std::size_t off =
+                    (static_cast<std::size_t>(py) * s_lut3d.width + px) * 2U;
+                return s_lut3d.rg[off];
+            };
+            const auto surface_point = [&](std::uint32_t px,
+                                           std::uint32_t py) {
+                const float u = static_cast<float>(px) /
+                                static_cast<float>(s_lut3d.width - 1U);
+                const float v = static_cast<float>(py) /
+                                static_cast<float>(s_lut3d.height - 1U);
+                return cd::math::Vec3f {
+                    kAnchor.x - kSpan * 0.5F + u * kSpan,
+                    kAnchor.y + lut_scale_at(px, py) * kHeight,
+                    kAnchor.z - kSpan * 0.5F + v * kSpan };
+            };
+            std::array<cd::math::Vec3f, 16> row {};
+            for (std::uint32_t py = 0; py < s_lut3d.height; ++py)
+            {
+                for (std::uint32_t px = 0; px < s_lut3d.width; ++px)
+                    row[px] = surface_point(px, py);
+                s.debug_lines.add_polyline(
+                    row, { 0.85F, 0.70F, 0.30F, 1.0F });
+            }
+            for (std::uint32_t px = 0; px < s_lut3d.width; ++px)
+            {
+                for (std::uint32_t py = 0; py < s_lut3d.height; ++py)
+                    row[py] = surface_point(px, py);
+                s.debug_lines.add_polyline(
+                    row, { 0.60F, 0.50F, 0.25F, 1.0F });
+            }
+            // Lookup marker: warm cross floating at the surface
+            // height of the panel's (n.v, roughness) point.
+            const auto mpx = static_cast<std::uint32_t>(std::clamp(
+                s.fx.brdf_lut_nv * static_cast<float>(s_lut3d.width),
+                0.0F, static_cast<float>(s_lut3d.width - 1U)));
+            const auto mpy = static_cast<std::uint32_t>(std::clamp(
+                s.fx.brdf_lut_r * static_cast<float>(s_lut3d.height),
+                0.0F, static_cast<float>(s_lut3d.height - 1U)));
+            s.debug_lines.add_cross(
+                surface_point(mpx, mpy), 0.12F,
+                { 0.95F, 0.35F, 0.15F, 1.0F });
         }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
