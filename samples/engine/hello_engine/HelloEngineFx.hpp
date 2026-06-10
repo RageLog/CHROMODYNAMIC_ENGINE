@@ -248,6 +248,16 @@ struct HelloEngineFx
     std::array<float, 4> mvec_prev { 0.0F, 0.0F, 0.0F, 1.0F };
     std::array<float, 4> mvec_curr { 0.05F, 0.02F, 0.0F, 1.0F };
     bool mvec_show_3d { false };
+    // phase1022-3d-viewport-cubemap-globe: shared state for the
+    // "Run25 IBL Cubemap Sample Probe" panel and its 3D overlay. The
+    // overlay renders a GLOBE of ~50 small spheres around a fixed
+    // anchor, each tinted by sample_cubemap_dir() along its own
+    // direction — the whole cubemap content becomes visible as a 3D
+    // ball (blue top = zenith, warm band = horizon). The user's
+    // sample-direction slider is shown as one larger sphere riding
+    // the same globe, so "which direction am I sampling" is obvious.
+    std::array<float, 3> cubemap_sample_dir { 0.0F, 1.0F, 0.0F };
+    bool cubemap_show_globe_3d { false };
 };
 
 }  // namespace cd_sample

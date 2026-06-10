@@ -3761,7 +3761,6 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // pipeline depends on.
     if (ImGui::CollapsingHeader("Run25  IBL Cubemap Sample Probe"))
     {
-        static cd::math::Vec3f s_cm_dir { 0.0F, 1.0F, 0.0F };
         static cd::ibl::CubeMapRgbF s_sky_cm = []() {
             // Bake a tiny analytical sky once per program: blue zenith,
             // warm horizon. Same shape as the engine's procedural-sky
@@ -3778,9 +3777,16 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                          horizon.z + (zenith.z - horizon.z) * t };
             });
         }();
-        ImGui::SliderFloat("Sample dir x", &s_cm_dir.x, -1.0F, 1.0F);
-        ImGui::SliderFloat("Sample dir y", &s_cm_dir.y, -1.0F, 1.0F);
-        ImGui::SliderFloat("Sample dir z", &s_cm_dir.z, -1.0F, 1.0F);
+        // phase1022-3d-viewport-cubemap-globe: dir migrated onto
+        // HelloEngineFx so the 3D overlay highlights the SAME
+        // direction the user drags here.
+        ImGui::SliderFloat("Sample dir x", &fx.cubemap_sample_dir[0], -1.0F, 1.0F);
+        ImGui::SliderFloat("Sample dir y", &fx.cubemap_sample_dir[1], -1.0F, 1.0F);
+        ImGui::SliderFloat("Sample dir z", &fx.cubemap_sample_dir[2], -1.0F, 1.0F);
+        const cd::math::Vec3f s_cm_dir {
+            fx.cubemap_sample_dir[0],
+            fx.cubemap_sample_dir[1],
+            fx.cubemap_sample_dir[2] };
         const auto sample =
             cd::ibl::sample_cubemap_dir(s_sky_cm, s_cm_dir);
         ImGui::ColorButton("Sky sample",
@@ -3795,6 +3801,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     s_sky_cm.face_size);
         ImGui::TextDisabled("bake_sky_cube + sample_cubemap_dir CPU path.");
         ImGui::TextDisabled("Production IBL prefilter convolves this for GGX lobes.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show cubemap globe in 3D viewport",
+                        &fx.cubemap_show_globe_3d);
+        if (fx.cubemap_show_globe_3d)
+        {
+            ImGui::TextDisabled("  ~50-sphere globe tinted by cubemap; big sphere = your sample dir");
+        }
     }
     // phase942-csm-split-live-demo (Run 25 Strand B): drive
     // cd::light::practical_split_distances against the four-cascade
@@ -9242,6 +9255,99 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_mvec");
                 }
+            }
+        }
+        // phase1022-3d-viewport-cubemap-globe: 11th application of the
+        // canonical sphere-at-position template. Bakes (once) the same
+        // tiny analytical sky cube the IBL probe panel uses, then
+        // renders a globe of small spheres around a fixed anchor —
+        // each tinted by sample_cubemap_dir() along its own outward
+        // direction. The full cubemap content becomes a readable 3D
+        // ball (blue cap = zenith, warm ring = horizon). One larger
+        // sphere rides the globe at the user's sample direction.
+        if (s.fx.cubemap_show_globe_3d)
+        {
+            static const cd::ibl::CubeMapRgbF s_globe_cm = []() {
+                return cd::ibl::bake_sky_cube(16, [](cd::math::Vec3f d) -> cd::math::Vec3f {
+                    const float ln = 1.0F / std::max(std::sqrt(
+                        d.x * d.x + d.y * d.y + d.z * d.z), 1e-3F);
+                    const cd::math::Vec3f n { d.x * ln, d.y * ln, d.z * ln };
+                    const float t = std::clamp(n.y * 0.5F + 0.5F, 0.0F, 1.0F);
+                    const cd::math::Vec3f horizon { 0.95F, 0.65F, 0.40F };
+                    const cd::math::Vec3f zenith  { 0.30F, 0.55F, 0.95F };
+                    return { horizon.x + (zenith.x - horizon.x) * t,
+                             horizon.y + (zenith.y - horizon.y) * t,
+                             horizon.z + (zenith.z - horizon.z) * t };
+                });
+            }();
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr cd::math::Vec3f kAnchor { 0.0F, 2.5F, 3.0F };
+                constexpr float kGlobeR = 1.2F;
+                const auto draw_globe_sphere =
+                    [&](const cd::math::Vec3f& dir, float radius,
+                        bool highlight) {
+                    const float dl = std::max(std::sqrt(
+                        dir.x * dir.x + dir.y * dir.y + dir.z * dir.z), 1e-3F);
+                    const cd::math::Vec3f nd { dir.x / dl, dir.y / dl, dir.z / dl };
+                    const auto col = cd::ibl::sample_cubemap_dir(s_globe_cm, nd);
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = radius;
+                    model[1][1] = radius;
+                    model[2][2] = radius;
+                    model[3][0] = kAnchor.x + nd.x * kGlobeR;
+                    model[3][1] = kAnchor.y + nd.y * kGlobeR;
+                    model[3][2] = kAnchor.z + nd.z * kGlobeR;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    // Highlight sphere keeps the sampled colour but
+                    // boosted so it pops against the globe shell.
+                    const float boost = highlight ? 1.35F : 1.0F;
+                    pp.tint[0] = std::min(col.x * boost, 1.0F);
+                    pp.tint[1] = std::min(col.y * boost, 1.0F);
+                    pp.tint[2] = std::min(col.z * boost, 1.0F);
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.6F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_cubemap_globe");
+                };
+                // 6 elevation rings x 8 azimuth + 2 poles = 50 shell
+                // spheres covering the full sphere of directions.
+                constexpr int kRings = 6;
+                constexpr int kAzims = 8;
+                constexpr float kPi = std::numbers::pi_v<float>;
+                for (int ri = 1; ri <= kRings; ++ri)
+                {
+                    const float el = kPi * static_cast<float>(ri) /
+                                     static_cast<float>(kRings + 1) - kPi * 0.5F;
+                    const float ce = std::cos(el);
+                    for (int ai = 0; ai < kAzims; ++ai)
+                    {
+                        const float az = 2.0F * kPi * static_cast<float>(ai) /
+                                         static_cast<float>(kAzims);
+                        draw_globe_sphere(
+                            { ce * std::cos(az), std::sin(el), ce * std::sin(az) },
+                            0.07F, false);
+                    }
+                }
+                draw_globe_sphere({ 0.0F,  1.0F, 0.0F }, 0.07F, false);
+                draw_globe_sphere({ 0.0F, -1.0F, 0.0F }, 0.07F, false);
+                draw_globe_sphere(
+                    { s.fx.cubemap_sample_dir[0],
+                      s.fx.cubemap_sample_dir[1],
+                      s.fx.cubemap_sample_dir[2] },
+                    0.16F, true);
             }
         }
 
