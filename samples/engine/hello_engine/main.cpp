@@ -2920,6 +2920,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         {
             ImGui::TextDisabled("  16x16 sphere carpet; height + brightness = fbm 6-oct quintic");
         }
+        ImGui::Checkbox("Show Earth globe in 3D viewport",
+                        &fx.earth_show_globe_3d);
+        if (fx.earth_show_globe_3d)
+        {
+            ImGui::TextDisabled("  ~98-sphere globe; continents/oceans/polar caps from the same ramp");
+        }
     }
     // phase926-decal-live-demo (Run 25 Strand B): CPU-side
     // cd::decal::project_world_to_decal + decal_intersects_aabb
@@ -9617,6 +9623,114 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                           kAnchor.y + 0.45F, kAnchor.z },
                         0.14F, { 0.95F, 0.75F, 0.18F });
                 }
+            }
+        }
+        // phase1026-3d-viewport-earth-globe: 15th application of the
+        // canonical sphere-at-position template. Renders a globe of
+        // small spheres tinted by the SAME fbm2 + pole-falloff +
+        // land/sea/snow ramp the Texture-Synth panel evaluates for a
+        // single (u, v): green-brown continents above n=0.48, depth-
+        // ramped blue oceans below, white caps where the pole falloff
+        // crosses 0.18. The procedural planet the
+        // bake_earth_albedo_rgba8 baker would produce becomes a
+        // watchable 3D ball.
+        if (s.fx.earth_show_globe_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr cd::math::Vec3f kAnchor { -3.5F, 2.5F, -3.0F };
+                constexpr float kGlobeR = 1.1F;
+                constexpr int kRings = 8;
+                constexpr int kAzims = 12;
+                constexpr float kPi = std::numbers::pi_v<float>;
+                const auto earth_color_at =
+                    [](float u, float v) -> cd::math::Vec3f {
+                    const float lat = (v - 0.5F) * std::numbers::pi_v<float>;
+                    const float pole_falloff = std::cos(lat);
+                    float n = cd::texture_synth::fbm2(u, v, 6.0F);
+                    n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
+                    cd::math::Vec3f earth {};
+                    if (n > 0.48F)
+                    {
+                        const float t = std::clamp((n - 0.48F) / 0.52F, 0.0F, 1.0F);
+                        const cd::math::Vec3f low  { 0.30F, 0.55F, 0.18F };
+                        const cd::math::Vec3f mid  { 0.55F, 0.45F, 0.20F };
+                        const cd::math::Vec3f high { 0.90F, 0.88F, 0.82F };
+                        if (t < 0.5F)
+                        {
+                            const float k = t * 2.0F;
+                            earth = { low.x + (mid.x - low.x) * k,
+                                      low.y + (mid.y - low.y) * k,
+                                      low.z + (mid.z - low.z) * k };
+                        }
+                        else
+                        {
+                            const float k = (t - 0.5F) * 2.0F;
+                            earth = { mid.x + (high.x - mid.x) * k,
+                                      mid.y + (high.y - mid.y) * k,
+                                      mid.z + (high.z - mid.z) * k };
+                        }
+                    }
+                    else
+                    {
+                        const float depth = std::clamp((0.48F - n) / 0.48F, 0.0F, 1.0F);
+                        earth = { 0.08F + (0.20F - 0.08F) * (1.0F - depth),
+                                  0.25F + (0.50F - 0.25F) * (1.0F - depth),
+                                  0.50F + (0.78F - 0.50F) * (1.0F - depth) };
+                    }
+                    if (pole_falloff < 0.18F)
+                        earth = { 0.92F, 0.94F, 0.97F };
+                    return earth;
+                };
+                const auto draw_earth_sphere =
+                    [&](float el, float az, float radius) {
+                    const float ce = std::cos(el);
+                    const cd::math::Vec3f nd {
+                        ce * std::cos(az), std::sin(el), ce * std::sin(az) };
+                    const float u = az / (2.0F * kPi);
+                    const float v = el / kPi + 0.5F;
+                    const auto col = earth_color_at(u, v);
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = radius;
+                    model[1][1] = radius;
+                    model[2][2] = radius;
+                    model[3][0] = kAnchor.x + nd.x * kGlobeR;
+                    model[3][1] = kAnchor.y + nd.y * kGlobeR;
+                    model[3][2] = kAnchor.z + nd.z * kGlobeR;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = col.x;
+                    pp.tint[1] = col.y;
+                    pp.tint[2] = col.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.6F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_earth_globe");
+                };
+                for (int ri = 1; ri <= kRings; ++ri)
+                {
+                    const float el = kPi * static_cast<float>(ri) /
+                                     static_cast<float>(kRings + 1) - kPi * 0.5F;
+                    for (int ai = 0; ai < kAzims; ++ai)
+                    {
+                        const float az = 2.0F * kPi * static_cast<float>(ai) /
+                                         static_cast<float>(kAzims);
+                        draw_earth_sphere(el, az, 0.085F);
+                    }
+                }
+                draw_earth_sphere( kPi * 0.5F - 0.01F, 0.0F, 0.085F);
+                draw_earth_sphere(-kPi * 0.5F + 0.01F, 0.0F, 0.085F);
             }
         }
 

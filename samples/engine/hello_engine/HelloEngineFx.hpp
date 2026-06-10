@@ -292,6 +292,14 @@ struct HelloEngineFx
     int           restir_samples { 32 };
     std::uint32_t restir_seed { 0xC0FFEEU };
     bool          restir_show_3d { false };
+    // phase1026-3d-viewport-earth-globe: 3D overlay for the Earth
+    // procedural section of the Texture-Synth panel. Renders a globe
+    // of ~98 small spheres, each tinted by the SAME fbm2 + pole
+    // falloff + land/sea/snow colour ramp the panel evaluates for a
+    // single (u, v) — the whole procedural planet becomes visible
+    // (green-brown continents, blue oceans, white polar caps) instead
+    // of one colour swatch.
+    bool earth_show_globe_3d { false };
 };
 
 }  // namespace cd_sample
