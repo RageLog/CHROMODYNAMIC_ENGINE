@@ -29,6 +29,9 @@ batch.add_frustum(inv_view_proj, color);         // 12 edges, Vulkan z=[0,1]
 batch.add_circle(centre, axis, radius, segs, c); // >= 3 segments
 batch.add_polyline(points, color);               // N-1 segments
 batch.add_cross(centre, half_size, color);       // 3-axis marker
+batch.add_sphere(centre, radius, segs, color);   // 3 great circles
+batch.add_arrow(from, to, color);                // shaft + 4-wing head
+batch.add_grid(centre, ax_a, ax_b, n, step, c);  // editor floor grid
 
 upload(batch.vertices());                        // consumer-owned VB
 cmd.draw(batch.vertex_count(), 1, 0, 0);         // kLineList pipeline
@@ -62,7 +65,9 @@ rings (phase 1032).
 
 ## Tests
 
-`tests/test_debug_line.cpp` — 15 cases covering vertex counts,
+`tests/test_debug_line.cpp` — 20 cases covering vertex counts,
 endpoint placement, colour propagation, AABB normalisation, OBB
 rotation, frustum NDC recovery (both depth conventions), circle
-plane/radius invariants and degenerate inputs.
+plane/radius invariants, sphere radius invariants, arrow topology
+(+ degenerate no-op), grid extents/plane confinement and degenerate
+inputs.
