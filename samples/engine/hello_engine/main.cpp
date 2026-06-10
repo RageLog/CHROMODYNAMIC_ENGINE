@@ -3274,8 +3274,11 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // respond to the mean-free-path slider.
     if (ImGui::CollapsingHeader("Run25  SSS BRDF Probe"))
     {
-        static cd::math::Vec3f s_sss_mfp { 0.6F, 0.3F, 0.2F };
-        ImGui::ColorEdit3("Mean free path (R/G/B)", &s_sss_mfp.x);
+        // phase1040-3d-viewport-sss-falloff: mfp migrated onto
+        // HelloEngineFx so the 3D curves reshape with the SAME values.
+        ImGui::ColorEdit3("Mean free path (R/G/B)", fx.sss_mfp.data());
+        const cd::math::Vec3f s_sss_mfp {
+            fx.sss_mfp[0], fx.sss_mfp[1], fx.sss_mfp[2] };
         constexpr int kRadii = 128;
         std::array<float, kRadii> falloff_r {};
         std::array<float, kRadii> falloff_g {};
@@ -3316,6 +3319,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F, 0.6F,
             ImVec2(0, 48));
         ImGui::TextDisabled("Burley 2015 + Christensen-Burley dipole approximation.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show SSS falloff in 3D viewport",
+                        &fx.sss_show_falloff_3d);
+        if (fx.sss_show_falloff_3d)
+        {
+            ImGui::TextDisabled("  R/G/B curves on one baseline; red bleeds farthest = skin glow");
+        }
     }
     // phase930-atmosphere-phase-fns-live-demo (Run 25 Strand B):
     // drive cd::atmosphere::henyey_greenstein + rayleigh_phase.
@@ -10382,6 +10392,46 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 kAnchor,
                 { kAnchor.x, kAnchor.y + kLobeR * 1.1F, kAnchor.z },
                 { 0.70F, 0.70F, 0.75F, 1.0F });   // normal marker
+        }
+        // phase1040-3d-viewport-sss-falloff: sixth pure-line demo.
+        // The three per-channel Burley diffusion falloff curves
+        // OVERLAID on one baseline: x = scatter radius (0..4 mm over
+        // a 3 m span), y = R(r) using the same unnormalised
+        // exponential pair the SSS probe panel plots. Red bleeding
+        // farther than green/blue — the reason skin glows red at
+        // shadow edges — reads instantly from the curve separation.
+        if (s.fx.sss_show_falloff_3d)
+        {
+            constexpr cd::math::Vec3f kAnchor { -3.5F, 5.5F, -3.0F };
+            constexpr float kSpanX = 3.0F;
+            constexpr float kAmpY  = 1.1F;
+            constexpr int kCurveSamples = 64;
+            const std::array<cd::math::Vec4f, 3> kChanCol {{
+                { 0.95F, 0.25F, 0.20F, 1.0F },
+                { 0.25F, 0.95F, 0.30F, 1.0F },
+                { 0.30F, 0.50F, 0.95F, 1.0F } }};
+            for (std::size_t ch = 0; ch < 3; ++ch)
+            {
+                const float d = std::max(s.fx.sss_mfp[ch], 1e-3F);
+                std::array<cd::math::Vec3f, kCurveSamples> pts {};
+                for (int i = 0; i < kCurveSamples; ++i)
+                {
+                    const float t01 = static_cast<float>(i) /
+                                      static_cast<float>(kCurveSamples - 1);
+                    const float r = t01 * 4.0F;  // mm
+                    const float v = 0.25F *
+                        (std::exp(-r / (3.0F * d)) + std::exp(-r / d));
+                    pts[static_cast<std::size_t>(i)] = {
+                        kAnchor.x - kSpanX * 0.5F + t01 * kSpanX,
+                        kAnchor.y + v * kAmpY,
+                        kAnchor.z };
+                }
+                s.debug_lines.add_polyline(pts, kChanCol[ch]);
+            }
+            s.debug_lines.add_line(
+                { kAnchor.x - kSpanX * 0.5F, kAnchor.y, kAnchor.z },
+                { kAnchor.x + kSpanX * 0.5F, kAnchor.y, kAnchor.z },
+                { 0.50F, 0.50F, 0.55F, 1.0F });   // baseline
         }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.

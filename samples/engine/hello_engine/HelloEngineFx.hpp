@@ -382,6 +382,16 @@ struct HelloEngineFx
     float sc_nv { 0.7F };
     float sc_nl { 0.5F };
     bool  sc_show_lobes_3d { false };
+    // phase1040-3d-viewport-sss-falloff: shared state for the "Run25
+    // SSS BRDF Probe" panel and its 3D overlay. The overlay renders
+    // the three per-channel Burley diffusion falloff curves as
+    // red / green / blue polylines over a shared baseline (x = radius
+    // in mm scaled to 3 m, y = R(r)). The channel SEPARATION — red
+    // bleeding farther than green/blue, the whole reason skin glows
+    // red at shadow edges — reads instantly when the three curves
+    // overlay in one plot instead of three stacked panel rows.
+    std::array<float, 3> sss_mfp { 0.6F, 0.3F, 0.2F };
+    bool sss_show_falloff_3d { false };
 };
 
 }  // namespace cd_sample
