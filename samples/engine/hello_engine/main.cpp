@@ -3380,12 +3380,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // around the sun axis.
     if (ImGui::CollapsingHeader("Run25  Light Shafts Inline Probe"))
     {
-        static float s_ls_cam_dir_x = 0.0F;
-        static float s_ls_cam_dir_y = 0.0F;
-        static float s_ls_cam_dir_z = -1.0F;
-        ImGui::SliderFloat("Cam dir x", &s_ls_cam_dir_x, -1.0F, 1.0F);
-        ImGui::SliderFloat("Cam dir y", &s_ls_cam_dir_y, -1.0F, 1.0F);
-        ImGui::SliderFloat("Cam dir z", &s_ls_cam_dir_z, -1.0F, 1.0F);
+        // phase1041-3d-viewport-shafts-ring: cam dir migrated onto
+        // HelloEngineFx so the 3D ring reshapes with the SAME values.
+        ImGui::SliderFloat("Cam dir x", &fx.shafts_cam_dir[0], -1.0F, 1.0F);
+        ImGui::SliderFloat("Cam dir y", &fx.shafts_cam_dir[1], -1.0F, 1.0F);
+        ImGui::SliderFloat("Cam dir z", &fx.shafts_cam_dir[2], -1.0F, 1.0F);
+        const float s_ls_cam_dir_x = fx.shafts_cam_dir[0];
+        const float s_ls_cam_dir_y = fx.shafts_cam_dir[1];
+        const float s_ls_cam_dir_z = fx.shafts_cam_dir[2];
         const cd::math::Vec3f sun_L { 0.0F, 1.0F, 0.0F };
         // Sweep around the sun, plotting the inline intensity.
         constexpr int kSamples = 128;
@@ -3420,6 +3422,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             0.0F, 1.0F,
             ImVec2(0, 64));
         ImGui::TextDisabled("Inline fragment-shader cone-alignment fallback.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show alignment ring in 3D viewport",
+                        &fx.shafts_show_ring_3d);
+        if (fx.shafts_show_ring_3d)
+        {
+            ImGui::TextDisabled("  polar ring around sun axis; bulge = max shaft intensity azimuth");
+        }
     }
     // phase931-ltc-area-light-live-demo (Run 25 Strand B): drive
     // cd::brdf::ltc::polygon_irradiance against a unit square area
@@ -10432,6 +10441,52 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 { kAnchor.x - kSpanX * 0.5F, kAnchor.y, kAnchor.z },
                 { kAnchor.x + kSpanX * 0.5F, kAnchor.y, kAnchor.z },
                 { 0.50F, 0.50F, 0.55F, 1.0F });   // baseline
+        }
+        // phase1041-3d-viewport-shafts-ring: seventh pure-line demo.
+        // The light-shafts cone-alignment sweep as a polar ring in
+        // the horizontal (XZ) plane around the vertical sun axis:
+        // radius(azimuth) = inline shaft intensity for a camera ray
+        // jittered toward that azimuth (same two-coefficient HG
+        // falloff the panel plots vs azimuth). A grey unit ring is
+        // the zero-intensity reference; the vertical line marks the
+        // sun axis. Dragging the cam-dir sliders rotates/reshapes
+        // the bulge live.
+        if (s.fx.shafts_show_ring_3d)
+        {
+            constexpr cd::math::Vec3f kAnchor { 0.0F, 5.5F, 3.0F };
+            constexpr int kRingSamples = 96;
+            constexpr float kBaseR = 0.5F;
+            constexpr float kSpanR = 0.9F;
+            constexpr float kTwoPi = 6.28318530717958647692F;
+            const cd::math::Vec3f sun_axis { 0.0F, 1.0F, 0.0F };
+            std::array<cd::math::Vec3f, kRingSamples + 1> ring {};
+            for (int i = 0; i <= kRingSamples; ++i)
+            {
+                const float theta = kTwoPi * static_cast<float>(i % kRingSamples) /
+                                    static_cast<float>(kRingSamples);
+                const float cam_x = s.fx.shafts_cam_dir[0] + std::cos(theta) * 0.3F;
+                const float cam_y = s.fx.shafts_cam_dir[1] + std::sin(theta) * 0.3F;
+                const float cam_z = s.fx.shafts_cam_dir[2];
+                const float inv_len = 1.0F / std::max(std::sqrt(
+                    cam_x * cam_x + cam_y * cam_y + cam_z * cam_z), 1e-3F);
+                const float cos_t = -(cam_x * inv_len * sun_axis.x +
+                                      cam_y * inv_len * sun_axis.y +
+                                      cam_z * inv_len * sun_axis.z);
+                const float inten = std::max(0.0F, cos_t);
+                const float r = kBaseR + kSpanR * inten;
+                ring[static_cast<std::size_t>(i)] = {
+                    kAnchor.x + std::cos(theta) * r,
+                    kAnchor.y,
+                    kAnchor.z + std::sin(theta) * r };
+            }
+            s.debug_lines.add_polyline(ring, { 0.95F, 0.85F, 0.35F, 1.0F });
+            s.debug_lines.add_circle(
+                kAnchor, sun_axis, kBaseR, 48,
+                { 0.50F, 0.50F, 0.55F, 1.0F });
+            s.debug_lines.add_line(
+                { kAnchor.x, kAnchor.y - 0.6F, kAnchor.z },
+                { kAnchor.x, kAnchor.y + 0.6F, kAnchor.z },
+                { 0.70F, 0.70F, 0.75F, 1.0F });
         }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.

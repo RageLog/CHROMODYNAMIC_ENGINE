@@ -392,6 +392,16 @@ struct HelloEngineFx
     // overlay in one plot instead of three stacked panel rows.
     std::array<float, 3> sss_mfp { 0.6F, 0.3F, 0.2F };
     bool sss_show_falloff_3d { false };
+    // phase1041-3d-viewport-shafts-ring: shared state for the "Run25
+    // Light Shafts Inline Probe" panel and its 3D overlay. The
+    // overlay renders the cone-alignment sweep as a polar ring
+    // around the vertical sun axis: radius(azimuth) = inline shaft
+    // intensity for a camera ray jittered toward that azimuth. The
+    // ring bulges toward the azimuth where the camera direction
+    // aligns against the sun — the same falloff the GLSL inline
+    // fragment fallback applies when the ray-march budget is tight.
+    std::array<float, 3> shafts_cam_dir { 0.0F, 0.0F, -1.0F };
+    bool shafts_show_ring_3d { false };
 };
 
 }  // namespace cd_sample
