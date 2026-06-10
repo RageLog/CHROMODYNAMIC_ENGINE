@@ -29,4 +29,16 @@ struct DeferredTlas
     std::uint32_t destroy_at_frame;
 };
 
+// phase1034-deferred-buffer-destroy: same convention for plain
+// buffers. Added for the debug-line vertex buffer's grow path —
+// review caught that an immediate destroy_buffer() mid-frame races
+// frame N-1's in-flight read (fif=2 only fences frame N-2). Any
+// buffer the GPU may still reference must go through a queue entry
+// with destroy_at_frame = frame_idx + 3, mirroring DeferredTlas.
+struct DeferredBuffer
+{
+    cd::rhi::BufferHandle h;
+    std::uint32_t destroy_at_frame;
+};
+
 }  // namespace cd_sample

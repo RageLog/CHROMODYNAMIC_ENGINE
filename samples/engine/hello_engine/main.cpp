@@ -6499,6 +6499,10 @@ struct HelloEngineApp::EngineState
     cd::debug_line::LineBatch                debug_lines;
     cd::rhi::BufferHandle                    debug_line_vb {};
     std::uint64_t                            debug_line_vb_capacity { 0 };
+    // phase1034: outgrown VBs park here until the frames that may
+    // still read them have fenced (destroy_at_frame = frame_idx + 3,
+    // same 3-frame margin as tlas_destroy_queue).
+    std::deque<cd_sample::DeferredBuffer>    buffer_destroy_queue;
     std::array<cd::material::MaterialInstance, 2> composite_insts;
     cd::material::MaterialInstance           bloom_prefilter_inst;
     std::array<cd::material::MaterialInstance, 3> bloom_down_insts;
@@ -10082,6 +10086,14 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         // consumers. VB is host-visible (kCpuToGpu) and grows by
         // doubling when a frame outgrows it; upload_buffer handles
         // host->device sync per the IDevice contract.
+        // phase1034: tick the deferred-buffer queue BEFORE any new
+        // growth so parked VBs from 3+ frames ago are reclaimed.
+        while (!s.buffer_destroy_queue.empty() &&
+               s.buffer_destroy_queue.front().destroy_at_frame <= s.frame_idx)
+        {
+            device.destroy_buffer(s.buffer_destroy_queue.front().h);
+            s.buffer_destroy_queue.pop_front();
+        }
         if (!s.debug_lines.empty())
         {
             const auto lverts = s.debug_lines.vertices();
@@ -10090,8 +10102,14 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             if (!s.debug_line_vb.is_valid() ||
                 s.debug_line_vb_capacity < bytes)
             {
+                // phase1034 (review fix): NEVER destroy_buffer here —
+                // frame N-1 may still be reading the old VB (fif=2
+                // fences only frame N-2). Park it on the deferred
+                // queue with the same 3-frame margin the TLAS ring
+                // uses.
                 if (s.debug_line_vb.is_valid())
-                    device.destroy_buffer(s.debug_line_vb);
+                    s.buffer_destroy_queue.push_back(
+                        { s.debug_line_vb, s.frame_idx + 3U });
                 const std::uint64_t new_cap =
                     std::max<std::uint64_t>(bytes * 2U, 16U * 1024U);
                 cd::rhi::BufferDesc bd {};
@@ -10465,6 +10483,9 @@ void HelloEngineApp::on_shutdown() noexcept
     device.destroy_buffer(s.inst_mat_ssbo);
     if (s.debug_line_vb.is_valid())  // phase1031 — lazily created
         device.destroy_buffer(s.debug_line_vb);
+    for (const auto& db : s.buffer_destroy_queue)  // phase1034 — drain
+        device.destroy_buffer(db.h);               // (device idle here)
+    s.buffer_destroy_queue.clear();
 
     if (s.albedo_tex.view.is_valid())  device.destroy_texture_view(s.albedo_tex.view);
     if (s.albedo_tex.image.is_valid()) device.destroy_texture(s.albedo_tex.image);

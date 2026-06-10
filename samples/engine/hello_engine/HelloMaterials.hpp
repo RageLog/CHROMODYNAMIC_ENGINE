@@ -1,22 +1,23 @@
 // =============================================================================
 // HelloMaterials.hpp
 // -----------------------------------------------------------------------------
-// hello_engine-local all-scene-pipelines aggregate. Builds the 7 materials
+// hello_engine-local all-scene-pipelines aggregate. Builds the 9 materials
 // (sky / composite / bloom prefilter / bloom downsample / bloom upsample /
-// prim / velocity / shadow) the sample uses for the HDR-MRT-composite frame
-// graph, plus the shadow depth-only pipeline. Lifted out of main() in
-// Marathon Run 13 phase N15b.
+// prim / velocity / shadow / debug_line) the sample uses for the
+// HDR-MRT-composite frame graph. Lifted out of main() in Marathon Run 13
+// phase N15b; debug_line (kLineList) joined in phase 1031.
 //
-// Why one aggregate?  All seven materials share the same MRT attachment
-// layout (kColorFmts) for the HDR pass + the same vertex layout (kPrimBindings
-// / kPrimAttrs) for the prim / velocity / shadow rasterization passes.
-// Threading them as 7 separate locals took ~340 lines of boot boilerplate in
-// main(); now the call site is a single spawn_materials() returning a
-// MaterialBundle with cd::material::Material moved into each field.
+// Why one aggregate?  The HDR-pass materials share the same MRT attachment
+// layout (kColorFmts) + the prim / velocity / shadow rasterization passes
+// share the same vertex layout (kPrimBindings / kPrimAttrs). Threading them
+// as separate locals took ~340 lines of boot boilerplate in main(); now the
+// call site is a single spawn_materials() returning a MaterialBundle with
+// cd::material::Material moved into each field.
 //
 // Rendering behaviour: unchanged.  Same MaterialDesc inputs, same raster +
 // depth-stencil + blend settings, same per-failure exit codes (7 / 32 / 40 /
-// 41 / 42 / 9 / 52 / 10 preserved via spawn_materials int rc).
+// 41 / 42 / 9 / 52 / 10 preserved via spawn_materials int rc; debug_line
+// adds exit code 11).
 // =============================================================================
 #pragma once
 
