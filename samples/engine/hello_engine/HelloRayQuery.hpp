@@ -66,8 +66,12 @@ namespace cd::hello_engine
 //                      when a future asset has multiple vertex buffers).
 struct InstanceMatGpu
 {
-    float         albedo[4];
-    float         emissive[4];
+    // phase1046b: zero-init NSDMIs — hicpp-member-init fired once the
+    // phase-1045 config fix revived the hicpp family; every other
+    // field already carried an initializer. Host code overwrites
+    // both before upload, so {} only hardens the partial-init path.
+    float         albedo[4] {};
+    float         emissive[4] {};
     std::uint32_t albedo_tex_slot { 0xFFFFFFFFu };
     std::uint32_t index_offset    { 0u };
     // phase866-2-bounce-sphere-normal: when is_sphere = 1, the

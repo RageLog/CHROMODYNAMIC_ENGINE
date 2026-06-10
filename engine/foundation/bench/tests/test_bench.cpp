@@ -129,7 +129,7 @@ TEST(BenchTest, MarkdownRowAndHeaderHaveExpectedSubstrings)
     auto r = cd::bench::run("mdrow", cheap_body, cfg);
     const auto row = r.to_markdown_row();
     EXPECT_NE(row.find("mdrow"), std::string::npos);
-    EXPECT_NE(row.find("|"), std::string::npos);
+    EXPECT_NE(row.find('|'), std::string::npos);
     const auto hdr = cd::bench::markdown_header();
     EXPECT_NE(hdr.find("Bench"), std::string_view::npos);
     EXPECT_NE(hdr.find("p99"), std::string_view::npos);

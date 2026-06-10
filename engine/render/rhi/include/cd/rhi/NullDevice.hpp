@@ -206,7 +206,7 @@ public:
         const ImageRegion& region
     ) override
     {
-        if (textures_.find(src_image.index()) == textures_.end())
+        if (!textures_.contains(src_image.index()))
         {
             return std::unexpected(rhi_errors::make(
                 rhi_errors::Code::kInvalidArgument,
@@ -458,7 +458,7 @@ public:
     [[nodiscard]] cd::core::Result<std::uint32_t>
     acquire_next_image(SwapchainHandle s, SemaphoreHandle, FenceHandle, std::uint64_t) override
     {
-        if (swapchains_.find(s.index()) == swapchains_.end())
+        if (!swapchains_.contains(s.index()))
         {
             return std::unexpected(
                 rhi_errors::make(rhi_errors::Code::kInvalidArgument, "acquire_next_image: unknown swapchain")
@@ -471,7 +471,7 @@ public:
     [[nodiscard]] cd::core::Result<void>
     present(SwapchainHandle s, std::uint32_t, std::span<const SemaphoreHandle>) override
     {
-        if (swapchains_.find(s.index()) == swapchains_.end())
+        if (!swapchains_.contains(s.index()))
         {
             return std::unexpected(rhi_errors::make(rhi_errors::Code::kInvalidArgument, "present: unknown swapchain"));
         }
@@ -485,12 +485,12 @@ public:
 
     [[nodiscard]] std::uint32_t swapchain_image_count(SwapchainHandle s) const override
     {
-        return swapchains_.find(s.index()) == swapchains_.end() ? 0U : 2U;
+        return !swapchains_.contains(s.index()) ? 0U : 2U;
     }
 
     [[nodiscard]] TextureHandle swapchain_image(SwapchainHandle s, std::uint32_t) const override
     {
-        if (swapchains_.find(s.index()) == swapchains_.end())
+        if (!swapchains_.contains(s.index()))
             return TextureHandle {};
         // Headless: the swapchain is fictional — return a deterministic but
         // never-allocated handle so callers can compare/store without UB.

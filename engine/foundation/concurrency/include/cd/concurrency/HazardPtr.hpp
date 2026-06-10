@@ -257,7 +257,7 @@ public:
     /// going away). Future scans (driven by other threads) may reclaim them.
     void absorb_pending(std::vector<Retired>& retired)
     {
-        std::lock_guard guard { pending_mutex_ };
+        std::scoped_lock guard { pending_mutex_ };
         pending_.insert(pending_.end(), retired.begin(), retired.end());
         retired.clear();
     }
@@ -266,7 +266,7 @@ public:
     /// pointers and tries to free them.
     void try_reclaim()
     {
-        std::lock_guard guard { pending_mutex_ };
+        std::scoped_lock guard { pending_mutex_ };
         scan(pending_);
     }
 
@@ -282,7 +282,7 @@ public:
 
     [[nodiscard]] std::size_t pending_count() const
     {
-        std::lock_guard guard { pending_mutex_ };
+        std::scoped_lock guard { pending_mutex_ };
         return pending_.size();
     }
 

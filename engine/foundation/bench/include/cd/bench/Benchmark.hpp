@@ -273,7 +273,7 @@ template <class Body>
     if (!per_call_ns.empty())
     {
         std::vector<double> sorted = per_call_ns;
-        std::sort(sorted.begin(), sorted.end());
+        std::ranges::sort(sorted);
         rep.min_ns_per_op = sorted.front();
         rep.max_ns_per_op = sorted.back();
         // Median: middle element for odd, mean of middle two for even.

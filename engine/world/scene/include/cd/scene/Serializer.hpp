@@ -91,9 +91,9 @@ deserialize_scene_with(Scene& scene, const cd::asset::json::Value& json, ReadExt
 {
     cd::asset::json::Array a;
     a.reserve(3);
-    a.push_back(cd::asset::json::Value { static_cast<double>(v.x) });
-    a.push_back(cd::asset::json::Value { static_cast<double>(v.y) });
-    a.push_back(cd::asset::json::Value { static_cast<double>(v.z) });
+    a.emplace_back(static_cast<double>(v.x));
+    a.emplace_back(static_cast<double>(v.y));
+    a.emplace_back(static_cast<double>(v.z));
     return cd::asset::json::Value { std::move(a) };
 }
 
@@ -102,10 +102,10 @@ deserialize_scene_with(Scene& scene, const cd::asset::json::Value& json, ReadExt
 {
     cd::asset::json::Array a;
     a.reserve(4);
-    a.push_back(cd::asset::json::Value { static_cast<double>(q.x) });
-    a.push_back(cd::asset::json::Value { static_cast<double>(q.y) });
-    a.push_back(cd::asset::json::Value { static_cast<double>(q.z) });
-    a.push_back(cd::asset::json::Value { static_cast<double>(q.w) });
+    a.emplace_back(static_cast<double>(q.x));
+    a.emplace_back(static_cast<double>(q.y));
+    a.emplace_back(static_cast<double>(q.z));
+    a.emplace_back(static_cast<double>(q.w));
     return cd::asset::json::Value { std::move(a) };
 }
 
@@ -181,7 +181,7 @@ serialize_scene_with(const Scene& scene, WriteExtras&& write_extras)
             const auto parent = scene.parent_of(e);
             if (parent.is_valid())
                 obj["parent"] = cd::asset::json::Value { static_cast<std::int64_t>(parent.id) };
-            nodes.push_back(cd::asset::json::Value { std::move(obj) });
+            nodes.emplace_back(std::move(obj));
         }
     );
     root["nodes"] = cd::asset::json::Value { std::move(nodes) };

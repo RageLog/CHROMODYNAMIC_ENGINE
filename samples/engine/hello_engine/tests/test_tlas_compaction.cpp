@@ -217,6 +217,7 @@ TEST(TlasCompaction, EmptyInput_YieldsEmptyResult)
 TEST(TlasCompaction, AllHidden_YieldsEmptyResult)
 {
     std::vector<FakeEntity> entities;
+    entities.reserve(16);
     for (int i = 0; i < 16; ++i)
     {
         entities.push_back(

@@ -376,7 +376,8 @@ int main()
     if (!tlas_r.has_value()) return 9;
 
     // Storage image (RGBA32F so the accumulator preserves float precision).
-    constexpr std::uint32_t kImgW = 512, kImgH = 512;
+    constexpr std::uint32_t kImgW = 512;
+    constexpr std::uint32_t kImgH = 512;
     cd::rhi::TextureDesc tex_desc {};
     tex_desc.type = cd::rhi::TextureType::k2D;
     tex_desc.format = cd::rhi::Format::kRGBA32Float;
@@ -410,14 +411,14 @@ int main()
 
     std::vector<std::byte> sbt_bytes(static_cast<std::size_t>(sbt_size), std::byte{0});
     // group 0 (raygen) → offset 0
-    std::memcpy(sbt_bytes.data() + 0 * region_size, handles.data() + 0 * hsz, hsz);
+    std::memcpy(sbt_bytes.data() + 0 * region_size, handles.data() + 0 * static_cast<std::size_t>(hsz), hsz);
     // group 1 + 2 (miss + shadow-miss) → offset region_size, stride=handle_stride
     std::memcpy(sbt_bytes.data() + 1 * region_size + 0 * handle_stride,
-                handles.data() + 1 * hsz, hsz);
+                handles.data() + 1 * static_cast<std::size_t>(hsz), hsz);
     std::memcpy(sbt_bytes.data() + 1 * region_size + 1 * handle_stride,
-                handles.data() + 2 * hsz, hsz);
+                handles.data() + 2 * static_cast<std::size_t>(hsz), hsz);
     // group 3 (chit) → offset 3*region_size
-    std::memcpy(sbt_bytes.data() + 3 * region_size, handles.data() + 3 * hsz, hsz);
+    std::memcpy(sbt_bytes.data() + 3 * region_size, handles.data() + 3 * static_cast<std::size_t>(hsz), hsz);
 
     cd::rhi::BufferDesc sbt_desc {};
     sbt_desc.size = sbt_size;

@@ -43,7 +43,7 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdlib>  // std::atoi — MinGW libc declares only in ::; force pull from std.
+#include <cstdlib>  // ::strtol — MinGW libc declares only in ::, not std::.
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -128,9 +128,11 @@ struct Runtime
                 }
                 if (numeric && next[0] != '\0')
                 {
-                    // Use ::atoi (always declared by <cstdlib>) instead of
-                    // std::atoi which MinGW libc omits from namespace std.
-                    rt.headless_frames = static_cast<std::uint32_t>(::atoi(next));
+                    // cert-err34-c: strtol reports conversion errors
+                    // (atoi cannot); base-10, endptr unused. ::strtol
+                    // (not std::) for MinGW libc parity.
+                    rt.headless_frames = static_cast<std::uint32_t>(
+                        ::strtol(next, nullptr, 10));
                     if (rt.headless_frames == 0)
                         rt.headless_frames = 1;
                     ++i;  // consume the count
@@ -153,9 +155,10 @@ struct Runtime
         }
         else if (arg == "--golden-tolerance" && i + 1 < argc)
         {
-            // Range-clamp into [0, 255]. atoi returns int; out-of-range
-            // values folded to the endpoints rather than wrapping.
-            const int v = ::atoi(argv[i + 1]);
+            // Range-clamp into [0, 255]; out-of-range values folded to
+            // the endpoints rather than wrapping. cert-err34-c: strtol
+            // over atoi so conversion failure is representable.
+            const int v = static_cast<int>(::strtol(argv[i + 1], nullptr, 10));
             const int clamped = v < 0 ? 0 : (v > 255 ? 255 : v);
             rt.golden_tolerance = static_cast<std::uint8_t>(clamped);
             ++i;
