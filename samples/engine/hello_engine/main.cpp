@@ -9441,6 +9441,13 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         clip_to_world(cx, cy),
                         { fade, fade, fade * 0.4F }, 0.04F });
                 }
+                // phase1043-arrow-upgrade: solid prev->curr ARROW via
+                // cd::debug_line — the motion vector finally reads as
+                // a vector (direction + magnitude), not a dot trail.
+                s.debug_lines.add_arrow(
+                    clip_to_world(s.fx.mvec_prev[0], s.fx.mvec_prev[1]),
+                    clip_to_world(s.fx.mvec_curr[0], s.fx.mvec_curr[1]),
+                    { 0.95F, 0.85F, 0.25F, 1.0F });
                 for (const auto& sp : spheres)
                 {
                     PrimPush pp {};
@@ -10007,9 +10014,11 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 }
                 // phase1032-line-upgrades: solid axis arms base->tip
                 // so the triad reads as a gizmo, not 3 floating dots.
+                // phase1043-arrow-upgrade: arms became ARROWS — the
+                // head disambiguates +axis from -axis at a glance.
                 for (std::size_t ai = 0; ai < 3; ++ai)
                 {
-                    s.debug_lines.add_line(
+                    s.debug_lines.add_arrow(
                         base,
                         { base.x + axes[ai].x * kArm,
                           base.y + axes[ai].y * kArm,
@@ -10123,6 +10132,14 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 };
                 draw_atten_sphere(kLightPos, 0.14F,
                                   { 0.95F, 0.80F, 0.35F });  // light marker
+                // phase1043-sphere-upgrade: wireframe RANGE sphere via
+                // cd::debug_line at the exact world radius where the
+                // rail maps `range` (rail: d in [0, 1.5*range] over
+                // 4 m, so range sits at 4 / 1.5 m) — the Frostbite
+                // window cutoff becomes a visible boundary shell.
+                s.debug_lines.add_sphere(
+                    kLightPos, kRailWorldLen / 1.5F, 32,
+                    { 0.95F, 0.80F, 0.35F, 1.0F });
                 for (int i = 1; i <= kRailCount; ++i)
                 {
                     const float t = static_cast<float>(i) /
