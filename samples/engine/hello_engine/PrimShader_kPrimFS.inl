@@ -300,6 +300,50 @@ float reflection_hit_id_t(vec3 origin, vec3 N, vec3 dir, float tmax,
   out_t    = rayQueryGetIntersectionTEXT(rq, true);
   return 1.0;
 }
+// phase1020-second-bounce-bindless-sampling: shared hit-albedo
+// resolver — see shaders/prim.frag.glsl for the full rationale.
+vec3 sample_hit_albedo(int slot, int prim, vec2 bary, vec3 hit_pos,
+                       vec3 fallback) {
+  uint tex_slot   = cd_instance_mats.data[slot].albedo_tex_slot;
+  uint idx_offset = cd_instance_mats.data[slot].index_offset;
+  if (tex_slot == kBindlessAlbedoSlotNone || tex_slot >= 256u)
+    return fallback;
+  uint mesh_id = cd_instance_mats.data[slot].mesh_id;
+  vec2 uv = vec2(0.0);
+  bool uv_ok = false;
+  if (mesh_id == 2u) {
+    vec4 sphc = cd_instance_mats.data[slot].sphere_center_radius;
+    vec3 obj_radial = normalize(hit_pos - sphc.xyz);
+    const float kInv2Pi = 0.15915494;
+    const float kInvPi  = 0.31830989;
+    uv = vec2(atan(obj_radial.z, obj_radial.x) * kInv2Pi + 0.5,
+              asin(clamp(obj_radial.y, -1.0, 1.0)) * kInvPi + 0.5);
+    uv_ok = true;
+  } else if (prim >= 0) {
+    uint i0, i1, i2;
+    vec2 uv0, uv1, uv2;
+    if (mesh_id == 1u) {
+      i0 = cd_cesium_ib.idx[idx_offset + uint(prim) * 3u + 0u];
+      i1 = cd_cesium_ib.idx[idx_offset + uint(prim) * 3u + 1u];
+      i2 = cd_cesium_ib.idx[idx_offset + uint(prim) * 3u + 2u];
+      uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
+      uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
+      uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
+    } else {
+      i0 = cd_sponza_ib.idx[idx_offset + uint(prim) * 3u + 0u];
+      i1 = cd_sponza_ib.idx[idx_offset + uint(prim) * 3u + 1u];
+      i2 = cd_sponza_ib.idx[idx_offset + uint(prim) * 3u + 2u];
+      uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
+      uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
+      uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+    }
+    float w0 = 1.0 - bary.x - bary.y;
+    uv = uv0 * w0 + uv1 * bary.x + uv2 * bary.y;
+    uv_ok = true;
+  }
+  if (!uv_ok) return fallback;
+  return texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+}
 float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
                            out vec3 out_color) {
   rayQueryEXT rq;
@@ -324,7 +368,11 @@ float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
     out_color = vec3(0.0);
     return 0.0;
   }
-  out_color = cd_instance_mats.data[slot2].albedo.rgb;
+  int  prim2 = rayQueryGetIntersectionPrimitiveIndexEXT(rq, true);
+  vec2 bary2 = rayQueryGetIntersectionBarycentricsEXT(rq, true);
+  float t2   = rayQueryGetIntersectionTEXT(rq, true);
+  out_color = sample_hit_albedo(slot2, prim2, bary2, origin + dir * t2,
+                                cd_instance_mats.data[slot2].albedo.rgb);
   return 1.0;
 }
 
