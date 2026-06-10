@@ -38,6 +38,11 @@
 #                                    returns is endemic in sample bring-up.
 #   -cppcoreguidelines-avoid-do-while Run12 B1: legitimate idiom (retry
 #                                    loops, scoped guards).
+#   -cppcoreguidelines-macro-to-enum / -modernize-macro-to-enum
+#                                    phase1046: same surface as macro-usage —
+#                                    CD_HAS_* / CD_PLATFORM_* feature macros
+#                                    live in #if/#ifdef contexts where an enum
+#                                    is impossible by construction.
 #   -cppcoreguidelines-macro-usage   Run13 B1: 294 instances, 292 are
 #                                    token-paste/#ifdef platform macros where
 #                                    constexpr is impossible; remaining 2 are
@@ -99,6 +104,7 @@ Checks: >
   -cppcoreguidelines-narrowing-conversions,
   -cppcoreguidelines-avoid-c-arrays,
   -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-macro-to-enum,
   hicpp-*,
   -hicpp-avoid-c-arrays,
   -hicpp-no-array-decay,
@@ -120,6 +126,7 @@ Checks: >
   -modernize-pass-by-value,
   -modernize-use-designated-initializers,
   -modernize-use-std-print,
+  -modernize-macro-to-enum,
   performance-*,
   -performance-enum-size,
   -performance-no-int-to-ptr,
