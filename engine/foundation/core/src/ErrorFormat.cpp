@@ -87,14 +87,14 @@ void append_hex(std::string& out, std::uint32_t v)
 void register_domain(std::uint32_t domain, std::string_view name, CodeNameFn lookup) noexcept
 {
     auto& r = registry();
-    std::lock_guard lk(r.mu);
+    std::scoped_lock lk(r.mu);
     r.entries[domain] = DomainEntry { name, lookup };
 }
 
 std::string_view domain_name(std::uint32_t domain) noexcept
 {
     auto& r = registry();
-    std::lock_guard lk(r.mu);
+    std::scoped_lock lk(r.mu);
     auto it = r.entries.find(domain);
     return it != r.entries.end() ? it->second.name : std::string_view {};
 }
@@ -104,7 +104,7 @@ std::string_view code_name(std::uint32_t domain, std::uint32_t code) noexcept
     auto& r = registry();
     DomainEntry entry {};
     {
-        std::lock_guard lk(r.mu);
+        std::scoped_lock lk(r.mu);
         auto it = r.entries.find(domain);
         if (it == r.entries.end())
             return {};

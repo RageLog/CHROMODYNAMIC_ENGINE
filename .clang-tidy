@@ -18,6 +18,55 @@
 #   compile_commands.json and gates the merge on a clean report.
 # =============================================================================
 ---
+# -----------------------------------------------------------------------------
+# phase1045 CONFIG-BUG FIX + rationale relocation.
+#
+# clang-tidy parses the `Checks:` folded scalar as ONE comma-separated
+# glob string -- '#' is NOT a comment inside it. The previous config
+# carried inline '# ...' notes inside the scalar; every note WITHOUT a
+# trailing comma GLUED the next entry into a dead no-op glob. Net
+# effect, verified via `clang-tidy --list-checks`: the
+# cppcoreguidelines-*, hicpp-*, misc-*, performance-* and
+# readability-* family enables were DEAD (glued to the cert-err33-c /
+# macro-usage / uppercase-literal-suffix / use-std-print /
+# avoid-pragma-once notes respectively), and three trailing disables
+# were no-ops. Only bugprone-*, cert-*, modernize-* and portability-*
+# were genuinely active. NEVER put '#' text inside Checks.
+#
+# Disable rationales (moved out of the scalar):
+#   -cert-err33-c                    Run12 B1: ignoring printf/scanf/system
+#                                    returns is endemic in sample bring-up.
+#   -cppcoreguidelines-avoid-do-while Run12 B1: legitimate idiom (retry
+#                                    loops, scoped guards).
+#   -cppcoreguidelines-macro-usage   Run13 B1: 294 instances, 292 are
+#                                    token-paste/#ifdef platform macros where
+#                                    constexpr is impossible; remaining 2 are
+#                                    operator-generator macros.
+#   -hicpp-uppercase-literal-suffix  Run12 B1: lowercase suffixes (1u, 1.0f)
+#                                    are the project convention; mirrors the
+#                                    readability- twin below.
+#   -modernize-use-std-print         <print> not universally available
+#                                    across the compiler matrix yet.
+#   -portability-avoid-pragma-once   #pragma once project-wide (CLAUDE.md).
+#   -readability-redundant-member-init explicit-init documents intent.
+#   -readability-braces-around-statements Run12 B1: single-statement
+#                                    if/else is hot-path convention.
+#   -readability-suspicious-call-argument Run12 B1: FP-prone on math arg
+#                                    shuffles reusing x/y/z names.
+#   google/fuchsia/llvm/zircon       the 11 Run27-promoted rules are enabled
+#                                    EXPLICITLY (no family globs) so the 12
+#                                    deferred siblings (google-build-using-
+#                                    namespace, google-default-arguments,
+#                                    google-explicit-constructor,
+#                                    google-runtime-int, fuchsia-default-
+#                                    arguments-{calls,declarations},
+#                                    fuchsia-overloaded-operator, fuchsia-
+#                                    statically-constructed-objects,
+#                                    fuchsia-trailing-return, llvm-header-
+#                                    guard, llvm-include-order,
+#                                    llvm-namespace-comment) stay OFF until
+#                                    their sites are fixed.
+# -----------------------------------------------------------------------------
 Checks: >
   -*,
   bugprone-*,
@@ -30,7 +79,7 @@ Checks: >
   cert-*,
   -cert-err58-cpp,
   -cert-msc51-cpp,
-  -cert-err33-c,  # Run12 B1: ignoring printf/scanf/system return codes is endemic in sample bring-up; not a real defect class for us.
+  -cert-err33-c,
   cppcoreguidelines-*,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-avoid-non-const-global-variables,
@@ -44,12 +93,12 @@ Checks: >
   -cppcoreguidelines-init-variables,
   -cppcoreguidelines-owning-memory,
   -cppcoreguidelines-special-member-functions,
-  -cppcoreguidelines-avoid-do-while,  # Run12 B1: do-while is a legitimate idiom (e.g. retry loops, scoped guards); rule fires on perfectly correct usage.
+  -cppcoreguidelines-avoid-do-while,
   -cppcoreguidelines-rvalue-reference-param-not-moved,
   -cppcoreguidelines-missing-std-forward,
   -cppcoreguidelines-narrowing-conversions,
   -cppcoreguidelines-avoid-c-arrays,
-  -cppcoreguidelines-macro-usage,  # Run13 B1: 294 instances total, 292 in Defines.hpp / Definitions.hpp (CD_PLATFORM_*, CD_COMPILER_*, CD_HAS_*, CD_STRINGIFY, CD_CONCAT, CD_UNIQUE_NAME) used in #ifdef / token-pasting / unique-id contexts where constexpr is fundamentally impossible. Remaining 2 (Vector.hpp CD_MATH_VEC_BINOP, Enums.hpp CD_RHI_DEFINE_FLAG_OPS) are textbook operator-generator macros.  # PoD layouts mirror GLSL/Vulkan structs; ADR pending
+  -cppcoreguidelines-macro-usage,
   hicpp-*,
   -hicpp-avoid-c-arrays,
   -hicpp-no-array-decay,
@@ -57,7 +106,7 @@ Checks: >
   -hicpp-special-member-functions,
   -hicpp-named-parameter,
   -hicpp-vararg,
-  -hicpp-uppercase-literal-suffix,  # Run12 B1: style preference; lowercase numeric suffixes (1u, 1.0f) are the project convention. Mirrors -readability-uppercase-literal-suffix below.
+  -hicpp-uppercase-literal-suffix,
   misc-*,
   -misc-non-private-member-variables-in-classes,
   -misc-include-cleaner,
@@ -70,14 +119,14 @@ Checks: >
   -modernize-avoid-c-arrays,
   -modernize-pass-by-value,
   -modernize-use-designated-initializers,
-  -modernize-use-std-print,  # <print> not universally available across the 8-compiler matrix yet
+  -modernize-use-std-print,
   performance-*,
   -performance-enum-size,
   -performance-no-int-to-ptr,
   -performance-unnecessary-value-param,
   -performance-avoid-endl,
   portability-*,
-  -portability-avoid-pragma-once,  # we use #pragma once project-wide; deliberate per CLAUDE.md
+  -portability-avoid-pragma-once,
   readability-*,
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
@@ -93,9 +142,20 @@ Checks: >
   -readability-make-member-function-const,
   -readability-qualified-auto,
   -readability-redundant-inline-specifier,
-  -readability-redundant-member-init,  # explicit-init documents intent; less risk on add-field
-  -readability-braces-around-statements,  # Run12 B1: single-statement if/else without braces is a project convention in hot-path math + GPU push fill code; rule does not catch real bugs.
-  -readability-suspicious-call-argument  # Run12 B1: false-positive prone on math / shader arg shuffles where x/y/z naming reuses parameter names.
+  -readability-redundant-member-init,
+  -readability-braces-around-statements,
+  -readability-suspicious-call-argument,
+  google-build-explicit-make-pair,
+  google-build-namespaces,
+  google-global-names-in-headers,
+  google-runtime-operator,
+  google-upgrade-googletest-case,
+  fuchsia-header-anon-namespaces,
+  fuchsia-multiple-inheritance,
+  fuchsia-virtual-inheritance,
+  llvm-prefer-isa-or-dyn-cast-in-conditionals,
+  llvm-twine-local,
+  zircon-temporary-objects
 
 # Warnings stay warnings locally. CI promotes to errors via -warnings-as-errors.
 # Marathon Run 11 phase B4: promote the FULLY-cleaned rules to error status. Bug-class
