@@ -349,6 +349,16 @@ struct HelloEngineFx
     float audio_tone_hz { 440.0F };
     float audio_tone_amp { 0.5F };
     bool  audio_show_wave_3d { false };
+    // phase1037-3d-viewport-rng-histogram: shared state for the
+    // "Run25 Random Distribution Probe" panel and its 3D overlay.
+    // The panel's Generate/Reset buttons fill these bins (PCG32
+    // next_float into 32 uniform buckets); the overlay renders one
+    // vertical line column per bin (height = count / max) plus a
+    // grey reference line at the expected-uniform height, so the
+    // histogram's convergence toward flat is watchable in 3D.
+    std::array<std::uint32_t, 32> rng_hist {};
+    std::uint64_t rng_total { 0 };
+    bool rng_show_hist_3d { false };
 };
 
 }  // namespace cd_sample

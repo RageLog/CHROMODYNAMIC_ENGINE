@@ -4307,10 +4307,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // uniform distribution flatten out as N grows.
     if (ImGui::CollapsingHeader("Run25  Random Distribution Probe"))
     {
+        // phase1037-3d-viewport-rng-histogram: bins migrated onto
+        // HelloEngineFx so the 3D column chart shows the SAME data.
         static cd::math::Random s_rng { 0x9E3779B97F4A7C15ULL };
         static int s_rng_samples_per_click = 256;
-        static std::array<std::uint32_t, 32> s_rng_hist {};
-        static std::uint64_t s_rng_total = 0;
+        auto& s_rng_hist  = fx.rng_hist;
+        auto& s_rng_total = fx.rng_total;
         ImGui::SliderInt("Samples per click", &s_rng_samples_per_click, 16, 4096);
         if (ImGui::Button("Generate samples"))
         {
@@ -4350,6 +4352,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                              0.0F, static_cast<float>(hist_max),
                              ImVec2(0, 64));
         ImGui::TextDisabled("PCG32 deterministic stream; large N converges to uniform.");
+        ImGui::Checkbox("Show histogram in 3D viewport",
+                        &fx.rng_show_hist_3d);
+        if (fx.rng_show_hist_3d)
+        {
+            ImGui::TextDisabled("  32 line columns; grey line = expected-uniform height");
+        }
     }
     // phase991-r-showcase-passive-cleanup: removed the 4th Run 25
     // sample-fold scaffold ("Run25 Backend Switcher"). Pure
@@ -10199,6 +10207,40 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 { kAnchor.x - kSpanX * 0.5F, kAnchor.y, kAnchor.z },
                 { kAnchor.x + kSpanX * 0.5F, kAnchor.y, kAnchor.z },
                 { 0.45F, 0.45F, 0.50F, 1.0F });
+        }
+        // phase1037-3d-viewport-rng-histogram: third pure-line demo.
+        // 32 vertical columns (one per PCG32 bin) over a 3.2 m span,
+        // height = count / max * 1.2 m, plus a grey reference line at
+        // the expected-uniform height. Clicking "Generate samples"
+        // grows the columns; with large N they visibly converge onto
+        // the reference line — the law of large numbers in the scene.
+        if (s.fx.rng_show_hist_3d && s.fx.rng_total > 0)
+        {
+            constexpr cd::math::Vec3f kAnchor { -3.5F, 3.8F, 0.0F };
+            constexpr float kSpanX = 3.2F;
+            constexpr float kMaxH  = 1.2F;
+            std::uint32_t hmax = 1;
+            for (const auto c : s.fx.rng_hist) hmax = std::max(hmax, c);
+            for (std::size_t bi = 0; bi < s.fx.rng_hist.size(); ++bi)
+            {
+                const float x = kAnchor.x - kSpanX * 0.5F + kSpanX *
+                    static_cast<float>(bi) /
+                    static_cast<float>(s.fx.rng_hist.size() - 1);
+                const float h = kMaxH *
+                    static_cast<float>(s.fx.rng_hist[bi]) /
+                    static_cast<float>(hmax);
+                s.debug_lines.add_line(
+                    { x, kAnchor.y, kAnchor.z },
+                    { x, kAnchor.y + h, kAnchor.z },
+                    { 0.30F, 0.80F, 0.95F, 1.0F });
+            }
+            const float expected_h = kMaxH *
+                (static_cast<float>(s.fx.rng_total) / 32.0F) /
+                static_cast<float>(hmax);
+            s.debug_lines.add_line(
+                { kAnchor.x - kSpanX * 0.5F, kAnchor.y + expected_h, kAnchor.z },
+                { kAnchor.x + kSpanX * 0.5F, kAnchor.y + expected_h, kAnchor.z },
+                { 0.55F, 0.55F, 0.60F, 1.0F });
         }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
