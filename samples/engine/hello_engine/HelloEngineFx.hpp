@@ -271,6 +271,15 @@ struct HelloEngineFx
     float vg_lod_threshold { 4.0F };
     int   vg_lod_vp_h { 720 };
     bool  vg_show_lod_3d { false };
+    // phase1024-3d-viewport-noise-heightfield: shared state for the
+    // "Run25 Texture-Synth Noise Probe" panel and its 3D overlay.
+    // The overlay renders a 16x16 sphere carpet where each sphere's
+    // HEIGHT and BRIGHTNESS encode fbm2_quintic_6oct(u, v, freq) —
+    // the 2D noise texture becomes a watchable terrain patch.
+    // Dragging the frequency slider reshapes the terrain live (same
+    // quintic kernel the phase-853 cloud shader uses).
+    int  noise_freq { 8 };
+    bool noise_show_field_3d { false };
 };
 
 }  // namespace cd_sample

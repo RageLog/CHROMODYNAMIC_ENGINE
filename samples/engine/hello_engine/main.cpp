@@ -2812,10 +2812,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // for diagonal seams).
     if (ImGui::CollapsingHeader("Run25  Texture-Synth Noise Probe"))
     {
-        static int s_ns_freq = 8;
+        // phase1024-3d-viewport-noise-heightfield: freq migrated onto
+        // HelloEngineFx so the 3D overlay reshapes with the SAME value.
         static float s_ns_row_v = 0.5F;
-        ImGui::SliderInt("Noise frequency", &s_ns_freq, 2, 32);
+        ImGui::SliderInt("Noise frequency", &fx.noise_freq, 2, 32);
         ImGui::SliderFloat("Sample row v",  &s_ns_row_v, 0.0F, 1.0F);
+        const int s_ns_freq = fx.noise_freq;
         constexpr int kCols = 256;
         std::array<float, kCols> row_cubic  {};
         std::array<float, kCols> row_quintic {};
@@ -2902,6 +2904,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     static_cast<double>(n));
         ImGui::TextDisabled("Quintic eliminates the cubic axis-aligned ridges");
         ImGui::TextDisabled("(Perlin 2002 improvement; clouds shader phase 853).");
+        ImGui::Separator();
+        ImGui::Checkbox("Show noise height-field in 3D viewport",
+                        &fx.noise_show_field_3d);
+        if (fx.noise_show_field_3d)
+        {
+            ImGui::TextDisabled("  16x16 sphere carpet; height + brightness = fbm 6-oct quintic");
+        }
     }
     // phase926-decal-live-demo (Run 25 Strand B): CPU-side
     // cd::decal::project_world_to_decal + decal_intersects_aabb
@@ -9443,6 +9452,66 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 draw_vg_sphere(
                     { kAnchor.x, kAnchor.y, kAnchor.z + cam_off },
                     0.08F, { 0.95F, 0.95F, 0.95F });
+            }
+        }
+        // phase1024-3d-viewport-noise-heightfield: 13th application of
+        // the canonical sphere-at-position template. 16x16 sphere
+        // carpet over a 3x3 m patch; each sphere's height AND
+        // brightness encode fbm2_quintic_6oct(u, v, freq) — the 2D
+        // noise texture the cloud shader (phase 853) and CPU bakers
+        // consume becomes a watchable terrain patch. Dragging the
+        // frequency slider in the Texture-Synth panel reshapes it live.
+        if (s.fx.noise_show_field_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                constexpr int kGrid = 16;
+                constexpr float kPatch = 3.0F;
+                constexpr cd::math::Vec3f kAnchor { -3.5F, 1.0F, 3.0F };
+                constexpr float kHeightScale = 0.8F;
+                constexpr float kRadius = 0.07F;
+                for (int gy = 0; gy < kGrid; ++gy)
+                for (int gx = 0; gx < kGrid; ++gx)
+                {
+                    const float u = static_cast<float>(gx) /
+                                    static_cast<float>(kGrid - 1);
+                    const float v = static_cast<float>(gy) /
+                                    static_cast<float>(kGrid - 1);
+                    const float n = cd::texture_synth::fbm2_quintic_6oct(
+                        u, v, static_cast<float>(s.fx.noise_freq));
+                    const cd::math::Vec3f pos {
+                        kAnchor.x + (u - 0.5F) * kPatch,
+                        kAnchor.y + n * kHeightScale,
+                        kAnchor.z + (v - 0.5F) * kPatch };
+                    const float shade = 0.20F + 0.75F * n;
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = kRadius;
+                    model[1][1] = kRadius;
+                    model[2][2] = kRadius;
+                    model[3][0] = pos.x;
+                    model[3][1] = pos.y;
+                    model[3][2] = pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = shade;
+                    pp.tint[1] = shade;
+                    pp.tint[2] = shade;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.65F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_noise_field");
+                }
             }
         }
 
