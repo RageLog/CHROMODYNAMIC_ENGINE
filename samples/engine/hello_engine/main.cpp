@@ -60,6 +60,7 @@
 #include <cd/concurrency/WorkStealingThreadPool.hpp>
 #include <cd/core/CounterTable.hpp>
 #include <cd/ddgi/Ddgi.hpp>
+#include <cd/debug_line/DebugLine.hpp>
 #include <cd/decal/Decal.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/ecs/World.hpp>
@@ -2988,6 +2989,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         if (fx.decal_show_obb_3d)
         {
             ImGui::TextDisabled("  centre tint = AABB-hit (green) / miss (red); corners = white");
+            ImGui::TextDisabled("  12 wireframe edges via cd::debug_line (phase 1031)");
         }
         ImGui::TextDisabled("Same math as the GBuffer decal pass.");
         ImGui::TextDisabled("Persson 2009 / Filion 2012 cluster binning.");
@@ -6489,6 +6491,14 @@ struct HelloEngineApp::EngineState
     // set index 1 alongside prim_inst (set 0) when the chrome
     // reflection branch needs to sample the bindless array.
     cd::rhi::DescriptorSetHandle             prim_bindless_set {};
+    // phase1031-debug-line-gpu: CPU batch + host-visible VB for the
+    // cd::debug_line kLineList pipeline. The batch is rebuilt every
+    // frame by whichever debug overlays are toggled on; the VB is
+    // created lazily at first use and grown (destroy + recreate at
+    // 2x) when a frame's vertex count exceeds the capacity.
+    cd::debug_line::LineBatch                debug_lines;
+    cd::rhi::BufferHandle                    debug_line_vb {};
+    std::uint64_t                            debug_line_vb_capacity { 0 };
     std::array<cd::material::MaterialInstance, 2> composite_insts;
     cd::material::MaterialInstance           bloom_prefilter_inst;
     std::array<cd::material::MaterialInstance, 3> bloom_down_insts;
@@ -8806,6 +8816,15 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_decal_gizmo");
                 }
+                // phase1031-debug-line-gpu (clarity fix 5/5): the
+                // corner spheres imply the OBB but the EDGES make it
+                // unambiguous. cd::debug_line::LineBatch emits the 12
+                // edges; the batch is flushed once at the end of the
+                // HDR pass through the new kLineList material.
+                s.debug_lines.add_obb(
+                    probe.position, probe.right, probe.up,
+                    probe.forward, probe.half_extents,
+                    { centre_tint.x, centre_tint.y, centre_tint.z, 1.0F });
             }
         }
         // phase1010-3d-viewport-csm-cascade-depth: 5th application of
@@ -9982,6 +10001,59 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 }
             }
         }
+        // phase1031-debug-line-gpu: flush the per-frame
+        // cd::debug_line::LineBatch through the kLineList material.
+        // Runs LAST in the HDR pass (after every overlay that may
+        // append lines) so a single upload + draw covers all line
+        // consumers. VB is host-visible (kCpuToGpu) and grows by
+        // doubling when a frame outgrows it; upload_buffer handles
+        // host->device sync per the IDevice contract.
+        if (!s.debug_lines.empty())
+        {
+            const auto lverts = s.debug_lines.vertices();
+            const std::uint64_t bytes =
+                lverts.size() * sizeof(cd::debug_line::LineVertex);
+            if (!s.debug_line_vb.is_valid() ||
+                s.debug_line_vb_capacity < bytes)
+            {
+                if (s.debug_line_vb.is_valid())
+                    device.destroy_buffer(s.debug_line_vb);
+                const std::uint64_t new_cap =
+                    std::max<std::uint64_t>(bytes * 2U, 16U * 1024U);
+                cd::rhi::BufferDesc bd {};
+                bd.size       = new_cap;
+                bd.usage      = cd::rhi::BufferUsage::kVertex;
+                bd.memory     = cd::rhi::MemoryUsage::kCpuToGpu;
+                bd.debug_name = "hello_engine/debug_line_vb";
+                if (auto br = device.create_buffer(bd); br.has_value())
+                {
+                    s.debug_line_vb          = *br;
+                    s.debug_line_vb_capacity = new_cap;
+                }
+                else
+                {
+                    s.debug_line_vb          = {};
+                    s.debug_line_vb_capacity = 0;
+                }
+            }
+            if (s.debug_line_vb.is_valid())
+            {
+                (void)device.upload_buffer(
+                    s.debug_line_vb, 0,
+                    std::span<const std::byte>(
+                        reinterpret_cast<const std::byte*>(lverts.data()),
+                        bytes));
+                s.materials.line.apply(cmd);
+                cmd.push_constants(
+                    s.materials.line.pipeline_layout(),
+                    cd::rhi::ShaderStage::kVertex,
+                    0, sizeof(cd::math::Mat4f), &vp);
+                cmd.bind_vertex_buffer(0, s.debug_line_vb, 0);
+                cmd.draw(static_cast<std::uint32_t>(lverts.size()), 1, 0, 0);
+                s.counters.increment("draws_debug_lines");
+            }
+            s.debug_lines.clear();
+        }
 
         ctx.new_frame();
 
@@ -10317,6 +10389,8 @@ void HelloEngineApp::on_shutdown() noexcept
     device.destroy_buffer(s.shadow_ubo);
     device.destroy_buffer(s.lights_ubo);
     device.destroy_buffer(s.inst_mat_ssbo);
+    if (s.debug_line_vb.is_valid())  // phase1031 — lazily created
+        device.destroy_buffer(s.debug_line_vb);
 
     if (s.albedo_tex.view.is_valid())  device.destroy_texture_view(s.albedo_tex.view);
     if (s.albedo_tex.image.is_valid()) device.destroy_texture(s.albedo_tex.image);

@@ -20,11 +20,13 @@
 // =============================================================================
 #pragma once
 
+#include "LineShader.hpp"
 #include "PrimShader.hpp"
 #include "HelloLighting.hpp"
 
 #include <cd/asset/Primitives.hpp>
 #include <cd/material/AnalyticalSkyMaterial.hpp>
+#include <cd/debug_line/DebugLine.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/post/bloom/Bloom.hpp>
@@ -53,6 +55,9 @@ struct MaterialBundle
     cd::material::Material prim              {};
     cd::material::Material velocity          {};
     cd::material::Material shadow            {};
+    /// phase1031 — kLineList debug pipeline consuming
+    /// cd::debug_line::LineBatch vertex streams.
+    cd::material::Material line              {};
     /// phase864-bindless-dedicated-set: descriptor set layout for the
     /// bindless sampler2D array (set index 1 of the prim pipeline).
     /// Owned by the bundle; freed in shutdown via
@@ -83,6 +88,12 @@ inline constexpr std::string_view kShadowVertGlslPath =
     "shaders/shadow.vert.glsl";
 inline constexpr std::string_view kShadowFragGlslPath =
     "shaders/shadow.frag.glsl";
+
+// phase1031: on-disk paths for the debug-line material.
+inline constexpr std::string_view kLineVertGlslPath =
+    "shaders/line.vert.glsl";
+inline constexpr std::string_view kLineFragGlslPath =
+    "shaders/line.frag.glsl";
 
 /// phase864-bindless-dedicated-set: build the standalone descriptor set
 /// layout that hosts the bindless sampler2D array on its own set index
@@ -300,6 +311,75 @@ shadow_recreate(cd::rhi::IDevice&       device,
     return true;
 }
 
+
+/// Build the debug-line MaterialDesc and call Material::create.
+/// kLineList topology, pos+color vertex stream from
+/// cd::debug_line::LineBatch, single mat4 view-proj push constant,
+/// no descriptors. Same 4-attachment HDR target set as prim so the
+/// pipeline is render-pass compatible with the scene pass; the FS
+/// writes neutral G-buffer values (see shaders/line.frag.glsl).
+/// Mirrors prim_recreate / shadow_recreate for hot-reload sharing.
+[[nodiscard]] inline bool
+line_recreate(cd::rhi::IDevice&       device,
+              cd::shader::ICompiler*  compiler,
+              cd::material::Material* line_material)
+{
+    constexpr std::array<cd::rhi::Format, 4> kColorFmts {
+        cd::rhi::Format::kRGBA16Float,
+        cd::rhi::Format::kRGBA16Float,
+        cd::rhi::Format::kRGBA8Unorm,
+        cd::rhi::Format::kRG8Unorm
+    };
+    constexpr std::array<cd::rhi::VertexBinding, 1> kBindings {
+        cd::rhi::VertexBinding {
+            0, sizeof(cd::debug_line::LineVertex), false }
+    };
+    constexpr std::array<cd::rhi::VertexAttribute, 2> kAttrs {
+        cd::rhi::VertexAttribute { 0, 0, cd::rhi::Format::kRGB32Float,
+                                   offsetof(cd::debug_line::LineVertex, position) },
+        cd::rhi::VertexAttribute { 1, 0, cd::rhi::Format::kRGBA32Float,
+                                   offsetof(cd::debug_line::LineVertex, color) }
+    };
+    constexpr std::array<cd::rhi::PushConstantRange, 1> kPush {
+        cd::rhi::PushConstantRange { .stages = cd::rhi::ShaderStage::kVertex,
+                                     .offset = 0,
+                                     .size   = static_cast<std::uint32_t>(sizeof(cd::math::Mat4f)) }
+    };
+    cd::material::MaterialDesc md {};
+#if HELLO_ENGINE_USE_ON_DISK_SHADERS
+    md.vertex_glsl_path   = kLineVertGlslPath;
+    md.fragment_glsl_path = kLineFragGlslPath;
+#endif
+    md.vertex_glsl   = cd::hello_engine::kLineVS;
+    md.fragment_glsl = cd::hello_engine::kLineFS;
+    md.color_attachment_formats = kColorFmts;
+    md.depth_attachment_format  = cd::rhi::Format::kD32Float;
+    md.vertex_bindings   = kBindings;
+    md.vertex_attributes = kAttrs;
+    md.push_constants    = kPush;
+    md.topology = cd::rhi::PrimitiveTopology::kLineList;
+    md.raster.cull = cd::rhi::CullMode::kNone;
+    // Depth-tested but not depth-writing: lines occlude correctly
+    // behind geometry yet never punch holes into the depth buffer
+    // that later passes (planar shadows, TLAS debug) would inherit.
+    md.depth_stencil.depth_test    = true;
+    md.depth_stencil.depth_write   = false;
+    md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
+    md.name = "hello_engine/debug_line";
+    auto r = cd::material::Material::create(device, compiler, md);
+    if (!r.has_value())
+    {
+        std::fprintf(
+            stderr,
+            "hello_engine: line_material create failed: %.*s\n",
+            static_cast<int>(r.error().message.size()),
+            r.error().message.data()
+        );
+        return false;
+    }
+    *line_material = std::move(*r);
+    return true;
+}
 
 [[nodiscard]] inline std::expected<MaterialBundle, MaterialSpawnError>
 spawn_materials(cd::rhi::IDevice&             device,
@@ -521,6 +601,12 @@ spawn_materials(cd::rhi::IDevice&             device,
     // hot-reload path rebuilds the pipeline identically.
     if (!shadow_recreate(device, compiler, &out.shadow))
         return std::unexpected(MaterialSpawnError { 10, "shadow" });
+
+    // ---- Debug-line material (phase1031) -----------------------------------
+    // Single source of truth lives in line_recreate() so a future
+    // hot-reload hookup rebuilds the pipeline identically.
+    if (!line_recreate(device, compiler, &out.line))
+        return std::unexpected(MaterialSpawnError { 11, "debug_line" });
 
     return out;
 }
