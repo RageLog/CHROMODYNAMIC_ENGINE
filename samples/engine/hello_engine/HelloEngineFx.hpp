@@ -370,6 +370,18 @@ struct HelloEngineFx
     float brdf_lut_nv { 0.7F };
     float brdf_lut_r  { 0.3F };
     bool  brdf_show_lut_3d { false };
+    // phase1039-3d-viewport-brdf-lobes: shared state for the "Run25
+    // Sheen + Clearcoat BRDF Probe" panel and its 3D overlay. The
+    // overlay draws the two microfacet distributions as POLAR LOBES
+    // above a surface line: for half-angle theta in [-90, 90] deg,
+    // radius = normalised D(cos theta). Warm lobe = Charlie sheen D
+    // (wide, flat-topped at high roughness); cool lobe = clearcoat
+    // D*V (tight specular spike). The textbook BRDF lobe diagram,
+    // standing in the scene, reshaping as the sliders move.
+    float sc_roughness { 0.3F };
+    float sc_nv { 0.7F };
+    float sc_nl { 0.5F };
+    bool  sc_show_lobes_3d { false };
 };
 
 }  // namespace cd_sample

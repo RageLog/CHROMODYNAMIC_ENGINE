@@ -3219,12 +3219,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // runs per pixel.
     if (ImGui::CollapsingHeader("Run25  Sheen + Clearcoat BRDF Probe"))
     {
-        static float s_sc_roughness = 0.3F;
-        static float s_sc_nv = 0.7F;
-        static float s_sc_nl = 0.5F;
-        ImGui::SliderFloat("Roughness", &s_sc_roughness, 0.0F, 1.0F);
-        ImGui::SliderFloat("n . v",     &s_sc_nv, 0.0F, 1.0F);
-        ImGui::SliderFloat("n . l",     &s_sc_nl, 0.0F, 1.0F);
+        // phase1039-3d-viewport-brdf-lobes: state migrated onto
+        // HelloEngineFx so the 3D lobes reshape with the SAME values.
+        ImGui::SliderFloat("Roughness", &fx.sc_roughness, 0.0F, 1.0F);
+        ImGui::SliderFloat("n . v",     &fx.sc_nv, 0.0F, 1.0F);
+        ImGui::SliderFloat("n . l",     &fx.sc_nl, 0.0F, 1.0F);
+        const float s_sc_roughness = fx.sc_roughness;
+        const float s_sc_nv = fx.sc_nv;
+        const float s_sc_nl = fx.sc_nl;
         constexpr int kSamples = 128;
         std::array<float, kSamples> charlie    {};
         std::array<float, kSamples> clearcoat  {};
@@ -3257,6 +3259,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             *std::ranges::max_element(clearcoat) * 1.1F + 1e-4F,
             ImVec2(0, 56));
         ImGui::TextDisabled("Estevez 2017 (Charlie sheen) + Filament clearcoat.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show BRDF lobes in 3D viewport",
+                        &fx.sc_show_lobes_3d);
+        if (fx.sc_show_lobes_3d)
+        {
+            ImGui::TextDisabled("  warm lobe = Charlie sheen D, cool = clearcoat D*V");
+            ImGui::TextDisabled("  grey base = surface plane, vertical = normal");
+        }
     }
     // phase929-brdf-sss-live-demo (Run 25 Strand B): drive
     // cd::brdf::sss diffusion profiles. Plots the per-channel falloff
@@ -10311,6 +10321,67 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             s.debug_lines.add_cross(
                 surface_point(mpx, mpy), 0.12F,
                 { 0.95F, 0.35F, 0.15F, 1.0F });
+        }
+        // phase1039-3d-viewport-brdf-lobes: fifth pure-line demo.
+        // Textbook BRDF lobe diagram: for half-angle theta in
+        // [-90, 90] deg, radius = normalised distribution value, the
+        // lobe drawn in the upper half-plane above a grey surface
+        // line with a vertical normal marker. Warm = Charlie sheen D
+        // (Estevez 2017; widens + flattens with roughness); cool =
+        // clearcoat D*V (Filament; tight specular spike).
+        if (s.fx.sc_show_lobes_3d)
+        {
+            constexpr cd::math::Vec3f kAnchor { 0.0F, 5.5F, -3.0F };
+            constexpr int kLobeSamples = 64;
+            constexpr float kLobeR = 1.3F;
+            constexpr float kHalfPi = 1.57079632679489661923F;
+            std::array<float, kLobeSamples> ch_v {};
+            std::array<float, kLobeSamples> cc_v {};
+            float ch_max = 1e-6F;
+            float cc_max = 1e-6F;
+            for (int i = 0; i < kLobeSamples; ++i)
+            {
+                const float th = -kHalfPi + 2.0F * kHalfPi *
+                    static_cast<float>(i) /
+                    static_cast<float>(kLobeSamples - 1);
+                const float nh = std::cos(th);
+                ch_v[static_cast<std::size_t>(i)] =
+                    cd::brdf::sheen_clearcoat::charlie_d(
+                        s.fx.sc_roughness, nh);
+                cc_v[static_cast<std::size_t>(i)] =
+                    cd::brdf::sheen_clearcoat::clearcoat_d_v(
+                        s.fx.sc_roughness, nh, s.fx.sc_nv, s.fx.sc_nl);
+                ch_max = std::max(ch_max, ch_v[static_cast<std::size_t>(i)]);
+                cc_max = std::max(cc_max, cc_v[static_cast<std::size_t>(i)]);
+            }
+            std::array<cd::math::Vec3f, kLobeSamples> ch_pts {};
+            std::array<cd::math::Vec3f, kLobeSamples> cc_pts {};
+            for (int i = 0; i < kLobeSamples; ++i)
+            {
+                const float th = -kHalfPi + 2.0F * kHalfPi *
+                    static_cast<float>(i) /
+                    static_cast<float>(kLobeSamples - 1);
+                const float sx = std::sin(th);
+                const float cy = std::cos(th);
+                const float chr = kLobeR *
+                    (ch_v[static_cast<std::size_t>(i)] / ch_max);
+                const float ccr = kLobeR *
+                    (cc_v[static_cast<std::size_t>(i)] / cc_max);
+                ch_pts[static_cast<std::size_t>(i)] = {
+                    kAnchor.x + sx * chr, kAnchor.y + cy * chr, kAnchor.z };
+                cc_pts[static_cast<std::size_t>(i)] = {
+                    kAnchor.x + sx * ccr, kAnchor.y + cy * ccr, kAnchor.z };
+            }
+            s.debug_lines.add_polyline(ch_pts, { 0.95F, 0.60F, 0.20F, 1.0F });
+            s.debug_lines.add_polyline(cc_pts, { 0.30F, 0.60F, 0.95F, 1.0F });
+            s.debug_lines.add_line(
+                { kAnchor.x - kLobeR * 1.1F, kAnchor.y, kAnchor.z },
+                { kAnchor.x + kLobeR * 1.1F, kAnchor.y, kAnchor.z },
+                { 0.50F, 0.50F, 0.55F, 1.0F });   // surface plane
+            s.debug_lines.add_line(
+                kAnchor,
+                { kAnchor.x, kAnchor.y + kLobeR * 1.1F, kAnchor.z },
+                { 0.70F, 0.70F, 0.75F, 1.0F });   // normal marker
         }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
