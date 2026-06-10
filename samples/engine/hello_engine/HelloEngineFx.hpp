@@ -300,6 +300,17 @@ struct HelloEngineFx
     // (green-brown continents, blue oceans, white polar caps) instead
     // of one colour swatch.
     bool earth_show_globe_3d { false };
+    // phase1027-3d-viewport-camera-basis: shared state for the
+    // "Run25 Camera Basis Probe" panel and its 3D overlay. The
+    // overlay renders the derived free-look basis as a triad at the
+    // probe camera position: red = right, green = up, blue = forward
+    // (+ a white sphere at the position itself). Dragging yaw/pitch/
+    // position swings the triad live — the same basis math
+    // FreeLookController feeds the view matrix.
+    float camera_basis_yaw_deg { 0.0F };
+    float camera_basis_pitch_deg { 0.0F };
+    std::array<float, 3> camera_basis_pos { 0.0F, 1.5F, 4.0F };
+    bool camera_basis_show_3d { false };
 };
 
 }  // namespace cd_sample

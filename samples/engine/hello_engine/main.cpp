@@ -3575,14 +3575,17 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // path the engine FreeLookController uses each frame.
     if (ImGui::CollapsingHeader("Run25  Camera Basis Probe"))
     {
-        static float s_cam_yaw = 0.0F;
-        static float s_cam_pitch = 0.0F;
-        static cd::math::Vec3f s_cam_pos { 0.0F, 1.5F, 4.0F };
-        ImGui::SliderFloat("Yaw (deg)",   &s_cam_yaw,   -180.0F, 180.0F);
-        ImGui::SliderFloat("Pitch (deg)", &s_cam_pitch, -89.0F, 89.0F);
-        ImGui::SliderFloat3("Position",   &s_cam_pos.x, -10.0F, 10.0F);
-        const float yaw_r   = s_cam_yaw   * std::numbers::pi_v<float> / 180.0F;
-        const float pitch_r = s_cam_pitch * std::numbers::pi_v<float> / 180.0F;
+        // phase1027-3d-viewport-camera-basis: state migrated onto
+        // HelloEngineFx so the 3D triad swings with the SAME values.
+        ImGui::SliderFloat("Yaw (deg)",   &fx.camera_basis_yaw_deg,   -180.0F, 180.0F);
+        ImGui::SliderFloat("Pitch (deg)", &fx.camera_basis_pitch_deg, -89.0F, 89.0F);
+        ImGui::SliderFloat3("Position",   fx.camera_basis_pos.data(), -10.0F, 10.0F);
+        const cd::math::Vec3f s_cam_pos {
+            fx.camera_basis_pos[0],
+            fx.camera_basis_pos[1],
+            fx.camera_basis_pos[2] };
+        const float yaw_r   = fx.camera_basis_yaw_deg   * std::numbers::pi_v<float> / 180.0F;
+        const float pitch_r = fx.camera_basis_pitch_deg * std::numbers::pi_v<float> / 180.0F;
         const cd::math::Vec3f forward {
             std::cos(pitch_r) * std::sin(yaw_r),
             std::sin(pitch_r),
@@ -3619,6 +3622,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                     static_cast<double>(s_cam_pos.y),
                     static_cast<double>(s_cam_pos.z));
         ImGui::TextDisabled("Free-look basis identical to FreeLookController.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show camera basis in 3D viewport",
+                        &fx.camera_basis_show_3d);
+        if (fx.camera_basis_show_3d)
+        {
+            ImGui::TextDisabled("  triad at probe position: red=right, green=up, blue=forward");
+        }
     }
     // phase935-frustum-cull-live-demo (Run 25 Strand B): drive
     // cd::camera::extract_frustum + test_aabb against a sliding
@@ -9731,6 +9741,101 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 }
                 draw_earth_sphere( kPi * 0.5F - 0.01F, 0.0F, 0.085F);
                 draw_earth_sphere(-kPi * 0.5F + 0.01F, 0.0F, 0.085F);
+            }
+        }
+        // phase1027-3d-viewport-camera-basis: 16th application of the
+        // canonical sphere-at-position template. Derives the SAME
+        // free-look basis the Camera Basis Probe panel computes
+        // (yaw/pitch -> forward, right = forward x world-up, up =
+        // right x forward) and renders it as a triad at the probe
+        // position: white sphere at the position, red at +right,
+        // green at +up, blue at +forward (axis tips at 0.9 m), plus
+        // 3 mid-axis dots so each axis reads as a short arm rather
+        // than a floating dot.
+        if (s.fx.camera_basis_show_3d)
+        {
+            const auto& dbg_mesh = s.meshes.sphere;
+            if (dbg_mesh.vb.is_valid())
+            {
+                cmd.bind_vertex_buffer(0, dbg_mesh.vb, 0);
+                cmd.bind_index_buffer(dbg_mesh.ib, 0, dbg_mesh.index_type);
+                const float yaw_r = s.fx.camera_basis_yaw_deg *
+                                    std::numbers::pi_v<float> / 180.0F;
+                const float pit_r = s.fx.camera_basis_pitch_deg *
+                                    std::numbers::pi_v<float> / 180.0F;
+                const cd::math::Vec3f fwd {
+                    std::cos(pit_r) * std::sin(yaw_r),
+                    std::sin(pit_r),
+                   -std::cos(pit_r) * std::cos(yaw_r) };
+                cd::math::Vec3f rgt {
+                    fwd.y * 0.0F - fwd.z * 1.0F,
+                    fwd.z * 0.0F - fwd.x * 0.0F,
+                    fwd.x * 1.0F - fwd.y * 0.0F };
+                const float rln = 1.0F / std::max(std::sqrt(
+                    rgt.x * rgt.x + rgt.y * rgt.y + rgt.z * rgt.z), 1e-3F);
+                rgt = { rgt.x * rln, rgt.y * rln, rgt.z * rln };
+                const cd::math::Vec3f up_v {
+                    rgt.y * fwd.z - rgt.z * fwd.y,
+                    rgt.z * fwd.x - rgt.x * fwd.z,
+                    rgt.x * fwd.y - rgt.y * fwd.x };
+                const cd::math::Vec3f base {
+                    s.fx.camera_basis_pos[0],
+                    s.fx.camera_basis_pos[1],
+                    s.fx.camera_basis_pos[2] };
+                struct BasisSphere
+                {
+                    cd::math::Vec3f pos;
+                    cd::math::Vec3f tint;
+                    float radius;
+                };
+                constexpr float kArm = 0.9F;
+                std::array<BasisSphere, 7> tri {};
+                tri[0] = { base, { 0.95F, 0.95F, 0.95F }, 0.10F };
+                const std::array<cd::math::Vec3f, 3> axes { rgt, up_v, fwd };
+                const std::array<cd::math::Vec3f, 3> tints {{
+                    { 0.95F, 0.18F, 0.18F },
+                    { 0.20F, 0.95F, 0.30F },
+                    { 0.30F, 0.45F, 0.95F } }};
+                for (std::size_t ai = 0; ai < 3; ++ai)
+                {
+                    tri[1 + ai * 2] = {
+                        { base.x + axes[ai].x * kArm * 0.5F,
+                          base.y + axes[ai].y * kArm * 0.5F,
+                          base.z + axes[ai].z * kArm * 0.5F },
+                        tints[ai], 0.05F };
+                    tri[2 + ai * 2] = {
+                        { base.x + axes[ai].x * kArm,
+                          base.y + axes[ai].y * kArm,
+                          base.z + axes[ai].z * kArm },
+                        tints[ai], 0.09F };
+                }
+                for (const auto& sp : tri)
+                {
+                    PrimPush pp {};
+                    cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                    model[0][0] = sp.radius;
+                    model[1][1] = sp.radius;
+                    model[2][2] = sp.radius;
+                    model[3][0] = sp.pos.x;
+                    model[3][1] = sp.pos.y;
+                    model[3][2] = sp.pos.z;
+                    pp.model = model;
+                    pp.mvp = vp * model;
+                    pp.tint[0] = sp.tint.x;
+                    pp.tint[1] = sp.tint.y;
+                    pp.tint[2] = sp.tint.z;
+                    pp.tint[3] = 1.0F;
+                    fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                    pp.fx_params[1]  = 0.0F;
+                    pp.fx_params4[0] = 0.0F;
+                    pp.fx_params4[1] = 0.5F;
+                    cmd.push_constants(
+                        s.materials.prim.pipeline_layout(),
+                        cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                        0, sizeof(pp), &pp);
+                    cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                    s.counters.increment("draws_camera_basis");
+                }
             }
         }
 
