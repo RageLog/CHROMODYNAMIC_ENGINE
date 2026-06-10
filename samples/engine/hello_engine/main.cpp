@@ -8628,6 +8628,12 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                         s.counters.increment("draws_frustum_aabb");
                     }
+                    // phase1032-line-upgrades: true 12-edge wireframe
+                    // via cd::debug_line — the corner spheres carry
+                    // the cull tint at distance, the edges make each
+                    // cell read as a BOX up close.
+                    s.debug_lines.add_aabb(
+                        bmin, bmax, { tint.x, tint.y, tint.z, 1.0F });
                 }
             }
         }
@@ -8700,6 +8706,41 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         const float hh = (lt == cd::light::LightType::kRectArea)
                             ? (row.light.area_height * 0.5F)
                             :  row.light.area_height;
+                        // phase1032-line-upgrades: rect outline (4
+                        // edges through the corners) or disk circle
+                        // so the emitting SHAPE reads, not just its
+                        // corner proxies.
+                        if (lt == cd::light::LightType::kRectArea)
+                        {
+                            const auto corner = [&](float si, float sj) {
+                                return cd::math::Vec3f {
+                                    pos.x + si * hw * row.light.area_tangent.x
+                                          + sj * hh * row.light.area_bitangent.x,
+                                    pos.y + si * hw * row.light.area_tangent.y
+                                          + sj * hh * row.light.area_bitangent.y,
+                                    pos.z + si * hw * row.light.area_tangent.z
+                                          + sj * hh * row.light.area_bitangent.z };
+                            };
+                            const std::array<cd::math::Vec3f, 5> outline {{
+                                corner(-1.0F, -1.0F), corner(1.0F, -1.0F),
+                                corner(1.0F, 1.0F),  corner(-1.0F, 1.0F),
+                                corner(-1.0F, -1.0F) }};
+                            s.debug_lines.add_polyline(
+                                outline, { tint.x, tint.y, tint.z, 1.0F });
+                        }
+                        else
+                        {
+                            const cd::math::Vec3f disk_normal {
+                                row.light.area_tangent.y * row.light.area_bitangent.z -
+                                row.light.area_tangent.z * row.light.area_bitangent.y,
+                                row.light.area_tangent.z * row.light.area_bitangent.x -
+                                row.light.area_tangent.x * row.light.area_bitangent.z,
+                                row.light.area_tangent.x * row.light.area_bitangent.y -
+                                row.light.area_tangent.y * row.light.area_bitangent.x };
+                            s.debug_lines.add_circle(
+                                pos, disk_normal, hw, 24,
+                                { tint.x, tint.y, tint.z, 1.0F });
+                        }
                         for (int sj = -1; sj <= 1; sj += 2)
                         for (int si = -1; si <= 1; si += 2)
                         {
@@ -8914,6 +8955,17 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                             0, sizeof(pp), &pp);
                         cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                         s.counters.increment("draws_csm_cascade");
+                        // phase1032-line-upgrades: boundary ring at
+                        // the cascade FAR distance, perpendicular to
+                        // the view ray — the ring marks where this
+                        // cascade hands off to the next one, which
+                        // the centre-depth sphere alone cannot show.
+                        s.debug_lines.add_circle(
+                            { s.cam.eye.x + view_dir.x * f,
+                              s.cam.eye.y + view_dir.y * f,
+                              s.cam.eye.z + view_dir.z * f },
+                            view_dir, radius * 2.5F, 32,
+                            { tint.x, tint.y, tint.z, 1.0F });
                     }
                 }
             }
@@ -9052,11 +9104,13 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_bezier_cp");
                 }
+                std::array<cd::math::Vec3f, kSamples> curve_pts {};
                 for (int i = 0; i < kSamples; ++i)
                 {
                     const float t = static_cast<float>(i) /
                                     static_cast<float>(kSamples - 1);
                     const auto p = cb.at(t);
+                    curve_pts[static_cast<std::size_t>(i)] = p;
                     PrimPush pp {};
                     cd::math::Mat4f model { cd::math::Mat4f::identity() };
                     model[0][0] = kSampleRadius;
@@ -9082,6 +9136,15 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_bezier_sample");
                 }
+                // phase1032-line-upgrades: continuous curve polyline
+                // (magenta) + the classic control polygon (dim grey)
+                // P0-P1-P2-P3 so the hull-vs-curve relationship reads.
+                s.debug_lines.add_polyline(
+                    curve_pts, { 0.95F, 0.18F, 0.78F, 1.0F });
+                const std::array<cd::math::Vec3f, 4> hull {{
+                    cb.p0, cb.p1, cb.p2, cb.p3 }};
+                s.debug_lines.add_polyline(
+                    hull, { 0.55F, 0.55F, 0.58F, 1.0F });
             }
         }
         // phase1013-3d-viewport-gpu-particles: 8th application of
@@ -9871,6 +9934,17 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                         0, sizeof(pp), &pp);
                     cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
                     s.counters.increment("draws_camera_basis");
+                }
+                // phase1032-line-upgrades: solid axis arms base->tip
+                // so the triad reads as a gizmo, not 3 floating dots.
+                for (std::size_t ai = 0; ai < 3; ++ai)
+                {
+                    s.debug_lines.add_line(
+                        base,
+                        { base.x + axes[ai].x * kArm,
+                          base.y + axes[ai].y * kArm,
+                          base.z + axes[ai].z * kArm },
+                        { tints[ai].x, tints[ai].y, tints[ai].z, 1.0F });
                 }
             }
         }
