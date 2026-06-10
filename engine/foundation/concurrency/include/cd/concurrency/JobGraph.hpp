@@ -128,9 +128,28 @@ public:
         };
 
         // Kick off all initially-ready nodes.
+        //
+        // phase1050 DEADLOCK FIX (RCA 2026-06-11): the ready scan MUST
+        // read the IMMUTABLE dependency lists, never the mutable
+        // in_degree array. The previous form
+        //     if (in_degree[i].load() == 0) submit_node(i);
+        // raced the workers already spawned by earlier iterations of
+        // this same loop: a worker finishing node A decrements its
+        // successor B's in_degree to 0 and submits B (fetch_sub == 1
+        // path above) WHILE the scan is still walking — the scan then
+        // ALSO sees in_degree[B] == 0 and submits B a second time.
+        // The duplicate execution underflows `remaining`, wakes the
+        // waiter early, and the still-running duplicate touches this
+        // frame's dead locals (rev / in_degree / done_mutex) —
+        // use-after-scope that wedges a pool worker forever (observed:
+        // 107-minute ctest hang; 33 executions for a 32-node graph).
+        // Deriving readiness from `dependencies.empty()` restores the
+        // exactly-once submission invariant: roots are submitted only
+        // by this loop, non-roots only by the single worker whose
+        // fetch_sub returned 1.
         for (JobId i = 0; i < static_cast<JobId>(n); ++i)
         {
-            if (in_degree[i].load(std::memory_order_relaxed) == 0)
+            if (nodes_[i].dependencies.empty())
             {
                 submit_node(i);
             }

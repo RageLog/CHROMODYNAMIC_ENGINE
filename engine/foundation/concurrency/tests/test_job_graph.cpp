@@ -214,6 +214,54 @@ TEST(JobGraph, DisjointChainsAllComplete)
 }
 
 // ============================================================================
+// phase1050 regression net for the kick-off double-submission deadlock
+// (RCA 2026-06-11). The old ready-scan read the MUTABLE in_degree array
+// while workers from earlier scan iterations were already decrementing
+// it — a successor whose in-degree hit 0 mid-scan got submitted TWICE.
+// The duplicate underflowed `remaining`, woke the waiter early, and the
+// straggler ran on run()'s destroyed stack frame (use-after-scope →
+// 107-minute wedge under ctest -j8).
+//
+// This test makes the race a deterministic-enough failure: the
+// DisjointChains topology with instant bodies maximises the window
+// (workers finish roots while the scan still walks), and EVERY node
+// counts its executions — exactly-once is the asserted invariant, not
+// just total completion. 300 iterations under a saturated pool
+// reproduced the old bug well within a single run (observed pre-fix:
+// 33 executions for 32 nodes / hang in <60 iterations across 6
+// concurrent instances).
+// ============================================================================
+TEST(JobGraph, StressExactlyOnceSubmissionUnderLoad)
+{
+    constexpr int kIterations = 300;
+    constexpr int kChains     = 8;
+    constexpr int kLen        = 4;
+    for (int iter = 0; iter < kIterations; ++iter)
+    {
+        cd::concurrency::ThreadPool pool { 4 };
+        cd::concurrency::JobGraph   g;
+        std::atomic<int> executions { 0 };
+        for (int c = 0; c < kChains; ++c)
+        {
+            cd::concurrency::JobId prev = g.add(
+                [&] { executions.fetch_add(1, std::memory_order_relaxed); }
+            );
+            for (int i = 1; i < kLen; ++i)
+            {
+                prev = g.add(
+                    [&] { executions.fetch_add(1, std::memory_order_relaxed); },
+                    { prev }
+                );
+            }
+        }
+        ASSERT_TRUE(g.run(pool));
+        // Exactly-once: any duplicate submission shows up as > n.
+        ASSERT_EQ(executions.load(), kChains * kLen)
+            << "double-submission regression at iteration " << iter;
+    }
+}
+
+// ============================================================================
 // X1C (phase 285) integration test: hello_engine boot DAG topology.
 // Mirrors the 7-node bake graph:
 //   A env_cube -> { B diff_irradiance, C spec_prefilter }
