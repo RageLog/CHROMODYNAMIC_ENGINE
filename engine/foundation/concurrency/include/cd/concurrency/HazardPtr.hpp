@@ -111,6 +111,16 @@ public:
             while (true)
             {
                 sl.ptrs[index].store(static_cast<void*>(p), std::memory_order_release);
+                // phase1084 (safety F1): Michael 2004 requires a FULL
+                // barrier between hazard publish and re-verify. A
+                // release-store followed by an acquire-load of a
+                // DIFFERENT object does not forbid StoreLoad
+                // reordering (even on x86-TSO the load can pass the
+                // thread's own buffered store) — without this fence a
+                // concurrent scan() can miss the slot while the
+                // re-verify misses the retire, and the protected
+                // pointer gets freed under the reader (UAF).
+                std::atomic_thread_fence(std::memory_order_seq_cst);
                 T* check = src.load(std::memory_order_acquire);
                 if (check == p)
                     return p;
@@ -224,6 +234,13 @@ public:
 
         std::unordered_set<void*> hazards;
         hazards.reserve(64);
+        // phase1084 (safety F1): the reclaimer-side half of the same
+        // protocol — order the retire-side source store (e.g. the
+        // deque's array_ swap in grow()) BEFORE the slot walk below.
+        // Total order through the two seq_cst fences guarantees: either
+        // scan sees the thief's hazard (keeps the buffer) or the
+        // thief's re-verify sees the new source value (retries).
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         for (Slot* s = head_.load(std::memory_order_acquire); s != nullptr; s = s->next.load(std::memory_order_acquire))
         {
             for (auto& p : s->ptrs)

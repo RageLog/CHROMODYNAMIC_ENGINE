@@ -226,6 +226,13 @@ public:
         handle.promise().on_complete = [this](std::exception_ptr) noexcept
         {
             active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
+            // phase1084 (safety F5): same empty-lock pattern as
+            // run_job() — without it the decrement+notify can fire
+            // between a wait_all() waiter's predicate evaluation and
+            // its sleep, losing the wakeup.
+            {
+                std::scoped_lock guard { idle_mutex_ };
+            }
             idle_condition_.notify_all();
         };
         // bugprone-unhandled-exception-at-new: spawn_detached is noexcept,
@@ -241,6 +248,9 @@ public:
         if (job == nullptr)
         {
             active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
+            {
+                std::scoped_lock guard { idle_mutex_ };  // F5, see above
+            }
             idle_condition_.notify_all();
             return false;
         }
@@ -311,6 +321,17 @@ private:
         const auto idx = next_inject_.fetch_add(1, std::memory_order_relaxed) % n;
         {
             std::scoped_lock guard { *inject_mutexes_[idx] };
+            // phase1084 (safety F4): re-check running_ UNDER the inject
+            // mutex. shutdown() drains these buffers under the same
+            // mutex after flipping running_, so a submitter that lost
+            // the race here would otherwise park a job that nobody
+            // ever runs or deletes (leak + a permanently non-zero
+            // queued_ hanging the next wait_all()).
+            if (!running_.load(std::memory_order_acquire))
+            {
+                delete job;
+                return;
+            }
             inject_buffers_[idx].push_back(job);
         }
         queued_.fetch_add(1, std::memory_order_release);
@@ -330,6 +351,15 @@ private:
         {
             wsd(self, static_cast<std::size_t>(j->priority())).push(j);
         }
+        // phase1084 (safety F2): the pushes above just made work
+        // STEALABLE — that is a publish, and every publish must bump
+        // the wake epoch or a peer that found nothing to steal can
+        // sleep until the next external enqueue (the retired 2 ms poll
+        // used to paper over exactly this). The bump also provides the
+        // release edge that makes these pushes visible to a sleeping
+        // peer's relaxed approx_size() re-check.
+        if (!local.empty())
+            bump_wake_epoch();
         return local.size();
     }
 
@@ -380,6 +410,14 @@ private:
         const auto self_u32 = static_cast<std::uint32_t>(self & 0xFFFFFFFFU);
         std::mt19937 rng { self_u32 * 2654435761U + 0x9E3779B9U };
         constexpr int kStealAttempts = 4;
+
+        // phase1084 (safety F3): make EVERY request_stop() self-waking —
+        // a worker blocked in wake_epoch_.wait() is not observable to
+        // jthread's dtor otherwise (the ctor-throw unwind path never
+        // runs shutdown(), so its request_stop+join would hang forever
+        // on a sleeping worker). Also turns shutdown()'s second bump
+        // from belt-and-braces into a structural guarantee.
+        std::stop_callback wake_on_stop { st, [this] { bump_wake_epoch(); } };
 
         // X1-FU-C: this worker's hazard cache — steal-side guard AND the
         // owner-side retire channel for MY deques' grow(). Stack RAII:
@@ -495,7 +533,6 @@ private:
     /// buffers into it (its dtor frees anything still pending).
     HazardDomain<1> hazard_domain_;
 
-    std::vector<std::jthread> workers_;
     /// kPriorityLevels deques PER WORKER, contiguous per worker — see wsd().
     std::vector<std::unique_ptr<WorkStealingDeque<Job*>>> queues_;
 
@@ -519,6 +556,14 @@ private:
     std::atomic<std::uint64_t> active_coroutines_ { 0 };
 
     WorkStealingPoolStats stats_;
+
+    /// phase1084 (safety F3): LAST member on purpose. Members are
+    /// destroyed in reverse declaration order, so on ANY unwind —
+    /// including a ctor throw mid-spawn, where shutdown() never runs —
+    /// the jthread dtors (request_stop + join, self-waking via the
+    /// stop_callback above) finish BEFORE queues_ / hazard_domain_ /
+    /// the mutexes those workers still touch are destroyed.
+    std::vector<std::jthread> workers_;
 };
 
 }  // namespace cd::concurrency
