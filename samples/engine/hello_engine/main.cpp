@@ -3169,8 +3169,10 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // counts. Same greedy clustering Meshoptimizer starts with.
     if (ImGui::CollapsingHeader("Run25  Mesh Shader Meshlet Builder Probe"))
     {
-        static int s_ms_tri_count = 100;
-        ImGui::SliderInt("Source triangle count", &s_ms_tri_count, 8, 500);
+        // phase1054-3d-viewport-meshlets: tri count migrated onto
+        // HelloEngineFx so the 3D cluster view rebuilds with it.
+        ImGui::SliderInt("Source triangle count", &fx.ms_tri_count, 8, 500);
+        const int s_ms_tri_count = fx.ms_tri_count;
         // Build a synthetic triangle-strip-like flat indexed mesh.
         const auto n = static_cast<std::uint32_t>(s_ms_tri_count);
         std::vector<cd::math::Vec3f> positions(n + 2);
@@ -3199,6 +3201,13 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                         data.meshlets[i].triangle_count);
         }
         ImGui::TextDisabled("NVIDIA 2018 / Karis 2021 Nanite leaf granularity.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show meshlet clusters in 3D viewport",
+                        &fx.ms_show_meshlets_3d);
+        if (fx.ms_show_meshlets_3d)
+        {
+            ImGui::TextDisabled("  strip triangles edge-drawn, colour = meshlet id (Nanite view)");
+        }
     }
     // phase929-brdf-sheen-clearcoat-live-demo (Run 25 Strand B):
     // drive cd::brdf::sheen_clearcoat::charlie_d + v_neubelt +
@@ -10217,6 +10226,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 cd_sample::append_vt_atlas_overlay(
                     s.fx, s.vt_table, s.debug_lines);
         }
+        if (s.fx.ms_show_meshlets_3d)
+            cd_sample::append_meshlet_overlay(s.fx, s.debug_lines);
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
         while (!s.buffer_destroy_queue.empty() &&

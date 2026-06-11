@@ -416,6 +416,15 @@ struct HelloEngineFx
     std::uint32_t vt_lookup_slot_x { 0 };
     std::uint32_t vt_lookup_slot_y { 0 };
     bool vt_show_atlas_3d { false };
+    // phase1054-3d-viewport-meshlets: shared state for the "Run25
+    // Mesh Shader Meshlet Builder Probe" panel and its 3D overlay.
+    // The overlay rebuilds the same synthetic strip + meshlets and
+    // draws every triangle's edges tinted by a per-meshlet hash —
+    // the Nanite-style cluster colour view (research doc Tier-1 #1,
+    // originally blocked on the mesh-shader GPU path; trivial via
+    // cd::debug_line).
+    int  ms_tri_count { 100 };
+    bool ms_show_meshlets_3d { false };
 };
 
 }  // namespace cd_sample

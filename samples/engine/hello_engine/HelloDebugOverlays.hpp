@@ -23,6 +23,7 @@
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/ibl/BrdfLut.hpp>
 #include <cd/math/Vector.hpp>
+#include <cd/mesh_shader/Meshlet.hpp>
 #include <cd/virtual_textures/VirtualTextures.hpp>
 
 #include <algorithm>
@@ -407,6 +408,75 @@ inline void append_vt_atlas_overlay(
     {
         lines.add_cross(cell_centre(slot->slot_x, slot->slot_y),
                         kCell * 0.30F, { 0.95F, 0.95F, 0.95F, 1.0F });
+    }
+}
+
+// phase1054-3d-viewport-meshlets: the Nanite-style cluster colour
+// view (research doc Tier-1 #1 — originally estimated as blocked on
+// the GPU mesh-shader path; trivial as CPU lines). Rebuilds the
+// probe panel's synthetic strip with the SAME fx tri count, runs
+// cd::mesh_shader::build_meshlets and draws every triangle's edges
+// tinted by a per-meshlet hash — adjacent clusters get distinct
+// colours, so the greedy 64-vert/124-tri clustering boundaries are
+// directly visible. Strip is rescaled to a fixed 4 m span so the
+// 8..500 tri range always fits the demo airspace.
+inline void append_meshlet_overlay(const HelloEngineFx& fx,
+                                   cd::debug_line::LineBatch& lines)
+{
+    constexpr cd::math::Vec3f kAnchor { 0.0F, 6.3F, -1.5F };
+    constexpr float kSpanX = 4.0F;
+    constexpr float kAmpY  = 3.0F;  // strip y is 0 / 0.1 — amplify
+    const auto n = static_cast<std::uint32_t>(fx.ms_tri_count);
+    std::vector<cd::math::Vec3f> positions(n + 2);
+    std::vector<std::uint32_t> indices;
+    indices.reserve(static_cast<std::size_t>(n) * 3U);
+    for (std::uint32_t i = 0; i < positions.size(); ++i)
+        positions[i] = { static_cast<float>(i) * 0.1F,
+                         static_cast<float>(i & 1U) * 0.1F,
+                         0.0F };
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        indices.push_back(i);
+        indices.push_back(i + 1U);
+        indices.push_back(i + 2U);
+    }
+    const auto data = cd::mesh_shader::build_meshlets(
+        std::span<const std::uint32_t>(indices),
+        std::span<const cd::math::Vec3f>(positions));
+    const float src_span =
+        std::max(static_cast<float>(positions.size() - 1) * 0.1F, 1e-3F);
+    const auto to_world = [&](const cd::math::Vec3f& p) {
+        return cd::math::Vec3f {
+            kAnchor.x - kSpanX * 0.5F + (p.x / src_span) * kSpanX,
+            kAnchor.y + p.y * kAmpY,
+            kAnchor.z };
+    };
+    for (std::size_t mi = 0; mi < data.meshlets.size(); ++mi)
+    {
+        const auto& m = data.meshlets[mi];
+        // Knuth-hash tint per meshlet id (phase1005 formula) so
+        // neighbouring clusters read distinctly.
+        const auto h = static_cast<std::uint32_t>(mi) * 2654435761U;
+        const cd::math::Vec4f tint {
+            0.25F + 0.70F * (static_cast<float>((h >>  0U) & 0xFFU) / 255.0F),
+            0.25F + 0.70F * (static_cast<float>((h >>  8U) & 0xFFU) / 255.0F),
+            0.25F + 0.70F * (static_cast<float>((h >> 16U) & 0xFFU) / 255.0F),
+            1.0F };
+        for (std::uint32_t t = 0; t < m.triangle_count; ++t)
+        {
+            const auto l0 = data.triangle_indices[m.triangle_offset + t * 3U + 0U];
+            const auto l1 = data.triangle_indices[m.triangle_offset + t * 3U + 1U];
+            const auto l2 = data.triangle_indices[m.triangle_offset + t * 3U + 2U];
+            const auto& p0 = positions[data.vertex_indices[m.vertex_offset + l0]];
+            const auto& p1 = positions[data.vertex_indices[m.vertex_offset + l1]];
+            const auto& p2 = positions[data.vertex_indices[m.vertex_offset + l2]];
+            const auto w0 = to_world(p0);
+            const auto w1 = to_world(p1);
+            const auto w2 = to_world(p2);
+            lines.add_line(w0, w1, tint);
+            lines.add_line(w1, w2, tint);
+            lines.add_line(w2, w0, tint);
+        }
     }
 }
 
