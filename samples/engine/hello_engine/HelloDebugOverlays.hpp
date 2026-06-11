@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <numbers>
 
 namespace cd_sample {
@@ -514,6 +515,52 @@ inline void append_ecs_cloud_overlay(const HelloEngineFx& fx,
 /// Umbrella: appends every toggled-on pure-line overlay. Called once
 /// per frame from main()'s render loop, just before the LineBatch
 /// flush (phase 1031/1034).
+// phase1094-3d-viewport-nrc-mse: the NRC demo's per-step training MSE
+// as a world-anchored LOG-SCALE polyline — the panel's 2D PlotLines
+// promoted into the viewport so the descent reads alongside the other
+// library demos. X = step window, Y = log10(mse) normalised to the
+// window's own min/max (a flat converged tail hugs the baseline).
+inline void append_nrc_mse_overlay(const HelloEngineFx& fx,
+                                   cd::debug_line::LineBatch& lines)
+{
+    const auto& h = fx.nrc_mse_history;
+    if (h.size() < 2) return;
+    constexpr cd::math::Vec3f kAnchor { -6.0F, 4.0F, -6.0F };
+    constexpr float kSpanX = 4.0F;
+    constexpr float kSpanY = 1.5F;
+    float lo = std::numeric_limits<float>::max();
+    float hi = std::numeric_limits<float>::lowest();
+    for (const float v : h)
+    {
+        const float lg = std::log10(std::max(v, 1e-12F));
+        lo = std::min(lo, lg);
+        hi = std::max(hi, lg);
+    }
+    const float range = std::max(hi - lo, 1e-6F);
+    // Axes (dim slate): baseline + value axis.
+    const cd::math::Vec4f kAxis { 0.45F, 0.47F, 0.52F, 1.0F };
+    lines.add_line(kAnchor,
+                   { kAnchor.x + kSpanX, kAnchor.y, kAnchor.z }, kAxis);
+    lines.add_line(kAnchor,
+                   { kAnchor.x, kAnchor.y + kSpanY, kAnchor.z }, kAxis);
+    // Curve (amber).
+    const cd::math::Vec4f kCurve { 0.95F, 0.72F, 0.25F, 1.0F };
+    const float inv_n = 1.0F / static_cast<float>(h.size() - 1);
+    cd::math::Vec3f prev {};
+    for (std::size_t i = 0; i < h.size(); ++i)
+    {
+        const float t01 = static_cast<float>(i) * inv_n;
+        const float lg  = std::log10(std::max(h[i], 1e-12F));
+        const float y01 = (lg - lo) / range;
+        const cd::math::Vec3f pt { kAnchor.x + t01 * kSpanX,
+                                   kAnchor.y + y01 * kSpanY,
+                                   kAnchor.z };
+        if (i > 0)
+            lines.add_line(prev, pt, kCurve);
+        prev = pt;
+    }
+}
+
 inline void append_pure_line_overlays(const HelloEngineFx& fx,
                                       cd::debug_line::LineBatch& lines)
 {
@@ -527,6 +574,7 @@ inline void append_pure_line_overlays(const HelloEngineFx& fx,
     if (fx.shafts_show_ring_3d)            append_shafts_ring(fx, lines);
     if (fx.ecs_show_cloud_3d && fx.ecs_alive_mirror > 0)
                                            append_ecs_cloud_overlay(fx, lines);
+    if (fx.nrc_show_mse_3d)                append_nrc_mse_overlay(fx, lines);
 }
 
 }  // namespace cd_sample

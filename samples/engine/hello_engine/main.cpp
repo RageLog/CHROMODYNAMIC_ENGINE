@@ -2566,7 +2566,6 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         static cd::nrc::Config s_nrc_cfg {};
         static std::unique_ptr<cd::nrc::CpuReferenceMlp> s_nrc_mlp =
             std::make_unique<cd::nrc::CpuReferenceMlp>(s_nrc_cfg);
-        static std::vector<float> s_nrc_mse_history;
         static std::array<float, cd::nrc::kInputDim> s_nrc_feature {};
         static cd::math::Vec3f s_nrc_target { 0.8F, 0.4F, 0.2F };
         static bool s_nrc_initialised = false;
@@ -2590,16 +2589,16 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                 const float ey = pred.y - s_nrc_target.y;
                 const float ez = pred.z - s_nrc_target.z;
                 const float mse = (ex * ex + ey * ey + ez * ez) / 3.0F;
-                s_nrc_mse_history.push_back(mse);
-                if (s_nrc_mse_history.size() > 1024U)
-                    s_nrc_mse_history.erase(s_nrc_mse_history.begin());
+                fx.nrc_mse_history.push_back(mse);
+                if (fx.nrc_mse_history.size() > 1024U)
+                    fx.nrc_mse_history.erase(fx.nrc_mse_history.begin());
             }
         }
         ImGui::SameLine();
         if (ImGui::Button("Reset MLP"))
         {
             s_nrc_mlp = std::make_unique<cd::nrc::CpuReferenceMlp>(s_nrc_cfg);
-            s_nrc_mse_history.clear();
+            fx.nrc_mse_history.clear();
         }
         // Live inference + MSE readout.
         {
@@ -2615,21 +2614,22 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                         static_cast<double>(pred.z));
             ImGui::Text("Validation MSE: %.6f  (training steps: %zu)",
                         static_cast<double>(mse),
-                        s_nrc_mse_history.size());
+                        fx.nrc_mse_history.size());
         }
-        if (!s_nrc_mse_history.empty())
+        if (!fx.nrc_mse_history.empty())
         {
             ImGui::PlotLines(
                 "##nrc_mse",
-                s_nrc_mse_history.data(),
-                static_cast<int>(s_nrc_mse_history.size()),
+                fx.nrc_mse_history.data(),
+                static_cast<int>(fx.nrc_mse_history.size()),
                 0,
                 "MSE (per-step)",
                 0.0F,
-                s_nrc_mse_history.front() > 0.0F ? s_nrc_mse_history.front() : 1.0F,
+                fx.nrc_mse_history.front() > 0.0F ? fx.nrc_mse_history.front() : 1.0F,
                 ImVec2(0, 80));
         }
-        ImGui::TextDisabled("In-engine visual demos queued (Strand B Run 25).");
+        ImGui::Checkbox("Show MSE curve in 3D viewport",
+                        &fx.nrc_show_mse_3d);
     }
     if (ImGui::CollapsingHeader("R5  Volumetrics", ImGuiTreeNodeFlags_DefaultOpen))
     {

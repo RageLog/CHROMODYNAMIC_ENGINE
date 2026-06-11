@@ -27,6 +27,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace cd_sample {
 
@@ -349,6 +350,12 @@ struct HelloEngineFx
     float audio_tone_hz { 440.0F };
     float audio_tone_amp { 0.5F };
     bool  audio_show_wave_3d { false };
+
+    // phase1094-3d-viewport-nrc-mse: NRC demo MSE history, migrated off
+    // the panel-local static so the pure-line overlay builder can read
+    // it; toggle promotes the panel's 2D PlotLines into the viewport.
+    bool nrc_show_mse_3d { false };
+    std::vector<float> nrc_mse_history {};
     // phase1037-3d-viewport-rng-histogram: shared state for the
     // "Run25 Random Distribution Probe" panel and its 3D overlay.
     // The panel's Generate/Reset buttons fill these bins (PCG32
