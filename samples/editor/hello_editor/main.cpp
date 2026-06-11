@@ -458,6 +458,11 @@ int main(int argc, char** argv)
         float screen_dir_x { 0.0F };
         float screen_dir_y { 0.0F };
         float world_per_px { 0.0F };
+        // phase1064: position snapshot at drag start so drag-end can
+        // rewind + push a TranslateCommand (EditHistory::push applies
+        // immediately — rewinding first makes apply land exactly on
+        // the live final position and undo on the exact start).
+        cd::math::Vec3f drag_start_pos {};
     };
     GizmoDragMetric gizmo_metric {};
 
@@ -896,6 +901,8 @@ int main(int argc, char** argv)
                                 viewport_gizmo.begin_drag(
                                     best, viewport_gizmo.target());
                                 gizmo_metric = best_metric;
+                                gizmo_metric.drag_start_pos =
+                                    gz_lt->value.position;
                             }
                         }
                         else if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
@@ -918,7 +925,24 @@ int main(int argc, char** argv)
                         }
                         else
                         {
+                            // phase1064: release transition — fold the
+                            // whole drag into ONE undoable command.
                             viewport_gizmo.end_drag();
+                            const auto& start = gizmo_metric.drag_start_pos;
+                            const auto& end_p = gz_lt->value.position;
+                            const cd::math::Vec3f total {
+                                end_p.x - start.x,
+                                end_p.y - start.y,
+                                end_p.z - start.z };
+                            const float len2 = total.x * total.x +
+                                total.y * total.y + total.z * total.z;
+                            if (len2 > 1e-10F)
+                            {
+                                gz_lt->value.position = start;  // rewind
+                                history.push(
+                                    std::make_unique<cd::editor::TranslateCommand>(
+                                        scene, selected, total));
+                            }
                         }
                     }
                 }
