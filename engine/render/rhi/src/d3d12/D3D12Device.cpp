@@ -13,6 +13,7 @@
 // smallest defensible milestone for a backend the marathon author
 // cannot rely on a human to pixel-check.
 // =============================================================================
+#include <algorithm>
 #include <cd/rhi/d3d12/D3D12Device.hpp>
 
 #include <cd/rhi/IDevice.hpp>
@@ -1001,7 +1002,7 @@ public:
             for (const auto& r : desc.push_constants)
             {
                 const auto end = r.offset + r.size;
-                if (end > max_end) max_end = end;
+                max_end = std::max(end, max_end);
             }
             // Round up to 4 bytes — root constants are u32 (DWORD) sized.
             pc_dwords = (max_end + 3u) / 4u;

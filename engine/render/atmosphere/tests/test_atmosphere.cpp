@@ -1,4 +1,5 @@
 #include <cd/atmosphere/Atmosphere.hpp>
+#include <numbers>
 
 #include <gtest/gtest.h>
 
@@ -21,12 +22,12 @@ TEST(Atmosphere, HenyeyGreensteinIntegratesToOne)
     float sum = 0.0F;
     for (int i = 0; i < kN; ++i)
     {
-        const float theta = 3.14159265F * (static_cast<float>(i) + 0.5F) /
+        const float theta = std::numbers::pi_v<float> * (static_cast<float>(i) + 0.5F) /
                             static_cast<float>(kN);
         const float cos_t = std::cos(theta);
         sum += henyey_greenstein(cos_t, g) * std::sin(theta);
     }
-    sum *= 2.0F * 3.14159265F * (3.14159265F / static_cast<float>(kN));
+    sum *= 2.0F * std::numbers::pi_v<float> * (std::numbers::pi_v<float> / static_cast<float>(kN));
     EXPECT_NEAR(sum, 1.0F, 0.05F);  // ~5% trapezoid error at N=200
 }
 

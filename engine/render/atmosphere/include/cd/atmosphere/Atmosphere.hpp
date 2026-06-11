@@ -26,6 +26,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <string_view>
 #include <vector>
 
@@ -57,13 +58,13 @@ struct Parameters
 {
     const float g2 = g * g;
     const float denom = std::pow(1.0F + g2 - 2.0F * g * cos_theta, 1.5F);
-    return (1.0F - g2) / (4.0F * 3.14159265F * denom);
+    return (1.0F - g2) / (4.0F * std::numbers::pi_v<float> * denom);
 }
 
 /// Rayleigh phase (isotropic-ish, cos²-dependent).
 [[nodiscard]] inline float rayleigh_phase(float cos_theta) noexcept
 {
-    return 3.0F / (16.0F * 3.14159265F) * (1.0F + cos_theta * cos_theta);
+    return 3.0F / (16.0F * std::numbers::pi_v<float>) * (1.0F + cos_theta * cos_theta);
 }
 
 /// 2D float LUT — used by the CPU bakes + offline tests. Production

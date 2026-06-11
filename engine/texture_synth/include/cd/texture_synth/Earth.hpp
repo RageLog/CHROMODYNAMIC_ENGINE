@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 namespace cd::texture_synth
@@ -29,7 +30,7 @@ bake_earth_albedo_rgba8(std::uint32_t size)
     for (std::uint32_t py = 0; py < size; ++py)
     {
         const float v   = static_cast<float>(py) / static_cast<float>(size);
-        const float lat = (v - 0.5F) * 3.14159265F;
+        const float lat = (v - 0.5F) * std::numbers::pi_v<float>;
         const float pole_falloff = std::cos(lat);
         for (std::uint32_t px = 0; px < size; ++px)
         {
@@ -121,7 +122,7 @@ bake_earth_mr_rgba8(std::uint32_t size)
     for (std::uint32_t py = 0; py < size; ++py)
     {
         const float v = static_cast<float>(py) / static_cast<float>(size);
-        const float lat = (v - 0.5F) * 3.14159265F;
+        const float lat = (v - 0.5F) * std::numbers::pi_v<float>;
         const float pole_falloff = std::cos(lat);
         for (std::uint32_t px = 0; px < size; ++px)
         {

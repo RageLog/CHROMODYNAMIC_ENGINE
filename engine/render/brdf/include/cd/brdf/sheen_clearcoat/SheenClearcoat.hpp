@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <string_view>
 
 namespace cd::brdf::sheen_clearcoat
@@ -37,7 +38,7 @@ charlie_d(float roughness, float n_dot_h) noexcept
     const float inv_a = 1.0F / alpha;
     const float sin2  = std::max(0.0F, 1.0F - n_dot_h * n_dot_h);
     return (2.0F + inv_a) * std::pow(sin2, 0.5F * inv_a) /
-           (2.0F * 3.14159265F);
+           (2.0F * std::numbers::pi_v<float>);
 }
 
 /// Neubelt visibility for the sheen layer.
@@ -60,7 +61,7 @@ clearcoat_d_v(float roughness,
     const float a   = std::max(roughness * roughness, 0.045F * 0.045F);
     const float a2  = a * a;
     const float den = (n_dot_h * n_dot_h) * (a2 - 1.0F) + 1.0F;
-    const float D   = a2 / (3.14159265F * den * den);
+    const float D   = a2 / (std::numbers::pi_v<float> * den * den);
     const float V   = 1.0F / (4.0F * n_dot_v * n_dot_l + 1e-4F);
     return D * V;
 }

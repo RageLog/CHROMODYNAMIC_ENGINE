@@ -44,6 +44,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <numbers>
 #include <span>
 #include <vector>
 
@@ -70,7 +71,7 @@ SphereMesh make_uv_sphere(int stacks, int slices)
     SphereMesh out;
     out.vertices.reserve(static_cast<std::size_t>((stacks + 1) * (slices + 1)));
 
-    constexpr float kPi = 3.14159265358979F;
+    constexpr float kPi = std::numbers::pi_v<float>;
     for (int i = 0; i <= stacks; ++i)
     {
         const float v = static_cast<float>(i) / static_cast<float>(stacks);

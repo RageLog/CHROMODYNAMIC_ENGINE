@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 namespace cd::imgdiff
@@ -46,7 +47,7 @@ namespace gauss_detail
     const auto r = static_cast<int>(std::ceil(3.0 * sigma));
     const int width = 2 * r + 1;
     std::vector<double> k(static_cast<std::size_t>(width));
-    const double inv_sqrt = 1.0 / (std::sqrt(2.0 * 3.14159265358979323846) * sigma);
+    const double inv_sqrt = 1.0 / (std::sqrt(2.0 * std::numbers::pi) * sigma);
     const double inv_2s2 = 1.0 / (2.0 * sigma * sigma);
     double sum = 0.0;
     for (int i = -r; i <= r; ++i)

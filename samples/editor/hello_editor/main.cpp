@@ -55,6 +55,7 @@
 #include <cd/imgui/Context.hpp>
 #include <cd/debug_draw/DebugDraw.hpp>
 #include <cd/editor/AxisGizmo.hpp>
+#include <numbers>
 #include <optional>
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/material/Material.hpp>
@@ -1076,7 +1077,7 @@ int main(int argc, char** argv)
                                         float delta = ang - gizmo_drag.angle_prev;
                                         // Shortest-arc unwrap so crossing
                                         // ±pi keeps accumulating smoothly.
-                                        constexpr float kPi = 3.14159265358979F;
+                                        constexpr float kPi = std::numbers::pi_v<float>;
                                         if (delta >  kPi) delta -= 2.0F * kPi;
                                         if (delta < -kPi) delta += 2.0F * kPi;
                                         const float total =

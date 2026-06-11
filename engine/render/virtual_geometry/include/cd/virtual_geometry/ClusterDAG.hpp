@@ -15,6 +15,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
@@ -54,12 +55,12 @@ struct AABB
     /// Expand box to include point p.
     void expand(cd::math::Vec3f p) noexcept
     {
-        if (p.x < min_corner.x) min_corner.x = p.x;
-        if (p.y < min_corner.y) min_corner.y = p.y;
-        if (p.z < min_corner.z) min_corner.z = p.z;
-        if (p.x > max_corner.x) max_corner.x = p.x;
-        if (p.y > max_corner.y) max_corner.y = p.y;
-        if (p.z > max_corner.z) max_corner.z = p.z;
+        min_corner.x = std::min(p.x, min_corner.x);
+        min_corner.y = std::min(p.y, min_corner.y);
+        min_corner.z = std::min(p.z, min_corner.z);
+        max_corner.x = std::max(p.x, max_corner.x);
+        max_corner.y = std::max(p.y, max_corner.y);
+        max_corner.z = std::max(p.z, max_corner.z);
     }
 
     [[nodiscard]] cd::math::Vec3f centre() const noexcept
@@ -147,8 +148,7 @@ public:
         if (m_nodes.empty()) return 0U;
         std::uint32_t max_lod = 0U;
         for (const auto& c : m_nodes)
-            if (c.lod_level > max_lod)
-                max_lod = c.lod_level;
+            max_lod = std::max(c.lod_level, max_lod);
         return max_lod + 1U;
     }
 

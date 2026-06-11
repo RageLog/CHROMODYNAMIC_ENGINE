@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <span>
 #include <string_view>
 
@@ -48,7 +49,7 @@ struct Settings
 {
     const float ax = std::abs(x);
     float r = -0.156583F * ax + 1.570796F * std::sqrt(1.0F - ax);
-    return (x >= 0.0F) ? r : 3.14159265F - r;
+    return (x >= 0.0F) ? r : std::numbers::pi_v<float> - r;
 }
 
 /// Integrate AO for a single direction. Returns visibility (1.0 = fully

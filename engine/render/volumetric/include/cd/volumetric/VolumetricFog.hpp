@@ -41,13 +41,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <string_view>
 #include <vector>
 
 namespace cd::volumetric
 {
 
-inline constexpr float kVolFogPi { 3.14159265358979323846F };
+inline constexpr float kVolFogPi { std::numbers::pi_v<float> };
 
 // ---- Settings ---------------------------------------------------------------
 

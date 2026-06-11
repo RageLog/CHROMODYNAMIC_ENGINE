@@ -16,6 +16,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cmath>
@@ -35,8 +36,8 @@ public:
         mean_ += delta / static_cast<double>(count_);
         const double delta2 = x - mean_;
         m2_ += delta * delta2;
-        if (x < min_) min_ = x;
-        if (x > max_) max_ = x;
+        min_ = std::min(x, min_);
+        max_ = std::max(x, max_);
     }
 
     [[nodiscard]] std::uint64_t count() const noexcept { return count_; }

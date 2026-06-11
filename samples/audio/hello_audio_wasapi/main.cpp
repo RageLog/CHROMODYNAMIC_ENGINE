@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <numbers>
 #include <thread>
 #include <vector>
 
@@ -28,7 +29,7 @@ constexpr float kDurationSec = 1.5F;
 
 std::vector<float> synth_sine(float freq_hz, std::uint32_t frames, float amp = 0.4F)
 {
-    constexpr float kPi = 3.14159265358979F;
+    constexpr float kPi = std::numbers::pi_v<float>;
     std::vector<float> out(frames);
     const float w = 2.0F * kPi * freq_hz / static_cast<float>(kClipSampleRate);
     for (std::uint32_t i = 0; i < frames; ++i)

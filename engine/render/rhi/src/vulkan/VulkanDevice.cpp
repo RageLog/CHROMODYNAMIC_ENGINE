@@ -22,6 +22,7 @@
     #pragma GCC diagnostic pop
 #endif
 
+#include <algorithm>
 #include <cd/rhi/ICommandBuffer.hpp>  // full type — VulkanDevice::create_command_buffer
 #include "VulkanCommandBuffer.hpp"   // ResourceTables + AccelBuildView (Phase 132)
                                       // returns unique_ptr<ICommandBuffer>, the
@@ -2867,18 +2868,13 @@ public:
         {
             // Driver allows us to choose: clamp the requested extent to caps.
             extent = { desc.extent.width, desc.extent.height };
-            if (extent.width < caps.minImageExtent.width)
-                extent.width = caps.minImageExtent.width;
-            if (extent.height < caps.minImageExtent.height)
-                extent.height = caps.minImageExtent.height;
-            if (extent.width > caps.maxImageExtent.width)
-                extent.width = caps.maxImageExtent.width;
-            if (extent.height > caps.maxImageExtent.height)
-                extent.height = caps.maxImageExtent.height;
+            extent.width = std::max(extent.width, caps.minImageExtent.width);
+            extent.height = std::max(extent.height, caps.minImageExtent.height);
+            extent.width = std::min(extent.width, caps.maxImageExtent.width);
+            extent.height = std::min(extent.height, caps.maxImageExtent.height);
         }
         std::uint32_t image_count = desc.image_count;
-        if (image_count < caps.minImageCount)
-            image_count = caps.minImageCount;
+        image_count = std::max(image_count, caps.minImageCount);
         if (caps.maxImageCount != 0 && image_count > caps.maxImageCount)
         {
             image_count = caps.maxImageCount;

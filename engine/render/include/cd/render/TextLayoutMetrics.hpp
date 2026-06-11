@@ -15,6 +15,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cstdint>
@@ -45,7 +46,7 @@ struct TextLayoutMetrics
     {
         if (c == '\n')
         {
-            if (running > longest) longest = running;
+            longest = std::max(running, longest);
             running = 0.0F;
             ++lines;
         }
@@ -54,7 +55,7 @@ struct TextLayoutMetrics
             running += char_advance_px;
         }
     }
-    if (running > longest) longest = running;
+    longest = std::max(running, longest);
 
     m.width      = longest;
     m.line_count = lines;

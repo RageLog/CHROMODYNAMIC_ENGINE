@@ -12,6 +12,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/NullCommandBuffer.hpp>
@@ -420,8 +421,7 @@ public:
             );
         }
         // Headless: snap to the requested value (no real GPU work to wait on).
-        if (it->second < value)
-            it->second = value;
+        it->second = std::max(it->second, value);
         return {};
     }
 
@@ -521,8 +521,7 @@ public:
                     rhi_errors::make(rhi_errors::Code::kInvalidArgument, "submit: unknown signal timeline")
                 );
             }
-            if (s.value > it->second)
-                it->second = s.value;
+            it->second = std::max(s.value, it->second);
         }
         if (desc.signal_fence.is_valid())
         {

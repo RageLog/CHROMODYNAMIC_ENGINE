@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <numbers>
 #include <span>
 #include <vector>
 
@@ -160,7 +161,7 @@ create_depth_target(cd::rhi::IDevice& dev, cd::rhi::Extent2D size, cd::rhi::Form
 ///   t=4: pos=(-1,0,0)  scale=1.0 + 360°
 [[nodiscard]] cd::anim::AnimationClip make_square_clip()
 {
-    constexpr float kPi = 3.14159265358979F;
+    constexpr float kPi = std::numbers::pi_v<float>;
     auto quat_y = [](float deg)
     {
         const float half = deg * kPi / 180.0F * 0.5F;

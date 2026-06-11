@@ -16,6 +16,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cstdint>
@@ -35,7 +36,7 @@ struct RetryPolicy
         if (attempt <= 1) return base_delay_ms;
         float d = static_cast<float>(base_delay_ms);
         for (std::uint32_t i = 1; i < attempt; ++i) d *= factor;
-        if (d > static_cast<float>(max_delay_ms)) d = static_cast<float>(max_delay_ms);
+        d = std::min(d, static_cast<float>(max_delay_ms));
         return static_cast<std::uint32_t>(d);
     }
 

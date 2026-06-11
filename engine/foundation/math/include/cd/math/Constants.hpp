@@ -24,8 +24,14 @@ inline constexpr T tau_v = T(6.28318530717958647692L);
 template <class T>
 inline constexpr T half_pi_v = T(1.57079632679489661923L);
 template <class T>
+// NOLINTNEXTLINE(modernize-use-std-numbers) — this header IS the project's
+// constants surface; the T(...) long-double literal idiom is kept uniform
+// across pi/tau/half_pi/inv_sqrt2, several of which std::numbers cannot
+// express (tau, inv_sqrt2 differs from 1/sqrt2 by rounding). The check's
+// auto-fix also mangles variable templates (phase1087 incident).
 inline constexpr T inv_pi_v = T(0.31830988618379067154L);
 template <class T>
+// NOLINTNEXTLINE(modernize-use-std-numbers) — see inv_pi_v note above.
 inline constexpr T sqrt2_v = T(1.41421356237309504880L);
 template <class T>
 inline constexpr T inv_sqrt2_v = T(0.70710678118654752440L);

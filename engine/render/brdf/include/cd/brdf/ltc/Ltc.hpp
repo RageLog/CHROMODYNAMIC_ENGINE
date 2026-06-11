@@ -21,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <span>
 #include <string_view>
 
@@ -107,7 +108,7 @@ polygon_irradiance(std::array<cd::math::Vec3f, 4> corners,
                       edge_integral(v[1], v[2]) +
                       edge_integral(v[2], v[3]) +
                       edge_integral(v[3], v[0]);
-    return std::abs(sum) / (2.0F * 3.14159265F);
+    return std::abs(sum) / (2.0F * std::numbers::pi_v<float>);
 }
 
 // ---- GLSL helper ------------------------------------------------------------

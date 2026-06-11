@@ -29,11 +29,12 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <numbers>
 
 namespace cd::render::volumetric
 {
 
-inline constexpr float kPi { 3.14159265F };
+inline constexpr float kPi { std::numbers::pi_v<float> };
 
 struct FogParams
 {

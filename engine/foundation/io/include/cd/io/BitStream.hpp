@@ -18,6 +18,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
 #include <cd/io/BinaryStream.hpp>
@@ -46,8 +47,7 @@ public:
     {
         if (bits == 0)
             return;
-        if (bits > 64)
-            bits = 64;
+        bits = std::min<uint32_t>(bits, 64);
         // Mask off any high bits the caller might have left lit.
         if (bits < 64)
             value &= (std::uint64_t { 1 } << bits) - 1;
@@ -136,8 +136,7 @@ public:
     {
         if (bits == 0)
             return std::uint64_t { 0 };
-        if (bits > 64)
-            bits = 64;
+        bits = std::min<uint32_t>(bits, 64);
         if (bits_remaining() < bits)
         {
             return std::unexpected(binary_errors::make(binary_errors::Code::kEndOfStream, "bit read past end"));

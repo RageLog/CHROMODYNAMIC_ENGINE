@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <numbers>
 #include <string>
 
 namespace
@@ -36,14 +37,14 @@ TEST(Endian, BswapU64)
 TEST(Endian, RoundTripFloat)
 {
     std::byte buf[sizeof(float)];
-    cd::io::store_le(buf, 3.14159f);
-    EXPECT_FLOAT_EQ(cd::io::load_le<float>(buf), 3.14159f);
+    cd::io::store_le(buf, std::numbers::pi_v<float>);
+    EXPECT_FLOAT_EQ(cd::io::load_le<float>(buf), std::numbers::pi_v<float>);
 }
 
 TEST(Endian, RoundTripDouble)
 {
     std::byte buf[sizeof(double)];
-    cd::io::store_le(buf, 2.718281828459045);
+    cd::io::store_le(buf, std::numbers::e);
     EXPECT_DOUBLE_EQ(cd::io::load_le<double>(buf), 2.718281828459045);
 }
 

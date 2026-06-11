@@ -9,6 +9,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/math/Vector.hpp>
 
@@ -36,8 +37,8 @@ public:
         const std::size_t n = control_.size();
         if (n == 0) return Vec3f {};
         if (n < 4) return control_[0];
-        if (t < 0.0F) t = 0.0F;
-        if (t > 1.0F) t = 1.0F;
+        t = std::max(t, 0.0F);
+        t = std::min(t, 1.0F);
         const std::size_t segments = n - 3;
         const float scaled = t * static_cast<float>(segments);
         std::size_t seg = static_cast<std::size_t>(scaled);

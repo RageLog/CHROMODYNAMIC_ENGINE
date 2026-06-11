@@ -13,6 +13,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cstddef>
@@ -53,7 +54,7 @@ public:
     /// pair with `ArenaScope` for RAII bracketing.
     void rewind(std::size_t mark) noexcept
     {
-        if (mark <= used_) used_ = mark;
+        used_ = std::min(mark, used_);
     }
 
     [[nodiscard]] std::size_t used() const noexcept { return used_; }

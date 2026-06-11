@@ -31,6 +31,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/core/Result.hpp>
 #include <cd/imgdiff/Gaussian.hpp>
@@ -40,6 +41,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 namespace cd::imgdiff
@@ -137,8 +139,7 @@ compute_flip_lite(ImageView a, ImageView b, double pixels_per_degree = 67.0)
         const double err = flip_detail::perceptual_map(delta);
         r.error_map[i] = err;
         sum += err;
-        if (err > r.max_error)
-            r.max_error = err;
+        r.max_error = std::max(err, r.max_error);
     }
     r.mean_error = sum / static_cast<double>(r.pixel_count);
 
@@ -219,7 +220,7 @@ namespace flip_detail
     const auto r = static_cast<int>(std::ceil(3.0 * sigma));
     const int width = 2 * r + 1;
     std::vector<double> k(static_cast<std::size_t>(width));
-    const double inv_sqrt = 1.0 / (std::sqrt(2.0 * 3.14159265358979323846) * sigma);
+    const double inv_sqrt = 1.0 / (std::sqrt(2.0 * std::numbers::pi) * sigma);
     const double inv_2s2 = 1.0 / (2.0 * sigma * sigma);
     double sum = 0.0;
     for (int i = -r; i <= r; ++i)
@@ -347,8 +348,7 @@ compute_flip_full(ImageView a, ImageView b, double pixels_per_degree = 67.0)
         const double err_clamped = std::min(err, 1.0);
         r.error_map[i] = err_clamped;
         sum += err_clamped;
-        if (err_clamped > r.max_error)
-            r.max_error = err_clamped;
+        r.max_error = std::max(err_clamped, r.max_error);
     }
     r.mean_error = sum / static_cast<double>(r.pixel_count);
 

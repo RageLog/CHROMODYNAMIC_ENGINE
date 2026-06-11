@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace cd::light
 {
@@ -69,7 +70,7 @@ cone_attenuation(float cos_theta, float cos_inner, float cos_outer) noexcept
 [[nodiscard]] inline float
 lumens_to_spot_intensity(float lumens, float cos_outer) noexcept
 {
-    const float arg = 2.0F * 3.14159265358979F * (1.0F - cos_outer);
+    const float arg = 2.0F * std::numbers::pi_v<float> * (1.0F - cos_outer);
     return arg > 1e-5F ? lumens / arg : lumens_to_point_intensity(lumens);
 }
 

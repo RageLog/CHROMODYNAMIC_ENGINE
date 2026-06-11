@@ -43,6 +43,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cstddef>
@@ -120,10 +121,7 @@ public:
         {
             return;
         }
-        if (dt_s < 0.0F)
-        {
-            dt_s = 0.0F;
-        }
+        dt_s = std::max(dt_s, 0.0F);
         elapsed_s_ += dt_s;
         if (elapsed_s_ >= anim_.duration_s)
         {

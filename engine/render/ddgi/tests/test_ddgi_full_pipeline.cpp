@@ -32,6 +32,7 @@
     #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <cd/core/Result.hpp>
 #include <cd/ddgi/FullPipeline.hpp>
 #include <cd/math/Matrix.hpp>
@@ -330,8 +331,7 @@ TEST(DdgiFullPipeline, ExecuteProducesNonZeroOutput)
         const float g = half_to_float(halves[t * 4U + 1U]);
         const float b = half_to_float(halves[t * 4U + 2U]);
         const float s = r + g + b;
-        if (s > max_seen)
-            max_seen = s;
+        max_seen = std::max(s, max_seen);
         if (s > 1e-6F)
         {
             any_nonzero = true;

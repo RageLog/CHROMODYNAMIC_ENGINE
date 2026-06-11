@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <string_view>
 #include <vector>
 
@@ -39,7 +40,7 @@ burley_diffusion_profile(float r, float s) noexcept
     const float d = std::max(1e-5F, s);
     const float exp_a = std::exp(-r / d);
     const float exp_b = std::exp(-r / (3.0F * d));
-    return (exp_a + exp_b) / (8.0F * 3.14159265F * d * r + 1e-5F);
+    return (exp_a + exp_b) / (8.0F * std::numbers::pi_v<float> * d * r + 1e-5F);
 }
 
 struct Kernel1D

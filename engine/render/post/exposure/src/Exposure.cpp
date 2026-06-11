@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 
 namespace cd::post::exposure
 {
@@ -20,7 +21,7 @@ namespace cd::post::exposure
 namespace
 {
 
-constexpr float kLog2Inv         = 1.4426950408889634F;   // 1 / ln(2)
+constexpr float kLog2Inv         = std::numbers::log2e_v<float>;   // 1 / ln(2)
 constexpr float kMinValidLuma    = 1.0E-6F;               // skip pixels at exactly 0 luma
 
 [[nodiscard]] float luma_rec709(float r, float g, float b) noexcept

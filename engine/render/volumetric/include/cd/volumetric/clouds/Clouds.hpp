@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <string_view>
 
 namespace cd::volumetric::clouds
@@ -37,7 +38,7 @@ height_fraction(float altitude_km, const Settings& s) noexcept
     if (altitude_km < s.layer_bottom_km || altitude_km > s.layer_top_km) return 0.0F;
     const float t = (altitude_km - s.layer_bottom_km) /
                     std::max(s.layer_top_km - s.layer_bottom_km, 1e-3F);
-    return std::sin(t * 3.14159265F);  // bell-shape
+    return std::sin(t * std::numbers::pi_v<float>);  // bell-shape
 }
 
 /// Remap helper from Schneider's talk. Maps input range [a, b] to

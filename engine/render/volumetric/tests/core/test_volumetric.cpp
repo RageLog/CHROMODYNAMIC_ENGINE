@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <algorithm>
+#include <numbers>
 
 namespace
 {
@@ -17,7 +19,7 @@ TEST(VolumetricFog, ZeroDistanceTransmittsFully)
 TEST(VolumetricFog, BeerLambertHalfLifeAtDensity)
 {
     // T = exp(-σ_t · d). With σ_t = 1.0 and d = ln(2), T should be 0.5.
-    const float d = std::log(2.0F);
+    const float d = std::numbers::ln2_v<float>;
     EXPECT_NEAR(cd::render::volumetric::transmittance(1.0F, d), 0.5F, 1e-5F);
 }
 

@@ -151,7 +151,7 @@ struct PbrVertex
 [[nodiscard]] std::vector<PbrVertex> make_sphere(int subdivisions)
 {
     // Icosahedron base vertices.
-    constexpr float phi = 1.6180339887F;  // golden ratio
+    constexpr float phi = std::numbers::phi_v<float>;  // golden ratio
     const float n = std::sqrt(1.0F + phi * phi);
     const float s = 1.0F / n;
     const float p = phi / n;
@@ -581,8 +581,8 @@ int main()
     // Fill light CB (directional from upper-left, white, intensity 3).
     {
         LightCB lcb {};
-        lcb.direction[0] = -0.577F; lcb.direction[1] = -0.577F;
-        lcb.direction[2] = -0.577F;
+        lcb.direction[0] = -std::numbers::egamma_v<float>; lcb.direction[1] = -std::numbers::egamma_v<float>;
+        lcb.direction[2] = -std::numbers::egamma_v<float>;
         lcb.color[0] = 1.0F; lcb.color[1] = 1.0F;
         lcb.color[2] = 1.0F; lcb.color[3] = 3.0F;
         (void)dev->upload_buffer(light_cb_h, 0, std::as_bytes(std::span(&lcb, 1)));

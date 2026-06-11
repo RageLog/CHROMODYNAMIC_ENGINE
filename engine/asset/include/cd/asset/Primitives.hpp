@@ -31,6 +31,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <vector>
 
 namespace cd::asset
@@ -57,7 +58,7 @@ struct PrimitiveMesh
 namespace primitives_detail
 {
 
-inline constexpr float kPi  = 3.14159265358979F;
+inline constexpr float kPi  = std::numbers::pi_v<float>;
 inline constexpr float kTau = 6.28318530717958F;
 
 inline void push_quad_indices(std::vector<std::uint16_t>& idx,

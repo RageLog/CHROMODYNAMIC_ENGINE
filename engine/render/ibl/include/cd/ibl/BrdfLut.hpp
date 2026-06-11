@@ -27,7 +27,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <numbers>
 #include <vector>
+#include <algorithm>
 
 namespace cd::ibl
 {
@@ -43,7 +45,7 @@ struct BrdfLut
 namespace detail
 {
 
-constexpr float kPi = 3.14159265358979F;
+constexpr float kPi = std::numbers::pi_v<float>;
 
 /// Hammersley low-discrepancy sequence (van der Corput base 2).
 [[nodiscard]] inline cd::math::Vec2f hammersley(std::uint32_t i, std::uint32_t n) noexcept

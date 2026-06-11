@@ -7,6 +7,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/math/Vector.hpp>
 
@@ -34,8 +35,8 @@ namespace cd::math
 
 [[nodiscard]] inline Vec2f lerp_v2(const Vec2f& a, const Vec2f& b, float t) noexcept
 {
-    if (t < 0.0F) t = 0.0F;
-    if (t > 1.0F) t = 1.0F;
+    t = std::max(t, 0.0F);
+    t = std::min(t, 1.0F);
     return Vec2f { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t };
 }
 
