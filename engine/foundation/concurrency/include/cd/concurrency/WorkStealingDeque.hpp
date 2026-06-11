@@ -14,8 +14,18 @@
 //
 // v1 (S2.5): single-resize doubling on growth, old buffers retained in
 //            a vector for safe access by in-flight thieves (no hazard ptrs).
-//            Acceptable for engine-lifecycle pools; a leak-free reclamation
-//            scheme arrives with HazardPtr (next S2.5 item).
+// v2 (phase1080, X1-FU-C): OPTIONAL hazard-pointer reclamation. When the
+//            owner wires a HazardDomain (set_hazard_domain) and an
+//            owner-side ThreadCache (set_owner_cache), grow() RETIRES the
+//            outgrown buffer through the domain instead of retaining it;
+//            thieves that pass their ThreadCache to steal() protect the
+//            array pointer for the load+CAS window (Michael 2004
+//            publish-then-reverify). Without the wiring the v1 retention
+//            path is byte-identical — standalone consumers keep working
+//            with zero new dependencies at runtime.
+//            Lifetime rule: the domain must outlive the deque, and every
+//            ThreadCache must be destroyed before the domain (the pool
+//            guarantees both by declaration order + join-before-destroy).
 //
 // Notes:
 //   - T must be trivially copyable or std::atomic-compatible (we store T in
@@ -26,6 +36,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cd/concurrency/HazardPtr.hpp>
 #include <cd/core/Defines.hpp>
 
 #include <atomic>
@@ -104,6 +115,23 @@ public:
     WorkStealingDeque(WorkStealingDeque&&) = delete;
     WorkStealingDeque& operator=(WorkStealingDeque&&) = delete;
 
+    /// Hazard-pointer reclamation domain (X1-FU-C). One slot per thief is
+    /// enough (K = 1): a thief protects exactly the array pointer.
+    using HazardDomainT = HazardDomain<1>;
+
+    /// OWNER-only, before concurrent use: enables hazard reclamation.
+    void set_hazard_domain(HazardDomainT* domain) noexcept
+    {
+        hazard_domain_ = domain;
+    }
+
+    /// OWNER-only: the owner thread's cache, used by grow() to retire
+    /// outgrown buffers. Must belong to the same domain.
+    void set_owner_cache(HazardDomainT::ThreadCache* cache) noexcept
+    {
+        owner_cache_ = cache;
+    }
+
     /// OWNER-only. Push to bottom. Grows the deque if necessary.
     void push(T value)
     {
@@ -151,7 +179,12 @@ public:
 
     /// THIEF. Try to steal from top. Returns Success/Empty/Abort.
     /// On Abort the caller should yield and try again (CAS race lost).
-    StealStatus steal(T& out)
+    /// `cache` (optional): the thief's hazard ThreadCache. When the owner
+    /// wired a domain, passing it protects the array pointer for the
+    /// load+CAS window so grow() can RETIRE old buffers instead of
+    /// retaining them. Thieves of a domain-wired deque MUST pass a cache;
+    /// the legacy nullptr path is only safe under v1 retention.
+    StealStatus steal(T& out, HazardDomainT::ThreadCache* cache = nullptr)
     {
         auto t = top_.load(std::memory_order_acquire);
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -160,12 +193,27 @@ public:
         {
             return StealStatus::Empty;
         }
-        Array* a = array_.load(std::memory_order_consume);
+        Array* a = nullptr;
+        const bool guarded = (cache != nullptr) && (hazard_domain_ != nullptr);
+        if (guarded)
+        {
+            // Michael 2004: publish hazard, re-verify source. After this
+            // returns, scan() cannot free `a` until clear() below.
+            a = cache->protect(array_, 0);
+        }
+        else
+        {
+            a = array_.load(std::memory_order_consume);
+        }
         auto x = a->load(t);
         if (!top_.compare_exchange_strong(t, t + 1, std::memory_order_seq_cst, std::memory_order_relaxed))
         {
+            if (guarded)
+                cache->clear(0);
             return StealStatus::Abort;
         }
+        if (guarded)
+            cache->clear(0);
         out = x;
         return StealStatus::Success;
     }
@@ -191,7 +239,19 @@ private:
         {
             new_a->store(i, old_a->load(i));
         }
-        // Retain the old buffer for in-flight thieves (leaks on shutdown only).
+        if (owner_cache_ != nullptr && hazard_domain_ != nullptr)
+        {
+            // X1-FU-C: hand the outgrown buffer to hazard reclamation —
+            // freed by a later scan() once no thief protects it. We no
+            // longer own it, so drop it from the dtor list.
+            std::erase(arrays_, old_a);
+            arrays_.emplace_back(new_a);
+            array_.store(new_a, std::memory_order_release);
+            owner_cache_->retire(old_a);
+            return new_a;
+        }
+        // v1 retention: keep the old buffer alive for in-flight thieves
+        // (freed at deque destruction only).
         arrays_.emplace_back(new_a);
         array_.store(new_a, std::memory_order_release);
         return new_a;
@@ -201,6 +261,8 @@ private:
     alignas(64) std::atomic<std::int64_t> bottom_ { 0 };
     alignas(64) std::atomic<Array*> array_ { nullptr };
     std::vector<Array*> arrays_;  ///< Buffers we own, freed on destruction.
+    HazardDomainT* hazard_domain_ { nullptr };            ///< X1-FU-C wiring
+    HazardDomainT::ThreadCache* owner_cache_ { nullptr };  ///< owner thread's
 };
 
 }  // namespace cd::concurrency

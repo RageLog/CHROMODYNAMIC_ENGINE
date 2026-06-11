@@ -165,4 +165,100 @@ TEST(WorkStealingDeque, PointerPayload)
     EXPECT_EQ(out, &a);
 }
 
+
+// ---------------------------------------------------------------------------
+// phase1080 (X1-FU-C): hazard-pointer reclamation mode.
+// ---------------------------------------------------------------------------
+
+// Domain-wired deque: repeated grows retire old buffers while 4 thieves
+// hammer steal() with their caches. Exactly-once delivery is asserted
+// per item; ASAN (Release+ASAN lane) is the use-after-free referee for
+// the retire/protect window.
+TEST(WorkStealingDeque, HazardModeGrowUnderConcurrentSteals)
+{
+    using Deque = cd::concurrency::WorkStealingDeque<std::size_t>;
+    Deque::HazardDomainT domain;
+    Deque dq { 4 };  // tiny start: many grows
+    dq.set_hazard_domain(&domain);
+
+    constexpr std::size_t kItems = 100000;
+    std::vector<std::atomic<int>> seen(kItems);
+    std::atomic<bool> done { false };
+    std::atomic<std::size_t> consumed { 0 };
+
+    std::vector<std::jthread> thieves;
+    thieves.reserve(4);
+    for (int t = 0; t < 4; ++t)
+    {
+        thieves.emplace_back(
+            [&dq, &domain, &seen, &done, &consumed]
+            {
+                Deque::HazardDomainT::ThreadCache cache { domain };
+                while (!done.load(std::memory_order_acquire) ||
+                       consumed.load(std::memory_order_acquire) < kItems)
+                {
+                    std::size_t v {};
+                    const auto st = dq.steal(v, &cache);
+                    if (st == cd::concurrency::StealStatus::Success)
+                    {
+                        seen[v].fetch_add(1, std::memory_order_relaxed);
+                        consumed.fetch_add(1, std::memory_order_acq_rel);
+                    }
+                    else
+                    {
+                        std::this_thread::yield();
+                    }
+                }
+            }
+        );
+    }
+
+    {
+        // Owner thread: its cache feeds grow()'s retire path.
+        Deque::HazardDomainT::ThreadCache owner_cache { domain };
+        dq.set_owner_cache(&owner_cache);
+        for (std::size_t i = 0; i < kItems; ++i)
+        {
+            dq.push(i);  // backlog forces repeated grows under live steals
+            if ((i & 1023U) == 0U)
+            {
+                // Occasionally pop from the owner side too.
+                if (auto v = dq.pop())
+                {
+                    seen[*v].fetch_add(1, std::memory_order_relaxed);
+                    consumed.fetch_add(1, std::memory_order_acq_rel);
+                }
+            }
+        }
+        // Drain leftovers from the owner side.
+        while (auto v = dq.pop())
+        {
+            seen[*v].fetch_add(1, std::memory_order_relaxed);
+            consumed.fetch_add(1, std::memory_order_acq_rel);
+        }
+        done.store(true, std::memory_order_release);
+        thieves.clear();  // join
+        owner_cache.flush_retired();
+        dq.set_owner_cache(nullptr);
+    }
+
+    ASSERT_EQ(consumed.load(), kItems);
+    for (std::size_t i = 0; i < kItems; ++i)
+        ASSERT_EQ(seen[i].load(), 1) << "item " << i << " delivered != once";
+    EXPECT_GT(dq.capacity(), 4u) << "test never grew - reclamation path unexercised";
+}
+
+// Legacy mode (no domain) still byte-identical: grow retains, dtor frees.
+TEST(WorkStealingDeque, LegacyModeStillRetainsWithoutDomain)
+{
+    cd::concurrency::WorkStealingDeque<std::size_t> dq { 4 };
+    for (std::size_t i = 0; i < 1000; ++i)
+        dq.push(i);
+    std::size_t sum = 0;
+    while (auto v = dq.pop())
+        sum += *v;
+    EXPECT_EQ(sum, 999u * 1000u / 2u);
+    EXPECT_GT(dq.capacity(), 4u);
+}
+
 }  // namespace

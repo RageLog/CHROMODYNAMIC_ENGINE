@@ -18,9 +18,14 @@
 //     execution.
 //   - No global mutex on the hot path; contention is only the WSD's CAS.
 //
-// Outstanding (Sprint S2.5 follow-ups):
-//   - Hazard-pointer based reclamation for retired WSD buffers (currently
-//     bounded retention until pool destruction).
+// phase1080 (X1-FU-C): outgrown WSD buffers are reclaimed through a
+// pool-owned HazardDomain<1> instead of being retained until pool
+// destruction. Each worker stack-owns a ThreadCache; it doubles as the
+// steal-side guard (protect the victim's array pointer for the
+// load+CAS window) and the owner-side retire channel (grow()).
+// Destruction order is load-bearing: hazard_domain_ is declared FIRST
+// so it outlives the deques; worker caches die at thread exit (join
+// happens in shutdown(), before any member is destroyed).
 //
 // phase1079 (X1-FU-D): priority-aware pop AND steal ordering. Each
 // worker owns kPriorityLevels Chase-Lev deques (one per TaskPriority);
@@ -50,6 +55,7 @@
 #pragma once
 
 #include <cd/concurrency/CoroTask.hpp>
+#include <cd/concurrency/HazardPtr.hpp>
 #include <cd/concurrency/Task.hpp>
 #include <cd/concurrency/TaskPriority.hpp>
 #include <cd/concurrency/WorkStealingDeque.hpp>
@@ -105,7 +111,11 @@ public:
         for (std::size_t i = 0; i < thread_count; ++i)
         {
             for (std::size_t lvl = 0; lvl < kPriorityLevels; ++lvl)
-                queues_.emplace_back(std::make_unique<WorkStealingDeque<Job*>>(64));
+            {
+                auto q = std::make_unique<WorkStealingDeque<Job*>>(64);
+                q->set_hazard_domain(&hazard_domain_);
+                queues_.emplace_back(std::move(q));
+            }
             inject_mutexes_.emplace_back(std::make_unique<std::mutex>());
         }
         for (std::size_t i = 0; i < thread_count; ++i)
@@ -371,6 +381,13 @@ private:
         std::mt19937 rng { self_u32 * 2654435761U + 0x9E3779B9U };
         constexpr int kStealAttempts = 4;
 
+        // X1-FU-C: this worker's hazard cache — steal-side guard AND the
+        // owner-side retire channel for MY deques' grow(). Stack RAII:
+        // flushes its retire list back to the domain at thread exit.
+        HazardDomain<1>::ThreadCache hp_cache { hazard_domain_ };
+        for (std::size_t lvl = 0; lvl < kPriorityLevels; ++lvl)
+            wsd(self, lvl).set_owner_cache(&hp_cache);
+
         // Critical -> Low scan over MY levels; returns nullptr when all empty.
         const auto pop_mine = [&]() -> Job*
         {
@@ -405,7 +422,7 @@ private:
                 for (std::size_t lvl = kPriorityLevels; lvl-- > 0;)
                 {
                     Job* stolen {};
-                    const auto status = wsd(victim, lvl).steal(stolen);
+                    const auto status = wsd(victim, lvl).steal(stolen, &hp_cache);
                     if (status == StealStatus::Success)
                     {
                         stats_.steals.fetch_add(1, std::memory_order_relaxed);
@@ -472,6 +489,11 @@ private:
             }
         }
     }
+
+    /// X1-FU-C reclamation domain. Declared FIRST: members are destroyed
+    /// in reverse order, so the domain outlives the deques that retire
+    /// buffers into it (its dtor frees anything still pending).
+    HazardDomain<1> hazard_domain_;
 
     std::vector<std::jthread> workers_;
     /// kPriorityLevels deques PER WORKER, contiguous per worker — see wsd().
