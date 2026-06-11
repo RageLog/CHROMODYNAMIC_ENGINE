@@ -42,6 +42,7 @@ add_subdirectory(atmosphere)          # Day 15 — Hillaire 2020 sky LUTs
 add_subdirectory(decal)               # Day 22 — Persson 2009 deferred decals
 add_subdirectory(velocity)            # Day 24 — motion-vector pass (TAA prereq)
 add_subdirectory(debug_line)          # phase1030 — CPU line-batch builder (debug viz)
+add_subdirectory(debug_draw)          # phase1057 — GPU line renderer (pipeline + VB + flush)
 add_subdirectory(mesh_shader)         # Day 25 — meshlet cluster builder + task/mesh shaders
 add_subdirectory(restir_di)           # Day  6 — Bitterli 2020 ReSTIR DI reservoir
 add_subdirectory(restir_gi)           # Day  7 — Ouyang 2021 ReSTIR GI bounce reservoir

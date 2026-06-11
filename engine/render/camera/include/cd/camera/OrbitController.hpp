@@ -22,6 +22,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/camera/Camera.hpp>
 #include <cd/math/Vector.hpp>
 
@@ -44,8 +45,7 @@ public:
     {
         const cd::math::Vec3f d { c.eye[0] - c.target[0], c.eye[1] - c.target[1], c.eye[2] - c.target[2] };
         radius_ = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        if (radius_ < 1e-4F)
-            radius_ = 1e-4F;
+        radius_ = std::max(radius_, 1e-4F);
         elevation_ = std::asin(std::clamp(d[1] / radius_, -1.0F, 1.0F));
         azimuth_ = std::atan2(d[2], d[0]);
     }
