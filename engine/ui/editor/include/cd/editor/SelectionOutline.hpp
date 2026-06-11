@@ -21,6 +21,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/ecs/Entity.hpp>
 #include <cd/math/Vector.hpp>
@@ -88,10 +89,10 @@ public:
     /// driving the values from UI sliders can run this once per frame.
     void clamp_params() noexcept
     {
-        if (thickness < 0.0F) thickness = 0.0F;
-        if (thickness > 16.0F) thickness = 16.0F;
-        if (opacity   < 0.0F) opacity = 0.0F;
-        if (opacity   > 1.0F) opacity = 1.0F;
+        thickness = std::max(thickness, 0.0F);
+        thickness = std::min(thickness, 16.0F);
+        opacity = std::max(opacity, 0.0F);
+        opacity = std::min(opacity, 1.0F);
     }
 
 private:

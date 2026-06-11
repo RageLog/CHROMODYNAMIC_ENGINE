@@ -25,6 +25,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <atomic>
@@ -80,8 +81,7 @@ class WorkStealingDeque
 public:
     explicit WorkStealingDeque(std::size_t initial_capacity = 64)
     {
-        if (initial_capacity < 4)
-            initial_capacity = 4;
+        initial_capacity = std::max<size_t>(initial_capacity, 4);
         // Round up to power-of-two for cheap masking.
         std::size_t cap = 1;
         while (cap < initial_capacity)

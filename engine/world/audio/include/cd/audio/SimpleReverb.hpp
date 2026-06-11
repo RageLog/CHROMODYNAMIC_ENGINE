@@ -18,6 +18,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cstddef>
@@ -39,8 +40,8 @@ public:
 
     void set_feedback(float fb) noexcept
     {
-        if (fb < -0.99F) fb = -0.99F;
-        if (fb >  0.99F) fb =  0.99F;
+        fb = std::max(fb, -0.99F);
+        fb = std::min(fb, 0.99F);
         feedback_ = fb;
     }
 

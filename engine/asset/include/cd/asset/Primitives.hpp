@@ -23,6 +23,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/math/Vector.hpp>
 
@@ -142,8 +143,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     using primitives_detail::kTau;
     using primitives_detail::make_v;
 
-    if (stacks < 2) stacks = 2;
-    if (slices < 3) slices = 3;
+    stacks = std::max(stacks, 2);
+    slices = std::max(slices, 3);
 
     PrimitiveMesh m;
     m.vertices.reserve((static_cast<std::size_t>(stacks) + 1U) * (static_cast<std::size_t>(slices) + 1U));
@@ -198,7 +199,7 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     using primitives_detail::kTau;
     using primitives_detail::make_v;
 
-    if (slices < 3) slices = 3;
+    slices = std::max(slices, 3);
     PrimitiveMesh m;
     m.vertices.reserve(2U + 2U * static_cast<std::size_t>(slices));
     m.indices.reserve(static_cast<std::size_t>(slices) * 6U);
@@ -267,7 +268,7 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     using primitives_detail::kTau;
     using primitives_detail::make_v;
 
-    if (slices < 3) slices = 3;
+    slices = std::max(slices, 3);
     PrimitiveMesh m;
     m.vertices.reserve(2U + 4U * static_cast<std::size_t>(slices));
     m.indices.reserve(static_cast<std::size_t>(slices) * 12U);
@@ -373,8 +374,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     using primitives_detail::kTau;
     using primitives_detail::make_v;
 
-    if (rings < 3) rings = 3;
-    if (sides < 3) sides = 3;
+    rings = std::max(rings, 3);
+    sides = std::max(sides, 3);
     PrimitiveMesh m;
     m.vertices.reserve((static_cast<std::size_t>(rings) + 1U) * (static_cast<std::size_t>(sides) + 1U));
     m.indices.reserve(static_cast<std::size_t>(rings) * static_cast<std::size_t>(sides) * 6U);
@@ -430,8 +431,8 @@ inline PrimitiveVertex make_v(float px, float py, float pz,
     using primitives_detail::kTau;
     using primitives_detail::make_v;
 
-    if (rings < 1) rings = 1;
-    if (slices < 3) slices = 3;
+    rings = std::max(rings, 1);
+    slices = std::max(slices, 3);
     const float half_h = 0.5F * height;
     PrimitiveMesh m;
     m.vertices.reserve((2U * static_cast<std::size_t>(rings) + 2U) * (static_cast<std::size_t>(slices) + 1U));

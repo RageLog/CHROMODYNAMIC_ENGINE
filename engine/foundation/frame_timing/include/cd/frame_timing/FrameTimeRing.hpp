@@ -29,6 +29,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <algorithm>
@@ -119,8 +120,8 @@ public:
         {
             const float v = buf_[i];
             sum += static_cast<double>(v);
-            if (v < dmin) dmin = v;
-            if (v > dmax) dmax = v;
+            dmin = std::min(v, dmin);
+            dmax = std::max(v, dmax);
             sorted.push_back(v);
         }
         std::ranges::sort(sorted);

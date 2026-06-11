@@ -16,6 +16,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <array>
@@ -37,7 +38,7 @@ public:
     void set_gain(std::size_t channel, float gain) noexcept
     {
         if (channel >= kChannels) return;
-        if (gain < 0.0F) gain = 0.0F;
+        gain = std::max(gain, 0.0F);
         gains_[channel] = gain;
     }
 

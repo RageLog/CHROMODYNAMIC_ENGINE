@@ -21,6 +21,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/anim/Animation.hpp>
 #include <cd/core/Defines.hpp>
 #include <cd/math/Matrix.hpp>
@@ -181,8 +182,7 @@ public:
             if (track.size() >= 2)
             {
                 const float td = track.back().time - track.front().time;
-                if (td > d)
-                    d = td;
+                d = std::max(td, d);
             }
         }
         return d;

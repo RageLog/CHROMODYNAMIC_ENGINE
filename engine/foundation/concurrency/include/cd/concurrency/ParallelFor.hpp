@@ -16,6 +16,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <algorithm>
@@ -35,7 +36,7 @@ inline void parallel_for(std::size_t begin, std::size_t end, F fn,
         worker_count = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
 
     const std::size_t total = end - begin;
-    if (worker_count > total) worker_count = total;
+    worker_count = std::min(worker_count, total);
     const std::size_t chunk = (total + worker_count - 1) / worker_count;
 
     std::vector<std::thread> threads;

@@ -14,6 +14,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 
 #include <cstdint>
@@ -40,8 +41,8 @@ public:
             rtt_    = rtt_ + 0.125F * (r - rtt_);
         }
         ++count_;
-        if (rtt_us < min_us_) min_us_ = rtt_us;
-        if (rtt_us > max_us_) max_us_ = rtt_us;
+        min_us_ = std::min(rtt_us, min_us_);
+        max_us_ = std::max(rtt_us, max_us_);
     }
 
     [[nodiscard]] float         current_rtt_us() const noexcept { return rtt_; }

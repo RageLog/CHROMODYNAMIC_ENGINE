@@ -9,6 +9,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/math/Vector.hpp>
 
@@ -23,8 +24,8 @@ struct CubicBezier
 
     [[nodiscard]] Vec3f at(float t) const noexcept
     {
-        if (t < 0.0F) t = 0.0F;
-        if (t > 1.0F) t = 1.0F;
+        t = std::max(t, 0.0F);
+        t = std::min(t, 1.0F);
         const float u = 1.0F - t;
         const float w0 = u * u * u;
         const float w1 = 3.0F * u * u * t;
@@ -39,7 +40,7 @@ struct CubicBezier
 
     [[nodiscard]] float arc_length(int samples = 32) const noexcept
     {
-        if (samples < 2) samples = 2;
+        samples = std::max(samples, 2);
         float len = 0.0F;
         Vec3f prev = at(0.0F);
         for (int i = 1; i <= samples; ++i)
