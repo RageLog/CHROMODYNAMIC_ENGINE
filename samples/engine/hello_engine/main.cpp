@@ -30,6 +30,7 @@
 // Stays at marathon discipline (sample pattern, single main.cpp,
 // no engine apps-layer mimicry; that lands at v1.0+ time).
 // =============================================================================
+#include <algorithm>
 #include <cd/anim/Animation.hpp>
 #include <cd/anim/GpuSkinning.hpp>
 #include <cd/anim/Skeleton.hpp>
@@ -607,8 +608,7 @@ inline void draw_random_panel(const Histogram& hist_uniform, const Histogram& hi
         std::vector<float> bars(hist_uniform.bins.size());
         std::size_t peak = 1;
         for (auto b : hist_uniform.bins)
-            if (b > peak)
-                peak = b;
+            peak = std::max(b, peak);
         for (std::size_t i = 0; i < hist_uniform.bins.size(); ++i)
             bars[i] = static_cast<float>(hist_uniform.bins[i]) / static_cast<float>(peak);
         ImGui::PlotHistogram(
@@ -628,8 +628,7 @@ inline void draw_random_panel(const Histogram& hist_uniform, const Histogram& hi
         std::vector<float> bars(hist_normal.bins.size());
         std::size_t peak = 1;
         for (auto b : hist_normal.bins)
-            if (b > peak)
-                peak = b;
+            peak = std::max(b, peak);
         for (std::size_t i = 0; i < hist_normal.bins.size(); ++i)
             bars[i] = static_cast<float>(hist_normal.bins[i]) / static_cast<float>(peak);
         ImGui::PlotHistogram(
@@ -1345,10 +1344,8 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
                 changed = true;
             if (changed)
             {
-                if (inner_deg > outer_deg - 0.5F)
-                    inner_deg = outer_deg - 0.5F;
-                if (inner_deg < 0.5F)
-                    inner_deg = 0.5F;
+                inner_deg = std::min(inner_deg, outer_deg - 0.5F);
+                inner_deg = std::max(inner_deg, 0.5F);
                 row.light.cos_inner_cone = std::cos(inner_deg * (std::numbers::pi_v<float> / 180.0F));
                 row.light.cos_outer_cone = std::cos(outer_deg * (std::numbers::pi_v<float> / 180.0F));
                 const float denom = row.light.cos_inner_cone - row.light.cos_outer_cone;
@@ -4373,8 +4370,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         for (std::size_t i = 0; i < 32; ++i)
         {
             hist_f[i] = static_cast<float>(s_rng_hist[i]);
-            if (s_rng_hist[i] > hist_max)
-                hist_max = s_rng_hist[i];
+            hist_max = std::max(s_rng_hist[i], hist_max);
         }
         ImGui::Text("Total samples: %llu",
                     static_cast<unsigned long long>(s_rng_total));
@@ -5016,8 +5012,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                 if (prev_ok)
                                 {
                                     const float d = dist_to_seg(prev, pw, mp);
-                                    if (d < min_d)
-                                        min_d = d;
+                                    min_d = std::min(d, min_d);
                                 }
                                 prev = pw;
                                 prev_ok = true;
@@ -5289,12 +5284,9 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                         default:
                                             break;
                                     }
-                                    if (cur.x < 0.05F)
-                                        cur.x = 0.05F;
-                                    if (cur.y < 0.05F)
-                                        cur.y = 0.05F;
-                                    if (cur.z < 0.05F)
-                                        cur.z = 0.05F;
+                                    cur.x = std::max(cur.x, 0.05F);
+                                    cur.y = std::max(cur.y, 0.05F);
+                                    cur.z = std::max(cur.z, 0.05F);
                                     lt->value.scale = cur;
                                 }
                                 else if (selected_kind == SelKind::kLight && selected >= 0 &&
@@ -5311,10 +5303,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                         L.type == cd::light::LightType::kSpot)
                                     {
                                         float r = gizmo_state.light_drag_range_start * factor;
-                                        if (r < 0.1F)
-                                            r = 0.1F;
-                                        if (r > 200.0F)
-                                            r = 200.0F;
+                                        r = std::max(r, 0.1F);
+                                        r = std::min(r, 200.0F);
                                         L.range = r;
                                     }
                                     else if (L.type == cd::light::LightType::kRectArea)
@@ -7616,7 +7606,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             {
                 if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
                 float u1 = s.rand_rng.next_float();
-                if (u1 < 1e-7F) u1 = 1e-7F;
+                u1 = std::max(u1, 1e-7F);
                 float u2 = s.rand_rng.next_float();
                 float rr = std::sqrt(-2.0F * std::log(u1));
                 float t  = 2.0F * std::numbers::pi_v<float> * u2;
@@ -7731,7 +7721,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             for (int i = 0; i < 8192; ++i)
             {
                 if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
-                float u1 = s.rand_rng.next_float(); if (u1 < 1e-7F) u1 = 1e-7F;
+                float u1 = s.rand_rng.next_float(); u1 = std::max(u1, 1e-7F);
                 float u2 = s.rand_rng.next_float();
                 float rr = std::sqrt(-2.0F * std::log(u1));
                 float t  = 2.0F * std::numbers::pi_v<float> * u2;
@@ -8209,8 +8199,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     fl.yaw   += ddx * cd_sample::kCamLookSpeed;
                     fl.pitch -= ddy * cd_sample::kCamLookSpeed;
                     constexpr float kHalfPi = 1.5707963F;
-                    if (fl.pitch >  kHalfPi - 0.05F) fl.pitch =  kHalfPi - 0.05F;
-                    if (fl.pitch < -kHalfPi + 0.05F) fl.pitch = -kHalfPi + 0.05F;
+                    fl.pitch = std::min(fl.pitch, kHalfPi - 0.05F);
+                    fl.pitch = std::max(fl.pitch, -kHalfPi + 0.05F);
                 }
                 fl.last_mouse_x = ev.mouse_x; fl.last_mouse_y = ev.mouse_y;
                 fl.has_last_mouse = true;
@@ -8219,8 +8209,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 !ImGui::GetIO().WantCaptureMouse)
             {
                 fl.dist *= (ev.wheel > 0.0F) ? 0.9F : 1.1F;
-                if (fl.dist < 1.0F)   fl.dist = 1.0F;
-                if (fl.dist > 100.0F) fl.dist = 100.0F;
+                fl.dist = std::max(fl.dist, 1.0F);
+                fl.dist = std::min(fl.dist, 100.0F);
             }
         }  // end event loop
 
@@ -8260,16 +8250,15 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 as.bus.mix(1, burst_noise(as.sample_t));
                 float x = as.bus.pull();
                 x = as.comp.process(x);
-                if (as.comp.gain_db() < comp_db_min) comp_db_min = as.comp.gain_db();
+                comp_db_min = std::min(as.comp.gain_db(), comp_db_min);
                 const float wet = as.reverb.process(x);
                 x = 0.75F * x + 0.20F * wet;
                 x = as.lowpass.process(x);
                 x = as.limiter.process(x);
-                if (as.limiter.current_gain() < lim_gain_min)
-                    lim_gain_min = as.limiter.current_gain();
-                if (std::fabs(x) > peak) peak = std::fabs(x);
-                if (x >  1.0F) x =  1.0F;
-                if (x < -1.0F) x = -1.0F;
+                lim_gain_min = std::min(as.limiter.current_gain(), lim_gain_min);
+                peak = std::max(std::fabs(x), peak);
+                x = std::min(x, 1.0F);
+                x = std::max(x, -1.0F);
                 as.ring[as.ring_write] = static_cast<std::int16_t>(x * 32760.0F);
                 if (++as.ring_write >= kAudioRingFrames) as.ring_write = 0;
                 ++as.total_written;
@@ -8335,7 +8324,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             for (int i = 0; i < 8192; ++i)
             {
                 if (cv_ok) { cv_ok = false; n.push_back(cv); continue; }
-                float u1 = s.rand_rng.next_float(); if (u1 < 1e-7F) u1 = 1e-7F;
+                float u1 = s.rand_rng.next_float(); u1 = std::max(u1, 1e-7F);
                 float u2 = s.rand_rng.next_float();
                 float rr = std::sqrt(-2.0F * std::log(u1));
                 float t  = 2.0F * std::numbers::pi_v<float> * u2;
