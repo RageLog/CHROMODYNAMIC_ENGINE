@@ -16,6 +16,7 @@
 
 cd_add_library(editor_panel_material_preview
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::material + cd::asset_material_authoring are EXCLUDE_FROM_INSTALL
   SOURCES
     src/MaterialPreview.cpp
   PUBLIC_DEPS

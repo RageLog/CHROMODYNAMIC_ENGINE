@@ -14,6 +14,7 @@
 
 cd_add_library(editor_panel_asset_pipeline_status
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::asset_streamer_pool is EXCLUDE_FROM_INSTALL
   SOURCES
     src/AssetPipelineStatus.cpp
   PUBLIC_DEPS

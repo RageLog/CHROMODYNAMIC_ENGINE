@@ -11,6 +11,7 @@
 
 cd_add_library(editor_panel_light_editor
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::lighting_clusters is EXCLUDE_FROM_INSTALL (vendored glslang)
   SOURCES
     src/LightEditor.cpp
   PUBLIC_DEPS

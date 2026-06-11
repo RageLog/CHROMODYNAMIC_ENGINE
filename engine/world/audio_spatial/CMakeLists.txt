@@ -86,6 +86,7 @@ endif()
 
 cd_add_library(audio_spatial
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # OpenAL (vcpkg/system find_package) is not in the export set
   SOURCES
     src/AudioSpatial.cpp
     src/HrtfMixer.cpp

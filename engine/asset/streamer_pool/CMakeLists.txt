@@ -12,6 +12,7 @@
 #   cd::rhi                    — IDevice forward for texture ticking
 cd_add_library(asset_streamer_pool
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # transitive cd::asset_shader_cache is EXCLUDE_FROM_INSTALL (vendored glslang)
   SOURCES
     src/StreamerPool.cpp
   PUBLIC_DEPS

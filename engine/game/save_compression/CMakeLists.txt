@@ -78,6 +78,7 @@ endif()
 
 cd_add_library(game_save_compression
   TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # lz4_static is FetchContent — not exportable
   SOURCES
     src/SaveCompression.cpp
   PUBLIC_DEPS
