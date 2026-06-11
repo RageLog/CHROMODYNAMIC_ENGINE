@@ -114,5 +114,5 @@ tmp/
 # phase1048: transient clang-tidy sweep artifacts (raw run-clang-tidy
 # output + extracted error lists). The curated findings live in the
 # phase commit messages; raw dumps are reproducible from the config.
-research/reports/ct_sweep_*
+research/reports/ct_*
 research/reports/clang_tidy_*
