@@ -160,17 +160,38 @@ public:
                 w.join();
         }
         // Drain any orphaned jobs to free memory (all priority levels).
+        // phase1085: balance queued_ for every job deleted unrun and
+        // notify idle waiters afterwards, so a wait_all() that raced
+        // into shutdown() observes consistent counters instead of
+        // hanging on jobs that will never run. CONTRACT: detached
+        // COROUTINES pending here still leak their frame and leave
+        // active_coroutines_ high (the type-erased Job cannot reach the
+        // handle) — call wait_all() before shutdown() when
+        // spawn_detached was used; see the v1 ThreadPool note.
+        std::uint64_t drained = 0;
         for (auto& q : queues_)
         {
             while (auto v = q->pop())
+            {
                 delete *v;
+                ++drained;
+            }
         }
         for (std::size_t i = 0; i < inject_buffers_.size(); ++i)
         {
             std::scoped_lock guard { *inject_mutexes_[i] };
             for (auto* j : inject_buffers_[i])
                 delete j;
+            drained += inject_buffers_[i].size();
             inject_buffers_[i].clear();
+        }
+        if (drained != 0)
+        {
+            queued_.fetch_sub(drained, std::memory_order_acq_rel);
+            {
+                std::scoped_lock guard { idle_mutex_ };
+            }
+            idle_condition_.notify_all();
         }
         workers_.clear();
     }
@@ -243,11 +264,19 @@ public:
                                              {
                                                  if (!handle.done())
                                                      handle.resume();
+                                                 // Frame is suspended at FinalAwaiter once done —
+                                                 // safe (and required) to destroy from outside.
+                                                 // phase1085: v1 ThreadPool got this in phase1052;
+                                                 // the work-stealing pool had been leaking every
+                                                 // completed detached frame.
+                                                 if (handle.done())
+                                                     handle.destroy();
                                              },
                                              priority };
         if (job == nullptr)
         {
             active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
+            handle.destroy();  // phase1085: released frame must not leak
             {
                 std::scoped_lock guard { idle_mutex_ };  // F5, see above
             }
