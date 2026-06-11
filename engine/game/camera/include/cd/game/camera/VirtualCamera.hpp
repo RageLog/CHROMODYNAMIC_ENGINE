@@ -224,9 +224,9 @@ public:
     /// Blend progress in [0, 1] - useful for debug HUD.
     CD_NODISCARD float blend_progress() const noexcept
     {
-        return (blend_total_s_ > 0.0F)
-                   ? ((blend_t_s_ < blend_total_s_) ? (blend_t_s_ / blend_total_s_) : 1.0F)
-                   : 1.0F;
+        if (blend_total_s_ <= 0.0F || blend_t_s_ >= blend_total_s_)
+            return 1.0F;
+        return blend_t_s_ / blend_total_s_;
     }
 
     /// Number of vcams currently registered.

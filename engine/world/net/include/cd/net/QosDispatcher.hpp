@@ -37,6 +37,7 @@
 #include <cd/core/Result.hpp>
 #include <cd/net/IConnection.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -171,8 +172,7 @@ public:
                 if (t.budget.refill_rate <= 0.0)
                     continue;
                 t.tokens += t.budget.refill_rate * elapsed;
-                if (t.tokens > t.budget.burst)
-                    t.tokens = t.budget.burst;
+                t.tokens = std::min(t.tokens, t.budget.burst);
             }
         }
         last_tick_ = now;

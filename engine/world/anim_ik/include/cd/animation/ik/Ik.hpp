@@ -33,6 +33,7 @@
 // =============================================================================
 #pragma once
 
+#include <numbers>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -63,8 +64,12 @@ namespace cd::animation::ik
 // =============================================================================
 struct JointLimits
 {
-    std::array<float, 3> min_euler { -3.14159265F, -3.14159265F, -3.14159265F };
-    std::array<float, 3> max_euler {  3.14159265F,  3.14159265F,  3.14159265F };
+    std::array<float, 3> min_euler { -std::numbers::pi_v<float>,
+                                     -std::numbers::pi_v<float>,
+                                     -std::numbers::pi_v<float> };
+    std::array<float, 3> max_euler {  std::numbers::pi_v<float>,
+                                      std::numbers::pi_v<float>,
+                                      std::numbers::pi_v<float> };
     bool                 enabled   { false };
 };
 

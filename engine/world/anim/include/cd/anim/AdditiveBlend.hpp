@@ -25,6 +25,7 @@
 #include <cd/math/Transform.hpp>
 #include <cd/math/Vector.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <span>
 
@@ -77,8 +78,7 @@ inline bool additive_blend(std::span<const cd::math::Transformf> base,
 {
     if (base.size() != additive_delta.size() || out.size() != base.size())
         return false;
-    if (weight < 0.0F) weight = 0.0F;
-    if (weight > 1.0F) weight = 1.0F;
+    weight = std::clamp(weight, 0.0F, 1.0F);
     for (std::size_t i = 0; i < base.size(); ++i)
     {
         const auto& bp = base[i];

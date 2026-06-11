@@ -21,6 +21,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <cstdint>
 
 namespace cd::ui
@@ -31,8 +32,7 @@ class Tooltip
 public:
     void set_delay(float seconds) noexcept
     {
-        if (seconds < 0.0F) seconds = 0.0F;
-        delay_ = seconds;
+        delay_ = std::max(seconds, 0.0F);
     }
 
     [[nodiscard]] float delay() const noexcept { return delay_; }

@@ -20,6 +20,7 @@
 #include <cd/math/Transform.hpp>
 #include <cd/math/Vector.hpp>
 
+#include <algorithm>
 #include <span>
 #include <vector>
 
@@ -64,8 +65,7 @@ inline bool blend2(std::span<const cd::math::Transformf> a,
 {
     if (a.size() != b.size() || out.size() != a.size())
         return false;
-    if (t < 0.0F) t = 0.0F;
-    if (t > 1.0F) t = 1.0F;
+    t = std::clamp(t, 0.0F, 1.0F);
     for (std::size_t i = 0; i < a.size(); ++i)
     {
         out[i].position = lerp_vec3(a[i].position, b[i].position, t);

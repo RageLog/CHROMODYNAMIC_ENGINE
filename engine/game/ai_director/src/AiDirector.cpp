@@ -92,10 +92,7 @@ std::optional<EncounterTemplate> AiDirector::request_next_encounter() const
     uint32_t max_configured_tier = 0;
     for (const auto& t : templates_)
     {
-        if (t.difficulty_tier > max_configured_tier)
-        {
-            max_configured_tier = t.difficulty_tier;
-        }
+        max_configured_tier = std::max(max_configured_tier, t.difficulty_tier);
     }
 
     const auto max_tier = static_cast<uint32_t>(
