@@ -463,6 +463,13 @@ int main(int argc, char** argv)
         // immediately — rewinding first makes apply land exactly on
         // the live final position and undo on the exact start).
         cd::math::Vec3f drag_start_pos {};
+        // phase1074: rotate/scale sessions.
+        cd::math::Quatf drag_start_rot {};
+        cd::math::Vec3f drag_start_scale { 1.0F, 1.0F, 1.0F };
+        cd::math::Vec3f ring_u {};        // rotate: in-plane basis
+        cd::math::Vec3f ring_v {};
+        float           angle_prev { 0.0F };  // rotate: unwrap accumulator
+        cd::math::Vec3f grab_hit {};      // scale: initial plane hit
     };
     GizmoDragState gizmo_drag {};
 
@@ -834,7 +841,21 @@ int main(int argc, char** argv)
                     constexpr float kArmLen = 1.2F;
                     constexpr float kPadMin = 0.30F;  // pad inner edge (× arm)
                     constexpr float kPadMax = 0.62F;  // pad outer edge (× arm)
+                    constexpr float kRingRad = 1.05F; // rotate ring radius
+                    constexpr float kRingTol = 0.14F; // ring pick band (world)
                     viewport_gizmo.set_target(gz_lt->value.position);
+                    // phase1074: mode hotkeys — 1/2/3 (W/E/R belongs to
+                    // the WASD camera). Ignored while typing in UI and
+                    // mid-drag (set_mode is drag-gated in the library).
+                    if (!ui_kbd)
+                    {
+                        if (ImGui::IsKeyPressed(ImGuiKey_1))
+                            viewport_gizmo.set_mode(cd::editor::GizmoMode::kTranslate);
+                        if (ImGui::IsKeyPressed(ImGuiKey_2))
+                            viewport_gizmo.set_mode(cd::editor::GizmoMode::kRotate);
+                        if (ImGui::IsKeyPressed(ImGuiKey_3))
+                            viewport_gizmo.set_mode(cd::editor::GizmoMode::kScale);
+                    }
                     const auto to_screen =
                         [&](const cd::math::Vec3f& w) -> std::optional<ImVec2>
                     {
@@ -873,11 +894,13 @@ int main(int argc, char** argv)
                     const auto org_px = to_screen(viewport_gizmo.target());
                     if (org_px.has_value() && !ui_mouse && mouse_ray.has_value())
                     {
+                        const auto gmode = viewport_gizmo.mode();
                         if (!viewport_gizmo.is_dragging())
                         {
                             cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
                             float best_d = viewport_gizmo.hover_tolerance_pixels;
                             const auto tgt = viewport_gizmo.target();
+                            if (gmode != cd::editor::GizmoMode::kRotate)
                             for (const auto ax : { cd::editor::GizmoAxis::kX,
                                                    cd::editor::GizmoAxis::kY,
                                                    cd::editor::GizmoAxis::kZ })
@@ -903,6 +926,7 @@ int main(int argc, char** argv)
                             // phase1073: XY/XZ/YZ pad pick — world-space
                             // ray-vs-pad-square; an inside hit beats any
                             // arrow proximity (pads sit between arrows).
+                            if (gmode == cd::editor::GizmoMode::kTranslate)
                             for (const auto pad : { cd::editor::GizmoAxis::kXY,
                                                     cd::editor::GizmoAxis::kXZ,
                                                     cd::editor::GizmoAxis::kYZ })
@@ -932,21 +956,95 @@ int main(int argc, char** argv)
                                     break;
                                 }
                             }
+                            // phase1074: rotate-ring hover — ray vs ring
+                            // plane, then radial band test around kRingRad.
+                            if (gmode == cd::editor::GizmoMode::kRotate)
+                            {
+                                float best_band = kRingTol;
+                                for (const auto ax : { cd::editor::GizmoAxis::kX,
+                                                       cd::editor::GizmoAxis::kY,
+                                                       cd::editor::GizmoAxis::kZ })
+                                {
+                                    const auto n = cd::editor::axis_dir(ax);
+                                    const auto hit = cd::editor::intersect_ray_plane(
+                                        *mouse_ray, tgt, n);
+                                    if (!hit.has_value()) continue;
+                                    const cd::math::Vec3f local {
+                                        hit->x - tgt.x, hit->y - tgt.y, hit->z - tgt.z };
+                                    const float dist = std::sqrt(
+                                        cd::math::dot(local, local));
+                                    const float band = std::fabs(dist - kRingRad);
+                                    if (band < best_band)
+                                    {
+                                        best_band = band;
+                                        best = ax;
+                                    }
+                                }
+                            }
                             viewport_gizmo.set_hover(best);
                             if (best != cd::editor::GizmoAxis::kNone &&
                                 ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                             {
-                                const auto n = cd::editor::is_plane(best)
-                                    ? cd::editor::plane_normal(best)
-                                    : cd::editor::axis_drag_plane_normal(
-                                          best, forward);
+                                const auto n =
+                                    (gmode == cd::editor::GizmoMode::kRotate)
+                                        ? cd::editor::axis_dir(best)
+                                        : (cd::editor::is_plane(best)
+                                               ? cd::editor::plane_normal(best)
+                                               : cd::editor::axis_drag_plane_normal(
+                                                     best, forward));
                                 const auto hit0 = cd::editor::intersect_ray_plane(
                                     *mouse_ray, tgt, n);
                                 if (hit0.has_value())
                                 {
-                                    viewport_gizmo.begin_drag(best, *hit0);
-                                    gizmo_drag = { tgt, n,
-                                                   gz_lt->value.position };
+                                    gizmo_drag = {};
+                                    gizmo_drag.plane_point  = tgt;
+                                    gizmo_drag.plane_normal = n;
+                                    switch (gmode)
+                                    {
+                                        case cd::editor::GizmoMode::kTranslate:
+                                            viewport_gizmo.begin_drag(best, *hit0);
+                                            gizmo_drag.drag_start_pos =
+                                                gz_lt->value.position;
+                                            break;
+                                        case cd::editor::GizmoMode::kRotate:
+                                        {
+                                            // In-plane basis = the other two
+                                            // principal axes (right-handed
+                                            // around the ring normal).
+                                            switch (best)
+                                            {
+                                                case cd::editor::GizmoAxis::kX:
+                                                    gizmo_drag.ring_u = { 0.0F, 1.0F, 0.0F };
+                                                    gizmo_drag.ring_v = { 0.0F, 0.0F, 1.0F };
+                                                    break;
+                                                case cd::editor::GizmoAxis::kY:
+                                                    gizmo_drag.ring_u = { 0.0F, 0.0F, 1.0F };
+                                                    gizmo_drag.ring_v = { 1.0F, 0.0F, 0.0F };
+                                                    break;
+                                                default:
+                                                    gizmo_drag.ring_u = { 1.0F, 0.0F, 0.0F };
+                                                    gizmo_drag.ring_v = { 0.0F, 1.0F, 0.0F };
+                                                    break;
+                                            }
+                                            const cd::math::Vec3f local {
+                                                hit0->x - tgt.x,
+                                                hit0->y - tgt.y,
+                                                hit0->z - tgt.z };
+                                            gizmo_drag.angle_prev = std::atan2(
+                                                cd::math::dot(local, gizmo_drag.ring_v),
+                                                cd::math::dot(local, gizmo_drag.ring_u));
+                                            gizmo_drag.drag_start_rot =
+                                                gz_lt->value.rotation;
+                                            viewport_gizmo.begin_value_drag(best);
+                                            break;
+                                        }
+                                        case cd::editor::GizmoMode::kScale:
+                                            gizmo_drag.grab_hit = *hit0;
+                                            gizmo_drag.drag_start_scale =
+                                                gz_lt->value.scale;
+                                            viewport_gizmo.begin_value_drag(best);
+                                            break;
+                                    }
                                 }
                             }
                         }
@@ -958,29 +1056,131 @@ int main(int argc, char** argv)
                                 gizmo_drag.plane_normal);
                             if (hit.has_value())
                             {
-                                viewport_gizmo.update_drag(*hit);
-                                gz_lt->value.position = viewport_gizmo.target();
+                                switch (gmode)
+                                {
+                                    case cd::editor::GizmoMode::kTranslate:
+                                        viewport_gizmo.update_drag(*hit);
+                                        gz_lt->value.position =
+                                            viewport_gizmo.target();
+                                        break;
+                                    case cd::editor::GizmoMode::kRotate:
+                                    {
+                                        const auto& tgt0 = gizmo_drag.plane_point;
+                                        const cd::math::Vec3f local {
+                                            hit->x - tgt0.x,
+                                            hit->y - tgt0.y,
+                                            hit->z - tgt0.z };
+                                        const float ang = std::atan2(
+                                            cd::math::dot(local, gizmo_drag.ring_v),
+                                            cd::math::dot(local, gizmo_drag.ring_u));
+                                        float delta = ang - gizmo_drag.angle_prev;
+                                        // Shortest-arc unwrap so crossing
+                                        // ±pi keeps accumulating smoothly.
+                                        constexpr float kPi = 3.14159265358979F;
+                                        if (delta >  kPi) delta -= 2.0F * kPi;
+                                        if (delta < -kPi) delta += 2.0F * kPi;
+                                        const float total =
+                                            viewport_gizmo.drag_value() + delta;
+                                        viewport_gizmo.update_value_drag(total);
+                                        gizmo_drag.angle_prev = ang;
+                                        const auto axis = cd::editor::axis_dir(
+                                            viewport_gizmo.active_axis());
+                                        gz_lt->value.rotation = cd::math::normalize(
+                                            cd::math::Quatf::from_axis_angle(
+                                                axis, total) *
+                                            gizmo_drag.drag_start_rot);
+                                        break;
+                                    }
+                                    case cd::editor::GizmoMode::kScale:
+                                    {
+                                        const auto axis = cd::editor::axis_dir(
+                                            viewport_gizmo.active_axis());
+                                        const cd::math::Vec3f span {
+                                            hit->x - gizmo_drag.grab_hit.x,
+                                            hit->y - gizmo_drag.grab_hit.y,
+                                            hit->z - gizmo_drag.grab_hit.z };
+                                        const float along =
+                                            cd::math::dot(span, axis);
+                                        viewport_gizmo.update_value_drag(along);
+                                        const float factor = std::max(
+                                            0.01F, 1.0F + along / kArmLen);
+                                        auto sc = gizmo_drag.drag_start_scale;
+                                        if (axis.x != 0.0F) sc.x *= factor;
+                                        if (axis.y != 0.0F) sc.y *= factor;
+                                        if (axis.z != 0.0F) sc.z *= factor;
+                                        gz_lt->value.scale = sc;
+                                        break;
+                                    }
+                                }
                             }
                         }
                         else
                         {
-                            // phase1064: release transition — fold the
-                            // whole drag into ONE undoable command.
-                            viewport_gizmo.end_drag();
-                            const auto& start = gizmo_drag.drag_start_pos;
-                            const auto& end_p = gz_lt->value.position;
-                            const cd::math::Vec3f total {
-                                end_p.x - start.x,
-                                end_p.y - start.y,
-                                end_p.z - start.z };
-                            const float len2 = total.x * total.x +
-                                total.y * total.y + total.z * total.z;
-                            if (len2 > 1e-10F)
+                            // phase1064/1074: release transition — fold
+                            // the whole drag into ONE undoable command
+                            // (rewind-then-push: EditHistory::push
+                            // applies immediately).
+                            switch (gmode)
                             {
-                                gz_lt->value.position = start;  // rewind
-                                history.push(
-                                    std::make_unique<cd::editor::TranslateCommand>(
-                                        scene, selected, total));
+                                case cd::editor::GizmoMode::kTranslate:
+                                {
+                                    viewport_gizmo.end_drag();
+                                    const auto& start = gizmo_drag.drag_start_pos;
+                                    const auto& end_p = gz_lt->value.position;
+                                    const cd::math::Vec3f total {
+                                        end_p.x - start.x,
+                                        end_p.y - start.y,
+                                        end_p.z - start.z };
+                                    const float len2 = total.x * total.x +
+                                        total.y * total.y + total.z * total.z;
+                                    if (len2 > 1e-10F)
+                                    {
+                                        gz_lt->value.position = start;  // rewind
+                                        history.push(
+                                            std::make_unique<cd::editor::TranslateCommand>(
+                                                scene, selected, total));
+                                    }
+                                    break;
+                                }
+                                case cd::editor::GizmoMode::kRotate:
+                                {
+                                    const float total =
+                                        viewport_gizmo.end_value_drag();
+                                    if (std::fabs(total) > 1e-6F)
+                                    {
+                                        const auto final_rot =
+                                            gz_lt->value.rotation;
+                                        gz_lt->value.rotation =
+                                            gizmo_drag.drag_start_rot;  // rewind
+                                        history.push(
+                                            std::make_unique<cd::editor::RotateCommand>(
+                                                scene, selected, final_rot));
+                                    }
+                                    break;
+                                }
+                                case cd::editor::GizmoMode::kScale:
+                                {
+                                    const float along =
+                                        viewport_gizmo.end_value_drag();
+                                    const float factor = std::max(
+                                        0.01F, 1.0F + along / kArmLen);
+                                    if (std::fabs(factor - 1.0F) > 1e-6F)
+                                    {
+                                        // Reconstruct the per-axis factor
+                                        // from start vs live scale.
+                                        const auto& s0 = gizmo_drag.drag_start_scale;
+                                        const auto& s1 = gz_lt->value.scale;
+                                        const cd::math::Vec3f f {
+                                            s0.x != 0.0F ? s1.x / s0.x : 1.0F,
+                                            s0.y != 0.0F ? s1.y / s0.y : 1.0F,
+                                            s0.z != 0.0F ? s1.z / s0.z : 1.0F };
+                                        gz_lt->value.scale = s0;  // rewind
+                                        history.push(
+                                            std::make_unique<cd::editor::ScaleCommand>(
+                                                scene, selected, f));
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
@@ -1014,8 +1214,12 @@ int main(int argc, char** argv)
                             { 0.95F, 0.60F, 0.15F, 1.0F });
                         // phase1063: translate gizmo arrows — base
                         // R/G/B, hover brightened, active near-white.
+                        // phase1074: rotate mode draws rings instead;
+                        // scale mode draws arms with cross end-caps.
                         constexpr float kArmLen = 1.2F;
+                        const auto gmode_r = viewport_gizmo.mode();
                         const auto tgt = viewport_gizmo.target();
+                        if (gmode_r != cd::editor::GizmoMode::kRotate)
                         for (const auto ax : { cd::editor::GizmoAxis::kX,
                                                cd::editor::GizmoAxis::kY,
                                                cd::editor::GizmoAxis::kZ })
@@ -1034,19 +1238,52 @@ int main(int argc, char** argv)
                                 tint.y = std::min(tint.y + 0.35F, 1.0F);
                                 tint.z = std::min(tint.z + 0.35F, 1.0F);
                             }
-                            dbg_batch.add_arrow(
-                                tgt,
-                                { tgt.x + dir.x * kArmLen,
-                                  tgt.y + dir.y * kArmLen,
-                                  tgt.z + dir.z * kArmLen },
-                                tint);
+                            const cd::math::Vec3f tip {
+                                tgt.x + dir.x * kArmLen,
+                                tgt.y + dir.y * kArmLen,
+                                tgt.z + dir.z * kArmLen };
+                            if (gmode_r == cd::editor::GizmoMode::kScale)
+                            {
+                                dbg_batch.add_line(tgt, tip, tint);
+                                dbg_batch.add_cross(tip, 0.08F, tint);
+                            }
+                            else
+                            {
+                                dbg_batch.add_arrow(tgt, tip, tint);
+                            }
+                        }
+                        if (gmode_r == cd::editor::GizmoMode::kRotate)
+                        {
+                            constexpr float kRingRad = 1.05F;
+                            for (const auto ax : { cd::editor::GizmoAxis::kX,
+                                                   cd::editor::GizmoAxis::kY,
+                                                   cd::editor::GizmoAxis::kZ })
+                            {
+                                cd::math::Vec4f tint {
+                                    ax == cd::editor::GizmoAxis::kX ? 0.85F : 0.20F,
+                                    ax == cd::editor::GizmoAxis::kY ? 0.85F : 0.25F,
+                                    ax == cd::editor::GizmoAxis::kZ ? 0.85F : 0.25F,
+                                    1.0F };
+                                if (viewport_gizmo.active_axis() == ax)
+                                    tint = { 1.0F, 1.0F, 0.85F, 1.0F };
+                                else if (viewport_gizmo.hover() == ax)
+                                {
+                                    tint.x = std::min(tint.x + 0.35F, 1.0F);
+                                    tint.y = std::min(tint.y + 0.35F, 1.0F);
+                                    tint.z = std::min(tint.z + 0.35F, 1.0F);
+                                }
+                                dbg_batch.add_circle(
+                                    tgt, cd::editor::axis_dir(ax),
+                                    kRingRad, 48, tint);
+                            }
                         }
                         // phase1073: XY/XZ/YZ pad squares between the
                         // arrows — outline only (4 lines per pad),
                         // tinted by the two member axes, hover/active
-                        // brightened like the arrows.
+                        // brightened like the arrows. Translate only.
                         constexpr float kPadMin = 0.30F;
                         constexpr float kPadMax = 0.62F;
+                        if (gmode_r == cd::editor::GizmoMode::kTranslate)
                         for (const auto pad : { cd::editor::GizmoAxis::kXY,
                                                 cd::editor::GizmoAxis::kXZ,
                                                 cd::editor::GizmoAxis::kYZ })
