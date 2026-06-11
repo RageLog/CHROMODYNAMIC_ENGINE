@@ -627,6 +627,11 @@ int main(int argc, char** argv)
     // Sponza from an engine-side save) fall back to Cube so they stay
     // visible and selectable.
     constexpr const char* kBridgePath = "hello_engine.cdscene.json";
+    // phase1096: the editor has no light entities yet, but a bridge file
+    // saved by hello_engine carries a "lights" array — preserve it
+    // VERBATIM across an editor round-trip so editing entity layout
+    // here never destroys an engine-side light setup.
+    cd::asset::json::Value bridged_lights {};
     auto bridge_kind_name = [](EntityMeta::Kind k) -> const char*
     {
         switch (k)
@@ -663,6 +668,11 @@ int main(int argc, char** argv)
                         std::string { bridge_kind_name(m->kind) } };
                     obj["tint"] = cd::scene::vec3_to_json(m->tint);
                 });
+            if (bridged_lights.is_array() &&
+                !bridged_lights.as_array().empty())
+            {
+                root.as_object_mut()["lights"] = bridged_lights;  // pass-through
+            }
             const auto txt = cd::asset::json::serialize(root, true);
             std::ofstream f { kBridgePath, std::ios::binary | std::ios::trunc };
             if (f)
@@ -686,6 +696,18 @@ int main(int argc, char** argv)
                 log_push("[bridge] load failed: " +
                          std::string { r.error().message });
                 return;
+            }
+            if (r->is_object())
+            {
+                const auto& ro = r->as_object();
+                if (auto it = ro.find("lights");
+                    it != ro.end() && it->second.is_array())
+                {
+                    bridged_lights = it->second;  // keep for re-save
+                    log_push("[bridge] preserved " +
+                             std::to_string(it->second.as_array().size()) +
+                             " lights (pass-through)");
+                }
             }
             // Replace semantics: drop every current root (children
             // cascade), then rebuild metas from the file's extras.
