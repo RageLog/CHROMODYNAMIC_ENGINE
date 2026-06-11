@@ -443,28 +443,28 @@ int main(int argc, char** argv)
     }
     cd::debug_line::LineBatch dbg_batch;
 
-    // phase1063: draggable translate gizmo for the selected entity.
-    // cd::editor::AxisGizmo owns the hover/drag state machine; this
-    // sample supplies the screen-space pick + the v1 drag metric
-    // (mouse delta projected onto the axis screen direction, scaled
-    // by world-units-per-pixel measured at drag start). Arrows render
-    // through cd::debug_draw. Undo/EditHistory integration is the
-    // queued follow-up.
+    // phase1063/1073: draggable translate gizmo for the selected
+    // entity. cd::editor::AxisGizmo owns the hover/drag state machine;
+    // v2 (phase1073) replaced the v1 screen-delta metric with the
+    // library's ray-plane kit: each frame the mouse ray
+    // (pick_ray_from_ndc) is intersected with a drag plane chosen at
+    // begin_drag — axis drags use the plane CONTAINING the axis that
+    // max-faces the camera (axis_drag_plane_normal), XY/XZ/YZ pad
+    // drags use the pad plane itself. The world hit feeds
+    // AxisGizmo::update_drag, which filters components per axis/pad.
+    // Arrows + pad squares render through cd::debug_draw.
     cd::editor::AxisGizmo viewport_gizmo;
-    struct GizmoDragMetric
+    struct GizmoDragState
     {
-        float anchor_x { 0.0F };
-        float anchor_y { 0.0F };
-        float screen_dir_x { 0.0F };
-        float screen_dir_y { 0.0F };
-        float world_per_px { 0.0F };
+        cd::math::Vec3f plane_point {};    // drag-plane anchor (target at grab)
+        cd::math::Vec3f plane_normal {};   // chosen at begin_drag
         // phase1064: position snapshot at drag start so drag-end can
         // rewind + push a TranslateCommand (EditHistory::push applies
         // immediately — rewinding first makes apply land exactly on
         // the live final position and undo on the exact start).
         cd::math::Vec3f drag_start_pos {};
     };
-    GizmoDragMetric gizmo_metric {};
+    GizmoDragState gizmo_drag {};
 
     // ---- ECS / scene / editor primitives ----------------------------------
     cd::ecs::World        world;
@@ -832,6 +832,8 @@ int main(int argc, char** argv)
                 if (auto* gz_lt = scene.local(selected); gz_lt != nullptr)
                 {
                     constexpr float kArmLen = 1.2F;
+                    constexpr float kPadMin = 0.30F;  // pad inner edge (× arm)
+                    constexpr float kPadMax = 0.62F;  // pad outer edge (× arm)
                     viewport_gizmo.set_target(gz_lt->value.position);
                     const auto to_screen =
                         [&](const cd::math::Vec3f& w) -> std::optional<ImVec2>
@@ -859,20 +861,28 @@ int main(int argc, char** argv)
                         return std::sqrt(px * px + py * py);
                     };
                     const ImVec2 mouse = ImGui::GetMousePos();
+                    // phase1073: world-space mouse ray via the library
+                    // pick kit (NDC y is the flip of to_screen's y).
+                    const auto inv_vp = cd::math::inverse(vp);
+                    const float ndc_mx =
+                        mouse.x / static_cast<float>(frame.extent.width) * 2.0F - 1.0F;
+                    const float ndc_my =
+                        1.0F - 2.0F * mouse.y / static_cast<float>(frame.extent.height);
+                    const auto mouse_ray =
+                        cd::editor::pick_ray_from_ndc(inv_vp, ndc_mx, ndc_my);
                     const auto org_px = to_screen(viewport_gizmo.target());
-                    if (org_px.has_value() && !ui_mouse)
+                    if (org_px.has_value() && !ui_mouse && mouse_ray.has_value())
                     {
                         if (!viewport_gizmo.is_dragging())
                         {
                             cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
                             float best_d = viewport_gizmo.hover_tolerance_pixels;
-                            GizmoDragMetric best_metric {};
+                            const auto tgt = viewport_gizmo.target();
                             for (const auto ax : { cd::editor::GizmoAxis::kX,
                                                    cd::editor::GizmoAxis::kY,
                                                    cd::editor::GizmoAxis::kZ })
                             {
                                 const auto dir = cd::editor::axis_dir(ax);
-                                const auto tgt = viewport_gizmo.target();
                                 const auto tip_px = to_screen(
                                     { tgt.x + dir.x * kArmLen,
                                       tgt.y + dir.y * kArmLen,
@@ -888,47 +898,76 @@ int main(int argc, char** argv)
                                 {
                                     best_d = d;
                                     best = ax;
-                                    best_metric = { mouse.x, mouse.y,
-                                                    ax_px_x / ax_px_len,
-                                                    ax_px_y / ax_px_len,
-                                                    kArmLen / ax_px_len };
+                                }
+                            }
+                            // phase1073: XY/XZ/YZ pad pick — world-space
+                            // ray-vs-pad-square; an inside hit beats any
+                            // arrow proximity (pads sit between arrows).
+                            for (const auto pad : { cd::editor::GizmoAxis::kXY,
+                                                    cd::editor::GizmoAxis::kXZ,
+                                                    cd::editor::GizmoAxis::kYZ })
+                            {
+                                const auto n = cd::editor::plane_normal(pad);
+                                const auto hit = cd::editor::intersect_ray_plane(
+                                    *mouse_ray, tgt, n);
+                                if (!hit.has_value()) continue;
+                                const cd::math::Vec3f local {
+                                    hit->x - tgt.x, hit->y - tgt.y, hit->z - tgt.z };
+                                float u = 0.0F;
+                                float v = 0.0F;
+                                switch (pad)
+                                {
+                                    case cd::editor::GizmoAxis::kXY:
+                                        u = local.x; v = local.y; break;
+                                    case cd::editor::GizmoAxis::kXZ:
+                                        u = local.x; v = local.z; break;
+                                    default:
+                                        u = local.y; v = local.z; break;
+                                }
+                                const float lo = kPadMin * kArmLen;
+                                const float hi = kPadMax * kArmLen;
+                                if (u >= lo && u <= hi && v >= lo && v <= hi)
+                                {
+                                    best = pad;
+                                    break;
                                 }
                             }
                             viewport_gizmo.set_hover(best);
                             if (best != cd::editor::GizmoAxis::kNone &&
                                 ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                             {
-                                viewport_gizmo.begin_drag(
-                                    best, viewport_gizmo.target());
-                                gizmo_metric = best_metric;
-                                gizmo_metric.drag_start_pos =
-                                    gz_lt->value.position;
+                                const auto n = cd::editor::is_plane(best)
+                                    ? cd::editor::plane_normal(best)
+                                    : cd::editor::axis_drag_plane_normal(
+                                          best, forward);
+                                const auto hit0 = cd::editor::intersect_ray_plane(
+                                    *mouse_ray, tgt, n);
+                                if (hit0.has_value())
+                                {
+                                    viewport_gizmo.begin_drag(best, *hit0);
+                                    gizmo_drag = { tgt, n,
+                                                   gz_lt->value.position };
+                                }
                             }
                         }
                         else if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
                         {
-                            const auto dir = cd::editor::axis_dir(
-                                viewport_gizmo.active_axis());
-                            const float along =
-                                (mouse.x - gizmo_metric.anchor_x) * gizmo_metric.screen_dir_x +
-                                (mouse.y - gizmo_metric.anchor_y) * gizmo_metric.screen_dir_y;
-                            const float world_delta =
-                                along * gizmo_metric.world_per_px;
-                            const auto org = viewport_gizmo.target();
-                            viewport_gizmo.update_drag(
-                                { org.x + dir.x * world_delta,
-                                  org.y + dir.y * world_delta,
-                                  org.z + dir.z * world_delta });
-                            gizmo_metric.anchor_x = mouse.x;
-                            gizmo_metric.anchor_y = mouse.y;
-                            gz_lt->value.position = viewport_gizmo.target();
+                            const auto hit = cd::editor::intersect_ray_plane(
+                                *mouse_ray,
+                                gizmo_drag.plane_point,
+                                gizmo_drag.plane_normal);
+                            if (hit.has_value())
+                            {
+                                viewport_gizmo.update_drag(*hit);
+                                gz_lt->value.position = viewport_gizmo.target();
+                            }
                         }
                         else
                         {
                             // phase1064: release transition — fold the
                             // whole drag into ONE undoable command.
                             viewport_gizmo.end_drag();
-                            const auto& start = gizmo_metric.drag_start_pos;
+                            const auto& start = gizmo_drag.drag_start_pos;
                             const auto& end_p = gz_lt->value.position;
                             const cd::math::Vec3f total {
                                 end_p.x - start.x,
@@ -1001,6 +1040,61 @@ int main(int argc, char** argv)
                                   tgt.y + dir.y * kArmLen,
                                   tgt.z + dir.z * kArmLen },
                                 tint);
+                        }
+                        // phase1073: XY/XZ/YZ pad squares between the
+                        // arrows — outline only (4 lines per pad),
+                        // tinted by the two member axes, hover/active
+                        // brightened like the arrows.
+                        constexpr float kPadMin = 0.30F;
+                        constexpr float kPadMax = 0.62F;
+                        for (const auto pad : { cd::editor::GizmoAxis::kXY,
+                                                cd::editor::GizmoAxis::kXZ,
+                                                cd::editor::GizmoAxis::kYZ })
+                        {
+                            cd::math::Vec3f a1 {};
+                            cd::math::Vec3f a2 {};
+                            switch (pad)
+                            {
+                                case cd::editor::GizmoAxis::kXY:
+                                    a1 = { 1.0F, 0.0F, 0.0F };
+                                    a2 = { 0.0F, 1.0F, 0.0F }; break;
+                                case cd::editor::GizmoAxis::kXZ:
+                                    a1 = { 1.0F, 0.0F, 0.0F };
+                                    a2 = { 0.0F, 0.0F, 1.0F }; break;
+                                default:
+                                    a1 = { 0.0F, 1.0F, 0.0F };
+                                    a2 = { 0.0F, 0.0F, 1.0F }; break;
+                            }
+                            cd::math::Vec4f tint {
+                                0.5F * (a1.x + a2.x) + 0.15F,
+                                0.5F * (a1.y + a2.y) + 0.15F,
+                                0.5F * (a1.z + a2.z) + 0.15F,
+                                1.0F };
+                            if (viewport_gizmo.active_axis() == pad)
+                                tint = { 1.0F, 1.0F, 0.85F, 1.0F };
+                            else if (viewport_gizmo.hover() == pad)
+                            {
+                                tint.x = std::min(tint.x + 0.35F, 1.0F);
+                                tint.y = std::min(tint.y + 0.35F, 1.0F);
+                                tint.z = std::min(tint.z + 0.35F, 1.0F);
+                            }
+                            const float lo = kPadMin * kArmLen;
+                            const float hi = kPadMax * kArmLen;
+                            const auto corner =
+                                [&](float u, float v) -> cd::math::Vec3f
+                            {
+                                return { tgt.x + a1.x * u + a2.x * v,
+                                         tgt.y + a1.y * u + a2.y * v,
+                                         tgt.z + a1.z * u + a2.z * v };
+                            };
+                            const auto c00 = corner(lo, lo);
+                            const auto c10 = corner(hi, lo);
+                            const auto c11 = corner(hi, hi);
+                            const auto c01 = corner(lo, hi);
+                            dbg_batch.add_line(c00, c10, tint);
+                            dbg_batch.add_line(c10, c11, tint);
+                            dbg_batch.add_line(c11, c01, tint);
+                            dbg_batch.add_line(c01, c00, tint);
                         }
                     }
                 }
