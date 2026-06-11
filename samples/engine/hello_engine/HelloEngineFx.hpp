@@ -402,6 +402,20 @@ struct HelloEngineFx
     // fragment fallback applies when the ray-march budget is tight.
     std::array<float, 3> shafts_cam_dir { 0.0F, 0.0F, -1.0F };
     bool shafts_show_ring_3d { false };
+    // phase1053-3d-viewport-vt-atlas: the VT probe's PageTable moved
+    // from a panel function-static into EngineState so the 3D overlay
+    // can enumerate residents() — the panel and the render loop talk
+    // through these plain fields (panel writes the request + bumps
+    // the serial; the loop applies it once per bump and mirrors the
+    // results back; the panel displays them with a 1-frame lag,
+    // fine for a debug probe).
+    std::array<int, 3> vt_req { 0, 0, 0 };  // x, y, mip
+    std::uint32_t vt_req_serial { 0 };
+    std::uint32_t vt_resident_count { 0 };
+    bool vt_lookup_found { false };
+    std::uint32_t vt_lookup_slot_x { 0 };
+    std::uint32_t vt_lookup_slot_y { 0 };
+    bool vt_show_atlas_3d { false };
 };
 
 }  // namespace cd_sample

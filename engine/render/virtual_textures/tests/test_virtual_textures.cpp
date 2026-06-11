@@ -44,6 +44,37 @@ TEST(VirtualTextures, EvictsWhenFull)
     EXPECT_EQ(t.resident_count(), 4U);
 }
 
+// phase1053: the residents() debug view exposes exactly the resident
+// set and nothing else -- count matches, every entry is valid, and
+// an evicted page disappears from the view.
+TEST(VirtualTextures, ResidentsViewTracksAllocationAndEviction)
+{
+    cd::virtual_textures::PageTable pt { 2, 1 };  // 2 slots
+    cd::virtual_textures::PageId a {};
+    a.x = 1; a.y = 2; a.mip = 0;
+    cd::virtual_textures::PageId b {};
+    b.x = 3; b.y = 4; b.mip = 1;
+    cd::virtual_textures::PageId c {};
+    c.x = 5; c.y = 6; c.mip = 2;
+
+    (void)pt.allocate(a);
+    (void)pt.allocate(b);
+
+    const auto& view = pt.residents();
+    EXPECT_EQ(view.size(), 2U);
+    EXPECT_TRUE(view.contains(a));
+    EXPECT_TRUE(view.contains(b));
+    for (const auto& [pid, slot] : view)
+        EXPECT_EQ(slot.valid, 1U);
+
+    (void)pt.allocate(c);  // FIFO evicts `a`
+
+    EXPECT_EQ(view.size(), 2U);
+    EXPECT_FALSE(view.contains(a));
+    EXPECT_TRUE(view.contains(b));
+    EXPECT_TRUE(view.contains(c));
+}
+
 TEST(VirtualTextures, GlslFeedbackHelperNonEmpty)
 {
     EXPECT_FALSE(cd::virtual_textures::kFeedbackGlsl.empty());

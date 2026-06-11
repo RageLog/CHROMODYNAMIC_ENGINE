@@ -3136,35 +3136,32 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // eviction behaviour as the atlas fills.
     if (ImGui::CollapsingHeader("Run25  Virtual Textures Probe"))
     {
-        static cd::virtual_textures::PageTable s_pt { 4, 4 };  // 4x4 = 16 slots
-        static int s_vt_req_x = 0;
-        static int s_vt_req_y = 0;
-        static int s_vt_req_mip = 0;
-        ImGui::SliderInt("Request page X", &s_vt_req_x, 0, 31);
-        ImGui::SliderInt("Request page Y", &s_vt_req_y, 0, 31);
-        ImGui::SliderInt("Request page mip", &s_vt_req_mip, 0, 4);
+        // phase1053-3d-viewport-vt-atlas: the PageTable moved into
+        // EngineState (render loop owns it; residents() drives the
+        // 3D atlas overlay). The panel requests via fx.vt_req +
+        // serial bump and reads the mirrored results (1-frame lag).
+        ImGui::SliderInt("Request page X", &fx.vt_req[0], 0, 31);
+        ImGui::SliderInt("Request page Y", &fx.vt_req[1], 0, 31);
+        ImGui::SliderInt("Request page mip", &fx.vt_req[2], 0, 4);
         if (ImGui::Button("Request page"))
         {
-            cd::virtual_textures::PageId pid {};
-            pid.x   = static_cast<std::uint16_t>(s_vt_req_x);
-            pid.y   = static_cast<std::uint16_t>(s_vt_req_y);
-            pid.mip = static_cast<std::uint8_t>(s_vt_req_mip);
-            (void)s_pt.allocate(pid);
+            ++fx.vt_req_serial;
         }
-        ImGui::Text("Resident pages: %zu / 16 (atlas 4x4)",
-                    s_pt.resident_count());
-        // Look up the requested page so the user sees if it's already in.
-        cd::virtual_textures::PageId q {};
-        q.x   = static_cast<std::uint16_t>(s_vt_req_x);
-        q.y   = static_cast<std::uint16_t>(s_vt_req_y);
-        q.mip = static_cast<std::uint8_t>(s_vt_req_mip);
-        const auto* slot = s_pt.lookup(q);
-        if (slot != nullptr)
+        ImGui::Text("Resident pages: %u / 16 (atlas 4x4)",
+                    fx.vt_resident_count);
+        if (fx.vt_lookup_found)
             ImGui::Text("Requested page resident @ slot (%u, %u)",
-                        slot->slot_x, slot->slot_y);
+                        fx.vt_lookup_slot_x, fx.vt_lookup_slot_y);
         else
             ImGui::TextDisabled("Requested page NOT resident (Request to allocate)");
         ImGui::TextDisabled("Mittring 2008 page-allocator + FIFO eviction.");
+        ImGui::Separator();
+        ImGui::Checkbox("Show atlas in 3D viewport",
+                        &fx.vt_show_atlas_3d);
+        if (fx.vt_show_atlas_3d)
+        {
+            ImGui::TextDisabled("  4x4 grid; filled cell = resident (tint = mip), cross = your page");
+        }
     }
     // phase927-mesh-shader-live-demo (Run 25 Strand B): drive
     // cd::mesh_shader::build_meshlets on a synthetic 100-triangle
@@ -6570,6 +6567,10 @@ struct HelloEngineApp::EngineState
     cd::debug_line::LineBatch                debug_lines;
     cd::rhi::BufferHandle                    debug_line_vb {};
     std::uint64_t                            debug_line_vb_capacity { 0 };
+    // phase1053: VT probe page table (moved out of the panel static
+    // so the 3D atlas overlay can enumerate residents()).
+    cd::virtual_textures::PageTable          vt_table { 4, 4 };
+    std::uint32_t                            vt_applied_serial { 0 };
     // phase1034: outgrown VBs park here until the frames that may
     // still read them have fenced (destroy_at_frame = frame_idx + 3,
     // same 3-frame margin as tlas_destroy_queue).
@@ -10192,6 +10193,30 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         // are pure functions of (fx, LineBatch), so the render loop
         // shrinks to one umbrella call before the flush below.
         cd_sample::append_pure_line_overlays(s.fx, s.debug_lines);
+        // phase1053-3d-viewport-vt-atlas: apply the panel's pending
+        // page request (one allocate per button press, serial-gated),
+        // mirror the lookup results back for the panel text, and
+        // draw the atlas grid overlay.
+        {
+            cd::virtual_textures::PageId q {};
+            q.x   = static_cast<std::uint16_t>(s.fx.vt_req[0]);
+            q.y   = static_cast<std::uint16_t>(s.fx.vt_req[1]);
+            q.mip = static_cast<std::uint8_t>(s.fx.vt_req[2]);
+            if (s.fx.vt_req_serial != s.vt_applied_serial)
+            {
+                (void)s.vt_table.allocate(q);
+                s.vt_applied_serial = s.fx.vt_req_serial;
+            }
+            s.fx.vt_resident_count =
+                static_cast<std::uint32_t>(s.vt_table.resident_count());
+            const auto* slot = s.vt_table.lookup(q);
+            s.fx.vt_lookup_found  = (slot != nullptr);
+            s.fx.vt_lookup_slot_x = (slot != nullptr) ? slot->slot_x : 0U;
+            s.fx.vt_lookup_slot_y = (slot != nullptr) ? slot->slot_y : 0U;
+            if (s.fx.vt_show_atlas_3d)
+                cd_sample::append_vt_atlas_overlay(
+                    s.fx, s.vt_table, s.debug_lines);
+        }
         // phase1034: tick the deferred-buffer queue BEFORE any new
         // growth so parked VBs from 3+ frames ago are reclaimed.
         while (!s.buffer_destroy_queue.empty() &&

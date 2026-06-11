@@ -23,6 +23,7 @@
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/ibl/BrdfLut.hpp>
 #include <cd/math/Vector.hpp>
+#include <cd/virtual_textures/VirtualTextures.hpp>
 
 #include <algorithm>
 #include <array>
@@ -353,6 +354,60 @@ inline void append_shafts_ring(const HelloEngineFx& fx,
         { kAnchor.x, kAnchor.y - 0.6F, kAnchor.z },
         { kAnchor.x, kAnchor.y + 0.6F, kAnchor.z },
         { 0.70F, 0.70F, 0.75F, 1.0F });
+}
+
+// phase1053-3d-viewport-vt-atlas: the physical VT atlas as a 4x4
+// wireframe grid. Resident slots are FILLED with an inner box tinted
+// by the resident page's mip (warm = mip 0, cooling toward mip 4 —
+// the classic VT debug palette where hot colours mean high detail);
+// a white cross marks the slot holding the panel's requested page.
+// Clicking "Request page" with a full atlas makes the FIFO eviction
+// VISIBLE: a previously-filled cell empties as another fills.
+inline void append_vt_atlas_overlay(
+    const HelloEngineFx& fx,
+    const cd::virtual_textures::PageTable& table,
+    cd::debug_line::LineBatch& lines)
+{
+    constexpr cd::math::Vec3f kAnchor { 3.5F, 5.5F, -1.5F };
+    constexpr float kCell = 0.5F;
+    constexpr int kSlots = 4;  // 4x4 atlas (matches EngineState table)
+    // Outer grid: 5 lines per direction in the XY plane.
+    lines.add_grid(kAnchor,
+                   { 1.0F, 0.0F, 0.0F }, { 0.0F, 1.0F, 0.0F },
+                   2, kCell, { 0.55F, 0.55F, 0.60F, 1.0F });
+    const auto cell_centre = [&](std::uint32_t sx, std::uint32_t sy) {
+        return cd::math::Vec3f {
+            kAnchor.x + (static_cast<float>(sx) - 1.5F) * kCell,
+            kAnchor.y + (static_cast<float>(sy) - 1.5F) * kCell,
+            kAnchor.z };
+    };
+    for (const auto& [pid, slot] : table.residents())
+    {
+        if (slot.slot_x >= kSlots || slot.slot_y >= kSlots)
+            continue;
+        const float mip_t =
+            std::min(static_cast<float>(pid.mip) / 4.0F, 1.0F);
+        const cd::math::Vec4f tint {
+            0.95F - 0.65F * mip_t,
+            0.55F - 0.25F * mip_t,
+            0.20F + 0.75F * mip_t,
+            1.0F };
+        const auto c = cell_centre(slot.slot_x, slot.slot_y);
+        constexpr float kInner = kCell * 0.38F;
+        lines.add_aabb(
+            { c.x - kInner, c.y - kInner, c.z - 0.02F },
+            { c.x + kInner, c.y + kInner, c.z + 0.02F },
+            tint);
+    }
+    cd::virtual_textures::PageId q {};
+    q.x   = static_cast<std::uint16_t>(fx.vt_req[0]);
+    q.y   = static_cast<std::uint16_t>(fx.vt_req[1]);
+    q.mip = static_cast<std::uint8_t>(fx.vt_req[2]);
+    if (const auto* slot = table.lookup(q); slot != nullptr)
+    {
+        lines.add_cross(cell_centre(slot->slot_x, slot->slot_y),
+                        kCell * 0.30F, { 0.95F, 0.95F, 0.95F, 1.0F });
+    }
 }
 
 /// Umbrella: appends every toggled-on pure-line overlay. Called once

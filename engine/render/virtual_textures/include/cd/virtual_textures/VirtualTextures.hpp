@@ -102,6 +102,15 @@ public:
 
     [[nodiscard]] std::size_t resident_count() const noexcept { return map_.size(); }
 
+    /// phase1053: read-only view of the resident set (PageId ->
+    /// AtlasSlot). Debug visualisers and feedback analysers need to
+    /// enumerate what is resident; exposing the map const-ref keeps
+    /// the allocator's invariants (mutation still only via
+    /// allocate()). Iteration order is unordered -- callers that
+    /// need FIFO age must not infer it from this view.
+    [[nodiscard]] const std::unordered_map<PageId, AtlasSlot, PageIdHash>&
+    residents() const noexcept { return map_; }
+
 private:
     std::uint16_t atlas_w_;
     std::uint16_t atlas_h_;
