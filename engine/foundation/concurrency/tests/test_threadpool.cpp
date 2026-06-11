@@ -180,6 +180,65 @@ TEST(CoroTask, SpawnDetachedRuns)
     EXPECT_EQ(counter.load(), 1);
 }
 
+// ============================================================================
+// phase1052 regression net for the three latent ThreadPool defects the
+// threadpool RCA (2026-06-11) surfaced while clearing the zombie-process
+// suspicion (verdict: that zombie was the pre-fix JobGraph deadlock; these
+// are hardening fixes for holes found during the trace).
+// ============================================================================
+
+// (a) spawn_detached + wait_all under repetition: exercises the
+// on_complete idle-notify path and the worker-side frame destroy. A
+// leaked frame doesn't fail an assertion directly, but ASAN presets
+// catch it; the counter proves exactly-once execution.
+TEST(CoroTask, SpawnDetachedManyWaitAllCountsExact)
+{
+    constexpr int kOuter = 200;
+    constexpr int kCoros = 100;
+    for (int rep = 0; rep < kOuter; ++rep)
+    {
+        cd::concurrency::ThreadPool pool { 2 };
+        std::atomic<int> counter { 0 };
+        for (int i = 0; i < kCoros; ++i)
+            ASSERT_TRUE(pool.spawn_detached(coro_void_increment(counter)));
+        pool.wait_all();
+        ASSERT_EQ(counter.load(), kCoros) << "rep " << rep;
+    }
+}
+
+// (b) wait_all must never return before the LAST popped-but-uncounted
+// task lands. Pre-fix, queued_ fell before in_flight_ rose, so the
+// idle predicate could read 0/0/0 mid-handoff and under-count.
+TEST(ThreadPool, WaitAllSeesEveryDetachedTask)
+{
+    constexpr int kOuter = 500;
+    constexpr int kJobs  = 50;
+    for (int rep = 0; rep < kOuter; ++rep)
+    {
+        cd::concurrency::ThreadPool pool { 2 };
+        std::atomic<int> hits { 0 };
+        for (int i = 0; i < kJobs; ++i)
+            pool.submit_detached([&] { hits.fetch_add(1, std::memory_order_relaxed); });
+        pool.wait_all();
+        ASSERT_EQ(hits.load(), kJobs) << "rep " << rep;
+    }
+}
+
+// (c) spawn_detached against a shut-down pool must report failure AND
+// roll back its coroutine bookkeeping — pre-fix the stale
+// active_coroutines_ count made any later wait_all() hang forever
+// (this test would deadlock; the phase-1047 ctest TIMEOUT would kill
+// it visibly).
+TEST(CoroTask, SpawnDetachedAfterShutdownFailsCleanly)
+{
+    cd::concurrency::ThreadPool pool { 1 };
+    pool.shutdown();
+    std::atomic<int> counter { 0 };
+    EXPECT_FALSE(pool.spawn_detached(coro_void_increment(counter)));
+    pool.wait_all();  // must return immediately: no stale counts
+    EXPECT_EQ(counter.load(), 0);
+}
+
 // --- JobGraph --------------------------------------------------------------
 TEST(JobGraph, LinearChainRunsInOrder)
 {

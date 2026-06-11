@@ -150,6 +150,21 @@ public:
 
     /// Spawn a detached CoroTask (void-returning) on the pool. Pool drives the
     /// coroutine by resuming the handle as a regular task.
+    ///
+    /// phase1052 (threadpool RCA hardening): three latent defects fixed —
+    ///   1. on_complete now notifies idle_condition_ under idle_mutex_, so a
+    ///      coroutine that reaches final-suspend on a NON-worker thread (no
+    ///      such resumer exists in-tree today, but the API allows it) still
+    ///      wakes wait_all(). Previously only the worker's post-task notify
+    ///      covered the gap.
+    ///   2. The coroutine frame is DESTROYED by the worker once resume()
+    ///      runs it to completion. Previously release() transferred
+    ///      ownership and nobody ever called destroy() — every
+    ///      spawn_detached leaked its whole frame.
+    ///   3. If enqueue is dropped (pool already shutting down), the +1 on
+    ///      active_coroutines_ is rolled back and the frame destroyed;
+    ///      previously the stale count made any later wait_all() hang
+    ///      forever.
     bool spawn_detached(CoroTask task, TaskPriority priority = TaskPriority::Normal) noexcept
     {
         if (!task)
@@ -161,15 +176,27 @@ public:
         handle.promise().on_complete = [this](std::exception_ptr) noexcept
         {
             active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
+            std::scoped_lock guard { idle_mutex_ };
+            idle_condition_.notify_all();
         };
-        enqueue(
+        const bool queued = enqueue(
             Job { [handle]
                   {
                       if (!handle.done())
                           handle.resume();
+                      // Frame is suspended at FinalAwaiter once done —
+                      // safe (and required) to destroy from outside.
+                      if (handle.done())
+                          handle.destroy();
                   },
                   priority }
         );
+        if (!queued)
+        {
+            active_coroutines_.fetch_sub(1, std::memory_order_relaxed);
+            handle.destroy();
+            return false;
+        }
         return true;
     }
 
@@ -227,11 +254,15 @@ private:
         }
     };
 
-    void enqueue(Job task)
+    /// Returns true when the job was queued, false when the pool is
+    /// shutting down and the job was dropped. submit_detached_* callers
+    /// keep the historical silent-drop semantics; spawn_detached needs
+    /// the result to roll back its coroutine bookkeeping (phase1052).
+    bool enqueue(Job task)
     {
         if (!running_.load(std::memory_order_acquire))
         {
-            return;
+            return false;
         }
         {
             std::scoped_lock guard { mutex_ };
@@ -243,6 +274,7 @@ private:
         }
         stats_.tasks_submitted.fetch_add(1, std::memory_order_relaxed);
         condition_.notify_one();
+        return true;
     }
 
     void worker_loop(std::stop_token st)
@@ -267,8 +299,13 @@ private:
                     continue;
                 t = std::move(const_cast<Entry&>(queue_.top()).job);
                 queue_.pop();
-                queued_.fetch_sub(1, std::memory_order_acq_rel);
+                // phase1052: in_flight_ rises BEFORE queued_ falls.
+                // The old order opened a window where wait_all()'s
+                // predicate read queued_ == 0 && in_flight_ == 0 while
+                // the last task was popped-but-not-yet-counted —
+                // a premature wait_all return (flaky under-count).
                 in_flight_.fetch_add(1, std::memory_order_acq_rel);
+                queued_.fetch_sub(1, std::memory_order_acq_rel);
             }
             try
             {
