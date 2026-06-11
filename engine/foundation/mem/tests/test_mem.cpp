@@ -113,7 +113,7 @@ TEST(TypedPoolAllocator, CreateDestroy)
     {
         int id;
 
-        Node(int v)
+        explicit Node(int v)
             : id { v }
         {
         }

@@ -12,7 +12,10 @@
 #include <cmath>
 #include <numeric>
 
-using namespace cd::render::lighting_clusters;
+using cd::render::lighting_clusters::Clusterer;
+using cd::render::lighting_clusters::ClusterGrid;
+using cd::render::lighting_clusters::LightAssignment;
+using cd::render::lighting_clusters::PointLight;
 
 // ---------------------------------------------------------------------------
 // Helpers

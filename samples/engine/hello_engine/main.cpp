@@ -6745,7 +6745,7 @@ struct HelloEngineApp::EngineState
                 const auto v = id.value();
                 std::this_thread::sleep_for(
                     std::chrono::milliseconds(
-                        120 + static_cast<long long>(v % 5) * 80));
+                        120 + static_cast<std::int64_t>(v % 5) * 80));
                 const bool ok = (v % 17 != 0);
                 if (ok) streamer_completed.fetch_add(1, std::memory_order_relaxed);
                 else    streamer_failed.fetch_add(1, std::memory_order_relaxed);

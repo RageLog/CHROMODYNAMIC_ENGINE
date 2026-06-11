@@ -782,21 +782,21 @@ TEST(AngleUnits, ToRadiansAndBack)
 
 TEST(AngleUnits, UDLDeg)
 {
-    using namespace cd::math::literals;
+    using cd::math::literals::operator""_deg;
     const float r = 180.0_deg;
     EXPECT_NEAR(r, 3.14159265F, 1e-5F);
 }
 
 TEST(AngleUnits, UDLRadIsIdentity)
 {
-    using namespace cd::math::literals;
+    using cd::math::literals::operator""_rad;
     const float r = 1.5_rad;
     EXPECT_FLOAT_EQ(r, 1.5F);
 }
 
 TEST(AngleUnits, UDLAcceptsIntegerLiteral)
 {
-    using namespace cd::math::literals;
+    using cd::math::literals::operator""_deg;
     const float r = 90_deg;
     EXPECT_NEAR(r, 1.5707963F, 1e-5F);
 }

@@ -92,6 +92,10 @@ public:
 
     Value() noexcept = default;  // null
 
+    // NOLINTBEGIN(google-explicit-constructor) — implicit converting ctors
+    // are the DESIGN of a JSON value type (`Value v = 5;`,
+    // `obj["k"] = "text"`); mirrors nlohmann::json and std::variant's
+    // converting constructor.
     Value(Null) noexcept
     {
     }
@@ -135,6 +139,7 @@ public:
         : storage_ { std::move(o) }
     {
     }
+    // NOLINTEND(google-explicit-constructor)
 
     [[nodiscard]] bool is_null() const noexcept
     {

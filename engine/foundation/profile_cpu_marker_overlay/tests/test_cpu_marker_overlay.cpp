@@ -8,7 +8,12 @@
 #include <chrono>
 #include <thread>
 
-using namespace cd::profile::cpu_marker_overlay;
+using cd::profile::cpu_marker_overlay::Collector;
+using cd::profile::cpu_marker_overlay::MarkerHandle;
+using cd::profile::cpu_marker_overlay::MarkerSample;
+using cd::profile::cpu_marker_overlay::Overlay;
+using cd::profile::cpu_marker_overlay::Rect;
+using cd::profile::cpu_marker_overlay::Scope;
 
 // ---------------------------------------------------------------------------
 // Test 1: begin/end round-trip — one completed sample is recorded

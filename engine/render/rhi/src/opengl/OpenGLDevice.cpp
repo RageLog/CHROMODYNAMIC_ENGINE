@@ -47,7 +47,7 @@ namespace
 
 using GLuint    = unsigned int;
 using GLsizei   = int;
-using GLsizeiptr = long long;  // matches Khronos khrplatform.h for x64
+using GLsizeiptr = long long;  // NOLINT(google-runtime-int) — Khronos khrplatform.h x64 ABI
 using GLenum    = unsigned int;
 using GLbitfield = unsigned int;
 using GLvoid    = void;

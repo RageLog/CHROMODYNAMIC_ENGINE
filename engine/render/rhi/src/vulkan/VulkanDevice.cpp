@@ -4537,6 +4537,7 @@ namespace
     if (env_index != nullptr)
     {
         char* end = nullptr;
+        // NOLINTNEXTLINE(google-runtime-int) — strtol returns long by C ABI.
         const long idx_long = std::strtol(env_index, &end, 10);
         const int idx = static_cast<int>(idx_long);
         if (end != env_index && idx >= 0 && static_cast<std::uint32_t>(idx) < devs.size())

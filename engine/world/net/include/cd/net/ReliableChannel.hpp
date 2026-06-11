@@ -74,7 +74,7 @@ public:
         kAckOnly = 1,
     };
 
-    AckWindowChannel(IConnection& transport,
+    explicit AckWindowChannel(IConnection& transport,
                      std::chrono::milliseconds rto = std::chrono::milliseconds { 100 },
                      std::uint32_t max_retries = 8) noexcept
         : transport_ { &transport }

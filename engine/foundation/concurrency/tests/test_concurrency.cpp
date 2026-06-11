@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <cstdint>
 
 #include <atomic>
 #include <chrono>
@@ -199,7 +200,7 @@ TEST(SpinLock, GuardRaii)
 TEST(SpinLock, MutualExclusionUnderContention)
 {
     cd::concurrency::SpinLock m;
-    long long counter = 0;
+    std::int64_t counter = 0;
     constexpr int kIters = 50'000;
     constexpr int kThreads = 4;
 

@@ -372,6 +372,7 @@ int main()
     if (headless_env != nullptr)
     {
         char* end = nullptr;
+        // NOLINTNEXTLINE(google-runtime-int) — strtol returns long by C ABI.
         const long frames_long = std::strtol(headless_env, &end, 10);
         if (end != headless_env && frames_long >= 0 && frames_long <= INT_MAX)
             headless_frames = static_cast<int>(frames_long);

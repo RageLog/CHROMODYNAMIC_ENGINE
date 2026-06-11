@@ -20,6 +20,12 @@
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <gtest/gtest.h>
 
+using cd::render::depth_bits_of;
+using cd::render::make_sort_key;
+using cd::render::material_id_of;
+using cd::render::SortBlend;
+using cd::render::SortLayer;
+
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -355,7 +361,6 @@ TEST(Renderer, ThreeFrameLoop)
 
 TEST(SortKey, LayerBitsAtTopOrderLayers)
 {
-    using namespace cd::render;
     const auto opaque = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 0, 0, 0);
     const auto ui     = make_sort_key(SortLayer::kUi,     0, SortBlend::kOff, 0, 0, 0);
     EXPECT_LT(opaque.value, ui.value);
@@ -363,7 +368,6 @@ TEST(SortKey, LayerBitsAtTopOrderLayers)
 
 TEST(SortKey, MaterialIdRecoverable)
 {
-    using namespace cd::render;
     const std::uint32_t mat = 0x123456u;
     const auto k = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, mat, 0, 0);
     EXPECT_EQ(material_id_of(k), mat);
@@ -371,7 +375,6 @@ TEST(SortKey, MaterialIdRecoverable)
 
 TEST(SortKey, DepthBitsRecoverable)
 {
-    using namespace cd::render;
     const std::uint32_t depth = 0xABCDEFu;
     const auto k = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 0, depth, 0);
     EXPECT_EQ(depth_bits_of(k), depth);
@@ -379,7 +382,6 @@ TEST(SortKey, DepthBitsRecoverable)
 
 TEST(SortKey, AscendingSortGroupsByLayerThenMaterialThenDepth)
 {
-    using namespace cd::render;
     const auto a = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 5, 100, 0);
     const auto b = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 5, 200, 0);
     const auto c = make_sort_key(SortLayer::kOpaque, 0, SortBlend::kOff, 6,   0, 0);

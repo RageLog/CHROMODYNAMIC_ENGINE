@@ -45,7 +45,7 @@ struct CompactLocation
     std::uint_least32_t line;
     std::string_view function;
 
-    constexpr CompactLocation(const SourceLocation& loc = SourceLocation::current()) noexcept
+    explicit constexpr CompactLocation(const SourceLocation& loc = SourceLocation::current()) noexcept
         : file { file_name_only(loc) }
         , line { loc.line() }
         , function { loc.function_name() }

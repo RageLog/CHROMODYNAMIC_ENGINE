@@ -7,7 +7,10 @@
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <gtest/gtest.h>
 
-using namespace cd::profile::frame_graph_timeline;
+using cd::profile::frame_graph_timeline::PassRecord;
+using cd::profile::frame_graph_timeline::Rect;
+using cd::profile::frame_graph_timeline::Timeline;
+using cd::profile::frame_graph_timeline::TimelineOverlay;
 
 // ---------------------------------------------------------------------------
 // Test 1: begin_frame resets the accumulator

@@ -29,12 +29,15 @@ template <class T>
 class Ref
 {
 public:
+    // NOLINTNEXTLINE(google-explicit-constructor) — implicit construction
+    // from T& mirrors std::reference_wrapper; that conversion is the point.
     constexpr Ref(T& r) noexcept : ptr_ { &r } {}
 
     Ref(T&&) = delete;   // No binding to temporaries.
 
     [[nodiscard]] constexpr T& get() const noexcept { return *ptr_; }
 
+    // NOLINTNEXTLINE(google-explicit-constructor) — see ctor note above.
     constexpr operator T&() const noexcept { return *ptr_; }
 
     [[nodiscard]] constexpr T* operator->() const noexcept { return ptr_; }

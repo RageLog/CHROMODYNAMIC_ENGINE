@@ -11,7 +11,9 @@
 #include <cd/rhi/NullDevice.hpp>
 #include <gtest/gtest.h>
 
-using namespace cd::profile::gpu_marker;
+using cd::profile::gpu_marker::MarkerHandle;
+using cd::profile::gpu_marker::Recorder;
+using cd::profile::gpu_marker::Scope;
 
 // ---------------------------------------------------------------------------
 // Test 1: begin_marker + end_marker round-trip

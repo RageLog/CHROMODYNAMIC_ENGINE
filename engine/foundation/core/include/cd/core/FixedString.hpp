@@ -24,7 +24,7 @@ class FixedString
 public:
     FixedString() = default;
 
-    FixedString(std::string_view sv) noexcept
+    explicit FixedString(std::string_view sv) noexcept
     {
         assign(sv);
     }

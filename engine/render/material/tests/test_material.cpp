@@ -7,6 +7,7 @@
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <gtest/gtest.h>
 
+
 #include <array>
 #include <cstdint>
 
@@ -212,9 +213,12 @@ TEST(PbrParams, FactorsSizeIsStd140Compatible)
 // Phase 155 — pre-integrated split-sum BRDF LUT.
 #include <cd/material/BrdfLut.hpp>
 
+using cd::material::bake_brdf_lut;
+using cd::material::hammersley;
+using cd::material::integrate_brdf;
+
 TEST(BrdfLut, HammersleyFirstSamplesAreLowDiscrepancy)
 {
-    using namespace cd::material;
     const auto s0 = hammersley(0, 16);
     const auto s1 = hammersley(1, 16);
     const auto s8 = hammersley(8, 16);
@@ -227,7 +231,6 @@ TEST(BrdfLut, HammersleyFirstSamplesAreLowDiscrepancy)
 
 TEST(BrdfLut, IntegratedTexelInBounds)
 {
-    using namespace cd::material;
     auto t0 = integrate_brdf(0.05F, 0.05F, 256);
     EXPECT_GE(t0.scale, 0.0F); EXPECT_LE(t0.scale, 1.0F);
     EXPECT_GE(t0.bias,  0.0F); EXPECT_LE(t0.bias,  1.0F);
@@ -237,7 +240,6 @@ TEST(BrdfLut, IntegratedTexelInBounds)
 
 TEST(BrdfLut, BakedLutHasExpectedShape)
 {
-    using namespace cd::material;
     auto lut = bake_brdf_lut(16, 16, 64);
     ASSERT_EQ(lut.size(), 256u);
     for (const auto& t : lut)
@@ -249,7 +251,6 @@ TEST(BrdfLut, BakedLutHasExpectedShape)
 
 TEST(BrdfLut, SmoothLowAngleHasLowScaleHighBias)
 {
-    using namespace cd::material;
     auto t = integrate_brdf(0.03F, 0.05F, 512);
     EXPECT_LT(t.scale, t.bias);
 }

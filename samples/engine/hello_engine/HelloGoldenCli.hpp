@@ -48,11 +48,12 @@ struct CliOptions
 {
     CliOptions out {};
     if (argv == nullptr) return out;
+    // NOLINTNEXTLINE(google-runtime-int) — strtol returns long by C ABI.
     const auto parse_int = [](const char* arg) -> std::optional<long> {
         if (arg == nullptr) return std::nullopt;
         char* end_ptr  = nullptr;
         errno          = 0;
-        const long val = std::strtol(arg, &end_ptr, 10);
+        const long val = std::strtol(arg, &end_ptr, 10);  // NOLINT(google-runtime-int)
         if (end_ptr == arg || *end_ptr != '\0' || errno != 0)
             return std::nullopt;
         return val;

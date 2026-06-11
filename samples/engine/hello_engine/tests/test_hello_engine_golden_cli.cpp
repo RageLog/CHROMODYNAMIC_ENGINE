@@ -32,7 +32,7 @@ namespace
 class ArgvBuilder
 {
 public:
-    explicit ArgvBuilder(std::initializer_list<std::string> args)
+    ArgvBuilder(std::initializer_list<std::string> args)
     {
         owned_.reserve(args.size());
         ptrs_.reserve(args.size() + 1);

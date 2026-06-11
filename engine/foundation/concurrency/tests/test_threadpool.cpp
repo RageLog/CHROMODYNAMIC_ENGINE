@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -82,7 +83,7 @@ TEST(ThreadPool, FuturesAggregate)
             }
         ));
     }
-    long long sum = 0;
+    std::int64_t sum = 0;
     for (auto& f : futs)
         sum += f.get();
     EXPECT_EQ(sum, 200LL * 199 /* 2 * (0..199) sum */);
