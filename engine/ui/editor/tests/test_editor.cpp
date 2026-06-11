@@ -511,3 +511,78 @@ TEST(PreferencesStore, RemoveAndClear)
     p.clear();
     EXPECT_EQ(p.size(), 0u);
 }
+
+// ---- phase1091 — CompositeCommand --------------------------------------------
+
+namespace
+{
+/// Order-recording probe command: notes its id on apply/revert.
+class ProbeCommand final : public cd::editor::ICommand
+{
+public:
+    ProbeCommand(int id, std::vector<int>& log) : id_ { id }, log_ { &log } {}
+    void apply() override { log_->push_back(id_); }
+    void revert() override { log_->push_back(-id_); }
+    [[nodiscard]] std::string_view label() const noexcept override { return "Probe"; }
+    [[nodiscard]] std::size_t byte_size() const noexcept override { return sizeof(*this); }
+
+private:
+    int id_;
+    std::vector<int>* log_;
+};
+
+TEST(CompositeCommand, AppliesForwardRevertsReverse)
+{
+    std::vector<int> log;
+    auto comp = std::make_unique<cd::editor::CompositeCommand>("Group move");
+    comp->add(std::make_unique<ProbeCommand>(1, log));
+    comp->add(std::make_unique<ProbeCommand>(2, log));
+    comp->add(std::make_unique<ProbeCommand>(3, log));
+    EXPECT_EQ(comp->size(), 3u);
+
+    cd::editor::EditHistory hist;
+    hist.push(std::move(comp));                       // applies 1,2,3
+    ASSERT_EQ(log, (std::vector<int> { 1, 2, 3 }));
+
+    EXPECT_TRUE(hist.undo());                          // reverts 3,2,1
+    ASSERT_EQ(log, (std::vector<int> { 1, 2, 3, -3, -2, -1 }));
+
+    EXPECT_TRUE(hist.redo());                          // re-applies 1,2,3
+    ASSERT_EQ(log, (std::vector<int> { 1, 2, 3, -3, -2, -1, 1, 2, 3 }));
+}
+
+TEST(CompositeCommand, GroupTranslateIsOneUndoStep)
+{
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    const auto a = scene.create_node();
+    const auto b = scene.create_node();
+    cd::editor::EditHistory hist;
+
+    auto comp = std::make_unique<cd::editor::CompositeCommand>("Translate 2");
+    comp->add(std::make_unique<cd::editor::TranslateCommand>(
+        scene, a, cd::math::Vec3f { 1.0F, 0.0F, 0.0F }));
+    comp->add(std::make_unique<cd::editor::TranslateCommand>(
+        scene, b, cd::math::Vec3f { 0.0F, 2.0F, 0.0F }));
+    hist.push(std::move(comp));
+
+    EXPECT_FLOAT_EQ(scene.local(a)->value.position.x, 1.0F);
+    EXPECT_FLOAT_EQ(scene.local(b)->value.position.y, 2.0F);
+
+    EXPECT_TRUE(hist.undo());  // ONE undo unwinds both
+    EXPECT_FLOAT_EQ(scene.local(a)->value.position.x, 0.0F);
+    EXPECT_FLOAT_EQ(scene.local(b)->value.position.y, 0.0F);
+    EXPECT_FALSE(hist.undo()) << "group must be a single history entry";
+}
+
+TEST(CompositeCommand, EmptyAndNullChildrenAreSafe)
+{
+    auto comp = std::make_unique<cd::editor::CompositeCommand>();
+    comp->add(nullptr);
+    EXPECT_TRUE(comp->empty());
+    cd::editor::EditHistory hist;
+    hist.push(std::move(comp));   // applying an empty composite is a no-op
+    EXPECT_TRUE(hist.undo());
+}
+
+}  // namespace

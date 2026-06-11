@@ -40,6 +40,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace cd::editor
 {
@@ -73,6 +74,57 @@ public:
     /// default returns sizeof(*this) — override when you capture
     /// large state (e.g. an entire serialized scene).
     [[nodiscard]] virtual std::size_t byte_size() const noexcept = 0;
+};
+
+/// phase1091 — groups N child commands into ONE undo step (the
+/// multi-select "move 7 entities" case: one Ctrl+Z reverts all 7).
+/// apply() runs children in insertion order, revert() in REVERSE
+/// order so overlapping targets unwind correctly. Children must be
+/// un-applied when added — EditHistory::push() runs the first
+/// apply(), exactly like any other command.
+class CompositeCommand final : public ICommand
+{
+public:
+    explicit CompositeCommand(std::string label = "Composite")
+        : label_ { std::move(label) }
+    {
+    }
+
+    /// Add a child. Pre-push only; the composite owns it.
+    void add(std::unique_ptr<ICommand> cmd)
+    {
+        if (cmd != nullptr)
+            children_.push_back(std::move(cmd));
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept { return children_.size(); }
+    [[nodiscard]] bool empty() const noexcept { return children_.empty(); }
+
+    void apply() override
+    {
+        for (auto& c : children_)
+            c->apply();
+    }
+
+    void revert() override
+    {
+        for (auto it = children_.rbegin(); it != children_.rend(); ++it)
+            (*it)->revert();
+    }
+
+    [[nodiscard]] std::string_view label() const noexcept override { return label_; }
+
+    [[nodiscard]] std::size_t byte_size() const noexcept override
+    {
+        std::size_t total = sizeof(*this) + label_.capacity();
+        for (const auto& c : children_)
+            total += c->byte_size();
+        return total;
+    }
+
+private:
+    std::vector<std::unique_ptr<ICommand>> children_;
+    std::string label_;
 };
 
 /// Bounded undo/redo stack. Single-threaded. Owns the command
