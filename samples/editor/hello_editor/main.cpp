@@ -618,6 +618,136 @@ int main(int argc, char** argv)
         [&]() { if (history.redo()) log_push("palette: Redo"); });
     palette.register_command(3, "Edit: Clear History",
         [&]() { history.clear(); log_push("palette: history cleared"); });
+    // phase1095: hello_engine scene BRIDGE. Same file path + per-entity
+    // field contract ("name"/"kind"/"tint", kind strings Cube/Sphere/
+    // Cone/Gltf) and the same palette ids (80/81) as hello_engine's
+    // Scene: Save / Scene: Load pair — arrange a scene here, save, then
+    // load it in hello_engine to see it in the full PBR pipeline (and
+    // vice versa). Kinds the editor has no mesh for (Torus/Cylinder/
+    // Sponza from an engine-side save) fall back to Cube so they stay
+    // visible and selectable.
+    constexpr const char* kBridgePath = "hello_engine.cdscene.json";
+    auto bridge_kind_name = [](EntityMeta::Kind k) -> const char*
+    {
+        switch (k)
+        {
+            case EntityMeta::Kind::kSphere: return "Sphere";
+            case EntityMeta::Kind::kCone:   return "Cone";
+            case EntityMeta::Kind::kGltf:   return "Gltf";
+            default:                        return "Cube";
+        }
+    };
+    auto bridge_kind_from = [](std::string_view n) -> EntityMeta::Kind
+    {
+        if (n == "Sphere") return EntityMeta::Kind::kSphere;
+        if (n == "Cone")   return EntityMeta::Kind::kCone;
+        if (n == "Gltf")   return EntityMeta::Kind::kGltf;
+        return EntityMeta::Kind::kCube;
+    };
+    palette.register_command(80, "Scene: Save (hello_engine bridge)",
+        [&]()
+        {
+            auto find_meta = [&](cd::ecs::Entity e) -> const EntityMeta*
+            {
+                for (const auto& m : entity_metas)
+                    if (m.handle.id == e.id) return &m;
+                return nullptr;
+            };
+            auto root = cd::scene::serialize_scene_with(scene,
+                [&](cd::ecs::Entity e, cd::asset::json::Object& obj)
+                {
+                    const auto* m = find_meta(e);
+                    if (m == nullptr) return;
+                    obj["name"] = cd::asset::json::Value { m->display_name };
+                    obj["kind"] = cd::asset::json::Value {
+                        std::string { bridge_kind_name(m->kind) } };
+                    obj["tint"] = cd::scene::vec3_to_json(m->tint);
+                });
+            const auto txt = cd::asset::json::serialize(root, true);
+            std::ofstream f { kBridgePath, std::ios::binary | std::ios::trunc };
+            if (f)
+            {
+                f.write(txt.data(), static_cast<std::streamsize>(txt.size()));
+                log_push("[bridge] saved " +
+                         std::to_string(entity_metas.size()) + " entities -> " +
+                         kBridgePath);
+            }
+            else
+            {
+                log_push("[bridge] save FAILED (ofstream)");
+            }
+        });
+    palette.register_command(81, "Scene: Load (hello_engine bridge)",
+        [&]()
+        {
+            auto r = cd::asset::json::load(kBridgePath);
+            if (!r.has_value())
+            {
+                log_push("[bridge] load failed: " +
+                         std::string { r.error().message });
+                return;
+            }
+            // Replace semantics: drop every current root (children
+            // cascade), then rebuild metas from the file's extras.
+            std::vector<cd::ecs::Entity> roots;
+            scene.for_each_root(
+                [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
+                {
+                    roots.push_back(e);
+                });
+            for (const auto e : roots)
+                scene.destroy_node(e);
+            entity_metas.clear();
+            selection.clear();
+            selected = {};
+            inspector_panel.set_target(selected);
+            history.clear();
+            const auto loaded = cd::scene::deserialize_scene_with(
+                scene, *r,
+                [&](cd::ecs::Entity e, const cd::asset::json::Object& obj)
+                {
+                    EntityMeta m;
+                    m.handle = e;
+                    if (auto it = obj.find("name");
+                        it != obj.end() && it->second.is_string())
+                        m.display_name = it->second.as_string();
+                    if (auto it = obj.find("kind");
+                        it != obj.end() && it->second.is_string())
+                        m.kind = bridge_kind_from(it->second.as_string());
+                    if (auto it = obj.find("tint");
+                        it != obj.end() && it->second.is_array() &&
+                        it->second.as_array().size() == 3)
+                    {
+                        const auto& a = it->second.as_array();
+                        if (a[0].is_number() && a[1].is_number() &&
+                            a[2].is_number())
+                            m.tint = { static_cast<float>(a[0].as_number()),
+                                       static_cast<float>(a[1].as_number()),
+                                       static_cast<float>(a[2].as_number()) };
+                    }
+                    entity_metas.push_back(std::move(m));
+                });
+            if (!loaded.has_value())
+            {
+                log_push("[bridge] deserialize failed: " +
+                         std::string { loaded.error().message });
+                return;
+            }
+            scene.for_each_root(
+                [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
+                {
+                    hierarchy.expand(e);
+                });
+            if (!entity_metas.empty())
+            {
+                selected = entity_metas.front().handle;
+                selection.add(selected);
+                inspector_panel.set_target(selected);
+            }
+            log_push("[bridge] loaded " +
+                     std::to_string(entity_metas.size()) + " entities <- " +
+                     kBridgePath);
+        });
     palette.register_command(10, "Select: First Entity",
         [&]() {
             if (!entity_metas.empty()) {
