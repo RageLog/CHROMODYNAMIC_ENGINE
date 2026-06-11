@@ -54,6 +54,8 @@
 #include <cd/editor/panel_console/Console.hpp>
 #include <cd/imgui/Context.hpp>
 #include <cd/debug_draw/DebugDraw.hpp>
+#include <cd/editor/AxisGizmo.hpp>
+#include <optional>
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
@@ -441,6 +443,24 @@ int main(int argc, char** argv)
     }
     cd::debug_line::LineBatch dbg_batch;
 
+    // phase1063: draggable translate gizmo for the selected entity.
+    // cd::editor::AxisGizmo owns the hover/drag state machine; this
+    // sample supplies the screen-space pick + the v1 drag metric
+    // (mouse delta projected onto the axis screen direction, scaled
+    // by world-units-per-pixel measured at drag start). Arrows render
+    // through cd::debug_draw. Undo/EditHistory integration is the
+    // queued follow-up.
+    cd::editor::AxisGizmo viewport_gizmo;
+    struct GizmoDragMetric
+    {
+        float anchor_x { 0.0F };
+        float anchor_y { 0.0F };
+        float screen_dir_x { 0.0F };
+        float screen_dir_y { 0.0F };
+        float world_per_px { 0.0F };
+    };
+    GizmoDragMetric gizmo_metric {};
+
     // ---- ECS / scene / editor primitives ----------------------------------
     cd::ecs::World        world;
     cd::scene::Scene      scene { world };
@@ -800,6 +820,110 @@ int main(int argc, char** argv)
             // transform. Flushed inside this pass; depth test keeps
             // the grid behind geometry, depth-write-off keeps it out
             // of later passes.
+            // phase1063: gizmo pick + drag (before the overlay batch
+            // so this frame's arrows reflect this frame's state).
+            if (selected.id != 0)
+            {
+                if (auto* gz_lt = scene.local(selected); gz_lt != nullptr)
+                {
+                    constexpr float kArmLen = 1.2F;
+                    viewport_gizmo.set_target(gz_lt->value.position);
+                    const auto to_screen =
+                        [&](const cd::math::Vec3f& w) -> std::optional<ImVec2>
+                    {
+                        const cd::math::Vec4f clip =
+                            vp * cd::math::Vec4f { w.x, w.y, w.z, 1.0F };
+                        if (clip.w <= 1e-5F) return std::nullopt;
+                        const float sx = (clip.x / clip.w * 0.5F + 0.5F) *
+                            static_cast<float>(frame.extent.width);
+                        const float sy = (1.0F - (clip.y / clip.w * 0.5F + 0.5F)) *
+                            static_cast<float>(frame.extent.height);
+                        return ImVec2 { sx, sy };
+                    };
+                    const auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 q)
+                    {
+                        const float abx = b.x - a.x;
+                        const float aby = b.y - a.y;
+                        const float len2 = abx * abx + aby * aby;
+                        float t = 0.0F;
+                        if (len2 > 1e-6F)
+                            t = std::clamp(((q.x - a.x) * abx + (q.y - a.y) * aby) / len2,
+                                           0.0F, 1.0F);
+                        const float px = a.x + abx * t - q.x;
+                        const float py = a.y + aby * t - q.y;
+                        return std::sqrt(px * px + py * py);
+                    };
+                    const ImVec2 mouse = ImGui::GetMousePos();
+                    const auto org_px = to_screen(viewport_gizmo.target());
+                    if (org_px.has_value() && !ui_mouse)
+                    {
+                        if (!viewport_gizmo.is_dragging())
+                        {
+                            cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
+                            float best_d = viewport_gizmo.hover_tolerance_pixels;
+                            GizmoDragMetric best_metric {};
+                            for (const auto ax : { cd::editor::GizmoAxis::kX,
+                                                   cd::editor::GizmoAxis::kY,
+                                                   cd::editor::GizmoAxis::kZ })
+                            {
+                                const auto dir = cd::editor::axis_dir(ax);
+                                const auto tgt = viewport_gizmo.target();
+                                const auto tip_px = to_screen(
+                                    { tgt.x + dir.x * kArmLen,
+                                      tgt.y + dir.y * kArmLen,
+                                      tgt.z + dir.z * kArmLen });
+                                if (!tip_px.has_value()) continue;
+                                const float ax_px_x = tip_px->x - org_px->x;
+                                const float ax_px_y = tip_px->y - org_px->y;
+                                const float ax_px_len = std::sqrt(
+                                    ax_px_x * ax_px_x + ax_px_y * ax_px_y);
+                                if (ax_px_len < 4.0F) continue;  // axis toward camera
+                                const float d = dist_to_seg(*org_px, *tip_px, mouse);
+                                if (d < best_d)
+                                {
+                                    best_d = d;
+                                    best = ax;
+                                    best_metric = { mouse.x, mouse.y,
+                                                    ax_px_x / ax_px_len,
+                                                    ax_px_y / ax_px_len,
+                                                    kArmLen / ax_px_len };
+                                }
+                            }
+                            viewport_gizmo.set_hover(best);
+                            if (best != cd::editor::GizmoAxis::kNone &&
+                                ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                            {
+                                viewport_gizmo.begin_drag(
+                                    best, viewport_gizmo.target());
+                                gizmo_metric = best_metric;
+                            }
+                        }
+                        else if (ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                        {
+                            const auto dir = cd::editor::axis_dir(
+                                viewport_gizmo.active_axis());
+                            const float along =
+                                (mouse.x - gizmo_metric.anchor_x) * gizmo_metric.screen_dir_x +
+                                (mouse.y - gizmo_metric.anchor_y) * gizmo_metric.screen_dir_y;
+                            const float world_delta =
+                                along * gizmo_metric.world_per_px;
+                            const auto org = viewport_gizmo.target();
+                            viewport_gizmo.update_drag(
+                                { org.x + dir.x * world_delta,
+                                  org.y + dir.y * world_delta,
+                                  org.z + dir.z * world_delta });
+                            gizmo_metric.anchor_x = mouse.x;
+                            gizmo_metric.anchor_y = mouse.y;
+                            gz_lt->value.position = viewport_gizmo.target();
+                        }
+                        else
+                        {
+                            viewport_gizmo.end_drag();
+                        }
+                    }
+                }
+            }
+
             if (dbg_renderer.is_valid())
             {
                 dbg_batch.add_grid({ 0.0F, 0.0F, 0.0F },
@@ -825,6 +949,35 @@ int main(int argc, char** argv)
                               tr.position.y + half.y,
                               tr.position.z + half.z },
                             { 0.95F, 0.60F, 0.15F, 1.0F });
+                        // phase1063: translate gizmo arrows — base
+                        // R/G/B, hover brightened, active near-white.
+                        constexpr float kArmLen = 1.2F;
+                        const auto tgt = viewport_gizmo.target();
+                        for (const auto ax : { cd::editor::GizmoAxis::kX,
+                                               cd::editor::GizmoAxis::kY,
+                                               cd::editor::GizmoAxis::kZ })
+                        {
+                            const auto dir = cd::editor::axis_dir(ax);
+                            cd::math::Vec4f tint {
+                                ax == cd::editor::GizmoAxis::kX ? 0.85F : 0.20F,
+                                ax == cd::editor::GizmoAxis::kY ? 0.85F : 0.25F,
+                                ax == cd::editor::GizmoAxis::kZ ? 0.85F : 0.25F,
+                                1.0F };
+                            if (viewport_gizmo.active_axis() == ax)
+                                tint = { 1.0F, 1.0F, 0.85F, 1.0F };
+                            else if (viewport_gizmo.hover() == ax)
+                            {
+                                tint.x = std::min(tint.x + 0.35F, 1.0F);
+                                tint.y = std::min(tint.y + 0.35F, 1.0F);
+                                tint.z = std::min(tint.z + 0.35F, 1.0F);
+                            }
+                            dbg_batch.add_arrow(
+                                tgt,
+                                { tgt.x + dir.x * kArmLen,
+                                  tgt.y + dir.y * kArmLen,
+                                  tgt.z + dir.z * kArmLen },
+                                tint);
+                        }
                     }
                 }
                 dbg_renderer.flush(device, cmd, dbg_batch, vp, frame_idx);
