@@ -27,6 +27,7 @@ cd_add_sample(hello_engine
     cd::brdf_sheen_clearcoat
     cd::brdf_sss
     cd::ddgi
+    cd::debug_draw
     cd::debug_line
     cd::decal
     cd::framegraph

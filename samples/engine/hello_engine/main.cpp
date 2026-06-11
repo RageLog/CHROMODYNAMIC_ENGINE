@@ -61,6 +61,7 @@
 #include <cd/concurrency/WorkStealingThreadPool.hpp>
 #include <cd/core/CounterTable.hpp>
 #include <cd/ddgi/Ddgi.hpp>
+#include <cd/debug_draw/DebugDraw.hpp>
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/decal/Decal.hpp>
 #include <cd/ecs/Entity.hpp>
@@ -6575,16 +6576,14 @@ struct HelloEngineApp::EngineState
     // created lazily at first use and grown (destroy + recreate at
     // 2x) when a frame's vertex count exceeds the capacity.
     cd::debug_line::LineBatch                debug_lines;
-    cd::rhi::BufferHandle                    debug_line_vb {};
-    std::uint64_t                            debug_line_vb_capacity { 0 };
+    // phase1058: GPU side ported to cd::debug_draw::Renderer — the
+    // pipeline + lazily-grown VB + frames-in-flight-safe growth all
+    // live in the library now (phase 1031/1034 prototype retired).
+    cd::debug_draw::Renderer                 debug_draw;
     // phase1053: VT probe page table (moved out of the panel static
     // so the 3D atlas overlay can enumerate residents()).
     cd::virtual_textures::PageTable          vt_table { 4, 4 };
     std::uint32_t                            vt_applied_serial { 0 };
-    // phase1034: outgrown VBs park here until the frames that may
-    // still read them have fenced (destroy_at_frame = frame_idx + 3,
-    // same 3-frame margin as tlas_destroy_queue).
-    std::deque<cd_sample::DeferredBuffer>    buffer_destroy_queue;
     std::array<cd::material::MaterialInstance, 2> composite_insts;
     cd::material::MaterialInstance           bloom_prefilter_inst;
     std::array<cd::material::MaterialInstance, 3> bloom_down_insts;
@@ -6839,6 +6838,33 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             cd::core::ErrorCode { 0,
                 static_cast<std::uint32_t>(mat_r.error().exit_code), "materials" });
     s.materials = std::move(*mat_r);
+
+    // phase1058: debug-line GPU renderer via cd::debug_draw. The MRT
+    // fragment shader (4 attachments with neutral G-buffer writes)
+    // comes from LineShader.hpp; on-disk copies win for hot-reload.
+    {
+        constexpr std::array<cd::rhi::Format, 4> kLineColorFmts {
+            cd::rhi::Format::kRGBA16Float,
+            cd::rhi::Format::kRGBA16Float,
+            cd::rhi::Format::kRGBA8Unorm,
+            cd::rhi::Format::kRG8Unorm
+        };
+        cd::debug_draw::RendererDesc dd {};
+        dd.color_attachment_formats = kLineColorFmts;
+        dd.depth_attachment_format  = cd::rhi::Format::kD32Float;
+        dd.vertex_glsl   = cd::hello_engine::kLineVS;
+        dd.fragment_glsl = cd::hello_engine::kLineFS;
+#if HELLO_ENGINE_USE_ON_DISK_SHADERS
+        dd.vertex_glsl_path   = cd_sample::kLineVertGlslPath;
+        dd.fragment_glsl_path = cd_sample::kLineFragGlslPath;
+#endif
+        dd.name = "hello_engine/debug_line";
+        auto dd_r = cd::debug_draw::Renderer::create(
+            device, s.compiler.get(), dd);
+        if (!dd_r.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 11U, "debug_line" });
+        s.debug_draw = std::move(*dd_r);
+    }
 
     // Shader hot-reload entries
     s.shader_watch.add_entry(
@@ -10228,66 +10254,12 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         }
         if (s.fx.ms_show_meshlets_3d)
             cd_sample::append_meshlet_overlay(s.fx, s.debug_lines);
-        // phase1034: tick the deferred-buffer queue BEFORE any new
-        // growth so parked VBs from 3+ frames ago are reclaimed.
-        while (!s.buffer_destroy_queue.empty() &&
-               s.buffer_destroy_queue.front().destroy_at_frame <= s.frame_idx)
-        {
-            device.destroy_buffer(s.buffer_destroy_queue.front().h);
-            s.buffer_destroy_queue.pop_front();
-        }
+        // phase1058: the whole upload/grow/park/draw dance is one
+        // library call now (cd::debug_draw::Renderer::flush).
         if (!s.debug_lines.empty())
-        {
-            const auto lverts = s.debug_lines.vertices();
-            const std::uint64_t bytes =
-                lverts.size() * sizeof(cd::debug_line::LineVertex);
-            if (!s.debug_line_vb.is_valid() ||
-                s.debug_line_vb_capacity < bytes)
-            {
-                // phase1034 (review fix): NEVER destroy_buffer here —
-                // frame N-1 may still be reading the old VB (fif=2
-                // fences only frame N-2). Park it on the deferred
-                // queue with the same 3-frame margin the TLAS ring
-                // uses.
-                if (s.debug_line_vb.is_valid())
-                    s.buffer_destroy_queue.push_back(
-                        { s.debug_line_vb, s.frame_idx + 3U });
-                const std::uint64_t new_cap =
-                    std::max<std::uint64_t>(bytes * 2U, 16ULL * 1024ULL);
-                cd::rhi::BufferDesc bd {};
-                bd.size       = new_cap;
-                bd.usage      = cd::rhi::BufferUsage::kVertex;
-                bd.memory     = cd::rhi::MemoryUsage::kCpuToGpu;
-                bd.debug_name = "hello_engine/debug_line_vb";
-                if (auto br = device.create_buffer(bd); br.has_value())
-                {
-                    s.debug_line_vb          = *br;
-                    s.debug_line_vb_capacity = new_cap;
-                }
-                else
-                {
-                    s.debug_line_vb          = {};
-                    s.debug_line_vb_capacity = 0;
-                }
-            }
-            if (s.debug_line_vb.is_valid())
-            {
-                (void)device.upload_buffer(
-                    s.debug_line_vb, 0,
-                    std::span<const std::byte>(
-                        reinterpret_cast<const std::byte*>(lverts.data()),
-                        bytes));
-                s.materials.line.apply(cmd);
-                cmd.push_constants(
-                    s.materials.line.pipeline_layout(),
-                    cd::rhi::ShaderStage::kVertex,
-                    0, sizeof(cd::math::Mat4f), &vp);
-                cmd.bind_vertex_buffer(0, s.debug_line_vb, 0);
-                cmd.draw(static_cast<std::uint32_t>(lverts.size()), 1, 0, 0);
-                s.counters.increment("draws_debug_lines");
-            }
-            s.debug_lines.clear();
-        }
+            s.counters.increment("draws_debug_lines");
+        s.debug_draw.flush(device, cmd, s.debug_lines, vp, s.frame_idx);
+        s.debug_lines.clear();
 
         ctx.new_frame();
 
@@ -10623,11 +10595,7 @@ void HelloEngineApp::on_shutdown() noexcept
     device.destroy_buffer(s.shadow_ubo);
     device.destroy_buffer(s.lights_ubo);
     device.destroy_buffer(s.inst_mat_ssbo);
-    if (s.debug_line_vb.is_valid())  // phase1031 — lazily created
-        device.destroy_buffer(s.debug_line_vb);
-    for (const auto& db : s.buffer_destroy_queue)  // phase1034 — drain
-        device.destroy_buffer(db.h);               // (device idle here)
-    s.buffer_destroy_queue.clear();
+    s.debug_draw.destroy(device);  // phase1058 — VB + parked + pipeline
 
     if (s.albedo_tex.view.is_valid())  device.destroy_texture_view(s.albedo_tex.view);
     if (s.albedo_tex.image.is_valid()) device.destroy_texture(s.albedo_tex.image);
