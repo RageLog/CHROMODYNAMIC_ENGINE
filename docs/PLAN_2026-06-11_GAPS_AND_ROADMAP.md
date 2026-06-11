@@ -102,23 +102,32 @@ grid + selection box + draggable gizmo + EditHistory undo entegrasyonu.
 
 ## D. Önerilen yürütme sırası
 
-**Sprint 1 — tam otonom (kullanıcı yokken güvenle):**
-1. C4 lint kuyruğu (12 kural probe + kolay promote'lar; nested-
-   conditional + redundant-casting dalgaları).
-2. C5 docs: debug_draw ADR + STATUS_AND_PLAN_W8 refresh + CLAUDE.md
-   tidy kuralı.
-3. C2 gizmo v2 (ray-plane + rotate/scale + pad'ler) — RotateCommand/
-   ScaleCommand hazır olduğundan düşük riskli, yüksek görünür değer.
-4. C1 X1-FU-E (README) + X1-FU-G (spec audit, kod değişikliği yok).
-5. C3 dolgu: HelloFrameLoop extraction + kalan probe demoları.
+**Sprint 1 — tam otonom — ✅ TAMAMLANDI (phases 1066-1077, 2026-06-11):**
+1. ✅ C4 lint kuyruğu (1067-1070): 12 ertelenen kural kapandı — 5
+   promote (209→214 WAE; default-arguments NVI refactor dahil),
+   7 rationale'li disable.
+2. ✅ C5 docs (1066, 1071): debug_draw ADR + STATUS refresh +
+   CLAUDE.md tidy kuralı.
+3. ✅ C2 gizmo v2 (1072-1074): lib kit (12 test) + ray-plane translate
+   + XY/XZ/YZ pads + rotate/scale modları + 1/2/3 hotkeys.
+4. ✅ C1 X1-FU-E README + X1-FU-G audit (1075): IDevice 4-kural
+   threading contract + research/reports/X1FUG_*.md.
+5. ✅ C3 HelloFrameLoop b1+b2 (1076-1077): 18 demo bloğu →
+   HelloViewportDemos.hpp; main.cpp 13042→11440, on_frame ~2590→~990.
 
-**Sprint 2 — yarı-gated (safety-review'lu otonom):**
-6. X1-FU-C hazard-pointer + X1-FU-D priority steal (safety-integration
-   zorunlu; JobGraph dersleri taze).
-7. X1-FU-A atomic wait/notify (B TSan koşusuna bağlı; TSan lokalde
-   koşulabilir, CI matrisi beklemeden).
-8. X1-FU-F secondary command buffers (K1 onayı ideali; surface review
-   kısmı onaysız başlayabilir).
+**Sprint 2 — safety-review'lu otonom — ✅ TAMAMLANDI (phases 1078-1081):**
+6. ✅ X1-FU-C hazard-pointer WSD reclamation (1080) + X1-FU-D
+   priority-aware pop/steal, 4 seviye deque/worker (1079).
+7. ✅ X1-FU-A atomic wake-epoch (1078) — cv + 2ms poll yerine C++20
+   atomic wait/notify. Not: TSan Windows'ta YOK (ADR'nin kaydı doğru);
+   doğrulama stress + Release+ASAN ile yapıldı, TSan X1-FU-B CI
+   lane'ine kaldı. Debug+ASAN ucrtbased /MDd interop'u nedeniyle
+   process-init'te ölüyor (proje hatası değil — LLVM 21 bilinen kısıt).
+8. ✅ X1-FU-F surface review (1081): research/reports/X1FUF_*.md —
+   verdict: raw secondary-buffer DEĞİL, pass-scoped parallel recorder
+   (lane modeli). ADR + implementasyon K1 sonrası.
+   safety-integration adversarial review'u 1078-1080 üzerinde koşuyor;
+   bulgular ayrı fix phase'leriyle kapatılacak.
 
 **Sprint 3 — onay sonrası büyük işler:**
 9. K1+K3 → X4 D3D12 parity (3-4 hafta, en büyük kalem) → X1 Phase 2
