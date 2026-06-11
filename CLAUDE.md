@@ -50,6 +50,11 @@
 - `-Wall -Werror -Wextra -Wshadow -Wnon-virtual-dtor -Wpedantic -Wconversion` standart.
 - `PUBLIC` / `PRIVATE` / `INTERFACE` doğru kullan. Layered DAG; cycle yasak.
 - ASAN / UBSAN debug preset'lerinde aktif. TSan ayrı preset.
+- **`.clang-tidy` `Checks:` scalar'ına ASLA `#` yorum koyma** — folded scalar
+  içinde `#` yorum DEĞİLDİR; virgülsüz metin sonraki kuralı ölü glob'a yapıştırır
+  (phase1045 olayı: 5 aile sessizce devre dışıydı). Rationale'ler scalar'ın
+  ÜSTÜNDEKİ yorum bloğuna yazılır; değişiklik sonrası `clang-tidy --list-checks`
+  ile doğrula.
 - Compiler matrisi (kararlaştırılınca): MSVC + Clang-cl + Clang + GCC.
 - Paket: vcpkg manifest mode (DtForHil pattern); kritik bağımlılıklar opsiyonel submodule.
 

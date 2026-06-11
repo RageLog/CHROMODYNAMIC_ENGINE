@@ -1,4 +1,4 @@
-# CHROMODYNAMIC - Status and Work Plan (Mega-Marathon A+B+D Close-out, 2026-05-29)
+# CHROMODYNAMIC - Status and Work Plan (Sprint-1 refresh, 2026-06-11)
 
 > Bu dokuman team-lead orkestrasyonu altinda, kod yazmadan, durust durum tespitidir. Kaynak: repo inspection + memory + Mega-Marathon Runs 21-33 (phases 372-412).
 
@@ -1418,3 +1418,53 @@ before and after.
 ---
 
 ---
+
+## Runs 28-31 + Sprint-1 close-out (phases 1015-1070, 2026-06-08..11)
+
+Authoritative forward plan now lives in
+docs/PLAN_2026-06-11_GAPS_AND_ROADMAP.md (K1-K6 user-gated decisions +
+3-sprint order). This section records what landed since phase 1015.
+
+**Agent/infra**: Fable 5 agent-suite optimization (1015; 26 fable /
+5 sonnet / 1 haiku, frontmatter = default, orchestrator may override
+per dispatch). ctest default TIMEOUT 120s via cd_add_test (1047).
+PC-restart RCA: 0x9F DRIVER_POWER_STATE_FAILURE x2 post-Windows-
+upgrade; admin one-liners handed to user (K6), DC-sleep disabled.
+
+**User-feedback fixes (Run 28 queue)**: flicker source isolation via 4
+independent disable toggles (1016); showcase clarity 4/5 then 5/5
+(1017-18, 1030-34); PBR second-bounce bindless sampling fix after an
+11-agent adversarial audit refuted 2 hypotheses (1020).
+
+**cd::debug_line + cd::debug_draw** (1030-1060): new CPU LineBatch lib
+(15 gtests) + GPU Renderer lib with the park-margin (frame_idx+3)
+buffer-growth policy centralised and compile-time pinned; hello_engine
+ported (exit 11 on boot-fail, X5 hot-reload entry), hello_editor is
+the second consumer. ADR-20260611-debug-line-draw-pair codifies it.
+34 viewport overlays cumulative; 19 sphere-template demos upgraded
+where lines communicate better (decal OBB closed clarity 5/5).
+
+**Concurrency permanent fixes**: JobGraph exactly-once submission
+(1050, immutable-topology kick-off + per-node execution-count stress
+asserts) and ThreadPool coroutine ownership + rollback + notify-
+under-mutex (1052). Regression nets in both.
+
+**hello_editor**: floor grid + selection AABB (1062), draggable
+translate gizmo with screen-space pick + v1 drag metric (1063),
+EditHistory undo via rewind-then-push TranslateCommand (1064).
+
+**Lint close-out of the 12 deferred rules (1067-1070)**: probe counts
+in research/reports/probe12_*; 5 rules promoted after tree-wide site
+fixes -- google-runtime-int (12 sites, C-ABI NOLINTs for strtol/
+lround/khrplatform), google-build-using-namespace (15 test sites ->
+using-declarations), google-explicit-constructor (16 sites; Json::
+Value + Ref<T> NOLINT-by-design), llvm-namespace-comment (31 sites
+autofixed), google-default-arguments (11 sites -> NVI pattern across
+IAllocator family / IDevice::create_command_buffer / IAudioBackend::
+play+create_stream; zero call-site changes). 7 rules stay off with
+written rationale in .clang-tidy (fuchsia style bans + llvm header-
+guard/include-order conflicts with project conventions).
+WarningsAsErrors: 209 -> 214 rules.
+
+**Checkpoint discipline**: 262/262 ctest PASS at every commit, no tag,
+no push. Open user gates: K1-K6 (see plan doc section B).
