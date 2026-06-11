@@ -60,6 +60,7 @@ FreeTypeBackend::~FreeTypeBackend()
 namespace ft_backend
 {
 
+// NOLINTNEXTLINE(misc-use-internal-linkage) — consumed cross-TU by Font.cpp via a local declaration.
 bool load(FreeTypeBackend& ft, std::span<const std::uint8_t> data, float pixel_size,
           int& out_ascent, int& out_descent, int& out_line_gap, float& out_scale)
 {
@@ -112,6 +113,7 @@ bool load(FreeTypeBackend& ft, std::span<const std::uint8_t> data, float pixel_s
     return true;
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage) — consumed cross-TU by Font.cpp via a local declaration.
 bool rasterize_glyph(FreeTypeBackend& ft, std::uint32_t codepoint,
                      std::vector<std::uint8_t>& dst_alpha,
                      int& w, int& h,

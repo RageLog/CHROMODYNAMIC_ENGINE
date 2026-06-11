@@ -273,7 +273,7 @@ struct SceneEntity
     bool prev_model_valid { false };
 };
 
-[[maybe_unused]] [[nodiscard]] inline PrimitiveKind kind_from_name(std::string_view n) noexcept
+[[maybe_unused]] [[nodiscard]] static inline PrimitiveKind kind_from_name(std::string_view n) noexcept
 {
     if (n == "Sphere")   return PrimitiveKind::kSphere;
     if (n == "Cone")     return PrimitiveKind::kCone;
@@ -289,7 +289,7 @@ struct GpuTexture2D
     cd::rhi::TextureViewHandle view  {};
 };
 
-[[nodiscard]] inline GpuTexture2D
+[[nodiscard]] static inline GpuTexture2D
 create_texture_rgba8(cd::rhi::IDevice& dev, const std::uint8_t* rgba,
                      std::uint32_t w, std::uint32_t h)
 {

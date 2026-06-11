@@ -141,6 +141,7 @@ static int ft_cubic_to(const FT_Vector* ctl1, const FT_Vector* ctl2,
 namespace msdfgen_backend
 {
 
+// NOLINTNEXTLINE(misc-use-internal-linkage) — consumed cross-TU by Font.cpp via a local declaration.
 void to_msdf_multi(FreeTypeBackend&           ft,
                    std::uint32_t               cp,
                    std::vector<std::uint8_t>&  dst,

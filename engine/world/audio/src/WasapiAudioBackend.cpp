@@ -296,7 +296,7 @@ public:
                 "create_stream: channels / sample_rate must be > 0"));
         }
         std::scoped_lock guard { state_mu_ };
-        const auto id = static_cast<std::uint32_t>(next_stream_id_++);
+        const auto id = next_stream_id_++;
         StreamRec rec;
         rec.channels = channels;
         rec.sample_rate = sample_rate;

@@ -46,6 +46,7 @@ namespace cd::rhi::vulkan
 // Forward declaration so the factory in VulkanDeviceFactory.cpp can reference
 // this implementation. GCC -Wmissing-declarations requires every non-static
 // definition to be preceded by a declaration with the same signature.
+// NOLINTNEXTLINE(misc-use-internal-linkage) — consumed cross-TU by VulkanDeviceFactory.cpp via a local declaration.
 [[nodiscard]] cd::core::Result<std::unique_ptr<cd::rhi::IDevice>> create_device(
     std::unique_ptr<VulkanInstance> inst,
     const std::vector<std::string>& device_extensions,

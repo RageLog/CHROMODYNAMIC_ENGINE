@@ -11,6 +11,7 @@
 namespace cd::net
 {
 
+// NOLINTNEXTLINE(misc-use-internal-linkage) — consumed cross-TU by the net tests via a local declaration.
 const char* qos_dispatcher_translation_unit() noexcept
 {
     return "cd::net::QosDispatcher @ QosDispatcher.cpp";

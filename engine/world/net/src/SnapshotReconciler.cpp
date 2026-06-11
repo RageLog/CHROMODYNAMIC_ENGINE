@@ -11,6 +11,7 @@
 namespace cd::net
 {
 
+// NOLINTNEXTLINE(misc-use-internal-linkage) — consumed cross-TU by the net tests via a local declaration.
 const char* snapshot_reconciler_translation_unit() noexcept
 {
     return "cd::net::SnapshotReconciler @ SnapshotReconciler.cpp";

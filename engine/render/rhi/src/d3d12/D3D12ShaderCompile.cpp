@@ -86,7 +86,7 @@ using Microsoft::WRL::ComPtr;
 
 } // namespace
 
-cd::core::Result<std::vector<std::uint8_t>> compile_sm5_d3dcompile(const CompileOptions& opts)
+static cd::core::Result<std::vector<std::uint8_t>> compile_sm5_d3dcompile(const CompileOptions& opts)
 {
     const char* target = target_for_sm5(opts.stage);
     if (target == nullptr)
@@ -151,7 +151,7 @@ cd::core::Result<std::vector<std::uint8_t>> compile_sm5_d3dcompile(const Compile
     return bytecode;
 }
 
-cd::core::Result<std::vector<std::uint8_t>> compile_sm6_dxc(const CompileOptions& opts)
+static cd::core::Result<std::vector<std::uint8_t>> compile_sm6_dxc(const CompileOptions& opts)
 {
     const wchar_t* target = target_for_sm6(opts.stage, opts.model);
     if (target == nullptr)
