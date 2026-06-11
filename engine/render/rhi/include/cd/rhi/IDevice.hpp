@@ -114,6 +114,23 @@ enum class Code : std::uint32_t
 }
 }  // namespace rhi_errors
 
+// -----------------------------------------------------------------------------
+// Threading contract (X1-FU-G spec audit, phase 1075 — see
+// research/reports/X1FUG_upload_buffer_thread_safety_audit.md):
+//   1. Resource lifetime calls (create_* / destroy_*) require EXTERNAL
+//      synchronization with every other IDevice call — backend handle
+//      tables are plain maps and the id counter is non-atomic by design
+//      while the engine is single-resource-threaded.
+//   2. upload_buffer / download_buffer are thread-COMPATIBLE: concurrent
+//      calls on DISTINCT handles are allowed provided rule 1 holds (no
+//      create/destroy in flight). Vulkan's copy is VMA-internally
+//      synchronized; the race surface is the handle lookup, not the copy.
+//   3. Concurrent same-handle uploads are the caller's responsibility;
+//      overlapping ranges are always a bug.
+//   4. CPU↔GPU timeline hazards (uploading while a previous frame still
+//      reads) stay with the caller — frames-in-flight fencing or the
+//      park-margin convention (ADR-20260611-debug-line-draw-pair).
+// -----------------------------------------------------------------------------
 class IDevice
 {
 public:
@@ -266,6 +283,9 @@ public:
 
     /// Write to a CPU-visible (kCpuToGpu) buffer region. Returns invalid arg
     /// error if the buffer is GPU-only.
+    /// Threading: thread-compatible — see the class-level contract (rules
+    /// 1-4); distinct handles may upload concurrently, same-handle
+    /// concurrency and GPU-timeline fencing are the caller's job.
     [[nodiscard]] virtual cd::core::Result<void>
     upload_buffer(BufferHandle h, std::uint64_t offset, std::span<const std::byte> data) = 0;
 
