@@ -15,7 +15,7 @@
 namespace cd::net
 {
 extern const char* qos_dispatcher_translation_unit() noexcept;
-}
+} // namespace cd::net
 
 namespace
 {

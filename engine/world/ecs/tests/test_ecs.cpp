@@ -267,7 +267,7 @@ TEST(EcsWorld, BulkLifecycleStress)
 namespace {
 struct Selected {};
 struct Disabled {};
-}
+} // namespace
 
 TEST(TagHelpers, TagThenHasReportsTrue)
 {
@@ -474,7 +474,7 @@ namespace {
 struct Pos {};
 struct Vel {};
 struct Hp  {};
-}
+} // namespace
 
 TEST(QuerySig, OrderIndependent)
 {
@@ -506,7 +506,7 @@ namespace {
 struct CompA {};
 struct CompB {};
 struct CompC {};
-}
+} // namespace
 
 TEST(ComponentMask, EachTypeGetsUniqueBit)
 {

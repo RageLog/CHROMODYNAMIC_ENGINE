@@ -57,12 +57,12 @@
 namespace cd::ui::renderer
 {
 class DrawBatcher;
-}
+} // namespace cd::ui::renderer
 namespace cd::ui::widgets
 {
 struct Theme;
 struct Rect;
-}
+} // namespace cd::ui::widgets
 
 namespace cd::editor::panel::asset_pipeline_status
 {

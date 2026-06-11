@@ -149,7 +149,7 @@ inline std::array<float, 4> mat4_mul_vec4(
     return (dx * dx + dy * dy + dz * dz) <= (radius * radius);
 }
 
-}  // namespace (anonymous)
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Clusterer implementation

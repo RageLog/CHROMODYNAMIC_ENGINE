@@ -501,7 +501,7 @@ TEST(Channel, CloseUnblocksReceiver)
 namespace {
 struct TestEvent { int value { 0 }; };
 struct AnotherEvent { float score { 0.0F }; };
-}
+} // namespace
 
 TEST(EventBus, SubscribeAndPublishMatch)
 {

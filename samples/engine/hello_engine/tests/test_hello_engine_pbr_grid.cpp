@@ -28,7 +28,7 @@ using cd::hello_engine::kPbrGridScale;
 using cd::hello_engine::kPbrGridSpacing;
 using cd::hello_engine::kPbrGridYBase;
 using cd::hello_engine::kPbrGridZ;
-}
+} // namespace
 
 // ===========================================================================
 // Grid cardinality + constancy.

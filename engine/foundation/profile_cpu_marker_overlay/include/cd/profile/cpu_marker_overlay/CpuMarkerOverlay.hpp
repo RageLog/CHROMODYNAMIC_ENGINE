@@ -40,7 +40,7 @@
 namespace cd::ui::renderer
 {
 class DrawBatcher;
-}
+} // namespace cd::ui::renderer
 
 namespace cd::profile::cpu_marker_overlay
 {

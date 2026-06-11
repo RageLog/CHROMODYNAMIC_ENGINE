@@ -50,7 +50,7 @@
 namespace cd::rhi
 {
 class ICommandBuffer;
-}
+} // namespace cd::rhi
 
 namespace cd::framegraph
 {

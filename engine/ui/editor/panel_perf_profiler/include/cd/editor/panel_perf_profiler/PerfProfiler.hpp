@@ -77,15 +77,15 @@
 namespace cd::ui::renderer
 {
 class DrawBatcher;
-}
+} // namespace cd::ui::renderer
 namespace cd::ui::theme
 {
 struct Theme;
-}
+} // namespace cd::ui::theme
 namespace cd::ui::widgets
 {
 struct Rect;
-}
+} // namespace cd::ui::widgets
 
 namespace cd::editor::panel::perf_profiler
 {

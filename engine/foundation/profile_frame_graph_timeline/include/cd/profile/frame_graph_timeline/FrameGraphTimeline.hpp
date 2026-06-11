@@ -38,7 +38,7 @@
 namespace cd::ui::renderer
 {
 class DrawBatcher;
-}
+} // namespace cd::ui::renderer
 
 namespace cd::profile::frame_graph_timeline
 {

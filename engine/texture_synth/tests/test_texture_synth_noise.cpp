@@ -118,4 +118,4 @@ TEST(TextureSynthNoise, AllHelpersAreNoexceptInlineFloats)
     SUCCEED();
 }
 
-}  // anonymous
+} // namespace

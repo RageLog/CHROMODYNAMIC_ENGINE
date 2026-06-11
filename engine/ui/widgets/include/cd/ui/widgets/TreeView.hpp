@@ -59,7 +59,7 @@
 namespace cd::ui::renderer
 {
 class DrawBatcher;
-}
+} // namespace cd::ui::renderer
 
 namespace cd::ui::widgets
 {

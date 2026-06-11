@@ -84,7 +84,7 @@ using Microsoft::WRL::ComPtr;
     return w;
 }
 
-}  // namespace  (anonymous helpers — compile_* functions follow)
+} // namespace
 
 cd::core::Result<std::vector<std::uint8_t>> compile_sm5_d3dcompile(const CompileOptions& opts)
 {

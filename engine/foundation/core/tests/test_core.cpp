@@ -1141,7 +1141,7 @@ TEST(PoolAllocator, BlockSizeMinimumIsPointerSize)
 namespace {
 struct Foo { int n { 0 }; };
 void take_foo(Foo& f) { ++f.n; }
-}
+} // namespace
 
 TEST(Ref, ImplicitFromLvalue)
 {
@@ -1176,7 +1176,7 @@ enum class TestFlags : std::uint32_t
     kC    = 4,
 };
 CD_ENUM_FLAGS(TestFlags)
-}
+} // namespace
 
 TEST(EnumFlags, OrCombines)
 {
@@ -1248,7 +1248,7 @@ public:
 private:
     int counter_ { 0 };
 };
-}
+} // namespace
 
 TEST(Singleton, InstanceIsSame)
 {

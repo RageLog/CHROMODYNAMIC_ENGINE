@@ -50,11 +50,11 @@
 namespace cd::ui::theme
 {
 struct Theme;
-}
+} // namespace cd::ui::theme
 namespace cd::ui::widgets
 {
 struct Rect;
-}
+} // namespace cd::ui::widgets
 
 namespace cd::editor::panel::auto_save_indicator
 {

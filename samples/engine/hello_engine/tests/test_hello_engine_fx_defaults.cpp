@@ -68,4 +68,4 @@ TEST(HelloEngineFxDefaults, ExposureAndTonemapAreCanonical)
     EXPECT_EQ(fx.tonemap_op, 2);
 }
 
-}  // anonymous
+} // namespace

@@ -15,7 +15,7 @@
 namespace
 {
 constexpr float kEps = 1e-4F;
-}
+} // namespace
 
 TEST(Camera, ViewProjectionFiniteForZeroAspect)
 {

@@ -104,11 +104,11 @@
 namespace cd::ui::renderer
 {
 class DrawBatcher;
-}
+} // namespace cd::ui::renderer
 namespace cd::ui::font
 {
 class Font;
-}
+} // namespace cd::ui::font
 
 namespace cd::ui::widgets
 {
