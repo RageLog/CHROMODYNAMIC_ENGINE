@@ -55,13 +55,13 @@ colour in a single draw.
 
 ## Reference consumer
 
-`samples/engine/hello_engine` (phase 1031): `MaterialBundle.line`
-(kLineList topology, depth test ON / depth write OFF, neutral
-G-buffer fragment outputs) + a lazily-grown `kCpuToGpu` vertex
-buffer, flushed once at the end of the HDR pass. Used by the decal
-OBB wireframe, frustum-cull cell wireframes, bezier curve + control
-polygon, camera-basis arms, area-light outlines and CSM boundary
-rings (phase 1032).
+The GPU half lives in `cd::debug_draw` (phase 1057): kLineList
+pipeline + frames-in-flight-safe vertex-buffer growth + the
+once-per-pass flush. `samples/engine/hello_engine` consumes the pair
+for all of its 3D overlays — decal OBB wireframe, frustum-cull cell
+wireframes, bezier curve + control polygon, camera-basis arrows,
+area-light outlines, CSM boundary rings, VT atlas grid, meshlet
+cluster view, ECS entity cloud and the seven pure-line plots.
 
 ## Tests
 
