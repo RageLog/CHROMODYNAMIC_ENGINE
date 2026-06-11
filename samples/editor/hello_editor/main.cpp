@@ -55,6 +55,7 @@
 #include <cd/imgui/Context.hpp>
 #include <cd/debug_draw/DebugDraw.hpp>
 #include <cd/editor/AxisGizmo.hpp>
+#include <cd/editor/SelectionSet.hpp>
 #include <numbers>
 #include <optional>
 #include <cd/debug_line/DebugLine.hpp>
@@ -464,6 +465,11 @@ int main(int argc, char** argv)
         // immediately — rewinding first makes apply land exactly on
         // the live final position and undo on the exact start).
         cd::math::Vec3f drag_start_pos {};
+        // phase1092: group-translate session — per-entity start
+        // positions captured at grab (entity, position) so the live
+        // drag and the undo command apply the SAME centroid delta to
+        // every member.
+        std::vector<std::pair<cd::ecs::Entity, cd::math::Vec3f>> drag_start_group {};
         // phase1074: rotate/scale sessions.
         cd::math::Quatf drag_start_rot {};
         cd::math::Vec3f drag_start_scale { 1.0F, 1.0F, 1.0F };
@@ -496,7 +502,12 @@ int main(int argc, char** argv)
     // and on synthetic fallback spawn.
     std::vector<EntityMeta> entity_metas;
 
-    // ---- Selected entity (invalid = no selection) ------------------------
+    // ---- Selection (phase1092: multi-select) ------------------------------
+    // `selection` is the source of truth (cd::editor::SelectionSet);
+    // `selected` mirrors selection.primary() so the inspector, rotate/
+    // scale gizmo modes and the existing single-target sites keep their
+    // shape. Ctrl+click in the hierarchy toggles membership.
+    cd::editor::SelectionSet selection;
     cd::ecs::Entity selected {};
 
     // ---- Inspector panel (cd::editor_panel_inspector) --------------------
@@ -551,6 +562,8 @@ int main(int argc, char** argv)
         if (!gltf_ingests.empty() && gltf_ingests.front().result.root_entity.id != 0)
         {
             selected = gltf_ingests.front().result.root_entity;
+            selection.clear();
+            selection.add(selected);
             inspector_panel.set_target(selected);
         }
     }
@@ -577,6 +590,8 @@ int main(int argc, char** argv)
         if (!entity_metas.empty())
         {
             selected = entity_metas.front().handle;
+            selection.clear();
+            selection.add(selected);
             inspector_panel.set_target(selected);
         }
         log_push("Spawned Cube, Sphere, Cone");
@@ -599,6 +614,8 @@ int main(int argc, char** argv)
         [&]() {
             if (!entity_metas.empty()) {
                 selected = entity_metas.front().handle;
+                selection.clear();
+                selection.add(selected);
                 inspector_panel.set_target(selected);
                 log_push("palette: select first entity");
             }
@@ -844,7 +861,29 @@ int main(int argc, char** argv)
                     constexpr float kPadMax = 0.62F;  // pad outer edge (× arm)
                     constexpr float kRingRad = 1.05F; // rotate ring radius
                     constexpr float kRingTol = 0.14F; // ring pick band (world)
-                    viewport_gizmo.set_target(gz_lt->value.position);
+                    // phase1092: gizmo anchors at the selection
+                    // CENTROID (single selection: the entity itself).
+                    cd::math::Vec3f sel_centroid = gz_lt->value.position;
+                    if (selection.size() > 1)
+                    {
+                        cd::math::Vec3f acc {};
+                        float n_sel = 0.0F;
+                        for (const auto sel_e : selection.entries())
+                        {
+                            if (auto* lt = scene.local(sel_e); lt != nullptr)
+                            {
+                                acc.x += lt->value.position.x;
+                                acc.y += lt->value.position.y;
+                                acc.z += lt->value.position.z;
+                                n_sel += 1.0F;
+                            }
+                        }
+                        if (n_sel > 0.0F)
+                            sel_centroid = { acc.x / n_sel,
+                                             acc.y / n_sel,
+                                             acc.z / n_sel };
+                    }
+                    viewport_gizmo.set_target(sel_centroid);
                     // phase1074: mode hotkeys — 1/2/3 (W/E/R belongs to
                     // the WASD camera). Ignored while typing in UI and
                     // mid-drag (set_mode is drag-gated in the library).
@@ -1005,8 +1044,21 @@ int main(int argc, char** argv)
                                     {
                                         case cd::editor::GizmoMode::kTranslate:
                                             viewport_gizmo.begin_drag(best, *hit0);
-                                            gizmo_drag.drag_start_pos =
-                                                gz_lt->value.position;
+                                            // phase1092: the drag origin is
+                                            // the CENTROID (gizmo target),
+                                            // and every member's start
+                                            // position is captured.
+                                            gizmo_drag.drag_start_pos = tgt;
+                                            gizmo_drag.drag_start_group.clear();
+                                            for (const auto sel_e : selection.entries())
+                                            {
+                                                if (auto* lt = scene.local(sel_e); lt != nullptr)
+                                                    gizmo_drag.drag_start_group.emplace_back(
+                                                        sel_e, lt->value.position);
+                                            }
+                                            if (gizmo_drag.drag_start_group.empty())
+                                                gizmo_drag.drag_start_group.emplace_back(
+                                                    selected, gz_lt->value.position);
                                             break;
                                         case cd::editor::GizmoMode::kRotate:
                                         {
@@ -1061,10 +1113,21 @@ int main(int argc, char** argv)
                                 switch (gmode)
                                 {
                                     case cd::editor::GizmoMode::kTranslate:
+                                    {
                                         viewport_gizmo.update_drag(*hit);
-                                        gz_lt->value.position =
-                                            viewport_gizmo.target();
+                                        const auto& c0 = gizmo_drag.drag_start_pos;
+                                        const auto& c1 = viewport_gizmo.target();
+                                        const cd::math::Vec3f d {
+                                            c1.x - c0.x, c1.y - c0.y, c1.z - c0.z };
+                                        for (const auto& [sel_e, p0] :
+                                             gizmo_drag.drag_start_group)
+                                        {
+                                            if (auto* lt = scene.local(sel_e); lt != nullptr)
+                                                lt->value.position = {
+                                                    p0.x + d.x, p0.y + d.y, p0.z + d.z };
+                                        }
                                         break;
+                                    }
                                     case cd::editor::GizmoMode::kRotate:
                                     {
                                         const auto& tgt0 = gizmo_drag.plane_point;
@@ -1126,21 +1189,36 @@ int main(int argc, char** argv)
                             {
                                 case cd::editor::GizmoMode::kTranslate:
                                 {
-                                    viewport_gizmo.end_drag();
-                                    const auto& start = gizmo_drag.drag_start_pos;
-                                    const auto& end_p = gz_lt->value.position;
+                                    (void)viewport_gizmo.end_drag();
+                                    // phase1092: total = centroid delta;
+                                    // rewind every member then push ONE
+                                    // CompositeCommand so a single Ctrl+Z
+                                    // unwinds the whole group move.
+                                    const auto& start_c = gizmo_drag.drag_start_pos;
+                                    const auto end_c = viewport_gizmo.target();
                                     const cd::math::Vec3f total {
-                                        end_p.x - start.x,
-                                        end_p.y - start.y,
-                                        end_p.z - start.z };
+                                        end_c.x - start_c.x,
+                                        end_c.y - start_c.y,
+                                        end_c.z - start_c.z };
                                     const float len2 = total.x * total.x +
                                         total.y * total.y + total.z * total.z;
                                     if (len2 > 1e-10F)
                                     {
-                                        gz_lt->value.position = start;  // rewind
-                                        history.push(
-                                            std::make_unique<cd::editor::TranslateCommand>(
-                                                scene, selected, total));
+                                        auto comp = std::make_unique<
+                                            cd::editor::CompositeCommand>(
+                                            "Translate selection");
+                                        for (const auto& [sel_e, p0] :
+                                             gizmo_drag.drag_start_group)
+                                        {
+                                            if (auto* lt = scene.local(sel_e); lt != nullptr)
+                                            {
+                                                lt->value.position = p0;  // rewind
+                                                comp->add(std::make_unique<
+                                                    cd::editor::TranslateCommand>(
+                                                    scene, sel_e, total));
+                                            }
+                                        }
+                                        history.push(std::move(comp));
                                     }
                                     break;
                                 }
@@ -1198,22 +1276,34 @@ int main(int argc, char** argv)
                                    { 0.32F, 0.33F, 0.38F, 1.0F });
                 if (selected.id != 0)
                 {
+                    // phase1092: one box per selection member — primary
+                    // keeps the bright orange, secondaries draw dimmer.
+                    for (const auto sel_e : selection.entries())
+                    {
+                        auto* box_lt = scene.local(sel_e);
+                        if (box_lt == nullptr)
+                            continue;
+                        const auto& btr = box_lt->value;
+                        const cd::math::Vec3f bhalf {
+                            0.6F * btr.scale.x,
+                            0.6F * btr.scale.y,
+                            0.6F * btr.scale.z };
+                        const bool is_primary = (sel_e == selected);
+                        dbg_batch.add_aabb(
+                            { btr.position.x - bhalf.x,
+                              btr.position.y - bhalf.y,
+                              btr.position.z - bhalf.z },
+                            { btr.position.x + bhalf.x,
+                              btr.position.y + bhalf.y,
+                              btr.position.z + bhalf.z },
+                            is_primary
+                                ? cd::math::Vec4f { 0.95F, 0.60F, 0.15F, 1.0F }
+                                : cd::math::Vec4f { 0.75F, 0.50F, 0.20F, 1.0F });
+                    }
                     if (auto* sel_lt = scene.local(selected);
                         sel_lt != nullptr)
                     {
-                        const auto& tr = sel_lt->value;
-                        const cd::math::Vec3f half {
-                            0.6F * tr.scale.x,
-                            0.6F * tr.scale.y,
-                            0.6F * tr.scale.z };
-                        dbg_batch.add_aabb(
-                            { tr.position.x - half.x,
-                              tr.position.y - half.y,
-                              tr.position.z - half.z },
-                            { tr.position.x + half.x,
-                              tr.position.y + half.y,
-                              tr.position.z + half.z },
-                            { 0.95F, 0.60F, 0.15F, 1.0F });
+
                         // phase1063: translate gizmo arrows — base
                         // R/G/B, hover brightened, active near-white.
                         // phase1074: rotate mode draws rings instead;
@@ -1485,14 +1575,32 @@ int main(int argc, char** argv)
                         : entity_label(ent);
 
                     // Selectable row.
-                    const bool is_selected = (selected.id == ent.id);
+                    const bool is_selected = selection.contains(ent);
                     ImGui::PushID(static_cast<int>(ent.id));
                     if (ImGui::Selectable(label.c_str(), is_selected,
                                          ImGuiSelectableFlags_None,
                                          ImVec2 { 0.0F, 0.0F }))
                     {
-                        if (!is_selected)
+                        // phase1092: Ctrl+click toggles membership;
+                        // plain click single-selects.
+                        if (imgui_io.KeyCtrl)
                         {
+                            if (is_selected)
+                                selection.remove(ent);
+                            else
+                                selection.add(ent);
+                            selected = selection.primary();
+                            inspector_panel.set_target(selected);
+                            rot_slider_deg    = 0.0F;
+                            rot_slider_entity = {};
+                            log_push("selection: " +
+                                     std::to_string(selection.size()) +
+                                     " entities");
+                        }
+                        else if (!is_selected || selection.size() > 1)
+                        {
+                            selection.clear();
+                            selection.add(ent);
                             selected = ent;
                             inspector_panel.set_target(selected);
                             rot_slider_deg    = 0.0F;
