@@ -42,6 +42,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>  // ::strtol — MinGW libc declares only in ::, not std::.
 #include <cstring>
@@ -159,7 +160,7 @@ struct Runtime
             // the endpoints rather than wrapping. cert-err34-c: strtol
             // over atoi so conversion failure is representable.
             const int v = static_cast<int>(::strtol(argv[i + 1], nullptr, 10));
-            const int clamped = v < 0 ? 0 : (v > 255 ? 255 : v);
+            const int clamped = std::clamp(v, 0, 255);
             rt.golden_tolerance = static_cast<std::uint8_t>(clamped);
             ++i;
         }

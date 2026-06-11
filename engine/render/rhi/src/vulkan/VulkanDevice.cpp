@@ -3712,11 +3712,12 @@ public:
             g.geometry.triangles.vertexStride = t.vertex_stride;
             g.geometry.triangles.maxVertex =
                 t.vertex_count == 0 ? 0 : t.vertex_count - 1;
-            g.geometry.triangles.indexType =
-                (t.index_count > 0)
-                    ? ((t.index_type == cd::rhi::IndexType::kUInt16) ?
-                        VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32)
-                    : VK_INDEX_TYPE_NONE_KHR;
+            if (t.index_count == 0)
+                g.geometry.triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+            else if (t.index_type == cd::rhi::IndexType::kUInt16)
+                g.geometry.triangles.indexType = VK_INDEX_TYPE_UINT16;
+            else
+                g.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
             g.geometry.triangles.indexData.deviceAddress =
                 t.index_count > 0
                     ? get_device_address(t.index_buffer, t.index_offset)
@@ -4155,11 +4156,12 @@ public:
                         break;
                 }
             }
-            g.type = is_hit_group
-                ? (g.intersectionShader != VK_SHADER_UNUSED_KHR
-                       ? VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR
-                       : VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR)
-                : VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+            if (!is_hit_group)
+                g.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+            else if (g.intersectionShader != VK_SHADER_UNUSED_KHR)
+                g.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
+            else
+                g.type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
             groups.push_back(g);
         }
 

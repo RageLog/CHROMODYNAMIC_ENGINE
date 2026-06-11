@@ -85,12 +85,16 @@ struct Vec<T, 3>
 
     [[nodiscard]] constexpr T& operator[](std::size_t i) noexcept
     {
-        return i == 0 ? x : (i == 1 ? y : z);
+        if (i == 0) return x;
+        if (i == 1) return y;
+        return z;
     }
 
     [[nodiscard]] constexpr const T& operator[](std::size_t i) const noexcept
     {
-        return i == 0 ? x : (i == 1 ? y : z);
+        if (i == 0) return x;
+        if (i == 1) return y;
+        return z;
     }
 
     [[nodiscard]] constexpr Vec<T, 2> xy() const noexcept
@@ -135,12 +139,18 @@ struct Vec<T, 4>
 
     [[nodiscard]] constexpr T& operator[](std::size_t i) noexcept
     {
-        return i == 0 ? x : (i == 1 ? y : (i == 2 ? z : w));
+        if (i == 0) return x;
+        if (i == 1) return y;
+        if (i == 2) return z;
+        return w;
     }
 
     [[nodiscard]] constexpr const T& operator[](std::size_t i) const noexcept
     {
-        return i == 0 ? x : (i == 1 ? y : (i == 2 ? z : w));
+        if (i == 0) return x;
+        if (i == 1) return y;
+        if (i == 2) return z;
+        return w;
     }
 
     [[nodiscard]] constexpr Vec<T, 3> xyz() const noexcept

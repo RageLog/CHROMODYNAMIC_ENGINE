@@ -7,6 +7,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/math/Constants.hpp>
 
+#include <algorithm>
 #include <type_traits>
 
 namespace cd::math
@@ -27,7 +28,7 @@ template <class T>
 template <class T>
 [[nodiscard]] constexpr T clamp(T v, T lo, T hi) noexcept
 {
-    return v < lo ? lo : (hi < v ? hi : v);
+    return std::clamp(v, lo, hi);
 }
 
 template <class T>

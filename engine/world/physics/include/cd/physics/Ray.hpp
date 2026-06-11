@@ -31,12 +31,18 @@ intersect_ray_aabb(const Ray& r, const Aabb& a) noexcept
 {
     float t_min = 0.0F;
     float t_max = 1.0e30F;
+    const auto comp = [](const cd::math::Vec3f& v, int i) noexcept
+    {
+        if (i == 0) return v.x;
+        if (i == 1) return v.y;
+        return v.z;
+    };
     for (int i = 0; i < 3; ++i)
     {
-        const float ro = (i == 0) ? r.origin.x : (i == 1 ? r.origin.y : r.origin.z);
-        const float rd = (i == 0) ? r.direction.x : (i == 1 ? r.direction.y : r.direction.z);
-        const float lo = (i == 0) ? a.min.x : (i == 1 ? a.min.y : a.min.z);
-        const float hi = (i == 0) ? a.max.x : (i == 1 ? a.max.y : a.max.z);
+        const float ro = comp(r.origin, i);
+        const float rd = comp(r.direction, i);
+        const float lo = comp(a.min, i);
+        const float hi = comp(a.max, i);
         if (std::abs(rd) < 1e-8F)
         {
             if (ro < lo || ro > hi) return std::nullopt;

@@ -986,13 +986,14 @@ int main(int argc, char** argv)
                             if (best != cd::editor::GizmoAxis::kNone &&
                                 ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                             {
-                                const auto n =
-                                    (gmode == cd::editor::GizmoMode::kRotate)
-                                        ? cd::editor::axis_dir(best)
-                                        : (cd::editor::is_plane(best)
-                                               ? cd::editor::plane_normal(best)
-                                               : cd::editor::axis_drag_plane_normal(
-                                                     best, forward));
+                                cd::math::Vec3f n {};
+                                if (gmode == cd::editor::GizmoMode::kRotate)
+                                    n = cd::editor::axis_dir(best);
+                                else if (cd::editor::is_plane(best))
+                                    n = cd::editor::plane_normal(best);
+                                else
+                                    n = cd::editor::axis_drag_plane_normal(
+                                        best, forward);
                                 const auto hit0 = cd::editor::intersect_ray_plane(
                                     *mouse_ray, tgt, n);
                                 if (hit0.has_value())

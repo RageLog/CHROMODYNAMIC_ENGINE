@@ -755,8 +755,9 @@ void CurveEditor::draw(cd::ui::renderer::DrawBatcher& batcher,
             const auto [kx, ky] = curve_to_widget(kf.time, kf.value);
 
             const bool selected = (ci == active_curve_ && ki == selected_kf_);
-            const Color knob_color = selected ? theme.accent_hover
-                                              : (is_active ? theme.accent : theme.text_dim);
+            Color knob_color = theme.text_dim;
+            if (selected)       knob_color = theme.accent_hover;
+            else if (is_active) knob_color = theme.accent;
             const float kr = kKnobRadius;
 
             fill_rect(batcher,

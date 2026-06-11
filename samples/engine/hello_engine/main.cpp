@@ -860,14 +860,23 @@ inline void draw_streamer_panel(cd::asset::AsyncStreamer& streamer,
     for (const auto& tracked_id : std::views::reverse(streamer_tracked))
     {
         const auto st = streamer.state_of(tracked_id);
-        const char* lbl = st == cd::asset::StreamState::kComplete   ? "COMPLETE"
-                          : st == cd::asset::StreamState::kInflight ? "INFLIGHT"
-                          : st == cd::asset::StreamState::kFailed   ? "FAILED"
-                                                                    : "PENDING";
-        const ImVec4 col = st == cd::asset::StreamState::kComplete   ? ImVec4(0.4F, 1.0F, 0.4F, 1)
-                           : st == cd::asset::StreamState::kInflight ? ImVec4(1.0F, 0.85F, 0.3F, 1)
-                           : st == cd::asset::StreamState::kFailed   ? ImVec4(1.0F, 0.4F, 0.4F, 1)
-                                                                     : ImVec4(0.7F, 0.7F, 0.7F, 1);
+        const char* lbl = "PENDING";
+        ImVec4 col { 0.7F, 0.7F, 0.7F, 1 };
+        if (st == cd::asset::StreamState::kComplete)
+        {
+            lbl = "COMPLETE";
+            col = { 0.4F, 1.0F, 0.4F, 1 };
+        }
+        else if (st == cd::asset::StreamState::kInflight)
+        {
+            lbl = "INFLIGHT";
+            col = { 1.0F, 0.85F, 0.3F, 1 };
+        }
+        else if (st == cd::asset::StreamState::kFailed)
+        {
+            lbl = "FAILED";
+            col = { 1.0F, 0.4F, 0.4F, 1 };
+        }
         ImGui::TextColored(col, "id %llu  %s", static_cast<unsigned long long>(tracked_id.value()), lbl);
     }
     ImGui::End();
@@ -1054,11 +1063,14 @@ inline void draw_inspector_panel(std::vector<SceneEntity>& entities,
                              (ent.use_texture ? "ON" : "OFF"));
                 }
                 ImGui::SameLine();
-                ImGui::TextDisabled(ent.is_pbr
-                                        ? (ent.use_texture
-                                               ? "sampling earth_albedo (texture * tint)"
-                                               : "procedural color (tint only)")
-                                        : "flag only honoured on is_pbr entities");
+                const char* tex_hint = "flag only honoured on is_pbr entities";
+                if (ent.is_pbr)
+                {
+                    tex_hint = ent.use_texture
+                                   ? "sampling earth_albedo (texture * tint)"
+                                   : "procedural color (tint only)";
+                }
+                ImGui::TextDisabled("%s", tex_hint);
             }
             ImGui::PopItemWidth();
         }
@@ -1288,11 +1300,15 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
         );
 
         // Type badge.
-        const char* type_str = row.light.type == cd::light::LightType::kDirectional ? "DIR "
-                               : row.light.type == cd::light::LightType::kPoint     ? "POINT"
-                               : row.light.type == cd::light::LightType::kSpot      ? "SPOT"
-                               : row.light.type == cd::light::LightType::kRectArea  ? "RECT"
-                                                                                    : "DISK";
+        const char* type_str = "DISK";
+        switch (row.light.type)
+        {
+            case cd::light::LightType::kDirectional: type_str = "DIR ";  break;
+            case cd::light::LightType::kPoint:       type_str = "POINT"; break;
+            case cd::light::LightType::kSpot:        type_str = "SPOT";  break;
+            case cd::light::LightType::kRectArea:    type_str = "RECT";  break;
+            default:                                                     break;
+        }
         ImGui::SameLine();
         ImGui::TextDisabled("[%s]", type_str);
 
@@ -2329,8 +2345,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                 "3 — AGX (Sobotka)",
                 "4 — HDR10 PQ (ST.2084 — needs HDR swapchain)"
             };
-            int op_clamped = (fx.tonemap_op < 0) ? 0 :
-                             (fx.tonemap_op > 4) ? 4 : fx.tonemap_op;
+            int op_clamped = std::clamp(fx.tonemap_op, 0, 4);
             if (ImGui::Combo("Tonemap operator", &op_clamped,
                              kTonemapNames, 5))
             {
@@ -2900,9 +2915,12 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
                            { earth.x, earth.y, earth.z, 1.0F },
                            ImGuiColorEditFlags_NoAlpha, ImVec2(64, 24));
         ImGui::SameLine();
-        ImGui::Text("Earth (%s) noise=%.3f",
-                    is_land ? "land" : (pole_falloff < 0.18F ? "snow" : "sea"),
-                    static_cast<double>(n));
+        const char* biome = "sea";
+        if (is_land)
+            biome = "land";
+        else if (pole_falloff < 0.18F)
+            biome = "snow";
+        ImGui::Text("Earth (%s) noise=%.3f", biome, static_cast<double>(n));
         ImGui::TextDisabled("Quintic eliminates the cubic axis-aligned ridges");
         ImGui::TextDisabled("(Perlin 2002 improvement; clouds shader phase 853).");
         ImGui::Separator();
@@ -4968,9 +4986,11 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     cube_at(p_z, cz);
                 }
                 // Mode label.
-                const char* mode_lbl = gizmo_state.mode == GizmoMode::kTranslate ? "T"
-                                       : gizmo_state.mode == GizmoMode::kRotate  ? "R"
-                                                                           : "S";
+                const char* mode_lbl = "S";
+                if (gizmo_state.mode == GizmoMode::kTranslate)
+                    mode_lbl = "T";
+                else if (gizmo_state.mode == GizmoMode::kRotate)
+                    mode_lbl = "R";
                 dl->AddText(
                     ImVec2(p_org.x + 8, p_org.y + 8),
                     ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 0.9F)),
@@ -6321,9 +6341,11 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
             pp.tint[2] = ent.tint.z;
             const bool is_gltf_prim = (ent.kind == PrimitiveKind::kSponza ||
                                        ent.kind == PrimitiveKind::kGltf);
-            pp.tint[3] = ent.is_pbr      ? 3.0F
-                       : is_gltf_prim    ? 4.0F
-                                         : 1.0F;
+            pp.tint[3] = 1.0F;
+            if (ent.is_pbr)
+                pp.tint[3] = 3.0F;
+            else if (is_gltf_prim)
+                pp.tint[3] = 4.0F;
             fill_prim_push_shared(pp, fx, sun, cam);
             // ECS override: per-entity texture-path flag in fx_params[1]
             // kSponza: per-prim textures dispatched below; set 0 here (overridden per prim).
@@ -7347,14 +7369,18 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                 // phase888-non-sponza-bindless-shader: cesium VB/IB
                 // bindings 14/15 — fall back to Sponza when not
                 // loaded (shader gates on mesh_id so safe).
-                s.meshes.gltf_cesium.vb.is_valid()
-                    ? s.meshes.gltf_cesium.vb
-                    : (s.meshes.gltf.vb.is_valid() ? s.meshes.gltf.vb
-                                                    : s.meshes.sphere.vb),
-                s.meshes.gltf_cesium.ib.is_valid()
-                    ? s.meshes.gltf_cesium.ib
-                    : (s.meshes.gltf.ib.is_valid() ? s.meshes.gltf.ib
-                                                    : s.meshes.sphere.ib));
+                [&s]
+                {
+                    if (s.meshes.gltf_cesium.vb.is_valid()) return s.meshes.gltf_cesium.vb;
+                    if (s.meshes.gltf.vb.is_valid())        return s.meshes.gltf.vb;
+                    return s.meshes.sphere.vb;
+                }(),
+                [&s]
+                {
+                    if (s.meshes.gltf_cesium.ib.is_valid()) return s.meshes.gltf_cesium.ib;
+                    if (s.meshes.gltf.ib.is_valid())        return s.meshes.gltf.ib;
+                    return s.meshes.sphere.ib;
+                }());
         };
         sync(s.meshes.gltf_prim_ranges);
         sync(s.meshes.gltf_cesium_prim_ranges);
@@ -8202,9 +8228,11 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             {
                 s.gizmo_state.mode = static_cast<GizmoMode>(
                     (static_cast<std::uint8_t>(s.gizmo_state.mode) + 1u) % 3u);
-                const char* ms =
-                    s.gizmo_state.mode == GizmoMode::kTranslate ? "TRANSLATE"
-                    : s.gizmo_state.mode == GizmoMode::kRotate  ? "ROTATE" : "SCALE";
+                const char* ms = "SCALE";
+                if (s.gizmo_state.mode == GizmoMode::kTranslate)
+                    ms = "TRANSLATE";
+                else if (s.gizmo_state.mode == GizmoMode::kRotate)
+                    ms = "ROTATE";
                 log_push_fn(std::string { "[gizmo] mode: " } + ms);
             }
             if (key_dn && ev.key == cd::platform::KeyCode::kDelete &&

@@ -42,6 +42,7 @@
 
 #include <cd/editor/panel_material_editor/MaterialEditor.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -57,7 +58,7 @@ namespace
 [[nodiscard]] cd::ui::widgets::Color to_widget_color(cd::ui::theme::ColorToken c) noexcept
 {
     auto pack = [](float v) noexcept -> std::uint8_t {
-        const float clamped = (v < 0.0F) ? 0.0F : (v > 1.0F) ? 1.0F : v;
+        const float clamped = std::clamp(v, 0.0F, 1.0F);
         return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
     };
     return cd::ui::widgets::Color { pack(c.r), pack(c.g), pack(c.b), pack(c.a) };

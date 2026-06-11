@@ -3752,11 +3752,13 @@ public:
         if (src_b == nullptr || dst_b == nullptr) return;
         for (const auto& r : regions)
         {
-            const UINT64 sz = (r.size == 0u)
-                ? (src_b->size > r.src_offset
-                    ? src_b->size - r.src_offset
-                    : 0u)
-                : r.size;
+            UINT64 sz = r.size;
+            if (sz == 0u)
+            {
+                // size 0 = "rest of the source buffer" (clamped at 0).
+                sz = (src_b->size > r.src_offset) ? src_b->size - r.src_offset
+                                                  : 0u;
+            }
             if (sz == 0u) continue;
             list_->CopyBufferRegion(
                 dst_b->resource.Get(), r.dst_offset,

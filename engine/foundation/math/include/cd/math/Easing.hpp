@@ -9,6 +9,8 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
+
 #include <cd/core/Defines.hpp>
 
 namespace cd::math
@@ -16,7 +18,7 @@ namespace cd::math
 
 [[nodiscard]] constexpr float clamp01(float t) noexcept
 {
-    return t < 0.0F ? 0.0F : (t > 1.0F ? 1.0F : t);
+    return std::clamp(t, 0.0F, 1.0F);
 }
 
 [[nodiscard]] constexpr float linear(float t) noexcept

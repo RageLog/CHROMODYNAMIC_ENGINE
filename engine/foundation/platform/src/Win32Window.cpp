@@ -406,9 +406,9 @@ private:
             {
                 OSEvent e {};
                 e.kind = OSEventKind::kMouseButtonDown;
-                e.mouse_button = (msg == WM_LBUTTONDOWN)   ? MouseButton::kLeft
-                                 : (msg == WM_RBUTTONDOWN) ? MouseButton::kRight
-                                                           : MouseButton::kMiddle;
+                e.mouse_button = MouseButton::kMiddle;
+                if (msg == WM_LBUTTONDOWN) e.mouse_button = MouseButton::kLeft;
+                if (msg == WM_RBUTTONDOWN) e.mouse_button = MouseButton::kRight;
                 e.mouse_x = static_cast<float>(GET_X_LPARAM(l));
                 e.mouse_y = static_cast<float>(GET_Y_LPARAM(l));
                 pending_.push_back(e);
@@ -420,9 +420,9 @@ private:
             {
                 OSEvent e {};
                 e.kind = OSEventKind::kMouseButtonUp;
-                e.mouse_button = (msg == WM_LBUTTONUP)   ? MouseButton::kLeft
-                                 : (msg == WM_RBUTTONUP) ? MouseButton::kRight
-                                                         : MouseButton::kMiddle;
+                e.mouse_button = MouseButton::kMiddle;
+                if (msg == WM_LBUTTONUP) e.mouse_button = MouseButton::kLeft;
+                if (msg == WM_RBUTTONUP) e.mouse_button = MouseButton::kRight;
                 e.mouse_x = static_cast<float>(GET_X_LPARAM(l));
                 e.mouse_y = static_cast<float>(GET_Y_LPARAM(l));
                 pending_.push_back(e);
