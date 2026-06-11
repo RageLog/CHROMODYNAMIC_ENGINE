@@ -4107,6 +4107,17 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         ImGui::Text("Total created : %u", s_demo_total_created);
         ImGui::Text("Total destroyed: %u", s_demo_total_destroyed);
         ImGui::TextDisabled("cd::ecs::World sparse-set + generation handles.");
+        // phase1056-3d-viewport-ecs-cloud: mirror the live count for
+        // the overlay (pure fx function; World stays panel-local).
+        fx.ecs_alive_mirror =
+            static_cast<std::uint32_t>(s_demo_world.alive_count());
+        ImGui::Separator();
+        ImGui::Checkbox("Show entity cloud in 3D viewport",
+                        &fx.ecs_show_cloud_3d);
+        if (fx.ecs_show_cloud_3d)
+        {
+            ImGui::TextDisabled("  1 cross per alive entity, golden-angle disc (display cap 2048)");
+        }
     }
     // phase960-scene-serializer-live-demo (Run 25 Strand B): drive
     // cd::scene::serialize_scene on a small ad-hoc scene + display

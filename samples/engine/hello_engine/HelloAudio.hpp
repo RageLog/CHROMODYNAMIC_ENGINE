@@ -6,6 +6,7 @@
 // =============================================================================
 #pragma once
 
+#include <algorithm>
 #include <cd/audio/Compressor.hpp>
 #include <cd/audio/IAudioBackend.hpp>
 #include <cd/audio/Limiter.hpp>
@@ -105,10 +106,8 @@ init_audio(AudioState& a, SquareFn square_wave, NoiseFn burst_noise)
         x = 0.75F * x + 0.20F * wet;
         x = l2.process(x);
         x = L2.process(x);
-        if (x > 1.0F)
-            x = 1.0F;
-        if (x < -1.0F)
-            x = -1.0F;
+        x = std::min(x, 1.0F);
+        x = std::max(x, -1.0F);
         live_buf[i] = x * 0.7F;
     }
     cd::audio::ClipDesc cd_desc {};

@@ -425,6 +425,14 @@ struct HelloEngineFx
     // cd::debug_line).
     int  ms_tri_count { 100 };
     bool ms_show_meshlets_3d { false };
+    // phase1056-3d-viewport-ecs-cloud: the ECS stress probe mirrors
+    // its World::alive_count() here each frame; the overlay renders
+    // one tiny cross per alive entity on a deterministic golden-angle
+    // spiral disc (positions are synthetic — the POPULATION and its
+    // growth/reset dynamics are the demo, not spatial data). Display
+    // capped at 2048 crosses; the panel hint states the cap.
+    std::uint32_t ecs_alive_mirror { 0 };
+    bool ecs_show_cloud_3d { false };
 };
 
 }  // namespace cd_sample

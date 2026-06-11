@@ -480,6 +480,37 @@ inline void append_meshlet_overlay(const HelloEngineFx& fx,
     }
 }
 
+// phase1056-3d-viewport-ecs-cloud: one tiny cross per alive entity
+// on a golden-angle spiral disc (Vogel layout: r = sqrt(i), theta =
+// i * 2.39996) — dense, even packing whose radius grows with the
+// population. Spawn batches visibly densify the disc; Reset empties
+// it. Display capped at 2048 (stated in the panel hint).
+inline void append_ecs_cloud_overlay(const HelloEngineFx& fx,
+                                     cd::debug_line::LineBatch& lines)
+{
+    constexpr cd::math::Vec3f kAnchor { -3.5F, 6.3F, 1.5F };
+    constexpr float kSpacing = 0.045F;
+    constexpr float kGoldenAngle = 2.39996323F;
+    constexpr std::uint32_t kDisplayCap = 2048;
+    const std::uint32_t n = std::min(fx.ecs_alive_mirror, kDisplayCap);
+    for (std::uint32_t i = 0; i < n; ++i)
+    {
+        const float fi = static_cast<float>(i);
+        const float r  = std::sqrt(fi) * kSpacing;
+        const float th = fi * kGoldenAngle;
+        const cd::math::Vec3f c {
+            kAnchor.x + std::cos(th) * r,
+            kAnchor.y + std::sin(th) * r,
+            kAnchor.z };
+        // Tint cools from warm core to blue rim so growth reads as
+        // rings being added.
+        const float t = (n > 1U) ? fi / static_cast<float>(n - 1U) : 0.0F;
+        lines.add_cross(c, 0.012F,
+                        { 0.95F - 0.65F * t, 0.70F - 0.30F * t,
+                          0.25F + 0.70F * t, 1.0F });
+    }
+}
+
 /// Umbrella: appends every toggled-on pure-line overlay. Called once
 /// per frame from main()'s render loop, just before the LineBatch
 /// flush (phase 1031/1034).
@@ -494,6 +525,8 @@ inline void append_pure_line_overlays(const HelloEngineFx& fx,
     if (fx.sc_show_lobes_3d)               append_brdf_lobes(fx, lines);
     if (fx.sss_show_falloff_3d)            append_sss_falloff(fx, lines);
     if (fx.shafts_show_ring_3d)            append_shafts_ring(fx, lines);
+    if (fx.ecs_show_cloud_3d && fx.ecs_alive_mirror > 0)
+                                           append_ecs_cloud_overlay(fx, lines);
 }
 
 }  // namespace cd_sample
