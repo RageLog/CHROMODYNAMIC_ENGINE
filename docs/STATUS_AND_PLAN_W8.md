@@ -1468,3 +1468,34 @@ WarningsAsErrors: 209 -> 214 rules.
 
 **Checkpoint discipline**: 262/262 ctest PASS at every commit, no tag,
 no push. Open user gates: K1-K6 (see plan doc section B).
+
+## Sprint-2 + lint close-out (phases 1078-1089, 2026-06-11 evening)
+
+**Sprint 2 (X1 follow-ups, safety-gated)**: X1-FU-A atomic wake-epoch
+(1078), X1-FU-D priority-aware pop/steal via 4 per-worker deques
+(1079), X1-FU-C hazard-pointer WSD reclamation (1080), X1-FU-F
+parallel-recorder surface review (1081, research/reports/X1FUF_*).
+The safety-integration adversarial audit VETOED 1078-1080 with two
+REAL findings — a missing Michael-2004 seq_cst fence pair in
+HazardPtr protect()/scan() (UAF window) and a publish-without-bump
+liveness hole in drain_my_inject — fixed in 1084 together with three
+hardenings (stop_callback self-waking workers, workers_ last member,
+enqueue TOCTOU, idle-notify locks); the independent diff-only
+re-audit verdict is SEAL. 1085 closed the re-audit backlog: the
+work-stealing pool had been LEAKING every completed detached
+coroutine frame (v1's phase-1052 fix had never been ported) and
+shutdown-drain now balances queued_. Validation: stress + 10x
+repeats + Release+ASAN (Debug+ASAN is unusable on LLVM 21 /MDd — see
+memory note); TSan stays gated on the X1-FU-B CI lane.
+
+**Lint warning-class close-out (1086-1089)**: internal-linkage +
+redundant-casting (wave 1, with three auto-fix link-breaks caught and
+NOLINT'ed against their cross-TU consumers), std::numbers + min-max
+autofix waves (1087, including the variable-template mangling the
+check inflicted on Constants.hpp), nested-conditional manual wave
+(1088, all 39 sites), residual sweep + promotion (1089).
+WarningsAsErrors: 214 -> 219. Probe evidence distilled into
+research/reports/probe12_summary.md (raw 15 MB outputs gitignored).
+
+**Bonus**: CD_ENABLE_INSTALL export-set rot repaired (1083, 6
+targets); plan-doc ticks (1082). 263/263 ctest at every checkpoint.

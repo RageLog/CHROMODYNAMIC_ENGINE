@@ -116,3 +116,7 @@ tmp/
 # phase commit messages; raw dumps are reproducible from the config.
 research/reports/ct_*
 research/reports/clang_tidy_*
+
+# raw clang-tidy probe outputs (15 MB+) — distilled into probe12_summary.md
+research/reports/probe12_chunk*.txt
+research/reports/probe_warning_classes.txt
