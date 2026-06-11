@@ -10,6 +10,7 @@ cd_add_sample(hello_editor
     cd::core
     cd::math
     cd::ecs
+    cd::light
     cd::scene
     cd::editor
     cd::editor_panel_inspector

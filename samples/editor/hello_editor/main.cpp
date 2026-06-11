@@ -70,6 +70,7 @@
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
+#include <cd/light/Light.hpp>
 #include <cd/scene/Serializer.hpp>
 #include <cd/shader/Compiler.hpp>
 #include <imgui.h>
@@ -220,6 +221,16 @@ struct EntityMeta
     cd::math::Vec3f   tint { 1.0F, 1.0F, 1.0F };
     // Mesh kind only used for synthetic fallback drawcalls.
     enum class Kind : std::uint8_t { kCube, kSphere, kCone, kGltf } kind { Kind::kCube };
+};
+
+// phase1097: editor light row — same shape as hello_engine's LightRow
+// so the bridge file's "lights" array round-trips field-for-field.
+struct EditorLightRow
+{
+    std::string     name { "Light" };
+    cd::light::Light light;
+    bool            enabled { true };
+    float           kelvin  { 6500.0F };
 };
 
 // ---------------------------------------------------------------------------
@@ -627,11 +638,10 @@ int main(int argc, char** argv)
     // Sponza from an engine-side save) fall back to Cube so they stay
     // visible and selectable.
     constexpr const char* kBridgePath = "hello_engine.cdscene.json";
-    // phase1096: the editor has no light entities yet, but a bridge file
-    // saved by hello_engine carries a "lights" array — preserve it
-    // VERBATIM across an editor round-trip so editing entity layout
-    // here never destroys an engine-side light setup.
-    cd::asset::json::Value bridged_lights {};
+    // phase1097: real light rows replace the phase1096 verbatim
+    // pass-through — the bridge "lights" array now parses into
+    // editable rows and serialises back field-for-field.
+    std::vector<EditorLightRow> light_rows;
     auto bridge_kind_name = [](EntityMeta::Kind k) -> const char*
     {
         switch (k)
@@ -668,10 +678,29 @@ int main(int argc, char** argv)
                         std::string { bridge_kind_name(m->kind) } };
                     obj["tint"] = cd::scene::vec3_to_json(m->tint);
                 });
-            if (bridged_lights.is_array() &&
-                !bridged_lights.as_array().empty())
+            if (!light_rows.empty())
             {
-                root.as_object_mut()["lights"] = bridged_lights;  // pass-through
+                cd::asset::json::Array la;
+                for (const auto& row : light_rows)
+                {
+                    cd::asset::json::Object lo;
+                    lo["name"]      = cd::asset::json::Value { row.name };
+                    lo["enabled"]   = cd::asset::json::Value { row.enabled };
+                    lo["type"]      = cd::asset::json::Value {
+                        static_cast<int>(row.light.type) };
+                    lo["kelvin"]    = cd::asset::json::Value {
+                        static_cast<double>(row.kelvin) };
+                    lo["intensity"] = cd::asset::json::Value {
+                        static_cast<double>(row.light.intensity) };
+                    lo["range"]     = cd::asset::json::Value {
+                        static_cast<double>(row.light.range) };
+                    lo["position"]  = cd::scene::vec3_to_json(row.light.position);
+                    lo["color"]     = cd::scene::vec3_to_json(row.light.color);
+                    lo["direction"] = cd::scene::vec3_to_json(row.light.direction);
+                    la.emplace_back(std::move(lo));
+                }
+                root.as_object_mut()["lights"] =
+                    cd::asset::json::Value { std::move(la) };
             }
             const auto txt = cd::asset::json::serialize(root, true);
             std::ofstream f { kBridgePath, std::ios::binary | std::ios::trunc };
@@ -703,10 +732,54 @@ int main(int argc, char** argv)
                 if (auto it = ro.find("lights");
                     it != ro.end() && it->second.is_array())
                 {
-                    bridged_lights = it->second;  // keep for re-save
-                    log_push("[bridge] preserved " +
-                             std::to_string(it->second.as_array().size()) +
-                             " lights (pass-through)");
+                    light_rows.clear();
+                    auto read3 = [](const cd::asset::json::Object& o,
+                                    const char* key, cd::math::Vec3f& out)
+                    {
+                        auto f = o.find(key);
+                        if (f == o.end() || !f->second.is_array() ||
+                            f->second.as_array().size() != 3)
+                            return;
+                        const auto& a = f->second.as_array();
+                        if (a[0].is_number() && a[1].is_number() &&
+                            a[2].is_number())
+                            out = { static_cast<float>(a[0].as_number()),
+                                    static_cast<float>(a[1].as_number()),
+                                    static_cast<float>(a[2].as_number()) };
+                    };
+                    for (const auto& lv : it->second.as_array())
+                    {
+                        if (!lv.is_object()) continue;
+                        const auto& lo = lv.as_object();
+                        EditorLightRow row {};
+                        if (auto n = lo.find("name");
+                            n != lo.end() && n->second.is_string())
+                            row.name = n->second.as_string();
+                        if (auto e2 = lo.find("enabled");
+                            e2 != lo.end() && e2->second.is_bool())
+                            row.enabled = e2->second.as_bool();
+                        if (auto t = lo.find("type");
+                            t != lo.end() && t->second.is_number())
+                            row.light.type = static_cast<cd::light::LightType>(
+                                static_cast<int>(t->second.as_number()));
+                        if (auto k = lo.find("kelvin");
+                            k != lo.end() && k->second.is_number())
+                            row.kelvin = static_cast<float>(k->second.as_number());
+                        if (auto in = lo.find("intensity");
+                            in != lo.end() && in->second.is_number())
+                            row.light.intensity =
+                                static_cast<float>(in->second.as_number());
+                        if (auto rg = lo.find("range");
+                            rg != lo.end() && rg->second.is_number())
+                            row.light.range =
+                                static_cast<float>(rg->second.as_number());
+                        read3(lo, "position",  row.light.position);
+                        read3(lo, "color",     row.light.color);
+                        read3(lo, "direction", row.light.direction);
+                        light_rows.push_back(std::move(row));
+                    }
+                    log_push("[bridge] loaded " +
+                             std::to_string(light_rows.size()) + " lights");
                 }
             }
             // Replace semantics: drop every current root (children
@@ -1446,6 +1519,33 @@ int main(int argc, char** argv)
                     dbg_batch.add_frustum(frozen_inv_vp,
                                           { 0.25F, 0.85F, 0.80F, 1.0F });
                 }
+                // phase1097: light gizmos — cross at the position in
+                // the light's own colour; point/spot add the range
+                // ring (XZ), directionals add a direction arrow.
+                for (const auto& row : light_rows)
+                {
+                    if (!row.enabled) continue;
+                    const cd::math::Vec4f lc { row.light.color.x,
+                                               row.light.color.y,
+                                               row.light.color.z, 1.0F };
+                    dbg_batch.add_cross(row.light.position, 0.25F, lc);
+                    if (row.light.type == cd::light::LightType::kDirectional)
+                    {
+                        const auto& d = row.light.direction;
+                        dbg_batch.add_arrow(
+                            row.light.position,
+                            { row.light.position.x + d.x * 1.5F,
+                              row.light.position.y + d.y * 1.5F,
+                              row.light.position.z + d.z * 1.5F },
+                            lc);
+                    }
+                    else if (row.light.range > 0.0F)
+                    {
+                        dbg_batch.add_circle(row.light.position,
+                                             { 0.0F, 1.0F, 0.0F },
+                                             row.light.range, 48, lc);
+                    }
+                }
                 if (selected.id != 0)
                 {
                     // phase1092: one box per selection member — primary
@@ -1707,6 +1807,41 @@ int main(int argc, char** argv)
             ImGui::TextDisabled(frozen_frustum_valid
                                     ? "(frozen — fly outside to inspect)"
                                     : "(snapshots this frame's camera)");
+
+            ImGui::Separator();
+            // phase1097: light rows — bridge-editable light setup.
+            if (ImGui::CollapsingHeader("Lights"))
+            {
+                int remove_at = -1;
+                for (int li = 0; li < static_cast<int>(light_rows.size()); ++li)
+                {
+                    auto& row = light_rows[static_cast<std::size_t>(li)];
+                    ImGui::PushID(li + 9000);
+                    ImGui::Checkbox("##on", &row.enabled);
+                    ImGui::SameLine();
+                    ImGui::Text("%s", row.name.c_str());
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x")) remove_at = li;
+                    ImGui::DragFloat3("pos", &row.light.position.x, 0.05F);
+                    ImGui::DragFloat("intensity", &row.light.intensity,
+                                     0.5F, 0.0F, 10000.0F);
+                    ImGui::ColorEdit3("color", &row.light.color.x,
+                                      ImGuiColorEditFlags_NoInputs);
+                    ImGui::PopID();
+                }
+                if (remove_at >= 0)
+                    light_rows.erase(light_rows.begin() + remove_at);
+                if (ImGui::Button("+ Point Light"))
+                {
+                    EditorLightRow row {};
+                    row.name = "Point " + std::to_string(light_rows.size() + 1);
+                    row.light.type = cd::light::LightType::kPoint;
+                    row.light.position = { 0.0F, 2.0F, 0.0F };
+                    row.light.range = 6.0F;
+                    row.light.intensity = 60.0F;
+                    light_rows.push_back(std::move(row));
+                }
+            }
 
             ImGui::Separator();
             ImGui::TextDisabled("Ctrl+Shift+P: command palette   |   WASD + RMB: free-fly camera");
