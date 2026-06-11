@@ -311,4 +311,89 @@ TEST(WorkStealingThreadPool, AtomicWakeShutdownWakesSleepers)
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// phase1079 (X1-FU-D) regression net: priority-aware pop + steal.
+// ---------------------------------------------------------------------------
+
+// Single worker => deterministic: gate the worker, queue Low jobs THEN
+// High jobs, release. The per-level deque scan must run every High
+// before any Low regardless of submission order.
+TEST(WorkStealingThreadPool, HighPriorityPopsBeforeLowOnOneWorker)
+{
+    cd::concurrency::WorkStealingThreadPool pool { 1 };
+    std::atomic<bool> release { false };
+    pool.submit_detached(
+        [&release]
+        {
+            while (!release.load(std::memory_order_acquire))
+                std::this_thread::yield();
+        }
+    );
+    std::mutex order_mutex;
+    std::vector<int> order;  // 0 = low, 1 = high
+    constexpr int kEach = 16;
+    for (int i = 0; i < kEach; ++i)
+    {
+        pool.submit_detached_with_priority(
+            cd::concurrency::TaskPriority::Low,
+            [&order_mutex, &order]
+            {
+                std::scoped_lock g { order_mutex };
+                order.push_back(0);
+            }
+        );
+    }
+    for (int i = 0; i < kEach; ++i)
+    {
+        pool.submit_detached_with_priority(
+            cd::concurrency::TaskPriority::High,
+            [&order_mutex, &order]
+            {
+                std::scoped_lock g { order_mutex };
+                order.push_back(1);
+            }
+        );
+    }
+    release.store(true, std::memory_order_release);
+    pool.wait_all();
+    ASSERT_EQ(order.size(), static_cast<std::size_t>(2 * kEach));
+    // Every High (1) must precede every Low (0).
+    const auto first_low = std::find(order.begin(), order.end(), 0);
+    const auto last_high = std::find(order.rbegin(), order.rend(), 1);
+    const auto last_high_idx =
+        static_cast<std::size_t>(std::distance(order.begin(), last_high.base()) - 1);
+    const auto first_low_idx =
+        static_cast<std::size_t>(std::distance(order.begin(), first_low));
+    EXPECT_LT(last_high_idx, first_low_idx)
+        << "a Low job ran before the High backlog drained";
+}
+
+// All four levels mixed under contention across 4 workers: ordering is
+// only guaranteed per worker, so this is a completion/leak stress, plus
+// the Critical bucket must drain no later than the others complete.
+TEST(WorkStealingThreadPool, MixedPriorityStressAllComplete)
+{
+    cd::concurrency::WorkStealingThreadPool pool { 4 };
+    std::atomic<int> ran { 0 };
+    constexpr int kPerLevel = 600;
+    using P = cd::concurrency::TaskPriority;
+    for (int i = 0; i < kPerLevel; ++i)
+    {
+        for (const auto p : { P::Low, P::Normal, P::High, P::Critical })
+        {
+            pool.submit_detached_with_priority(
+                p,
+                [&ran]
+                {
+                    ran.fetch_add(1, std::memory_order_relaxed);
+                }
+            );
+        }
+    }
+    pool.wait_all();
+    EXPECT_EQ(ran.load(), kPerLevel * 4);
+    EXPECT_EQ(pool.stats().detached_exceptions.load(), 0u);
+}
+
 }  // namespace

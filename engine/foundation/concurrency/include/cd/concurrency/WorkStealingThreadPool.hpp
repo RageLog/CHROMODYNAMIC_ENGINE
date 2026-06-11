@@ -10,9 +10,9 @@
 //   submit / submit_with_priority / submit_detached / spawn_detached / wait_all
 //
 // Differences vs. v1 ThreadPool:
-//   - Priority is recorded but currently advisory (jobs run FIFO inside one
-//     worker, LIFO popped from bottom, FIFO stolen from top). Priority-aware
-//     stealing is a follow-up.
+//   - Priority routes each job to its level's per-worker deque; pops and
+//     steals scan Critical -> Low (phase1079, X1-FU-D). Within one level:
+//     owner LIFO from bottom, thieves FIFO from top.
 //   - Job storage: heap-allocated to fit the WSD<T*> requirement (T must be
 //     trivially copyable). The pool owns the allocation and frees it after
 //     execution.
@@ -21,7 +21,15 @@
 // Outstanding (Sprint S2.5 follow-ups):
 //   - Hazard-pointer based reclamation for retired WSD buffers (currently
 //     bounded retention until pool destruction).
-//   - Priority-aware steal ordering.
+//
+// phase1079 (X1-FU-D): priority-aware pop AND steal ordering. Each
+// worker owns kPriorityLevels Chase-Lev deques (one per TaskPriority);
+// the inject drain routes a job to its priority's deque, own pops and
+// victim steals both scan Critical -> Low. A Chase-Lev deque cannot
+// reorder in place, so per-level deques are the standard way to get
+// strict cross-priority ordering while keeping the lock-free
+// owner/thief protocol untouched. Ordering INSIDE one level is
+// unchanged (owner LIFO / thief FIFO).
 //
 // phase1078 (X1-FU-A): the worker WAKE path migrated from
 // condition_variable + 2 ms polling wait_for to C++20
@@ -91,12 +99,13 @@ public:
         }
         running_.store(true, std::memory_order_release);
         workers_.reserve(thread_count);
-        queues_.reserve(thread_count);
+        queues_.reserve(thread_count * kPriorityLevels);
         inject_mutexes_.reserve(thread_count);
         inject_buffers_.resize(thread_count);
         for (std::size_t i = 0; i < thread_count; ++i)
         {
-            queues_.emplace_back(std::make_unique<WorkStealingDeque<Job*>>(64));
+            for (std::size_t lvl = 0; lvl < kPriorityLevels; ++lvl)
+                queues_.emplace_back(std::make_unique<WorkStealingDeque<Job*>>(64));
             inject_mutexes_.emplace_back(std::make_unique<std::mutex>());
         }
         for (std::size_t i = 0; i < thread_count; ++i)
@@ -140,11 +149,14 @@ public:
             if (w.joinable())
                 w.join();
         }
-        // Drain any orphaned jobs to free memory.
-        for (std::size_t i = 0; i < queues_.size(); ++i)
+        // Drain any orphaned jobs to free memory (all priority levels).
+        for (auto& q : queues_)
         {
-            while (auto v = queues_[i]->pop())
+            while (auto v = q->pop())
                 delete *v;
+        }
+        for (std::size_t i = 0; i < inject_buffers_.size(); ++i)
+        {
             std::scoped_lock guard { *inject_mutexes_[i] };
             for (auto* j : inject_buffers_[i])
                 delete j;
@@ -261,6 +273,14 @@ public:
     }
 
 private:
+    static constexpr std::size_t kPriorityLevels = 4;  // TaskPriority::Low..Critical
+
+    /// Deque for (worker, priority level). Levels are contiguous per worker.
+    [[nodiscard]] WorkStealingDeque<Job*>& wsd(std::size_t worker, std::size_t lvl) noexcept
+    {
+        return *queues_[worker * kPriorityLevels + lvl];
+    }
+
     void bump_wake_epoch() noexcept
     {
         wake_epoch_.fetch_add(1, std::memory_order_release);
@@ -277,7 +297,7 @@ private:
         // Round-robin the submission across per-worker injection buffers. The
         // chosen worker will drain its own buffer into its WSD; other workers
         // can only access this job through stealing.
-        const auto n = queues_.size();
+        const auto n = inject_buffers_.size();
         const auto idx = next_inject_.fetch_add(1, std::memory_order_relaxed) % n;
         {
             std::scoped_lock guard { *inject_mutexes_[idx] };
@@ -298,14 +318,14 @@ private:
         }
         for (auto* j : local)
         {
-            queues_[self]->push(j);
+            wsd(self, static_cast<std::size_t>(j->priority())).push(j);
         }
         return local.size();
     }
 
     std::size_t pick_victim(std::size_t self, std::mt19937& rng)
     {
-        const auto n = queues_.size();
+        const auto n = inject_buffers_.size();
         if (n <= 1)
             return self;
         std::uniform_int_distribution<std::size_t> dist { 0, n - 2 };
@@ -349,18 +369,29 @@ private:
         // builds and silences -Wimplicit-int-conversion.
         const auto self_u32 = static_cast<std::uint32_t>(self & 0xFFFFFFFFU);
         std::mt19937 rng { self_u32 * 2654435761U + 0x9E3779B9U };
-        auto& my_q = *queues_[self];
         constexpr int kStealAttempts = 4;
+
+        // Critical -> Low scan over MY levels; returns nullptr when all empty.
+        const auto pop_mine = [&]() -> Job*
+        {
+            for (std::size_t lvl = kPriorityLevels; lvl-- > 0;)
+            {
+                if (auto v = wsd(self, lvl).pop())
+                    return *v;
+            }
+            return nullptr;
+        };
 
         while (true)
         {
             // 1) Drain pending external submissions onto MY WSD (owner-only push).
             drain_my_inject(self);
 
-            // 2) Own deque first (LIFO).
-            if (auto local = my_q.pop())
+            // 2) Own deques first — highest priority level wins (X1-FU-D);
+            //    LIFO inside one level.
+            if (auto* local = pop_mine())
             {
-                run_job(*local);
+                run_job(local);
                 continue;
             }
 
@@ -369,20 +400,27 @@ private:
             for (int attempt = 0; attempt < kStealAttempts; ++attempt)
             {
                 const auto victim = pick_victim(self, rng);
-                Job* stolen {};
-                const auto status = queues_[victim]->steal(stolen);
-                if (status == StealStatus::Success)
+                // X1-FU-D: scan the victim's levels Critical -> Low so a
+                // thief always relieves the highest-priority backlog first.
+                for (std::size_t lvl = kPriorityLevels; lvl-- > 0;)
                 {
-                    stats_.steals.fetch_add(1, std::memory_order_relaxed);
-                    run_job(stolen);
-                    found = true;
+                    Job* stolen {};
+                    const auto status = wsd(victim, lvl).steal(stolen);
+                    if (status == StealStatus::Success)
+                    {
+                        stats_.steals.fetch_add(1, std::memory_order_relaxed);
+                        run_job(stolen);
+                        found = true;
+                        break;
+                    }
+                    if (status == StealStatus::Abort)
+                    {
+                        stats_.steal_aborts.fetch_add(1, std::memory_order_relaxed);
+                        std::this_thread::yield();
+                    }
+                }
+                if (found)
                     break;
-                }
-                if (status == StealStatus::Abort)
-                {
-                    stats_.steal_aborts.fetch_add(1, std::memory_order_relaxed);
-                    std::this_thread::yield();
-                }
             }
             if (found)
                 continue;
@@ -404,12 +442,18 @@ private:
             }
             if (!work_visible)
             {
-                for (std::size_t i = 0; i < queues_.size(); ++i)
+                const auto workers = inject_buffers_.size();
+                for (std::size_t i = 0; i < workers && !work_visible; ++i)
                 {
-                    if (i != self && queues_[i]->approx_size() > 0)
+                    if (i == self)
+                        continue;
+                    for (std::size_t lvl = 0; lvl < kPriorityLevels; ++lvl)
                     {
-                        work_visible = true;
-                        break;
+                        if (wsd(i, lvl).approx_size() > 0)
+                        {
+                            work_visible = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -418,10 +462,11 @@ private:
 
             if (!running_.load(std::memory_order_acquire) || st.stop_requested())
             {
-                // Final drain before exit: only owner-side ops on my_q are safe here.
-                while (auto v = my_q.pop())
+                // Final drain before exit: only owner-side ops on my own
+                // deques are safe here. Highest level first.
+                while (auto* local = pop_mine())
                 {
-                    run_job(*v);
+                    run_job(local);
                 }
                 return;
             }
@@ -429,6 +474,7 @@ private:
     }
 
     std::vector<std::jthread> workers_;
+    /// kPriorityLevels deques PER WORKER, contiguous per worker — see wsd().
     std::vector<std::unique_ptr<WorkStealingDeque<Job*>>> queues_;
 
     // Per-worker injection lists: external submitters drop new jobs here,
