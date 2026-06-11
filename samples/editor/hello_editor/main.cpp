@@ -480,6 +480,14 @@ int main(int argc, char** argv)
     };
     GizmoDragState gizmo_drag {};
 
+    // phase1093: freeze-frustum debug staple — checking the box snapshots
+    // inverse(view_proj) of THAT frame; the frozen wireframe frustum then
+    // stays in the world so the user can fly outside it and inspect what
+    // the camera saw (the classic culling-debug workflow).
+    bool            freeze_frustum { false };
+    bool            frozen_frustum_valid { false };
+    cd::math::Mat4f frozen_inv_vp {};
+
     // ---- ECS / scene / editor primitives ----------------------------------
     cd::ecs::World        world;
     cd::scene::Scene      scene { world };
@@ -1274,6 +1282,18 @@ int main(int argc, char** argv)
                                    { 0.0F, 0.0F, 1.0F },
                                    10, 1.0F,
                                    { 0.32F, 0.33F, 0.38F, 1.0F });
+                // phase1093: freeze-frustum — snapshot once on toggle,
+                // then draw the frozen frustum every frame (teal).
+                if (freeze_frustum && !frozen_frustum_valid)
+                {
+                    frozen_inv_vp = cd::math::inverse(vp);
+                    frozen_frustum_valid = true;
+                }
+                if (frozen_frustum_valid)
+                {
+                    dbg_batch.add_frustum(frozen_inv_vp,
+                                          { 0.25F, 0.85F, 0.80F, 1.0F });
+                }
                 if (selected.id != 0)
                 {
                     // phase1092: one box per selection member — primary
@@ -1523,6 +1543,18 @@ int main(int argc, char** argv)
                 std::string lbl { history.next_undo_label() };
                 ImGui::TextDisabled("next undo: %s", lbl.c_str());
             }
+
+            ImGui::Separator();
+            // phase1093: freeze-frustum toggle. Snapshot happens in the
+            // render block below where `vp` is in scope (frame ordering:
+            // the snapshot uses the SAME frame's matrix the user saw).
+            ImGui::Checkbox("Freeze frustum", &freeze_frustum);
+            if (!freeze_frustum)
+                frozen_frustum_valid = false;
+            ImGui::SameLine();
+            ImGui::TextDisabled(frozen_frustum_valid
+                                    ? "(frozen — fly outside to inspect)"
+                                    : "(snapshots this frame's camera)");
 
             ImGui::Separator();
             ImGui::TextDisabled("Ctrl+Shift+P: command palette   |   WASD + RMB: free-fly camera");
