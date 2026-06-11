@@ -45,10 +45,13 @@ void main() {
 
 }  // namespace
 
-cd::core::Result<Renderer>
-Renderer::create(cd::rhi::IDevice& device,
-                 cd::shader::ICompiler* compiler,
-                 const RendererDesc& desc)
+namespace
+{
+
+[[nodiscard]] cd::core::Result<cd::material::Material>
+build_line_material(cd::rhi::IDevice& device,
+                    cd::shader::ICompiler* compiler,
+                    const RendererDesc& desc)
 {
     static_assert(sizeof(cd::debug_line::LineVertex) == 28,
                   "LineVertex layout drifted; update kAttrs/stride");
@@ -93,7 +96,17 @@ Renderer::create(cd::rhi::IDevice& device,
     md.depth_stencil.depth_compare = cd::rhi::CompareOp::kLess;
     md.name = desc.name;
 
-    auto mat = cd::material::Material::create(device, compiler, md);
+    return cd::material::Material::create(device, compiler, md);
+}
+
+}  // namespace
+
+cd::core::Result<Renderer>
+Renderer::create(cd::rhi::IDevice& device,
+                 cd::shader::ICompiler* compiler,
+                 const RendererDesc& desc)
+{
+    auto mat = build_line_material(device, compiler, desc);
     if (!mat.has_value())
     {
         return std::unexpected(mat.error());
@@ -101,6 +114,19 @@ Renderer::create(cd::rhi::IDevice& device,
     Renderer out {};
     out.material_ = std::move(*mat);
     return out;
+}
+
+bool Renderer::recreate_pipeline(cd::rhi::IDevice& device,
+                                 cd::shader::ICompiler* compiler,
+                                 const RendererDesc& desc)
+{
+    auto mat = build_line_material(device, compiler, desc);
+    if (!mat.has_value())
+    {
+        return false;  // keep the old pipeline rendering
+    }
+    material_ = std::move(*mat);
+    return true;
 }
 
 void Renderer::flush(cd::rhi::IDevice& device,

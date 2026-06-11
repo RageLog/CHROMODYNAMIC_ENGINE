@@ -80,6 +80,19 @@ TEST(DebugDrawRenderer, DestroyMarginMatchesEngineConvention)
     SUCCEED();
 }
 
+// phase1060: hot-reload contract — a failed recreate keeps the old
+// pipeline state untouched (here: the invalid default, but the
+// observable contract is "no mutation on failure" + false return).
+TEST(DebugDrawRenderer, RecreatePipelineFailureLeavesStateUntouched)
+{
+    cd::rhi::NullDevice device;
+    Renderer r {};
+    EXPECT_FALSE(r.recreate_pipeline(device, nullptr, make_desc()));
+    EXPECT_FALSE(r.is_valid());
+    EXPECT_EQ(r.vertex_capacity_bytes(), 0U);
+    EXPECT_EQ(r.parked_buffer_count(), 0U);
+}
+
 TEST(DebugDrawRenderer, MoveTransfersValidity)
 {
     Renderer a {};

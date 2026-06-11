@@ -6864,6 +6864,37 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         if (!dd_r.has_value())
             return std::unexpected(cd::core::ErrorCode { 0, 11U, "debug_line" });
         s.debug_draw = std::move(*dd_r);
+#if HELLO_ENGINE_USE_ON_DISK_SHADERS
+        // phase1060: line shaders join the X5 hot-reload watch. The
+        // closure rebuilds the SAME desc (statics — the boot-scope
+        // arrays would dangle) and swaps only the pipeline; VB +
+        // parked queue carry no shader state and stay put. A broken
+        // edit keeps the old pipeline (recreate_pipeline contract).
+        s.shader_watch.add_entry(
+            nullptr,
+            std::vector<std::string> {
+                std::string { cd_sample::kLineVertGlslPath },
+                std::string { cd_sample::kLineFragGlslPath } },
+            [this](cd::rhi::IDevice& d, cd::shader::ICompiler* c) -> bool
+            {
+                static constexpr std::array<cd::rhi::Format, 4> kFmts {
+                    cd::rhi::Format::kRGBA16Float,
+                    cd::rhi::Format::kRGBA16Float,
+                    cd::rhi::Format::kRGBA8Unorm,
+                    cd::rhi::Format::kRG8Unorm
+                };
+                cd::debug_draw::RendererDesc rd {};
+                rd.color_attachment_formats = kFmts;
+                rd.depth_attachment_format  = cd::rhi::Format::kD32Float;
+                rd.vertex_glsl   = cd::hello_engine::kLineVS;
+                rd.fragment_glsl = cd::hello_engine::kLineFS;
+                rd.vertex_glsl_path   = cd_sample::kLineVertGlslPath;
+                rd.fragment_glsl_path = cd_sample::kLineFragGlslPath;
+                rd.name = "hello_engine/debug_line";
+                return state_->debug_draw.recreate_pipeline(d, c, rd);
+            },
+            "debug_line");
+#endif
     }
 
     // Shader hot-reload entries

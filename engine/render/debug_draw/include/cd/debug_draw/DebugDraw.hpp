@@ -98,6 +98,16 @@ public:
                const cd::math::Mat4f& view_proj,
                std::uint32_t frame_idx);
 
+    /// Rebuild ONLY the pipeline from `desc` (hot-reload path: the
+    /// on-disk GLSL changed). The vertex buffer and parked queue are
+    /// untouched — they carry no shader state. On failure the OLD
+    /// pipeline is kept and false returned, mirroring the engine's
+    /// prim/shadow hot-reload contract so a broken shader edit never
+    /// kills the running pipeline.
+    [[nodiscard]] bool recreate_pipeline(cd::rhi::IDevice& device,
+                                         cd::shader::ICompiler* compiler,
+                                         const RendererDesc& desc);
+
     /// Release the pipeline + vertex buffer + every parked buffer.
     /// Device must be idle.
     void destroy(cd::rhi::IDevice& device) noexcept;
