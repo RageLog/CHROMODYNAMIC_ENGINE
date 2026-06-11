@@ -22,6 +22,22 @@
 //   - Hazard-pointer based reclamation for retired WSD buffers (currently
 //     bounded retention until pool destruction).
 //   - Priority-aware steal ordering.
+//
+// phase1078 (X1-FU-A): the worker WAKE path migrated from
+// condition_variable + 2 ms polling wait_for to C++20
+// std::atomic::wait/notify_all on a wake epoch counter. Protocol
+// (lost-wake-free by construction):
+//   worker: epoch = wake_epoch_.load(acquire)
+//           re-check shutdown + own inject buffer + peer queues
+//           wake_epoch_.wait(epoch)            // returns iff epoch moved
+//   waker:  publish work (release)             // enqueue / shutdown
+//           wake_epoch_.fetch_add(1, release)
+//           wake_epoch_.notify_all()
+// A bump between the worker's load and wait() makes wait() return
+// immediately; the acquire load orders the re-check AFTER the epoch
+// read, so any work published before the bump is visible to it.
+// idle_condition_ (wait_all) deliberately stays a cv — cold path,
+// and the predicate spans three counters.
 // =============================================================================
 #pragma once
 
@@ -32,7 +48,6 @@
 #include <cd/core/Defines.hpp>
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -113,11 +128,13 @@ public:
         {
             std::scoped_lock guard { idle_mutex_ };
         }
-        wake_condition_.notify_all();
+        bump_wake_epoch();
         idle_condition_.notify_all();
         for (auto& w : workers_)
             w.request_stop();
-        wake_condition_.notify_all();
+        // Second bump covers a worker that loaded the epoch before
+        // request_stop() above (mirrors the old double-notify).
+        bump_wake_epoch();
         for (auto& w : workers_)
         {
             if (w.joinable())
@@ -244,6 +261,12 @@ public:
     }
 
 private:
+    void bump_wake_epoch() noexcept
+    {
+        wake_epoch_.fetch_add(1, std::memory_order_release);
+        wake_epoch_.notify_all();
+    }
+
     void enqueue(Job* job)
     {
         if (!running_.load(std::memory_order_acquire))
@@ -262,7 +285,7 @@ private:
         }
         queued_.fetch_add(1, std::memory_order_release);
         stats_.tasks_submitted.fetch_add(1, std::memory_order_relaxed);
-        wake_condition_.notify_all();
+        bump_wake_epoch();
     }
 
     /// Owner-only: drain MY injection buffer into MY WSD. Returns number drained.
@@ -364,29 +387,34 @@ private:
             if (found)
                 continue;
 
-            // 4) Sleep until new work or shutdown.
-            std::unique_lock guard { wake_mutex_ };
-            wake_condition_.wait_for(
-                guard,
-                std::chrono::milliseconds { 2 },
-                [&]
+            // 4) Sleep until new work or shutdown (X1-FU-A: C++20 atomic
+            // wait on the wake epoch — event-driven, no 2 ms poll). The
+            // epoch is loaded FIRST; the work re-check below is ordered
+            // after it by the acquire load, so a producer that published
+            // work and bumped the epoch in between either makes the
+            // re-check see the work or makes wait() return immediately.
+            const auto wake_epoch = wake_epoch_.load(std::memory_order_acquire);
+            bool work_visible =
+                !running_.load(std::memory_order_acquire) || st.stop_requested();
+            if (!work_visible)
+            {
+                // MY injection buffer has work, or a peer queue is stealable.
+                std::scoped_lock sg { *inject_mutexes_[self] };
+                work_visible = !inject_buffers_[self].empty();
+            }
+            if (!work_visible)
+            {
+                for (std::size_t i = 0; i < queues_.size(); ++i)
                 {
-                    if (!running_.load(std::memory_order_acquire) || st.stop_requested())
-                        return true;
-                    // Wake if MY injection buffer has work or if any peer queue is non-empty.
+                    if (i != self && queues_[i]->approx_size() > 0)
                     {
-                        std::scoped_lock sg { *inject_mutexes_[self] };
-                        if (!inject_buffers_[self].empty())
-                            return true;
+                        work_visible = true;
+                        break;
                     }
-                    for (std::size_t i = 0; i < queues_.size(); ++i)
-                    {
-                        if (i != self && queues_[i]->approx_size() > 0)
-                            return true;
-                    }
-                    return false;
                 }
-            );
+            }
+            if (!work_visible)
+                wake_epoch_.wait(wake_epoch, std::memory_order_acquire);
 
             if (!running_.load(std::memory_order_acquire) || st.stop_requested())
             {
@@ -411,8 +439,8 @@ private:
     std::vector<std::vector<Job*>> inject_buffers_;
     std::atomic<std::size_t> next_inject_ { 0 };
 
-    std::mutex wake_mutex_;
-    std::condition_variable wake_condition_;
+    /// X1-FU-A wake epoch — see the protocol note in the file banner.
+    std::atomic<std::uint32_t> wake_epoch_ { 0 };
 
     std::mutex idle_mutex_;
     std::condition_variable idle_condition_;

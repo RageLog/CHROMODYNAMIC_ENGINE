@@ -220,4 +220,95 @@ TEST(WorkStealingThreadPool, StealsActuallyFireWhenImbalanced)
         << "no steals fired under imbalanced workload - work-stealing path regression";
 }
 
+
+// ---------------------------------------------------------------------------
+// phase1078 (X1-FU-A) regression net: the worker wake path moved from a
+// cv + 2 ms polling wait_for to C++20 atomic wait/notify on a wake
+// epoch. A lost wakeup now hangs forever instead of being papered over
+// by the next poll tick, so these tests + the ctest TIMEOUT are the
+// tripwire.
+// ---------------------------------------------------------------------------
+
+// Many submit/wait_all ROUNDS: each round puts every worker to sleep
+// (queue drained), then the next round's enqueue must wake them via the
+// epoch bump alone. 200 rounds x 64 jobs makes a lost-wake practically
+// certain to trip the TIMEOUT if the protocol regresses.
+TEST(WorkStealingThreadPool, AtomicWakeSurvivesRepeatedSleepWakeRounds)
+{
+    cd::concurrency::WorkStealingThreadPool pool { 4 };
+    std::atomic<int> ran { 0 };
+    constexpr int kRounds = 200;
+    constexpr int kJobsPerRound = 64;
+    for (int r = 0; r < kRounds; ++r)
+    {
+        for (int j = 0; j < kJobsPerRound; ++j)
+        {
+            pool.submit_detached(
+                [&ran]
+                {
+                    ran.fetch_add(1, std::memory_order_relaxed);
+                }
+            );
+        }
+        pool.wait_all();
+    }
+    EXPECT_EQ(ran.load(), kRounds * kJobsPerRound);
+}
+
+// Multi-producer burst: 8 external threads hammer submit_detached
+// concurrently while workers sleep/wake. Exercises the
+// epoch-bump-between-load-and-wait window from many wakers at once.
+TEST(WorkStealingThreadPool, AtomicWakeMultiProducerBurst)
+{
+    cd::concurrency::WorkStealingThreadPool pool { 4 };
+    std::atomic<int> ran { 0 };
+    constexpr int kProducers = 8;
+    constexpr int kJobsPerProducer = 500;
+    {
+        std::vector<std::jthread> producers;
+        producers.reserve(kProducers);
+        for (int t = 0; t < kProducers; ++t)
+        {
+            producers.emplace_back(
+                [&pool, &ran]
+                {
+                    for (int j = 0; j < kJobsPerProducer; ++j)
+                    {
+                        pool.submit_detached(
+                            [&ran]
+                            {
+                                ran.fetch_add(1, std::memory_order_relaxed);
+                            }
+                        );
+                    }
+                }
+            );
+        }
+    }  // producers joined
+    pool.wait_all();
+    EXPECT_EQ(ran.load(), kProducers * kJobsPerProducer);
+}
+
+// Shutdown must wake sleeping workers via the epoch (no cv to poke any
+// more): construct pools, let workers reach the sleep state, destroy.
+// 50 cycles; a missed shutdown wake = join hang = TIMEOUT trip.
+TEST(WorkStealingThreadPool, AtomicWakeShutdownWakesSleepers)
+{
+    for (int cycle = 0; cycle < 50; ++cycle)
+    {
+        cd::concurrency::WorkStealingThreadPool pool { 3 };
+        // One tiny job per cycle so workers transition run -> sleep.
+        std::atomic<int> ran { 0 };
+        pool.submit_detached(
+            [&ran]
+            {
+                ran.fetch_add(1, std::memory_order_relaxed);
+            }
+        );
+        pool.wait_all();
+        EXPECT_EQ(ran.load(), 1);
+        // dtor -> shutdown() -> epoch bumps must rouse all 3 sleepers.
+    }
+}
+
 }  // namespace
