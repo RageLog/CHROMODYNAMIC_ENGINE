@@ -2865,7 +2865,7 @@ public:
     }
 
     [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer>
-    create_command_buffer(cd::rhi::QueueType) override;  // defined out-of-line below
+    do_create_command_buffer(cd::rhi::QueueType) override;  // defined out-of-line below
 
     void submit(cd::rhi::ICommandBuffer& cb) override;   // defined out-of-line below
 
@@ -3901,7 +3901,7 @@ private:
 };
 
 std::unique_ptr<cd::rhi::ICommandBuffer>
-D3D12Device::create_command_buffer(cd::rhi::QueueType)
+D3D12Device::do_create_command_buffer(cd::rhi::QueueType)
 {
     ComPtr<ID3D12CommandAllocator> alloc;
     if (FAILED(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))))

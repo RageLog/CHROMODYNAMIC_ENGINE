@@ -1209,7 +1209,7 @@ public:
     }
 
     [[nodiscard]] std::unique_ptr<ICommandBuffer>
-    create_command_buffer(QueueType /*queue*/ = QueueType::kGraphics) override
+    do_create_command_buffer(QueueType /*queue*/) override
     {
         return std::make_unique<MetalCommandBufferImpl>(mtl_queue_, this);
     }

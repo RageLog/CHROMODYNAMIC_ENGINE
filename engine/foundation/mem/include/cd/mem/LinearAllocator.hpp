@@ -38,7 +38,7 @@ public:
     LinearAllocator(const LinearAllocator&) = delete;
     LinearAllocator& operator=(const LinearAllocator&) = delete;
 
-    [[nodiscard]] void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept override
+    [[nodiscard]] void* do_allocate(std::size_t size, std::size_t alignment) noexcept override
     {
         if (size == 0 || block_ == nullptr)
         {

@@ -25,6 +25,9 @@
 #include <cd/rhi/Enums.hpp>
 #include <cd/rhi/Format.hpp>
 #include <cd/rhi/Handles.hpp>
+#include <cd/rhi/ICommandBuffer.hpp>  // complete type — the inline NVI
+                                      // create_command_buffer() wrapper
+                                      // returns unique_ptr<ICommandBuffer>
 #include <cd/rhi/Pipeline.hpp>
 
 #include <cstdint>
@@ -289,8 +292,16 @@ public:
 
     /// Acquire a recordable command buffer for the given queue. Ownership is
     /// returned to the device when the buffer is destroyed.
+    [[nodiscard]] std::unique_ptr<class ICommandBuffer>
+    create_command_buffer(QueueType queue = QueueType::kGraphics)
+    {
+        return do_create_command_buffer(queue);
+    }
+
+    /// NVI hook for create_command_buffer() — the default queue argument
+    /// lives on the non-virtual wrapper above (google-default-arguments).
     [[nodiscard]] virtual std::unique_ptr<class ICommandBuffer>
-    create_command_buffer(QueueType queue = QueueType::kGraphics) = 0;
+    do_create_command_buffer(QueueType queue) = 0;
 
     /// Submit a recorded command buffer to the device's queue.
     virtual void submit(ICommandBuffer& cmd) = 0;

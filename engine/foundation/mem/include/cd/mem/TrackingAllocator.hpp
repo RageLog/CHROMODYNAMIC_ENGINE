@@ -85,7 +85,7 @@ public:
     {
     }
 
-    [[nodiscard]] void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept override
+    [[nodiscard]] void* do_allocate(std::size_t size, std::size_t alignment) noexcept override
     {
         void* p = inner_->allocate(size, alignment);
 #if CD_MEM_TRACKING

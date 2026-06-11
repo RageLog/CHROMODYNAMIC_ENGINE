@@ -22,7 +22,7 @@ public:
     /// `size` is rounded up to a multiple of the OS page size. `alignment` must
     /// be <= page size (the OS guarantees page-aligned returns). Returns
     /// nullptr on failure.
-    [[nodiscard]] void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept override;
+    [[nodiscard]] void* do_allocate(std::size_t size, std::size_t alignment) noexcept override;
 
     void deallocate(void* ptr) noexcept override;
 

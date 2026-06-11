@@ -47,7 +47,7 @@ std::size_t PageAllocator::page_size() noexcept
     return cached;
 }
 
-void* PageAllocator::allocate(std::size_t size, std::size_t alignment) noexcept
+void* PageAllocator::do_allocate(std::size_t size, std::size_t alignment) noexcept
 {
     if (size == 0)
     {

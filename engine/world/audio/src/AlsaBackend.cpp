@@ -142,7 +142,7 @@ public:
     // ---- Playback ------------------------------------------------------
 
     [[nodiscard]] cd::core::Result<VoiceHandle>
-    play(ClipHandle clip, float volume, bool looping) override
+    do_play(ClipHandle clip, float volume, bool looping) override
     {
         std::lock_guard guard { mu_ };
         if (clips_.find(clip.value()) == clips_.end())

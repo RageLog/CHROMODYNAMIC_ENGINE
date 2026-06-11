@@ -82,7 +82,7 @@ public:
 
     /// Allocate one block. `size` must be <= block_size; `alignment` must be
     /// <= block_alignment. Otherwise nullptr is returned.
-    [[nodiscard]] void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept override
+    [[nodiscard]] void* do_allocate(std::size_t size, std::size_t alignment) noexcept override
     {
         if (size > block_size_ || alignment > block_align_ || free_head_ == nullptr)
         {

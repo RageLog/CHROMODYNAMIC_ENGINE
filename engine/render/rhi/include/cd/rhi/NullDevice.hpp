@@ -498,7 +498,7 @@ public:
     }
 
     // ---- Command buffers (S3.1) -------------------------------------------
-    [[nodiscard]] std::unique_ptr<ICommandBuffer> create_command_buffer(QueueType = QueueType::kGraphics) override
+    [[nodiscard]] std::unique_ptr<ICommandBuffer> do_create_command_buffer(QueueType) override
     {
         return std::make_unique<NullCommandBuffer>();
     }

@@ -41,7 +41,13 @@ public:
     IAllocator(IAllocator&&) = delete;
     IAllocator& operator=(IAllocator&&) = delete;
 
-    [[nodiscard]] virtual void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept = 0;
+    /// NVI wrapper — the default argument lives HERE, never on the
+    /// virtual (google-default-arguments: defaults on virtuals bind
+    /// statically and may silently diverge between overrides).
+    [[nodiscard]] void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept
+    {
+        return do_allocate(size, alignment);
+    }
 
     virtual void deallocate(void* ptr) noexcept = 0;
 
@@ -58,6 +64,11 @@ public:
     {
         return 0;
     }
+
+protected:
+    /// Implementation hook for allocate(). `alignment` is always the
+    /// caller-resolved value (the public wrapper applied the default).
+    [[nodiscard]] virtual void* do_allocate(std::size_t size, std::size_t alignment) noexcept = 0;
 };
 
 /// Trivial system allocator backed by aligned new/delete. Safe to use as a
@@ -65,7 +76,7 @@ public:
 class SystemAllocator final : public IAllocator
 {
 public:
-    [[nodiscard]] void* allocate(std::size_t size, std::size_t alignment = kDefaultAlignment) noexcept override
+    [[nodiscard]] void* do_allocate(std::size_t size, std::size_t alignment) noexcept override
     {
         if (size == 0)
         {

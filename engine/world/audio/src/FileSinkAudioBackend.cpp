@@ -88,7 +88,7 @@ public:
 
     // ---- Playback ------------------------------------------------------
 
-    [[nodiscard]] cd::core::Result<VoiceHandle> play(ClipHandle clip, float volume, bool looping) override
+    [[nodiscard]] cd::core::Result<VoiceHandle> do_play(ClipHandle clip, float volume, bool looping) override
     {
         if (clips_.find(clip.index()) == clips_.end())
         {

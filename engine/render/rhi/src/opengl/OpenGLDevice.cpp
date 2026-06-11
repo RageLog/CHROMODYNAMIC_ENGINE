@@ -1044,7 +1044,7 @@ public:
         swapchains_.erase(it);
     }
     [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer>
-    create_command_buffer(cd::rhi::QueueType) override
+    do_create_command_buffer(cd::rhi::QueueType) override
     {
         return std::make_unique<GLCommandBuffer>(this, &gl_);
     }

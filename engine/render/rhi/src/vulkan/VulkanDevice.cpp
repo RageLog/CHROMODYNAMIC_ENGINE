@@ -3027,7 +3027,7 @@ public:
     }
 
     // --- Command pool + command buffer (S3.4) ----------------------------
-    [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer> create_command_buffer(cd::rhi::QueueType /*queue*/) override
+    [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer> do_create_command_buffer(cd::rhi::QueueType /*queue*/) override
     {
         if (graphics_pool_ == VK_NULL_HANDLE)
         {

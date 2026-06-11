@@ -90,8 +90,16 @@ public:
 
     // ---- Playback ------------------------------------------------------
 
+    [[nodiscard]] cd::core::Result<VoiceHandle>
+    play(ClipHandle clip, float volume = 1.0F, bool looping = false)
+    {
+        return do_play(clip, volume, looping);
+    }
+
+    /// NVI hook for play() — default volume/looping live on the
+    /// non-virtual wrapper above (google-default-arguments).
     [[nodiscard]] virtual cd::core::Result<VoiceHandle>
-    play(ClipHandle clip, float volume = 1.0F, bool looping = false) = 0;
+    do_play(ClipHandle clip, float volume, bool looping) = 0;
     virtual void stop(VoiceHandle voice) = 0;
     virtual void set_volume(VoiceHandle voice, float volume) = 0;
     [[nodiscard]] virtual bool is_playing(VoiceHandle voice) const noexcept = 0;
@@ -114,10 +122,21 @@ public:
     // streaming (file-sink, null) compile + report kNotImplemented at
     // runtime — matches the IDevice RT default pattern.
 
+    [[nodiscard]] cd::core::Result<StreamHandle>
+    create_stream(std::uint32_t channels,
+                  std::uint32_t sample_rate,
+                  float volume = 1.0F)
+    {
+        return do_create_stream(channels, sample_rate, volume);
+    }
+
+    /// NVI hook for create_stream(). Default no-op body lets backends
+    /// without push-stream support compile + report kNotImplemented at
+    /// runtime — matches the IDevice RT default pattern.
     [[nodiscard]] virtual cd::core::Result<StreamHandle>
-    create_stream(std::uint32_t /*channels*/,
-                  std::uint32_t /*sample_rate*/,
-                  float /*volume*/ = 1.0F)
+    do_create_stream(std::uint32_t /*channels*/,
+                     std::uint32_t /*sample_rate*/,
+                     float /*volume*/)
     {
         return std::unexpected(audio_errors::make(
             audio_errors::Code::kBackendError,

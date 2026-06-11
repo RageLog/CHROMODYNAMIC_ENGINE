@@ -237,7 +237,7 @@ public:
     }
 
     [[nodiscard]] cd::core::Result<VoiceHandle>
-    play(ClipHandle clip, float volume, bool looping) override
+    do_play(ClipHandle clip, float volume, bool looping) override
     {
         std::scoped_lock guard { state_mu_ };
         if (!clips_.contains(clip.index()))
@@ -287,7 +287,7 @@ public:
     // ---- Phase 157 — push-stream API ----------------------------------
 
     [[nodiscard]] cd::core::Result<StreamHandle>
-    create_stream(std::uint32_t channels, std::uint32_t sample_rate, float volume) override
+    do_create_stream(std::uint32_t channels, std::uint32_t sample_rate, float volume) override
     {
         if (channels == 0 || sample_rate == 0)
         {
