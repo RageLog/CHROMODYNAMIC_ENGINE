@@ -32,38 +32,40 @@ namespace cd::hello_engine
 // ---- Push constant block for kPrimVS / kPrimFS ----------------------------
 // 256 B (well under Vulkan's 128 B *minimum*, but our target HW exposes
 // 256 B+ via the maxPushConstantsSize feature). Layout: 2 mat4 + 8 vec4.
+// NOTE: mirrors the GPU push-constant layout; host code fully overwrites
+// every field before upload — NSDMIs below are defensive zero-init only.
 struct PrimPush
 {
     cd::math::Mat4f mvp;
     cd::math::Mat4f model;
-    float tint[4];
-    float sun_dir[4];
-    float sun_color[4];
+    float tint[4] {};
+    float sun_dir[4] {};
+    float sun_color[4] {};
     // FX params block 1 - x=tonemap_op (0=Nark, 1=Hill, 2=Hable, 3=AGX)
     //                     y=albedo_tex_flag (1=sample cd_albedo_tex)
     //                     z=gtao_strength (inline curvature darkening)
     //                     w=bloom_strength (post-tonemap halo boost)
-    float fx_params[4];
+    float fx_params[4] {};
     // FX params block 2 - x=smaa_strength (legacy inline FXAA blur)
     //                     y=motion_blur_amount (LIVE in composite - phase 215)
     //                     z=taa_amount (LIVE in composite - phase 216-217)
     //                     w=dof_strength (LIVE in composite - phase 207)
-    float fx_params2[4];
+    float fx_params2[4] {};
     // FX params block 3 - atmospherics (LIVE in composite - phase 209)
     //                     x=fog_density (legacy inline; composite owns now)
     //                     y=atmosphere_strength (legacy inline; composite owns)
     //                     z=clouds_coverage (queued - needs 3D noise sampler)
     //                     w=light_shafts_strength (LIVE in composite - phase 208)
-    float fx_params3[4];
+    float fx_params3[4] {};
     // Camera origin (needed for distance fog without breaking the model
     // matrix invariant). xyz=world camera, w=unused.
-    float camera_pos[4];
+    float camera_pos[4] {};
     // R6 advanced BRDF strengths:
     //   x=clearcoat (Filament second Schlick lobe on top of base spec)
     //   y=sheen (Charlie velvet rim term)
     //   z=sss (Burley wrap-diffusion approximation)
     //   w=reserved
-    float fx_params4[4];
+    float fx_params4[4] {};
 };
 
 static_assert(sizeof(PrimPush) == 256, "PrimPush layout drift");

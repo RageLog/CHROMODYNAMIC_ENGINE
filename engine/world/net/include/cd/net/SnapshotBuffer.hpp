@@ -63,7 +63,7 @@ public:
         const auto& a = *(it - 1);
         const double span = b.t - a.t;
         if (span <= 0.0) return a.state;
-        const float u = static_cast<float>((t - a.t) / span);
+        const auto u = static_cast<float>((t - a.t) / span);
         return a.state * (1.0F - u) + b.state * u;
     }
 

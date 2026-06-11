@@ -129,7 +129,9 @@ bake_earth_mr_rgba8(std::uint32_t size)
             float n = fbm2(u, v, 6.0F);
             n = n * pole_falloff + 0.15F * (1.0F - pole_falloff);
             const bool is_ocean = n <= 0.48F;
-            float roughness, metallic, ao;
+            float roughness;
+            float metallic;
+            float ao;
             if (pole_falloff < 0.18F) {
                 roughness = 0.85F; metallic = 0.0F; ao = 0.95F;
             } else if (is_ocean) {

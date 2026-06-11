@@ -134,7 +134,9 @@ sample_cubemap_dir(const CubeMapRgbF& cm, cd::math::Vec3f dir) noexcept
     const float ay = std::abs(dir.y);
     const float az = std::abs(dir.z);
     CubeFace face = CubeFace::kPosX;
-    float sc = 0.0F, tc = 0.0F, ma = 0.0F;
+    float sc = 0.0F;
+    float tc = 0.0F;
+    float ma = 0.0F;
     if (ax >= ay && ax >= az)
     {
         face = dir.x > 0 ? CubeFace::kPosX : CubeFace::kNegX;

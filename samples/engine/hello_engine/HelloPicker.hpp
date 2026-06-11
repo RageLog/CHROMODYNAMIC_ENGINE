@@ -54,15 +54,15 @@ struct PickResult
 
 struct PickInputs
 {
-    float          ndc_x;            // already in [-1, 1]
-    float          ndc_y;            // already in [-1, 1], Y-flipped
-    float          aspect;
+    float          ndc_x {};         // already in [-1, 1]
+    float          ndc_y {};         // already in [-1, 1], Y-flipped
+    float          aspect {};
     cd::camera::Camera  cam;         // by value -- read-only snapshot
-    float          cam_pitch;
-    float          cam_yaw;
-    bool           wasd_active;
-    bool           cam_right_drag;
-    bool           gizmo_hovered;
+    float          cam_pitch {};
+    float          cam_yaw {};
+    bool           wasd_active {};
+    bool           cam_right_drag {};
+    bool           gizmo_hovered {};
 };
 
 struct EntityHit

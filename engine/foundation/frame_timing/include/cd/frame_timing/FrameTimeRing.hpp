@@ -123,10 +123,10 @@ public:
             if (v > dmax) dmax = v;
             sorted.push_back(v);
         }
-        std::sort(sorted.begin(), sorted.end());
+        std::ranges::sort(sorted);
         s.mean   = sum / static_cast<double>(filled_);
         s.median = sorted[filled_ / 2];
-        const std::size_t p99_idx =
+        const auto p99_idx =
             static_cast<std::size_t>(static_cast<float>(filled_) * 0.99F);
         s.p99    = sorted[std::min(p99_idx, filled_ - 1)];
         s.dt_min = dmin;

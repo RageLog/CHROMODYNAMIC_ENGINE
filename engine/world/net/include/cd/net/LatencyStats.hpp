@@ -34,7 +34,7 @@ public:
         }
         else
         {
-            const float r = static_cast<float>(rtt_us);
+            const auto r = static_cast<float>(rtt_us);
             const float diff = (r > rtt_) ? (r - rtt_) : (rtt_ - r);
             jitter_ = jitter_ + 0.25F * (diff - jitter_);
             rtt_    = rtt_ + 0.125F * (r - rtt_);

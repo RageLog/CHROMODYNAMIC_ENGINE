@@ -35,6 +35,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/math/Matrix.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -95,9 +96,15 @@ decompose_local(const cd::math::Mat4f& m) noexcept
     const float inv_sx = sx > 1e-6F ? 1.0F / sx : 0.0F;
     const float inv_sy = sy > 1e-6F ? 1.0F / sy : 0.0F;
     const float inv_sz = sz > 1e-6F ? 1.0F / sz : 0.0F;
-    const float r00 = m[0][0]*inv_sx, r01 = m[0][1]*inv_sx, r02 = m[0][2]*inv_sx;
-    const float r10 = m[1][0]*inv_sy, r11 = m[1][1]*inv_sy, r12 = m[1][2]*inv_sy;
-    const float r20 = m[2][0]*inv_sz, r21 = m[2][1]*inv_sz, r22 = m[2][2]*inv_sz;
+    const float r00 = m[0][0]*inv_sx;
+    const float r01 = m[0][1]*inv_sx;
+    const float r02 = m[0][2]*inv_sx;
+    const float r10 = m[1][0]*inv_sy;
+    const float r11 = m[1][1]*inv_sy;
+    const float r12 = m[1][2]*inv_sy;
+    const float r20 = m[2][0]*inv_sz;
+    const float r21 = m[2][1]*inv_sz;
+    const float r22 = m[2][2]*inv_sz;
     // Quaternion from rotation matrix (Sarrus / Shepperd variant).
     const float trace = r00 + r11 + r22;
     if (trace > 0.0F)
@@ -202,7 +209,7 @@ to_skeleton(const GltfScene& scene, std::size_t skin_index)
     // Build the new ordering: sort by (depth, original index).
     std::vector<std::size_t> order(joints.size());
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::stable_sort(order.begin(), order.end(),
+    std::ranges::stable_sort(order,
         [&](std::size_t a, std::size_t b) { return depths[a] < depths[b]; });
 
     // Re-map old indices → new indices, then build the final joint list.
@@ -305,7 +312,7 @@ to_skeleton_bundle(const GltfScene& scene, std::size_t skin_index)
     }
     std::vector<std::size_t> order(joints.size());
     for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::stable_sort(order.begin(), order.end(),
+    std::ranges::stable_sort(order,
         [&](std::size_t a, std::size_t b) { return depths[a] < depths[b]; });
 
     std::vector<std::int32_t> remap(joints.size(), -1);

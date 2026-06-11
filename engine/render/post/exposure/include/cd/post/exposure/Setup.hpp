@@ -142,7 +142,7 @@ struct Setup
             return std::unexpected(red_r.error());
         }
         Setup out {};
-        out.reduction = std::move(*red_r);
+        out.reduction = *red_r;
         return out;
     }
 

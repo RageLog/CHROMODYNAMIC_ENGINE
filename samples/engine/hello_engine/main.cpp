@@ -167,6 +167,7 @@
 #include <numbers>
 #include <optional>
 #include <random>
+#include <ranges>
 #include <span>
 #include <string>
 #include <thread>
@@ -467,7 +468,6 @@ constexpr std::size_t kAudioBufferLen = 512;  // samples per tick
 // ============================================================================
 
 using cd::render::GpuMesh;
-using cd::render::upload_mesh;
 using cd::render::destroy_mesh;
 
 // W8-AR: PbrVertex / to_pbr_vertices / upload_pbr_mesh REMOVED.
@@ -479,29 +479,19 @@ using cd::render::destroy_mesh;
 // =============================================================================
 // Phase 289 / Marathon Run 7 sub-N1A: the embedded kPrimVS / kPrimFS / kShadowVS
 // / kShadowFS GLSL strings (~990 lines total) live in PrimShader.hpp +
-// PrimShader_kPrimFS.inl + PrimShader_kShadow.inl now. main.cpp brings
-// them back into the anonymous namespace via using-decls so existing
-// call sites stay identical.
+// PrimShader_kPrimFS.inl + PrimShader_kShadow.inl now. The remaining
+// main.cpp call sites were extracted since, so no using-decls are needed.
 // =============================================================================
-using cd::hello_engine::kPrimVS;
-using cd::hello_engine::kPrimFS;
-using cd::hello_engine::kShadowVS;
-using cd::hello_engine::kShadowFS;
 
 
 // R3 - Composite pass - shader source + push struct extracted into
 // cd::post_composite. hello_engine just references the namespace via
-// the using-decls below.
-using cd::post::composite::kCompositeFS;
-using cd::post::composite::kCompositeVS;
+// the using-decl below.
 using CompositePush = cd::post::composite::Push;
 
 // R3 - Multi-mip bloom (Karis 2013) - shader source + push struct
 // definitions are extracted into cd::post_bloom. hello_engine just
 // references them via the namespace.
-using cd::post::bloom::kDownsampleFS;
-using cd::post::bloom::kPrefilterFS;
-using cd::post::bloom::kUpsampleFS;
 using BloomPrefilterPush = cd::post::bloom::PrefilterPush;
 using BloomUpsamplePush = cd::post::bloom::UpsamplePush;
 
@@ -511,7 +501,6 @@ using BloomUpsamplePush = cd::post::bloom::UpsamplePush;
 // re-imports the names so existing call sites stay identical.
 // =============================================================================
 using cd::hello_engine::PrimPush;
-using cd::hello_engine::LightSlotGpu;
 using cd::hello_engine::LightUboGpu;
 using cd::hello_engine::pack_light_slot;
 
@@ -541,7 +530,6 @@ using cd::render::make_planar_shadow_matrix;
 using ColorTarget = cd::framegraph::ColorTarget;
 using DepthTarget = cd::framegraph::DepthTarget;
 using BloomMipChain = cd::post::bloom::BloomMipChain;
-using cd::framegraph::create_color_target;
 using cd::framegraph::create_depth_target;
 using cd::post::bloom::create_bloom_chain;
 
@@ -670,8 +658,8 @@ inline void draw_history_panel(const cd::editor::EditHistory& history,
         history.bytes_in_use()
     );
     ImGui::Separator();
-    for (auto it = log.rbegin(); it != log.rend(); ++it)
-        ImGui::TextUnformatted(it->c_str());
+    for (const auto& line : std::views::reverse(log))
+        ImGui::TextUnformatted(line.c_str());
     ImGui::End();
 }
 
@@ -868,9 +856,9 @@ inline void draw_streamer_panel(cd::asset::AsyncStreamer& streamer,
     }
     ImGui::Separator();
     // Recent-tracked rows: id, state.
-    for (auto it = streamer_tracked.rbegin(); it != streamer_tracked.rend(); ++it)
+    for (const auto& tracked_id : std::views::reverse(streamer_tracked))
     {
-        const auto st = streamer.state_of(*it);
+        const auto st = streamer.state_of(tracked_id);
         const char* lbl = st == cd::asset::StreamState::kComplete   ? "COMPLETE"
                           : st == cd::asset::StreamState::kInflight ? "INFLIGHT"
                           : st == cd::asset::StreamState::kFailed   ? "FAILED"
@@ -879,7 +867,7 @@ inline void draw_streamer_panel(cd::asset::AsyncStreamer& streamer,
                            : st == cd::asset::StreamState::kInflight ? ImVec4(1.0F, 0.85F, 0.3F, 1)
                            : st == cd::asset::StreamState::kFailed   ? ImVec4(1.0F, 0.4F, 0.4F, 1)
                                                                      : ImVec4(0.7F, 0.7F, 0.7F, 1);
-        ImGui::TextColored(col, "id %llu  %s", static_cast<unsigned long long>(it->value()), lbl);
+        ImGui::TextColored(col, "id %llu  %s", static_cast<unsigned long long>(tracked_id.value()), lbl);
     }
     ImGui::End();
 }
@@ -1671,7 +1659,8 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                     for (int i = 0; i <= kEdges; ++i)
                     {
                         const float t = static_cast<float>(i) / static_cast<float>(kEdges) * 2.0F * std::numbers::pi_v<float>;
-                        const float ct = std::cos(t), st = std::sin(t);
+                        const float ct = std::cos(t);
+                        const float st = std::sin(t);
                         rim[static_cast<std::size_t>(i)] = { far_center.x + (rgt.x * ct + bt.x * st) * disk_r,
                                                              far_center.y + (rgt.y * ct + bt.y * st) * disk_r,
                                                              far_center.z + (rgt.z * ct + bt.z * st) * disk_r };
@@ -1764,7 +1753,8 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
                 // cross(N, T) for B_rect).
                 cd::math::Vec3f b { ln.y * t.z - ln.z * t.y, ln.z * t.x - ln.x * t.z, ln.x * t.y - ln.y * t.x };
                 // Project 4 corners.
-                const float hw = L.area_width * 0.5F, hh = L.area_height * 0.5F;
+                const float hw = L.area_width * 0.5F;
+                const float hh = L.area_height * 0.5F;
                 cd::math::Vec3f c0 { L.position.x - t.x * hw - b.x * hh,
                                      L.position.y - t.y * hw - b.y * hh,
                                      L.position.z - t.z * hw - b.z * hh };
@@ -1837,7 +1827,8 @@ inline void draw_command_palette_popup(cd::editor::CommandPalette& palette,
     if (palette_visible)
     {
         const auto vw_p = static_cast<float>(extent.width);
-        const float pw = 520.0F, ph = 360.0F;
+        const float pw = 520.0F;
+        const float ph = 360.0F;
         ImGui::SetNextWindowPos(ImVec2((vw_p - pw) * 0.5F, 80.0F), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(pw, ph), ImGuiCond_Always);
         if (ImGui::Begin(
@@ -1921,10 +1912,10 @@ inline void spawn_primitive_seeds(cd::scene::Scene& scene,
 {
     struct Seed
     {
-        const char* name;
+        const char* name {};
         cd::math::Vec3f pos;
         cd::math::Vec3f tint;
-        PrimitiveKind k;
+        PrimitiveKind k {};
     };
     const std::array<Seed, 5> seeds {
         {
@@ -3383,7 +3374,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     {
         // phase1041-3d-viewport-shafts-ring: cam dir migrated onto
         // HelloEngineFx so the 3D ring reshapes with the SAME values.
-        ImGui::SliderFloat("Cam dir x", &fx.shafts_cam_dir[0], -1.0F, 1.0F);
+        ImGui::SliderFloat("Cam dir x", fx.shafts_cam_dir.data(), -1.0F, 1.0F);
         ImGui::SliderFloat("Cam dir y", &fx.shafts_cam_dir[1], -1.0F, 1.0F);
         ImGui::SliderFloat("Cam dir z", &fx.shafts_cam_dir[2], -1.0F, 1.0F);
         const float s_ls_cam_dir_x = fx.shafts_cam_dir[0];
@@ -3893,7 +3884,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
         // phase1022-3d-viewport-cubemap-globe: dir migrated onto
         // HelloEngineFx so the 3D overlay highlights the SAME
         // direction the user drags here.
-        ImGui::SliderFloat("Sample dir x", &fx.cubemap_sample_dir[0], -1.0F, 1.0F);
+        ImGui::SliderFloat("Sample dir x", fx.cubemap_sample_dir.data(), -1.0F, 1.0F);
         ImGui::SliderFloat("Sample dir y", &fx.cubemap_sample_dir[1], -1.0F, 1.0F);
         ImGui::SliderFloat("Sample dir z", &fx.cubemap_sample_dir[2], -1.0F, 1.0F);
         const cd::math::Vec3f s_cm_dir {
@@ -4605,7 +4596,9 @@ inline void draw_planar_shadows(cd::rhi::ICommandBuffer& cmd,
                                 const MeshFor& mesh_for)
 {
     // Skip when sun is disabled or pointing upward.
-    if (!(sun.strength > 1e-4F && sun.dir.y < -1e-3F))
+    // DeMorgan with per-term negation (NOT operator flips) so NaN
+    // comparisons keep their exact pre-rewrite behaviour.
+    if (!(sun.strength > 1e-4F) || !(sun.dir.y < -1e-3F))
         return;
     const auto S = make_planar_shadow_matrix(sun.dir, floor_y, shadow_lift);
     PrimPush sp {};
@@ -4882,12 +4875,15 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 // Arrowheads (filled triangles).
                 auto arrowhead = [&](ImVec2 from, ImVec2 to, ImU32 col)
                 {
-                    const float dx = to.x - from.x, dy = to.y - from.y;
+                    const float dx = to.x - from.x;
+                    const float dy = to.y - from.y;
                     const float len = std::sqrt(dx * dx + dy * dy);
                     if (len < 1e-3F)
                         return;
-                    const float nx = dx / len, ny = dy / len;
-                    const float sx = -ny, sy = nx;
+                    const float nx = dx / len;
+                    const float ny = dy / len;
+                    const float sx = -ny;
+                    const float sy = nx;
                     constexpr float kHead = 10.0F;
                     const ImVec2 a = to;
                     const ImVec2 b { to.x - nx * kHead + sx * 5.0F, to.y - ny * kHead + sy * 5.0F };
@@ -4918,8 +4914,10 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         {
                             const float a = static_cast<float>(i) / kRingSeg * 2.0F * std::numbers::pi_v<float>;
                             const float b = static_cast<float>(i + 1) / kRingSeg * 2.0F * std::numbers::pi_v<float>;
-                            const float ca0 = std::cos(a), sa0 = std::sin(a);
-                            const float cb0 = std::cos(b), sb0 = std::sin(b);
+                            const float ca0 = std::cos(a);
+                            const float sa0 = std::sin(a);
+                            const float cb0 = std::cos(b);
+                            const float sb0 = std::sin(b);
                             cd::math::Vec3f wa { tgt.x + (u.x * ca0 + v.x * sa0) * kRingRad,
                                                  tgt.y + (u.y * ca0 + v.y * sa0) * kRingRad,
                                                  tgt.z + (u.z * ca0 + v.z * sa0) * kRingRad };
@@ -4973,12 +4971,14 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                 const ImVec2 mp = ImGui::GetIO().MousePos;
                 auto dist_to_seg = [](ImVec2 a, ImVec2 b, ImVec2 p)
                 {
-                    const float dx = b.x - a.x, dy = b.y - a.y;
+                    const float dx = b.x - a.x;
+                    const float dy = b.y - a.y;
                     const float L2 = dx * dx + dy * dy;
                     if (L2 < 1e-4F)
                         return std::sqrt((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y));
                     const float t = std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / L2, 0.0F, 1.0F);
-                    const float qx = a.x + t * dx, qy = a.y + t * dy;
+                    const float qx = a.x + t * dx;
+                    const float qy = a.y + t * dy;
                     return std::sqrt((p.x - qx) * (p.x - qx) + (p.y - qy) * (p.y - qy));
                 };
                 cd::editor::GizmoAxis best = cd::editor::GizmoAxis::kNone;
@@ -4999,7 +4999,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         for (int i = 0; i <= kHoverSeg; ++i)
                         {
                             const float a = static_cast<float>(i) / kHoverSeg * 2.0F * std::numbers::pi_v<float>;
-                            const float ca = std::cos(a), sa = std::sin(a);
+                            const float ca = std::cos(a);
+                            const float sa = std::sin(a);
                             const cd::math::Vec3f w { tgt.x + (u.x * ca + v.x * sa) * kHoverRad,
                                                       tgt.y + (u.y * ca + v.y * sa) * kHoverRad,
                                                       tgt.z + (u.z * ca + v.z * sa) * kHoverRad };
@@ -5223,7 +5224,8 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                         // Screen-space path (rotate/scale, or
                         // ray-plane fallback). delta_world stays 0
                         // for translate when ray-plane worked.
-                        const float nx = ax_dx / ax_len_px, ny = ax_dy / ax_len_px;
+                        const float nx = ax_dx / ax_len_px;
+                        const float ny = ax_dy / ax_len_px;
                         const float mouse_dx = mp.x - gizmo_state.drag_anchor.x;
                         const float mouse_dy = mp.y - gizmo_state.drag_anchor.y;
                         const float dot_px = mouse_dx * nx + mouse_dy * ny;
@@ -6347,7 +6349,9 @@ inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
                 // Default to "stone-ish" (matte dielectric) so unfilled
                 // prim_ranges still look sensible; gets overridden per-prim
                 // or kept as-is for single draw.
-                float m = 0.0F, r = 0.9F, ns = 0.0F;
+                float m = 0.0F;
+                float r = 0.9F;
+                float ns = 0.0F;
                 const auto ranges = prim_ranges_for(ent.kind);
                 if (!ranges.empty())
                 {
@@ -7007,7 +7011,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     {
         auto ae_r = cd::post::exposure::Setup::create(
             device, cd::rhi::Extent2D { 128U, 128U });
-        if (ae_r.has_value()) s.auto_exposure = std::move(*ae_r);
+        if (ae_r.has_value()) s.auto_exposure = *ae_r;  // trivially copyable; move was a no-op
         // Else: keep default-constructed; current_ev() returns 0.0F.
     }
     for (std::uint32_t i = 0; i < 3; ++i)
@@ -7784,7 +7788,9 @@ cd::core::Result<void> HelloEngineApp::on_boot()
                     lo["kelvin"]    = cd::asset::json::Value { static_cast<double>(l.kelvin) };
                     lo["intensity"] = cd::asset::json::Value { static_cast<double>(l.light.intensity) };
                     lo["range"]     = cd::asset::json::Value { static_cast<double>(l.light.range) };
-                    cd::asset::json::Array pos, col, dir;
+                    cd::asset::json::Array pos;
+                    cd::asset::json::Array col;
+                    cd::asset::json::Array dir;
                     pos.emplace_back(static_cast<double>(l.light.position.x));
                     pos.emplace_back(static_cast<double>(l.light.position.y));
                     pos.emplace_back(static_cast<double>(l.light.position.z));
@@ -8235,7 +8241,9 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         auto& as = s.audio_state;
         if (!as.muted)
         {
-            float peak = 0.0F, comp_db_min = 0.0F, lim_gain_min = 1.0F;
+            float peak = 0.0F;
+            float comp_db_min = 0.0F;
+            float lim_gain_min = 1.0F;
             for (std::size_t si = 0; si < kAudioBufferLen; ++si, ++as.sample_t)
             {
                 as.bus.mix(0, square_wave(as.sample_t, 440.0F));
@@ -8345,9 +8353,16 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 auto* lt = s.scene.local(ent.handle);
                 if (!lt) continue;
                 const float half = cesium_yaw_t * 0.5F;
-                const float sy = std::sin(half), cy = std::cos(half);
-                const float qx1=0.0F,qy1=sy,qz1=0.0F,qw1=cy;
-                const float qx2=-0.7071068F,qy2=0.0F,qz2=0.0F,qw2=0.7071068F;
+                const float sy = std::sin(half);
+                const float cy = std::cos(half);
+                const float qx1 = 0.0F;
+                const float qy1 = sy;
+                const float qz1 = 0.0F;
+                const float qw1 = cy;
+                const float qx2 = -0.7071068F;
+                const float qy2 = 0.0F;
+                const float qz2 = 0.0F;
+                const float qw2 = 0.7071068F;
                 lt->value.rotation = {
                     qw1*qx2+qx1*qw2+qy1*qz2-qz1*qy2,
                     qw1*qy2-qx1*qz2+qy1*qw2+qz1*qx2,
@@ -8667,38 +8682,38 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     // for the cd::debug::LineRenderer lib.
                     constexpr float kCornerR = 0.10F;
                     for (int csz = 0; csz <= 1; ++csz)
-                    for (int csy = 0; csy <= 1; ++csy)
-                    for (int csx = 0; csx <= 1; ++csx)
-                    {
-                        const cd::math::Vec3f cpos {
-                            (csx != 0) ? bmax.x : bmin.x,
-                            (csy != 0) ? bmax.y : bmin.y,
-                            (csz != 0) ? bmax.z : bmin.z };
-                        PrimPush pp {};
-                        cd::math::Mat4f model { cd::math::Mat4f::identity() };
-                        model[0][0] = kCornerR;
-                        model[1][1] = kCornerR;
-                        model[2][2] = kCornerR;
-                        model[3][0] = cpos.x;
-                        model[3][1] = cpos.y;
-                        model[3][2] = cpos.z;
-                        pp.model = model;
-                        pp.mvp = vp * model;
-                        pp.tint[0] = tint.x;
-                        pp.tint[1] = tint.y;
-                        pp.tint[2] = tint.z;
-                        pp.tint[3] = 1.0F;  // standard Lit
-                        fill_prim_push_shared(pp, s.fx, sun, s.cam);
-                        pp.fx_params[1]  = 0.0F;
-                        pp.fx_params4[0] = 0.0F;
-                        pp.fx_params4[1] = 0.7F;
-                        cmd.push_constants(
-                            s.materials.prim.pipeline_layout(),
-                            cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
-                            0, sizeof(pp), &pp);
-                        cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
-                        s.counters.increment("draws_frustum_aabb");
-                    }
+                        for (int csy = 0; csy <= 1; ++csy)
+                            for (int csx = 0; csx <= 1; ++csx)
+                            {
+                                const cd::math::Vec3f cpos {
+                                    (csx != 0) ? bmax.x : bmin.x,
+                                    (csy != 0) ? bmax.y : bmin.y,
+                                    (csz != 0) ? bmax.z : bmin.z };
+                                PrimPush pp {};
+                                cd::math::Mat4f model { cd::math::Mat4f::identity() };
+                                model[0][0] = kCornerR;
+                                model[1][1] = kCornerR;
+                                model[2][2] = kCornerR;
+                                model[3][0] = cpos.x;
+                                model[3][1] = cpos.y;
+                                model[3][2] = cpos.z;
+                                pp.model = model;
+                                pp.mvp = vp * model;
+                                pp.tint[0] = tint.x;
+                                pp.tint[1] = tint.y;
+                                pp.tint[2] = tint.z;
+                                pp.tint[3] = 1.0F;  // standard Lit
+                                fill_prim_push_shared(pp, s.fx, sun, s.cam);
+                                pp.fx_params[1]  = 0.0F;
+                                pp.fx_params4[0] = 0.0F;
+                                pp.fx_params4[1] = 0.7F;
+                                cmd.push_constants(
+                                    s.materials.prim.pipeline_layout(),
+                                    cd::rhi::ShaderStage::kVertex | cd::rhi::ShaderStage::kFragment,
+                                    0, sizeof(pp), &pp);
+                                cmd.draw_indexed(dbg_mesh.index_count, 1, 0, 0, 0);
+                                s.counters.increment("draws_frustum_aabb");
+                            }
                     // phase1032-line-upgrades: true 12-edge wireframe
                     // via cd::debug_line — the corner spheres carry
                     // the cull tint at distance, the edges make each
@@ -8884,23 +8899,23 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 {
                     cd::math::Vec3f pos;
                     cd::math::Vec3f tint;
-                    float radius;
+                    float radius { 0.0F };
                 };
                 std::array<DecalGizmoSphere, 9> gizmo {};
                 gizmo[0] = { probe.position, centre_tint, 0.18F };
                 std::size_t idx = 1;
                 for (int sz = -1; sz <= 1; sz += 2)
-                for (int sy = -1; sy <= 1; sy += 2)
-                for (int sx = -1; sx <= 1; sx += 2)
-                {
-                    gizmo[idx].pos = {
-                        probe.position.x + static_cast<float>(sx) * probe.half_extents.x,
-                        probe.position.y + static_cast<float>(sy) * probe.half_extents.y,
-                        probe.position.z + static_cast<float>(sz) * probe.half_extents.z };
-                    gizmo[idx].tint   = { 0.95F, 0.95F, 0.95F };
-                    gizmo[idx].radius = 0.10F;
-                    ++idx;
-                }
+                    for (int sy = -1; sy <= 1; sy += 2)
+                        for (int sx = -1; sx <= 1; sx += 2)
+                        {
+                            gizmo[idx].pos = {
+                                probe.position.x + static_cast<float>(sx) * probe.half_extents.x,
+                                probe.position.y + static_cast<float>(sy) * probe.half_extents.y,
+                                probe.position.z + static_cast<float>(sz) * probe.half_extents.z };
+                            gizmo[idx].tint   = { 0.95F, 0.95F, 0.95F };
+                            gizmo[idx].radius = 0.10F;
+                            ++idx;
+                        }
                 for (const auto& g : gizmo)
                 {
                     PrimPush pp {};
@@ -9963,7 +9978,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 {
                     cd::math::Vec3f pos;
                     cd::math::Vec3f tint;
-                    float radius;
+                    float radius { 0.0F };
                 };
                 constexpr float kArm = 0.9F;
                 std::array<BasisSphere, 7> tri {};
@@ -10202,7 +10217,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     s.buffer_destroy_queue.push_back(
                         { s.debug_line_vb, s.frame_idx + 3U });
                 const std::uint64_t new_cap =
-                    std::max<std::uint64_t>(bytes * 2U, 16U * 1024U);
+                    std::max<std::uint64_t>(bytes * 2U, 16ULL * 1024ULL);
                 cd::rhi::BufferDesc bd {};
                 bd.size       = new_cap;
                 bd.usage      = cd::rhi::BufferUsage::kVertex;
@@ -12533,8 +12548,14 @@ int main(int argc, char** argv)
                 const float half = cesium_yaw_t * 0.5F;
                 const float sy = std::sin(half);
                 const float cy = std::cos(half);
-                const float qx1 = 0.0F, qy1 = sy, qz1 = 0.0F, qw1 = cy;
-                const float qx2 = -0.7071068F, qy2 = 0.0F, qz2 = 0.0F, qw2 = 0.7071068F;
+                const float qx1 = 0.0F;
+                const float qy1 = sy;
+                const float qz1 = 0.0F;
+                const float qw1 = cy;
+                const float qx2 = -0.7071068F;
+                const float qy2 = 0.0F;
+                const float qz2 = 0.0F;
+                const float qw2 = 0.7071068F;
                 lt->value.rotation.x = qw1 * qx2 + qx1 * qw2 + qy1 * qz2 - qz1 * qy2;
                 lt->value.rotation.y = qw1 * qy2 - qx1 * qz2 + qy1 * qw2 + qz1 * qx2;
                 lt->value.rotation.z = qw1 * qz2 + qx1 * qy2 - qy1 * qx2 + qz1 * qw2;

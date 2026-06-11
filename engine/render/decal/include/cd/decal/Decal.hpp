@@ -108,9 +108,11 @@ decal_intersects_aabb(const Decal& d,
             }
         }
     }
-    return !(mx.x < aabb_min.x || mn.x > aabb_max.x ||
-             mx.y < aabb_min.y || mn.y > aabb_max.y ||
-             mx.z < aabb_min.z || mn.z > aabb_max.z);
+    // NaN-preserving negated form (equivalent to the prior
+    // !(... || ...) separating-axis rejection).
+    return !(mx.x < aabb_min.x) && !(mn.x > aabb_max.x) &&
+           !(mx.y < aabb_min.y) && !(mn.y > aabb_max.y) &&
+           !(mx.z < aabb_min.z) && !(mn.z > aabb_max.z);
 }
 
 // ---- GLSL helper for the deferred decal pass --------------------------------

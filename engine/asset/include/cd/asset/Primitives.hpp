@@ -593,10 +593,10 @@ make_torus_knot(float radius = 0.6F,
         const int i_next = (i + 1) % curve_segments;
         for (int j = 0; j < tube_segments; ++j)
         {
-            const std::uint16_t a = static_cast<std::uint16_t>(i      * ring + j);
-            const std::uint16_t b = static_cast<std::uint16_t>(i_next * ring + j);
-            const std::uint16_t c = static_cast<std::uint16_t>(i_next * ring + (j + 1));
-            const std::uint16_t d = static_cast<std::uint16_t>(i      * ring + (j + 1));
+            const auto a = static_cast<std::uint16_t>(i      * ring + j);
+            const auto b = static_cast<std::uint16_t>(i_next * ring + j);
+            const auto c = static_cast<std::uint16_t>(i_next * ring + (j + 1));
+            const auto d = static_cast<std::uint16_t>(i      * ring + (j + 1));
             m.indices.push_back(a); m.indices.push_back(b); m.indices.push_back(c);
             m.indices.push_back(a); m.indices.push_back(c); m.indices.push_back(d);
         }

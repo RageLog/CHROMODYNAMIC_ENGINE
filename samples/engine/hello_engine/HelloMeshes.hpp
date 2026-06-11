@@ -221,7 +221,7 @@ boot_meshes(cd::rhi::IDevice&                device,
     // Load Sponza Atrium (static scene, kSponza entity).
     {
         auto loaded = cd_sample::try_auto_load_gltf(device, albedo, prim_inst);
-        out.gltf             = std::move(loaded.mesh);
+        out.gltf             = loaded.mesh;
         out.gltf_loaded_name = std::move(loaded.loaded_name);
         out.skinned          = std::move(loaded.skinned);  // always invalid for Sponza
         out.gltf_prim_ranges = std::move(loaded.prim_ranges);
@@ -290,7 +290,7 @@ boot_meshes(cd::rhi::IDevice&                device,
     // Runs AFTER Sponza so both coexist independently.
     {
         auto loaded = cd_sample::try_load_cesiumman_gltf(device, albedo, prim_inst);
-        out.gltf_cesium             = std::move(loaded.mesh);
+        out.gltf_cesium             = loaded.mesh;
         out.gltf_cesium_loaded_name = std::move(loaded.loaded_name);
         out.cesium_skinned          = std::move(loaded.skinned);
         out.gltf_cesium_prim_ranges = std::move(loaded.prim_ranges);

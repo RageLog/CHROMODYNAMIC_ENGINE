@@ -113,7 +113,9 @@ fit_cascade_light_matrix(const std::array<cd::math::Vec3f, 8>& slice_corners,
     float radius = 0.0F;
     for (const auto& c : slice_corners)
     {
-        const float dx = c.x - center.x, dy = c.y - center.y, dz = c.z - center.z;
+        const float dx = c.x - center.x;
+        const float dy = c.y - center.y;
+        const float dz = c.z - center.z;
         radius = std::max(radius, std::sqrt(dx*dx + dy*dy + dz*dz));
     }
     // Snap radius to a stable increment to reduce shimmering.

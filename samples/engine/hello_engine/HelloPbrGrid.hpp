@@ -43,10 +43,10 @@ struct PbrGridSlot
 {
     std::string         name;
     cd::math::Vec3f     position;
-    float               scale;
+    float               scale     {};
     cd::math::Vec3f     tint;
-    float               metallic;
-    float               roughness;
+    float               metallic  {};
+    float               roughness {};
 };
 
 // ---- Grid layout constants ------------------------------------------------

@@ -50,7 +50,7 @@ public:
     {
         states_[r.id.value()] = StreamState::kPending;
         heap_.push_back(r);
-        std::push_heap(heap_.begin(), heap_.end(),
+        std::ranges::push_heap(heap_,
                        [](const StreamRequest& a, const StreamRequest& b)
                        { return a.priority < b.priority; });
     }
@@ -63,7 +63,7 @@ public:
     /// the queue is empty.
     [[nodiscard]] StreamRequest pop_top()
     {
-        std::pop_heap(heap_.begin(), heap_.end(),
+        std::ranges::pop_heap(heap_,
                       [](const StreamRequest& a, const StreamRequest& b)
                       { return a.priority < b.priority; });
         auto r = heap_.back();

@@ -56,13 +56,13 @@ public:
     void add(cd::ecs::Entity e)
     {
         if (!e.is_valid()) return;
-        if (std::find(selected_.begin(), selected_.end(), e) == selected_.end())
+        if (std::ranges::find(selected_, e) == selected_.end())
             selected_.push_back(e);
     }
 
     void remove(cd::ecs::Entity e) noexcept
     {
-        selected_.erase(std::remove(selected_.begin(), selected_.end(), e), selected_.end());
+        selected_.erase(std::ranges::remove(selected_, e).begin(), selected_.end());
     }
 
     void clear() noexcept { selected_.clear(); }

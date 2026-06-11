@@ -84,7 +84,7 @@ public:
             if (s > 0) scored.emplace_back(s, i);
         }
         // Descending score; stable on index for determinism.
-        std::sort(scored.begin(), scored.end(),
+        std::ranges::sort(scored,
                   [](const auto& a, const auto& b)
                   {
                       if (a.first != b.first) return a.first > b.first;

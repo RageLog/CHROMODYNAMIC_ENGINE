@@ -19,8 +19,7 @@ class Random
 public:
     Random() noexcept : Random(0x853c49e6748fea9bULL) {}
     explicit Random(std::uint64_t seed) noexcept
-        : state_ { 0U },
-          inc_   { (seed << 1U) | 1U }
+        : inc_ { (seed << 1U) | 1U }
     {
         next_u32();
         state_ += seed;
@@ -31,8 +30,8 @@ public:
     {
         const std::uint64_t old = state_;
         state_ = old * 6364136223846793005ULL + inc_;
-        const std::uint32_t xorshifted = static_cast<std::uint32_t>(((old >> 18u) ^ old) >> 27u);
-        const std::uint32_t rot = static_cast<std::uint32_t>(old >> 59u);
+        const auto xorshifted = static_cast<std::uint32_t>(((old >> 18u) ^ old) >> 27u);
+        const auto rot = static_cast<std::uint32_t>(old >> 59u);
         return (xorshifted >> rot) | (xorshifted << ((~rot + 1u) & 31u));
     }
 
@@ -51,7 +50,7 @@ public:
     /// Uniform integer in [lo, hi). `hi` must be > `lo`.
     std::int32_t range_i(std::int32_t lo, std::int32_t hi) noexcept
     {
-        const std::uint32_t span = static_cast<std::uint32_t>(hi - lo);
+        const auto span = static_cast<std::uint32_t>(hi - lo);
         return lo + static_cast<std::int32_t>(next_u32() % span);
     }
 

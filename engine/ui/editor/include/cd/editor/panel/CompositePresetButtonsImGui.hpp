@@ -45,7 +45,7 @@ inline void draw_composite_preset_buttons(const CompositeFxBinding& binding,
 {
     for (int i = 0; i < kPresetCount; ++i)
     {
-        const PresetId id = static_cast<PresetId>(i);
+        const auto id = static_cast<PresetId>(i);
         const auto     label = preset_label(id);
         // ImGui::Button takes a const char* -- copy through a
         // std::string so the temporary string_view stays alive.

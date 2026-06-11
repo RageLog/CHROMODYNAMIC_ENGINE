@@ -107,17 +107,17 @@ public:
         // Corner order mirrors add_aabb's (z-major, then y, then x)
         // so add_box_edges_ shares the same edge index table.
         for (int sz = -1; sz <= 1; sz += 2)
-        for (int sy = -1; sy <= 1; sy += 2)
-        for (int sx = -1; sx <= 1; sx += 2)
-        {
-            const float fx = static_cast<float>(sx) * half_extents.x;
-            const float fy = static_cast<float>(sy) * half_extents.y;
-            const float fz = static_cast<float>(sz) * half_extents.z;
-            c[i++] = {
-                centre.x + right.x * fx + up.x * fy + forward.x * fz,
-                centre.y + right.y * fx + up.y * fy + forward.y * fz,
-                centre.z + right.z * fx + up.z * fy + forward.z * fz };
-        }
+            for (int sy = -1; sy <= 1; sy += 2)
+                for (int sx = -1; sx <= 1; sx += 2)
+                {
+                    const float fx = static_cast<float>(sx) * half_extents.x;
+                    const float fy = static_cast<float>(sy) * half_extents.y;
+                    const float fz = static_cast<float>(sz) * half_extents.z;
+                    c[i++] = {
+                        centre.x + right.x * fx + up.x * fy + forward.x * fz,
+                        centre.y + right.y * fx + up.y * fy + forward.y * fz,
+                        centre.z + right.z * fx + up.z * fy + forward.z * fz };
+                }
         // Remap from the loop's (-,-,-),(+,-,-),(-,+,-),(+,+,-),...
         // ordering to add_box_edges_'s ring ordering.
         const std::array<cd::math::Vec3f, 8> ring {{

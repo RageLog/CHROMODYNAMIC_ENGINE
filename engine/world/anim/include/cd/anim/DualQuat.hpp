@@ -102,9 +102,15 @@ template <class T>
 {
     // Extract the 3×3 rotation sub-matrix (upper-left block) and convert to
     // quaternion (Shepperd method).
-    const T m00 = m[0][0], m10 = m[1][0], m20 = m[2][0];
-    const T m01 = m[0][1], m11 = m[1][1], m21 = m[2][1];
-    const T m02 = m[0][2], m12 = m[1][2], m22 = m[2][2];
+    const T m00 = m[0][0];
+    const T m10 = m[1][0];
+    const T m20 = m[2][0];
+    const T m01 = m[0][1];
+    const T m11 = m[1][1];
+    const T m21 = m[2][1];
+    const T m02 = m[0][2];
+    const T m12 = m[1][2];
+    const T m22 = m[2][2];
 
     const T trace = m00 + m11 + m22;
     cd::math::Quat<T> rot;
@@ -165,15 +171,27 @@ template <class T>
 [[nodiscard]] inline cd::math::Mat<T, 4> to_mat4(const DualQuat<T>& dq) noexcept
 {
     // Recover rotation matrix from the real part.
-    const T qx = dq.real.x, qy = dq.real.y, qz = dq.real.z, qw = dq.real.w;
-    const T xx = qx * qx, yy = qy * qy, zz = qz * qz;
-    const T xy = qx * qy, xz = qx * qz, yz = qy * qz;
-    const T wx = qw * qx, wy = qw * qy, wz = qw * qz;
+    const T qx = dq.real.x;
+    const T qy = dq.real.y;
+    const T qz = dq.real.z;
+    const T qw = dq.real.w;
+    const T xx = qx * qx;
+    const T yy = qy * qy;
+    const T zz = qz * qz;
+    const T xy = qx * qy;
+    const T xz = qx * qz;
+    const T yz = qy * qz;
+    const T wx = qw * qx;
+    const T wy = qw * qy;
+    const T wz = qw * qz;
 
     // Recover translation: t = 2 * qd * conjugate(qr)
     // conjugate(qr) = {-qx, -qy, -qz, qw}.
     // Kavan 2008 §4.2, Eq. 10 — only the vector part carries the translation.
-    const T dqx = dq.dual.x, dqy = dq.dual.y, dqz = dq.dual.z, dqw = dq.dual.w;
+    const T dqx = dq.dual.x;
+    const T dqy = dq.dual.y;
+    const T dqz = dq.dual.z;
+    const T dqw = dq.dual.w;
     const T t2x = T { 2 } * (-dqw * qx + dqx * qw - dqy * qz + dqz * qy);
     const T t2y = T { 2 } * (-dqw * qy + dqx * qz + dqy * qw - dqz * qx);
     const T t2z = T { 2 } * (-dqw * qz - dqx * qy + dqy * qx + dqz * qw);

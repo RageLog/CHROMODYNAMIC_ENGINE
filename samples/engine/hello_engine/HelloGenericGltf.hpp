@@ -174,8 +174,8 @@ load_generic_gltf_scenes(cd::rhi::IDevice&                       device,
             }
         }
     }
-    std::sort(files.begin(), files.end(),
-              [](const auto& a, const auto& b) { return a.filename() < b.filename(); });
+    std::ranges::sort(files,
+                      [](const auto& a, const auto& b) { return a.filename() < b.filename(); });
 
     if (files.empty())
     {
