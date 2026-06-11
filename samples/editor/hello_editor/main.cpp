@@ -53,6 +53,8 @@
 #include <cd/editor/panel_inspector/Inspector.hpp>
 #include <cd/editor/panel_console/Console.hpp>
 #include <cd/imgui/Context.hpp>
+#include <cd/debug_draw/DebugDraw.hpp>
+#include <cd/debug_line/DebugLine.hpp>
 #include <cd/material/Material.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/math/Quaternion.hpp>
@@ -413,6 +415,32 @@ int main(int argc, char** argv)
     mat_desc.name = "hello_editor_viewport";
     auto mat_r = cd::material::Material::create(device, compiler.get(), mat_desc);
 
+    // phase1062: editor debug-line renderer (cd::debug_draw, 2nd
+    // consumer). Single BGRA8 attachment -> the library's embedded
+    // default shaders fit as-is. Failure degrades gracefully — the
+    // editor runs without the grid/selection overlays.
+    cd::debug_draw::Renderer dbg_renderer {};
+    {
+        cd::debug_draw::RendererDesc dd {};
+        dd.color_attachment_formats = kColorFormats;
+        dd.depth_attachment_format  = kDepthFormat;
+        dd.name = "hello_editor/debug_line";
+        if (auto dd_r = cd::debug_draw::Renderer::create(
+                device, compiler.get(), dd); dd_r.has_value())
+        {
+            dbg_renderer = std::move(*dd_r);
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "hello_editor: debug_draw create failed: %.*s "
+                "(grid/selection overlays disabled)\n",
+                static_cast<int>(dd_r.error().message.size()),
+                dd_r.error().message.data());
+        }
+    }
+    cd::debug_line::LineBatch dbg_batch;
+
     // ---- ECS / scene / editor primitives ----------------------------------
     cd::ecs::World        world;
     cd::scene::Scene      scene { world };
@@ -765,6 +793,43 @@ int main(int argc, char** argv)
             draw_kind(EntityMeta::Kind::kCube,   cube_vb,   cube_ib,   static_cast<std::uint32_t>(kCubeIndices.size()));
             draw_kind(EntityMeta::Kind::kSphere, sphere_vb, sphere_ib, sphere_idx_count);
             draw_kind(EntityMeta::Kind::kCone,   cone_vb,   cone_ib,   cone_idx_count);
+
+            // phase1062: editor staples via cd::debug_draw — the
+            // classic floor grid (10 m, 1 m cells, XZ plane) and an
+            // orange selection box around the selected entity's
+            // transform. Flushed inside this pass; depth test keeps
+            // the grid behind geometry, depth-write-off keeps it out
+            // of later passes.
+            if (dbg_renderer.is_valid())
+            {
+                dbg_batch.add_grid({ 0.0F, 0.0F, 0.0F },
+                                   { 1.0F, 0.0F, 0.0F },
+                                   { 0.0F, 0.0F, 1.0F },
+                                   10, 1.0F,
+                                   { 0.32F, 0.33F, 0.38F, 1.0F });
+                if (selected.id != 0)
+                {
+                    if (auto* sel_lt = scene.local(selected);
+                        sel_lt != nullptr)
+                    {
+                        const auto& tr = sel_lt->value;
+                        const cd::math::Vec3f half {
+                            0.6F * tr.scale.x,
+                            0.6F * tr.scale.y,
+                            0.6F * tr.scale.z };
+                        dbg_batch.add_aabb(
+                            { tr.position.x - half.x,
+                              tr.position.y - half.y,
+                              tr.position.z - half.z },
+                            { tr.position.x + half.x,
+                              tr.position.y + half.y,
+                              tr.position.z + half.z },
+                            { 0.95F, 0.60F, 0.15F, 1.0F });
+                    }
+                }
+                dbg_renderer.flush(device, cmd, dbg_batch, vp, frame_idx);
+                dbg_batch.clear();
+            }
         }
 
         // ==================================================================
@@ -1041,6 +1106,7 @@ int main(int argc, char** argv)
     // Destroy glTF GPU resources.
     cd_sample::destroy_generic_ingests(device, gltf_ingests);
 
+    dbg_renderer.destroy(device);  // phase1062 — device idle here
     std::printf("hello_editor T3.2: clean exit (%u frames).\n", frame_idx);
     return 0;
 }

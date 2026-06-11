@@ -5,6 +5,8 @@
 cd_add_sample(hello_editor
   SOURCES main.cpp
   DEPS
+    cd::debug_draw
+    cd::debug_line
     cd::core
     cd::math
     cd::ecs
