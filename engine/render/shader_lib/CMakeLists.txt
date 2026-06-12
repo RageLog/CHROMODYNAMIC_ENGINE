@@ -7,6 +7,7 @@
 set(CD_SHADER_LIB_MODULES
   math_common
   brdf
+  brdf_w8aq   # phase1135: verbatim W8-AQ block (transitional, see module header)
   tonemap
 )
 

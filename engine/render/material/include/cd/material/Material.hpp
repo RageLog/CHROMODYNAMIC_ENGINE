@@ -108,6 +108,12 @@ struct MaterialDesc
     std::span<const std::uint32_t> vertex_spirv {};
     std::span<const std::uint32_t> fragment_spirv {};
 
+    /// phase1135 (SL-D wave 1): optional, non-owning include resolver
+    /// forwarded into every GLSL stage compile. Null keeps the legacy
+    /// behaviour (#include is a compile error). Pair with
+    /// cd::shader_lib::ModuleResolver to pull shader-library modules.
+    cd::shader::IIncludeResolver* include_resolver { nullptr };
+
     // -------- Pipeline configuration -----------------------------------------
 
     /// Render target color formats (dynamic-rendering pipeline creation).

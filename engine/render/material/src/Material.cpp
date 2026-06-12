@@ -55,7 +55,8 @@ namespace
     cd::shader::ICompiler& compiler,
     std::string_view source,
     cd::rhi::ShaderStage rhi_stage,
-    std::string_view name
+    std::string_view name,
+    cd::shader::IIncludeResolver* include_resolver
 )
 {
     cd::shader::CompileDesc d {};
@@ -64,6 +65,7 @@ namespace
     d.lang = cd::shader::ShaderLanguage::kGlsl;
     d.target = cd::shader::TargetEnv::kVulkan13;
     d.source_name = name;
+    d.include_resolver = include_resolver;
     auto r = compiler.compile(d);
     if (!r.has_value())
     {
@@ -211,7 +213,8 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
             *compiler,
             vs_src,
             cd::rhi::ShaderStage::kVertex,
-            std::string { desc.name } + ".vert"
+            std::string { desc.name } + ".vert",
+            desc.include_resolver
         );
         if (!r.has_value())
             return std::unexpected(r.error());
@@ -282,7 +285,8 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
             *compiler,
             fs_src,
             cd::rhi::ShaderStage::kFragment,
-            std::string { desc.name } + ".frag"
+            std::string { desc.name } + ".frag",
+            desc.include_resolver
         );
         if (!r.has_value())
             return std::unexpected(r.error());

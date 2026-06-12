@@ -9,6 +9,9 @@
 // up here next to ray_query so the GLSL preprocessor sees it before
 // the binding declarations that depend on it (compiler-strict path).
 #extension GL_EXT_nonuniform_qualifier : require
+// phase1135 (SL-D wave 1): shader-library module includes, resolved by
+// cd::shader_lib::ModuleResolver (MaterialDesc::include_resolver).
+#extension GL_GOOGLE_include_directive : enable
 layout(push_constant) uniform PC {
   mat4 mvp;
   mat4 model;
@@ -479,30 +482,10 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   return s / 9.0;
 }
 
-// W8-AQ Cook-Torrance helpers (used by tint.w == 3.0 PBR-sphere branch).
-// Same equations as cd::material::StandardPbrMaterial so unified prim
-// path renders metallic spheres physically identical to the dedicated
-// PBR pipeline used by hello_pbr.
-float D_GGX_pbr(float NoH, float a) {
-  float a2 = a * a;
-  float d  = (NoH * NoH) * (a2 - 1.0) + 1.0;
-  return a2 / (3.14159265 * d * d + 1e-7);
-}
-float G_SchlickGGX_pbr(float NoV, float k) {
-  return NoV / (NoV * (1.0 - k) + k + 1e-7);
-}
-float G_Smith_pbr(float NoV, float NoL, float roughness) {
-  float r = roughness + 1.0;
-  float k = (r * r) / 8.0;
-  return G_SchlickGGX_pbr(NoV, k) * G_SchlickGGX_pbr(NoL, k);
-}
-vec3 F_Schlick_pbr(float HoV, vec3 F0) {
-  return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
-}
-vec3 F_Schlick_roughness_pbr(float NoV, vec3 F0, float roughness) {
-  vec3 ceiling = max(vec3(1.0 - roughness), F0);
-  return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
-}
+// phase1135 (SL-D wave 1): the W8-AQ Cook-Torrance helper block moved
+// VERBATIM to the shader library (exact-text migration — preprocessed
+// token stream unchanged, chrome_probe golden pins the move).
+#include <cd/shader_lib/brdf_w8aq.glsl>
 
 void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
