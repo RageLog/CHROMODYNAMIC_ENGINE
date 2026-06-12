@@ -64,6 +64,34 @@ else()
   )
 endif()
 
+# phase1141 (X4-C1): GLSL -> SPIR-V -> HLSL -> DXIL chain + ADR S1
+# ray-query translation spike. Windows links the d3d12 backend; the
+# validation-only subset still runs elsewhere.
+if(WIN32)
+  cd_add_test(d3d12_shader_toolchain
+    SOURCES test_d3d12_shader_toolchain.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::spirv_cross_glue cd::rhi cd::core
+  )
+  # DxcCreateInstance is IMPORT-linked (rhi_d3d12 links dxcompiler.lib),
+  # so any binary that pulls compile_hlsl needs dxcompiler.dll at LOAD
+  # time — a missing DLL pops a MODAL system-error dialog and hangs
+  # ctest to timeout. dxil.dll is the DXIL signer. Copy the newest
+  # Windows SDK pair next to the test (SDK bin is not on PATH).
+  file(GLOB _cd_dxc_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_list)
+  if(_cd_dxc_list)
+    list(POP_BACK _cd_dxc_list _cd_dxc_dll)
+    get_filename_component(_cd_dxc_dir "${_cd_dxc_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_shader_toolchain POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_shader_toolchain>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_shader_toolchain>")
+  endif()
+endif()
+
 # phase1115 (X1-FU-F step 1) — IDrawRecorder split + parallel-pass
 # recorder contract pins on the Null reference implementation.
 cd_add_test(parallel_recorder

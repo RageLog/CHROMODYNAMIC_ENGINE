@@ -36,7 +36,8 @@ cd_add_library(rhi_d3d12
   SOURCES
     src/d3d12/D3D12Device.cpp
     src/d3d12/D3D12ShaderCompile.cpp
-  PUBLIC_DEPS cd::core cd::rhi
+    src/d3d12/D3D12ShaderToolchain.cpp  # phase1141 X4-C1: GLSL->SPIR-V->HLSL->DXIL chain
+  PUBLIC_DEPS cd::core cd::rhi cd::shader cd::spirv_cross_glue
 )
 
 # Windows-only link path. System SDK provides d3d12/dxgi/dxguid/d3dcompiler/dxcompiler.
