@@ -165,9 +165,9 @@ serialize_scene_with(const Scene& scene, WriteExtras&& write_extras)
     root["version"] = cd::asset::json::Value { static_cast<int>(kSceneJsonVersion) };
 
     cd::asset::json::Array nodes;
-    auto& w = const_cast<cd::ecs::World&>(scene.world());
+    const auto& w = scene.world();
     w.for_each<LocalTransform>(
-        [&](cd::ecs::Entity e, LocalTransform& lt)
+        [&](cd::ecs::Entity e, const LocalTransform& lt)
         {
             cd::asset::json::Object obj;
             // Let the caller pre-populate so we can guarantee the

@@ -10,6 +10,7 @@
 
 #include <cd/vfs/IFileSource.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <string>
@@ -45,12 +46,8 @@ public:
 
     [[nodiscard]] bool exists(std::string_view path) const
     {
-        for (const auto& l : layers_)
-        {
-            if (l->exists(path))
-                return true;
-        }
-        return false;
+        return std::ranges::any_of(
+            layers_, [&](const auto& l) { return l->exists(path); });
     }
 
     [[nodiscard]] cd::core::Result<std::vector<std::byte>> read(std::string_view path) const

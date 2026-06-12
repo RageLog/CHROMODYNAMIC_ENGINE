@@ -228,7 +228,7 @@ public:
 
     void reset() noexcept override
     {
-        for (auto& c : children_) { c->reset(); }
+        for (auto& c : children_) { (*c).reset(); }
     }
 
 protected:
@@ -326,7 +326,7 @@ public:
 
     void reset() noexcept override
     {
-        if (child_) { child_->reset(); }
+        if (child_) { (*child_).reset(); }
     }
 
 protected:
@@ -417,7 +417,7 @@ public:
     /// composites, counters in decorators, etc.).
     void reset() noexcept
     {
-        if (root_) { root_->reset(); }
+        if (root_) { (*root_).reset(); }
     }
 
 private:

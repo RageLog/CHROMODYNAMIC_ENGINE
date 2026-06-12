@@ -48,9 +48,10 @@ public:
     /// is a menu / close-button action only").
     [[nodiscard]] bool handle() const
     {
-        for (const auto& e : handlers_)
-            if (e.handler && e.handler()) return true;
-        return false;
+        return std::ranges::any_of(handlers_, [](const auto& e)
+        {
+            return e.handler && e.handler();
+        });
     }
 
     [[nodiscard]] std::size_t handler_count() const noexcept

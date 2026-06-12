@@ -145,6 +145,8 @@ private:
             }
             if (st.stop_requested() || !running_)
                 return;
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — canonical
+            // priority_queue move-out (popped on the next line).
             Entry e = std::move(const_cast<Entry&>(entries_.top()));
             entries_.pop();
             guard.unlock();
@@ -165,6 +167,7 @@ private:
         }
         while (!drained.empty())
         {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — same idiom.
             Entry e = std::move(const_cast<Entry&>(drained.top()));
             drained.pop();
             if (e.callback)

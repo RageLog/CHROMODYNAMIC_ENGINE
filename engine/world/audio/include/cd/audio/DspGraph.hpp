@@ -242,7 +242,7 @@ public:
 
     void reset() noexcept
     {
-        for (auto& n : nodes_) n->reset();
+        for (auto& n : nodes_) (*n).reset();
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return nodes_.size(); }

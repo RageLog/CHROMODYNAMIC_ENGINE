@@ -56,7 +56,7 @@ enum class PacketKind : std::uint8_t
     kStartGame     = 4,
     kSyncRoomState = 5,
 
-    kCount_  ///< Sentinel — not a valid kind; used for range checks.
+    kCount_        = 6,  ///< Sentinel — not a valid kind; used for range checks.
 };
 
 // ---------------------------------------------------------------------------

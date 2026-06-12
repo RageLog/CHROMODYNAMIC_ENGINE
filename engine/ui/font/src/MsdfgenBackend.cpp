@@ -273,7 +273,7 @@ void to_msdf_multi(FreeTypeBackend&           ft,
             for (int c = 0; c < 3; ++c)
             {
                 // src_px[c] is already in [0, 1] after DistanceMapping.
-                const int packed = static_cast<int>(src_px[c] * 255.0F + 0.5F);
+                const int packed = static_cast<int>(std::lround(src_px[c] * 255.0F));
                 dst_px[c] = static_cast<std::uint8_t>(std::clamp(packed, 0, 255));
             }
         }

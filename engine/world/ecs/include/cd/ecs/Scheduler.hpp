@@ -329,12 +329,10 @@ private:
                 return true;
         }
         // A reads ∩ B writes (commutative half)
-        for (const auto& t : a.read_set())
+        return std::ranges::any_of(a.read_set(), [&](const auto& t)
         {
-            if (b.write_set().contains(t))
-                return true;
-        }
-        return false;
+            return b.write_set().contains(t);
+        });
     }
 
     cd::core::Result<void> build_order_()

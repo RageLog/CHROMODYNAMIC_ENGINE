@@ -18,6 +18,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -64,8 +65,7 @@ public:
 
     [[nodiscard]] constexpr bool any() const noexcept
     {
-        for (auto w : words_) if (w != 0) return true;
-        return false;
+        return std::ranges::any_of(words_, [](auto w) { return w != 0; });
     }
 
     [[nodiscard]] constexpr bool none() const noexcept { return !any(); }

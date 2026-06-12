@@ -70,8 +70,8 @@ public:
 
     [[nodiscard]] bool contains(cd::ecs::Entity e) const noexcept
     {
-        for (const auto& s : selected_) if (s == e) return true;
-        return false;
+        return std::ranges::any_of(
+            selected_, [&](const auto& s) { return s == e; });
     }
 
     [[nodiscard]] const std::vector<cd::ecs::Entity>& entities() const noexcept { return selected_; }

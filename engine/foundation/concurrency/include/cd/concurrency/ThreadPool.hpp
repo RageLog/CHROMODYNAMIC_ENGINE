@@ -297,6 +297,9 @@ private:
                 }
                 if (queue_.empty())
                     continue;
+                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — canonical
+                // priority_queue move-out: top() is const&, the element is
+                // popped on the next line; the object itself is not const.
                 t = std::move(const_cast<Entry&>(queue_.top()).job);
                 queue_.pop();
                 // phase1052: in_flight_ rises BEFORE queued_ falls.

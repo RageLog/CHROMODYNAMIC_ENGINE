@@ -125,8 +125,8 @@ inline void put_f32(std::vector<std::byte>& out, float v)
         cd::math::Vec3f scale;
     };
     std::vector<NodeRec> nodes;
-    auto& w = const_cast<cd::ecs::World&>(scene.world());
-    w.for_each<LocalTransform>([&](cd::ecs::Entity e, LocalTransform& lt) {
+    const auto& w = scene.world();
+    w.for_each<LocalTransform>([&](cd::ecs::Entity e, const LocalTransform& lt) {
         NodeRec rec {};
         rec.id = e.id;
         const auto parent = scene.parent_of(e);

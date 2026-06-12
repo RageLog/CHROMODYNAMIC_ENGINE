@@ -157,12 +157,10 @@ public:
     [[nodiscard]] bool is_acyclic() const noexcept
     {
         constexpr auto kNoParent = std::numeric_limits<std::uint32_t>::max();
-        for (const auto& c : m_nodes)
+        return std::ranges::all_of(m_nodes, [](const auto& c)
         {
-            if (c.parent_lod == kNoParent) continue;
-            if (c.parent_lod <= c.lod_level) return false;
-        }
-        return true;
+            return c.parent_lod == kNoParent || c.parent_lod > c.lod_level;
+        });
     }
 
 private:

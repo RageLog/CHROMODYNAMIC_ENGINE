@@ -30,7 +30,7 @@ Status SequenceNode::tick(Blackboard& bb)
             cursor_ = 0;
             // Reset every child so a re-entry starts cleanly (e.g. a
             // running grandchild's cursor must drop).
-            for (auto& c : children_) { c->reset(); }
+            for (auto& c : children_) { (*c).reset(); }
             return Status::kFailure;
         }
         // kSuccess: advance and try the next child.
@@ -38,7 +38,7 @@ Status SequenceNode::tick(Blackboard& bb)
     }
     // Every child succeeded.
     cursor_ = 0;
-    for (auto& c : children_) { c->reset(); }
+    for (auto& c : children_) { (*c).reset(); }
     return Status::kSuccess;
 }
 
@@ -55,7 +55,7 @@ Status SelectorNode::tick(Blackboard& bb)
         if (s == Status::kSuccess)
         {
             cursor_ = 0;
-            for (auto& c : children_) { c->reset(); }
+            for (auto& c : children_) { (*c).reset(); }
             return Status::kSuccess;
         }
         // kFailure: try the next alternative.
@@ -63,7 +63,7 @@ Status SelectorNode::tick(Blackboard& bb)
     }
     // Every child failed.
     cursor_ = 0;
-    for (auto& c : children_) { c->reset(); }
+    for (auto& c : children_) { (*c).reset(); }
     return Status::kFailure;
 }
 
@@ -98,12 +98,12 @@ Status ParallelNode::tick(Blackboard& bb)
 
     if (failure_count >= failure_threshold_)
     {
-        for (auto& c : children_) { c->reset(); }
+        for (auto& c : children_) { (*c).reset(); }
         return Status::kFailure;
     }
     if (success_count >= success_target)
     {
-        for (auto& c : children_) { c->reset(); }
+        for (auto& c : children_) { (*c).reset(); }
         return Status::kSuccess;
     }
     return Status::kRunning;
@@ -143,7 +143,7 @@ Status RepeaterNode::tick(Blackboard& bb)
         if (s == Status::kRunning) { return Status::kRunning; }
         last_ = s;
         // Reset the child between iterations so it starts fresh.
-        child_->reset();
+        (*child_).reset();
         ++iter_;
         // Guard against infinite tick-time loops when count_==0: a
         // forever-repeater must yield after each finished iteration so
@@ -168,7 +168,7 @@ Status UntilSuccessNode::tick(Blackboard& bb)
     if (s == Status::kSuccess) { return Status::kSuccess; }
     if (s == Status::kRunning) { return Status::kRunning; }
     // kFailure: reset and report kRunning so the caller re-enters next tick.
-    child_->reset();
+    (*child_).reset();
     return Status::kRunning;
 }
 

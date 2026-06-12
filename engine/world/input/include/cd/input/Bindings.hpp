@@ -20,6 +20,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/input/Input.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string_view>
 #include <unordered_map>
@@ -57,9 +58,8 @@ public:
     {
         auto it = bindings_.find(action_hash(action));
         if (it == bindings_.end()) return false;
-        for (KeyCode k : it->second)
-            if (s.is_key_down(k)) return true;
-        return false;
+        return std::ranges::any_of(
+            it->second, [&](KeyCode k) { return s.is_key_down(k); });
     }
 
     [[nodiscard]] std::size_t action_count() const noexcept { return bindings_.size(); }

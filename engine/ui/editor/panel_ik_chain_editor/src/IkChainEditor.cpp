@@ -240,7 +240,7 @@ float IkChainEditor::project_y(float world_y,
 // ---------------------------------------------------------------------------
 
 std::array<float, 2> IkChainEditor::project_3d(
-    const std::array<float, 3>& wp,
+    const std::array<float, 3>& world_pos,
     const cd::ui::widgets::Rect& bounds) const noexcept
 {
     // Multiply [wx, wy, wz, 1] by the column-major 4×4 VP matrix.
@@ -250,9 +250,9 @@ std::array<float, 2> IkChainEditor::project_3d(
     // clip_w = m[3]*wx + m[7]*wy + m[11]*wz + m[15]
 
     const auto& m = view_proj_;
-    const float wx = wp[0];
-    const float wy = wp[1];
-    const float wz = wp[2];
+    const float wx = world_pos[0];
+    const float wy = world_pos[1];
+    const float wz = world_pos[2];
 
     const float clip_x = m[0] * wx + m[4] * wy + m[8]  * wz + m[12];
     const float clip_y = m[1] * wx + m[5] * wy + m[9]  * wz + m[13];

@@ -121,7 +121,11 @@ public:
         {
             return nullptr;
         }
-        return &slots_[h.index()].value();
+        // is_live() implies an engaged slot; the explicit has_value
+        // check keeps the accessor robust against invariant drift and
+        // makes the optional access visibly guarded.
+        auto& slot = slots_[h.index()];
+        return slot.has_value() ? &*slot : nullptr;
     }
 
     [[nodiscard]] const T* get(handle_type h) const noexcept
@@ -130,7 +134,8 @@ public:
         {
             return nullptr;
         }
-        return &slots_[h.index()].value();
+        const auto& slot = slots_[h.index()];
+        return slot.has_value() ? &*slot : nullptr;
     }
 
     /// Returns true iff the handle still refers to a live slot in this store.
@@ -196,9 +201,11 @@ public:
     {
         for (size_type i = 0; i < slots_.size(); ++i)
         {
-            if (slots_[i].has_value())
+            // Bind the slot once: the double subscript defeated the
+            // optional-access flow analysis AND re-evaluated the index.
+            if (auto& slot = slots_[i]; slot.has_value())
             {
-                std::forward<F>(fn)(handle_type { i, generations_[i], type_id_ }, slots_[i].value());
+                std::forward<F>(fn)(handle_type { i, generations_[i], type_id_ }, *slot);
             }
         }
     }
@@ -208,9 +215,9 @@ public:
     {
         for (size_type i = 0; i < slots_.size(); ++i)
         {
-            if (slots_[i].has_value())
+            if (const auto& slot = slots_[i]; slot.has_value())
             {
-                std::forward<F>(fn)(handle_type { i, generations_[i], type_id_ }, slots_[i].value());
+                std::forward<F>(fn)(handle_type { i, generations_[i], type_id_ }, *slot);
             }
         }
     }

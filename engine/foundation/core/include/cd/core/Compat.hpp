@@ -10,6 +10,7 @@
 #include <cd/core/Defines.hpp>
 
 #include <algorithm>
+#include <memory>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -66,8 +67,9 @@ inline void copy_c_string(char* destination, std::size_t destination_size, const
     {
         return {};
     }
-    std::string value { buffer };
-    std::free(buffer);
+    const std::unique_ptr<char, decltype(&std::free)> owned {
+        buffer, &std::free };  // RAII for the _dupenv_s allocation
+    std::string value { owned.get() };
     return value;
 #else
     const char* value = std::getenv(name);

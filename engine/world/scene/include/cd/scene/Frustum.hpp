@@ -24,6 +24,8 @@
 #include <cd/math/Vector.hpp>
 #include <cd/physics/Aabb.hpp>
 
+#include <algorithm>
+
 namespace cd::scene
 {
 
@@ -56,7 +58,7 @@ struct Frustum
                                      const cd::physics::Aabb& aabb) noexcept
 {
     const Plane planes[6] = { f.left, f.right, f.bottom, f.top, f.near_, f.far_ };
-    for (const auto& p : planes)
+    return std::ranges::all_of(planes, [&](const Plane& p)
     {
         // p-vertex: corner farthest along plane normal.
         const cd::math::Vec3f pv {
@@ -64,10 +66,8 @@ struct Frustum
             (p.n.y >= 0.0F) ? aabb.max.y : aabb.min.y,
             (p.n.z >= 0.0F) ? aabb.max.z : aabb.min.z,
         };
-        if (signed_distance(p, pv) < 0.0F)
-            return false;
-    }
-    return true;
+        return signed_distance(p, pv) >= 0.0F;
+    });
 }
 
 /// Returns true iff the sphere `(center, radius)` is at least
@@ -85,10 +85,10 @@ struct Frustum
 {
     const Plane planes[6] = { f.left, f.right, f.bottom, f.top, f.near_, f.far_ };
     const float neg_r = -radius;
-    for (const auto& p : planes)
+    return std::ranges::all_of(planes, [&](const Plane& p)
     {
-        if (signed_distance(p, center) < neg_r) return false;
-    }
+        return signed_distance(p, center) >= neg_r;
+    });
     return true;
 }
 
@@ -100,10 +100,10 @@ struct Frustum
                                                 float radius) noexcept
 {
     const Plane planes[6] = { f.left, f.right, f.bottom, f.top, f.near_, f.far_ };
-    for (const auto& p : planes)
+    return std::ranges::all_of(planes, [&](const Plane& p)
     {
-        if (signed_distance(p, center) < radius) return false;
-    }
+        return signed_distance(p, center) >= radius;
+    });
     return true;
 }
 
