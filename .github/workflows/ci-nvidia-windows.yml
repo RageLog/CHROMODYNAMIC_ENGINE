@@ -104,7 +104,7 @@ jobs:
           # Each sample boots its own swapchain + window; the runner
           # session must allow interactive logon (UI session) or run
           # under autologon for GLFW window creation to succeed.
-          $samples = @('hello_engine', 'hello_imgui', 'hello_pbr')
+          $samples = @('hello_engine', 'hello_pbr')  # phase1139: hello_imgui folded
           foreach ($s in $samples) {
             $exe = "build/ci-msvc/bin/Debug/$s.exe"
             if (-not (Test-Path $exe)) {

@@ -3,7 +3,6 @@
 # triangle/cube/path-trace/RT/rhi_features land here.
 add_subdirectory(hello_triangle)
 add_subdirectory(hello_cube)
-add_subdirectory(hello_rhi_features)
 
 if(WIN32)
   # phase909-sample-consolidation: hello_d3d12_boot retired. Its 4-step
@@ -13,7 +12,6 @@ if(WIN32)
   # test_d3d12_parity_m4.cpp (14). Source directory deleted.
   add_subdirectory(hello_d3d12_clear)
   add_subdirectory(hello_d3d12_triangle)
-  add_subdirectory(hello_opengl_boot)
   add_subdirectory(hello_opengl_resources)
   add_subdirectory(hello_opengl_triangle)
 endif()

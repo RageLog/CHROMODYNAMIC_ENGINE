@@ -29,4 +29,5 @@
 #
 # The "demo each library feature" half of the feedback is handled
 # by adding a Sound panel to hello_engine in phase 907.
-add_subdirectory(hello_audio_wasapi)
+# phase1139: hello_audio_wasapi folded -- hello_engine Audio panel +
+# WASAPI backend cover it (SAMPLES_CONSOLIDATION_PLAN.md batch 1).
