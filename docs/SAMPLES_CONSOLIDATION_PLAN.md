@@ -33,6 +33,10 @@
   hello_rt (engine sky/PBR grid/framegraph/X1 submit/RT yansıma
   yollarıyla bire bir karşılık; her silmeden önce ekran kapsamı
   kontrol listesi).
+  - phase1144: `hello_framegraph` silindi — NEEDS-PORT şartı
+    karşılandı; gerçek-cihaz kanıtı phase1143'te
+    `engine/render/framegraph/tests/test_framegraph_vulkan.cpp`
+    olarak gemiye girdi.
 - **Batch 3 (asset birleştirme):** hello_mesh/obj/texture/cooked/
   textured_cooked/gltf → tek `hello_asset_pipeline` (cooked akışı
   taşınır; glTF görsel yolu hello_engine'de zaten Sponza/CesiumMan).

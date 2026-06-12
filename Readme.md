@@ -197,7 +197,6 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 | `hello_obj`           | OBJ import + draw |
 | `hello_cooked`        | `.cdmesh` cook target |
 | `hello_gltf`          | glTF 2.0 import + per-instance frustum culling |
-| `hello_framegraph`    | `cd::framegraph` pass declarations |
 | `hello_hot_reload`    | shader hot-reload via file watcher |
 | `hello_imgui`         | Dear ImGui demo + profile HUD |
 | `hello_bench`         | `cd::bench` microbench on four hot-path snippets |

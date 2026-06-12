@@ -19,12 +19,11 @@
 #
 # Retained (all category b Vulkan / D3D12 visual demos):
 #   hello_d3d12_pbr     - D3D12 backend PBR demo (Win32 only)
-#   hello_framegraph    - framegraph end-to-end visual
-#   hello_gpu_cluster   - Forward+ GPU dispatch + GPU/CPU parity (compute-gated)
-#   hello_imgui         - first end-to-end ImGui visual
+# phase1139: hello_gpu_cluster, hello_imgui folded (batch-1; coverage
+# lives in hello_engine cluster demo + hello_engine/hello_editor ImGui).
 # phase1142: hello_pbr, hello_skybox, hello_render_thread folded
 # (batch-2 sample consolidation; visual coverage lives in hello_engine).
+# phase1144: hello_framegraph folded (real-device proof = test_framegraph_vulkan).
 if(WIN32)
   add_subdirectory(hello_d3d12_pbr)
 endif()
-add_subdirectory(hello_framegraph)
