@@ -109,6 +109,14 @@ namespace
 
 }  // namespace
 
+VkImageLayout layout_for_state(cd::rhi::ResourceState state) noexcept
+{
+    // phase1127 (X4-B): public alias of the anon-namespace mapping so the
+    // device-level image readback shares it instead of duplicating the
+    // switch (drift here = silent layout corruption on round-trips).
+    return layout_for(state);
+}
+
 VulkanCommandBuffer::VulkanCommandBuffer(
     VkDevice device,
     VkCommandPool pool,

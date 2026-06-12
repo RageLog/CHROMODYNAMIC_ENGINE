@@ -344,6 +344,15 @@ public:
         std::uint32_t height { 0 };
         std::uint32_t mip_level { 0 };
         std::uint32_t base_layer { 0 };
+        /// phase1127 (X4-B): the state/layout the CALLER left the image
+        /// in. The backend transitions src_state -> transfer-source ->
+        /// src_state around the copy. The default kUndefined preserves
+        /// the legacy phase377 semantics — but per the Vulkan spec a
+        /// transition FROM kUndefined may DISCARD the image contents,
+        /// so callers reading back RENDERED results MUST pass the true
+        /// current state (e.g. kShaderResource). The D3D12 backend
+        /// tracks per-resource state internally and ignores this field.
+        ResourceState src_state { ResourceState::kUndefined };
     };
 
     /// Copy a rectangular region of `src_image` into `dst_buffer` at

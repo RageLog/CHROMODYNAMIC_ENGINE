@@ -16,10 +16,19 @@ cd_add_test(backend_parity
 )
 
 # phase377-B-infra2: IDevice::copy_image_to_buffer smoke tests (NullDevice).
-cd_add_test(image_readback
-  SOURCES test_image_readback.cpp
-  DEPS    cd::rhi cd::core
-)
+# phase1127 (X4-B): + GPU clear-colour round-trip against the REAL Vulkan
+# and (on Windows) D3D12 backends — each skips when no device is present.
+if(WIN32)
+  cd_add_test(image_readback
+    SOURCES test_image_readback.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::rhi cd::core
+  )
+else()
+  cd_add_test(image_readback
+    SOURCES test_image_readback.cpp
+    DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+endif()
 
 # phase400-M4H: D3D12 M4A-M4F surface contract parity test (CPU-only;
 # no device instantiation — runnable in every CI lane).

@@ -80,6 +80,11 @@ struct ResourceTables
     RtPipelineLookupFn rt_pipeline_lookup { nullptr };
 };
 
+/// phase1127 (X4-B): shared ResourceState -> VkImageLayout mapping. The
+/// command-buffer barrier path and the device-level image readback must
+/// agree on this mapping or readback round-trips silently corrupt layouts.
+[[nodiscard]] VkImageLayout layout_for_state(cd::rhi::ResourceState state) noexcept;
+
 class VulkanCommandBuffer final : public cd::rhi::ICommandBuffer
 {
 public:

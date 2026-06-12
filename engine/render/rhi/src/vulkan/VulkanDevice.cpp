@@ -3193,7 +3193,13 @@ public:
         };
         vkBeginCommandBuffer(cmd, &bi);
 
-        // Transition: UNDEFINED → TRANSFER_SRC_OPTIMAL
+        // Transition: caller-declared src_state → TRANSFER_SRC_OPTIMAL.
+        // phase1127 (X4-B): the legacy default (kUndefined) maps to
+        // VK_IMAGE_LAYOUT_UNDEFINED, which per spec may DISCARD the
+        // image contents — fine for the original phase377 smoke use,
+        // WRONG for reading back rendered results. Callers that render
+        // first must set region.src_state to the true current state.
+        const VkImageLayout caller_layout = layout_for_state(region.src_state);
         const VkImageMemoryBarrier2 to_src {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -3201,7 +3207,7 @@ public:
             .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
             .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .oldLayout = caller_layout,
             .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -3250,7 +3256,13 @@ public:
             &copy_region
         );
 
-        // Transition back: TRANSFER_SRC_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+        // Transition back: TRANSFER_SRC_OPTIMAL → the caller's declared
+        // state (legacy kUndefined keeps the historical SHADER_READ_ONLY
+        // restore so existing callers observe no behaviour change).
+        const VkImageLayout restore_layout =
+            (region.src_state == cd::rhi::ResourceState::kUndefined)
+                ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                : caller_layout;
         const VkImageMemoryBarrier2 to_read {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .pNext = nullptr,
@@ -3259,7 +3271,7 @@ public:
             .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
             .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,
             .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout = restore_layout,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = img_it->second,

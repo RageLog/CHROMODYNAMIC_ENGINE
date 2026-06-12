@@ -21,17 +21,29 @@
 //   * Arrange / Act / Assert.
 //   * Edge cases + negative tests included.
 // =============================================================================
+#if defined(_WIN32)
+    #define WIN32_LEAN_AND_MEAN
+    #define NOMINMAX
+#endif
+
+#include <cd/rhi/Barriers.hpp>
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Enums.hpp>
 #include <cd/rhi/Format.hpp>
 #include <cd/rhi/Handles.hpp>
+#include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/NullDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>
+#if defined(_WIN32)
+    #include <cd/rhi/d3d12/D3D12Device.hpp>
+#endif
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace
@@ -245,6 +257,140 @@ TEST(ImageReadback, ImageRegionDefaultsToZero)
     EXPECT_EQ(r.height, 0u);
     EXPECT_EQ(r.mip_level, 0u);
     EXPECT_EQ(r.base_layer, 0u);
+    // phase1127 (X4-B): legacy default — discard-permitting transition.
+    EXPECT_EQ(r.src_state, cd::rhi::ResourceState::kUndefined);
 }
+
+// ---- GPU round-trip (phase1127, X4-B parity gate) ---------------------------
+//
+// Clear a 4x4 RGBA8 offscreen target to a known colour through a real
+// render pass, declare the image's true state via ImageRegion::src_state,
+// read the texels back through copy_image_to_buffer + download_buffer and
+// assert every channel. This is the test the ROADMAP_PHASE_2 §2.4 gate
+// names: the same body runs against the Vulkan AND D3D12 backends so the
+// two readback paths cannot drift.
+
+void run_gpu_clear_roundtrip(cd::rhi::IDevice& dev)
+{
+    constexpr std::uint32_t kW = 4;
+    constexpr std::uint32_t kH = 4;
+    constexpr std::uint64_t kBytes = std::uint64_t { kW } * kH * 4u;
+
+    // Arrange: colour target + readback buffer.
+    cd::rhi::TextureDesc td {};
+    td.type         = cd::rhi::TextureType::k2D;
+    td.format       = cd::rhi::Format::kRGBA8Unorm;
+    td.extent       = { kW, kH, 1 };
+    td.mip_levels   = 1;
+    td.array_layers = 1;
+    td.usage        = cd::rhi::TextureUsage::kColorAttachment |
+                      cd::rhi::TextureUsage::kTransferSrc |
+                      cd::rhi::TextureUsage::kSampled;
+    auto tex_r = dev.create_texture(td);
+    ASSERT_TRUE(tex_r.has_value());
+    const auto tex = *tex_r;
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = tex;
+    vd.type    = cd::rhi::TextureType::k2D;
+    auto view_r = dev.create_texture_view(vd);
+    ASSERT_TRUE(view_r.has_value());
+    const auto view = *view_r;
+
+    cd::rhi::BufferDesc bd {};
+    bd.size   = kBytes;
+    bd.usage  = cd::rhi::BufferUsage::kTransferDst;
+    bd.memory = cd::rhi::MemoryUsage::kGpuToCpu;
+    auto buf_r = dev.create_buffer(bd);
+    ASSERT_TRUE(buf_r.has_value());
+    const auto buf = *buf_r;
+
+    // Act 1: clear the target via a render pass, leave it in
+    // kShaderResource (the state we declare to the readback).
+    auto cmd = dev.create_command_buffer();
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+    cd::rhi::TextureBarrier to_color {};
+    to_color.texture = tex;
+    to_color.from    = cd::rhi::ResourceState::kUndefined;
+    to_color.to      = cd::rhi::ResourceState::kColorAttachment;
+    to_color.range   = { 0, 1, 0, 1 };
+    cmd->barrier({}, { &to_color, 1 });
+
+    cd::rhi::ColorAttachmentInfo att {};
+    att.view        = view;
+    att.load_op     = cd::rhi::LoadOp::kClear;
+    att.store_op    = cd::rhi::StoreOp::kStore;
+    att.clear_color = { .f32 = { 1.0F, 0.5F, 0.25F, 1.0F } };
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.color_attachments = { &att, 1 };
+    rp.render_area.extent = { kW, kH };
+    cmd->begin_render_pass(rp);
+    cmd->end_render_pass();
+
+    cd::rhi::TextureBarrier to_read {};
+    to_read.texture = tex;
+    to_read.from    = cd::rhi::ResourceState::kColorAttachment;
+    to_read.to      = cd::rhi::ResourceState::kShaderResource;
+    to_read.range   = { 0, 1, 0, 1 };
+    cmd->barrier({}, { &to_read, 1 });
+    cmd->end();
+    dev.submit(*cmd);
+    dev.wait_idle();
+
+    // Act 2: readback with the TRUE current state declared. (With the
+    // legacy kUndefined default the spec would allow the driver to
+    // discard the cleared texels in the to-transfer transition.)
+    cd::rhi::IDevice::ImageRegion region {};
+    region.width     = kW;
+    region.height    = kH;
+    region.src_state = cd::rhi::ResourceState::kShaderResource;
+    const auto copy_r = dev.copy_image_to_buffer(tex, buf, 0, region);
+    ASSERT_TRUE(copy_r.has_value())
+        << std::string(copy_r.error().message.begin(), copy_r.error().message.end());
+
+    std::vector<std::byte> raw(static_cast<std::size_t>(kBytes));
+    auto dl = dev.download_buffer(buf, 0, std::span<std::byte> { raw });
+    ASSERT_TRUE(dl.has_value());
+
+    // Assert: every texel is the clear colour (unorm rounding ±1).
+    const auto near_u8 = [](std::byte got, int want)
+    {
+        const int g = static_cast<int>(std::to_integer<std::uint8_t>(got));
+        return g >= want - 1 && g <= want + 1;
+    };
+    for (std::uint32_t i = 0; i < kW * kH; ++i)
+    {
+        const std::size_t o = static_cast<std::size_t>(i) * 4u;
+        EXPECT_TRUE(near_u8(raw[o + 0], 255)) << "texel " << i << " R";
+        EXPECT_TRUE(near_u8(raw[o + 1], 128)) << "texel " << i << " G";
+        EXPECT_TRUE(near_u8(raw[o + 2], 64))  << "texel " << i << " B";
+        EXPECT_TRUE(near_u8(raw[o + 3], 255)) << "texel " << i << " A";
+    }
+
+    dev.destroy_buffer(buf);
+    dev.destroy_texture_view(view);
+    dev.destroy_texture(tex);
+}
+
+TEST(ImageReadback, VulkanGpuClearColorRoundTrip)
+{
+    cd::rhi::vulkan::VulkanCreateInfo info {};
+    info.enable_validation = false;
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(info);
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no Vulkan ICD available on this host";
+    run_gpu_clear_roundtrip(**dev_r);
+}
+
+#if defined(_WIN32)
+TEST(ImageReadback, D3D12GpuClearColorRoundTrip)
+{
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device({});
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no D3D12 adapter available on this host";
+    run_gpu_clear_roundtrip(**dev_r);
+}
+#endif
 
 }  // namespace

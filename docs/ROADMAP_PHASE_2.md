@@ -81,9 +81,14 @@ ImGui + bloom) that the M4 milestone calls out.
    Either pull `spirv-cross` (Tier-B FetchContent per ADR-016) or
    commit to native DXIL via DirectXShaderCompiler. Decision input for
    X4's first ADR.
-2. **Image-readback API** in `cd::rhi::IDevice` — required for any
-   golden parity test. Currently absent in both Vulkan and D3D12.
-   Single API + 3 backend impls (Vulkan, D3D12, Null).
+2. **Image-readback API** in `cd::rhi::IDevice` — ✅ DONE (phase1127;
+   the API itself shipped at phase377). `copy_image_to_buffer` exists
+   in all 3 backends; phase1127 added `ImageRegion::src_state` (the
+   legacy kUndefined transition could legally DISCARD rendered
+   contents on Vulkan), fixed the D3D12 path to de-pitch its 256-byte
+   row alignment into the contract's tightly-packed layout, and added
+   the GPU clear-colour round-trip test running the SAME body against
+   Vulkan and D3D12 (test_image_readback.cpp, X4-B gate).
 3. **NVIDIA self-hosted CI lane (X3)** — D3D12 runtime tests can't run
    on GitHub-hosted Linux runners. Hardware unavailability is an
    explicit X4 honest-scope flag.

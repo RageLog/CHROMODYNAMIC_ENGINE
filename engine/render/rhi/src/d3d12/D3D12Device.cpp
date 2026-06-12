@@ -2729,18 +2729,50 @@ public:
             list->ResourceBarrier(1, &bar);
         }
 
-        // Query the row pitch for the subresource (D3D12 aligns rows to 256 B).
+        // phase1127 (X4-B parity): D3D12 placed-footprint copies REQUIRE a
+        // 256-byte-aligned row pitch, while the IDevice contract (and the
+        // Vulkan backend, bufferRowLength = 0) deliver TIGHTLY-PACKED rows
+        // in dst_buffer. Recording the pitched copy straight into the
+        // caller's buffer both failed Close() for small buffers AND would
+        // have produced a different byte layout than Vulkan — exactly the
+        // drift the X4 parity gate exists to catch. Copy into an internal
+        // pitched staging buffer sized from a region-shaped footprint,
+        // then de-pitch row-by-row into the caller's buffer after the
+        // GPU wait.
         D3D12_RESOURCE_DESC src_desc = trec->resource->GetDesc();
+        D3D12_RESOURCE_DESC region_desc = src_desc;
+        region_desc.Width     = region.width;
+        region_desc.Height    = region.height;
+        region_desc.MipLevels = 1;
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
-        UINT64 total_bytes = 0;
+        UINT row_count = 0;
+        UINT64 row_bytes = 0;
+        UINT64 staging_bytes = 0;
         device_->GetCopyableFootprints(
-            &src_desc, region.mip_level, 1, dst_offset,
-            &footprint, nullptr, nullptr, &total_bytes);
+            &region_desc, 0, 1, 0,
+            &footprint, &row_count, &row_bytes, &staging_bytes);
 
-        // Adjust the footprint region to match the requested rectangle.
-        footprint.Footprint.Width  = region.width;
-        footprint.Footprint.Height = region.height;
-        footprint.Footprint.Depth  = 1;
+        D3D12_HEAP_PROPERTIES staging_heap {};
+        staging_heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC staging_desc {};
+        staging_desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        staging_desc.Width            = staging_bytes;
+        staging_desc.Height           = 1;
+        staging_desc.DepthOrArraySize = 1;
+        staging_desc.MipLevels        = 1;
+        staging_desc.Format           = DXGI_FORMAT_UNKNOWN;
+        staging_desc.SampleDesc       = { 1, 0 };
+        staging_desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> staging;
+        hr = device_->CreateCommittedResource(
+            &staging_heap, D3D12_HEAP_FLAG_NONE, &staging_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&staging));
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: staging CreateCommittedResource failed"));
+        }
 
         D3D12_TEXTURE_COPY_LOCATION src_loc {};
         src_loc.pResource        = trec->resource.Get();
@@ -2749,7 +2781,7 @@ public:
             (region.base_layer * static_cast<UINT>(src_desc.MipLevels));
 
         D3D12_TEXTURE_COPY_LOCATION dst_loc {};
-        dst_loc.pResource       = brec.resource.Get();
+        dst_loc.pResource       = staging.Get();
         dst_loc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         dst_loc.PlacedFootprint = footprint;
 
@@ -2791,6 +2823,48 @@ public:
                 cd::rhi::rhi_errors::Code::kDeviceLost,
                 "copy_image_to_buffer: wait_idle_internal failed"));
         }
+
+        // De-pitch: staging (RowPitch-aligned rows) -> caller's buffer
+        // (tightly-packed rows starting at dst_offset) — matches the
+        // Vulkan backend's bufferRowLength = 0 layout byte-for-byte.
+        void* src_mapped = nullptr;
+        const D3D12_RANGE src_range { 0, static_cast<SIZE_T>(staging_bytes) };
+        hr = staging->Map(0, &src_range, &src_mapped);
+        if (FAILED(hr) || src_mapped == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: staging Map failed"));
+        }
+        void* dst_mapped = nullptr;
+        const D3D12_RANGE no_read { 0, 0 };
+        hr = brec.resource->Map(0, &no_read, &dst_mapped);
+        if (FAILED(hr) || dst_mapped == nullptr)
+        {
+            staging->Unmap(0, nullptr);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "copy_image_to_buffer: dst_buffer Map failed"));
+        }
+        const auto* src_bytes = static_cast<const std::uint8_t*>(src_mapped);
+        auto* dst_bytes = static_cast<std::uint8_t*>(dst_mapped) +
+                          static_cast<std::size_t>(dst_offset);
+        for (UINT row = 0; row < row_count; ++row)
+        {
+            std::memcpy(
+                dst_bytes + static_cast<std::size_t>(row) *
+                                static_cast<std::size_t>(row_bytes),
+                src_bytes + static_cast<std::size_t>(row) *
+                                static_cast<std::size_t>(footprint.Footprint.RowPitch),
+                static_cast<std::size_t>(row_bytes));
+        }
+        const D3D12_RANGE wrote {
+            static_cast<SIZE_T>(dst_offset),
+            static_cast<SIZE_T>(dst_offset +
+                                row_bytes * static_cast<UINT64>(row_count)),
+        };
+        brec.resource->Unmap(0, &wrote);
+        staging->Unmap(0, nullptr);
         return {};
     }
 
