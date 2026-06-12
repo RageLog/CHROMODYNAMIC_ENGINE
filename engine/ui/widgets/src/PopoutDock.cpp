@@ -28,6 +28,8 @@ PopoutWindow* PopoutDock::find_(std::string_view panel_id) noexcept
 
 const PopoutWindow* PopoutDock::find_(std::string_view panel_id) const noexcept
 {
+    // const/non-const dedup; the non-const overload only searches.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     return const_cast<PopoutDock*>(this)->find_(panel_id);
 }
 

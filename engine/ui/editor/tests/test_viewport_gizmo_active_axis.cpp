@@ -13,6 +13,7 @@
 #include <cd/editor/ui/EditorWidgets.hpp>
 #include <cd/scene/Scene.hpp>
 #include <gtest/gtest.h>
+#include <algorithm>
 
 namespace
 {
@@ -39,17 +40,13 @@ struct GizmoFixture
 {
     std::vector<cd::ui::DrawCommand> cmds;
     g.collect_draw_commands(cmds);
-    for (const auto& c : cmds)
+    return std::ranges::any_of(cmds, [](const auto& c)
     {
-        if (c.kind == cd::ui::DrawKind::kRect &&
-            c.color.r >= 0.9F &&
-            c.color.g >= 0.5F &&
-            c.color.b <= 0.4F)
-        {
-            return true;
-        }
-    }
-    return false;
+        return c.kind == cd::ui::DrawKind::kRect &&
+               c.color.r >= 0.9F &&
+               c.color.g >= 0.5F &&
+               c.color.b <= 0.4F;
+    });
 }
 
 // ---- Test cases --------------------------------------------------------------

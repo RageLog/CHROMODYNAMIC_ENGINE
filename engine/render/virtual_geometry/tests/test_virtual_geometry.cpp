@@ -27,7 +27,7 @@ TEST(VirtualGeometry, LodFrontierTrueWhenSelfPassesParentFails)
     n.bounds_sphere = { 0, 0, 10, 1.0F };
     n.self_error   = 0.1F;
     n.parent_error = 1.0F;
-    EXPECT_TRUE(is_lod_frontier(n, /*threshold=*/8.0F,
+    EXPECT_TRUE(is_lod_frontier(n, /*threshold_px=*/8.0F,
                                 { 0, 0, 0 }, 0.7F, 1080));
 }
 
@@ -37,7 +37,7 @@ TEST(VirtualGeometry, LodFrontierFalseWhenBothBelowThreshold)
     n.bounds_sphere = { 0, 0, 100, 1.0F };
     n.self_error   = 0.01F;
     n.parent_error = 0.02F;  // both tiny -> parent should still be acceptable
-    EXPECT_FALSE(is_lod_frontier(n, /*threshold=*/5.0F,
+    EXPECT_FALSE(is_lod_frontier(n, /*threshold_px=*/5.0F,
                                  { 0, 0, 0 }, 0.7F, 1080));
 }
 

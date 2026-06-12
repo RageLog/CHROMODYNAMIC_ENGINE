@@ -555,12 +555,14 @@ extern "C" int world_set_local_transform(lua_State* L)
 
 void ensure_events_table(lua_State* L)
 {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — Lua registry-key idiom (void* key).
     ::lua_pushlightuserdata(L, const_cast<char*>(kEventsRegistryKey));
     ::lua_rawget(L, LUA_REGISTRYINDEX);
     if (lua_isnil(L, -1))
     {
         ::lua_pop(L, 1);
         ::lua_newtable(L);
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — same idiom.
         ::lua_pushlightuserdata(L, const_cast<char*>(kEventsRegistryKey));
         ::lua_pushvalue(L, -2);
         ::lua_rawset(L, LUA_REGISTRYINDEX);
@@ -732,6 +734,7 @@ void install_sentinel(lua_State* L)
     ::lua_pushcfunction(L, &sentinel_gc);
     ::lua_setfield(L, -2, "__gc");
     ::lua_setmetatable(L, -2);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — same idiom.
     ::lua_pushlightuserdata(L, const_cast<char*>(kStateRegistryKey));
     ::lua_pushvalue(L, -2);
     ::lua_rawset(L, LUA_REGISTRYINDEX);

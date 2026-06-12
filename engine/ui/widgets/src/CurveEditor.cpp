@@ -37,6 +37,7 @@
 #include <cd/ui/font/Font.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 
+#include <limits>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -149,7 +150,7 @@ std::size_t Curve::set_keyframe(std::size_t index, KeyFrame kf)
     }
 
     const std::size_t left_idx = find_segment(t);
-    if (left_idx == static_cast<std::size_t>(-1) || left_idx + 1U >= keyframes_.size())
+    if (left_idx == std::numeric_limits<std::size_t>::max() || left_idx + 1U >= keyframes_.size())
     {
         return keyframes_.back().value;
     }
@@ -503,7 +504,7 @@ bool CurveEditor::tick(const InputState& input)
                 if (row_rect.contains(mx, my))
                 {
                     // Apply the selected tangent mode.
-                    if (ctx_menu_kf_ != static_cast<std::size_t>(-1) &&
+                    if (ctx_menu_kf_ != std::numeric_limits<std::size_t>::max() &&
                         active_curve_ < curves_.size())
                     {
                         Curve& ac = curves_[active_curve_];
@@ -536,7 +537,7 @@ bool CurveEditor::tick(const InputState& input)
     {
         const auto [hit_ci, hit_ki] = hit_test_knob(mx, my);
 
-        if (hit_ci != static_cast<std::size_t>(-1))
+        if (hit_ci != std::numeric_limits<std::size_t>::max())
         {
             // Hit a knob -- start drag.
             selected_kf_   = hit_ki;
@@ -791,7 +792,7 @@ void CurveEditor::draw(cd::ui::renderer::DrawBatcher& batcher,
 
         // Determine current mode of ctx_menu_kf_ for highlight.
         TangentMode current_mode = TangentMode::kAuto;
-        if (ctx_menu_kf_ != static_cast<std::size_t>(-1) &&
+        if (ctx_menu_kf_ != std::numeric_limits<std::size_t>::max() &&
             active_curve_ < curves_.size())
         {
             const Curve& ac = curves_[active_curve_];

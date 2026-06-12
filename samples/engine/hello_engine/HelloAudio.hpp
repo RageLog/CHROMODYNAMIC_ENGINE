@@ -60,17 +60,17 @@ init_audio(AudioState& a, SquareFn square_wave, NoiseFn burst_noise)
         static_cast<float>(kAudioSampleRate),
         /*threshold=*/0.40F,
         /*ratio=*/6.0F,
-        /*attack=*/0.004F,
-        /*release=*/0.080F);
+        /*attack_sec=*/0.004F,
+        /*release_sec=*/0.080F);
     a.reverb.prepare(kAudioSampleRate / 8u);
     a.reverb.set_feedback(0.35F);
     a.lowpass.prepare(static_cast<float>(kAudioSampleRate),
-                      /*cutoff=*/6500.0F);
+                      /*cutoff_hz=*/6500.0F);
     a.limiter.prepare(
         static_cast<float>(kAudioSampleRate),
-        /*thresh=*/0.92F,
-        /*attack=*/0.0002F,
-        /*release=*/0.040F);
+        /*threshold=*/0.92F,
+        /*attack_sec=*/0.0002F,
+        /*release_sec=*/0.040F);
 
     a.ring.assign(kAudioRingFrames, 0);
 
@@ -118,7 +118,7 @@ init_audio(AudioState& a, SquareFn square_wave, NoiseFn burst_noise)
     if (!clip_r.has_value())
         return;
     a.live_clip = *clip_r;
-    auto voice_r = a.backend->play(a.live_clip, /*vol=*/0.0F, /*loop=*/true);
+    auto voice_r = a.backend->play(a.live_clip, /*volume=*/0.0F, /*looping=*/true);
     if (voice_r.has_value())
         a.live_voice = *voice_r;
 }

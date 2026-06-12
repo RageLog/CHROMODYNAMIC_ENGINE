@@ -57,6 +57,7 @@
 #include <cd/imgdiff/Ssim.hpp>
 
 #include <gtest/gtest.h>
+#include <memory>
 
 #include <array>
 #include <cmath>
@@ -159,8 +160,9 @@ synthesise(const Fixture& cam, std::uint32_t w, std::uint32_t h)
     size_t len = 0;
     if (_dupenv_s(&buf, &len, name) != 0 || buf == nullptr)
         return {};
-    std::string out { buf };
-    std::free(buf);
+    const std::unique_ptr<char, decltype(&std::free)> owned {
+        buf, &std::free };  // RAII for the _dupenv_s allocation
+    std::string out { owned.get() };
     return out;
 #else
     if (const char* v = std::getenv(name); v != nullptr && v[0] != '\0')

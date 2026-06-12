@@ -29,6 +29,7 @@
 #include <cd/ui/font/Font.hpp>
 #include <cd/ui/renderer/DrawBatcher.hpp>
 
+#include <limits>
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -195,14 +196,10 @@ float draw_text_line(cd::ui::renderer::DrawBatcher& batcher,
 /// signal (Enter or Space). Helper for buttons / toggles / checkboxes.
 [[nodiscard]] bool any_activate_key(std::span<const KeyInput> keys) noexcept
 {
-    for (const KeyInput& k : keys)
+    return std::ranges::any_of(keys, [](const KeyInput& k)
     {
-        if (k.signal == KeySignal::kEnter || k.signal == KeySignal::kSpace)
-        {
-            return true;
-        }
-    }
-    return false;
+        return k.signal == KeySignal::kEnter || k.signal == KeySignal::kSpace;
+    });
 }
 
 }  // namespace
@@ -856,7 +853,7 @@ bool Dropdown::tick(const InputState& input)
             // Releasing on a list option commits it; releasing on the
             // header collapses without changing the selection;
             // releasing outside also collapses.
-            if (hovered_option_ != static_cast<std::size_t>(-1))
+            if (hovered_option_ != std::numeric_limits<std::size_t>::max())
             {
                 selected_ = hovered_option_;
                 expanded_ = false;

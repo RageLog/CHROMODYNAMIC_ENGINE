@@ -173,6 +173,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "PrimShader.hpp"
@@ -899,7 +900,7 @@ inline void draw_scene_tree_panel(const std::vector<SceneEntity>& entities, int&
     ImGui::Separator();
     for (std::size_t i = 0; i < entities.size(); ++i)
     {
-        const bool sel = (selected == static_cast<int>(i));
+        const bool sel = (std::cmp_equal(selected,i));
         char row[128] {};
         std::snprintf(row, sizeof(row), "%s##e%zu", entities[i].name.c_str(), i);
         if (ImGui::Selectable(row, sel))
@@ -919,7 +920,7 @@ inline void draw_inspector_panel(std::vector<SceneEntity>& entities,
                                  const std::function<void(std::string)>& log_push)
 {
     ImGui::Begin("Inspector");
-    if (selected >= 0 && selected < static_cast<int>(entities.size()))
+    if (selected >= 0 && std::cmp_less(selected,entities.size()))
     {
         auto& ent = entities[static_cast<std::size_t>(selected)];
         auto* lt = scene.local(ent.handle);
@@ -1108,7 +1109,7 @@ inline void draw_outliner_panel(const std::vector<SceneEntity>& entities,
     ImGui::TextDisabled("Scene entities + lights (click to select):");
     for (std::size_t i = 0; i < entities.size(); ++i)
     {
-        const bool is_sel = (selected_kind == SelKind::kEntity && selected == static_cast<int>(i));
+        const bool is_sel = (selected_kind == SelKind::kEntity && std::cmp_equal(selected,i));
         const std::string label = entities[i].name + "##outl_e" + std::to_string(i);
         if (ImGui::Selectable(label.c_str(), is_sel))
         {
@@ -1118,7 +1119,7 @@ inline void draw_outliner_panel(const std::vector<SceneEntity>& entities,
     }
     for (std::size_t i = 0; i < lights.size(); ++i)
     {
-        const bool is_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
+        const bool is_sel = (selected_kind == SelKind::kLight && std::cmp_equal(selected,i));
         const std::string label = "[light] " + lights[i].name + "##outl_l" + std::to_string(i);
         if (ImGui::Selectable(label.c_str(), is_sel))
         {
@@ -1273,7 +1274,7 @@ inline void draw_lights_panel(std::vector<LightRow>& lights,
         auto& row = lights[i];
         ImGui::PushID(static_cast<int>(i));
         // Click on row name selects the light (so Inspector + gizmo see it).
-        const bool row_sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(i));
+        const bool row_sel = (selected_kind == SelKind::kLight && std::cmp_equal(selected,i));
         if (row_sel)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 0.85F, 0.0F, 1.0F));
         if (ImGui::Selectable(
@@ -1487,7 +1488,7 @@ inline void draw_selection_outline_overlay(const std::vector<SceneEntity>& entit
     // world position onto the screen, then draw a circle around it
     // via ImGui's foreground draw list. Cheap, no extra GPU pass,
     // and demonstrates SelectionOutline state end-to-end.
-    if (selected_kind == SelKind::kEntity && selected >= 0 && selected < static_cast<int>(entities.size()))
+    if (selected_kind == SelKind::kEntity && selected >= 0 && std::cmp_less(selected,entities.size()))
     {
         outline.set(entities[static_cast<std::size_t>(selected)].handle);
     }
@@ -1573,7 +1574,7 @@ inline void draw_light_markers_overlay(const std::vector<LightRow>& lights,
         if (!lrow.enabled)
             continue;
         const auto& L = lrow.light;
-        const bool sel = (selected_kind == SelKind::kLight && selected == static_cast<int>(li));
+        const bool sel = (selected_kind == SelKind::kLight && std::cmp_equal(selected,li));
         const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x, L.color.y, L.color.z, 1.0F));
         const ImU32 col_dim =
             ImGui::ColorConvertFloat4ToU32(ImVec4(L.color.x * 0.6F, L.color.y * 0.6F, L.color.z * 0.6F, 0.7F));
@@ -3230,7 +3231,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
             return nullptr;
         if (selected_kind == SelKind::kEntity)
         {
-            if (selected >= static_cast<int>(entities.size()))
+            if (std::cmp_greater_equal(selected,entities.size()))
                 return nullptr;
             if (auto* lt = scene.local(entities[static_cast<std::size_t>(selected)].handle))
                 return &lt->value.position;
@@ -3238,7 +3239,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
         }
         if (selected_kind == SelKind::kLight)
         {
-            if (selected >= static_cast<int>(lights.size()))
+            if (std::cmp_greater_equal(selected,lights.size()))
                 return nullptr;
             auto& L = lights[static_cast<std::size_t>(selected)].light;
             if (L.type == cd::light::LightType::kDirectional)
@@ -3607,7 +3608,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                     // R-mode rotates light.direction; S-mode scales
                     // light.range / area_width / area_height.
                     if (selected_kind == SelKind::kLight && selected >= 0 &&
-                        selected < static_cast<int>(lights.size()))
+                        std::cmp_less(selected, lights.size()))
                     {
                         const auto& L = lights[static_cast<std::size_t>(selected)].light;
                         gizmo_state.light_drag_dir_start = L.direction;
@@ -3721,7 +3722,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                     lt->value.scale = cur;
                                 }
                                 else if (selected_kind == SelKind::kLight && selected >= 0 &&
-                                         selected < static_cast<int>(lights.size()))
+                                         std::cmp_less(selected, lights.size()))
                                 {
                                     // gap #17: scale-mode gizmo on a
                                     // light edits its area-of-effect.
@@ -3810,7 +3811,7 @@ inline void update_and_draw_gizmo(cd::editor::AxisGizmo& gizmo,
                                                           a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z };
                                 }
                                 else if (selected_kind == SelKind::kLight && selected >= 0 &&
-                                         selected < static_cast<int>(lights.size()))
+                                         std::cmp_less(selected, lights.size()))
                                 {
                                     // gap #16: rotate-mode gizmo rotates
                                     // a light's direction. W8-N: also
@@ -6152,7 +6153,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.palette.register_command(20, "Transform: Reset Selected",
         [&s, log_push_fn]() mutable
         {
-            if (s.selected >= 0 && s.selected < static_cast<int>(s.entities.size()))
+            if (s.selected >= 0 && std::cmp_less(s.selected,s.entities.size()))
             {
                 auto& ent = s.entities[static_cast<std::size_t>(s.selected)];
                 if (auto* lt = s.scene.local(ent.handle); lt)
@@ -6174,7 +6175,7 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.palette.register_command(31, "Camera: Follow Selected",
         [&s, log_push_fn]() mutable
         {
-            if (s.selected >= 0 && s.selected < static_cast<int>(s.entities.size()))
+            if (s.selected >= 0 && std::cmp_less(s.selected,s.entities.size()))
             {
                 s.scene_cam.attach(s.cam, s.scene,
                     s.entities[static_cast<std::size_t>(s.selected)].handle);
@@ -6610,7 +6611,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 { fl.manual_mode = true; s.scene_cam.set_auto_spin(false); }
             }
             if (key_dn && ev.key == cd::platform::KeyCode::kF &&
-                s.selected >= 0 && s.selected < static_cast<int>(s.entities.size()))
+                s.selected >= 0 && std::cmp_less(s.selected, s.entities.size()))
             {
                 if (auto* lt = s.scene.local(
                         s.entities[static_cast<std::size_t>(s.selected)].handle))
@@ -6637,7 +6638,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 !ImGui::GetIO().WantCaptureKeyboard && s.selected >= 0)
             {
                 if (s.selected_kind == SelKind::kEntity &&
-                    s.selected < static_cast<int>(s.entities.size()))
+                    std::cmp_less(s.selected, s.entities.size()))
                 {
                     const std::string nm =
                         s.entities[static_cast<std::size_t>(s.selected)].name;
@@ -6647,7 +6648,7 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     log_push_fn("[edit] entity deleted: " + nm);
                 }
                 else if (s.selected_kind == SelKind::kLight &&
-                         s.selected < static_cast<int>(s.lights.size()))
+                         std::cmp_less(s.selected, s.lights.size()))
                 {
                     const std::string nm =
                         s.lights[static_cast<std::size_t>(s.selected)].name;

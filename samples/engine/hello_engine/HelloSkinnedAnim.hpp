@@ -50,6 +50,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <utility>
 
 namespace cd_sample {
 
@@ -198,7 +199,7 @@ update_skinned_animation(SkinnedRuntime& skinned,
             if (skin_joint >= skinned.skin_joint_remap.size())
                 continue;
             const std::int32_t sj = skinned.skin_joint_remap[skin_joint];
-            if (sj < 0 || sj >= static_cast<std::int32_t>(joint_count))
+            if (sj < 0 || std::cmp_greater_equal(sj,joint_count))
                 continue;
             w4[n_valid]  = w;
             dq4[n_valid] = dq_palette[static_cast<std::size_t>(sj)];

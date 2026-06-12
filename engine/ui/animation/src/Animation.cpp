@@ -204,14 +204,10 @@ float Timeline::value_for(ChannelId channel) const noexcept
 
 bool Timeline::done() const noexcept
 {
-    for (const Entry& e : channels_)
+    return std::ranges::all_of(channels_, [&](const Entry& e)
     {
-        if (now_s_ < e.start_s + e.anim.duration_s)
-        {
-            return false;
-        }
-    }
-    return true;
+        return now_s_ >= e.start_s + e.anim.duration_s;
+    });
 }
 
 }  // namespace cd::ui::animation

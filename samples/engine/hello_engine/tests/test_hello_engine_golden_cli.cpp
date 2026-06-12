@@ -50,6 +50,7 @@ public:
     [[nodiscard]] int    argc() const noexcept { return static_cast<int>(owned_.size()); }
     [[nodiscard]] char** argv() const noexcept
     {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — argv ABI is char**.
         return const_cast<char**>(ptrs_.data());
     }
 

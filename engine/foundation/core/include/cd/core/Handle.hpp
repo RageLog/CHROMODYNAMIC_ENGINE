@@ -144,12 +144,13 @@ static_assert(alignof(Handle<AnyTag>) <= 8u);
 }  // namespace cd::core
 
 // std::hash specialization so Handle works in std::unordered_map etc.
-// NOLINTNEXTLINE(cert-dcl58-cpp) — specializing std::hash for a
-// program-defined type is explicitly permitted ([namespace.std]/2);
-// the check cannot distinguish this from forbidden std additions.
+// Specializing std::hash for a program-defined type is explicitly
+// permitted ([namespace.std]/2); the check cannot distinguish this
+// from forbidden std additions.
 namespace std
 {
 template <class Tag>
+// NOLINTNEXTLINE(cert-dcl58-cpp)
 struct hash<::cd::core::Handle<Tag>>
 {
     [[nodiscard]] size_t operator()(const ::cd::core::Handle<Tag>& h) const noexcept

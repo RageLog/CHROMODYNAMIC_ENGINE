@@ -438,11 +438,8 @@ bool is_valid_slot_id(std::string_view id) noexcept
     std::string lower(id);
     std::ranges::transform(lower, lower.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    for (auto r : kReserved)
-    {
-        if (lower == r) return false;
-    }
-    return true;
+    return std::ranges::none_of(kReserved,
+                                [&](const auto& r) { return lower == r; });
 }
 
 // -----------------------------------------------------------------------------

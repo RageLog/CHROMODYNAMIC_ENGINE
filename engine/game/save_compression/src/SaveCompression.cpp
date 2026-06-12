@@ -35,6 +35,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace cd::game::save_compression
 {
@@ -189,7 +190,7 @@ decompress_rle(const CompressedSave& compressed)
         else
         {
             // Literal packet: needs [count] payload bytes.
-            if (static_cast<std::size_t>(blob_end - pos) < count)
+            if (std::cmp_less(blob_end - pos, count))
             {
                 return std::nullopt;  // truncated blob
             }
@@ -336,7 +337,7 @@ decompress_lz4(const CompressedSave& compressed)
         dst_size
     );
 
-    if (decoded < 0 || static_cast<std::uint64_t>(decoded) != compressed.original_size)
+    if (decoded < 0 || std::cmp_not_equal(decoded, compressed.original_size))
     {
         return std::nullopt;
     }

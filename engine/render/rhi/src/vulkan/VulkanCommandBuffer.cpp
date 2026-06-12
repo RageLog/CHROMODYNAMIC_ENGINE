@@ -278,18 +278,18 @@ void VulkanCommandBuffer::end_render_pass()
     vkCmdEndRendering(cmd_);
 }
 
-void VulkanCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h)
+void VulkanCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle pipeline)
 {
     if (tables_.graphics_pipelines == nullptr)
         return;
-    auto it = tables_.graphics_pipelines->find(h.index());
+    auto it = tables_.graphics_pipelines->find(pipeline.index());
     if (it == tables_.graphics_pipelines->end())
         return;
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, it->second);
     // Remember the layout for follow-up bind_descriptor_set / push_constants.
     if (tables_.pipeline_to_layout != nullptr)
     {
-        auto layout_it = tables_.pipeline_to_layout->find(h.index());
+        auto layout_it = tables_.pipeline_to_layout->find(pipeline.index());
         if (layout_it != tables_.pipeline_to_layout->end())
         {
             current_graphics_layout_ = layout_it->second;
@@ -297,17 +297,17 @@ void VulkanCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle
     }
 }
 
-void VulkanCommandBuffer::bind_compute_pipeline(cd::rhi::ComputePipelineHandle h)
+void VulkanCommandBuffer::bind_compute_pipeline(cd::rhi::ComputePipelineHandle pipeline)
 {
     if (tables_.compute_pipelines == nullptr)
         return;
-    auto it = tables_.compute_pipelines->find(h.index());
+    auto it = tables_.compute_pipelines->find(pipeline.index());
     if (it == tables_.compute_pipelines->end())
         return;
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, it->second);
     if (tables_.pipeline_to_layout != nullptr)
     {
-        auto layout_it = tables_.pipeline_to_layout->find(h.index());
+        auto layout_it = tables_.pipeline_to_layout->find(pipeline.index());
         if (layout_it != tables_.pipeline_to_layout->end())
         {
             current_compute_layout_ = layout_it->second;

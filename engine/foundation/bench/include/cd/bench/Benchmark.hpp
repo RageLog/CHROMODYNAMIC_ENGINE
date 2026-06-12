@@ -205,8 +205,9 @@ template <class T>
 inline void do_not_optimize(const T& value) noexcept
 {
 #if defined(__clang__) || defined(__GNUC__)
-    // NOLINTNEXTLINE(hicpp-no-assembler) — the canonical DoNotOptimize
-    // compiler fence; there is no portable C++ equivalent.
+    // The canonical DoNotOptimize compiler fence; there is no portable
+    // C++ equivalent.
+    // NOLINTNEXTLINE(hicpp-no-assembler)
     asm volatile("" : : "r,m"(value) : "memory");
 #else
     static volatile std::atomic<std::uintptr_t> sink { 0 };

@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace cd::hello_engine::golden
 {
@@ -65,8 +66,7 @@ struct CliOptions
         if (a == "--golden-fixture" && i + 1 < argc && argv[i + 1] != nullptr)
         {
             if (const auto n = parse_int(argv[i + 1]); n.has_value() &&
-                *n >= 0 && static_cast<std::size_t>(*n)
-                           < cd::hello_engine::sponza_fixtures::kFixtureCount)
+                *n >= 0 && std::cmp_less(*n, cd::hello_engine::sponza_fixtures::kFixtureCount))
             {
                 out.fixture_index = static_cast<int>(*n);
                 out.fixture_seen  = true;

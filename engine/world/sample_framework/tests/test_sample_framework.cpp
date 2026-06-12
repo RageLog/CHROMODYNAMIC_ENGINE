@@ -13,6 +13,7 @@
 #include <cd/sample/run.hpp>
 
 #include <cd/core/Result.hpp>
+#include <utility>
 
 #include <gtest/gtest.h>
 
@@ -50,7 +51,7 @@ protected:
         last_frame_index = fc.frame_index;
         last_total_time  = fc.total_time;
         if (request_shutdown_at_frame >= 0 &&
-            static_cast<int>(fc.frame_index) == request_shutdown_at_frame)
+            std::cmp_equal(fc.frame_index, request_shutdown_at_frame))
         {
             request_shutdown();
         }

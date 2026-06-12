@@ -89,6 +89,7 @@
 #include <numbers>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -1822,7 +1823,7 @@ int main(int argc, char** argv)
             if (ImGui::CollapsingHeader("Lights"))
             {
                 int remove_at = -1;
-                for (int li = 0; li < static_cast<int>(light_rows.size()); ++li)
+                for (int li = 0; std::cmp_less(li,light_rows.size()); ++li)
                 {
                     auto& row = light_rows[static_cast<std::size_t>(li)];
                     ImGui::PushID(li + 9000);

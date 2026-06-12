@@ -40,6 +40,7 @@
 #include <cd/ui/input/Input.hpp>
 
 #include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 
@@ -258,14 +259,8 @@ bool FocusManager::is_in_active_chain(WidgetId id) const noexcept
         return false;
     }
     const auto chain = active_chain_();
-    for (const WidgetId entry : chain)
-    {
-        if (entry == id)
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(
+        chain, [&](WidgetId entry) { return entry == id; });
 }
 
 // ---- FocusManager: private helpers ----------------------------------------

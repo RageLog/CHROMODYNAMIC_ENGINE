@@ -112,7 +112,7 @@ constexpr std::uint32_t kTexSize = 256;
 {
     static std::atomic<std::uint64_t> seq { 0 };
     const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    const auto path = std::filesystem::temp_directory_path() /
+    auto path = std::filesystem::temp_directory_path() /  // non-const: returned by move
                       ("cd_textured_cooked_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
                        std::to_string(seq.fetch_add(1)) + ".cdtex");
 

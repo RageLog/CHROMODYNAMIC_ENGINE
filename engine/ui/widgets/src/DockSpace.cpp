@@ -26,6 +26,7 @@
 
 #include <cd/ui/renderer/DrawBatcher.hpp>
 
+#include <limits>
 #include <algorithm>
 #include <cstring>
 #include <iterator>
@@ -210,6 +211,8 @@ DockNode* DockSpace::find_panel_owner(std::string_view panel_id) noexcept
 
 const DockNode* DockSpace::find_panel_owner(std::string_view panel_id) const noexcept
 {
+    // const/non-const dedup; the non-const overload only searches.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     return const_cast<DockSpace*>(this)->find_panel_owner(panel_id);
 }
 
@@ -624,7 +627,7 @@ void DockSpace::tick(const InputState& input, float dt_s)
     bool        inside_strip  = false;
     DockNode*   tab_node      = hit_test_tab_strip_(root_.get(), px, py, tab_idx, inside_strip);
 
-    if (input.pointer.left_pressed && tab_node != nullptr && tab_idx != static_cast<std::size_t>(-1))
+    if (input.pointer.left_pressed && tab_node != nullptr && tab_idx != std::numeric_limits<std::size_t>::max())
     {
         // Click activates the clicked tab.
         tab_node->set_active_tab(tab_idx);

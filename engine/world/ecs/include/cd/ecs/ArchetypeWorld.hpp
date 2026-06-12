@@ -339,9 +339,10 @@ inline void ArchetypeWorld::each(Fn&& fn)
 template <class... Ts, class Fn>
 inline void ArchetypeWorld::each(Fn&& fn) const
 {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) — const/non-const
-    // each() dedup; the non-const overload only iterates (no structural
-    // mutation), so casting away const here cannot write through it.
+    // const/non-const each() dedup; the non-const overload only iterates
+    // (no structural mutation), so casting away const cannot write
+    // through it.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
     const_cast<ArchetypeWorld*>(this)->template each<Ts...>(std::forward<Fn>(fn));
 }
 

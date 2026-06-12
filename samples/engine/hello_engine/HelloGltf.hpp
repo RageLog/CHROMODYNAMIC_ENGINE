@@ -164,7 +164,7 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
             }
 
             if (prim.material_index >= 0 &&
-                prim.material_index < static_cast<int>(loaded.materials.size()))
+                std::cmp_less(prim.material_index, loaded.materials.size()))
             {
                 const auto& mat = loaded.materials[static_cast<std::size_t>(prim.material_index)];
                 const int tex_idx = mat.base_color_texture;
@@ -184,7 +184,7 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // is missing or unloadable, the fallback is the glTF
                 // base_color_factor (which is the legacy phase465 path).
                 std::optional<std::array<float, 4>> avg_texture_color {};
-                if (tex_idx >= 0 && tex_idx < static_cast<int>(loaded.textures.size()))
+                if (tex_idx >= 0 && std::cmp_less(tex_idx,loaded.textures.size()))
                 {
                     const auto& gt = loaded.textures[static_cast<std::size_t>(tex_idx)];
                     if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
@@ -208,7 +208,7 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // path). The shader treats this as a tangent-space normal
                 // map via the normal_strength weight in fx_params4[2].
                 if (mat.normal_texture >= 0 &&
-                    mat.normal_texture < static_cast<int>(loaded.textures.size()))
+                    std::cmp_less(mat.normal_texture,loaded.textures.size()))
                 {
                     const auto& gt = loaded.textures[static_cast<std::size_t>(mat.normal_texture)];
                     if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
@@ -225,7 +225,7 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
                 // phase456: per-prim metallic-roughness texture upload.
                 // glTF packs ARM-style: G=rough, B=metal (A unused).
                 if (mat.metallic_roughness_texture >= 0 &&
-                    mat.metallic_roughness_texture < static_cast<int>(loaded.textures.size()))
+                    std::cmp_less(mat.metallic_roughness_texture,loaded.textures.size()))
                 {
                     const auto& gt = loaded.textures[static_cast<std::size_t>(mat.metallic_roughness_texture)];
                     if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)
@@ -326,7 +326,7 @@ parse_gltf_result(cd::rhi::IDevice&                  device,
     {
         const auto& mat = loaded.materials.front();
         const int tex_idx = mat.base_color_texture;
-        if (tex_idx >= 0 && tex_idx < static_cast<int>(loaded.textures.size()))
+        if (tex_idx >= 0 && std::cmp_less(tex_idx,loaded.textures.size()))
         {
             const auto& gt = loaded.textures[static_cast<std::size_t>(tex_idx)];
             if (!gt.rgba.empty() && gt.width > 0 && gt.height > 0)

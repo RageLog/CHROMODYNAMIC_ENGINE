@@ -76,7 +76,7 @@ namespace
         return std::nullopt;
     }
     std::string value(buf);
-    std::free(buf);  // NOLINT(cppcoreguidelines-no-malloc)
+    std::free(buf);  // NOLINT(cppcoreguidelines-no-malloc,hicpp-no-malloc)
     if (value.empty()) { return std::nullopt; }
     return value;
 #else

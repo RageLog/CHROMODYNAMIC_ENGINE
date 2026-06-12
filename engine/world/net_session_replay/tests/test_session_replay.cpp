@@ -116,8 +116,8 @@ TEST(SessionReplay, RecordSaveLoadRoundTrip)
 
     Recorder rec;
     rec.start_recording();
-    rec.record_packet(p1, /*channel=*/1, /*incoming=*/true);
-    rec.record_packet(p2, /*channel=*/2, /*incoming=*/false);
+    rec.record_packet(p1, /*channel_id=*/1, /*incoming=*/true);
+    rec.record_packet(p2, /*channel_id=*/2, /*incoming=*/false);
     rec.stop_recording();
 
     ASSERT_EQ(rec.packet_count(), 2U);

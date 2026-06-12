@@ -522,7 +522,7 @@ void skip_ws(std::string_view text, std::size_t& i) noexcept
     }
     const std::unique_ptr<char, decltype(&std::free)> buf {
         raw, &std::free };
-    const std::string value { buf.get() };
+    std::string value { buf.get() };  // non-const so the return can move
     if (value.empty()) { return std::nullopt; }
     return value;
 #else

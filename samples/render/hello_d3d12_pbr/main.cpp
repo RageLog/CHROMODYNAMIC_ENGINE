@@ -48,6 +48,7 @@
 #endif
 
 #include <windows.h>
+#include <memory>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
@@ -377,7 +378,9 @@ int main()
         if (end != headless_env && frames_long >= 0 && frames_long <= INT_MAX)
             headless_frames = static_cast<int>(frames_long);
     }
-    free(headless_env);  // _dupenv_s allocates; must free even if null
+    // RAII for the _dupenv_s allocation (free(nullptr) is a no-op).
+    const std::unique_ptr<char, decltype(&std::free)> headless_owned {
+        headless_env, &std::free };
 
     // ---- Device ---------------------------------------------------------------
     cd::rhi::d3d12::D3D12CreateInfo dci {};

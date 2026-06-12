@@ -42,6 +42,7 @@
 
 #include <cd/ui/layout/Constraint.hpp>
 
+#include <limits>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -477,7 +478,7 @@ void ConstraintSolver::edit_variable(VariableId id, float suggested_value)
             for (auto& e2 : impl_->edits)
             {
                 if (e2.stored_idx > e.stored_idx &&
-                    e2.stored_idx != std::size_t(-1))
+                    e2.stored_idx != std::numeric_limits<std::size_t>::max())
                 {
                     --e2.stored_idx;
                 }
