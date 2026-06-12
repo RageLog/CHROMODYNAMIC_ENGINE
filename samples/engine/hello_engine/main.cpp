@@ -190,6 +190,7 @@
 #include "HelloTlasRebuild.hpp"
 #include "HelloSkinnedAnim.hpp"
 #include "HelloBootBindless.hpp"
+#include "HelloBootPostfx.hpp"
 #include "HelloBootScene.hpp"
 #include "HelloAudio.hpp"
 #include "HelloIbl.hpp"
@@ -5567,108 +5568,16 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             return std::unexpected(cd::core::ErrorCode { 0, 15, "prim inst update" });
     }
 
-    // Composite material instances
-    for (std::uint32_t i = 0; i < 2; ++i)
-    {
-        auto r = cd::material::MaterialInstance::create(device, s.materials.composite);
-        if (!r.has_value())
-            return std::unexpected(cd::core::ErrorCode { 0, 33, "composite inst" });
-        s.composite_insts[i] = std::move(*r);
-    }
-
-    // Bloom mip chain
-    if (!create_bloom_chain(device, { window.width(), window.height() }, s.bloom_chain))
-        return std::unexpected(cd::core::ErrorCode { 0, 43, "bloom chain" });
-    {
-        auto r = cd::material::MaterialInstance::create(
-            device, s.materials.bloom_prefilter);
-        if (!r.has_value())
-            return std::unexpected(cd::core::ErrorCode { 0, 44, "bloom prefilter inst" });
-        s.bloom_prefilter_inst = std::move(*r);
-    }
-
-    // Phase 511 — auto-exposure helper. Allocate the GpuReduction against a
-    // small downsampled-HDR extent (<=128x128 so the 256-partial-slot budget
-    // is respected; engine should pre-downsample its HDR before feeding the
-    // reduction). create() failure is *non-fatal*: the helper degrades to
-    // default-constructed (current_ev() == 0, bloom prefilter sees ev=0 =
-    // identical to pre-phase-511 behaviour). This keeps the integration
-    // safe to enable on backends that lack compute support and on headless
-    // smoke runs that don't bind a live HDR descriptor.
-    {
-        auto ae_r = cd::post::exposure::Setup::create(
-            device, cd::rhi::Extent2D { 128U, 128U });
-        if (ae_r.has_value()) s.auto_exposure = *ae_r;  // trivially copyable; move was a no-op
-        // Else: keep default-constructed; current_ev() returns 0.0F.
-    }
-    for (std::uint32_t i = 0; i < 3; ++i)
-    {
-        auto r = cd::material::MaterialInstance::create(
-            device, s.materials.bloom_downsample);
-        if (!r.has_value())
-            return std::unexpected(cd::core::ErrorCode { 0, 45, "bloom down inst" });
-        s.bloom_down_insts[i] = std::move(*r);
-    }
-    for (std::uint32_t i = 0; i < 3; ++i)
-    {
-        auto r = cd::material::MaterialInstance::create(
-            device, s.materials.bloom_upsample);
-        if (!r.has_value())
-            return std::unexpected(cd::core::ErrorCode { 0, 46, "bloom up inst" });
-        s.bloom_up_insts[i] = std::move(*r);
-    }
-
-    // Bind bloom descriptors helper (also used by on_frame resize path)
-    auto bind_bloom_desc_fn = [&s]()
-    {
-        auto wone = [&s](cd::material::MaterialInstance& inst,
-                          cd::rhi::TextureViewHandle src)
-        {
-            std::array<cd::rhi::DescriptorWrite, 1> w {
-                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = src, .sampler = s.albedo_sampler }
-            };
-            (void)inst.update(w);
-        };
-        wone(s.bloom_prefilter_inst, s.rts.hdr.view);
-        wone(s.bloom_down_insts[0],  s.bloom_chain.mips[0].view);
-        wone(s.bloom_down_insts[1],  s.bloom_chain.mips[1].view);
-        wone(s.bloom_down_insts[2],  s.bloom_chain.mips[2].view);
-        wone(s.bloom_up_insts[0],    s.bloom_chain.mips[3].view);
-        wone(s.bloom_up_insts[1],    s.bloom_chain.mips[2].view);
-        wone(s.bloom_up_insts[2],    s.bloom_chain.mips[1].view);
-    };
-    bind_bloom_desc_fn();
-
-    auto bind_composite_hdr_fn = [&s]()
-    {
-        for (std::uint32_t i = 0; i < 2; ++i)
-        {
-            std::array<cd::rhi::DescriptorWrite, 6> ws {
-                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.hdr.view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.bloom_chain.mips[0].view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 2, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.depth.view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.gbuf_normal.view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 4, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.history[i].view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.gbuf_velocity.view, .sampler = s.albedo_sampler }
-            };
-            (void)s.composite_insts[i].update(ws);
-        }
-    };
-    bind_composite_hdr_fn();
+    // phase1125 (on_boot extraction batch 3): composite/bloom/exposure
+    // instances + the bloom/composite descriptor binders live in
+    // HelloBootPostfx.hpp (binders shared with the on_frame resize path,
+    // which previously carried duplicated lambdas).
+    if (auto pf = cd_sample::setup_boot_postfx_instances(
+            s, device, { window.width(), window.height() });
+        !pf.has_value())
+        return std::unexpected(pf.error());
+    cd_sample::bind_bloom_descriptors(s);
+    cd_sample::bind_composite_hdr_descriptors(s);
 
     // Meshes + glTF + BLAS
     auto upload_alb_fn = [&device_ref = device](
@@ -6212,54 +6121,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         }
     };
 
-    auto bind_bloom_desc_fn = [&s]()
-    {
-        auto wone = [&s](cd::material::MaterialInstance& inst,
-                          cd::rhi::TextureViewHandle src)
-        {
-            std::array<cd::rhi::DescriptorWrite, 1> w {
-                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = src, .sampler = s.albedo_sampler }
-            };
-            (void)inst.update(w);
-        };
-        wone(s.bloom_prefilter_inst, s.rts.hdr.view);
-        wone(s.bloom_down_insts[0],  s.bloom_chain.mips[0].view);
-        wone(s.bloom_down_insts[1],  s.bloom_chain.mips[1].view);
-        wone(s.bloom_down_insts[2],  s.bloom_chain.mips[2].view);
-        wone(s.bloom_up_insts[0],    s.bloom_chain.mips[3].view);
-        wone(s.bloom_up_insts[1],    s.bloom_chain.mips[2].view);
-        wone(s.bloom_up_insts[2],    s.bloom_chain.mips[1].view);
-    };
-    auto bind_composite_hdr_fn = [&s]()
-    {
-        for (std::uint32_t i = 0; i < 2; ++i)
-        {
-            std::array<cd::rhi::DescriptorWrite, 6> ws {
-                cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.hdr.view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.bloom_chain.mips[0].view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 2, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.depth.view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.gbuf_normal.view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 4, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.history[i].view, .sampler = s.albedo_sampler },
-                cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
-                    .type = cd::rhi::DescriptorType::kCombinedImageSampler,
-                    .view = s.rts.gbuf_velocity.view, .sampler = s.albedo_sampler }
-            };
-            (void)s.composite_insts[i].update(ws);
-        }
-    };
-
+    // phase1125: bloom/composite descriptor binders moved to
+    // HelloBootPostfx.hpp (shared with on_boot — were duplicated here).
     using clock = std::chrono::steady_clock;
     const auto frame_loop_start = clock::now();
     auto last_tick = frame_loop_start;
@@ -6450,8 +6313,8 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             s.history_states[1] = cd::rhi::ResourceState::kUndefined;
             if (!create_bloom_chain(device, { window.width(), window.height() }, s.bloom_chain))
                 continue;
-            bind_bloom_desc_fn();
-            bind_composite_hdr_fn();
+            cd_sample::bind_bloom_descriptors(s);
+            cd_sample::bind_composite_hdr_descriptors(s);
             s.depth_initialised_on_gpu = false;
             s.needs_rebuild = false;
         }
