@@ -97,4 +97,39 @@ setup_boot_gpu_buffers(StateT& s, DeviceT& device)
     return {};
 }
 
+/// phase1140 (on_boot extraction batch 6): procedural Earth-like
+/// albedo/normal/MR textures from the CPU IBL bake + the shared repeat
+/// sampler. Verbatim from on_boot (constants inlined to their
+/// cd_sample definitions).
+template <typename StateT, typename DeviceT>
+[[nodiscard]] inline cd::core::Result<void>
+setup_boot_procedural_textures(StateT& s, DeviceT& device)
+{
+    // Procedural textures
+    s.albedo_tex = create_texture_rgba8(device, s.ibl_cpu.earth_albedo.data(),
+                                        cd_sample::kHelloIblEarthAlbedoSize, cd_sample::kHelloIblEarthAlbedoSize);
+    s.has_gltf_texture = true;
+    std::fprintf(stderr, "[showcase] procedural Earth-like albedo (%ux%u) bound\n",
+                 cd_sample::kHelloIblEarthAlbedoSize, cd_sample::kHelloIblEarthAlbedoSize);
+    s.normal_tex = create_texture_rgba8(device, s.ibl_cpu.earth_normal.data(),
+                                        cd_sample::kHelloIblEarthNormalSize, cd_sample::kHelloIblEarthNormalSize);
+    std::fprintf(stderr, "[showcase] procedural normal map (%ux%u) bound\n",
+                 cd_sample::kHelloIblEarthNormalSize, cd_sample::kHelloIblEarthNormalSize);
+    s.mr_tex = create_texture_rgba8(device, s.ibl_cpu.earth_mr.data(), cd_sample::kHelloIblEarthMrSize, cd_sample::kHelloIblEarthMrSize);
+    std::fprintf(stderr, "[showcase] procedural metallic-roughness (%ux%u) bound\n",
+                 cd_sample::kHelloIblEarthMrSize, cd_sample::kHelloIblEarthMrSize);
+
+    cd::rhi::SamplerDesc alb_sd {};
+    alb_sd.mag_filter  = cd::rhi::SamplerFilter::kLinear;
+    alb_sd.min_filter  = cd::rhi::SamplerFilter::kLinear;
+    alb_sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
+    alb_sd.address_u   = cd::rhi::SamplerAddressMode::kRepeat;
+    alb_sd.address_v   = cd::rhi::SamplerAddressMode::kRepeat;
+    alb_sd.address_w   = cd::rhi::SamplerAddressMode::kRepeat;
+    if (auto r = device.create_sampler(alb_sd); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 19, "albedo sampler" });
+    else s.albedo_sampler = *r;
+    return {};
+}
+
 }  // namespace cd_sample

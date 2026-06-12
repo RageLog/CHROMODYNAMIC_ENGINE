@@ -34,9 +34,14 @@
 #include <cd/framegraph/Targets.hpp>
 #include <cd/rhi/Enums.hpp>
 #include <cd/rhi/Format.hpp>
+#include <cd/rhi/Barriers.hpp>
+#include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/IDevice.hpp>
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <span>
 #include <cstdio>
 
 namespace cd_sample {
@@ -140,6 +145,88 @@ create_render_targets(cd::rhi::IDevice&      device,
     }
     out.ok = true;
     return 0;
+}
+
+
+// =============================================================================
+// phase1140: GpuTexture2D + create_texture_rgba8 — moved VERBATIM from
+// hello_engine main.cpp file scope (modulo `static`) so header-level
+// boot helpers (HelloBootGpu.hpp) can create procedural textures too.
+// One-shot upload path: staging buffer -> barrier -> copy -> barrier ->
+// submit + wait_idle (boot-time only; not for per-frame use).
+// =============================================================================
+// ---- GPU texture 2D --------------------------------------------------------
+struct GpuTexture2D
+{
+    cd::rhi::TextureHandle     image {};
+    cd::rhi::TextureViewHandle view  {};
+};
+
+[[nodiscard]] inline GpuTexture2D
+create_texture_rgba8(cd::rhi::IDevice& dev, const std::uint8_t* rgba,
+                     std::uint32_t w, std::uint32_t h)
+{
+    GpuTexture2D out {};
+    if (rgba == nullptr || w == 0 || h == 0) return out;
+    cd::rhi::TextureDesc td {};
+    td.type         = cd::rhi::TextureType::k2D;
+    td.format       = cd::rhi::Format::kRGBA8Unorm;
+    td.extent       = { w, h, 1 };
+    td.mip_levels   = 1;
+    td.array_layers = 1;
+    td.usage        = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
+    td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
+    auto img = dev.create_texture(td);
+    if (!img.has_value()) return out;
+    out.image = *img;
+    const std::size_t bytes = static_cast<std::size_t>(w) * h * 4;
+    cd::rhi::BufferDesc sd {};
+    sd.size   = bytes;
+    sd.usage  = cd::rhi::BufferUsage::kTransferSrc;
+    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto staging_r = dev.create_buffer(sd);
+    if (!staging_r.has_value()) return out;
+    const auto staging = *staging_r;
+    (void)dev.upload_buffer(staging, 0,
+        std::span<const std::byte>(reinterpret_cast<const std::byte*>(rgba), bytes));
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    if (cmd == nullptr) { dev.destroy_buffer(staging); return out; }
+    cmd->begin();
+    std::array<cd::rhi::TextureBarrier, 1> tb_dst {
+        cd::rhi::TextureBarrier { .texture = out.image,
+            .from = cd::rhi::ResourceState::kUndefined,
+            .to   = cd::rhi::ResourceState::kTransferDst, .range = { 0,1,0,1 } }
+    };
+    cmd->barrier({}, tb_dst);
+    std::array<cd::rhi::BufferImageCopyRegion, 1> regs {
+        cd::rhi::BufferImageCopyRegion { .buffer_offset = 0, .mip_level = 0,
+            .base_layer = 0, .layer_count = 1,
+            .image_offset = { 0,0,0 }, .image_extent = { w,h,1 } }
+    };
+    cmd->copy_buffer_to_image(staging, out.image, regs);
+    std::array<cd::rhi::TextureBarrier, 1> tb_read {
+        cd::rhi::TextureBarrier { .texture = out.image,
+            .from = cd::rhi::ResourceState::kTransferDst,
+            .to   = cd::rhi::ResourceState::kShaderResource, .range = { 0,1,0,1 } }
+    };
+    cmd->barrier({}, tb_read);
+    cmd->end();
+    cd::rhi::SubmitDesc sub {};
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
+    sub.command_buffers = cbs;
+    (void)dev.submit(sub);
+    dev.wait_idle();
+    dev.destroy_buffer(staging);
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture     = out.image;
+    vd.type        = cd::rhi::TextureType::k2D;
+    vd.format      = cd::rhi::Format::kRGBA8Unorm;
+    vd.base_mip    = 0; vd.mip_count   = 1;
+    vd.base_layer  = 0; vd.layer_count = 1;
+    auto v = dev.create_texture_view(vd);
+    if (!v.has_value()) { dev.destroy_texture(out.image); out.image = {}; return out; }
+    out.view = *v;
+    return out;
 }
 
 } // namespace cd_sample

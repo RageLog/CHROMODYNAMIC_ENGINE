@@ -289,79 +289,12 @@ struct SceneEntity
     return PrimitiveKind::kCube;
 }
 
-// ---- GPU texture 2D --------------------------------------------------------
-struct GpuTexture2D
-{
-    cd::rhi::TextureHandle     image {};
-    cd::rhi::TextureViewHandle view  {};
-};
-
-[[nodiscard]] static inline GpuTexture2D
-create_texture_rgba8(cd::rhi::IDevice& dev, const std::uint8_t* rgba,
-                     std::uint32_t w, std::uint32_t h)
-{
-    GpuTexture2D out {};
-    if (rgba == nullptr || w == 0 || h == 0) return out;
-    cd::rhi::TextureDesc td {};
-    td.type         = cd::rhi::TextureType::k2D;
-    td.format       = cd::rhi::Format::kRGBA8Unorm;
-    td.extent       = { w, h, 1 };
-    td.mip_levels   = 1;
-    td.array_layers = 1;
-    td.usage        = cd::rhi::TextureUsage::kSampled | cd::rhi::TextureUsage::kTransferDst;
-    td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
-    auto img = dev.create_texture(td);
-    if (!img.has_value()) return out;
-    out.image = *img;
-    const std::size_t bytes = static_cast<std::size_t>(w) * h * 4;
-    cd::rhi::BufferDesc sd {};
-    sd.size   = bytes;
-    sd.usage  = cd::rhi::BufferUsage::kTransferSrc;
-    sd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    auto staging_r = dev.create_buffer(sd);
-    if (!staging_r.has_value()) return out;
-    const auto staging = *staging_r;
-    (void)dev.upload_buffer(staging, 0,
-        std::span<const std::byte>(reinterpret_cast<const std::byte*>(rgba), bytes));
-    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
-    if (cmd == nullptr) { dev.destroy_buffer(staging); return out; }
-    cmd->begin();
-    std::array<cd::rhi::TextureBarrier, 1> tb_dst {
-        cd::rhi::TextureBarrier { .texture = out.image,
-            .from = cd::rhi::ResourceState::kUndefined,
-            .to   = cd::rhi::ResourceState::kTransferDst, .range = { 0,1,0,1 } }
-    };
-    cmd->barrier({}, tb_dst);
-    std::array<cd::rhi::BufferImageCopyRegion, 1> regs {
-        cd::rhi::BufferImageCopyRegion { .buffer_offset = 0, .mip_level = 0,
-            .base_layer = 0, .layer_count = 1,
-            .image_offset = { 0,0,0 }, .image_extent = { w,h,1 } }
-    };
-    cmd->copy_buffer_to_image(staging, out.image, regs);
-    std::array<cd::rhi::TextureBarrier, 1> tb_read {
-        cd::rhi::TextureBarrier { .texture = out.image,
-            .from = cd::rhi::ResourceState::kTransferDst,
-            .to   = cd::rhi::ResourceState::kShaderResource, .range = { 0,1,0,1 } }
-    };
-    cmd->barrier({}, tb_read);
-    cmd->end();
-    cd::rhi::SubmitDesc sub {};
-    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cmd.get() };
-    sub.command_buffers = cbs;
-    (void)dev.submit(sub);
-    dev.wait_idle();
-    dev.destroy_buffer(staging);
-    cd::rhi::TextureViewDesc vd {};
-    vd.texture     = out.image;
-    vd.type        = cd::rhi::TextureType::k2D;
-    vd.format      = cd::rhi::Format::kRGBA8Unorm;
-    vd.base_mip    = 0; vd.mip_count   = 1;
-    vd.base_layer  = 0; vd.layer_count = 1;
-    auto v = dev.create_texture_view(vd);
-    if (!v.has_value()) { dev.destroy_texture(out.image); out.image = {}; return out; }
-    out.view = *v;
-    return out;
-}
+// phase1140 (on_boot extraction batch 6 prep): GpuTexture2D +
+// create_texture_rgba8 moved to HelloRenderTargets.hpp (cd_sample) so
+// boot helpers in headers can create procedural textures. Using-decls
+// keep every existing unqualified reference compiling unchanged.
+using cd_sample::GpuTexture2D;
+using cd_sample::create_texture_rgba8;
 
 // ---- Random viz histogram --------------------------------------------------
 struct Histogram
@@ -540,7 +473,8 @@ using cd::render::make_planar_shadow_matrix;
 using ColorTarget = cd::framegraph::ColorTarget;
 using DepthTarget = cd::framegraph::DepthTarget;
 using BloomMipChain = cd::post::bloom::BloomMipChain;
-using cd::framegraph::create_depth_target;
+// phase1140: create_depth_target using-decl dropped — the last direct
+// caller moved into HelloBootGpu.hpp (ADL resolves it there).
 using cd::post::bloom::create_bloom_chain;
 
 // Histogram, SelKind, LightRow moved to file scope (before namespace {}).
@@ -5442,34 +5376,11 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     constexpr std::uint32_t kLightUboBytes = cd_sample::kBootLightUboBytes;
     using cd::hello_engine::kInstMatBytes;
 
-    constexpr std::uint32_t kTexSize    = cd_sample::kHelloIblEarthAlbedoSize;
-    constexpr std::uint32_t kNormalSize = cd_sample::kHelloIblEarthNormalSize;
-    constexpr std::uint32_t kMrSize     = cd_sample::kHelloIblEarthMrSize;
-
-    // Procedural textures
-    s.albedo_tex = create_texture_rgba8(device, s.ibl_cpu.earth_albedo.data(),
-                                        kTexSize, kTexSize);
-    s.has_gltf_texture = true;
-    std::fprintf(stderr, "[showcase] procedural Earth-like albedo (%ux%u) bound\n",
-                 kTexSize, kTexSize);
-    s.normal_tex = create_texture_rgba8(device, s.ibl_cpu.earth_normal.data(),
-                                        kNormalSize, kNormalSize);
-    std::fprintf(stderr, "[showcase] procedural normal map (%ux%u) bound\n",
-                 kNormalSize, kNormalSize);
-    s.mr_tex = create_texture_rgba8(device, s.ibl_cpu.earth_mr.data(), kMrSize, kMrSize);
-    std::fprintf(stderr, "[showcase] procedural metallic-roughness (%ux%u) bound\n",
-                 kMrSize, kMrSize);
-
-    cd::rhi::SamplerDesc alb_sd {};
-    alb_sd.mag_filter  = cd::rhi::SamplerFilter::kLinear;
-    alb_sd.min_filter  = cd::rhi::SamplerFilter::kLinear;
-    alb_sd.mipmap_mode = cd::rhi::SamplerMipmapMode::kLinear;
-    alb_sd.address_u   = cd::rhi::SamplerAddressMode::kRepeat;
-    alb_sd.address_v   = cd::rhi::SamplerAddressMode::kRepeat;
-    alb_sd.address_w   = cd::rhi::SamplerAddressMode::kRepeat;
-    if (auto r = device.create_sampler(alb_sd); !r.has_value())
-        return std::unexpected(cd::core::ErrorCode { 0, 19, "albedo sampler" });
-    else s.albedo_sampler = *r;
+    // phase1140 (on_boot extraction batch 6): procedural textures +
+    // albedo sampler live in HelloBootGpu.hpp.
+    if (auto pt = cd_sample::setup_boot_procedural_textures(s, device);
+        !pt.has_value())
+        return std::unexpected(pt.error());
 
     // phase1126 (on_boot extraction batch 4): prim instance + 10-binding
     // boot descriptor write live in HelloBootBindless.hpp.
