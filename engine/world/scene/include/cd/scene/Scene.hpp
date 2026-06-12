@@ -169,7 +169,7 @@ public:
         // descend_ takes `Fn&`; binding the named parameter (which is an
         // lvalue here) to that reference works whether the caller passed
         // an rvalue lambda or an lvalue callable.
-        descend_(root, 0u, fn);
+        descend(root, 0u, fn);
     }
 
     /// Direct children of `e` in attach() order. Returns nullptr if `e`
@@ -180,11 +180,11 @@ public:
     }
 
 private:
-    void destroy_subtree_(cd::ecs::Entity node);
-    void propagate_(cd::ecs::Entity node, const cd::math::Mat4f& parent_world);
+    void destroy_subtree(cd::ecs::Entity node);
+    void propagate(cd::ecs::Entity node, const cd::math::Mat4f& parent_world);
 
     template <class Fn>
-    void descend_(cd::ecs::Entity node, std::uint32_t depth, Fn& fn) const
+    void descend(cd::ecs::Entity node, std::uint32_t depth, Fn& fn) const
     {
         constexpr std::uint32_t kMaxDepth = 256;
         if (depth > kMaxDepth)
@@ -194,7 +194,7 @@ private:
         if (ch == nullptr)
             return;
         for (const auto& c : ch->entities)
-            descend_(c, depth + 1, fn);
+            descend(c, depth + 1, fn);
     }
 
     cd::ecs::World* world_ { nullptr };

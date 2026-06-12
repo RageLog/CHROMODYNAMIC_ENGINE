@@ -184,13 +184,13 @@ private:
     std::vector<DrawCommand>    commands_;
     std::vector<ScissorRect>    scissor_stack_;
 
-    [[nodiscard]] ScissorRect current_scissor_() const noexcept;
+    [[nodiscard]] ScissorRect current_scissor() const noexcept;
 
     /// Append a quad of (v0, v1, v2, v3) winding 0-1-2-0-2-3 (two
     /// CCW triangles) and start / extend a draw command keyed by
     /// (variant, texture_slot, scissor). Same key -> merge into the
     /// previous command's index range; different key -> emit new.
-    void emit_quad_(float x, float y, float w, float h,
+    void emit_quad(float x, float y, float w, float h,
                     std::uint8_t variant,
                     std::uint32_t texture_slot,
                     const AtlasUv& uv,

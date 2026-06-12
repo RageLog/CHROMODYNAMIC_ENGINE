@@ -19,18 +19,18 @@ namespace cd::ui::widgets
 // Private helpers
 // ---------------------------------------------------------------------------
 
-PopoutWindow* PopoutDock::find_(std::string_view panel_id) noexcept
+PopoutWindow* PopoutDock::find(std::string_view panel_id) noexcept
 {
     auto it = std::ranges::find_if(windows_,
         [panel_id](const PopoutWindow& w) { return w.panel_id == panel_id; });
     return (it != windows_.end()) ? &(*it) : nullptr;
 }
 
-const PopoutWindow* PopoutDock::find_(std::string_view panel_id) const noexcept
+const PopoutWindow* PopoutDock::find(std::string_view panel_id) const noexcept
 {
     // const/non-const dedup; the non-const overload only searches.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    return const_cast<PopoutDock*>(this)->find_(panel_id);
+    return const_cast<PopoutDock*>(this)->find(panel_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ bool PopoutDock::detach_panel(std::string_view panel_id,
                                std::array<float, 2U> position,
                                std::array<float, 2U> size)
 {
-    if (find_(panel_id) != nullptr)
+    if (find(panel_id) != nullptr)
     {
         // Already detached — idempotent guard.
         return false;
@@ -70,7 +70,7 @@ bool PopoutDock::reattach_panel(std::string_view panel_id)
 
 bool PopoutDock::is_detached(std::string_view panel_id) const noexcept
 {
-    return find_(panel_id) != nullptr;
+    return find(panel_id) != nullptr;
 }
 
 std::span<const PopoutWindow> PopoutDock::detached_windows() const noexcept
@@ -85,7 +85,7 @@ std::span<const PopoutWindow> PopoutDock::detached_windows() const noexcept
 void PopoutDock::simulate_drag(std::string_view panel_id,
                                 std::array<float, 2U> new_position) noexcept
 {
-    PopoutWindow* w = find_(panel_id);
+    PopoutWindow* w = find(panel_id);
     if (w != nullptr)
     {
         w->position = new_position;

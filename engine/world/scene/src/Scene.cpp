@@ -26,10 +26,10 @@ void Scene::destroy_node(cd::ecs::Entity node)
     // Detach from parent first so its Children list does not retain the
     // dead handle.
     detach(node);
-    destroy_subtree_(node);
+    destroy_subtree(node);
 }
 
-void Scene::destroy_subtree_(cd::ecs::Entity node)
+void Scene::destroy_subtree(cd::ecs::Entity node)
 {
     // Copy the children list before iterating: destroy_node() walks it via
     // detach() which mutates the Children component we're traversing.
@@ -40,7 +40,7 @@ void Scene::destroy_subtree_(cd::ecs::Entity node)
     }
     for (auto child : kids)
     {
-        destroy_subtree_(child);
+        destroy_subtree(child);
     }
     world_->destroy(node);
 }
@@ -87,7 +87,7 @@ void Scene::detach(cd::ecs::Entity child)
     world_->remove<Parent>(child);
 }
 
-void Scene::propagate_(cd::ecs::Entity node, const cd::math::Mat4f& parent_world)
+void Scene::propagate(cd::ecs::Entity node, const cd::math::Mat4f& parent_world)
 {
     // Compose: world = parent_world · local
     const auto* lt = world_->get<LocalTransform>(node);
@@ -105,7 +105,7 @@ void Scene::propagate_(cd::ecs::Entity node, const cd::math::Mat4f& parent_world
         const auto child_copy = kids->entities;
         for (auto c : child_copy)
         {
-            propagate_(c, node_world);
+            propagate(c, node_world);
         }
     }
 }
@@ -125,7 +125,7 @@ void Scene::update_transforms()
     const auto identity = cd::math::Mat4f::identity();
     for (auto r : roots)
     {
-        propagate_(r, identity);
+        propagate(r, identity);
     }
 }
 

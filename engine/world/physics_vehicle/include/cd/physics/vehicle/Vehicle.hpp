@@ -221,7 +221,7 @@ public:
 
     /// Read the last simulated vehicle state. Undefined if tick() has never
     /// been called.
-    [[nodiscard]] const VehicleState& state() const noexcept { return m_state; }
+    [[nodiscard]] const VehicleState& state() const noexcept { return state_; }
 
 private:
     // ---- Helpers -----------------------------------------------------------
@@ -238,27 +238,27 @@ private:
 
     // ---- State -------------------------------------------------------------
 
-    VehicleConfig m_cfg {};
+    VehicleConfig cfg_ {};
 
     /// Longitudinal velocity (m/s). Positive = forward.
-    float m_velocity_ms { 0.0F };
+    float velocity_ms_ { 0.0F };
 
     /// Pending driver inputs (set by set_input, consumed by tick).
-    float m_throttle { 0.0F };
-    float m_brake    { 0.0F };
-    float m_steer    { 0.0F };
+    float throttle_ { 0.0F };
+    float brake_    { 0.0F };
+    float steer_    { 0.0F };
 
     /// Current gear [0 = 1st gear].
-    uint8_t m_gear { 0 };
+    uint8_t gear_ { 0 };
 
-    VehicleState m_state {};
+    VehicleState state_ {};
 
     // ---- Sprint-2: JoltAdapter (heap-allocated to keep header PIMPL-clean) --
     // Non-null only after a successful configure_jolt() call.
-    std::unique_ptr<JoltAdapter> m_jolt_adapter;
+    std::unique_ptr<JoltAdapter> jolt_adapter_;
 
     /// Non-owning pointer to the world passed to configure_jolt().
-    cd::physics::IPhysicsWorld* m_jolt_world { nullptr };
+    cd::physics::IPhysicsWorld* jolt_world_ { nullptr };
 };
 
 }  // namespace cd::physics::vehicle

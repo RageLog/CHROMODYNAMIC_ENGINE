@@ -38,13 +38,13 @@ public:
         // next free block in its first sizeof(void*) bytes.
         for (std::size_t i = 0; i + 1 < block_count_; ++i)
         {
-            auto* cur = block_at_(i);
-            auto* next = block_at_(i + 1);
+            auto* cur = block_at(i);
+            auto* next = block_at(i + 1);
             std::memcpy(cur, &next, sizeof(void*));
         }
         void* terminator = nullptr;
-        std::memcpy(block_at_(block_count_ - 1), &terminator, sizeof(void*));
-        free_head_ = block_at_(0);
+        std::memcpy(block_at(block_count_ - 1), &terminator, sizeof(void*));
+        free_head_ = block_at(0);
         free_count_ = block_count_;
     }
 
@@ -73,7 +73,7 @@ public:
     [[nodiscard]] std::size_t used_count()  const noexcept { return block_count_ - free_count_; }
 
 private:
-    [[nodiscard]] void* block_at_(std::size_t i) noexcept
+    [[nodiscard]] void* block_at(std::size_t i) noexcept
     {
         return storage_.get() + i * block_size_;
     }

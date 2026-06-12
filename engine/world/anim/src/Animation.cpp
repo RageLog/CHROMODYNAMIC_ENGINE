@@ -58,7 +58,7 @@ cd::math::Transformf AnimationClip::sample(float t) const noexcept
     return interpolate(lo.value, hi.value, local_t);
 }
 
-float AnimationPlayer::wrap_(float t, float duration) const noexcept
+float AnimationPlayer::wrap(float t, float duration) const noexcept
 {
     if (duration <= 0.0F)
         return 0.0F;
@@ -96,7 +96,7 @@ cd::math::Transformf AnimationPlayer::update(float dt) noexcept
     // Time relative to the first keyframe (clips don't need to start at 0).
     const float t0 = clip_->frames().front().time;
     const float relative = time_ - 0.0F;
-    const float wrapped = wrap_(relative, clip_->duration()) + t0;
+    const float wrapped = wrap(relative, clip_->duration()) + t0;
     return clip_->sample(wrapped);
 }
 
@@ -130,7 +130,7 @@ cd::math::Transformf interpolate_local(
 
 }  // namespace
 
-cd::math::Transformf SkinnedClip::sample_track_(const std::vector<Keyframe>& frames, float t) noexcept
+cd::math::Transformf SkinnedClip::sample_track(const std::vector<Keyframe>& frames, float t) noexcept
 {
     if (frames.empty())
         return cd::math::Transformf {};

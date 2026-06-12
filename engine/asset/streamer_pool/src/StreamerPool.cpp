@@ -95,8 +95,8 @@ void StreamerPool::tick(const float dt)
     // streamers in proportion to their priority weights, rounding favourably
     // toward higher-priority streamers without drift over time.
 
-    const auto W = static_cast<std::int64_t>(total_weight);
-    const auto B = static_cast<std::int64_t>(cfg_.max_concurrent_loads);
+    const auto w = static_cast<std::int64_t>(total_weight);
+    const auto b = static_cast<std::int64_t>(cfg_.max_concurrent_loads);
 
     auto compute_tokens = [&](std::int64_t& deficit,
                                std::uint32_t priority,
@@ -106,9 +106,9 @@ void StreamerPool::tick(const float dt)
         {
             return 0U;
         }
-        deficit += static_cast<std::int64_t>(priority) * B;
-        const std::int64_t tokens = deficit / W;
-        deficit -= tokens * W;
+        deficit += static_cast<std::int64_t>(priority) * b;
+        const std::int64_t tokens = deficit / w;
+        deficit -= tokens * w;
         return static_cast<std::uint32_t>(tokens);
     };
 

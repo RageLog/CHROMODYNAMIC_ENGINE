@@ -78,19 +78,19 @@ compact_tlas_entity_instances(std::span<const EntityT> entities,
                               KindFor                  kind_for,
                               ModelFor                 model_for)
 {
-    const std::size_t kEntCount = entities.size();
+    const std::size_t k_ent_count = entities.size();
 
     // Pre-sized scratch arrays so worker threads write by index, never
     // push_back.  ent_valid[i] is the side-channel "this slot took" bit
     // because std::optional<AccelInstance> would need a default ctor we
     // do not want to provide.
-    std::vector<cd::rhi::AccelInstance>           ent_inst_scratch(kEntCount);
-    std::vector<cd::hello_engine::InstanceMatGpu> ent_mat_scratch(kEntCount);
-    std::vector<std::uint8_t>                     ent_valid(kEntCount, 0u);
+    std::vector<cd::rhi::AccelInstance>           ent_inst_scratch(k_ent_count);
+    std::vector<cd::hello_engine::InstanceMatGpu> ent_mat_scratch(k_ent_count);
+    std::vector<std::uint8_t>                     ent_valid(k_ent_count, 0u);
 
     cd::concurrency::parallel_for(
         std::size_t { 0 },
-        kEntCount,
+        k_ent_count,
         [&](std::size_t i)
         {
             const auto& ent = entities[i];
@@ -112,9 +112,9 @@ compact_tlas_entity_instances(std::span<const EntityT> entities,
     // instanceCustomIndex lookup into inst_mat_ssbo stays aligned with
     // the TLAS hit instance id.
     TlasEntityCompactionResult out;
-    out.instances.reserve(kEntCount + 25u + 1u);  // entity body + floor + skinned tail
-    out.inst_mats.reserve(kEntCount + 1u);
-    for (std::size_t i = 0; i < kEntCount; ++i)
+    out.instances.reserve(k_ent_count + 25u + 1u);  // entity body + floor + skinned tail
+    out.inst_mats.reserve(k_ent_count + 1u);
+    for (std::size_t i = 0; i < k_ent_count; ++i)
     {
         if (ent_valid[i] == 0u)
             continue;

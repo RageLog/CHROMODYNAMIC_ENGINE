@@ -208,13 +208,13 @@ private:
 
     std::vector<InternalNode> nodes_;
 
-    [[nodiscard]] InternalNode& node_(NodeId id) { return nodes_[id.value]; }
-    [[nodiscard]] const InternalNode& node_(NodeId id) const { return nodes_[id.value]; }
+    [[nodiscard]] InternalNode& node(NodeId id) { return nodes_[id.value]; }
+    [[nodiscard]] const InternalNode& node(NodeId id) const { return nodes_[id.value]; }
 
-    void solve_subtree_(NodeId node, float w, float h);
-    void compute_main_(NodeId node, float main_available);
-    void compute_cross_(NodeId node, float cross_available);
-    void position_children_(NodeId node);
+    void solve_subtree(NodeId node, float w, float h);
+    void compute_main(NodeId node, float main_available);
+    void compute_cross(NodeId node, float cross_available);
+    void position_children(NodeId node);
 };
 
 }  // namespace cd::ui::layout

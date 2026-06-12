@@ -27,7 +27,7 @@ TEST(RestirDi, UpdateTakesFirstSampleUnconditionally)
     Sample s { 7, { 1, 1, 1 }, 1.0F };
     update(r, s, 1.0F, 0.99F);  // any rnd ok — first sample always selected
     EXPECT_EQ(r.selected.light_index, 7U);
-    EXPECT_EQ(r.M, 1U);
+    EXPECT_EQ(r.m, 1U);
 }
 
 TEST(RestirDi, UpdateProbabilityMatchesWeightRatio)
@@ -54,10 +54,10 @@ TEST(RestirDi, UpdateProbabilityMatchesWeightRatio)
 TEST(RestirDi, ClampHistoryLimitsM)
 {
     Reservoir r {};
-    r.M = 500;
+    r.m = 500;
     r.weight_sum = 1000.0F;
     clamp_history(r, 100);
-    EXPECT_EQ(r.M, 100U);
+    EXPECT_EQ(r.m, 100U);
     EXPECT_NEAR(r.weight_sum, 200.0F, kEps);
 }
 
@@ -68,7 +68,7 @@ TEST(RestirDi, CombineMergesDonorContribution)
     update(a, Sample { 1, { 1, 0, 0 }, 1.0F }, 1.0F, 0.5F);
     update(b, Sample { 2, { 0, 1, 0 }, 1.0F }, 1.0F, 0.5F);
     combine(a, b, 0.99F, [](const Sample& s) { return s.target_pdf; });
-    EXPECT_GE(a.M, 2U);
+    EXPECT_GE(a.m, 2U);
     EXPECT_GE(a.weight_sum, 0.0F);
 }
 

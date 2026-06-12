@@ -123,7 +123,7 @@ TEST(ShaderCompiler, TargetVulkan12EmitsValidSpirv)
     cd::shader::CompileDesc desc {};
     desc.source = kTriangleVS;
     desc.stage = cd::shader::ShaderStage::kVertex;
-    desc.target = cd::shader::TargetEnv::kVulkan_1_2;
+    desc.target = cd::shader::TargetEnv::kVulkan12;
     auto r = c->compile(desc);
     ASSERT_TRUE(r.has_value());
     EXPECT_FALSE(r->spirv.empty());

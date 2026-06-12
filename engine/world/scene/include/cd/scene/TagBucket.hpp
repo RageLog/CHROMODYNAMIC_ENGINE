@@ -62,7 +62,7 @@ public:
     entities_with(std::string_view name) const
     {
         auto it = buckets_.find(tag_hash(name));
-        return (it != buckets_.end()) ? it->second : empty_;
+        return (it != buckets_.end()) ? it->second : empty;
     }
 
     [[nodiscard]] std::size_t bucket_count() const noexcept { return buckets_.size(); }
@@ -71,7 +71,7 @@ public:
 
 private:
     std::unordered_map<std::uint32_t, std::vector<cd::ecs::Entity>> buckets_;
-    static inline const std::vector<cd::ecs::Entity>                empty_ {};
+    static inline const std::vector<cd::ecs::Entity>                empty {};
 };
 
 }  // namespace cd::scene

@@ -62,8 +62,8 @@ public:
     explicit Skeleton(std::vector<Joint> joints)
         : joints_ { std::move(joints) }
     {
-        recompute_inverse_binds_();
-        index_names_();
+        recompute_inverse_binds();
+        index_names();
     }
 
     [[nodiscard]] std::size_t joint_count() const noexcept { return joints_.size(); }
@@ -90,7 +90,7 @@ public:
     }
 
 private:
-    void recompute_inverse_binds_()
+    void recompute_inverse_binds()
     {
         std::vector<cd::math::Mat4f> world_binds(joints_.size(), cd::math::Mat4f::identity());
         for (std::size_t i = 0; i < joints_.size(); ++i)
@@ -105,7 +105,7 @@ private:
         }
     }
 
-    void index_names_()
+    void index_names()
     {
         name_to_index_.clear();
         for (std::size_t i = 0; i < joints_.size(); ++i)
@@ -169,7 +169,7 @@ public:
             const auto& frames = joint_tracks_[j];
             if (frames.empty())
                 continue;
-            out_pose.joint_locals[j] = sample_track_(frames, t);
+            out_pose.joint_locals[j] = sample_track(frames, t);
         }
     }
 
@@ -189,7 +189,7 @@ public:
     }
 
 private:
-    static cd::math::Transformf sample_track_(const std::vector<Keyframe>& frames, float t) noexcept;
+    static cd::math::Transformf sample_track(const std::vector<Keyframe>& frames, float t) noexcept;
 
     std::vector<std::vector<Keyframe>> joint_tracks_;
 };

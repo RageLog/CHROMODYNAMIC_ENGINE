@@ -239,10 +239,10 @@ private:
     };
 
     // Register an mtime / creation / deletion event detected this tick.
-    void note_event_(const std::string& path, ChangeKind kind, TimePoint now);
+    void note_event(const std::string& path, ChangeKind kind, TimePoint now);
 
     // Dispatch any pending events whose throttle window has elapsed.
-    std::size_t flush_pending_(TimePoint now);
+    std::size_t flush_pending(TimePoint now);
 
     Duration                                                   throttle_window_;
     std::uint64_t                                              next_id_ { 1 };

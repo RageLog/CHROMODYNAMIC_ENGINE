@@ -66,7 +66,7 @@ namespace
 
 [[nodiscard]] cd::ui::widgets::Theme build_dark_widget_theme()
 {
-    const auto dark = cd::ui::theme::kDarkTheme();
+    const auto dark = cd::ui::theme::k_dark_theme();
     cd::ui::widgets::Theme t {};
     t.background    = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kBackground));
     t.surface       = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kSurface));
@@ -83,7 +83,7 @@ namespace
 
 [[nodiscard]] std::vector<std::uint8_t> find_system_font()
 {
-    static const std::array<const char*, 6> kCandidates {
+    static const std::array<const char*, 6> k_candidates {
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/calibri.ttf",
         "C:/Windows/Fonts/arial.ttf",
@@ -91,7 +91,7 @@ namespace
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     };
-    for (const char* p : kCandidates)
+    for (const char* p : k_candidates)
     {
         std::ifstream f(p, std::ios::binary | std::ios::ate);
         if (!f) { continue; }

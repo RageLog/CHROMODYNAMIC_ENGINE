@@ -49,7 +49,7 @@ public:
     {
         Entry e;
         e.callback = std::move(cb);
-        e.last_mtime = read_mtime_(path);
+        e.last_mtime = read_mtime(path);
         entries_.emplace(std::move(path), std::move(e));
     }
 
@@ -68,7 +68,7 @@ public:
         std::size_t fired = 0;
         for (auto& [path, e] : entries_)
         {
-            const auto now = read_mtime_(path);
+            const auto now = read_mtime(path);
             if (now != Mtime {} && now != e.last_mtime)
             {
                 e.last_mtime = now;
@@ -92,7 +92,7 @@ private:
         Mtime last_mtime {};
     };
 
-    [[nodiscard]] static Mtime read_mtime_(const std::string& path) noexcept
+    [[nodiscard]] static Mtime read_mtime(const std::string& path) noexcept
     {
         std::error_code ec;
         const auto t = std::filesystem::last_write_time(path, ec);

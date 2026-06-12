@@ -78,7 +78,7 @@ CachedCompiler::CachedCompiler(ICompiler& inner, std::filesystem::path cache_dir
     (void)ec;
 }
 
-std::filesystem::path CachedCompiler::path_for_(std::uint64_t key, std::string_view suffix) const
+std::filesystem::path CachedCompiler::path_for(std::uint64_t key, std::string_view suffix) const
 {
     return cache_dir_ / (to_hex(key) + std::string { suffix });
 }
@@ -86,7 +86,7 @@ std::filesystem::path CachedCompiler::path_for_(std::uint64_t key, std::string_v
 cd::core::Result<CompileResult> CachedCompiler::compile(const CompileDesc& desc)
 {
     const auto key = hash_desc(desc);
-    const auto spv_path = path_for_(key, ".spv");
+    const auto spv_path = path_for(key, ".spv");
 
     // ---- Read path ----
     std::error_code ec;
@@ -124,7 +124,7 @@ cd::core::Result<CompileResult> CachedCompiler::compile(const CompileDesc& desc)
     // racing on the same key produce identical bytes, so a rename overwrite
     // is harmless. Use a key-suffixed tmp name (NOT pid/tid) so even
     // multi-process builds don't tag-team a single file in flight.
-    const auto tmp_path = path_for_(key, ".spv.tmp");
+    const auto tmp_path = path_for(key, ".spv.tmp");
     {
         std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
         if (!out.is_open())
@@ -148,7 +148,7 @@ cd::core::Result<CompileResult> CachedCompiler::compile(const CompileDesc& desc)
     }
 
     // Sidecar meta — best-effort, failure is silent.
-    const auto meta_path = path_for_(key, ".meta");
+    const auto meta_path = path_for(key, ".meta");
     std::ofstream meta(meta_path, std::ios::trunc);
     if (meta.is_open())
     {

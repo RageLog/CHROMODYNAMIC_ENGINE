@@ -52,9 +52,9 @@ layout(push_constant) uniform PC {
     uvec4 probes_dim;
     uint  probe_face_size;
     uint  frame_index;
-    uint  _pad0;
-    uint  _pad1;
-    vec3  sky_color;     float _pad2;
+    uint  pad0;
+    uint  pad1;
+    vec3  sky_color;     float pad2;
 } pc;
 
 vec3 fibonacci_dir(uint i, uint n, uint seed) {
@@ -105,7 +105,7 @@ compile_trace_module(cd::rhi::IDevice& device, bool needs_tlas)
     cd_desc.source       = needs_tlas ? kDdgiTraceCS : kDdgiTraceSmokeCS;
     cd_desc.stage        = cd::shader::ShaderStage::kCompute;
     cd_desc.lang         = cd::shader::ShaderLanguage::kGlsl;
-    cd_desc.target       = cd::shader::TargetEnv::kVulkan_1_3;
+    cd_desc.target       = cd::shader::TargetEnv::kVulkan13;
     cd_desc.source_name  = needs_tlas ? "ddgi_trace.comp" : "ddgi_trace_smoke.comp";
 
     auto compiled = compiler->compile(cd_desc);
@@ -143,7 +143,7 @@ compile_blend_module(cd::rhi::IDevice& device,
     cd_desc.source      = source;
     cd_desc.stage       = cd::shader::ShaderStage::kCompute;
     cd_desc.lang        = cd::shader::ShaderLanguage::kGlsl;
-    cd_desc.target      = cd::shader::TargetEnv::kVulkan_1_3;
+    cd_desc.target      = cd::shader::TargetEnv::kVulkan13;
     cd_desc.source_name = source_name;
 
     auto compiled = compiler->compile(cd_desc);
@@ -871,8 +871,8 @@ BlendPushConstants make_blend_pc(const ProbeGrid&     grid,
     pc.probes_dim[3]        = settings.rays_per_probe;
     pc.probe_face_size      = probe_face_size;
     pc.frame_index          = frame_index;
-    pc._pad0                = 0U;
-    pc._pad1                = 0U;
+    pc.pad0                = 0U;
+    pc.pad1                = 0U;
     return pc;
 }
 
@@ -1061,11 +1061,11 @@ void DispatchPass::execute_sample(cd::rhi::ICommandBuffer& cmd)
     pc.grid_origin[0]   = grid_.origin.x;
     pc.grid_origin[1]   = grid_.origin.y;
     pc.grid_origin[2]   = grid_.origin.z;
-    pc._pad0            = 0.0F;
+    pc.pad0            = 0.0F;
     pc.grid_spacing[0]  = grid_.spacing.x;
     pc.grid_spacing[1]  = grid_.spacing.y;
     pc.grid_spacing[2]  = grid_.spacing.z;
-    pc._pad1            = 0.0F;
+    pc.pad1            = 0.0F;
     pc.probes_dim[0]    = grid_.probes_x;
     pc.probes_dim[1]    = grid_.probes_y;
     pc.probes_dim[2]    = grid_.probes_z;
@@ -1073,11 +1073,11 @@ void DispatchPass::execute_sample(cd::rhi::ICommandBuffer& cmd)
     pc.probe_face_size  = probe_face_size_;
     pc.output_width     = sample_output_width_;
     pc.output_height    = sample_output_height_;
-    pc._pad3            = 0U;
+    pc.pad3            = 0U;
     pc.sky_color[0]     = sky_color_[0];
     pc.sky_color[1]     = sky_color_[1];
     pc.sky_color[2]     = sky_color_[2];
-    pc._pad4            = 0.0F;
+    pc.pad4            = 0.0F;
 
     cmd.bind_compute_pipeline(sample_pipeline_);
     cmd.bind_descriptor_set(0U, sample_descriptor_set_);

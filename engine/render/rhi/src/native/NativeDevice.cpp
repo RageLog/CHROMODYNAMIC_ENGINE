@@ -25,7 +25,7 @@ namespace
 {
 
 #if defined(_WIN32)
-NativeDeviceResult try_d3d12_()
+NativeDeviceResult try_d3d12()
 {
     NativeDeviceResult r;
     auto d = cd::rhi::d3d12::create_d3d12_device({});
@@ -74,7 +74,7 @@ NativeDeviceResult try_vulkan_()
 NativeDeviceResult make_native_device()
 {
 #if defined(_WIN32)
-    if (auto r = try_d3d12_(); r.device)
+    if (auto r = try_d3d12(); r.device)
         return r;
 #    if defined(CD_ENABLE_VULKAN)
     if (auto r = try_vulkan_(); r.device)

@@ -52,10 +52,10 @@ make_planar_shadow_matrix(const cd::math::Vec3f& sun_dir, float plane_y, float l
     // Clamp |Ly| away from 0 so a sun coming in horizontally doesn't
     // produce an infinite-length shadow (numerically: divide-by-zero).
     constexpr float kMinAbs = 0.10F;
-    float Ly = sun_dir.y;
-    if (std::fabs(Ly) < kMinAbs)
-        Ly = (Ly < 0.0F) ? -kMinAbs : kMinAbs;
-    const float k = 1.0F / Ly;
+    float ly = sun_dir.y;
+    if (std::fabs(ly) < kMinAbs)
+        ly = (ly < 0.0F) ? -kMinAbs : kMinAbs;
+    const float k = 1.0F / ly;
     const float ax = sun_dir.x * k;
     const float az = sun_dir.z * k;
     const float py = plane_y + lift;

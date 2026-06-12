@@ -217,7 +217,7 @@ private:
 
     /// Run one pass of Sprint-2 particle-particle self-collision repulsion
     /// using a uniform spatial-hash broad-phase. No-op when
-    /// m_cfg.self_collision.enable_self_collision == false or when there are
+    /// cfg_.self_collision.enable_self_collision == false or when there are
     /// fewer than two non-pinned particles.
     void solve_self_collisions() noexcept;
 
@@ -227,33 +227,33 @@ private:
 
     // ---- State ---------------------------------------------------------------
 
-    SoftBodyConfig m_cfg {};
+    SoftBodyConfig cfg_ {};
 
     /// Live particle state (copy of cfg.particles, mutated each tick).
-    std::vector<Particle> m_particles {};
+    std::vector<Particle> particles_ {};
 
     /// Accumulated per-particle force offsets (reset each tick).
-    /// Indexed parallel to m_particles. Used by apply_force().
-    std::vector<std::array<float, 3>> m_force_accum {};
+    /// Indexed parallel to particles_. Used by apply_force().
+    std::vector<std::array<float, 3>> force_accum_ {};
 
     // ---- Sprint-2 self-collision scratch buffers ----------------------------
     // Allocated once at configure() time (sized to particle count) to avoid
     // per-tick heap churn in solve_self_collisions().
 
     /// Integer grid coordinate triple (cell_x, cell_y, cell_z) per particle.
-    std::vector<std::array<int32_t, 3>> m_cell_coord {};
+    std::vector<std::array<int32_t, 3>> cell_coord_ {};
 
-    /// Hash key per particle (computed each tick from m_cell_coord).
-    std::vector<uint32_t> m_cell_hash {};
+    /// Hash key per particle (computed each tick from cell_coord_).
+    std::vector<uint32_t> cell_hash_ {};
 
     /// Sort-permutation: indices [0..N) reordered so equal-hash particles are
-    /// contiguous. Built each tick via std::sort over m_cell_hash.
-    std::vector<uint32_t> m_hash_index {};
+    /// contiguous. Built each tick via std::sort over cell_hash_.
+    std::vector<uint32_t> hash_index_ {};
 
     /// For each hash bucket key (mod table size), the start offset into
-    /// m_hash_index of particles whose hash equals the key.
-    /// Size = bucket_count + 1; last entry = m_hash_index.size().
-    std::vector<uint32_t> m_bucket_start {};
+    /// hash_index_ of particles whose hash equals the key.
+    /// Size = bucket_count + 1; last entry = hash_index_.size().
+    std::vector<uint32_t> bucket_start_ {};
 };
 
 }  // namespace cd::physics::soft_body

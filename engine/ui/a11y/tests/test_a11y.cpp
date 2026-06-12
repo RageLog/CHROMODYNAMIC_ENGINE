@@ -51,15 +51,15 @@ TEST(A11y, HighContrastThemePassesAaaOnBodyAndLabel)
 {
     // Simulate the high-contrast preset palette: pure white on pure black
     // for body text + label text. AAA body text requires >= 7:1.
-    EXPECT_TRUE(a11y::passes_contrast(kWhite, kBlack, a11y::ThemeVariant::kHighContrastTheme));
-    EXPECT_TRUE(a11y::passes_contrast(kBlack, kWhite, a11y::ThemeVariant::kHighContrastTheme));
+    EXPECT_TRUE(a11y::passes_contrast(kWhite, kBlack, a11y::ThemeVariant::k_high_contrast_theme));
+    EXPECT_TRUE(a11y::passes_contrast(kBlack, kWhite, a11y::ThemeVariant::k_high_contrast_theme));
 
     // Mid-grey on near-white fails AAA (and AA) -- the high-contrast
     // theme must avoid this combination by construction.
-    EXPECT_FALSE(a11y::passes_contrast(kMidGrey, kNearWhite, a11y::ThemeVariant::kHighContrastTheme));
+    EXPECT_FALSE(a11y::passes_contrast(kMidGrey, kNearWhite, a11y::ThemeVariant::k_high_contrast_theme));
 
     // Sanity: AAA threshold is strictly stricter than AA.
-    EXPECT_GT(a11y::min_required_contrast(a11y::ThemeVariant::kHighContrastTheme),
+    EXPECT_GT(a11y::min_required_contrast(a11y::ThemeVariant::k_high_contrast_theme),
               a11y::min_required_contrast(a11y::ThemeVariant::kStandardTheme));
 }
 

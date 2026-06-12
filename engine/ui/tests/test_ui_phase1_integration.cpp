@@ -30,13 +30,13 @@ namespace
 
 [[nodiscard]] std::vector<std::uint8_t> find_system_font()
 {
-    static const std::array<const char*, 4> kCandidates {
+    static const std::array<const char*, 4> k_candidates {
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/calibri.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
     };
-    for (const char* p : kCandidates)
+    for (const char* p : k_candidates)
     {
         std::ifstream f(p, std::ios::binary | std::ios::ate);
         if (!f) continue;

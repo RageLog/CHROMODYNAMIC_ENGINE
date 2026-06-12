@@ -139,7 +139,7 @@ public:
         }
         const float t       = elapsed_s_ / anim_.duration_s;
         const float t_eased = ease(t, anim_.easing);
-        return lerp_(anim_.from, anim_.to, t_eased);
+        return lerp(anim_.from, anim_.to, t_eased);
     }
 
     /// True once the playhead has reached `duration_s`.
@@ -159,7 +159,7 @@ private:
     /// Generic lerp helper. Works for arithmetic T and any T that supports
     /// operator+, operator- and operator*(float). For cd::math::Vec*f the
     /// componentwise operators in Vector.hpp satisfy this.
-    [[nodiscard]] static T lerp_(const T& a, const T& b, float t) noexcept
+    [[nodiscard]] static T lerp(const T& a, const T& b, float t) noexcept
     {
         return a + (b - a) * t;
     }

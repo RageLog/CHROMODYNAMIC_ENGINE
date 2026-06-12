@@ -46,7 +46,7 @@ struct Reservoir
 {
     Sample         selected   {};
     float          weight_sum { 0.0F };
-    std::uint32_t  M          { 0 };
+    std::uint32_t  m          { 0 };
     /// Age in frames — incremented each frame the reservoir is carried
     /// forward without a new candidate. Used by TemporalBuffer to
     /// invalidate stale reservoirs.
@@ -56,8 +56,8 @@ struct Reservoir
     /// Computed once on demand (Bitterli Eq. 6).
     [[nodiscard]] float final_weight() const noexcept
     {
-        if (M == 0 || selected.target_pdf <= 0.0F) return 0.0F;
-        return weight_sum / (static_cast<float>(M) * selected.target_pdf);
+        if (m == 0 || selected.target_pdf <= 0.0F) return 0.0F;
+        return weight_sum / (static_cast<float>(m) * selected.target_pdf);
     }
 
     /// Reset to zero-state (invalidated reservoir).
@@ -75,7 +75,7 @@ inline void
 update(Reservoir& r, const Sample& s, float weight, float rand_01) noexcept
 {
     r.weight_sum += weight;
-    r.M += 1;
+    r.m += 1;
     if (r.weight_sum <= 0.0F) return;
     if (rand_01 < weight / r.weight_sum) r.selected = s;
 }
@@ -91,11 +91,11 @@ inline void combine(Reservoir& dst,
                     float rand_01,
                     F&& eval_pdf) noexcept
 {
-    if (other.M == 0) return;
+    if (other.m == 0) return;
     const float p_hat = std::forward<F>(eval_pdf)(other.selected);
-    const float w = p_hat * other.final_weight() * static_cast<float>(other.M);
+    const float w = p_hat * other.final_weight() * static_cast<float>(other.m);
     dst.weight_sum += w;
-    dst.M += other.M;
+    dst.m += other.m;
     if (dst.weight_sum > 0.0F && rand_01 < w / dst.weight_sum)
         dst.selected = other.selected;
 }
@@ -105,7 +105,7 @@ inline void combine(Reservoir& dst,
 /// reasonable number of frames.
 inline void clamp_history(Reservoir& r, std::uint32_t cap) noexcept
 {
-    if (r.M > cap) { r.weight_sum *= static_cast<float>(cap) / static_cast<float>(r.M); r.M = cap; }
+    if (r.m > cap) { r.weight_sum *= static_cast<float>(cap) / static_cast<float>(r.m); r.m = cap; }
 }
 
 /// Temporal blend of two reservoirs with blending factor alpha in [0,1].
@@ -122,9 +122,9 @@ temporal_blend(const Reservoir& current,
     result.selected   = (alpha <= 0.5F) ? current.selected : previous.selected;
     result.weight_sum = (1.0F - alpha) * current.weight_sum
                       +          alpha  * previous.weight_sum;
-    result.M          = static_cast<std::uint32_t>(
-                            (1.0F - alpha) * static_cast<float>(current.M)
-                          +          alpha  * static_cast<float>(previous.M));
+    result.m          = static_cast<std::uint32_t>(
+                            (1.0F - alpha) * static_cast<float>(current.m)
+                          +          alpha  * static_cast<float>(previous.m));
     result.age        = current.age;
     return result;
 }

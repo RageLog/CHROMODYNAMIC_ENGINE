@@ -196,7 +196,7 @@ public:
         started_ = true;
 
         // Spawn render thread. Per-thread COM is initialized inside it.
-        thread_ = std::thread { [this] { render_loop_(); } };
+        thread_ = std::thread { [this] { render_loop(); } };
         return true;
     }
 
@@ -343,7 +343,7 @@ public:
     }
 
 private:
-    void render_loop_() noexcept
+    void render_loop() noexcept
     {
         // Per-thread COM init.
         const auto hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -376,7 +376,7 @@ private:
             // Mix into a scratch float buffer, then convert to device
             // format if it isn't already float32.
             scratch_.assign(static_cast<std::size_t>(frames_available) * device_channels_, 0.0F);
-            mix_frames_(scratch_, frames_available);
+            mix_frames(scratch_, frames_available);
 
             if (device_is_float_)
             {
@@ -403,7 +403,7 @@ private:
             CoUninitialize();
     }
 
-    void mix_frames_(std::vector<float>& out, std::uint32_t frames) noexcept
+    void mix_frames(std::vector<float>& out, std::uint32_t frames) noexcept
     {
         std::scoped_lock guard { state_mu_ };
         const float master = master_.load(std::memory_order_acquire);

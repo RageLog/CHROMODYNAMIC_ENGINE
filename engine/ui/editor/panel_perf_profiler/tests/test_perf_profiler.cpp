@@ -50,7 +50,7 @@ namespace
 
 [[nodiscard]] cd::ui::theme::Theme default_theme() noexcept
 {
-    return cd::ui::theme::kDarkTheme();
+    return cd::ui::theme::k_dark_theme();
 }
 
 /// Build a minimal FrameSnapshot with a given total_ms and no markers.

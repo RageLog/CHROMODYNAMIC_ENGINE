@@ -55,9 +55,9 @@ inline constexpr std::uint32_t kMaxBones = 256;
 struct SkinnedVertex
 {
     cd::math::Vec3f position;                          // 12
-    float           _pos_pad { 0.0F };                 // +4 → 16
+    float           pos_pad { 0.0F };                 // +4 → 16
     cd::math::Vec3f normal;                            // 12
-    float           _nrm_pad { 0.0F };                 // +4 → 16
+    float           nrm_pad { 0.0F };                 // +4 → 16
     cd::math::Vec2f uv;                                // 8
     std::uint16_t   bone_ids[4]     { 0, 0, 0, 0 };    // 8 → 16
     float           bone_weights[4] { 1.0F, 0.0F, 0.0F, 0.0F };  // 16

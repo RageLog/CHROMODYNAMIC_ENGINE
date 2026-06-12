@@ -331,8 +331,24 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
+  # phase1118 (K7 fallout): protected members follow the same trailing-_
+  # convention as private ones (BehaviorTree children_/child_ — dropping
+  # the suffix collided with the child() accessor: duplicate member).
+  - key: readability-identifier-naming.ProtectedMemberSuffix
+    value: _
+  # phase1118 (K7 carve-out): Frustum.{near_,far_} keep the trailing _
+  # DELIBERATELY — `near`/`far` are legacy Windows macros (minwindef.h)
+  # and renaming them breaks any TU that includes <windows.h> first.
+  - key: readability-identifier-naming.MemberIgnoredRegexp
+    value: '^(near|far)_$'
   - key: readability-identifier-naming.NamespaceCase
     value: lower_case
+  # phase1118 (K7 carve-out): _cd_-prefixed locals are CD_* macro internals
+  # (Assert.hpp CD_VERIFY/CD_PANIC expansion variables) — the underscore
+  # prefix deliberately keeps them out of user-code completion/collision
+  # space inside macro expansion scopes.
+  - key: readability-identifier-naming.VariableIgnoredRegexp
+    value: '^_cd_[a-z0-9_]+$'
   - key: readability-identifier-naming.ConstexprVariableCase
     value: CamelCase
   - key: readability-identifier-naming.ConstexprVariablePrefix
@@ -347,6 +363,12 @@ CheckOptions:
     value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionPrefix
     value: CD_
+  # phase1118 (K7 fallout): NEVER prefix system/3rd-party FEATURE macros —
+  # the phase1117 sweep renamed `#define NOMINMAX` to CD_NOMINMAX in 5 TUs,
+  # silently re-enabling the Windows min/max macros (Vector.hpp blew up).
+  # These names are contracts with external headers, not our identifiers.
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^(WIN32_LEAN_AND_MEAN|NOMINMAX|VC_EXTRALEAN|UNICODE|_UNICODE|NDEBUG|VK_USE_PLATFORM_[A-Z0-9_]+|VK_NO_PROTOTYPES|VOLK_[A-Z0-9_]+|VMA_[A-Z0-9_]+|GLFW_[A-Z0-9_]+|STB_[A-Z0-9_]+|TINYGLTF_[A-Z0-9_]+|IMGUI_[A-Z0-9_]+|_CRT_[A-Z0-9_]+|GTEST_[A-Z0-9_]+)$'
   - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
     value: true
   - key: cppcoreguidelines-special-member-functions.AllowMissingMoveFunctions

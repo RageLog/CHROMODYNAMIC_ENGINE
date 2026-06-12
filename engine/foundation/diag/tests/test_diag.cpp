@@ -21,7 +21,7 @@ namespace
 
 std::atomic<int> g_calls { 0 };
 std::atomic<int> g_last_signal { 0 };
-std::atomic<cd::diag::CrashSeverity> g_last_severity { cd::diag::CrashSeverity::Fatal };
+std::atomic<cd::diag::CrashSeverity> g_last_severity { cd::diag::CrashSeverity::kFatal };
 char g_last_label[16] = {};
 
 extern "C" void test_reporter(const cd::diag::CrashContext& ctx) noexcept
@@ -45,7 +45,7 @@ protected:
     {
         g_calls.store(0);
         g_last_signal.store(0);
-        g_last_severity.store(cd::diag::CrashSeverity::Fatal);
+        g_last_severity.store(cd::diag::CrashSeverity::kFatal);
         g_last_label[0] = '\0';
     }
 };
@@ -79,7 +79,7 @@ TEST_F(CrashReporterTest, RaiseInterruptDispatches)
     std::raise(SIGTERM);
     EXPECT_GE(g_calls.load(), 1);
     EXPECT_EQ(g_last_signal.load(), SIGTERM);
-    EXPECT_EQ(g_last_severity.load(), cd::diag::CrashSeverity::Interrupt);
+    EXPECT_EQ(g_last_severity.load(), cd::diag::CrashSeverity::kInterrupt);
     EXPECT_STREQ(g_last_label, "SIGTERM");
     cr.uninstall();
 }
@@ -90,7 +90,7 @@ TEST_F(CrashReporterTest, NonFatalDoesNotTerminate)
     ASSERT_TRUE(cr.install(test_reporter));
     cr.capture_non_fatal("renderer-stall");
     EXPECT_EQ(g_calls.load(), 1);
-    EXPECT_EQ(g_last_severity.load(), cd::diag::CrashSeverity::NonFatal);
+    EXPECT_EQ(g_last_severity.load(), cd::diag::CrashSeverity::kNonFatal);
     EXPECT_STREQ(g_last_label, "renderer-stall");
     cr.uninstall();
 }

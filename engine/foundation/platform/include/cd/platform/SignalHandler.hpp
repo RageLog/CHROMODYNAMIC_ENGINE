@@ -26,9 +26,9 @@ namespace cd::platform
 /// Categories of signals tracked by the handler.
 enum class SignalCategory : std::uint8_t
 {
-    Crash,      // SIGABRT / SIGSEGV / SIGFPE / SIGILL
-    Interrupt,  // SIGINT / SIGTERM (graceful shutdown request)
-    Unknown,
+    kCrash,      // SIGABRT / SIGSEGV / SIGFPE / SIGILL
+    kInterrupt,  // SIGINT / SIGTERM (graceful shutdown request)
+    kUnknown,
 };
 
 /// Function-pointer callback type. Must be async-signal-safe.

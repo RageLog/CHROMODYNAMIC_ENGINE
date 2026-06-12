@@ -51,32 +51,32 @@ bool read_pod(std::ifstream& in, T& value)
 
 void Recorder::start_recording()
 {
-    m_records.clear();
-    m_start_time = Clock::now();
-    m_recording  = true;
+    records_.clear();
+    start_time_ = Clock::now();
+    recording_  = true;
 }
 
 void Recorder::record_packet(std::span<const std::uint8_t> payload,
                               std::uint32_t                  channel_id,
                               bool                           incoming)
 {
-    if (!m_recording)
+    if (!recording_)
         return;
 
     using Ms = std::chrono::duration<double, std::milli>;
-    const double ts_ms = std::chrono::duration_cast<Ms>(Clock::now() - m_start_time).count();
+    const double ts_ms = std::chrono::duration_cast<Ms>(Clock::now() - start_time_).count();
 
     PacketRecord rec;
     rec.timestamp_ms = ts_ms;
     rec.channel_id   = channel_id;
     rec.incoming     = incoming;
     rec.payload.assign(payload.begin(), payload.end());
-    m_records.push_back(std::move(rec));
+    records_.push_back(std::move(rec));
 }
 
 void Recorder::stop_recording() noexcept
 {
-    m_recording = false;
+    recording_ = false;
 }
 
 bool Recorder::save_to_file(const std::filesystem::path& out_path) const
@@ -97,12 +97,12 @@ bool Recorder::save_to_file(const std::filesystem::path& out_path) const
         return false;
 
     // Header — count
-    const auto count = static_cast<std::uint32_t>(m_records.size());
+    const auto count = static_cast<std::uint32_t>(records_.size());
     if (!write_pod(out, count))
         return false;
 
     // Records
-    for (const PacketRecord& rec : m_records)
+    for (const PacketRecord& rec : records_)
     {
         if (!write_pod(out, rec.timestamp_ms))
             return false;
@@ -129,12 +129,12 @@ bool Recorder::save_to_file(const std::filesystem::path& out_path) const
 
 std::size_t Recorder::packet_count() const noexcept
 {
-    return m_records.size();
+    return records_.size();
 }
 
 bool Recorder::is_recording() const noexcept
 {
-    return m_recording;
+    return recording_;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,32 +199,32 @@ bool Replayer::load_from_file(const std::filesystem::path& in_path)
         records.push_back(std::move(rec));
     }
 
-    m_records = std::move(records);
-    m_cursor  = 0;
+    records_ = std::move(records);
+    cursor_  = 0;
     return true;
 }
 
 std::span<const PacketRecord> Replayer::all() const noexcept
 {
-    return { m_records.data(), m_records.size() };
+    return { records_.data(), records_.size() };
 }
 
 std::optional<PacketRecord> Replayer::next_packet(double current_ms)
 {
-    if (m_cursor >= m_records.size())
+    if (cursor_ >= records_.size())
         return std::nullopt;
 
-    const PacketRecord& rec = m_records[m_cursor];
+    const PacketRecord& rec = records_[cursor_];
     if (rec.timestamp_ms > current_ms)
         return std::nullopt;
 
-    ++m_cursor;
+    ++cursor_;
     return rec;
 }
 
 void Replayer::reset() noexcept
 {
-    m_cursor = 0;
+    cursor_ = 0;
 }
 
 }  // namespace cd::net::session_replay

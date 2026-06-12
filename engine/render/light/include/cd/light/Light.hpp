@@ -77,7 +77,7 @@ struct Light
     float           cos_inner_cone { 0.866F };  // cos(30°)
     float           cos_outer_cone { 0.707F };  // cos(45°)
     float           inv_cone_range { 4.0F };    // 1 / (cos_inner - cos_outer)
-    float           _spot_pad      { 0.0F };
+    float           spot_pad      { 0.0F };
 
     // ---- Area light (kRectArea/kDiskArea) ----------------------------
     cd::math::Vec3f area_tangent { 1.0F, 0.0F, 0.0F };  // first edge / disk +X
@@ -91,8 +91,8 @@ struct Light
     std::uint32_t   ies_profile   { 0 };   // AssetId.value() — 0 = no profile
     LightType       type          { LightType::kPoint };
     std::uint8_t    flags         { 0 };
-    std::uint16_t   _slot_pad     { 0 };
-    std::uint32_t   _tail_pad     { 0 };   // round to multiple of 16 (std140)
+    std::uint16_t   slot_pad     { 0 };
+    std::uint32_t   tail_pad     { 0 };   // round to multiple of 16 (std140)
 
     // ---- Flags -------------------------------------------------------
     static constexpr std::uint8_t kFlagCastsShadow      = 1u << 0;

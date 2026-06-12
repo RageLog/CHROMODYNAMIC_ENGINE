@@ -321,23 +321,23 @@ TEST(UiColorPickerOklch, OutputClamped0To1ForValidLch)
 
     for (int li = 0; li <= kStepsL; ++li)
     {
-        const float L = static_cast<float>(li) / static_cast<float>(kStepsL);
+        const float l = static_cast<float>(li) / static_cast<float>(kStepsL);
         for (int ci = 0; ci <= kStepsC; ++ci)
         {
-            const float C = static_cast<float>(ci) / static_cast<float>(kStepsC) * 0.4F;
+            const float c = static_cast<float>(ci) / static_cast<float>(kStepsC) * 0.4F;
             for (int hi = 0; hi < kStepsH; ++hi)
             {
                 const float h = static_cast<float>(hi) / static_cast<float>(kStepsH)
                                 * 2.0F * kPi;
 
-                const w::Float3 rgb = w::oklch_to_rgb(L, C, h);
+                const w::Float3 rgb = w::oklch_to_rgb(l, c, h);
 
-                EXPECT_GE(rgb.x, 0.0F) << "r<0  L=" << L << " C=" << C << " h=" << h;
-                EXPECT_LE(rgb.x, 1.0F) << "r>1  L=" << L << " C=" << C << " h=" << h;
-                EXPECT_GE(rgb.y, 0.0F) << "g<0  L=" << L << " C=" << C << " h=" << h;
-                EXPECT_LE(rgb.y, 1.0F) << "g>1  L=" << L << " C=" << C << " h=" << h;
-                EXPECT_GE(rgb.z, 0.0F) << "b<0  L=" << L << " C=" << C << " h=" << h;
-                EXPECT_LE(rgb.z, 1.0F) << "b>1  L=" << L << " C=" << C << " h=" << h;
+                EXPECT_GE(rgb.x, 0.0F) << "r<0  L=" << l << " C=" << c << " h=" << h;
+                EXPECT_LE(rgb.x, 1.0F) << "r>1  L=" << l << " C=" << c << " h=" << h;
+                EXPECT_GE(rgb.y, 0.0F) << "g<0  L=" << l << " C=" << c << " h=" << h;
+                EXPECT_LE(rgb.y, 1.0F) << "g>1  L=" << l << " C=" << c << " h=" << h;
+                EXPECT_GE(rgb.z, 0.0F) << "b<0  L=" << l << " C=" << c << " h=" << h;
+                EXPECT_LE(rgb.z, 1.0F) << "b>1  L=" << l << " C=" << c << " h=" << h;
             }
         }
     }

@@ -548,8 +548,8 @@ cd::scene::Frustum make_unit_box_frustum()
     f.right  = {{-1, 0, 0}, 1.0F};   // x <=  1
     f.bottom = {{ 0, 1, 0}, 1.0F};   // y >= -1
     f.top    = {{ 0,-1, 0}, 1.0F};   // y <=  1
-    f.near_  = {{ 0, 0, 1}, 1.0F};   // z >= -1
-    f.far_   = {{ 0, 0,-1}, 1.0F};   // z <=  1
+    f.near_ = {{ 0, 0, 1}, 1.0F};   // z >= -1
+    f.far_  = {{ 0, 0,-1}, 1.0F};   // z <=  1
     return f;
 }
 

@@ -117,7 +117,7 @@ private:
     /// Compute the depth of each node via BFS from the root. Nodes absent
     /// from the traversal (disconnected sub-graphs) are placed at depth 0.
     /// Returns a vector parallel to tree_->nodes in tree insertion order.
-    void recompute_layout_() const;
+    void recompute_layout() const;
 
     // ---- State --------------------------------------------------------------
     const cd::game::dialog_tree::DialogTree* tree_        { nullptr };

@@ -36,7 +36,7 @@ struct PbrFactors
     float roughness   { 0.5F };
     float occlusion   { 1.0F };
     float normal_scale { 1.0F };
-    float _pad        { 0.0F };
+    float pad        { 0.0F };
 };
 static_assert(sizeof(PbrFactors) == 48, "PbrFactors must stay std140-packed (48 bytes)");
 

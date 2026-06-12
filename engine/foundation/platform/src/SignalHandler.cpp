@@ -27,21 +27,21 @@ extern "C" void cd_signal_dispatch(int sig) noexcept
     {
         return;
     }
-    SignalCategory category = SignalCategory::Unknown;
+    SignalCategory category = SignalCategory::kUnknown;
     switch (sig)
     {
         case SIGABRT:
         case SIGSEGV:
         case SIGFPE:
         case SIGILL:
-            category = SignalCategory::Crash;
+            category = SignalCategory::kCrash;
             break;
         case SIGINT:
         case SIGTERM:
-            category = SignalCategory::Interrupt;
+            category = SignalCategory::kInterrupt;
             break;
         default:
-            category = SignalCategory::Unknown;
+            category = SignalCategory::kUnknown;
             break;
     }
     SignalCallback cb = g_callback.load(std::memory_order_acquire);

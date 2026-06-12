@@ -82,7 +82,7 @@ void platform_try_set_position(cd::platform::IWindow& win,
 // Private helpers
 // ---------------------------------------------------------------------------
 
-ManagedWindow* NativeWindowAdapter::find_(std::string_view panel_id) noexcept
+ManagedWindow* NativeWindowAdapter::find(std::string_view panel_id) noexcept
 {
     auto it = std::ranges::find_if(managed_,
         [panel_id](const ManagedWindow& m) { return m.panel_id == panel_id; });
@@ -96,7 +96,7 @@ ManagedWindow* NativeWindowAdapter::find_(std::string_view panel_id) noexcept
 bool NativeWindowAdapter::open(const PopoutWindow& pw)
 {
     // Idempotent: already managed.
-    if (find_(pw.panel_id) != nullptr) { return false; }
+    if (find(pw.panel_id) != nullptr) { return false; }
 
     const cd::platform::WindowDesc desc {
         .title    = pw.panel_id,

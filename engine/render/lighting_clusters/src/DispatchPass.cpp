@@ -264,7 +264,7 @@ DispatchPass::prepare(cd::rhi::IDevice& device, std::uint32_t max_lights)
     cd_desc.source       = kClusterCullCS;
     cd_desc.stage        = cd::shader::ShaderStage::kCompute;
     cd_desc.lang         = cd::shader::ShaderLanguage::kGlsl;
-    cd_desc.target       = cd::shader::TargetEnv::kVulkan_1_3;
+    cd_desc.target       = cd::shader::TargetEnv::kVulkan13;
     cd_desc.source_name  = "cluster_cull.comp";
     auto compiled = compiler->compile(cd_desc);
     if (!compiled.has_value())

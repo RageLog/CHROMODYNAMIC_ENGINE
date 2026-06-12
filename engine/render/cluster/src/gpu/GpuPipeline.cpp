@@ -231,7 +231,7 @@ GpuPipeline::create(cd::rhi::IDevice& device,
     desc.source = kClusterAssignGlsl;
     desc.stage = cd::shader::ShaderStage::kCompute;
     desc.lang = cd::shader::ShaderLanguage::kGlsl;
-    desc.target = cd::shader::TargetEnv::kVulkan_1_3;
+    desc.target = cd::shader::TargetEnv::kVulkan13;
     desc.source_name = "cluster_assign.comp";
     auto comp = compiler->compile(desc);
     if (!comp.has_value())

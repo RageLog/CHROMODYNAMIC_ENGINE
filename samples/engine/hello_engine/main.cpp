@@ -2530,7 +2530,7 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             if (light_idx < 8U)
                 survivor_hist[light_idx] += 1U;
         }
-        ImGui::Text("Reservoir.M (samples streamed): %u", res.M);
+        ImGui::Text("Reservoir.M (samples streamed): %u", res.m);
         ImGui::Text("Reservoir.weight_sum (sum w_i): %.3f", static_cast<double>(res.weight_sum));
         ImGui::Text("Survivor: light_index = %u  target_pdf = %.3f  final_weight = %.4f",
                     res.selected.light_index,

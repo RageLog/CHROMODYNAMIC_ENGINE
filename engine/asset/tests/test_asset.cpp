@@ -34,29 +34,29 @@ TEST(AssetId, HashIsStableAcrossCalls)
 
 TEST(AssetId, ConstexprUsable)
 {
-    constexpr auto compile_time = cd::asset::AssetId::from_path("foo/bar.txt");
-    static_assert(compile_time.value() != 0);
+    constexpr auto kCompileTime = cd::asset::AssetId::from_path("foo/bar.txt");
+    static_assert(kCompileTime.value() != 0);
     auto run_time = cd::asset::AssetId::from_path("foo/bar.txt");
-    EXPECT_EQ(compile_time, run_time);
+    EXPECT_EQ(kCompileTime, run_time);
 }
 
 // --- AssetRegistry --------------------------------------------------------
 class AssetRegistryTest : public ::testing::Test
 {
 protected:
-    cd::vfs::VirtualFileSystem vfs;
-    std::shared_ptr<cd::vfs::MemorySource> mem = std::make_shared<cd::vfs::MemorySource>("mem");
+    cd::vfs::VirtualFileSystem vfs_;
+    std::shared_ptr<cd::vfs::MemorySource> mem_ = std::make_shared<cd::vfs::MemorySource>("mem");
 
     void SetUp() override
     {
-        vfs.mount_back(mem);
+        vfs_.mount_back(mem_);
     }
 };
 
 TEST_F(AssetRegistryTest, LoadTextSucceeds)
 {
-    mem->put_text("foo.txt", "hello");
-    cd::asset::AssetRegistry reg { vfs };
+    mem_->put_text("foo.txt", "hello");
+    cd::asset::AssetRegistry reg { vfs_ };
     reg.register_loader(std::make_unique<cd::asset::TextAssetLoader>());
     EXPECT_EQ(reg.loader_count(), 1u);
 
@@ -72,8 +72,8 @@ TEST_F(AssetRegistryTest, LoadTextSucceeds)
 
 TEST_F(AssetRegistryTest, RepeatLoadIsCached)
 {
-    mem->put_text("a.txt", "abc");
-    cd::asset::AssetRegistry reg { vfs };
+    mem_->put_text("a.txt", "abc");
+    cd::asset::AssetRegistry reg { vfs_ };
     reg.register_loader(std::make_unique<cd::asset::TextAssetLoader>());
 
     auto id1 = reg.load("text", "a.txt");
@@ -85,8 +85,8 @@ TEST_F(AssetRegistryTest, RepeatLoadIsCached)
 
 TEST_F(AssetRegistryTest, UnknownTagRejected)
 {
-    mem->put_text("a.txt", "x");
-    cd::asset::AssetRegistry reg { vfs };
+    mem_->put_text("a.txt", "x");
+    cd::asset::AssetRegistry reg { vfs_ };
     auto r = reg.load("nonexistent", "a.txt");
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset::asset_errors::Code::kNoLoaderForTag));
@@ -94,7 +94,7 @@ TEST_F(AssetRegistryTest, UnknownTagRejected)
 
 TEST_F(AssetRegistryTest, VfsMissingProducesError)
 {
-    cd::asset::AssetRegistry reg { vfs };
+    cd::asset::AssetRegistry reg { vfs_ };
     reg.register_loader(std::make_unique<cd::asset::BytesAssetLoader>());
     auto r = reg.load("bytes", "missing.bin");
     ASSERT_FALSE(r.has_value());
@@ -103,9 +103,9 @@ TEST_F(AssetRegistryTest, VfsMissingProducesError)
 
 TEST_F(AssetRegistryTest, ReleaseAndClear)
 {
-    mem->put_text("a.txt", "x");
-    mem->put_text("b.txt", "y");
-    cd::asset::AssetRegistry reg { vfs };
+    mem_->put_text("a.txt", "x");
+    mem_->put_text("b.txt", "y");
+    cd::asset::AssetRegistry reg { vfs_ };
     reg.register_loader(std::make_unique<cd::asset::TextAssetLoader>());
     auto a = *reg.load("text", "a.txt");
     (void)reg.load("text", "b.txt");
@@ -118,7 +118,7 @@ TEST_F(AssetRegistryTest, ReleaseAndClear)
 
 TEST_F(AssetRegistryTest, InstallByPasses)
 {
-    cd::asset::AssetRegistry reg { vfs };
+    cd::asset::AssetRegistry reg { vfs_ };
     auto id = cd::asset::AssetId::from_path("runtime.tag");
     reg.install(id, std::make_unique<cd::asset::TextAsset>(std::string { "injected" }));
     auto* txt = dynamic_cast<cd::asset::TextAsset*>(reg.find(id));
@@ -272,8 +272,8 @@ TEST(FileWatcher, UnwatchStopsCallbacks)
 
 TEST(AssetTag, MakeTagHashesString)
 {
-    constexpr auto t = cd::asset::make_tag("character");
-    EXPECT_NE(t.hash, 0u);
+    constexpr auto kT = cd::asset::make_tag("character");
+    EXPECT_NE(kT.hash, 0u);
     // FNV-1a is deterministic.
     EXPECT_EQ(cd::asset::make_tag("character"), cd::asset::make_tag("character"));
     EXPECT_NE(cd::asset::make_tag("character"), cd::asset::make_tag("enemy"));

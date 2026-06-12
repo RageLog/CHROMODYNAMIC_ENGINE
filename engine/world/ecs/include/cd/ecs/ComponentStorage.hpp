@@ -65,7 +65,7 @@ public:
     template <class... Args>
     T& emplace(Entity e, Args&&... args)
     {
-        ensure_sparse_(e.id);
+        ensure_sparse(e.id);
         auto& slot = sparse_[e.id];
         if (slot != detail::kInvalidDenseIndex && dense_[slot] == e)
         {
@@ -158,7 +158,7 @@ public:
     }
 
 private:
-    void ensure_sparse_(std::uint32_t id)
+    void ensure_sparse(std::uint32_t id)
     {
         if (id >= sparse_.size())
         {

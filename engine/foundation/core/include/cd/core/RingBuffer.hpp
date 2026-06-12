@@ -24,7 +24,7 @@ public:
 
     /// Push at the tail. Returns false if full.
     bool push(const T& v) { return emplace_(v); }
-    bool push(T&& v) { return emplace_(std::move(v)); }
+    bool push(T&& v) { return emplace(std::move(v)); }
 
     /// Pop the head. Returns std::nullopt when empty.
     std::optional<T> pop() noexcept
@@ -50,7 +50,7 @@ public:
 
 private:
     template <class U>
-    bool emplace_(U&& v)
+    bool emplace(U&& v)
     {
         if (size_ == N) return false;
         T* slot = reinterpret_cast<T*>(&buf_[tail_ * sizeof(T)]);

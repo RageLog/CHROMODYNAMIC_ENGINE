@@ -96,22 +96,22 @@ Validator::validate_texture_blob(std::span<const std::uint8_t> blob,
 
     // ---- T2: magic header check ---------------------------------------------
     // PNG: \x89 P N G \r \n \x1a \n  (8 bytes)
-    constexpr std::array<std::uint8_t, 4> k_png_magic{ 0x89U, 'P', 'N', 'G' };
+    constexpr std::array<std::uint8_t, 4> kPngMagic{ 0x89U, 'P', 'N', 'G' };
     // JPEG: FF D8
-    constexpr std::array<std::uint8_t, 2> k_jpg_magic{ 0xFFU, 0xD8U };
+    constexpr std::array<std::uint8_t, 2> kJpgMagic{ 0xFFU, 0xD8U };
     // KTX2: 12-byte identifier (first 4 bytes are \xABKTX)
-    constexpr std::array<std::uint8_t, 4> k_ktx2_magic{ 0xABU, 'K', 'T', 'X' };
+    constexpr std::array<std::uint8_t, 4> kKtx2Magic{ 0xABU, 'K', 'T', 'X' };
     // DDS: "DDS "
-    constexpr std::array<std::uint8_t, 4> k_dds_magic{ 'D', 'D', 'S', ' ' };
+    constexpr std::array<std::uint8_t, 4> kDdsMagic{ 'D', 'D', 'S', ' ' };
     // HDR (Radiance RGBE): "#?RADIANCE"
     // We check 2 bytes "#?" as a lightweight identifier.
-    constexpr std::array<std::uint8_t, 2> k_hdr_magic{ '#', '?' };
+    constexpr std::array<std::uint8_t, 2> kHdrMagic{ '#', '?' };
 
-    const bool is_png  = starts_with_magic(blob, std::span<const std::uint8_t>{ k_png_magic });
-    const bool is_jpg  = starts_with_magic(blob, std::span<const std::uint8_t>{ k_jpg_magic });
-    const bool is_ktx2 = starts_with_magic(blob, std::span<const std::uint8_t>{ k_ktx2_magic });
-    const bool is_dds  = starts_with_magic(blob, std::span<const std::uint8_t>{ k_dds_magic });
-    const bool is_hdr  = starts_with_magic(blob, std::span<const std::uint8_t>{ k_hdr_magic });
+    const bool is_png  = starts_with_magic(blob, std::span<const std::uint8_t>{ kPngMagic });
+    const bool is_jpg  = starts_with_magic(blob, std::span<const std::uint8_t>{ kJpgMagic });
+    const bool is_ktx2 = starts_with_magic(blob, std::span<const std::uint8_t>{ kKtx2Magic });
+    const bool is_dds  = starts_with_magic(blob, std::span<const std::uint8_t>{ kDdsMagic });
+    const bool is_hdr  = starts_with_magic(blob, std::span<const std::uint8_t>{ kHdrMagic });
 
     const bool known_format = is_png || is_jpg || is_ktx2 || is_dds || is_hdr;
     if (!known_format)
@@ -153,8 +153,8 @@ Validator::validate_gltf_blob(std::span<const std::uint8_t> blob,
 
     // ---- T2: detect GLB vs JSON .gltf ---------------------------------------
     // GLB magic: 0x67 0x6C 0x54 0x46 ("glTF")
-    constexpr std::array<std::uint8_t, 4> k_glb_magic{ 0x67U, 0x6CU, 0x54U, 0x46U };
-    const bool is_glb = starts_with_magic(blob, std::span<const std::uint8_t>{ k_glb_magic });
+    constexpr std::array<std::uint8_t, 4> kGlbMagic{ 0x67U, 0x6CU, 0x54U, 0x46U };
+    const bool is_glb = starts_with_magic(blob, std::span<const std::uint8_t>{ kGlbMagic });
 
     if (is_glb)
     {
@@ -215,18 +215,18 @@ Validator::validate_audio_blob(std::span<const std::uint8_t> blob,
 
     // ---- T2: WAV detection --------------------------------------------------
     // RIFF/WAVE: "RIFF" at offset 0, "WAVE" at offset 8 (minimum 12 bytes).
-    constexpr std::array<std::uint8_t, 4> k_riff{ 'R', 'I', 'F', 'F' };
-    constexpr std::array<std::uint8_t, 4> k_wave{ 'W', 'A', 'V', 'E' };
-    constexpr std::array<std::uint8_t, 4> k_ogg { 'O', 'g', 'g', 'S' };
+    constexpr std::array<std::uint8_t, 4> kRiff{ 'R', 'I', 'F', 'F' };
+    constexpr std::array<std::uint8_t, 4> kWave{ 'W', 'A', 'V', 'E' };
+    constexpr std::array<std::uint8_t, 4> kOgg { 'O', 'g', 'g', 'S' };
 
-    const bool has_riff = starts_with_magic(blob, std::span<const std::uint8_t>{ k_riff });
+    const bool has_riff = starts_with_magic(blob, std::span<const std::uint8_t>{ kRiff });
     const bool has_wave = (blob.size() >= 12UZ) &&
                           starts_with_magic(blob.subspan(8UZ, 4UZ),
-                                            std::span<const std::uint8_t>{ k_wave });
+                                            std::span<const std::uint8_t>{ kWave });
     const bool is_wav   = has_riff && has_wave;
 
     // ---- T3: OGG detection --------------------------------------------------
-    const bool is_ogg = starts_with_magic(blob, std::span<const std::uint8_t>{ k_ogg });
+    const bool is_ogg = starts_with_magic(blob, std::span<const std::uint8_t>{ kOgg });
 
     if (!is_wav && !is_ogg)
     {

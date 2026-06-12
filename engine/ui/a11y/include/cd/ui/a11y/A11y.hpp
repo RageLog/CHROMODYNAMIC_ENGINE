@@ -14,7 +14,7 @@
 //   * focus_indicator_rect -- 2px outset of a widget's bounds, used by the
 //                             renderer to draw the "focus ring".
 //   * compute_contrast_ratio(fg, bg) -- WCAG 2.1 contrast ratio in [1..21].
-//   * ThemeVariant         -- kStandardTheme vs kHighContrastTheme; the
+//   * ThemeVariant         -- kStandardTheme vs k_high_contrast_theme; the
 //                             min_required_contrast()/passes_contrast()
 //                             helpers enforce AA vs AAA on the variant.
 //
@@ -132,19 +132,19 @@ struct Rgba
 
 // ---- Theme variant + enforcement ------------------------------------------
 //
-// kStandardTheme expects WCAG 2.1 AA body text (>=4.5); kHighContrastTheme
+// kStandardTheme expects WCAG 2.1 AA body text (>=4.5); k_high_contrast_theme
 // expects AAA (>=7). Large-text and non-text targets have laxer cut-offs;
 // this library focuses on body text since editor / HUD UIs are
 // overwhelmingly small text.
 enum class ThemeVariant : std::uint8_t
 {
     kStandardTheme    = 0,
-    kHighContrastTheme = 1,
+    k_high_contrast_theme = 1,
 };
 
 [[nodiscard]] constexpr float min_required_contrast(ThemeVariant v) noexcept
 {
-    return (v == ThemeVariant::kHighContrastTheme) ? 7.0F : 4.5F;
+    return (v == ThemeVariant::k_high_contrast_theme) ? 7.0F : 4.5F;
 }
 
 [[nodiscard]] constexpr bool passes_contrast(Rgba fg, Rgba bg, ThemeVariant v) noexcept

@@ -22,14 +22,14 @@ namespace cd::diag
 
 enum class CrashSeverity : std::uint8_t
 {
-    Fatal,      // SIGABRT / SIGSEGV / SIGFPE / SIGILL — process terminating
-    NonFatal,   // soft-assert path; engine can continue
-    Interrupt,  // SIGINT / SIGTERM — graceful shutdown requested
+    kFatal,      // SIGABRT / SIGSEGV / SIGFPE / SIGILL — process terminating
+    kNonFatal,   // soft-assert path; engine can continue
+    kInterrupt,  // SIGINT / SIGTERM — graceful shutdown requested
 };
 
 struct CrashContext
 {
-    CrashSeverity severity { CrashSeverity::Fatal };
+    CrashSeverity severity { CrashSeverity::kFatal };
     int raw_signal { 0 };
     std::string_view label {};  // human-readable signal name (e.g., "SIGSEGV")
 };

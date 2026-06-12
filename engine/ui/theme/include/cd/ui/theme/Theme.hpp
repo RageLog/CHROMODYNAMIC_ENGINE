@@ -207,9 +207,9 @@ struct Theme
 // light is the same chroma rotated to a high-luminance surface, and
 // high-contrast hits WCAG AAA for body text (>=7:1) for users with
 // low-vision accessibility requirements.
-[[nodiscard]] Theme kDarkTheme() noexcept;
-[[nodiscard]] Theme kLightTheme() noexcept;
-[[nodiscard]] Theme kHighContrastTheme() noexcept;
+[[nodiscard]] Theme k_dark_theme() noexcept;
+[[nodiscard]] Theme k_light_theme() noexcept;
+[[nodiscard]] Theme k_high_contrast_theme() noexcept;
 
 // ---- Named palette factories (phase695 / M14 W6A) --------------------------
 //
@@ -223,17 +223,17 @@ struct Theme
 //   default_high_contrast_palette() -- black surface + white text (WCAG AAA)
 [[nodiscard]] inline Theme default_dark_palette() noexcept
 {
-    return kDarkTheme();
+    return k_dark_theme();
 }
 
 [[nodiscard]] inline Theme default_light_palette() noexcept
 {
-    return kLightTheme();
+    return k_light_theme();
 }
 
 [[nodiscard]] inline Theme default_high_contrast_palette() noexcept
 {
-    return kHighContrastTheme();
+    return k_high_contrast_theme();
 }
 
 // Resolve a theme_name string (as stored in .cdproj) to one of the three

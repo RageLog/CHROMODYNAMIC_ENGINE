@@ -64,7 +64,7 @@ void main() {
     desc.source = src;
     desc.stage = cd::shader::ShaderStage::kFragment;
     desc.lang = cd::shader::ShaderLanguage::kGlsl;
-    desc.target = cd::shader::TargetEnv::kVulkan_1_3;
+    desc.target = cd::shader::TargetEnv::kVulkan13;
     desc.source_name = "test_cluster_pbr.frag";
     auto r = compiler->compile(desc);
     ASSERT_TRUE(r.has_value()) << "GLSL compile failed: "

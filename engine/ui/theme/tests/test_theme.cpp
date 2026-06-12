@@ -27,7 +27,7 @@ constexpr float kEps = 1e-4F;
 
 TEST(ThemeV2, DarkThemeHasDarkSurface)
 {
-    const auto t = tt::kDarkTheme();
+    const auto t = tt::k_dark_theme();
     const auto surface = t.color(tt::PaletteSlot::kSurface);
     // Luminance must be in the "dark" band (<0.15) -- Material 3 surface
     // (#1C1B1F) sits at ~0.108 in sRGB-encoded space; threshold leaves
@@ -39,7 +39,7 @@ TEST(ThemeV2, DarkThemeHasDarkSurface)
 
 TEST(ThemeV2, LightThemeHasLightSurface)
 {
-    const auto t = tt::kLightTheme();
+    const auto t = tt::k_light_theme();
     const auto surface = t.color(tt::PaletteSlot::kSurface);
     // Luminance must be in the "near-white" band (>0.9).
     EXPECT_GT(tt::relative_luminance(surface), 0.9F);
@@ -49,7 +49,7 @@ TEST(ThemeV2, LightThemeHasLightSurface)
 
 TEST(ThemeV2, HighContrastThemeMeetsWcagAaaBodyText)
 {
-    const auto t = tt::kHighContrastTheme();
+    const auto t = tt::k_high_contrast_theme();
     const auto bg = t.color(tt::PaletteSlot::kSurface);
     const auto fg = t.color(tt::PaletteSlot::kOnSurface);
     const float ratio = tt::contrast_ratio(fg, bg);
@@ -61,7 +61,7 @@ TEST(ThemeV2, HighContrastThemeMeetsWcagAaaBodyText)
 
 TEST(ThemeV2, SpacingScaleIsMonotonic)
 {
-    const auto t = tt::kDarkTheme();
+    const auto t = tt::k_dark_theme();
     EXPECT_LT(t.spacing.xs, t.spacing.sm);
     EXPECT_LT(t.spacing.sm, t.spacing.md);
     EXPECT_LT(t.spacing.md, t.spacing.lg);
@@ -72,7 +72,7 @@ TEST(ThemeV2, SpacingScaleIsMonotonic)
 
 TEST(ThemeV2, ApplyBrandOverridePrimaryChangesOnPrimaryStaysReadable)
 {
-    auto base = tt::kDarkTheme();
+    auto base = tt::k_dark_theme();
     const auto before = base.color(tt::PaletteSlot::kPrimary);
 
     // Pick a clearly-dark brand so on_primary should flip to white.
@@ -101,7 +101,7 @@ TEST(ThemeV2, ApplyBrandOverridePrimaryChangesOnPrimaryStaysReadable)
 
 TEST(ThemeV2, TypographySizesWellDefined)
 {
-    const auto t = tt::kDarkTheme();
+    const auto t = tt::k_dark_theme();
     const auto body    = t.font(tt::TypographySlot::kBody);
     const auto heading = t.font(tt::TypographySlot::kHeading);
     const auto label   = t.font(tt::TypographySlot::kLabel);
@@ -118,7 +118,7 @@ TEST(ThemeV2, TypographySizesWellDefined)
 
 TEST(ThemeV2, MotionDurationsPositive)
 {
-    const auto t = tt::kDarkTheme();
+    const auto t = tt::k_dark_theme();
     EXPECT_GT(t.motion.duration_short,  0.0F);
     EXPECT_GT(t.motion.duration_medium, 0.0F);
     EXPECT_GT(t.motion.duration_long,   0.0F);
@@ -130,12 +130,12 @@ TEST(ThemeV2, MotionDurationsPositive)
 
 TEST(ThemeV2, ElevationZeroEqualsNoShadow)
 {
-    constexpr tt::Elevation flat { 0.0F, 0.0F };
-    EXPECT_NEAR(flat.shadow_blur,     0.0F, kEps);
-    EXPECT_NEAR(flat.shadow_offset_y, 0.0F, kEps);
+    constexpr tt::Elevation kFlat { 0.0F, 0.0F };
+    EXPECT_NEAR(kFlat.shadow_blur,     0.0F, kEps);
+    EXPECT_NEAR(kFlat.shadow_offset_y, 0.0F, kEps);
 
     // Defaults are non-zero (raised surface).
-    const auto t = tt::kDarkTheme();
+    const auto t = tt::k_dark_theme();
     EXPECT_GT(t.elevation.shadow_blur,     0.0F);
     EXPECT_GT(t.elevation.shadow_offset_y, 0.0F);
 }
@@ -146,7 +146,7 @@ TEST(ThemeV2, PaletteAndTypographyArraySizes)
 {
     static_assert(tt::kPaletteSize == 16);
     static_assert(tt::kTypographySize == 4);
-    const auto t = tt::kDarkTheme();
+    const auto t = tt::k_dark_theme();
     EXPECT_EQ(t.palette.size(),    16U);
     EXPECT_EQ(t.typography.size(), 4U);
 }
@@ -177,7 +177,7 @@ namespace wt = cd::ui::widgets;
 // ---- Case 11: surface_subtle is lighter than surface -----------------------
 //
 // surface_subtle (#232A35) must be strictly lighter than surface (#1A1F26 in
-// the context mapping from kDarkTheme). We test at the widget-Theme default
+// the context mapping from k_dark_theme). We test at the widget-Theme default
 // level only (no V2 lookup needed) -- the default struct values encode the
 // warm-dark palette contract.
 TEST(ThemeV2SemanticTokens, SurfaceSubtleIsLighterThanSurface)

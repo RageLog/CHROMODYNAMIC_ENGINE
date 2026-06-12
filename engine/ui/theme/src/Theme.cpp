@@ -57,7 +57,7 @@ constexpr ColorToken pick_on_color(ColorToken bg) noexcept
 // Material 3 reference "dark" palette. Surface is a near-black neutral
 // (#1C1B1F), primary is a muted lavender (#D0BCFF) so it pops against
 // the dark surface while staying inside the brand chroma envelope.
-Theme kDarkTheme() noexcept
+Theme k_dark_theme() noexcept
 {
     Theme t;
     t.palette[static_cast<std::size_t>(PaletteSlot::kPrimary)]            = rgb(0xD0, 0xBC, 0xFF);  // primary
@@ -93,7 +93,7 @@ Theme kDarkTheme() noexcept
 // Material 3 reference "light" palette. Surface is near-white
 // (#FFFBFE), primary is a stronger purple (#6750A4) so it stays
 // readable against the bright surface.
-Theme kLightTheme() noexcept
+Theme k_light_theme() noexcept
 {
     Theme t;
     t.palette[static_cast<std::size_t>(PaletteSlot::kPrimary)]            = rgb(0x67, 0x50, 0xA4);  // primary
@@ -130,7 +130,7 @@ Theme kLightTheme() noexcept
 // contrast ratio >= 7:1). Surface is pure black, on_surface is pure
 // white -- contrast is 21:1, well above AAA. Primary is canary yellow
 // so a colour-blind user can still distinguish action affordances.
-Theme kHighContrastTheme() noexcept
+Theme k_high_contrast_theme() noexcept
 {
     Theme t;
     t.palette[static_cast<std::size_t>(PaletteSlot::kPrimary)]            = rgb(0xFF, 0xEB, 0x3B);  // primary (yellow, AAA on black)

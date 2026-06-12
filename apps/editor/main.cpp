@@ -4022,7 +4022,7 @@ int main(int argc, char** argv)
     // make unconditionally.
     if (route_taken == 1)
     {
-        const auto dark = uth::kDarkTheme();
+        const auto dark = uth::k_dark_theme();
         const auto pri  = dark.color(uth::PaletteSlot::kPrimary);
         const auto sec  = dark.color(uth::PaletteSlot::kSecondary);
         const auto sur  = dark.color(uth::PaletteSlot::kSurface);

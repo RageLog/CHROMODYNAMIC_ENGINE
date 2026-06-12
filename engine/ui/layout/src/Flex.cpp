@@ -134,7 +134,7 @@ void FlexTree::add_child(NodeId parent, NodeId child)
     {
         return;
     }
-    node_(parent).children.push_back(child);
+    node(parent).children.push_back(child);
 }
 
 void FlexTree::set_style(NodeId node, const FlexStyle& style)
@@ -143,7 +143,7 @@ void FlexTree::set_style(NodeId node, const FlexStyle& style)
     {
         return;
     }
-    node_(node).style = style;
+    this->node(node).style = style;
 }
 
 Rect FlexTree::layout(NodeId node) const noexcept
@@ -152,7 +152,7 @@ Rect FlexTree::layout(NodeId node) const noexcept
     {
         return {};
     }
-    return node_(node).computed_rect;
+    return this->node(node).computed_rect;
 }
 
 void FlexTree::solve(NodeId root, float available_width, float available_height)
@@ -161,18 +161,18 @@ void FlexTree::solve(NodeId root, float available_width, float available_height)
     {
         return;
     }
-    auto& r = node_(root);
+    auto& r = node(root);
     // Root sits at (0, 0) by default; its own width / height honour pinned
     // values if the caller set them, otherwise fill `available_*`.
     const float w = is_auto(r.style.width)  ? available_width  : r.style.width;
     const float h = is_auto(r.style.height) ? available_height : r.style.height;
     r.computed_rect = Rect { 0.0F, 0.0F, w, h };
-    solve_subtree_(root, w, h);
+    solve_subtree(root, w, h);
 }
 
-void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
+void FlexTree::solve_subtree(NodeId node_id, float outer_w, float outer_h)
 {
-    auto& n = node_(node_id);
+    auto& n = node(node_id);
     const FlexDirection dir = n.style.direction;
 
     const float inner_w = std::max(0.0F, outer_w - pad_main(n.style.padding, dir) * (axis_is_row(dir) ? 1.0F : 0.0F)
@@ -200,7 +200,7 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
     float used_main = 0.0F;
     for (std::size_t i = 0; i < k; ++i)
     {
-        const auto& cs = node_(n.children[i]).style;
+        const auto& cs = node(n.children[i]).style;
         base_main[i]  = resolve_base_main(cs, dir);
         base_cross[i] = resolve_base_cross(cs, dir, inner_cross);
         used_main    += base_main[i];
@@ -218,13 +218,13 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
         float grow_total = 0.0F;
         for (std::size_t i = 0; i < k; ++i)
         {
-            grow_total += node_(n.children[i]).style.flex_grow;
+            grow_total += node(n.children[i]).style.flex_grow;
         }
         if (grow_total > 0.0F)
         {
             for (std::size_t i = 0; i < k; ++i)
             {
-                const float g = node_(n.children[i]).style.flex_grow;
+                const float g = node(n.children[i]).style.flex_grow;
                 final_main[i] = base_main[i] + free_main * (g / grow_total);
             }
         }
@@ -242,13 +242,13 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
         float shrink_total = 0.0F;
         for (std::size_t i = 0; i < k; ++i)
         {
-            shrink_total += node_(n.children[i]).style.flex_shrink * base_main[i];
+            shrink_total += node(n.children[i]).style.flex_shrink * base_main[i];
         }
         if (shrink_total > 0.0F)
         {
             for (std::size_t i = 0; i < k; ++i)
             {
-                const float s = node_(n.children[i]).style.flex_shrink;
+                const float s = node(n.children[i]).style.flex_shrink;
                 const float share = (s * base_main[i]) / shrink_total;
                 final_main[i] = std::max(0.0F, base_main[i] + free_main * share);
             }
@@ -272,7 +272,7 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
     // Clamp main against min/max + min 0.
     for (std::size_t i = 0; i < k; ++i)
     {
-        const auto& cs = node_(n.children[i]).style;
+        const auto& cs = node(n.children[i]).style;
         const float min_v = axis_is_row(dir) ? cs.min_width  : cs.min_height;
         const float max_v = axis_is_row(dir) ? cs.max_width  : cs.max_height;
         final_main[i] = clamp_min_max(final_main[i], min_v, max_v);
@@ -281,7 +281,7 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
     // 4. Resolve cross sizes (stretch if align-items=stretch and unpinned).
     for (std::size_t i = 0; i < k; ++i)
     {
-        const auto& cs = node_(n.children[i]).style;
+        const auto& cs = node(n.children[i]).style;
         const float pinned_cross = axis_is_row(dir) ? cs.height : cs.width;
         const float intr_cross   = axis_is_row(dir) ? cs.intrinsic_height : cs.intrinsic_width;
         if (!is_auto(pinned_cross))
@@ -350,7 +350,7 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
     float main_cursor  = pad_ms + start_offset;
     for (std::size_t i = 0; i < k; ++i)
     {
-        auto& c = node_(n.children[i]);
+        auto& c = node(n.children[i]);
         const float fm = final_main[i];
         const float fc = final_cross[i];
 
@@ -397,14 +397,14 @@ void FlexTree::solve_subtree_(NodeId node_id, float outer_w, float outer_h)
         }
 
         // Recurse: child's outer rect is what we just computed.
-        solve_subtree_(n.children[i], c.computed_rect.width, c.computed_rect.height);
+        solve_subtree(n.children[i], c.computed_rect.width, c.computed_rect.height);
 
         main_cursor += fm + n.style.gap_main + extra_gap;
     }
 }
 
-void FlexTree::compute_main_(NodeId, float)   { /* reserved for future incremental solver */ }
-void FlexTree::compute_cross_(NodeId, float)  { /* reserved */ }
-void FlexTree::position_children_(NodeId)     { /* reserved */ }
+void FlexTree::compute_main(NodeId, float)   { /* reserved for future incremental solver */ }
+void FlexTree::compute_cross(NodeId, float)  { /* reserved */ }
+void FlexTree::position_children(NodeId)     { /* reserved */ }
 
 }  // namespace cd::ui::layout

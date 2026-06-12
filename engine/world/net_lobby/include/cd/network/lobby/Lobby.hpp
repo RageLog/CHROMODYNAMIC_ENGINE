@@ -174,9 +174,9 @@ public:
     [[nodiscard]] std::span<const RoomState> active_rooms() const noexcept;
 
 private:
-    std::vector<RoomState>                           m_rooms;
-    std::unordered_map<RoomId, std::size_t>          m_index;  ///< room_id -> m_rooms index
-    RoomId                                           m_next_id { 1 };
+    std::vector<RoomState>                           m_rooms_;
+    std::unordered_map<RoomId, std::size_t>          m_index_;  ///< room_id -> m_rooms index
+    RoomId                                           m_next_id_ { 1 };
 
     [[nodiscard]] RoomState*       find_room(RoomId room_id) noexcept;
     [[nodiscard]] const RoomState* find_room(RoomId room_id) const noexcept;

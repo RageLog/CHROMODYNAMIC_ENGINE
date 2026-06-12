@@ -96,7 +96,7 @@ SubscriptionId HotReloadBus::watch(std::string   path,
                 // Inside the watcher callback we only mark the entry pending.
                 // The actual dispatch (and any throttle decision) happens
                 // back in tick() once we know the current time.
-                note_event_(key, ChangeKind::kModified, Clock::now());
+                note_event(key, ChangeKind::kModified, Clock::now());
             });
     }
 
@@ -157,7 +157,7 @@ std::size_t HotReloadBus::tick(TimePoint now)
 {
     // Phase 1: drain raw mtime events from FileWatcher. The watcher fires
     // synchronously inside poll(); each callback funnels into
-    // `note_event_(path, kModified, ...)`.
+    // `note_event(path, kModified, ...)`.
     watcher_->poll();
 
     // Phase 2: detect creation / deletion transitions ourselves.
@@ -172,26 +172,26 @@ std::size_t HotReloadBus::tick(TimePoint now)
             // creation and deletion happened inside the same window we
             // would not be in this branch because the final state is
             // "missing".)
-            note_event_(path, ChangeKind::kModified, now);
+            note_event(path, ChangeKind::kModified, now);
         }
         else if (!exists_now && entry.file_present_last_poll)
         {
             // File disappeared. We still want subscribers to know — Asset
             // streamers usually invalidate any cached blob; the live game
             // can fall back to a placeholder texture.
-            note_event_(path, ChangeKind::kDeleted, now);
+            note_event(path, ChangeKind::kDeleted, now);
         }
         entry.file_present_last_poll = exists_now;
     }
 
     // Phase 3: flush pending events whose throttle window has elapsed.
-    return flush_pending_(now);
+    return flush_pending(now);
 }
 
 // -----------------------------------------------------------------------------
-// note_event_
+// note_event
 // -----------------------------------------------------------------------------
-void HotReloadBus::note_event_(const std::string& path, ChangeKind kind, TimePoint now)
+void HotReloadBus::note_event(const std::string& path, ChangeKind kind, TimePoint now)
 {
     auto it = paths_.find(path);
     if (it == paths_.end()) return;
@@ -217,7 +217,7 @@ void HotReloadBus::note_event_(const std::string& path, ChangeKind kind, TimePoi
 // -----------------------------------------------------------------------------
 // flush_pending_
 // -----------------------------------------------------------------------------
-std::size_t HotReloadBus::flush_pending_(TimePoint now)
+std::size_t HotReloadBus::flush_pending(TimePoint now)
 {
     std::size_t fired = 0;
     for (auto& [path, entry] : paths_)

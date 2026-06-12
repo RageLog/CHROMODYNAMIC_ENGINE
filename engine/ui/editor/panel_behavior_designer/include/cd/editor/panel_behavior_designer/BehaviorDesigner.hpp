@@ -155,7 +155,7 @@ private:
     /// Recursively walk the BT and compute subtree width (in node units).
     /// Populates `nodes_out` in pre-order with layout_x_ set to column,
     /// layout_y_ set to depth. Returns subtree width.
-    static float measure_subtree_(
+    static float measure_subtree(
         const cd::game::ai_bt::Node* node,
         BehaviorNodeId                parent_id,
         std::uint32_t                 depth,
@@ -168,13 +168,13 @@ private:
         std::vector<LayoutNode>&      nodes_out);
 
     /// Draw the real-BT graph path.
-    void draw_real_tree_(cd::ui::renderer::DrawBatcher& batcher,
+    void draw_real_tree(cd::ui::renderer::DrawBatcher& batcher,
                          const cd::ui::widgets::Theme&  theme,
                          float graph_x, float graph_y,
                          float graph_w, float graph_h) const;
 
     /// Draw the Sprint-1 demo-node fallback path.
-    void draw_demo_nodes_(cd::ui::renderer::DrawBatcher& batcher,
+    void draw_demo_nodes(cd::ui::renderer::DrawBatcher& batcher,
                           const cd::ui::widgets::Theme&  theme,
                           float graph_x, float graph_y,
                           float graph_w, float graph_h) const;

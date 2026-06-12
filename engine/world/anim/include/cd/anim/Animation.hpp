@@ -163,7 +163,7 @@ public:
     cd::math::Transformf update(float dt) noexcept;
 
 private:
-    [[nodiscard]] float wrap_(float t, float duration) const noexcept;
+    [[nodiscard]] float wrap(float t, float duration) const noexcept;
 
     const AnimationClip* clip_ { nullptr };
     float time_ { 0.0F };

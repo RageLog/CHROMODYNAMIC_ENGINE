@@ -62,7 +62,7 @@ namespace
     d.source = source;
     d.stage = to_shader_stage(rhi_stage);
     d.lang = cd::shader::ShaderLanguage::kGlsl;
-    d.target = cd::shader::TargetEnv::kVulkan_1_3;
+    d.target = cd::shader::TargetEnv::kVulkan13;
     d.source_name = name;
     auto r = compiler.compile(d);
     if (!r.has_value())
@@ -78,25 +78,25 @@ namespace
 
 Material::~Material()
 {
-    release_();
+    release();
 }
 
 Material::Material(Material&& other) noexcept
 {
-    steal_(std::move(other));
+    steal(std::move(other));
 }
 
 Material& Material::operator=(Material&& other) noexcept
 {
     if (this != &other)
     {
-        release_();
-        steal_(std::move(other));
+        release();
+        steal(std::move(other));
     }
     return *this;
 }
 
-void Material::release_() noexcept
+void Material::release() noexcept
 {
     if (device_ == nullptr)
         return;
@@ -123,7 +123,7 @@ void Material::release_() noexcept
     has_descriptors_ = false;
 }
 
-void Material::steal_(Material&& other) noexcept
+void Material::steal(Material&& other) noexcept
 {
     device_ = other.device_;
     vs_ = other.vs_;
@@ -412,25 +412,25 @@ void Material::apply(cd::rhi::ICommandBuffer& cmd) const
 
 MaterialInstance::~MaterialInstance()
 {
-    release_();
+    release();
 }
 
 MaterialInstance::MaterialInstance(MaterialInstance&& other) noexcept
 {
-    steal_(std::move(other));
+    steal(std::move(other));
 }
 
 MaterialInstance& MaterialInstance::operator=(MaterialInstance&& other) noexcept
 {
     if (this != &other)
     {
-        release_();
-        steal_(std::move(other));
+        release();
+        steal(std::move(other));
     }
     return *this;
 }
 
-void MaterialInstance::release_() noexcept
+void MaterialInstance::release() noexcept
 {
     if (device_ == nullptr)
         return;
@@ -454,7 +454,7 @@ void MaterialInstance::release_() noexcept
     emissive_[2] = 0.0F;
 }
 
-void MaterialInstance::steal_(MaterialInstance&& other) noexcept
+void MaterialInstance::steal(MaterialInstance&& other) noexcept
 {
     device_ = other.device_;
     desc_set_ = other.desc_set_;

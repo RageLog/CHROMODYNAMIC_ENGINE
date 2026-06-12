@@ -66,7 +66,7 @@ namespace
 
 [[nodiscard]] cd::ui::widgets::Theme build_dark_widget_theme()
 {
-    const auto dark = cd::ui::theme::kDarkTheme();
+    const auto dark = cd::ui::theme::k_dark_theme();
     cd::ui::widgets::Theme t {};
     t.background    = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kBackground));
     t.surface       = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kSurface));

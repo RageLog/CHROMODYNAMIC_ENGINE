@@ -125,7 +125,7 @@ struct ErrorCode
 };
 
 /// Canonical "no error" sentinel.
-inline const ErrorCode kNoError {};
+inline const ErrorCode k_no_error {};
 
 // Core domain (0x0000) error codes
 namespace core_errors

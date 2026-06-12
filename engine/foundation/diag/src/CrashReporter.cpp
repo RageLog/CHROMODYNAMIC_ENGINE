@@ -44,14 +44,14 @@ void dispatch_signal(cd::platform::SignalCategory category, int raw) noexcept
     ctx.label = label_for(raw);
     switch (category)
     {
-        case cd::platform::SignalCategory::Crash:
-            ctx.severity = CrashSeverity::Fatal;
+        case cd::platform::SignalCategory::kCrash:
+            ctx.severity = CrashSeverity::kFatal;
             break;
-        case cd::platform::SignalCategory::Interrupt:
-            ctx.severity = CrashSeverity::Interrupt;
+        case cd::platform::SignalCategory::kInterrupt:
+            ctx.severity = CrashSeverity::kInterrupt;
             break;
         default:
-            ctx.severity = CrashSeverity::NonFatal;
+            ctx.severity = CrashSeverity::kNonFatal;
             break;
     }
     ReporterFn cb = g_reporter.load(std::memory_order_acquire);
@@ -93,7 +93,7 @@ void CrashReporter::uninstall() noexcept
 void CrashReporter::capture_non_fatal(std::string_view label) noexcept
 {
     CrashContext ctx {};
-    ctx.severity = CrashSeverity::NonFatal;
+    ctx.severity = CrashSeverity::kNonFatal;
     ctx.raw_signal = 0;
     ctx.label = label;
     ReporterFn cb = g_reporter.load(std::memory_order_acquire);

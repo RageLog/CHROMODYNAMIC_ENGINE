@@ -112,9 +112,9 @@ void glslang_shutdown()
 {
     switch (t)
     {
-        case TargetEnv::kVulkan_1_2:
+        case TargetEnv::kVulkan12:
             return glslang::EShTargetVulkan_1_2;
-        case TargetEnv::kVulkan_1_3:
+        case TargetEnv::kVulkan13:
             return glslang::EShTargetVulkan_1_3;
     }
     return glslang::EShTargetVulkan_1_3;
@@ -125,9 +125,9 @@ void glslang_shutdown()
     // Vulkan 1.2 → SPIR-V 1.5, Vulkan 1.3 → SPIR-V 1.6 (per Vulkan spec table).
     switch (t)
     {
-        case TargetEnv::kVulkan_1_2:
+        case TargetEnv::kVulkan12:
             return glslang::EShTargetSpv_1_5;
-        case TargetEnv::kVulkan_1_3:
+        case TargetEnv::kVulkan13:
             return glslang::EShTargetSpv_1_6;
     }
     return glslang::EShTargetSpv_1_6;

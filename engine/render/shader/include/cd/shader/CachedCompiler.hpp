@@ -79,7 +79,7 @@ public:
     bool clear();
 
 private:
-    [[nodiscard]] std::filesystem::path path_for_(std::uint64_t key, std::string_view suffix) const;
+    [[nodiscard]] std::filesystem::path path_for(std::uint64_t key, std::string_view suffix) const;
 
     ICompiler* inner_;
     std::filesystem::path cache_dir_;

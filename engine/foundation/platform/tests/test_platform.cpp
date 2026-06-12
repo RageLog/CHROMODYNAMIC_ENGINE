@@ -18,7 +18,7 @@ namespace
 
 std::atomic<int> g_invocations { 0 };
 std::atomic<int> g_last_signal { 0 };
-std::atomic<cd::platform::SignalCategory> g_last_category { cd::platform::SignalCategory::Unknown };
+std::atomic<cd::platform::SignalCategory> g_last_category { cd::platform::SignalCategory::kUnknown };
 
 extern "C" void test_callback(cd::platform::SignalCategory category, int raw) noexcept
 {
@@ -63,7 +63,7 @@ TEST(SignalHandler, DispatchOnRaisedInterrupt)
 {
     g_invocations.store(0);
     g_last_signal.store(0);
-    g_last_category.store(cd::platform::SignalCategory::Unknown);
+    g_last_category.store(cd::platform::SignalCategory::kUnknown);
 
     cd::platform::SignalHandler h;
     ASSERT_TRUE(h.install(test_callback));
@@ -74,7 +74,7 @@ TEST(SignalHandler, DispatchOnRaisedInterrupt)
 
     EXPECT_GE(g_invocations.load(), 1);
     EXPECT_EQ(g_last_signal.load(), SIGTERM);
-    EXPECT_EQ(g_last_category.load(), cd::platform::SignalCategory::Interrupt);
+    EXPECT_EQ(g_last_category.load(), cd::platform::SignalCategory::kInterrupt);
 
     h.uninstall();
 }

@@ -83,9 +83,9 @@ struct alignas(16) TracePushConstants
     std::uint32_t probes_dim[4];     // xyz = count, w = rays_per_probe
     std::uint32_t probe_face_size;
     std::uint32_t frame_index;
-    std::uint32_t _pad0;
-    std::uint32_t _pad1;
-    float        sky_color[3];     float _pad2;
+    std::uint32_t pad0;
+    std::uint32_t pad1;
+    float        sky_color[3];     float pad2;
 };
 static_assert(sizeof(TracePushConstants) == 80,
               "TracePushConstants must match kDdgiTraceCS push-constant block");
@@ -102,8 +102,8 @@ struct alignas(16) BlendPushConstants
     std::uint32_t probes_dim[4];     // xyz = count, w = rays_per_probe
     std::uint32_t probe_face_size;
     std::uint32_t frame_index;
-    std::uint32_t _pad0;
-    std::uint32_t _pad1;
+    std::uint32_t pad0;
+    std::uint32_t pad1;
 };
 static_assert(sizeof(BlendPushConstants) == 64,
               "BlendPushConstants must match kDdgiBlend{Irradiance,Visibility}CS PC blocks");
@@ -122,14 +122,14 @@ static_assert(sizeof(BlendPushConstants) == 64,
 /// but the semantics differ).
 struct alignas(16) SamplePushConstants
 {
-    float        grid_origin[3];    float _pad0;
-    float        grid_spacing[3];   float _pad1;
+    float        grid_origin[3];    float pad0;
+    float        grid_spacing[3];   float pad1;
     std::uint32_t probes_dim[4];      // xyz = count, w = rays_per_probe (unused here)
     std::uint32_t probe_face_size;
     std::uint32_t output_width;
     std::uint32_t output_height;
-    std::uint32_t _pad3;
-    float        sky_color[3];      float _pad4;
+    std::uint32_t pad3;
+    float        sky_color[3];      float pad4;
 };
 static_assert(sizeof(SamplePushConstants) == 80,
               "SamplePushConstants must match kDdgiSampleCS push-constant block");

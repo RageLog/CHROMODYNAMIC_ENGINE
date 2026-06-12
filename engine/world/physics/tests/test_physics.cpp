@@ -67,9 +67,9 @@ TEST(Physics, GravityIntegratesDynamicBody)
     d.position = { 0.0F, 0.0F, 0.0F };
     auto b = w->create_body(d);
     ASSERT_TRUE(b.has_value());
-    constexpr float dt = 1.0F / 60.0F;
+    constexpr float kDt = 1.0F / 60.0F;
     for (int i = 0; i < 60; ++i)
-        w->step(dt);
+        w->step(kDt);
     // After 1s of -9.81 m/s² gravity, semi-implicit Euler produces a
     // slightly larger drop than the analytic v_avg formula because each
     // step uses v_{n+1} for position update. Empirically ≈ -4.96.

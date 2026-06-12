@@ -39,36 +39,36 @@ class SmallVector
 public:
     SmallVector() noexcept = default;
 
-    SmallVector(const SmallVector& other) { copy_from_(other); }
+    SmallVector(const SmallVector& other) { copy_from(other); }
     SmallVector& operator=(const SmallVector& other)
     {
-        if (this != &other) { clear(); copy_from_(other); }
+        if (this != &other) { clear(); copy_from(other); }
         return *this;
     }
-    SmallVector(SmallVector&& other) noexcept { move_from_(std::move(other)); }
+    SmallVector(SmallVector&& other) noexcept { move_from(std::move(other)); }
     SmallVector& operator=(SmallVector&& other) noexcept
     {
-        if (this != &other) { clear(); move_from_(std::move(other)); }
+        if (this != &other) { clear(); move_from(std::move(other)); }
         return *this;
     }
     ~SmallVector() { clear(); }
 
     void push_back(const T& v)
     {
-        ensure_capacity_(size_ + 1);
+        ensure_capacity(size_ + 1);
         new (data() + size_) T(v);
         ++size_;
     }
     void push_back(T&& v)
     {
-        ensure_capacity_(size_ + 1);
+        ensure_capacity(size_ + 1);
         new (data() + size_) T(std::move(v));
         ++size_;
     }
     template <class... Args>
     T& emplace_back(Args&&... args)
     {
-        ensure_capacity_(size_ + 1);
+        ensure_capacity(size_ + 1);
         T* slot = data() + size_;
         new (slot) T(std::forward<Args>(args)...);
         ++size_;
@@ -116,7 +116,7 @@ private:
     std::size_t heap_cap_ { 0 };
     std::size_t size_ { 0 };
 
-    void ensure_capacity_(std::size_t need)
+    void ensure_capacity(std::size_t need)
     {
         if (need <= capacity()) return;
         const std::size_t new_cap = std::max(need, capacity() * 2);
@@ -131,11 +131,11 @@ private:
         heap_cap_ = new_cap;
     }
 
-    void copy_from_(const SmallVector& o)
+    void copy_from(const SmallVector& o)
     {
         for (std::size_t i = 0; i < o.size_; ++i) push_back(o[i]);
     }
-    void move_from_(SmallVector&& o) noexcept
+    void move_from(SmallVector&& o) noexcept
     {
         for (std::size_t i = 0; i < o.size_; ++i)
             new (data() + i) T(std::move(o[i]));

@@ -54,29 +54,29 @@ bool has_warning(const std::vector<ValidationIssue>& issues)
 }
 
 // Minimal valid PNG header (8-byte signature).
-constexpr std::array<std::uint8_t, 8> k_png_sig{
+constexpr std::array<std::uint8_t, 8> kPngSig{
     0x89U, 'P', 'N', 'G', '\r', '\n', 0x1AU, '\n'
 };
 
 // Minimal valid JPEG header (declared for completeness; not exercised yet).
-[[maybe_unused]] constexpr std::array<std::uint8_t, 4> k_jpg_sig{ 0xFFU, 0xD8U, 0xFFU, 0xE0U };
+[[maybe_unused]] constexpr std::array<std::uint8_t, 4> kJpgSig{ 0xFFU, 0xD8U, 0xFFU, 0xE0U };
 
 // Minimal valid GLB header (12 bytes): magic + version(2) + length(12).
-constexpr std::array<std::uint8_t, 12> k_glb_header{
+constexpr std::array<std::uint8_t, 12> kGlbHeader{
     0x67U, 0x6CU, 0x54U, 0x46U,  // "glTF"
     0x02U, 0x00U, 0x00U, 0x00U,  // version = 2 (LE)
     0x0CU, 0x00U, 0x00U, 0x00U   // length = 12 (LE)
 };
 
 // Minimal valid WAV header: "RIFF" + 4-byte size + "WAVE" (12 bytes).
-constexpr std::array<std::uint8_t, 12> k_wav_header{
+constexpr std::array<std::uint8_t, 12> kWavHeader{
     'R', 'I', 'F', 'F',
     0x04U, 0x00U, 0x00U, 0x00U,  // chunk size (dummy)
     'W', 'A', 'V', 'E'
 };
 
 // Minimal valid OGG page header (4-byte capture pattern).
-constexpr std::array<std::uint8_t, 4> k_ogg_sig{ 'O', 'g', 'g', 'S' };
+constexpr std::array<std::uint8_t, 4> kOggSig{ 'O', 'g', 'g', 'S' };
 
 // ---- T1: empty blob => kError for all three entrypoints ---------------------
 
@@ -115,7 +115,7 @@ TEST(Validator, OversizedTextureBlobWarning)
     // 4-byte PNG-sig + 100 extra bytes = 104 bytes total.
     // conservative_pixels = 104 / 4 = 26 > 4 => warning.
     std::vector<std::uint8_t> oversized_blob(
-        k_png_sig.begin(), k_png_sig.end());
+        kPngSig.begin(), kPngSig.end());
     oversized_blob.resize(oversized_blob.size() + 100U, 0xFFU);
 
     const auto issues = v.validate_texture_blob(
@@ -176,7 +176,7 @@ TEST(Validator, ValidPngBlobNoIssues)
 {
     const Validator v;
     const auto      issues = v.validate_texture_blob(
-        std::span<const std::uint8_t>{ k_png_sig }, "albedo.png");
+        std::span<const std::uint8_t>{ kPngSig }, "albedo.png");
     EXPECT_TRUE(issues.empty())
         << "Expected no issues for minimal valid PNG blob";
 }
@@ -185,7 +185,7 @@ TEST(Validator, ValidGlbBlobNoIssues)
 {
     const Validator v;
     const auto      issues = v.validate_gltf_blob(
-        std::span<const std::uint8_t>{ k_glb_header }, "scene.glb");
+        std::span<const std::uint8_t>{ kGlbHeader }, "scene.glb");
     EXPECT_TRUE(issues.empty())
         << "Expected no issues for minimal valid GLB blob";
 }
@@ -194,7 +194,7 @@ TEST(Validator, ValidWavBlobNoIssues)
 {
     const Validator v;
     const auto      issues = v.validate_audio_blob(
-        std::span<const std::uint8_t>{ k_wav_header }, "click.wav");
+        std::span<const std::uint8_t>{ kWavHeader }, "click.wav");
     EXPECT_TRUE(issues.empty())
         << "Expected no issues for minimal valid WAV blob";
 }
@@ -208,7 +208,7 @@ TEST(Validator, ConfigureAppliesNewPolicy)
     // Default policy: max 16 Mi pixels — PNG sig of 8 bytes is fine.
     {
         const auto issues = v.validate_texture_blob(
-            std::span<const std::uint8_t>{ k_png_sig }, "test.png");
+            std::span<const std::uint8_t>{ kPngSig }, "test.png");
         EXPECT_FALSE(has_warning(issues))
             << "Default policy must not warn on tiny blob";
     }
@@ -222,7 +222,7 @@ TEST(Validator, ConfigureAppliesNewPolicy)
     // must produce a warning.
     {
         const auto issues = v.validate_texture_blob(
-            std::span<const std::uint8_t>{ k_png_sig }, "test.png");
+            std::span<const std::uint8_t>{ kPngSig }, "test.png");
         EXPECT_TRUE(has_warning(issues))
             << "Tightened policy must warn on blob with > 1 conservative pixel";
     }
@@ -250,7 +250,7 @@ TEST(Validator, ValidOggBlobNoIssues)
 {
     const Validator v;
     const auto      issues = v.validate_audio_blob(
-        std::span<const std::uint8_t>{ k_ogg_sig }, "music.ogg");
+        std::span<const std::uint8_t>{ kOggSig }, "music.ogg");
     EXPECT_TRUE(issues.empty())
         << "Expected no issues for minimal valid OGG blob";
 }
@@ -261,13 +261,13 @@ TEST(Validator, GlbVersionNot2IsWarning)
 {
     const Validator v;
     // GLB with version = 1 (not 2).
-    constexpr std::array<std::uint8_t, 12> glb_v1{
+    constexpr std::array<std::uint8_t, 12> kGlbV1{
         0x67U, 0x6CU, 0x54U, 0x46U,  // "glTF"
         0x01U, 0x00U, 0x00U, 0x00U,  // version = 1 (LE)
         0x0CU, 0x00U, 0x00U, 0x00U
     };
     const auto issues = v.validate_gltf_blob(
-        std::span<const std::uint8_t>{ glb_v1 }, "old.glb");
+        std::span<const std::uint8_t>{ kGlbV1 }, "old.glb");
     EXPECT_TRUE(has_warning(issues))
         << "Expected kWarning for GLB version != 2";
     EXPECT_FALSE(has_error(issues))
@@ -280,13 +280,13 @@ TEST(Validator, RiffWithoutWaveTagIsError)
 {
     const Validator v;
     // "RIFF" at offset 0 but "XXXX" at offset 8 (not "WAVE").
-    constexpr std::array<std::uint8_t, 12> riff_no_wave{
+    constexpr std::array<std::uint8_t, 12> kRiffNoWave{
         'R', 'I', 'F', 'F',
         0x04U, 0x00U, 0x00U, 0x00U,
         'X', 'X', 'X', 'X'
     };
     const auto issues = v.validate_audio_blob(
-        std::span<const std::uint8_t>{ riff_no_wave }, "bad.wav");
+        std::span<const std::uint8_t>{ kRiffNoWave }, "bad.wav");
     EXPECT_TRUE(has_error(issues))
         << "Expected kError for RIFF blob without WAVE fourCC";
 }
@@ -311,7 +311,7 @@ TEST(Validator, ConfigureReplacesPolicy)
 
     // PNG sig blob must not warn under loose policy.
     const auto issues = v.validate_texture_blob(
-        std::span<const std::uint8_t>{ k_png_sig }, "test.png");
+        std::span<const std::uint8_t>{ kPngSig }, "test.png");
     EXPECT_FALSE(has_warning(issues))
         << "Loose policy must not warn on tiny PNG blob";
 }

@@ -343,7 +343,7 @@ struct MomentPC
     std::uint32_t resolution_x;
     std::uint32_t resolution_y;
     float         temporal_alpha;
-    float         _pad;
+    float         pad;
 };
 
 struct VariancePC
@@ -351,7 +351,7 @@ struct VariancePC
     std::uint32_t resolution_x;
     std::uint32_t resolution_y;
     std::uint32_t short_history_threshold;
-    std::uint32_t _pad;
+    std::uint32_t pad;
 };
 
 struct FilterPC
@@ -363,7 +363,7 @@ struct FilterPC
     float         phi_depth;
     float         phi_normal;
     std::uint32_t iteration;
-    std::uint32_t _pad;
+    std::uint32_t pad;
 };
 
 // Reservoir size mirrors `cd::restir_di::DispatchPass::reservoir_buffer_size`
@@ -793,7 +793,7 @@ bool SvgfDenoiser::execute(cd::rhi::ICommandBuffer&   cb,
             .resolution_x   = cfg_.viewport_width,
             .resolution_y   = cfg_.viewport_height,
             .temporal_alpha = cfg_.temporal_alpha,
-            ._pad           = 0.0F,
+            .pad           = 0.0F,
         };
         cb.push_constants(moment_layout_,
                           cd::rhi::ShaderStage::kCompute,
@@ -813,7 +813,7 @@ bool SvgfDenoiser::execute(cd::rhi::ICommandBuffer&   cb,
             .resolution_x            = cfg_.viewport_width,
             .resolution_y            = cfg_.viewport_height,
             .short_history_threshold = kSvgfShortHistoryThreshold,
-            ._pad                    = 0U,
+            .pad                    = 0U,
         };
         cb.push_constants(variance_layout_,
                           cd::rhi::ShaderStage::kCompute,
@@ -840,7 +840,7 @@ bool SvgfDenoiser::execute(cd::rhi::ICommandBuffer&   cb,
             .phi_depth    = cfg_.depth_phi,
             .phi_normal   = cfg_.normal_phi,
             .iteration    = i,
-            ._pad         = 0U,
+            .pad         = 0U,
         };
         cb.bind_descriptor_set(0U, ds);
         cb.push_constants(filter_layout_,

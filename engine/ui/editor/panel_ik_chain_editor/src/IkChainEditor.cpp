@@ -311,7 +311,7 @@ std::optional<std::array<float, 3>> IkChainEditor::unproject_to_plane(
     // Notation: mij = m[col*4 + row] → m[c][r] with c in [0,3], r in [0,3].
     // We store column-major, so m[c*4+r].
 
-    auto M = [&](int c, int r) -> float { return m[static_cast<std::size_t>(c * 4 + r)]; };
+    auto mat = [&](int c, int r) -> float { return m[static_cast<std::size_t>(c * 4 + r)]; };
 
     // Compute inverse using Gauss-Jordan or cofactor formula.
     // Using the 2x2 sub-determinant helper.
@@ -336,18 +336,18 @@ std::optional<std::array<float, 3>> IkChainEditor::unproject_to_plane(
 
     // Full determinant of VP.
     const float det =
-          M(0,0) * det3(M(1,1), M(1,2), M(1,3),
-                        M(2,1), M(2,2), M(2,3),
-                        M(3,1), M(3,2), M(3,3))
-        - M(1,0) * det3(M(0,1), M(0,2), M(0,3),
-                        M(2,1), M(2,2), M(2,3),
-                        M(3,1), M(3,2), M(3,3))
-        + M(2,0) * det3(M(0,1), M(0,2), M(0,3),
-                        M(1,1), M(1,2), M(1,3),
-                        M(3,1), M(3,2), M(3,3))
-        - M(3,0) * det3(M(0,1), M(0,2), M(0,3),
-                        M(1,1), M(1,2), M(1,3),
-                        M(2,1), M(2,2), M(2,3));
+          mat(0,0) * det3(mat(1,1), mat(1,2), mat(1,3),
+                        mat(2,1), mat(2,2), mat(2,3),
+                        mat(3,1), mat(3,2), mat(3,3))
+        - mat(1,0) * det3(mat(0,1), mat(0,2), mat(0,3),
+                        mat(2,1), mat(2,2), mat(2,3),
+                        mat(3,1), mat(3,2), mat(3,3))
+        + mat(2,0) * det3(mat(0,1), mat(0,2), mat(0,3),
+                        mat(1,1), mat(1,2), mat(1,3),
+                        mat(3,1), mat(3,2), mat(3,3))
+        - mat(3,0) * det3(mat(0,1), mat(0,2), mat(0,3),
+                        mat(1,1), mat(1,2), mat(1,3),
+                        mat(2,1), mat(2,2), mat(2,3));
 
     constexpr float kDetEps = 1e-10F;
     if (std::abs(det) < kDetEps)
@@ -375,9 +375,9 @@ std::optional<std::array<float, 3>> IkChainEditor::unproject_to_plane(
         for (int r2 = 0; r2 < 4; ++r2) if (r2 != row) rows_left[static_cast<std::size_t>(ri++)] = r2;
 
         const float minor_det = det3(
-            M(cols_left[0], rows_left[0]), M(cols_left[1], rows_left[0]), M(cols_left[2], rows_left[0]),
-            M(cols_left[0], rows_left[1]), M(cols_left[1], rows_left[1]), M(cols_left[2], rows_left[1]),
-            M(cols_left[0], rows_left[2]), M(cols_left[1], rows_left[2]), M(cols_left[2], rows_left[2])
+            mat(cols_left[0], rows_left[0]), mat(cols_left[1], rows_left[0]), mat(cols_left[2], rows_left[0]),
+            mat(cols_left[0], rows_left[1]), mat(cols_left[1], rows_left[1]), mat(cols_left[2], rows_left[1]),
+            mat(cols_left[0], rows_left[2]), mat(cols_left[1], rows_left[2]), mat(cols_left[2], rows_left[2])
         );
         // Sign: (-1)^(row+col)
         const float sign = ((row + col) % 2 == 0) ? 1.0F : -1.0F;
@@ -704,7 +704,7 @@ void IkChainEditor::draw(
     const float tx = tgt_screen[0];
     const float ty = tgt_screen[1];
 
-    const cd::ui::renderer::Color kTargetColor = is_dragging_
+    const cd::ui::renderer::Color k_target_color = is_dragging_
         ? cd::ui::renderer::Color { 255U, 200U, 60U, 255U }   // bright drag
         : cd::ui::renderer::Color { 230U, 150U, 40U, 230U };  // normal
 
@@ -713,12 +713,12 @@ void IkChainEditor::draw(
     // Horizontal arm.
     batcher.quad(tx - half, ty - kLineH * 0.5F,
                  half * 2.0F, kLineH,
-                 kTargetColor);
+                 k_target_color);
 
     // Vertical arm.
     batcher.quad(tx - kLineH * 0.5F, ty - half,
                  kLineH, half * 2.0F,
-                 kTargetColor);
+                 k_target_color);
 
     // ---- 7. Convergence indicator (bottom-left corner) ----------------------
     // Prefer the live drag result when dragging; fall back to bound result.

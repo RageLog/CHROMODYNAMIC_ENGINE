@@ -122,7 +122,7 @@ private:
     };
 
     template <class T>
-    [[nodiscard]] static ComponentTypeInfo info_for_() noexcept
+    [[nodiscard]] static ComponentTypeInfo info_for() noexcept
     {
         return ComponentTypeInfo {
             std::type_index(typeid(T)),
@@ -170,10 +170,10 @@ private:
         std::size_t row_in_chunk { 0 };
     };
 
-    [[nodiscard]] Archetype* find_or_create_archetype_(
+    [[nodiscard]] Archetype* find_or_create_archetype(
         std::vector<ComponentTypeInfo> infos);
 
-    void chunk_swap_pop_(Archetype& a, Chunk& c, std::size_t row);
+    void chunk_swap_pop(Archetype& a, Chunk& c, std::size_t row);
 
     // Move-construct all components shared between src and dst archetypes
     // from (src_c, src_row) into a freshly appended row of dst.
@@ -182,7 +182,7 @@ private:
     // Does NOT update entity lists or entity_locations_ -- caller handles that.
     // Does NOT destruct the source row -- caller handles that.
     [[nodiscard]] std::pair<Chunk*, std::size_t>
-    migrate_shared_components_(Archetype& dst, Archetype& src,
+    migrate_shared_components(Archetype& dst, Archetype& src,
                                Chunk& src_c, std::size_t src_row);
 
     EntityManager entities_ {};
@@ -190,12 +190,12 @@ private:
     std::vector<EntityLocation> entity_locations_ {};
 
     template <class... Ts>
-    [[nodiscard]] static std::vector<ComponentTypeInfo> sorted_infos_();
+    [[nodiscard]] static std::vector<ComponentTypeInfo> sorted_infos();
 
     template <class T0, class... Trest>
-    void write_columns_(Archetype& a, Chunk& c, std::size_t row,
+    void write_columns(Archetype& a, Chunk& c, std::size_t row,
                         T0&& v0, Trest&&... vrest);
-    void write_columns_(Archetype&, Chunk&, std::size_t) {}
+    void write_columns(Archetype&, Chunk&, std::size_t) {}
 };
 
 // =============================================================================
@@ -204,11 +204,11 @@ private:
 
 template <class... Ts>
 [[nodiscard]] inline std::vector<ArchetypeWorld::ComponentTypeInfo>
-ArchetypeWorld::sorted_infos_()
+ArchetypeWorld::sorted_infos()
 {
     std::vector<ComponentTypeInfo> v;
     v.reserve(sizeof...(Ts));
-    (v.push_back(info_for_<std::remove_cvref_t<Ts>>()), ...);
+    (v.push_back(info_for<std::remove_cvref_t<Ts>>()), ...);
     std::sort(v.begin(), v.end(),
         [](const ComponentTypeInfo& a, const ComponentTypeInfo& b) {
             return a.type < b.type;
@@ -219,7 +219,7 @@ ArchetypeWorld::sorted_infos_()
 template <class... Ts>
 [[nodiscard]] inline std::size_t ArchetypeWorld::chunk_capacity_for() const
 {
-    auto infos = sorted_infos_<Ts...>();
+    auto infos = sorted_infos<Ts...>();
     for (const auto& up : archetypes_) {
         if (up->infos.size() != infos.size()) continue;
         bool match = true;
@@ -232,7 +232,7 @@ template <class... Ts>
 }
 
 template <class T0, class... Trest>
-inline void ArchetypeWorld::write_columns_(Archetype& a, Chunk& c, std::size_t row,
+inline void ArchetypeWorld::write_columns(Archetype& a, Chunk& c, std::size_t row,
                                             T0&& v0, Trest&&... vrest)
 {
     using U = std::remove_cvref_t<T0>;
@@ -240,15 +240,15 @@ inline void ArchetypeWorld::write_columns_(Archetype& a, Chunk& c, std::size_t r
     auto& column_bytes = c.columns[col];
     auto* slot = column_bytes.data() + row * sizeof(U);
     ::new (slot) U(std::forward<T0>(v0));
-    write_columns_(a, c, row, std::forward<Trest>(vrest)...);
+    write_columns(a, c, row, std::forward<Trest>(vrest)...);
 }
 
 template <class... Ts>
 inline Entity ArchetypeWorld::emplace(Ts&&... values)
 {
     static_assert(sizeof...(Ts) > 0, "ArchetypeWorld::emplace requires at least one component");
-    auto infos = sorted_infos_<Ts...>();
-    Archetype* a = find_or_create_archetype_(std::move(infos));
+    auto infos = sorted_infos<Ts...>();
+    Archetype* a = find_or_create_archetype(std::move(infos));
 
     Chunk* c = nullptr;
     if (!a->chunks.empty() && a->chunks.back()->size < a->chunks.back()->capacity) {
@@ -270,7 +270,7 @@ inline Entity ArchetypeWorld::emplace(Ts&&... values)
     const std::size_t row = c->size;
     c->entities.push_back(e);
     ++c->size;
-    write_columns_(*a, *c, row, std::forward<Ts>(values)...);
+    write_columns(*a, *c, row, std::forward<Ts>(values)...);
 
     if (entity_locations_.size() <= e.id) {
         entity_locations_.resize(e.id + 1U);
@@ -286,7 +286,7 @@ inline Entity ArchetypeWorld::emplace(Ts&&... values)
 namespace detail
 {
 template <class T>
-inline T& archetype_column_ref_(std::byte* col_base, std::size_t row) noexcept
+inline T& archetype_column_ref(std::byte* col_base, std::size_t row) noexcept
 {
     return *reinterpret_cast<T*>(col_base + row * sizeof(T));
 }
@@ -329,7 +329,7 @@ inline void ArchetypeWorld::each(Fn&& fn)
             for (std::size_t r = 0; r < c.size; ++r) {
                 [&]<std::size_t... Is>(std::index_sequence<Is...>) {
                     fn(c.entities[r],
-                       detail::archetype_column_ref_<std::remove_cvref_t<Ts>>(col_bases[Is], r)...);
+                       detail::archetype_column_ref<std::remove_cvref_t<Ts>>(col_bases[Is], r)...);
                 }(std::index_sequence_for<Ts...>{});
             }
         }
@@ -351,7 +351,7 @@ inline void ArchetypeWorld::each(Fn&& fn) const
 // =============================================================================
 
 inline std::pair<ArchetypeWorld::Chunk*, std::size_t>
-ArchetypeWorld::migrate_shared_components_(
+ArchetypeWorld::migrate_shared_components(
     Archetype& dst, Archetype& src,
     Chunk& src_c, std::size_t src_row)
 {
@@ -410,18 +410,18 @@ inline void ArchetypeWorld::add_component(Entity e, T value)
 
     // Build the target infos: existing + new, re-sorted by type_index.
     std::vector<ComponentTypeInfo> new_infos = old_a.infos;
-    new_infos.push_back(info_for_<U>());
+    new_infos.push_back(info_for<U>());
     std::sort(new_infos.begin(), new_infos.end(),
         [](const ComponentTypeInfo& a, const ComponentTypeInfo& b) {
             return a.type < b.type;
         });
 
-    Archetype* new_a = find_or_create_archetype_(std::move(new_infos));
+    Archetype* new_a = find_or_create_archetype(std::move(new_infos));
 
     // Migrate shared components.  The source slots are move-from'd but still
     // occupy their memory; chunk_swap_pop_ will call destruct on them later,
     // which is well-defined (moved-from objects are destructible per C++).
-    auto [dc, new_row] = migrate_shared_components_(*new_a, old_a, old_c,
+    auto [dc, new_row] = migrate_shared_components(*new_a, old_a, old_c,
                                                     old_loc.row_in_chunk);
 
     // Construct the brand-new component in its column of the destination.
@@ -436,7 +436,7 @@ inline void ArchetypeWorld::add_component(Entity e, T value)
     // Swap-pop the old row.  new_type does not exist in old_a so
     // chunk_swap_pop_ never touches the new component's column.  The
     // shared-component slots are in moved-from (but destructible) state.
-    chunk_swap_pop_(old_a, old_c, old_loc.row_in_chunk);
+    chunk_swap_pop(old_a, old_c, old_loc.row_in_chunk);
 
     // Update entity location.
     const std::size_t new_chunk_idx = new_a->chunks.size() - 1U;
@@ -467,11 +467,11 @@ inline void ArchetypeWorld::remove_component(Entity e)
     for (const auto& ci : old_a.infos)
         if (ci.type != rem_type) new_infos.push_back(ci);
 
-    Archetype* new_a = find_or_create_archetype_(std::move(new_infos));
+    Archetype* new_a = find_or_create_archetype(std::move(new_infos));
 
     // Migrate surviving components (rem_type is absent from new_a so
     // migrate_shared_components_ skips it automatically).
-    auto [dc, new_row] = migrate_shared_components_(*new_a, old_a, old_c,
+    auto [dc, new_row] = migrate_shared_components(*new_a, old_a, old_c,
                                                     old_loc.row_in_chunk);
     dc->entities.push_back(e);
 

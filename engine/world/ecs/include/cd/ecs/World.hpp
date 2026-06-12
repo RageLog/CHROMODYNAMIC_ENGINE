@@ -87,13 +87,13 @@ public:
     T& emplace(Entity e, Args&&... args)
     {
         static_assert(!std::is_reference_v<T>, "T must be a value type");
-        return storage_<T>().emplace(e, std::forward<Args>(args)...);
+        return storage<T>().emplace(e, std::forward<Args>(args)...);
     }
 
     template <class T>
     void remove(Entity e)
     {
-        if (auto* s = try_storage_<T>())
+        if (auto* s = try_storage<T>())
             s->remove(e);
     }
 
@@ -101,28 +101,28 @@ public:
     template <class T>
     [[nodiscard]] T* get(Entity e)
     {
-        auto* s = try_storage_<T>();
+        auto* s = try_storage<T>();
         return s != nullptr ? s->try_get(e) : nullptr;
     }
 
     template <class T>
     [[nodiscard]] const T* get(Entity e) const
     {
-        auto* s = try_storage_<T>();
+        auto* s = try_storage<T>();
         return s != nullptr ? s->try_get(e) : nullptr;
     }
 
     template <class T>
     [[nodiscard]] bool has(Entity e) const
     {
-        auto* s = try_storage_<T>();
+        auto* s = try_storage<T>();
         return s != nullptr && s->contains(e);
     }
 
     template <class T>
     [[nodiscard]] std::size_t component_count() const noexcept
     {
-        auto* s = try_storage_<T>();
+        auto* s = try_storage<T>();
         return s != nullptr ? s->size() : 0U;
     }
 
@@ -132,14 +132,14 @@ public:
     template <class T, class Fn>
     void for_each(Fn&& fn)
     {
-        if (auto* s = try_storage_<T>())
+        if (auto* s = try_storage<T>())
             s->for_each(std::forward<Fn>(fn));
     }
 
     template <class T, class Fn>
     void for_each(Fn&& fn) const
     {
-        if (auto* s = try_storage_<T>())
+        if (auto* s = try_storage<T>())
             s->for_each(std::forward<Fn>(fn));
     }
 
@@ -150,7 +150,7 @@ public:
     template <class T, class... Rest, class Fn>
     void each(Fn&& fn)
     {
-        auto* driver = try_storage_<T>();
+        auto* driver = try_storage<T>();
         if (driver == nullptr)
             return;
 
@@ -161,7 +161,7 @@ public:
 
         // Probe the rest of the requested storages — if any is missing, the
         // intersection is empty so the lambda is never invoked.
-        if (((try_storage_<Rest>() == nullptr) || ...))
+        if (((try_storage<Rest>() == nullptr) || ...))
             return;
 
         // Pick the driver with the smallest pool. We compare the primary T
@@ -170,7 +170,7 @@ public:
         // (typically ≤ 4) the compiler folds it.
         auto try_swap = [&]<class U>()
         {
-            auto* s = try_storage_<U>();
+            auto* s = try_storage<U>();
             if (s != nullptr && s->size() < min_size)
             {
                 min_size = s->size();
@@ -225,8 +225,8 @@ public:
         /// emplaced if the Query was built before that emplace.
         void refresh(const World& w) noexcept
         {
-            driver_ = w.try_storage_<T>();
-            rest_present_ = (... && (w.try_storage_<Rest>() != nullptr));
+            driver_ = w.try_storage<T>();
+            rest_present_ = (... && (w.try_storage<Rest>() != nullptr));
             last_version_ = w.structural_version();
         }
 
@@ -313,7 +313,7 @@ public:
 
 private:
     template <class T>
-    SparseSet<T>& storage_()
+    SparseSet<T>& storage()
     {
         const std::type_index key { typeid(T) };
         auto it = storages_.find(key);
@@ -329,7 +329,7 @@ private:
     }
 
     template <class T>
-    SparseSet<T>* try_storage_() const
+    SparseSet<T>* try_storage() const
     {
         const std::type_index key { typeid(T) };
         auto it = storages_.find(key);

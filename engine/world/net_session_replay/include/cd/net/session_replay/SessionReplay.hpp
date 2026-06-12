@@ -101,9 +101,9 @@ private:
     using Clock     = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
 
-    std::vector<PacketRecord> m_records;
-    TimePoint                 m_start_time;
-    bool                      m_recording { false };
+    std::vector<PacketRecord> records_;
+    TimePoint                 start_time_;
+    bool                      recording_ { false };
 };
 
 // ---------------------------------------------------------------------------
@@ -142,8 +142,8 @@ public:
     void reset() noexcept;
 
 private:
-    std::vector<PacketRecord> m_records;
-    std::size_t               m_cursor { 0 };
+    std::vector<PacketRecord> records_;
+    std::size_t               cursor_ { 0 };
 };
 
 }  // namespace cd::net::session_replay

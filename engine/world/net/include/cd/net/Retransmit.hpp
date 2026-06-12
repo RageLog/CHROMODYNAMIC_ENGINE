@@ -170,13 +170,13 @@ public:
     [[nodiscard]] cd::core::Result<std::uint32_t>
     send(std::span<const std::byte> payload)
     {
-        const std::size_t effective_cap = effective_window_cap_();
+        const std::size_t effective_cap = effective_window_cap();
         if (effective_cap > 0 && pending_.size() >= effective_cap)
             return std::unexpected(net_errors::make(net_errors::Code::kWouldBlock,
                                                     "send window full"));
         const auto seq = next_send_seq_++;
         Pending p;
-        p.framed = build_user_frame_(seq, payload);
+        p.framed = build_user_frame(seq, payload);
         p.seq = seq;
         p.send_time = Clock::now();
         p.retries = 0;
@@ -213,17 +213,17 @@ public:
             if (!msg.has_value())
                 break;
             if (msg->channel == user_channel_)
-                handle_user_frame_(std::move(msg->payload));
+                handle_user_frame(std::move(msg->payload));
             else if (msg->channel == ack_channel_)
-                handle_ack_(msg->payload);
+                handle_ack(msg->payload);
             // Other channels: ignored.
         }
-        retransmit_(now);
-        flush_ready_();
+        retransmit(now);
+        flush_ready();
         // Emit one cumulative ACK per tick if the contiguous high water
         // has advanced (or if a duplicate prodded us to resend the
         // last-known ACK for safety).
-        maybe_emit_cum_ack_();
+        maybe_emit_cum_ack();
     }
 
     [[nodiscard]] std::size_t pending_send_count() const noexcept { return pending_.size(); }
@@ -252,7 +252,7 @@ private:
     };
 
     [[nodiscard]] static std::vector<std::byte>
-    build_user_frame_(std::uint32_t seq, std::span<const std::byte> payload)
+    build_user_frame(std::uint32_t seq, std::span<const std::byte> payload)
     {
         std::vector<std::byte> framed;
         framed.reserve(4 + payload.size());
@@ -262,7 +262,7 @@ private:
         return framed;
     }
 
-    [[nodiscard]] std::size_t effective_window_cap_() const noexcept
+    [[nodiscard]] std::size_t effective_window_cap() const noexcept
     {
         if (!aimd_enabled_)
             return send_window_size_;  // 0 = uncapped
@@ -273,7 +273,7 @@ private:
         return std::min(send_window_size_, cwnd_);
     }
 
-    [[nodiscard]] static std::uint32_t read_u32_(const std::byte* p) noexcept
+    [[nodiscard]] static std::uint32_t read_u32(const std::byte* p) noexcept
     {
         std::uint32_t v = 0;
         for (int i = 0; i < 4; ++i)
@@ -281,11 +281,11 @@ private:
         return v;
     }
 
-    void handle_user_frame_(std::vector<std::byte> bytes)
+    void handle_user_frame(std::vector<std::byte> bytes)
     {
         if (bytes.size() < 4)
             return;
-        const auto seq = read_u32_(bytes.data());
+        const auto seq = read_u32(bytes.data());
 
         if (seq < next_recv_seq_ || seen_.contains(seq))
         {
@@ -302,11 +302,11 @@ private:
         inbound_[seq] = std::move(payload);
     }
 
-    void handle_ack_(const std::vector<std::byte>& payload)
+    void handle_ack(const std::vector<std::byte>& payload)
     {
         if (payload.size() < 4)
             return;
-        const auto cum = read_u32_(payload.data());
+        const auto cum = read_u32(payload.data());
 
         // Parse optional SACK ranges (Wave 53). Old senders / receivers
         // running pre-Wave-53 builds simply omit the count byte; we
@@ -324,8 +324,8 @@ private:
                 for (std::size_t i = 0; i < count; ++i)
                 {
                     const auto* p = payload.data() + 5 + i * 8;
-                    const auto a = read_u32_(p);
-                    const auto b = read_u32_(p + 4);
+                    const auto a = read_u32(p);
+                    const auto b = read_u32(p + 4);
                     ranges.emplace_back(a, b);
                     if (b > max_sack_end)
                         max_sack_end = b;
@@ -354,7 +354,7 @@ private:
             {
                 if (it->second.retries == 0)
                 {
-                    update_rtt_(Clock::now() - it->second.send_time);
+                    update_rtt(Clock::now() - it->second.send_time);
                     // AIMD: Additive Increase on every successful
                     // non-retransmit ACK. Bump cwnd by 1, clamped.
                     if (aimd_enabled_ && cwnd_ < cwnd_max_)
@@ -394,7 +394,7 @@ private:
         }
     }
 
-    void retransmit_(Clock::time_point now)
+    void retransmit(Clock::time_point now)
     {
         bool any_fired = false;
         for (auto& [seq, p] : pending_)
@@ -422,7 +422,7 @@ private:
             cwnd_ = std::max(cwnd_min_, cwnd_ / 2);
     }
 
-    void update_rtt_(std::chrono::nanoseconds r)
+    void update_rtt(std::chrono::nanoseconds r)
     {
         if (srtt_.count() == 0)
         {
@@ -451,7 +451,7 @@ private:
         rto_ = rto_ms;
     }
 
-    void flush_ready_()
+    void flush_ready()
     {
         // Move every contiguous-from-next_recv_seq_ entry into ready_.
         while (true)
@@ -465,23 +465,23 @@ private:
         }
     }
 
-    static void write_u32_(std::vector<std::byte>& out, std::uint32_t v)
+    static void write_u32(std::vector<std::byte>& out, std::uint32_t v)
     {
         for (int i = 0; i < 4; ++i)
             out.push_back(std::byte { static_cast<std::uint8_t>((v >> (i * 8)) & 0xFFu) });
     }
 
-    void send_ack_(std::uint32_t cum, std::span<const std::pair<std::uint32_t, std::uint32_t>> ranges = {})
+    void send_ack(std::uint32_t cum, std::span<const std::pair<std::uint32_t, std::uint32_t>> ranges = {})
     {
         std::vector<std::byte> buf;
         buf.reserve(5 + ranges.size() * 8);
-        write_u32_(buf, cum);
+        write_u32(buf, cum);
         const auto count = std::min<std::size_t>(ranges.size(), kSackRangeCap);
         buf.push_back(std::byte { static_cast<std::uint8_t>(count) });
         for (std::size_t i = 0; i < count; ++i)
         {
-            write_u32_(buf, ranges[i].first);
-            write_u32_(buf, ranges[i].second);
+            write_u32(buf, ranges[i].first);
+            write_u32(buf, ranges[i].second);
         }
         (void)mux_->send(ack_channel_, ChannelType::kUnreliableUnordered,
                          { buf.data(), buf.size() });
@@ -490,7 +490,7 @@ private:
     /// Build SACK ranges from `inbound_`: contiguous runs of out-of-
     /// order delivered-but-not-flushed seqs. Capped at `kSackRangeCap`.
     [[nodiscard]] std::vector<std::pair<std::uint32_t, std::uint32_t>>
-    build_sack_ranges_() const
+    build_sack_ranges() const
     {
         std::vector<std::uint32_t> seqs;
         seqs.reserve(inbound_.size());
@@ -518,7 +518,7 @@ private:
         return ranges;
     }
 
-    void maybe_emit_cum_ack_()
+    void maybe_emit_cum_ack()
     {
         // Cumulative semantic = "next expected seq" (everything BELOW
         // this is delivered). 0 = nothing received yet, valid but
@@ -527,11 +527,11 @@ private:
         const std::uint32_t cum = next_recv_seq_;
         const bool advanced = !last_cum_ack_.has_value()
                             || cum > *last_cum_ack_;
-        const auto ranges = build_sack_ranges_();
+        const auto ranges = build_sack_ranges();
         const bool have_sack_to_share = !ranges.empty();
         if (!advanced && !ack_dirty_ && !have_sack_to_share)
             return;
-        send_ack_(cum, { ranges.data(), ranges.size() });
+        send_ack(cum, { ranges.data(), ranges.size() });
         last_cum_ack_ = cum;
         ack_dirty_ = false;
     }

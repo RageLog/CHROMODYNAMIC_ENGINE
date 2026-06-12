@@ -35,16 +35,16 @@ struct LightProbe
                                               const cd::math::Vec3f& n) noexcept
 {
     // SH basis functions Y_0_0, Y_1_-1, Y_1_0, Y_1_1, Y_2_-2, Y_2_-1, Y_2_0, Y_2_1, Y_2_2
-    const float Y00 = 0.282095F;
-    const float Y1m1 = 0.488603F * n.y;
-    const float Y10  = 0.488603F * n.z;
-    const float Y11  = 0.488603F * n.x;
-    const float Y2m2 = 1.092548F * n.x * n.y;
-    const float Y2m1 = 1.092548F * n.y * n.z;
-    const float Y20  = 0.315392F * (3.0F * n.z * n.z - 1.0F);
-    const float Y21  = 1.092548F * n.x * n.z;
-    const float Y22  = 0.546274F * (n.x * n.x - n.y * n.y);
-    const float bases[9] = { Y00, Y1m1, Y10, Y11, Y2m2, Y2m1, Y20, Y21, Y22 };
+    const float y00 = 0.282095F;
+    const float y1m1 = 0.488603F * n.y;
+    const float y10  = 0.488603F * n.z;
+    const float y11  = 0.488603F * n.x;
+    const float y2m2 = 1.092548F * n.x * n.y;
+    const float y2m1 = 1.092548F * n.y * n.z;
+    const float y20  = 0.315392F * (3.0F * n.z * n.z - 1.0F);
+    const float y21  = 1.092548F * n.x * n.z;
+    const float y22  = 0.546274F * (n.x * n.x - n.y * n.y);
+    const float bases[9] = { y00, y1m1, y10, y11, y2m2, y2m1, y20, y21, y22 };
 
     cd::math::Vec3f out {};
     for (int i = 0; i < 9; ++i)

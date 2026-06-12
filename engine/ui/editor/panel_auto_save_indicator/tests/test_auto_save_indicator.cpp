@@ -48,7 +48,7 @@ namespace
 
 [[nodiscard]] cd::ui::theme::Theme default_theme() noexcept
 {
-    return cd::ui::theme::kDarkTheme();
+    return cd::ui::theme::k_dark_theme();
 }
 
 /// Draw into a fresh batcher and return the vertex count.

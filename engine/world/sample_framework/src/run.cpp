@@ -16,7 +16,7 @@ namespace cd::sample
 // Anchor so the static library always has at least one symbol exposed.
 // Avoids "library contained no objects" warnings on some toolchains
 // when the header-only template path is the only consumer.
-extern const char kSampleFrameworkBuildAnchor[];
-const char kSampleFrameworkBuildAnchor[] = "cd::sample::sample_framework M2A";
+extern const char k_sample_framework_build_anchor[];
+const char k_sample_framework_build_anchor[] = "cd::sample::sample_framework M2A";
 
 }  // namespace cd::sample

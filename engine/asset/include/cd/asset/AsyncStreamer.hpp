@@ -62,7 +62,7 @@ public:
         bool expected = false;
         if (!running_.compare_exchange_strong(expected, true)) return;
         stopping_.store(false, std::memory_order_release);
-        worker_ = std::thread { [this] { worker_loop_(); } };
+        worker_ = std::thread { [this] { worker_loop(); } };
     }
 
     /// Signal the worker to drain and exit. Blocks until joined.
@@ -108,7 +108,7 @@ public:
     }
 
 private:
-    void worker_loop_()
+    void worker_loop()
     {
         for (;;)
         {

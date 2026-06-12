@@ -38,7 +38,7 @@ void DrawBatcher::pop_scissor()
     }
 }
 
-ScissorRect DrawBatcher::current_scissor_() const noexcept
+ScissorRect DrawBatcher::current_scissor() const noexcept
 {
     if (scissor_stack_.empty())
     {
@@ -60,7 +60,7 @@ namespace
 }
 }  // namespace
 
-void DrawBatcher::emit_quad_(float x, float y, float w, float h,
+void DrawBatcher::emit_quad(float x, float y, float w, float h,
                              std::uint8_t variant,
                              std::uint32_t texture_slot,
                              const AtlasUv& uv,
@@ -94,7 +94,7 @@ void DrawBatcher::emit_quad_(float x, float y, float w, float h,
     DrawCommand prospective {};
     prospective.variant      = variant;
     prospective.texture_slot = texture_slot;
-    prospective.scissor      = current_scissor_();
+    prospective.scissor      = current_scissor();
     prospective.index_offset = static_cast<std::uint32_t>(indices_.size() - 6U);
     prospective.index_count  = 6U;
 
@@ -112,7 +112,7 @@ void DrawBatcher::emit_quad_(float x, float y, float w, float h,
 void DrawBatcher::quad(float x, float y, float w, float h, Color c)
 {
     AtlasUv unused {};
-    emit_quad_(x, y, w, h, material::kSolid, 0xFFFFFFFFu, unused, c);
+    emit_quad(x, y, w, h, material::kSolid, 0xFFFFFFFFu, unused, c);
 }
 
 void DrawBatcher::textured_quad(float x, float y, float w, float h,
@@ -120,7 +120,7 @@ void DrawBatcher::textured_quad(float x, float y, float w, float h,
                                 const AtlasUv& uv,
                                 Color tint)
 {
-    emit_quad_(x, y, w, h, material::kTextured, texture_slot, uv, tint);
+    emit_quad(x, y, w, h, material::kTextured, texture_slot, uv, tint);
 }
 
 void DrawBatcher::glyph(float x, float y, float w, float h,
@@ -128,7 +128,7 @@ void DrawBatcher::glyph(float x, float y, float w, float h,
                         const AtlasUv& uv,
                         Color tint)
 {
-    emit_quad_(x, y, w, h, material::kGlyph, texture_slot, uv, tint);
+    emit_quad(x, y, w, h, material::kGlyph, texture_slot, uv, tint);
 }
 
 }  // namespace cd::ui::renderer

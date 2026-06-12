@@ -60,14 +60,14 @@ struct TempFile
 {
     // 14-byte file header + 40-byte DIB header + 4×3 bytes pixels +
     // (4 - (6 mod 4)) mod 4 = 2 bytes padding per row × 2 rows = 4 bytes.
-    constexpr int w = 2;
-    constexpr int h = 2;
-    constexpr int row_bytes = 4 * ((24 * w + 31) / 32);  // BMP rows padded to 4 bytes.
-    constexpr int pixel_data_size = row_bytes * h;
-    constexpr int header_size = 14 + 40;
-    constexpr int total_size = header_size + pixel_data_size;
+    constexpr int kW = 2;
+    constexpr int kH = 2;
+    constexpr int kRowBytes = 4 * ((24 * kW + 31) / 32);  // BMP rows padded to 4 bytes.
+    constexpr int kPixelDataSize = kRowBytes * kH;
+    constexpr int kHeaderSize = 14 + 40;
+    constexpr int kTotalSize = kHeaderSize + kPixelDataSize;
 
-    std::vector<std::uint8_t> buf(total_size, 0);
+    std::vector<std::uint8_t> buf(kTotalSize, 0);
 
     auto write16 = [&](std::size_t off, std::uint16_t v)
     {
@@ -85,23 +85,23 @@ struct TempFile
     // BMP file header
     buf[0] = 'B';
     buf[1] = 'M';
-    write32(2, total_size);
+    write32(2, kTotalSize);
     write32(6, 0);             // reserved
-    write32(10, header_size);  // pixel data offset
+    write32(10, kHeaderSize);  // pixel data offset
 
     // DIB header (BITMAPINFOHEADER, 40 bytes)
     write32(14, 40);
-    write32(18, w);
-    write32(22, h);
+    write32(18, kW);
+    write32(22, kH);
     write16(26, 1);   // planes
     write16(28, 24);  // bpp
     write32(30, 0);   // BI_RGB no compression
-    write32(34, pixel_data_size);
+    write32(34, kPixelDataSize);
 
     // Pixel rows. BMP stores BGR per pixel, bottom-row first.
     // Bottom row (BMP row 0): blue, green
     // Top row    (BMP row 1): red,  white
-    std::size_t off = header_size;
+    std::size_t off = kHeaderSize;
     // Row 0 (bottom in image, but written first in file).
     buf[off + 0] = 0xFF;
     buf[off + 1] = 0x00;
@@ -111,7 +111,7 @@ struct TempFile
     buf[off + 5] = 0x00;  // green
     // (padding to row_bytes already zeroed)
 
-    off += row_bytes;
+    off += kRowBytes;
     // Row 1 (top in image)
     buf[off + 0] = 0x00;
     buf[off + 1] = 0x00;

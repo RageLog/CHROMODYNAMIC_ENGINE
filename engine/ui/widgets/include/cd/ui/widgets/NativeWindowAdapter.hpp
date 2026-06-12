@@ -204,7 +204,7 @@ public:
     }
 
 private:
-    [[nodiscard]] ManagedWindow* find_(std::string_view panel_id) noexcept;
+    [[nodiscard]] ManagedWindow* find(std::string_view panel_id) noexcept;
 
     std::vector<ManagedWindow>  managed_ {};
     std::vector<NativeWindowGap> gaps_   {};

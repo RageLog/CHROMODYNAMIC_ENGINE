@@ -172,7 +172,7 @@ void main() {
     cd.source = glsl;
     cd.stage = stage;
     cd.lang = cd::shader::ShaderLanguage::kGlsl;
-    cd.target = cd::shader::TargetEnv::kVulkan_1_3;
+    cd.target = cd::shader::TargetEnv::kVulkan13;
     cd.source_name = name;
     auto r = comp.compile(cd);
     if (!r.has_value())

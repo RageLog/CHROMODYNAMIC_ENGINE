@@ -44,7 +44,7 @@ TEST(RestirMath, Case1_SingleSampleReservoirHoldsSampleWithWeightOne)
     DI::update(r, s, 1.0F, 0.0F);
 
     EXPECT_EQ(r.selected.light_index, 42U);
-    EXPECT_EQ(r.M, 1U);
+    EXPECT_EQ(r.m, 1U);
     EXPECT_NEAR(r.weight_sum, 1.0F, kEps);
 
     // final_weight = W / (M * p_hat) = 1.0 / (1 * 1.0) = 1.0
@@ -106,14 +106,14 @@ TEST(RestirMath, Case3_ReservoirMergePreservesExpectedWeight)
     DI::update(a, DI::Sample{ 1U, { 1, 0, 0 }, 2.0F }, 2.0F, 0.0F);
     DI::update(b, DI::Sample{ 2U, { 0, 1, 0 }, 3.0F }, 3.0F, 0.0F);
 
-    const std::uint32_t M_a = a.M;
-    const std::uint32_t M_b = b.M;
+    const std::uint32_t M_a = a.m;
+    const std::uint32_t M_b = b.m;
     const float W_a = a.weight_sum;
 
     // eval_pdf returns the donor sample's target_pdf as-is (identity domain).
     DI::combine(a, b, 0.0F, [](const DI::Sample& s) { return s.target_pdf; });
 
-    EXPECT_EQ(a.M, M_a + M_b);
+    EXPECT_EQ(a.m, M_a + M_b);
     // weight_sum must be at least W_a (b contributed a non-negative w).
     EXPECT_GE(a.weight_sum, W_a - kEps);
     EXPECT_GE(a.final_weight(), 0.0F);
@@ -131,12 +131,12 @@ TEST(RestirMath, Case4_TemporalBlendAlphaHalfAveragesTwoFrames)
     DI::Reservoir previous{};
 
     // current: M=4, weight_sum=8.0
-    current.M          = 4U;
+    current.m          = 4U;
     current.weight_sum = 8.0F;
     current.selected   = DI::Sample{ 10U, { 1, 0, 0 }, 1.0F };
 
     // previous: M=6, weight_sum=12.0
-    previous.M          = 6U;
+    previous.m          = 6U;
     previous.weight_sum = 12.0F;
     previous.selected   = DI::Sample{ 20U, { 0, 1, 0 }, 1.0F };
 
@@ -144,7 +144,7 @@ TEST(RestirMath, Case4_TemporalBlendAlphaHalfAveragesTwoFrames)
 
     // Expected: weight_sum = 0.5*8 + 0.5*12 = 10.0, M = 0.5*4 + 0.5*6 = 5
     EXPECT_NEAR(blended.weight_sum, 10.0F, kEps);
-    EXPECT_EQ(blended.M, 5U);
+    EXPECT_EQ(blended.m, 5U);
 }
 
 // ============================================================================
@@ -159,13 +159,13 @@ TEST(RestirMath, Case5_EmptyReservoirMergeWithNonEmptyReturnsNonEmpty)
     DI::Reservoir filled{};
 
     DI::update(filled, DI::Sample{ 99U, { 0.5F, 0.5F, 0.5F }, 1.0F }, 1.0F, 0.0F);
-    ASSERT_EQ(empty.M, 0U);
-    ASSERT_EQ(filled.M, 1U);
+    ASSERT_EQ(empty.m, 0U);
+    ASSERT_EQ(filled.m, 1U);
 
     // rand_01 = 0.0 → donor always wins (w / merged_sum is positive).
     DI::combine(empty, filled, 0.0F, [](const DI::Sample& s) { return s.target_pdf; });
 
-    EXPECT_GT(empty.M, 0U);
+    EXPECT_GT(empty.m, 0U);
     EXPECT_GT(empty.weight_sum, 0.0F);
     EXPECT_EQ(empty.selected.light_index, 99U);
 }
@@ -198,7 +198,7 @@ TEST(RestirMath, Case6_ReservoirInvalidationOnAgeOverMaxPreservesZeroState)
     // Verify: age == kMaxAge is NOT stale (age > kMaxAge fires the gate).
     {
         const DI::Reservoir fresh = buf.previous(1U, 1U);
-        EXPECT_EQ(fresh.M, 1U)
+        EXPECT_EQ(fresh.m, 1U)
             << "Reservoir at age==kMaxAge must still be readable";
         EXPECT_GT(fresh.weight_sum, 0.0F);
     }
@@ -214,7 +214,7 @@ TEST(RestirMath, Case6_ReservoirInvalidationOnAgeOverMaxPreservesZeroState)
 
     // Now previous() must return the zero sentinel.
     const DI::Reservoir aged = buf.previous(1U, 1U);
-    EXPECT_EQ(aged.M, 0U)
+    EXPECT_EQ(aged.m, 0U)
         << "Stale reservoir M must be 0 when age > kMaxAge";
     EXPECT_NEAR(aged.weight_sum, 0.0F, kEps)
         << "Stale reservoir weight_sum must be 0 when age > kMaxAge";
@@ -277,10 +277,10 @@ TEST(RestirMath, GiCombineInvalidatesVisibilityFlag)
 TEST(RestirMath, DiClampHistoryScalesWeightProportionally)
 {
     DI::Reservoir r{};
-    r.M          = 200U;
+    r.m          = 200U;
     r.weight_sum = 400.0F;
     DI::clamp_history(r, 50U);
-    EXPECT_EQ(r.M, 50U);
+    EXPECT_EQ(r.m, 50U);
     EXPECT_NEAR(r.weight_sum, 100.0F, kEps);
 }
 

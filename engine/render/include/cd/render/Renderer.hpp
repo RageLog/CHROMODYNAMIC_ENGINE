@@ -192,8 +192,8 @@ public:
     [[nodiscard]] cd::core::Result<void> recreate_swapchain(cd::rhi::Extent2D new_extent);
 
 private:
-    void release_() noexcept;
-    void steal_(Renderer&& other) noexcept;
+    void release() noexcept;
+    void steal(Renderer&& other) noexcept;
 
     RendererDesc desc_ {};
     cd::rhi::IDevice* device_ { nullptr };

@@ -75,7 +75,7 @@ TEST(CoreErrorCode, DefaultIsOk)
     cd::core::ErrorCode e;
     EXPECT_TRUE(e.ok());
     EXPECT_FALSE(static_cast<bool>(e));
-    EXPECT_EQ(e, cd::core::kNoError);
+    EXPECT_EQ(e, cd::core::k_no_error);
 }
 
 TEST(CoreErrorCode, MakeFromCoreCode)

@@ -34,8 +34,8 @@
 //   A constant force F applied over one step dt produces acceleration a = F * inv_mass.
 //   In Verlet the next position shift from acceleration is: +a * dt^2.
 //   Equivalently, shifting prev_pos by -a * dt^2 gives the same next position.
-//   We store the offset in m_force_accum and apply it during tick integration.
-//   m_force_accum is zeroed at the end of every tick (impulse is one-shot).
+//   We store the offset in force_accum_ and apply it during tick integration.
+//   force_accum_ is zeroed at the end of every tick (impulse is one-shot).
 //
 // Sprint-2 — Self-collision (phase 760):
 //
@@ -82,43 +82,43 @@ namespace cd::physics::soft_body
 
 void SoftBody::configure(const SoftBodyConfig& cfg) noexcept
 {
-    m_cfg       = cfg;
-    m_particles = cfg.particles;
+    cfg_       = cfg;
+    particles_ = cfg.particles;
 
-    const std::size_t n = m_particles.size();
-    m_force_accum.assign(n, std::array<float, 3>{ 0.0F, 0.0F, 0.0F });
+    const std::size_t n = particles_.size();
+    force_accum_.assign(n, std::array<float, 3>{ 0.0F, 0.0F, 0.0F });
 
     // Sprint-2 scratch buffers. Sized once at configure() so tick() does no
     // heap allocation. bucket_start sizing uses a next-power-of-two table to
     // keep the modulo as a bitmask; with N <= 32 use 64, otherwise round up.
-    m_cell_coord.assign(n, std::array<int32_t, 3>{ 0, 0, 0 });
-    m_cell_hash.assign(n, 0U);
-    m_hash_index.assign(n, 0U);
+    cell_coord_.assign(n, std::array<int32_t, 3>{ 0, 0, 0 });
+    cell_hash_.assign(n, 0U);
+    hash_index_.assign(n, 0U);
 
     std::size_t table_size = 64U;
     while (table_size < n * 2U)
     {
         table_size *= 2U;
     }
-    m_bucket_start.assign(table_size + 1U, 0U);
+    bucket_start_.assign(table_size + 1U, 0U);
 }
 
 // ---- SoftBody::tick --------------------------------------------------------
 
 void SoftBody::tick(float dt, std::array<float, 3> gravity) noexcept
 {
-    if (dt <= 0.0F || m_particles.empty())
+    if (dt <= 0.0F || particles_.empty())
     {
         return;
     }
 
     const float dt2     = dt * dt;
-    const float damping = std::clamp(m_cfg.damping, 0.0F, 1.0F);
+    const float damping = std::clamp(cfg_.damping, 0.0F, 1.0F);
 
     // ---- 1. Verlet integration + gravity + accumulated forces ----------------
-    for (std::size_t i = 0; i < m_particles.size(); ++i)
+    for (std::size_t i = 0; i < particles_.size(); ++i)
     {
-        Particle& p = m_particles[i];
+        Particle& p = particles_[i];
 
         if (p.pinned || p.inv_mass <= 0.0F)
         {
@@ -135,7 +135,7 @@ void SoftBody::tick(float dt, std::array<float, 3> gravity) noexcept
         };
 
         // Acceleration = gravity + force_accum * inv_mass.
-        const std::array<float, 3>& fa = m_force_accum[i];
+        const std::array<float, 3>& fa = force_accum_[i];
         const std::array<float, 3> accel {
             gravity[0] + fa[0] * p.inv_mass,
             gravity[1] + fa[1] * p.inv_mass,
@@ -158,7 +158,7 @@ void SoftBody::tick(float dt, std::array<float, 3> gravity) noexcept
     // Self-collision is interleaved inside the loop so it composes with the
     // distance pass instead of being a single post-fix that could be undone
     // by the next solver_iterations call.
-    const uint32_t iters = (m_cfg.solver_iterations > 0U) ? m_cfg.solver_iterations : 1U;
+    const uint32_t iters = (cfg_.solver_iterations > 0U) ? cfg_.solver_iterations : 1U;
     for (uint32_t iter = 0U; iter < iters; ++iter)
     {
         solve_constraints();
@@ -167,7 +167,7 @@ void SoftBody::tick(float dt, std::array<float, 3> gravity) noexcept
     }
 
     // ---- 3. Reset per-tick force accumulator ----------------------------------
-    for (auto& fa : m_force_accum)
+    for (auto& fa : force_accum_)
     {
         fa = { 0.0F, 0.0F, 0.0F };
     }
@@ -177,38 +177,38 @@ void SoftBody::tick(float dt, std::array<float, 3> gravity) noexcept
 
 std::span<const Particle> SoftBody::particles() const noexcept
 {
-    return std::span<const Particle>{ m_particles.data(), m_particles.size() };
+    return std::span<const Particle>{ particles_.data(), particles_.size() };
 }
 
 // ---- SoftBody::apply_force -------------------------------------------------
 
 void SoftBody::apply_force(uint32_t particle_idx, std::array<float, 3> force) noexcept
 {
-    if (particle_idx >= static_cast<uint32_t>(m_force_accum.size()))
+    if (particle_idx >= static_cast<uint32_t>(force_accum_.size()))
     {
         return; // Out-of-range: silently ignored per API contract.
     }
 
-    m_force_accum[particle_idx][0] += force[0];
-    m_force_accum[particle_idx][1] += force[1];
-    m_force_accum[particle_idx][2] += force[2];
+    force_accum_[particle_idx][0] += force[0];
+    force_accum_[particle_idx][1] += force[1];
+    force_accum_[particle_idx][2] += force[2];
 }
 
 // ---- SoftBody::solve_constraints -------------------------------------------
 
 void SoftBody::solve_constraints() noexcept
 {
-    for (const SpringConstraint& sc : m_cfg.constraints)
+    for (const SpringConstraint& sc : cfg_.constraints)
     {
-        if (sc.a >= static_cast<uint32_t>(m_particles.size()) ||
-            sc.b >= static_cast<uint32_t>(m_particles.size()) ||
+        if (sc.a >= static_cast<uint32_t>(particles_.size()) ||
+            sc.b >= static_cast<uint32_t>(particles_.size()) ||
             sc.a == sc.b)
         {
             continue; // Invalid constraint: skip.
         }
 
-        Particle& pa = m_particles[sc.a];
-        Particle& pb = m_particles[sc.b];
+        Particle& pa = particles_[sc.a];
+        Particle& pb = particles_[sc.b];
 
         const float w_sum = pa.inv_mass + pb.inv_mass;
         if (w_sum <= 0.0F)
@@ -283,13 +283,13 @@ namespace
 
 void SoftBody::solve_self_collisions() noexcept
 {
-    const SelfCollision& sc_cfg = m_cfg.self_collision;
+    const SelfCollision& sc_cfg = cfg_.self_collision;
     if (!sc_cfg.enable_self_collision)
     {
         return; // Disabled: zero cost for Sprint-1 ropes.
     }
 
-    const std::size_t n = m_particles.size();
+    const std::size_t n = particles_.size();
     if (n < 2U)
     {
         return; // No pair to collide.
@@ -311,38 +311,38 @@ void SoftBody::solve_self_collisions() noexcept
 
     // table_size was rounded to a power of two in configure(); derive a mask
     // from the size minus one (size = bucket_start.size() - 1).
-    const std::size_t table_size = m_bucket_start.size() - 1U;
+    const std::size_t table_size = bucket_start_.size() - 1U;
     const auto        table_mask = static_cast<uint32_t>(table_size - 1U);
 
     // ---- 1. Quantize + hash all particles ------------------------------------
     for (std::size_t i = 0; i < n; ++i)
     {
-        const Particle& p = m_particles[i];
+        const Particle& p = particles_[i];
         const int32_t cx = quantize_cell(p.position[0], inv_cell_size);
         const int32_t cy = quantize_cell(p.position[1], inv_cell_size);
         const int32_t cz = quantize_cell(p.position[2], inv_cell_size);
-        m_cell_coord[i] = { cx, cy, cz };
-        m_cell_hash[i]  = spatial_hash(cx, cy, cz, table_mask);
-        m_hash_index[i] = static_cast<uint32_t>(i);
+        cell_coord_[i] = { cx, cy, cz };
+        cell_hash_[i]  = spatial_hash(cx, cy, cz, table_mask);
+        hash_index_[i] = static_cast<uint32_t>(i);
     }
 
     // ---- 2. Sort indices by hash (stable not required) -----------------------
-    std::ranges::sort(m_hash_index,
+    std::ranges::sort(hash_index_,
                       [&](uint32_t a, uint32_t b) noexcept {
-                          return m_cell_hash[a] < m_cell_hash[b];
+                          return cell_hash_[a] < cell_hash_[b];
                       });
 
     // ---- 3. Build CSR bucket_start (counting + prefix sum) -------------------
-    std::ranges::fill(m_bucket_start, 0U);
+    std::ranges::fill(bucket_start_, 0U);
     for (std::size_t i = 0; i < n; ++i)
     {
-        ++m_bucket_start[m_cell_hash[i] + 1U];
+        ++bucket_start_[cell_hash_[i] + 1U];
     }
-    for (std::size_t b = 1; b < m_bucket_start.size(); ++b)
+    for (std::size_t b = 1; b < bucket_start_.size(); ++b)
     {
-        m_bucket_start[b] += m_bucket_start[b - 1U];
+        bucket_start_[b] += bucket_start_[b - 1U];
     }
-    // m_hash_index is already grouped by hash (we sorted); the prefix-sum
+    // hash_index_ is already grouped by hash (we sorted); the prefix-sum
     // bucket_start now gives the [start, end) range for each bucket.
 
     // ---- 4. Near-phase: visit 3x3x3 neighbourhood for each particle ----------
@@ -351,9 +351,9 @@ void SoftBody::solve_self_collisions() noexcept
     // out (the w_sum > 0 guard below preserves both-pinned no-op semantics).
     for (std::size_t i = 0; i < n; ++i)
     {
-        const int32_t cx0 = m_cell_coord[i][0];
-        const int32_t cy0 = m_cell_coord[i][1];
-        const int32_t cz0 = m_cell_coord[i][2];
+        const int32_t cx0 = cell_coord_[i][0];
+        const int32_t cy0 = cell_coord_[i][1];
+        const int32_t cz0 = cell_coord_[i][2];
 
         for (int32_t dz = -1; dz <= 1; ++dz)
         {
@@ -366,12 +366,12 @@ void SoftBody::solve_self_collisions() noexcept
                     const int32_t cz = cz0 + dz;
                     const uint32_t h = spatial_hash(cx, cy, cz, table_mask);
 
-                    const uint32_t b_begin = m_bucket_start[h];
-                    const uint32_t b_end   = m_bucket_start[h + 1U];
+                    const uint32_t b_begin = bucket_start_[h];
+                    const uint32_t b_end   = bucket_start_[h + 1U];
 
                     for (uint32_t k = b_begin; k < b_end; ++k)
                     {
-                        const uint32_t j = m_hash_index[k];
+                        const uint32_t j = hash_index_[k];
                         if (j <= static_cast<uint32_t>(i))
                         {
                             continue; // Skip self + already-processed pair.
@@ -379,15 +379,15 @@ void SoftBody::solve_self_collisions() noexcept
 
                         // Hash collision filter: confirm the candidate truly
                         // lives in the queried integer cell.
-                        if (m_cell_coord[j][0] != cx ||
-                            m_cell_coord[j][1] != cy ||
-                            m_cell_coord[j][2] != cz)
+                        if (cell_coord_[j][0] != cx ||
+                            cell_coord_[j][1] != cy ||
+                            cell_coord_[j][2] != cz)
                         {
                             continue;
                         }
 
-                        Particle& pa = m_particles[i];
-                        Particle& pb = m_particles[j];
+                        Particle& pa = particles_[i];
+                        Particle& pb = particles_[j];
 
                         const float dxp = pb.position[0] - pa.position[0];
                         const float dyp = pb.position[1] - pa.position[1];
@@ -437,13 +437,13 @@ void SoftBody::solve_self_collisions() noexcept
 void SoftBody::enforce_pins() noexcept
 {
     // Restore pinned particles to their original (configured) positions.
-    // m_cfg.particles holds the authoritative initial state.
-    for (std::size_t i = 0; i < m_particles.size(); ++i)
+    // cfg_.particles holds the authoritative initial state.
+    for (std::size_t i = 0; i < particles_.size(); ++i)
     {
-        if (m_particles[i].pinned || m_particles[i].inv_mass <= 0.0F)
+        if (particles_[i].pinned || particles_[i].inv_mass <= 0.0F)
         {
-            m_particles[i].position      = m_cfg.particles[i].position;
-            m_particles[i].prev_position = m_cfg.particles[i].position;
+            particles_[i].position      = cfg_.particles[i].position;
+            particles_[i].prev_position = cfg_.particles[i].position;
         }
     }
 }

@@ -121,16 +121,16 @@ integrate_brdf(float n_dot_v, float roughness, std::uint32_t samples = 512) noex
     for (std::uint32_t i = 0; i < samples; ++i)
     {
         const auto xi = hammersley(i, samples);
-        const auto H  = importance_sample_ggx(xi, roughness);
+        const auto h  = importance_sample_ggx(xi, roughness);
         // Reflect V about H to get L.
-        const float v_dot_h = v_x * H[0] + v_z * H[2];
+        const float v_dot_h = v_x * h[0] + v_z * h[2];
         // L = reflect(-V, H) = 2*dot(V,H)*H - V; we only need L_z (N·L)
         // for the integration so the other components are unused.
-        const float l_z = 2.0F * v_dot_h * H[2] - v_z;
+        const float l_z = 2.0F * v_dot_h * h[2] - v_z;
         const float n_dot_l = std::max(0.0F, l_z);
         if (n_dot_l <= 0.0F) continue;
 
-        const float n_dot_h = std::max(0.0F, H[2]);
+        const float n_dot_h = std::max(0.0F, h[2]);
         const float v_dot_h_clamp = std::max(0.0F, v_dot_h);
         const float g = geometry_smith_ibl(std::max(0.001F, n_dot_v), n_dot_l, roughness);
         const float g_vis = (g * v_dot_h_clamp) / std::max(1e-5F, n_dot_h * n_dot_v);

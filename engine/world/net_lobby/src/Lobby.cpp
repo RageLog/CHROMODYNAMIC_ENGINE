@@ -16,18 +16,18 @@ namespace cd::network::lobby
 
 RoomState* Lobby::find_room(RoomId room_id) noexcept
 {
-    const auto it = m_index.find(room_id);
-    if (it == m_index.end())
+    const auto it = m_index_.find(room_id);
+    if (it == m_index_.end())
         return nullptr;
-    return &m_rooms[it->second];
+    return &m_rooms_[it->second];
 }
 
 const RoomState* Lobby::find_room(RoomId room_id) const noexcept
 {
-    const auto it = m_index.find(room_id);
-    if (it == m_index.end())
+    const auto it = m_index_.find(room_id);
+    if (it == m_index_.end())
         return nullptr;
-    return &m_rooms[it->second];
+    return &m_rooms_[it->second];
 }
 
 PlayerState* Lobby::find_player(RoomState& rs, uint64_t player_id) noexcept
@@ -46,7 +46,7 @@ PlayerState* Lobby::find_player(RoomState& rs, uint64_t player_id) noexcept
 
 RoomId Lobby::create_room(const LobbyConfig& config, uint64_t host_player_id)
 {
-    const RoomId id = m_next_id++;
+    const RoomId id = m_next_id_++;
 
     RoomState rs;
     rs.room_id  = id;
@@ -57,9 +57,9 @@ RoomId Lobby::create_room(const LobbyConfig& config, uint64_t host_player_id)
     host.player_id = host_player_id;
     rs.players.push_back(host);
 
-    const std::size_t idx = m_rooms.size();
-    m_rooms.push_back(std::move(rs));
-    m_index.emplace(id, idx);
+    const std::size_t idx = m_rooms_.size();
+    m_rooms_.push_back(std::move(rs));
+    m_index_.emplace(id, idx);
 
     return id;
 }
@@ -162,7 +162,7 @@ const RoomState* Lobby::room(RoomId room_id) const noexcept
 
 std::span<const RoomState> Lobby::active_rooms() const noexcept
 {
-    return { m_rooms.data(), m_rooms.size() };
+    return { m_rooms_.data(), m_rooms_.size() };
 }
 
 }  // namespace cd::network::lobby

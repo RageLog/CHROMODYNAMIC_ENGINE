@@ -26,25 +26,25 @@ constexpr std::uint64_t kTimelineForever = std::numeric_limits<std::uint64_t>::m
 
 Renderer::~Renderer()
 {
-    release_();
+    release();
 }
 
 Renderer::Renderer(Renderer&& other) noexcept
 {
-    steal_(std::move(other));
+    steal(std::move(other));
 }
 
 Renderer& Renderer::operator=(Renderer&& other) noexcept
 {
     if (this != &other)
     {
-        release_();
-        steal_(std::move(other));
+        release();
+        steal(std::move(other));
     }
     return *this;
 }
 
-void Renderer::release_() noexcept
+void Renderer::release() noexcept
 {
     if (device_ == nullptr)
         return;
@@ -71,7 +71,7 @@ void Renderer::release_() noexcept
     in_progress_ = false;
 }
 
-void Renderer::steal_(Renderer&& other) noexcept
+void Renderer::steal(Renderer&& other) noexcept
 {
     desc_ = other.desc_;
     device_ = other.device_;
@@ -132,21 +132,21 @@ cd::core::Result<Renderer> Renderer::create(const RendererDesc& desc)
         auto a = r.device_->create_semaphore();
         if (!a.has_value())
         {
-            r.release_();
+            r.release();
             return std::unexpected(render_errors::wrap(render_errors::Code::kSyncCreateFailed, a.error()));
         }
         f.acquire_sem = *a;
         auto p = r.device_->create_semaphore();
         if (!p.has_value())
         {
-            r.release_();
+            r.release();
             return std::unexpected(render_errors::wrap(render_errors::Code::kSyncCreateFailed, p.error()));
         }
         f.present_sem = *p;
         auto fence = r.device_->create_fence(/*signaled=*/true);
         if (!fence.has_value())
         {
-            r.release_();
+            r.release();
             return std::unexpected(render_errors::wrap(render_errors::Code::kSyncCreateFailed, fence.error()));
         }
         f.fence = *fence;
@@ -154,7 +154,7 @@ cd::core::Result<Renderer> Renderer::create(const RendererDesc& desc)
         f.cmd = r.device_->create_command_buffer(cd::rhi::QueueType::kGraphics);
         if (f.cmd == nullptr)
         {
-            r.release_();
+            r.release();
             return std::unexpected(
                 render_errors::make(
                     render_errors::Code::kSyncCreateFailed,

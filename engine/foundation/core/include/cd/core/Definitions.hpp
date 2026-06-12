@@ -771,9 +771,9 @@
     #define CD_PTR_SIZE 4
 #endif
 
-#define CD_64BIT (CD_PTR_SIZE == 8)
-#define CD_32BIT (CD_PTR_SIZE == 4)
-#define CD_16BIT (CD_PTR_SIZE == 2)
+#define CD_64_BIT (CD_PTR_SIZE == 8)
+#define CD_32_BIT (CD_PTR_SIZE == 4)
+#define CD_16_BIT (CD_PTR_SIZE == 2)
 
 #if defined(__CHAR_BIT__)
     #define CD_CHAR_BIT __CHAR_BIT__
@@ -2201,7 +2201,7 @@ CD_STATIC_ASSERT_MSG(
     CD_BYTE_ORDER == CD_BYTE_ORDER_LITTLE || CD_BYTE_ORDER == CD_BYTE_ORDER_BIG || CD_BYTE_ORDER == CD_BYTE_ORDER_PDP,
     "CD_BYTE_ORDER must be little, big or pdp"
 );
-CD_STATIC_ASSERT_MSG(CD_64BIT + CD_32BIT + CD_16BIT == 1, "exactly one of CD_{16,32,64}BIT must be 1");
+CD_STATIC_ASSERT_MSG(CD_64_BIT + CD_32_BIT + CD_16_BIT == 1, "exactly one of CD_{16,32,64}BIT must be 1");
 CD_STATIC_ASSERT_MSG(CD_CHAR_BIT >= 8, "CD_CHAR_BIT must be >= 8");
 
 /* ========================================================================== */

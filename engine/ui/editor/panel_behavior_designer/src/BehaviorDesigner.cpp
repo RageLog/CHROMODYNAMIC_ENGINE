@@ -117,7 +117,7 @@ float BehaviorDesigner::pan_y() const noexcept
 // Returns the total width (in pixels) consumed by this subtree so the
 // parent can centre itself above it.
 // ---------------------------------------------------------------------------
-float BehaviorDesigner::measure_subtree_(
+float BehaviorDesigner::measure_subtree(
     const cd::game::ai_bt::Node* node,
     BehaviorNodeId                parent_id,
     std::uint32_t                 depth,
@@ -165,7 +165,7 @@ float BehaviorDesigner::measure_subtree_(
         float child_col = col_offset;
         for (const cd::game::ai_bt::Node* child : children)
         {
-            const float cw = measure_subtree_(child,
+            const float cw = measure_subtree(child,
                                               my_id,
                                               depth + 1U,
                                               child_col,
@@ -189,7 +189,7 @@ float BehaviorDesigner::measure_subtree_(
 // ---------------------------------------------------------------------------
 // draw_real_tree_ — emit quads for the real BT graph.
 // ---------------------------------------------------------------------------
-void BehaviorDesigner::draw_real_tree_(cd::ui::renderer::DrawBatcher& batcher,
+void BehaviorDesigner::draw_real_tree(cd::ui::renderer::DrawBatcher& batcher,
                                        const cd::ui::widgets::Theme&  theme,
                                        float graph_x, float graph_y,
                                        float graph_w, float graph_h) const
@@ -207,7 +207,7 @@ void BehaviorDesigner::draw_real_tree_(cd::ui::renderer::DrawBatcher& batcher,
     nodes.reserve(64U);
     BehaviorNodeId next_id = 1U;  // 0 == kInvalidNodeId
 
-    measure_subtree_(root_node,
+    measure_subtree(root_node,
                      kInvalidNodeId,
                      0U,
                      0.0F,
@@ -360,7 +360,7 @@ void BehaviorDesigner::draw_real_tree_(cd::ui::renderer::DrawBatcher& batcher,
 // ---------------------------------------------------------------------------
 // draw_demo_nodes_ — Sprint-1 fallback (3 hard-coded nodes).
 // ---------------------------------------------------------------------------
-void BehaviorDesigner::draw_demo_nodes_(cd::ui::renderer::DrawBatcher& batcher,
+void BehaviorDesigner::draw_demo_nodes(cd::ui::renderer::DrawBatcher& batcher,
                                         const cd::ui::widgets::Theme&  theme,
                                         float graph_x, float graph_y,
                                         float graph_w, float graph_h) const
@@ -518,11 +518,11 @@ void BehaviorDesigner::draw(cd::ui::renderer::DrawBatcher& batcher,
     // ---- Nodes + edges ------------------------------------------------------
     if (tree_ != nullptr)
     {
-        draw_real_tree_(batcher, theme, graph_x, graph_y, graph_w, graph_h);
+        draw_real_tree(batcher, theme, graph_x, graph_y, graph_w, graph_h);
     }
     else
     {
-        draw_demo_nodes_(batcher, theme, graph_x, graph_y, graph_w, graph_h);
+        draw_demo_nodes(batcher, theme, graph_x, graph_y, graph_w, graph_h);
     }
 }
 

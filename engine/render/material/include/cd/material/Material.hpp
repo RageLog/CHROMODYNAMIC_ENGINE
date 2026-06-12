@@ -200,8 +200,8 @@ public:
     void apply(cd::rhi::ICommandBuffer& cmd) const;
 
 private:
-    void release_() noexcept;
-    void steal_(Material&& other) noexcept;
+    void release() noexcept;
+    void steal(Material&& other) noexcept;
 
     cd::rhi::IDevice* device_ { nullptr };
     cd::rhi::ShaderModuleHandle vs_ {};
@@ -363,8 +363,8 @@ public:
     void set_emissive(float r, float g, float b) noexcept;
 
 private:
-    void release_() noexcept;
-    void steal_(MaterialInstance&& other) noexcept;
+    void release() noexcept;
+    void steal(MaterialInstance&& other) noexcept;
 
     cd::rhi::IDevice* device_ { nullptr };
     cd::rhi::DescriptorSetHandle desc_set_ {};

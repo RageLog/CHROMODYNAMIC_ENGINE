@@ -44,7 +44,7 @@ std::unique_ptr<cd::rhi::IDevice> try_make_device()
     return std::move(*r);
 }
 
-#define SKIP_IF_NO_VULKAN(dev_var)    \
+#define CD_SKIP_IF_NO_VULKAN(dev_var)    \
     auto dev_var = try_make_device(); \
     if (!dev_var)                     \
     GTEST_SKIP() << "no Vulkan ICD available on this host"
@@ -117,7 +117,7 @@ TEST(Renderer, RejectsNullDevice)
 
 TEST(Renderer, RejectsZeroExtent)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     cd::render::RendererDesc d {};
     d.device = dev.get();
     d.swapchain.extent = { 0, 0 };
@@ -128,7 +128,7 @@ TEST(Renderer, RejectsZeroExtent)
 
 TEST(Renderer, RejectsZeroFramesInFlight)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     cd::render::RendererDesc d {};
     d.device = dev.get();
     d.swapchain.extent = { 64, 64 };
@@ -140,7 +140,7 @@ TEST(Renderer, RejectsZeroFramesInFlight)
 #if defined(_WIN32)
 TEST(Renderer, EndFrameWithoutBeginRejected)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -158,7 +158,7 @@ TEST(Renderer, EndFrameWithoutBeginRejected)
 
 TEST(Renderer, DoubleBeginRejected)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -183,7 +183,7 @@ TEST(Renderer, SingleFrameRoundTrip)
     // full acquire/submit/present cycle with implicit barriers on the
     // swapchain image. No explicit render-pass recording — we just verify the
     // sync hand-off works end-to-end on the real GPU.
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -215,7 +215,7 @@ TEST(Renderer, RecreateSwapchainChangesExtent)
     // Mimic the resize path the hello_triangle sample drives: build a
     // Renderer at one size, call recreate_swapchain with a different size,
     // then drive a frame to confirm the new swapchain is usable.
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -245,7 +245,7 @@ TEST(Renderer, RecreateSwapchainChangesExtent)
 
 TEST(Renderer, RecreateSwapchainRejectsZeroExtent)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -262,7 +262,7 @@ TEST(Renderer, RecreateSwapchainRejectsZeroExtent)
 
 TEST(Renderer, SubmitDrawsRejectsOutsideFrame)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -283,7 +283,7 @@ TEST(Renderer, SubmitDrawsRejectsOutsideFrame)
 
 TEST(Renderer, SubmitDrawsReplaysBucketInSortedOrder)
 {
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -331,7 +331,7 @@ TEST(Renderer, ThreeFrameLoop)
     // Exercises the frames_in_flight ring: with 2 frames in flight, the third
     // begin_frame must successfully reuse slot 0 (which has been drained by
     // the fence wait inside begin_frame).
-    SKIP_IF_NO_VULKAN(dev);
+    CD_SKIP_IF_NO_VULKAN(dev);
     HiddenWindow w;
     cd::render::RendererDesc d {};
     d.device = dev.get();
@@ -654,11 +654,11 @@ TEST(PlanarShadow, ProjectsPointOntoYPlaneAlongSun)
     const cd::math::Vec3f sun { 0.0F, -1.0F, 0.0F };
     const float plane_y = -0.5F;
     const float lift    = 0.01F;
-    const auto S = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const auto s = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
 
     // Caster point (3, 5, -2) -> projected (3, -0.49, -2).
     const cd::math::Vec4f p { 3.0F, 5.0F, -2.0F, 1.0F };
-    const auto p_proj = S * p;
+    const auto p_proj = s * p;
     EXPECT_NEAR(p_proj.x, 3.0F, kEps);
     EXPECT_NEAR(p_proj.y, plane_y + lift, kEps);
     EXPECT_NEAR(p_proj.z, -2.0F, kEps);
@@ -675,9 +675,9 @@ TEST(PlanarShadow, OffAxisSunFlattensYAndShearsXZ)
     const cd::math::Vec3f sun { 0.5F, -0.5F, 0.5F };
     const float plane_y = -0.5F;
     const float lift    = 0.0F;
-    const auto S = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const auto s = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
     const cd::math::Vec4f p { 0.0F, 1.0F, 0.0F, 1.0F };
-    const auto p_proj = S * p;
+    const auto p_proj = s * p;
     EXPECT_NEAR(p_proj.x, 1.0F - plane_y, kEps);   // = 1.5
     EXPECT_NEAR(p_proj.y, plane_y, kEps);
     EXPECT_NEAR(p_proj.z, 1.0F - plane_y, kEps);
@@ -694,9 +694,9 @@ TEST(PlanarShadow, NearHorizontalSunClampsToFiniteShadow)
     const cd::math::Vec3f sun { 1.0F, -0.01F, 0.0F };
     const float plane_y = -0.5F;
     const float lift    = 0.0F;
-    const auto S = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
+    const auto s = cd::render::make_planar_shadow_matrix(sun, plane_y, lift);
     const cd::math::Vec4f p { 0.0F, 1.0F, 0.0F, 1.0F };
-    const auto p_proj = S * p;
+    const auto p_proj = s * p;
     // Projected y still pinned to plane_y.
     EXPECT_NEAR(p_proj.y, plane_y, kEps);
     // X offset bounded under 20 (would be 150+ without clamp).

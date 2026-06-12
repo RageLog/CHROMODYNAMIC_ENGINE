@@ -100,8 +100,8 @@ enum class ShaderLanguage : std::uint8_t
 /// matching device feature flag.
 enum class TargetEnv : std::uint8_t
 {
-    kVulkan_1_2,
-    kVulkan_1_3,
+    kVulkan12,
+    kVulkan13,
 };
 
 struct CompileDesc
@@ -113,7 +113,7 @@ struct CompileDesc
     /// Input source language.
     ShaderLanguage lang { ShaderLanguage::kGlsl };
     /// SPIR-V target environment. Defaults to the engine's RHI baseline.
-    TargetEnv target { TargetEnv::kVulkan_1_3 };
+    TargetEnv target { TargetEnv::kVulkan13 };
     /// Entry-point function name. GLSL ignores this (always "main"); HLSL needs
     /// the actual entry point because a single file may host many.
     std::string_view entry_point { "main" };

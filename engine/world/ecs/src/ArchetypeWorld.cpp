@@ -65,12 +65,12 @@ void ArchetypeWorld::destroy(Entity e)
     EntityLocation loc = entity_locations_[e.id];
     Archetype& a = *loc.archetype;
     Chunk& c = *a.chunks[loc.chunk_index];
-    chunk_swap_pop_(a, c, loc.row_in_chunk);
+    chunk_swap_pop(a, c, loc.row_in_chunk);
     entity_locations_[e.id] = EntityLocation {};
     entities_.destroy(e);
 }
 
-ArchetypeWorld::Archetype* ArchetypeWorld::find_or_create_archetype_(
+ArchetypeWorld::Archetype* ArchetypeWorld::find_or_create_archetype(
     std::vector<ComponentTypeInfo> infos)
 {
     // Linear search for an existing archetype with the same type set.
@@ -91,7 +91,7 @@ ArchetypeWorld::Archetype* ArchetypeWorld::find_or_create_archetype_(
     return archetypes_.back().get();
 }
 
-void ArchetypeWorld::chunk_swap_pop_(Archetype& a, Chunk& c, std::size_t row)
+void ArchetypeWorld::chunk_swap_pop(Archetype& a, Chunk& c, std::size_t row)
 {
     const std::size_t last = c.size - 1U;
     if (row != last) {

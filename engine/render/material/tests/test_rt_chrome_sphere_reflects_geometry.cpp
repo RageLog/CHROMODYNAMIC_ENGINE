@@ -201,7 +201,7 @@ TEST(RtChromeSphereReflectsGeometry, VulkanGatedClosestHitGlslCompiles)
     d.source      = cd::material::kRtClosestHitGlsl;
     d.stage       = cd::shader::ShaderStage::kClosestHit;
     d.lang        = cd::shader::ShaderLanguage::kGlsl;
-    d.target      = cd::shader::TargetEnv::kVulkan_1_3;
+    d.target      = cd::shader::TargetEnv::kVulkan13;
     d.source_name = "rt_chrome_sphere_reflects_geometry.rchit";
     const auto compiled = compiler->compile(d);
 

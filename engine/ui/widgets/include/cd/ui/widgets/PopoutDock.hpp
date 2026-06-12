@@ -110,8 +110,8 @@ public:
 
 private:
     /// Linear search is acceptable: typical detached panel count < 10.
-    [[nodiscard]] PopoutWindow* find_(std::string_view panel_id) noexcept;
-    [[nodiscard]] const PopoutWindow* find_(std::string_view panel_id) const noexcept;
+    [[nodiscard]] PopoutWindow* find(std::string_view panel_id) noexcept;
+    [[nodiscard]] const PopoutWindow* find(std::string_view panel_id) const noexcept;
 
     std::vector<PopoutWindow> windows_;
 };

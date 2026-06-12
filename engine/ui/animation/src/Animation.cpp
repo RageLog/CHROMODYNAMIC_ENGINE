@@ -79,11 +79,11 @@ namespace
 
 [[nodiscard]] float ease_out_back(float t) noexcept
 {
-    constexpr float c1 = 1.70158F;
-    constexpr float c3 = c1 + 1.0F;
+    constexpr float kC1 = 1.70158F;
+    constexpr float kC3 = kC1 + 1.0F;
     const float     u  = t - 1.0F;
     // 1 + c3 * u^3 + c1 * u^2 -- classic Penner outBack
-    return 1.0F + c3 * u * u * u + c1 * u * u;
+    return 1.0F + kC3 * u * u * u + kC1 * u * u;
 }
 
 // ----- Elastic (damped sine; standard EaseOutElastic) -----------------------
@@ -99,9 +99,9 @@ namespace
         return 1.0F;
     }
     // c4 = (2*pi) / 3 -- matches easings.net reference output.
-    constexpr float c4 = 2.0943951023931953F;  // (2 * pi) / 3
+    constexpr float kC4 = 2.0943951023931953F;  // (2 * pi) / 3
     const float     d  = std::pow(2.0F, -10.0F * t);
-    const float     s  = std::sin((t * 10.0F - 0.75F) * c4);
+    const float     s  = std::sin((t * 10.0F - 0.75F) * kC4);
     return d * s + 1.0F;
 }
 
@@ -109,25 +109,25 @@ namespace
 
 [[nodiscard]] float ease_out_bounce(float t) noexcept
 {
-    constexpr float n1 = 7.5625F;
-    constexpr float d1 = 2.75F;
+    constexpr float kN1 = 7.5625F;
+    constexpr float kD1 = 2.75F;
 
-    if (t < 1.0F / d1)
+    if (t < 1.0F / kD1)
     {
-        return n1 * t * t;
+        return kN1 * t * t;
     }
-    if (t < 2.0F / d1)
+    if (t < 2.0F / kD1)
     {
-        const float u = t - 1.5F / d1;
-        return n1 * u * u + 0.75F;
+        const float u = t - 1.5F / kD1;
+        return kN1 * u * u + 0.75F;
     }
-    if (t < 2.5F / d1)
+    if (t < 2.5F / kD1)
     {
-        const float u = t - 2.25F / d1;
-        return n1 * u * u + 0.9375F;
+        const float u = t - 2.25F / kD1;
+        return kN1 * u * u + 0.9375F;
     }
-    const float u = t - 2.625F / d1;
-    return n1 * u * u + 0.984375F;
+    const float u = t - 2.625F / kD1;
+    return kN1 * u * u + 0.984375F;
 }
 
 }  // namespace
