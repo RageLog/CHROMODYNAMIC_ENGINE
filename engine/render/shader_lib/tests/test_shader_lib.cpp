@@ -8,9 +8,11 @@
 // =============================================================================
 #include <cd/shader/Compiler.hpp>
 #include <cd/shader_lib/ModuleRegistry.hpp>
+#include <cd/shader_lib/VariantDomain.hpp>
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <string>
 
 namespace
@@ -151,6 +153,92 @@ TEST(ShaderLibCompile, PbrLobeEndToEnd)
         "    vec3 c0 = (diff + spec) * cd_saturate(nol) + 0.001 * (b1 + b2);\n"
         "    o = vec4(cd_tonemap_uchimura(c0), 1.0);\n"
         "}\n";
+
+    cd::shader_lib::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
+
+using TestDomain = cd::shader_lib::VariantDomain<
+    cd::shader_lib::BoolDim<"DIR_LIGHT">,
+    cd::shader_lib::BoolDim<"SHADOW_RECV">,
+    cd::shader_lib::EnumDim<"TONEMAP", 4>>;
+
+// Filament-style curated validity: a shadow receiver needs the
+// directional light.
+constexpr auto kTestFilter = [](const TestDomain::Variant& v)
+{
+    return v.get<"SHADOW_RECV">() == 0u || v.get<"DIR_LIGHT">() == 1u;
+};
+
+// The curated budget is pinned AT COMPILE TIME: 2*2*4 = 16 raw, the
+// filter rejects the 4 (SHADOW_RECV=1, DIR_LIGHT=0) combinations.
+static_assert(TestDomain::space_size() == 16u);
+static_assert(TestDomain::valid_count(kTestFilter) == 12u);
+
+TEST(VariantDomain, EnumerationVisitsExactlyTheValidSet)
+{
+    std::uint64_t visited = 0;
+    const auto accepted = TestDomain::for_each_valid(
+        kTestFilter,
+        [&](const TestDomain::Variant& v)
+        {
+            ++visited;
+            EXPECT_TRUE(v.get<"SHADOW_RECV">() == 0u ||
+                        v.get<"DIR_LIGHT">() == 1u);
+            EXPECT_LT(v.get<"TONEMAP">(), 4u);
+        });
+    EXPECT_EQ(accepted, 12u);
+    EXPECT_EQ(visited, 12u);
+}
+
+TEST(VariantDomain, DefinesSerialiseAlphabetically)
+{
+    TestDomain::Variant v {};
+    v.set<"TONEMAP">(3u);
+    v.set<"DIR_LIGHT">(1u);
+    const auto defines = TestDomain::to_defines(v);
+    ASSERT_EQ(defines.size(), 3u);
+    EXPECT_EQ(defines[0].name, "DIR_LIGHT");
+    EXPECT_EQ(defines[1].name, "SHADOW_RECV");
+    EXPECT_EQ(defines[2].name, "TONEMAP");
+    EXPECT_EQ(defines[0].value, 1u);
+    EXPECT_EQ(defines[1].value, 0u);
+    EXPECT_EQ(defines[2].value, 3u);
+}
+
+TEST(VariantDomain, PreambleCompilesWithModules)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    TestDomain::Variant v {};
+    v.set<"DIR_LIGHT">(1u);
+    v.set<"TONEMAP">(2u);
+
+    std::string src = "#version 450\n"
+                      "#extension GL_GOOGLE_include_directive : enable\n";
+    src += TestDomain::to_preamble(v);
+    src += "#include <cd/shader_lib/tonemap.glsl>\n"
+           "layout(location = 0) out vec4 o;\n"
+           "void main()\n"
+           "{\n"
+           "#if DIR_LIGHT\n"
+           "    vec3 c0 = cd_tonemap_reinhard(vec3(float(TONEMAP)));\n"
+           "#else\n"
+           "    vec3 c0 = vec3(0.0);\n"
+           "#endif\n"
+           "    o = vec4(c0, 1.0);\n"
+           "}\n";
 
     cd::shader_lib::ModuleResolver resolver;
     cd::shader::CompileDesc desc {};
