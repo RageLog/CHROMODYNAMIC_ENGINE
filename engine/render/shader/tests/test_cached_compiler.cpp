@@ -9,6 +9,9 @@
 #include <cd/shader/CachedCompiler.hpp>
 #include <gtest/gtest.h>
 
+#include <map>
+#include <optional>
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -69,6 +72,76 @@ struct CacheDirGuard
     CacheDirGuard(CacheDirGuard&&) = delete;
     CacheDirGuard& operator=(CacheDirGuard&&) = delete;
 };
+
+// ---- phase1132 (SL-C step 1): include-closure key fold -----------------------
+
+class CacheMapResolver final : public cd::shader::IIncludeResolver
+{
+public:
+    [[nodiscard]] std::optional<Resolved> resolve(
+        std::string_view requested, std::string_view /*requester*/,
+        bool /*system_include*/) override
+    {
+        const auto it = modules.find(std::string { requested });
+        if (it == modules.end())
+            return std::nullopt;
+        return Resolved { it->first, it->second };
+    }
+
+    std::map<std::string, std::string> modules;
+};
+
+// Editing an included module MUST change the cache key (stale .spv would
+// silently mis-render otherwise) — ADR-20260612-shader-library-architecture
+// §2.3. The root source stays byte-identical across the edit.
+TEST(CachedCompiler, ModuleEditInvalidatesClosureKey)
+{
+    CountingCompiler inner;
+    CacheDirGuard guard { fresh_cache_dir() };
+    cd::shader::CachedCompiler cached { inner, guard.path };
+
+    CacheMapResolver resolver;
+    resolver.modules["m.glsl"] = "float v() { return 1.0; }\n";
+
+    cd::shader::CompileDesc desc {};
+    desc.source = "#include \"m.glsl\"\nvoid main() {}\n";
+    desc.include_resolver = &resolver;
+
+    ASSERT_TRUE(cached.compile(desc).has_value());   // miss 1
+    ASSERT_TRUE(cached.compile(desc).has_value());   // hit
+    EXPECT_EQ(cached.stats().misses, 1u);
+    EXPECT_EQ(cached.stats().hits, 1u);
+
+    resolver.modules["m.glsl"] = "float v() { return 2.0; }\n";  // module edit
+    ASSERT_TRUE(cached.compile(desc).has_value());   // MUST miss again
+    EXPECT_EQ(cached.stats().misses, 2u);
+    EXPECT_EQ(cached.stats().hits, 1u);
+}
+
+// No resolver / no includes -> key identical to the pre-phase1132 epoch.
+TEST(CachedCompiler, EmptyClosureKeepsLegacyKey)
+{
+    CountingCompiler inner;
+    CacheDirGuard guard { fresh_cache_dir() };
+
+    cd::shader::CompileDesc desc {};
+    desc.source = "void main() {}\n";
+
+    {
+        cd::shader::CachedCompiler cached { inner, guard.path };
+        ASSERT_TRUE(cached.compile(desc).has_value());  // miss -> persists
+    }
+    {
+        // Same dir, resolver SET but source has no includes: closure is
+        // empty -> same key -> warm hit from the first epoch.
+        cd::shader::CachedCompiler cached { inner, guard.path };
+        CacheMapResolver resolver;
+        desc.include_resolver = &resolver;
+        ASSERT_TRUE(cached.compile(desc).has_value());
+        EXPECT_EQ(cached.stats().hits, 1u);
+        EXPECT_EQ(cached.stats().misses, 0u);
+    }
+}
 
 }  // namespace
 

@@ -5,6 +5,10 @@
 #include <cd/shader/ShaderStage.hpp>
 #include <gtest/gtest.h>
 
+#include <map>
+#include <optional>
+#include <string>
+
 #include <cstdint>
 #include <memory>
 
@@ -186,6 +190,82 @@ TEST(ShaderStageDesc, ToStringCoversAllStages)
     EXPECT_STREQ(cd::shader::to_string(cd::shader::StageKind::kVertex), "vertex");
     EXPECT_STREQ(cd::shader::to_string(cd::shader::StageKind::kFragment), "fragment");
     EXPECT_STREQ(cd::shader::to_string(cd::shader::StageKind::kRayGen), "raygen");
+}
+
+// ---- phase1132 (SL-C step 1): IIncludeResolver through glslang --------------
+
+class MapResolver final : public cd::shader::IIncludeResolver
+{
+public:
+    [[nodiscard]] std::optional<Resolved> resolve(
+        std::string_view requested, std::string_view /*requester*/,
+        bool /*system_include*/) override
+    {
+        const auto it = modules.find(std::string { requested });
+        if (it == modules.end())
+            return std::nullopt;
+        return Resolved { it->first, it->second };
+    }
+
+    std::map<std::string, std::string> modules;
+};
+
+constexpr const char* kIncludingFS = R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "test_module.glsl"
+layout(location = 0) out vec4 o;
+void main() { o = vec4(test_module_value()); }
+)glsl";
+
+TEST(ShaderCompiler, IncludeResolvesThroughResolver)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    MapResolver resolver;
+    resolver.modules["test_module.glsl"] =
+        "#ifndef CD_SL_TEST_MODULE_GLSL\n"
+        "#define CD_SL_TEST_MODULE_GLSL\n"
+        "float test_module_value() { return 0.5; }\n"
+        "#endif\n";
+
+    cd::shader::CompileDesc desc {};
+    desc.source = kIncludingFS;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value()) << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+TEST(ShaderCompiler, IncludeWithoutResolverFails)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::shader::CompileDesc desc {};
+    desc.source = kIncludingFS;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    const auto r = c->compile(desc);
+    EXPECT_FALSE(r.has_value());  // legacy behaviour: includes are errors
+}
+
+TEST(ShaderCompiler, UnknownIncludeFailsWithResolver)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    MapResolver resolver;  // empty: nothing resolves
+    cd::shader::CompileDesc desc {};
+    desc.source = kIncludingFS;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    EXPECT_FALSE(r.has_value());
 }
 
 }  // namespace

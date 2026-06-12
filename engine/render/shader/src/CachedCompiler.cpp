@@ -3,6 +3,7 @@
 // =============================================================================
 #include <cd/shader/CachedCompiler.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -52,6 +53,89 @@ constexpr std::uint64_t kFnvPrime = 0x100000001B3ULL;
     return h;
 }
 
+// phase1132 (SL-C step 1, ADR-20260612-shader-library-architecture §2.3):
+// include-closure hash. A cheap recursive #include scan resolves the
+// closure WITHOUT a full preprocess; conditional includes are
+// over-approximated (a mentioned-but-#ifdef'd include still joins the
+// closure) which errs on the side of EXTRA recompiles, never stale hits.
+// The fold is over (path-hash then content-hash) entries SORTED by entry
+// value, so the result is independent of include order/duplication.
+[[nodiscard]] std::uint64_t hash_entry(std::string_view path, std::string_view content) noexcept
+{
+    std::uint64_t h = kFnvOffsetBasis;
+    h = fnv1a_update(h, path.data(), path.size());
+    h = fnv1a_update(h, content.data(), content.size());
+    return h;
+}
+
+void scan_includes(std::string_view text,
+                   const std::string& requester,
+                   IIncludeResolver& resolver,
+                   std::vector<std::uint64_t>& entries,
+                   std::vector<std::string>& visited,
+                   int depth)
+{
+    if (depth > 16)
+        return;
+    std::size_t pos = 0;
+    while (pos < text.size())
+    {
+        const std::size_t line_end = text.find('\n', pos);
+        std::string_view line = text.substr(
+            pos, line_end == std::string_view::npos ? std::string_view::npos
+                                                    : line_end - pos);
+        pos = line_end == std::string_view::npos ? text.size() : line_end + 1;
+
+        const std::size_t hash_at = line.find_first_not_of(" \t");
+        if (hash_at == std::string_view::npos || line[hash_at] != '#')
+            continue;
+        const std::size_t kw = line.find("include", hash_at + 1);
+        if (kw == std::string_view::npos)
+            continue;
+        const std::size_t open = line.find_first_of("<\"", kw + 7);
+        if (open == std::string_view::npos)
+            continue;
+        const bool system_include = line[open] == '<';
+        const char closer = system_include ? '>' : '"';
+        const std::size_t close = line.find(closer, open + 1);
+        if (close == std::string_view::npos || close == open + 1)
+            continue;
+        const std::string_view requested = line.substr(open + 1, close - open - 1);
+
+        auto r = resolver.resolve(requested, requester, system_include);
+        if (!r.has_value())
+            continue;  // the compiler will report the real error
+        bool seen = false;
+        for (const auto& v : visited)
+        {
+            if (v == r->virtual_path) { seen = true; break; }
+        }
+        if (seen)
+            continue;
+        visited.push_back(r->virtual_path);
+        entries.push_back(hash_entry(r->virtual_path, r->content));
+        scan_includes(r->content, r->virtual_path, resolver, entries,
+                      visited, depth + 1);
+    }
+}
+
+[[nodiscard]] std::uint64_t closure_hash(const CompileDesc& d)
+{
+    if (d.include_resolver == nullptr)
+        return 0;
+    std::vector<std::uint64_t> entries;
+    std::vector<std::string> visited;
+    scan_includes(d.source, std::string {}, *d.include_resolver, entries,
+                  visited, 0);
+    if (entries.empty())
+        return 0;  // no includes -> key unchanged -> cache epoch preserved
+    std::sort(entries.begin(), entries.end());
+    std::uint64_t h = kFnvOffsetBasis;
+    for (const auto e : entries)
+        h = fnv1a_update(h, &e, sizeof(e));
+    return h;
+}
+
 [[nodiscard]] std::string to_hex(std::uint64_t v)
 {
     static constexpr char kHex[] = "0123456789abcdef";
@@ -85,7 +169,10 @@ std::filesystem::path CachedCompiler::path_for(std::uint64_t key, std::string_vi
 
 cd::core::Result<CompileResult> CachedCompiler::compile(const CompileDesc& desc)
 {
-    const auto key = hash_desc(desc);
+    // phase1132: closure_hash() is 0 when no resolver / no includes, so
+    // every pre-SL cache entry keeps its key (no cold-start for existing
+    // shaders).
+    const auto key = hash_desc(desc) ^ closure_hash(desc);
     const auto spv_path = path_for(key, ".spv");
 
     // ---- Read path ----

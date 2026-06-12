@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -104,6 +105,46 @@ enum class TargetEnv : std::uint8_t
     kVulkan13,
 };
 
+// ---- Include resolution (phase1132, SL-C step 1) ----------------------------
+
+/// Resolves `#include` requests during compilation (the GLSL path enables
+/// GL_GOOGLE_include_directive when a resolver is present). Implementations
+/// are engine-side module registries (cd::shader_lib::ModuleRegistry) or
+/// filesystem mounts. Resolved content only needs to stay valid for the
+/// duration of the compile() call that requested it.
+///
+/// Contract (ADR-20260612-shader-library-architecture §2.2):
+///   * resolution must be DETERMINISTIC for a given (requested, requester,
+///     system_include) triple — the include-closure feeds the shader cache
+///     key, so a flaky resolver poisons the cache;
+///   * depth is capped at 16 by the compiler (cycles are rejected by the
+///     cap; library modules additionally carry classic include guards).
+class IIncludeResolver
+{
+public:
+    struct Resolved
+    {
+        std::string virtual_path;  ///< canonical path — keys the closure
+        std::string content;       ///< full module text
+    };
+
+    IIncludeResolver() noexcept = default;
+    virtual ~IIncludeResolver() = default;
+    IIncludeResolver(const IIncludeResolver&) = delete;
+    IIncludeResolver& operator=(const IIncludeResolver&) = delete;
+    IIncludeResolver(IIncludeResolver&&) = delete;
+    IIncludeResolver& operator=(IIncludeResolver&&) = delete;
+
+    /// `requested` is the literal include path as written in the source;
+    /// `requester` is the virtual path of the including file ("" for the
+    /// root source); `system_include` distinguishes `<...>` from `"..."`.
+    /// Return std::nullopt when the path is unknown (compile error).
+    [[nodiscard]] virtual std::optional<Resolved> resolve(
+        std::string_view requested,
+        std::string_view requester,
+        bool system_include) = 0;
+};
+
 struct CompileDesc
 {
     /// Source text. Must be non-empty.
@@ -123,6 +164,12 @@ struct CompileDesc
     /// Emit SPIR-V with `OpSource`/`OpLine` debug info. Off by default to keep
     /// release binaries lean.
     bool generate_debug_info { false };
+    /// phase1132 (SL-C): optional, non-owning include resolver. Null keeps
+    /// the legacy behaviour (any #include is a compile error). When set,
+    /// CachedCompiler folds the resolved include CLOSURE into the cache
+    /// key (ADR-20260612-shader-library-architecture §2.3) so editing a
+    /// module invalidates every cached root that includes it.
+    IIncludeResolver* include_resolver { nullptr };
 };
 
 struct CompileResult

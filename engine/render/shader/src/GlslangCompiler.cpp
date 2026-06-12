@@ -133,6 +133,77 @@ void glslang_shutdown()
     return glslang::EShTargetSpv_1_6;
 }
 
+/// phase1132 (SL-C step 1): glslang Includer bridging IIncludeResolver.
+/// Depth-capped at 16 per ADR-20260612-shader-library-architecture §2.2
+/// (cycles bounce off the cap; modules also carry include guards).
+class ResolverIncluder final : public glslang::TShader::Includer
+{
+public:
+    explicit ResolverIncluder(IIncludeResolver& resolver) noexcept
+        : resolver_ { &resolver }
+    {
+    }
+
+    IncludeResult* includeSystem(const char* header_name,
+                                 const char* includer_name,
+                                 std::size_t inclusion_depth) override
+    {
+        return resolve_request(header_name, includer_name, inclusion_depth, true);
+    }
+
+    IncludeResult* includeLocal(const char* header_name,
+                                const char* includer_name,
+                                std::size_t inclusion_depth) override
+    {
+        return resolve_request(header_name, includer_name, inclusion_depth, false);
+    }
+
+    void releaseInclude(IncludeResult* result) override
+    {
+        if (result != nullptr)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) glslang's
+            // Includer contract is raw new/delete across the callback pair.
+            delete static_cast<Payload*>(result->userData);
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+            delete result;
+        }
+    }
+
+private:
+    struct Payload
+    {
+        std::string path;
+        std::string content;
+    };
+
+    static constexpr std::size_t kMaxIncludeDepth = 16;
+
+    IncludeResult* resolve_request(const char* header_name,
+                                   const char* includer_name,
+                                   std::size_t inclusion_depth,
+                                   bool system_include)
+    {
+        if (header_name == nullptr || inclusion_depth > kMaxIncludeDepth)
+            return nullptr;  // glslang surfaces this as a compile error
+        auto r = resolver_->resolve(
+            header_name,
+            includer_name != nullptr ? std::string_view { includer_name }
+                                     : std::string_view {},
+            system_include);
+        if (!r.has_value())
+            return nullptr;
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) see releaseInclude.
+        auto* payload = new Payload { std::move(r->virtual_path),
+                                      std::move(r->content) };
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+        return new IncludeResult(payload->path, payload->content.data(),
+                                 payload->content.size(), payload);
+    }
+
+    IIncludeResolver* resolver_;
+};
+
 class GlslangCompiler final : public ICompiler
 {
 public:
@@ -204,12 +275,25 @@ public:
 
         const TBuiltInResource* resources = GetDefaultResources();
         constexpr int kDefaultVersion = 450;  // GLSL #version when none is specified.
-        if (!shader.parse(
-                resources,
-                kDefaultVersion,
-                /*forwardCompatible=*/false,
-                messages
-            ))
+        // phase1132 (SL-C step 1): when the caller supplies an include
+        // resolver, parse through the bridging includer so module
+        // #includes resolve; the null path keeps the EXACT legacy
+        // overload (includes are errors) — zero behaviour drift.
+        bool parse_ok = false;
+        if (desc.include_resolver != nullptr)
+        {
+            ResolverIncluder includer { *desc.include_resolver };
+            parse_ok = shader.parse(
+                resources, kDefaultVersion, /*forwardCompatible=*/false,
+                messages, includer);
+        }
+        else
+        {
+            parse_ok = shader.parse(
+                resources, kDefaultVersion, /*forwardCompatible=*/false,
+                messages);
+        }
+        if (!parse_ok)
         {
             std::string msg = "glslang parse: ";
             msg += shader.getInfoLog();
