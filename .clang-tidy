@@ -66,9 +66,18 @@
 #                                    has_value()) that the check's flow
 #                                    analysis cannot see into. Promote if the
 #                                    check ever gains assertion awareness.
-#   readability-identifier-naming    phase1105: active but NOT in WAE — 1089
-#                                    accumulated diagnostics need their own
-#                                    dedicated wave (tracked in the plan doc).
+#   readability-identifier-naming    phase1107: active but NOT in WAE. The
+#                                    dedicated probe found 326 unique sites
+#                                    (109 method case / 64 constexpr k-prefix /
+#                                    56 variable / 49 private-member suffix /
+#                                    22 macro prefix / rest small) AND two
+#                                    deliberate convention conflicts the
+#                                    config cannot express: cd::math constants
+#                                    mirror std::numbers names (pi_v, tau_v)
+#                                    and the Jolt adapter mirrors Jolt's API
+#                                    casing. Resolving config-vs-code is a
+#                                    user decision (plan doc K7); method
+#                                    renames are also cross-TU API changes.
 #   -readability-use-concise-preprocessor-directives phase1100: wants the
 #                                    C++23 #elifdef/#elifndef spellings. 10k+
 #                                    hits, zero defect value, and the planned

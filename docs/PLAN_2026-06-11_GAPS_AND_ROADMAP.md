@@ -31,6 +31,7 @@ grid + selection box + draggable gizmo + EditHistory undo entegrasyonu.
 | K3 | **X5 ADR (20260608) kabulü** | Mekanizma fiilen ÇALIŞIYOR (prim/shadow/line hot-reload canlı); ADR'deki Q1-Q3 resmî kabul bekliyor | Engine-wide shader-on-disk rollout (samples dışına) |
 | K4 | **Phase 1020 chrome görsel onayı** | İkinci-bounce bindless fix'i landed; chrome küre görünümünü gözle doğrula | Golden chrome-probe re-bake kararı |
 | K5 | **Flicker kaynağı isimlendirme** | 4 ayrı toggle hazır (TAA/MBlur/Grain/Clouds) — birini kapatıp suçluyu söyle | Kök-katman fix'i (capture-driven kurala göre) |
+| K7 | **identifier-naming: config mi koda, kod mu config'e?** | 326 benzersiz site; cd::math sabitleri std::numbers adlarını (pi_v), JoltAdapter Jolt casing'ini KASITLI aynalıyor — kural config'i bunları ifade edemiyor. Seçenekler: (a) konvansiyon istisnaları tanımla + kalan ~200 siteyi dalga ile düzelt, (b) kuralı warning'de bırak | identifier-naming dalgası + WAE promotion |
 | K6 | **NVIDIA sürücü + WU policy** | 0x9F DRIVER_POWER_STATE_FAILURE ×2 (Windows upgrade sonrası); admin PowerShell komutu daha önce verildi | Gece koşularının kesintisizliği |
 
 ---
@@ -141,6 +142,13 @@ grid + selection box + draggable gizmo + EditHistory undo entegrasyonu.
   kalan kuyruk: bugprone-unchecked-optional-access (bug-class, 73),
   identifier-naming (1089 — ayrı büyük dalga adayı), küçük tail
   (sign-comparison 15, cert-dcl58 28, vb.) triage'da.
+
+**Devam dalgası 2 close-out notları (1099-1107):**
+- on_boot (1237 satır) extraction'ı BİLİNÇLİ atlandı: gövdesi W8-BE
+  bindless wiring'inin tam ortası (7-parça sessiz-device-lost
+  checklist bölgesi, bkz. memory) — otonom taşıma riski getirisini
+  aşıyor; K4 görsel onayı + capture rig'iyle birlikte ele alınmalı.
+- identifier-naming → K7'ye terfi etti (yukarıda).
 
 **Sprint 3 — onay sonrası büyük işler:**
 9. K1+K3 → X4 D3D12 parity (3-4 hafta, en büyük kalem) → X1 Phase 2
