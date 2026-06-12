@@ -154,26 +154,8 @@ layout(set = 0, binding = 15, std430) readonly buffer CesiumIB {
 // and is allocated independently from the global descriptor pool.
 layout(set = 1, binding = 0) uniform sampler2D cd_bindless_albedo[];
 
-// Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
-// Avoids needing per-vertex tangents - works for any UV-mapped mesh.
-mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
-  vec3 dp1 = dFdx(p);
-  vec3 dp2 = dFdy(p);
-  vec2 duv1 = dFdx(uv);
-  vec2 duv2 = dFdy(uv);
-  vec3 dp2perp = cross(dp2, N);
-  vec3 dp1perp = cross(N, dp1);
-  vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-  vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-  // phase437-black: guard against degenerate UV (identical UVs on a
-  // Sponza primitive / collapsed triangle → dFdx/dFdy == 0 →
-  // max(dot(T,T), dot(B,B)) == 0 → inversesqrt(0) = +Inf →
-  // TBN * nm_sample = NaN). Fall back to identity TBN (N unchanged).
-  float denom = max(dot(T, T), dot(B, B));
-  if (denom < 1e-10) return mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), N);
-  float invmax = inversesqrt(denom);
-  return mat3(T * invmax, B * invmax, N);
-}
+// phase1138 (SL-D wave 2): moved VERBATIM to the shader library.
+#include <cd/gluon/cotangent_frame.glsl>
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
@@ -196,13 +178,8 @@ layout(location = 2) out vec4 out_albedo;
 // blur + deferred BRDF + GI.
 layout(location = 3) out vec2 out_mr;
 
-// Frostbite windowed inverse-square attenuation.
-float distance_atten(float d, float range) {
-  if (range <= 0.0) return 0.0;
-  float ratio = d / range;
-  float w = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
-  return (w * w) / (d * d + 0.01);
-}
+// phase1138 (SL-D wave 2): moved VERBATIM to the shader library.
+#include <cd/gluon/light_atten.glsl>
 
 // Faz 1.7 inline RT shadow visibility test. Shoots a ray from the
 // surface point toward `dir` for at most `tmax` metres. Returns 1.0
@@ -419,38 +396,10 @@ float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
 // 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
 // occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
 // uv has y down (matches Vulkan clip y after perspective divide).
-// LTC polygon irradiance for area lights (#3). Lambert-only fit
-// (identity inverse matrix - production wants a 64x64 LUT keyed
-// by roughness/NoV). N is the surface normal at the shading
-// point; corners are in world-space, relative to the shading
-// point. Returns the form-factor of the polygon visible from N.
-// Edge integral with atan2 - robust at parallel and anti-parallel
-// configurations (the prior acos/sin form blew up near sin ~ 0 and
-// produced a thin black stripe at the area-light's equatorial plane).
-float cd_ltc_edge_integral(vec3 a, vec3 b) {
-  float d = clamp(dot(a, b), -1.0, 1.0);
-  vec3  c = cross(a, b);
-  float l = length(c);
-  float th = (l < 1e-6) ? 0.0 : atan(l, d);  // GLSL atan(y,x) = atan2
-  return (l < 1e-6) ? 0.0 : (th / l) * c.z;
-}
-float cd_ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
-  vec3 up = abs(N.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-  vec3 T  = normalize(cross(up, N));
-  vec3 B  = cross(N, T);
-  mat3 frame = transpose(mat3(T, B, N));
-  vec3 p0 = normalize(frame * c0);
-  vec3 p1 = normalize(frame * c1);
-  vec3 p2 = normalize(frame * c2);
-  vec3 p3 = normalize(frame * c3);
-  float s = cd_ltc_edge_integral(p0, p1) +
-            cd_ltc_edge_integral(p1, p2) +
-            cd_ltc_edge_integral(p2, p3) +
-            cd_ltc_edge_integral(p3, p0);
-  // max-not-abs: negative values mean the polygon is back-facing.
-  // Closes the 'siyah serit' artifact at the rect's equatorial plane.
-  return max(s, 0.0) / 6.28318530;
-}
+// phase1138 (SL-D wave 2): LTC area-light pair moved VERBATIM to the
+// shader library (W8-AJ twin lives in cd::brdf::ltc — unification is
+// the user-signed visual phase).
+#include <cd/gluon/ltc_polygon.glsl>
 
 float sample_shadow(vec4 sp, vec3 N, vec3 L) {
   // Perspective divide - ortho gives w=1 but keep for generality.

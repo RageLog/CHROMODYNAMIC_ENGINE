@@ -7,7 +7,10 @@
 set(CD_GLUON_MODULES
   math_common
   brdf
-  brdf_w8aq   # phase1135: verbatim W8-AQ block (transitional, see module header)
+  brdf_w8aq         # phase1135: verbatim W8-AQ block (transitional)
+  cotangent_frame   # phase1138: verbatim from prim.frag (Mikkelsen 2010 TBN)
+  light_atten       # phase1138: verbatim from prim.frag (Frostbite windowed)
+  ltc_polygon       # phase1138: verbatim from prim.frag (atan2 edge integral)
   tonemap
 )
 
