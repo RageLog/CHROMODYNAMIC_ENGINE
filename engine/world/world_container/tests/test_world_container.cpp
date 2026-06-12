@@ -1,3 +1,4 @@
+#include <cd/world_container/LayerMember.hpp>
 #include <cd/world_container/ProjectIo.hpp>
 #include <cd/world_container/World.hpp>
 
@@ -235,6 +236,74 @@ TEST(ProjectIo, LoadMissingFileFails)
     EXPECT_EQ(r.error().code,
               static_cast<std::uint32_t>(
                   cd::world_container::project_io_errors::Code::kIoFailure));
+}
+
+
+// ---------------------------------------------------------------------------
+// phase1110 — LayerMember (ECS layer membership)
+// ---------------------------------------------------------------------------
+
+TEST(LayerMember, ImplicitDefaultAndAssignment)
+{
+    using namespace cd::world_container;
+    cd::ecs::World w;
+    const auto e = w.create();
+
+    EXPECT_EQ(layer_of(w, e), kDefaultLayerName);  // no component yet
+
+    assign_layer(w, e, "Lights");
+    EXPECT_EQ(layer_of(w, e), "Lights");
+
+    assign_layer(w, e, "UI");                       // reassign replaces
+    EXPECT_EQ(layer_of(w, e), "UI");
+
+    clear_layer(w, e);
+    EXPECT_EQ(layer_of(w, e), kDefaultLayerName);   // falls back
+}
+
+TEST(LayerMember, CountAndVisitFilterByName)
+{
+    using namespace cd::world_container;
+    cd::ecs::World w;
+    const auto a = w.create();
+    const auto b = w.create();
+    const auto c = w.create();
+    assign_layer(w, a, "Lights");
+    assign_layer(w, b, "Lights");
+    assign_layer(w, c, "Props");
+
+    EXPECT_EQ(count_members(w, "Lights"), 2u);
+    EXPECT_EQ(count_members(w, "Props"), 1u);
+    EXPECT_EQ(count_members(w, "Absent"), 0u);
+
+    std::size_t visited = 0;
+    bool saw_c = false;
+    for_each_member(w, "Lights",
+                    [&](cd::ecs::Entity e)
+                    {
+                        ++visited;
+                        if (e.id == c.id) saw_c = true;
+                    });
+    EXPECT_EQ(visited, 2u);
+    EXPECT_FALSE(saw_c);
+}
+
+TEST(LayerMember, RenameMigratesMembers)
+{
+    using namespace cd::world_container;
+    cd::ecs::World w;
+    const auto a = w.create();
+    const auto b = w.create();
+    const auto c = w.create();
+    assign_layer(w, a, "Old");
+    assign_layer(w, b, "Old");
+    assign_layer(w, c, "Other");
+
+    EXPECT_EQ(rename_layer_members(w, "Old", "New"), 2u);
+    EXPECT_EQ(layer_of(w, a), "New");
+    EXPECT_EQ(layer_of(w, b), "New");
+    EXPECT_EQ(layer_of(w, c), "Other");
+    EXPECT_EQ(count_members(w, "Old"), 0u);
 }
 
 }  // namespace

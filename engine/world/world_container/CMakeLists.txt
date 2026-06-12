@@ -4,7 +4,7 @@
 # streaming (v1.7) ships.
 cd_add_library(world_container
   TYPE INTERFACE
-  PUBLIC_DEPS cd::core cd::math cd::asset_json  # asset_json: ProjectIo (.cdproject persistence)
+  PUBLIC_DEPS cd::core cd::math cd::asset_json cd::ecs  # asset_json: ProjectIo (.cdproject persistence)
 )
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)
