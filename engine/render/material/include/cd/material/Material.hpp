@@ -108,10 +108,13 @@ struct MaterialDesc
     std::span<const std::uint32_t> vertex_spirv {};
     std::span<const std::uint32_t> fragment_spirv {};
 
-    /// phase1135 (SL-D wave 1): optional, non-owning include resolver
-    /// forwarded into every GLSL stage compile. Null keeps the legacy
-    /// behaviour (#include is a compile error). Pair with
-    /// cd::gluon::ModuleResolver to pull shader-library modules.
+    /// phase1135 (SL-D wave 1) + SL-D wave 3 (ADR-20260612 addendum):
+    /// optional, non-owning include resolver forwarded into every GLSL
+    /// stage compile. Null = embedded cd::gluon ModuleResolver bridge —
+    /// shader-library modules (#include <cd/gluon/*.glsl>) resolve for
+    /// every material out of the box. Callers that want the old
+    /// "#include is a compile error" semantics must opt out by passing
+    /// a resolver that rejects every request.
     cd::shader::IIncludeResolver* include_resolver { nullptr };
 
     // -------- Pipeline configuration -----------------------------------------

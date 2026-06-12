@@ -76,6 +76,7 @@ void main() {
 /// but the light geometry comes from the runtime.
 constexpr const char* kLitPbrFS = R"glsl(
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 const uint kLightTypeDirectional = 0u;
 const uint kLightTypePoint       = 1u;
 const uint kLightTypeSpot        = 2u;
@@ -130,13 +131,9 @@ vec3 F_Schlick_rough(float NoV, vec3 F0, float roughness) {
   return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
 }
 
-// Frostbite windowed inverse-square distance attenuation.
-float distance_atten(float d, float range) {
-  if (range <= 0.0) return 0.0;
-  float ratio = d / range;
-  float w = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
-  return (w * w) / (d * d + 0.01);
-}
+// SL-D wave 3 (ADR-20260612 addendum): distance_atten definition is the
+// cd::gluon module (byte-identical body; Frostbite windowed inverse-square).
+#include <cd/gluon/light_atten.glsl>
 
 float cone_atten(float cos_theta, float cos_inner, float cos_outer) {
   if (cos_theta >= cos_inner) return 1.0;

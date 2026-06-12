@@ -338,7 +338,10 @@ TEST(LitPbr, ShaderSourcesAreCompilableShaped)
     const std::string fs { cd::material::kLitPbrFS };
     EXPECT_NE(vs.find("gl_Position"), std::string::npos);
     EXPECT_NE(fs.find("u_lights.lights"), std::string::npos);
-    EXPECT_NE(fs.find("distance_atten"), std::string::npos);
+    // SL-D wave 3 (ADR-20260612 addendum): the distance_atten DEFINITION
+    // moved to the cd::gluon module; the embedded string now carries the
+    // include line (resolved by the Material::create default resolver).
+    EXPECT_NE(fs.find("#include <cd/gluon/light_atten.glsl>"), std::string::npos);
     EXPECT_NE(fs.find("cone_atten"), std::string::npos);
 }
 

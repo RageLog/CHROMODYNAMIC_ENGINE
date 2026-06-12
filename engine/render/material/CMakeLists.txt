@@ -21,6 +21,10 @@ cd_add_library(material
     cd::asset   # PbrParams.hpp references AssetId
     cd::light   # Phase 171 — LitPbrMaterial packs cd::light::Light
     cd::anim    # Phase 228 / SK6 — SkinnedLitMaterial re-exports cd::anim VS
+  PRIVATE_DEPS
+    cd::gluon   # SL-D wave 3 (ADR-20260612 addendum) — Material.cpp builds the
+                # default ModuleResolver bridge; no material header names a
+                # gluon type, so the dependency stays PRIVATE.
 )
 
 if(CD_ENABLE_TESTING)

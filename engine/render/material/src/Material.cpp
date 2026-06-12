@@ -2,6 +2,8 @@
 // CHROMODYNAMIC — cd/material/Material.cpp
 // =============================================================================
 #include <cd/material/Material.hpp>
+
+#include <cd/gluon/ModuleRegistry.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 
 #include <algorithm>
@@ -155,6 +157,17 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     const std::uint32_t* fs_code { nullptr };
     std::size_t fs_size { 0 };
 
+    // SL-D wave 3 (ADR-20260612 addendum): a null `desc.include_resolver`
+    // no longer means "#include is a compile error" — it bridges to the
+    // embedded cd::gluon module catalogue so the library can compile its
+    // own embedded GLSL (#include <cd/gluon/*.glsl>). Function-local, NOT
+    // static: ModuleResolver is stateless + deterministic per the
+    // ModuleRegistry.hpp contract, so per-call construction is free and
+    // no cross-library global state is introduced.
+    cd::gluon::ModuleResolver default_resolver {};
+    cd::shader::IIncludeResolver* const include_resolver =
+        desc.include_resolver != nullptr ? desc.include_resolver : &default_resolver;
+
     // Vertex-stage source resolution. Per ADR-20260529-X5 precedence:
     //   vertex_spirv > vertex_glsl_path > vertex_glsl
     // The owning string for the on-disk branch must outlive compile_stage.
@@ -214,7 +227,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
             vs_src,
             cd::rhi::ShaderStage::kVertex,
             std::string { desc.name } + ".vert",
-            desc.include_resolver
+            include_resolver
         );
         if (!r.has_value())
             return std::unexpected(r.error());
@@ -286,7 +299,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
             fs_src,
             cd::rhi::ShaderStage::kFragment,
             std::string { desc.name } + ".frag",
-            desc.include_resolver
+            include_resolver
         );
         if (!r.has_value())
             return std::unexpected(r.error());
