@@ -293,6 +293,31 @@ TEST(StandardPbr, AreaExtrasHalvedForLtcCorners)
     EXPECT_NE(fs.find("extras.z * 0.5"), std::string::npos);
 }
 
+TEST(StandardPbr, EmbeddedFsCompilesThroughDefaultResolverBridge)
+{
+    // SL-D wave 4: the LTC suite moved VERBATIM to the cd::gluon module
+    // cd/gluon/ltc_standard_pbr.glsl and the embedded FS now carries the
+    // #include line. Compiling the string with a NULL include_resolver
+    // proves the SL-D wave-3 default ModuleResolver bridge serves the
+    // module and the preprocessed stream still defines the LTC suite.
+    auto compiler = cd::shader::make_glslang_compiler();
+    if (compiler == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::rhi::NullDevice dev;
+    constexpr std::array<cd::rhi::Format, 1> kFormats { cd::rhi::Format::kRGBA8Unorm };
+    cd::material::MaterialDesc desc {};
+    desc.vertex_glsl = cd::material::kStandardPbrVS;
+    desc.fragment_glsl = cd::material::kStandardPbrFS;
+    desc.color_attachment_formats = kFormats;
+    desc.name = "standard_pbr_sl_d_wave4";
+    // include_resolver intentionally left null — default gluon bridge.
+
+    auto m = cd::material::Material::create(dev, compiler.get(), desc);
+    ASSERT_TRUE(m.has_value()) << m.error().message;
+    EXPECT_TRUE(m->is_valid());
+}
+
 TEST(AnalyticalSky, CpuBakedPaletteMatchesGlslSky)
 {
     // W5-A: CPU bake palette is daylight-saturated (matching the GLSL

@@ -165,6 +165,42 @@ TEST(ShaderLibCompile, PbrLobeEndToEnd)
     EXPECT_FALSE(r->spirv.empty());
 }
 
+// SL-D wave 4: the StandardPbrMaterial LTC suite (transitional twin of
+// ltc_polygon.glsl, names WITHOUT the cd_ prefix) compiles standalone
+// and its specular entry point is callable through the resolver.
+TEST(ShaderLibCompile, LtcStandardPbrSpecularCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/ltc_standard_pbr.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n);\n"
+        "    float s = ltc_polygon_specular(n,\n"
+        "        vec3(-1.0,  1.0, 1.0), vec3(1.0,  1.0, 1.0),\n"
+        "        vec3( 1.0, -1.0, 1.0), vec3(-1.0, -1.0, 1.0),\n"
+        "        0.4, 0.7);\n"
+        "    o = vec4(vec3(s), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
 // ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
 
 using TestDomain = cd::gluon::VariantDomain<
