@@ -38,6 +38,11 @@
 // =============================================================================
 #pragma once
 
+// phase1117 (K7 carve-out): this adapter DELIBERATELY mirrors Jolt's
+// own API casing so a reader can diff it against Jolt samples 1:1;
+// renaming to project style would defeat the adapter's purpose.
+// NOLINTBEGIN(readability-identifier-naming)
+
 #include <cd/physics/vehicle/Vehicle.hpp>
 #include <cd/physics/IPhysicsWorld.hpp>
 #include <cd/math/Vector.hpp>
@@ -178,3 +183,4 @@ private:
 };
 
 }  // namespace cd::physics::vehicle
+// NOLINTEND(readability-identifier-naming)

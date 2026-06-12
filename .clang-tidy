@@ -337,6 +337,12 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.ConstexprVariablePrefix
     value: k
+  # phase1117 (K7 carve-out): the cd::math constants surface DELIBERATELY
+  # mirrors std::numbers naming (pi_v<T>, tau, inv_sqrt2, epsilon_d, ...);
+  # forcing kCamelCase there would fight the std idiom the header exists
+  # to extend. Everything else keeps the k-prefix convention.
+  - key: readability-identifier-naming.ConstexprVariableIgnoredRegexp
+    value: '^(pi|tau|half_pi|inv_pi|sqrt2|inv_sqrt2|epsilon)(_v|_d)?$'
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionPrefix
