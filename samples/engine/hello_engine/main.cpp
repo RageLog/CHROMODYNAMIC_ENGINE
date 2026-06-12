@@ -30,7 +30,6 @@
 // Stays at marathon discipline (sample pattern, single main.cpp,
 // no engine apps-layer mimicry; that lands at v1.0+ time).
 // =============================================================================
-#include <algorithm>
 #include <cd/anim/Animation.hpp>
 #include <cd/anim/GpuSkinning.hpp>
 #include <cd/anim/Skeleton.hpp>
@@ -162,6 +161,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cd/core/Compat.hpp>  // compat::read_env_var (CD_HDR_LANES)
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -2288,6 +2288,14 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
             fx.clouds_coverage  = 0.0F;
             log_push("Stable Mode: TAA + motion blur + grain + clouds = 0 (flicker isolation preset)");
         }
+        // phase1121 (X1-FU-F step 3): HDR-pass parallel-lane recording.
+        if (ImGui::Checkbox("HDR pass: parallel lanes (X1-FU-F)", &fx.hdr_parallel_lanes))
+            log_push(fx.hdr_parallel_lanes
+                         ? "HDR pass -> 3 secondary-cmd lanes (vkCmdExecuteCommands)"
+                         : "HDR pass -> serial primary recording");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Record sky/scene/overlays/lines into 3 secondary-command-buffer\n"
+                              "lanes joined in lane order. Pixel parity with the serial path.");
         // phase1016-flicker-isolation-toggles (Run 28 item #1): user
         // confirmed Stable Mode kills the flicker but cannot tell WHICH
         // of the 4 sources is responsible ("ise yariyor ama neyin
@@ -2943,7 +2951,7 @@ inline void fill_prim_push_shared(PrimPush& pp,
 // push constants + draw the fullscreen triangle. Tints the sky with the
 // directional sun_col at full sky-tint blend so the CCT slider in the
 // Lights panel propagates to the sky too.
-inline void draw_sky_pass(cd::rhi::ICommandBuffer& cmd,
+inline void draw_sky_pass(cd::rhi::IDrawRecorder& cmd,
                           const cd::camera::Camera& cam,
                           float aspect,
                           const SunLight& sun,
@@ -3017,7 +3025,7 @@ inline void draw_sky_pass(cd::rhi::ICommandBuffer& cmd,
 // The MeshFor template lets the helper accept main()'s `mesh_for`
 // lambda without dragging the GpuMesh registry into a public header.
 template <typename MeshFor>
-inline void draw_planar_shadows(cd::rhi::ICommandBuffer& cmd,
+inline void draw_planar_shadows(cd::rhi::IDrawRecorder& cmd,
                                 const SunLight& sun,
                                 float floor_y,
                                 float shadow_lift,
@@ -4515,75 +4523,11 @@ struct HdrSceneFrame
     float aspect { 1.0F };
 };
 
-inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
-                                          std::uint32_t frame_idx,
-                                          const cd::framegraph::ColorTarget& hdr_target,
-                                          const cd::framegraph::ColorTarget& gbuf_normal,
-                                          const cd::framegraph::ColorTarget& gbuf_albedo,
-                                          const cd::framegraph::ColorTarget& gbuf_mr,
-                                          const cd::framegraph::DepthTarget& depth,
-                                          cd::rhi::Extent2D extent,
-                                          const cd::camera::Camera& cam,
-                                          float taa_amount)
+inline HdrSceneFrame make_hdr_frame(std::uint32_t frame_idx,
+                                    cd::rhi::Extent2D extent,
+                                    const cd::camera::Camera& cam,
+                                    float taa_amount)
 {
-    {
-        const cd::rhi::ResourceState prev_state =
-            (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
-        std::array<cd::rhi::TextureBarrier, 4> hb {
-            cd::rhi::TextureBarrier { .texture = hdr_target.image,
-                                     .from = prev_state,
-                                     .to = cd::rhi::ResourceState::kColorAttachment,
-                                     .range = { 0, 1, 0, 1 } },
-            cd::rhi::TextureBarrier { .texture = gbuf_normal.image,
-                                     .from = prev_state,
-                                     .to = cd::rhi::ResourceState::kColorAttachment,
-                                     .range = { 0, 1, 0, 1 } },
-            cd::rhi::TextureBarrier { .texture = gbuf_albedo.image,
-                                     .from = prev_state,
-                                     .to = cd::rhi::ResourceState::kColorAttachment,
-                                     .range = { 0, 1, 0, 1 } },
-            cd::rhi::TextureBarrier { .texture = gbuf_mr.image,
-                                     .from = prev_state,
-                                     .to = cd::rhi::ResourceState::kColorAttachment,
-                                     .range = { 0, 1, 0, 1 } }
-        };
-        cmd.barrier({}, hb);
-    }
-    std::array<cd::rhi::ColorAttachmentInfo, 4> color_attach {
-        cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
-                                      .load_op = cd::rhi::LoadOp::kClear,
-                                      .store_op = cd::rhi::StoreOp::kStore,
-                                      .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } },
-        cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
-                                      .load_op = cd::rhi::LoadOp::kClear,
-                                      .store_op = cd::rhi::StoreOp::kStore,
-                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
-        cd::rhi::ColorAttachmentInfo { .view = gbuf_albedo.view,
-                                      .load_op = cd::rhi::LoadOp::kClear,
-                                      .store_op = cd::rhi::StoreOp::kStore,
-                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
-        cd::rhi::ColorAttachmentInfo { .view = gbuf_mr.view,
-                                      .load_op = cd::rhi::LoadOp::kClear,
-                                      .store_op = cd::rhi::StoreOp::kStore,
-                                      .clear_color = { .f32 = { 0.0F, 1.0F, 0.0F, 0.0F } } }
-    };
-    cd::rhi::DepthStencilAttachmentInfo depth_attach {};
-    depth_attach.view = depth.view;
-    depth_attach.depth_load = cd::rhi::LoadOp::kClear;
-    depth_attach.depth_store = cd::rhi::StoreOp::kStore;
-    depth_attach.clear.depth = 1.0F;
-
-    cd::rhi::RenderPassBeginInfo rp {};
-    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, extent };
-    rp.color_attachments = color_attach;
-    rp.depth_stencil = &depth_attach;
-    cmd.begin_render_pass(rp);
-    cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
-                                         static_cast<float>(extent.width),
-                                         static_cast<float>(extent.height),
-                                         0.0F, 1.0F });
-    cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
-
     HdrSceneFrame out {};
     out.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
     out.vp_unjittered = cd::camera::view_projection(cam, out.aspect);
@@ -4601,6 +4545,156 @@ inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
     return out;
 }
 
+// phase1121 (X1-FU-F step 3): the barrier + attachment construction is
+// shared by the serial open and the parallel-lane open below so the two
+// paths can never drift.
+inline void hdr_pass_barriers(cd::rhi::ICommandBuffer& cmd,
+                              std::uint32_t frame_idx,
+                              const cd::framegraph::ColorTarget& hdr_target,
+                              const cd::framegraph::ColorTarget& gbuf_normal,
+                              const cd::framegraph::ColorTarget& gbuf_albedo,
+                              const cd::framegraph::ColorTarget& gbuf_mr)
+{
+    const cd::rhi::ResourceState prev_state =
+        (frame_idx == 0) ? cd::rhi::ResourceState::kUndefined : cd::rhi::ResourceState::kShaderResource;
+    std::array<cd::rhi::TextureBarrier, 4> hb {
+        cd::rhi::TextureBarrier { .texture = hdr_target.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } },
+        cd::rhi::TextureBarrier { .texture = gbuf_normal.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } },
+        cd::rhi::TextureBarrier { .texture = gbuf_albedo.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } },
+        cd::rhi::TextureBarrier { .texture = gbuf_mr.image,
+                                 .from = prev_state,
+                                 .to = cd::rhi::ResourceState::kColorAttachment,
+                                 .range = { 0, 1, 0, 1 } }
+    };
+    cmd.barrier({}, hb);
+}
+
+/// Attachment bundle for the HDR pass. Self-contained by value: the
+/// RenderPassBeginInfo is built by the caller FROM this struct so its
+/// span/pointer always reference the caller's living instance.
+struct HdrPassAttach
+{
+    std::array<cd::rhi::ColorAttachmentInfo, 4> color {};
+    cd::rhi::DepthStencilAttachmentInfo depth {};
+};
+
+inline HdrPassAttach hdr_pass_attach(const cd::framegraph::ColorTarget& hdr_target,
+                                     const cd::framegraph::ColorTarget& gbuf_normal,
+                                     const cd::framegraph::ColorTarget& gbuf_albedo,
+                                     const cd::framegraph::ColorTarget& gbuf_mr,
+                                     const cd::framegraph::DepthTarget& depth)
+{
+    HdrPassAttach a {};
+    a.color = {
+        cd::rhi::ColorAttachmentInfo { .view = hdr_target.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 1.0F, 0.0F, 1.0F, 1.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_normal.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_albedo.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 0.0F, 0.0F, 0.0F } } },
+        cd::rhi::ColorAttachmentInfo { .view = gbuf_mr.view,
+                                      .load_op = cd::rhi::LoadOp::kClear,
+                                      .store_op = cd::rhi::StoreOp::kStore,
+                                      .clear_color = { .f32 = { 0.0F, 1.0F, 0.0F, 0.0F } } }
+    };
+    a.depth.view = depth.view;
+    a.depth.depth_load = cd::rhi::LoadOp::kClear;
+    a.depth.depth_store = cd::rhi::StoreOp::kStore;
+    a.depth.clear.depth = 1.0F;
+    return a;
+}
+
+inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
+                                          std::uint32_t frame_idx,
+                                          const cd::framegraph::ColorTarget& hdr_target,
+                                          const cd::framegraph::ColorTarget& gbuf_normal,
+                                          const cd::framegraph::ColorTarget& gbuf_albedo,
+                                          const cd::framegraph::ColorTarget& gbuf_mr,
+                                          const cd::framegraph::DepthTarget& depth,
+                                          cd::rhi::Extent2D extent,
+                                          const cd::camera::Camera& cam,
+                                          float taa_amount)
+{
+    hdr_pass_barriers(cmd, frame_idx, hdr_target, gbuf_normal, gbuf_albedo, gbuf_mr);
+    const HdrPassAttach a = hdr_pass_attach(hdr_target, gbuf_normal, gbuf_albedo,
+                                            gbuf_mr, depth);
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, extent };
+    rp.color_attachments = a.color;
+    rp.depth_stencil = &a.depth;
+    cmd.begin_render_pass(rp);
+    cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                         static_cast<float>(extent.width),
+                                         static_cast<float>(extent.height),
+                                         0.0F, 1.0F });
+    cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+    return make_hdr_frame(frame_idx, extent, cam, taa_amount);
+}
+
+/// phase1121 (X1-FU-F step 3): parallel-lane variant. Same barriers and
+/// attachments, then the pass opens with secondary-contents semantics.
+/// When the backend reports no lane support (null recorder) it falls back
+/// to the serial open INTERNALLY so barriers are never emitted twice;
+/// callers branch on the returned recorder.
+inline std::pair<HdrSceneFrame, std::unique_ptr<cd::rhi::IParallelPassRecorder>>
+begin_hdr_scene_pass_lanes(cd::rhi::ICommandBuffer& cmd,
+                           std::uint32_t frame_idx,
+                           const cd::framegraph::ColorTarget& hdr_target,
+                           const cd::framegraph::ColorTarget& gbuf_normal,
+                           const cd::framegraph::ColorTarget& gbuf_albedo,
+                           const cd::framegraph::ColorTarget& gbuf_mr,
+                           const cd::framegraph::DepthTarget& depth,
+                           cd::rhi::Extent2D extent,
+                           const cd::camera::Camera& cam,
+                           float taa_amount,
+                           std::uint32_t lane_count)
+{
+    hdr_pass_barriers(cmd, frame_idx, hdr_target, gbuf_normal, gbuf_albedo, gbuf_mr);
+    const HdrPassAttach a = hdr_pass_attach(hdr_target, gbuf_normal, gbuf_albedo,
+                                            gbuf_mr, depth);
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.render_area = cd::rhi::Rect2D { { 0, 0 }, extent };
+    rp.color_attachments = a.color;
+    rp.depth_stencil = &a.depth;
+    auto rec = cmd.begin_parallel_render_pass(rp, lane_count);
+    if (rec == nullptr)
+    {
+        cmd.begin_render_pass(rp);
+        cmd.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                             static_cast<float>(extent.width),
+                                             static_cast<float>(extent.height),
+                                             0.0F, 1.0F });
+        cmd.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+    }
+    return { make_hdr_frame(frame_idx, extent, cam, taa_amount), std::move(rec) };
+}
+
+/// phase1121: a lane's secondary inherits NO dynamic state from the
+/// primary — every lane must (re)set viewport/scissor before its draws.
+inline void prep_hdr_lane(cd::rhi::IDrawRecorder& lane, cd::rhi::Extent2D extent)
+{
+    lane.set_viewport(cd::rhi::Viewport { 0.0F, 0.0F,
+                                          static_cast<float>(extent.width),
+                                          static_cast<float>(extent.height),
+                                          0.0F, 1.0F });
+    lane.set_scissor(cd::rhi::Rect2D { { 0, 0 }, extent });
+}
+
 // ---- draw_floor_and_entities ----------------------------------------------
 // Draws the floor quad (with FS sentinel tint.w=2.0 -> analytic XZ grid)
 // and the ECS entity primitives row in one helper. Both use the same
@@ -4615,7 +4709,7 @@ inline HdrSceneFrame begin_hdr_scene_pass(cd::rhi::ICommandBuffer& cmd,
 // for the projection matrix; we accept it as an argument so the constant
 // stays a single source of truth.
 template <typename MeshFor, typename PrimRangesFor>
-inline void draw_floor_and_entities(cd::rhi::ICommandBuffer& cmd,
+inline void draw_floor_and_entities(cd::rhi::IDrawRecorder& cmd,
                                     const GpuMesh& floor_mesh,
                                     float floor_y,
                                     const cd::math::Mat4f& vp,
@@ -5890,6 +5984,12 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     // enable_* toggles gate the corresponding strength at its default;
     // tonemap_op passes through). Absent file = keep the synthetic
     // sample project + the cinematic first-boot fx defaults.
+    // phase1121 (X1-FU-F step 3): CD_HDR_LANES=1 forces parallel-lane HDR
+    // recording from boot — the golden parity capture renders the same
+    // fixture lanes-off vs lanes-on and diffs the PNGs.
+    if (cd::core::compat::read_env_var("CD_HDR_LANES") == "1")
+        s.fx.hdr_parallel_lanes = true;
+
     if (auto proj = cd::world_container::load_project_file(
             "hello_editor.cdproject");
         proj.has_value())
@@ -7048,24 +7148,69 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                              s.shadow_initialised_on_gpu, s.materials.shadow,
                              kShadowMapSize, s.entities, s.scene, mesh_for);
 
-        const auto hdr_frame = begin_hdr_scene_pass(
-            cmd, s.frame_idx, s.rts.hdr, s.rts.gbuf_normal, s.rts.gbuf_albedo,
-            s.rts.gbuf_mr, s.rts.depth, frame.extent, s.cam, s.fx.taa_amount);
+        // phase1121 (X1-FU-F step 3): HDR pass over parallel lanes behind
+        // the fx toggle. Lane plan (CONTIGUOUS blocks; lane-order merge ==
+        // original serial order, so pixel parity holds by construction):
+        //   lane0  sky + prim state + floor/entities + planar shadows
+        //   lane1  prim state + 3D viewport overlays
+        //   lane2  debug-line flush
+        // v1 records lanes SEQUENTIALLY on the main thread: the GPU side
+        // (secondaries + vkCmdExecuteCommands) is fully exercised while
+        // s.counters / UBO uploads stay race-free. Worker-thread dispatch
+        // follows once the shared-state audit clears it (ADR-20260612).
+        constexpr std::uint32_t kHdrLaneCount = 3;
+        std::unique_ptr<cd::rhi::IParallelPassRecorder> hdr_rec;
+        HdrSceneFrame hdr_frame {};
+        if (s.fx.hdr_parallel_lanes)
+        {
+            auto opened = begin_hdr_scene_pass_lanes(
+                cmd, s.frame_idx, s.rts.hdr, s.rts.gbuf_normal, s.rts.gbuf_albedo,
+                s.rts.gbuf_mr, s.rts.depth, frame.extent, s.cam, s.fx.taa_amount,
+                kHdrLaneCount);
+            hdr_frame = opened.first;
+            hdr_rec   = std::move(opened.second);
+            // Engagement evidence (parity captures + user logs): emitted
+            // once so a silent serial fallback is distinguishable from a
+            // real lane run.
+            static bool lanes_logged = false;
+            if (!lanes_logged)
+            {
+                lanes_logged = true;
+                std::puts(hdr_rec
+                              ? "[lanes] HDR pass: parallel lanes ENGAGED (3 lanes)"
+                              : "[lanes] HDR pass: backend fallback to SERIAL");
+            }
+        }
+        else
+        {
+            hdr_frame = begin_hdr_scene_pass(
+                cmd, s.frame_idx, s.rts.hdr, s.rts.gbuf_normal, s.rts.gbuf_albedo,
+                s.rts.gbuf_mr, s.rts.depth, frame.extent, s.cam, s.fx.taa_amount);
+        }
         const float aspect           = hdr_frame.aspect;
         const cd::math::Mat4f vp_unj = hdr_frame.vp_unjittered;
         const cd::math::Mat4f vp     = hdr_frame.vp;
 
-        draw_sky_pass(cmd, s.cam, aspect, sun, s.materials.sky);
+        auto& hdr_lane0 = hdr_rec ? hdr_rec->lane(0)
+                                  : static_cast<cd::rhi::IDrawRecorder&>(cmd);
+        auto& hdr_lane1 = hdr_rec ? hdr_rec->lane(1)
+                                  : static_cast<cd::rhi::IDrawRecorder&>(cmd);
+        auto& hdr_lane2 = hdr_rec ? hdr_rec->lane(2)
+                                  : static_cast<cd::rhi::IDrawRecorder&>(cmd);
+        if (hdr_rec)
+            prep_hdr_lane(hdr_lane0, frame.extent);
+
+        draw_sky_pass(hdr_lane0, s.cam, aspect, sun, s.materials.sky);
         upload_multi_light_ubo(device, s.lights_ubo, s.lights, s.counters);
-        s.materials.prim.apply(cmd);
-        s.prim_inst.bind(cmd, 0);
+        s.materials.prim.apply(hdr_lane0);
+        s.prim_inst.bind(hdr_lane0, 0);
         // phase864-bindless-dedicated-set: bind the dedicated bindless
         // descriptor set at set index 1 alongside the per-prim set 0.
         // The shader reads cd_bindless_albedo from (set=1, binding=0).
         if (s.prim_bindless_set.is_valid())
-            cmd.bind_descriptor_set(1, s.prim_bindless_set);
+            hdr_lane0.bind_descriptor_set(1, s.prim_bindless_set);
 
-        draw_floor_and_entities(cmd, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
+        draw_floor_and_entities(hdr_lane0, s.meshes.floor, kFloorY, vp, s.fx, sun, s.cam,
                                 s.entities, s.scene, s.has_gltf_texture,
                                 s.materials.prim, s.counters, mesh_for,
                                 [&s](PrimitiveKind k) -> std::span<const cd_sample::GltfPrimRange> {
@@ -7076,26 +7221,37 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                 s.albedo_sampler, device, s.albedo_tex.view,
                                 s.normal_tex.view, s.mr_tex.view,  // phase456: per-prim restore
                                 s.show_editor_floor);  // phase435-vis8
-        draw_planar_shadows(cmd, sun, kFloorY, kShadowLift, s.entities,
+        draw_planar_shadows(hdr_lane0, sun, kFloorY, kShadowLift, s.entities,
                             s.scene, vp, s.materials.prim, s.counters, mesh_for);
-        cd_sample::draw_ddgi_probe_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_frustum_cull_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared, aspect);
-        cd_sample::draw_light_gizmo_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_decal_obb_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_csm_cascade_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_cluster_heatmap_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_bezier_curve_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_gpu_particles_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_quat_slerp_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_motion_vector_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_cubemap_globe_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_vg_lod_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_noise_heightfield_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_restir_reservoir_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_earth_globe_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_camera_basis_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_cct_sweep_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
-        cd_sample::draw_attenuation_rail_overlay_3d(s, cmd, vp, sun, fill_prim_push_shared);
+        // phase1121: lane1 owns the 3D overlays — re-establish dynamic
+        // state + the prim pipeline/sets the overlays assume (a lane's
+        // secondary inherits nothing from lane0).
+        if (hdr_rec)
+        {
+            prep_hdr_lane(hdr_lane1, frame.extent);
+            s.materials.prim.apply(hdr_lane1);
+            s.prim_inst.bind(hdr_lane1, 0);
+            if (s.prim_bindless_set.is_valid())
+                hdr_lane1.bind_descriptor_set(1, s.prim_bindless_set);
+        }
+        cd_sample::draw_ddgi_probe_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_frustum_cull_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared, aspect);
+        cd_sample::draw_light_gizmo_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_decal_obb_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_csm_cascade_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_cluster_heatmap_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_bezier_curve_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_gpu_particles_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_quat_slerp_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_motion_vector_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_cubemap_globe_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_vg_lod_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_noise_heightfield_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_restir_reservoir_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_earth_globe_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_camera_basis_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_cct_sweep_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
+        cd_sample::draw_attenuation_rail_overlay_3d(s, hdr_lane1, vp, sun, fill_prim_push_shared);
         // phase1031-debug-line-gpu: flush the per-frame
         // cd::debug_line::LineBatch through the kLineList material.
         // Runs LAST in the HDR pass (after every overlay that may
@@ -7140,7 +7296,9 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         // library call now (cd::debug_draw::Renderer::flush).
         if (!s.debug_lines.empty())
             s.counters.increment("draws_debug_lines");
-        s.debug_draw.flush(device, cmd, s.debug_lines, vp, s.frame_idx);
+        if (hdr_rec)
+            prep_hdr_lane(hdr_lane2, frame.extent);
+        s.debug_draw.flush(device, hdr_lane2, s.debug_lines, vp, s.frame_idx);
         s.debug_lines.clear();
 
         ctx.new_frame();
@@ -7265,7 +7423,17 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                    frame.extent);
         }  // if (!kHideEditorUiForGolden) — phase797 golden capture gate
 
-        cmd.end_render_pass();
+        // phase1121: lanes join IN LANE ORDER (== serial order) and the
+        // pass closes inside finish(); the serial path closes as before.
+        if (hdr_rec)
+        {
+            hdr_rec->finish();
+            hdr_rec.reset();
+        }
+        else
+        {
+            cmd.end_render_pass();
+        }
         {
             std::array<cd::rhi::TextureBarrier, 4> hb {
                 cd::rhi::TextureBarrier { .texture = s.rts.hdr.image,

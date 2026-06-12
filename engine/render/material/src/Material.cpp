@@ -401,7 +401,7 @@ Material::create(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler, cons
     return m;
 }
 
-void Material::apply(cd::rhi::ICommandBuffer& cmd) const
+void Material::apply(cd::rhi::IDrawRecorder& cmd) const
 {
     if (!is_valid())
         return;
@@ -627,7 +627,7 @@ cd::core::Result<void> MaterialInstance::update(std::span<const cd::rhi::Descrip
     return {};
 }
 
-void MaterialInstance::bind(cd::rhi::ICommandBuffer& cmd, std::uint32_t set_index) const
+void MaterialInstance::bind(cd::rhi::IDrawRecorder& cmd, std::uint32_t set_index) const
 {
     if (!is_valid())
         return;

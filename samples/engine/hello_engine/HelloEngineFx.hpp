@@ -136,6 +136,11 @@ struct HelloEngineFx
     // ---- R-Showcase HDR / GI toggles ----
     bool hdr10_request { false };  // queued for swapchain-output rework
     bool restir_di_on { false };
+    // phase1121 (X1-FU-F step 3): record the HDR scene pass through
+    // parallel secondary-command-buffer lanes (Vulkan). Default OFF —
+    // the serial path stays byte-identical to pre-1121 recording.
+    // CD_HDR_LANES=1 forces ON at boot (golden parity capture).
+    bool hdr_parallel_lanes { false };
     bool restir_gi_on { false };
     bool ddgi_on { false };
     bool nrc_on { false };

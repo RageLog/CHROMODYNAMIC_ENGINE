@@ -93,7 +93,7 @@ public:
     /// reclaim; pass the same monotonically increasing counter the
     /// frame loop uses elsewhere.
     void flush(cd::rhi::IDevice& device,
-               cd::rhi::ICommandBuffer& cmd,
+               cd::rhi::IDrawRecorder& cmd,
                const cd::debug_line::LineBatch& batch,
                const cd::math::Mat4f& view_proj,
                std::uint32_t frame_idx);

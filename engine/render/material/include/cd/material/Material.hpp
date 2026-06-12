@@ -39,7 +39,7 @@
 
 namespace cd::rhi
 {
-class ICommandBuffer;
+class IDrawRecorder;
 } // namespace cd::rhi
 
 namespace cd::material
@@ -197,7 +197,10 @@ public:
     }
 
     /// Record vkCmdBindPipeline. Call once per pipeline change.
-    void apply(cd::rhi::ICommandBuffer& cmd) const;
+    /// phase1121 (X1-FU-F step 3): takes the draw-subset recorder so
+    /// materials can be applied inside parallel pass lanes; a full
+    /// ICommandBuffer binds implicitly (it IS an IDrawRecorder).
+    void apply(cd::rhi::IDrawRecorder& cmd) const;
 
 private:
     void release() noexcept;
@@ -244,7 +247,7 @@ public:
 
     /// Record vkCmdBindDescriptorSets at the given set index. Call after the
     /// owning Material's `apply()`.
-    void bind(cd::rhi::ICommandBuffer& cmd, std::uint32_t set_index = 0) const;
+    void bind(cd::rhi::IDrawRecorder& cmd, std::uint32_t set_index = 0) const;
 
     // ---- T1.9: metallic / roughness CPU-side accessors --------------------
     //

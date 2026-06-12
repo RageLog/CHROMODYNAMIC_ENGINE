@@ -37,7 +37,7 @@ using cd::hello_engine::PrimPush;
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_ddgi_probe_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -118,7 +118,7 @@ inline void draw_ddgi_probe_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_frustum_cull_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared, float aspect)
@@ -221,7 +221,7 @@ inline void draw_frustum_cull_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_light_gizmo_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -373,7 +373,7 @@ inline void draw_light_gizmo_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_decal_obb_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -470,7 +470,7 @@ inline void draw_decal_obb_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_csm_cascade_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -581,7 +581,7 @@ inline void draw_csm_cascade_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_cluster_heatmap_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -674,7 +674,7 @@ inline void draw_cluster_heatmap_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_bezier_curve_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -776,7 +776,7 @@ inline void draw_bezier_curve_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_gpu_particles_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -861,7 +861,7 @@ inline void draw_gpu_particles_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_quat_slerp_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -965,7 +965,7 @@ inline void draw_quat_slerp_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_motion_vector_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1063,7 +1063,7 @@ inline void draw_motion_vector_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_cubemap_globe_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1165,7 +1165,7 @@ inline void draw_cubemap_globe_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_vg_lod_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1259,7 +1259,7 @@ inline void draw_vg_lod_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_noise_heightfield_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1328,7 +1328,7 @@ inline void draw_noise_heightfield_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_restir_reservoir_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1433,7 +1433,7 @@ inline void draw_restir_reservoir_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_earth_globe_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1550,7 +1550,7 @@ inline void draw_earth_globe_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_camera_basis_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1667,7 +1667,7 @@ inline void draw_camera_basis_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_cct_sweep_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)
@@ -1734,7 +1734,7 @@ inline void draw_cct_sweep_overlay_3d(StateT& s,
 
 template <typename StateT, typename SunT, typename FillFn>
 inline void draw_attenuation_rail_overlay_3d(StateT& s,
-                   cd::rhi::ICommandBuffer& cmd,
+                   cd::rhi::IDrawRecorder& cmd,
                    const cd::math::Mat4f& vp,
                    const SunT& sun,
                    FillFn&& fill_prim_push_shared)

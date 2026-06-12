@@ -130,7 +130,7 @@ bool Renderer::recreate_pipeline(cd::rhi::IDevice& device,
 }
 
 void Renderer::flush(cd::rhi::IDevice& device,
-                     cd::rhi::ICommandBuffer& cmd,
+                     cd::rhi::IDrawRecorder& cmd,
                      const cd::debug_line::LineBatch& batch,
                      const cd::math::Mat4f& view_proj,
                      std::uint32_t frame_idx)
