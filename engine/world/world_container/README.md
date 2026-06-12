@@ -58,3 +58,17 @@ ctest --preset ninja-debug -R world_container
 - Designed for integration with ECS (cd::ecs entities belong to layers).
 - Streaming system (v1.7) queries level bounds for persistence prediction.
 - Editor integration (v1.6) uses layers for viewport filtering and bulk property edits.
+
+## phase1108 — `.cdproject` persistence (ProjectIo.hpp)
+
+`serialize_project / deserialize_project` + atomic
+`save_project_file / load_project_file` turn the in-memory
+Project/Level/Layer model into an openable product artefact
+(schema_version 1; unknown versions rejected, unknown keys ignored,
+absent keys keep defaults). `Level::scene_path()` links each level to
+its entity payload — a `.cdscene` file in the cd::scene::Serializer
+format (the hello_editor <-> hello_engine bridge family).
+
+Next increments (tracked in the plan doc): editor Project panel
+(open/save .cdproject, level list, active-level scene loading via the
+bridge), ECS layer-membership component, then v1.7 streaming.

@@ -72,6 +72,13 @@ public:
         return nullptr;
     }
 
+    /// phase1108: path (project-relative) to this level's entity
+    /// payload — a .cdscene file in the cd::scene::Serializer format
+    /// (the same family the hello_editor <-> hello_engine bridge
+    /// reads). Empty = level has no baked content yet.
+    [[nodiscard]] std::string_view scene_path() const noexcept { return scene_path_; }
+    void set_scene_path(std::string p) { scene_path_ = std::move(p); }
+
     /// Index of the active (spawn-destination) layer. v1.6 editor
     /// surface uses this when the asset palette drops a new entity.
     [[nodiscard]] std::size_t active_layer() const noexcept { return active_layer_; }
@@ -82,6 +89,7 @@ public:
 
 private:
     std::string                          name_         { "Untitled Level" };
+    std::string                          scene_path_   {};
     LevelBounds                          bounds_       {};
     std::vector<std::unique_ptr<Layer>>  layers_;
     std::size_t                          active_layer_ { 0 };
