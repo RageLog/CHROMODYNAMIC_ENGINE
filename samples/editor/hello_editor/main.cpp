@@ -71,6 +71,7 @@
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/light/Light.hpp>
+#include <cd/world_container/LayerMember.hpp>
 #include <cd/world_container/ProjectIo.hpp>
 #include <cd/scene/Serializer.hpp>
 #include <cd/shader/Compiler.hpp>
@@ -527,6 +528,43 @@ int main(int argc, char** argv)
     // and on synthetic fallback spawn.
     std::vector<EntityMeta> entity_metas;
 
+    // phase1111: bridge file path + project boot moved ABOVE the spawn
+    // section so freshly spawned entities can be assigned to the ACTIVE
+    // level's active layer from minute one.
+    constexpr const char* kBridgePath = "hello_engine.cdscene.json";
+    // phase1109: project container — the editor now opens/saves a
+    // .cdproject (cd::world_container::ProjectIo) and drives scene
+    // loading through the ACTIVE level's scene_path. First boot (no
+    // file) creates a default project whose single level points at
+    // the hello_engine bridge scene, tying the two systems together.
+    constexpr const char* kProjectPath = "hello_editor.cdproject";
+    std::unique_ptr<cd::world_container::Project> project;
+    std::size_t active_level_idx = 0;
+    if (auto loaded_proj = cd::world_container::load_project_file(kProjectPath);
+        loaded_proj.has_value())
+    {
+        project = std::move(*loaded_proj);
+        log_push("[project] loaded " + std::string { kProjectPath } + " (" +
+                 std::to_string(project->level_count()) + " levels)");
+    }
+    else
+    {
+        project = std::make_unique<cd::world_container::Project>("Hello Project");
+        auto* lvl = project->add_level("Main");
+        lvl->set_scene_path(kBridgePath);
+        log_push("[project] new default project (Main -> bridge scene)");
+    }
+
+    // Name of the active level's active (spawn-destination) layer.
+    auto active_layer_name = [&]() -> std::string
+    {
+        if (const auto* lvl = project->level(active_level_idx); lvl != nullptr)
+            if (const auto* lay = lvl->layer(lvl->active_layer()); lay != nullptr)
+                return std::string { lay->name() };
+        return std::string { cd::world_container::kDefaultLayerName };
+    };
+
+
     // ---- Selection (phase1092: multi-select) ------------------------------
     // `selection` is the source of truth (cd::editor::SelectionSet);
     // `selected` mirrors selection.primary() so the inspector, rotate/
@@ -570,6 +608,8 @@ int main(int argc, char** argv)
                 m.display_name = "[glTF root] " + std::filesystem::path(gi.source_path).filename().string();
                 m.tint         = { 1.0F, 1.0F, 1.0F };
                 m.kind         = EntityMeta::Kind::kGltf;
+                cd::world_container::assign_layer(world, m.handle,
+                                                  active_layer_name());
                 entity_metas.push_back(m);
             }
             // Per-node entities
@@ -580,6 +620,8 @@ int main(int argc, char** argv)
                 m.display_name = "node_" + std::to_string(ni);
                 m.tint         = { 0.8F, 0.85F, 1.0F };
                 m.kind         = EntityMeta::Kind::kGltf;
+                cd::world_container::assign_layer(world, m.handle,
+                                                  active_layer_name());
                 entity_metas.push_back(m);
             }
         }
@@ -610,6 +652,8 @@ int main(int argc, char** argv)
             m.tint = s.tint;
             m.kind = s.kind;
             scene.local(m.handle)->value.position = s.pos;
+            cd::world_container::assign_layer(world, m.handle,
+                                              active_layer_name());
             entity_metas.push_back(m);
         }
         if (!entity_metas.empty())
@@ -643,7 +687,6 @@ int main(int argc, char** argv)
     // vice versa). Kinds the editor has no mesh for (Torus/Cylinder/
     // Sponza from an engine-side save) fall back to Cube so they stay
     // visible and selectable.
-    constexpr const char* kBridgePath = "hello_engine.cdscene.json";
     // phase1097: real light rows replace the phase1096 verbatim
     // pass-through — the bridge "lights" array now parses into
     // editable rows and serialises back field-for-field.
@@ -684,6 +727,8 @@ int main(int argc, char** argv)
                             ? std::string { bridge_kind_name(m->kind) }
                             : m->bridge_kind };
                     obj["tint"] = cd::scene::vec3_to_json(m->tint);
+                    obj["layer"] = cd::asset::json::Value { std::string {
+                        cd::world_container::layer_of(world, e) } };
                 });
             if (!light_rows.empty())
             {
@@ -829,6 +874,14 @@ int main(int argc, char** argv)
                                        static_cast<float>(a[1].as_number()),
                                        static_cast<float>(a[2].as_number()) };
                     }
+                    if (auto it = obj.find("layer");
+                        it != obj.end() && it->second.is_string() &&
+                        it->second.as_string() !=
+                            cd::world_container::kDefaultLayerName)
+                    {
+                        cd::world_container::assign_layer(
+                            world, e, it->second.as_string());
+                    }
                     entity_metas.push_back(std::move(m));
                 });
             if (!loaded.has_value())
@@ -856,29 +909,6 @@ int main(int argc, char** argv)
         [&]() { save_scene_to(kBridgePath); });
     palette.register_command(81, "Scene: Load (hello_engine bridge)",
         [&]() { load_scene_from(kBridgePath); });
-
-    // phase1109: project container — the editor now opens/saves a
-    // .cdproject (cd::world_container::ProjectIo) and drives scene
-    // loading through the ACTIVE level's scene_path. First boot (no
-    // file) creates a default project whose single level points at
-    // the hello_engine bridge scene, tying the two systems together.
-    constexpr const char* kProjectPath = "hello_editor.cdproject";
-    std::unique_ptr<cd::world_container::Project> project;
-    std::size_t active_level_idx = 0;
-    if (auto loaded_proj = cd::world_container::load_project_file(kProjectPath);
-        loaded_proj.has_value())
-    {
-        project = std::move(*loaded_proj);
-        log_push("[project] loaded " + std::string { kProjectPath } + " (" +
-                 std::to_string(project->level_count()) + " levels)");
-    }
-    else
-    {
-        project = std::make_unique<cd::world_container::Project>("Hello Project");
-        auto* lvl = project->add_level("Main");
-        lvl->set_scene_path(kBridgePath);
-        log_push("[project] new default project (Main -> bridge scene)");
-    }
 
     palette.register_command(10, "Select: First Entity",
         [&]() {
@@ -2017,6 +2047,18 @@ int main(int argc, char** argv)
                         }
                     }
                     ImGui::PopID();
+                    // phase1111: dim layer suffix for organised rows.
+                    {
+                        const auto lay_name =
+                            cd::world_container::layer_of(world, ent);
+                        if (lay_name != cd::world_container::kDefaultLayerName)
+                        {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("[%.*s]",
+                                static_cast<int>(lay_name.size()),
+                                lay_name.data());
+                        }
+                    }
 
                     if (indent > 0.0F) ImGui::Unindent(indent);
                 }
