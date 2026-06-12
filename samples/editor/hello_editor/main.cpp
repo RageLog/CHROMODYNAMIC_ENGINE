@@ -221,6 +221,10 @@ struct EntityMeta
     cd::math::Vec3f   tint { 1.0F, 1.0F, 1.0F };
     // Mesh kind only used for synthetic fallback drawcalls.
     enum class Kind : std::uint8_t { kCube, kSphere, kCone, kGltf } kind { Kind::kCube };
+    // phase1098: raw bridge kind string as LOADED (e.g. "Torus") — the
+    // editor renders unknowns as Cube but must re-save the original
+    // string so an editor round-trip never downgrades engine data.
+    std::string bridge_kind {};
 };
 
 // phase1097: editor light row — same shape as hello_engine's LightRow
@@ -675,7 +679,9 @@ int main(int argc, char** argv)
                     if (m == nullptr) return;
                     obj["name"] = cd::asset::json::Value { m->display_name };
                     obj["kind"] = cd::asset::json::Value {
-                        std::string { bridge_kind_name(m->kind) } };
+                        m->bridge_kind.empty()
+                            ? std::string { bridge_kind_name(m->kind) }
+                            : m->bridge_kind };
                     obj["tint"] = cd::scene::vec3_to_json(m->tint);
                 });
             if (!light_rows.empty())
@@ -808,7 +814,10 @@ int main(int argc, char** argv)
                         m.display_name = it->second.as_string();
                     if (auto it = obj.find("kind");
                         it != obj.end() && it->second.is_string())
-                        m.kind = bridge_kind_from(it->second.as_string());
+                    {
+                        m.bridge_kind = it->second.as_string();
+                        m.kind = bridge_kind_from(m.bridge_kind);
+                    }
                     if (auto it = obj.find("tint");
                         it != obj.end() && it->second.is_array() &&
                         it->second.as_array().size() == 3)

@@ -43,3 +43,5 @@ add_custom_command(TARGET cd_sample_hello_editor POST_BUILD
     $<TARGET_FILE_DIR:cd_sample_hello_editor>/assets/samples/Generic
   COMMENT "Create hello_editor generic-gltf drop-in directory"
 )
+
+add_subdirectory(tests)
