@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cd::denoise
@@ -98,8 +99,8 @@ atrous_iteration(const AuxBuffers& src_aux,
                                             dx * static_cast<std::int32_t>(step);
                     const std::int32_t sy = static_cast<std::int32_t>(y) +
                                             dy * static_cast<std::int32_t>(step);
-                    if (sx < 0 || sx >= static_cast<std::int32_t>(src_aux.w) ||
-                        sy < 0 || sy >= static_cast<std::int32_t>(src_aux.h)) continue;
+                    if (sx < 0 || std::cmp_greater_equal(sx, src_aux.w) ||
+                        sy < 0 || std::cmp_greater_equal(sy, src_aux.h)) continue;
                     const std::size_t off = static_cast<std::size_t>(sy) * src_aux.w +
                                             static_cast<std::size_t>(sx);
                     const cd::math::Vec3f c1 = src_color[off];

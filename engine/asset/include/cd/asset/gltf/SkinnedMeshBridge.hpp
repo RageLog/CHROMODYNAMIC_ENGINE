@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cd::asset::gltf
@@ -163,7 +164,7 @@ to_skeleton(const GltfScene& scene, std::size_t skin_index)
     auto parent_in_skin = [&](int node_idx) -> std::int32_t
     {
         int cursor = node_idx;
-        while (cursor >= 0 && cursor < static_cast<int>(scene.nodes.size()))
+        while (cursor >= 0 && std::cmp_less(cursor, scene.nodes.size()))
         {
             const int parent = scene.nodes[static_cast<std::size_t>(cursor)].parent;
             if (parent < 0) return -1;
@@ -181,11 +182,11 @@ to_skeleton(const GltfScene& scene, std::size_t skin_index)
     {
         const int node_idx = gskin.joints[i];
         cd::anim::Joint j;
-        j.name = (node_idx >= 0 && node_idx < static_cast<int>(scene.nodes.size()))
+        j.name = (node_idx >= 0 && std::cmp_less(node_idx, scene.nodes.size()))
                      ? scene.nodes[static_cast<std::size_t>(node_idx)].name
                      : std::string {};
         j.parent = parent_in_skin(node_idx);
-        if (node_idx >= 0 && node_idx < static_cast<int>(scene.nodes.size()))
+        if (node_idx >= 0 && std::cmp_less(node_idx, scene.nodes.size()))
             j.local_bind = decompose_local(scene.nodes[static_cast<std::size_t>(node_idx)].local_matrix);
         if (i < gskin.inverse_bind_matrices.size())
             j.inverse_bind_matrix = gskin.inverse_bind_matrices[i];
@@ -270,7 +271,7 @@ to_skeleton_bundle(const GltfScene& scene, std::size_t skin_index)
     auto parent_in_skin = [&](int node_idx) -> std::int32_t
     {
         int cursor = node_idx;
-        while (cursor >= 0 && cursor < static_cast<int>(scene.nodes.size()))
+        while (cursor >= 0 && std::cmp_less(cursor, scene.nodes.size()))
         {
             const int parent = scene.nodes[static_cast<std::size_t>(cursor)].parent;
             if (parent < 0) return -1;
@@ -287,11 +288,11 @@ to_skeleton_bundle(const GltfScene& scene, std::size_t skin_index)
     {
         const int node_idx = gskin.joints[i];
         cd::anim::Joint j;
-        j.name = (node_idx >= 0 && node_idx < static_cast<int>(scene.nodes.size()))
+        j.name = (node_idx >= 0 && std::cmp_less(node_idx, scene.nodes.size()))
                      ? scene.nodes[static_cast<std::size_t>(node_idx)].name
                      : std::string {};
         j.parent = parent_in_skin(node_idx);
-        if (node_idx >= 0 && node_idx < static_cast<int>(scene.nodes.size()))
+        if (node_idx >= 0 && std::cmp_less(node_idx, scene.nodes.size()))
             j.local_bind = decompose_local(scene.nodes[static_cast<std::size_t>(node_idx)].local_matrix);
         if (i < gskin.inverse_bind_matrices.size())
             j.inverse_bind_matrix = gskin.inverse_bind_matrices[i];
@@ -434,12 +435,12 @@ inline void sample_gltf_animation(
     {
         if (ch.path == GltfTargetPath::kMorphWeights) continue;
         if (ch.sampler_index < 0 ||
-            ch.sampler_index >= static_cast<int>(anim.samplers.size())) continue;
+            std::cmp_greater_equal(ch.sampler_index, anim.samplers.size())) continue;
         auto it = node_to_joint.find(ch.target_node);
         if (it == node_to_joint.end()) continue;
         const std::int32_t joint = it->second;
         if (joint < 0 ||
-            joint >= static_cast<std::int32_t>(pose.joint_locals.size())) continue;
+            std::cmp_greater_equal(joint, pose.joint_locals.size())) continue;
 
         const auto& s = anim.samplers[static_cast<std::size_t>(ch.sampler_index)];
         if (s.times.empty()) continue;

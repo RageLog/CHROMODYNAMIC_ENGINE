@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 
 namespace cd::ddgi
 {
@@ -113,9 +114,9 @@ struct ProbeGrid
 
                     const bool in_bounds =
                         cx >= 0 && cy >= 0 && cz >= 0 &&
-                        static_cast<std::uint32_t>(cx) < probes_x &&
-                        static_cast<std::uint32_t>(cy) < probes_y &&
-                        static_cast<std::uint32_t>(cz) < probes_z;
+                        std::cmp_less(cx, probes_x) &&
+                        std::cmp_less(cy, probes_y) &&
+                        std::cmp_less(cz, probes_z);
 
                     const auto i = static_cast<std::size_t>(idx);
                     weights_out[i] = in_bounds ? (wx * wy * wz) : 0.0F;
@@ -336,9 +337,9 @@ trilinear_probe_weights(const ProbeGrid& g,
         const std::int32_t cz = z0 + dz;
         const bool in_bounds =
             cx >= 0 && cy >= 0 && cz >= 0 &&
-            static_cast<std::uint32_t>(cx) < g.probes_x &&
-            static_cast<std::uint32_t>(cy) < g.probes_y &&
-            static_cast<std::uint32_t>(cz) < g.probes_z;
+            std::cmp_less(cx, g.probes_x) &&
+            std::cmp_less(cy, g.probes_y) &&
+            std::cmp_less(cz, g.probes_z);
         const auto i = static_cast<std::size_t>(idx);
         weights[i] = in_bounds ? (wx * wy * wz) : 0.0F;
         corners[i] = {

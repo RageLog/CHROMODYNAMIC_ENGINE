@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <numbers>
 #include <span>
+#include <utility>
 
 namespace cd::ibl
 {
@@ -54,7 +55,7 @@ sample_equirect(const EquirectImage& eq, cd::math::Vec3f dir) noexcept
     };
     auto clamp_y = [&](int y) {
         if (y < 0) return 0;
-        if (y >= static_cast<int>(eq.height)) return static_cast<int>(eq.height - 1);
+        if (std::cmp_greater_equal(y, eq.height)) return static_cast<int>(eq.height - 1);
         return y;
     };
     const int x0 = wrap_x(static_cast<int>(std::floor(fx)));

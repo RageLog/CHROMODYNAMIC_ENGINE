@@ -73,7 +73,7 @@ TEST(GameQuery, RayHitsCenteredBox)
     const Aabb box = box_at(Vec3f { 5.0F, 0.0F, 0.0F }, 1.0F);
     auto hit = intersect_ray_aabb(Vec3f { 0.0F, 0.0F, 0.0F },
                                   Vec3f { 1.0F, 0.0F, 0.0F }, box,
-                                  /*max=*/100.0F);
+                                  /*max_dist=*/100.0F);
     ASSERT_TRUE(hit.has_value());
     EXPECT_NEAR(hit->t, 4.0F, 1e-5F);
     EXPECT_NEAR(hit->normal.x, -1.0F, 1e-5F);

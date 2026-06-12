@@ -49,7 +49,7 @@ TEST(HdrDisplay, Rec2020MatrixPreservesWhite)
 
 TEST(HdrDisplay, ScrgbPackScalesByMaxNits)
 {
-    const auto p = scrgb_pack({ 1, 1, 1 }, /*max=*/400.0F);
+    const auto p = scrgb_pack({ 1, 1, 1 }, /*display_max_nits=*/400.0F);
     EXPECT_NEAR(p.x, 400.0F / 80.0F, kEps);
 }
 

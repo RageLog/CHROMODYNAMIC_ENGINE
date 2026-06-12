@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <utility>
 
 namespace cd::gpu_particles
 {
@@ -58,7 +59,7 @@ compact_alive(std::span<Particle> particles) noexcept
     for (auto& p : particles)
     {
         if (p.life <= 0.0F) continue;
-        if (live != static_cast<std::uint32_t>(&p - particles.data()))
+        if (std::cmp_not_equal(live, &p - particles.data()))
             particles[live] = p;
         ++live;
     }

@@ -22,6 +22,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace cd::ibl
@@ -165,7 +166,7 @@ sample_cubemap_dir(const CubeMapRgbF& cm, cd::math::Vec3f dir) noexcept
     const float fy = v * static_cast<float>(cm.face_size) - 0.5F;
     const auto clamp_i = [&](int i) {
         if (i < 0) return 0;
-        if (i >= static_cast<int>(cm.face_size)) return static_cast<int>(cm.face_size - 1);
+        if (std::cmp_greater_equal(i, cm.face_size)) return static_cast<int>(cm.face_size - 1);
         return i;
     };
     const int x0 = clamp_i(static_cast<int>(std::floor(fx)));

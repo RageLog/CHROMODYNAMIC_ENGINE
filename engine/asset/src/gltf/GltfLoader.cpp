@@ -45,6 +45,7 @@
 #include <limits>
 #include <string>
 #include <cstdio>
+#include <utility>
 
 namespace cd::asset::gltf
 {
@@ -69,7 +70,7 @@ struct AccessorView
 [[nodiscard]] AccessorView access(const tinygltf::Model& model, int accessor_index)
 {
     AccessorView v {};
-    if (accessor_index < 0 || accessor_index >= static_cast<int>(model.accessors.size()))
+    if (accessor_index < 0 || std::cmp_greater_equal(accessor_index, model.accessors.size()))
         return v;
     const auto& acc = model.accessors[static_cast<std::size_t>(accessor_index)];
     if (acc.bufferView < 0)
@@ -254,7 +255,7 @@ struct AccessorView
 [[nodiscard]] GltfTexture decode_texture(const tinygltf::Model& model, const tinygltf::Texture& tex)
 {
     GltfTexture out;
-    if (tex.source < 0 || tex.source >= static_cast<int>(model.images.size()))
+    if (tex.source < 0 || std::cmp_greater_equal(tex.source, model.images.size()))
         return out;
     const auto& img = model.images[static_cast<std::size_t>(tex.source)];
     if (img.image.empty() || img.width <= 0 || img.height <= 0)

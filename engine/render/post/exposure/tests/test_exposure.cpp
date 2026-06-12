@@ -82,7 +82,7 @@ TEST(Exposure, SmoothingClampsToMinMax)
     s.max_ev =  2.0F;
 
     // Even with huge dt and target far past max, smoothing clamps.
-    const float ev = pex::apply_smoothing(0.0F, /*target=*/ 10.0F, /*dt=*/ 100.0F, s);
+    const float ev = pex::apply_smoothing(0.0F, /*target_ev=*/ 10.0F, /*dt_seconds=*/ 100.0F, s);
     EXPECT_LE(ev, 2.0F);
     EXPECT_NEAR(ev, 2.0F, 0.001F);
 }
@@ -90,7 +90,7 @@ TEST(Exposure, SmoothingClampsToMinMax)
 TEST(Exposure, SmoothingZeroDtKeepsPrev)
 {
     pex::Settings s {};
-    const float ev = pex::apply_smoothing(1.5F, /*target=*/ -1.5F, /*dt=*/ 0.0F, s);
+    const float ev = pex::apply_smoothing(1.5F, /*target_ev=*/ -1.5F, /*dt_seconds=*/ 0.0F, s);
     EXPECT_FLOAT_EQ(ev, 1.5F);
 }
 
@@ -104,7 +104,7 @@ TEST(Exposure, SmoothingApproachesTargetOverTime)
     // 300 frames @ 60 fps = 5s
     for (int i = 0; i < 300; ++i)
     {
-        ev = pex::apply_smoothing(ev, target, /*dt=*/ 1.0F / 60.0F, s);
+        ev = pex::apply_smoothing(ev, target, /*dt_seconds=*/ 1.0F / 60.0F, s);
     }
     EXPECT_NEAR(ev, target, 0.05F);   // within 2.5% of target after 5τ
     EXPECT_LT(ev, target);            // monotonically approaches from below
@@ -131,7 +131,7 @@ TEST(Exposure, UpdateEvComposesPipeline)
     pex::Settings s {};
     // Grey scene + prev_ev = 0 + 1s adaptation -> EV stays at 0.
     const float la = std::log2(0.18F);
-    const float ev = pex::update_ev(la, /*prev=*/ 0.0F, /*dt=*/ 1.0F, s);
+    const float ev = pex::update_ev(la, /*prev_ev=*/ 0.0F, /*dt_seconds=*/ 1.0F, s);
     EXPECT_NEAR(ev, 0.0F, 0.01F);
 }
 
@@ -293,7 +293,7 @@ TEST(ExposureSetup, TickOnNullDeviceKeepsPrevEv)
     auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
-    const float mul = setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 1.0F / 60.0F);
+    const float mul = setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt_seconds=*/ 1.0F / 60.0F);
     cmd->end();
 
     EXPECT_FLOAT_EQ(setup.prev_ev, 1.25F);  // unchanged.
@@ -317,7 +317,7 @@ TEST(ExposureSetup, EvBiasOffsetsAutoEv)
     auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
-    const float mul = setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 0.0F);
+    const float mul = setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt_seconds=*/ 0.0F);
     cmd->end();
 
     const float baseline = pex::compute_exposure_multiplier(0.0F, setup.settings);
@@ -338,7 +338,7 @@ TEST(ExposureSetup, EvBiasClampsToSettingsRange)
     auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
-    (void)setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 0.0F);
+    (void)setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt_seconds=*/ 0.0F);
     cmd->end();
 
     // current_ev() returns the clamped sum; never escapes settings.max_ev.
@@ -416,7 +416,7 @@ TEST(ExposureSetup, MultipleTicksKeepEvStableUnderNullDevice)
     for (int i = 0; i < 60; ++i)
     {
         cmd->begin();
-        (void)setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt=*/ 1.0F / 60.0F);
+        (void)setup.tick(*cmd, cd::rhi::TextureViewHandle {}, /*dt_seconds=*/ 1.0F / 60.0F);
         cmd->end();
     }
     EXPECT_FLOAT_EQ(setup.prev_ev, 0.75F);

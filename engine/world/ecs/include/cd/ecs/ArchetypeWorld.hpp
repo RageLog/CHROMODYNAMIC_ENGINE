@@ -42,6 +42,7 @@
 
 #include <cd/ecs/Entity.hpp>
 
+#include <limits>
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -372,7 +373,7 @@ ArchetypeWorld::migrate_shared_components_(
     // Move-construct each component present in BOTH src and dst.
     for (std::size_t dk = 0; dk < dst.infos.size(); ++dk) {
         const std::size_t sk = src.column_for(dst.infos[dk].type);
-        if (sk == static_cast<std::size_t>(-1)) continue;  // new type -- skip
+        if (sk == std::numeric_limits<std::size_t>::max()) continue;  // new type -- skip
         auto* dst_ptr = dc->columns[dk].data() + dst_row * dst.infos[dk].size_bytes;
         auto* src_ptr = src_c.columns[sk].data() + src_row * src.infos[sk].size_bytes;
         dst.infos[dk].move_construct(dst_ptr, src_ptr);
@@ -421,7 +422,7 @@ inline void ArchetypeWorld::add_component(Entity e, T value)
 
     // Construct the brand-new component in its column of the destination.
     const std::size_t new_col = new_a->column_for(new_type);
-    assert(new_col != static_cast<std::size_t>(-1));
+    assert(new_col != std::numeric_limits<std::size_t>::max());
     auto* new_slot = dc->columns[new_col].data() + new_row * sizeof(U);
     ::new (new_slot) U(std::move(value));
 
@@ -451,9 +452,9 @@ inline void ArchetypeWorld::remove_component(Entity e)
     Chunk&     old_c = *old_a.chunks[old_loc.chunk_index];
 
     const std::size_t rem_col = old_a.column_for(rem_type);
-    assert(rem_col != static_cast<std::size_t>(-1)
+    assert(rem_col != std::numeric_limits<std::size_t>::max()
            && "remove_component: entity does not carry this component type");
-    if (rem_col == static_cast<std::size_t>(-1)) return;
+    if (rem_col == std::numeric_limits<std::size_t>::max()) return;
 
     // Build the target infos: existing - removed type.
     // old_a.infos is already sorted; filtering preserves order.

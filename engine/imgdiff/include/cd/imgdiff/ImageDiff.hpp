@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cd::imgdiff
@@ -149,7 +150,7 @@ highlight(ImageView a, ImageView b, std::uint8_t tolerance = 0)
         const auto dg = std::abs(static_cast<int>(a.rgba[i + 1]) - static_cast<int>(b.rgba[i + 1]));
         const auto db = std::abs(static_cast<int>(a.rgba[i + 2]) - static_cast<int>(b.rgba[i + 2]));
         const auto da = std::abs(static_cast<int>(a.rgba[i + 3]) - static_cast<int>(b.rgba[i + 3]));
-        const bool differs = (dr > tolerance) || (dg > tolerance) || (db > tolerance) || (da > tolerance);
+        const bool differs = std::cmp_greater(dr, tolerance) || std::cmp_greater(dg, tolerance) || std::cmp_greater(db, tolerance) || std::cmp_greater(da, tolerance);
         if (differs)
         {
             out[i + 0] = 255;
