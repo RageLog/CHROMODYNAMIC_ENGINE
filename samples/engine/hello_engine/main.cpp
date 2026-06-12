@@ -148,6 +148,7 @@
 // from this header are exercised below so the wire-up is one #include
 // away from the GPU dispatch.
 #include <cd/volumetric/VolumetricFog.hpp>
+#include <cd/world_container/ProjectIo.hpp>
 #include <cd/world_container/World.hpp>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -5883,6 +5884,31 @@ cd::core::Result<void> HelloEngineApp::on_boot()
 
     // World / scene / ECS
     setup_world_container(s.cd_world);
+    // phase1112: if the editor saved a .cdproject next to us, ADOPT it —
+    // the runtime now reads the same product artefact the editor writes.
+    // ProjectSettings drive the composite fx knobs (phase1113 mapping:
+    // enable_* toggles gate the corresponding strength at its default;
+    // tonemap_op passes through). Absent file = keep the synthetic
+    // sample project + the cinematic first-boot fx defaults.
+    if (auto proj = cd::world_container::load_project_file(
+            "hello_editor.cdproject");
+        proj.has_value())
+    {
+        const auto& ps = (*proj)->settings();
+        s.fx.tonemap_op   = static_cast<int>(ps.tonemap_op);
+        s.fx.bloom_post   = ps.enable_bloom ? 0.035F : 0.0F;
+        s.fx.ao_strength  = ps.enable_gtao  ? 0.55F  : 0.0F;
+        s.fx.ssr_strength = ps.enable_ssr   ? 0.5F   : 0.0F;
+        s.log.emplace_back(
+            "[project] adopted hello_editor.cdproject (" +
+            std::to_string((*proj)->level_count()) + " levels; tonemap=" +
+            std::to_string(s.fx.tonemap_op) + " bloom=" +
+            (ps.enable_bloom ? std::string { "on" } : std::string { "off" }) +
+            " gtao=" + (ps.enable_gtao ? "on" : "off") +
+            " ssr=" + (ps.enable_ssr ? "on" : "off") + ")");
+        s.cd_world.set_project(std::move(*proj));
+        s.cd_world.set_name("Editor Project World");
+    }
     spawn_primitive_seeds(s.scene, s.entities);
     // phase798-rt-chrome-sponza-probe: in fixture-#5 mode skip CesiumMan
     // (4 m glowing humanoid at world origin) so it doesn't block the
