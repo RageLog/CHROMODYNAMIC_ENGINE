@@ -205,3 +205,64 @@ küme); `for_each_valid(filter, fn)` tüm geçerli kombinasyonları
   closure-hash [BLOCKING], (2) kütüphane iskeleti + math_common +
   brdf + tonemap tohum modülleri, (3) headless compile testi,
   (4) VariantDomain, (5) ilk tüketici migrasyonu (golden-pinned).
+
+---
+
+## Addendum (2026-06-13) — material gömülü GLSL ve default resolver
+
+### Bağlam
+
+SL-D wave-3 envanteri: `engine/render/material` gömülü GLSL'leri gluon
+modülleriyle bayt-aynı bloklar taşıyor (kanıt: `LitPbrMaterial.hpp:134
+distance_atten` ↔ `gluon/shaders/modules/light_atten.glsl:13`; LTC
+suite kısmen). String'lere `#include <cd/gluon/...>` konursa,
+`Material::create`'i resolver geçmeden çağıran her tüketici derleme
+hatası alır — kütüphane kendi gömülü kaynağını derleyemez hale gelir.
+DAG kanıtı: karşılıklı `#include` SIFIR (gluon→material ve
+material→gluon grep'leri boş); gluon deps (`cd::core` + `cd::shader`)
+zaten material'ın bağımlılık closure'unda. Cycle ve layer ihlali yok.
+
+### Karar — Opsiyon A (rafine: PRIVATE bağımlılık)
+
+1. `cd::material` → `cd::gluon` bağımlılığı eklenir, ancak **PUBLIC
+   değil `PRIVATE_DEPS`** (CDProject.cmake destekliyor): hiçbir material
+   header'ı gluon TİPİ adlandırmaz; `MaterialDesc::include_resolver`
+   tipi `cd::shader::IIncludeResolver*` olarak kalır (shader zaten
+   PUBLIC). Yalnız `Material.cpp` `ModuleResolver` kurar.
+2. **Default-resolver köprüsü**: `Material::create` GLSL derleme
+   dalında `desc.include_resolver == nullptr` ise fonksiyon-lokal bir
+   `cd::gluon::ModuleResolver` kullanılır. `ModuleResolver` stateless +
+   deterministik (ModuleRegistry.hpp kontratı) — `static` bile
+   gerekmez; CLAUDE.md "global state yasak" kuralı İHLAL EDİLMEZ.
+3. **Null semantiği değişimi** (tek davranış değişikliği): null artık
+   "include = hata" değil "gömülü gluon kataloğu" demektir. Geriye
+   uyumluluk: `#include` içermeyen kaynaklar bayt-aynı derlenir;
+   closure boş kaldığından §2.3 gereği cache anahtarı DEĞİŞMEZ.
+   `Material.hpp:111-115` doc-comment'i buna göre güncellenir.
+4. Taşınan her gömülü string head'ine `#extension
+   GL_GOOGLE_include_directive : enable` eklenir (extension head
+   placement dersi — bindless olayının önleyici kuralı).
+
+### Reddedilenler
+
+- **B (erteleme)**: en yoğun trafikli kopya (LitPbr ışık zayıflatması)
+  drift sınıfında açık kalır; A katman zararı olmadan mümkünken
+  erteleme gerekçesiz.
+- **C (cd::shader'a process-wide default resolver kaydı)**: CLAUDE.md
+  §7 "library'ler arası global state yasak" ile doğrudan çatışır;
+  ayrıca test izolasyonunu bozar (set sırasına bağlı sonuç). RED.
+- **A-PUBLIC varyantı**: header yüzeyi gluon tipi taşımadığından
+  PUBLIC gereksiz görünürlük; PRIVATE yeterli (static-lib link
+  transitivity'yi CMake `$<LINK_ONLY:>` zaten taşır).
+
+### Sonuçlar
+
+- (+) Material gömülü GLSL dedupe'u SL-D kapsamına girer; kütüphane
+  kendi kendine derlenebilir kalır (standalone-product korunur).
+- (−) "include görürsem hata ver" isteyen tüketici artık opt-out
+  etmeli: her isteği reddeden bir resolver geçerek. Dökümante edilir.
+- (→) Golden pinler: chrome_probe + multi-light/area-light per-feature
+  fixture'ları BAYT-AYNI; `test_material.cpp:341` (`distance_atten`
+  substring beklentisi) include satırına göre güncellenir (metin
+  asserti, davranış değil). Install/export seti etkilenmez (material
+  ve gluon zaten `EXCLUDE_FROM_INSTALL`).
