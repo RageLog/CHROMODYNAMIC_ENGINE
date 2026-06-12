@@ -8,6 +8,7 @@
 
 #include <cd/rhi/ICommandBuffer.hpp>
 
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -213,6 +214,9 @@ public:
 
     [[nodiscard]] IDrawRecorder& lane(std::uint32_t i) noexcept override
     {
+        // phase1119 (audit B2): match the Vulkan contract — out-of-range
+        // is a caller bug; clamping in release keeps noexcept safety.
+        assert(i < lanes_ && "lane index out of range");
         return lane_buffers_[i < lanes_ ? i : lanes_ - 1u];
     }
 

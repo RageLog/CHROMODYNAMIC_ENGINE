@@ -3,6 +3,8 @@
 // =============================================================================
 #include "VulkanCommandBuffer.hpp"
 
+#include <cassert>
+
 namespace cd::rhi::vulkan
 {
 
@@ -137,6 +139,16 @@ VulkanCommandBuffer::~VulkanCommandBuffer()
     }
 }
 
+void VulkanCommandBuffer::adopt_label_arena(VulkanCommandBuffer& lane)
+{
+    // phase1119 (audit C): splice the lane's label strings into the primary
+    // arena. The primary's begin() clears them once the next frame proves
+    // the GPU is done — identical fencing to the retired pools.
+    for (auto& s : lane.debug_label_arena_)
+        debug_label_arena_.push_back(std::move(s));
+    lane.debug_label_arena_.clear();
+}
+
 void VulkanCommandBuffer::retire_lane_pools(std::vector<VkCommandPool>&& pools)
 {
     retired_lane_pools_.insert(retired_lane_pools_.end(),
@@ -152,6 +164,20 @@ void VulkanCommandBuffer::begin()
     // also release those, which is the wrong tradeoff for a per-frame
     // command buffer that will refill the arena immediately.
     debug_label_arena_.clear();
+
+    // phase1119 (X1-FU-F step-2 gate, audit A3): free lane pools retired by
+    // parallel recorders in earlier frames. begin() may only run when this
+    // primary is no longer pending (Renderer waits on the frame fence first),
+    // and a retired secondary's pending lifetime is a subset of the
+    // primary's — so the pools are provably idle here. Without this, a
+    // parallel pass per frame leaks lane_count pools per frame for the
+    // application lifetime.
+    for (auto pool : retired_lane_pools_)
+    {
+        if (pool != VK_NULL_HANDLE && device_ != VK_NULL_HANDLE)
+            vkDestroyCommandPool(device_, pool, nullptr);
+    }
+    retired_lane_pools_.clear();
 
     const VkCommandBufferBeginInfo bi {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1003,6 +1029,10 @@ std::uint32_t VulkanParallelPassRecorder::lane_count() const noexcept
 
 cd::rhi::IDrawRecorder& VulkanParallelPassRecorder::lane(std::uint32_t i) noexcept
 {
+    // phase1119 (audit B2): an out-of-range index silently clamped to the
+    // last lane would alias two threads onto one secondary — an external-
+    // sync violation that surfaces as device-lost. Fail loudly in debug.
+    assert(i < lanes_.size() && "lane index out of range");
     const auto idx = i < lanes_.size() ? i : lanes_.size() - 1u;
     return *lanes_[idx];
 }
@@ -1011,6 +1041,13 @@ void VulkanParallelPassRecorder::finish()
 {
     if (finished_)
         return;
+    // phase1119 (audit C): lane wrappers die with this recorder, but their
+    // debug-label strings were handed to vkCmdBeginDebugUtilsLabelEXT on the
+    // secondaries, which the GPU executes AFTER the recorder is gone. Move
+    // every lane's arena into the primary (same lifetime discipline as the
+    // pools) so the documented "until execution completes" invariant holds.
+    for (auto& l : lanes_)
+        primary_->adopt_label_arena(*l);
     for (auto sec : secondaries_)
         vkEndCommandBuffer(sec);
     if (!secondaries_.empty())

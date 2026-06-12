@@ -763,6 +763,7 @@ public:
             for (auto view_id : sc.view_ids)
             {
                 views_.erase(view_id);
+                view_formats_.erase(view_id);  // phase1119 (audit A4)
             }
             for (auto v : sc.views)
             {
@@ -3009,6 +3010,7 @@ public:
         for (auto view_id : it->second.view_ids)
         {
             views_.erase(view_id);
+            view_formats_.erase(view_id);  // phase1119 (audit A4)
         }
         for (auto v : it->second.views)
         {

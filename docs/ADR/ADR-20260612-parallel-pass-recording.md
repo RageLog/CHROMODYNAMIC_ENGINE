@@ -63,3 +63,16 @@ tavsiyesinin gerekçesi buydu.
   panel toggle'ı arkasında; (4) D3D12/Metal kendi gemileriyle.
 - safety-integration kapısı adım 2'de zorunlu (pool ömrü + reset
   fencing) — Sprint-2 concurrency barı.
+- **Adım-2 kapı durumu (phase1119)**: safety audit VETO → kontrat
+  uygulandı → SEAL adayı. (A3) retired lane pool'ları `begin()`'de
+  serbest bırakılır — begin() zaten "primary pending değil" kontratını
+  taşır (Renderer frame-fence bekler) ve retired secondary'nin pending
+  ömrü primary'ninkinin alt kümesidir; fix bu yüzden ek varsayım
+  gerektirmez. (C) lane debug-label arena'ları `finish()`'te primary'ye
+  taşınır (pool'larla aynı fence disiplini). (A4) swapchain teardown
+  iki döngüsü `view_formats_`'ı da siler. (B2) `lane(i)` aralık dışı
+  debug assert (Vulkan + Null). (A2) recorder ömür/threading kontratı
+  `ICommandBuffer.hpp`'de dokümante: finish() yıkımdan önce zorunlu;
+  lane kayıtları finish()'ten happens-before; abandon pass scope'unu
+  açık bırakır. MSAA nöbeti: `iri.rasterizationSamples` 1-sample
+  hardcode — adım 3'te MSAA'lı pass'e lane açmadan önce genelle.

@@ -152,6 +152,19 @@ public:
 /// IN LANE ORDER (lane order == submission order, so same-input frames
 /// replay identically regardless of worker scheduling) and ends the
 /// pass. Lane creation follows IDevice threading-contract rule 1.
+///
+/// LIFETIME / THREADING CONTRACT (phase1119, audit A2+B2):
+///   * finish() MUST be called before the recorder is destroyed. A
+///     recorder abandoned without finish() leaves the primary's render
+///     pass scope OPEN (begun with secondary-contents semantics): the
+///     primary can neither record serial draws nor end() legally.
+///   * Every lane recording MUST happens-before finish() (join your
+///     workers first). Destroying or finishing the recorder while a
+///     lane thread is still recording races the driver's command-pool
+///     external-synchronisation requirement (device-lost).
+///   * lane(i) with i >= lane_count() is a caller bug: it asserts in
+///     debug builds and clamps to the last lane in release (two
+///     threads aliasing one lane is the race described above).
 class IParallelPassRecorder
 {
 public:

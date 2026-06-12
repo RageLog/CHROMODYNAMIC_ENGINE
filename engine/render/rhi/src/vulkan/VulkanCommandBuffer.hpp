@@ -117,6 +117,11 @@ public:
     /// must outlive the primary's GPU execution.
     void retire_lane_pools(std::vector<VkCommandPool>&& pools);
 
+    /// phase1119 (audit C): move a lane wrapper's debug-label arena into
+    /// this (primary) buffer so label strings outlive the recorder and
+    /// follow the same begin()-fenced reclamation as retired lane pools.
+    void adopt_label_arena(VulkanCommandBuffer& lane);
+
     void bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle pipeline) override;
     void bind_compute_pipeline(cd::rhi::ComputePipelineHandle pipeline) override;
     void bind_descriptor_set(std::uint32_t set_index, cd::rhi::DescriptorSetHandle set) override;
