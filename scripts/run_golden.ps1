@@ -46,12 +46,11 @@ Set-Location $repoRoot
 # include GoldenCapture.hpp. Track A Part 1 wired the 5 with shader-
 # pipeline regression risk; remaining windowed samples wire in
 # follow-up waves.
+# phase1142: hello_cube / hello_pbr / hello_skybox folded (batch-2
+# sample consolidation); script hard-fails on missing exes.
 $samples = @(
     'hello_triangle',
-    'hello_cube',
-    'hello_anim',
-    'hello_pbr',
-    'hello_skybox'
+    'hello_anim'
 )
 
 $multiConfigBin = Join-Path $BuildDir "bin/$Config"

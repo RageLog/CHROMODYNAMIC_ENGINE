@@ -115,7 +115,8 @@ appears to reflect only sky + nearby spheres.
 
 The full engine-owned RT closest-hit shader is deferred behind an inline-
 GLSL-string boundary (today the closest-hit lives in
-`samples/rhi/hello_rt/main.cpp` and `hello_engine` is FROZEN). What this
+`samples/rhi/hello_path_trace/main.cpp` (phase1142: hello_rt folded) and
+`hello_engine` is FROZEN). What this
 library ships in phase 657 is the **stable CPU-side contract** the future
 shader-record builder will read:
 
@@ -162,7 +163,8 @@ sample), the integration is:
    `MaterialInstance` list and calls `ray_hit_sample(*inst)` for each.
 2. The result is packed into a per-prim SSBO indexed by
    `gl_InstanceCustomIndexEXT` — same indexing pattern as
-   `samples/rhi/hello_rt/main.cpp` already demonstrates.
+   `samples/rhi/hello_path_trace/main.cpp` (phase1142: hello_rt folded)
+   already demonstrates.
 3. The closest-hit GLSL reads the buffer on every hit and shades
    `payload.color` from `albedo + emissive + Schlick(metallic,roughness)`
    instead of returning black / IBL miss.

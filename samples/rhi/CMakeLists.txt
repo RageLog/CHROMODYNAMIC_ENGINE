@@ -1,8 +1,8 @@
 # samples/rhi — RHI backend smokes (Vulkan / D3D12 / OpenGL).
 # Outer CMake already gated this directory on CD_ENABLE_VULKAN, so
-# triangle/cube/path-trace/RT/rhi_features land here.
+# triangle/path-trace land here.
+# phase1142: hello_cube folded (batch-2 sample consolidation).
 add_subdirectory(hello_triangle)
-add_subdirectory(hello_cube)
 
 if(WIN32)
   # phase909-sample-consolidation: hello_d3d12_boot retired. Its 4-step
@@ -20,9 +20,9 @@ endif()
 # here for visibility; if you build with CD_ENABLE_VULKAN=OFF this
 # whole subdirectory is skipped.
 # hello_rt_check (Phase 14.G v0.40.0 API-surface probe) was deleted in
-# phase411-D-F5: hello_rt (Phase 141+406) covers BLAS/TLAS create, RT
-# pipeline, SBT, dispatch_rays, and feature detection with a real scene.
-add_subdirectory(hello_rt)
+# phase411-D-F5. phase1142: hello_rt folded (batch-2 sample
+# consolidation) — BLAS/TLAS create, RT pipeline, SBT and dispatch_rays
+# coverage lives in hello_path_trace + engine/render/rhi/tests.
 add_subdirectory(hello_path_trace)
 
 # Metal boot smoke — macOS / iOS only; requires CD_RHI_METAL_ENABLED=ON.

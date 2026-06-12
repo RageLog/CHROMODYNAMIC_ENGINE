@@ -21,7 +21,7 @@ cd_add_sample(hello_engine
     cd::frame_timing
     cd::imgui_backend
     cd::light
-    cd::async_submit
+    cd::async_submit  # TODO(phase1143): unused link, analyst 2026-06-13
     cd::atmosphere
     cd::brdf_ltc
     cd::brdf_sheen_clearcoat

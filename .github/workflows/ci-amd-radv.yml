@@ -83,7 +83,14 @@ jobs:
           # Hardware-backed RADV — no Xvfb, the runner has a real
           # display (or a DRI render node). Run a representative
           # subset only; full sweep gated behind the workflow input.
-          bash scripts/run_smoke_samples.sh hello_triangle hello_cube hello_pbr hello_skybox hello_anim
+          # phase1142: hello_cube / hello_pbr / hello_skybox folded
+          # (batch-2 sample consolidation).
+          # TODO(phase1142): scripts/run_smoke_samples.sh does not exist
+          # in the repo (pre-existing defect) — this step fails as soon
+          # as a labelled amd-gpu runner registers. Restore the script
+          # or align this step to scripts/run_golden.sh before enabling
+          # the lane.
+          bash scripts/run_smoke_samples.sh hello_triangle hello_anim
 
       - name: Sample sweep (full)
         if: ${{ inputs.run_full_samples }}

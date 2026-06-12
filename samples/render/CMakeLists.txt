@@ -18,17 +18,13 @@
 #       (reservoir + spatial reuse + sample weight invariants).
 #
 # Retained (all category b Vulkan / D3D12 visual demos):
-#   hello_pbr           - canonical PBR sphere grid visual
 #   hello_d3d12_pbr     - D3D12 backend PBR demo (Win32 only)
-#   hello_skybox        - analytical procedural sky visual
 #   hello_framegraph    - framegraph end-to-end visual
 #   hello_gpu_cluster   - Forward+ GPU dispatch + GPU/CPU parity (compute-gated)
 #   hello_imgui         - first end-to-end ImGui visual
-#   hello_render_thread - render-thread submit/present pattern visual
-add_subdirectory(hello_pbr)
+# phase1142: hello_pbr, hello_skybox, hello_render_thread folded
+# (batch-2 sample consolidation; visual coverage lives in hello_engine).
 if(WIN32)
   add_subdirectory(hello_d3d12_pbr)
 endif()
-add_subdirectory(hello_skybox)
 add_subdirectory(hello_framegraph)
-add_subdirectory(hello_render_thread)

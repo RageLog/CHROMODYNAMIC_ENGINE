@@ -401,7 +401,8 @@ private:
 //
 // The full integration (closest-hit GLSL branch on hit_kind, per-instance
 // SBT albedo SSBO, barycentric UV interpolation) is deferred behind the
-// inline-GLSL-string boundary in samples/rhi/hello_rt and the eventual
+// inline-GLSL-string boundary in samples/rhi/hello_path_trace (phase1142:
+// hello_rt folded) and the eventual
 // engine RT pipeline. This header-only helper is the **stable contract**:
 // the CPU-side data the future shader-record builder will pack.
 //

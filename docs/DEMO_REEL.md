@@ -31,20 +31,16 @@ frame.
 | Sample                          | What you see                                                  | Phase  |
 |---------------------------------|---------------------------------------------------------------|--------|
 | `hello_triangle`                | The canonical first Vulkan triangle.                         | 4      |
-| `hello_cube`                    | Spinning textured cube, perspective matrix.                  | 5      |
 | `hello_mesh`                    | OBJ mesh loaded + rendered with proper normals.              | 6      |
 | `hello_texture`                 | Textured quad, full UV sampling pipeline.                    | 6      |
 | `hello_obj`                     | OBJ importer end-to-end with normals + UV.                   | 7      |
 | `hello_gltf`                    | glTF 2.0 import → cdmesh → draw.                             | 7      |
 | `hello_cooked`                  | Asset cooked into `.cdmesh`, loaded back, drawn.             | 8      |
 | `hello_textured_cooked`         | Same, but with `.cdtex` (KTX2/BC7) sampling.                 | 8      |
-| `hello_skybox`                  | **Procedural analytical atmosphere** (no cubemap).           | 16     |
-| `hello_pbr`                     | **Metal/roughness PBR sphere sweep** under one directional + ambient. | 9 |
 | `hello_anim`                    | Skeletal animation, rotating opaque cube via skinning matrix. | 14    |
 | `hello_scene_graph`             | Scene-graph traversal, parent→child transforms.              | 11     |
 | `hello_framegraph`              | Multi-pass framegraph (gbuffer → lighting → composite).      | 12     |
 | `hello_hot_reload`              | Edit a shader → engine watches → reload without restart.     | 13     |
-| `hello_render_thread`           | Dedicated render thread, double-buffered command queue.      | 15     |
 | `hello_imgui`                   | ImGui integration (Phase 17.A), draw + interact.             | 17     |
 | `hello_inspector`               | Editor-style inspector window over a live scene.             | 17.B   |
 | `hello_editor`                  | EditHistory + TransformCommands wired into ImGui inspector.  | 18     |
@@ -52,15 +48,15 @@ frame.
 **Run examples:**
 ```bash
 # Interactive (ESC to exit):
-./build/llvm-win-base/bin/Debug/hello_skybox.exe
-./build/llvm-win-base/bin/Debug/hello_pbr.exe
+./build/llvm-win-base/bin/Debug/hello_triangle.exe
+./build/llvm-win-base/bin/Debug/hello_anim.exe
 
 # Smoke (5 frames then exit, useful for CI or quick check):
 ./build/llvm-win-base/bin/Debug/hello_anim.exe --headless 5
 
 # Golden capture (deterministic, no animation):
-./build/llvm-win-base/bin/Debug/hello_skybox.exe \
-    --headless 3 --golden-capture sky.png
+./build/llvm-win-base/bin/Debug/hello_triangle.exe \
+    --headless 3 --golden-capture tri.png
 ```
 
 ---
@@ -146,11 +142,9 @@ For a quick "show me what the marathon did" walkthrough:
 1. **`hello_command_palette`** — 1 s, prints registry + fuzzy queries.
 2. **`hello_net_sim`** — 3 s, prints the per-second replication table.
 3. **`hello_audio_chain`** — 2 s, writes a WAV you can play.
-4. **`hello_skybox`** — interactive, procedural atmosphere.
-5. **`hello_pbr`** — interactive, PBR sphere sweep.
-6. **`hello_anim`** — interactive, skinned animation.
-7. **`hello_framegraph`** — interactive, multi-pass render.
-8. **`hello_editor`** — interactive, ImGui inspector with undo/redo.
+4. **`hello_anim`** — interactive, skinned animation.
+5. **`hello_framegraph`** — interactive, multi-pass render.
+6. **`hello_editor`** — interactive, ImGui inspector with undo/redo.
 
 ```bash
 DBG=./build/llvm-win-base/bin/Debug
@@ -158,8 +152,6 @@ $DBG/hello_command_palette.exe
 $DBG/hello_net_sim.exe
 $DBG/hello_audio_chain.exe
 # Then the visual ones (close each window with ESC to advance):
-$DBG/hello_skybox.exe
-$DBG/hello_pbr.exe
 $DBG/hello_anim.exe
 $DBG/hello_framegraph.exe
 $DBG/hello_editor.exe
@@ -190,12 +182,12 @@ A practical cheat-sheet for which sample exercises which subsystem.
 | Subsystem  | Primary samples                              | Notable primitives exercised                  |
 |------------|----------------------------------------------|-----------------------------------------------|
 | core       | hello_core, hello_handle, hello_foundation   | Result, ErrorCode, Handle, RingBuffer, Hash   |
-| concurrency| hello_scheduler, hello_render_thread         | Job, Latch, Barrier, MPSC Channel, Flag       |
-| math       | hello_anim, hello_pbr, hello_skybox          | Mat4, Quat, AABB, Frustum, SphericalHarmonics |
+| concurrency| hello_scheduler                              | Job, Latch, Barrier, MPSC Channel, Flag       |
+| math       | hello_anim                                   | Mat4, Quat, AABB, Frustum, SphericalHarmonics |
 | ecs        | hello_ecs, hello_scene_graph                 | Entity, Archetype, View, SystemGraph          |
 | scene      | hello_scene_graph, hello_scene_save          | TransformGraph, TagBucket, SceneStats         |
-| rhi        | hello_triangle, hello_cube, hello_rhi_features | IDevice, ICommandBuffer, Pipeline, Barriers |
-| render     | hello_pbr, hello_skybox, hello_framegraph    | Renderer, FrameGraph, SortKey, IBL, PBR mat   |
+| rhi        | hello_triangle, hello_rhi_features           | IDevice, ICommandBuffer, Pipeline, Barriers   |
+| render     | hello_framegraph                             | Renderer, FrameGraph, SortKey, IBL, PBR mat   |
 | asset      | hello_gltf, hello_obj, hello_cooked          | AssetRegistry, cdmesh, cdtex, AssetRefCount   |
 | audio      | hello_audio_chain, hello_audio_synth         | Mixer, Compressor, Limiter, SimpleReverb, LowPass |
 | net        | hello_net_sim, hello_udp                     | SnapshotBuffer, DeltaWriter, LatencyStats, Throttle, SequenceWindow |

@@ -7,7 +7,8 @@
 // shows ACTUAL surrounding geometry instead of black / IBL fallback.
 //
 // The full closest-hit GLSL branch lives behind an inline shader-string
-// boundary (samples/rhi/hello_rt + the future engine-owned RT pipeline) and
+// boundary (samples/rhi/hello_path_trace (phase1142: hello_rt folded) + the
+// future engine-owned RT pipeline) and
 // is deferred per the step-5 scope-down. This commit ships the **stable
 // CPU-side contract** the future shader-record builder will read:
 //

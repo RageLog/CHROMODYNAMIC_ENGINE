@@ -54,12 +54,11 @@ fi
 
 # Wired samples — keep in sync with run_golden.ps1 + each sample's
 # main.cpp include of GoldenCapture.hpp.
+# phase1142: hello_cube / hello_pbr / hello_skybox folded (batch-2
+# sample consolidation); script hard-fails on missing exes.
 SAMPLES=(
     hello_triangle
-    hello_cube
     hello_anim
-    hello_pbr
-    hello_skybox
 )
 
 # Resolve sample directory. Multi-config (Ninja MC) uses bin/<Config>;

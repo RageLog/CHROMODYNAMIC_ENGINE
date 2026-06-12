@@ -22,7 +22,8 @@
 //      via the packer, verify the packed record for the colored quad has
 //      the painted RGB (= chrome-sphere's reflection would land on
 //      non-zero color, not pure sky). The full RT dispatch + readback is
-//      covered by `samples/rhi/hello_rt` since that sample owns the BLAS /
+//      covered by `samples/rhi/hello_path_trace` (phase1142: hello_rt
+//      folded) since that sample owns the BLAS /
 //      TLAS / SBT scaffolding; this library-level test asserts the data
 //      contract that drives the in-shader colour lookup.
 //
@@ -220,7 +221,8 @@ TEST(RtChromeSphereReflectsGeometry, VulkanGatedClosestHitGlslCompiles)
 // ---- Case 3 — Vulkan-gated: chrome reflects colored quad end-to-end --------
 //
 // A full RT dispatch + readback would replicate the entire `samples/rhi/
-// hello_rt` scaffolding (BLAS / TLAS / SBT / storage image / barriers /
+// hello_path_trace` (phase1142: hello_rt folded) scaffolding (BLAS / TLAS
+// / SBT / storage image / barriers /
 // submit / wait_idle / map_buffer). That sample is the canonical
 // integration smoke; this library-level test asserts the **data contract**
 // the closest-hit reads:

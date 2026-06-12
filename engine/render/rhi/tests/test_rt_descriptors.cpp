@@ -12,7 +12,8 @@
 // breakage at compile + smoke time.
 //
 // Full end-to-end verification (RT pipeline create + dispatch on a
-// real adapter) lives in samples/rhi/hello_rt (Phase 141).
+// real adapter) lives in samples/rhi/hello_path_trace (phase1142:
+// hello_rt folded).
 // =============================================================================
 #include <cd/rhi/Descriptors.hpp>
 #include <cd/rhi/Handles.hpp>

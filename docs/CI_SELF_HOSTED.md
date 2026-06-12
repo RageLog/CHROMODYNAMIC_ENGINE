@@ -128,9 +128,9 @@ The workflow drives 4 preset combinations in parallel:
 | `ninja-base-tsan`      | `ninja-debug-tsan`           | yes   | Clang TSan                           |
 
 The MSVC lane also runs a sample-smoke step that boots
-`hello_engine`, `hello_imgui`, `hello_pbr` for 5 frames each on the
-real GPU and reports their exit codes.  This is the only path
-covering full Vulkan rendering on Windows.
+`hello_engine` for 5 frames on the real GPU and reports its exit
+code (phase1139: hello_imgui folded; phase1142: hello_pbr folded).
+This is the only path covering full Vulkan rendering on Windows.
 
 ### Why a separate lane
 

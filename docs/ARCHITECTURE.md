@@ -261,14 +261,15 @@ Numbers come from running each sample under `CD_VULKAN_DEVICE_INDEX=0`
 | Sample | Max delta / channel | RMSE (0-255) | PSNR |
 |---|---|---|---|
 | hello_triangle | 1 / 255 | 0.05 | 73.6 dB |
-| hello_cube     | 1 / 255 | 0.03 | 77.9 dB |
-| hello_anim     | 1 / 255 | 0.02 | 80.8 dB |
-| hello_pbr      | 1 / 255 | 0.07 | 70.7 dB |
-| hello_skybox   | 1 / 255 | 0.14 | 65.0 dB |
+| hello_anim | 1 / 255 | 0.02 | 80.8 dB |
+
+(phase1142: hello_cube / hello_pbr / hello_skybox rows retired with
+their samples in batch-2 consolidation; the historical measurement
+showed the same ≤ 1/255 delta, PSNR 65.0-77.9 dB.)
 
 Takeaways:
 
-1. **Cross-vendor delta is ≤ 1/255 per channel** across all 5
+1. **Cross-vendor delta is ≤ 1/255 per channel** across all wired
    samples. Vulkan's "spec-compliant rasterization" lives up to its
    reputation for these test cases.
 2. **PSNR > 65 dB** on every sample — academically "lossless"
@@ -277,10 +278,6 @@ Takeaways:
    channel) already covers cross-vendor diff with headroom — the
    gate's tolerance is the *driver round-off* envelope, not the
    *visual difference* envelope.
-4. hello_skybox has the highest noise (PSNR 65 dB) because its
-   atmosphere shader does more arithmetic (Reinhard + gamma + sun
-   disk smoothstep). More math = more rounding sites = more chances
-   for trailing-bit divergence. Still well within tolerance.
 
 ### Capturing a new vendor's golden set
 

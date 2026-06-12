@@ -8,8 +8,8 @@
 // per-prim albedo + emissive + metallic + roughness accessors that the future
 // shader-record builder would pack into a per-instance SSBO. The matching
 // closest-hit GLSL branch lived only as a STUB inside
-// `samples/rhi/hello_rt/main.cpp`, where the body just reads `albedo_buf[iid]`
-// and skips lighting entirely.
+// `samples/rhi/hello_path_trace/main.cpp` (phase1142: hello_rt folded),
+// where the body just reads `albedo_buf[iid]` and skips lighting entirely.
 //
 // This header ships the **production-grade** closest-hit shader that consumes
 // the T1.12 contract: a real general-geometry branch that reads the per-prim
@@ -21,9 +21,10 @@
 //
 // Design constraints (per CLAUDE.md §1 + §7):
 //   * Library-oriented: this header is the only public surface; downstream
-//     RT pipelines (`samples/rhi/hello_rt`, the future
-//     `cd::render::rt_pipeline`) consume `kRtClosestHitGlsl` as a string and
-//     pack their per-instance SSBO via `pack_rt_material_records`.
+//     RT pipelines (`samples/rhi/hello_path_trace` (phase1142: hello_rt
+//     folded), the future `cd::render::rt_pipeline`) consume
+//     `kRtClosestHitGlsl` as a string and pack their per-instance SSBO via
+//     `pack_rt_material_records`.
 //   * No global state. The packer takes a `std::span<const MaterialInstance>`
 //     and writes into a caller-owned `std::vector<RtMaterialRecord>` so the
 //     caller owns the lifetime.

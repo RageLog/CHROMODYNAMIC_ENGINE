@@ -544,7 +544,8 @@ void MaterialInstance::set_emissive(float r, float g, float b) noexcept
 // ---- T1.12 — RT closest-hit sample stub helper ----------------------------
 //
 // Today the cd::material library does not own an RT pipeline (the closest-hit
-// GLSL lives in samples/rhi/hello_rt/main.cpp as a string literal, and the
+// GLSL lives in samples/rhi/hello_path_trace/main.cpp (phase1142: hello_rt
+// folded) as a string literal, and the
 // hello_engine sample is FROZEN). This helper is the **stable contract** the
 // future engine-owned RT pipeline will read: given a MaterialInstance, it
 // returns the per-prim shading state a general-geometry closest-hit shader
