@@ -642,3 +642,25 @@ needed) + existing golden fixtures stay byte-identical through each
 extraction step. Owner chain: researcher → architect → developer × N →
 tester. SL-A/SL-B block SL-C; SL-D items land independently after
 SL-C and can interleave with X4 work.
+
+---
+
+## §10. NAMING — tematik kütüphane adlandırma programı (DÜŞÜK öncelik)
+
+Kullanıcı yönlendirmesi 2026-06-12 (gluon rename sonrası): "isimlendirmeyi
+yine bu mantıkla yapabiliriz; hatta eski kütüphaneler bu şekilde
+isimlendirilebilir — planda olsun ama düşük öncelikli."
+
+- Desen: kuantum kromodinamiği / fizik temalı, kısa, markalanabilir
+  adlar (emsal: **cd::gluon** — shading kodunu "bağlayan" kütüphane).
+- Kapsam adayları (İLERİDE, tek tek kullanıcı onayıyla): ürün-olarak-
+  verilebilecek kütüphaneler önce (ör. world_container, debug_draw,
+  sample_framework); altyapı kütüphaneleri (core/math/rhi) betimleyici
+  kalabilir.
+- Kurallar: [[feedback-naming-discipline]] geçerli (grep-before-rename,
+  çakışma taraması, git mv ile geçmiş korunur, blanket-replace kısmi
+  eşleşme taraması — phase1136 "gluonrary" dersi). Her rename ayrı
+  commit + 267 ctest + golden cmp.
+- Öncelik: DÜŞÜK — SL-D / samples konsolidasyonu / X4 bittikten sonra,
+  kullanıcı istedikçe parça parça.
+
