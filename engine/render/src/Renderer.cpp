@@ -194,8 +194,6 @@ cd::core::Result<FrameContext> Renderer::begin_frame()
     {
         return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, w.error()));
     }
-    device_->reset_fence(f.fence);
-
     // Acquire next swapchain image. The acquire_sem will be signaled when the
     // image is renderable; we feed it into submit() as a wait below.
     auto idx = device_->acquire_next_image(swapchain_, f.acquire_sem, cd::rhi::FenceHandle {}, kTimelineForever);
@@ -210,6 +208,14 @@ cd::core::Result<FrameContext> Renderer::begin_frame()
         return std::unexpected(render_errors::wrap(render_errors::Code::kDeviceError, idx.error()));
     }
     current_image_index_ = *idx;
+
+    // phase1120 (lanes re-audit side finding): reset the fence only after a
+    // SUCCESSFUL acquire. Resetting before meant an out-of-date return left
+    // the fence unsignalled with no submit to re-signal it — the next
+    // begin_frame on this slot would then block forever in wait_for_fence.
+    // Every path that reaches submit() (which re-signals) passes through
+    // here, so the fence is always unsignalled exactly once per submit.
+    device_->reset_fence(f.fence);
 
     const auto sc_image = device_->swapchain_image(swapchain_, current_image_index_);
     const auto sc_view = device_->swapchain_image_view(swapchain_, current_image_index_);

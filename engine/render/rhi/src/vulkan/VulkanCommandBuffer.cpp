@@ -375,7 +375,7 @@ void VulkanCommandBuffer::bind_descriptor_set(std::uint32_t set_index, cd::rhi::
     // out-of-spec — Vulkan forbids it.
     const VkPipelineBindPoint bp =
         (current_graphics_layout_ != VK_NULL_HANDLE) ? VK_PIPELINE_BIND_POINT_GRAPHICS : VK_PIPELINE_BIND_POINT_COMPUTE;
-    const VkPipelineLayout layout =
+    const auto layout =
         (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) ? current_graphics_layout_ : current_compute_layout_;
     if (layout == VK_NULL_HANDLE)
         return;  // no pipeline bound yet
@@ -688,12 +688,12 @@ void VulkanCommandBuffer::push_debug_group(std::string_view name)
 {
     if (vkCmdBeginDebugUtilsLabelEXT == nullptr)
         return;
-    // The Vulkan spec lets the driver read VkDebugUtilsLabelEXT::pLabelName
-    // up until the command buffer finishes executing on the GPU. A stack
-    // buffer here would dangle the moment this function returns, so the
-    // label string lives in a per-command-buffer std::deque<std::string>
-    // (stable pointers across emplace_back) that's cleared at begin().
-    // The deque owns the storage; we pass the c_str() into Vulkan.
+    // Per the Vulkan spec pLabelName is consumed at RECORD time (it is
+    // not on the retained-pointer list), so a stack buffer would already
+    // be legal for conformant drivers. The per-command-buffer
+    // std::deque<std::string> arena (stable pointers, cleared at
+    // begin()) is defence-in-depth against non-conformant tooling that
+    // holds the pointer longer than the spec allows.
     const auto& stored = debug_label_arena_.emplace_back(name);
     const VkDebugUtilsLabelEXT label {
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
@@ -1041,11 +1041,13 @@ void VulkanParallelPassRecorder::finish()
 {
     if (finished_)
         return;
-    // phase1119 (audit C): lane wrappers die with this recorder, but their
-    // debug-label strings were handed to vkCmdBeginDebugUtilsLabelEXT on the
-    // secondaries, which the GPU executes AFTER the recorder is gone. Move
-    // every lane's arena into the primary (same lifetime discipline as the
-    // pools) so the documented "until execution completes" invariant holds.
+    // phase1119/1120 (audit C re-audit): per the spec pLabelName is
+    // consumed at record time, so lane labels need no lifetime transfer
+    // for conformant drivers. The arena handover below mirrors the
+    // primary's belt-and-suspenders discipline for non-conformant
+    // tooling. NOTE: SSO strings change buffer address on move, so this
+    // transfer deliberately does NOT claim execution-time pointer
+    // validity — only allocation-lifetime parity with the pools.
     for (auto& l : lanes_)
         primary_->adopt_label_arena(*l);
     for (auto sec : secondaries_)
