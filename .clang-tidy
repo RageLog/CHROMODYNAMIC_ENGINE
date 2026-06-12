@@ -58,6 +58,13 @@
 #                                    if/else is hot-path convention.
 #   -readability-suspicious-call-argument Run12 B1: FP-prone on math arg
 #                                    shuffles reusing x/y/z names.
+#   -readability-use-concise-preprocessor-directives phase1100: wants the
+#                                    C++23 #elifdef/#elifndef spellings. 10k+
+#                                    hits, zero defect value, and the planned
+#                                    compiler matrix (MSVC+Clang-cl+Clang+GCC,
+#                                    CLAUDE.md §6) makes the universally-
+#                                    supported `#elif defined(...)` the safer
+#                                    project convention.
 #   -readability-math-missing-parentheses phase1046d: `a + b * c` is the
 #                                    standard idiom in a graphics engine;
 #                                    the rule fired on ~20 correct sites in
@@ -155,6 +162,7 @@ Checks: >
   portability-*,
   -portability-avoid-pragma-once,
   readability-*,
+  -readability-use-concise-preprocessor-directives,
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
   -readability-function-size,
