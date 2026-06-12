@@ -21,6 +21,7 @@
 #include <cd/rhi/Pipeline.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <span>
 
 namespace cd::rhi
@@ -74,27 +75,24 @@ struct BufferImageCopyRegion
     Extent3D image_extent { 1, 1, 1 };
 };
 
-class ICommandBuffer
+/// phase1115 (X1-FU-F) — the DRAW-SUBSET recording surface: exactly
+/// the calls that are legal inside a render pass from a parallel
+/// recording lane. ICommandBuffer extends this with lifecycle, pass
+/// scope, compute, copies, barriers and RT — so an
+/// IParallelPassRecorder::lane() can hand out an IDrawRecorder& and
+/// the TYPE SYSTEM forbids pass/lifecycle calls from lanes (the
+/// misuse class the X1FUF surface review flagged).
+class IDrawRecorder
 {
 public:
-    ICommandBuffer() noexcept = default;
-    virtual ~ICommandBuffer() = default;
-    ICommandBuffer(const ICommandBuffer&) = delete;
-    ICommandBuffer& operator=(const ICommandBuffer&) = delete;
-    ICommandBuffer(ICommandBuffer&&) = delete;
-    ICommandBuffer& operator=(ICommandBuffer&&) = delete;
+    IDrawRecorder() noexcept = default;
+    virtual ~IDrawRecorder() = default;
+    IDrawRecorder(const IDrawRecorder&) = delete;
+    IDrawRecorder& operator=(const IDrawRecorder&) = delete;
+    IDrawRecorder(IDrawRecorder&&) = delete;
+    IDrawRecorder& operator=(IDrawRecorder&&) = delete;
 
-    // ---- Lifecycle ---------------------------------------------------------
-    virtual void begin() = 0;
-    virtual void end() = 0;
-
-    // ---- Render pass -------------------------------------------------------
-    virtual void begin_render_pass(const RenderPassBeginInfo& info) = 0;
-    virtual void end_render_pass() = 0;
-
-    // ---- Pipeline binding --------------------------------------------------
     virtual void bind_graphics_pipeline(GraphicsPipelineHandle pipeline) = 0;
-    virtual void bind_compute_pipeline(ComputePipelineHandle pipeline) = 0;
     /// Phase 135 — RT pipeline binding. Non-pure-virtual default
     /// no-op so non-RT backends compile unchanged.
     virtual void bind_rt_pipeline(RtPipelineHandle /*pipeline*/) {}
@@ -116,7 +114,7 @@ public:
     virtual void set_viewport(const Viewport& vp) = 0;
     virtual void set_scissor(const Rect2D& rect) = 0;
 
-    // ---- Draw / dispatch ---------------------------------------------------
+    // ---- Draw ---------------------------------------------------------------
     virtual void draw(
         std::uint32_t vertex_count,
         std::uint32_t instance_count,
@@ -130,6 +128,73 @@ public:
         std::int32_t vertex_offset,
         std::uint32_t first_instance
     ) = 0;
+
+    // ---- Mesh shader ----------------------------------------------------------
+    // Default no-op so backends without mesh-shader support compile
+    // unchanged (full contract notes preserved from the pre-split
+    // ICommandBuffer declaration).
+    virtual void draw_mesh_tasks(std::uint32_t /*group_x*/,
+                                 std::uint32_t /*group_y*/,
+                                 std::uint32_t /*group_z*/) {}
+
+    // ---- Debug ------------------------------------------------------------------
+    /// Lifetime contract: `name` only needs to outlive *this call* —
+    /// backends copy it into per-command-buffer storage because the
+    /// native APIs may hold the pointer until GPU completion.
+    virtual void push_debug_group(std::string_view name) = 0;
+    virtual void pop_debug_group() = 0;
+};
+
+/// phase1115 (X1-FU-F) — a render pass whose draw recording is split
+/// across thread-confined lanes. Obtain via
+/// ICommandBuffer::begin_parallel_render_pass(); record on lane(i)
+/// from AT MOST one thread each; finish() joins lanes into the primary
+/// IN LANE ORDER (lane order == submission order, so same-input frames
+/// replay identically regardless of worker scheduling) and ends the
+/// pass. Lane creation follows IDevice threading-contract rule 1.
+class IParallelPassRecorder
+{
+public:
+    IParallelPassRecorder() noexcept = default;
+    virtual ~IParallelPassRecorder() = default;
+    IParallelPassRecorder(const IParallelPassRecorder&) = delete;
+    IParallelPassRecorder& operator=(const IParallelPassRecorder&) = delete;
+    IParallelPassRecorder(IParallelPassRecorder&&) = delete;
+    IParallelPassRecorder& operator=(IParallelPassRecorder&&) = delete;
+
+    [[nodiscard]] virtual std::uint32_t lane_count() const noexcept = 0;
+    /// Lane i recording surface — draw subset only, enforced by type.
+    [[nodiscard]] virtual IDrawRecorder& lane(std::uint32_t i) noexcept = 0;
+    /// Join lanes into the primary in lane order and end the pass.
+    virtual void finish() = 0;
+};
+
+class ICommandBuffer : public IDrawRecorder
+{
+public:
+    ICommandBuffer() noexcept = default;
+
+    // ---- Lifecycle ---------------------------------------------------------
+    virtual void begin() = 0;
+    virtual void end() = 0;
+
+    // ---- Render pass -------------------------------------------------------
+    virtual void begin_render_pass(const RenderPassBeginInfo& info) = 0;
+    virtual void end_render_pass() = 0;
+
+    /// phase1115 (X1-FU-F): begin a render pass whose draws are recorded
+    /// across parallel lanes. Default nullptr = backend has no
+    /// parallel-recording support yet; callers fall back to the serial
+    /// begin_render_pass() path.
+    [[nodiscard]] virtual std::unique_ptr<IParallelPassRecorder>
+    begin_parallel_render_pass(const RenderPassBeginInfo& /*info*/,
+                               std::uint32_t /*lane_count*/)
+    {
+        return nullptr;
+    }
+
+    // ---- Compute -------------------------------------------------------------
+    virtual void bind_compute_pipeline(ComputePipelineHandle pipeline) = 0;
     virtual void dispatch(std::uint32_t group_x, std::uint32_t group_y, std::uint32_t group_z) = 0;
 
     // ---- Copies / clears ---------------------------------------------------
@@ -156,34 +221,6 @@ public:
     // ---- Barriers ----------------------------------------------------------
     virtual void
     barrier(std::span<const BufferBarrier> buffer_barriers, std::span<const TextureBarrier> texture_barriers) = 0;
-
-    // ---- Debug -------------------------------------------------------------
-    /// Pushes a named debug-group marker (RenderDoc / PIX / NSight Graphics
-    /// surface this as a hierarchical scope).
-    ///
-    /// Lifetime contract: `name` only needs to outlive *this call*. The
-    /// backend is required to copy the string into per-command-buffer
-    /// storage before returning, because the underlying API (Vulkan
-    /// `vkCmdBeginDebugUtilsLabelEXT`, D3D12 `BeginEvent`, Metal
-    /// `pushDebugGroup:`) can keep the pointer alive until the command
-    /// buffer finishes executing on the GPU — long after this call
-    /// returns. Callers may therefore safely pass a `string_view` over a
-    /// temporary `std::string`, a `std::format` buffer, or any other
-    /// transient storage.
-    virtual void push_debug_group(std::string_view name) = 0;
-    virtual void pop_debug_group() = 0;
-
-    // ---- Mesh shader (Phase 765 W2A — F5) ---------------------------------
-    //
-    // Dispatch a 3D grid of task-shader workgroups (or mesh-shader workgroups
-    // when no task stage is present). Maps directly to vkCmdDrawMeshTasksEXT
-    // on Vulkan and DispatchMesh on D3D12. Default no-op so backends without
-    // mesh-shader support compile unchanged. Caller must have bound a mesh
-    // pipeline via `bind_graphics_pipeline()` first; outside a render pass
-    // the call is undefined behavior (same contract as `draw`).
-    virtual void draw_mesh_tasks(std::uint32_t /*group_x*/,
-                                 std::uint32_t /*group_y*/,
-                                 std::uint32_t /*group_z*/) {}
 
     // ---- Ray tracing (Phase 14.G — API shape only at v0.40.0) --------------
     //

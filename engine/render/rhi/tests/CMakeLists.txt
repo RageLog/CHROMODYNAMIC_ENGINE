@@ -54,3 +54,10 @@ else()
     DEPS    cd::rhi cd::core
   )
 endif()
+
+# phase1115 (X1-FU-F step 1) — IDrawRecorder split + parallel-pass
+# recorder contract pins on the Null reference implementation.
+cd_add_test(parallel_recorder
+  SOURCES test_parallel_recorder.cpp
+  DEPS    cd::rhi cd::core
+)
