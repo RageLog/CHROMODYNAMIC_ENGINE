@@ -71,6 +71,7 @@
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <cd/scene/Scene.hpp>
 #include <cd/light/Light.hpp>
+#include <cd/world_container/ProjectIo.hpp>
 #include <cd/scene/Serializer.hpp>
 #include <cd/shader/Compiler.hpp>
 #include <imgui.h>
@@ -664,9 +665,8 @@ int main(int argc, char** argv)
         if (n == "Gltf")   return EntityMeta::Kind::kGltf;
         return EntityMeta::Kind::kCube;
     };
-    palette.register_command(80, "Scene: Save (hello_engine bridge)",
-        [&]()
-        {
+    auto save_scene_to = [&](const std::string& bridge_path)
+    {
             auto find_meta = [&](cd::ecs::Entity e) -> const EntityMeta*
             {
                 for (const auto& m : entity_metas)
@@ -710,23 +710,22 @@ int main(int argc, char** argv)
                     cd::asset::json::Value { std::move(la) };
             }
             const auto txt = cd::asset::json::serialize(root, true);
-            std::ofstream f { kBridgePath, std::ios::binary | std::ios::trunc };
+            std::ofstream f { bridge_path, std::ios::binary | std::ios::trunc };
             if (f)
             {
                 f.write(txt.data(), static_cast<std::streamsize>(txt.size()));
                 log_push("[bridge] saved " +
                          std::to_string(entity_metas.size()) + " entities -> " +
-                         kBridgePath);
+                         bridge_path);
             }
             else
             {
                 log_push("[bridge] save FAILED (ofstream)");
             }
-        });
-    palette.register_command(81, "Scene: Load (hello_engine bridge)",
-        [&]()
-        {
-            auto r = cd::asset::json::load(kBridgePath);
+    };
+    auto load_scene_from = [&](const std::string& bridge_path)
+    {
+            auto r = cd::asset::json::load(bridge_path);
             if (!r.has_value())
             {
                 log_push("[bridge] load failed: " +
@@ -851,8 +850,36 @@ int main(int argc, char** argv)
             }
             log_push("[bridge] loaded " +
                      std::to_string(entity_metas.size()) + " entities <- " +
-                     kBridgePath);
-        });
+                     bridge_path);
+    };
+    palette.register_command(80, "Scene: Save (hello_engine bridge)",
+        [&]() { save_scene_to(kBridgePath); });
+    palette.register_command(81, "Scene: Load (hello_engine bridge)",
+        [&]() { load_scene_from(kBridgePath); });
+
+    // phase1109: project container — the editor now opens/saves a
+    // .cdproject (cd::world_container::ProjectIo) and drives scene
+    // loading through the ACTIVE level's scene_path. First boot (no
+    // file) creates a default project whose single level points at
+    // the hello_engine bridge scene, tying the two systems together.
+    constexpr const char* kProjectPath = "hello_editor.cdproject";
+    std::unique_ptr<cd::world_container::Project> project;
+    std::size_t active_level_idx = 0;
+    if (auto loaded_proj = cd::world_container::load_project_file(kProjectPath);
+        loaded_proj.has_value())
+    {
+        project = std::move(*loaded_proj);
+        log_push("[project] loaded " + std::string { kProjectPath } + " (" +
+                 std::to_string(project->level_count()) + " levels)");
+    }
+    else
+    {
+        project = std::make_unique<cd::world_container::Project>("Hello Project");
+        auto* lvl = project->add_level("Main");
+        lvl->set_scene_path(kBridgePath);
+        log_push("[project] new default project (Main -> bridge scene)");
+    }
+
     palette.register_command(10, "Select: First Entity",
         [&]() {
             if (!entity_metas.empty()) {
@@ -1775,6 +1802,58 @@ int main(int argc, char** argv)
         // ---- Toolbar (undo / redo) ----------------------------------------
         ImGui::SetNextWindowPos(ImVec2 { gutter, gutter }, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2 { vw - 2.0F * gutter, tool_h }, ImGuiCond_FirstUseEver);
+        ImGui::Begin("Project");
+        {
+            ImGui::Text("%.*s", static_cast<int>(project->name().size()),
+                        project->name().data());
+            if (ImGui::SmallButton("Save Project"))
+            {
+                if (save_project_file(kProjectPath, *project).has_value())
+                    log_push("[project] saved " + std::string { kProjectPath });
+                else
+                    log_push("[project] save FAILED");
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Save Scene -> Level"))
+            {
+                if (const auto* lvl = project->level(active_level_idx);
+                    lvl != nullptr && !lvl->scene_path().empty())
+                    save_scene_to(std::string { lvl->scene_path() });
+            }
+            ImGui::Separator();
+            for (std::size_t li = 0; li < project->level_count(); ++li)
+            {
+                const auto* lvl = project->level(li);
+                if (lvl == nullptr) continue;
+                ImGui::PushID(static_cast<int>(li) + 7000);
+                const bool is_active = (li == active_level_idx);
+                std::string row { lvl->name() };
+                row += "  (";
+                row += lvl->scene_path().empty()
+                           ? std::string { "no scene" }
+                           : std::string { lvl->scene_path() };
+                row += ")";
+                if (ImGui::Selectable(row.c_str(), is_active) && !is_active)
+                {
+                    active_level_idx = li;
+                    if (!lvl->scene_path().empty())
+                        load_scene_from(std::string { lvl->scene_path() });
+                    log_push("[project] active level: " +
+                             std::string { lvl->name() });
+                }
+                ImGui::PopID();
+            }
+            if (ImGui::SmallButton("+ Level"))
+            {
+                const auto n = project->level_count() + 1;
+                auto* lvl = project->add_level("Level " + std::to_string(n));
+                lvl->set_scene_path("level_" + std::to_string(n) +
+                                    ".cdscene.json");
+                log_push("[project] added level " + std::to_string(n));
+            }
+        }
+        ImGui::End();
+
         ImGui::Begin("Toolbar");
         {
             // Undo / Redo

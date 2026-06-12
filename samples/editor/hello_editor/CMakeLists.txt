@@ -11,6 +11,7 @@ cd_add_sample(hello_editor
     cd::math
     cd::ecs
     cd::light
+    cd::world_container
     cd::scene
     cd::editor
     cd::editor_panel_inspector
