@@ -1499,3 +1499,25 @@ research/reports/probe12_summary.md (raw 15 MB outputs gitignored).
 
 **Bonus**: CD_ENABLE_INSTALL export-set rot repaired (1083, 6
 targets); plan-doc ticks (1082). 263/263 ctest at every checkpoint.
+
+## Continuation wave 2 (phases 1099-1105, 2026-06-12)
+
+**Extraction**: the 26 R-Showcase "Run25" probe sections moved into
+HelloShowcaseProbes.hpp (1099) — main.cpp 11468 -> 9866,
+draw_r_showcase_panel 2310 -> ~700 lines.
+
+**Full-config lint discovery + tail cycle (1100-1105)**:
+readability-use-concise-preprocessor-directives disabled with
+rationale (C++23 #elifdef vs the MSVC+GCC matrix); twelve tail rules
+cleaned tree-wide and promoted — WarningsAsErrors 219 -> 233
+(sign-comparison, argument-comment, anyofallof, ambiguous-smartptr-
+reset, const-cast, no-malloc, no-assembler, dcl58, enum-initial-value,
+inconsistent-param-name, no-automatic-move, incorrect-roundings).
+bugprone-unchecked-optional-access stays a warning (library sites
+hardened; the rest is gtest-ASSERT-guarded code the flow analysis
+cannot see); readability-identifier-naming (1089 diags) is the
+documented deferred wave. Hard-won autofix lessons recorded in the
+memory plan note: cmp-vs--1 sentinel inversion (cd_test_ui_widgets
+caught a REAL Dropdown regression live; the untested DockSpace sibling
+was found by class-scan), paren mangling, and triage-from-truncated-
+list. 264/264 ctest at every checkpoint.
