@@ -1,5 +1,5 @@
 // =============================================================================
-// cd::shader_lib — brdf_w8aq.glsl
+// cd::gluon — brdf_w8aq.glsl
 // phase1135 (SL-D wave 1, exact-text migration): the W8-AQ Cook-Torrance
 // helper block lifted VERBATIM from hello_engine shaders/prim.frag.glsl.
 // The preprocessed token stream of every consumer stays byte-identical,
@@ -12,8 +12,8 @@
 // Schlick-GGX k-remap here is NOT FP-identical to height-correlated
 // Smith. Do not extend this module — new code uses brdf.glsl.
 // =============================================================================
-#ifndef CD_SL_BRDF_W8AQ_GLSL
-#define CD_SL_BRDF_W8AQ_GLSL
+#ifndef CD_GLUON_BRDF_W8AQ_GLSL
+#define CD_GLUON_BRDF_W8AQ_GLSL
 
 // W8-AQ Cook-Torrance helpers (used by tint.w == 3.0 PBR-sphere branch).
 // Same equations as cd::material::StandardPbrMaterial so unified prim
@@ -40,4 +40,4 @@ vec3 F_Schlick_roughness_pbr(float NoV, vec3 F0, float roughness) {
   return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
 }
 
-#endif  // CD_SL_BRDF_W8AQ_GLSL
+#endif  // CD_GLUON_BRDF_W8AQ_GLSL

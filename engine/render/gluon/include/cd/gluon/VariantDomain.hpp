@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC — cd/shader_lib/VariantDomain.hpp
+// CHROMODYNAMIC — cd/gluon/VariantDomain.hpp
 // phase1134 (SL-C step 4, ADR-20260612-shader-library-architecture §2.4):
 // typed shader permutation domain — the Unreal TShaderPermutationDomain ×
 // Filament curated-validity synthesis in C++23.
@@ -22,7 +22,7 @@
 #include <string_view>
 #include <utility>
 
-namespace cd::shader_lib
+namespace cd::gluon
 {
 
 /// Fixed-capacity compile-time string for NTTP dimension names.
@@ -192,4 +192,4 @@ public:
     }
 };
 
-}  // namespace cd::shader_lib
+}  // namespace cd::gluon

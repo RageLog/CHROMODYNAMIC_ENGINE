@@ -1,4 +1,4 @@
-# ADR-20260612 — SL-B: cd::shader_lib — SOTA Shader Modül Kütüphanesi Mimarisi
+# ADR-20260612 — SL-B: cd::gluon — SOTA Shader Modül Kütüphanesi Mimarisi
 
 - **Status**: Accepted (kullanıcı yönlendirmesi 2026-06-12: "çok gelişmiş
   state-of-the-art seviyesi bir shader library" — öncelikli plan kalemi)
@@ -54,7 +54,7 @@ olarak da verilebilen** bir shader kütüphanesi.
 
 ## 2. Karar
 
-**Opsiyon A**: `engine/render/shader_lib/` altında `cd::shader_lib`
+**Opsiyon A**: `engine/render/gluon/` altında `cd::gluon`
 kütüphanesi — GLSL include-modülleri + glslang includer seam'i + C++23
 typed variant domain. Modül sınırları Slang `module` birimleriyle 1:1
 örtüşecek şekilde çizilir (Phase-3 Slang kapısı açık kalır).
@@ -62,8 +62,8 @@ typed variant domain. Modül sınırları Slang `module` birimleriyle 1:1
 ### 2.1 Kütüphane yerleşimi (standart `engine/<lib>` konvansiyonu)
 
 ```text
-engine/render/shader_lib/
-  include/cd/shader_lib/
+engine/render/gluon/
+  include/cd/gluon/
     ModuleRegistry.hpp     // modül kataloğu + sanal-yol -> içerik çözümü
     IncludeResolver.hpp    // cd::shader::IIncludeResolver implementasyonu
     VariantDomain.hpp      // C++23 typed permutation domain + curator filter
@@ -85,7 +85,7 @@ engine/render/shader_lib/
 ### 2.2 Include mekanizması ve disiplin kuralları
 
 1. GLSL tarafı `#extension GL_GOOGLE_include_directive : enable` +
-   `#include <cd/shader_lib/brdf.glsl>` sanal yolları kullanır
+   `#include <cd/gluon/brdf.glsl>` sanal yolları kullanır
    (Unreal `/Engine/` deseninin bizdeki karşılığı).
 2. `cd::shader::ICompiler::compile`'a **opsiyonel** `IIncludeResolver*`
    parametresi eklenir (default `nullptr` = bugünkü davranış —
@@ -93,7 +93,7 @@ engine/render/shader_lib/
    `glslang::TShader::Includer`'a köprüler (DirStackFileIncluder deseni).
 3. Includer davranışı (Godot referansı): **idempotent** (aynı modül
    ikinci kez include edilirse boş döner — ayrıca her modülde
-   `#ifndef CD_SL_<NAME>_GLSL` koruması bulunur), **döngü reddi**
+   `#ifndef CD_GLUON_<NAME>_GLSL` koruması bulunur), **döngü reddi**
    (hata), **derinlik limiti 16**.
 4. Granülarite disiplini (Unity kuralı uyarlaması): modüller yalnız
    `math_common.glsl`'e include bağımlılığı kurabilir; modüller-arası
@@ -126,10 +126,10 @@ Unreal typed-domain + Filament küratörlü-geçerlilik sentezi, C++23:
 
 ```cpp
 // VariantDomain.hpp yüzey eskizi (NTTP string boyut adları):
-using PbrDomain = cd::shader_lib::VariantDomain<
-    cd::shader_lib::BoolDim<"DIR_LIGHT">,
-    cd::shader_lib::BoolDim<"SHADOW_RECV">,
-    cd::shader_lib::EnumDim<"TONEMAP", 4>>;
+using PbrDomain = cd::gluon::VariantDomain<
+    cd::gluon::BoolDim<"DIR_LIGHT">,
+    cd::gluon::BoolDim<"SHADOW_RECV">,
+    cd::gluon::EnumDim<"TONEMAP", 4>>;
 
 // Filament-tarzı merkezi geçerlilik (constexpr; geçersiz kombinasyon
 // derlenmiş varianta hiç dönüşmez):

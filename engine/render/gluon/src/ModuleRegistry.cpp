@@ -1,15 +1,15 @@
 // =============================================================================
-// CHROMODYNAMIC — cd/shader_lib/ModuleRegistry.cpp
+// CHROMODYNAMIC — cd/gluon/ModuleRegistry.cpp
 // =============================================================================
-#include <cd/shader_lib/ModuleRegistry.hpp>
+#include <cd/gluon/ModuleRegistry.hpp>
 
 // Generated at configure time from shaders/modules/*.glsl — defines
-// cd::shader_lib::detail::kEmbeddedModules (sorted by virtual_path).
-#include <shader_lib_embedded.hpp>
+// cd::gluon::detail::kEmbeddedModules (sorted by virtual_path).
+#include <gluon_embedded.hpp>
 
 #include <string>
 
-namespace cd::shader_lib
+namespace cd::gluon
 {
 
 std::span<const ModuleDesc> modules() noexcept
@@ -19,12 +19,12 @@ std::span<const ModuleDesc> modules() noexcept
 
 const ModuleDesc* find_module(std::string_view requested) noexcept
 {
-    constexpr std::string_view kPrefix { "cd/shader_lib/" };
+    constexpr std::string_view kPrefix { "cd/gluon/" };
     for (const auto& m : detail::kEmbeddedModules)
     {
         if (m.virtual_path == requested)
             return &m;
-        // bare-name form: "brdf.glsl" matches "cd/shader_lib/brdf.glsl"
+        // bare-name form: "brdf.glsl" matches "cd/gluon/brdf.glsl"
         if (m.virtual_path.size() == kPrefix.size() + requested.size() &&
             m.virtual_path.substr(kPrefix.size()) == requested)
             return &m;
@@ -44,4 +44,4 @@ ModuleResolver::resolve(std::string_view requested,
                       std::string { m->content } };
 }
 
-}  // namespace cd::shader_lib
+}  // namespace cd::gluon

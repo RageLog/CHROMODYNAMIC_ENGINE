@@ -109,7 +109,7 @@ enum class TargetEnv : std::uint8_t
 
 /// Resolves `#include` requests during compilation (the GLSL path enables
 /// GL_GOOGLE_include_directive when a resolver is present). Implementations
-/// are engine-side module registries (cd::shader_lib::ModuleRegistry) or
+/// are engine-side module registries (cd::gluon::ModuleRegistry) or
 /// filesystem mounts. Resolved content only needs to stay valid for the
 /// duration of the compile() call that requested it.
 ///

@@ -1,5 +1,5 @@
 // =============================================================================
-// CHROMODYNAMIC — engine/render/shader_lib/tests/test_shader_lib.cpp
+// CHROMODYNAMIC — engine/render/gluon/tests/test_gluon.cpp
 // phase1133 (SL-C step 2): module catalogue + headless compile-all gate
 // (ADR-20260612-shader-library-architecture §2.5 item 1).
 //
@@ -7,8 +7,8 @@
 // in-process; tests SKIP when the engine is built without glslang.
 // =============================================================================
 #include <cd/shader/Compiler.hpp>
-#include <cd/shader_lib/ModuleRegistry.hpp>
-#include <cd/shader_lib/VariantDomain.hpp>
+#include <cd/gluon/ModuleRegistry.hpp>
+#include <cd/gluon/VariantDomain.hpp>
 
 #include <gtest/gtest.h>
 
@@ -22,7 +22,7 @@ namespace
 
 TEST(ShaderLibRegistry, CatalogueIsNonEmptyAndSorted)
 {
-    const auto mods = cd::shader_lib::modules();
+    const auto mods = cd::gluon::modules();
     ASSERT_GE(mods.size(), 3u);  // math_common + brdf + tonemap seeds
     for (std::size_t i = 1; i < mods.size(); ++i)
         EXPECT_LT(mods[i - 1].virtual_path, mods[i].virtual_path);
@@ -30,25 +30,25 @@ TEST(ShaderLibRegistry, CatalogueIsNonEmptyAndSorted)
     {
         EXPECT_FALSE(m.content.empty()) << m.virtual_path;
         // Every module carries its include guard (idempotency contract).
-        EXPECT_NE(m.content.find("#ifndef CD_SL_"), std::string_view::npos)
+        EXPECT_NE(m.content.find("#ifndef CD_GLUON_"), std::string_view::npos)
             << m.virtual_path;
     }
 }
 
 TEST(ShaderLibRegistry, FindAcceptsCanonicalAndBarePaths)
 {
-    EXPECT_NE(cd::shader_lib::find_module("cd/shader_lib/brdf.glsl"), nullptr);
-    EXPECT_NE(cd::shader_lib::find_module("brdf.glsl"), nullptr);
-    EXPECT_EQ(cd::shader_lib::find_module("no_such_module.glsl"), nullptr);
-    EXPECT_EQ(cd::shader_lib::find_module(""), nullptr);
+    EXPECT_NE(cd::gluon::find_module("cd/gluon/brdf.glsl"), nullptr);
+    EXPECT_NE(cd::gluon::find_module("brdf.glsl"), nullptr);
+    EXPECT_EQ(cd::gluon::find_module("no_such_module.glsl"), nullptr);
+    EXPECT_EQ(cd::gluon::find_module(""), nullptr);
 }
 
 TEST(ShaderLibRegistry, ResolverServesModules)
 {
-    cd::shader_lib::ModuleResolver resolver;
-    const auto r = resolver.resolve("cd/shader_lib/math_common.glsl", "", true);
+    cd::gluon::ModuleResolver resolver;
+    const auto r = resolver.resolve("cd/gluon/math_common.glsl", "", true);
     ASSERT_TRUE(r.has_value());
-    EXPECT_EQ(r->virtual_path, "cd/shader_lib/math_common.glsl");
+    EXPECT_EQ(r->virtual_path, "cd/gluon/math_common.glsl");
     EXPECT_FALSE(r->content.empty());
     EXPECT_FALSE(resolver.resolve("missing.glsl", "", true).has_value());
 }
@@ -73,8 +73,8 @@ TEST(ShaderLibCompile, EveryModuleCompilesStandalone)
     if (c == nullptr)
         GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
 
-    cd::shader_lib::ModuleResolver resolver;
-    for (const auto& m : cd::shader_lib::modules())
+    cd::gluon::ModuleResolver resolver;
+    for (const auto& m : cd::gluon::modules())
     {
         const std::string src = wrap_module_in_fragment(m.virtual_path);
         cd::shader::CompileDesc desc {};
@@ -101,9 +101,9 @@ TEST(ShaderLibCompile, ModulesComposeWithGuardDedupe)
     const std::string src =
         "#version 450\n"
         "#extension GL_GOOGLE_include_directive : enable\n"
-        "#include <cd/shader_lib/brdf.glsl>\n"
-        "#include <cd/shader_lib/tonemap.glsl>\n"
-        "#include <cd/shader_lib/math_common.glsl>\n"  // third hit, still fine
+        "#include <cd/gluon/brdf.glsl>\n"
+        "#include <cd/gluon/tonemap.glsl>\n"
+        "#include <cd/gluon/math_common.glsl>\n"  // third hit, still fine
         "layout(location = 0) out vec4 o;\n"
         "void main()\n"
         "{\n"
@@ -112,7 +112,7 @@ TEST(ShaderLibCompile, ModulesComposeWithGuardDedupe)
         "    o = vec4(t, 1.0);\n"
         "}\n";
 
-    cd::shader_lib::ModuleResolver resolver;
+    cd::gluon::ModuleResolver resolver;
     cd::shader::CompileDesc desc {};
     desc.source = src;
     desc.stage = cd::shader::ShaderStage::kFragment;
@@ -134,8 +134,8 @@ TEST(ShaderLibCompile, PbrLobeEndToEnd)
     const std::string src =
         "#version 450\n"
         "#extension GL_GOOGLE_include_directive : enable\n"
-        "#include <cd/shader_lib/brdf.glsl>\n"
-        "#include <cd/shader_lib/tonemap.glsl>\n"
+        "#include <cd/gluon/brdf.glsl>\n"
+        "#include <cd/gluon/tonemap.glsl>\n"
         "layout(location = 0) in vec3 v_n;\n"
         "layout(location = 1) in vec3 v_v;\n"
         "layout(location = 2) in vec3 v_l;\n"
@@ -154,7 +154,7 @@ TEST(ShaderLibCompile, PbrLobeEndToEnd)
         "    o = vec4(cd_tonemap_uchimura(c0), 1.0);\n"
         "}\n";
 
-    cd::shader_lib::ModuleResolver resolver;
+    cd::gluon::ModuleResolver resolver;
     cd::shader::CompileDesc desc {};
     desc.source = src;
     desc.stage = cd::shader::ShaderStage::kFragment;
@@ -167,10 +167,10 @@ TEST(ShaderLibCompile, PbrLobeEndToEnd)
 
 // ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
 
-using TestDomain = cd::shader_lib::VariantDomain<
-    cd::shader_lib::BoolDim<"DIR_LIGHT">,
-    cd::shader_lib::BoolDim<"SHADOW_RECV">,
-    cd::shader_lib::EnumDim<"TONEMAP", 4>>;
+using TestDomain = cd::gluon::VariantDomain<
+    cd::gluon::BoolDim<"DIR_LIGHT">,
+    cd::gluon::BoolDim<"SHADOW_RECV">,
+    cd::gluon::EnumDim<"TONEMAP", 4>>;
 
 // Filament-style curated validity: a shadow receiver needs the
 // directional light.
@@ -228,7 +228,7 @@ TEST(VariantDomain, PreambleCompilesWithModules)
     std::string src = "#version 450\n"
                       "#extension GL_GOOGLE_include_directive : enable\n";
     src += TestDomain::to_preamble(v);
-    src += "#include <cd/shader_lib/tonemap.glsl>\n"
+    src += "#include <cd/gluon/tonemap.glsl>\n"
            "layout(location = 0) out vec4 o;\n"
            "void main()\n"
            "{\n"
@@ -240,7 +240,7 @@ TEST(VariantDomain, PreambleCompilesWithModules)
            "    o = vec4(c0, 1.0);\n"
            "}\n";
 
-    cd::shader_lib::ModuleResolver resolver;
+    cd::gluon::ModuleResolver resolver;
     cd::shader::CompileDesc desc {};
     desc.source = src;
     desc.stage = cd::shader::ShaderStage::kFragment;

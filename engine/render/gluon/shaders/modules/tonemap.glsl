@@ -1,5 +1,5 @@
 // =============================================================================
-// cd::shader_lib — tonemap.glsl
+// cd::gluon — tonemap.glsl
 // Canonical tonemap operators (the phase1128 inventory counted operator
 // copies across 34 mention sites). All operators map linear scene-referred
 // RGB to display-referred [0,1] and are deliberately gamma-agnostic — the
@@ -8,10 +8,10 @@
 // References: Reinhard 2002; Narkowicz 2016 (ACES fit); Hill/Day ACES
 // fitted matrices (UE4/Unity SRP lineage); Uchimura 2017 (GT tonemap).
 // =============================================================================
-#ifndef CD_SL_TONEMAP_GLSL
-#define CD_SL_TONEMAP_GLSL
+#ifndef CD_GLUON_TONEMAP_GLSL
+#define CD_GLUON_TONEMAP_GLSL
 
-#include <cd/shader_lib/math_common.glsl>
+#include <cd/gluon/math_common.glsl>
 
 /// Classic Reinhard, per-channel.
 vec3 cd_tonemap_reinhard(vec3 c)
@@ -83,4 +83,4 @@ vec3 cd_tonemap_uchimura(vec3 x)
     return T * w0 + L * w1 + S * w2;
 }
 
-#endif  // CD_SL_TONEMAP_GLSL
+#endif  // CD_GLUON_TONEMAP_GLSL

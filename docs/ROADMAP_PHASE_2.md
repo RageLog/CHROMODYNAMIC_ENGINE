@@ -28,7 +28,7 @@ follow-up board in `ADR-20260528-job-system-design.md` Sonuclar.
 
 | ID        | Name                                       | Status this snapshot | Blocker / pre-req                                                  | Owner-agent recommendation (lead → support)                          |
 | --------- | ------------------------------------------ | -------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| **SL**    | SOTA shader library (cd::shader_library)   | ACTIVE (user-priority 2026-06-12) | SOTA research (running); X4-A toolchain ADR cross-input | researcher → architect → developer × N → tester |
+| **SL**    | SOTA shader library (cd::gluon)   | ACTIVE (user-priority 2026-06-12) | SOTA research (running); X4-A toolchain ADR cross-input | researcher → architect → developer × N → tester |
 | **X4**    | D3D12 backend parity + RT                  | QUEUED (3-4 weeks)   | RHI surface stable; ~~image-readback API~~ ✅ phase1127; SPIRV-Cross or DXIL path   | architect → researcher → developer × N → tester → build-devops       |
 | **X5**    | Shader on-disk + hot-reload                | QUEUED (1 week)      | `cd::shader::FileWatcher` + `cd::shader::ICompiler` already live   | architect → developer → tester → doc-writer                          |
 | **X1-FU-F** | Vulkan secondary command buffer pipeline | QUEUED (~1 week)     | `cd::rhi::ICommandBuffer` surface review; 4-backend impl needed    | architect → safety-integration → developer × 4 → tester              |
@@ -620,8 +620,8 @@ SL-B  ADR (architect): module granularity + include/import mechanism
       (key MUST hash the include CLOSURE, not just the root source),
       X4-A D3D12 toolchain ADR as cross-input (single-source story).
    │
-SL-C  Library skeleton: engine/render/shader_library/
-      (cd::shader_library) — .glsl module files + C++ registry +
+SL-C  Library skeleton: engine/render/gluon/
+      (cd::gluon) — .glsl module files + C++ registry +
       include resolver wired into cd::shader::CachedCompiler + X5
       hot-reload (watch the closure, not just roots).
    │

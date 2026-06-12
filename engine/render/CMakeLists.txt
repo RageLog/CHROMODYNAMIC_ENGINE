@@ -12,7 +12,7 @@
 
 add_subdirectory(rhi)
 add_subdirectory(shader)
-add_subdirectory(shader_lib)    # phase1133 SL-C: SOTA shader module library (ADR-20260612)
+add_subdirectory(gluon)    # phase1133 SL-C: SOTA shader module library (ADR-20260612)
 
 add_subdirectory(material)
 add_subdirectory(light)        # Phase 165 — SOTA light primitives + clustered + CSM

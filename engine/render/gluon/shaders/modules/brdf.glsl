@@ -1,5 +1,5 @@
 // =============================================================================
-// cd::shader_lib — brdf.glsl
+// cd::gluon — brdf.glsl
 // Microfacet BRDF building blocks. Canonical replacements for the Fresnel
 // ×9 / GGX-D ×5 / Smith-G ×6 copies the phase1128 inventory found across
 // engine libs and samples.
@@ -13,10 +13,10 @@
 // References: Karis 2013 (UE4 course notes), Lagarde & de Rousiers 2014
 // (Frostbite PBR), Heitz 2014 (height-correlated Smith).
 // =============================================================================
-#ifndef CD_SL_BRDF_GLSL
-#define CD_SL_BRDF_GLSL
+#ifndef CD_GLUON_BRDF_GLSL
+#define CD_GLUON_BRDF_GLSL
 
-#include <cd/shader_lib/math_common.glsl>
+#include <cd/gluon/math_common.glsl>
 
 /// Schlick Fresnel with configurable grazing reflectance f90.
 vec3 cd_f_schlick(vec3 f0, float f90, float voh)
@@ -91,4 +91,4 @@ vec3 cd_specular_ggx(vec3 f0, float noh, float nov, float nol, float voh,
     return d * v * f;
 }
 
-#endif  // CD_SL_BRDF_GLSL
+#endif  // CD_GLUON_BRDF_GLSL

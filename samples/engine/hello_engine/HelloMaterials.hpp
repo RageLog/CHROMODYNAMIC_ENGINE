@@ -30,7 +30,7 @@
 #include <cd/material/AnalyticalSkyMaterial.hpp>
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/material/Material.hpp>
-#include <cd/shader_lib/ModuleRegistry.hpp>
+#include <cd/gluon/ModuleRegistry.hpp>
 #include <cd/math/Matrix.hpp>
 #include <cd/post/bloom/Bloom.hpp>
 #include <cd/post/composite/Composite.hpp>
@@ -212,11 +212,11 @@ prim_recreate(cd::rhi::IDevice&                       device,
 #endif
     md.vertex_glsl        = cd::hello_engine::kPrimVS;
     md.fragment_glsl      = cd::hello_engine::kPrimFS;
-    // phase1135 (SL-D wave 1): resolve #include <cd/shader_lib/...> in the
+    // phase1135 (SL-D wave 1): resolve #include <cd/gluon/...> in the
     // prim shaders through the embedded module catalogue. Static because
     // the HelloShaderWatch hot-reload path re-compiles through the same
     // desc after create() returns.
-    static cd::shader_lib::ModuleResolver s_prim_module_resolver;
+    static cd::gluon::ModuleResolver s_prim_module_resolver;
     md.include_resolver = &s_prim_module_resolver;
     md.color_attachment_formats = kColorFmts;
     md.depth_attachment_format  = cd::rhi::Format::kD32Float;

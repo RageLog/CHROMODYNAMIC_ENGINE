@@ -66,7 +66,7 @@ cd_add_sample(hello_engine
     cd::rhi
     cd::rhi_vulkan
     cd::scene
-    cd::shader_lib
+    cd::gluon
     cd::shader
     cd::world_container
     cd::sample_framework

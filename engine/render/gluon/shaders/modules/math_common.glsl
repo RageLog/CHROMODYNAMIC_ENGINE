@@ -1,12 +1,12 @@
 // =============================================================================
-// cd::shader_lib — math_common.glsl
+// cd::gluon — math_common.glsl
 // Foundation constants + tiny helpers every other module may rely on.
 // RULES (ADR-20260612-shader-library-architecture §2.2):
 //   * this is the ONLY module other modules may #include;
 //   * keep it dependency-free and side-effect-free (pure functions only).
 // =============================================================================
-#ifndef CD_SL_MATH_COMMON_GLSL
-#define CD_SL_MATH_COMMON_GLSL
+#ifndef CD_GLUON_MATH_COMMON_GLSL
+#define CD_GLUON_MATH_COMMON_GLSL
 
 const float CD_PI          = 3.14159265358979323846;
 const float CD_TWO_PI      = 6.28318530717958647693;
@@ -38,4 +38,4 @@ void cd_onb(vec3 n, out vec3 b1, out vec3 b2)
     b2 = vec3(b, s + n.y * n.y * a, -n.y);
 }
 
-#endif  // CD_SL_MATH_COMMON_GLSL
+#endif  // CD_GLUON_MATH_COMMON_GLSL

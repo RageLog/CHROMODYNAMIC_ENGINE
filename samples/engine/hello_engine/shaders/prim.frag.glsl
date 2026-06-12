@@ -10,7 +10,7 @@
 // the binding declarations that depend on it (compiler-strict path).
 #extension GL_EXT_nonuniform_qualifier : require
 // phase1135 (SL-D wave 1): shader-library module includes, resolved by
-// cd::shader_lib::ModuleResolver (MaterialDesc::include_resolver).
+// cd::gluon::ModuleResolver (MaterialDesc::include_resolver).
 #extension GL_GOOGLE_include_directive : enable
 layout(push_constant) uniform PC {
   mat4 mvp;
@@ -485,7 +485,7 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
 // phase1135 (SL-D wave 1): the W8-AQ Cook-Torrance helper block moved
 // VERBATIM to the shader library (exact-text migration — preprocessed
 // token stream unchanged, chrome_probe golden pins the move).
-#include <cd/shader_lib/brdf_w8aq.glsl>
+#include <cd/gluon/brdf_w8aq.glsl>
 
 void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
