@@ -190,6 +190,7 @@
 #include "HelloTlasRebuild.hpp"
 #include "HelloSkinnedAnim.hpp"
 #include "HelloBootBindless.hpp"
+#include "HelloBootGpu.hpp"
 #include "HelloBootPostfx.hpp"
 #include "HelloBootScene.hpp"
 #include "HelloAudio.hpp"
@@ -5433,64 +5434,13 @@ cd::core::Result<void> HelloEngineApp::on_boot()
         { return cd_sample::shadow_recreate(d, c, &state_->materials.shadow); },
         "shadow");
 
-    // Shadow-map resources
-    constexpr cd::rhi::Extent2D kShadowMapSize { 2048, 2048 };
-    if (!create_depth_target(device, kShadowMapSize, kDepthFormat, s.shadow_target,
-                             cd::rhi::TextureUsage::kSampled))
-        return std::unexpected(cd::core::ErrorCode { 0, 11, "shadow target" });
-
-    cd::rhi::SamplerDesc shad_sd {};
-    shad_sd.mag_filter   = cd::rhi::SamplerFilter::kLinear;
-    shad_sd.min_filter   = cd::rhi::SamplerFilter::kLinear;
-    shad_sd.mipmap_mode  = cd::rhi::SamplerMipmapMode::kNearest;
-    shad_sd.address_u    = cd::rhi::SamplerAddressMode::kClampToBorder;
-    shad_sd.address_v    = cd::rhi::SamplerAddressMode::kClampToBorder;
-    shad_sd.address_w    = cd::rhi::SamplerAddressMode::kClampToBorder;
-    shad_sd.border_color = cd::rhi::BorderColor::kFloatOpaqueWhite;
-    shad_sd.max_lod      = 1.0F;
-    if (auto r = device.create_sampler(shad_sd); !r.has_value())
-        return std::unexpected(cd::core::ErrorCode { 0, 12, "shadow sampler" });
-    else s.shadow_sampler = *r;
-
-    cd::rhi::BufferDesc shad_ubo_d {};
-    shad_ubo_d.size   = sizeof(cd::math::Mat4f);
-    shad_ubo_d.usage  = cd::rhi::BufferUsage::kUniform;
-    shad_ubo_d.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    if (auto r = device.create_buffer(shad_ubo_d); !r.has_value())
-        return std::unexpected(cd::core::ErrorCode { 0, 13, "shadow ubo" });
-    else s.shadow_ubo = *r;
-
-    // Multi-light UBO
-    constexpr std::uint32_t kMaxLights_     = cd::hello_engine::kMaxLights;
-    constexpr std::uint32_t kLightSlotBytes = 80;
-    constexpr std::uint32_t kLightUboBytes  = 16 + kMaxLights_ * kLightSlotBytes;
-    cd::rhi::BufferDesc lights_d {};
-    lights_d.size   = kLightUboBytes;
-    lights_d.usage  = cd::rhi::BufferUsage::kUniform;
-    lights_d.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    if (auto r = device.create_buffer(lights_d); !r.has_value())
-        return std::unexpected(cd::core::ErrorCode { 0, 16, "lights ubo" });
-    else s.lights_ubo = *r;
-
-    // Instance-material SSBO (W8-BC)
+    // phase1129 (on_boot extraction batch 5): shadow/light/SSBO/IBL boot
+    // resources live in HelloBootGpu.hpp; the byte-size constants are
+    // shared from there (single definition for boot + descriptors).
+    if (auto gb = cd_sample::setup_boot_gpu_buffers(s, device); !gb.has_value())
+        return std::unexpected(gb.error());
+    constexpr std::uint32_t kLightUboBytes = cd_sample::kBootLightUboBytes;
     using cd::hello_engine::kInstMatBytes;
-    cd::rhi::BufferDesc inst_d {};
-    inst_d.size   = kInstMatBytes;
-    inst_d.usage  = cd::rhi::BufferUsage::kStorage | cd::rhi::BufferUsage::kTransferDst;
-    inst_d.memory = cd::rhi::MemoryUsage::kCpuToGpu;
-    if (auto r = device.create_buffer(inst_d); !r.has_value())
-        return std::unexpected(cd::core::ErrorCode { 0, 16, "inst mat ssbo" });
-    else s.inst_mat_ssbo = *r;
-
-    // IBL bake
-    constexpr cd::math::Vec3f kIblSunDirToward { 0.3F, 0.9F, 0.2F };
-    s.ibl_cpu = cd_sample::bake_ibl_cpu(cd_sample::normalize_dir(kIblSunDirToward));
-    if (!s.ibl_cpu.ok)
-        return std::unexpected(cd::core::ErrorCode { 0, 23, "ibl bake" });
-    if (auto r = cd_sample::upload_ibl_gpu(device, s.ibl_cpu); !r.has_value())
-        return std::unexpected(
-            cd::core::ErrorCode { 0, static_cast<std::uint32_t>(r.error()), "ibl gpu" });
-    else s.ibl_gpu = *r;
 
     constexpr std::uint32_t kTexSize    = cd_sample::kHelloIblEarthAlbedoSize;
     constexpr std::uint32_t kNormalSize = cd_sample::kHelloIblEarthNormalSize;
