@@ -129,6 +129,19 @@ grid + selection box + draggable gizmo + EditHistory undo entegrasyonu.
    safety-integration adversarial review'u 1078-1080 üzerinde koşuyor;
    bulgular ayrı fix phase'leriyle kapatılacak.
 
+**Devam dalgası (plan sonrası otonom, 2026-06-11/12, phases 1091-1100+):**
+- ✅ CompositeCommand + editor multi-select/grup taşıma (1091-1092),
+  freeze-frustum (1093), NRC MSE 3D eğri (1094).
+- ✅ cdscene köprüsü: editor↔hello_engine save/load + lights round-trip
+  + kind-string koruması + headless KONTRAT testi (1095-1098; 264 test).
+- ✅ R-Showcase Run25 probe extraction (1099): 26 bölüm →
+  HelloShowcaseProbes.hpp; main.cpp 11468→9866,
+  draw_r_showcase_panel 2310→~700.
+- ✅ Full-config tidy keşfi (1100+): use-concise-preprocessor disable;
+  kalan kuyruk: bugprone-unchecked-optional-access (bug-class, 73),
+  identifier-naming (1089 — ayrı büyük dalga adayı), küçük tail
+  (sign-comparison 15, cert-dcl58 28, vb.) triage'da.
+
 **Sprint 3 — onay sonrası büyük işler:**
 9. K1+K3 → X4 D3D12 parity (3-4 hafta, en büyük kalem) → X1 Phase 2
    WSL entegrasyonu.
