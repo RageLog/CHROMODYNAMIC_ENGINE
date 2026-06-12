@@ -1,10 +1,12 @@
 #include <cd/world_container/LayerMember.hpp>
+#include <cd/world_container/LevelStreamer.hpp>
 #include <cd/world_container/ProjectIo.hpp>
 #include <cd/world_container/World.hpp>
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 
 namespace
 {
@@ -304,6 +306,136 @@ TEST(LayerMember, RenameMigratesMembers)
     EXPECT_EQ(layer_of(w, b), "New");
     EXPECT_EQ(layer_of(w, c), "Other");
     EXPECT_EQ(count_members(w, "Old"), 0u);
+}
+
+
+// ---------------------------------------------------------------------------
+// phase1114 — LevelStreamer (v1.7 streaming slice 1: level switching
+// with persistent-layer survival)
+// ---------------------------------------------------------------------------
+
+namespace
+{
+/// Write a .cdscene with `n` entities; entity i is on `layer_for(i)`.
+template <class LayerFor>
+void write_scene_file(const std::filesystem::path& path,
+                      cd::ecs::World& scratch_world, int n, LayerFor&& layer_for)
+{
+    cd::scene::Scene scratch { scratch_world };
+    std::vector<cd::ecs::Entity> ents;
+    for (int i = 0; i < n; ++i)
+    {
+        const auto e = scratch.create_node();
+        scratch.local(e)->value.position = { static_cast<float>(i), 0.0F, 0.0F };
+        ents.push_back(e);
+    }
+    auto root = cd::scene::serialize_scene_with(
+        scratch,
+        [&](cd::ecs::Entity e, cd::asset::json::Object& obj)
+        {
+            for (std::size_t i = 0; i < ents.size(); ++i)
+            {
+                if (ents[i].id != e.id) continue;
+                obj["layer"] = cd::asset::json::Value {
+                    std::string { layer_for(static_cast<int>(i)) } };
+            }
+        });
+    const auto txt = cd::asset::json::serialize(root, true);
+    std::ofstream f { path, std::ios::binary | std::ios::trunc };
+    f.write(txt.data(), static_cast<std::streamsize>(txt.size()));
+}
+}  // namespace
+
+TEST(LevelStreamer, SwitchDestroysNonPersistentAndKeepsPersistent)
+{
+    using namespace cd::world_container;
+    const auto dir = std::filesystem::temp_directory_path() / "cd_streamer_test";
+    std::filesystem::create_directories(dir);
+
+    // Scene A: entity0 on persistent "Keep", entity1 on Default.
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "a.cdscene", scratch, 2,
+                         [](int i) { return i == 0 ? "Keep" : "Default"; });
+    }
+    // Scene B: one entity on Default.
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "b.cdscene", scratch, 1,
+                         [](int) { return "Default"; });
+    }
+
+    Project proj { "Stream Test" };
+    Level* a = proj.add_level("A");
+    a->set_scene_path("a.cdscene");
+    Layer* keep = a->add_layer("Keep");
+    keep->set_persistent(true);
+    Level* b = proj.add_level("B");
+    b->set_scene_path("b.cdscene");
+
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+
+    std::vector<cd::ecs::Entity> loaded_a;
+    auto r = streamer.activate(proj, 0, dir,
+                               [&](cd::ecs::Entity e, const cd::asset::json::Object&)
+                               { loaded_a.push_back(e); });
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(loaded_a.size(), 2u);
+    EXPECT_EQ(streamer.tracked_count(), 2u);
+    EXPECT_EQ(layer_of(world, loaded_a[0]), "Keep");
+    EXPECT_EQ(layer_of(world, loaded_a[1]), kDefaultLayerName);
+
+    // Switch to B: the "Keep" entity must SURVIVE, the Default one dies.
+    std::vector<cd::ecs::Entity> loaded_b;
+    r = streamer.activate(proj, 1, dir,
+                          [&](cd::ecs::Entity e, const cd::asset::json::Object&)
+                          { loaded_b.push_back(e); });
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(loaded_b.size(), 1u);
+    EXPECT_NE(scene.local(loaded_a[0]), nullptr) << "persistent entity destroyed";
+    EXPECT_EQ(scene.local(loaded_a[1]), nullptr) << "non-persistent entity leaked";
+    EXPECT_EQ(streamer.tracked_count(), 2u);  // survivor + B's entity
+    EXPECT_EQ(streamer.active_index(), 1u);
+
+    // Deactivate: B has no persistent layers — everything tracked dies
+    // EXCEPT entities whose layer B marks persistent (none), but the
+    // survivor from A keeps its "Keep" membership — B doesn't know that
+    // layer, so it dies too. Contract: persistence is per OUTGOING level.
+    streamer.deactivate(proj);
+    EXPECT_EQ(scene.local(loaded_a[0]), nullptr);
+    EXPECT_EQ(scene.local(loaded_b[0]), nullptr);
+    EXPECT_FALSE(streamer.has_active());
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(LevelStreamer, BadLevelAndMissingFileFail)
+{
+    using namespace cd::world_container;
+    Project proj { "Errs" };
+    proj.add_level("NoScene");  // empty scene_path
+    Level* missing = proj.add_level("Missing");
+    missing->set_scene_path("does_not_exist.cdscene");
+
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+    const auto dir = std::filesystem::temp_directory_path();
+
+    auto r1 = streamer.activate(proj, 0, dir,
+                                [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_FALSE(r1.has_value());
+    auto r2 = streamer.activate(proj, 99, dir,
+                                [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_FALSE(r2.has_value());
+    auto r3 = streamer.activate(proj, 1, dir,
+                                [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_FALSE(r3.has_value());
+    EXPECT_FALSE(streamer.has_active());
+    EXPECT_EQ(streamer.tracked_count(), 0u);
 }
 
 }  // namespace
