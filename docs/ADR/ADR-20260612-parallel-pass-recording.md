@@ -59,8 +59,11 @@ tavsiyesinin gerekçesi buydu.
 - Lane sayısı doğal olarak WorkStealingThreadPool::thread_count() ile
   eşleşir; X1 prep/submit scratch bölüntüsü değişmeden taşınır.
 - Adım planı: (1) split+Null+testler ✅ bu ADR'le; (2) Vulkan lane'leri
-  + lane_count 1↔N piksel-parite testi; (3) hello_engine HDR pass'i
-  panel toggle'ı arkasında; (4) D3D12/Metal kendi gemileriyle.
+  ✅ phase1116 + GPU testi (SEAL phase1119-1120); (3) hello_engine HDR
+  pass'i panel toggle'ı arkasında ✅ phase1121 — chrome_probe fixture
+  serial-vs-lanes yakalaması BAYT-AYNI (cmp clean), lane'ler v1'de ana
+  thread'de sıralı kaydedilir (paylaşılan-durum audit'i sonrası worker
+  dispatch); (4) D3D12/Metal kendi gemileriyle.
 - safety-integration kapısı adım 2'de zorunlu (pool ömrü + reset
   fencing) — Sprint-2 concurrency barı.
 - **Adım-2 kapı durumu (phase1119)**: safety audit VETO → kontrat
