@@ -19,9 +19,13 @@
 #include "HelloRayQuery.hpp"      // kBindlessAlbedoSlotNone
 #include "HelloTlasRebuild.hpp"   // W8BEGeomMeta
 
+#include <cd/core/ErrorCode.hpp>
+#include <cd/core/Result.hpp>
+#include <cd/material/Material.hpp>
 #include <cd/math/Vector.hpp>
 #include <cd/rhi/IDevice.hpp>
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <span>
@@ -324,6 +328,65 @@ inline void wire_w8be_bindless_and_meta(StateT& s, DeviceT& device,
             ++i;
         }
     }
+}
+
+/// phase1126 (on_boot extraction batch 4): prim MaterialInstance creation
+/// + its 10-binding boot descriptor write (shadow UBO/map, lights UBO,
+/// albedo/IBL/normal/MR textures, instance-material SSBO). Same byte
+/// sizes as wire_w8be_bindless_and_meta.
+template <typename StateT, typename DeviceT>
+[[nodiscard]] inline cd::core::Result<void>
+init_prim_inst_descriptors(StateT& s, DeviceT& device,
+                           std::uint32_t light_ubo_bytes,
+                           std::uint32_t inst_mat_bytes)
+{
+    // Prim material instance
+    if (auto r = cd::material::MaterialInstance::create(device, s.materials.prim); !r.has_value())
+        return std::unexpected(cd::core::ErrorCode { 0, 14, "prim inst" });
+    else s.prim_inst = std::move(*r);
+    {
+        const auto& gspec = s.ibl_gpu.gpu_spec_cube;
+        const auto& gdiff = s.ibl_gpu.gpu_diff_cube;
+        const auto& gbrdf = s.ibl_gpu.gpu_brdf_lut;
+        std::array<cd::rhi::DescriptorWrite, 10> dw {
+            cd::rhi::DescriptorWrite { .binding = 0, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer = s.shadow_ubo, .buffer_offset = 0,
+                .buffer_range = sizeof(cd::math::Mat4f) },
+            cd::rhi::DescriptorWrite { .binding = 1, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.shadow_target.view, .sampler = s.shadow_sampler },
+            cd::rhi::DescriptorWrite { .binding = 3, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer = s.lights_ubo, .buffer_offset = 0,
+                .buffer_range = light_ubo_bytes },
+            cd::rhi::DescriptorWrite { .binding = 4, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.albedo_tex.view, .sampler = s.albedo_sampler },
+            cd::rhi::DescriptorWrite { .binding = 5, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = gspec.view, .sampler = s.ibl_gpu.ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 6, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = gdiff.view, .sampler = s.ibl_gpu.ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 7, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = gbrdf.view, .sampler = s.ibl_gpu.ibl_sampler },
+            cd::rhi::DescriptorWrite { .binding = 8, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.normal_tex.view, .sampler = s.albedo_sampler },
+            cd::rhi::DescriptorWrite { .binding = 9, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kCombinedImageSampler,
+                .view = s.mr_tex.view, .sampler = s.albedo_sampler },
+            cd::rhi::DescriptorWrite { .binding = 10, .array_element = 0,
+                .type = cd::rhi::DescriptorType::kStorageBuffer,
+                .buffer = s.inst_mat_ssbo, .buffer_offset = 0,
+                .buffer_range = inst_mat_bytes }
+        };
+        if (auto wr = s.prim_inst.update(dw); !wr.has_value())
+            return std::unexpected(cd::core::ErrorCode { 0, 15, "prim inst update" });
+    }
+    return {};
 }
 
 }  // namespace cd_sample
