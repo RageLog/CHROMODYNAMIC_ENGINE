@@ -10,3 +10,10 @@ cd_add_test(rhi_mesh_shader
   SOURCES test_rhi_mesh_shader.cpp
   DEPS    cd::rhi_vulkan cd::rhi cd::core cd::shader
 )
+
+# phase1116 (X1-FU-F step 2) — parallel lanes on the real Vulkan device:
+# per-lane pools, dynamic-rendering secondaries, vkCmdExecuteCommands.
+cd_add_test(rhi_parallel_lanes
+  SOURCES test_rhi_parallel_lanes.cpp
+  DEPS    cd::rhi_vulkan cd::rhi cd::core
+)

@@ -1179,6 +1179,7 @@ public:
         }
         const auto id = next_id_++;
         views_.emplace(id, view);
+        view_formats_.emplace(id, map_format(fmt));
         return cd::rhi::TextureViewHandle { id, 1u };
     }
 
@@ -1189,6 +1190,7 @@ public:
             vkDestroyImageView(device_, it->second, nullptr);
             views_.erase(it);
         }
+        view_formats_.erase(h.index());
     }
 
     [[nodiscard]] cd::core::Result<cd::rhi::SamplerHandle> create_sampler(const cd::rhi::SamplerDesc& desc) override
@@ -2962,6 +2964,7 @@ public:
         {
             const auto view_id = next_id_++;
             views_.emplace(view_id, v);
+            view_formats_.emplace(view_id, chosen_format.format);  // phase1116
             view_ids.push_back(view_id);
         }
 
@@ -3067,6 +3070,8 @@ public:
                 .pipeline_layouts = &pipeline_layouts_,
                 .pipeline_to_layout = &pipeline_to_layout_,
                 .descriptor_sets = &descriptor_sets_,
+                .view_formats = &view_formats_,
+                .graphics_queue_family = graphics_family_,
                 .accel_lookup = &VulkanDevice::accel_lookup_static_,
                 .accel_lookup_user = this,
                 .rt_pipeline_lookup = &VulkanDevice::rt_pipeline_lookup_static_,
@@ -4400,6 +4405,8 @@ public:
     std::unordered_map<std::uint32_t, VmaAllocation> image_alloc_;
     std::unordered_map<std::uint32_t, TextureMeta> image_meta_;
     std::unordered_map<std::uint32_t, VkImageView> views_;
+    /// phase1116: view-id -> format, for parallel-lane inheritance info.
+    std::unordered_map<std::uint32_t, VkFormat> view_formats_;
     std::unordered_map<std::uint32_t, VkSampler> samplers_;
     // phase843-W8-BE: per-layout metadata so allocate_descriptor_set knows
     // whether to chain VkDescriptorSetVariableDescriptorCountAllocateInfo.

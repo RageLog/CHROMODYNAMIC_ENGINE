@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -56,6 +57,15 @@ struct ResourceTables
     const std::unordered_map<std::uint32_t, VkPipelineLayout>* pipeline_to_layout { nullptr };
     const std::unordered_map<std::uint32_t, VkDescriptorSet>* descriptor_sets { nullptr };
 
+    /// phase1116 (X1-FU-F step 2): view-id -> VkFormat, needed by the
+    /// parallel-lane inheritance info (dynamic rendering secondaries
+    /// must declare attachment formats up front).
+    const std::unordered_map<std::uint32_t, VkFormat>* view_formats { nullptr };
+    /// Queue family for per-lane command pools (one pool per lane —
+    /// pools are externally synchronized, so each recording thread
+    /// needs its own).
+    std::uint32_t graphics_queue_family { 0 };
+
     /// Phase 132 — callback that resolves an AS handle to an
     /// AccelBuildView (BLAS triangles or TLAS instances + scratch).
     /// Returns false on unknown handle.
@@ -92,6 +102,20 @@ public:
 
     void begin_render_pass(const cd::rhi::RenderPassBeginInfo& info) override;
     void end_render_pass() override;
+
+    /// phase1116 (X1-FU-F step 2): Vulkan parallel lanes — dynamic
+    /// rendering with SECONDARY_COMMAND_BUFFERS contents; each lane is
+    /// a secondary command buffer on its OWN pool (thread-confined),
+    /// joined by vkCmdExecuteCommands in lane order at finish().
+    /// Returns nullptr (serial fallback) when an attachment format
+    /// cannot be resolved or lane setup fails.
+    [[nodiscard]] std::unique_ptr<cd::rhi::IParallelPassRecorder>
+    begin_parallel_render_pass(const cd::rhi::RenderPassBeginInfo& info,
+                               std::uint32_t lane_count) override;
+
+    /// Lane pools survive until this primary is destroyed — secondaries
+    /// must outlive the primary's GPU execution.
+    void retire_lane_pools(std::vector<VkCommandPool>&& pools);
 
     void bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle pipeline) override;
     void bind_compute_pipeline(cd::rhi::ComputePipelineHandle pipeline) override;
@@ -190,6 +214,44 @@ private:
     // command buffer. Cleared in begin(); the next begin() reuses the
     // already-allocated nodes.
     std::deque<std::string> debug_label_arena_ {};
+
+    /// phase1116: pools handed over by finished parallel recorders;
+    /// destroyed in the dtor (which implies GPU completion in the
+    /// engine's wait-before-destroy usage).
+    std::vector<VkCommandPool> retired_lane_pools_ {};
+
+    friend class VulkanParallelPassRecorder;
+    void begin_rendering_(const cd::rhi::RenderPassBeginInfo& info,
+                          VkRenderingFlags flags);
+};
+
+/// phase1116 — Vulkan lanes. Construction allocates one pool +
+/// secondary per lane and begins them with RENDER_PASS_CONTINUE +
+/// dynamic-rendering inheritance; the primary's rendering scope is
+/// opened by begin_parallel_render_pass BEFORE this object is created.
+/// finish() ends the secondaries, executes them in lane order, ends
+/// the primary's rendering and retires the pools to the primary.
+class VulkanParallelPassRecorder final : public cd::rhi::IParallelPassRecorder
+{
+public:
+    VulkanParallelPassRecorder(VulkanCommandBuffer& primary,
+                               VkDevice device,
+                               std::vector<VkCommandPool> pools,
+                               std::vector<VkCommandBuffer> secondaries,
+                               ResourceTables tables);
+    ~VulkanParallelPassRecorder() override;
+
+    [[nodiscard]] std::uint32_t lane_count() const noexcept override;
+    [[nodiscard]] cd::rhi::IDrawRecorder& lane(std::uint32_t i) noexcept override;
+    void finish() override;
+
+private:
+    VulkanCommandBuffer* primary_;
+    VkDevice device_;
+    std::vector<VkCommandPool> pools_;
+    std::vector<VkCommandBuffer> secondaries_;
+    std::vector<std::unique_ptr<VulkanCommandBuffer>> lanes_;
+    bool finished_ { false };
 };
 
 }  // namespace cd::rhi::vulkan

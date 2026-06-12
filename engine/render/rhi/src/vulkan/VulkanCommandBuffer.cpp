@@ -122,10 +122,26 @@ VulkanCommandBuffer::VulkanCommandBuffer(
 
 VulkanCommandBuffer::~VulkanCommandBuffer()
 {
+    // phase1116: lane pools retired by parallel recorders die with the
+    // primary (engine usage waits for GPU idle before destroying cmd
+    // buffers, so the secondaries are no longer pending). Destroying a
+    // pool frees its command buffers implicitly.
+    for (auto pool : retired_lane_pools_)
+    {
+        if (pool != VK_NULL_HANDLE && device_ != VK_NULL_HANDLE)
+            vkDestroyCommandPool(device_, pool, nullptr);
+    }
     if (cmd_ != VK_NULL_HANDLE && pool_ != VK_NULL_HANDLE && device_ != VK_NULL_HANDLE)
     {
         vkFreeCommandBuffers(device_, pool_, 1, &cmd_);
     }
+}
+
+void VulkanCommandBuffer::retire_lane_pools(std::vector<VkCommandPool>&& pools)
+{
+    retired_lane_pools_.insert(retired_lane_pools_.end(),
+                               pools.begin(), pools.end());
+    pools.clear();
 }
 
 void VulkanCommandBuffer::begin()
@@ -203,6 +219,12 @@ namespace
 
 void VulkanCommandBuffer::begin_render_pass(const cd::rhi::RenderPassBeginInfo& info)
 {
+    begin_rendering_(info, 0);
+}
+
+void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& info,
+                                           VkRenderingFlags flags)
+{
     // Dynamic rendering path (Vulkan 1.3 core). The caller is expected to have
     // transitioned attachments into VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL /
     // VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL via a barrier() call before
@@ -260,7 +282,7 @@ void VulkanCommandBuffer::begin_render_pass(const cd::rhi::RenderPassBeginInfo& 
     VkRenderingInfo ri {};
     ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
     ri.pNext = nullptr;
-    ri.flags = 0;
+    ri.flags = flags;
     ri.renderArea.offset = { info.render_area.offset.x, info.render_area.offset.y };
     ri.renderArea.extent = { info.render_area.extent.width, info.render_area.extent.height };
     ri.layerCount = 1;
@@ -834,6 +856,172 @@ void VulkanCommandBuffer::acceleration_structure_barrier()
         .pImageMemoryBarriers     = nullptr,
     };
     vkCmdPipelineBarrier2(cmd_, &dep);
+}
+
+
+// ---------------------------------------------------------------------------
+// phase1116 (X1-FU-F step 2) — parallel lanes over dynamic rendering.
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<cd::rhi::IParallelPassRecorder>
+VulkanCommandBuffer::begin_parallel_render_pass(
+    const cd::rhi::RenderPassBeginInfo& info, std::uint32_t lane_count)
+{
+    if (lane_count == 0)
+        lane_count = 1;
+    if (tables_.view_formats == nullptr)
+        return nullptr;  // device didn't plumb formats — serial fallback
+
+    // Resolve attachment formats for the secondaries' inheritance info.
+    std::vector<VkFormat> color_formats;
+    color_formats.reserve(info.color_attachments.size());
+    for (const auto& a : info.color_attachments)
+    {
+        const auto it = tables_.view_formats->find(a.view.index());
+        if (it == tables_.view_formats->end())
+            return nullptr;
+        color_formats.push_back(it->second);
+    }
+    VkFormat depth_format = VK_FORMAT_UNDEFINED;
+    if (info.depth_stencil != nullptr)
+    {
+        const auto it = tables_.view_formats->find(info.depth_stencil->view.index());
+        if (it == tables_.view_formats->end())
+            return nullptr;
+        depth_format = it->second;
+    }
+
+    // Build every lane BEFORE opening the rendering scope so a failure
+    // leaves the primary untouched (caller falls back to serial).
+    std::vector<VkCommandPool> pools;
+    std::vector<VkCommandBuffer> secondaries;
+    pools.reserve(lane_count);
+    secondaries.reserve(lane_count);
+    auto cleanup = [&]
+    {
+        for (auto pool : pools)
+            vkDestroyCommandPool(device_, pool, nullptr);
+    };
+
+    VkCommandBufferInheritanceRenderingInfo iri {};
+    iri.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+    iri.colorAttachmentCount = static_cast<std::uint32_t>(color_formats.size());
+    iri.pColorAttachmentFormats = color_formats.empty() ? nullptr : color_formats.data();
+    iri.depthAttachmentFormat = depth_format;
+    iri.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    iri.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkCommandBufferInheritanceInfo inh {};
+    inh.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inh.pNext = &iri;
+
+    for (std::uint32_t i = 0; i < lane_count; ++i)
+    {
+        const VkCommandPoolCreateInfo pi {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queueFamilyIndex = tables_.graphics_queue_family,
+        };
+        VkCommandPool pool { VK_NULL_HANDLE };
+        if (vkCreateCommandPool(device_, &pi, nullptr, &pool) != VK_SUCCESS)
+        {
+            cleanup();
+            return nullptr;
+        }
+        pools.push_back(pool);
+
+        const VkCommandBufferAllocateInfo ai {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+            .commandBufferCount = 1,
+        };
+        VkCommandBuffer sec { VK_NULL_HANDLE };
+        if (vkAllocateCommandBuffers(device_, &ai, &sec) != VK_SUCCESS)
+        {
+            cleanup();
+            return nullptr;
+        }
+        const VkCommandBufferBeginInfo bi {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                     VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+            .pInheritanceInfo = &inh,
+        };
+        if (vkBeginCommandBuffer(sec, &bi) != VK_SUCCESS)
+        {
+            cleanup();
+            return nullptr;
+        }
+        secondaries.push_back(sec);
+    }
+
+    begin_rendering_(info, VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT);
+    return std::make_unique<VulkanParallelPassRecorder>(
+        *this, device_, std::move(pools), std::move(secondaries), tables_);
+}
+
+VulkanParallelPassRecorder::VulkanParallelPassRecorder(
+    VulkanCommandBuffer& primary, VkDevice device,
+    std::vector<VkCommandPool> pools, std::vector<VkCommandBuffer> secondaries,
+    ResourceTables tables)
+    : primary_ { &primary }
+    , device_ { device }
+    , pools_ { std::move(pools) }
+    , secondaries_ { std::move(secondaries) }
+{
+    lanes_.reserve(secondaries_.size());
+    for (auto sec : secondaries_)
+    {
+        // pool = VK_NULL_HANDLE: the wrapper must NOT free the secondary
+        // (the pool owns it; the pool dies with the primary at retire).
+        lanes_.push_back(std::make_unique<VulkanCommandBuffer>(
+            device_, VK_NULL_HANDLE, sec, tables));
+    }
+}
+
+VulkanParallelPassRecorder::~VulkanParallelPassRecorder()
+{
+    if (!finished_)
+    {
+        // Never finished: nothing was executed — the pools can die now,
+        // but the primary's rendering scope is the CALLER's problem
+        // (documented: always finish() a recorder you began).
+        for (auto pool : pools_)
+            vkDestroyCommandPool(device_, pool, nullptr);
+        pools_.clear();
+    }
+}
+
+std::uint32_t VulkanParallelPassRecorder::lane_count() const noexcept
+{
+    return static_cast<std::uint32_t>(lanes_.size());
+}
+
+cd::rhi::IDrawRecorder& VulkanParallelPassRecorder::lane(std::uint32_t i) noexcept
+{
+    const auto idx = i < lanes_.size() ? i : lanes_.size() - 1u;
+    return *lanes_[idx];
+}
+
+void VulkanParallelPassRecorder::finish()
+{
+    if (finished_)
+        return;
+    for (auto sec : secondaries_)
+        vkEndCommandBuffer(sec);
+    if (!secondaries_.empty())
+    {
+        vkCmdExecuteCommands(primary_->native(),
+                             static_cast<std::uint32_t>(secondaries_.size()),
+                             secondaries_.data());
+    }
+    primary_->end_render_pass();
+    primary_->retire_lane_pools(std::move(pools_));
+    finished_ = true;
 }
 
 }  // namespace cd::rhi::vulkan
