@@ -28,7 +28,8 @@ follow-up board in `ADR-20260528-job-system-design.md` Sonuclar.
 
 | ID        | Name                                       | Status this snapshot | Blocker / pre-req                                                  | Owner-agent recommendation (lead → support)                          |
 | --------- | ------------------------------------------ | -------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| **X4**    | D3D12 backend parity + RT                  | QUEUED (3-4 weeks)   | RHI surface stable; image-readback API; SPIRV-Cross or DXIL path   | architect → researcher → developer × N → tester → build-devops       |
+| **SL**    | SOTA shader library (cd::shader_library)   | ACTIVE (user-priority 2026-06-12) | SOTA research (running); X4-A toolchain ADR cross-input | researcher → architect → developer × N → tester |
+| **X4**    | D3D12 backend parity + RT                  | QUEUED (3-4 weeks)   | RHI surface stable; ~~image-readback API~~ ✅ phase1127; SPIRV-Cross or DXIL path   | architect → researcher → developer × N → tester → build-devops       |
 | **X5**    | Shader on-disk + hot-reload                | QUEUED (1 week)      | `cd::shader::FileWatcher` + `cd::shader::ICompiler` already live   | architect → developer → tester → doc-writer                          |
 | **X1-FU-F** | Vulkan secondary command buffer pipeline | QUEUED (~1 week)     | `cd::rhi::ICommandBuffer` surface review; 4-backend impl needed    | architect → safety-integration → developer × 4 → tester              |
 | X1-FU-A   | `cv` → `std::atomic::wait/notify_one`      | Polish (1-2 days)    | X1-FU-B (TSan run) green                                           | safety-integration → developer → tester                              |
@@ -584,3 +585,60 @@ The following are tracked but explicitly excluded from Phase 2 X4/X5/X1-FU-F:
 3. **team-lead**: dispatch sub-tasks per §5.1 ordering once ADRs land.
 
 No code, no further ADR writing from this roadmap pass.
+
+---
+
+## §9. SL — SOTA shader library (user-priority addition, 2026-06-12)
+
+User direction: "çok gelişmiş state-of-the-art seviyesi bir shader
+library; yapısı normal kütüphane yapımıza yakın/aynı olabilir;
+kütüphaneleşebilecek mevcut shader'lar + yeni shader'lar plana
+eklenmeli." Reusable shader MODULE library, consumable like any
+`engine/<lib>` library and shippable standalone.
+
+### 9.1 Evidence (duplication inventory, phase1128 probe)
+
+76 files carry embedded GLSL strings; 7 on-disk GLSL files (hello_engine
+X5 path + cluster_assign.comp). Duplicated core snippets across them:
+Fresnel ×9 files, GGX-D ×5, Smith-G ×6, fBm noise ×6, octahedral
+encode/decode ×8, hash/PCG ×8, Hammersley/importance-sampling ×5,
+tonemap operators spread over 34 mention sites. Every duplicate is a
+silent-drift hazard (the W8 sweeps repeatedly fixed one copy and missed
+another).
+
+### 9.2 Sub-task DAG
+
+```text
+SL-A  SOTA research (researcher, RUNNING 2026-06-12)
+      Slang / Unity SRP-Core ShaderLibrary / Unreal .ush / Filament
+      matc / bgfx shaderc / Godot includes / glslang include EXT +
+      variant-management SOTA -> research/notes/shader_library_sota.md
+   │
+SL-B  ADR (architect): module granularity + include/import mechanism
+      (glslang DirStackFileIncluder vs Slang adoption vs hybrid),
+      variant/permutation strategy, CachedCompiler cache-key impact
+      (key MUST hash the include CLOSURE, not just the root source),
+      X4-A D3D12 toolchain ADR as cross-input (single-source story).
+   │
+SL-C  Library skeleton: engine/render/shader_library/
+      (cd::shader_library) — .glsl module files + C++ registry +
+      include resolver wired into cd::shader::CachedCompiler + X5
+      hot-reload (watch the closure, not just roots).
+   │
+SL-D  Extraction wave 1 (golden-pinned per consumer migration):
+      brdf_common.glsl (Fresnel/GGX/Smith) -> noise.glsl (hash/PCG/
+      fBm/curl) -> sampling.glsl (Hammersley/importance/oct) ->
+      tonemap.glsl (ACES/Reinhard/Uchimura/AgX) -> color.glsl ->
+      shadow.glsl (PCF family). Consumers migrate ONE AT A TIME with
+      chrome_probe + per-feature golden pins.
+   │
+SL-E  New-shader policy: every new shader is born as modules + thin
+      entry point; headless compile-all-modules ctest gate (glslang)
+      + permutation smoke. Doc: README + module catalogue.
+```
+
+Test gate: headless compile of every module permutation (no GPU
+needed) + existing golden fixtures stay byte-identical through each
+extraction step. Owner chain: researcher → architect → developer × N →
+tester. SL-A/SL-B block SL-C; SL-D items land independently after
+SL-C and can interleave with X4 work.
