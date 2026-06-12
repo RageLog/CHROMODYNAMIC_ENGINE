@@ -286,7 +286,7 @@ TEST(Positional, ListenerAtSourcePositionReturnsBaseline)
 TEST(PositionalSource, PrimeAndProcessSizeContract)
 {
     cd::audio::PositionalSource src;
-    src.prime(/*sample_rate=*/48000, /*max_block=*/128);
+    src.prime(/*sample_rate=*/48000, /*max_block_samples=*/128);
     EXPECT_EQ(src.sample_rate(), 48000U);
     EXPECT_EQ(src.max_block_samples(), 128U);
 

@@ -201,8 +201,8 @@ TEST(SoftBodySprint1, MoreIterationsImproveStability)
     constexpr std::array<float, 3> kGravity { 0.0F, -9.81F, 0.0F };
 
     SoftBody sb_low, sb_high;
-    auto cfg_low  = make_rope(5, 1.0F, /*iterations=*/1);
-    auto cfg_high = make_rope(5, 1.0F, /*iterations=*/20);
+    auto cfg_low  = make_rope(5, 1.0F, /*solver_iterations=*/1);
+    auto cfg_high = make_rope(5, 1.0F, /*solver_iterations=*/20);
     sb_low.configure(cfg_low);
     sb_high.configure(cfg_high);
 

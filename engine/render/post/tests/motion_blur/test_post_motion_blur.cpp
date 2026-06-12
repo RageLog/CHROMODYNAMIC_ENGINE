@@ -32,7 +32,7 @@ TEST(MotionBlur, TileMaxPicksLargestMagnitude)
 TEST(MotionBlur, TileMaxClampsToMaxMotion)
 {
     std::vector<cd::math::Vec2f> v(16 * 16, { 100, 0 });
-    const auto m = reduce_tile_max(v, 16, 16, 0, 0, 16, /*max=*/40.0F);
+    const auto m = reduce_tile_max(v, 16, 16, 0, 0, 16, /*max_motion_px=*/40.0F);
     EXPECT_NEAR(std::sqrt(m.x * m.x + m.y * m.y), 40.0F, kEps);
 }
 

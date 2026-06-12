@@ -65,7 +65,7 @@ TEST(LobbyCreate, CreateRoom)
 {
     Lobby lobby;
 
-    const RoomId rid = lobby.create_room(make_config(), /*host=*/1001U);
+    const RoomId rid = lobby.create_room(make_config(), /*host_player_id=*/1001U);
     EXPECT_NE(rid, kInvalidRoomId);
 
     const RoomState* rs = lobby.room(rid);
