@@ -585,8 +585,29 @@ public:
 
             D3D12_RENDER_TARGET_VIEW_DESC rd {};
             rd.Format = view_fmt;
-            rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-            rd.Texture2D.MipSlice = desc.base_mip;
+            // X4-E1 — RTV dimension follows the view's texture type, mirroring
+            // VulkanDevice's VK_IMAGE_VIEW_TYPE_1D / _3D for attachments.
+            // (Cube RTs are not a separate RTV dimension in D3D12 — they bind
+            // as a TEXTURE2DARRAY slice; cube colour attachments are not part
+            // of this RHI's render-target surface, so the cube-flag falls
+            // through to the TEXTURE2D path here.)
+            if (is_1d_view)
+            {
+                rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE1D;
+                rd.Texture1D.MipSlice = desc.base_mip;
+            }
+            else if (is_3d_view)
+            {
+                rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE3D;
+                rd.Texture3D.MipSlice = desc.base_mip;
+                rd.Texture3D.FirstWSlice = desc.base_layer;
+                rd.Texture3D.WSize = static_cast<UINT>(-1);  // all depth slices
+            }
+            else
+            {
+                rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+                rd.Texture2D.MipSlice = desc.base_mip;
+            }
             device_->CreateRenderTargetView(trec->resource.Get(), &rd, cpu);
             vrec.rtv_cpu = cpu;
         }
@@ -603,10 +624,29 @@ public:
             cpu.ptr += static_cast<SIZE_T>(dsv_cursor_) * dsv_increment_;
             ++dsv_cursor_;
 
+            // X4-E1 — DSV dimension follows the view's texture type. D3D12
+            // has no TEXTURE3D DSV dimension (Vulkan likewise has no 3D depth
+            // attachment use), so a 3D depth view is rejected rather than
+            // silently downgraded to TEXTURE2D.
+            if (is_3d_view)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_texture_view: 3D textures cannot be a depth-stencil "
+                    "attachment (no D3D12_DSV_DIMENSION_TEXTURE3D)"));
+            }
             D3D12_DEPTH_STENCIL_VIEW_DESC dd {};
             dd.Format = view_fmt;
-            dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-            dd.Texture2D.MipSlice = desc.base_mip;
+            if (is_1d_view)
+            {
+                dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE1D;
+                dd.Texture1D.MipSlice = desc.base_mip;
+            }
+            else
+            {
+                dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                dd.Texture2D.MipSlice = desc.base_mip;
+            }
             device_->CreateDepthStencilView(trec->resource.Get(), &dd, cpu);
             // The DSV handle lives in a separate pool; we reuse rtv_cpu
             // as the "primary attachment view slot" — begin_render_pass'
@@ -2187,6 +2227,67 @@ public:
                         // pResource == nullptr; the GPU VA is in the desc.
                         device_->CreateShaderResourceView(nullptr, &asrv, dst);
                     }
+                    break;
+                }
+                case cd::rhi::DescriptorType::kBindlessSampledImage:
+                {
+                    // X4-E1 — runtime-indexed sampler2D array slot. Mirrors
+                    // VulkanDevice's kBindlessSampledImage handling, which
+                    // routes one slot to a COMBINED_IMAGE_SAMPLER write at
+                    // `array_element`. On D3D12 the slot is an SRV in the
+                    // CBV/SRV/UAV heap (the sampler half is served by the
+                    // root signature's static samplers, same model as
+                    // kCombinedImageSampler above). `array_element` already
+                    // offset `dst` into the table at the top of the loop, so
+                    // we write exactly one slot here.
+                    //
+                    // NOTE: D3D12 does not advertise features().bindless_resources
+                    // at this snapshot, so cross-backend callers gate on it and
+                    // never reach this path on D3D12; the case exists for parity
+                    // with the Vulkan descriptor surface (no silent
+                    // kNotImplemented fall-through).
+                    auto view_it = texture_views_.find(w.view.index());
+                    if (view_it == texture_views_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: bindless slot view unknown"));
+                    auto tex_it = textures_.find(view_it->second.parent.index());
+                    if (tex_it == textures_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: bindless slot texture unknown"));
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
+                    srv.Format = view_it->second.format;
+                    srv.Shader4ComponentMapping =
+                        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    if (view_it->second.is_cube)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                        srv.TextureCube.MostDetailedMip = 0;
+                        srv.TextureCube.MipLevels = 1;
+                        srv.TextureCube.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_1d)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE1D;
+                        srv.Texture1D.MostDetailedMip = 0;
+                        srv.Texture1D.MipLevels = 1;
+                        srv.Texture1D.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_3d)
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+                        srv.Texture3D.MostDetailedMip = 0;
+                        srv.Texture3D.MipLevels = 1;
+                        srv.Texture3D.ResourceMinLODClamp = 0.0F;
+                    }
+                    else
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                        srv.Texture2D.MipLevels = 1;
+                    }
+                    device_->CreateShaderResourceView(
+                        tex_it->second.resource.Get(), &srv, dst);
                     break;
                 }
                 default:

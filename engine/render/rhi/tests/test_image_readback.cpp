@@ -393,4 +393,132 @@ TEST(ImageReadback, D3D12GpuClearColorRoundTrip)
 }
 #endif
 
+// ---- 1D / 3D texture create + view (X4-E1 parity gate) ----------------------
+//
+// Mirrors the GPU-clear round-trip pattern: a single body runs against the
+// real Vulkan and (on Windows) D3D12 backends so the 1D/3D create_texture +
+// create_texture_view paths cannot drift. NullDevice runs the same body too
+// (headless CI). Exercises the X4-E1 D3D12 fixes:
+//   * create_texture k1D / k3D (already wired Phase 393/394 — regression net)
+//   * create_texture_view k1D / k3D SRV dimensions
+// The SampledImage usage routes through the SRV path that picks
+// TEXTURE1D / TEXTURE3D dimensions from the view-record flags.
+
+void run_1d_3d_texture_create(cd::rhi::IDevice& dev)
+{
+    // --- 1D texture (64×1) sampled view. ---
+    {
+        cd::rhi::TextureDesc td {};
+        td.type         = cd::rhi::TextureType::k1D;
+        td.format       = cd::rhi::Format::kRGBA8Unorm;
+        td.extent       = { 64, 1, 1 };
+        td.mip_levels   = 1;
+        td.array_layers = 1;
+        td.usage        = cd::rhi::TextureUsage::kSampled |
+                          cd::rhi::TextureUsage::kTransferSrc;
+        auto tex_r = dev.create_texture(td);
+        ASSERT_TRUE(tex_r.has_value())
+            << std::string(tex_r.error().message.begin(), tex_r.error().message.end());
+        const auto tex = *tex_r;
+
+        cd::rhi::TextureViewDesc vd {};
+        vd.texture = tex;
+        vd.type    = cd::rhi::TextureType::k1D;
+        auto view_r = dev.create_texture_view(vd);
+        ASSERT_TRUE(view_r.has_value())
+            << std::string(view_r.error().message.begin(), view_r.error().message.end());
+
+        dev.destroy_texture_view(*view_r);
+        dev.destroy_texture(tex);
+    }
+
+    // --- 3D texture (16×16×16) sampled view. ---
+    {
+        cd::rhi::TextureDesc td {};
+        td.type         = cd::rhi::TextureType::k3D;
+        td.format       = cd::rhi::Format::kRGBA8Unorm;
+        td.extent       = { 16, 16, 16 };
+        td.mip_levels   = 1;
+        td.array_layers = 1;
+        td.usage        = cd::rhi::TextureUsage::kSampled |
+                          cd::rhi::TextureUsage::kTransferSrc;
+        auto tex_r = dev.create_texture(td);
+        ASSERT_TRUE(tex_r.has_value())
+            << std::string(tex_r.error().message.begin(), tex_r.error().message.end());
+        const auto tex = *tex_r;
+
+        cd::rhi::TextureViewDesc vd {};
+        vd.texture = tex;
+        vd.type    = cd::rhi::TextureType::k3D;
+        auto view_r = dev.create_texture_view(vd);
+        ASSERT_TRUE(view_r.has_value())
+            << std::string(view_r.error().message.begin(), view_r.error().message.end());
+
+        dev.destroy_texture_view(*view_r);
+        dev.destroy_texture(tex);
+    }
+}
+
+TEST(ImageReadback, NullDevice1Dand3DTextureCreate)
+{
+    cd::rhi::NullDevice dev;
+    run_1d_3d_texture_create(dev);
+}
+
+TEST(ImageReadback, Vulkan1Dand3DTextureCreate)
+{
+    cd::rhi::vulkan::VulkanCreateInfo info {};
+    info.enable_validation = false;
+    auto dev_r = cd::rhi::vulkan::create_vulkan_device(info);
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no Vulkan ICD available on this host";
+    run_1d_3d_texture_create(**dev_r);
+}
+
+#if defined(_WIN32)
+TEST(ImageReadback, D3D121Dand3DTextureCreate)
+{
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device({});
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no D3D12 adapter available on this host";
+    run_1d_3d_texture_create(**dev_r);
+}
+
+// X4-E1 — a 3D texture used as a render target gets a TEXTURE3D RTV
+// (not the previous hardcoded TEXTURE2D dimension). D3D12 *does* allow
+// ALLOW_RENDER_TARGET on a TEXTURE3D resource, so this path is reachable
+// on real hardware (unlike depth-stencil, which D3D12 forbids on 3D
+// resources at CreateCommittedResource time — that guard stays as
+// defense-in-depth in create_texture_view but cannot be reached here).
+TEST(ImageReadback, D3D123DRenderTargetViewSucceeds)
+{
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device({});
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no D3D12 adapter available on this host";
+    auto& dev = **dev_r;
+
+    cd::rhi::TextureDesc td {};
+    td.type         = cd::rhi::TextureType::k3D;
+    td.format       = cd::rhi::Format::kRGBA8Unorm;
+    td.extent       = { 8, 8, 8 };
+    td.mip_levels   = 1;
+    td.array_layers = 1;
+    td.usage        = cd::rhi::TextureUsage::kColorAttachment;
+    auto tex_r = dev.create_texture(td);
+    ASSERT_TRUE(tex_r.has_value())
+        << std::string(tex_r.error().message.begin(), tex_r.error().message.end());
+    const auto tex = *tex_r;
+
+    cd::rhi::TextureViewDesc vd {};
+    vd.texture = tex;
+    vd.type    = cd::rhi::TextureType::k3D;
+    auto view_r = dev.create_texture_view(vd);
+    ASSERT_TRUE(view_r.has_value())
+        << std::string(view_r.error().message.begin(), view_r.error().message.end());
+
+    dev.destroy_texture_view(*view_r);
+    dev.destroy_texture(tex);
+}
+#endif
+
 }  // namespace
