@@ -121,41 +121,16 @@ const float PI = 3.14159265358979;
 // cd_d_ggx takes PERCEPTUAL roughness (derives alpha=r² internally) and
 // cd_v_smith_ggx_correlated folds the geometry term WITH the
 // 1/(4·NoV·NoL) denominator, so the direct-specular site multiplies
-// D * V * F with NO separate denominator. The clearcoat (clearcoat_dv)
-// and sheen (v_neubelt) lobes keep their own V terms — untouched.
+// D * V * F with NO separate denominator.
+// SL consumer-migration #4 (phase1168): F_Schlick / F_Schlick_roughness /
+// charlie_d / v_neubelt / clearcoat_dv removed — replaced by canonical
+// cd::gluon cd_f_schlick / cd_f_schlick_roughness (brdf.glsl) and
+// cd_charlie_d / cd_v_neubelt / cd_clearcoat_dv (brdf_sheen.glsl /
+// brdf_clearcoat.glsl). Arg-order for Fresnel is REVERSED vs. inline:
+// gluon uses (f0, voh) and (f0, nov, roughness), not (HoV, F0) / (cos, F0, r).
 #include <cd/gluon/brdf.glsl>
-
-vec3 F_Schlick(float HoV, vec3 F0) {
-  return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
-}
-
-vec3 F_Schlick_roughness(float cos_theta, vec3 F0, float roughness) {
-  vec3 ceiling = max(vec3(1.0 - roughness), F0);
-  return F0 + (ceiling - F0) * pow(clamp(1.0 - cos_theta, 0.0, 1.0), 5.0);
-}
-
-// ---- R6 BRDF additions (cd::brdf_sheen_clearcoat — Estevez/Filament) -------
-
-// Charlie sheen distribution (Estevez 2017).
-float charlie_d(float r, float nh) {
-  float a = max(r, 0.05);
-  float i = 1.0 / a;
-  float s2 = max(0.0, 1.0 - nh * nh);
-  return (2.0 + i) * pow(s2, 0.5 * i) / 6.28318530;
-}
-// Neubelt visibility for sheen.
-float v_neubelt(float nv, float nl) {
-  return 1.0 / (4.0 * (nl + nv - nl * nv) + 1e-4);
-}
-// Filament clearcoat D * V (GGX with 0.045 minimum roughness floor).
-float clearcoat_dv(float r, float nh, float nv, float nl) {
-  float a  = max(r * r, 0.045 * 0.045);
-  float a2 = a * a;
-  float d  = (nh * nh) * (a2 - 1.0) + 1.0;
-  float D  = a2 / (3.14159265 * d * d);
-  float V  = 1.0 / (4.0 * nv * nl + 1e-4);
-  return D * V;
-}
+#include <cd/gluon/brdf_sheen.glsl>
+#include <cd/gluon/brdf_clearcoat.glsl>
 
 // Burley wrap-diffusion (inline SSS approximation — Sztrajman/Filament
 // fast path). Real SSS needs a separable Jiménez blur post-pass; this
@@ -256,7 +231,7 @@ vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
   float HoV = max(dot(H, V), 0.0);
   float D = cd_d_ggx(NoH, roughness);
   float V_ = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
-  vec3  F = F_Schlick(HoV, F0);
+  vec3  F = cd_f_schlick(F0, HoV);
   vec3 specular = (D * V_) * F;
   vec3 kS = F;
   vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
@@ -264,17 +239,17 @@ vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
   vec3 lobe = diffuse + specular;
   // Charlie sheen lobe (additive on top of base).
   if (sheen_strength > 0.001) {
-    float Ds = charlie_d(roughness, NoH);
-    float Vs = v_neubelt(NoV, NoL);
+    float Ds = cd_charlie_d(roughness, NoH);
+    float Vs = cd_v_neubelt(NoV, NoL);
     // Match Filament's neutral sheen tint; user can scale further.
     vec3 sheen_col = vec3(0.95, 0.92, 0.88);
     lobe += sheen_col * Ds * Vs * sheen_strength;
   }
   // Filament clearcoat lobe — second specular layer with fixed F0
   // (4% dielectric), additive on the spec sum. Roughness reuses the
-  // base material's, clamped by clearcoat_dv() to the 0.045 floor.
+  // base material's, clamped by cd_clearcoat_dv() to the 0.045 floor.
   if (clearcoat_strength > 0.001) {
-    float DV_cc = clearcoat_dv(roughness, NoH, NoV, NoL);
+    float DV_cc = cd_clearcoat_dv(roughness, NoH, NoV, NoL);
     float F_cc  = 0.04 + 0.96 * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
     lobe += vec3(DV_cc * F_cc * clearcoat_strength);
   }
@@ -403,7 +378,7 @@ void main() {
                                    0.0, 0.0);
       // Diffuse stays on the analytic LTC form factor (Heitz 2016) —
       // the cosine-integral path is correct for the diffuse lobe.
-      vec3 F_area  = F_Schlick_roughness(NoV, F0, roughness);
+      vec3 F_area  = cd_f_schlick_roughness(F0, NoV, roughness);
       vec3 kD_area = (vec3(1.0) - F_area) * (1.0 - metallic);
       direct += kD_area * albedo * area_col * ff_diff
               + spec_area;
@@ -491,7 +466,7 @@ void main() {
   vec3  irradiance  = texture(cd_ibl_diff, N).rgb;
   vec2  brdf        = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
                                                 clamp(roughness, 0.0, 1.0))).rg;
-  vec3  F_ibl       = F_Schlick_roughness(NoV, F0, roughness);
+  vec3  F_ibl       = cd_f_schlick_roughness(F0, NoV, roughness);
   vec3  ibl_kD      = (vec3(1.0) - F_ibl) * (1.0 - metallic);
   // Fdez-Aguera 2019 "A Multiple-Scattering Microfacet Model for Real-Time IBL"
   // (JCGT 8:1) — multi-scatter compensation (Eq. 12-13, §3.4).

@@ -115,15 +115,10 @@ const float PI = 3.14159265358979;
 // Smith BRDF. cd_d_ggx takes PERCEPTUAL roughness; cd_v_smith_ggx_correlated
 // folds the geometry term WITH the 1/(4·NoV·NoL) denominator, so the
 // direct-specular site multiplies D * V * F with NO separate denominator.
+// SL consumer-migration #4 (phase1168): F_Schlick / F_Schlick_rough removed
+// — replaced by cd_f_schlick / cd_f_schlick_roughness from brdf.glsl.
+// Arg-order is REVERSED: gluon uses (f0, voh) and (f0, nov, roughness).
 #include <cd/gluon/brdf.glsl>
-
-vec3 F_Schlick(float HoV, vec3 F0) {
-  return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
-}
-vec3 F_Schlick_rough(float NoV, vec3 F0, float roughness) {
-  vec3 ceiling = max(vec3(1.0 - roughness), F0);
-  return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
-}
 
 // SL-D wave 3/5 (ADR-20260612 addendum): distance_atten + cone_atten
 // definitions are cd::gluon modules now (byte-identical bodies; Frostbite
@@ -142,7 +137,7 @@ vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
   float HoV = max(dot(H, V), 0.0);
   float D = cd_d_ggx(NoH, roughness);
   float V_ = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
-  vec3  F = F_Schlick(HoV, F0);
+  vec3  F = cd_f_schlick(F0, HoV);
   vec3 specular = (D * V_) * F;
   vec3 kS = F;
   vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
@@ -221,7 +216,7 @@ void main() {
   // light_count_pad.z >= 1 means "real cubemap textures bound";
   //   otherwise fall back to the analytical sky.
   vec3 R = reflect(-V, N);
-  vec3 ibl_F  = F_Schlick_rough(NoV, F0, roughness);
+  vec3 ibl_F  = cd_f_schlick_roughness(F0, NoV, roughness);
   vec3 ibl_kD = (vec3(1.0) - ibl_F) * (1.0 - metallic);
 
   vec3 env_diffuse;
