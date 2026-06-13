@@ -5,9 +5,10 @@ namespace cd::hello_engine
 {
 
 // AUTO-SYNCED with samples/engine/hello_engine/shaders/prim.frag.glsl
-// (phase 465). Embedded fallback used when on-disk shaders/ directory
-// is missing next to the binary. Keep in lockstep with the .glsl file
-// — drift loses runtime fixes silently.
+// (phase 1165: gluon includes phase1135/1138, canonical BRDF phase1157,
+// PCF migration phase1164). Embedded fallback used when on-disk
+// shaders/ directory is missing next to the binary. Keep in lockstep
+// with the .glsl file — drift loses runtime fixes silently.
 inline constexpr const char* kPrimFS = R"glsl(
 #version 460
 // Faz 1.7 - inline RT shadows via ray queries inside the raster FS.
@@ -20,6 +21,9 @@ inline constexpr const char* kPrimFS = R"glsl(
 // up here next to ray_query so the GLSL preprocessor sees it before
 // the binding declarations that depend on it (compiler-strict path).
 #extension GL_EXT_nonuniform_qualifier : require
+// phase1135 (SL-D wave 1): shader-library module includes, resolved by
+// cd::gluon::ModuleResolver (MaterialDesc::include_resolver).
+#extension GL_GOOGLE_include_directive : enable
 layout(push_constant) uniform PC {
   mat4 mvp;
   mat4 model;
@@ -82,40 +86,61 @@ layout(set = 0, binding = 9) uniform sampler2D   cd_mr_tex;
 // shared before phase465.  Single-geometry instances (procedural prims,
 // CesiumMan, the editor floor) still fill geom slot 0 + replicate to
 // 1..31 on the host so geom_index >= 1 reads back the same albedo.
-// phase840-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
-// InstanceMat extended with albedo_tex_slot + index_offset for the
-// bindless texture-sampling path. Sentinel slot 0xFFFFFFFFu keeps
-// non-Sponza prims on the W8-BD avg-colour fallback. Bindings 11/12/13
-// land in phase842 once the host wiring is in place.
+// phase840-W8-BE-rt-bindless-texture-sampling: InstanceMat extended
+// with `albedo_tex_slot` + `index_offset` fields. Slot value
+// `kBindlessAlbedoSlotNone` (= 0xFFFFFFFFu) signals "no per-prim
+// texture, fall back to the albedo (avg-colour) field" (W8-BD path).
+//
+// The new bindings 11 (sampler2D array), 12 (vertex SSBO), 13 (index
+// SSBO) are added in phase842 alongside the host-side wiring so the
+// validation layer never sees a shader that references a binding the
+// pipeline layout does not yet expose.
 struct InstanceMat {
   vec4 albedo;
   vec4 emissive;
   uint albedo_tex_slot;
   uint index_offset;
-  // phase866 see prim.frag.glsl
+  // phase866-2-bounce-sphere-normal: is_sphere = 1 enables the
+  // analytical-normal 2-bounce path; sphere_center_radius carries
+  // the world-space centre + radius for that path.
   uint is_sphere;
-  // phase886: see prim.frag.glsl
+  // phase886-non-sponza-bindless-prep: 0 = Sponza (sponza_vb/ib
+  // bindings 11/12), 1 = future CesiumMan binding. Shader uses
+  // it as a hint; texture-UV interp still uses Sponza VB/IB
+  // until a future phase wires the multi-mesh selection.
   uint mesh_id;
   vec4 sphere_center_radius;
 };
 layout(set = 0, binding = 10) readonly buffer InstanceMats {
   InstanceMat data[];
 } cd_instance_mats;
+// phase798-rt-chrome-sponza-geom-cap: 32 -> 128 to cover Sponza's 103
+// primitives (every curtain / column past slot 31 was clamping to 31).
+// Slot count = kMaxInstances(64) * kMaxGeomsPerInst(128) = 8192.
 const int  kMaxGeomsPerInst        = 128;
 const int  kMaxInstMatSlots        = 8192;
 const float kIblMaxMipLod          = 5.0;
+// phase840 sentinel: matches HelloRayQuery::kBindlessAlbedoSlotNone.
 const uint kBindlessAlbedoSlotNone = 0xFFFFFFFFu;
 
-// phase844-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
-// bindings 11/12/13 + PrimitiveVertexGpu struct + UV barycentric
-// interp + bindless texture sample. See prim.frag.glsl for the
-// full block-comment rationale. (The #extension GL_EXT_nonuniform_qualifier
-// declaration was moved to the file head for compiler strictness in
-// phase847.)
+// phase842c-W8-BE-rt-bindless-texture-sampling: new bindings.
+//   11 — Sponza vertex buffer as readonly storage (positions + UVs).
+//        Mirrors cd::asset::PrimitiveVertex (3×float pos + 3×float normal +
+//        2×float uv + 3×float color = 44 B, std430 padded to 48 B per
+//        vec3 alignment rules — we use explicit vec4 stride to make
+//        the layout deterministic).
+//   12 — Sponza index buffer (uint32) as readonly storage. Looks up
+//        the three vertex indices of the ray-hit triangle.
+//   13 — bindless sampler2D array. Per-prim albedo textures live in
+//        slots indexed by InstanceMat.albedo_tex_slot. The
+//        nonuniform_qualifier extension is required because the slot
+//        index varies per-pixel across the chrome surface.
+// (#extension GL_EXT_nonuniform_qualifier moved to the file head in
+// phase847 for compiler strictness.)
 struct PrimitiveVertexGpu {
-  vec4 pos_x_y_z_nx;
-  vec4 ny_nz_u_v;
-  vec4 col_r_g_b_pad;
+  vec4 pos_x_y_z_nx;     // pos.xyz + normal.x   (std430 packs 3-float as vec3 alignment)
+  vec4 ny_nz_u_v;        // normal.yz + uv.xy
+  vec4 col_r_g_b_pad;    // color.rgb + 4-byte pad to round to 48 B
 };
 layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
   PrimitiveVertexGpu verts[];
@@ -123,36 +148,26 @@ layout(set = 0, binding = 11, std430) readonly buffer SponzaVB {
 layout(set = 0, binding = 12, std430) readonly buffer SponzaIB {
   uint idx[];
 } cd_sponza_ib;
-// phase888-non-sponza-bindless-shader: see prim.frag.glsl
+// phase888-non-sponza-bindless-shader: bindings 14/15 carry the
+// CesiumMan VB/IB. mesh_id == 1 in the per-prim SSBO entry
+// selects this pair instead of sponza_vb/ib for the chrome
+// reflection UV interpolation.
 layout(set = 0, binding = 14, std430) readonly buffer CesiumVB {
   PrimitiveVertexGpu verts[];
 } cd_cesium_vb;
 layout(set = 0, binding = 15, std430) readonly buffer CesiumIB {
   uint idx[];
 } cd_cesium_ib;
-// phase864-bindless-dedicated-set: see prim.frag.glsl
+// phase864-bindless-dedicated-set: bindless sampler2D array moved
+// onto its own descriptor set at index 1. The shared per-prim set 0
+// no longer carries binding 13 — phase 851 + 860 proved NVIDIA
+// crashes the dynamic-index branch when bindless lives in the same
+// set as classic bindings. Set 1 has a single binding (binding=0)
+// and is allocated independently from the global descriptor pool.
 layout(set = 1, binding = 0) uniform sampler2D cd_bindless_albedo[];
 
-// Cotangent-frame from screen-space derivatives (Mikkelsen 2010).
-// Avoids needing per-vertex tangents - works for any UV-mapped mesh.
-mat3 cotangent_frame(vec3 N, vec3 p, vec2 uv) {
-  vec3 dp1 = dFdx(p);
-  vec3 dp2 = dFdy(p);
-  vec2 duv1 = dFdx(uv);
-  vec2 duv2 = dFdy(uv);
-  vec3 dp2perp = cross(dp2, N);
-  vec3 dp1perp = cross(N, dp1);
-  vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
-  vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
-  // phase437-black: guard against degenerate UV (identical UVs on a
-  // Sponza primitive / collapsed triangle → dFdx/dFdy == 0 →
-  // max(dot(T,T), dot(B,B)) == 0 → inversesqrt(0) = +Inf →
-  // TBN * nm_sample = NaN). Fall back to identity TBN (N unchanged).
-  float denom = max(dot(T, T), dot(B, B));
-  if (denom < 1e-10) return mat3(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), N);
-  float invmax = inversesqrt(denom);
-  return mat3(T * invmax, B * invmax, N);
-}
+// phase1138 (SL-D wave 2): moved VERBATIM to the shader library.
+#include <cd/gluon/cotangent_frame.glsl>
 layout(location = 0) in vec3 v_world_pos;
 layout(location = 1) in vec3 v_world_normal;
 layout(location = 2) in vec3 v_albedo;
@@ -175,13 +190,8 @@ layout(location = 2) out vec4 out_albedo;
 // blur + deferred BRDF + GI.
 layout(location = 3) out vec2 out_mr;
 
-// Frostbite windowed inverse-square attenuation.
-float distance_atten(float d, float range) {
-  if (range <= 0.0) return 0.0;
-  float ratio = d / range;
-  float w = clamp(1.0 - ratio*ratio*ratio*ratio, 0.0, 1.0);
-  return (w * w) / (d * d + 0.01);
-}
+// phase1138 (SL-D wave 2): moved VERBATIM to the shader library.
+#include <cd/gluon/light_atten.glsl>
 
 // Faz 1.7 inline RT shadow visibility test. Shoots a ray from the
 // surface point toward `dir` for at most `tmax` metres. Returns 1.0
@@ -376,96 +386,27 @@ float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
   return 1.0;
 }
 
-// 3?-3 PCF shadow sampling. Returns 1.0 = fully lit, 0.0 = fully
-// occluded. Vulkan clip space x,y ??? [-1,1], depth ??? [0,1]; texture
-// uv has y down (matches Vulkan clip y after perspective divide).
-// LTC polygon irradiance for area lights (#3). Lambert-only fit
-// (identity inverse matrix - production wants a 64x64 LUT keyed
-// by roughness/NoV). N is the surface normal at the shading
-// point; corners are in world-space, relative to the shading
-// point. Returns the form-factor of the polygon visible from N.
-// Edge integral with atan2 - robust at parallel and anti-parallel
-// configurations (the prior acos/sin form blew up near sin ~ 0 and
-// produced a thin black stripe at the area-light's equatorial plane).
-float cd_ltc_edge_integral(vec3 a, vec3 b) {
-  float d = clamp(dot(a, b), -1.0, 1.0);
-  vec3  c = cross(a, b);
-  float l = length(c);
-  float th = (l < 1e-6) ? 0.0 : atan(l, d);  // GLSL atan(y,x) = atan2
-  return (l < 1e-6) ? 0.0 : (th / l) * c.z;
-}
-float cd_ltc_polygon_irradiance(vec3 N, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
-  vec3 up = abs(N.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
-  vec3 T  = normalize(cross(up, N));
-  vec3 B  = cross(N, T);
-  mat3 frame = transpose(mat3(T, B, N));
-  vec3 p0 = normalize(frame * c0);
-  vec3 p1 = normalize(frame * c1);
-  vec3 p2 = normalize(frame * c2);
-  vec3 p3 = normalize(frame * c3);
-  float s = cd_ltc_edge_integral(p0, p1) +
-            cd_ltc_edge_integral(p1, p2) +
-            cd_ltc_edge_integral(p2, p3) +
-            cd_ltc_edge_integral(p3, p0);
-  // max-not-abs: negative values mean the polygon is back-facing.
-  // Closes the 'siyah serit' artifact at the rect's equatorial plane.
-  return max(s, 0.0) / 6.28318530;
-}
+// phase1138 (SL-D wave 2): LTC area-light pair moved VERBATIM to the
+// shader library (W8-AJ twin lives in cd::brdf::ltc — unification is
+// the user-signed visual phase).
+#include <cd/gluon/ltc_polygon.glsl>
 
-float sample_shadow(vec4 sp, vec3 N, vec3 L) {
-  // Perspective divide - ortho gives w=1 but keep for generality.
-  vec3 p = sp.xyz / sp.w;
-  // Outside the shadow ortho frustum ??' assume lit (sky / far away).
-  if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0 ||
-      p.z < 0.0 || p.z > 1.0) return 1.0;
-  // Vulkan: NDC y down ??' texture v down, same orientation, no flip.
-  vec2 uv = p.xy * 0.5 + 0.5;
-  // Slope-scaled depth bias - fights shadow acne on grazing-angle
-  // fragments. Coefficient picked empirically.
-  // phase451-csm: bias tightened slope 0.0015 -> 0.0003, floor 0.0003
-  // -> 0.00005. Combined with the shrunken ortho frustum in
-  // draw_shadow_map_pass (40m->20m extents, far 100m->60m), the world-
-  // space bias drops from ~6cm to ~0.3cm — small enough that cube /
-  // character / cylinder shadows cast onto Sponza floor are no longer
-  // swallowed by self-bias. PBR sphere grid acne risk: spheres are
-  // smooth, slope-scaled bias still spans the gradient, and the floor
-  // is 0.00005 NDC = 3mm world (well below sphere radius).
-  float bias = max(0.0003 * (1.0 - max(dot(N, L), 0.0)), 0.00005);
-  float ref  = p.z - bias;
-  vec2 ts = 1.0 / vec2(textureSize(cd_shadow_map, 0));
-  float s = 0.0;
-  for (int dy = -1; dy <= 1; ++dy)
-    for (int dx = -1; dx <= 1; ++dx) {
-      float d = texture(cd_shadow_map, uv + vec2(float(dx), float(dy)) * ts).r;
-      s += (d < ref) ? 0.0 : 1.0;
-    }
-  return s / 9.0;
-}
+// phase (SL-D consumer migration): the 3×3 PCF + slope-scaled bias
+// (phase451-csm tuned coefficients) moved VERBATIM to the shader
+// library (cd_pcf_shadow_3x3 + cd_shadow_slope_bias). The global
+// cd_shadow_map sampler is passed as a function argument so the module
+// stays self-contained. Pixel-neutral: chrome_probe golden pins it.
+#include <cd/gluon/shadow_filtering.glsl>
 
-// W8-AQ Cook-Torrance helpers (used by tint.w == 3.0 PBR-sphere branch).
-// Same equations as cd::material::StandardPbrMaterial so unified prim
-// path renders metallic spheres physically identical to the dedicated
-// PBR pipeline used by hello_pbr.
-float D_GGX_pbr(float NoH, float a) {
-  float a2 = a * a;
-  float d  = (NoH * NoH) * (a2 - 1.0) + 1.0;
-  return a2 / (3.14159265 * d * d + 1e-7);
-}
-float G_SchlickGGX_pbr(float NoV, float k) {
-  return NoV / (NoV * (1.0 - k) + k + 1e-7);
-}
-float G_Smith_pbr(float NoV, float NoL, float roughness) {
-  float r = roughness + 1.0;
-  float k = (r * r) / 8.0;
-  return G_SchlickGGX_pbr(NoV, k) * G_SchlickGGX_pbr(NoL, k);
-}
-vec3 F_Schlick_pbr(float HoV, vec3 F0) {
-  return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
-}
-vec3 F_Schlick_roughness_pbr(float NoV, vec3 F0, float roughness) {
-  vec3 ceiling = max(vec3(1.0 - roughness), F0);
-  return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
-}
+// phase1135 (SL-D wave 1): the W8-AQ Cook-Torrance helper block moved
+// VERBATIM to the shader library (exact-text migration — preprocessed
+// token stream unchanged, chrome_probe golden pins the move).
+// CANONICAL BRDF UNIFICATION (user-signed visual phase): swapped the
+// transitional brdf_w8aq twin (Schlick-GGX k=(r+1)²/8 geometry term)
+// for the canonical height-correlated Smith brdf module. The call
+// sites below drop their explicit /(4·NoV·NoL) divisor because
+// cd_v_smith_ggx_correlated folds that denominator in (D·V·F form).
+#include <cd/gluon/brdf.glsl>
 
 void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
@@ -479,7 +420,12 @@ void main() {
     if (alpha_val < pc.fx_params.w) discard;
   }
 
-  // surface_flag now encodes both AO eligibility AND a finer SSR/RT-blend bucket
+  // surface_flag encodes the SSR bucket for the composite pass:
+  //   > 0.95 → full SSR
+  //   [0.5, 0.95] → half-strength SSR additive enhancement
+  //   ≤ 0.5 → no SSR (sky / shadow / floor / non-metallic surfaces)
+  // Computed as a baseline here; overridden below once metallic is known
+  // (non-metallic glTF prims must NOT get SSR — that was the curtain sheen bug).
   float surface_flag = (is_shadow_w || is_floor_w) ? 0.0
                      : is_pbr_w                    ? 0.85
                      : is_gltf_prim                ? 0.6
@@ -524,6 +470,14 @@ void main() {
   // Write correct G-buffer MRT values
   out_albedo = vec4(clamp(albedo, vec3(0.0), vec3(1.0)), 1.0);
   out_mr     = vec2(metallic, roughness);
+
+  // Override surface_flag for non-metallic glTF prims: disable SSR so
+  // curtains, stone, and vegetation don't get screen-space reflections
+  // (which was causing the metallic sheen bug). Only metallic glTF prims
+  // (if any) keep the 0.6 bucket for SSR enhancement.
+  if (is_gltf_prim && metallic < 0.25)
+    surface_flag = 0.0;
+  out_normal = vec4(safe_N, surface_flag);
 
   // tint.w sentinel: < 0.5 = "shadow-projection draw"
   if (is_shadow_w) {
@@ -580,7 +534,20 @@ void main() {
   float NoV = max(dot(N, V), 0.0);
   vec3 F0 = mix(vec3(0.04), albedo, metallic);
 
+  // Energy conservation is handled by kD = (1-F)*(1-metallic), NOT by
+  // dividing diffuse by PI. PBR spheres use 1/PI for physical correctness
+  // in the dedicated Cook-Torrance path; glTF prims and default entities
+  // keep 1.0 so their diffuse contribution is not artificially dimmed
+  // (which would expose specular artifacts as metallic sheen).
   float diff_scale = is_pbr_w ? 0.318309886 : 1.0;
+
+  // Non-metallic surfaces (curtains, stone, vegetation, procedural entities)
+  // get ZERO Cook-Torrance specular. Rough dielectrics (roughness >= 0.3,
+  // F0 = 0.04) have negligible visible specular in reality, and even a small
+  // percentage of GGX specular becomes visible under high-intensity lights
+  // (3000-6000 lm), creating a metallic sheen that doesn't belong on fabric.
+  // Only the PBR demo spheres (is_pbr_w) retain full Cook-Torrance specular.
+  bool diel_no_spec = !is_pbr_w && metallic < 0.25;
 
   vec3 lit = vec3(0.0);
 
@@ -591,13 +558,14 @@ void main() {
     float NoL = max(dot(N, L), 0.0);
     float NoH = max(dot(N, H), 0.0);
     float HoV = max(dot(H, V), 0.0);
-    float D = D_GGX_pbr(NoH, roughness * roughness);
-    float G = G_Smith_pbr(NoV, NoL, roughness);
-    vec3  F = F_Schlick_pbr(HoV, F0);
-    vec3 specular = (D * G) * F / (4.0 * NoV * NoL + 1e-7);
+    float D = cd_d_ggx(NoH, roughness);
+    float Vis = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
+    vec3  F = cd_f_schlick(F0, HoV);
+    vec3 specular = (D * Vis) * F;
+    if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
-    float shade = sample_shadow(v_shadow_pos, N, L);
+    float shade = cd_pcf_shadow_3x3(cd_shadow_map, v_shadow_pos, N, L);
     lit += (diffuse + specular) * NoL * pc.sun_color.rgb *
                (pc.sun_dir.w * shade);
   }
@@ -667,14 +635,14 @@ void main() {
       float NoLrp = max(dot(N, Lrp), 0.0);
       float NoHrp = max(dot(N, Hrp), 0.0);
       float HoVrp = max(dot(Hrp, V), 0.0);
-      float D_a = D_GGX_pbr(NoHrp, roughness * roughness);
-      float G_a = G_Smith_pbr(NoV, NoLrp, roughness);
-      vec3  F_a = F_Schlick_pbr(HoVrp, F0);
-      vec3 spec_rect = (D_a * G_a) * F_a /
-                       (4.0 * NoV * NoLrp + 1e-7) * NoLrp *
+      float D_a = cd_d_ggx(NoHrp, roughness);
+      float Vis_a = cd_v_smith_ggx_correlated(NoV, NoLrp, roughness);
+      vec3  F_a = cd_f_schlick(F0, HoVrp);
+      vec3 spec_rect = (D_a * Vis_a) * F_a * NoLrp *
                        acol * atten_rp;
+      if (diel_no_spec) spec_rect = vec3(0.0);
 
-      vec3 F_diff = F_Schlick_roughness_pbr(NoV, F0, roughness);
+      vec3 F_diff = cd_f_schlick_roughness(F0, NoV, roughness);
       vec3 kD_a   = (vec3(1.0) - F_diff) * (1.0 - metallic);
       lit += vis_a * (kD_a * albedo * acol * ff_diff + spec_rect);
       continue;
@@ -712,10 +680,11 @@ void main() {
     vec3 H = normalize(Lp + V);
     float NoH = max(dot(N, H), 0.0);
     float HoV = max(dot(H, V), 0.0);
-    float D = D_GGX_pbr(NoH, roughness * roughness);
-    float G = G_Smith_pbr(NoV, NoL, roughness);
-    vec3  F = F_Schlick_pbr(HoV, F0);
-    vec3 specular = (D * G) * F / (4.0 * NoV * NoL + 1e-7);
+    float D = cd_d_ggx(NoH, roughness);
+    float Vis = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
+    vec3  F = cd_f_schlick(F0, HoV);
+    vec3 specular = (D * Vis) * F;
+    if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
     vec3 lcol = cd_lights.slots[li].color_int.xyz *
@@ -739,13 +708,19 @@ void main() {
   vec3  diff_e  = texture(cd_ibl_diff, N).rgb;
   vec2  brdf_v  = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
                                             clamp(roughness, 0.0, 1.0))).rg;
-  vec3  F_ibl   = F_Schlick_roughness_pbr(NoV, F0, roughness);
+  vec3  F_ibl   = cd_f_schlick_roughness(F0, NoV, roughness);
   vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - metallic);
   float Ess_p   = brdf_v.x + brdf_v.y;
   float Ems_p   = 1.0 - Ess_p;
   vec3  Favg_p  = F0 + (1.0 - F0) * (1.0 / 21.0);
   vec3  Fms_p   = (Favg_p * Ess_p) / (vec3(1.0) - Favg_p * Ems_p);
-  vec3  ibl_spec_p = spec_e * (F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p);
+  vec3  raw_ibl_spec = spec_e * (F0 * brdf_v.x + vec3(brdf_v.y) + Fms_p * Ems_p);
+  // Zero IBL specular for non-metallic non-PBR surfaces to match the
+  // zeroed direct-light specular above. Only PBR spheres and metallic
+  // surfaces get environment reflections.
+  float ibl_spec_metallic_gate = diel_no_spec ? 0.0
+                                : mix(0.12, 1.0, clamp(metallic, 0.0, 1.0));
+  vec3  ibl_spec_p = raw_ibl_spec * ibl_spec_metallic_gate;
 
   float ibl_gate_factor = is_pbr_w ? 1.0 : 0.6;
   float ibl_gate = clamp(pc.sun_dir.w * ibl_gate_factor, 0.0, 1.0);
@@ -772,7 +747,7 @@ void main() {
   }
   if (scene_hit > 0.5 && hit_slot >= 0) {
     vec3 hit_alb = cd_instance_mats.data[hit_slot].albedo.rgb;
-    // phase844-W8-BE-rt-bindless-texture-sampling (auto-synced from .glsl):
+    // phase842c-W8-BE-rt-bindless-texture-sampling:
     // When the per-prim metadata exposes a texture slot (!= sentinel),
     // recover the per-vertex UV at the hit point via barycentric
     // interpolation from the Sponza VB/IB SSBOs and sample the bindless
@@ -780,29 +755,62 @@ void main() {
     // without textures (CesiumMan, PBR grid, procedural seeds).
     uint tex_slot   = cd_instance_mats.data[hit_slot].albedo_tex_slot;
     uint idx_offset = cd_instance_mats.data[hit_slot].index_offset;
-    // phase865 + phase888: see prim.frag.glsl
-    if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u && hit_prim >= 0) {
+    // phase865-bindless-revive-via-dedicated-set: with binding moved
+    // off set 0 (phase 864 API + boot wiring), the dynamic-index
+    // crash phase 851 + 860 reproduced should no longer fire. If
+    // stability holds, chrome reflections finally show real Sponza
+    // texture detail (curtain damask, leaf veins, sandstone grain).
+    if (tex_slot != kBindlessAlbedoSlotNone && tex_slot < 256u) {
+      // phase888-non-sponza-bindless-shader: mesh_id selects which
+      // VB/IB pair to read for the UV interp. 0 = Sponza (bindings
+      // 11/12), 1 = CesiumMan (bindings 14/15), 2 = analytical
+      // sphere (no VB/IB; spherical UV from hit-pos vs centre,
+      // phase1000-pbr-sphere-rt-texture). Same bindless slot array
+      // is shared.
       uint mesh_id = cd_instance_mats.data[hit_slot].mesh_id;
-      uint i0, i1, i2;
-      vec2 uv0, uv1, uv2;
-      if (mesh_id == 1u) {
-        i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-        i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-        i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-        uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
-        uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
-        uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
-      } else {
-        i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
-        i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
-        i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
-        uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
-        uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
-        uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+      vec2 uv = vec2(0.0);
+      bool uv_ok = false;
+      if (mesh_id == 2u) {
+        // phase1000-pbr-sphere-rt-texture: analytical spherical UV
+        // for sphere hits. Required because sphere primitives don't
+        // expose VB/IB UVs -- the shader has to derive them from the
+        // hit point itself. Standard spherical equirectangular
+        // mapping: u = atan2(z, x) / (2 pi) + 0.5, v = asin(y) / pi +
+        // 0.5. Object-space radial direction = normalize(hit_pos -
+        // sphere_center) (the analytical normal added in phase 866).
+        vec4  sphc       = cd_instance_mats.data[hit_slot].sphere_center_radius;
+        vec3  hit_pos    = (v_world_pos + safe_N * 0.01) + Ri * hit_t;
+        vec3  obj_radial = normalize(hit_pos - sphc.xyz);
+        const float kInv2Pi = 0.15915494;  // 1 / (2 * pi)
+        const float kInvPi  = 0.31830989;  // 1 / pi
+        uv = vec2(atan(obj_radial.z, obj_radial.x) * kInv2Pi + 0.5,
+                  asin(clamp(obj_radial.y, -1.0, 1.0)) * kInvPi + 0.5);
+        uv_ok = true;
+      } else if (hit_prim >= 0) {
+        uint i0, i1, i2;
+        vec2 uv0, uv1, uv2;
+        if (mesh_id == 1u) {
+          i0 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+          i1 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+          i2 = cd_cesium_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+          uv0 = cd_cesium_vb.verts[i0].ny_nz_u_v.zw;
+          uv1 = cd_cesium_vb.verts[i1].ny_nz_u_v.zw;
+          uv2 = cd_cesium_vb.verts[i2].ny_nz_u_v.zw;
+        } else {
+          i0 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 0u];
+          i1 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 1u];
+          i2 = cd_sponza_ib.idx[idx_offset + uint(hit_prim) * 3u + 2u];
+          uv0 = cd_sponza_vb.verts[i0].ny_nz_u_v.zw;
+          uv1 = cd_sponza_vb.verts[i1].ny_nz_u_v.zw;
+          uv2 = cd_sponza_vb.verts[i2].ny_nz_u_v.zw;
+        }
+        float w0 = 1.0 - hit_bary.x - hit_bary.y;
+        uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
+        uv_ok = true;
       }
-      float w0 = 1.0 - hit_bary.x - hit_bary.y;
-      vec2  uv = uv0 * w0 + uv1 * hit_bary.x + uv2 * hit_bary.y;
-      hit_alb  = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+      if (uv_ok) {
+        hit_alb = texture(cd_bindless_albedo[nonuniformEXT(tex_slot)], uv).rgb;
+      }
     }
     // phase866-2-bounce-sphere-normal: see prim.frag.glsl
     uint  hit_is_sphere = cd_instance_mats.data[hit_slot].is_sphere;
@@ -852,27 +860,82 @@ void main() {
                                             roughness * kIblMaxMipLod).rgb;
         hit_alb = mix(hit_alb, hit_alb + second_bounce_ibl * 0.5, 0.4);
     }
-    // phase830-rt-chrome-sponza-visible-mirror (auto-synced from prim.frag.glsl):
-    // For mirror reflections the BRDF integral at the reflection direction
-    // is unity — multiplying by brdf_term was attenuating the chrome
-    // reflection and tinting it with F0 a second time, fading the curtain
-    // reflections into the white-wall background. Drop the brdf_term for
-    // the RT branch; keep it on the IBL fallback.
-    // phase835-rt-chrome-sponza-tame-whitewash (auto-synced from .glsl):
-    // Post-phase833 the BLAS holds all 103 Sponza prims and rays land
-    // on EVERY surface — white sandstone walls were blowing out at 8x.
-    // 2.5x keeps walls visible-but-not-clipping while colored curtain
-    // prims stay saturated.
+    // phase795-rt-chrome-sponza-brightness:
+    // OLD: refl_color = hit_alb * (0.3 + 0.7 * NoL_hit) * sun_color * 3.0
+    // The OLD math used a pseudo_N = -Ri "fake normal" dotted with the
+    // sun direction. For typical chrome reflection rays this dot ends up
+    // close to zero (or even negative — clamped to zero), so refl_color
+    // ended up at the 0.3 floor: ~0.9 * hit_alb * sun_color. After the
+    // brdf_term * blend the surviving signal was so dim that chrome
+    // mostly fell back to the IBL term, painting the spheres in the
+    // outdoor sky colour even when the RT ray DID land on Sponza
+    // geometry. The user-reported bug ("spheres look like they're in a
+    // different universe than Sponza") was driven by this energy loss
+    // — not by an actual RT miss.
+    //
+    // NEW: emit hit_alb at a flat HDR-bright level (5x sun_color). No
+    // pseudo-normal cosine term. The intent is "this surface returns
+    // its full diffuse albedo at the IBL energy range" — appropriate
+    // for the indirect GI-ish role this branch is playing, and matches
+    // how the cubemap encodes interior brightness. Saturated per-prim
+    // colours (red curtain, green curtain, sandstone wall) now actually
+    // make it into the mirror image.
+    // phase835-rt-chrome-sponza-tame-whitewash:
+    // After phase833 fixed the BLAS cap (Sponza was silently truncated
+    // to 32/103 prims), ray hits land on the FULL 103 prims. With the
+    // 8x sun-strength boost set when most hits were missing, the white
+    // sandstone walls now blow out post-ACES into a flat white wash —
+    // visible curtain colours got drowned out and prim-edge detail
+    // softened. 4x compromises between:
+    //   * dimmer overall (white sandstone walls render as bright but
+    //     not clipping the ACES knee),
+    //   * coloured curtain prims (R 0.85/0.12/0.08, G 0.15/0.6/0.1)
+    //     keep their saturation post-tonemap,
+    //   * chrome still reads as bright-mirror, not low-contrast plastic.
+    //
+    // The per-prim "average colour" return remains a known limit —
+    // prim-internal detail (curtain damask pattern, leaf texture)
+    // requires ray-side texture sampling (queued strand L-rt-tex,
+    // see ADR W8-BD rejected alternative #1).
     vec3 refl_color = hit_alb * pc.sun_color.rgb * 4.0;
+    // phase830-rt-chrome-sponza-visible-mirror:
+    // For mirror reflections (perfect specular delta function) the BRDF
+    // integral over the cone is unity at the reflection direction — so
+    // we should NOT multiply by `brdf_term` (which is the diffuse-cone
+    // F0*GGX integral, designed for the IBL prefilter path). Multiplying
+    // by it was attenuating the chrome reflection by ~20% AND tinting it
+    // with F0 a second time, which made the curtain reflections fade
+    // into the white-wall background. The Fresnel weighting we DO want
+    // for chrome already lives in `F0` baked into the hit-side surface;
+    // here we just paint the hit colour at the prim's albedo brightness.
+    //
+    // For ROUGH metallic surfaces (roughness > ~0.3) a single RT ray is
+    // an under-sampled estimator of the BRDF lobe; the rough_blend term
+    // still folds in the IBL prefilter as the dim-blur fallback.
+    //
+    //   roughness=0.05 → blend=0.0025 → 99.75% scene (chrome mirror)
+    //   roughness=0.30 → blend=0.09   → 91% scene
+    //   roughness=0.90 → blend=0.81   → 19% scene (mostly IBL blur)
+    //
+    // F0-based fade-in: for low-F0 metals (impossible — metals have high
+    // F0) or non-metals (skipped at line 631) the gate is moot. The
+    // metal_gate at the blend keeps non-metallic dielectrics on the IBL
+    // path untouched.
     float rough_blend = clamp(roughness * roughness, 0.0, 1.0);
     float metal_gate  = clamp(metallic, 0.0, 1.0);
     float blend_t     = mix(1.0, rough_blend, metal_gate);
     ibl_spec_blended = mix(refl_color, ibl_spec_p, blend_t);
   }
 
-  // phase831-rt-chrome-sponza-bypass-ambient-gates (auto-synced from .glsl):
-  // Mirror reflections bypass ao_factor + ibl_gate so chrome keeps full
-  // reflection energy regardless of sun strength.
+  // phase831-rt-chrome-sponza-bypass-ambient-gates:
+  // A perfect mirror reflection is direct specular — it should NOT be
+  // attenuated by `ao_factor` (the mirror surface itself is not
+  // shadowed by ambient occlusion at the reflection direction) or
+  // `ibl_gate` (which fades the IBL term when the sun is low, but the
+  // RT scene reflection is independent of sun strength). Split the
+  // ambient contribution so the diffuse + IBL-spec path keeps its
+  // existing ao*gate attenuation while the smooth-metallic RT-hit
+  // mirror path is added at full energy.
   bool is_rt_mirror = (scene_hit > 0.5) && (metallic > 0.5) && (roughness < 0.3);
   vec3 ibl_spec_for_ambient = is_rt_mirror ? vec3(0.0) : ibl_spec_blended;
   vec3 ibl_contrib =
@@ -888,7 +951,8 @@ void main() {
     vec3 dn_dx = dFdx(v_world_normal);
     vec3 dn_dy = dFdy(v_world_normal);
     float curv = clamp(length(dn_dx) + length(dn_dy), 0.0, 1.0);
-    float ao   = 1.0 - ao_strength * curv * 0.85;
+    // Reduce crease-AO intensity to avoid dark halos around objects.
+    float ao   = 1.0 - ao_strength * curv * 0.35;
     ambient   *= ao;
   }
 
