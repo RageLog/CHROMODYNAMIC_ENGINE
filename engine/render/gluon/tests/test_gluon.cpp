@@ -165,6 +165,43 @@ TEST(ShaderLibCompile, PbrLobeEndToEnd)
     EXPECT_FALSE(r->spirv.empty());
 }
 
+// Canonical BRDF unification (hello_engine prim path): the roughness-
+// aware Schlick Fresnel added to brdf.glsl for the ambient / IBL kD
+// split must compile + link standalone. Mirrors the prim.frag IBL site.
+TEST(ShaderLibCompile, RoughnessFresnelCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/brdf.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_v;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 v = normalize(v_v);\n"
+        "    float nov = dot(n, v); float rough = 0.6;\n"
+        "    vec3 f0 = vec3(0.04);\n"
+        "    vec3 f = cd_f_schlick_roughness(f0, nov, rough);\n"
+        "    vec3 kd = (vec3(1.0) - f) * 0.75;\n"
+        "    o = vec4(kd, 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
 // SL-D wave 4: the StandardPbrMaterial LTC suite (transitional twin of
 // ltc_polygon.glsl, names WITHOUT the cd_ prefix) compiles standalone
 // and its specular entry point is callable through the resolver.

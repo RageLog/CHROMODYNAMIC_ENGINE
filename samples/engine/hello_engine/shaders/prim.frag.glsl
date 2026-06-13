@@ -434,7 +434,12 @@ float sample_shadow(vec4 sp, vec3 N, vec3 L) {
 // phase1135 (SL-D wave 1): the W8-AQ Cook-Torrance helper block moved
 // VERBATIM to the shader library (exact-text migration — preprocessed
 // token stream unchanged, chrome_probe golden pins the move).
-#include <cd/gluon/brdf_w8aq.glsl>
+// CANONICAL BRDF UNIFICATION (user-signed visual phase): swapped the
+// transitional brdf_w8aq twin (Schlick-GGX k=(r+1)²/8 geometry term)
+// for the canonical height-correlated Smith brdf module. The call
+// sites below drop their explicit /(4·NoV·NoL) divisor because
+// cd_v_smith_ggx_correlated folds that denominator in (D·V·F form).
+#include <cd/gluon/brdf.glsl>
 
 void main() {
   bool is_shadow_w   = (pc.tint.w < 0.5);
@@ -586,10 +591,10 @@ void main() {
     float NoL = max(dot(N, L), 0.0);
     float NoH = max(dot(N, H), 0.0);
     float HoV = max(dot(H, V), 0.0);
-    float D = D_GGX_pbr(NoH, roughness * roughness);
-    float G = G_Smith_pbr(NoV, NoL, roughness);
-    vec3  F = F_Schlick_pbr(HoV, F0);
-    vec3 specular = (D * G) * F / (4.0 * NoV * NoL + 1e-7);
+    float D = cd_d_ggx(NoH, roughness);
+    float Vis = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
+    vec3  F = cd_f_schlick(F0, HoV);
+    vec3 specular = (D * Vis) * F;
     if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
@@ -663,15 +668,14 @@ void main() {
       float NoLrp = max(dot(N, Lrp), 0.0);
       float NoHrp = max(dot(N, Hrp), 0.0);
       float HoVrp = max(dot(Hrp, V), 0.0);
-      float D_a = D_GGX_pbr(NoHrp, roughness * roughness);
-      float G_a = G_Smith_pbr(NoV, NoLrp, roughness);
-      vec3  F_a = F_Schlick_pbr(HoVrp, F0);
-      vec3 spec_rect = (D_a * G_a) * F_a /
-                       (4.0 * NoV * NoLrp + 1e-7) * NoLrp *
+      float D_a = cd_d_ggx(NoHrp, roughness);
+      float Vis_a = cd_v_smith_ggx_correlated(NoV, NoLrp, roughness);
+      vec3  F_a = cd_f_schlick(F0, HoVrp);
+      vec3 spec_rect = (D_a * Vis_a) * F_a * NoLrp *
                        acol * atten_rp;
       if (diel_no_spec) spec_rect = vec3(0.0);
 
-      vec3 F_diff = F_Schlick_roughness_pbr(NoV, F0, roughness);
+      vec3 F_diff = cd_f_schlick_roughness(F0, NoV, roughness);
       vec3 kD_a   = (vec3(1.0) - F_diff) * (1.0 - metallic);
       lit += vis_a * (kD_a * albedo * acol * ff_diff + spec_rect);
       continue;
@@ -709,10 +713,10 @@ void main() {
     vec3 H = normalize(Lp + V);
     float NoH = max(dot(N, H), 0.0);
     float HoV = max(dot(H, V), 0.0);
-    float D = D_GGX_pbr(NoH, roughness * roughness);
-    float G = G_Smith_pbr(NoV, NoL, roughness);
-    vec3  F = F_Schlick_pbr(HoV, F0);
-    vec3 specular = (D * G) * F / (4.0 * NoV * NoL + 1e-7);
+    float D = cd_d_ggx(NoH, roughness);
+    float Vis = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
+    vec3  F = cd_f_schlick(F0, HoV);
+    vec3 specular = (D * Vis) * F;
     if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
@@ -737,7 +741,7 @@ void main() {
   vec3  diff_e  = texture(cd_ibl_diff, N).rgb;
   vec2  brdf_v  = texture(cd_brdf_lut, vec2(clamp(NoV, 0.0, 1.0),
                                             clamp(roughness, 0.0, 1.0))).rg;
-  vec3  F_ibl   = F_Schlick_roughness_pbr(NoV, F0, roughness);
+  vec3  F_ibl   = cd_f_schlick_roughness(F0, NoV, roughness);
   vec3  ibl_kD  = (vec3(1.0) - F_ibl) * (1.0 - metallic);
   float Ess_p   = brdf_v.x + brdf_v.y;
   float Ems_p   = 1.0 - Ess_p;

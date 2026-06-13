@@ -30,6 +30,17 @@ vec3 cd_f_schlick(vec3 f0, float voh)
     return cd_f_schlick(f0, 1.0, voh);
 }
 
+/// Roughness-aware Schlick Fresnel for the ambient / IBL kD split
+/// (Karis 2013 / Lagarde). The grazing reflectance ceiling is lowered
+/// to max(1 - roughness, f0) so rough surfaces do not pick up a
+/// physically wrong full-white edge. `nov` is the view-cosine; the
+/// pre-integrated IBL term uses N·V (not H·V) at the split-sum stage.
+vec3 cd_f_schlick_roughness(vec3 f0, float nov, float perceptual_roughness)
+{
+    vec3 f90 = max(vec3(1.0 - perceptual_roughness), f0);
+    return f0 + (f90 - f0) * cd_pow5(1.0 - cd_saturate(nov));
+}
+
 /// GGX / Trowbridge-Reitz normal distribution.
 float cd_d_ggx(float noh, float perceptual_roughness)
 {
