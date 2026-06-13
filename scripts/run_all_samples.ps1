@@ -61,7 +61,6 @@ $argsForSample = @{
 # hello_asset_pipeline runs 6 sections including BC7 cook — give it extra time.
 $extraTimeout = @{
     'hello_asset_pipeline.exe' = 60
-    'hello_hot_reload.exe'     = 15
 }
 
 $results = @()

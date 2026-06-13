@@ -39,7 +39,7 @@ frame.
 | `hello_textured_cooked`         | Same, but with `.cdtex` (KTX2/BC7) sampling.                 | 8      |
 | `hello_anim`                    | Skeletal animation, rotating opaque cube via skinning matrix. | 14    |
 | `hello_scene_graph`             | Scene-graph traversal, parent→child transforms.              | 11     |
-| `hello_hot_reload`              | Edit a shader → engine watches → reload without restart.     | 13     |
+<!-- hello_hot_reload removed phase1157 — covered by hello_engine ShaderWatch panel -->
 | `hello_imgui`                   | ImGui integration (Phase 17.A), draw + interact.             | 17     |
 | `hello_inspector`               | Editor-style inspector window over a live scene.             | 17.B   |
 | `hello_editor`                  | EditHistory + TransformCommands wired into ImGui inspector.  | 18     |

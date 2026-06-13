@@ -185,7 +185,7 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 | `hello_engine`          | engine   | Full PBR/Vulkan render loop, Sponza, IBL, TAA, bloom, RT reflections |
 | `hello_editor`          | editor   | EditHistory + TransformCommands + Material Editor + Animator panels wired into ImGui |
 | `hello_behavior_designer` | editor | Behavior-tree visual designer (DEFERRED — ADR-20260613) |
-| `hello_hot_reload`      | editor   | Shader hot-reload via file watcher |
+<!-- hello_hot_reload removed phase1157: shader watch + material rebuild covered by hello_engine HelloShaderWatch.hpp -->
 | `hello_asset_pipeline`  | asset    | Mesh / texture / OBJ / cooked (.cdmesh) / glTF / BC7 — all 6 importers in one binary |
 | `hello_stress`          | foundation | Concurrency stress: work-stealing pool + ring-buffer flood under load |
 | `hello_world`           | game     | Minimal game-loop archetype (entity spawn, update, teardown) |
