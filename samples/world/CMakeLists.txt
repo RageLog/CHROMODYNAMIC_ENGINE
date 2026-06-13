@@ -21,12 +21,16 @@
 # Retained:
 #   * bench_archetype           - SparseSetWorld vs ArchetypeWorld 1000-entity
 #       microbenchmark. Category (c) standalone tool (perf datapoint).
-#   * hello_anim, hello_inspector, hello_scene_graph - Vulkan+ImGui visual
-#       demos (category b). Should fold into hello_engine as panel toggles
-#       in a later wave once hello_engine grows an Editor Panels collapser.
+#   * hello_anim - Vulkan+ImGui visual demo (category b). NEEDS-PORT: folds
+#       into hello_engine once an AnimationPlayer showcase + golden lands.
+#       Retained until then.
+#
+# Retired in phase 1152 (endgame audit, SAFE-DELETE — covered elsewhere):
+#   * hello_inspector    -> hello_editor hosts panel_inspector + HierarchyView
+#       + scene save/load (samples/editor/hello_editor/main.cpp:53).
+#   * hello_scene_graph  -> hello_engine Scene Serializer + ECS World Stress
+#       probes (HelloShowcaseProbes.hpp) + engine/world/scene/tests (9).
 add_subdirectory(bench_archetype)
 if(CD_ENABLE_VULKAN)
   add_subdirectory(hello_anim)
-  add_subdirectory(hello_inspector)
-  add_subdirectory(hello_scene_graph)
 endif()

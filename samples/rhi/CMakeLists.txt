@@ -10,8 +10,10 @@ if(WIN32)
   # wait_idle) is fully covered by GTEST_SKIP-on-no-adapter prologues
   # in engine/render/rhi/tests/test_d3d12_mesh_shader.cpp (9) +
   # test_d3d12_parity_m4.cpp (14). Source directory deleted.
-  add_subdirectory(hello_d3d12_clear)
-  add_subdirectory(hello_d3d12_triangle)
+  # phase1152: hello_d3d12_clear + hello_d3d12_triangle folded into
+  # hello_d3d12_pbr — it carries the same Win32 window + device + swapchain +
+  # clear path AND the PSO/draw/HLSL-compile path, with richer descriptors
+  # (docs/D3D12_PARITY_AUDIT.md). Both retired as redundant.
   # phase1149: hello_opengl_resources + hello_opengl_triangle folded into
   # hello_opengl (sample consolidation plan #6) — resource smoke (exit-code
   # gated) runs first, then the Phase 167 visible triangle.
