@@ -41,14 +41,31 @@
   textured_cooked/gltf → tek `hello_asset_pipeline` (cooked akışı
   taşınır; glTF görsel yolu hello_engine'de zaten Sponza/CesiumMan).
   **phase1150 DONE** — 6 binary → 1; git rm'd; CMakeLists + Readme + scripts güncellendi.
-- **Batch 4 (editor/world katlama):** hello_animator/behavior_designer/
-  material_editor/hot_reload + world/hello_anim/inspector/scene_graph +
-  ui/hello_ui → hello_editor panellerine (panel kütüphaneleri
-  engine/ui/editor'da zaten mevcut; sample'lar ince sarmalayıcı).
-  game/hello_world (885L) gameplay döngüsü → hello_engine'e taşınacak
-  modüller belirlenerek.
 - **OpenGL birleşik:** hello_opengl_resources + hello_opengl_triangle →
-  tek `hello_opengl` (Batch 2 ile).
+  tek `hello_opengl`. **phase1148 DONE** — 2 binary → 1.
+- **Batch 4 (endgame audit, 2026-06-13 — analyst kanıt-tabanlı):**
+  - **Batch-4a phase1152 DONE (SAFE-DELETE, 4 binary, 21→17):**
+    `world/hello_inspector` (hello_editor panel_inspector+HierarchyView+
+    save/load host), `world/hello_scene_graph` (hello_engine Scene
+    Serializer + ECS stress probes + scene unit tests 9),
+    `rhi/hello_d3d12_clear` ve `rhi/hello_d3d12_triangle`
+    (hello_d3d12_pbr Win32+device+swapchain+clear + PSO+draw+HLSL yolunu
+    taşıyor; D3D12_PARITY_AUDIT).
+  - **NEEDS-PORT (7 binary, ODAKLI GELECEK SESSION — gerçek entegrasyon,
+    "ince sarmalayıcı" DEĞİL):**
+    | Sample | Taşınacak | Nereye | Efor | Kapı |
+    | --- | --- | --- | --- | --- |
+    | hello_animator | panel_animator + Animator::draw() | hello_editor | ~30L+dep | UI-stack: panel cd::ui/DrawBatcher, editor ImGui — köprü gerekebilir |
+    | hello_behavior_designer | panel_behavior_designer | hello_editor | ~30L+dep | aynı UI-stack kapısı |
+    | hello_material_editor | panel_material_editor | hello_editor | ~30L+dep | aynı UI-stack kapısı |
+    | hello_hot_reload | FileWatcher+CachedCompiler+material swap | hello_editor/engine toggle | ~100L | FileWatcher threading; ADR-20260522 canonical |
+    | hello_anim | AnimationClip+Player+GoldenCapture | hello_engine showcase | ~200L | CI run_smoke `hello_anim` adını taşıyor — script+golden güncelle |
+    | hello_ui | ui_layout+ui_widgets+ui_renderer_rhi::Submitter | hello_editor/engine | orta-yüksek | architect kapısı: kSubmitterPipelineReady gate |
+    | hello_world | cd::game::{camera,trigger,particles_event,query} | hello_engine Gameplay panel | ~400L | architect kapısı: 4 gameplay-lib dep |
+  - Architect onayı NEEDS-PORT öncesi gerekli (hello_ui submitter gate +
+    hello_world gameplay-lib dep). 3 editor paneli en düşük efor ama
+    cd::ui↔ImGui stack uyumu önce netleşmeli. ≤10 hedefi bu 7 port +
+    (gerekirse) ek d3d12 katlamasıyla kapanır.
 
 ## Kurallar
 

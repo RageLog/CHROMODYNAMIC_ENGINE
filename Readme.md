@@ -22,7 +22,7 @@ application.
 > maturity gate (visual correctness on all windowed samples, cross-
 > GPU-vendor validation, external downstream consumer, independent
 > review).
-> Library count: **55**. Sample count: **39**. Test binaries: **58**.
+> Library count: **55**. Sample count: **17**. Test binaries: **58**.
 > Latest tag: **v0.25.0**.
 
 ## Highlights
@@ -170,7 +170,7 @@ cmake/CD*.cmake      # cd_add_library / cd_add_test / cd_add_sample helpers
 cmake/CDDoxygen.cmake, CDCoverage.cmake, CDSmoke.cmake
 CMakeModules/        # Vendored helpers (Sanitizers, Packaging, …)
 engine/<lib>/        # One subdirectory per cd::<lib>
-samples/             # 18 hello_* samples covering every public surface
+samples/             # 17 hello_* / bench_* samples covering every public surface
 tools/               # Offline cookers (cd_cook_mesh, cd_cook_texture)
 Dependencies/        # Optional vendored deps (googletest fallback)
 scripts/             # Smoke harness, build helpers
@@ -180,25 +180,25 @@ scripts/             # Smoke harness, build helpers
 
 Built into `build/<preset>/bin/<Config>/hello_*`:
 
-| Sample | Demonstrates |
-|---|---|
-| `hello_core`          | `cd::core` primitives (Result, ErrorCode, span) |
-| `hello_foundation`    | foundation layer wiring (log + diag + profile) |
-| `hello_handle`        | `cd::mem` slot-map handle pattern |
-| `hello_runtime`       | `cd::runtime` composition (subsystem startup/shutdown) |
-| `hello_ecs`           | archetype storage + queries |
-| `hello_scheduler`     | `cd::ecs::Scheduler` with declared reads/writes |
-| `hello_triangle`      | Vulkan dynamic-rendering minimal triangle |
-| `hello_asset_pipeline`| asset pipeline: mesh / texture / obj / cooked (.cdmesh) / gltf / textured_cooked (BC7) — all 6 in one binary (phase1150) |
-| `hello_cube`          | depth buffer + transform UBO |
-| `hello_scene_graph`   | hierarchical transforms via `cd::scene` |
-| `hello_hot_reload`    | shader hot-reload via file watcher |
-| `hello_imgui`         | Dear ImGui demo + profile HUD |
-| `hello_bench`         | `cd::bench` microbench on four hot-path snippets |
-| `hello_json`          | `cd::asset_json` parse / mutate / serialize round-trip |
-| `hello_scene_save`    | scene graph ↔ JSON round-trip (`cd::scene::Serializer`) |
-| `hello_audio_synth`   | sine synth → WAV byte stream → `cd::asset_wav::load` roundtrip |
-| `hello_asset_registry`| `cd::asset::AssetRegistry` + `WavAssetLoader` + `JsonAssetLoader` demo |
+| Sample | Category | Demonstrates |
+| ----------------------- | ---------- | -------------------------------------------------------------------- |
+| `hello_engine`          | engine   | Full PBR/Vulkan render loop, Sponza, IBL, TAA, bloom, RT reflections |
+| `hello_editor`          | editor   | EditHistory + TransformCommands wired into ImGui inspector |
+| `hello_animator`        | editor   | Animation clip authoring UI (NEEDS-PORT) |
+| `hello_behavior_designer` | editor | Behavior-tree visual designer (NEEDS-PORT) |
+| `hello_hot_reload`      | editor   | Shader hot-reload via file watcher |
+| `hello_material_editor` | editor   | PBR material parameter editor UI (NEEDS-PORT) |
+| `hello_asset_pipeline`  | asset    | Mesh / texture / OBJ / cooked (.cdmesh) / glTF / BC7 — all 6 importers in one binary |
+| `hello_stress`          | foundation | Concurrency stress: work-stealing pool + ring-buffer flood under load |
+| `hello_world`           | game     | Minimal game-loop archetype (entity spawn, update, teardown) |
+| `hello_d3d12_pbr`       | render   | D3D12 PBR sphere grid (D3D12 backend has 5 kNotImpl sites — X4-E) |
+| `hello_metal`           | rhi      | Metal minimal triangle (Apple Silicon / macOS) |
+| `hello_opengl`          | rhi      | OpenGL triangle + resource upload (consolidates 2 former samples) |
+| `hello_path_trace`      | rhi      | Vulkan ray-query path-tracer prototype |
+| `hello_triangle`        | rhi      | Vulkan dynamic-rendering minimal triangle |
+| `hello_ui`              | ui       | `cd::ui` + Dear ImGui layout demo |
+| `bench_archetype`       | world    | ECS archetype storage throughput benchmark |
+| `hello_anim`            | world    | `cd::anim` AnimationClip/Player keyframe drive (NEEDS-PORT → hello_engine) |
 
 ## Documentation
 
