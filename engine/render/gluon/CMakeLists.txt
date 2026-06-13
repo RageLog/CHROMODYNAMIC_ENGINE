@@ -6,6 +6,9 @@
 
 set(CD_GLUON_MODULES
   math_common
+  packing           # P0-A wave1: octahedral verbatim from ddgi (Cigolle 2014) + unorm/snorm
+  hash_noise        # P0-A wave1: PCG/rand verbatim from restir + value-noise/fBm from composite
+  sampling          # P0-A wave1: Hammersley/vdC + GGX importance sample (Karis split-sum)
   brdf
   cotangent_frame   # phase1138: verbatim from prim.frag (Mikkelsen 2010 TBN)
   cone_atten

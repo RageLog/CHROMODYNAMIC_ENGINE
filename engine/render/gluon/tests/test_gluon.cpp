@@ -238,6 +238,114 @@ TEST(ShaderLibCompile, LtcSpecularCompiles)
     EXPECT_FALSE(r->spirv.empty());
 }
 
+// ---- P0-A wave 1 (ADR-20260613): packing / hash_noise / sampling pins ------
+
+// packing.glsl: octahedral round-trip (cd_oct_decode(cd_oct_encode(n))) +
+// 2-channel normal reconstruct + unorm pack — DOMINANT lift from ddgi.
+TEST(ShaderLibCompile, PackingRoundTripCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/packing.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n);\n"
+        "    vec3 r = cd_oct_decode(cd_oct_encode(n));\n"
+        "    vec3 rn = cd_normal_reconstruct_z(n.xy);\n"
+        "    float q = cd_unpack_unorm(cd_pack_unorm(n.z * 0.5 + 0.5, 8.0), 8.0);\n"
+        "    o = vec4(r * 0.5 + rn * 0.5, q);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// hash_noise.glsl: PCG rand (restir DOMINANT) + value-noise/fBm (composite
+// DOMINANT) + gradient/curl (SOTA) all callable through the resolver.
+TEST(ShaderLibCompile, HashNoiseCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/hash_noise.glsl>\n"
+        "layout(location = 0) in vec2 v_uv;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    uint s = 12345u;\n"
+        "    float r = cd_rand(s);\n"
+        "    float vn = cd_value_noise(v_uv);\n"
+        "    float fb = cd_fbm4(v_uv);\n"
+        "    float gn = cd_gradient_noise(v_uv);\n"
+        "    vec2  cn = cd_curl_noise(v_uv);\n"
+        "    o = vec4(r, vn, fb, gn + cn.x);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// sampling.glsl: Hammersley + GGX importance sample (Karis split-sum) +
+// cosine hemisphere + concentric disk — the IBL runtime-eval entry points.
+TEST(ShaderLibCompile, SamplingCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/sampling.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n);\n"
+        "    vec2 xi = cd_hammersley(7u, 64u);\n"
+        "    vec3 h  = cd_importance_sample_ggx(xi, 0.4, n);\n"
+        "    vec3 ch = cd_cosine_sample_hemisphere(xi, n);\n"
+        "    vec3 sp = cd_uniform_sample_sphere(xi);\n"
+        "    vec2 dk = cd_uniform_sample_disk(xi);\n"
+        "    o = vec4(h * 0.5 + ch * 0.25 + sp * 0.25, dk.x);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
 // ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
 
 using TestDomain = cd::gluon::VariantDomain<
