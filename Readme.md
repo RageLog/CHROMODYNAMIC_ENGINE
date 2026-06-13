@@ -183,11 +183,9 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 | Sample | Category | Demonstrates |
 | ----------------------- | ---------- | -------------------------------------------------------------------- |
 | `hello_engine`          | engine   | Full PBR/Vulkan render loop, Sponza, IBL, TAA, bloom, RT reflections |
-| `hello_editor`          | editor   | EditHistory + TransformCommands wired into ImGui inspector |
-| `hello_animator`        | editor   | Animation clip authoring UI (NEEDS-PORT) |
-| `hello_behavior_designer` | editor | Behavior-tree visual designer (NEEDS-PORT) |
+| `hello_editor`          | editor   | EditHistory + TransformCommands + Material Editor + Animator panels wired into ImGui |
+| `hello_behavior_designer` | editor | Behavior-tree visual designer (DEFERRED — ADR-20260613) |
 | `hello_hot_reload`      | editor   | Shader hot-reload via file watcher |
-| `hello_material_editor` | editor   | PBR material parameter editor UI (NEEDS-PORT) |
 | `hello_asset_pipeline`  | asset    | Mesh / texture / OBJ / cooked (.cdmesh) / glTF / BC7 — all 6 importers in one binary |
 | `hello_stress`          | foundation | Concurrency stress: work-stealing pool + ring-buffer flood under load |
 | `hello_world`           | game     | Minimal game-loop archetype (entity spawn, update, teardown) |

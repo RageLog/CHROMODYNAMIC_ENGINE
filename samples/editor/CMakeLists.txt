@@ -15,6 +15,6 @@
 # chain bring-up). Keeping them as standalone exes meanwhile.
 add_subdirectory(hello_editor)
 add_subdirectory(hello_hot_reload)
-add_subdirectory(hello_material_editor)  # phase567: ImGui-free cd::ui_* material editor panel sample
-add_subdirectory(hello_animator)         # phase591: ImGui-free cd::editor::panel::animator sample
-add_subdirectory(hello_behavior_designer)  # phase592: demos cd::editor::panel::behavior_designer
+# phase1156: hello_material_editor folded into hello_editor (Material Editor ImGui panel, Seçenek B)
+# phase1156: hello_animator folded into hello_editor (Animator ImGui panel, Seçenek B)
+add_subdirectory(hello_behavior_designer)  # phase592: demos cd::editor::panel::behavior_designer (DEFERRED per ADR-20260613)

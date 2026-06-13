@@ -52,11 +52,12 @@
 #include <cd/editor/TransformCommands.hpp>
 #include <cd/editor/panel_inspector/Inspector.hpp>
 #include <cd/editor/panel_console/Console.hpp>
+#include <cd/editor/panel_material_editor/MaterialEditor.hpp>  // phase1156: folded from hello_material_editor
+#include <cd/editor/panel_animator/Animator.hpp>               // phase1156: folded from hello_animator
 #include <cd/imgui/Context.hpp>
 #include <cd/debug_draw/DebugDraw.hpp>
 #include <cd/editor/AxisGizmo.hpp>
 #include <cd/editor/SelectionSet.hpp>
-#include <numbers>
 #include <optional>
 #include <cd/debug_line/DebugLine.hpp>
 #include <cd/material/Material.hpp>
@@ -576,6 +577,31 @@ int main(int argc, char** argv)
     // ---- Inspector panel (cd::editor_panel_inspector) --------------------
     cd::editor::panel::inspector::Inspector inspector_panel;
     inspector_panel.set_world_ptr(&world);
+
+    // ---- Material Editor panel (phase1156: folded from hello_material_editor) --
+    // State object only; rendering is done via ImGui below (Seçenek B).
+    cd::editor::panel::material_editor::MaterialEditor g_mat_editor;
+    g_mat_editor.set_material_id(1U);
+    g_mat_editor.set_base_color(0.25F, 0.55F, 0.95F);
+    g_mat_editor.set_metallic(0.80F);
+    g_mat_editor.set_roughness(0.35F);
+
+    // ---- Animator panel (phase1156: folded from hello_animator) ---------------
+    // State object only; rendering is done via ImGui below (Seçenek B).
+    cd::editor::panel::animator::Animator g_animator;
+    {
+        static constexpr cd::editor::panel::animator::ClipId kClipIdle   = 1U;
+        static constexpr cd::editor::panel::animator::ClipId kClipWalk   = 2U;
+        static constexpr cd::editor::panel::animator::ClipId kClipAttack = 3U;
+        g_animator.add_clip(kClipIdle);
+        g_animator.add_clip(kClipWalk);
+        g_animator.add_clip(kClipAttack);
+        g_animator.set_clip(kClipWalk);
+        g_animator.set_duration(2.4F);
+        g_animator.set_time(1.2F);
+        g_animator.set_playing(true);
+        g_animator.set_looping(true);
+    }
 
     auto find_meta = [&](cd::ecs::Entity e) -> EntityMeta* {
         for (auto& m : entity_metas)
@@ -2148,6 +2174,87 @@ int main(int argc, char** argv)
             const auto& log_entries = console_panel.entries();
             for (auto it = log_entries.rbegin(); it != log_entries.rend(); ++it)
                 ImGui::TextUnformatted(it->c_str());
+        }
+        ImGui::End();
+
+        // ---- Material Editor (phase1156: folded from hello_material_editor) --
+        // Seçenek B: state owned by g_mat_editor; ImGui renders directly.
+        ImGui::Begin("Material Editor");
+        {
+            // Base colour
+            std::array<float, 3> base_col {
+                g_mat_editor.base_color_r(),
+                g_mat_editor.base_color_g(),
+                g_mat_editor.base_color_b()
+            };
+            if (ImGui::ColorEdit3("Base Color", base_col.data()))
+                g_mat_editor.set_base_color(base_col[0], base_col[1], base_col[2]);
+
+            // Metallic
+            float metallic = g_mat_editor.metallic();
+            if (ImGui::SliderFloat("Metallic", &metallic, 0.0F, 1.0F))
+                g_mat_editor.set_metallic(metallic);
+
+            // Roughness
+            float roughness = g_mat_editor.roughness();
+            if (ImGui::SliderFloat("Roughness", &roughness, 0.0F, 1.0F))
+                g_mat_editor.set_roughness(roughness);
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Material slot: %u", g_mat_editor.material_id());
+        }
+        ImGui::End();
+
+        // ---- Animator (phase1156: folded from hello_animator) ----------------
+        // Seçenek B: state owned by g_animator; ImGui renders directly.
+        ImGui::Begin("Animator");
+        {
+            // Clip browser — simple ListBox over registered clip ids
+            const int clip_count = static_cast<int>(g_animator.clip_count());
+            if (clip_count == 0)
+            {
+                ImGui::TextDisabled("(no clips)");
+            }
+            else
+            {
+                // Build display strings on stack
+                static const char* const kClipNames[] = { "Idle", "Walk", "Attack" };
+                int current_item = -1;
+                for (int i = 0; i < clip_count && i < 3; ++i)
+                {
+                    // The seeded clips are 1/2/3; Walk (id=2) is active.
+                    if (g_animator.clip_id() ==
+                            static_cast<cd::editor::panel::animator::ClipId>(i + 1))
+                        current_item = i;
+                }
+                if (ImGui::ListBox("Clips", &current_item, kClipNames,
+                                   std::min(clip_count, 3), 3))
+                {
+                    const auto new_id =
+                        static_cast<cd::editor::panel::animator::ClipId>(current_item + 1);
+                    g_animator.set_clip(new_id);
+                }
+            }
+
+            // Timeline scrubber
+            float t = g_animator.time();
+            const float dur = g_animator.duration();
+            if (ImGui::SliderFloat("Time", &t, 0.0F, dur > 0.0F ? dur : 1.0F))
+                g_animator.set_time(t);
+
+            // Play / Loop checkboxes
+            bool playing = g_animator.is_playing();
+            if (ImGui::Checkbox("Playing", &playing))
+                g_animator.set_playing(playing);
+            ImGui::SameLine();
+            bool looping = g_animator.is_looping();
+            if (ImGui::Checkbox("Looping", &looping))
+                g_animator.set_looping(looping);
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Duration: %.2f s  |  Time: %.2f s",
+                static_cast<double>(g_animator.duration()),
+                static_cast<double>(g_animator.time()));
         }
         ImGui::End();
 

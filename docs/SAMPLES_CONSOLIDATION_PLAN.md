@@ -51,20 +51,27 @@
     `rhi/hello_d3d12_clear` ve `rhi/hello_d3d12_triangle`
     (hello_d3d12_pbr Win32+device+swapchain+clear + PSO+draw+HLSL yolunu
     taşıyor; D3D12_PARITY_AUDIT).
-  - **NEEDS-PORT (7 binary, ODAKLI GELECEK SESSION — gerçek entegrasyon,
+  - **Batch-4b phase1156 DONE (FOLD, 2 binary, 17→15): hello_material_editor +
+    hello_animator folded into hello_editor as ImGui-native panels (Seçenek B,
+    ADR-20260613). State objects g_mat_editor / g_animator; DrawBatcher path
+    NOT used in hello_editor — pure ImGui ColorEdit3/SliderFloat/Checkbox/ListBox.
+    git rm both sample dirs. hello_behavior_designer DEFERRED per ADR-20260613
+    (node-graph layout reimplementation ~200L extra, not justified for sample count).**
+  - **NEEDS-PORT (5 binary, ODAKLI GELECEK SESSION — gerçek entegrasyon,
     "ince sarmalayıcı" DEĞİL):**
-    | Sample | Taşınacak | Nereye | Efor | Kapı |
-    | --- | --- | --- | --- | --- |
-    | hello_animator | panel_animator + Animator::draw() | hello_editor | ~30L+dep | UI-stack: panel cd::ui/DrawBatcher, editor ImGui — köprü gerekebilir |
-    | hello_behavior_designer | panel_behavior_designer | hello_editor | ~30L+dep | aynı UI-stack kapısı |
-    | hello_material_editor | panel_material_editor | hello_editor | ~30L+dep | aynı UI-stack kapısı |
-    | hello_hot_reload | FileWatcher+CachedCompiler+material swap | hello_editor/engine toggle | ~100L | FileWatcher threading; ADR-20260522 canonical |
-    | hello_anim | AnimationClip+Player+GoldenCapture | hello_engine showcase | ~200L | CI run_smoke `hello_anim` adını taşıyor — script+golden güncelle |
-    | hello_ui | ui_layout+ui_widgets+ui_renderer_rhi::Submitter | hello_editor/engine | orta-yüksek | architect kapısı: kSubmitterPipelineReady gate |
-    | hello_world | cd::game::{camera,trigger,particles_event,query} | hello_engine Gameplay panel | ~400L | architect kapısı: 4 gameplay-lib dep |
+
+    | Sample | Taşınacak | Nereye | Efor | Kapı | Durum |
+    | --- | --- | --- | --- | --- | --- |
+    | hello_animator | panel_animator + Animator::draw() | hello_editor | ~30L+dep | UI-stack uyumu | **DONE phase1156** |
+    | hello_material_editor | panel_material_editor | hello_editor | ~30L+dep | UI-stack uyumu | **DONE phase1156** |
+    | hello_behavior_designer | panel_behavior_designer | hello_editor | ~200L | node-graph layout | DEFERRED — ADR-20260613 |
+    | hello_hot_reload | FileWatcher+CachedCompiler+material swap | hello_editor/engine toggle | ~100L | FileWatcher threading; ADR-20260522 canonical | PENDING |
+    | hello_anim | AnimationClip+Player+GoldenCapture | hello_engine showcase | ~200L | CI run_smoke `hello_anim` adını taşıyor — script+golden güncelle | PENDING |
+    | hello_ui | ui_layout+ui_widgets+ui_renderer_rhi::Submitter | hello_editor/engine | orta-yüksek | architect kapısı: kSubmitterPipelineReady gate | PENDING |
+    | hello_world | cd::game::{camera,trigger,particles_event,query} | hello_engine Gameplay panel | ~400L | architect kapısı: 4 gameplay-lib dep | PENDING |
+
   - Architect onayı NEEDS-PORT öncesi gerekli (hello_ui submitter gate +
-    hello_world gameplay-lib dep). 3 editor paneli en düşük efor ama
-    cd::ui↔ImGui stack uyumu önce netleşmeli. ≤10 hedefi bu 7 port +
+    hello_world gameplay-lib dep). ≤10 hedefi kalan 5 port +
     (gerekirse) ek d3d12 katlamasıyla kapanır.
 
 ## Kurallar
