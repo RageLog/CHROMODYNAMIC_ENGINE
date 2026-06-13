@@ -115,21 +115,15 @@ layout(location = 3) out vec2 out_mr;
 
 const float PI = 3.14159265358979;
 
-float D_GGX(float NoH, float a) {
-  float a2 = a * a;
-  float d  = (NoH * NoH) * (a2 - 1.0) + 1.0;
-  return a2 / (PI * d * d + 1e-7);
-}
-
-float G_SchlickGGX(float NoV, float k) {
-  return NoV / (NoV * (1.0 - k) + k + 1e-7);
-}
-
-float G_Smith(float NoV, float NoL, float roughness) {
-  float r = roughness + 1.0;
-  float k = (r * r) / 8.0;
-  return G_SchlickGGX(NoV, k) * G_SchlickGGX(NoL, k);
-}
+// SL consumer-migration #3 (phase1157/1165 fold): the inline GGX-D /
+// Schlick-GGX / Smith-G trio is replaced by the canonical cd::gluon
+// height-correlated Smith BRDF (cd_d_ggx + cd_v_smith_ggx_correlated).
+// cd_d_ggx takes PERCEPTUAL roughness (derives alpha=r² internally) and
+// cd_v_smith_ggx_correlated folds the geometry term WITH the
+// 1/(4·NoV·NoL) denominator, so the direct-specular site multiplies
+// D * V * F with NO separate denominator. The clearcoat (clearcoat_dv)
+// and sheen (v_neubelt) lobes keep their own V terms — untouched.
+#include <cd/gluon/brdf.glsl>
 
 vec3 F_Schlick(float HoV, vec3 F0) {
   return F0 + (vec3(1.0) - F0) * pow(clamp(1.0 - HoV, 0.0, 1.0), 5.0);
@@ -260,10 +254,10 @@ vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
   float NoV = max(dot(N, V), 0.0);
   float NoH = max(dot(N, H), 0.0);
   float HoV = max(dot(H, V), 0.0);
-  float D = D_GGX(NoH, roughness * roughness);
-  float G = G_Smith(NoV, NoL, roughness);
+  float D = cd_d_ggx(NoH, roughness);
+  float V_ = cd_v_smith_ggx_correlated(NoV, NoL, roughness);
   vec3  F = F_Schlick(HoV, F0);
-  vec3 specular = (D * G) * F / (4.0 * NoV * NoL + 1e-7);
+  vec3 specular = (D * V_) * F;
   vec3 kS = F;
   vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
   vec3 diffuse = kD * albedo / PI;
