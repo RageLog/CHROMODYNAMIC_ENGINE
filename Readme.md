@@ -188,7 +188,7 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 <!-- hello_hot_reload removed phase1157: shader watch + material rebuild covered by hello_engine HelloShaderWatch.hpp -->
 | `hello_asset_pipeline`  | asset    | Mesh / texture / OBJ / cooked (.cdmesh) / glTF / BC7 — all 6 importers in one binary |
 | `hello_stress`          | foundation | Concurrency stress: work-stealing pool + ring-buffer flood under load |
-| `hello_world`           | game     | Minimal game-loop archetype (entity spawn, update, teardown) |
+<!-- hello_world removed phase1173: gameplay stack (query/trigger/camera/particles_event) folded into hello_engine "Gameplay Stack Demo" probe (HelloGameplayDemo.hpp) -->
 | `hello_d3d12_pbr`       | render   | D3D12 PBR sphere grid (D3D12 backend has 5 kNotImpl sites — X4-E) |
 | `hello_metal`           | rhi      | Metal minimal triangle (Apple Silicon / macOS) |
 | `hello_opengl`          | rhi      | OpenGL triangle + resource upload (consolidates 2 former samples) |

@@ -21,9 +21,16 @@
 #   * hello_dialog_branch  -> engine/game/dialog_tree/tests/test_dialog_tree.cpp (8).
 #   * hello_input_replay   -> engine/game/input_recorder/tests/test_input_recorder.cpp (10).
 #
-# Retained:
-#   * hello_world — Phase 504 / G3.5 closeout VISUAL variant: real Win32 window
-#     + Vulkan swapchain showing 3rd-person player walking through a trigger
-#     volume with a follow vcam. Category (b) visual demo for the entire
-#     gameplay stack (query / trigger / camera / particles_event).
-add_subdirectory(hello_world)
+# Retired in phase1173 (samples-consolidation, hello_world fold):
+#   * hello_world — Phase 504 / G3.5 closeout VISUAL variant. The four
+#     gameplay libraries (query / trigger / camera / particles_event) it
+#     exercised are now driven by a CPU-only "Gameplay Stack Demo" probe in
+#     hello_engine (samples/engine/hello_engine/HelloGameplayDemo.hpp), per
+#     [feedback_sample_consolidation_and_per_feature_demo]. The ~600 lines of
+#     platform-window / Vulkan-swapchain / Renderer boilerplate hello_world
+#     carried are already provided by hello_engine, so the binary was retired
+#     rather than ported byte-for-byte.
+#
+# samples/game/ now hosts no standalone binaries; the directory is kept for
+# future gameplay-tier showcases and so the parent add_subdirectory stays
+# valid.

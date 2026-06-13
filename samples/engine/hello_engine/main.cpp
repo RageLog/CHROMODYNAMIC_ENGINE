@@ -187,6 +187,7 @@
 #include "HelloTlasRing.hpp"
 #include "HelloViewportDemos.hpp"
 #include "HelloShowcaseProbes.hpp"
+#include "HelloGameplayDemo.hpp"
 #include "HelloTlasRebuild.hpp"
 #include "HelloSkinnedAnim.hpp"
 #include "HelloBootBindless.hpp"
@@ -2763,6 +2764,10 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // CPU demos (DDGI / ReSTIR / NRC / vol-fog / clouds / ...) are
     // all preserved -- they have interactive surface area.
     cd_sample::draw_run25_probes(fx);
+    // phase1173-hello-world-fold: folded samples/game/hello_world gameplay
+    // stack demo (query/trigger/camera/particles_event). CPU-only +
+    // golden-neutral; only reached through this golden-gated panel block.
+    cd_sample::draw_gameplay_demo_panel(log_push);
     // phase991-r-showcase-passive-cleanup: removed the 4th Run 25
     // sample-fold scaffold ("Run25 Backend Switcher"). Pure
     // BulletText catalog of per-backend rhi samples + a blocked-on-

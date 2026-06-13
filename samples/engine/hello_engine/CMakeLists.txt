@@ -16,6 +16,12 @@ cd_add_sample(hello_engine
     cd::concurrency
     cd::core
     cd::ecs
+    # phase1173-hello-world-fold: gameplay-stack libs for the folded
+    # samples/game/hello_world "Gameplay Stack Demo" R-Showcase probe.
+    cd::game_query
+    cd::game_trigger
+    cd::game_camera
+    cd::game_particles_event
     cd::editor
     cd::editor_panel
     cd::frame_timing
