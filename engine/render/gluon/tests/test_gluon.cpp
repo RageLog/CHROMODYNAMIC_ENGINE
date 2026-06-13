@@ -346,6 +346,124 @@ TEST(ShaderLibCompile, SamplingCompiles)
     EXPECT_FALSE(r->spirv.empty());
 }
 
+// ---- P0-A wave 2 (ADR-20260613): color_space / shadow_filtering / ibl ------
+
+// color_space.glsl: exact sRGB transfer (ColorPicker DOMINANT) + Rec.2020
+// (HdrDisplay DOMINANT) + Kelvin→RGB (ColorTemperature DOMINANT) + luminance /
+// YCoCg round-trip / exposure (SOTA) all callable through the resolver.
+TEST(ShaderLibCompile, ColorSpaceCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/color_space.glsl>\n"
+        "layout(location = 0) in vec3 v_c;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 lin = cd_srgb_to_linear3(v_c);\n"
+        "    vec3 s   = cd_linear_to_srgb3(lin);\n"
+        "    vec3 w   = cd_linear_srgb_to_rec2020(lin);\n"
+        "    float y  = cd_luminance(lin) + cd_luminance_601(lin);\n"
+        "    vec3 yc  = cd_ycocg_to_rgb(cd_rgb_to_ycocg(lin));\n"
+        "    vec3 k   = cd_cct_to_linear_rgb(6500.0);\n"
+        "    vec3 e   = cd_exposure(k, 1.0) * cd_ev100_to_exposure(12.0);\n"
+        "    o = vec4(s * 0.4 + w * 0.2 + yc * 0.2 + e * 0.2, y);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// shadow_filtering.glsl: 3×3 PCF (prim.frag DOMINANT, sampler2D parameter) +
+// slope bias + 5×5 / Poisson / cascade-select (SOTA) through the resolver.
+TEST(ShaderLibCompile, ShadowFilteringCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/shadow_filtering.glsl>\n"
+        "layout(set = 0, binding = 0) uniform sampler2D u_shadow;\n"
+        "layout(location = 0) in vec4 v_sp;\n"
+        "layout(location = 1) in vec3 v_n;\n"
+        "layout(location = 2) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 l = normalize(v_l);\n"
+        "    float s3 = cd_pcf_shadow_3x3(u_shadow, v_sp, n, l);\n"
+        "    float s5 = cd_pcf_shadow_5x5(u_shadow, v_sp, n, l);\n"
+        "    float sp = cd_pcf_shadow_poisson(u_shadow, v_sp, n, l, 2.0, 0.7);\n"
+        "    int ci = cd_shadow_cascade_select(12.0, vec4(5.0, 15.0, 50.0, 200.0), 4);\n"
+        "    o = vec4(s3, s5, sp, float(ci));\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// ibl_sampling.glsl: analytic split-sum env-BRDF (Karis/Lazarov) + roughness→
+// mip (PrefilteredSpecular DOMINANT) + SH9 irradiance (LightProbe DOMINANT)
+// — the runtime IBL eval entry points (bake NOT regenerated, §2.6).
+TEST(ShaderLibCompile, IblSamplingCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/ibl_sampling.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_v;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 v = normalize(v_v);\n"
+        "    float nov = max(dot(n, v), 0.0); float rough = 0.5;\n"
+        "    vec2 ab  = cd_env_brdf_approx(rough, nov);\n"
+        "    vec3 spec = cd_specular_ibl(vec3(0.04), rough, nov, vec3(0.6));\n"
+        "    float mip = cd_roughness_to_mip(rough, 8.0);\n"
+        "    vec3 sh[9];\n"
+        "    for (int i = 0; i < 9; ++i) sh[i] = vec3(0.1);\n"
+        "    vec3 irr = cd_sh9_irradiance(sh, n);\n"
+        "    o = vec4(spec + irr + vec3(ab, mip * 0.1), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
 // ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
 
 using TestDomain = cd::gluon::VariantDomain<

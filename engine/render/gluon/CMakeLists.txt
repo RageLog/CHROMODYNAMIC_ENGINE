@@ -9,6 +9,9 @@ set(CD_GLUON_MODULES
   packing           # P0-A wave1: octahedral verbatim from ddgi (Cigolle 2014) + unorm/snorm
   hash_noise        # P0-A wave1: PCG/rand verbatim from restir + value-noise/fBm from composite
   sampling          # P0-A wave1: Hammersley/vdC + GGX importance sample (Karis split-sum)
+  color_space       # P0-A wave2: sRGB/Rec2020/CCT verbatim (ColorPicker+HdrDisplay+ColorTemperature) + luma/YCoCg/exposure SOTA
+  shadow_filtering  # P0-A wave2: PCF 3x3 + slope-bias verbatim from prim.frag + PCF5x5/Poisson/cascade-select SOTA
+  ibl_sampling      # P0-A wave2: split-sum env-BRDF (Karis/Lazarov) + roughness->mip verbatim + SH9 irradiance verbatim from LightProbe
   brdf
   cotangent_frame   # phase1138: verbatim from prim.frag (Mikkelsen 2010 TBN)
   cone_atten
