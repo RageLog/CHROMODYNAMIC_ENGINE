@@ -16,12 +16,16 @@ set(CD_GLUON_MODULES
   brdf_sheen        # P1 wave1: Charlie-D + Neubelt-V verbatim from cd::brdf::sheen_clearcoat (Estevez-Kulla 2017)
   brdf_clearcoat    # P1 wave1: Filament clearcoat D*V (0.045 floor) verbatim from cd::brdf::sheen_clearcoat
   brdf_sss          # P1 wave1: Burley wrap-diffusion inline lobe verbatim from cd::brdf::sss (Burley 2015; CS blur NOT migrated)
+  brdf_diffuse_ext  # P1 wave2: Oren-Nayar qualitative + Fujii fast rough-diffuse (SOTA; no engine GLSL copy)
+  brdf_anisotropy   # P1 wave2: anisotropic GGX-D (Burley/Kulla) + height-correlated Smith-V (Heitz) (SOTA; no engine GLSL copy)
   cotangent_frame   # phase1138: verbatim from prim.frag (Mikkelsen 2010 TBN)
   cone_atten
   light_atten       # phase1138: verbatim from prim.frag (Frostbite windowed)
   ltc_polygon       # phase1138: verbatim from prim.frag (atan2 edge integral)
   ltc_specular      # canonical GGX-specular extension of ltc_polygon (cd_ltc_inv_matrix/M_transform/polygon_specular)
   tonemap
+  tonemap_ext       # P1 wave2: AgX display transform + punchy variant (Sobotka/Blender minimal fit) — prim.frag op=3 target
+  color_grading     # P1 wave2: lift-gamma-gain/contrast/saturation/white-balance(CAT02)/channel-mixer (Lagarde/Frostbite, ASC-CDL)
 )
 
 set(_cd_gluon_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")

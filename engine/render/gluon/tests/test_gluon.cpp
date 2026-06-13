@@ -575,6 +575,158 @@ TEST(ShaderLibCompile, BrdfSssCompiles)
     EXPECT_FALSE(r->spirv.empty());
 }
 
+// ---- P1 wave 2 (ADR-20260613): brdf_diffuse_ext / brdf_anisotropy /
+//      tonemap_ext / color_grading (SOTA-standard, no engine GLSL copy) ------
+
+// brdf_diffuse_ext.glsl: Oren-Nayar qualitative (1994) + Fujii fast fit,
+// both carrying the /PI direct-lighting convention, callable via resolver.
+TEST(ShaderLibCompile, BrdfDiffuseExtCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/brdf_diffuse_ext.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_v;\n"
+        "layout(location = 2) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 v = normalize(v_v);\n"
+        "    vec3 l = normalize(v_l);\n"
+        "    float nol = dot(n, l); float nov = dot(n, v); float lov = dot(l, v);\n"
+        "    vec3 on = cd_fd_oren_nayar(vec3(0.6), nol, nov, lov, 0.5);\n"
+        "    vec3 fj = cd_fd_oren_nayar_fast(vec3(0.6), nol, nov, lov, 0.4);\n"
+        "    o = vec4(on * 0.5 + fj * 0.5, 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// brdf_anisotropy.glsl: anisotropic GGX-D (Burley/Kulla) + height-correlated
+// anisotropic Smith-V (Heitz), tangent/bitangent parameterised, via resolver.
+TEST(ShaderLibCompile, BrdfAnisotropyCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/brdf_anisotropy.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_t;\n"
+        "layout(location = 2) in vec3 v_v;\n"
+        "layout(location = 3) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 t = normalize(v_t);\n"
+        "    vec3 b = cross(n, t);\n"
+        "    vec3 v = normalize(v_v); vec3 l = normalize(v_l);\n"
+        "    vec3 h = normalize(v + l);\n"
+        "    float at = 0.25; float ab = 0.05;\n"
+        "    float D = cd_d_ggx_aniso(at, ab, dot(t, h), dot(b, h), dot(n, h));\n"
+        "    float V = cd_v_smith_ggx_aniso(at, ab,\n"
+        "        dot(t, v), dot(b, v), dot(n, v),\n"
+        "        dot(t, l), dot(b, l), dot(n, l));\n"
+        "    o = vec4(vec3(D * V), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// tonemap_ext.glsl: AgX display transform (Sobotka/Blender minimal fit) +
+// punchy variant — the prim.frag op=3 "AGX" target, callable via resolver.
+TEST(ShaderLibCompile, TonemapExtCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/tonemap_ext.glsl>\n"
+        "layout(location = 0) in vec3 v_c;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 agx  = cd_tonemap_agx(v_c);\n"
+        "    vec3 agxp = cd_tonemap_agx_punchy(v_c);\n"
+        "    o = vec4(agx * 0.5 + agxp * 0.5, 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// color_grading.glsl: lift-gamma-gain + pivot contrast + luminance-centred
+// saturation (LOCAL cd_cg_luminance, NO color_space include) + CAT02
+// white-balance + channel-mixer, all callable via resolver.
+TEST(ShaderLibCompile, ColorGradingCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/color_grading.glsl>\n"
+        "layout(location = 0) in vec3 v_c;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 g = cd_lift_gamma_gain(v_c, vec3(0.02), vec3(1.1), vec3(1.05));\n"
+        "    g = cd_contrast(g, 1.2, 0.18);\n"
+        "    g = cd_saturation(g, 1.15);\n"
+        "    g = cd_white_balance(g, 0.2, -0.1);\n"
+        "    g = cd_channel_mixer(g, vec3(1.0, 0.0, 0.0),\n"
+        "                            vec3(0.0, 1.0, 0.0),\n"
+        "                            vec3(0.0, 0.0, 1.0));\n"
+        "    o = vec4(g, 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
 // ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
 
 using TestDomain = cd::gluon::VariantDomain<
