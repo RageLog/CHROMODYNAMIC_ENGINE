@@ -131,16 +131,11 @@ vec3 F_Schlick_rough(float NoV, vec3 F0, float roughness) {
   return F0 + (ceiling - F0) * pow(clamp(1.0 - NoV, 0.0, 1.0), 5.0);
 }
 
-// SL-D wave 3 (ADR-20260612 addendum): distance_atten definition is the
-// cd::gluon module (byte-identical body; Frostbite windowed inverse-square).
+// SL-D wave 3/5 (ADR-20260612 addendum): distance_atten + cone_atten
+// definitions are cd::gluon modules now (byte-identical bodies; Frostbite
+// windowed inverse-square + spot-cone quadratic falloff).
 #include <cd/gluon/light_atten.glsl>
-
-float cone_atten(float cos_theta, float cos_inner, float cos_outer) {
-  if (cos_theta >= cos_inner) return 1.0;
-  if (cos_theta <= cos_outer) return 0.0;
-  float t = (cos_theta - cos_outer) / max(1e-5, cos_inner - cos_outer);
-  return t * t;
-}
+#include <cd/gluon/cone_atten.glsl>
 
 vec3 direct_lobe(vec3 N, vec3 V, vec3 L,
                  vec3 albedo, float metallic, float roughness,
