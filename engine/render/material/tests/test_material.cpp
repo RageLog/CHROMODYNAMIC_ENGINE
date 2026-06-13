@@ -295,11 +295,11 @@ TEST(StandardPbr, AreaExtrasHalvedForLtcCorners)
 
 TEST(StandardPbr, EmbeddedFsCompilesThroughDefaultResolverBridge)
 {
-    // SL-D wave 4: the LTC suite moved VERBATIM to the cd::gluon module
-    // cd/gluon/ltc_standard_pbr.glsl and the embedded FS now carries the
-    // #include line. Compiling the string with a NULL include_resolver
-    // proves the SL-D wave-3 default ModuleResolver bridge serves the
-    // module and the preprocessed stream still defines the LTC suite.
+    // SL-D wave 4 (now canonical): the LTC suite lives in cd::gluon modules
+    // cd/gluon/ltc_polygon.glsl + cd/gluon/ltc_specular.glsl; the embedded FS
+    // carries both #include lines. Compiling with a NULL include_resolver
+    // proves the default ModuleResolver bridge serves the modules and the
+    // preprocessed stream defines the full cd_-prefixed LTC suite.
     auto compiler = cd::shader::make_glslang_compiler();
     if (compiler == nullptr)
         GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";

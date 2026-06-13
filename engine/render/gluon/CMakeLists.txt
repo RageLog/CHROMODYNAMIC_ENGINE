@@ -11,7 +11,7 @@ set(CD_GLUON_MODULES
   cone_atten
   light_atten       # phase1138: verbatim from prim.frag (Frostbite windowed)
   ltc_polygon       # phase1138: verbatim from prim.frag (atan2 edge integral)
-  ltc_standard_pbr  # SL-D wave 4: verbatim from StandardPbrMaterial (twin of ltc_polygon)
+  ltc_specular      # canonical GGX-specular extension of ltc_polygon (cd_ltc_inv_matrix/M_transform/polygon_specular)
   tonemap
 )
 

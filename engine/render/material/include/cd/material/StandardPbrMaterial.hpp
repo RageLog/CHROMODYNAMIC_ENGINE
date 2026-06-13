@@ -180,11 +180,12 @@ vec3 wrap_diffuse(vec3 N, vec3 L, vec3 albedo,
 }
 
 // SL-D wave 4 (ADR-20260612 addendum): the LTC area-light helper suite
-// (ltc_edge_integral / ltc_polygon_irradiance / ltc_inv_matrix /
-// ltc_M_transform / ltc_polygon_specular) moved VERBATIM to the
-// cd::gluon module below; the W8-AJ commentary travels with it.
+// (cd_ltc_edge_integral / cd_ltc_polygon_irradiance / cd_ltc_inv_matrix /
+// cd_ltc_M_transform / cd_ltc_polygon_specular) in canonical cd_ prefixed
+// form via cd::gluon modules; the W8-AJ commentary travels with them.
 // Resolved by the Material::create default ModuleResolver bridge.
-#include <cd/gluon/ltc_standard_pbr.glsl>
+#include <cd/gluon/ltc_polygon.glsl>
+#include <cd/gluon/ltc_specular.glsl>
 
 // ---- Representative-point area-light specular (Karis 2013 / UE4) ----
 // W8-AN: the LTC inverse-matrix fit above is a 4-coefficient polynomial
@@ -393,7 +394,7 @@ void main() {
       // factor to 0. Reversing the traversal order yields a
       // CCW polygon from the lit side and unblocks both the
       // diffuse + GGX-specular LTC contributions.
-      float ff_diff = ltc_polygon_irradiance(N, c0, c3, c2, c1);
+      float ff_diff = cd_ltc_polygon_irradiance(N, c0, c3, c2, c1);
       // W8-AN: rect-specular via Karis 2013 representative-point.
       // The LTC inv-matrix fit is too sparse to reproduce mirror-like
       // peak alignment, so the prior LTC-specular path produced a
