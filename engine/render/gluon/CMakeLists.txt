@@ -13,6 +13,9 @@ set(CD_GLUON_MODULES
   shadow_filtering  # P0-A wave2: PCF 3x3 + slope-bias verbatim from prim.frag + PCF5x5/Poisson/cascade-select SOTA
   ibl_sampling      # P0-A wave2: split-sum env-BRDF (Karis/Lazarov) + roughness->mip verbatim + SH9 irradiance verbatim from LightProbe
   brdf
+  brdf_sheen        # P1 wave1: Charlie-D + Neubelt-V verbatim from cd::brdf::sheen_clearcoat (Estevez-Kulla 2017)
+  brdf_clearcoat    # P1 wave1: Filament clearcoat D*V (0.045 floor) verbatim from cd::brdf::sheen_clearcoat
+  brdf_sss          # P1 wave1: Burley wrap-diffusion inline lobe verbatim from cd::brdf::sss (Burley 2015; CS blur NOT migrated)
   cotangent_frame   # phase1138: verbatim from prim.frag (Mikkelsen 2010 TBN)
   cone_atten
   light_atten       # phase1138: verbatim from prim.frag (Frostbite windowed)

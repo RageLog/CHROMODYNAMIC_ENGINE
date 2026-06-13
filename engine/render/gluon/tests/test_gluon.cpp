@@ -464,6 +464,117 @@ TEST(ShaderLibCompile, IblSamplingCompiles)
     EXPECT_FALSE(r->spirv.empty());
 }
 
+// ---- P1 wave 1 (ADR-20260613): brdf_sheen / brdf_clearcoat / brdf_sss ------
+
+// brdf_sheen.glsl: Charlie-D (Estevez-Kulla 2017) + Neubelt-V + inline rim
+// lobe, all VERBATIM from cd::brdf::sheen_clearcoat, callable via resolver.
+TEST(ShaderLibCompile, BrdfSheenCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/brdf_sheen.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_v;\n"
+        "layout(location = 2) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 v = normalize(v_v);\n"
+        "    vec3 l = normalize(v_l); vec3 h = normalize(v + l);\n"
+        "    float noh = dot(n, h); float nov = dot(n, v); float nol = dot(n, l);\n"
+        "    float D = cd_charlie_d(0.4, noh);\n"
+        "    float V = cd_v_neubelt(nov, nol);\n"
+        "    vec3 rim = cd_sheen_inline_lobe(nov, 0.5);\n"
+        "    o = vec4(rim + vec3(D * V), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// brdf_clearcoat.glsl: Filament clearcoat D*V (0.045 floor) + inline rim
+// lobe, VERBATIM from cd::brdf::sheen_clearcoat, callable via resolver.
+TEST(ShaderLibCompile, BrdfClearcoatCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/brdf_clearcoat.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_v;\n"
+        "layout(location = 2) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 v = normalize(v_v);\n"
+        "    vec3 l = normalize(v_l); vec3 h = normalize(v + l);\n"
+        "    float noh = dot(n, h); float nov = dot(n, v); float nol = dot(n, l);\n"
+        "    float cc = cd_clearcoat_dv(0.1, noh, nov, nol);\n"
+        "    vec3 lobe = cd_clearcoat_inline_lobe(vec3(0.6), nov, 0.5);\n"
+        "    o = vec4(lobe + vec3(cc), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// brdf_sss.glsl: Burley wrap-diffusion inline lobe (Burley 2015) VERBATIM
+// from cd::brdf::sss, callable via resolver. The separable-blur CS body is
+// intentionally NOT migrated (fragment-usable lobe only).
+TEST(ShaderLibCompile, BrdfSssCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/brdf_sss.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 1) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n); vec3 l = normalize(v_l);\n"
+        "    vec3 sss = cd_sss_inline_wrap(n, l, 3.0, 0.5);\n"
+        "    o = vec4(sss, 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
 // ---- phase1134 (SL-C step 4): VariantDomain --------------------------------
 
 using TestDomain = cd::gluon::VariantDomain<
