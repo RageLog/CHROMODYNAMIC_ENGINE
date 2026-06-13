@@ -18,6 +18,8 @@
 #include <cd/rhi/Pipeline.hpp>
 #include <cd/shader/Compiler.hpp>
 
+#include <cd/gluon/ModuleRegistry.hpp>
+
 #include <array>
 #include <cstring>
 #include <string>
@@ -40,6 +42,8 @@ namespace
 
 constexpr std::string_view kDdgiTraceSmokeCS = R"glsl(
 #version 460
+#extension GL_GOOGLE_include_directive : enable
+#include <cd/gluon/packing.glsl>
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -64,13 +68,6 @@ vec3 fibonacci_dir(uint i, uint n, uint seed) {
     return vec3(cos(phi)*sin_t, sin(phi)*sin_t, cos_t);
 }
 
-vec2 oct_encode(vec3 n) {
-    float l = abs(n.x) + abs(n.y) + abs(n.z);
-    vec2  p = n.xy / l;
-    if (n.z < 0.0) p = (1.0 - abs(p.yx)) * sign(p);
-    return p * 0.5 + 0.5;
-}
-
 void main() {
     uint ray_idx   = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * 8u;
     uint probe_idx = gl_GlobalInvocationID.z;
@@ -86,7 +83,7 @@ void main() {
 
     ivec2 px_out = ivec2(int(ray_idx), int(probe_idx));
     imageStore(ray_radiance, px_out, radiance);
-    imageStore(ray_dir_dist, px_out, vec4(oct_encode(dir), dist, 0.0));
+    imageStore(ray_dir_dist, px_out, vec4(cd_oct_encode(dir), dist, 0.0));
 }
 )glsl";
 
@@ -107,6 +104,12 @@ compile_trace_module(cd::rhi::IDevice& device, bool needs_tlas)
     cd_desc.lang         = cd::shader::ShaderLanguage::kGlsl;
     cd_desc.target       = cd::shader::TargetEnv::kVulkan13;
     cd_desc.source_name  = needs_tlas ? "ddgi_trace.comp" : "ddgi_trace_smoke.comp";
+
+    // Resolve #include <cd/gluon/*.glsl> against the embedded module catalogue.
+    // Function-local (NOT static): ModuleResolver is stateless + deterministic
+    // per ModuleRegistry.hpp, mirroring Material.cpp:167-169.
+    cd::gluon::ModuleResolver default_resolver {};
+    cd_desc.include_resolver = &default_resolver;
 
     auto compiled = compiler->compile(cd_desc);
     if (!compiled.has_value())
@@ -145,6 +148,12 @@ compile_blend_module(cd::rhi::IDevice& device,
     cd_desc.lang        = cd::shader::ShaderLanguage::kGlsl;
     cd_desc.target      = cd::shader::TargetEnv::kVulkan13;
     cd_desc.source_name = source_name;
+
+    // Resolve #include <cd/gluon/*.glsl> against the embedded module catalogue.
+    // Function-local (NOT static): ModuleResolver is stateless + deterministic
+    // per ModuleRegistry.hpp, mirroring Material.cpp:167-169.
+    cd::gluon::ModuleResolver default_resolver {};
+    cd_desc.include_resolver = &default_resolver;
 
     auto compiled = compiler->compile(cd_desc);
     if (!compiled.has_value())

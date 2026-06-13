@@ -18,7 +18,7 @@ cd_add_library(ddgi
     src/DispatchPass.cpp
     src/FullPipeline.cpp
   PUBLIC_DEPS  cd::core cd::math cd::rhi
-  PRIVATE_DEPS cd::shader
+  PRIVATE_DEPS cd::shader cd::gluon
 )
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests)

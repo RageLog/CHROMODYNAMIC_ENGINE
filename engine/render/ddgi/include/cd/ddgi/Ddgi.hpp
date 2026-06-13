@@ -359,7 +359,9 @@ trilinear_probe_weights(const ProbeGrid& g,
 /// low-discrepancy sequence, rotated by frame_index to accumulate uniformly).
 constexpr std::string_view kDdgiTraceCS = R"glsl(
 #version 460
+#extension GL_GOOGLE_include_directive : enable
 #extension GL_EXT_ray_query : require
+#include <cd/gluon/packing.glsl>
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -386,14 +388,6 @@ vec3 fibonacci_dir(uint i, uint n, uint seed) {
     float cos_t = 1.0 - 2.0 * float(i) / float(n);
     float sin_t = sqrt(max(0.0, 1.0 - cos_t*cos_t));
     return vec3(cos(phi)*sin_t, sin(phi)*sin_t, cos_t);
-}
-
-// Octahedral encode for packing hit direction into rg16f.
-vec2 oct_encode(vec3 n) {
-    float l = abs(n.x) + abs(n.y) + abs(n.z);
-    vec2  p = n.xy / l;
-    if (n.z < 0.0) p = (1.0 - abs(p.yx)) * sign(p);
-    return p * 0.5 + 0.5;
 }
 
 void main() {
@@ -430,7 +424,7 @@ void main() {
 
     ivec2 px_out = ivec2(int(ray_idx), int(probe_idx));
     imageStore(ray_radiance, px_out, radiance);
-    imageStore(ray_dir_dist, px_out, vec4(oct_encode(dir), dist, 0.0));
+    imageStore(ray_dir_dist, px_out, vec4(cd_oct_encode(dir), dist, 0.0));
 }
 )glsl";
 
@@ -438,6 +432,8 @@ void main() {
 /// One thread per probe face texel; accumulates with EMA hysteresis.
 constexpr std::string_view kDdgiBlendIrradianceCS = R"glsl(
 #version 460
+#extension GL_GOOGLE_include_directive : enable
+#include <cd/gluon/packing.glsl>
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -458,14 +454,6 @@ layout(push_constant) uniform PC {
     uint  _pad2;
 } pc;
 
-// Octahedral decode.
-vec3 oct_decode(vec2 e) {
-    vec2  p = e * 2.0 - 1.0;
-    vec3  n = vec3(p, 1.0 - abs(p.x) - abs(p.y));
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
-    return normalize(n);
-}
-
 void main() {
     // Each thread maps to one atlas texel (probe_face texel in [0, face_size)).
     uint atlas_x    = gl_GlobalInvocationID.x;
@@ -480,7 +468,7 @@ void main() {
     float fs = float(pc.probe_face_size);
     vec2  local_uv = (vec2(float(atlas_x), float(atlas_y)) + 0.5) / fs;
     vec2  oct_p    = local_uv * 2.0 - 1.0;
-    vec3  face_dir = oct_decode(local_uv);
+    vec3  face_dir = cd_oct_decode(local_uv);
 
     // Accumulate weighted radiance across all rays (cosine-weighted).
     vec3  accum  = vec3(0.0);
@@ -490,7 +478,7 @@ void main() {
         ivec2  ray_px   = ivec2(int(r), int(probe_idx));
         vec4   rad_info = imageLoad(ray_radiance, ray_px);
         vec4   dir_info = imageLoad(ray_dir_dist, ray_px);
-        vec3   ray_dir  = oct_decode(dir_info.xy);
+        vec3   ray_dir  = cd_oct_decode(dir_info.xy);
         float  cos_w    = max(0.0, dot(face_dir, ray_dir));
         accum  += rad_info.rgb * cos_w;
         weight += cos_w;
@@ -520,6 +508,8 @@ void main() {
 /// Used by the sample FS to gate indirect irradiance and prevent light leaks.
 constexpr std::string_view kDdgiBlendVisibilityCS = R"glsl(
 #version 460
+#extension GL_GOOGLE_include_directive : enable
+#include <cd/gluon/packing.glsl>
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -540,13 +530,6 @@ layout(push_constant) uniform PC {
     uint  _pad1;
 } pc;
 
-vec3 oct_decode(vec2 e) {
-    vec2 p = e * 2.0 - 1.0;
-    vec3 n = vec3(p, 1.0 - abs(p.x) - abs(p.y));
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
-    return normalize(n);
-}
-
 void main() {
     uint atlas_x   = gl_GlobalInvocationID.x;
     uint atlas_y   = gl_GlobalInvocationID.y;
@@ -557,7 +540,7 @@ void main() {
 
     float fs      = float(pc.probe_face_size);
     vec2  local_uv = (vec2(float(atlas_x), float(atlas_y)) + 0.5) / fs;
-    vec3  face_dir = oct_decode(local_uv);
+    vec3  face_dir = cd_oct_decode(local_uv);
 
     float sum_d  = 0.0;
     float sum_d2 = 0.0;
@@ -568,7 +551,7 @@ void main() {
         vec4  dir_dd  = imageLoad(ray_dir_dist, ray_px);
         float dist    = dir_dd.z;
         if (dist < 0.0) continue;   // miss — sky
-        vec3  ray_dir = oct_decode(dir_dd.xy);
+        vec3  ray_dir = cd_oct_decode(dir_dd.xy);
         float cos_w   = max(0.0, dot(face_dir, ray_dir));
         sum_d  += dist * cos_w;
         sum_d2 += dist * dist * cos_w;
@@ -601,6 +584,8 @@ void main() {
 /// prevent indirect light leaking through occluders.
 constexpr std::string_view kDdgiSampleFS = R"glsl(
 #version 460
+#extension GL_GOOGLE_include_directive : enable
+#include <cd/gluon/packing.glsl>
 
 // Irradiance atlas (rgba16f, full atlas).
 layout(set = 1, binding = 0) uniform sampler2D irradiance_atlas;
@@ -625,22 +610,6 @@ layout(location = 1) in  vec3 v_normal;
 // Output: indirect irradiance contribution (premultiplied by albedo outside).
 layout(location = 0) out vec4 out_indirect;
 
-// Octahedral decode.
-vec3 oct_decode(vec2 e) {
-    vec2 p = e * 2.0 - 1.0;
-    vec3 n = vec3(p, 1.0 - abs(p.x) - abs(p.y));
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
-    return normalize(n);
-}
-
-// Octahedral encode.
-vec2 oct_encode(vec3 n) {
-    float l = abs(n.x) + abs(n.y) + abs(n.z);
-    vec2  p = n.xy / l;
-    if (n.z < 0.0) p = (1.0 - abs(p.yx)) * sign(p);
-    return p * 0.5 + 0.5;
-}
-
 // Chebyshev upper-bound weight for visibility gating (McGuire et al. 2017).
 float chebyshev_weight(float mean, float mean_sq, float dist) {
     if (dist <= mean) return 1.0;
@@ -656,7 +625,7 @@ vec2 probe_irr_uv(uint flat_idx, vec3 n) {
     uint py  = rem / pc.probes_dim.x;
     uint px  = rem % pc.probes_dim.x;
     float fs = float(pc.probe_face_size);
-    vec2  face_uv = oct_encode(n);
+    vec2  face_uv = cd_oct_encode(n);
     float tile_x  = float(px + pz * pc.probes_dim.x) + face_uv.x;
     float tile_y  = float(py) + face_uv.y;
     float atlas_w = float(pc.probes_dim.x * pc.probes_dim.z) * fs;
@@ -735,6 +704,8 @@ void main() {
 /// prefer hooking into a graphics framebuffer pass; the math is identical.
 constexpr std::string_view kDdgiSampleCS = R"glsl(
 #version 460
+#extension GL_GOOGLE_include_directive : enable
+#include <cd/gluon/packing.glsl>
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -759,13 +730,6 @@ layout(push_constant) uniform PC {
     vec3  sky_color;     float _pad4;
 } pc;
 
-vec2 oct_encode(vec3 n) {
-    float l = abs(n.x) + abs(n.y) + abs(n.z);
-    vec2  p = n.xy / l;
-    if (n.z < 0.0) p = (1.0 - abs(p.yx)) * sign(p);
-    return p * 0.5 + 0.5;
-}
-
 // Chebyshev upper-bound weight for visibility gating (McGuire et al. 2017).
 float chebyshev_weight(float mean, float mean_sq, float dist) {
     if (dist <= mean) return 1.0;
@@ -780,7 +744,7 @@ ivec2 probe_atlas_coord(uint flat_idx, vec3 n) {
     uint rem = flat_idx % (pc.probes_dim.x * pc.probes_dim.y);
     uint py  = rem / pc.probes_dim.x;
     uint px  = rem % pc.probes_dim.x;
-    vec2 face_uv = oct_encode(n);
+    vec2 face_uv = cd_oct_encode(n);
     uint fs = pc.probe_face_size;
     ivec2 base = ivec2(int((px + pz * pc.probes_dim.x) * fs),
                        int(py * fs));
