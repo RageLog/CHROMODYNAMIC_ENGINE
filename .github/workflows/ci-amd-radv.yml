@@ -85,12 +85,15 @@ jobs:
           # subset only; full sweep gated behind the workflow input.
           # phase1142: hello_cube / hello_pbr / hello_skybox folded
           # (batch-2 sample consolidation).
-          # TODO(phase1142): scripts/run_smoke_samples.sh does not exist
-          # in the repo (pre-existing defect) — this step fails as soon
-          # as a labelled amd-gpu runner registers. Restore the script
-          # or align this step to scripts/run_golden.sh before enabling
-          # the lane.
-          bash scripts/run_smoke_samples.sh hello_triangle hello_anim
+          # phase1172: this smoke step was dead since phase1142 —
+          # scripts/run_smoke_samples.sh never existed in the repo, and
+          # hello_anim (its only other arg) is now safe-deleted. Disabled
+          # as a no-op rather than rewired: per-sample golden coverage is
+          # already provided by the "Golden compare (RADV vendor set)" step
+          # below (guarded run_golden.sh --golden-dir tests/golden/radv) and
+          # by the ctest step above. Re-enable with a real smoke driver if a
+          # crash-only (non-golden) sample sweep is wanted on this lane.
+          echo "[smoke] step disabled (phase1172); coverage via ctest + RADV golden-compare."
 
       - name: Sample sweep (full)
         if: ${{ inputs.run_full_samples }}

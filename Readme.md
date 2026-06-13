@@ -196,7 +196,6 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 | `hello_triangle`        | rhi      | Vulkan dynamic-rendering minimal triangle |
 | `hello_ui`              | ui       | `cd::ui` + Dear ImGui layout demo |
 | `bench_archetype`       | world    | ECS archetype storage throughput benchmark |
-| `hello_anim`            | world    | `cd::anim` AnimationClip/Player keyframe drive (NEEDS-PORT → hello_engine) |
 
 ## Documentation
 

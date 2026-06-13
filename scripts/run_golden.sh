@@ -56,9 +56,10 @@ fi
 # main.cpp include of GoldenCapture.hpp.
 # phase1142: hello_cube / hello_pbr / hello_skybox folded (batch-2
 # sample consolidation); script hard-fails on missing exes.
+# phase1172: hello_anim SAFE-DELETE (capability superset HelloSkinnedAnim in
+# hello_engine; cd::anim coverage via test_anim.cpp 55 unit cases).
 SAMPLES=(
     hello_triangle
-    hello_anim
 )
 
 # Resolve sample directory. Multi-config (Ninja MC) uses bin/<Config>;

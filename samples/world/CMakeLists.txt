@@ -21,16 +21,16 @@
 # Retained:
 #   * bench_archetype           - SparseSetWorld vs ArchetypeWorld 1000-entity
 #       microbenchmark. Category (c) standalone tool (perf datapoint).
-#   * hello_anim - Vulkan+ImGui visual demo (category b). NEEDS-PORT: folds
-#       into hello_engine once an AnimationPlayer showcase + golden lands.
-#       Retained until then.
 #
 # Retired in phase 1152 (endgame audit, SAFE-DELETE — covered elsewhere):
 #   * hello_inspector    -> hello_editor hosts panel_inspector + HierarchyView
 #       + scene save/load (samples/editor/hello_editor/main.cpp:53).
 #   * hello_scene_graph  -> hello_engine Scene Serializer + ECS World Stress
 #       probes (HelloShowcaseProbes.hpp) + engine/world/scene/tests (9).
+#
+# Retired in phase 1172 (SAFE-DELETE — capability superset: HelloSkinnedAnim in
+#   hello_engine covers real CesiumMan skinning; cd::anim keyframe/clip/player
+#   interpolation fully covered by engine/world/anim/tests/test_anim.cpp 55
+#   unit-test cases + test_dual_quat.cpp; golden redundant):
+#   * hello_anim -> hello_engine HelloSkinnedAnim.hpp + cd::anim unit tests.
 add_subdirectory(bench_archetype)
-if(CD_ENABLE_VULKAN)
-  add_subdirectory(hello_anim)
-endif()

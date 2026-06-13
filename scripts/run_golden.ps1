@@ -48,9 +48,10 @@ Set-Location $repoRoot
 # follow-up waves.
 # phase1142: hello_cube / hello_pbr / hello_skybox folded (batch-2
 # sample consolidation); script hard-fails on missing exes.
+# phase1172: hello_anim SAFE-DELETE (capability superset HelloSkinnedAnim in
+# hello_engine; cd::anim coverage via test_anim.cpp 55 unit cases).
 $samples = @(
-    'hello_triangle',
-    'hello_anim'
+    'hello_triangle'
 )
 
 $multiConfigBin = Join-Path $BuildDir "bin/$Config"

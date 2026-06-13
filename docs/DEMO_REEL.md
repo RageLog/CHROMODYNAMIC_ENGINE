@@ -37,7 +37,7 @@ frame.
 | `hello_gltf`                    | glTF 2.0 import → cdmesh → draw.                             | 7      |
 | `hello_cooked`                  | Asset cooked into `.cdmesh`, loaded back, drawn.             | 8      |
 | `hello_textured_cooked`         | Same, but with `.cdtex` (KTX2/BC7) sampling.                 | 8      |
-| `hello_anim`                    | Skeletal animation, rotating opaque cube via skinning matrix. | 14    |
+<!-- hello_anim removed phase1172 — SAFE-DELETE: cd::anim coverage via test_anim.cpp 55 unit cases + test_dual_quat.cpp; capability superset HelloSkinnedAnim in hello_engine (real CesiumMan skinning, not keyframe-cube) -->
 | `hello_scene_graph`             | Scene-graph traversal, parent→child transforms.              | 11     |
 <!-- hello_hot_reload removed phase1157 — covered by hello_engine ShaderWatch panel -->
 | `hello_imgui`                   | ImGui integration (Phase 17.A), draw + interact.             | 17     |
@@ -48,12 +48,8 @@ frame.
 ```bash
 # Interactive (ESC to exit):
 ./build/llvm-win-base/bin/Debug/hello_triangle.exe
-./build/llvm-win-base/bin/Debug/hello_anim.exe
 
-# Smoke (5 frames then exit, useful for CI or quick check):
-./build/llvm-win-base/bin/Debug/hello_anim.exe --headless 5
-
-# Golden capture (deterministic, no animation):
+# Golden capture (deterministic):
 ./build/llvm-win-base/bin/Debug/hello_triangle.exe \
     --headless 3 --golden-capture tri.png
 ```
@@ -141,8 +137,7 @@ For a quick "show me what the marathon did" walkthrough:
 1. **`hello_command_palette`** — 1 s, prints registry + fuzzy queries.
 2. **`hello_net_sim`** — 3 s, prints the per-second replication table.
 3. **`hello_audio_chain`** — 2 s, writes a WAV you can play.
-4. **`hello_anim`** — interactive, skinned animation.
-5. **`hello_editor`** — interactive, ImGui inspector with undo/redo.
+4. **`hello_editor`** — interactive, ImGui inspector with undo/redo.
 
 ```bash
 DBG=./build/llvm-win-base/bin/Debug
@@ -150,7 +145,6 @@ $DBG/hello_command_palette.exe
 $DBG/hello_net_sim.exe
 $DBG/hello_audio_chain.exe
 # Then the visual ones (close each window with ESC to advance):
-$DBG/hello_anim.exe
 $DBG/hello_editor.exe
 ```
 
@@ -180,7 +174,7 @@ A practical cheat-sheet for which sample exercises which subsystem.
 |------------|----------------------------------------------|-----------------------------------------------|
 | core       | hello_core, hello_handle, hello_foundation   | Result, ErrorCode, Handle, RingBuffer, Hash   |
 | concurrency| hello_scheduler                              | Job, Latch, Barrier, MPSC Channel, Flag       |
-| math       | hello_anim                                   | Mat4, Quat, AABB, Frustum, SphericalHarmonics |
+| math       | hello_engine (HelloMath probe)               | Mat4, Quat, AABB, Frustum, SphericalHarmonics |
 | ecs        | hello_ecs, hello_scene_graph                 | Entity, Archetype, View, SystemGraph          |
 | scene      | hello_scene_graph, hello_scene_save          | TransformGraph, TagBucket, SceneStats         |
 | rhi        | hello_triangle, hello_rhi_features           | IDevice, ICommandBuffer, Pipeline, Barriers   |

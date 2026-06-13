@@ -66,7 +66,7 @@
     | hello_material_editor | panel_material_editor | hello_editor | ~30L+dep | UI-stack uyumu | **DONE phase1156** |
     | hello_behavior_designer | panel_behavior_designer | hello_editor | ~200L | node-graph layout | DEFERRED — ADR-20260613 |
     | hello_hot_reload | FileWatcher+CachedCompiler+material swap | hello_editor/engine toggle | ~100L | FileWatcher threading; ADR-20260522 canonical | **DONE phase1171 (SAFE-DELETE — coverage in HelloShaderWatch.hpp)** |
-    | hello_anim | AnimationClip+Player+GoldenCapture | hello_engine showcase | ~200L | CI run_smoke `hello_anim` adını taşıyor — script+golden güncelle | PENDING |
+    | hello_anim | AnimationClip+Player+GoldenCapture | hello_engine showcase | ~200L | CI run_smoke `hello_anim` adını taşıyor — script+golden güncelle | **DONE phase1172 (SAFE-DELETE — capability superset HelloSkinnedAnim; golden redundant, cd::anim 55 unit tests in test_anim.cpp + test_dual_quat.cpp)** |
     | hello_ui | ui_layout+ui_widgets+ui_renderer_rhi::Submitter | hello_editor/engine | orta-yüksek | architect kapısı: kSubmitterPipelineReady gate | PENDING |
     | hello_world | cd::game::{camera,trigger,particles_event,query} | hello_engine Gameplay panel | ~400L | architect kapısı: 4 gameplay-lib dep | PENDING |
 
