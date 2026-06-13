@@ -1,4 +1,4 @@
-cd_add_sample(hello_opengl_triangle
+cd_add_sample(hello_opengl
   SOURCES main.cpp
   DEPS    cd::core cd::rhi cd::rhi_opengl cd::platform
 )

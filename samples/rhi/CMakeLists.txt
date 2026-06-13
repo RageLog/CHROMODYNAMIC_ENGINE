@@ -12,8 +12,10 @@ if(WIN32)
   # test_d3d12_parity_m4.cpp (14). Source directory deleted.
   add_subdirectory(hello_d3d12_clear)
   add_subdirectory(hello_d3d12_triangle)
-  add_subdirectory(hello_opengl_resources)
-  add_subdirectory(hello_opengl_triangle)
+  # phase1149: hello_opengl_resources + hello_opengl_triangle folded into
+  # hello_opengl (sample consolidation plan #6) — resource smoke (exit-code
+  # gated) runs first, then the Phase 167 visible triangle.
+  add_subdirectory(hello_opengl)
 endif()
 
 # RT samples need Vulkan ray-query — same gate as the parent. Listed
