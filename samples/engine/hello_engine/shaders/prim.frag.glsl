@@ -401,35 +401,12 @@ float reflection_hit_color(vec3 origin, vec3 dir, float tmax,
 // the user-signed visual phase).
 #include <cd/gluon/ltc_polygon.glsl>
 
-float sample_shadow(vec4 sp, vec3 N, vec3 L) {
-  // Perspective divide - ortho gives w=1 but keep for generality.
-  vec3 p = sp.xyz / sp.w;
-  // Outside the shadow ortho frustum ??' assume lit (sky / far away).
-  if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0 ||
-      p.z < 0.0 || p.z > 1.0) return 1.0;
-  // Vulkan: NDC y down ??' texture v down, same orientation, no flip.
-  vec2 uv = p.xy * 0.5 + 0.5;
-  // Slope-scaled depth bias - fights shadow acne on grazing-angle
-  // fragments. Coefficient picked empirically.
-  // phase451-csm: bias tightened slope 0.0015 -> 0.0003, floor 0.0003
-  // -> 0.00005. Combined with the shrunken ortho frustum in
-  // draw_shadow_map_pass (40m->20m extents, far 100m->60m), the world-
-  // space bias drops from ~6cm to ~0.3cm — small enough that cube /
-  // character / cylinder shadows cast onto Sponza floor are no longer
-  // swallowed by self-bias. PBR sphere grid acne risk: spheres are
-  // smooth, slope-scaled bias still spans the gradient, and the floor
-  // is 0.00005 NDC = 3mm world (well below sphere radius).
-  float bias = max(0.0003 * (1.0 - max(dot(N, L), 0.0)), 0.00005);
-  float ref  = p.z - bias;
-  vec2 ts = 1.0 / vec2(textureSize(cd_shadow_map, 0));
-  float s = 0.0;
-  for (int dy = -1; dy <= 1; ++dy)
-    for (int dx = -1; dx <= 1; ++dx) {
-      float d = texture(cd_shadow_map, uv + vec2(float(dx), float(dy)) * ts).r;
-      s += (d < ref) ? 0.0 : 1.0;
-    }
-  return s / 9.0;
-}
+// phase (SL-D consumer migration): the 3×3 PCF + slope-scaled bias
+// (phase451-csm tuned coefficients) moved VERBATIM to the shader
+// library (cd_pcf_shadow_3x3 + cd_shadow_slope_bias). The global
+// cd_shadow_map sampler is passed as a function argument so the module
+// stays self-contained. Pixel-neutral: chrome_probe golden pins it.
+#include <cd/gluon/shadow_filtering.glsl>
 
 // phase1135 (SL-D wave 1): the W8-AQ Cook-Torrance helper block moved
 // VERBATIM to the shader library (exact-text migration — preprocessed
@@ -598,7 +575,7 @@ void main() {
     if (diel_no_spec) specular = vec3(0.0);
     vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
     vec3 diffuse = kD * albedo * diff_scale;
-    float shade = sample_shadow(v_shadow_pos, N, L);
+    float shade = cd_pcf_shadow_3x3(cd_shadow_map, v_shadow_pos, N, L);
     lit += (diffuse + specular) * NoL * pc.sun_color.rgb *
                (pc.sun_dir.w * shade);
   }
