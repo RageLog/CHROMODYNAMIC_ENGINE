@@ -32,11 +32,10 @@
 # category (b) demos -- canonical "here is what cd::asset_<format>
 # produces on screen" entry points. Queued for fold into hello_engine
 # once it grows an Asset Viewer panel.
+# phase1150: 6 asset samples folded into hello_asset_pipeline
+# (SAMPLES_CONSOLIDATION_PLAN.md Batch-3 done)
+# Retired: hello_mesh, hello_texture, hello_gltf, hello_obj,
+#          hello_cooked, hello_textured_cooked
 if(CD_ENABLE_VULKAN)
-  add_subdirectory(hello_mesh)
-  add_subdirectory(hello_texture)
-  add_subdirectory(hello_gltf)
-  add_subdirectory(hello_obj)
-  add_subdirectory(hello_cooked)
-  add_subdirectory(hello_textured_cooked)
+  add_subdirectory(hello_asset_pipeline)
 endif()

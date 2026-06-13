@@ -55,14 +55,13 @@ if ($samples.Count -eq 0) {
 # but as a no-op. We pass nothing here; if a path is missing, the sample prints
 # usage and returns non-zero, and that's the right signal: regression caught.
 $argsForSample = @{
-    'hello_gltf.exe' = @()  # exits cleanly without path (prints usage)
 }
 
-# Some samples take long because they cook on first run (e.g. textured_cooked
-# does PNG→BC7→.cdtex on disk). Give them more headroom.
+# Some samples take long because they cook on first run.
+# hello_asset_pipeline runs 6 sections including BC7 cook — give it extra time.
 $extraTimeout = @{
-    'hello_textured_cooked.exe' = 15
-    'hello_hot_reload.exe'      = 15
+    'hello_asset_pipeline.exe' = 60
+    'hello_hot_reload.exe'     = 15
 }
 
 $results = @()

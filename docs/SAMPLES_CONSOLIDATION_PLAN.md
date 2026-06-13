@@ -40,6 +40,7 @@
 - **Batch 3 (asset birleştirme):** hello_mesh/obj/texture/cooked/
   textured_cooked/gltf → tek `hello_asset_pipeline` (cooked akışı
   taşınır; glTF görsel yolu hello_engine'de zaten Sponza/CesiumMan).
+  **phase1150 DONE** — 6 binary → 1; git rm'd; CMakeLists + Readme + scripts güncellendi.
 - **Batch 4 (editor/world katlama):** hello_animator/behavior_designer/
   material_editor/hot_reload + world/hello_anim/inspector/scene_graph +
   ui/hello_ui → hello_editor panellerine (panel kütüphaneleri

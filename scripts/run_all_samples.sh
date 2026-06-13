@@ -39,9 +39,10 @@ mkdir -p "$LOG_DIR"
 # Per-sample extra timeout for slow-on-first-run cases.
 extra_timeout() {
     case "$1" in
-        hello_textured_cooked|hello_textured_cooked.exe) echo 15 ;;
-        hello_hot_reload|hello_hot_reload.exe)            echo 15 ;;
-        *)                                                 echo "$TIMEOUT_SEC" ;;
+        # hello_asset_pipeline runs 6 sections including BC7 cook — extra headroom.
+        hello_asset_pipeline|hello_asset_pipeline.exe) echo 60 ;;
+        hello_hot_reload|hello_hot_reload.exe)          echo 15 ;;
+        *)                                               echo "$TIMEOUT_SEC" ;;
     esac
 }
 
