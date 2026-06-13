@@ -150,6 +150,8 @@ void main() {
 
 constexpr std::string_view kCompositeFS = R"glsl(
 #version 450
+#extension GL_GOOGLE_include_directive : enable
+#include <cd/gluon/hash_noise.glsl>
 layout(set = 0, binding = 0) uniform sampler2D cd_hdr_color;
 layout(set = 0, binding = 1) uniform sampler2D cd_bloom_mip0;
 layout(set = 0, binding = 2) uniform sampler2D cd_depth;
@@ -361,56 +363,6 @@ vec3 ssr_color(vec2 uv, vec3 wp, vec3 N, float NoV) {
   float contact_fade = clamp(1.0 - screen_dist * 1.5, 0.0, 1.0);
   vec3 hit = texture(cd_hdr_color, hit_sp.xy).rgb;
   return hit * pc.ssr.x * ef * (0.3 + fresnel * 0.7) * graze * contact_fade;
-}
-
-// phase853-clouds-quality: improved 2D fBm-on-sky for the cloud
-// overlay. Cubic interp + 4 octaves was producing extremely visible
-// square-tile patches at all zoom levels (user-reported "BULUTLAR
-// COK KOTU GOZUKUYOR"). Three improvements together fix the tile
-// look without requiring a 3D Worley texture or a real raymarch:
-//   1. Quintic Hermite interpolation (Perlin 2002 — `6t^5 -15t^4
-//      +10t^3`) removes the cubic axis-aligned ridges along cell
-//      edges.
-//   2. 6 octaves (was 4) lets the smallest cells carry sub-pixel
-//      detail so the eye reads cloud "wisps" not "blocks".
-//   3. Stronger curl-style domain warp + half-cell offset between
-//      octaves breaks the axis-aligned grid the value-noise basis
-//      always exposes at low octaves.
-//
-// True volumetric clouds (3D Worley/Perlin + 64+ step march) stay
-// queued; this remains the cheap composite-inline single-tap path.
-float cd_hash21(vec2 p) {
-  // Three irrational rotations + larger constants reduce the
-  // visible repeating pattern at large UV scales vs. the legacy
-  // (127.1, 311.7) hash.
-  p = vec2(dot(p, vec2(127.1, 311.7)),
-           dot(p, vec2(269.5, 183.3)));
-  return fract(sin(p.x + p.y) * 43758.5453);
-}
-float cd_value_noise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  // Quintic Hermite: 6t^5 - 15t^4 + 10t^3 (Perlin "improved" 2002).
-  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  float a = cd_hash21(i);
-  float b = cd_hash21(i + vec2(1.0, 0.0));
-  float c = cd_hash21(i + vec2(0.0, 1.0));
-  float d = cd_hash21(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-float cd_fbm4(vec2 p) {
-  float s = 0.0;
-  float a = 0.5;
-  // 6 octaves with a slight per-octave rotation breaks the
-  // axis-aligned cell grid the value-noise basis would otherwise
-  // expose. mat2(0.8, 0.6, -0.6, 0.8) ≈ ~37 degree rotation.
-  const mat2 kRot = mat2(0.8, 0.6, -0.6, 0.8);
-  for (int i = 0; i < 6; ++i) {
-    s += a * cd_value_noise(p);
-    p = kRot * p * 2.07 + vec2(31.7, 17.3);
-    a *= 0.5;
-  }
-  return s;
 }
 
 // A-trous edge-aware spatial filter (Dammertz 2010 / SVGF spatial step).
