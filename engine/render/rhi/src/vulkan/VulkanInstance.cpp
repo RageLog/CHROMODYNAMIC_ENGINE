@@ -4,6 +4,9 @@
 #include "VulkanInternal.hpp"
 #include "VulkanMacros.hpp"
 
+#include <cd/rhi/vulkan/VulkanDevice.hpp>  // validation_error_count / reset decls
+
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -12,6 +15,14 @@ namespace cd::rhi::vulkan
 
 namespace
 {
+
+// Vulkan V1 (depth-aware barrier fix) — in-process validation-error net.
+// The debug messenger is a free C callback with no instance context, so the
+// counter is a file-scope atomic. Tests reset() it, exercise a real barrier
+// wiring, then assert it stayed zero: a wrong subresource aspect on a depth
+// image is a validation VUID (not a device-lost), so without this counter the
+// only signal was an out-of-band stderr print that no assertion could see.
+std::atomic<std::uint32_t> g_validation_error_count { 0 };
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -31,6 +42,12 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
         std::fprintf(stderr, "[%s] %s\n", tag, data->pMessage);
         std::fflush(stderr);
     }
+    // Count ERROR-severity validation messages so an in-process test can assert
+    // a wiring path emitted no VUID. relaxed: the only ordering requirement is
+    // that wait_idle()/the messenger flush happens-before the load in the test,
+    // which the Vulkan queue submit + host sync already guarantee.
+    if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+        g_validation_error_count.fetch_add(1, std::memory_order_relaxed);
     return VK_FALSE;
 }
 
@@ -169,6 +186,29 @@ cd::core::Result<void> create_instance(
         }
     }
     return {};
+}
+
+std::uint32_t validation_error_count() noexcept
+{
+    return g_validation_error_count.load(std::memory_order_relaxed);
+}
+
+void reset_validation_error_count() noexcept
+{
+    g_validation_error_count.store(0, std::memory_order_relaxed);
+}
+
+bool validation_layer_available() noexcept
+{
+    // Mirrors the gate create_instance() uses: validation is only ACTUALLY
+    // enabled when VK_LAYER_KHRONOS_validation is discoverable. A test that
+    // asserts validation_error_count()==0 is vacuous without the layer (the
+    // messenger never fires), so it should SKIP rather than pass for free.
+    // volkInitialize() is required before vkEnumerateInstanceLayerProperties;
+    // it is safe to call repeatedly (idempotent loader bootstrap).
+    if (volkInitialize() != VK_SUCCESS)
+        return false;
+    return has_validation_layer();
 }
 
 }  // namespace cd::rhi::vulkan

@@ -3,6 +3,8 @@
 // =============================================================================
 #include "VulkanCommandBuffer.hpp"
 
+#include <cd/rhi/vulkan/VulkanFormat.hpp>  // vk_aspect_for_format (single source of truth)
+
 #include <cassert>
 
 namespace cd::rhi::vulkan
@@ -105,6 +107,26 @@ namespace
         default:
             return VK_IMAGE_LAYOUT_UNDEFINED;
     }
+}
+
+// Vulkan V1 (depth-aware barrier fix): resolve a texture handle's aspect mask
+// via the device's image_formats map. The format -> aspect mapping itself comes
+// from the single public source of truth vk_aspect_for_format() (defined in
+// VulkanDevice.cpp, declared in <cd/rhi/vulkan/VulkanFormat.hpp>), so the
+// barrier/copy wiring exercised here is the SAME mapping the unit test pins —
+// no anon-namespace mirror that could silently drift. On a miss (e.g. swapchain
+// images, which are always colour and carry no image_formats_ entry) the COLOR
+// fallback is correct and safe.
+[[nodiscard]] VkImageAspectFlags aspect_for_texture(
+    const ResourceTables& tables, std::uint32_t texture_index) noexcept
+{
+    if (tables.image_formats != nullptr)
+    {
+        const auto it = tables.image_formats->find(texture_index);
+        if (it != tables.image_formats->end())
+            return static_cast<VkImageAspectFlags>(vk_aspect_for_format(it->second));
+    }
+    return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
 }  // namespace
@@ -544,7 +566,7 @@ void VulkanCommandBuffer::copy_buffer_to_image(
         vr.bufferOffset = r.buffer_offset;
         vr.bufferRowLength = 0;  // tightly packed (driver derives from extent)
         vr.bufferImageHeight = 0;
-        vr.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vr.imageSubresource.aspectMask = aspect_for_texture(tables_, dst.index());
         vr.imageSubresource.mipLevel = r.mip_level;
         vr.imageSubresource.baseArrayLayer = r.base_layer;
         vr.imageSubresource.layerCount = r.layer_count;
@@ -588,7 +610,7 @@ void VulkanCommandBuffer::copy_image_to_buffer(
         vr.bufferOffset = r.buffer_offset;
         vr.bufferRowLength = 0;
         vr.bufferImageHeight = 0;
-        vr.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vr.imageSubresource.aspectMask = aspect_for_texture(tables_, src.index());
         vr.imageSubresource.mipLevel = r.mip_level;
         vr.imageSubresource.baseArrayLayer = r.base_layer;
         vr.imageSubresource.layerCount = r.layer_count;
@@ -668,7 +690,7 @@ void VulkanCommandBuffer::barrier(
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = resolved,
         .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .aspectMask = aspect_for_texture(tables_, tb.texture.index()),
             .baseMipLevel = tb.range.base_mip,
             .levelCount = tb.range.mip_count,
             .baseArrayLayer = tb.range.base_layer,

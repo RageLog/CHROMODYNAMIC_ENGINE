@@ -9,6 +9,7 @@
 // =============================================================================
 #pragma once
 
+#include <cd/rhi/Format.hpp>   // cd::rhi::Format (image_formats aspect lookup)
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <volk.h>
 
@@ -61,6 +62,15 @@ struct ResourceTables
     /// parallel-lane inheritance info (dynamic rendering secondaries
     /// must declare attachment formats up front).
     const std::unordered_map<std::uint32_t, VkFormat>* view_formats { nullptr };
+
+    /// Vulkan V1 (depth-aware barrier fix): texture-id -> cd::rhi::Format.
+    /// barrier() and the buffer<->image copy regions must compute the
+    /// VkImageAspectFlags from the texture's real format (a depth or
+    /// depth+stencil image transitioned/copied with a hardcoded
+    /// COLOR aspect is a validation error / silent no-op). Points at the
+    /// producing device's image-format map; same stability contract as the
+    /// other tables (no concurrent mutation during recording).
+    const std::unordered_map<std::uint32_t, cd::rhi::Format>* image_formats { nullptr };
     /// Queue family for per-lane command pools (one pool per lane —
     /// pools are externally synchronized, so each recording thread
     /// needs its own).

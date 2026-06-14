@@ -1,7 +1,6 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/rhi/vulkan/VulkanDevice.cpp
 // =============================================================================
-#include "VulkanCommandBuffer.hpp"
 #include "VulkanInternal.hpp"
 
 // VMA is included via the impl-in-one-TU pattern; here we want only the
@@ -29,6 +28,7 @@
                                       // dtor needs the complete type at the call
                                       // site (GCC enforces this earlier than Clang).
 #include <cd/rhi/IDevice.hpp>
+#include <cd/rhi/vulkan/VulkanFormat.hpp>  // vk_aspect_for_format public alias
 
 #include <array>
 #include <cstdio>   // env-driven device selection diagnostic
@@ -605,6 +605,14 @@ struct VmaUsageMapping
 
 }  // namespace
 
+// Vulkan V1 (depth-aware barrier fix): public, testable alias of the
+// anon-namespace aspect_for_format. Returns the raw VkImageAspectFlags value
+// (alias of uint32_t) so the declaring header stays Vulkan-free.
+std::uint32_t vk_aspect_for_format(cd::rhi::Format f) noexcept
+{
+    return static_cast<std::uint32_t>(aspect_for_format(f));
+}
+
 class VulkanDevice final : public cd::rhi::IDevice
 {
 public:
@@ -1127,6 +1135,7 @@ public:
         meta.mip_levels = desc.mip_levels;
         meta.array_layers = desc.array_layers;
         image_meta_.emplace(id, meta);
+        image_formats_.emplace(id, desc.format);
         return cd::rhi::TextureHandle { id, 1u };
     }
 
@@ -1143,6 +1152,7 @@ public:
         if (ait != image_alloc_.end())
             image_alloc_.erase(ait);
         image_meta_.erase(h.index());
+        image_formats_.erase(h.index());
     }
 
     [[nodiscard]] cd::core::Result<cd::rhi::TextureViewHandle>
@@ -3073,6 +3083,7 @@ public:
                 .pipeline_to_layout = &pipeline_to_layout_,
                 .descriptor_sets = &descriptor_sets_,
                 .view_formats = &view_formats_,
+                .image_formats = &image_formats_,
                 .graphics_queue_family = graphics_family_,
                 .accel_lookup = &VulkanDevice::accel_lookup_static_,
                 .accel_lookup_user = this,
@@ -4418,6 +4429,12 @@ public:
     std::unordered_map<std::uint32_t, VkImage> images_;
     std::unordered_map<std::uint32_t, VmaAllocation> image_alloc_;
     std::unordered_map<std::uint32_t, TextureMeta> image_meta_;
+    /// Vulkan V1 (depth-aware barrier fix): flat texture-id -> cd::rhi::Format,
+    /// maintained alongside image_meta_. Exposed via ResourceTables so the
+    /// command buffer can compute the correct VkImageAspectFlags for
+    /// depth/stencil image transitions and buffer<->image copies (mirrors the
+    /// view_formats_ pattern — a flat map the cmd buffer reads at record time).
+    std::unordered_map<std::uint32_t, cd::rhi::Format> image_formats_;
     std::unordered_map<std::uint32_t, VkImageView> views_;
     /// phase1116: view-id -> format, for parallel-lane inheritance info.
     std::unordered_map<std::uint32_t, VkFormat> view_formats_;

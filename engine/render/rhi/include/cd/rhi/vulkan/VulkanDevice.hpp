@@ -47,4 +47,30 @@ struct VulkanCreateInfo
 /// destruction.
 [[nodiscard]] cd::core::Result<std::unique_ptr<cd::rhi::IDevice>> create_vulkan_device(VulkanCreateInfo info = {});
 
+/// Vulkan V1 (depth-aware barrier fix) — in-process validation-error net.
+///
+/// The default debug messenger (installed when `enable_validation` is true)
+/// counts every ERROR-severity validation message it receives, process-wide.
+/// A wrong image-subresource aspect on a depth image is a validation VUID, not
+/// a device-lost; before this counter the only signal was an out-of-band stderr
+/// print that no test assertion could observe. Tests call
+/// `reset_validation_error_count()`, exercise a real wiring path, `wait_idle()`,
+/// then assert `validation_error_count() == 0`.
+///
+/// Thread-safe (backed by a relaxed atomic). The count is global, not
+/// per-device, because the messenger callback has no device context.
+[[nodiscard]] std::uint32_t validation_error_count() noexcept;
+
+/// Reset the process-wide validation-error counter to zero. Call this at the
+/// start of a test that asserts a wiring path emits no validation errors.
+void reset_validation_error_count() noexcept;
+
+/// True when VK_LAYER_KHRONOS_validation is discoverable by the Vulkan loader,
+/// i.e. when `enable_validation` actually installs a debug messenger. The
+/// validation-error counter only catches VUIDs while this is true, so a test
+/// that relies on it must SKIP (not pass) when this returns false — otherwise a
+/// host without the layer reports a meaningless green. Bootstraps volk if
+/// needed; returns false when no ICD/loader is present.
+[[nodiscard]] bool validation_layer_available() noexcept;
+
 }  // namespace cd::rhi::vulkan
