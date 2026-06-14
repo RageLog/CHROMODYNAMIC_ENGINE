@@ -181,3 +181,20 @@ if(WIN32)
               "$<TARGET_FILE_DIR:cd_test_d3d12_blend_stride>")
   endif()
 endif()
+
+# phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
+# Pure CPU-side limits read + an empty command list push/pop — no shaders or
+# DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no
+# adapter); off-Windows compiles a trivial skip so the test name exists in
+# every CI lane.
+if(WIN32)
+  cd_add_test(d3d12_limits_debug_group
+    SOURCES test_d3d12_limits_debug_group.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+else()
+  cd_add_test(d3d12_limits_debug_group
+    SOURCES test_d3d12_limits_debug_group.cpp
+    DEPS    cd::rhi cd::core
+  )
+endif()

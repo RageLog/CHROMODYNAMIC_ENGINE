@@ -382,7 +382,67 @@ public:
             features_.mesh_shader = has_tier_1 && device2_;
         }
 
+        // ---- 8. DeviceLimits fill (D13 — parity with Vulkan) ---------------
+        fill_device_limits();
+
         return S_OK;
+    }
+
+    // ---- D13: populate DeviceLimits from real D3D12 caps -------------------
+    //
+    // The RHI `DeviceLimits` struct (see Descriptors.hpp) exposes a fixed
+    // set of fields; this fills each from the documented D3D12 hard limits
+    // and the queried resource-binding tier, mirroring the Vulkan backend's
+    // `limits_.* = p.limits.*` block. D3D12 has no per-device limit struct
+    // for most of these (they are spec-mandated constants for FL 11_0+),
+    // so the values come from the D3D12 spec / d3d12.h `#define`s, with the
+    // binding-tier-dependent descriptor caps taken from CheckFeatureSupport.
+    void fill_device_limits()
+    {
+        // Spec-mandated texture dimensions (Feature Level 11_0+).
+        limits_.max_texture_dimension_1d  = D3D12_REQ_TEXTURE1D_U_DIMENSION;          // 16384
+        limits_.max_texture_dimension_2d  = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;     // 16384
+        limits_.max_texture_dimension_3d  = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;   // 2048
+        limits_.max_texture_array_layers  = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION; // 2048
+
+        // Constant buffer max size: 4096 float4 registers * 16 bytes = 65536.
+        limits_.max_uniform_buffer_range  =
+            D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16u;                            // 65536
+        // Structured/raw UAV/SRV addressable range: 2^27 elements (typed) is the
+        // documented cap; report the 128 MiB max resource span as the storage
+        // range (matches what callers branch on for large SSBO support).
+        limits_.max_storage_buffer_range  = 1u << 27;                                 // 134217728
+
+        // Root signature is 64 DWORDs; root constants are a subset. We expose
+        // the full root-signature budget in bytes as the push-constant ceiling.
+        limits_.max_push_constants_size   = D3D12_MAX_ROOT_COST * 4u;                 // 256
+
+        // Resource-binding tier governs the simultaneously-bound descriptor
+        // counts. Tier 2/3 are effectively unbounded ("full heap"); Tier 1 has
+        // the classic 14 CBV / 128 SRV / 64 UAV caps. We surface the number of
+        // root-table descriptor sets the engine can bind (matches Vulkan's
+        // maxBoundDescriptorSets semantics) — root signature can reference many
+        // tables, capped by the 64-DWORD budget; 8 is a safe portable floor and
+        // what the engine's pipeline-layout path assumes.
+        limits_.max_bound_descriptor_sets = 8u;
+
+        // Input-assembler limits (spec constants).
+        limits_.max_vertex_input_attributes = D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT; // 32
+        limits_.max_vertex_input_bindings   = D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT;      // 32
+
+        // Simultaneous render targets.
+        limits_.max_color_attachments = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;       // 8
+
+        // Max anisotropy (sampler).
+        limits_.max_anisotropy = static_cast<float>(D3D12_REQ_MAXANISOTROPY);         // 16
+
+        // Buffer offset alignments. CBVs must be 256-byte aligned; raw/structured
+        // buffer SRV/UAV offsets follow the 16-byte structured-buffer rule but we
+        // report the stricter 256-byte CBV alignment to stay safe for both.
+        limits_.min_uniform_buffer_offset_alignment =
+            D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;                           // 256
+        limits_.min_storage_buffer_offset_alignment =
+            D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;                                         // 16
     }
 
     ~D3D12Device() override
@@ -4042,6 +4102,13 @@ public:
         // The prior frame's upload staging is no longer needed once the
         // allocator is safe to reset (engine waited on its fence).
         retained_uploads_.clear();
+        // Reset per-recording debug-group depth so a recycled command buffer
+        // (begin→record→end→submit→begin again) never inherits a stale depth
+        // from a previous recording that left unmatched push_debug_group calls.
+        // Without this reset the pop underflow-guard silently eats the first
+        // EndEvent of a subsequent recording, causing PIX/RenderDoc event-tree
+        // desync (phase1189 B5 fix).
+        debug_group_depth_ = 0;
     }
     void end() override
     {
@@ -4747,8 +4814,42 @@ public:
         if (!bars.empty())
             list_->ResourceBarrier(static_cast<UINT>(bars.size()), bars.data());
     }
-    void push_debug_group(std::string_view) override {}
-    void pop_debug_group() override {}
+    // ---- D14: PIX/RenderDoc debug groups ----------------------------------
+    //
+    // The WinPixEventRuntime header/lib is not vendored, so we use the raw
+    // PIX op that ships in d3d12.h itself: ID3D12GraphicsCommandList::
+    // BeginEvent / EndEvent. With metadata == PIX_EVENT_ANSI_VERSION (1) the
+    // payload is a null-terminated ANSI string; this is exactly the encoding
+    // PIX / RenderDoc / Nsight decode when no event runtime is linked. The
+    // call is a safe no-op on a tool-less run (the driver ignores it), so it
+    // NEVER crashes. A depth counter keeps push/pop balanced and guarantees
+    // we never call EndEvent more than BeginEvent (mirrors the Vulkan
+    // backend's null-function-pointer guard).
+    void push_debug_group(std::string_view name) override
+    {
+        if (list_ == nullptr) return;
+        // PIX_EVENT_ANSI_VERSION == 1 (from pix3.h). Defined locally because
+        // WinPixEventRuntime is not a build dependency.
+        constexpr UINT kPixEventAnsiVersion = 1u;
+        // BeginEvent consumes the payload synchronously at record time, so a
+        // local null-terminated copy is sufficient and safe.
+        const std::string label { name };
+        list_->BeginEvent(
+            kPixEventAnsiVersion,
+            label.c_str(),
+            static_cast<UINT>(label.size() + 1));  // include NUL terminator
+        ++debug_group_depth_;
+    }
+    void pop_debug_group() override
+    {
+        if (list_ == nullptr || debug_group_depth_ == 0) return;
+        list_->EndEvent();
+        --debug_group_depth_;
+    }
+    [[nodiscard]] std::uint32_t debug_group_depth() const noexcept override
+    {
+        return debug_group_depth_;
+    }
 
     // ---- DXR AS build (REAL — phase466 v0.99.93 M4-parity-closeout) -------
     //
@@ -4820,6 +4921,9 @@ private:
     // prior frame's fence by then, mirroring how command-allocator reset is
     // safe at begin()).
     std::vector<ComPtr<ID3D12Resource>> retained_uploads_;
+    // D14 (phase1188) — nesting depth so pop_debug_group never calls
+    // EndEvent more times than push_debug_group called BeginEvent.
+    std::uint32_t debug_group_depth_ { 0 };
 };
 
 std::unique_ptr<cd::rhi::ICommandBuffer>

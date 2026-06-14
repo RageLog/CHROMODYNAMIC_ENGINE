@@ -259,6 +259,13 @@ public:
     virtual void acceleration_structure_barrier() {}
 
     virtual void dispatch_rays(const DispatchRaysDesc& /*desc*/) {}
+
+    // ---- Test/diagnostic observability ------------------------------------
+    /// Returns the current debug-group nesting depth for this recording.
+    /// Primarily used by tests to assert that begin() resets the counter
+    /// when a command buffer is recycled (phase1189 B5 fix).
+    /// Default returns 0; backends that track depth override this.
+    [[nodiscard]] virtual std::uint32_t debug_group_depth() const noexcept { return 0; }
 };
 
 }  // namespace cd::rhi
