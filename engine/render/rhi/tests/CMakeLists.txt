@@ -182,6 +182,34 @@ if(WIN32)
   endif()
 endif()
 
+# phase1190 (D10 + B1b): D3D12 bindless runtime + static-sampler-half GPU
+# smokes. Three textures written to bindless slots are dynamic-indexed by a
+# shader (register(t0, space1)[push_const]); a classic textured shader samples
+# via the now-backed static sampler. Same GLSL->DXIL device path + WARP
+# render/readback as the depth/MRT test. The structural (feature-gate +
+# write-slot validation) case runs draw-less; the dynamic-index + sampler draws
+# SKIP cleanly when no D3D12 adapter, no DXC DLL, or SM6 indexing is
+# unsupported on this WARP.
+if(WIN32)
+  cd_add_test(d3d12_bindless_sampler
+    SOURCES test_d3d12_bindless_sampler.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_bl_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_bl_list)
+  if(_cd_dxc_bl_list AND TARGET cd_test_d3d12_bindless_sampler)
+    list(POP_BACK _cd_dxc_bl_list _cd_dxc_bl_dll)
+    get_filename_component(_cd_dxc_bl_dir "${_cd_dxc_bl_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_bindless_sampler POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_bl_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_bindless_sampler>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_bl_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_bindless_sampler>")
+  endif()
+endif()
+
 # phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
 # Pure CPU-side limits read + an empty command list push/pop — no shaders or
 # DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no

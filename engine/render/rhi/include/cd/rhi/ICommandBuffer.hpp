@@ -99,6 +99,15 @@ public:
 
     virtual void bind_descriptor_set(std::uint32_t set_index, DescriptorSetHandle set) = 0;
 
+    /// D10 — bind a dedicated bindless texture array to a root descriptor-table
+    /// slot (the engine's set-1 `register(t0, space1)[i]`). The backend binds the
+    /// persistent shader-visible bindless heap and points root parameter
+    /// `set_index` at the array's GPU base, so the shader dynamic-indexes the
+    /// array. Non-pure default no-op so backends without a dedicated bindless
+    /// pool (and the Null reference) compile unchanged; D3D12 overrides it.
+    virtual void bind_bindless_texture_array(std::uint32_t /*set_index*/,
+                                             BindlessTextureArrayHandle /*array*/) {}
+
     virtual void bind_vertex_buffer(std::uint32_t binding, BufferHandle buffer, std::uint64_t offset) = 0;
     virtual void bind_index_buffer(BufferHandle buffer, std::uint64_t offset, IndexType type) = 0;
 

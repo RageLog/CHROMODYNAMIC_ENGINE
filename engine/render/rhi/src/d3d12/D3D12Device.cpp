@@ -382,7 +382,24 @@ public:
             features_.mesh_shader = has_tier_1 && device2_;
         }
 
-        // ---- 8. DeviceLimits fill (D13 — parity with Vulkan) ---------------
+        // ---- 8. Bindless feature query (D10 — parity with Vulkan) ----------
+        // D3D12_FEATURE_DATA_D3D12_OPTIONS::ResourceBindingTier governs whether
+        // the device supports the large/unbounded shader-visible descriptor
+        // tables the engine's dedicated bindless set (`register(t0, space1)[i]`,
+        // MEMORY rule 9) dynamic-indexes. Tier 2 lifts the SRV-per-table cap to
+        // ~1M and allows DESCRIPTORS_VOLATILE unbounded SRV arrays; Tier 3 makes
+        // the whole heap addressable. We advertise `bindless_resources` on Tier 2+
+        // (the Vulkan analog is VK_EXT_descriptor_indexing being present). WARP
+        // reports Tier 3, so the autonomous smokes can exercise the real path.
+        D3D12_FEATURE_DATA_D3D12_OPTIONS opts0 {};
+        if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS,
+                                                   &opts0, sizeof(opts0))))
+        {
+            features_.bindless_resources =
+                (opts0.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_2);
+        }
+
+        // ---- 9. DeviceLimits fill (D13 — parity with Vulkan) ---------------
         fill_device_limits();
 
         return S_OK;
@@ -1263,6 +1280,36 @@ public:
         // mis-bound the dedicated bindless set (set 1 -> space1 in the shader).
         std::uint32_t set_space = 0;
 
+        // B1b sampler-half — back the SPIRV-Cross s-registers.
+        //
+        // SPIRV-Cross splits each combined `sampler2D` (set N, binding M) into a
+        // Texture SRV `register(tM, spaceN)` AND a SamplerState `register(sM,
+        // spaceN)`. The texture half is served by the SRV descriptor table above;
+        // the sampler half was UNBACKED (NumStaticSamplers=0) — so any textured
+        // Sample() on D3D12 had no sampler. Two cases:
+        //
+        //  * CLASSIC combined sampler (kSampledImage / kCombinedImageSampler):
+        //    the emission is a SINGLE SamplerState `register(sM, spaceN)`, which a
+        //    STATIC sampler satisfies. Static samplers cost ZERO root budget and
+        //    are immutable — a perfect fit for the engine's single-sampler model.
+        //
+        //  * BINDLESS combined sampler array (kBindlessSampledImage): the emission
+        //    is a SamplerState ARRAY `register(sM, spaceN)[]` (an unbounded sampler
+        //    DESCRIPTOR RANGE the DXIL dynamic-indexes). A static sampler CANNOT
+        //    satisfy a shader sampler descriptor range ("not fully bound in root
+        //    signature" → E_INVALIDARG at PSO creation), so the bindless sampler
+        //    half needs a real SAMPLER DESCRIPTOR TABLE backed by a shader-visible
+        //    sampler heap. We declare the unbounded sampler range here and bind the
+        //    sampler heap + table in bind_bindless_texture_array.
+        //
+        // The shadow map (set 0 binding 1) is a plain `sampler2D` in prim.frag.glsl
+        // (NOT sampler2DShadow), so a standard filtered sampler covers it; no
+        // SamplerComparisonState half is emitted by the engine corpus today.
+        std::vector<D3D12_STATIC_SAMPLER_DESC> static_samplers;
+        // Bindless sampler ranges (one unbounded SAMPLER range per bindless
+        // binding, at its (sM, spaceN)). Collected into a single sampler table.
+        std::vector<D3D12_DESCRIPTOR_RANGE> bindless_sampler_ranges;
+
         for (const auto h : desc.set_layouts)
         {
             auto it = descriptor_set_layouts_.find(h.index());
@@ -1325,9 +1372,11 @@ public:
                 // which is exactly the dynamic-indexing semantics SM6.x needs
                 // here, so no v1.1 range-flags migration is required for the
                 // declaration to be CONSISTENT with the SPIRV-Cross emission.
-                // (Runtime heap writes — write_bindless_texture_slot /
-                // features().bindless_resources — are roadmap item D10 and are
-                // intentionally NOT wired here.)
+                // (D10: the runtime heap writes — write_bindless_texture_slot /
+                // create_bindless_texture_array — back this range with a
+                // persistent shader-visible heap, and features().bindless_resources
+                // is advertised on resource-binding Tier 2+. See the bindless
+                // methods after update_descriptor_set.)
                 r.NumDescriptors = (b.type ==
                     cd::rhi::DescriptorType::kBindlessSampledImage)
                     ? UINT_MAX : b.count;
@@ -1336,6 +1385,47 @@ public:
                 r.OffsetInDescriptorsFromTableStart =
                     D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
                 ranges.push_back(r);
+
+                // B1b — emit the matching sampler half. SPIRV-Cross emits a
+                // SamplerState at (sM, spaceN) for combined samplers; AS / input
+                // attachments are SRVs with no sampler half, so they are excluded.
+                if (b.type == cd::rhi::DescriptorType::kBindlessSampledImage)
+                {
+                    // BINDLESS: a SAMPLER range (a static sampler cannot satisfy a
+                    // shader sampler descriptor RANGE — DXC reflects the combined
+                    // sampler2D[]'s sampler half as a single shared SamplerState in
+                    // a table, NumDescriptors=1). Bounded to the binding count so the
+                    // matcher binds it without the unbounded-range edge cases.
+                    // Collected into a single sampler table below; backed by a
+                    // shader-visible sampler heap pre-filled with the default sampler.
+                    D3D12_DESCRIPTOR_RANGE sr {};
+                    sr.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+                    sr.NumDescriptors     = b.count == 0u ? 1u : b.count;
+                    sr.BaseShaderRegister = b.binding; // sM
+                    sr.RegisterSpace      = set_space; // spaceN
+                    sr.OffsetInDescriptorsFromTableStart = 0;
+                    bindless_sampler_ranges.push_back(sr);
+                }
+                else if (b.type == cd::rhi::DescriptorType::kSampledImage ||
+                         b.type == cd::rhi::DescriptorType::kCombinedImageSampler)
+                {
+                    // CLASSIC: a single SamplerState — a static sampler satisfies it.
+                    D3D12_STATIC_SAMPLER_DESC s {};
+                    s.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                    s.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    s.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    s.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+                    s.MipLODBias       = 0.0F;
+                    s.MaxAnisotropy    = 1;
+                    s.ComparisonFunc   = D3D12_COMPARISON_FUNC_NEVER;
+                    s.BorderColor      = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+                    s.MinLOD           = 0.0F;
+                    s.MaxLOD           = D3D12_FLOAT32_MAX;
+                    s.ShaderRegister   = b.binding;   // sM (== texture tM)
+                    s.RegisterSpace    = set_space;   // spaceN (== texture space)
+                    s.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                    static_samplers.push_back(s);
+                }
             }
             // Advance the register space for the NEXT descriptor set. The
             // Vulkan side binds set_layouts in order, so the space index must
@@ -1360,6 +1450,23 @@ public:
             p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
             table_params.push_back(static_cast<std::uint32_t>(params.size()));
             params.push_back(p);
+        }
+
+        // B1b — one SAMPLER descriptor table for all bindless sampler ranges
+        // collected above. Bound by bind_bindless_texture_array (the sampler heap
+        // can coexist with the CBV/SRV/UAV bindless heap — D3D12 allows one of
+        // each type bound simultaneously). UINT32_MAX = no bindless sampler table.
+        std::uint32_t bindless_sampler_param_idx = ~std::uint32_t { 0 };
+        if (!bindless_sampler_ranges.empty())
+        {
+            D3D12_ROOT_PARAMETER sp {};
+            sp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+            sp.DescriptorTable.NumDescriptorRanges =
+                static_cast<UINT>(bindless_sampler_ranges.size());
+            sp.DescriptorTable.pDescriptorRanges = bindless_sampler_ranges.data();
+            sp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            bindless_sampler_param_idx = static_cast<std::uint32_t>(params.size());
+            params.push_back(sp);
         }
 
         // phase466 — push-constants → D3D12 root 32-bit constants slot.
@@ -1406,8 +1513,13 @@ public:
         D3D12_ROOT_SIGNATURE_DESC rsd {};
         rsd.NumParameters = static_cast<UINT>(params.size());
         rsd.pParameters = params.empty() ? nullptr : params.data();
-        rsd.NumStaticSamplers = 0;
-        rsd.pStaticSamplers = nullptr;
+        // B1b — static samplers back the SPIRV-Cross s-registers (one LINEAR-clamp
+        // sampler per sampled-image binding at its (sM, spaceN); see the loop
+        // above). Static samplers cost no root budget. Previously this was 0 and
+        // every textured Sample() on D3D12 had an unbacked sampler register.
+        rsd.NumStaticSamplers = static_cast<UINT>(static_samplers.size());
+        rsd.pStaticSamplers =
+            static_samplers.empty() ? nullptr : static_samplers.data();
         rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
         ComPtr<ID3DBlob> blob;
@@ -1442,6 +1554,7 @@ public:
         rec.table_params = std::move(table_params);
         rec.push_constants_param  = pc_param_idx;
         rec.push_constants_dwords = pc_dwords;
+        rec.bindless_sampler_param = bindless_sampler_param_idx;
         const auto id = next_id_++;
         pipeline_layouts_.emplace(id, std::move(rec));
         return cd::rhi::PipelineLayoutHandle { id, 1u };
@@ -2513,12 +2626,12 @@ public:
                 }
                 case cd::rhi::DescriptorType::kCombinedImageSampler:
                 {
-                    // CombinedImageSampler maps to a Texture2D SRV in
-                    // the CBV/SRV/UAV table (the sampler half goes
-                    // into a separate sampler heap when present; for
-                    // v0.47.0 we route to a static-sampler fallback
-                    // baked into the root signature). Same SRV path
-                    // as kSampledImage.
+                    // CombinedImageSampler maps to a Texture2D SRV in the
+                    // CBV/SRV/UAV table. The sampler half is served by a static
+                    // sampler in the root signature: B1b populates one LINEAR-clamp
+                    // D3D12_STATIC_SAMPLER_DESC at the binding's (sM, spaceN) in
+                    // create_pipeline_layout (NumStaticSamplers was 0 before B1b, so
+                    // the s-register was unbacked). Same SRV path as kSampledImage.
                     auto view_it = texture_views_.find(w.view.index());
                     if (view_it == texture_views_.end())
                         return std::unexpected(cd::rhi::rhi_errors::make(
@@ -2636,21 +2749,25 @@ public:
                 }
                 case cd::rhi::DescriptorType::kBindlessSampledImage:
                 {
-                    // X4-E1 — runtime-indexed sampler2D array slot. Mirrors
-                    // VulkanDevice's kBindlessSampledImage handling, which
-                    // routes one slot to a COMBINED_IMAGE_SAMPLER write at
-                    // `array_element`. On D3D12 the slot is an SRV in the
-                    // CBV/SRV/UAV heap (the sampler half is served by the
-                    // root signature's static samplers, same model as
-                    // kCombinedImageSampler above). `array_element` already
-                    // offset `dst` into the table at the top of the loop, so
-                    // we write exactly one slot here.
+                    // X4-E1 — runtime-indexed sampler2D array slot written via
+                    // the GENERIC descriptor-set surface (update_descriptor_set).
+                    // The slot is an SRV in the per-set CBV/SRV/UAV heap; the
+                    // sampler half is served by the bindless SAMPLER descriptor
+                    // table (B1b — see create_pipeline_layout; a bindless
+                    // sampler2D[] emits a SamplerState range, which a static
+                    // sampler cannot satisfy). `array_element` already offset
+                    // `dst` into the table at the top of the loop, so we write
+                    // exactly one slot here.
                     //
-                    // NOTE: D3D12 does not advertise features().bindless_resources
-                    // at this snapshot, so cross-backend callers gate on it and
-                    // never reach this path on D3D12; the case exists for parity
-                    // with the Vulkan descriptor surface (no silent
-                    // kNotImplemented fall-through).
+                    // NOTE: this is the LEGACY single-set bindless path. The
+                    // DEDICATED bindless pool (D10 — create_bindless_texture_array
+                    // / write_bindless_texture_slot, which now back the engine's
+                    // set-1 `register(t0, space1)[i]` array and advertise
+                    // features().bindless_resources on Tier 2+) writes into its own
+                    // persistent shader-visible heap, NOT this per-set ring. This
+                    // case is retained for callers that route a bindless binding
+                    // through the generic DescriptorWrite surface (parity with the
+                    // Vulkan descriptor path; no silent kNotImplemented fall-through).
                     auto view_it = texture_views_.find(w.view.index());
                     if (view_it == texture_views_.end())
                         return std::unexpected(cd::rhi::rhi_errors::make(
@@ -2702,6 +2819,143 @@ public:
             }
         }
         return {};
+    }
+
+    // ---- Bindless texture array (D10 — parity with Vulkan) ----------------
+    //
+    // The engine's dedicated bindless set (set 1 = `register(t0, space1)[i]`,
+    // MEMORY rule 9) is a runtime-indexed SRV array. The Vulkan reference
+    // backs it with a dedicated UPDATE_AFTER_BIND | PARTIALLY_BOUND |
+    // VARIABLE_DESCRIPTOR_COUNT descriptor set whose slots are written by
+    // `write_bindless_texture_slot` (VulkanDevice.cpp:4017-4188). The D3D12
+    // analog is a SEPARATE, PERSISTENT shader-visible CBV/SRV/UAV heap (the
+    // "bindless pool") whose contiguous slot range is the descriptor table the
+    // space1 unbounded SRV range resolves against:
+    //
+    //   create_bindless_texture_array(desc) -> reserve `desc.slot_count`
+    //       contiguous descriptors in `bindless_heap_` (bump allocator); the
+    //       reserved base is the table base for `register(t0, space1)`.
+    //   write_bindless_texture_slot(array, slot, view) -> CreateShaderResourceView
+    //       for the view's parent texture directly into `bindless_heap_` at
+    //       (base + slot). Because the heap is shader-visible the SRV is live
+    //       the moment it is written (no CPU->GPU copy step, unlike the per-set
+    //       ring at `copy_set_to_gpu_heap`); this mirrors Vulkan's
+    //       UPDATE_AFTER_BIND immediacy.
+    //
+    // The command path (bind_bindless_texture_array) binds `bindless_heap_` +
+    // the bindless sampler heap via SetDescriptorHeaps and points the set-1 SRV
+    // root-table at the array's GPU base and the sampler root-table at the
+    // sampler heap. The sampler half is a real SAMPLER descriptor table (B1b —
+    // see create_pipeline_layout): a bindless sampler2D[] emits a SamplerState
+    // range that a static sampler cannot satisfy.
+
+    [[nodiscard]] cd::core::Result<cd::rhi::BindlessTextureArrayHandle>
+    create_bindless_texture_array(
+        const cd::rhi::BindlessTextureArrayDesc& desc) override
+    {
+        if (!features_.bindless_resources)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "create_bindless_texture_array: device resource-binding tier < 2 "
+                "(no unbounded shader-visible SRV tables)"));
+        }
+        if (desc.slot_count == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "create_bindless_texture_array: slot_count must be > 0"));
+        }
+        // The sampler half is served by the bindless SAMPLER descriptor table
+        // (filled with the default LINEAR-clamp sampler), not a per-array sampler
+        // descriptor; desc.sampler is accepted for Vulkan API parity but not
+        // dereferenced here (a stale handle is not an error on D3D12). We still
+        // reject slot_count overflow of the pool.
+        if (auto r = ensure_bindless_heap_(); !r.has_value())
+            return std::unexpected(r.error());
+        if (bindless_cursor_ + desc.slot_count > kBindlessHeapCap)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "create_bindless_texture_array: bindless heap exhausted"));
+        }
+        BindlessArrayRecord rec;
+        rec.base_slot  = bindless_cursor_;
+        rec.slot_count = desc.slot_count;
+        bindless_cursor_ += desc.slot_count;
+        const auto id = next_id_++;
+        bindless_arrays_.emplace(id, rec);
+        return cd::rhi::BindlessTextureArrayHandle { id, 1u };
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    write_bindless_texture_slot(cd::rhi::BindlessTextureArrayHandle array,
+                                std::uint32_t                       slot,
+                                cd::rhi::TextureViewHandle          view) override
+    {
+        auto arr_it = bindless_arrays_.find(array.index());
+        if (arr_it == bindless_arrays_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: unknown bindless array handle"));
+        }
+        if (slot >= arr_it->second.slot_count)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: slot out of range"));
+        }
+        auto view_it = texture_views_.find(view.index());
+        if (view_it == texture_views_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: unknown texture view"));
+        }
+        auto tex_it = textures_.find(view_it->second.parent.index());
+        if (tex_it == textures_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "write_bindless_texture_slot: bindless slot texture unknown"));
+        }
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
+        srv.Format = view_it->second.format;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        if (view_it->second.is_cube)
+        {
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+            srv.TextureCube.MostDetailedMip = 0;
+            srv.TextureCube.MipLevels = 1;
+            srv.TextureCube.ResourceMinLODClamp = 0.0F;
+        }
+        else if (view_it->second.is_3d)
+        {
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+            srv.Texture3D.MostDetailedMip = 0;
+            srv.Texture3D.MipLevels = 1;
+            srv.Texture3D.ResourceMinLODClamp = 0.0F;
+        }
+        else
+        {
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Texture2D.MipLevels = 1;
+        }
+        // Write directly into the shader-visible bindless heap at (base + slot).
+        D3D12_CPU_DESCRIPTOR_HANDLE dst =
+            bindless_heap_->GetCPUDescriptorHandleForHeapStart();
+        dst.ptr += static_cast<SIZE_T>(arr_it->second.base_slot + slot) *
+                   bindless_increment_;
+        device_->CreateShaderResourceView(tex_it->second.resource.Get(), &srv, dst);
+        return {};
+    }
+
+    void destroy_bindless_texture_array(cd::rhi::BindlessTextureArrayHandle h) override
+    {
+        // Slots are not reclaimed (bump allocator), matching the per-set heap
+        // policy; the persistent heap lives for the device's lifetime.
+        bindless_arrays_.erase(h.index());
     }
 
     // ---- Synchronization (REAL — Phase 125 v0.99.52) ----------------------
@@ -3742,6 +3996,11 @@ public:
         /// "no push-constant range declared at layout creation".
         std::uint32_t push_constants_param { ~std::uint32_t { 0 } };
         std::uint32_t push_constants_dwords { 0 };  // total Num32BitValues
+        /// B1b — root-signature parameter index of the SAMPLER descriptor table
+        /// backing the bindless sampler half (s-register array). UINT32_MAX when
+        /// the layout has no bindless sampler binding. bind_bindless_texture_array
+        /// points this table at the device's shader-visible sampler heap.
+        std::uint32_t bindless_sampler_param { ~std::uint32_t { 0 } };
     };
 
     struct DescriptorSetRecord
@@ -4004,6 +4263,111 @@ private:
     UINT gpu_heap_increment_ { 0 };
     std::uint32_t gpu_heap_cursor_ { 0 };
     static constexpr UINT kGpuHeapCap = 16384;
+
+    // D10 — persistent SHADER-VISIBLE bindless pool (CBV/SRV/UAV). Separate
+    // from gpu_heap_ (which is a per-set ring): bindless slots must PERSIST
+    // across frames (they are written once and dynamic-indexed by the shader),
+    // so they cannot live in the ring that wraps per-bind. write_bindless_
+    // texture_slot writes SRVs directly here at (array.base + slot); the
+    // command path binds this heap and points the set-1 root table at the
+    // array's GPU base. 1024 descriptors comfortably covers the per-prim
+    // showcase scenes (Khronos Sponza is 103).
+    static constexpr UINT kBindlessHeapCap = 1024;
+    ComPtr<ID3D12DescriptorHeap> bindless_heap_;
+    UINT bindless_increment_ { 0 };
+    std::uint32_t bindless_cursor_ { 0 };
+
+    // One contiguous bindless slot range allocated by create_bindless_texture_array.
+    struct BindlessArrayRecord
+    {
+        std::uint32_t base_slot { 0 };
+        std::uint32_t slot_count { 0 };
+    };
+    std::unordered_map<std::uint32_t, BindlessArrayRecord> bindless_arrays_;
+
+    // B1b — shader-visible SAMPLER heap backing the bindless sampler half. The
+    // bindless `sampler2D[]` emits a SamplerState ARRAY `register(sM, spaceN)[]`
+    // that the DXIL dynamic-indexes by the SAME index as the texture, so the heap
+    // is pre-filled with the default LINEAR-clamp sampler at every slot — any
+    // in-range index resolves to it. Sampler heaps cap at 2048; 1024 fits.
+    ComPtr<ID3D12DescriptorHeap> bindless_sampler_heap_;
+
+    // Lazily create the persistent shader-visible bindless heap.
+    [[nodiscard]] cd::core::Result<void> ensure_bindless_heap_()
+    {
+        if (bindless_heap_ != nullptr) return {};
+        D3D12_DESCRIPTOR_HEAP_DESC hd {};
+        hd.NumDescriptors = kBindlessHeapCap;
+        hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&bindless_heap_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "bindless shader-visible heap creation failed"));
+        }
+        bindless_increment_ = device_->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        // Co-create the sampler heap, pre-filled with the default sampler.
+        D3D12_DESCRIPTOR_HEAP_DESC sd {};
+        sd.NumDescriptors = kBindlessHeapCap;
+        sd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        sd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        if (FAILED(device_->CreateDescriptorHeap(&sd,
+                                                 IID_PPV_ARGS(&bindless_sampler_heap_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "bindless sampler heap creation failed"));
+        }
+        const UINT samp_inc = device_->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        D3D12_SAMPLER_DESC dsd {};
+        dsd.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        dsd.AddressU       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        dsd.AddressV       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        dsd.AddressW       = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        dsd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        dsd.MaxLOD         = D3D12_FLOAT32_MAX;
+        D3D12_CPU_DESCRIPTOR_HANDLE sc =
+            bindless_sampler_heap_->GetCPUDescriptorHandleForHeapStart();
+        for (UINT i = 0; i < kBindlessHeapCap; ++i)
+        {
+            device_->CreateSampler(&dsd, sc);
+            sc.ptr += samp_inc;
+        }
+        return {};
+    }
+
+public:
+    // D10 — bindless heap accessors for the command path + smokes.
+    [[nodiscard]] ID3D12DescriptorHeap* bindless_heap() noexcept
+    {
+        return bindless_heap_.Get();
+    }
+    [[nodiscard]] ID3D12DescriptorHeap* bindless_sampler_heap() noexcept
+    {
+        return bindless_sampler_heap_.Get();
+    }
+    [[nodiscard]] UINT bindless_increment() const noexcept
+    {
+        return bindless_increment_;
+    }
+    /// GPU descriptor handle for a bindless array's slot 0 — the base the
+    /// space1 unbounded SRV table resolves `register(t0, space1)[slot]` against.
+    /// Returns ptr==0 for an unknown handle (or no heap yet).
+    [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
+    bindless_array_gpu_base(cd::rhi::BindlessTextureArrayHandle h) noexcept
+    {
+        if (bindless_heap_ == nullptr) return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
+        auto it = bindless_arrays_.find(h.index());
+        if (it == bindless_arrays_.end()) return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
+        D3D12_GPU_DESCRIPTOR_HANDLE out =
+            bindless_heap_->GetGPUDescriptorHandleForHeapStart();
+        out.ptr += static_cast<UINT64>(it->second.base_slot) * bindless_increment_;
+        return out;
+    }
 
 public:
     [[nodiscard]] GraphicsPipelineRecord* find_graphics_pipeline(cd::rhi::GraphicsPipelineHandle h) noexcept
@@ -4292,6 +4656,64 @@ public:
             list_->SetComputeRootDescriptorTable(set_index, gpu);
         else
             list_->SetGraphicsRootDescriptorTable(set_index, gpu);
+    }
+    // D10 — bind the dedicated bindless pool + point root param `set_index` at
+    // the array's GPU base. The bindless heap is a SEPARATE persistent
+    // shader-visible CBV/SRV/UAV heap; D3D12 allows exactly one such heap bound
+    // at a time, so this SetDescriptorHeaps call makes the bindless pool the
+    // active heap for the subsequent draw (the engine binds the bindless set
+    // after the classic per-prim set, mirroring the Vulkan set-1 bind order).
+    void bind_bindless_texture_array(std::uint32_t set_index,
+                                     cd::rhi::BindlessTextureArrayHandle array) override
+    {
+        if (owner_ == nullptr) return;
+        ID3D12DescriptorHeap* heap = owner_->bindless_heap();
+        if (heap == nullptr) return;
+        const auto gpu = owner_->bindless_array_gpu_base(array);
+        if (gpu.ptr == 0) return;
+        const bool is_compute = bound_compute_layout_.value() != 0u;
+        // Bind the bindless SRV heap AND its sampler heap together — D3D12 allows
+        // one CBV/SRV/UAV + one SAMPLER heap bound simultaneously, so the bindless
+        // texture half and its sampler half are both live for the draw.
+        ID3D12DescriptorHeap* samp = owner_->bindless_sampler_heap();
+        if (samp != nullptr)
+        {
+            ID3D12DescriptorHeap* heaps[] = { heap, samp };
+            list_->SetDescriptorHeaps(2, heaps);
+        }
+        else
+        {
+            ID3D12DescriptorHeap* heaps[] = { heap };
+            list_->SetDescriptorHeaps(1, heaps);
+        }
+        // Resolve the SRV table's actual root-parameter index from the bound
+        // layout's table_params (an empty earlier set produces no table, so the
+        // set ordinal != root-param index). Fall back to set_index when the
+        // layout/mapping is unavailable.
+        const auto* lrec = owner_->find_pipeline_layout(
+            is_compute ? bound_compute_layout_ : bound_graphics_layout_);
+        UINT srv_param = set_index;
+        if (lrec != nullptr && set_index < lrec->table_params.size())
+            srv_param = static_cast<UINT>(lrec->table_params[set_index]);
+        // Point the SRV table param at the array's GPU base.
+        if (is_compute)
+            list_->SetComputeRootDescriptorTable(srv_param, gpu);
+        else
+            list_->SetGraphicsRootDescriptorTable(srv_param, gpu);
+        // Point the bindless sampler table (if any) at the sampler heap base.
+        if (lrec != nullptr &&
+            lrec->bindless_sampler_param != ~std::uint32_t { 0 } &&
+            samp != nullptr)
+        {
+            const D3D12_GPU_DESCRIPTOR_HANDLE samp_base =
+                samp->GetGPUDescriptorHandleForHeapStart();
+            if (is_compute)
+                list_->SetComputeRootDescriptorTable(
+                    lrec->bindless_sampler_param, samp_base);
+            else
+                list_->SetGraphicsRootDescriptorTable(
+                    lrec->bindless_sampler_param, samp_base);
+        }
     }
     void bind_vertex_buffer(std::uint32_t binding, cd::rhi::BufferHandle buffer, std::uint64_t offset) override
     {
