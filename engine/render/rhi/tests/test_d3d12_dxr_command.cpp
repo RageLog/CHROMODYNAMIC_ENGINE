@@ -24,17 +24,19 @@
 //      Also pins the SBT alignment contract (handle size 32, record/base
 //      alignment 64) the builder + override agree on.
 //
-//   2. FUNCTIONAL (Windows + DXR-gated): create an RT PSO + an SBT buffer + a
-//      tiny TLAS on the real D3D12 device, record bind_rt_pipeline +
-//      acceleration_structure_barrier + dispatch_rays into a command list, and
-//      submit. Asserts the recording + submission do NOT fault. When the local
-//      adapter does NOT report D3D12_RAYTRACING_TIER >= 1.0 (features()
-//      .ray_tracing == false) the functional probe honest-GTEST_SKIPs: the
-//      runtime trace is NVIDIA-DXR-gated per ROADMAP §5 (WARP / non-RT adapters
-//      have no DispatchRays path). A full ray-gen-UAV-pixel readback assertion
-//      is deferred to the NVIDIA self-hosted CI lane (ROADMAP §5) — it
-//      additionally needs the zero-filled get_rt_shader_group_handles
-//      limitation closed so a real SBT can be authored end-to-end.
+//   2. FUNCTIONAL (Windows + DXR-gated): a full END-TO-END trace on the real
+//      D3D12 device. Part 1 exercises acceleration_structure_barrier() around
+//      two real AS builds. Part 2 (B7b) closes the two create-side gaps and
+//      PROVES the GPU executed the rays: create an RTPSO that now emits a real
+//      D3D12_HIT_GROUP subobject, author the SBT from the REAL
+//      GetShaderIdentifier handles (get_rt_shader_group_handles no longer
+//      returns zero-fill), build a BLAS+TLAS over one triangle, bind the RTPSO
+//      + a descriptor set (TLAS SRV + output UAV), dispatch_rays over an 8x8
+//      UAV, and read the centre pixel back. A correct pipeline traces the ray
+//      into the triangle and runs CLOSEST-HIT -> WHITE; the assert pins WHITE,
+//      which is unreachable unless both create-side gaps are closed AND the AS
+//      descriptor write lands. When the local adapter does NOT report
+//      D3D12_RAYTRACING_TIER >= 1.0 the probe honest-GTEST_SKIPs.
 // =============================================================================
 
 #include <cd/rhi/Descriptors.hpp>
@@ -51,6 +53,8 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -358,27 +362,52 @@ TEST(D3D12DxrCommand, RecordsDxrCommandsAndSubmitsOnRealDevice)
         dev->wait_idle();
     }
 
-    // === PART 2: D8 bind_rt_pipeline + D7 dispatch_rays ===================
-    // Needs a real ID3D12StateObject. A minimal HLSL RT library (ray-gen +
-    // miss + closest-hit) compiled to DXIL via SM6.5.
+    // === PART 2: END-TO-END DXR TRACE WITH UAV READBACK ===================
+    // B7b — close the two create-side gaps (hit-group subobject + real shader
+    // identifiers) and PROVE the GPU executed the rays. A minimal HLSL RT
+    // library: ray-gen casts ONE ray straight down +Z through the PART-1
+    // triangle's centroid, traces the TLAS, and writes the returned payload
+    // colour into a UAV. A HIT runs the closest-hit shader (white); a MISS
+    // runs the miss shader (red). We aim the ray at the triangle, so a correct
+    // end-to-end pipeline writes WHITE — the readback asserts exactly that,
+    // which is only reachable if (a) CreateStateObject accepted the hit-group
+    // subobject and (b) the SBT carries the REAL GetShaderIdentifier handles.
     constexpr const char* kRtHlsl = R"(
 struct Payload { float4 color; };
-RaytracingAccelerationStructure scene : register(t0);
-RWTexture2D<float4>             output : register(u0);
+// Registers match the descriptor-set-layout binding numbers below: the D3D12
+// pipeline-layout builder assigns BaseShaderRegister = binding index per range
+// type, so binding 0 (AS) -> t0 and binding 1 (storage image) -> u1.
+RaytracingAccelerationStructure scene  : register(t0);   // set layout binding 0
+RWTexture2D<float4>             output : register(u1);   // set layout binding 1
 
 [shader("raygeneration")]
 void rgen()
 {
-    uint2 px = DispatchRaysIndex().xy;
-    output[px] = float4(0.0, 0.0, 0.0, 1.0);
+    uint2 px  = DispatchRaysIndex().xy;
+    uint2 dim = DispatchRaysDimensions().xy;
+    // Map the pixel to NDC [-1,1]^2 in the triangle's XY plane and shoot a
+    // ray straight along -Z at the Z=0 triangle. The centre pixel lands on
+    // the triangle, so a correct pipeline writes WHITE there; corner pixels
+    // miss and write RED.
+    float2 ndc = (float2(px) + 0.5) / float2(dim) * 2.0 - 1.0;
+    ndc.y = -ndc.y;  // image space y-down -> world y-up
+    RayDesc ray;
+    ray.Origin    = float3(ndc.x, ndc.y, 1.0);   // above the Z=0 plane
+    ray.Direction = float3(0.0, 0.0, -1.0);      // straight down -Z at it
+    ray.TMin      = 0.001;
+    ray.TMax      = 10.0;
+    Payload p;
+    p.color = float4(0.0, 0.0, 0.0, 0.0);
+    TraceRay(scene, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, p);
+    output[px] = p.color;
 }
 
 [shader("miss")]
-void miss(inout Payload p) { p.color = float4(0.0, 0.0, 0.0, 1.0); }
+void miss(inout Payload p) { p.color = float4(1.0, 0.0, 0.0, 1.0); }  // RED = miss
 
 [shader("closesthit")]
 void chit(inout Payload p, in BuiltInTriangleIntersectionAttributes a)
-{ p.color = float4(1.0, 1.0, 1.0, 1.0); }
+{ p.color = float4(1.0, 1.0, 1.0, 1.0); }                              // WHITE = hit
 )";
 
     auto compile_rt = [&](rhi::ShaderStage stage, const char* entry)
@@ -404,64 +433,137 @@ void chit(inout Payload p, in BuiltInTriangleIntersectionAttributes a)
     const auto rgen = compile_rt(rhi::ShaderStage::kRayGen,     "rgen");
     const auto miss = compile_rt(rhi::ShaderStage::kMiss,       "miss");
     const auto chit = compile_rt(rhi::ShaderStage::kClosestHit, "chit");
+    ASSERT_TRUE(rgen.is_valid() && miss.is_valid() && chit.is_valid())
+        << "RT shader compilation failed (SM6.5 DXIL).";
 
-    rhi::RtPipelineHandle rtpso {};
-    if (rgen.is_valid() && miss.is_valid() && chit.is_valid())
+    // --- Output UAV (8x8 RGBA8) + a descriptor set holding it + the TLAS ---
+    rhi::TextureDesc out_td {};
+    out_td.type   = rhi::TextureType::k2D;
+    out_td.format = rhi::Format::kRGBA8Unorm;
+    out_td.extent = { 8u, 8u, 1u };
+    out_td.usage  = rhi::TextureUsage::kStorage | rhi::TextureUsage::kTransferSrc;
+    out_td.memory = rhi::MemoryUsage::kGpuOnly;
+    auto out_r = dev->create_texture(out_td);
+    ASSERT_TRUE(out_r.has_value()) << out_r.error().message;
+    const auto out_tex = *out_r;
+
+    rhi::TextureViewDesc out_vd {};
+    out_vd.texture = out_tex;
+    out_vd.type    = rhi::TextureType::k2D;
+    auto out_view_r = dev->create_texture_view(out_vd);
+    ASSERT_TRUE(out_view_r.has_value()) << out_view_r.error().message;
+    const auto out_view = *out_view_r;
+
+    // Layout: binding 0 = TLAS SRV (t0), binding 1 = storage image UAV (u0).
+    // The space-per-set model maps set 0 -> space0, matching register(t0)/(u0).
+    const rhi::DescriptorSetLayoutBinding binds[] = {
+        { 0u, rhi::DescriptorType::kAccelerationStructure, 1u, rhi::ShaderStage::kAllGraphics },
+        { 1u, rhi::DescriptorType::kStorageImage,          1u, rhi::ShaderStage::kAllGraphics },
+    };
+    rhi::DescriptorSetLayoutDesc dsl_desc {};
+    dsl_desc.bindings = std::span<const rhi::DescriptorSetLayoutBinding>(binds, 2);
+    auto dsl_r = dev->create_descriptor_set_layout(dsl_desc);
+    ASSERT_TRUE(dsl_r.has_value()) << dsl_r.error().message;
+    const auto dsl = *dsl_r;
+
+    const rhi::DescriptorSetLayoutHandle set_layouts[] = { dsl };
+    rhi::PipelineLayoutDesc pld {};
+    pld.set_layouts = std::span<const rhi::DescriptorSetLayoutHandle>(set_layouts, 1);
+    auto layout_r = dev->create_pipeline_layout(pld);
+    ASSERT_TRUE(layout_r.has_value()) << layout_r.error().message;
+
+    auto set_r = dev->allocate_descriptor_set(dsl);
+    ASSERT_TRUE(set_r.has_value()) << set_r.error().message;
+    const auto set = *set_r;
+
+    const rhi::DescriptorWrite writes[] = {
+        [&] { rhi::DescriptorWrite w {}; w.binding = 0u;
+              w.type = rhi::DescriptorType::kAccelerationStructure;
+              w.accel = tlas; return w; }(),
+        [&] { rhi::DescriptorWrite w {}; w.binding = 1u;
+              w.type = rhi::DescriptorType::kStorageImage;
+              w.view = out_view; return w; }(),
+    };
     {
-        rhi::PipelineLayoutDesc pld {};
-        auto layout_r = dev->create_pipeline_layout(pld);
-        ASSERT_TRUE(layout_r.has_value()) << layout_r.error().message;
-
-        const rhi::RtShaderEntry shaders[] = {
-            { rhi::RtShaderStage::kRaygen,     rgen, "rgen", 0u },
-            { rhi::RtShaderStage::kMiss,       miss, "miss", 1u },
-            { rhi::RtShaderStage::kClosestHit, chit, "chit", 2u },
-        };
-        rhi::RtPipelineDesc rpd {};
-        rpd.shaders             = std::span<const rhi::RtShaderEntry>(shaders, 3);
-        rpd.max_recursion       = 1u;
-        rpd.max_payload_bytes   = 16u;
-        rpd.max_attribute_bytes = 8u;
-        if (auto rtpso_r = dev->create_rt_pipeline(rpd, *layout_r);
-            rtpso_r.has_value())
-            rtpso = *rtpso_r;
+        auto wr = dev->update_descriptor_set(
+            set, std::span<const rhi::DescriptorWrite>(writes, 2));
+        ASSERT_TRUE(wr.has_value()) << wr.error().message;
     }
 
-    // create_rt_pipeline today assembles DXIL libs + shader/pipeline config +
-    // global root signature but NO hit-group subobject, so CreateStateObject
-    // can reject the RTPSO on a strict driver (E_INVALIDARG). That is a
-    // create-SIDE gap (RtPipelineDesc has no hit-group surface yet), NOT the
-    // D7/D8 command path. When the RTPSO is unavailable we have already proven
-    // D9 + AS builds above; the D7/D8 RECORD is then GTEST_SKIPped honestly so
-    // the part-1 evidence still counts as a PASS-with-skip on this host.
-    if (!rtpso.is_valid())
-        GTEST_SKIP() << "D9 + AS-build recording PASSED on this DXR device; "
-                        "D7/D8 record skipped — create_rt_pipeline produced no "
-                        "RTPSO (no hit-group subobject in RtPipelineDesc yet; a "
-                        "create-side gap, not the command path). Full trace +"
-                        " UAV-pixel readback is the NVIDIA-self-hosted-CI "
-                        "follow-on (ROADMAP §5).";
+    // --- Create the RTPSO (NOW with a hit-group subobject) ---------------
+    const rhi::RtShaderEntry shaders[] = {
+        { rhi::RtShaderStage::kRaygen,     rgen, "rgen", 0u },
+        { rhi::RtShaderStage::kMiss,       miss, "miss", 1u },
+        { rhi::RtShaderStage::kClosestHit, chit, "chit", 2u },  // group 2 = hit group
+    };
+    rhi::RtPipelineDesc rpd {};
+    rpd.shaders             = std::span<const rhi::RtShaderEntry>(shaders, 3);
+    rpd.max_recursion       = 1u;
+    rpd.max_payload_bytes   = 16u;
+    rpd.max_attribute_bytes = 8u;
+    auto rtpso_r = dev->create_rt_pipeline(rpd, *layout_r);
+    ASSERT_TRUE(rtpso_r.has_value())
+        << "create_rt_pipeline failed — hit-group subobject gap not closed: "
+        << rtpso_r.error().message;
+    const auto rtpso = *rtpso_r;
 
-    // --- SBT buffer (one 64-byte record per region) ----------------------
+    // --- SBT: author from the REAL shader identifiers --------------------
     const std::uint32_t handle_size = dev->rt_shader_group_handle_size();
     const std::uint32_t base_align  = dev->rt_shader_group_base_alignment();
     ASSERT_EQ(handle_size, 32u);
     ASSERT_EQ(base_align,  64u);
     const std::uint64_t record = base_align;  // 64-byte record stride
 
+    // Pull the three group identifiers (raygen=0, miss=1, hit=2) and verify
+    // they are NON-zero — the old gap returned all-zero handles, which can
+    // NOT author a working SBT. This is the shader_handles_impl proof.
+    std::array<std::byte, std::size_t { 32 } * 3> ids {};
+    {
+        auto h0 = dev->get_rt_shader_group_handles(
+            rtpso, 0u, 3u, std::span<std::byte>(ids));
+        ASSERT_TRUE(h0.has_value())
+            << "get_rt_shader_group_handles failed: " << h0.error().message;
+    }
+    auto group_is_nonzero = [&](std::size_t g) {
+        for (std::size_t i = 0; i < 32; ++i)
+            if (ids[g * std::size_t { 32 } + i] != std::byte { 0 }) return true;
+        return false;
+    };
+    EXPECT_TRUE(group_is_nonzero(0)) << "ray-gen identifier is zero-filled";
+    EXPECT_TRUE(group_is_nonzero(1)) << "miss identifier is zero-filled";
+    EXPECT_TRUE(group_is_nonzero(2)) << "hit-group identifier is zero-filled";
+
+    // Upload one 32-byte identifier into each 64-byte record of an
+    // upload-heap SBT buffer (a shader table is legal on an UPLOAD heap).
     rhi::BufferDesc sbt_bd {};
     sbt_bd.size   = record * 3u;  // raygen + miss + hit
     sbt_bd.usage  = rhi::BufferUsage::kShaderBindingTable;
-    sbt_bd.memory = rhi::MemoryUsage::kGpuOnly;
+    sbt_bd.memory = rhi::MemoryUsage::kCpuToGpu;
     auto sbt_r = dev->create_buffer(sbt_bd);
     ASSERT_TRUE(sbt_r.has_value()) << sbt_r.error().message;
     const auto sbt = *sbt_r;
+    for (std::uint32_t g = 0; g < 3u; ++g)
+    {
+        auto put = dev->upload_buffer(
+            sbt, record * std::uint64_t { g },
+            std::span<const std::byte>(ids.data() + std::size_t { g } * 32u, 32u));
+        ASSERT_TRUE(put.has_value()) << put.error().message;
+    }
 
-    // --- Record: bind RTPSO + dispatch rays ------------------------------
+    // --- Record: (re)build AS in THIS CB, then bind + dispatch -----------
+    // Build the BLAS+TLAS in the SAME command buffer as the trace so the
+    // acceleration-structure writes are guaranteed visible to DispatchRays
+    // through the acceleration_structure_barrier() (UAV barrier) below —
+    // independent of any cross-submit lifetime assumption.
     auto cb = dev->create_command_buffer(rhi::QueueType::kGraphics);
     ASSERT_NE(cb.get(), nullptr);
     cb->begin();
-    cb->bind_rt_pipeline(rtpso);           // D8 — SetPipelineState1
+    cb->build_acceleration_structure(blas);
+    cb->acceleration_structure_barrier();
+    cb->build_acceleration_structure(tlas);
+    cb->acceleration_structure_barrier();
+    cb->bind_rt_pipeline(rtpso);                 // D8 — SetPipelineState1 + root sig
+    cb->bind_descriptor_set(0u, set);            // set 0 -> root param 0 (UAV+TLAS)
 
     rhi::DispatchRaysDesc drd {};
     drd.width  = 8u;
@@ -470,18 +572,42 @@ void chit(inout Payload p, in BuiltInTriangleIntersectionAttributes a)
     drd.raygen = { sbt, 0u,          record, record };
     drd.miss   = { sbt, record,      record, record };
     drd.hit    = { sbt, record * 2u, record, record };
-    cb->dispatch_rays(drd);                // D7 — DispatchRays
+    cb->dispatch_rays(drd);                      // D7 — DispatchRays
     cb->end();
-
-    // Submit. The SBT is zero-filled (get_rt_shader_group_handles returns
-    // zeroed identifiers today — a documented limitation), so the trace itself
-    // produces no meaningful output; this smoke asserts the RECORDING +
-    // SUBMISSION of bind_rt_pipeline + dispatch_rays does not fault. A
-    // meaningful ray-gen-UAV-pixel readback is the NVIDIA-self-hosted-CI
-    // follow-on.
     dev->submit(*cb);
     dev->wait_idle();
-    SUCCEED();
+
+    // --- Read back the centre pixel -> must be WHITE (the ray HIT) -------
+    rhi::BufferDesc rb_bd {};
+    rb_bd.size   = std::uint64_t { 8 } * 8u * 4u;
+    rb_bd.usage  = rhi::BufferUsage::kTransferDst;
+    rb_bd.memory = rhi::MemoryUsage::kGpuToCpu;
+    auto rb_r = dev->create_buffer(rb_bd);
+    ASSERT_TRUE(rb_r.has_value()) << rb_r.error().message;
+    const auto rb = *rb_r;
+
+    rhi::IDevice::ImageRegion reg {};
+    reg.width  = 8u;
+    reg.height = 8u;
+    auto copy_r = dev->copy_image_to_buffer(out_tex, rb, 0u, reg);
+    ASSERT_TRUE(copy_r.has_value()) << copy_r.error().message;
+
+    std::array<std::byte, std::size_t { 8 } * 8 * 4> pixels {};
+    auto dl = dev->download_buffer(rb, 0u, std::span<std::byte>(pixels));
+    ASSERT_TRUE(dl.has_value()) << dl.error().message;
+
+    // Centre pixel (4,4): row-major RGBA8. WHITE proves ray-gen + traversal +
+    // CLOSEST-HIT (the new hit group) all ran on the GPU. RED would mean the
+    // ray missed (TLAS/SBT mis-bound); BLACK would mean the UAV write never
+    // happened.
+    const std::size_t idx = (std::size_t { 4 } * 8u + 4u) * 4u;
+    const auto r8 = static_cast<unsigned>(static_cast<std::uint8_t>(pixels[idx + 0]));
+    const auto g8 = static_cast<unsigned>(static_cast<std::uint8_t>(pixels[idx + 1]));
+    const auto b8 = static_cast<unsigned>(static_cast<std::uint8_t>(pixels[idx + 2]));
+    EXPECT_EQ(r8, 255u) << "centre pixel R — expected WHITE (closest-hit ran)";
+    EXPECT_EQ(g8, 255u) << "centre pixel G — expected WHITE (closest-hit ran)";
+    EXPECT_EQ(b8, 255u) << "centre pixel B — expected WHITE (closest-hit ran); "
+                           "RED(255,0,0)=ray missed, BLACK=UAV unwritten";
 }
 
 #endif  // _WIN32

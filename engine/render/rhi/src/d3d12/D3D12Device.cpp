@@ -1551,6 +1551,7 @@ public:
         }
         PipelineLayoutRecord rec;
         rec.root_sig = root_sig;
+        rec.root_sig_blob = blob;
         rec.table_params = std::move(table_params);
         rec.push_constants_param  = pc_param_idx;
         rec.push_constants_dwords = pc_dwords;
@@ -2233,6 +2234,102 @@ public:
             lib_descs.push_back(ld);
         }
 
+        // --- 1b. Hit groups (one D3D12_HIT_GROUP_DESC per group that
+        //         carries a closest-hit / any-hit / intersection shader) ---
+        //
+        // Mirror the Vulkan grouping convention: each unique RtShaderEntry
+        // ::group index — in first-occurrence order — becomes one SBT shader
+        // group. A general group (raygen / miss / callable) needs no DXR
+        // subobject: its SBT identifier IS the shader export name. A hit group
+        // (closest-hit + optional any-hit + intersection) needs a
+        // D3D12_HIT_GROUP subobject whose HitGroupExport is the name the SBT
+        // identifier is then looked up under. group_export_names is filled in
+        // the SAME order so get_rt_shader_group_handles can map group index ->
+        // export name.
+        std::vector<std::uint32_t> group_ids_seen;
+        for (const auto& se : desc.shaders)
+        {
+            if (std::ranges::find(group_ids_seen, se.group) == group_ids_seen.end())
+                group_ids_seen.push_back(se.group);
+        }
+
+        std::vector<std::wstring>          group_export_names;   // SBT order
+        std::vector<std::wstring>          hit_group_names;      // pinned storage
+        std::vector<D3D12_HIT_GROUP_DESC>  hit_group_descs;
+        group_export_names.reserve(group_ids_seen.size());
+        hit_group_names.reserve(group_ids_seen.size());
+        hit_group_descs.reserve(group_ids_seen.size());
+
+        for (auto gid : group_ids_seen)
+        {
+            const std::wstring* general_export      = nullptr;
+            const std::wstring* closest_hit_export  = nullptr;
+            const std::wstring* any_hit_export      = nullptr;
+            const std::wstring* intersection_export = nullptr;
+            for (std::size_t i = 0; i < desc.shaders.size(); ++i)
+            {
+                const auto& se = desc.shaders[i];
+                if (se.group != gid) continue;
+                const std::wstring* name = &export_names[i];
+                switch (se.stage)
+                {
+                    case cd::rhi::RtShaderStage::kRaygen:
+                    case cd::rhi::RtShaderStage::kMiss:
+                    case cd::rhi::RtShaderStage::kCallable:
+                        general_export = name;
+                        break;
+                    case cd::rhi::RtShaderStage::kClosestHit:
+                        closest_hit_export = name;
+                        break;
+                    case cd::rhi::RtShaderStage::kAnyHit:
+                        any_hit_export = name;
+                        break;
+                    case cd::rhi::RtShaderStage::kIntersection:
+                        intersection_export = name;
+                        break;
+                }
+            }
+
+            const bool is_hit_group =
+                closest_hit_export != nullptr || any_hit_export != nullptr ||
+                intersection_export != nullptr;
+
+            if (!is_hit_group)
+            {
+                // General group — the SBT identifier is the shader export
+                // name directly. A malformed group with no shader at all is
+                // rejected: there is nothing to bind an SBT record to.
+                if (general_export == nullptr)
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kInvalidArgument,
+                        "create_rt_pipeline: shader group has no shader"));
+                }
+                group_export_names.push_back(*general_export);
+                continue;
+            }
+
+            // Hit group — synthesise a unique export name (DXR requires every
+            // export in the state object to be unique; the per-shader DXIL
+            // exports already exist, so the hit-group export is a NEW name).
+            std::wstring hg_name = L"hitgroup_" + std::to_wstring(gid);
+            const auto& pinned = hit_group_names.emplace_back(std::move(hg_name));
+
+            D3D12_HIT_GROUP_DESC hg {};
+            hg.HitGroupExport = pinned.c_str();
+            hg.Type = (intersection_export != nullptr)
+                          ? D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE
+                          : D3D12_HIT_GROUP_TYPE_TRIANGLES;
+            hg.ClosestHitShaderImport  =
+                closest_hit_export  != nullptr ? closest_hit_export->c_str()  : nullptr;
+            hg.AnyHitShaderImport      =
+                any_hit_export      != nullptr ? any_hit_export->c_str()      : nullptr;
+            hg.IntersectionShaderImport =
+                intersection_export != nullptr ? intersection_export->c_str() : nullptr;
+            hit_group_descs.push_back(hg);
+            group_export_names.push_back(pinned);
+        }
+
         // --- 2. Shader config ---
         D3D12_RAYTRACING_SHADER_CONFIG shader_cfg {};
         shader_cfg.MaxPayloadSizeInBytes   = desc.max_payload_bytes;
@@ -2243,12 +2340,49 @@ public:
         pipeline_cfg.MaxTraceRecursionDepth = desc.max_recursion;
 
         // --- 4. Global root signature (empty if no layout) ---
+        //
+        // A DXR GLOBAL root signature MUST NOT carry
+        // D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT (a
+        // graphics-IA-only flag) — CreateStateObject rejects it with
+        // E_INVALIDARG. create_pipeline_layout always sets that flag for the
+        // shared graphics root sig, so we cannot reuse layout.root_sig
+        // directly. Instead we deserialize the layout's serialized blob, strip
+        // the IA flag, and re-serialize a DXR-compatible root signature.
         ComPtr<ID3D12RootSignature> global_rs;
         if (layout.value() != 0u)
         {
             auto pl_it = pipeline_layouts_.find(layout.index());
-            if (pl_it != pipeline_layouts_.end())
-                global_rs = pl_it->second.root_sig;
+            if (pl_it != pipeline_layouts_.end() && pl_it->second.root_sig_blob)
+            {
+                const auto& src_blob = pl_it->second.root_sig_blob;
+                ComPtr<ID3D12RootSignatureDeserializer> deser;
+                if (SUCCEEDED(D3D12CreateRootSignatureDeserializer(
+                        src_blob->GetBufferPointer(),
+                        src_blob->GetBufferSize(),
+                        IID_PPV_ARGS(&deser))))
+                {
+                    const D3D12_ROOT_SIGNATURE_DESC* src_desc =
+                        deser->GetRootSignatureDesc();
+                    if (src_desc != nullptr)
+                    {
+                        D3D12_ROOT_SIGNATURE_DESC dxr_desc = *src_desc;
+                        // Strip the graphics-only IA flag; everything else
+                        // (params, static samplers, deny flags) is preserved.
+                        dxr_desc.Flags &= ~D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+                        ComPtr<ID3DBlob> dxr_blob;
+                        ComPtr<ID3DBlob> dxr_err;
+                        if (SUCCEEDED(D3D12SerializeRootSignature(
+                                &dxr_desc, D3D_ROOT_SIGNATURE_VERSION_1,
+                                &dxr_blob, &dxr_err)))
+                        {
+                            (void)device_->CreateRootSignature(
+                                0, dxr_blob->GetBufferPointer(),
+                                dxr_blob->GetBufferSize(),
+                                IID_PPV_ARGS(&global_rs));
+                        }
+                    }
+                }
+            }
         }
         if (!global_rs)
         {
@@ -2268,13 +2402,20 @@ public:
 
         // --- 5. Assemble flat subobject array ---
         std::vector<D3D12_STATE_SUBOBJECT> subs;
-        subs.reserve(lib_descs.size() + 3u);
+        subs.reserve(lib_descs.size() + hit_group_descs.size() + 3u);
 
         for (auto& ld : lib_descs)
         {
             D3D12_STATE_SUBOBJECT s {};
             s.Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
             s.pDesc = &ld;
+            subs.push_back(s);
+        }
+        for (auto& hg : hit_group_descs)
+        {
+            D3D12_STATE_SUBOBJECT s {};
+            s.Type  = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
+            s.pDesc = &hg;
             subs.push_back(s);
         }
         {
@@ -2326,6 +2467,9 @@ public:
         rec.props     = props;
         rec.group_handle_size =
             D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;  // 32 per DXR spec
+        rec.group_export_names = std::move(group_export_names);
+        rec.global_root_sig    = global_rs;
+        rec.layout_handle      = layout;
         const auto id = next_id_++;
         rt_pipelines_.emplace(id, std::move(rec));
         return cd::rhi::RtPipelineHandle { id, 1u };
@@ -2371,11 +2515,11 @@ public:
                 "get_rt_shader_group_handles: unknown RT pipeline handle"));
         }
         // ShaderIdentifier copy per group. Each identifier is 32 bytes.
-        // The export_names from creation time are needed to look up
-        // by name; since we don't retain them here we use the index-based
-        // approach: the caller selects groups by sequential index
-        // (raygen=0, miss=1, hit=2, …) matching the order supplied
-        // to create_rt_pipeline.
+        // Groups are addressed by sequential index in the SAME first-occurrence
+        // order create_rt_pipeline emitted them (raygen=0, miss=1, hit=2, …).
+        // We retained the per-group export name at creation time, so we can
+        // call GetShaderIdentifier(name) and copy the real 32-byte identifier
+        // the SBT builder consumes.
         const auto& rec = it->second;
         const UINT id_size = rec.group_handle_size;
         if (out.size() < static_cast<std::size_t>(group_count) * id_size)
@@ -2384,13 +2528,27 @@ public:
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
                 "get_rt_shader_group_handles: output buffer too small"));
         }
-        // We don't retain the shader entry names; return zero-filled
-        // handles so callers can detect missing names without crashing.
-        // A follow-on wave stores export_names per-pipeline record
-        // so GetShaderIdentifier(name) can be called.
-        std::memset(out.data(), 0,
-                    static_cast<std::size_t>(group_count) * id_size);
-        (void)first_group;
+        const std::size_t total_groups = rec.group_export_names.size();
+        if (static_cast<std::size_t>(first_group) + group_count > total_groups)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "get_rt_shader_group_handles: group range out of bounds"));
+        }
+        for (std::uint32_t g = 0; g < group_count; ++g)
+        {
+            const std::wstring& name = rec.group_export_names[first_group + g];
+            const void* identifier = rec.props->GetShaderIdentifier(name.c_str());
+            std::byte* dst = out.data() + static_cast<std::size_t>(g) * id_size;
+            if (identifier == nullptr)
+            {
+                // Export not present in the state object — zero-fill that
+                // record so the SBT slot is inert rather than garbage.
+                std::memset(dst, 0, id_size);
+                continue;
+            }
+            std::memcpy(dst, identifier, id_size);
+        }
         return {};
     }
 
@@ -2722,15 +2880,21 @@ public:
                     // Phase 396 — DXR acceleration structure SRV.
                     // In D3D12 an AS is exposed as an SRV with
                     // RaytracingAccelerationStructure format. The GPU
-                    // virtual address is stored in the AccelRecord;
-                    // we look it up via the BufferHandle field of
-                    // the write (callers pass the AS handle packed
-                    // as a BufferHandle per the engine RHI contract).
+                    // virtual address is stored in the AccelRecord; we look
+                    // it up via the DEDICATED `accel` field of the write —
+                    // the documented contract (DescriptorWrite::accel) and
+                    // the field every real caller fills (hello_path_trace,
+                    // ddgi::DispatchPass) and the Vulkan backend reads
+                    // (w.accel). The legacy `buffer`-packed lookup is kept
+                    // as a fallback so any caller that packed the AS into
+                    // `buffer` still resolves.
                     //
                     // If the AS is not found on this adapter, or DXR
                     // is unavailable, we silently skip the write so
                     // the non-DXR path doesn't crash on construction.
-                    auto acc_it = accels_.find(w.buffer.index());
+                    auto acc_it = accels_.find(w.accel.index());
+                    if (acc_it == accels_.end())
+                        acc_it = accels_.find(w.buffer.index());
                     if (acc_it != accels_.end())
                     {
                         D3D12_SHADER_RESOURCE_VIEW_DESC asrv {};
@@ -4009,6 +4173,12 @@ public:
         /// the layout has no bindless sampler binding. bind_bindless_texture_array
         /// points this table at the device's shader-visible sampler heap.
         std::uint32_t bindless_sampler_param { ~std::uint32_t { 0 } };
+        /// Serialized root-signature blob. The graphics root_sig above carries
+        /// D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, which
+        /// a DXR GLOBAL root signature MUST NOT have (CreateStateObject rejects
+        /// it with E_INVALIDARG). create_rt_pipeline deserializes this blob,
+        /// strips the IA flag, and re-serializes a DXR-compatible variant.
+        ComPtr<ID3DBlob> root_sig_blob;
     };
 
     struct DescriptorSetRecord
@@ -4156,6 +4326,19 @@ private:
         ComPtr<ID3D12StateObject>           state_obj;
         ComPtr<ID3D12StateObjectProperties> props;
         UINT                                group_handle_size { 32u };
+        // Per shader-group export name, in the SAME first-occurrence group
+        // order create_rt_pipeline emits them (general groups carry the
+        // shader export name; hit groups carry the synthesised hit-group
+        // export name). get_rt_shader_group_handles indexes this list and
+        // calls GetShaderIdentifier(name) to author the SBT. Wide strings:
+        // GetShaderIdentifier takes LPCWSTR.
+        std::vector<std::wstring>           group_export_names;
+        // The GLOBAL root signature baked into the state object. DXR binds
+        // root arguments through the compute root-binding model, so
+        // bind_rt_pipeline must SetComputeRootSignature(this) for a later
+        // bind_descriptor_set to land its descriptor table on the RTPSO.
+        ComPtr<ID3D12RootSignature>         global_root_sig;
+        cd::rhi::PipelineLayoutHandle       layout_handle {};
     };
     std::unordered_map<std::uint32_t, RtPipelineRecord> rt_pipelines_;
 
@@ -5418,6 +5601,20 @@ public:
         ComPtr<ID3D12GraphicsCommandList4> list4;
         if (FAILED(list_.As(&list4)) || !list4) return;
         list4->SetPipelineState1(rec->state_obj.Get());
+        // DXR root arguments are bound through the COMPUTE root-binding model.
+        // The RTPSO's global root signature is a state-object subobject, but
+        // the list still needs SetComputeRootSignature(global) for a later
+        // SetComputeRootDescriptorTable (issued by bind_descriptor_set) to
+        // land — otherwise the table binds against a stale/empty root sig.
+        // Marking bound_compute_layout_ routes bind_descriptor_set to the
+        // compute path (mirrors how bind_compute_pipeline behaves).
+        if (rec->global_root_sig)
+        {
+            list_->SetComputeRootSignature(rec->global_root_sig.Get());
+            bound_compute_layout_  = rec->layout_handle;
+            bound_graphics_layout_ = {};
+            bound_graphics_pipeline_ = {};
+        }
     }
 
     // ---- DXR command path: D7 dispatch_rays --------------------------------
