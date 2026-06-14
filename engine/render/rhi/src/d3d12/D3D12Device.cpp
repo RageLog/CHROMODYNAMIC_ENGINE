@@ -169,6 +169,58 @@ inline void fill_d3d12_stencil_state(D3D12_DEPTH_STENCIL_DESC& ds,
     ds.BackFace  = op;
 }
 
+// D4 (phase1187): per-attachment blend. Translate the engine BlendFactor /
+// BlendOp enums to their D3D12 equivalents, mirroring the Vulkan reference's
+// map_blend_factor / map_blend_op so the blend math is identical across
+// backends. The color-channel maps use the plain SRC/DEST factors; the
+// alpha-channel variants (SrcBlendAlpha/DestBlendAlpha) reuse the same map
+// because D3D12, like Vulkan, requires the *_ALPHA blend enums to be the
+// color-channel enums whose alpha components are taken — i.e. the same
+// D3D12_BLEND token is valid in both the color and alpha slots.
+[[nodiscard]] D3D12_BLEND
+to_d3d12_blend(cd::rhi::BlendFactor f) noexcept
+{
+    using BF = cd::rhi::BlendFactor;
+    switch (f)
+    {
+        case BF::kZero:                 return D3D12_BLEND_ZERO;
+        case BF::kOne:                  return D3D12_BLEND_ONE;
+        case BF::kSrcColor:             return D3D12_BLEND_SRC_COLOR;
+        case BF::kOneMinusSrcColor:     return D3D12_BLEND_INV_SRC_COLOR;
+        case BF::kDstColor:             return D3D12_BLEND_DEST_COLOR;
+        case BF::kOneMinusDstColor:     return D3D12_BLEND_INV_DEST_COLOR;
+        case BF::kSrcAlpha:             return D3D12_BLEND_SRC_ALPHA;
+        case BF::kOneMinusSrcAlpha:     return D3D12_BLEND_INV_SRC_ALPHA;
+        case BF::kDstAlpha:             return D3D12_BLEND_DEST_ALPHA;
+        case BF::kOneMinusDstAlpha:     return D3D12_BLEND_INV_DEST_ALPHA;
+        case BF::kConstantColor:        return D3D12_BLEND_BLEND_FACTOR;
+        case BF::kOneMinusConstantColor:return D3D12_BLEND_INV_BLEND_FACTOR;
+        // D3D12 has no separate constant-alpha blend; the BlendFactor RGBA
+        // (set via OMSetBlendFactor) covers the constant-alpha case too —
+        // map to the same BLEND_FACTOR token the Vulkan constant-color path
+        // mirrors. This keeps the enum total and avoids an invalid value.
+        case BF::kConstantAlpha:        return D3D12_BLEND_BLEND_FACTOR;
+        case BF::kOneMinusConstantAlpha:return D3D12_BLEND_INV_BLEND_FACTOR;
+        case BF::kSrcAlphaSaturate:     return D3D12_BLEND_SRC_ALPHA_SAT;
+    }
+    return D3D12_BLEND_ZERO;
+}
+
+[[nodiscard]] D3D12_BLEND_OP
+to_d3d12_blend_op(cd::rhi::BlendOp o) noexcept
+{
+    using BO = cd::rhi::BlendOp;
+    switch (o)
+    {
+        case BO::kAdd:             return D3D12_BLEND_OP_ADD;
+        case BO::kSubtract:        return D3D12_BLEND_OP_SUBTRACT;
+        case BO::kReverseSubtract: return D3D12_BLEND_OP_REV_SUBTRACT;
+        case BO::kMin:             return D3D12_BLEND_OP_MIN;
+        case BO::kMax:             return D3D12_BLEND_OP_MAX;
+    }
+    return D3D12_BLEND_OP_ADD;
+}
+
 // Pick the D3D12 heap type from the engine's MemoryUsage hint.
 // DEFAULT  ← kGpuOnly (device-local, GPU-visible only)
 // UPLOAD   ← kCpuToGpu (write-combine, host-visible)
@@ -1422,22 +1474,79 @@ public:
         rs.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
         psd.RasterizerState = rs;
 
-        // Blend — opaque single attachment for v0.36.0.
+        // Blend — D4 (phase1187): translate the engine's per-attachment
+        // BlendAttachmentState[] into D3D12_BLEND_DESC, mirroring the Vulkan
+        // reference (VulkanDevice.cpp:1618-1674). When no blend attachments
+        // are supplied we synthesize opaque "write-all" entries for every
+        // declared color attachment — identical to the Vulkan else-branch —
+        // so fragment output still reaches the framebuffer. With one or more
+        // attachments we fill RenderTarget[i] per attachment for MRT and set
+        // IndependentBlendEnable when the attachments differ. The engine
+        // surface carries no alpha-to-coverage flag (parity: the Vulkan
+        // multisample state hardcodes alphaToCoverageEnable = VK_FALSE), so
+        // AlphaToCoverageEnable stays FALSE here too.
         D3D12_BLEND_DESC bd {};
         bd.AlphaToCoverageEnable = FALSE;
-        bd.IndependentBlendEnable = FALSE;
+        // Default every RT slot to opaque write-all (the D3D12 zero-init for
+        // RenderTarget leaves Src/DestBlend == 0 which are *invalid* enums;
+        // CreateGraphicsPipelineState only validates slot 0 when
+        // IndependentBlendEnable == FALSE, but we fill all 8 defensively so
+        // an MRT PSO never carries an invalid trailing slot).
         for (auto& rt : bd.RenderTarget)
         {
-            rt.BlendEnable = FALSE;
-            rt.LogicOpEnable = FALSE;
-            rt.SrcBlend = D3D12_BLEND_ONE;
-            rt.DestBlend = D3D12_BLEND_ZERO;
-            rt.BlendOp = D3D12_BLEND_OP_ADD;
-            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
-            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
-            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-            rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+            rt.BlendEnable           = FALSE;
+            rt.LogicOpEnable         = FALSE;
+            rt.SrcBlend              = D3D12_BLEND_ONE;
+            rt.DestBlend             = D3D12_BLEND_ZERO;
+            rt.BlendOp               = D3D12_BLEND_OP_ADD;
+            rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha        = D3D12_BLEND_ZERO;
+            rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+            rt.LogicOp               = D3D12_LOGIC_OP_NOOP;
             rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        }
+        if (!desc.blend_attachments.empty())
+        {
+            const auto n = std::min<std::size_t>(desc.blend_attachments.size(), 8);
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                const auto& b = desc.blend_attachments[i];
+                auto& rt = bd.RenderTarget[i];
+                rt.BlendEnable           = b.blend_enable ? TRUE : FALSE;
+                rt.SrcBlend              = to_d3d12_blend(b.src_color);
+                rt.DestBlend             = to_d3d12_blend(b.dst_color);
+                rt.BlendOp               = to_d3d12_blend_op(b.color_op);
+                rt.SrcBlendAlpha         = to_d3d12_blend(b.src_alpha);
+                rt.DestBlendAlpha        = to_d3d12_blend(b.dst_alpha);
+                rt.BlendOpAlpha          = to_d3d12_blend_op(b.alpha_op);
+                // The engine color-write mask shares the RGBA bit order with
+                // D3D12_COLOR_WRITE_ENABLE_{RED,GREEN,BLUE,ALPHA} (1,2,4,8).
+                rt.RenderTargetWriteMask =
+                    static_cast<UINT8>(b.color_write_mask & 0xFu);
+            }
+            // IndependentBlendEnable when any attachment's state differs from
+            // attachment 0 — D3D12 only consults RenderTarget[0] unless this
+            // is TRUE, so MRT with per-target blend needs it set.
+            bool independent = false;
+            for (std::size_t i = 1; i < n && !independent; ++i)
+            {
+                const auto& a = desc.blend_attachments[0];
+                const auto& c = desc.blend_attachments[i];
+                independent =
+                    a.blend_enable    != c.blend_enable    ||
+                    a.src_color       != c.src_color       ||
+                    a.dst_color       != c.dst_color       ||
+                    a.color_op        != c.color_op        ||
+                    a.src_alpha       != c.src_alpha       ||
+                    a.dst_alpha       != c.dst_alpha       ||
+                    a.alpha_op        != c.alpha_op        ||
+                    a.color_write_mask != c.color_write_mask;
+            }
+            bd.IndependentBlendEnable = independent ? TRUE : FALSE;
+        }
+        else
+        {
+            bd.IndependentBlendEnable = FALSE;
         }
         psd.BlendState = bd;
 
@@ -1529,6 +1638,12 @@ public:
         GraphicsPipelineRecord rec;
         rec.pso = pso;
         rec.layout_handle = desc.layout;
+        // D6 (phase1187): capture each binding's stride from the engine
+        // VertexBinding[] so bind_vertex_buffer can stamp the correct
+        // D3D12_VERTEX_BUFFER_VIEW.StrideInBytes. Handles multiple bindings
+        // / strides (e.g. separate position + instance streams).
+        for (const auto& vb : desc.vertex_bindings)
+            rec.binding_strides[vb.binding] = vb.stride;
         // Cache the D3D12 topology that bind_graphics_pipeline +
         // IASetPrimitiveTopology consumer needs (PSO carries the
         // *type* but the command-list call needs the *topology*
@@ -3590,6 +3705,16 @@ public:
         /// IASetPrimitiveTopology for mesh PSOs (the IA is inert), and
         /// draw_mesh_tasks gates DispatchMesh on this flag.
         bool is_mesh_shader { false };
+        /// D6 (phase1187) — per-binding vertex stride captured from the
+        /// pipeline's VertexBinding[] at PSO creation. `bind_vertex_buffer`
+        /// reads `binding_strides[binding]` for D3D12_VERTEX_BUFFER_VIEW.
+        /// StrideInBytes instead of the legacy hardcoded 24. The PSO's input
+        /// layout supplies attribute offsets but D3D12 still requires the
+        /// stride on the VBV, so it must be cached here. Indexed by the
+        /// engine `VertexBinding::binding` slot; a binding absent from the map
+        /// falls back to 0 (a no-stride/degenerate VBV) which surfaces the
+        /// miswiring loudly rather than silently fetching wrong vertices.
+        std::unordered_map<std::uint32_t, std::uint32_t> binding_strides;
     };
 
     // phase466 — compute pipeline record.
@@ -4067,6 +4192,7 @@ public:
                 list_->IASetPrimitiveTopology(rec->d3d_topology);
             bound_compute_layout_ = {};
             bound_graphics_layout_ = rec->layout_handle;
+            bound_graphics_pipeline_ = h;
             bound_is_mesh_shader_ = rec->is_mesh_shader;
         }
     }
@@ -4081,6 +4207,7 @@ public:
             list_->SetComputeRootSignature(layout->root_sig.Get());
         bound_compute_layout_  = rec->layout_handle;
         bound_graphics_layout_ = {};
+        bound_graphics_pipeline_ = {};
     }
     void bind_descriptor_set(std::uint32_t set_index, cd::rhi::DescriptorSetHandle set) override
     {
@@ -4106,18 +4233,22 @@ public:
             D3D12_VERTEX_BUFFER_VIEW vbv {};
             vbv.BufferLocation = buf->resource->GetGPUVirtualAddress() + offset;
             vbv.SizeInBytes = static_cast<UINT>(buf->size - offset);
-            // StrideInBytes is set by the PSO's input layout via
-            // engine VertexBinding[]. The engine API doesn't pass
-            // stride to bind_vertex_buffer (PSO carries it), so we
-            // store 0 here; D3D12 actually requires it. Phase 14.C
-            // workaround: stride is encoded in the caller's binding
-            // descriptor that built the PSO — we re-fetch it from the
-            // last-bound graphics pipeline's stored layout. For the
-            // triangle sample the vertex layout is (Vec3 pos, Vec3 col)
-            // = 24 B; we use that as a sensible default when stride
-            // can't be inferred. A follow-up wave adds stride to the
-            // bind_vertex_buffer signature.
-            vbv.StrideInBytes = 24;
+            // D6 (phase1187): StrideInBytes comes from the bound graphics
+            // PSO's per-binding VertexBinding[].stride (captured at PSO
+            // creation), not a hardcoded 24. The engine API doesn't pass
+            // stride to bind_vertex_buffer — the PSO carries it — so we look
+            // it up via the last-bound pipeline's `binding_strides` map keyed
+            // by this VB slot. Handles multiple bindings with distinct
+            // strides. Absent slot / no pipeline bound → 0 (degenerate VBV
+            // that surfaces a miswire loudly instead of fetching wrong data).
+            UINT stride = 0;
+            if (auto* rec = owner_->find_graphics_pipeline(bound_graphics_pipeline_))
+            {
+                auto sit = rec->binding_strides.find(binding);
+                if (sit != rec->binding_strides.end())
+                    stride = static_cast<UINT>(sit->second);
+            }
+            vbv.StrideInBytes = stride;
             list_->IASetVertexBuffers(binding, 1, &vbv);
         }
     }
@@ -4677,6 +4808,9 @@ private:
     // entry point without an additional API surface change.
     cd::rhi::PipelineLayoutHandle bound_graphics_layout_ {};
     cd::rhi::PipelineLayoutHandle bound_compute_layout_  {};
+    // D6 (phase1187) — last-bound graphics PSO so bind_vertex_buffer can
+    // look up the per-binding vertex stride captured at PSO creation.
+    cd::rhi::GraphicsPipelineHandle bound_graphics_pipeline_ {};
     // phase766 — true after bind_graphics_pipeline on a mesh-shading PSO.
     // draw_mesh_tasks consults this flag before issuing DispatchMesh.
     bool bound_is_mesh_shader_ { false };

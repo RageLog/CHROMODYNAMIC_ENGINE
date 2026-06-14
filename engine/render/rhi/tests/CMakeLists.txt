@@ -158,3 +158,26 @@ if(WIN32)
               "$<TARGET_FILE_DIR:cd_test_d3d12_depth_mrt>")
   endif()
 endif()
+
+# phase1187 (D4 + D6): D3D12 PSO per-attachment blend + per-binding vertex
+# stride GPU smokes. Same GLSL->DXIL device path + WARP render/readback as the
+# depth/MRT test; SKIPs cleanly when no D3D12 adapter or no DXC DLL.
+if(WIN32)
+  cd_add_test(d3d12_blend_stride
+    SOURCES test_d3d12_blend_stride.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_bs_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_bs_list)
+  if(_cd_dxc_bs_list AND TARGET cd_test_d3d12_blend_stride)
+    list(POP_BACK _cd_dxc_bs_list _cd_dxc_bs_dll)
+    get_filename_component(_cd_dxc_bs_dir "${_cd_dxc_bs_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_blend_stride POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_bs_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_blend_stride>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_bs_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_blend_stride>")
+  endif()
+endif()
