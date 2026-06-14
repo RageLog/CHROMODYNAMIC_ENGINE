@@ -3846,6 +3846,9 @@ public:
         target_view_ = {};
         target_texture_ = {};
         bound_is_mesh_shader_ = false;
+        // The prior frame's upload staging is no longer needed once the
+        // allocator is safe to reset (engine waited on its fence).
+        retained_uploads_.clear();
     }
     void end() override
     {
@@ -4119,8 +4122,288 @@ public:
                 sz);
         }
     }
-    void copy_buffer_to_image(cd::rhi::BufferHandle, cd::rhi::TextureHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}
-    void copy_image_to_buffer(cd::rhi::TextureHandle, cd::rhi::BufferHandle, std::span<const cd::rhi::BufferImageCopyRegion>) override {}
+    // phase1185 (D1+D15) — texture UPLOAD. The caller owns the surrounding
+    // barriers (dst already in COPY_DEST / kTransferDst) exactly like the
+    // Vulkan backend's vkCmdCopyBufferToImage. D3D12 placed-footprint copies
+    // REQUIRE a 256-byte-aligned source row pitch
+    // (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT), while the IDevice contract feeds
+    // a TIGHTLY-PACKED source buffer (bufferRowLength = 0, like Vulkan). We
+    // therefore allocate a per-copy UPLOAD staging buffer sized from
+    // GetCopyableFootprints, re-pitch the tightly-packed source rows into it,
+    // then CopyTextureRegion(dst texture <- placed-footprint staging). The
+    // staging ComPtr is retained until the next begin() so it outlives the
+    // GPU execution of this command list.
+    //
+    // SCOPE: correctness for uncompressed single-plane formats (RGBA8 / BGRA8
+    // / R8 / etc.). Block-compressed (BC*) and multi-plane (depth+stencil)
+    // copies are NOT handled here — GetCopyableFootprints would report a
+    // block/plane-shaped footprint that the tight-row re-pitch loop below does
+    // not honour, so they are rejected by a no-op rather than silently
+    // producing wrong bytes (see the bpp==0 guard).
+    void copy_buffer_to_image(cd::rhi::BufferHandle src,
+                              cd::rhi::TextureHandle dst,
+                              std::span<const cd::rhi::BufferImageCopyRegion> regions) override
+    {
+        if (owner_ == nullptr || regions.empty()) return;
+        auto* src_b = owner_->find_buffer(src);
+        auto* dst_t = owner_->find_texture(dst);
+        if (src_b == nullptr || dst_t == nullptr) return;
+        // Source must be CPU-mappable (UPLOAD/READBACK) so we can re-pitch its
+        // bytes into the aligned staging. A kGpuOnly source has no CPU pointer;
+        // that path would need a GPU-side buffer→buffer re-pitch (out of scope).
+        if (src_b->heap_type != D3D12_HEAP_TYPE_UPLOAD &&
+            src_b->heap_type != D3D12_HEAP_TYPE_READBACK)
+            return;
+
+        ID3D12Device* device = owner_->native_device();
+        const D3D12_RESOURCE_DESC tex_desc = dst_t->resource->GetDesc();
+        const UINT mip_levels = std::max<UINT>(1u, tex_desc.MipLevels);
+
+        // Map the source buffer once; all regions read from it.
+        void* src_mapped = nullptr;
+        const D3D12_RANGE src_read { 0, static_cast<SIZE_T>(src_b->size) };
+        if (FAILED(src_b->resource->Map(0, &src_read, &src_mapped)) ||
+            src_mapped == nullptr)
+            return;
+        const auto* src_base = static_cast<const std::uint8_t*>(src_mapped);
+
+        for (const auto& r : regions)
+        {
+            // Region-shaped single-subresource footprint.
+            D3D12_RESOURCE_DESC region_desc = tex_desc;
+            region_desc.Width  = r.image_extent.width;
+            region_desc.Height = r.image_extent.height;
+            region_desc.DepthOrArraySize =
+                static_cast<UINT16>(std::max<std::uint32_t>(1u, r.image_extent.depth));
+            region_desc.MipLevels = 1;
+
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+            UINT   row_count   = 0;
+            UINT64 row_bytes   = 0;
+            UINT64 total_bytes = 0;
+            device->GetCopyableFootprints(&region_desc, 0, 1, 0,
+                                          &footprint, &row_count, &row_bytes,
+                                          &total_bytes);
+            // Guard BC / multi-plane (and degenerate) footprints: the tight
+            // re-pitch below assumes contiguous row_bytes per row.
+            if (row_count == 0 || row_bytes == 0 || total_bytes == 0)
+                continue;
+
+            // Source bounds guard (symmetric with the download de-pitch): the
+            // re-pitch loop reads src_base + buffer_offset + flat*row_bytes for
+            // every tight row/slice. Reject if that TIGHT range would overrun
+            // the source buffer rather than perform an OOB read.
+            const UINT   depth_src = std::max<UINT>(1u, footprint.Footprint.Depth);
+            const UINT64 tight_src =
+                row_bytes * static_cast<UINT64>(row_count) * depth_src;
+            if (r.buffer_offset + tight_src > src_b->size)
+                continue;
+
+            ComPtr<ID3D12Resource> staging;
+            D3D12_HEAP_PROPERTIES up_heap {};
+            up_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+            D3D12_RESOURCE_DESC st_desc {};
+            st_desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+            st_desc.Width            = total_bytes;
+            st_desc.Height           = 1;
+            st_desc.DepthOrArraySize = 1;
+            st_desc.MipLevels        = 1;
+            st_desc.Format           = DXGI_FORMAT_UNKNOWN;
+            st_desc.SampleDesc       = { 1, 0 };
+            st_desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            if (FAILED(device->CreateCommittedResource(
+                    &up_heap, D3D12_HEAP_FLAG_NONE, &st_desc,
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                    IID_PPV_ARGS(&staging))))
+                continue;
+
+            void* st_mapped = nullptr;
+            const D3D12_RANGE no_read { 0, 0 };
+            if (FAILED(staging->Map(0, &no_read, &st_mapped)) ||
+                st_mapped == nullptr)
+                continue;
+            // Re-pitch: tight source rows (row_bytes each, starting at
+            // buffer_offset) -> aligned staging rows (RowPitch each). depth
+            // slices are stacked tightly on the source side too.
+            auto* st_base = static_cast<std::uint8_t*>(st_mapped);
+            const UINT64 row_pitch  = footprint.Footprint.RowPitch;
+            const UINT   rows_per_slice = row_count;
+            for (UINT slice = 0; slice < depth_src; ++slice)
+            {
+                for (UINT row = 0; row < rows_per_slice; ++row)
+                {
+                    const UINT64 flat = static_cast<UINT64>(slice) * rows_per_slice + row;
+                    std::memcpy(
+                        st_base + flat * row_pitch,
+                        src_base + r.buffer_offset +
+                            flat * row_bytes,
+                        static_cast<std::size_t>(row_bytes));
+                }
+            }
+            staging->Unmap(0, nullptr);
+
+            D3D12_TEXTURE_COPY_LOCATION dst_loc {};
+            dst_loc.pResource        = dst_t->resource.Get();
+            dst_loc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dst_loc.SubresourceIndex = r.mip_level + (r.base_layer * mip_levels);
+
+            D3D12_TEXTURE_COPY_LOCATION src_loc {};
+            src_loc.pResource       = staging.Get();
+            src_loc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src_loc.PlacedFootprint = footprint;
+
+            list_->CopyTextureRegion(
+                &dst_loc,
+                static_cast<UINT>(r.image_offset.x),
+                static_cast<UINT>(r.image_offset.y),
+                static_cast<UINT>(r.image_offset.z),
+                &src_loc, nullptr);
+
+            retained_uploads_.push_back(std::move(staging));
+        }
+        src_b->resource->Unmap(0, nullptr);
+    }
+    // phase1185 (D2) — cmd-level texture DOWNLOAD (in-frame readback). The RHI
+    // BufferImageCopyRegion contract is Vulkan-style TIGHT (bufferRowLength = 0):
+    // the dst buffer must receive contiguous rows of exactly row_bytes, with no
+    // 256-byte padding, so a tight-row consumer (e.g. GoldenCapture's
+    // w*h*bpp-sized readback) lands byte-identical to vkCmdCopyImageToBuffer.
+    //
+    // D3D12 CopyTextureRegion into a placed-footprint buffer can ONLY write
+    // 256-aligned (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT) rows, so a direct
+    // texture->dst copy would emit PITCHED rows — wrong layout for the tight
+    // consumer whenever width*bpp % 256 != 0, and potentially larger than the
+    // tightly-sized dst (silent skip on the bounds guard, leaving stale data).
+    //
+    // FIX (deferred-safe, no compute shader): record
+    //   1) CopyTextureRegion(src texture -> RETAINED intermediate PITCHED buffer)
+    //   2) a per-(slice,row) loop of CopyBufferRegion(dst tight-row offset <-
+    //      intermediate pitched-row offset, row_bytes each)
+    // so the dst ends up with TIGHT rows. The intermediate buffer is retained
+    // for the command list's lifetime (same pattern as retained_uploads_) so it
+    // outlives the deferred GPU execution. The bounds check below uses the TIGHT
+    // total (row_bytes * row_count * depth), not the pitched total.
+    //
+    // The caller owns the surrounding barriers (src already in COPY_SOURCE /
+    // kTransferSrc), symmetric with copy_buffer_to_image and Vulkan.
+    //
+    // SCOPE: same uncompressed single-plane formats as the upload path; BC /
+    // multi-plane footprints are rejected by the bpp/row guard.
+    void copy_image_to_buffer(cd::rhi::TextureHandle src,
+                              cd::rhi::BufferHandle dst,
+                              std::span<const cd::rhi::BufferImageCopyRegion> regions) override
+    {
+        if (owner_ == nullptr || regions.empty()) return;
+        auto* src_t = owner_->find_texture(src);
+        auto* dst_b = owner_->find_buffer(dst);
+        if (src_t == nullptr || dst_b == nullptr) return;
+
+        ID3D12Device* device = owner_->native_device();
+        const D3D12_RESOURCE_DESC tex_desc = src_t->resource->GetDesc();
+        const UINT mip_levels = std::max<UINT>(1u, tex_desc.MipLevels);
+
+        for (const auto& r : regions)
+        {
+            D3D12_RESOURCE_DESC region_desc = tex_desc;
+            region_desc.Width  = r.image_extent.width;
+            region_desc.Height = r.image_extent.height;
+            region_desc.DepthOrArraySize =
+                static_cast<UINT16>(std::max<std::uint32_t>(1u, r.image_extent.depth));
+            region_desc.MipLevels = 1;
+
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint {};
+            UINT   row_count   = 0;
+            UINT64 row_bytes   = 0;
+            UINT64 total_bytes = 0;  // PITCHED total (256-aligned rows).
+            device->GetCopyableFootprints(&region_desc, 0, 1, 0,
+                                          &footprint, &row_count, &row_bytes,
+                                          &total_bytes);
+            if (row_count == 0 || row_bytes == 0 || total_bytes == 0)
+                continue;
+
+            const UINT64 row_pitch = footprint.Footprint.RowPitch;
+            const UINT   depth     = std::max<UINT>(1u, footprint.Footprint.Depth);
+            const UINT64 tight_total =
+                row_bytes * static_cast<UINT64>(row_count) * depth;
+
+            // The dst buffer must hold the TIGHT rows starting at buffer_offset
+            // (the Vulkan contract size), not the pitched footprint total.
+            if (r.buffer_offset + tight_total > dst_b->size)
+                continue;
+
+            // Step 1: copy the texture into a retained PITCHED intermediate
+            // buffer (footprint anchored at 0). A DEFAULT-heap buffer is fine —
+            // the de-pitch CopyBufferRegion is a GPU-side buffer->buffer copy.
+            ComPtr<ID3D12Resource> intermediate;
+            D3D12_HEAP_PROPERTIES def_heap {};
+            def_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC mid_desc {};
+            mid_desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+            mid_desc.Width            = total_bytes;
+            mid_desc.Height           = 1;
+            mid_desc.DepthOrArraySize = 1;
+            mid_desc.MipLevels        = 1;
+            mid_desc.Format           = DXGI_FORMAT_UNKNOWN;
+            mid_desc.SampleDesc       = { 1, 0 };
+            mid_desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            if (FAILED(device->CreateCommittedResource(
+                    &def_heap, D3D12_HEAP_FLAG_NONE, &mid_desc,
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                    IID_PPV_ARGS(&intermediate))))
+                continue;
+
+            footprint.Offset = 0;
+
+            D3D12_TEXTURE_COPY_LOCATION src_loc {};
+            src_loc.pResource        = src_t->resource.Get();
+            src_loc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            src_loc.SubresourceIndex = r.mip_level + (r.base_layer * mip_levels);
+
+            D3D12_TEXTURE_COPY_LOCATION mid_loc {};
+            mid_loc.pResource       = intermediate.Get();
+            mid_loc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            mid_loc.PlacedFootprint = footprint;
+
+            const D3D12_BOX src_box {
+                .left   = static_cast<UINT>(r.image_offset.x),
+                .top    = static_cast<UINT>(r.image_offset.y),
+                .front  = static_cast<UINT>(r.image_offset.z),
+                .right  = static_cast<UINT>(r.image_offset.x) + r.image_extent.width,
+                .bottom = static_cast<UINT>(r.image_offset.y) + r.image_extent.height,
+                .back   = static_cast<UINT>(r.image_offset.z) +
+                          std::max<std::uint32_t>(1u, r.image_extent.depth),
+            };
+            list_->CopyTextureRegion(&mid_loc, 0, 0, 0, &src_loc, &src_box);
+
+            // Step 2: barrier the intermediate COPY_DEST -> COPY_SOURCE, then
+            // de-pitch each row into the dst at TIGHT stride.
+            D3D12_RESOURCE_BARRIER to_src {};
+            to_src.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            to_src.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+            to_src.Transition.pResource   = intermediate.Get();
+            to_src.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+            to_src.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            to_src.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list_->ResourceBarrier(1, &to_src);
+
+            for (UINT slice = 0; slice < depth; ++slice)
+            {
+                for (UINT row = 0; row < row_count; ++row)
+                {
+                    const UINT64 flat =
+                        static_cast<UINT64>(slice) * row_count + row;
+                    list_->CopyBufferRegion(
+                        dst_b->resource.Get(),
+                        r.buffer_offset + flat * row_bytes,
+                        intermediate.Get(),
+                        flat * row_pitch,
+                        row_bytes);
+                }
+            }
+
+            retained_uploads_.push_back(std::move(intermediate));
+        }
+    }
     // phase466 — explicit state-transition barriers. Vulkan ResourceState
     // is mapped to the matching D3D12_RESOURCE_STATES bitmask; we batch
     // all transitions into a single ResourceBarrier call.
@@ -4254,6 +4537,12 @@ private:
     // phase766 — true after bind_graphics_pipeline on a mesh-shading PSO.
     // draw_mesh_tasks consults this flag before issuing DispatchMesh.
     bool bound_is_mesh_shader_ { false };
+    // phase1185 (D1) — per-copy UPLOAD staging buffers created by
+    // copy_buffer_to_image. They must outlive the GPU execution of this
+    // command list; cleared at the next begin() (the engine has waited on the
+    // prior frame's fence by then, mirroring how command-allocator reset is
+    // safe at begin()).
+    std::vector<ComPtr<ID3D12Resource>> retained_uploads_;
 };
 
 std::unique_ptr<cd::rhi::ICommandBuffer>

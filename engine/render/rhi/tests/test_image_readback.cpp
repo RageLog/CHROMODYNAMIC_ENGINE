@@ -41,9 +41,11 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace
@@ -390,6 +392,172 @@ TEST(ImageReadback, D3D12GpuClearColorRoundTrip)
     if (!dev_r.has_value())
         GTEST_SKIP() << "no D3D12 adapter available on this host";
     run_gpu_clear_roundtrip(**dev_r);
+}
+
+// ---- cmd-level upload -> cmd-level download round-trip (D1 + D2) ------------
+//
+// phase1185: exercises the two newly-implemented command-buffer copies.
+//   copy_buffer_to_image  (D1/D15) — UPLOAD a known RGBA8 pattern into a
+//                                     DEFAULT-heap texture via a pitched
+//                                     staging buffer + CopyTextureRegion.
+//   copy_image_to_buffer  (D2)     — DOWNLOAD it back into a READBACK buffer
+//                                     via a placed-footprint CopyTextureRegion.
+//
+// Two width regimes are exercised:
+//   * 64x64 RGBA8 → tight row = 64*4 = 256 B, exactly
+//     D3D12_TEXTURE_DATA_PITCH_ALIGNMENT, so RowPitch == row_bytes and NO
+//     re-pitch/de-pitch arithmetic is hit.
+//   * 50x32 RGBA8 → tight row = 50*4 = 200 B → RowPitch padded to 256 B, so
+//     BOTH the upload re-pitch (tight→256) and the download de-pitch (256→tight,
+//     the per-row CopyBufferRegion loop) are genuinely exercised. This is the
+//     proof the placed-footprint pitch math is correct.
+// In every case the cmd-level download lands byte-identical (TIGHT) to the
+// source so the round-trip asserts EXACT equality across all w*h*bpp bytes.
+// The body runs against the real D3D12 backend (WARP if no HW adapter).
+
+void run_cmd_upload_download_roundtrip(cd::rhi::IDevice& dev,
+                                       std::uint32_t kW, std::uint32_t kH)
+{
+    const std::uint64_t kBytes = std::uint64_t { kW } * kH * 4u;
+
+    // A deterministic, per-texel-unique RGBA8 pattern.
+    std::vector<std::uint8_t> pattern(static_cast<std::size_t>(kBytes));
+    for (std::uint32_t i = 0; i < kW * kH; ++i)
+    {
+        const std::size_t o = static_cast<std::size_t>(i) * 4u;
+        pattern[o + 0] = static_cast<std::uint8_t>(i & 0xFFu);
+        pattern[o + 1] = static_cast<std::uint8_t>((i >> 4) & 0xFFu);
+        pattern[o + 2] = static_cast<std::uint8_t>((i * 7u) & 0xFFu);
+        pattern[o + 3] = static_cast<std::uint8_t>((i ^ 0xA5u) & 0xFFu);
+    }
+
+    // Arrange: DEFAULT-heap target texture (transfer dst + src so it can be
+    // both written and read back).
+    cd::rhi::TextureDesc td {};
+    td.type         = cd::rhi::TextureType::k2D;
+    td.format       = cd::rhi::Format::kRGBA8Unorm;
+    td.extent       = { kW, kH, 1 };
+    td.mip_levels   = 1;
+    td.array_layers = 1;
+    td.usage        = cd::rhi::TextureUsage::kTransferDst |
+                      cd::rhi::TextureUsage::kTransferSrc |
+                      cd::rhi::TextureUsage::kSampled;
+    td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
+    auto tex_r = dev.create_texture(td);
+    ASSERT_TRUE(tex_r.has_value())
+        << std::string(tex_r.error().message.begin(), tex_r.error().message.end());
+    const auto tex = *tex_r;
+
+    // UPLOAD-heap staging source (the engine pattern: upload_buffer fills it).
+    cd::rhi::BufferDesc up_bd {};
+    up_bd.size   = kBytes;
+    up_bd.usage  = cd::rhi::BufferUsage::kTransferSrc;
+    up_bd.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto up_r = dev.create_buffer(up_bd);
+    ASSERT_TRUE(up_r.has_value());
+    const auto up_buf = *up_r;
+    {
+        auto put = dev.upload_buffer(
+            up_buf, 0,
+            std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(pattern.data()), kBytes));
+        ASSERT_TRUE(put.has_value());
+    }
+
+    // READBACK-heap destination.
+    cd::rhi::BufferDesc rb_bd {};
+    rb_bd.size   = kBytes;
+    rb_bd.usage  = cd::rhi::BufferUsage::kTransferDst;
+    rb_bd.memory = cd::rhi::MemoryUsage::kGpuToCpu;
+    auto rb_r = dev.create_buffer(rb_bd);
+    ASSERT_TRUE(rb_r.has_value());
+    const auto rb_buf = *rb_r;
+
+    // Act: one command list does upload -> download with explicit barriers
+    // around each copy (the cmd-level copies do NOT transition implicitly,
+    // matching the Vulkan contract).
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    ASSERT_NE(cmd, nullptr);
+    cmd->begin();
+
+    cd::rhi::TextureBarrier to_dst {};
+    to_dst.texture = tex;
+    to_dst.from    = cd::rhi::ResourceState::kUndefined;
+    to_dst.to      = cd::rhi::ResourceState::kTransferDst;
+    to_dst.range   = { 0, 1, 0, 1 };
+    cmd->barrier({}, { &to_dst, 1 });
+
+    std::array<cd::rhi::BufferImageCopyRegion, 1> up_regs {
+        cd::rhi::BufferImageCopyRegion {
+            .buffer_offset = 0, .mip_level = 0, .base_layer = 0,
+            .layer_count = 1, .image_offset = { 0, 0, 0 },
+            .image_extent = { kW, kH, 1 } }
+    };
+    cmd->copy_buffer_to_image(up_buf, tex, up_regs);
+
+    cd::rhi::TextureBarrier to_src {};
+    to_src.texture = tex;
+    to_src.from    = cd::rhi::ResourceState::kTransferDst;
+    to_src.to      = cd::rhi::ResourceState::kTransferSrc;
+    to_src.range   = { 0, 1, 0, 1 };
+    cmd->barrier({}, { &to_src, 1 });
+
+    std::array<cd::rhi::BufferImageCopyRegion, 1> dn_regs {
+        cd::rhi::BufferImageCopyRegion {
+            .buffer_offset = 0, .mip_level = 0, .base_layer = 0,
+            .layer_count = 1, .image_offset = { 0, 0, 0 },
+            .image_extent = { kW, kH, 1 } }
+    };
+    cmd->copy_image_to_buffer(tex, rb_buf, dn_regs);
+
+    cmd->end();
+    dev.submit(*cmd);
+    dev.wait_idle();
+
+    // Assert: every byte round-tripped EXACTLY.
+    std::vector<std::byte> got(static_cast<std::size_t>(kBytes));
+    auto dl = dev.download_buffer(rb_buf, 0, std::span<std::byte> { got });
+    ASSERT_TRUE(dl.has_value());
+
+    std::size_t first_bad = kBytes;
+    for (std::size_t i = 0; i < static_cast<std::size_t>(kBytes); ++i)
+    {
+        if (std::to_integer<std::uint8_t>(got[i]) != pattern[i])
+        {
+            first_bad = i;
+            break;
+        }
+    }
+    EXPECT_EQ(first_bad, static_cast<std::size_t>(kBytes))
+        << "first mismatched byte at offset " << first_bad
+        << " (got " << static_cast<int>(std::to_integer<std::uint8_t>(got[first_bad]))
+        << " want " << static_cast<int>(pattern[first_bad]) << ")";
+
+    dev.destroy_buffer(rb_buf);
+    dev.destroy_buffer(up_buf);
+    dev.destroy_texture(tex);
+}
+
+// Aligned case: 64*4 = 256 B/row == pitch, no re-pitch arithmetic exercised.
+TEST(ImageReadback, D3D12CmdUploadDownloadRoundTrip)
+{
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device({});
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no D3D12 adapter available on this host";
+    run_cmd_upload_download_roundtrip(**dev_r, 64, 64);
+}
+
+// Non-aligned case (the pitch-math proof): 50*4 = 200 B tight row → RowPitch
+// padded to 256 B. This exercises the upload re-pitch (200→256) AND the
+// download de-pitch per-row CopyBufferRegion loop (256→200). If the de-pitch
+// arithmetic were wrong every row past the first would land at the wrong dst
+// offset and the exact-equality assert would fire.
+TEST(ImageReadback, D3D12CmdUploadDownloadRoundTripNonAligned)
+{
+    auto dev_r = cd::rhi::d3d12::create_d3d12_device({});
+    if (!dev_r.has_value())
+        GTEST_SKIP() << "no D3D12 adapter available on this host";
+    run_cmd_upload_download_roundtrip(**dev_r, 50, 32);
 }
 #endif
 
