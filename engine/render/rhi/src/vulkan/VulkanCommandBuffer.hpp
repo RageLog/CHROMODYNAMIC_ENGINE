@@ -9,6 +9,7 @@
 // =============================================================================
 #pragma once
 
+#include <cd/rhi/Enums.hpp>    // cd::rhi::QueueType (multi-queue routing tag)
 #include <cd/rhi/Format.hpp>   // cd::rhi::Format (image_formats aspect lookup)
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <volk.h>
@@ -214,11 +215,22 @@ public:
         return cmd_;
     }
 
+    /// Vulkan V2 (multi-queue model): the QueueType this buffer was allocated
+    /// for. submit() reads it to route the VkSubmitInfo2 to the matching
+    /// VkQueue. Defaults to kGraphics so the existing graphics submit path —
+    /// and the parallel-lane secondaries, which are never submitted directly —
+    /// stay byte-identical. The producing device sets this immediately after
+    /// construction in do_create_command_buffer(QueueType).
+    void set_queue_type(cd::rhi::QueueType q) noexcept { queue_type_ = q; }
+    [[nodiscard]] cd::rhi::QueueType queue_type() const noexcept { return queue_type_; }
+
 private:
     VkDevice device_ { VK_NULL_HANDLE };
     VkCommandPool pool_ { VK_NULL_HANDLE };
     VkCommandBuffer cmd_ { VK_NULL_HANDLE };
     ResourceTables tables_ {};
+    // Vulkan V2 (multi-queue model) — submit() routing tag. See set_queue_type.
+    cd::rhi::QueueType queue_type_ { cd::rhi::QueueType::kGraphics };
     // bind_descriptor_set / push_constants need a VkPipelineLayout but the
     // ICommandBuffer signature doesn't accept one — these caches remember the
     // layout that the most-recent bind_*_pipeline call implied.

@@ -28,6 +28,7 @@
                                       // dtor needs the complete type at the call
                                       // site (GCC enforces this earlier than Clang).
 #include <cd/rhi/IDevice.hpp>
+#include <cd/rhi/vulkan/VulkanDevice.hpp>  // QueueFamilyInfo (multi-queue introspection bridge)
 #include <cd/rhi/vulkan/VulkanFormat.hpp>  // vk_aspect_for_format public alias
 
 #include <array>
@@ -616,6 +617,23 @@ std::uint32_t vk_aspect_for_format(cd::rhi::Format f) noexcept
 class VulkanDevice final : public cd::rhi::IDevice
 {
 public:
+    /// Vulkan V2 (multi-queue model) — the additive async-compute / dedicated-
+    /// transfer / present queue handles + their family indices. The graphics
+    /// family/queue stay separate constructor args so the unchanged render path
+    /// is unmistakable. When a QueueType aliases graphics, the corresponding
+    /// family equals graphics_family and the VkQueue handle equals graphics_queue.
+    struct QueueSet
+    {
+        std::uint32_t compute_family { 0 };
+        std::uint32_t transfer_family { 0 };
+        std::uint32_t present_family { 0 };
+        VkQueue compute_queue { VK_NULL_HANDLE };
+        VkQueue transfer_queue { VK_NULL_HANDLE };
+        VkQueue present_queue { VK_NULL_HANDLE };
+        bool compute_dedicated { false };
+        bool transfer_dedicated { false };
+    };
+
     VulkanDevice(
         std::unique_ptr<VulkanInstance> inst,
         VkPhysicalDevice pd,
@@ -623,13 +641,22 @@ public:
         std::uint32_t gfx_family,
         VkQueue gfx_queue,
         VmaAllocator allocator,
-        std::string name
+        std::string name,
+        QueueSet queues
     ) noexcept
         : inst_ { std::move(inst) }
         , physical_ { pd }
         , device_ { dev }
         , graphics_family_ { gfx_family }
         , graphics_queue_ { gfx_queue }
+        , compute_family_ { queues.compute_family }
+        , transfer_family_ { queues.transfer_family }
+        , present_family_ { queues.present_family }
+        , compute_queue_ { queues.compute_queue }
+        , transfer_queue_ { queues.transfer_queue }
+        , present_queue_ { queues.present_queue }
+        , compute_dedicated_ { queues.compute_dedicated }
+        , transfer_dedicated_ { queues.transfer_dedicated }
         , vma_allocator_ { allocator }
         , adapter_name_ { std::move(name) }
     {
@@ -733,6 +760,17 @@ public:
         return graphics_queue_;
     }
 
+    // Vulkan V2 (multi-queue model) — read-only introspection used by the
+    // multi-queue smoke test to assert the family-selection result on the
+    // current GPU (graphics valid; compute/transfer either dedicated or aliased
+    // to graphics). These are rhi_vulkan-internal, exposed via the
+    // try_fill_queue_families bridge — the IDevice interface stays queue-agnostic.
+    [[nodiscard]] std::uint32_t compute_family() const noexcept { return compute_family_; }
+    [[nodiscard]] std::uint32_t transfer_family() const noexcept { return transfer_family_; }
+    [[nodiscard]] std::uint32_t present_family() const noexcept { return present_family_; }
+    [[nodiscard]] bool compute_family_dedicated() const noexcept { return compute_dedicated_; }
+    [[nodiscard]] bool transfer_family_dedicated() const noexcept { return transfer_dedicated_; }
+
     // Public read-only accessors used by `try_fill_native_handles()` so
     // NativeHandles.cpp can hand raw Vulkan handles to opt-in callers
     // (ImGui backend, RenderDoc capture script, etc.) without making the
@@ -809,6 +847,19 @@ public:
         {
             vkDestroyCommandPool(device_, graphics_pool_, nullptr);
             graphics_pool_ = VK_NULL_HANDLE;
+        }
+        // Vulkan V2 (multi-queue model): tear down the additive compute/transfer
+        // pools. They are distinct VkCommandPool objects even when their family
+        // aliases graphics, so each needs its own destroy.
+        if (compute_pool_ != VK_NULL_HANDLE)
+        {
+            vkDestroyCommandPool(device_, compute_pool_, nullptr);
+            compute_pool_ = VK_NULL_HANDLE;
+        }
+        if (transfer_pool_ != VK_NULL_HANDLE)
+        {
+            vkDestroyCommandPool(device_, transfer_pool_, nullptr);
+            transfer_pool_ = VK_NULL_HANDLE;
         }
         if (descriptor_pool_ != VK_NULL_HANDLE)
         {
@@ -2638,7 +2689,12 @@ public:
             .pImageIndices = &image_index,
             .pResults = nullptr,
         };
-        const VkResult r = vkQueuePresentKHR(graphics_queue_, &pi);
+        // Vulkan V2 (multi-queue model): present on the present queue. When no
+        // separate present family was selected (the common case — graphics
+        // supports the surface, or no surface was probed at device creation),
+        // present_queue_ aliases graphics_queue_ and this is the unchanged path.
+        VkQueue present_q = present_queue_ != VK_NULL_HANDLE ? present_queue_ : graphics_queue_;
+        const VkResult r = vkQueuePresentKHR(present_q, &pi);
         if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
         {
             return std::unexpected(make_err(cd::rhi::rhi_errors::Code::kSwapchainOutOfDate, "swapchain out of date"));
@@ -3039,9 +3095,34 @@ public:
     }
 
     // --- Command pool + command buffer (S3.4) ----------------------------
-    [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer> do_create_command_buffer(cd::rhi::QueueType /*queue*/) override
+    // Vulkan V2 (multi-queue model): resolve the (pool, family) pair for a
+    // QueueType, lazily creating the pool on that QueueType's family. The
+    // graphics case returns graphics_pool_/graphics_family_ UNCHANGED so the
+    // render path is byte-identical; compute/transfer get their own pool on the
+    // selected (possibly aliased-to-graphics) family. Returns false on pool
+    // creation failure.
+    [[nodiscard]] bool resolve_pool_for_queue_(cd::rhi::QueueType queue,
+                                               VkCommandPool& out_pool,
+                                               std::uint32_t& out_family) noexcept
     {
-        if (graphics_pool_ == VK_NULL_HANDLE)
+        VkCommandPool* slot = &graphics_pool_;
+        std::uint32_t family = graphics_family_;
+        switch (queue)
+        {
+            case cd::rhi::QueueType::kGraphics:
+                slot = &graphics_pool_;
+                family = graphics_family_;
+                break;
+            case cd::rhi::QueueType::kCompute:
+                slot = &compute_pool_;
+                family = compute_family_;
+                break;
+            case cd::rhi::QueueType::kTransfer:
+                slot = &transfer_pool_;
+                family = transfer_family_;
+                break;
+        }
+        if (*slot == VK_NULL_HANDLE)
         {
             const VkCommandPoolCreateInfo pi {
                 .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -3050,17 +3131,27 @@ public:
                 // CommandBuffers in VulkanCommandBuffer's dtor (single-pool v1).
                 // S3.5 will switch to a per-frame pool + vkResetCommandPool.
                 .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-                .queueFamilyIndex = graphics_family_,
+                .queueFamilyIndex = family,
             };
-            if (vkCreateCommandPool(device_, &pi, nullptr, &graphics_pool_) != VK_SUCCESS)
-            {
-                return nullptr;
-            }
+            if (vkCreateCommandPool(device_, &pi, nullptr, slot) != VK_SUCCESS)
+                return false;
         }
+        out_pool = *slot;
+        out_family = family;
+        return true;
+    }
+
+    [[nodiscard]] std::unique_ptr<cd::rhi::ICommandBuffer> do_create_command_buffer(cd::rhi::QueueType queue) override
+    {
+        VkCommandPool pool { VK_NULL_HANDLE };
+        std::uint32_t family { graphics_family_ };
+        if (!resolve_pool_for_queue_(queue, pool, family))
+            return nullptr;
+
         const VkCommandBufferAllocateInfo ai {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             .pNext = nullptr,
-            .commandPool = graphics_pool_,
+            .commandPool = pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             .commandBufferCount = 1,
         };
@@ -3069,9 +3160,9 @@ public:
         {
             return nullptr;
         }
-        return std::make_unique<VulkanCommandBuffer>(
+        auto vcb = std::make_unique<VulkanCommandBuffer>(
             device_,
-            graphics_pool_,
+            pool,
             cmd,
             ResourceTables {
                 .buffers = &buffers_,
@@ -3084,12 +3175,18 @@ public:
                 .descriptor_sets = &descriptor_sets_,
                 .view_formats = &view_formats_,
                 .image_formats = &image_formats_,
+                // Per-lane pools (parallel render pass) always live on the
+                // graphics family — secondaries only execute graphics work.
                 .graphics_queue_family = graphics_family_,
                 .accel_lookup = &VulkanDevice::accel_lookup_static_,
                 .accel_lookup_user = this,
                 .rt_pipeline_lookup = &VulkanDevice::rt_pipeline_lookup_static_,
             }
         );
+        // Vulkan V2 (multi-queue model): tag the buffer so submit() routes it to
+        // the matching VkQueue. kGraphics tag => unchanged graphics submit path.
+        vcb->set_queue_type(queue);
+        return vcb;
     }
 
     // Phase 135 — static callback for cmd-buffer bind_rt_pipeline.
@@ -3369,6 +3466,14 @@ public:
     [[nodiscard]] cd::core::Result<void> submit(const cd::rhi::SubmitDesc& desc) override
     {
         // Resolve command buffers.
+        // Vulkan V2 (multi-queue model): a VkSubmitInfo2 targets exactly one
+        // VkQueue, so the submit's destination queue is the QueueType of its
+        // command buffers. We take it from the first command buffer; the legacy
+        // default of kGraphics is preserved when none is present (empty submit)
+        // or when the buffer was created with the default kGraphics tag, so the
+        // flagship render path routes to graphics_queue_ byte-identically.
+        cd::rhi::QueueType target_queue = cd::rhi::QueueType::kGraphics;
+        bool queue_resolved = false;
         std::vector<VkCommandBufferSubmitInfo> cb_infos;
         cb_infos.reserve(desc.command_buffers.size());
         for (auto* icb : desc.command_buffers)
@@ -3381,6 +3486,11 @@ public:
                 return std::unexpected(
                     make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "submit: non-Vulkan command buffer")
                 );
+            }
+            if (!queue_resolved)
+            {
+                target_queue = vk_cb->queue_type();
+                queue_resolved = true;
             }
             VkCommandBufferSubmitInfo ci {};
             ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -3490,11 +3600,33 @@ public:
             .signalSemaphoreInfoCount = static_cast<std::uint32_t>(signals.size()),
             .pSignalSemaphoreInfos = signals.empty() ? nullptr : signals.data(),
         };
-        if (vkQueueSubmit2(graphics_queue_, 1, &si, vk_fence) != VK_SUCCESS)
+        // Vulkan V2 (multi-queue model): route to the queue for this submit's
+        // QueueType. kGraphics (the default + the flagship path) resolves to
+        // graphics_queue_, so this is the exact same call as before for the
+        // render loop. Compute/transfer queues alias graphics_queue_ on GPUs
+        // with a single universal family — still correct.
+        if (vkQueueSubmit2(queue_for_type_(target_queue), 1, &si, vk_fence) != VK_SUCCESS)
         {
             return std::unexpected(make_err(cd::rhi::rhi_errors::Code::kDeviceLost, "vkQueueSubmit2 failed"));
         }
         return {};
+    }
+
+    // Vulkan V2 (multi-queue model): map a QueueType to its VkQueue. Aliased
+    // QueueTypes return graphics_queue_ (same handle the factory retrieved for
+    // their shared family), so routing degenerates to the legacy single queue.
+    [[nodiscard]] VkQueue queue_for_type_(cd::rhi::QueueType q) const noexcept
+    {
+        switch (q)
+        {
+            case cd::rhi::QueueType::kGraphics:
+                return graphics_queue_;
+            case cd::rhi::QueueType::kCompute:
+                return compute_queue_ != VK_NULL_HANDLE ? compute_queue_ : graphics_queue_;
+            case cd::rhi::QueueType::kTransfer:
+                return transfer_queue_ != VK_NULL_HANDLE ? transfer_queue_ : graphics_queue_;
+        }
+        return graphics_queue_;
     }
 
     void wait_idle() override
@@ -4382,9 +4514,30 @@ public:
     VkDevice device_ { VK_NULL_HANDLE };
     std::uint32_t graphics_family_ { 0 };
     VkQueue graphics_queue_ { VK_NULL_HANDLE };
+    // Vulkan V2 (multi-queue model): async-compute / dedicated-transfer /
+    // present families + queues. When a QueueType aliases graphics, the family
+    // equals graphics_family_ and the VkQueue equals graphics_queue_, so the
+    // routing in submit()/present() degenerates to the legacy single-queue path
+    // — byte-identical for the graphics render loop.
+    std::uint32_t compute_family_ { 0 };
+    std::uint32_t transfer_family_ { 0 };
+    std::uint32_t present_family_ { 0 };
+    VkQueue compute_queue_ { VK_NULL_HANDLE };
+    VkQueue transfer_queue_ { VK_NULL_HANDLE };
+    VkQueue present_queue_ { VK_NULL_HANDLE };
+    bool compute_dedicated_ { false };
+    bool transfer_dedicated_ { false };
     // Constructed in the factory after vkCreateDevice; owned by us.
     VmaAllocator vma_allocator_ { VK_NULL_HANDLE };
     VkCommandPool graphics_pool_ { VK_NULL_HANDLE };
+    // Vulkan V2 (multi-queue model): per-QueueType command pools. Each pool is
+    // created on its QueueType's family the first time a command buffer for
+    // that type is requested. When the family aliases graphics, the pool is a
+    // separate VkCommandPool on the SAME family index (pools are not shareable
+    // across threads, but here they just partition by usage) — the graphics
+    // pool (graphics_pool_) is never touched by the compute/transfer paths.
+    VkCommandPool compute_pool_ { VK_NULL_HANDLE };
+    VkCommandPool transfer_pool_ { VK_NULL_HANDLE };
 
     std::string adapter_name_;
     cd::rhi::DeviceLimits limits_ {};
@@ -4608,23 +4761,108 @@ namespace
     return chosen;
 }
 
-[[nodiscard]] cd::core::Result<std::uint32_t> find_graphics_queue(VkPhysicalDevice pd)
+}  // namespace
+
+// Vulkan V2 (multi-queue model) — queue-family selection. Policy:
+//   * GRAPHICS family: first family with GRAPHICS_BIT. Vulkan guarantees a
+//     graphics family also reports COMPUTE_BIT + TRANSFER_BIT, so this is the
+//     universal fallback for every QueueType.
+//   * ASYNC-COMPUTE family: prefer a family with COMPUTE_BIT but NOT
+//     GRAPHICS_BIT (a true async-compute engine); else alias to graphics.
+//   * DEDICATED-TRANSFER family: prefer a family with TRANSFER_BIT but neither
+//     GRAPHICS_BIT nor COMPUTE_BIT (a pure DMA/copy engine); else alias to
+//     graphics.
+//   * PRESENT family: prefer graphics when it supports the surface (the common
+//     case — present on the render queue); else the first present-capable
+//     family; else alias to graphics (headless / no surface probed).
+// Overlap/alias is the NORMAL outcome on GPUs that expose one universal family;
+// callers dedupe by index before emitting VkDeviceQueueCreateInfos.
+[[nodiscard]] cd::core::Result<QueueFamilySelection>
+select_queue_families(VkPhysicalDevice pd, VkSurfaceKHR surface) noexcept
 {
     std::uint32_t count { 0 };
     vkGetPhysicalDeviceQueueFamilyProperties(pd, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
     vkGetPhysicalDeviceQueueFamilyProperties(pd, &count, families.data());
+
+    constexpr VkQueueFlags kG = VK_QUEUE_GRAPHICS_BIT;
+    constexpr VkQueueFlags kC = VK_QUEUE_COMPUTE_BIT;
+    constexpr VkQueueFlags kT = VK_QUEUE_TRANSFER_BIT;
+
+    // ---- graphics (required) ------------------------------------------------
+    std::uint32_t graphics = count;  // sentinel = not found
     for (std::uint32_t i = 0; i < count; ++i)
     {
-        if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0)
-            return i;
+        if ((families[i].queueFlags & kG) != 0)
+        {
+            graphics = i;
+            break;
+        }
     }
-    return std::unexpected(
-        cd::rhi::rhi_errors::make(cd::rhi::rhi_errors::Code::kNoSuitableAdapter, "no graphics queue")
-    );
-}
+    if (graphics == count)
+    {
+        return std::unexpected(
+            cd::rhi::rhi_errors::make(cd::rhi::rhi_errors::Code::kNoSuitableAdapter, "no graphics queue family")
+        );
+    }
 
-}  // namespace
+    QueueFamilySelection sel {};
+    sel.graphics = graphics;
+    sel.compute = graphics;   // default alias
+    sel.transfer = graphics;  // default alias
+    sel.present = graphics;   // default alias
+
+    // ---- async-compute: COMPUTE without GRAPHICS ----------------------------
+    for (std::uint32_t i = 0; i < count; ++i)
+    {
+        const VkQueueFlags f = families[i].queueFlags;
+        if ((f & kC) != 0 && (f & kG) == 0)
+        {
+            sel.compute = i;
+            sel.compute_dedicated = true;
+            break;
+        }
+    }
+
+    // ---- dedicated transfer: TRANSFER without GRAPHICS or COMPUTE -----------
+    for (std::uint32_t i = 0; i < count; ++i)
+    {
+        const VkQueueFlags f = families[i].queueFlags;
+        if ((f & kT) != 0 && (f & kG) == 0 && (f & kC) == 0)
+        {
+            sel.transfer = i;
+            sel.transfer_dedicated = true;
+            break;
+        }
+    }
+
+    // ---- present: prefer graphics, else any present-capable family ----------
+    if (surface != VK_NULL_HANDLE)
+    {
+        sel.present_resolved = true;
+        VkBool32 gfx_present { VK_FALSE };
+        vkGetPhysicalDeviceSurfaceSupportKHR(pd, graphics, surface, &gfx_present);
+        if (gfx_present == VK_TRUE)
+        {
+            sel.present = graphics;
+        }
+        else
+        {
+            for (std::uint32_t i = 0; i < count; ++i)
+            {
+                VkBool32 supported { VK_FALSE };
+                vkGetPhysicalDeviceSurfaceSupportKHR(pd, i, surface, &supported);
+                if (supported == VK_TRUE)
+                {
+                    sel.present = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    return sel;
+}
 
 [[nodiscard]] cd::core::Result<std::unique_ptr<cd::rhi::IDevice>> create_device(
     std::unique_ptr<VulkanInstance> inst,
@@ -4637,10 +4875,16 @@ namespace
         return std::unexpected(pd_res.error());
     VkPhysicalDevice pd = *pd_res;
 
-    auto qf_res = find_graphics_queue(pd);
+    // Vulkan V2 (multi-queue model): select graphics / async-compute /
+    // dedicated-transfer / present families. Device creation has no surface
+    // yet, so present is resolved per-swapchain later (and aliases to graphics
+    // until then); we pass VK_NULL_HANDLE here. The graphics family is the
+    // required one and drives the unchanged render path.
+    auto qf_res = select_queue_families(pd, VK_NULL_HANDLE);
     if (!qf_res.has_value())
         return std::unexpected(qf_res.error());
-    std::uint32_t qf = *qf_res;
+    const QueueFamilySelection sel = *qf_res;
+    const std::uint32_t qf = sel.graphics;
 
     std::vector<const char*> exts;
     exts.reserve(device_extensions.size() + 2);
@@ -4705,15 +4949,39 @@ namespace
         }
     }
 
+    // Vulkan V2 (multi-queue model): emit ONE VkDeviceQueueCreateInfo per
+    // DISTINCT family index. You cannot list the same family twice with
+    // separate infos (VUID-VkDeviceCreateInfo-queueFamilyIndex-02802); when two
+    // QueueTypes share a family we request a single queue and ALIAS the VkQueue
+    // handle after creation. Dedupe preserves graphics first so the unchanged
+    // render path is unaffected.
     const float queue_priority = 1.0F;
-    const VkDeviceQueueCreateInfo qci {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .pNext = nullptr,
-        .flags = 0,
-        .queueFamilyIndex = qf,
-        .queueCount = 1,
-        .pQueuePriorities = &queue_priority,
+    std::vector<std::uint32_t> distinct_families;
+    distinct_families.reserve(4);
+    const auto add_distinct = [&](std::uint32_t fam) {
+        for (std::uint32_t existing : distinct_families)
+            if (existing == fam)
+                return;
+        distinct_families.push_back(fam);
     };
+    add_distinct(sel.graphics);
+    add_distinct(sel.compute);
+    add_distinct(sel.transfer);
+    add_distinct(sel.present);
+
+    std::vector<VkDeviceQueueCreateInfo> qcis;
+    qcis.reserve(distinct_families.size());
+    for (std::uint32_t fam : distinct_families)
+    {
+        qcis.push_back(VkDeviceQueueCreateInfo {
+            .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queueFamilyIndex = fam,
+            .queueCount = 1,
+            .pQueuePriorities = &queue_priority,
+        });
+    }
 
     // Vulkan 1.3 core features we rely on must be enabled explicitly via the
     // pNext chain — drivers that gate them behind enablement will reject the
@@ -4842,8 +5110,8 @@ namespace
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &f2,
         .flags = 0,
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos = &qci,
+        .queueCreateInfoCount = static_cast<std::uint32_t>(qcis.size()),
+        .pQueueCreateInfos = qcis.data(),
         .enabledLayerCount = 0,
         .ppEnabledLayerNames = nullptr,
         .enabledExtensionCount = static_cast<std::uint32_t>(exts.size()),
@@ -4860,8 +5128,20 @@ namespace
     }
     volkLoadDevice(dev);
 
-    VkQueue q {};
+    // Vulkan V2 (multi-queue model): retrieve ONE VkQueue per distinct family
+    // (queueIndex 0 — we requested queueCount=1 per family). QueueTypes that
+    // share a family alias the same handle, which is correct: submitting to the
+    // same VkQueue from two QueueType slots is just sequential submission on the
+    // one queue (the legacy single-queue behaviour, preserved exactly for the
+    // graphics path).
+    VkQueue q { VK_NULL_HANDLE };  // graphics queue (unchanged render path)
     vkGetDeviceQueue(dev, qf, 0, &q);
+    VkQueue compute_q { VK_NULL_HANDLE };
+    vkGetDeviceQueue(dev, sel.compute, 0, &compute_q);
+    VkQueue transfer_q { VK_NULL_HANDLE };
+    vkGetDeviceQueue(dev, sel.transfer, 0, &transfer_q);
+    VkQueue present_q { VK_NULL_HANDLE };
+    vkGetDeviceQueue(dev, sel.present, 0, &present_q);
 
     VkPhysicalDeviceProperties props {};
     vkGetPhysicalDeviceProperties(pd, &props);
@@ -4904,7 +5184,18 @@ namespace
     }
 
     return std::unique_ptr<cd::rhi::IDevice> {
-        std::make_unique<VulkanDevice>(std::move(inst), pd, dev, qf, q, allocator, props.deviceName)
+        std::make_unique<VulkanDevice>(
+            std::move(inst), pd, dev, qf, q, allocator, props.deviceName,
+            VulkanDevice::QueueSet {
+                .compute_family = sel.compute,
+                .transfer_family = sel.transfer,
+                .present_family = sel.present,
+                .compute_queue = compute_q,
+                .transfer_queue = transfer_q,
+                .present_queue = present_q,
+                .compute_dedicated = sel.compute_dedicated,
+                .transfer_dedicated = sel.transfer_dedicated,
+            })
     };
 }
 
@@ -4936,6 +5227,22 @@ bool try_fill_native_handles(
         *out_graphics_queue = concrete->graphics_queue();
     if (out_graphics_family != nullptr)
         *out_graphics_family = concrete->graphics_family();
+    return true;
+}
+
+// Vulkan V2 (multi-queue model) — public introspection bridge. Defined here
+// because VulkanDevice is a private class of this TU.
+bool query_queue_families(cd::rhi::IDevice& dev, QueueFamilyInfo& out) noexcept
+{
+    auto* concrete = dynamic_cast<VulkanDevice*>(&dev);
+    if (concrete == nullptr)
+        return false;
+    out.graphics = concrete->graphics_family();
+    out.compute = concrete->compute_family();
+    out.transfer = concrete->transfer_family();
+    out.present = concrete->present_family();
+    out.compute_dedicated = concrete->compute_family_dedicated();
+    out.transfer_dedicated = concrete->transfer_family_dedicated();
     return true;
 }
 

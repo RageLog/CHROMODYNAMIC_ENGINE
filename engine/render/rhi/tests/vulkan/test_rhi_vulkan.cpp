@@ -1425,4 +1425,153 @@ TEST(VulkanDevice, SwapchainFullPresentLoopWin32)
 }
 #endif  // _WIN32
 
+// =============================================================================
+// Vulkan V2 — multi-queue model. Lightweight smoke (NOT the stress loop):
+//   (a) family-selection invariants on the CURRENT GPU,
+//   (b) a Compute-QueueType command buffer routes to the compute queue and
+//       a trivial recorded op submits + completes,
+//   (c) validation-clean variant gated on the validation layer.
+// =============================================================================
+
+// (a) The selection logic must always yield a valid graphics family, and the
+//     compute/transfer families are EITHER dedicated OR aliased back to
+//     graphics — both are correct. Overlap is the normal case on a GPU with one
+//     universal family. We assert the structural invariants, not a specific
+//     vendor layout, so this passes on any conformant driver.
+TEST(VulkanMultiQueue, FamilySelectionInvariants)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::rhi::vulkan::QueueFamilyInfo qf {};
+    ASSERT_TRUE(cd::rhi::vulkan::query_queue_families(*dev, qf))
+        << "query_queue_families failed on a Vulkan-backed device";
+
+    // A graphics family was found (the factory would have failed otherwise).
+    // No upper bound to assert without re-querying the count; the device exists,
+    // so the index is in range by construction.
+
+    // Compute: dedicated => a DISTINCT family; not dedicated => aliased to gfx.
+    if (qf.compute_dedicated)
+        EXPECT_NE(qf.compute, qf.graphics) << "compute flagged dedicated but equals graphics";
+    else
+        EXPECT_EQ(qf.compute, qf.graphics) << "compute not dedicated must alias graphics";
+
+    // Transfer: same invariant.
+    if (qf.transfer_dedicated)
+        EXPECT_NE(qf.transfer, qf.graphics) << "transfer flagged dedicated but equals graphics";
+    else
+        EXPECT_EQ(qf.transfer, qf.graphics) << "transfer not dedicated must alias graphics";
+
+    // Present was not probed at device creation (no surface) -> aliases graphics.
+    EXPECT_EQ(qf.present, qf.graphics) << "present must alias graphics when no surface probed";
+}
+
+// (b) Create a Compute-QueueType command buffer, record a trivial op (a buffer
+//     copy — valid on any graphics/compute/transfer-capable family), submit it.
+//     This exercises do_create_command_buffer(kCompute) -> compute pool, and
+//     submit() routing the VkSubmitInfo2 to the compute queue. wait_idle then
+//     asserts the GPU completed the work without device loss.
+TEST(VulkanMultiQueue, ComputeQueueSubmitTrivialOp)
+{
+    SKIP_IF_NO_VULKAN(dev);
+
+    cd::rhi::BufferDesc src_desc {};
+    src_desc.size = 64;
+    src_desc.usage = cd::rhi::BufferUsage::kTransferSrc;
+    src_desc.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto src = dev->create_buffer(src_desc);
+    ASSERT_TRUE(src.has_value());
+
+    cd::rhi::BufferDesc dst_desc {};
+    dst_desc.size = 64;
+    dst_desc.usage = cd::rhi::BufferUsage::kTransferDst;
+    dst_desc.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto dst = dev->create_buffer(dst_desc);
+    ASSERT_TRUE(dst.has_value());
+
+    // The deliverable: a command buffer for the Compute queue.
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kCompute);
+    ASSERT_NE(cb, nullptr) << "compute command buffer allocation failed";
+
+    cb->begin();
+    std::array<cd::rhi::BufferCopyRegion, 1> regions {
+        cd::rhi::BufferCopyRegion { .src_offset = 0, .dst_offset = 0, .size = 64 },
+    };
+    cb->copy_buffer(*src, *dst, regions);
+    cb->end();
+
+    // Routes to the compute queue (aliased to graphics on single-family GPUs).
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cb.get() };
+    cd::rhi::SubmitDesc submit {};
+    submit.command_buffers = cbs;
+    auto sr = dev->submit(submit);
+    ASSERT_TRUE(sr.has_value()) << "compute-queue submit failed: " << sr.error().message;
+
+    dev->wait_idle();
+    EXPECT_EQ(dev->backend(), cd::rhi::Backend::kVulkan);  // device survived
+
+    dev->destroy_buffer(*src);
+    dev->destroy_buffer(*dst);
+}
+
+// (c) Validation-clean variant: with VK_LAYER_KHRONOS_validation installed,
+//     the multi-queue device-creation + a compute-queue submit must emit ZERO
+//     ERROR-severity VUIDs (e.g. duplicate queueFamilyIndex in
+//     VkDeviceCreateInfo, wrong queue for a submit). Honest SKIP when the layer
+//     is absent — the counter is vacuous otherwise. Lightweight: one device,
+//     one compute submit.
+TEST(VulkanMultiQueue, NoValidationErrorOnComputeSubmit)
+{
+    cd::rhi::vulkan::VulkanCreateInfo info {};
+    info.enable_validation = true;
+    auto r = cd::rhi::vulkan::create_vulkan_device(info);
+    if (!r.has_value())
+        GTEST_SKIP() << "no Vulkan ICD available on this host";
+    auto dev = std::move(*r);
+
+    if (!cd::rhi::vulkan::validation_layer_available())
+        GTEST_SKIP() << "VK_LAYER_KHRONOS_validation not installed; "
+                        "validation-error net is vacuous on this host";
+
+    cd::rhi::vulkan::reset_validation_error_count();
+
+    cd::rhi::BufferDesc src_desc {};
+    src_desc.size = 64;
+    src_desc.usage = cd::rhi::BufferUsage::kTransferSrc;
+    src_desc.memory = cd::rhi::MemoryUsage::kCpuToGpu;
+    auto src = dev->create_buffer(src_desc);
+    ASSERT_TRUE(src.has_value());
+
+    cd::rhi::BufferDesc dst_desc {};
+    dst_desc.size = 64;
+    dst_desc.usage = cd::rhi::BufferUsage::kTransferDst;
+    dst_desc.memory = cd::rhi::MemoryUsage::kGpuOnly;
+    auto dst = dev->create_buffer(dst_desc);
+    ASSERT_TRUE(dst.has_value());
+
+    auto cb = dev->create_command_buffer(cd::rhi::QueueType::kCompute);
+    ASSERT_NE(cb, nullptr);
+
+    cb->begin();
+    std::array<cd::rhi::BufferCopyRegion, 1> regions {
+        cd::rhi::BufferCopyRegion { .src_offset = 0, .dst_offset = 0, .size = 64 },
+    };
+    cb->copy_buffer(*src, *dst, regions);
+    cb->end();
+
+    std::array<cd::rhi::ICommandBuffer*, 1> cbs { cb.get() };
+    cd::rhi::SubmitDesc submit {};
+    submit.command_buffers = cbs;
+    auto sr = dev->submit(submit);
+    ASSERT_TRUE(sr.has_value()) << "compute-queue submit failed: " << sr.error().message;
+
+    dev->wait_idle();
+
+    ASSERT_EQ(cd::rhi::vulkan::validation_error_count(), 0u)
+        << "multi-queue device creation / compute submit emitted a validation error";
+
+    dev->destroy_buffer(*src);
+    dev->destroy_buffer(*dst);
+}
+
 }  // namespace

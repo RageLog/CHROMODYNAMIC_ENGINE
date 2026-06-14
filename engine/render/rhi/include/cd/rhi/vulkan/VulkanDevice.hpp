@@ -65,6 +65,26 @@ struct VulkanCreateInfo
 /// start of a test that asserts a wiring path emits no validation errors.
 void reset_validation_error_count() noexcept;
 
+/// Vulkan V2 (multi-queue model) — read-only view of the queue families a
+/// device selected. Family indices may legitimately ALIAS (overlap): on a GPU
+/// exposing a single graphics+compute+transfer family, all indices are equal
+/// and `*_dedicated` is false. The smoke test asserts graphics is valid and
+/// compute/transfer are either dedicated or aliased to graphics.
+struct QueueFamilyInfo
+{
+    std::uint32_t graphics { 0 };
+    std::uint32_t compute { 0 };
+    std::uint32_t transfer { 0 };
+    std::uint32_t present { 0 };
+    bool compute_dedicated { false };
+    bool transfer_dedicated { false };
+};
+
+/// Fill `out` with the queue-family selection of a Vulkan-backed device.
+/// Returns false (out untouched) when `dev` is not a Vulkan device. Internal
+/// introspection for tests/tooling — the IDevice interface stays queue-agnostic.
+[[nodiscard]] bool query_queue_families(cd::rhi::IDevice& dev, QueueFamilyInfo& out) noexcept;
+
 /// True when VK_LAYER_KHRONOS_validation is discoverable by the Vulkan loader,
 /// i.e. when `enable_validation` actually installs a debug messenger. The
 /// validation-error counter only catches VUIDs while this is true, so a test
