@@ -79,6 +79,11 @@ Vulkan is ~95% complete. The audit surfaces a **small, bounded** set of
 real gaps. Per the directive, Vulkan must be TAM bitmiş before any D3D12
 or Metal work begins. X1-FU-F is already done, so it is NOT re-opened.
 
+> **✅ STATUS (2026-06-14): VULKAN DECLARED TAM.** V1 DONE (phase1180 /
+> `a531fd9`), V2 DONE (phase1181 / `27201fd`), pre-existing tidy debt
+> cleaned (phase1182 / `a2aaed3`), V3 DEFERRED (perf-only, see below). The
+> Vulkan correctness/feature bar is now FROZEN; D3D12 (Phase B) may begin.
+
 | ID | Gap | Severity | Evidence | Effort | Blast radius |
 | -- | --- | -------- | -------- | ------ | ------------ |
 | **V1** | `barrier()` hardcodes `subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT` → depth/stencil texture transitions use the wrong subresource (validation error / silent no-op). Device-side readback already uses `aspect_for_format` (`VulkanDevice.cpp:3216`) — **asymmetric**. | **HIGH** (correctness) | `VulkanCommandBuffer.cpp:671` (also copy regions `:547,:591`) | **M** | command-buffer barrier path; needs texture-id→format map in `ResourceTables` |
@@ -120,8 +125,29 @@ or Metal work begins. X1-FU-F is already done, so it is NOT re-opened.
    `AccelStructureDesc`, add `MODE_UPDATE` refit path for skinned-mesh
    BLAS.
 
-After V1 + V2 land green (254/254+ ctest, lavapipe clean), **Vulkan is
-declared TAM** and the bar is frozen for D3D12.
+**✅ VULKAN DECLARED TAM (2026-06-14).**
+- **V1 LANDED** (phase1180 / `a531fd9`): depth-aware barrier aspect across
+  `barrier()` + both copy paths via an `image-id→Format` map in
+  `ResourceTables`; the duplicate cmd-buffer aspect helper was deleted
+  (single `vk_aspect_for_format` source so the unit test pins real wiring);
+  a real regression net (atomic validation-error counter + assert) was added
+  after adversarial review found the first tests passed on the buggy code.
+- **V2 LANDED** (phase1181 / `27201fd`): `select_queue_families` (graphics/
+  async-compute/dedicated-transfer/present with overlap-alias handling +
+  family dedup), per-`QueueType` pool/queue routing for create/submit/present
+  with graphics fallback. Graphics path byte-identical (golden), 5 existing
+  graphics tests green, ownership-transfer barriers correctly scoped out
+  (no shared cross-family in-flight work today).
+- **V3 DEFERRED** (perf-only): AS build flags stay `PREFER_FAST_TRACE`
+  (per-frame TLAS full rebuild). This is a perf refinement Vulkan shares with
+  no one (it is the reference), needs an `AccelStructureDesc` ABI change
+  (`ALLOW_UPDATE`/`ALLOW_COMPACTION` + a `MODE_UPDATE` refit path), and is
+  outside the *parity* charter. Tracked for a future "RT performance"
+  milestone; revisit if the user re-prioritizes.
+
+Every checkpoint: build clean (WAE), chrome_probe golden byte-identical, new
+gtests pass (validation-layer-gated cases honest-SKIP on this host, activate
+in a layer-equipped CI). **The Vulkan bar is FROZEN for D3D12.**
 
 ---
 
