@@ -2828,26 +2828,32 @@ public:
     // backs it with a dedicated UPDATE_AFTER_BIND | PARTIALLY_BOUND |
     // VARIABLE_DESCRIPTOR_COUNT descriptor set whose slots are written by
     // `write_bindless_texture_slot` (VulkanDevice.cpp:4017-4188). The D3D12
-    // analog is a SEPARATE, PERSISTENT shader-visible CBV/SRV/UAV heap (the
-    // "bindless pool") whose contiguous slot range is the descriptor table the
-    // space1 unbounded SRV range resolves against:
+    // analog is the PERSISTENT bindless sub-region [kGpuHeapCap, kUnifiedHeapCap)
+    // of the ONE shader-visible CBV/SRV/UAV `unified_heap_` (phase1190 B6
+    // follow-up — see the unified_heap_ rationale at the member declaration).
+    // The persistent contiguous slot range is the descriptor table the space1
+    // unbounded SRV range resolves against:
     //
     //   create_bindless_texture_array(desc) -> reserve `desc.slot_count`
-    //       contiguous descriptors in `bindless_heap_` (bump allocator); the
-    //       reserved base is the table base for `register(t0, space1)`.
+    //       contiguous descriptors in the bindless sub-region (bump allocator);
+    //       the reserved base is the table base for `register(t0, space1)`.
     //   write_bindless_texture_slot(array, slot, view) -> CreateShaderResourceView
-    //       for the view's parent texture directly into `bindless_heap_` at
-    //       (base + slot). Because the heap is shader-visible the SRV is live
-    //       the moment it is written (no CPU->GPU copy step, unlike the per-set
-    //       ring at `copy_set_to_gpu_heap`); this mirrors Vulkan's
+    //       for the view's parent texture directly into `unified_heap_` at
+    //       (kGpuHeapCap + base + slot). Because the heap is shader-visible the
+    //       SRV is live the moment it is written (no CPU->GPU copy step, unlike
+    //       the per-set ring at `copy_set_to_gpu_heap`); this mirrors Vulkan's
     //       UPDATE_AFTER_BIND immediacy.
     //
-    // The command path (bind_bindless_texture_array) binds `bindless_heap_` +
+    // The command path (bind_bindless_texture_array) binds `unified_heap_` +
     // the bindless sampler heap via SetDescriptorHeaps and points the set-1 SRV
     // root-table at the array's GPU base and the sampler root-table at the
-    // sampler heap. The sampler half is a real SAMPLER descriptor table (B1b —
-    // see create_pipeline_layout): a bindless sampler2D[] emits a SamplerState
-    // range that a static sampler cannot satisfy.
+    // sampler heap. Because the ring and the bindless pool share `unified_heap_`,
+    // a draw can co-bind a classic set-0 table AND the bindless set-1 array
+    // without either SetDescriptorHeaps call unbinding the other (the CBV/SRV/UAV
+    // heap is identical; only the sampler heap is a separate, co-bindable type).
+    // The sampler half is a real SAMPLER descriptor table (B1b — see
+    // create_pipeline_layout): a bindless sampler2D[] emits a SamplerState range
+    // that a static sampler cannot satisfy.
 
     [[nodiscard]] cd::core::Result<cd::rhi::BindlessTextureArrayHandle>
     create_bindless_texture_array(
@@ -2942,10 +2948,12 @@ public:
             srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             srv.Texture2D.MipLevels = 1;
         }
-        // Write directly into the shader-visible bindless heap at (base + slot).
+        // Write directly into the bindless sub-region of the shader-visible
+        // unified heap at (kGpuHeapCap + array.base + slot). The kGpuHeapCap
+        // region offset keeps the SRV out of the [0, kGpuHeapCap) per-set ring.
         D3D12_CPU_DESCRIPTOR_HANDLE dst =
-            bindless_heap_->GetCPUDescriptorHandleForHeapStart();
-        dst.ptr += static_cast<SIZE_T>(arr_it->second.base_slot + slot) *
+            unified_heap_->GetCPUDescriptorHandleForHeapStart();
+        dst.ptr += static_cast<SIZE_T>(kGpuHeapCap + arr_it->second.base_slot + slot) *
                    bindless_increment_;
         device_->CreateShaderResourceView(tex_it->second.resource.Get(), &srv, dst);
         return {};
@@ -4256,24 +4264,43 @@ private:
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         return {};
     }
+    // UNIFIED shader-visible CBV/SRV/UAV heap (phase1190 B6 follow-up). D3D12
+    // allows exactly ONE shader-visible CBV/SRV/UAV heap bound per draw, so the
+    // per-set ring and the persistent bindless pool MUST live in the SAME heap —
+    // otherwise a draw that binds a classic set-0 table AND the bindless set-1
+    // array silently unbinds whichever heap was set last (wrong/garbage
+    // sampling). Layout of the one heap (size kGpuHeapCap + kBindlessHeapCap):
+    //
+    //   [0, kGpuHeapCap)                          — the per-set RING (unchanged
+    //                                               wrap/copy logic, offset 0)
+    //   [kGpuHeapCap, kGpuHeapCap+kBindlessHeapCap) — the PERSISTENT bindless pool
+    //
+    // SetDescriptorHeaps always binds THIS one heap (+ the sampler heap), never
+    // swapped between classic and bindless. The ring's wrap test stays bounded by
+    // kGpuHeapCap so it can never stomp the bindless region. Both gpu_heap() and
+    // bindless_heap() return this same heap; their RootDescriptorTable GPU
+    // handles point into their respective sub-regions.
+    ComPtr<ID3D12DescriptorHeap> unified_heap_;
+
     // GPU-visible descriptor heap — populated per-bind by copying from
     // the CPU heap. Ring-buffer style allocator (16k slots) so frames
-    // don't trample each other.
-    ComPtr<ID3D12DescriptorHeap> gpu_heap_;
+    // don't trample each other. The ring is the [0, kGpuHeapCap) sub-region of
+    // unified_heap_.
     UINT gpu_heap_increment_ { 0 };
     std::uint32_t gpu_heap_cursor_ { 0 };
     static constexpr UINT kGpuHeapCap = 16384;
 
-    // D10 — persistent SHADER-VISIBLE bindless pool (CBV/SRV/UAV). Separate
-    // from gpu_heap_ (which is a per-set ring): bindless slots must PERSIST
-    // across frames (they are written once and dynamic-indexed by the shader),
-    // so they cannot live in the ring that wraps per-bind. write_bindless_
-    // texture_slot writes SRVs directly here at (array.base + slot); the
-    // command path binds this heap and points the set-1 root table at the
-    // array's GPU base. 1024 descriptors comfortably covers the per-prim
-    // showcase scenes (Khronos Sponza is 103).
+    // D10 — persistent SHADER-VISIBLE bindless pool (CBV/SRV/UAV). It is the
+    // [kGpuHeapCap, kGpuHeapCap+kBindlessHeapCap) sub-region of unified_heap_
+    // (NOT a separate heap — see the unification rationale above). Bindless slots
+    // must PERSIST across frames (they are written once and dynamic-indexed by
+    // the shader), so they cannot live in the ring that wraps per-bind.
+    // write_bindless_texture_slot writes SRVs directly here at
+    // (kGpuHeapCap + array.base + slot); the command path points the set-1 root
+    // table at the array's GPU base. 1024 descriptors comfortably covers the
+    // per-prim showcase scenes (Khronos Sponza is 103).
     static constexpr UINT kBindlessHeapCap = 1024;
-    ComPtr<ID3D12DescriptorHeap> bindless_heap_;
+    static constexpr UINT kUnifiedHeapCap  = kGpuHeapCap + kBindlessHeapCap;
     UINT bindless_increment_ { 0 };
     std::uint32_t bindless_cursor_ { 0 };
 
@@ -4292,22 +4319,38 @@ private:
     // in-range index resolves to it. Sampler heaps cap at 2048; 1024 fits.
     ComPtr<ID3D12DescriptorHeap> bindless_sampler_heap_;
 
-    // Lazily create the persistent shader-visible bindless heap.
-    [[nodiscard]] cd::core::Result<void> ensure_bindless_heap_()
+    // Lazily create the ONE unified shader-visible CBV/SRV/UAV heap that backs
+    // both the per-set ring [0, kGpuHeapCap) and the persistent bindless pool
+    // [kGpuHeapCap, kUnifiedHeapCap). Idempotent; safe to call from either the
+    // ring path (copy_set_to_gpu_heap) or the bindless path (ensure_bindless_heap_).
+    [[nodiscard]] cd::core::Result<void> ensure_unified_heap_()
     {
-        if (bindless_heap_ != nullptr) return {};
+        if (unified_heap_ != nullptr) return {};
         D3D12_DESCRIPTOR_HEAP_DESC hd {};
-        hd.NumDescriptors = kBindlessHeapCap;
+        hd.NumDescriptors = kUnifiedHeapCap;
         hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&bindless_heap_))))
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&unified_heap_))))
         {
             return std::unexpected(cd::rhi::rhi_errors::make(
                 cd::rhi::rhi_errors::Code::kResourceCreationFailed,
-                "bindless shader-visible heap creation failed"));
+                "unified shader-visible CBV/SRV/UAV heap creation failed"));
         }
-        bindless_increment_ = device_->GetDescriptorHandleIncrementSize(
+        const UINT inc = device_->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        gpu_heap_increment_ = inc;
+        bindless_increment_ = inc;
+        return {};
+    }
+
+    // Lazily create the bindless pool — now a sub-region of the unified heap —
+    // plus its co-resident SAMPLER heap. Ensures the unified heap first so the
+    // bindless sub-region exists, then sets up the sampler half.
+    [[nodiscard]] cd::core::Result<void> ensure_bindless_heap_()
+    {
+        if (bindless_sampler_heap_ != nullptr) return {};
+        if (auto r = ensure_unified_heap_(); !r.has_value())
+            return std::unexpected(r.error());
 
         // Co-create the sampler heap, pre-filled with the default sampler.
         D3D12_DESCRIPTOR_HEAP_DESC sd {};
@@ -4341,10 +4384,13 @@ private:
     }
 
 public:
-    // D10 — bindless heap accessors for the command path + smokes.
+    // D10 — bindless heap accessors for the command path + smokes. The bindless
+    // pool is a sub-region of the unified heap, so this returns the SAME heap as
+    // gpu_heap() — binding either one binds the unified heap (the whole point of
+    // the B6 follow-up unification: classic set-0 + bindless set-1 co-bind).
     [[nodiscard]] ID3D12DescriptorHeap* bindless_heap() noexcept
     {
-        return bindless_heap_.Get();
+        return unified_heap_.Get();
     }
     [[nodiscard]] ID3D12DescriptorHeap* bindless_sampler_heap() noexcept
     {
@@ -4356,16 +4402,19 @@ public:
     }
     /// GPU descriptor handle for a bindless array's slot 0 — the base the
     /// space1 unbounded SRV table resolves `register(t0, space1)[slot]` against.
+    /// The bindless pool lives at [kGpuHeapCap, ...) of the unified heap, so the
+    /// region offset kGpuHeapCap is added on top of the array's base slot.
     /// Returns ptr==0 for an unknown handle (or no heap yet).
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
     bindless_array_gpu_base(cd::rhi::BindlessTextureArrayHandle h) noexcept
     {
-        if (bindless_heap_ == nullptr) return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
+        if (unified_heap_ == nullptr) return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
         auto it = bindless_arrays_.find(h.index());
         if (it == bindless_arrays_.end()) return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
         D3D12_GPU_DESCRIPTOR_HANDLE out =
-            bindless_heap_->GetGPUDescriptorHandleForHeapStart();
-        out.ptr += static_cast<UINT64>(it->second.base_slot) * bindless_increment_;
+            unified_heap_->GetGPUDescriptorHandleForHeapStart();
+        out.ptr += static_cast<UINT64>(kGpuHeapCap + it->second.base_slot) *
+                   bindless_increment_;
         return out;
     }
 
@@ -4404,33 +4453,31 @@ public:
     [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
     copy_set_to_gpu_heap(const DescriptorSetRecord& set)
     {
-        if (gpu_heap_ == nullptr)
+        // The per-set ring is the [0, kGpuHeapCap) sub-region of the unified
+        // heap (phase1190 B6 follow-up). Allocate the unified heap on first use.
+        if (unified_heap_ == nullptr)
         {
-            D3D12_DESCRIPTOR_HEAP_DESC hd {};
-            hd.NumDescriptors = kGpuHeapCap;
-            hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-            if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&gpu_heap_))))
+            if (auto r = ensure_unified_heap_(); !r.has_value())
                 return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
-            gpu_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         }
+        // Wrap stays bounded by kGpuHeapCap so the ring NEVER stomps the bindless
+        // region at [kGpuHeapCap, kUnifiedHeapCap); rely on wait_idle() between
+        // frames to keep the ring sane.
         if (gpu_heap_cursor_ + set.view_count > kGpuHeapCap)
-            gpu_heap_cursor_ = 0;  // wrap (ring); rely on wait_idle()
-                                   // between frames to keep things sane
+            gpu_heap_cursor_ = 0;
         const auto slot = gpu_heap_cursor_;
         gpu_heap_cursor_ += set.view_count;
         D3D12_CPU_DESCRIPTOR_HANDLE src = cpu_heap_->GetCPUDescriptorHandleForHeapStart();
         src.ptr += static_cast<SIZE_T>(set.cpu_heap_offset) * cpu_heap_increment_;
-        D3D12_CPU_DESCRIPTOR_HANDLE gpu_cpu = gpu_heap_->GetCPUDescriptorHandleForHeapStart();
+        D3D12_CPU_DESCRIPTOR_HANDLE gpu_cpu = unified_heap_->GetCPUDescriptorHandleForHeapStart();
         gpu_cpu.ptr += static_cast<SIZE_T>(slot) * gpu_heap_increment_;
         device_->CopyDescriptorsSimple(set.view_count, gpu_cpu, src,
                                        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        D3D12_GPU_DESCRIPTOR_HANDLE out = gpu_heap_->GetGPUDescriptorHandleForHeapStart();
+        D3D12_GPU_DESCRIPTOR_HANDLE out = unified_heap_->GetGPUDescriptorHandleForHeapStart();
         out.ptr += static_cast<UINT64>(slot) * gpu_heap_increment_;
         return out;
     }
-    [[nodiscard]] ID3D12DescriptorHeap* gpu_heap() noexcept { return gpu_heap_.Get(); }
+    [[nodiscard]] ID3D12DescriptorHeap* gpu_heap() noexcept { return unified_heap_.Get(); }
 };
 
 // ---- Trivial command buffer (Phase 13.C — clear-only) ----------------------
@@ -4649,20 +4696,34 @@ public:
         if (rec == nullptr) return;
         const auto gpu = owner_->copy_set_to_gpu_heap(*rec);
         if (gpu.ptr == 0) return;
-        ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap() };
-        list_->SetDescriptorHeaps(1, heaps);
+        // Bind the unified CBV/SRV/UAV heap (gpu_heap() and bindless_heap() now
+        // return the SAME heap, so a later bind_bindless_texture_array in the
+        // same draw does NOT swap it out — the B6 follow-up co-bind fix). Bind
+        // the bindless sampler heap alongside (different heap type, co-bindable)
+        // so a co-bound set-1 array's sampler table also resolves.
+        ID3D12DescriptorHeap* samp0 = owner_->bindless_sampler_heap();
+        if (samp0 != nullptr)
+        {
+            ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap(), samp0 };
+            list_->SetDescriptorHeaps(2, heaps);
+        }
+        else
+        {
+            ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap() };
+            list_->SetDescriptorHeaps(1, heaps);
+        }
         // phase466 — route to compute or graphics based on the last-bound pipeline.
         if (bound_compute_layout_.value() != 0u)
             list_->SetComputeRootDescriptorTable(set_index, gpu);
         else
             list_->SetGraphicsRootDescriptorTable(set_index, gpu);
     }
-    // D10 — bind the dedicated bindless pool + point root param `set_index` at
-    // the array's GPU base. The bindless heap is a SEPARATE persistent
-    // shader-visible CBV/SRV/UAV heap; D3D12 allows exactly one such heap bound
-    // at a time, so this SetDescriptorHeaps call makes the bindless pool the
-    // active heap for the subsequent draw (the engine binds the bindless set
-    // after the classic per-prim set, mirroring the Vulkan set-1 bind order).
+    // D10 — point root param `set_index` at the array's GPU base inside the
+    // unified heap's bindless sub-region. The bindless pool is NOW a sub-region
+    // of the SAME shader-visible CBV/SRV/UAV heap the per-set ring uses
+    // (phase1190 B6 follow-up), so this SetDescriptorHeaps call binds the identical
+    // CBV/SRV/UAV heap that bind_descriptor_set bound — a draw that binds a classic
+    // set-0 table AND this bindless set-1 array keeps BOTH live (no silent unbind).
     void bind_bindless_texture_array(std::uint32_t set_index,
                                      cd::rhi::BindlessTextureArrayHandle array) override
     {
@@ -4672,9 +4733,10 @@ public:
         const auto gpu = owner_->bindless_array_gpu_base(array);
         if (gpu.ptr == 0) return;
         const bool is_compute = bound_compute_layout_.value() != 0u;
-        // Bind the bindless SRV heap AND its sampler heap together — D3D12 allows
-        // one CBV/SRV/UAV + one SAMPLER heap bound simultaneously, so the bindless
-        // texture half and its sampler half are both live for the draw.
+        // Bind the unified CBV/SRV/UAV heap AND its sampler heap together — D3D12
+        // allows one CBV/SRV/UAV + one SAMPLER heap bound simultaneously, so the
+        // bindless texture half (in the unified heap) and its sampler half are
+        // both live for the draw.
         ID3D12DescriptorHeap* samp = owner_->bindless_sampler_heap();
         if (samp != nullptr)
         {

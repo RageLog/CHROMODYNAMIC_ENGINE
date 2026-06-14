@@ -210,6 +210,33 @@ if(WIN32)
   endif()
 endif()
 
+# phase1190 B6 follow-up: UNIFIED descriptor-heap CO-BIND smoke. One draw binds a
+# CLASSIC set-0 (combined sampler2D + static sampler) AND the BINDLESS set-1 array
+# (sampler2D[]) and reads BOTH — proving the per-set ring region and the bindless
+# region share ONE shader-visible CBV/SRV/UAV heap (D3D12 allows only one such
+# heap per draw, so separate heaps would silently unbind one). Same GLSL->DXIL
+# device path + WARP render/readback as the bindless/sampler smoke; SKIPs cleanly
+# when no D3D12 adapter, no DXC DLL, or SM6 indexing is unsupported on this WARP.
+if(WIN32)
+  cd_add_test(d3d12_cobind_heap
+    SOURCES test_d3d12_cobind_heap.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_co_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_co_list)
+  if(_cd_dxc_co_list AND TARGET cd_test_d3d12_cobind_heap)
+    list(POP_BACK _cd_dxc_co_list _cd_dxc_co_dll)
+    get_filename_component(_cd_dxc_co_dir "${_cd_dxc_co_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_cobind_heap POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_co_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_cobind_heap>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_co_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_cobind_heap>")
+  endif()
+endif()
+
 # phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
 # Pure CPU-side limits read + an empty command list push/pop — no shaders or
 # DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no
