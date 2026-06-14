@@ -237,6 +237,39 @@ if(WIN32)
   endif()
 endif()
 
+# D8 + D7 + D9: D3D12 DXR command-recording path (bind_rt_pipeline /
+# dispatch_rays / acceleration_structure_barrier). Structural DISPATCH_RAYS_DESC
+# field-math + SBT-alignment assertions run on EVERY CI lane (no device); the
+# Windows + DXR-gated functional probe records the three commands against the
+# real device and submits (honest-SKIP when the adapter lacks
+# D3D12_RAYTRACING_TIER >= 1.0 per ROADMAP §5). The functional probe compiles a
+# tiny RT DXIL library via compile_hlsl (SM6.5), so it needs the same
+# dxcompiler.dll/dxil.dll runtime as the toolchain test.
+if(WIN32)
+  cd_add_test(d3d12_dxr_command
+    SOURCES test_d3d12_dxr_command.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_rt_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_rt_list)
+  if(_cd_dxc_rt_list AND TARGET cd_test_d3d12_dxr_command)
+    list(POP_BACK _cd_dxc_rt_list _cd_dxc_rt_dll)
+    get_filename_component(_cd_dxc_rt_dir "${_cd_dxc_rt_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_dxr_command POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_rt_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_dxr_command>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_rt_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_dxr_command>")
+  endif()
+else()
+  cd_add_test(d3d12_dxr_command
+    SOURCES test_d3d12_dxr_command.cpp
+    DEPS    cd::rhi cd::core
+  )
+endif()
+
 # phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
 # Pure CPU-side limits read + an empty command list push/pop — no shaders or
 # DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no

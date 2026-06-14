@@ -4440,6 +4440,15 @@ public:
         auto it = buffers_.find(h.index());
         return it == buffers_.end() ? nullptr : &it->second;
     }
+    // D8 (DXR command path) — RT pipeline accessor for D3D12CommandBuffer so
+    // bind_rt_pipeline can pull the ID3D12StateObject created by
+    // create_rt_pipeline (the RTPSO is bound via SetPipelineState1, NOT
+    // SetPipelineState — a state object is not an ID3D12PipelineState).
+    [[nodiscard]] RtPipelineRecord* find_rt_pipeline(cd::rhi::RtPipelineHandle h) noexcept
+    {
+        auto it = rt_pipelines_.find(h.index());
+        return it == rt_pipelines_.end() ? nullptr : &it->second;
+    }
     [[nodiscard]] DescriptorSetRecord* find_descriptor_set(cd::rhi::DescriptorSetHandle h) noexcept
     {
         auto it = descriptor_sets_.find(h.index());
@@ -5379,6 +5388,138 @@ public:
         D3D12_RESOURCE_BARRIER bar {};
         bar.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         bar.UAV.pResource = rec->result.Get();
+        list_->ResourceBarrier(1, &bar);
+    }
+
+    // ---- DXR command path: D8 bind_rt_pipeline ----------------------------
+    //
+    // Bind a ray-tracing state object created by create_rt_pipeline. The DXR
+    // contract differs from graphics/compute: an RTPSO is an
+    // ID3D12StateObject (NOT an ID3D12PipelineState), so it is bound via
+    // ID3D12GraphicsCommandList4::SetPipelineState1 — SetPipelineState would
+    // reject the object. The RTPSO's GLOBAL root signature is a subobject of
+    // the state object itself (D3D12_GLOBAL_ROOT_SIGNATURE, set at creation),
+    // so DXR resource bindings are still driven by SetComputeRootSignature +
+    // SetComputeRoot* / SetDescriptorHeaps (the same root-binding model
+    // compute uses — bind_descriptor_set already routes to the compute root
+    // path). We therefore do NOT re-set a root signature here; binding the
+    // state object is sufficient and mirrors the Vulkan reference
+    // (vkCmdBindPipeline with VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR).
+    //
+    // Mirrors the Vulkan backend's null-function-pointer guard: if the
+    // runtime list does not expose ID3D12GraphicsCommandList4 (no DXR), the
+    // QueryInterface fails and this is a typed no-op — never a crash, never a
+    // silent success that pretends a trace was bound.
+    void bind_rt_pipeline(cd::rhi::RtPipelineHandle h) override
+    {
+        if (owner_ == nullptr) return;
+        auto* rec = owner_->find_rt_pipeline(h);
+        if (rec == nullptr || !rec->state_obj) return;
+        ComPtr<ID3D12GraphicsCommandList4> list4;
+        if (FAILED(list_.As(&list4)) || !list4) return;
+        list4->SetPipelineState1(rec->state_obj.Get());
+    }
+
+    // ---- DXR command path: D7 dispatch_rays --------------------------------
+    //
+    // Build a D3D12_DISPATCH_RAYS_DESC from the SBT regions and trace.
+    //
+    // The engine's SbtRegion mirrors VkStridedDeviceAddressRegionKHR
+    // {buffer, offset, stride_bytes, size_bytes}; we resolve each region's
+    // GPU virtual address as (buffer base GVA + offset). The four DXR table
+    // fields map as:
+    //   * RayGenerationShaderRecord {StartAddress, SizeInBytes}  -- no stride
+    //     (exactly one ray-gen record per dispatch); StartAddress must be
+    //     D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT (64)-aligned, which the
+    //     SBT builder guarantees (rt_shader_group_base_alignment() == 64).
+    //   * MissShaderTable / HitGroupTable / CallableShaderTable
+    //     {StartAddress, SizeInBytes, StrideInBytes} -- the per-record stride
+    //     is the SBT record size (handle 32 B rounded up to the 64-B record
+    //     alignment by the builder), passed straight through from
+    //     SbtRegion::stride_bytes so the desc matches EXACTLY how the SBT was
+    //     authored. A region whose buffer is invalid is skipped (left zeroed),
+    //     same policy as the Vulkan resolve().
+    //
+    // Width/Height/Depth come from the dispatch dims. Requires
+    // ID3D12GraphicsCommandList4::DispatchRays; on a non-DXR list the
+    // QueryInterface fails and this is a typed no-op (never a crash).
+    void dispatch_rays(const cd::rhi::DispatchRaysDesc& desc) override
+    {
+        if (owner_ == nullptr) return;
+        ComPtr<ID3D12GraphicsCommandList4> list4;
+        if (FAILED(list_.As(&list4)) || !list4) return;
+
+        auto region_gva = [this](const cd::rhi::SbtRegion& r) -> D3D12_GPU_VIRTUAL_ADDRESS {
+            if (!r.buffer.is_valid()) return 0;
+            auto* b = owner_->find_buffer(r.buffer);
+            if (b == nullptr || !b->resource) return 0;
+            return b->resource->GetGPUVirtualAddress() + r.offset;
+        };
+
+        D3D12_DISPATCH_RAYS_DESC drd {};
+
+        // Ray-gen: exactly one record, so no stride field.
+        const auto rg = region_gva(desc.raygen);
+        if (rg != 0)
+        {
+            drd.RayGenerationShaderRecord.StartAddress = rg;
+            drd.RayGenerationShaderRecord.SizeInBytes  = desc.raygen.size_bytes;
+        }
+
+        // Miss / hit-group / callable tables carry a per-record stride.
+        const auto ms = region_gva(desc.miss);
+        if (ms != 0)
+        {
+            drd.MissShaderTable.StartAddress  = ms;
+            drd.MissShaderTable.SizeInBytes   = desc.miss.size_bytes;
+            drd.MissShaderTable.StrideInBytes = desc.miss.stride_bytes;
+        }
+        const auto hi = region_gva(desc.hit);
+        if (hi != 0)
+        {
+            drd.HitGroupTable.StartAddress  = hi;
+            drd.HitGroupTable.SizeInBytes   = desc.hit.size_bytes;
+            drd.HitGroupTable.StrideInBytes = desc.hit.stride_bytes;
+        }
+        const auto ca = region_gva(desc.callable);
+        if (ca != 0)
+        {
+            drd.CallableShaderTable.StartAddress  = ca;
+            drd.CallableShaderTable.SizeInBytes   = desc.callable.size_bytes;
+            drd.CallableShaderTable.StrideInBytes = desc.callable.stride_bytes;
+        }
+
+        drd.Width  = desc.width;
+        drd.Height = desc.height;
+        drd.Depth  = desc.depth;
+
+        list4->DispatchRays(&drd);
+    }
+
+    // ---- DXR command path: D9 acceleration_structure_barrier ---------------
+    //
+    // Make a BLAS/TLAS build visible to a subsequent build or trace on the
+    // same command list. The Vulkan reference uses a memory barrier between
+    // ACCELERATION_STRUCTURE_BUILD stages; the D3D12 equivalent is a global
+    // UAV barrier (pResource == nullptr) — AS results live in UAV-state
+    // DEFAULT-heap buffers, so a UAV barrier orders every prior AS write
+    // before every subsequent AS read/write. This complements the
+    // per-build UAV barrier build_acceleration_structure already emits on the
+    // result buffer: callers that rebuild a BLAS in-place every frame and
+    // reference it from a TLAS rebuilt later in the SAME submission emit this
+    // between the two builds (the explicit barrier the IDevice contract
+    // documents for the skinned-mesh case).
+    //
+    // A null/UAV barrier is always valid on a direct command list, so this is
+    // safe on any device — there is no DXR feature gate to fail here (the gate
+    // is on the AS build / trace, not on the global memory barrier).
+    void acceleration_structure_barrier() override
+    {
+        if (list_ == nullptr) return;
+        D3D12_RESOURCE_BARRIER bar {};
+        bar.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        bar.Flags         = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        bar.UAV.pResource = nullptr;  // global UAV barrier
         list_->ResourceBarrier(1, &bar);
     }
 
