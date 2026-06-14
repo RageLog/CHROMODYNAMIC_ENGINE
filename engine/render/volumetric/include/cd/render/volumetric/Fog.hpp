@@ -23,18 +23,16 @@
 #pragma once
 
 #include <cd/core/Defines.hpp>
+#include <cd/math/Functions.hpp>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
-#include <numbers>
 
 namespace cd::render::volumetric
 {
-
-inline constexpr float kPi { std::numbers::pi_v<float> };
 
 struct FogParams
 {
@@ -50,15 +48,10 @@ struct FogParams
     float anisotropy { 0.4F };
 };
 
-/// Henyey-Greenstein phase function. `cos_theta` is the dot product of
-/// the light direction with the view direction (both unit). Returns
-/// the phase value (1/sr).
-[[nodiscard]] inline float henyey_greenstein(float cos_theta, float g) noexcept
-{
-    const float g2 = g * g;
-    const float denom = 1.0F + g2 - 2.0F * g * cos_theta;
-    return (1.0F - g2) / (4.0F * kPi * std::pow(std::max(denom, 1.0e-6F), 1.5F));
-}
+/// Henyey-Greenstein phase function — delegates to the canonical
+/// cd::math::henyey_greenstein (guarded, singularity-safe).
+/// Re-exported here so cd::render::volumetric consumers remain unaffected.
+using cd::math::henyey_greenstein;
 
 /// Beer-Lambert transmittance along a homogeneous segment of length
 /// `distance` with extinction `sigma_t`. Returns T ∈ (0, 1].

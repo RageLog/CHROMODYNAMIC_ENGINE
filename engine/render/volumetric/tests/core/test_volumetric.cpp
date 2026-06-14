@@ -37,7 +37,7 @@ TEST(VolumetricFog, TransmittanceMonotonicallyDecreases)
 TEST(VolumetricFog, IsotropicPhaseIs1Over4Pi)
 {
     // g = 0 → isotropic; phase value should be 1 / (4π) for any cos_theta.
-    constexpr float kExpected = 1.0F / (4.0F * cd::render::volumetric::kPi);
+    constexpr float kExpected = 1.0F / (4.0F * cd::math::pi);
     EXPECT_NEAR(cd::render::volumetric::henyey_greenstein(0.0F, 0.0F), kExpected, 1e-5F);
     EXPECT_NEAR(cd::render::volumetric::henyey_greenstein(1.0F, 0.0F), kExpected, 1e-5F);
     EXPECT_NEAR(cd::render::volumetric::henyey_greenstein(-1.0F, 0.0F), kExpected, 1e-5F);
@@ -86,7 +86,7 @@ TEST(VolumetricFog, InScatteringIncreasesWithDistance)
     EXPECT_GT(far.x, near.x);  // more fog accumulates over longer rays
     // Asymptotes at L_max = σ_s / σ_t · phase · L (for very long rays).
     const float L_max = (p.scattering / p.extinction)
-                       * (1.0F / (4.0F * cd::render::volumetric::kPi));
+                       * (1.0F / (4.0F * cd::math::pi));
     EXPECT_LT(far.x, L_max * 1.01F + 1e-3F);  // can't exceed the limit
 }
 

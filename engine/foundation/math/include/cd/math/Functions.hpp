@@ -8,6 +8,7 @@
 #include <cd/math/Constants.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <type_traits>
 
 namespace cd::math
@@ -76,6 +77,28 @@ template <class T>
 [[nodiscard]] constexpr int sign(T v) noexcept
 {
     return (T { 0 } < v) - (v < T { 0 });
+}
+
+/// Henyey-Greenstein phase function (Henyey & Greenstein 1941,
+/// "Diffuse Radiation in the Galaxy").
+///
+/// @param cos_theta  Dot product of the incident and scattered directions
+///                   (both unit vectors, pointing away from the scattering
+///                   point), i.e. cos(angle between light and view rays).
+/// @param g          Asymmetry parameter g ∈ (-1, +1).
+///                   g > 0 → forward-scatter (water droplets, Mie aerosols),
+///                   g = 0 → isotropic,  g < 0 → back-scatter.
+/// @return           Phase value in sr⁻¹.
+///
+/// The guard `max(denom, 1e-6)` prevents a singularity at g → 1 ∧ cos_theta → 1.
+/// For typical Mie g ≤ 0.95 and any cos_theta the guard never fires
+/// (minimum denom ≈ 0.0025 at g=0.95, cos_theta=1), so golden / render
+/// output is unaffected.
+[[nodiscard]] inline float henyey_greenstein(float cos_theta, float g) noexcept
+{
+    const float g2    = g * g;
+    const float denom = 1.0F + g2 - 2.0F * g * cos_theta;
+    return (1.0F - g2) / (4.0F * pi_v<float> * std::pow(std::max(denom, 1.0e-6F), 1.5F));
 }
 
 }  // namespace cd::math

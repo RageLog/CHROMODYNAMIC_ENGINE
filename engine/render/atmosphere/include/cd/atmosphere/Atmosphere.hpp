@@ -20,6 +20,7 @@
 // =============================================================================
 #pragma once
 
+#include <cd/math/Functions.hpp>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
@@ -53,13 +54,10 @@ struct Parameters
     float mie_g { 0.8F };
 };
 
-/// Henyey-Greenstein phase function. Forward-asymmetry parameter `g`.
-[[nodiscard]] inline float henyey_greenstein(float cos_theta, float g) noexcept
-{
-    const float g2 = g * g;
-    const float denom = std::pow(1.0F + g2 - 2.0F * g * cos_theta, 1.5F);
-    return (1.0F - g2) / (4.0F * std::numbers::pi_v<float> * denom);
-}
+/// Henyey-Greenstein phase function — delegates to the canonical
+/// cd::math::henyey_greenstein (guarded, singularity-safe).
+/// Re-exported here so cd::atmosphere consumers remain unaffected.
+using cd::math::henyey_greenstein;
 
 /// Rayleigh phase (isotropic-ish, cos²-dependent).
 [[nodiscard]] inline float rayleigh_phase(float cos_theta) noexcept

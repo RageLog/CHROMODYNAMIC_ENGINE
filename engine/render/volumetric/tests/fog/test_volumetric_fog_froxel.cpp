@@ -31,7 +31,6 @@ using cd::volumetric::integrate_view_ray;
 using cd::volumetric::kVolFogCompositeCS;
 using cd::volumetric::kVolFogInjectCS;
 using cd::volumetric::kVolFogIntegrateCS;
-using cd::volumetric::kVolFogPi;
 using cd::volumetric::scattering_of;
 using cd::volumetric::slice_thickness;
 using cd::volumetric::slice_to_view_z;
@@ -123,7 +122,7 @@ TEST(VolFogFroxel, FroxelToViewRoundTrip)
     FroxelGridDesc d {};
     d.width = 16; d.height = 9; d.depth = 16;
     d.near_z = 0.5F; d.far_z = 32.0F;
-    const float tan_half_fov_x = std::tan(60.0F * 0.5F * kVolFogPi / 180.0F);
+    const float tan_half_fov_x = std::tan(60.0F * 0.5F * cd::math::pi / 180.0F);
     const float aspect = 16.0F / 9.0F;
     for (std::uint32_t z = 0; z < d.depth; ++z)
     {
@@ -158,7 +157,7 @@ TEST(VolFogFroxel, ViewToFroxelRejectsBehindCamera)
 TEST(VolFogFroxel, HenyeyGreensteinIsotropic)
 {
     // g = 0 ⇒ uniform 1/(4π) regardless of cos θ.
-    const float expected = 1.0F / (4.0F * kVolFogPi);
+    const float expected = 1.0F / (4.0F * cd::math::pi);
     EXPECT_NEAR(henyey_greenstein( 1.0F, 0.0F), expected, 1e-5F);
     EXPECT_NEAR(henyey_greenstein( 0.0F, 0.0F), expected, 1e-5F);
     EXPECT_NEAR(henyey_greenstein(-1.0F, 0.0F), expected, 1e-5F);
@@ -199,7 +198,7 @@ TEST(VolFogFroxel, HenyeyGreensteinNormalisesOverSphere)
             const float cosT = -1.0F + (static_cast<float>(i) + 0.5F) * dCos;
             sum += henyey_greenstein(cosT, g) * dCos;
         }
-        sum *= 2.0F * kVolFogPi * static_cast<float>(kPhiSteps);
+        sum *= 2.0F * cd::math::pi * static_cast<float>(kPhiSteps);
         EXPECT_NEAR(sum, 1.0F, 5e-3F) << "g=" << g;
     }
 }

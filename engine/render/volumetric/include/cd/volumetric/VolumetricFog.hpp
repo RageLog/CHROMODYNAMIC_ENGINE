@@ -36,19 +36,17 @@
 // =============================================================================
 #pragma once
 
+#include <cd/math/Functions.hpp>
 #include <cd/math/Vector.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <numbers>
 #include <string_view>
 #include <vector>
 
 namespace cd::volumetric
 {
-
-inline constexpr float kVolFogPi { std::numbers::pi_v<float> };
 
 // ---- Settings ---------------------------------------------------------------
 
@@ -192,18 +190,10 @@ view_to_froxel(const cd::math::Vec3f& view,
 
 // ---- Phase + transmittance ---------------------------------------------------
 
-/// Henyey-Greenstein phase function. `cos_theta` = dot(view, light)
-/// where both vectors are unit and point AWAY from the surface (i.e.
-/// camera ray and light ray). g ∈ (-1, +1).
-[[nodiscard]] inline float
-henyey_greenstein(float cos_theta, float g) noexcept
-{
-    const float g2 = g * g;
-    const float denom = 1.0F + g2 - 2.0F * g * cos_theta;
-    // Guard against the singularity at g→1 ∧ cos_theta→1.
-    const float safe = std::max(denom, 1.0e-6F);
-    return (1.0F - g2) / (4.0F * kVolFogPi * std::pow(safe, 1.5F));
-}
+/// Henyey-Greenstein phase function — delegates to the canonical
+/// cd::math::henyey_greenstein (guarded, singularity-safe).
+/// Re-exported here so cd::volumetric consumers remain unaffected.
+using cd::math::henyey_greenstein;
 
 /// Beer-Lambert transmittance e^(-σ_t · d).
 [[nodiscard]] inline float
