@@ -24,6 +24,17 @@ cd_add_sample(hello_engine
     cd::game_particles_event
     cd::editor
     cd::editor_panel
+    # phase1174 — behavior_designer fold (ADR-20260614 Kanıt 6 / §5.2).
+    # cd::ui_* overlay stack so hello_engine can render the library
+    # BehaviorDesigner panel via a cd::ui::renderer_rhi::Submitter that
+    # co-exists with ImGui. cd::game_ai_bt + cd::ui_renderer + cd::ui_widgets
+    # arrive transitively as PUBLIC_DEPS of cd::editor_panel_behavior_designer
+    # (verified in engine/ui/editor/panel_behavior_designer/CMakeLists.txt).
+    cd::editor_panel_behavior_designer
+    cd::ui_widgets
+    cd::ui_renderer_rhi
+    cd::ui_font
+    cd::ui_theme
     cd::frame_timing
     cd::imgui_backend
     cd::light

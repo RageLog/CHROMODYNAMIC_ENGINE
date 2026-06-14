@@ -64,7 +64,7 @@
     | --- | --- | --- | --- | --- | --- |
     | hello_animator | panel_animator + Animator::draw() | hello_editor | ~30L+dep | UI-stack uyumu | **DONE phase1156** |
     | hello_material_editor | panel_material_editor | hello_editor | ~30L+dep | UI-stack uyumu | **DONE phase1156** |
-    | hello_behavior_designer | panel_behavior_designer | hello_editor | ~200L | node-graph layout | DEFERRED — ADR-20260613 |
+    | hello_behavior_designer | panel_behavior_designer | hello_engine overlay | ~60L | golden-gated cd::ui::Submitter | **DONE phase1176 (FOLD — ADR-20260614; Route B Submitter overlay co-exists with ImGui, R-Showcase toggle, golden byte-identical; lib coverage = test_behavior_designer 12 cases)** |
     | hello_hot_reload | FileWatcher+CachedCompiler+material swap | hello_editor/engine toggle | ~100L | FileWatcher threading; ADR-20260522 canonical | **DONE phase1171 (SAFE-DELETE — coverage in HelloShaderWatch.hpp)** |
     | hello_anim | AnimationClip+Player+GoldenCapture | hello_engine showcase | ~200L | CI run_smoke `hello_anim` adını taşıyor — script+golden güncelle | **DONE phase1172 (SAFE-DELETE — capability superset HelloSkinnedAnim; golden redundant, cd::anim 55 unit tests in test_anim.cpp + test_dual_quat.cpp)** |
     | hello_ui | ui_layout+ui_widgets+ui_renderer_rhi::Submitter | hello_editor/engine | orta-yüksek | architect kapısı: kSubmitterPipelineReady gate | PENDING |
@@ -96,7 +96,7 @@
 | **hello_anim** | **DOABLE-NOW (script/golden re-home şart)** | `cd::anim` dep'i PUBLIC_DEPS = yalnız `cd::math + cd::core` (saf-yukarı DAG); ama hello_anim 3 yerde hard-wired golden producer | golden capture'ı hello_engine golden CLI'ya re-home + 3 referans edit (kod değil config) |
 | **hello_ui** | **GATED** | `samples/ui/hello_ui/main.cpp:577` `constexpr bool kSubmitterPipelineReady = false` HÂLÂ false; Submitter pipeline bağlamıyor | cd::material UI variant'ları (Submitter VS/FS link + descriptor seti) — ADR-20260530 Phase 1.5 |
 | **hello_world** | **DOABLE-NOW (DAG temiz, panel scope orta)** | 4 gameplay-lib + `cd::gameplay_time` + `cd::anim`(yok) hello_engine'de DEĞİL; ama hepsi saf-yukarı (game_query→cd::scene, game_camera→cd::camera/ecs — tümü hello_engine closure'unda); cycle YOK | yalnız ~400L gameplay panel + 5 yeni DEP edit (mimari blok YOK) |
-| **hello_behavior_designer** | **DEFER** | ADR-20260613: node-graph layout (`measure_subtree`/`draw_real_tree`) ~200L ImGui DrawList reimpl + `cd::game::ai_bt::BehaviorTree` yeni hello_editor dep | sample-azaltma için orantısız; DrawBatcher→ImGui köprü maliyeti |
+| **hello_behavior_designer** | **DONE phase1176 (FOLD — ADR-20260614)** | ADR-20260613'ün DEFER gerekçesi (Submitter altyapısı yok varsayımı) Kanıt 2+5 ile geçersiz; Route B Submitter overlay hello_engine composite pass'ine çizer, panel `draw()` imzası değişmez, ImGui reimpl YOK | golden byte-identical (overlay golden frame'de record etmez); test_behavior_designer 12 case lib coverage |
 
 ### Kanıt detayı (her satır)
 
@@ -189,13 +189,22 @@
   kapısı AÇIK. [feedback_sample_consolidation_and_per_feature_demo] ile
   uyumlu (panel-içi demo).
 
-#### hello_behavior_designer → DEFER
+#### hello_behavior_designer → ~~DEFER~~ DONE phase1176 (FOLD, ADR-20260614)
 
-- ADR-20260613-editor-panel-fold-strategy Karar: Seçenek C (ERTELEME).
-  Node-graph layout (`measure_subtree`/`draw_real_tree`/`draw_demo_nodes`
-  + ortogonal kenarlar) ImGui DrawList ile ~200L ekstra reimpl gerektirir;
-  `cd::game::ai_bt::BehaviorTree` hello_editor'a yeni kütüphane dep'i
-  ekler. Sample-azaltma için orantısız. Karar değişmedi — DEFER.
+> **GÜNCELLEME phase1176**: Aşağıdaki DEFER gerekçesi ADR-20260614
+> Kanıt 2+5 ile geçersizleşti. Reimpl gerekmedi: Route B Submitter
+> (`create_with_inline_shader`, Phase 554) hello_engine composite pass'ine
+> overlay olarak çiziyor, panel `draw(batcher,theme,bounds)` imzası
+> DEĞİŞMEDİ, ImGui DrawList reimpl YOK. `cd::game_ai_bt` dep'i
+> `cd::editor_panel_behavior_designer`'ın PUBLIC_DEP'i olarak transitive
+> geldi. Overlay golden-gate içinde (default OFF) → chrome_probe golden
+> byte-identical KORUNDU. samples 12 → 11.
+
+- (Tarihsel kayıt) ADR-20260613-editor-panel-fold-strategy Karar: Seçenek C
+  (ERTELEME). Node-graph layout (`measure_subtree`/`draw_real_tree`/
+  `draw_demo_nodes` + ortogonal kenarlar) ImGui DrawList ile ~200L ekstra
+  reimpl gerektirir varsayımıyla ertelenmişti; ADR-20260614 daha iyi yolu
+  (Submitter overlay, reimpl yok) açtı.
 
 ### Net öncelik sırası (15 → ≤10)
 

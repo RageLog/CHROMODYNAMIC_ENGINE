@@ -19,4 +19,9 @@ add_subdirectory(hello_editor)
 # CachedCompiler, FileWatcher, Material::create paths all live in main.cpp.
 # phase1156: hello_material_editor folded into hello_editor (Material Editor ImGui panel, Seçenek B)
 # phase1156: hello_animator folded into hello_editor (Animator ImGui panel, Seçenek B)
-add_subdirectory(hello_behavior_designer)  # phase592: demos cd::editor::panel::behavior_designer (DEFERRED per ADR-20260613)
+# phase1176: hello_behavior_designer FOLDED into hello_engine as a
+# golden-gated cd::ui::Submitter overlay panel (ADR-20260614, Job A+B).
+# The BehaviorDesigner library panel + Route B Submitter path are now
+# exercised from samples/engine/hello_engine (toggle in R-Showcase).
+# Library coverage stays via engine/ui/editor/panel_behavior_designer/
+# tests/test_behavior_designer.cpp (12 headless cases). samples 12 -> 11.

@@ -138,6 +138,16 @@
 #include <cd/scene/SceneCameraController.hpp>
 #include <cd/scene/Serializer.hpp>
 #include <cd/shader/Compiler.hpp>
+// phase1174 — behavior_designer fold (ADR-20260614). cd::ui_* overlay
+// stack: a cd::ui::renderer_rhi::Submitter (Route B inline GLSL) +
+// DrawBatcher render the library BehaviorDesigner panel as a golden-gated
+// ImGui-coexisting overlay. See the boot/record blocks below.
+#include <cd/ui/font/Font.hpp>
+#include <cd/ui/renderer/DrawBatcher.hpp>
+#include <cd/ui/renderer_rhi/Submitter.hpp>
+#include <cd/ui/theme/Theme.hpp>
+#include <cd/ui/widgets/Widgets.hpp>
+#include <cd/editor/panel_behavior_designer/BehaviorDesigner.hpp>
 #include <cd/velocity/Velocity.hpp>
 #include <cd/volumetric/clouds/Clouds.hpp>
 #include <cd/volumetric/fog/Fog.hpp>
@@ -407,6 +417,64 @@ constexpr std::size_t kAudioBufferLen = 512;  // samples per tick
 }
 
 // PrimitiveKind, SceneEntity, kind_from_name moved to file scope (before namespace {}).
+
+// ============================================================================
+// phase1174 — behavior_designer fold (ADR-20260614).
+//
+// Theme bridge + font probe ported VERBATIM from the now-deleted
+// samples/editor/hello_behavior_designer/main.cpp. They feed the
+// cd::ui::renderer_rhi::Submitter overlay that renders the library
+// BehaviorDesigner panel. The font is optional (Route B inline shader
+// does not sample the atlas today); kept for parity with the source sample.
+// ============================================================================
+
+[[nodiscard]] cd::ui::widgets::Color to_widget_color(cd::ui::theme::ColorToken c) noexcept
+{
+    auto pack = [](float v) noexcept -> std::uint8_t {
+        const float clamped = std::clamp(v, 0.0F, 1.0F);
+        return static_cast<std::uint8_t>(std::lround(clamped * 255.0F));
+    };
+    return cd::ui::widgets::Color { pack(c.r), pack(c.g), pack(c.b), pack(c.a) };
+}
+
+[[nodiscard]] cd::ui::widgets::Theme build_dark_widget_theme()
+{
+    const auto dark = cd::ui::theme::k_dark_theme();
+    cd::ui::widgets::Theme t {};
+    t.background    = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kBackground));
+    t.surface       = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kSurface));
+    t.surface_hover = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kSurfaceVariant));
+    t.surface_press = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kPrimaryContainer));
+    t.accent        = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kPrimary));
+    t.accent_hover  = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kPrimaryContainer));
+    t.text          = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kOnSurface));
+    t.text_dim      = to_widget_color(dark.color(cd::ui::theme::PaletteSlot::kOnSurfaceVariant));
+    return t;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> find_system_font_for_bd()
+{
+    static const std::array<const char*, 6> k_candidates {
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/calibri.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    };
+    for (const char* p : k_candidates)
+    {
+        std::ifstream f(p, std::ios::binary | std::ios::ate);
+        if (!f) { continue; }
+        const auto sz = static_cast<std::size_t>(f.tellg());
+        f.seekg(0);
+        std::vector<std::uint8_t> out(sz);
+        f.read(reinterpret_cast<char*>(out.data()),
+               static_cast<std::streamsize>(sz));
+        if (!out.empty()) { return out; }
+    }
+    return {};
+}
 
 // ============================================================================
 // GPU mesh holder.
@@ -5149,6 +5217,30 @@ struct HelloEngineApp::EngineState
     std::string                              palette_query;
     cd_sample::HelloEngineFx                 fx;
 
+    // phase1174 — behavior_designer fold (ADR-20260614). A cd::ui::*
+    // overlay stack that renders the library BehaviorDesigner panel on top
+    // of the ImGui dev UI. The Submitter (Route B inline GLSL) co-exists
+    // with ImGui in the same composite/swapchain BGRA8 pass (depth OFF +
+    // alpha blend ON).
+    //
+    // Held via unique_ptr (not a by-value member): cd::ui::renderer_rhi::
+    // Submitter is PIMPL with an inline `= default` default ctor whose
+    // unique_ptr<Impl> member needs Impl complete at the point EngineState's
+    // own ctor is compiled — which it is not (Impl lives in the .cpp). The
+    // ADR scope guard forbids touching the library header, so we side-step
+    // the limitation consumer-side: unique_ptr<Submitter> only needs the
+    // out-of-line ~Submitter() (declared), never sizeof(Impl). Heap-stored
+    // after device_owner so it destructs before the device on teardown.
+    std::unique_ptr<cd::ui::renderer_rhi::Submitter> ui_submitter;
+    cd::ui::renderer::DrawBatcher            ui_batcher;
+    cd::ui::widgets::Theme                   ui_widget_theme;
+    cd::ui::font::Font                       ui_font;
+    cd::editor::panel::behavior_designer::BehaviorDesigner bd_panel;
+    // ZORUNLU golden invariant (ADR §5.1): the overlay record is gated by
+    // (!kHideEditorUiForGolden && show_behavior_designer) so it NEVER
+    // emits draws on a golden capture frame. Default OFF.
+    bool                                     show_behavior_designer { false };
+
     // Post-fx settings (wired; dispatch queued)
     cd::post::gtao::Settings                  fx_gtao;
     cd::post::bloom::Settings                 fx_bloom;
@@ -5272,6 +5364,55 @@ cd::core::Result<void> HelloEngineApp::on_boot()
     s.imgui_ctx = std::move(*ctx_r);
 
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+    // phase1174 — behavior_designer fold (ADR-20260614, Job A boot wiring).
+    //
+    // Route B (create_with_inline_shader, Phase 554): an INLINE-compiled
+    // GLSL pipeline that records DrawBatcher quads straight into the
+    // composite/swapchain pass. color_format MUST match the swapchain
+    // (kBGRA8Unorm) — see ADR Kanıt 5 + §5.1 format contract. The
+    // create() never runs on the golden path's hot loop; a failure here is
+    // logged + skipped (overlay stays disabled) so the golden capture is
+    // unaffected (ADR §5.5).
+    {
+        const auto ttf = find_system_font_for_bd();
+        if (!ttf.empty() &&
+            s.ui_font.load_ttf_in_memory(
+                std::span<const std::uint8_t>(ttf.data(), ttf.size())))
+        {
+            static constexpr float         kPixelSize = 15.0F;
+            static constexpr std::uint32_t kAtlasDim  = 1024U;
+            (void)s.ui_font.rasterize_range(0x0020U, 0x00FFU, kPixelSize, kAtlasDim);
+        }
+        s.ui_widget_theme = build_dark_widget_theme();
+
+        cd::ui::renderer_rhi::SubmitterCreateInfo sci {};
+        sci.color_format = cd::rhi::Format::kBGRA8Unorm;
+        sci.max_vertices = 16384U;
+        sci.max_indices  = 65536U;
+        auto sub_r =
+            cd::ui::renderer_rhi::Submitter::create_with_inline_shader(device, sci);
+        if (sub_r.has_value())
+        {
+            s.ui_submitter = std::make_unique<cd::ui::renderer_rhi::Submitter>(
+                std::move(*sub_r));
+            // Seed a non-trivial BT panel state (mirrors the deleted
+            // hello_behavior_designer demo): demo BT root + child select +
+            // pan. Renders the Sprint-1 demo-node graph when toggled ON.
+            s.bd_panel.set_tree_root(1U);      // demo BT root
+            s.bd_panel.set_selected(2U);       // select Child A (accent border)
+            s.bd_panel.set_pan_offset(20.0F, 10.0F);
+            std::printf("hello_engine: BehaviorDesigner overlay ready "
+                        "(cd::ui Submitter Route B; toggle in R-Showcase).\n");
+        }
+        else
+        {
+            std::printf("hello_engine: BehaviorDesigner overlay disabled "
+                        "(Submitter create failed: %.*s).\n",
+                        static_cast<int>(sub_r.error().message.size()),
+                        sub_r.error().message.data());
+        }
+    }
 
     // Shader compiler
     s.compiler = cd::shader::make_glslang_compiler();
@@ -6501,6 +6642,23 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             ImGui::Checkbox("Show editor floor grid", &s.show_editor_floor);
             ImGui::SameLine();
             ImGui::TextDisabled("(auto-off when Sponza loaded)");
+            // phase1174 — behavior_designer fold (ADR-20260614). Toggle for
+            // the cd::ui Submitter overlay that renders the library
+            // BehaviorDesigner node-graph on top of the ImGui UI. Default
+            // OFF; this checkbox itself only exists inside the golden gate,
+            // so a golden capture can never flip it on.
+            ImGui::Separator();
+            if (s.ui_submitter && s.ui_submitter->is_valid())
+            {
+                ImGui::Checkbox("Behavior Designer overlay",
+                                &s.show_behavior_designer);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(cd::ui Submitter node-graph)");
+            }
+            else
+            {
+                ImGui::TextDisabled("Behavior Designer overlay unavailable");
+            }
             ImGui::End();
         }
 
@@ -6600,6 +6758,34 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                              s.fx, s.lights, s.cam, frame_loop_start,
                              s.prev_cam_basis, s.prev_vp_unjittered, s.prev_vp_valid,
                              vp_unj);
+
+        // phase1174 — behavior_designer fold (ADR-20260614, Job A overlay
+        // record + Job B panel bind). The cd::ui Submitter records the
+        // BehaviorDesigner node-graph into the OPEN composite/swapchain pass,
+        // BEFORE ctx.render(cmd) so ImGui stays on top (ADR §3.3 draw order:
+        // scene -> composite -> submitter -> ImGui). It co-exists with ImGui
+        // (same BGRA8 pass; Submitter pipeline is depth-OFF + alpha-blend-ON).
+        //
+        // ZORUNLU golden invariant (ADR §5.1): the upload/record pair is
+        // gated by (!kHideEditorUiForGolden && show_behavior_designer). On a
+        // --golden-fixture capture golden::enabled() is true, so this block
+        // NEVER runs -> the composite output is byte-identical to baseline.
+        if (!kHideEditorUiForGolden && s.show_behavior_designer &&
+            s.ui_submitter && s.ui_submitter->is_valid())
+        {
+            const cd::ui::widgets::Rect panel_rect {
+                0.0F,
+                0.0F,
+                static_cast<float>(frame.extent.width),
+                static_cast<float>(frame.extent.height)
+            };
+            s.ui_batcher.begin_frame();
+            s.bd_panel.draw(s.ui_batcher, s.ui_widget_theme, panel_rect);
+            if (s.ui_submitter->upload(s.ui_batcher))
+            {
+                s.ui_submitter->record(cmd, frame.extent);
+            }
+        }
 
         ctx.render(cmd);
         cmd.end_render_pass();
@@ -6795,6 +6981,13 @@ void HelloEngineApp::on_shutdown() noexcept
         s.tlas_destroy_queue.pop_front();
     }
     cd_sample::destroy_meshes(device, s.meshes);
+
+    // phase1174 — behavior_designer fold (ADR-20260614). Tear down the
+    // cd::ui Submitter explicitly while the device is still alive so the
+    // GPU resources are released deterministically (the dtor would also do
+    // it, but ordering it here matches the rest of on_shutdown).
+    if (s.ui_submitter) { s.ui_submitter->destroy(); }
+    s.ui_submitter.reset();
 
     std::printf("hello_engine: clean exit (%u frames).\n", s.frame_idx);
     state_.reset();
