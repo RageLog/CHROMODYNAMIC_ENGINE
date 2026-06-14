@@ -143,6 +143,7 @@
 // DrawBatcher render the library BehaviorDesigner panel as a golden-gated
 // ImGui-coexisting overlay. See the boot/record blocks below.
 #include <cd/ui/font/Font.hpp>
+#include <cd/ui/layout/Flex.hpp>  // phase1177 — hello_ui fold (Flex demo tree)
 #include <cd/ui/renderer/DrawBatcher.hpp>
 #include <cd/ui/renderer_rhi/Submitter.hpp>
 #include <cd/ui/theme/Theme.hpp>
@@ -474,6 +475,57 @@ constexpr std::size_t kAudioBufferLen = 512;  // samples per tick
         if (!out.empty()) { return out; }
     }
     return {};
+}
+
+// ============================================================================
+// phase1177 — hello_ui fold (ADR-20260614 §3.4, Job C).
+//
+// The Button/Slider/Label/Flex demo ported VERBATIM (semantically) from the
+// now-deleted samples/ui/hello_ui/main.cpp. A column FlexTree with three
+// leaves (header label / button / slider) is solved each frame for the
+// panel rect, the leaf rects drive the widget rects, the widgets tick on
+// the (currently empty) input snapshot, and everything is drawn into the
+// shared ui_batcher. The Route B inline Submitter is solid-fill only (it
+// does not sample the glyph atlas today), so the demo renders as the panel
+// background + button face + slider track/knob quads — identical visual
+// contract to the BehaviorDesigner overlay it shares the Submitter with.
+// ============================================================================
+
+[[nodiscard]] cd::ui::widgets::Rect uiw_to_widget_rect(const cd::ui::layout::Rect& r) noexcept
+{
+    return cd::ui::widgets::Rect { r.x, r.y, r.width, r.height };
+}
+
+/// Build the column-flex demo tree (header label / button / slider leaves).
+/// Mirrors hello_ui's build_tree(); writes the node ids back into EngineState.
+void uiw_build_tree(cd::ui::layout::FlexTree& tree,
+                    cd::ui::layout::NodeId& root,
+                    cd::ui::layout::NodeId& label,
+                    cd::ui::layout::NodeId& button,
+                    cd::ui::layout::NodeId& slider)
+{
+    namespace ll = cd::ui::layout;
+    ll::FlexStyle rs;
+    rs.direction   = ll::FlexDirection::kColumn;
+    rs.align_items = ll::AlignItems::kStretch;
+    rs.padding     = { 16.0F, 16.0F, 16.0F, 16.0F };
+    rs.gap_main    = 12.0F;
+    root = tree.create_node(rs);
+
+    ll::FlexStyle leaf;
+    leaf.flex_shrink      = 0.0F;
+    leaf.intrinsic_height = 36.0F;
+    label = tree.create_node(leaf);
+
+    leaf.intrinsic_height = 40.0F;
+    button = tree.create_node(leaf);
+
+    leaf.intrinsic_height = 28.0F;
+    slider = tree.create_node(leaf);
+
+    tree.add_child(root, label);
+    tree.add_child(root, button);
+    tree.add_child(root, slider);
 }
 
 // ============================================================================
@@ -5241,6 +5293,25 @@ struct HelloEngineApp::EngineState
     // emits draws on a golden capture frame. Default OFF.
     bool                                     show_behavior_designer { false };
 
+    // phase1177 — hello_ui fold (ADR-20260614 §3.4, Job C). The deleted
+    // samples/ui/hello_ui Button/Slider/Label/Flex demo, re-homed as a
+    // second consumer of the SAME ui_submitter/ui_batcher/ui_widget_theme/
+    // ui_font overlay stack (no second Submitter — one overlay feeds both
+    // panels). Same golden invariant: the record is gated by
+    // (!kHideEditorUiForGolden && show_ui_widgets) so it NEVER emits draws
+    // on a golden capture frame. Default OFF.
+    bool                                     show_ui_widgets { false };
+    cd::ui::layout::FlexTree                 uiw_tree;
+    cd::ui::layout::NodeId                   uiw_root   { cd::ui::layout::kInvalidNode };
+    cd::ui::layout::NodeId                   uiw_label  { cd::ui::layout::kInvalidNode };
+    cd::ui::layout::NodeId                   uiw_button { cd::ui::layout::kInvalidNode };
+    cd::ui::layout::NodeId                   uiw_slider { cd::ui::layout::kInvalidNode };
+    cd::ui::widgets::Button                  uiw_btn { "Click me" };
+    cd::ui::widgets::Slider                  uiw_sld { 0.5F };
+    int                                      uiw_click_count { 0 };
+    float                                    uiw_slider_val  { 0.5F };
+    bool                                     uiw_tree_built  { false };
+
     // Post-fx settings (wired; dispatch queued)
     cd::post::gtao::Settings                  fx_gtao;
     cd::post::bloom::Settings                 fx_bloom;
@@ -5385,6 +5456,13 @@ cd::core::Result<void> HelloEngineApp::on_boot()
             (void)s.ui_font.rasterize_range(0x0020U, 0x00FFU, kPixelSize, kAtlasDim);
         }
         s.ui_widget_theme = build_dark_widget_theme();
+
+        // phase1177 — hello_ui fold: build the Button/Slider/Label demo
+        // tree once. Device-independent (pure CPU flex tree); rebuilt never.
+        uiw_build_tree(s.uiw_tree, s.uiw_root, s.uiw_label, s.uiw_button, s.uiw_slider);
+        s.uiw_tree_built = true;
+        s.uiw_btn.set_on_click([&s] { ++s.uiw_click_count; });
+        s.uiw_sld.set_on_change([&s](float v) { s.uiw_slider_val = v; });
 
         cd::ui::renderer_rhi::SubmitterCreateInfo sci {};
         sci.color_format = cd::rhi::Format::kBGRA8Unorm;
@@ -6654,10 +6732,20 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                                 &s.show_behavior_designer);
                 ImGui::SameLine();
                 ImGui::TextDisabled("(cd::ui Submitter node-graph)");
+                // phase1177 — hello_ui fold (ADR-20260614 §3.4, Job C). A
+                // SECOND panel sharing the SAME Submitter overlay: the folded
+                // hello_ui Button/Slider/Label/Flex demo. Default OFF; this
+                // checkbox lives inside the golden gate so a golden capture
+                // can never flip it on.
+                ImGui::Checkbox("UI Widgets Demo",
+                                &s.show_ui_widgets);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(cd::ui_widgets + ui_layout Flex)");
             }
             else
             {
                 ImGui::TextDisabled("Behavior Designer overlay unavailable");
+                ImGui::TextDisabled("UI Widgets Demo unavailable");
             }
             ImGui::End();
         }
@@ -6767,10 +6855,18 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
         // (same BGRA8 pass; Submitter pipeline is depth-OFF + alpha-blend-ON).
         //
         // ZORUNLU golden invariant (ADR §5.1): the upload/record pair is
-        // gated by (!kHideEditorUiForGolden && show_behavior_designer). On a
+        // gated by (!kHideEditorUiForGolden && (panel toggles)). On a
         // --golden-fixture capture golden::enabled() is true, so this block
         // NEVER runs -> the composite output is byte-identical to baseline.
-        if (!kHideEditorUiForGolden && s.show_behavior_designer &&
+        //
+        // phase1177 — hello_ui fold (ADR-20260614 §3.4, Job C). TWO panels
+        // share this ONE Submitter overlay: the BehaviorDesigner node-graph
+        // (Job A/B) and the folded hello_ui Button/Slider/Label/Flex demo.
+        // Both draw into the SAME ui_batcher within a single begin_frame ->
+        // upload -> record cycle; each panel is independently toggled but the
+        // outer gate keeps EITHER from emitting on a golden frame.
+        if (!kHideEditorUiForGolden &&
+            (s.show_behavior_designer || s.show_ui_widgets) &&
             s.ui_submitter && s.ui_submitter->is_valid())
         {
             const cd::ui::widgets::Rect panel_rect {
@@ -6780,7 +6876,62 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 static_cast<float>(frame.extent.height)
             };
             s.ui_batcher.begin_frame();
-            s.bd_panel.draw(s.ui_batcher, s.ui_widget_theme, panel_rect);
+
+            if (s.show_behavior_designer)
+            {
+                s.bd_panel.draw(s.ui_batcher, s.ui_widget_theme, panel_rect);
+            }
+
+            // phase1177 — UI Widgets Demo. Solve the column-flex tree for a
+            // small panel anchored bottom-left, push the leaf rects onto the
+            // widgets, tick them on the (empty) input snapshot, and draw the
+            // header label / button / slider into the shared batcher.
+            if (s.show_ui_widgets && s.uiw_tree_built)
+            {
+                constexpr float kPanelW = 320.0F;
+                constexpr float kPanelH = 160.0F;
+                const float panel_x = 24.0F;
+                const float panel_y =
+                    static_cast<float>(frame.extent.height) - kPanelH - 24.0F;
+
+                s.uiw_tree.solve(s.uiw_root, kPanelW, kPanelH);
+
+                // Translate the solver's panel-local rects into the bottom-
+                // left anchor and feed the widgets.
+                auto shift = [&](cd::ui::layout::NodeId n) {
+                    cd::ui::layout::Rect r = s.uiw_tree.layout(n);
+                    r.x += panel_x;
+                    r.y += panel_y;
+                    return r;
+                };
+                const cd::ui::layout::Rect lr = shift(s.uiw_label);
+                s.uiw_btn.set_rect(uiw_to_widget_rect(shift(s.uiw_button)));
+                s.uiw_sld.set_rect(uiw_to_widget_rect(shift(s.uiw_slider)));
+
+                cd::ui::widgets::InputState ui_input;
+                ui_input.focused = false;
+                (void)s.uiw_btn.tick(ui_input);
+                (void)s.uiw_sld.tick(ui_input);
+
+                // Panel background + header label surface quad.
+                s.ui_batcher.quad(panel_x, panel_y, kPanelW, kPanelH,
+                                  cd::ui::renderer::Color {
+                                      s.ui_widget_theme.background.r,
+                                      s.ui_widget_theme.background.g,
+                                      s.ui_widget_theme.background.b,
+                                      s.ui_widget_theme.background.a });
+                s.ui_batcher.quad(lr.x, lr.y, lr.width, lr.height,
+                                  cd::ui::renderer::Color {
+                                      s.ui_widget_theme.surface.r,
+                                      s.ui_widget_theme.surface.g,
+                                      s.ui_widget_theme.surface.b,
+                                      s.ui_widget_theme.surface.a });
+                cd::ui::font::Font* fp =
+                    s.ui_font.is_loaded() ? &s.ui_font : nullptr;
+                s.uiw_btn.draw(s.ui_batcher, fp, s.ui_widget_theme);
+                s.uiw_sld.draw(s.ui_batcher, fp, s.ui_widget_theme);
+            }
+
             if (s.ui_submitter->upload(s.ui_batcher))
             {
                 s.ui_submitter->record(cmd, frame.extent);

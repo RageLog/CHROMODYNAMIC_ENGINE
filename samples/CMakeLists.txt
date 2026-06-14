@@ -48,5 +48,5 @@ if(CD_ENABLE_VULKAN)
   add_subdirectory(render)
   add_subdirectory(editor)
   add_subdirectory(engine)
-  add_subdirectory(ui)     # phase463 — ADR-20260530 Phase 1.5 hello_ui demo
+  add_subdirectory(ui)     # phase1177 — hello_ui folded into hello_engine "UI Widgets Demo"; tier now empty
 endif()

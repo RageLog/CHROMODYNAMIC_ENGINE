@@ -194,7 +194,7 @@ Built into `build/<preset>/bin/<Config>/hello_*`:
 | `hello_opengl`          | rhi      | OpenGL triangle + resource upload (consolidates 2 former samples) |
 | `hello_path_trace`      | rhi      | Vulkan ray-query path-tracer prototype |
 | `hello_triangle`        | rhi      | Vulkan dynamic-rendering minimal triangle |
-| `hello_ui`              | ui       | `cd::ui` + Dear ImGui layout demo |
+<!-- hello_ui removed phase1177: cd::ui Button/Slider/Label/Flex demo folded into hello_engine golden-gated "UI Widgets Demo" R-Showcase panel (re-uses the BehaviorDesigner Submitter overlay) -->
 | `bench_archetype`       | world    | ECS archetype storage throughput benchmark |
 
 ## Documentation

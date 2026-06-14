@@ -1,11 +1,12 @@
 # samples/ui — UI tier showcase samples (Vulkan-gated by the parent
-# samples/CMakeLists.txt). Phase 1.5 + partial Phase 2 of
-# ADR-20260530-ui-widget-library introduces hello_ui as the first
-# end-to-end demo wiring cd::ui_layout / ui_font / ui_renderer /
-# ui_renderer_rhi / ui_input / ui_widgets together.
+# samples/CMakeLists.txt).
 #
 # phase913-sample-consolidation: hello_widgets_table headless console
 # proof folded into engine/ui/widgets/tests/test_table.cpp (7 cases).
-# Source directory deleted. hello_ui is retained because it is the
-# canonical Vulkan visual demo for the entire cd::ui stack (category b).
-add_subdirectory(hello_ui)
+#
+# phase1177 — hello_ui fold (ADR-20260614 §3.4, Job C / samples≤10). The
+# canonical Vulkan visual demo for the cd::ui stack (Button / Slider /
+# Label / Flex layout) was folded into hello_engine as the golden-gated
+# "UI Widgets Demo" R-Showcase panel, re-using the BehaviorDesigner
+# Submitter overlay (Job A/B). The samples/ui/hello_ui source directory
+# was deleted. This tier currently hosts no standalone binaries.

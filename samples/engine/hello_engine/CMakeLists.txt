@@ -32,6 +32,10 @@ cd_add_sample(hello_engine
     # (verified in engine/ui/editor/panel_behavior_designer/CMakeLists.txt).
     cd::editor_panel_behavior_designer
     cd::ui_widgets
+    # phase1177 — hello_ui fold (ADR-20260614 §3.4, Job C). The folded
+    # hello_ui "UI Widgets Demo" panel uses the cd::ui_layout Flex solver
+    # for its Button/Slider/Label column tree (direct #include of Flex.hpp).
+    cd::ui_layout
     cd::ui_renderer_rhi
     cd::ui_font
     cd::ui_theme
