@@ -19,6 +19,11 @@
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 
+// D12 (phase1184): in-device GLSL/SPIR-V/HLSL → DXIL cross-compile.
+#include <cd/rhi/d3d12/D3D12ShaderToolchain.hpp>
+#include <cd/gluon/ModuleRegistry.hpp>
+#include <cd/shader/Compiler.hpp>
+
 #if defined(_WIN32)
     // Win32 platform headers first so D3D12 + DXGI macros resolve cleanly.
     // The samples already define WIN32_LEAN_AND_MEAN + NOMINMAX globally;
@@ -48,6 +53,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -888,6 +894,13 @@ public:
 
     // ---- Shader module (REAL — Phase 14.C v0.36.0) ------------------------
 
+    // D12 (phase1184) — route by source language. `kBytecode` (default)
+    // is the legacy pass-through: `code` is already DXIL/DXBC and is
+    // stored verbatim (byte-identical to the pre-D12 contract). `kGlsl`,
+    // `kSpirv`, `kHlsl` run the cross-compile toolchain
+    // (GLSL→SPIR-V→HLSL→DXIL) so the engine shader corpus produces DXIL
+    // here instead of relying on inline SM5.1 HLSL islands. All failures
+    // are typed errors — no crash, no silent empty module.
     [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle>
     create_shader_module(const cd::rhi::ShaderModuleDesc& desc) override
     {
@@ -895,13 +908,125 @@ public:
         {
             return std::unexpected(cd::rhi::rhi_errors::make(
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
-                "shader module: empty bytecode"));
+                "shader module: empty source/bytecode"));
         }
-        const auto* src = static_cast<const std::uint8_t*>(desc.code);
+
         ShaderModuleRecord rec;
-        rec.bytecode.assign(src, src + desc.code_size);
         rec.stage = desc.stage;
         rec.entry_point = std::string { desc.entry_point };
+
+        switch (desc.language)
+        {
+            case cd::rhi::ShaderSourceLanguage::kBytecode:
+            {
+                // Native DXIL/DXBC — consume verbatim.
+                const auto* src = static_cast<const std::uint8_t*>(desc.code);
+                rec.bytecode.assign(src, src + desc.code_size);
+                break;
+            }
+            case cd::rhi::ShaderSourceLanguage::kGlsl:
+            {
+                auto* compiler = glsl_compiler();
+                if (compiler == nullptr)
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        "shader module: GLSL requested but the glslang "
+                        "front-end is unavailable (CD_ENABLE_GLSLANG=OFF)"));
+                }
+                // ADR-20260614 consumer-resolver pattern: a null
+                // include_resolver bridges to the embedded cd::gluon module
+                // catalogue via a FUNCTION-LOCAL stateless resolver (not
+                // static / member / global — §2.2). When the caller injects
+                // a resolver we respect it (§2.3). The resolver must outlive
+                // the compile() call inside compile_glsl_to_dxil, so it is
+                // declared here and kept in scope for the whole branch.
+                cd::gluon::ModuleResolver default_resolver {};
+                auto* injected = static_cast<cd::shader::IIncludeResolver*>(
+                    desc.include_resolver);
+                cd::rhi::d3d12::GlslToDxilDesc gd {};
+                gd.glsl_source = std::string_view {
+                    static_cast<const char*>(desc.code),
+                    static_cast<std::size_t>(desc.code_size) };
+                gd.stage = desc.stage;
+                gd.entry_point = desc.entry_point;
+                gd.source_name = desc.debug_name.empty()
+                                     ? std::string_view { "<inline>" }
+                                     : desc.debug_name;
+                gd.include_resolver =
+                    injected != nullptr ? injected : &default_resolver;
+                auto dxil = cd::rhi::d3d12::compile_glsl_to_dxil(*compiler, gd);
+                if (!dxil.has_value())
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        std::string { "shader module (GLSL→DXIL): " } +
+                            std::string { dxil.error().message }));
+                }
+                rec.bytecode = std::move(*dxil);
+                break;
+            }
+            case cd::rhi::ShaderSourceLanguage::kSpirv:
+            {
+                if ((desc.code_size % 4) != 0)
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kInvalidArgument,
+                        "shader module: SPIR-V code must be 32-bit aligned"));
+                }
+                const std::span<const std::uint32_t> words {
+                    static_cast<const std::uint32_t*>(desc.code),
+                    static_cast<std::size_t>(desc.code_size / 4) };
+                cd::rhi::d3d12::GlslToDxilDesc gd {};
+                gd.stage = desc.stage;
+                gd.entry_point = desc.entry_point;
+                gd.source_name = desc.debug_name.empty()
+                                     ? std::string_view { "<inline>" }
+                                     : desc.debug_name;
+                auto dxil = cd::rhi::d3d12::compile_spirv_to_dxil(words, gd);
+                if (!dxil.has_value())
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        std::string { "shader module (SPIR-V→DXIL): " } +
+                            std::string { dxil.error().message }));
+                }
+                rec.bytecode = std::move(*dxil);
+                break;
+            }
+            case cd::rhi::ShaderSourceLanguage::kHlsl:
+            {
+                cd::rhi::d3d12::CompileOptions co {};
+                co.source = std::string_view {
+                    static_cast<const char*>(desc.code),
+                    static_cast<std::size_t>(desc.code_size) };
+                co.entry_point = desc.entry_point;
+                co.stage = desc.stage;
+                co.source_name = desc.debug_name.empty()
+                                     ? std::string_view { "<inline>" }
+                                     : desc.debug_name;
+                co.optimization_level = 3u;
+                co.model = cd::rhi::d3d12::ShaderModel::kSM6_5;
+                auto dxil = cd::rhi::d3d12::compile_hlsl(co);
+                if (!dxil.has_value())
+                {
+                    return std::unexpected(cd::rhi::rhi_errors::make(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        std::string { "shader module (HLSL→DXIL): " } +
+                            std::string { dxil.error().message }));
+                }
+                rec.bytecode = std::move(*dxil);
+                break;
+            }
+        }
+
+        if (rec.bytecode.empty())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "shader module: cross-compile produced empty DXIL"));
+        }
+
         const auto id = next_id_++;
         shader_modules_.emplace(id, std::move(rec));
         return cd::rhi::ShaderModuleHandle { id, 1u };
@@ -3476,6 +3601,22 @@ private:
         UINT                                group_handle_size { 32u };
     };
     std::unordered_map<std::uint32_t, RtPipelineRecord> rt_pipelines_;
+
+    // D12 (phase1184) — lazily-created glslang front-end for the in-device
+    // GLSL → SPIR-V → HLSL → DXIL cross-compile path. Built on first GLSL
+    // create_shader_module and reused (so the SPIR-V half is amortised).
+    // Null when CD_ENABLE_GLSLANG=OFF — a GLSL request then returns a typed
+    // kBackendUnavailable error instead of crashing.
+    std::unique_ptr<cd::shader::ICompiler> glsl_compiler_;
+
+    /// Return the cached glslang compiler, building it on first use. May
+    /// return nullptr (glslang backend not compiled in).
+    [[nodiscard]] cd::shader::ICompiler* glsl_compiler()
+    {
+        if (glsl_compiler_ == nullptr)
+            glsl_compiler_ = cd::shader::make_glslang_compiler();
+        return glsl_compiler_.get();
+    }
 
 public:
     // Phase 142 step 3 — AccelRecord accessor for D3D12CommandBuffer.

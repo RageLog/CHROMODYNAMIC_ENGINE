@@ -180,6 +180,29 @@ enum class ShaderStage : std::uint32_t
     kAllGraphics = kVertex | kFragment | kGeometry | kTessControl | kTessEval,
 };
 
+// ---- Shader source language (D12, phase1184) ------------------------------
+//
+// Describes what `ShaderModuleDesc::code` actually contains, so a backend's
+// `create_shader_module` can route it through the right (cross-)compile
+// path. `kBytecode` (the default) is the legacy contract: `code` is already
+// the backend's native binary — SPIR-V words for Vulkan, DXIL/DXBC for
+// D3D12 — and is consumed verbatim (no recompilation, byte-identical to the
+// pre-D12 behaviour). The non-default values let a caller hand the device a
+// *source* blob and ask the backend to cross-compile to its native binary
+// (e.g. the engine GLSL corpus → DXIL on D3D12 via SPIR-V→HLSL→DXIL).
+//
+// Not every backend implements every language: a backend that cannot
+// cross-compile a given language returns a typed error from
+// `create_shader_module` rather than crashing or silently producing an
+// empty module.
+enum class ShaderSourceLanguage : std::uint8_t
+{
+    kBytecode = 0,  ///< Native binary (SPIR-V on Vulkan, DXIL/DXBC on D3D12) — pass-through.
+    kGlsl,          ///< Vulkan-style GLSL source (the engine corpus). cd::gluon #includes resolve.
+    kSpirv,         ///< SPIR-V words presented as a source to be re-targeted (D3D12: SPIR-V→HLSL→DXIL).
+    kHlsl,          ///< HLSL source (D3D12 only) compiled straight through DXC.
+};
+
 // ---- Resource usage flags -------------------------------------------------
 
 enum class BufferUsage : std::uint32_t

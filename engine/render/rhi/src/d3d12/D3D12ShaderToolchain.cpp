@@ -69,6 +69,43 @@ namespace
         std::move(msg));
 }
 
+#if defined(_WIN32)
+/// Shared Stage 2 (SPIR-V → HLSL via SPIRV-Cross) + Stage 3 (HLSL → DXIL
+/// via DXC) used by both the GLSL and SPIR-V entry points. `desc.model`
+/// must already be validated as non-kSM5_1 by the caller.
+[[nodiscard]] cd::core::Result<std::vector<std::uint8_t>>
+spirv_to_dxil_tail(std::span<const std::uint32_t> spirv, const GlslToDxilDesc& desc)
+{
+    // ---- Stage 2: SPIR-V → HLSL (SPIRV-Cross; exceptions are contained
+    // inside translate() per Translate.hpp) -----------------------------------
+    const auto hlsl = cd::spirv_cross_glue::translate(
+        spirv, cd::spirv_cross_glue::Target::kHlsl,
+        hlsl_version_for(desc.model));
+    if (!hlsl.ok())
+    {
+        return std::unexpected(prefixed("spirv-cross", hlsl.error,
+                                        shader_errors::Code::kCompileFailed));
+    }
+
+    // ---- Stage 3: HLSL → DXIL (DXC) -----------------------------------------
+    CompileOptions co {};
+    co.source = hlsl.source;
+    co.entry_point = desc.entry_point;
+    co.stage = desc.stage;
+    co.source_name = desc.source_name;
+    co.optimization_level = desc.optimization_level;
+    co.model = desc.model;
+    auto dxil = compile_hlsl(co);
+    if (!dxil.has_value())
+    {
+        return std::unexpected(prefixed("dxc", dxil.error().message,
+                                        static_cast<shader_errors::Code>(
+                                            dxil.error().code)));
+    }
+    return dxil;
+}
+#endif  // _WIN32
+
 }  // namespace
 
 cd::core::Result<std::vector<std::uint8_t>>
@@ -115,33 +152,38 @@ compile_glsl_to_dxil(cd::shader::ICompiler& spirv_compiler,
                                         shader_errors::Code::kCompileFailed));
     }
 
-    // ---- Stage 2: SPIR-V → HLSL (SPIRV-Cross; exceptions are contained
-    // inside translate() per Translate.hpp) -----------------------------------
-    const auto hlsl = cd::spirv_cross_glue::translate(
-        spirv_r->spirv, cd::spirv_cross_glue::Target::kHlsl,
-        hlsl_version_for(desc.model));
-    if (!hlsl.ok())
-    {
-        return std::unexpected(prefixed("spirv-cross", hlsl.error,
-                                        shader_errors::Code::kCompileFailed));
-    }
+    // ---- Stage 2 (SPIRV-Cross) + Stage 3 (DXC) ------------------------------
+    return spirv_to_dxil_tail(spirv_r->spirv, desc);
+#endif
+}
 
-    // ---- Stage 3: HLSL → DXIL (DXC) -----------------------------------------
-    CompileOptions co {};
-    co.source = hlsl.source;
-    co.entry_point = desc.entry_point;
-    co.stage = desc.stage;
-    co.source_name = desc.source_name;
-    co.optimization_level = desc.optimization_level;
-    co.model = desc.model;
-    auto dxil = compile_hlsl(co);
-    if (!dxil.has_value())
+cd::core::Result<std::vector<std::uint8_t>>
+compile_spirv_to_dxil(std::span<const std::uint32_t> spirv,
+                      const GlslToDxilDesc& desc)
+{
+#if !defined(_WIN32)
+    (void)spirv;
+    (void)desc;
+    return std::unexpected(shader_errors::make(
+        shader_errors::Code::kBackendUnavailable,
+        "compile_spirv_to_dxil: non-Windows build"));
+#else
+    if (spirv.empty())
     {
-        return std::unexpected(prefixed("dxc", dxil.error().message,
-                                        static_cast<shader_errors::Code>(
-                                            dxil.error().code)));
+        return std::unexpected(shader_errors::make(
+            shader_errors::Code::kCompileFailed,
+            "compile_spirv_to_dxil: empty SPIR-V module"));
     }
-    return dxil;
+    if (desc.model == ShaderModel::kSM5_1)
+    {
+        // ADR §2.4: the SPIRV-Cross tail is SM6-only — same gate as the
+        // GLSL entry point.
+        return std::unexpected(shader_errors::make(
+            shader_errors::Code::kUnsupportedStage,
+            "compile_spirv_to_dxil: kSM5_1 is invalid on the SPIR-V chain "
+            "(use compile_hlsl directly for legacy SM5.1)"));
+    }
+    return spirv_to_dxil_tail(spirv, desc);
 #endif
 }
 

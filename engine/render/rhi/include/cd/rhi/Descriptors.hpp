@@ -136,6 +136,21 @@ struct ShaderModuleDesc
     std::uint64_t code_size { 0 };
     std::string_view entry_point { "main" };
     std::string_view debug_name {};
+
+    // ---- D12 (phase1184): in-device cross-compile routing ----------------
+    /// What `code` contains. `kBytecode` (default) preserves the legacy
+    /// contract — `code` is the backend's native binary and is consumed
+    /// verbatim. Non-default values ask the backend to cross-compile the
+    /// supplied *source* to its native binary (e.g. GLSL → DXIL on D3D12).
+    ShaderSourceLanguage language { ShaderSourceLanguage::kBytecode };
+    /// Optional, non-owning `cd::shader::IIncludeResolver*` forwarded to the
+    /// GLSL front-end when `language == kGlsl`. Typed `void*` so the RHI
+    /// interface library stays free of a `cd::shader` dependency; the
+    /// backend `static_cast`s it back. Null → the backend falls back to a
+    /// function-local `cd::gluon::ModuleResolver` (ADR-20260614 consumer
+    /// pattern) so `#include <cd/gluon/*.glsl>` resolves against the
+    /// embedded module catalogue.
+    void* include_resolver { nullptr };
 };
 
 struct VertexAttribute

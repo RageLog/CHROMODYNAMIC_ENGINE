@@ -38,6 +38,10 @@ cd_add_library(rhi_d3d12
     src/d3d12/D3D12ShaderCompile.cpp
     src/d3d12/D3D12ShaderToolchain.cpp  # phase1141 X4-C1: GLSL->SPIR-V->HLSL->DXIL chain
   PUBLIC_DEPS cd::core cd::rhi cd::shader cd::spirv_cross_glue
+  # D12 (phase1184): create_shader_module resolves #include <cd/gluon/*.glsl>
+  # on the GLSL path via a function-local ModuleResolver (ADR-20260614).
+  # PRIVATE — only the .cpp compile branch names the gluon type.
+  PRIVATE_DEPS cd::gluon
 )
 
 # Windows-only link path. System SDK provides d3d12/dxgi/dxguid/d3dcompiler/dxcompiler.

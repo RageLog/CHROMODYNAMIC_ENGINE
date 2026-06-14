@@ -25,6 +25,7 @@
 #include <cd/shader/Compiler.hpp>
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -52,5 +53,15 @@ struct GlslToDxilDesc
 [[nodiscard]] cd::core::Result<std::vector<std::uint8_t>>
 compile_glsl_to_dxil(cd::shader::ICompiler& spirv_compiler,
                      const GlslToDxilDesc& desc);
+
+/// SPIR-V → HLSL(SM6.x) → DXIL tail of the chain — the same Stage 2 + 3 as
+/// `compile_glsl_to_dxil`, but starting from a pre-built SPIR-V module
+/// instead of GLSL source. Used by the D3D12 `create_shader_module` path
+/// when a caller hands the device SPIR-V words (`ShaderSourceLanguage::
+/// kSpirv`). `kSM5_1` is rejected (SM6-only chain), mirroring the GLSL
+/// entry point. Stage-prefixed error chaining is preserved.
+[[nodiscard]] cd::core::Result<std::vector<std::uint8_t>>
+compile_spirv_to_dxil(std::span<const std::uint32_t> spirv,
+                      const GlslToDxilDesc& desc);
 
 }  // namespace cd::rhi::d3d12
