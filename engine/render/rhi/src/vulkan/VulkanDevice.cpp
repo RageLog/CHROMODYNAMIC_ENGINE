@@ -724,7 +724,7 @@ public:
         std::filesystem::create_directories(path.parent_path(), ec);
         // Write to a tmp file and rename so a concurrent reader never sees a
         // half-written cache (driver would reject it on next load).
-        const auto tmp = path;
+        const auto& tmp = path;
         const auto tmp_path = std::filesystem::path { path.string() + ".tmp" };
         {
             std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
@@ -3669,7 +3669,7 @@ public:
             for (const auto& inst : desc.instances)
             {
                 if (!inst.blas.is_valid() ||
-                    accels_.find(inst.blas.index()) == accels_.end())
+                    !accels_.contains(inst.blas.index()))
                 {
                     return std::unexpected(cd::rhi::rhi_errors::make(
                         cd::rhi::rhi_errors::Code::kInvalidArgument,
