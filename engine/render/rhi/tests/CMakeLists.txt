@@ -134,3 +134,27 @@ cd_add_test(parallel_recorder
   SOURCES test_parallel_recorder.cpp
   DEPS    cd::rhi cd::core
 )
+
+# phase1186 (D3 + D5): D3D12 begin_render_pass depth/MRT + PSO depth-compare
+# GPU smokes. Builds GLSL through the device DXIL path (so it needs the same
+# dxcompiler.dll/dxil.dll runtime as the toolchain test) and runs a real
+# render+readback on WARP. SKIPs cleanly when no D3D12 adapter or no DXC DLL.
+if(WIN32)
+  cd_add_test(d3d12_depth_mrt
+    SOURCES test_d3d12_depth_mrt.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_dm_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_dm_list)
+  if(_cd_dxc_dm_list AND TARGET cd_test_d3d12_depth_mrt)
+    list(POP_BACK _cd_dxc_dm_list _cd_dxc_dm_dll)
+    get_filename_component(_cd_dxc_dm_dir "${_cd_dxc_dm_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_depth_mrt POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_dm_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_depth_mrt>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_dm_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_depth_mrt>")
+  endif()
+endif()

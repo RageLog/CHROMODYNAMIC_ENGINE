@@ -50,6 +50,7 @@
     #include <dxgidebug.h>
 #endif
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -103,6 +104,69 @@ class D3D12CommandBuffer;
         case F::kD24UnormS8Uint: return DXGI_FORMAT_D24_UNORM_S8_UINT;
         default:              return DXGI_FORMAT_UNKNOWN;
     }
+}
+
+// D3 (phase1186): true when a DSV format carries a stencil aspect, so
+// begin_render_pass only raises D3D12_CLEAR_FLAG_STENCIL on formats that
+// actually have stencil bits (clearing stencil on a depth-only format is a
+// debug-layer error).
+[[nodiscard]] bool dsv_format_has_stencil(DXGI_FORMAT f) noexcept
+{
+    switch (f)
+    {
+        case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// D5 (phase1186): translate the engine CompareOp into a D3D12 comparison
+// function for the PSO depth/stencil state. Mirrors the Vulkan map_compare
+// used by the reference backend so the depth-test semantics are identical.
+[[nodiscard]] D3D12_COMPARISON_FUNC
+to_d3d12_compare_func(cd::rhi::CompareOp op) noexcept
+{
+    using C = cd::rhi::CompareOp;
+    switch (op)
+    {
+        case C::kNever:        return D3D12_COMPARISON_FUNC_NEVER;
+        case C::kLess:         return D3D12_COMPARISON_FUNC_LESS;
+        case C::kEqual:        return D3D12_COMPARISON_FUNC_EQUAL;
+        case C::kLessEqual:    return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        case C::kGreater:      return D3D12_COMPARISON_FUNC_GREATER;
+        case C::kNotEqual:     return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+        case C::kGreaterEqual: return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+        case C::kAlways:       return D3D12_COMPARISON_FUNC_ALWAYS;
+    }
+    return D3D12_COMPARISON_FUNC_LESS;
+}
+
+// D5 (phase1186): set StencilEnable + front/back StencilOpDesc on a
+// D3D12_DEPTH_STENCIL_DESC. The engine `DepthStencilState` currently carries
+// only a `stencil_test` toggle (no per-face fail/depthFail/pass ops, func, or
+// read/write masks) — exactly like the Vulkan reference, whose
+// VkPipelineDepthStencilStateCreateInfo leaves `.front = {}` / `.back = {}`
+// zero. D3D12 stencil-op enums start at 1 (0 is invalid), so when stencil is
+// enabled we install valid pass-through defaults (KEEP / ALWAYS + the D3D12
+// default read/write masks) rather than the all-zero Vulkan layout. When the
+// engine surface grows per-face StencilOpState fields this is the single
+// translation point that consumes them.
+inline void fill_d3d12_stencil_state(D3D12_DEPTH_STENCIL_DESC& ds,
+                                     bool stencil_test) noexcept
+{
+    ds.StencilEnable = stencil_test ? TRUE : FALSE;
+    ds.StencilReadMask  = D3D12_DEFAULT_STENCIL_READ_MASK;
+    ds.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    const D3D12_DEPTH_STENCILOP_DESC op {
+        .StencilFailOp      = D3D12_STENCIL_OP_KEEP,
+        .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
+        .StencilPassOp      = D3D12_STENCIL_OP_KEEP,
+        .StencilFunc        = D3D12_COMPARISON_FUNC_ALWAYS,
+    };
+    ds.FrontFace = op;
+    ds.BackFace  = op;
 }
 
 // Pick the D3D12 heap type from the engine's MemoryUsage hint.
@@ -1379,13 +1443,16 @@ public:
 
         // Depth-stencil. Disabled by default for hello_d3d12_triangle —
         // the depth_attachment_format == kUndefined branch reflects that.
+        // D5 (phase1186): translate the engine DepthStencilState — DepthFunc
+        // from the compare op (was hardcoded LESS) and StencilEnable from
+        // stencil_test (was hardcoded FALSE). Mirrors the Vulkan reference.
         D3D12_DEPTH_STENCIL_DESC ds {};
         ds.DepthEnable = (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
             && desc.depth_stencil.depth_test;
         ds.DepthWriteMask = desc.depth_stencil.depth_write
             ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-        ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-        ds.StencilEnable = FALSE;
+        ds.DepthFunc = to_d3d12_compare_func(desc.depth_stencil.depth_compare);
+        fill_d3d12_stencil_state(ds, desc.depth_stencil.stencil_test);
         psd.DepthStencilState = ds;
 
         psd.SampleMask = UINT_MAX;
@@ -1601,14 +1668,15 @@ public:
             rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
         }
 
-        // Depth-stencil
+        // Depth-stencil. D5 (phase1186): DepthFunc from compare op +
+        // StencilEnable from stencil_test (was hardcoded LESS / FALSE).
         D3D12_DEPTH_STENCIL_DESC ds {};
         ds.DepthEnable = (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
             && desc.depth_stencil.depth_test;
         ds.DepthWriteMask = desc.depth_stencil.depth_write
             ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-        ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-        ds.StencilEnable = FALSE;
+        ds.DepthFunc = to_d3d12_compare_func(desc.depth_stencil.depth_compare);
+        fill_d3d12_stencil_state(ds, desc.depth_stencil.stencil_test);
 
         // Color formats
         D3D12_RT_FORMAT_ARRAY rtfmts {};
@@ -3874,36 +3942,111 @@ public:
 
     void begin_render_pass(const cd::rhi::RenderPassBeginInfo& info) override
     {
-        if (info.color_attachments.empty())
-            return;
-        const auto& a = info.color_attachments.front();
-        target_view_ = a.view;
-        if (auto* vrec = owner_->find_texture_view(a.view))
+        // D3 (phase1186): bind ALL color attachments + the optional depth
+        // attachment, honouring each load-op — matching the Vulkan dynamic-
+        // rendering reference (VulkanCommandBuffer::begin_rendering_). MRT
+        // (count > 1) and depth testing both flow through here now; the
+        // legacy single-RTV / null-DSV path is gone.
+        //
+        // Like the Vulkan path the *caller* owns most layout transitions via
+        // explicit barrier() calls; we keep the historical implicit
+        // COMMON/PRESENT -> RENDER_TARGET (and -> DEPTH_WRITE) transition for
+        // the swapchain present path that hello_engine relies on, guarded so
+        // it is a no-op when the resource is already in the right state.
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 8> rtvs {};
+        UINT rtv_count = 0;
+
+        for (const auto& a : info.color_attachments)
         {
-            target_texture_ = vrec->parent;
-            if (auto* trec = owner_->find_texture(vrec->parent))
+            if (rtv_count >= rtvs.size())
+                break;  // D3D12 caps simultaneous render targets at 8.
+            auto* vrec = owner_->find_texture_view(a.view);
+            if (vrec == nullptr)
+                continue;
+            auto* trec = owner_->find_texture(vrec->parent);
+            if (trec == nullptr)
+                continue;
+
+            // The first color attachment is the "primary" slot the present
+            // path in end() reads back for the RENDER_TARGET -> PRESENT
+            // transition (swapchain image).
+            if (rtv_count == 0)
             {
-                // Transition into RENDER_TARGET if not already there.
-                if (trec->state != D3D12_RESOURCE_STATE_RENDER_TARGET)
+                target_view_    = a.view;
+                target_texture_ = vrec->parent;
+            }
+
+            if (trec->state != D3D12_RESOURCE_STATE_RENDER_TARGET)
+            {
+                D3D12_RESOURCE_BARRIER bar {};
+                bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                bar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                bar.Transition.pResource = trec->resource.Get();
+                bar.Transition.StateBefore = trec->state;
+                bar.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list_->ResourceBarrier(1, &bar);
+                trec->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            }
+
+            const D3D12_CPU_DESCRIPTOR_HANDLE rtv = vrec->rtv_cpu;
+            rtvs[rtv_count] = rtv;
+            ++rtv_count;
+            if (a.load_op == cd::rhi::LoadOp::kClear)
+                list_->ClearRenderTargetView(rtv, a.clear_color.f32, 0, nullptr);
+        }
+
+        // Depth-stencil attachment (optional). The DSV CPU handle lives in
+        // the view record's rtv_cpu slot (create_texture_view's is_depth
+        // branch reuses that field). A null DSV is bound only when there is
+        // genuinely no depth attachment.
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv {};
+        bool has_dsv = false;
+        if (info.depth_stencil != nullptr)
+        {
+            if (auto* dview = owner_->find_texture_view(info.depth_stencil->view))
+            {
+                if (auto* dtex = owner_->find_texture(dview->parent))
                 {
-                    D3D12_RESOURCE_BARRIER bar {};
-                    bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    bar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                    bar.Transition.pResource = trec->resource.Get();
-                    bar.Transition.StateBefore = trec->state;
-                    bar.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                    bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    list_->ResourceBarrier(1, &bar);
-                    trec->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                }
-                const D3D12_CPU_DESCRIPTOR_HANDLE rtv = vrec->rtv_cpu;
-                list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-                if (a.load_op == cd::rhi::LoadOp::kClear)
-                {
-                    list_->ClearRenderTargetView(rtv, a.clear_color.f32, 0, nullptr);
+                    if (dtex->state != D3D12_RESOURCE_STATE_DEPTH_WRITE)
+                    {
+                        D3D12_RESOURCE_BARRIER bar {};
+                        bar.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        bar.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                        bar.Transition.pResource = dtex->resource.Get();
+                        bar.Transition.StateBefore = dtex->state;
+                        bar.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                        bar.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                        list_->ResourceBarrier(1, &bar);
+                        dtex->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                    }
+                    dsv = dview->rtv_cpu;
+                    has_dsv = true;
+
+                    // Clear flags: depth and/or stencil, per the per-aspect
+                    // load-op. Stencil clear only fires for formats that
+                    // carry a stencil aspect.
+                    D3D12_CLEAR_FLAGS clear_flags {};
+                    if (info.depth_stencil->depth_load == cd::rhi::LoadOp::kClear)
+                        clear_flags |= D3D12_CLEAR_FLAG_DEPTH;
+                    if (info.depth_stencil->stencil_load == cd::rhi::LoadOp::kClear &&
+                        dsv_format_has_stencil(dtex->format))
+                        clear_flags |= D3D12_CLEAR_FLAG_STENCIL;
+                    if (clear_flags != 0)
+                    {
+                        list_->ClearDepthStencilView(
+                            dsv, clear_flags,
+                            info.depth_stencil->clear.depth,
+                            static_cast<UINT8>(info.depth_stencil->clear.stencil),
+                            0, nullptr);
+                    }
                 }
             }
         }
+
+        list_->OMSetRenderTargets(
+            rtv_count, rtv_count > 0 ? rtvs.data() : nullptr,
+            FALSE, has_dsv ? &dsv : nullptr);
     }
     void end_render_pass() override {}
 
