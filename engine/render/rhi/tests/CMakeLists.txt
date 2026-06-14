@@ -92,6 +92,42 @@ if(WIN32)
   endif()
 endif()
 
+# ADR-20260614-d3d12-binding-model: DXIL-reflection verification of the
+# space-per-set + push_constant remap. Compiles an engine-style GLSL with a
+# set-0 resource, a set-1 bindless resource, and a push_constant block through
+# the GLSL->SPIR-V->HLSL->DXIL chain, then reflects the DXIL (no GPU) to assert
+# each binding lands at the register+space the D3D12 root signature declares.
+if(WIN32)
+  cd_add_test(d3d12_binding_reflection
+    SOURCES test_d3d12_binding_reflection.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::spirv_cross_glue cd::rhi cd::core
+  )
+  # cd::rhi_d3d12 links d3d12/dxcompiler/dxguid PRIVATE, so the symbols don't
+  # propagate to this test. It calls DxcCreateInstance + IID_PPV_ARGS for
+  # ID3D12ShaderReflection directly, plus D3D12SerializeRootSignature +
+  # D3D12CreateRootSignatureDeserializer (root-sig SIDE bindless-range check),
+  # so link the SDK import libs explicitly.
+  if(TARGET cd_test_d3d12_binding_reflection)
+    target_link_libraries(cd_test_d3d12_binding_reflection PRIVATE d3d12 dxcompiler dxguid)
+  endif()
+  # Same DXC runtime dependency as the toolchain test: copy dxcompiler.dll +
+  # dxil.dll next to the binary so DxcCreateInstance / CreateReflection resolve
+  # at LOAD time (a missing DLL pops a modal dialog and hangs ctest).
+  file(GLOB _cd_dxc_refl_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_refl_list)
+  if(_cd_dxc_refl_list)
+    list(POP_BACK _cd_dxc_refl_list _cd_dxc_refl_dll)
+    get_filename_component(_cd_dxc_refl_dir "${_cd_dxc_refl_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_binding_reflection POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_refl_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_binding_reflection>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_refl_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_binding_reflection>")
+  endif()
+endif()
+
 # phase1115 (X1-FU-F step 1) — IDrawRecorder split + parallel-pass
 # recorder contract pins on the Null reference implementation.
 cd_add_test(parallel_recorder

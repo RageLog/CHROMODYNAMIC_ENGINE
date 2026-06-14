@@ -83,8 +83,50 @@ constexpr std::uint32_t kDefaultMslVersion  = 20200U;  // MSL 2.2
         spirv_cross::CompilerHLSL::Options hlsl_opts {};
         // shader_model is expressed as major*10 + minor in SPIRV-Cross options.
         // Default: SM 6.0 → 60. If caller passes e.g. 51 → SM 5.1.
-        hlsl_opts.shader_model = static_cast<std::uint32_t>((version == 0U) ? kDefaultHlslVersion : version);
+        const auto sm =
+            static_cast<std::uint32_t>((version == 0U) ? kDefaultHlslVersion : version);
+        hlsl_opts.shader_model = sm;
         compiler.set_hlsl_options(hlsl_opts);
+
+        // ---- D3D12 binding model: space-per-set + explicit push_constant remap
+        // (ADR-20260614-d3d12-binding-model). On SM>=51 SPIRV-Cross already
+        // emits resource bindings as `register(<class>M, spaceN)` where N is the
+        // Vulkan descriptor-set index and M the binding index — matching the
+        // D3D12 root signature's per-set table layout (space N). So NO resource
+        // remap is needed here.
+        //
+        // The push_constant block, however, is emitted register-LESS by default
+        // (its desc_set == ResourceBindingPushConstantDescriptorSet == ~0u), so
+        // DXC auto-assigns it b0/space0 — which both collides with the set-0 CBV
+        // b0 and misses the root signature's root-constant slot at b0/space1.
+        // Force it onto b0/space1 via a RootConstants layout that spans the
+        // declared push_constant struct size (the same byte range the D3D12 root
+        // signature derives for its 32-bit-constants slot).
+        if (sm >= 51U)
+        {
+            const spirv_cross::ShaderResources res = compiler.get_shader_resources();
+            if (!res.push_constant_buffers.empty())
+            {
+                const spirv_cross::Resource& pc = res.push_constant_buffers.front();
+                const std::size_t struct_size =
+                    compiler.get_declared_struct_size(compiler.get_type(pc.base_type_id));
+                // RootConstants byte range must be a multiple of 4 (SPIRV-Cross
+                // contract). push_constant blocks are always 4-byte aligned, but
+                // round up defensively so a partial trailing word is covered.
+                const std::uint32_t end =
+                    (static_cast<std::uint32_t>(struct_size) + 3U) & ~3U;
+                if (end > 0U)
+                {
+                    std::vector<spirv_cross::RootConstants> rc(1);
+                    rc[0].start   = 0U;
+                    rc[0].end     = end;
+                    rc[0].binding = 0U;   // b0
+                    rc[0].space   = 1U;   // space1 (matches root sig 32-bit-constants slot)
+                    compiler.set_root_constant_layouts(std::move(rc));
+                }
+            }
+        }
+
         return TranslateResult { compiler.compile(), {} };
     }
     catch (const std::exception& ex)

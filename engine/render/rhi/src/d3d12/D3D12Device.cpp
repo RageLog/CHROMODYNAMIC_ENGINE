@@ -1080,6 +1080,13 @@ public:
         std::vector<std::uint32_t> table_params;
         table_params.reserve(desc.set_layouts.size());
 
+        // ADR-20260614-d3d12-binding-model: space-per-set. The N-th descriptor
+        // set layout maps to HLSL register space N — matching the SPIRV-Cross
+        // SM>=51 default (`register(<class>M, spaceN)`, N = Vulkan set index).
+        // Previously every range was hardcoded to space0, which silently
+        // mis-bound the dedicated bindless set (set 1 -> space1 in the shader).
+        std::uint32_t set_space = 0;
+
         for (const auto h : desc.set_layouts)
         {
             auto it = descriptor_set_layouts_.find(h.index());
@@ -1109,11 +1116,22 @@ public:
                     case cd::rhi::DescriptorType::kCombinedImageSampler:
                     case cd::rhi::DescriptorType::kInputAttachment:
                     case cd::rhi::DescriptorType::kAccelerationStructure:
+                    case cd::rhi::DescriptorType::kBindlessSampledImage:
                         // DXR exposes acceleration structures as SRVs of
                         // a special RAYTRACING_ACCELERATION_STRUCTURE
                         // type. The root-signature range slot is plain
                         // SRV; the descriptor-write side fills in the
                         // RAYTRACING_ACCELERATION_STRUCTURE SRV desc.
+                        //
+                        // ADR-20260614-d3d12-binding-model / B1b: the engine's
+                        // dedicated bindless set (MEMORY rule 9 — set 1) declares
+                        // a `kBindlessSampledImage` array. SPIRV-Cross emits it as
+                        // `Texture2D ... : register(t<binding>, space<set>)`, so
+                        // it MUST land on an SRV range or the whole set-1 table is
+                        // dropped from the root signature → silent unbound at
+                        // space1 (the shader's `register(t0, space1)` has no table).
+                        // The unbounded NumDescriptors override below mirrors the
+                        // Vulkan VARIABLE_DESCRIPTOR_COUNT / PARTIALLY_BOUND set.
                         r.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
                         break;
                     case cd::rhi::DescriptorType::kStorageImage:
@@ -1123,13 +1141,32 @@ public:
                         break;
                     default: continue;
                 }
-                r.NumDescriptors = b.count;
+                // Bindless arrays are declared UNBOUNDED. NumDescriptors ==
+                // UINT_MAX is the D3D12 sentinel for an unbounded descriptor
+                // range; combined with SM5.1+ dynamic indexing it matches the
+                // Vulkan bindless set's runtime sizing. Root-signature v1.0
+                // ranges behave as fully DESCRIPTORS_VOLATILE | DATA_VOLATILE,
+                // which is exactly the dynamic-indexing semantics SM6.x needs
+                // here, so no v1.1 range-flags migration is required for the
+                // declaration to be CONSISTENT with the SPIRV-Cross emission.
+                // (Runtime heap writes — write_bindless_texture_slot /
+                // features().bindless_resources — are roadmap item D10 and are
+                // intentionally NOT wired here.)
+                r.NumDescriptors = (b.type ==
+                    cd::rhi::DescriptorType::kBindlessSampledImage)
+                    ? UINT_MAX : b.count;
                 r.BaseShaderRegister = b.binding;
-                r.RegisterSpace = 0;
+                r.RegisterSpace = set_space;  // space N = N-th descriptor set
                 r.OffsetInDescriptorsFromTableStart =
                     D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
                 ranges.push_back(r);
             }
+            // Advance the register space for the NEXT descriptor set. The
+            // Vulkan side binds set_layouts in order, so the space index must
+            // equal the set ordinal even when a (sampler-only) layout produces
+            // no CBV/SRV/UAV ranges — hence the increment lives before the
+            // early-out below, not at the bottom of the loop.
+            ++set_space;
             if (ranges.empty())
             {
                 // Edge case: layout has nothing but samplers. Skip the
