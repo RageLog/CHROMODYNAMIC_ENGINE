@@ -5355,6 +5355,17 @@ struct HelloEngineApp::EngineState
     bool                                     needs_rebuild      { false };
     std::uint32_t                            frame_idx          { 0 };
 
+    // phase1178 — cd::ui InputState wiring (pointer flatten for overlay panels).
+    // Updated each frame in the event loop from platform OSEvents so the
+    // overlay record block (gated by !kHideEditorUiForGolden) can build a
+    // real InputState for uiw_btn/uiw_sld tick(). Golden-neutral: these
+    // fields are only USED inside the golden gate; mutation in the event loop
+    // is always safe (values don't affect rendered pixels when the gate is off).
+    float                                    ui_mouse_x         { 0.0F };
+    float                                    ui_mouse_y         { 0.0F };
+    bool                                     ui_lmb_down        { false };
+    bool                                     ui_lmb_prev_down   { false };
+
     explicit EngineState()
         : streamer(
             [this](cd::asset::AssetId id) -> bool
@@ -6143,10 +6154,17 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                     s.app_state.pick.x = ev.mouse_x;
                     s.app_state.pick.y = ev.mouse_y;
                 }
+                // phase1178: track LMB down for cd::ui InputState flatten.
+                if (ev.mouse_button == cd::platform::MouseButton::kLeft)
+                    s.ui_lmb_down = true;
             }
             if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
                 ev.mouse_button == cd::platform::MouseButton::kRight)
                 fl.right_drag = false;
+            // phase1178: track LMB up for cd::ui InputState flatten.
+            if (ev.kind == cd::platform::OSEventKind::kMouseButtonUp &&
+                ev.mouse_button == cd::platform::MouseButton::kLeft)
+                s.ui_lmb_down = false;
             if (ev.kind == cd::platform::OSEventKind::kMouseMove)
             {
                 if (fl.right_drag && fl.has_last_mouse)
@@ -6161,6 +6179,9 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 }
                 fl.last_mouse_x = ev.mouse_x; fl.last_mouse_y = ev.mouse_y;
                 fl.has_last_mouse = true;
+                // phase1178: mirror cursor to ui_mouse for InputState flatten.
+                s.ui_mouse_x = ev.mouse_x;
+                s.ui_mouse_y = ev.mouse_y;
             }
             if (ev.kind == cd::platform::OSEventKind::kMouseWheel &&
                 !ImGui::GetIO().WantCaptureMouse)
@@ -6908,8 +6929,19 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 s.uiw_btn.set_rect(uiw_to_widget_rect(shift(s.uiw_button)));
                 s.uiw_sld.set_rect(uiw_to_widget_rect(shift(s.uiw_slider)));
 
+                // phase1178 — flatten current frame's pointer state into
+                // InputState so Button/Slider tick() can respond to hover
+                // + click. Coordinates are absolute screen-space pixels;
+                // widget rects were already shifted to screen space above.
+                // This block is already inside !kHideEditorUiForGolden
+                // (outer gate) so golden captures are byte-identical.
                 cd::ui::widgets::InputState ui_input;
-                ui_input.focused = false;
+                ui_input.pointer.mouse_x      = s.ui_mouse_x;
+                ui_input.pointer.mouse_y      = s.ui_mouse_y;
+                ui_input.pointer.left_down    = s.ui_lmb_down;
+                ui_input.pointer.left_pressed = s.ui_lmb_down && !s.ui_lmb_prev_down;
+                ui_input.pointer.left_released= !s.ui_lmb_down && s.ui_lmb_prev_down;
+                ui_input.focused              = false;
                 (void)s.uiw_btn.tick(ui_input);
                 (void)s.uiw_sld.tick(ui_input);
 
@@ -7066,6 +7098,9 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             break;
         }
 
+        // phase1178 — advance LMB edge-detection state for next frame's
+        // InputState (left_pressed / left_released edge signals).
+        s.ui_lmb_prev_down = s.ui_lmb_down;
         ++s.frame_idx;
         s.counters.set("frame", s.frame_idx);
     }  // while(true)
