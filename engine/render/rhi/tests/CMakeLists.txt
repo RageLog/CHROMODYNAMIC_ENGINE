@@ -333,6 +333,35 @@ else()
   )
 endif()
 
+# parity1121 STRAND 2: D3D12 FACE-CULL parity under the NEGATIVE-HEIGHT viewport
+# (phase1196). The neg-height viewport that makes D3D12 match Vulkan's +Y-down
+# NDC FLIPS the window-space winding the rasterizer uses for facing, so
+# FrontCounterClockwise must be INVERTED vs the engine descriptor to keep cull
+# semantics backend-identical. Renders a front-wound + a reversed triangle on
+# WARP under cull=kNone/kBack/kFront and asserts the engine's front_face=kCW
+# back-cull keeps intended-front geometry VISIBLE (and culls the reversed one).
+# Same GLSL->DXIL device path + DXC runtime as the depth/MRT smoke; SKIPs
+# cleanly when no D3D12 adapter / no glslang / no DXC DLL.
+if(WIN32)
+  cd_add_test(d3d12_face_cull_parity
+    SOURCES test_d3d12_face_cull_parity.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_fc_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_fc_list)
+  if(_cd_dxc_fc_list AND TARGET cd_test_d3d12_face_cull_parity)
+    list(POP_BACK _cd_dxc_fc_list _cd_dxc_fc_dll)
+    get_filename_component(_cd_dxc_fc_dir "${_cd_dxc_fc_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_face_cull_parity POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_fc_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_face_cull_parity>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_fc_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_face_cull_parity>")
+  endif()
+endif()
+
 # phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
 # Pure CPU-side limits read + an empty command list push/pop — no shaders or
 # DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no
