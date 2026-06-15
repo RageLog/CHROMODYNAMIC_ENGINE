@@ -362,6 +362,81 @@ if(WIN32)
   endif()
 endif()
 
+# parity1121 WAVE A1 / D3: D3D12 DeviceFeatures parity. Pure CPU-side device
+# introspection (no shaders / no DXC) — asserts the eight previously-unset
+# DeviceFeatures flags (ray_query / geometry_shader / tessellation_shader /
+# sampler_anisotropy / depth_clamp / dual_source_blend / timestamp_queries /
+# pipeline_statistics_queries) are all true on a FL11+ WARP/hardware device,
+# mirroring the Vulkan reference. Windows links the real d3d12 backend (SKIPs
+# when no adapter); off-Windows compiles a trivial skip so the name exists in
+# every CI lane.
+if(WIN32)
+  cd_add_test(d3d12_device_features
+    SOURCES test_d3d12_device_features.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+else()
+  cd_add_test(d3d12_device_features
+    SOURCES test_d3d12_device_features.cpp
+    DEPS    cd::rhi cd::core
+  )
+endif()
+
+# parity1121 WAVE A1 / D1: D3D12 MSAA SampleCount parity. Creates a 4x MSAA
+# colour texture + a 4x graphics PSO through the RHI and renders one triangle
+# on WARP; D3D12 enforces the PSO/RTV sample-count match at execution, so a
+# temp-reverted create_texture / PSO-builder fix removes the device (detected
+# via the SubmitDesc Result + signal-semaphore, never a hang). Same GLSL->DXIL
+# device path + DXC runtime as the depth/MRT smoke; SKIPs cleanly when no
+# adapter / no glslang / no DXC DLL.
+if(WIN32)
+  cd_add_test(d3d12_msaa_parity
+    SOURCES test_d3d12_msaa_parity.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_ms_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_ms_list)
+  if(_cd_dxc_ms_list AND TARGET cd_test_d3d12_msaa_parity)
+    list(POP_BACK _cd_dxc_ms_list _cd_dxc_ms_dll)
+    get_filename_component(_cd_dxc_ms_dir "${_cd_dxc_ms_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_msaa_parity POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_ms_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_msaa_parity>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_ms_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_msaa_parity>")
+  endif()
+endif()
+
+# parity1121 WAVE A1 / D4: D3D12 kStorageImage UAV ViewDimension parity. A
+# compute shader declaring RWTexture3D is bound (via a kStorageImage descriptor
+# write) to a 3D storage texture and dispatched on WARP; D3D12 enforces the
+# UAV-dimension / shader-resource match, so a temp-reverted fix (TEXTURE2D UAV
+# on the 3D resource) removes the device (detected via SubmitDesc Result +
+# signal-semaphore, never a hang). Same GLSL->DXIL device path + DXC runtime as
+# the depth/MRT smoke; SKIPs cleanly when no adapter / no glslang / no DXC DLL /
+# compute PSO unsupported.
+if(WIN32)
+  cd_add_test(d3d12_storage_image_3d
+    SOURCES test_d3d12_storage_image_3d.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_si_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_si_list)
+  if(_cd_dxc_si_list AND TARGET cd_test_d3d12_storage_image_3d)
+    list(POP_BACK _cd_dxc_si_list _cd_dxc_si_dll)
+    get_filename_component(_cd_dxc_si_dir "${_cd_dxc_si_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_storage_image_3d POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_si_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_storage_image_3d>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_si_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_storage_image_3d>")
+  endif()
+endif()
+
 # phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
 # Pure CPU-side limits read + an empty command list push/pop — no shaders or
 # DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no

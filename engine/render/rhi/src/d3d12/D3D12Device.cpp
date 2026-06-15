@@ -364,9 +364,50 @@ public:
                                                    &opts5, sizeof(opts5))))
         {
             features_.ray_tracing = (opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0);
+            // Inline ray queries (the equivalent of VK_KHR_ray_query) are a
+            // Tier 1.1 capability. Mirrors VulkanDevice.cpp:4623 setting
+            // features_.ray_query from the VK_KHR_ray_query extension.
+            features_.ray_query =
+                (opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1);
             // Query ID3D12Device5 for the AS-related entry points; if it
             // succeeds we can call BuildRaytracingAccelerationStructure.
             (void)device_.As(&device5_);
+        }
+
+        // ---- 6b. D3 — remaining DeviceFeatures parity (mirrors Vulkan) -----
+        // VulkanDevice.cpp:4593-4597 reads these from VkPhysicalDeviceFeatures.
+        // On D3D12 Feature Level 11_0+ all five are mandatory parts of the
+        // spec (no per-device toggle), so the honest value is an unconditional
+        // true — the engine never instantiates a sub-FL11_0 device. There is
+        // no CheckFeatureSupport query that would say otherwise; querying one
+        // and ignoring its (always-true) result would be dishonest noise.
+        features_.geometry_shader     = true;  // FL9_1+ guaranteed.
+        features_.tessellation_shader = true;  // FL11_0+ mandatory (HS/DS).
+        features_.sampler_anisotropy  = true;  // MaxAnisotropy 16 mandated.
+        features_.depth_clamp         = true;  // RasterizerState.DepthClipEnable.
+        features_.dual_source_blend   = true;  // SRC1_COLOR/SRC1_ALPHA blends.
+
+        // ---- 6c. D3 — timestamp + pipeline-statistics queries --------------
+        // Mirrors the Vulkan side advertising these caps. D3D12 timestamp
+        // queries (D3D12_QUERY_HEAP_TYPE_TIMESTAMP) are available on any
+        // FL11_0+ direct/compute queue; pipeline-statistics queries
+        // (D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS) are likewise mandated.
+        // The honest source is whether a query heap of each type can be
+        // created on this device, so probe that rather than hardcode.
+        {
+            D3D12_QUERY_HEAP_DESC ts_qd {};
+            ts_qd.Type  = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            ts_qd.Count = 1;
+            ComPtr<ID3D12QueryHeap> ts_heap;
+            features_.timestamp_queries = SUCCEEDED(device_->CreateQueryHeap(
+                &ts_qd, IID_PPV_ARGS(&ts_heap)));
+
+            D3D12_QUERY_HEAP_DESC ps_qd {};
+            ps_qd.Type  = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+            ps_qd.Count = 1;
+            ComPtr<ID3D12QueryHeap> ps_heap;
+            features_.pipeline_statistics_queries = SUCCEEDED(
+                device_->CreateQueryHeap(&ps_qd, IID_PPV_ARGS(&ps_heap)));
         }
 
         // ---- 7. Mesh-shader feature query (phase766) -----------------------
@@ -462,6 +503,59 @@ public:
             D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;                           // 256
         limits_.min_storage_buffer_offset_alignment =
             D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT;                                         // 16
+    }
+
+    // ---- D1: validated MSAA sample-count mapping (parity with Vulkan) ------
+    //
+    // Mirrors VulkanDevice's `map_samples` (VulkanDevice.cpp:196), which turns
+    // the engine `SampleCount` enum into the backend's native MSAA count. Where
+    // Vulkan trusts the enum directly, D3D12 must additionally validate that
+    // the (format, count) pair is supported on this adapter via
+    // CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS); an
+    // unsupported count makes CreateCommittedResource / CreatePipelineState
+    // fail with E_INVALIDARG. We clamp DOWN to the highest supported power-of-
+    // two count (>= 1) and warn, so a 16x request on a 8x-max adapter renders
+    // at 8x rather than failing the whole texture/PSO creation. The companion
+    // `quality_levels` is reported through `out_quality` for the resource's
+    // SampleDesc.Quality (0 selects the standard MSAA pattern).
+    [[nodiscard]] UINT map_samples(cd::rhi::SampleCount s,
+                                   DXGI_FORMAT          fmt,
+                                   UINT*                out_quality = nullptr) const
+    {
+        const auto supported = [this, fmt](UINT count) -> bool {
+            if (count <= 1u)
+                return true;
+            D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS q {};
+            q.Format           = fmt;
+            q.SampleCount      = count;
+            q.Flags            = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+            q.NumQualityLevels = 0;
+            if (FAILED(device_->CheckFeatureSupport(
+                    D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &q, sizeof(q))))
+                return false;
+            return q.NumQualityLevels > 0;
+        };
+
+        UINT requested = std::max<UINT>(static_cast<UINT>(s), 1u);
+
+        // Clamp down to the highest supported power-of-two <= requested.
+        UINT count = requested;
+        while (count > 1u && !supported(count))
+            count >>= 1u;
+
+        if (count != requested)
+        {
+            std::fprintf(stderr,
+                "[d3d12] map_samples: %ux MSAA unsupported for format %d on this "
+                "adapter; clamped to %ux\n",
+                static_cast<unsigned>(requested),
+                static_cast<int>(fmt),
+                static_cast<unsigned>(count));
+        }
+
+        if (out_quality != nullptr)
+            *out_quality = 0;  // standard MSAA pattern.
+        return count;
     }
 
     ~D3D12Device() override
@@ -657,8 +751,12 @@ public:
         rd.Alignment  = 0;
         rd.MipLevels  = static_cast<UINT16>(desc.mip_levels);
         rd.Format     = fmt;
-        rd.SampleDesc.Count   = 1;
-        rd.SampleDesc.Quality = 0;
+        // D1 (parity with Vulkan VkImageCreateInfo.samples = map_samples(...)):
+        // honor TextureDesc.samples, validated + clamped against the adapter's
+        // supported MSAA quality levels for this format.
+        UINT tex_quality = 0;
+        rd.SampleDesc.Count   = map_samples(desc.samples, fmt, &tex_quality);
+        rd.SampleDesc.Quality = tex_quality;
         rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         rd.Flags  = D3D12_RESOURCE_FLAG_NONE;
         const auto u = static_cast<std::uint32_t>(desc.usage);
@@ -690,6 +788,7 @@ public:
         rec.extent = desc.extent;
         rec.usage = desc.usage;
         rec.type  = desc.type;
+        rec.sample_count = rd.SampleDesc.Count;  // D1: remember the MSAA count.
         textures_.emplace(id, std::move(rec));
         return cd::rhi::TextureHandle { id, 1u };
     }
@@ -804,6 +903,14 @@ public:
                 rd.Texture3D.FirstWSlice = desc.base_layer;
                 rd.Texture3D.WSize = static_cast<UINT>(-1);  // all depth slices
             }
+            else if (trec->sample_count > 1u)
+            {
+                // D1: an MSAA colour target needs a TEXTURE2DMS RTV — a plain
+                // TEXTURE2D RTV on a multisampled resource is an invalid view
+                // (device-removal under the debug layer). Mirrors Vulkan, where
+                // the image view automatically reflects the multisampled image.
+                rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DMS;
+            }
             else
             {
                 rd.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
@@ -842,6 +949,12 @@ public:
             {
                 dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE1D;
                 dd.Texture1D.MipSlice = desc.base_mip;
+            }
+            else if (trec->sample_count > 1u)
+            {
+                // D1: an MSAA depth target needs a TEXTURE2DMS DSV (companion to
+                // the MSAA RTV branch above).
+                dd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DMS;
             }
             else
             {
@@ -1617,6 +1730,21 @@ public:
         if (gs != nullptr)
             psd.GS = { gs->bytecode.data(), gs->bytecode.size() };
 
+        // D1 (parity with Vulkan rasterizationSamples = map_samples(desc.samples)):
+        // resolve + validate the PSO sample count once, against a representative
+        // attachment format (first color, else depth, else a safe default), and
+        // reuse it for both RasterizerState.MultisampleEnable and SampleDesc.
+        const DXGI_FORMAT pso_sample_fmt = [&]() -> DXGI_FORMAT {
+            if (!desc.color_attachment_formats.empty())
+                return to_dxgi_format(desc.color_attachment_formats[0]);
+            if (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
+                return to_dxgi_format(desc.depth_attachment_format);
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        }();
+        UINT pso_sample_quality = 0;
+        const UINT pso_sample_count =
+            map_samples(desc.samples, pso_sample_fmt, &pso_sample_quality);
+
         // Rasterizer state from the engine's RasterState.
         D3D12_RASTERIZER_DESC rs {};
         rs.FillMode = (desc.raster.polygon_mode == cd::rhi::PolygonMode::kFill)
@@ -1655,7 +1783,9 @@ public:
         rs.DepthBiasClamp = 0.0F;
         rs.SlopeScaledDepthBias = 0.0F;
         rs.DepthClipEnable = TRUE;
-        rs.MultisampleEnable = FALSE;
+        // D1: enable MSAA rasterization rules when samples > 1 (Vulkan's
+        // multisample state implicitly does this via rasterizationSamples).
+        rs.MultisampleEnable = (pso_sample_count > 1u) ? TRUE : FALSE;
         rs.AntialiasedLineEnable = FALSE;
         rs.ForcedSampleCount = 0;
         rs.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
@@ -1804,8 +1934,9 @@ public:
         psd.DSVFormat = (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
             ? to_dxgi_format(desc.depth_attachment_format)
             : DXGI_FORMAT_UNKNOWN;
-        psd.SampleDesc.Count = 1;
-        psd.SampleDesc.Quality = 0;
+        // D1: honor GraphicsPipelineDesc.samples (was hardcoded 1x).
+        psd.SampleDesc.Count   = pso_sample_count;
+        psd.SampleDesc.Quality = pso_sample_quality;
         psd.NodeMask = 0;
         psd.CachedPSO = {};
         psd.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
@@ -1937,6 +2068,21 @@ public:
             D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
         };
 
+        // D1 (parity with the graphics-PSO path + Vulkan rasterizationSamples):
+        // resolve + validate the mesh-PSO sample count once against a
+        // representative attachment format and reuse it for both the rasterizer
+        // MultisampleEnable bit and the SAMPLE_DESC subobject below.
+        const DXGI_FORMAT ms_sample_fmt = [&]() -> DXGI_FORMAT {
+            if (!desc.color_attachment_formats.empty())
+                return to_dxgi_format(desc.color_attachment_formats[0]);
+            if (desc.depth_attachment_format != cd::rhi::Format::kUndefined)
+                return to_dxgi_format(desc.depth_attachment_format);
+            return DXGI_FORMAT_R8G8B8A8_UNORM;
+        }();
+        UINT ms_sample_quality = 0;
+        const UINT ms_sample_count =
+            map_samples(desc.samples, ms_sample_fmt, &ms_sample_quality);
+
         // Rasterizer
         D3D12_RASTERIZER_DESC rs {};
         rs.FillMode = (desc.raster.polygon_mode == cd::rhi::PolygonMode::kFill)
@@ -1955,6 +2101,8 @@ public:
         rs.FrontCounterClockwise =
             (desc.raster.front_face == cd::rhi::FrontFace::kClockwise) ? TRUE : FALSE;
         rs.DepthClipEnable = TRUE;
+        // D1: MSAA rasterization rules when samples > 1.
+        rs.MultisampleEnable = (ms_sample_count > 1u) ? TRUE : FALSE;
 
         // Blend
         D3D12_BLEND_DESC bd {};
@@ -1997,10 +2145,10 @@ public:
                 ? to_dxgi_format(desc.depth_attachment_format)
                 : DXGI_FORMAT_UNKNOWN;
 
-        // Sample desc
+        // Sample desc — D1: honor GraphicsPipelineDesc.samples (was 1x).
         DXGI_SAMPLE_DESC sd {};
-        sd.Count = 1;
-        sd.Quality = 0;
+        sd.Count   = ms_sample_count;
+        sd.Quality = ms_sample_quality;
 
         // Build the contiguous PSS blob via a single packed struct. The
         // D3D12 driver walks the stream by reading the tag, dispatching
@@ -2766,9 +2914,42 @@ public:
                             "update_descriptor_set: UAV texture unknown"));
                     D3D12_UNORDERED_ACCESS_VIEW_DESC uav {};
                     uav.Format = view_it->second.format;
-                    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-                    uav.Texture2D.MipSlice = 0;
-                    uav.Texture2D.PlaneSlice = 0;
+                    // D4 (parity with the kSampledImage SRV path above): the UAV
+                    // ViewDimension must follow the view's texture type, not be
+                    // hardcoded TEXTURE2D. A TEXTURE2D UAV on a 3D/array/cube
+                    // resource read/writes only slice 0 (or fails creation), so
+                    // compute image stores to anything but a plain 2D texture
+                    // silently hit the wrong data. Mirrors the SRV branch.
+                    if (view_it->second.is_3d)
+                    {
+                        // No D3D12_UAV_DIMENSION_TEXTURE3D mis-slicing: bind the
+                        // full depth so a compute shader can store to any voxel.
+                        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+                        uav.Texture3D.MipSlice    = 0;
+                        uav.Texture3D.FirstWSlice = 0;
+                        uav.Texture3D.WSize       = static_cast<UINT>(-1);  // all depth slices
+                    }
+                    else if (view_it->second.is_cube)
+                    {
+                        // D3D12 has no native cube UAV; expose the 6 faces as a
+                        // TEXTURE2DARRAY (matches the documented D3D12 idiom).
+                        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+                        uav.Texture2DArray.MipSlice        = 0;
+                        uav.Texture2DArray.FirstArraySlice = 0;
+                        uav.Texture2DArray.ArraySize       = 6;
+                        uav.Texture2DArray.PlaneSlice      = 0;
+                    }
+                    else if (view_it->second.is_1d)
+                    {
+                        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE1D;
+                        uav.Texture1D.MipSlice = 0;
+                    }
+                    else
+                    {
+                        uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                        uav.Texture2D.MipSlice = 0;
+                        uav.Texture2D.PlaneSlice = 0;
+                    }
                     device_->CreateUnorderedAccessView(
                         tex_it->second.resource.Get(), nullptr, &uav, dst);
                     break;
@@ -4123,6 +4304,10 @@ public:
         bool is_swapchain_image { false };
         D3D12_CPU_DESCRIPTOR_HANDLE rtv_cpu {};
         D3D12_RESOURCE_STATES state { D3D12_RESOURCE_STATE_COMMON };
+        // D1: validated MSAA sample count (1 for non-MSAA). The RTV/DSV created
+        // for an MSAA resource MUST use the TEXTURE2DMS dimension or the view is
+        // invalid; the SRV/UAV likewise need TEXTURE2DMS for sampling.
+        UINT sample_count { 1u };
     };
 
     struct TextureViewRecord
