@@ -61,21 +61,30 @@ MetalSwapchainObj::MetalSwapchainObj(CAMetalLayer* layer, id<MTLDevice> device,
                                      const SwapchainDesc& desc) noexcept
     : layer_(layer)
 {
+    // FIX 3 (M7 — ADR-20260615): configure every CAMetalLayer property the
+    // present/acquire path depends on, mirroring the Vulkan create_swapchain
+    // (surface format + extent + present mode). device + pixelFormat + the
+    // colorspace are required for [layer nextDrawable] to hand out a usable
+    // drawable; framebufferOnly = YES lets Metal pick the most efficient
+    // drawable storage (the swapchain image is only ever a render target);
+    // drawableSize sizes the drawable pool.
     pixel_format_ = to_mtl_format(desc.format);
     layer_.device      = device;
     layer_.pixelFormat = pixel_format_;
-    // framebufferOnly skips read-back paths — fine for Sprint-1 since the
-    // swapchain image is only ever a render target.
+    // framebufferOnly skips read-back paths — the swapchain image is only ever
+    // a render target, so this is both correct and the fastest path.
     layer_.framebufferOnly = YES;
 
     // CGSize for the layer's drawableSize. The caller's Extent2D is in
     // logical pixels; macOS picks the backing-scale from the NSView the
-    // layer is attached to. We pass through unchanged for Sprint-1; HiDPI
-    // handling lives in the platform window layer.
+    // layer is attached to. We pass through unchanged; HiDPI handling lives in
+    // the platform window layer.
     if (desc.extent.width > 0 && desc.extent.height > 0)
     {
-        layer_.drawableSize = CGSizeMake(static_cast<CGFloat>(desc.extent.width),
-                                         static_cast<CGFloat>(desc.extent.height));
+        width_  = desc.extent.width;
+        height_ = desc.extent.height;
+        layer_.drawableSize = CGSizeMake(static_cast<CGFloat>(width_),
+                                         static_cast<CGFloat>(height_));
     }
 
     // displaySyncEnabled gates vsync. macOS 10.13+; on iOS this property
@@ -93,12 +102,45 @@ MetalSwapchainObj::MetalSwapchainObj(CAMetalLayer* layer, id<MTLDevice> device,
 
 id<CAMetalDrawable> MetalSwapchainObj::acquire_drawable() noexcept
 {
+    // FIX 3 (M7): a zero-area drawableSize (window minimised / not yet sized)
+    // makes nextDrawable spin or return nil; treat it as out-of-date up front
+    // so the device surfaces kSwapchainOutOfDate WITHOUT blocking on a drawable
+    // that will never arrive. Mirrors the Vulkan acquire returning
+    // VK_ERROR_OUT_OF_DATE_KHR on a zero-extent surface.
+    const CGSize ds = layer_.drawableSize;
+    if (ds.width <= 0.0 || ds.height <= 0.0)
+    {
+        current_ = nil;
+        return nil;
+    }
     // nextDrawable blocks up to ~1 second when all drawables are in flight.
     // It can return nil under exceptional conditions (off-screen layer,
     // GPU stall); callers translate nil to kSwapchainOutOfDate.
     id<CAMetalDrawable> d = [layer_ nextDrawable];
     current_ = d;
     return d;
+}
+
+// FIX 3 (M7 — ADR-20260615): window-resize handler. Updates the layer's
+// drawableSize so the next nextDrawable hands out correctly-sized drawables,
+// mirroring the Vulkan swapchain-recreate. Rejects a degenerate (zero-area)
+// extent so a minimise does not push a drawableSize that would make every
+// subsequent acquire fail. Returns true when the size actually changed.
+bool MetalSwapchainObj::resize(std::uint32_t width, std::uint32_t height) noexcept
+{
+    if (width == 0 || height == 0)
+    {
+        return false;
+    }
+    if (width == width_ && height == height_)
+    {
+        return false;
+    }
+    width_  = width;
+    height_ = height;
+    layer_.drawableSize = CGSizeMake(static_cast<CGFloat>(width),
+                                     static_cast<CGFloat>(height));
+    return true;
 }
 
 }  // namespace cd::rhi::metal::detail

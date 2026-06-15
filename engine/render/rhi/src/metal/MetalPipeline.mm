@@ -599,19 +599,42 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
     // --- Vertex descriptor (MTLVertexDescriptor) ---------------------------
     // VertexAttribute: location -> attribute index, binding -> bufferIndex,
     // format, offset. VertexBinding: stride + per_instance step function.
+    //
+    // FIX 1 (ADR-20260615 namespace, hardened phase1122): Metal shares ONE
+    // [[buffer(N)]] namespace per stage across descriptor-set argument buffers
+    // (set N -> [[buffer(N)]], sets [0..7], M3 contract), the push block
+    // ([[buffer(8)]]), these vertex-input buffers, and SPIRV-Cross's own aux
+    // buffers ([20..30]). To keep the four classes DISJOINT, both the
+    // attribute's bufferIndex AND the layout slot are relocated to
+    // kVertexBufferBaseIndex + binding (range [9..15], strictly below the aux
+    // floor of 20). The runtime bind_vertex_buffer (MetalCommandBuffer.mm)
+    // applies the IDENTICAL offset, so the PSO's stage_in layout and the bound
+    // buffer index agree. Bindings beyond the reserved range are dropped (would
+    // collide with reserved slots).
     if (!desc.vertex_attributes.empty() || !desc.vertex_bindings.empty())
     {
         MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
         for (const VertexAttribute& a : desc.vertex_attributes)
         {
+            if (a.binding >= kMaxVertexBufferSlots)
+            {
+                continue;
+            }
             const NSUInteger loc = static_cast<NSUInteger>(a.location);
+            const NSUInteger buf_idx =
+                static_cast<NSUInteger>(kVertexBufferBaseIndex + a.binding);
             vd.attributes[loc].format = to_vertex_format(a.format);
             vd.attributes[loc].offset = static_cast<NSUInteger>(a.offset);
-            vd.attributes[loc].bufferIndex = static_cast<NSUInteger>(a.binding);
+            vd.attributes[loc].bufferIndex = buf_idx;
         }
         for (const VertexBinding& b : desc.vertex_bindings)
         {
-            const NSUInteger slot = static_cast<NSUInteger>(b.binding);
+            if (b.binding >= kMaxVertexBufferSlots)
+            {
+                continue;
+            }
+            const NSUInteger slot =
+                static_cast<NSUInteger>(kVertexBufferBaseIndex + b.binding);
             vd.layouts[slot].stride = static_cast<NSUInteger>(b.stride);
             vd.layouts[slot].stepFunction = b.per_instance
                 ? MTLVertexStepFunctionPerInstance

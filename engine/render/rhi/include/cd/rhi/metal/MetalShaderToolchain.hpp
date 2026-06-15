@@ -49,7 +49,29 @@ namespace cd::rhi::metal
 /// 0 (per-prim) and 1 (bindless); a push slot ABOVE that range avoids colliding
 /// with any argument-buffer slot. This constant is the canonical engine choice
 /// the .mm side binds against.
-inline constexpr std::uint32_t kPushConstantBufferIndex = 16U;
+///
+/// Full per-stage [[buffer(N)]] map (see MetalInternal.hpp for the canonical
+/// table + rationale): argument-buffer sets [0..7], push_constant [8],
+/// vertex-input [9..15], headroom [16..19], SPIRV-Cross aux buffers [20..30].
+/// The push slot at [8] sits above the set range and below the vertex range;
+/// it MUST equal kMetalPushConstantBufferIndex in MetalInternal.hpp.
+inline constexpr std::uint32_t kPushConstantBufferIndex = 8U;
+
+/// Base [[buffer(N)]] index for vertex-input (stage_in) buffers. Mirror of
+/// kVertexBufferBaseIndex (MetalInternal.hpp) re-exposed on the public toolchain
+/// header so the host-side toolchain test can assert the emitted MSL never
+/// places any class in the reserved vertex range [9..15]. Vertex binding B binds
+/// at kVertexBufferBaseIndex + B; the range is STRICTLY BELOW the SPIRV-Cross
+/// aux floor (kSpirvCrossAuxBaseIndex) so no aux buffer can alias a vertex stream.
+inline constexpr std::uint32_t kVertexBufferBaseIndex = 9U;
+
+/// Number of vertex-input buffer slots available [9..15].
+inline constexpr std::uint32_t kMaxVertexBufferSlots = 7U;
+
+/// Base [[buffer(N)]] index SPIRV-Cross CompilerMSL's auxiliary buffers are
+/// pinned to (Translate.cpp translate_msl_impl). Range [20..30]. Pinning makes
+/// the aux indices deterministic + provably disjoint from the vertex range.
+inline constexpr std::uint32_t kSpirvCrossAuxBaseIndex = 20U;
 
 struct MslBindingModel
 {

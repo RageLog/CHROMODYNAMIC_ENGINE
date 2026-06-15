@@ -123,6 +123,86 @@
 namespace cd::rhi::metal::detail
 {
 
+// ---------------------------------------------------------------------------
+// Metal buffer-index binding contract (FIX 1 — ADR-20260615 namespace fix,
+// hardened phase1122 for SPIRV-Cross aux-buffer disjointness).
+//
+// Metal shares ONE [[buffer(N)]] index namespace per shader stage across FOUR
+// distinct resource classes, all capped at Metal's per-stage limit of 31 slots
+// ([[buffer(0..30)]]):
+//   (a) descriptor-set argument buffers (M3 set-per-argument-buffer contract),
+//   (b) the push-constant block,
+//   (c) vertex-input (stage_in) buffers,
+//   (d) SPIRV-Cross CompilerMSL's OWN auxiliary buffers (swizzle / buffer-size /
+//       indirect-params / view-mask / output / tess / dynamic-offsets / input /
+//       index — emitted by CompilerMSL under argument_buffers / multi-stage).
+// If ANY two overlap a buffer bound for one class silently aliases another and
+// the scene fails to render OR Metal PSO validation rejects the program.
+//
+// SPIRV-Cross's aux buffers DEFAULT to the TOP of the namespace, [20..30]
+// (spirv_msl.hpp Options: shader_patch_input=20, shader_index=21,
+// shader_input=22, dynamic_offsets=23, view_mask=24, buffer_size=25,
+// shader_tess_factor=26, shader_patch_output=27, shader_output=28,
+// indirect_params=29, swizzle=30). The PRE-FIX vertex base of 24 put
+// vertex-input buffers at [24..30], DIRECTLY aliasing seven of those aux slots
+// (e.g. the buffer-size buffer at 25, commonly emitted under argument_buffers).
+//
+// FIX: pin SPIRV-Cross's aux buffers to their canonical top range [20..30]
+// (Translate.cpp translate_msl_impl sets them EXPLICITLY so they are
+// deterministic and cannot drift) and relocate vertex-input DOWN to [9..15],
+// strictly below the aux range. The MTLVertexDescriptor.layouts[binding]
+// .bufferIndex (MetalPipeline.mm) and bind_vertex_buffer (MetalCommandBuffer.mm)
+// BOTH add kVertexBufferBaseIndex so the PSO vertex layout and the runtime bind
+// agree, and the emitted MSL never places any class in the vertex range.
+//
+//   Full per-stage buffer-index map (DISJOINT by construction):
+//   ┌────────────┬───────────────────────────────────────────────────────┐
+//   │ [[buffer]] │ owner                                                   │
+//   ├────────────┼───────────────────────────────────────────────────────┤
+//   │ 0 .. 7     │ descriptor-set argument buffers (set index == buffer)   │
+//   │            │ K = kMaxDescriptorSetSlots-1 = 7 (engine uses sets 0,1) │
+//   │ 8          │ push_constant block (kMetalPushConstantBufferIndex, M3) │
+//   │ 9 .. 15    │ vertex-input buffers (kVertexBufferBaseIndex + binding) │
+//   │ 16 .. 19   │ HEADROOM (unowned — future use)                         │
+//   │ 20 .. 30   │ SPIRV-Cross CompilerMSL aux buffers (pinned, Translate) │
+//   └────────────┴───────────────────────────────────────────────────────┘
+//
+// The four classes are pairwise disjoint: sets [0..7], push [8], vertex [9..15],
+// aux [20..30], with [16..19] left as headroom. Vertex is STRICTLY BELOW the aux
+// floor of 20 so it can never alias an aux buffer. Every value stays within the
+// Metal per-stage cap of 31 slots. This is the engine's canonical Metal binding
+// contract; the .mm bind sites + the SPIRV-Cross aux pin + the host test
+// (test_metal_shader_toolchain.cpp) ALL reference these shared constants.
+// ---------------------------------------------------------------------------
+
+// Highest-plus-one descriptor-set argument-buffer slot the engine reserves. The
+// prim pipeline declares sets 0 (per-prim) and 1 (bindless); we reserve [0..7]
+// so future sets have head-room while keeping the whole map under the 31-slot
+// cap. Argument buffers therefore live in [[buffer(0..7)]].
+inline constexpr std::uint32_t kMaxDescriptorSetSlots = 8U;
+
+// Push-constant block slot — mirror of cd::rhi::metal::kPushConstantBufferIndex
+// (MetalShaderToolchain.hpp). Re-declared here so the .mm binding code reads it
+// from the same internal contract header without a public-header round trip.
+// Sits at [8], directly above the set range and below the vertex range.
+inline constexpr std::uint32_t kMetalPushConstantBufferIndex = 8U;
+
+// Base [[buffer(N)]] index for vertex-input (stage_in) buffers. Vertex binding
+// B is bound at kVertexBufferBaseIndex + B in BOTH the MTLVertexDescriptor
+// layout (MetalPipeline.mm) and the bind_vertex_buffer call (MetalCommandBuffer
+// .mm). Chosen above the argument-buffer range [0..7] and the push slot [8],
+// and STRICTLY BELOW the SPIRV-Cross aux floor of 20. Range [9..15] = 7 streams.
+inline constexpr std::uint32_t kVertexBufferBaseIndex = 9U;
+
+// Number of vertex-input buffer slots available [9..15].
+inline constexpr std::uint32_t kMaxVertexBufferSlots = 7U;
+
+// Base [[buffer(N)]] index SPIRV-Cross CompilerMSL's auxiliary buffers are
+// pinned to (Translate.cpp translate_msl_impl). CompilerMSL's defaults already
+// occupy [20..30]; pinning makes them DETERMINISTIC + provably disjoint from the
+// vertex range [9..15]. The .mm side never binds host resources in [20..30].
+inline constexpr std::uint32_t kSpirvCrossAuxBufferBaseIndex = 20U;
+
 // Forward declaration — MetalCommandBufferImpl holds a non-owning pointer
 // to a MetalDeviceCtx supplied by the device that created it. The concrete
 // definition appears further down this header.
@@ -154,9 +234,20 @@ public:
     MetalSwapchainObj& operator=(MetalSwapchainObj&&) = delete;
 
     // Acquire the next frame's drawable. Returns nil if the layer cannot
-    // provide a drawable (off-screen, minimised, GPU stalled). Caller
-    // owns the returned reference under ARC.
+    // provide a drawable (off-screen, minimised, GPU stalled, OR the layer's
+    // drawableSize is zero after a minimise). Caller owns the returned
+    // reference under ARC; the device maps nil -> kSwapchainOutOfDate so the
+    // frame loop can recreate/resize (FIX 3 — Vulkan acquire-out-of-date
+    // parity).
     [[nodiscard]] id<CAMetalDrawable> acquire_drawable() noexcept;
+
+    // FIX 3 (M7 — ADR-20260615): update the layer's drawableSize to a new
+    // extent (window resize). Mirrors the Vulkan swapchain-recreate path: the
+    // CAMetalLayer reallocates its drawable pool to the new size on the next
+    // nextDrawable. A zero-area extent is rejected (returns false) so a
+    // minimise does not push a degenerate drawableSize that would make every
+    // subsequent nextDrawable return nil. Returns true when the size changed.
+    [[nodiscard]] bool resize(std::uint32_t width, std::uint32_t height) noexcept;
 
     // Bookkeeping for the most recently acquired drawable, so present()
     // can locate it from the swapchain handle alone.
@@ -166,11 +257,15 @@ public:
     [[nodiscard]] CAMetalLayer* layer() const noexcept { return layer_; }
     [[nodiscard]] std::uint32_t image_count() const noexcept { return image_count_; }
     [[nodiscard]] MTLPixelFormat pixel_format() const noexcept { return pixel_format_; }
+    [[nodiscard]] std::uint32_t width() const noexcept { return width_; }
+    [[nodiscard]] std::uint32_t height() const noexcept { return height_; }
 
 private:
     CAMetalLayer*       layer_ { nil };
     id<CAMetalDrawable> current_ { nil };
     std::uint32_t       image_count_ { 0 };
+    std::uint32_t       width_ { 0 };
+    std::uint32_t       height_ { 0 };
     MTLPixelFormat      pixel_format_ { MTLPixelFormatBGRA8Unorm_sRGB };
 };
 

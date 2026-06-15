@@ -648,7 +648,7 @@ public:
     //   * kGlsl  -> compose_glsl_to_msl(spirv_compiler, GlslToMslDesc{...})
     //              GLSL -> SPIR-V (glslang) -> MSL (SPIRV-Cross), with the M3
     //              set-per-argument-buffer binding contract enforced
-    //              (argument_buffers = true, push_constant -> [[buffer(16)]]).
+    //              (argument_buffers = true, push_constant -> [[buffer(8)]]).
     //   * kSpirv -> compose_spirv_to_msl(words, ...) — SPIR-V tail only.
     //   * kBytecode (kMsl-equivalent legacy) -> the existing raw-MSL path.
     //
@@ -1704,12 +1704,29 @@ public:
                 "expected a CAMetalLayer* already attached to an NSView/UIView"));
         }
 
+        const std::scoped_lock lock { swapchains_mu_ };
+
+        // FIX 3 (M7 — ADR-20260615): window-resize parity. The Vulkan back-end
+        // handles a resize by destroy + create_swapchain against the same
+        // surface; the Metal analog is to reuse the existing MetalSwapchainObj
+        // bound to the SAME CAMetalLayer and just update its drawableSize via
+        // resize(). Re-allocating a new layer-backed object on every resize
+        // would orphan in-flight drawables. We scan for an entry whose layer
+        // matches and resize it in place, returning the existing handle.
+        for (auto& [idx, sc] : swapchains_)
+        {
+            if (sc->layer() == layer)
+            {
+                (void)sc->resize(desc.extent.width, desc.extent.height);
+                return SwapchainHandle { idx, 1u };
+            }
+        }
+
         auto obj = std::make_unique<MetalSwapchainObj>(layer, mtl_device_, desc);
 
         const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
         const SwapchainHandle h { id, 1u };
 
-        const std::scoped_lock lock { swapchains_mu_ };
         swapchains_.emplace(h.index(), std::move(obj));
         return h;
     }
@@ -2167,7 +2184,7 @@ private:
     // M6: run the host-side GLSL/SPIR-V -> MSL toolchain (cd::rhi_metal_shader).
     // The .mm only consumes the MSL text; the cross-compile logic stays in the
     // host-side library so it compiles + tests on Windows. Honours the M3
-    // set-per-argument-buffer + [[buffer(16)]] push contract via the default
+    // set-per-argument-buffer + [[buffer(8)]] push contract via the default
     // MslBindingModel. The include_resolver follows the ADR-20260614 consumer
     // pattern: a null desc.include_resolver bridges to the embedded cd::gluon
     // catalogue through a function-local ModuleResolver kept in scope for the

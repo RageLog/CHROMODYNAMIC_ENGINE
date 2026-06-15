@@ -52,7 +52,7 @@
 
 #include <cd/rhi/Descriptors.hpp>
 // M4 (ADR-20260615): the canonical push-constant argument-buffer slot
-// (kPushConstantBufferIndex = 16) the M3 toolchain emits push blocks to.
+// (kPushConstantBufferIndex = 8) the M3 toolchain emits push blocks to.
 #include <cd/rhi/metal/MetalShaderToolchain.hpp>
 
 namespace cd::rhi::metal::detail
@@ -298,6 +298,16 @@ void MetalCommandBufferImpl::bind_descriptor_set(std::uint32_t set_index,
     {
         return;
     }
+    // FIX 1 (ADR-20260615 namespace, hardened phase1122): the argument buffer
+    // binds at [[buffer(set_index)]] (M3 contract). The reserved set range is
+    // [0..kMaxDescriptorSetSlots-1] = [0..7], strictly below the push slot (8),
+    // the vertex range ([9..15]) and the SPIRV-Cross aux range ([20..30]), so a
+    // set bind can never alias a push, vertex-input or aux buffer. A set index
+    // outside the reserved range is dropped rather than aliased.
+    if (set_index >= kMaxDescriptorSetSlots)
+    {
+        return;
+    }
     const NSUInteger slot = static_cast<NSUInteger>(set_index);
     id<MTLBuffer> arg = ds->arg_buffer();
 
@@ -522,7 +532,7 @@ void MetalCommandBufferImpl::close_blit_encoder_if_open() noexcept
 // Metal has no native "push constants"; the canonical replacement for small
 // (≤4 KB) per-draw constants is setVertexBytes / setFragmentBytes. The M3
 // toolchain remaps the Vulkan push_constant block to a FIXED argument-buffer
-// slot [[buffer(kPushConstantBufferIndex = 16)]] that sits ABOVE the engine's
+// slot [[buffer(kPushConstantBufferIndex = 8)]] that sits ABOVE the engine's
 // descriptor-set range (sets 0/1 -> [[buffer(0/1)]]), so there is no
 // collision. We therefore bind at THAT constant, NOT the caller's `offset`
 // (the offset is a byte offset INTO the push range, which Metal's inline-byte
@@ -834,12 +844,18 @@ void MetalCommandBufferImpl::dispatch(std::uint32_t x,
 // ---------------------------------------------------------------------------
 // bind_vertex_buffer — Sprint-3 setVertexBuffer:offset:atIndex: path.
 //
-// The Metal vertex-buffer table is a flat index space; the engine's
-// `binding` parameter maps directly to it (matches the Vulkan back-end's
-// VkVertexInputBindingDescription::binding and the D3D12 back-end's
-// input-slot index). When the lookup misses (still the Sprint-3 default —
-// create_buffer hands out stub handles) the call is gracefully skipped,
-// mirroring the copy-buffer fallback.
+// FIX 1 (ADR-20260615 namespace, hardened phase1122): Metal shares ONE
+// [[buffer(N)]] namespace per stage. The engine's `binding` (which maps to
+// VkVertexInputBindingDescription::binding / the D3D12 input-slot index) is
+// RELOCATED to kVertexBufferBaseIndex + binding so a vertex stream at binding 0
+// does NOT alias the set-0 argument buffer at [[buffer(0)]] (M3 contract), the
+// push slot at [[buffer(8)]], or a SPIRV-Cross aux buffer ([20..30]). The
+// MTLVertexDescriptor layout (MetalPipeline.mm) applies the SAME offset so the
+// PSO's stage_in expects the buffer at the same relocated index — the two MUST
+// agree. Bindings beyond the reserved vertex range [9..15] are dropped (would
+// collide with reserved Metal slots) rather than silently aliasing. When the
+// lookup misses the call is gracefully skipped, mirroring the copy-buffer
+// fallback.
 // ---------------------------------------------------------------------------
 void MetalCommandBufferImpl::bind_vertex_buffer(std::uint32_t binding,
                                                 BufferHandle buffer,
@@ -849,14 +865,23 @@ void MetalCommandBufferImpl::bind_vertex_buffer(std::uint32_t binding,
     {
         return;
     }
+    if (binding >= kMaxVertexBufferSlots)
+    {
+        // Out of the reserved vertex range [9..15]; binding here would land in
+        // the headroom/aux ranges and could alias a SPIRV-Cross aux buffer.
+        // Skip rather than alias.
+        return;
+    }
     id<MTLBuffer> buf = ctx_->lookup_buffer(buffer);
     if (buf == nil)
     {
         return;
     }
+    const NSUInteger slot =
+        static_cast<NSUInteger>(kVertexBufferBaseIndex + binding);
     [encoder_ setVertexBuffer:buf
                        offset:static_cast<NSUInteger>(offset)
-                      atIndex:static_cast<NSUInteger>(binding)];
+                      atIndex:slot];
 }
 
 // ---------------------------------------------------------------------------
@@ -932,20 +957,83 @@ void MetalCommandBufferImpl::draw_indexed(std::uint32_t index_count,
 }
 
 // ---------------------------------------------------------------------------
-// M5 (ADR-20260615) — barrier.
+// M5 (ADR-20260615) / FIX 2 — barrier with REAL hazard direction.
 //
 // Metal auto-tracks hazards at encoder boundaries for tracked resources, so an
 // explicit barrier is only needed for ordering/visibility WITHIN an open
-// encoder (e.g. a compute write read by a later dispatch on the same encoder,
-// or untracked argument-buffer resources). We translate the buffer/texture
-// barrier spans into a memory-barrier scope on the active encoder:
+// encoder (a compute write read by a later dispatch on the same encoder, or
+// untracked argument-buffer resources). The Sprint-1 baseline HARDCODED
+// afterStages:Fragment beforeStages:Vertex regardless of the real hazard,
+// which is wrong for e.g. a vertex-stage write consumed by a fragment-stage
+// read. We now derive the after/before MTLRenderStages from the barrier's
+// from/to ResourceState, mirroring the Vulkan back-end's stage_for() src/dst
+// mapping (VulkanCommandBuffer.cpp:16) so the producer stage (`from`) precedes
+// the consumer stage (`to`):
 //   * render encoder  -> [encoder memoryBarrierWithScope:afterStages:beforeStages:]
-//   * compute encoder -> [encoder memoryBarrierWithScope:]
-// Layout transitions do not exist on Metal (storageMode is fixed) so only the
-// scope (buffers / textures) is mapped. Cross-encoder / queue ordering is
-// already covered by Metal's automatic hazard tracking + the submit-time
-// MTLSharedEvent hand-off, so no MTLFence is needed for the engine's tracked
-// resources.
+//                        afterStages  = stage(from-states)  (producer)
+//                        beforeStages = stage(to-states)    (consumer)
+//   * compute encoder -> [encoder memoryBarrierWithScope:]  (no stage args on
+//                        a compute encoder — all compute work is one stage)
+// The scope (Buffers / Textures / RenderTargets) is OR-ed from which barrier
+// kinds are present and whether any target a colour/depth attachment state.
+// Layout transitions do not exist on Metal (storageMode is fixed). Cross-
+// encoder / queue ordering is already covered by Metal's automatic hazard
+// tracking + the submit-time MTLSharedEvent hand-off.
+namespace
+{
+
+// Map a cd::rhi::ResourceState bitmask to the MTLRenderStages it participates
+// in. Mirrors VulkanCommandBuffer.cpp stage_for() coarse mapping, collapsed to
+// Metal's two render stages (Vertex / Fragment) + the render-target output
+// (which Metal expresses via Fragment for memoryBarrierWithScope purposes).
+[[nodiscard]] MTLRenderStages render_stages_for(ResourceState s) noexcept
+{
+    MTLRenderStages stages = static_cast<MTLRenderStages>(0);
+    // Vertex-input / index / indirect feed the vertex stage.
+    if (has(s, ResourceState::kVertexBuffer)
+        || has(s, ResourceState::kIndexBuffer)
+        || has(s, ResourceState::kIndirectArgument))
+    {
+        stages |= MTLRenderStageVertex;
+    }
+    // Shader-readable resources (UBO/SRV/UAV) can be sampled by either stage;
+    // be conservative and cover both, matching Vulkan's ALL_GRAPHICS mapping.
+    if (has(s, ResourceState::kConstantBuffer)
+        || has(s, ResourceState::kShaderResource)
+        || has(s, ResourceState::kUnorderedAccess))
+    {
+        stages |= MTLRenderStageVertex | MTLRenderStageFragment;
+    }
+    // Colour / depth attachment writes and present land at the fragment-output
+    // tail of the pipeline.
+    if (has(s, ResourceState::kColorAttachment)
+        || has(s, ResourceState::kDepthRead)
+        || has(s, ResourceState::kDepthWrite)
+        || has(s, ResourceState::kPresent))
+    {
+        stages |= MTLRenderStageFragment;
+    }
+    if (stages == static_cast<MTLRenderStages>(0))
+    {
+        // kCommon / kUndefined / transfer: be conservative and span both so the
+        // barrier never UNDER-synchronises (matches Vulkan ALL_COMMANDS).
+        stages = MTLRenderStageVertex | MTLRenderStageFragment;
+    }
+    return stages;
+}
+
+// Does this state class touch a render-target (colour / depth) attachment?
+// Such hazards need MTLBarrierScopeRenderTargets in addition to the buffer /
+// texture scope (a render-target write read as a sampled texture, etc.).
+[[nodiscard]] bool touches_render_target(ResourceState s) noexcept
+{
+    return has(s, ResourceState::kColorAttachment)
+        || has(s, ResourceState::kDepthRead)
+        || has(s, ResourceState::kDepthWrite);
+}
+
+}  // namespace
+
 void MetalCommandBufferImpl::barrier(std::span<const BufferBarrier> bb,
                                      std::span<const TextureBarrier> tb)
 {
@@ -958,19 +1046,53 @@ void MetalCommandBufferImpl::barrier(std::span<const BufferBarrier> bb,
     {
         scope |= MTLBarrierScopeTextures;
     }
+
+    // Accumulate the producer (`after`) and consumer (`before`) render stages
+    // across every barrier so a batch with mixed hazards orders correctly.
+    MTLRenderStages after_stages  = static_cast<MTLRenderStages>(0);
+    MTLRenderStages before_stages = static_cast<MTLRenderStages>(0);
+    for (const BufferBarrier& b : bb)
+    {
+        after_stages  |= render_stages_for(b.from);
+        before_stages |= render_stages_for(b.to);
+    }
+    for (const TextureBarrier& t : tb)
+    {
+        after_stages  |= render_stages_for(t.from);
+        before_stages |= render_stages_for(t.to);
+        if (touches_render_target(t.from) || touches_render_target(t.to))
+        {
+            scope |= MTLBarrierScopeRenderTargets;
+        }
+    }
+
     if (scope == static_cast<MTLBarrierScope>(0))
     {
         return;
     }
     if (encoder_ != nil)
     {
+        if (after_stages == static_cast<MTLRenderStages>(0))
+        {
+            after_stages = MTLRenderStageVertex | MTLRenderStageFragment;
+        }
+        if (before_stages == static_cast<MTLRenderStages>(0))
+        {
+            before_stages = MTLRenderStageVertex | MTLRenderStageFragment;
+        }
         [encoder_ memoryBarrierWithScope:scope
-                             afterStages:MTLRenderStageFragment
-                            beforeStages:MTLRenderStageVertex];
+                             afterStages:after_stages
+                            beforeStages:before_stages];
     }
     else if (compute_ != nil)
     {
-        [compute_ memoryBarrierWithScope:scope];
+        // A compute encoder has no render-stage axis; RenderTargets scope is
+        // meaningless there, so drop it down to the buffer/texture scope.
+        scope &= ~MTLBarrierScopeRenderTargets;
+        if (scope != static_cast<MTLBarrierScope>(0))
+        {
+            [compute_ memoryBarrierWithScope:scope];
+        }
     }
 }
 
@@ -1047,15 +1169,26 @@ void MetalCommandBufferImpl::build_acceleration_structure(AccelStructureHandle a
 
 void MetalCommandBufferImpl::acceleration_structure_barrier()
 {
-    // The AS-encoder boundary itself orders an AS build vs. its consumer; when
-    // a render/compute encoder is already open (consuming a TLAS via
-    // ray-query) we additionally issue a buffer-scope memory barrier so a TLAS
+    // FIX 2 (ADR-20260615): the AS-encoder boundary already orders an AS build
+    // vs. its consumer; when a render/compute encoder is ALSO open (consuming a
+    // TLAS via ray-query) we issue a buffer-scope memory barrier so a TLAS
     // rebuilt earlier on the same cmd-buf is visible to the ray-query reads.
+    // MTLAccelerationStructures are buffer-backed, so MTLBarrierScopeBuffers is
+    // the correct scope. The Sprint-1 baseline hardcoded afterStages:Vertex
+    // beforeStages:Fragment, which mis-orders a fragment-stage build producer
+    // against a vertex-stage ray-query consumer. The build completes BEFORE any
+    // render-stage consumer reads it, and the ray-query read may happen in
+    // EITHER the vertex or the fragment stage (engine consumes TLAS in the
+    // fragment shader, but skinned/compute paths may read it in vertex), so we
+    // span BOTH stages on both sides — the conservative, never-under-sync
+    // direction.
+    constexpr MTLRenderStages kBothStages =
+        MTLRenderStageVertex | MTLRenderStageFragment;
     if (encoder_ != nil)
     {
         [encoder_ memoryBarrierWithScope:MTLBarrierScopeBuffers
-                             afterStages:MTLRenderStageVertex
-                            beforeStages:MTLRenderStageFragment];
+                             afterStages:kBothStages
+                            beforeStages:kBothStages];
     }
     else if (compute_ != nil)
     {

@@ -57,6 +57,16 @@ constexpr std::uint32_t kDefaultMslVersion  = 20200U;  // MSL 2.2
 // binding model (phase M3) raises any lower request to this floor.
 constexpr std::uint32_t kMinArgumentBufferMslVersion = 20000U;  // MSL 2.0
 
+// Base [[buffer(N)]] index the 11 SPIRV-Cross CompilerMSL auxiliary buffers are
+// pinned to (phase1122 namespace fix). Mirrors CompilerMSL's upstream defaults
+// (spirv_msl.hpp: [20..30]) but is set EXPLICITLY so the aux range is
+// deterministic + provably disjoint from the engine's vertex-input range
+// [9..15] (cd::rhi::metal::kVertexBufferBaseIndex). This is the lower-layer
+// glue's local copy of cd::rhi::metal::kSpirvCrossAuxBaseIndex — the rhi/metal
+// header sits ABOVE this library in the DAG, so the value is duplicated here by
+// design (one number, two layers); the host test asserts both agree.
+constexpr std::uint32_t kSpirvCrossAuxBaseIndex = 20U;
+
 [[nodiscard]] TranslateResult translate_glsl(
     const std::vector<std::uint32_t>& words,
     std::uint32_t                      version)
@@ -168,6 +178,31 @@ constexpr std::uint32_t kMinArgumentBufferMslVersion = 20000U;  // MSL 2.0
             msl_opts.msl_version =
                 std::max(msl_opts.msl_version, kMinArgumentBufferMslVersion);
         }
+
+        // ---- SPIRV-Cross auxiliary-buffer pin (phase1122 namespace fix).
+        // CompilerMSL emits its OWN [[buffer(N)]] auxiliary buffers (swizzle /
+        // buffer-size / indirect-params / view-mask / output / tess / dynamic-
+        // offsets / input / index). They DEFAULT to the top of the per-stage
+        // namespace, [20..30] (spirv_msl.hpp Options). The engine's Metal
+        // binding map (MetalInternal.hpp) reserves vertex-input buffers at
+        // [9..15] and pins these aux buffers to that SAME canonical top range so
+        // they are DETERMINISTIC and provably DISJOINT from the vertex range —
+        // they can never drift down into [9..15] across SPIRV-Cross versions.
+        // The values mirror the upstream defaults but are set explicitly so the
+        // contract is host-verifiable (see test_metal_shader_toolchain.cpp).
+        //   base = kSpirvCrossAuxBaseIndex = 20.
+        msl_opts.shader_patch_input_buffer_index  = kSpirvCrossAuxBaseIndex + 0U;   // 20
+        msl_opts.shader_index_buffer_index        = kSpirvCrossAuxBaseIndex + 1U;   // 21
+        msl_opts.shader_input_buffer_index        = kSpirvCrossAuxBaseIndex + 2U;   // 22
+        msl_opts.dynamic_offsets_buffer_index     = kSpirvCrossAuxBaseIndex + 3U;   // 23
+        msl_opts.view_mask_buffer_index           = kSpirvCrossAuxBaseIndex + 4U;   // 24
+        msl_opts.buffer_size_buffer_index         = kSpirvCrossAuxBaseIndex + 5U;   // 25
+        msl_opts.shader_tess_factor_buffer_index  = kSpirvCrossAuxBaseIndex + 6U;   // 26
+        msl_opts.shader_patch_output_buffer_index = kSpirvCrossAuxBaseIndex + 7U;   // 27
+        msl_opts.shader_output_buffer_index       = kSpirvCrossAuxBaseIndex + 8U;   // 28
+        msl_opts.indirect_params_buffer_index     = kSpirvCrossAuxBaseIndex + 9U;   // 29
+        msl_opts.swizzle_buffer_index             = kSpirvCrossAuxBaseIndex + 10U;  // 30
+
         compiler.set_msl_options(msl_opts);
 
         // ---- push_constant -> its own dedicated [[buffer(n)]] slot.

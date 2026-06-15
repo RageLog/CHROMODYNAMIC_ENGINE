@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -54,6 +55,35 @@ void main() { gl_Position = vec4(in_pos, 1.0); }
 [[nodiscard]] std::unique_ptr<cd::shader::ICompiler> make_compiler_or_null()
 {
     return cd::shader::make_glslang_compiler();
+}
+
+// Extract every N from the literal attribute "[[buffer(N)]]" in an MSL source.
+// Used by the buffer-index disjointness test to prove no emitted [[buffer]]
+// lands in the reserved vertex-input range.
+[[nodiscard]] std::vector<std::uint32_t> collect_buffer_indices(const std::string& msl)
+{
+    std::vector<std::uint32_t> out;
+    constexpr std::string_view kOpen = "[[buffer(";
+    std::size_t pos = 0;
+    while ((pos = msl.find(kOpen, pos)) != std::string::npos)
+    {
+        const std::size_t num_start = pos + kOpen.size();
+        std::size_t cur = num_start;
+        std::uint32_t value = 0;
+        bool has_digit = false;
+        while (cur < msl.size() && msl[cur] >= '0' && msl[cur] <= '9')
+        {
+            value = value * 10U + static_cast<std::uint32_t>(msl[cur] - '0');
+            has_digit = true;
+            ++cur;
+        }
+        if (has_digit)
+        {
+            out.push_back(value);
+        }
+        pos = num_start;
+    }
+    return out;
 }
 
 // ---- Argument validation (no glslang needed) --------------------------------
@@ -166,6 +196,70 @@ TEST(MetalShaderToolchain, FragmentChainResolvesGluonIncludeAndBindings)
         "[[buffer(" + std::to_string(cd::rhi::metal::kPushConstantBufferIndex) + ")]]";
     EXPECT_NE(msl.find(pc_attr), std::string::npos)
         << "push_constant must be remapped to " << pc_attr << ":\n" << msl;
+}
+
+// phase1122 namespace-disjointness CONTRACT TEST. The four [[buffer(N)]]
+// resource classes the Metal backend shares one per-stage namespace across MUST
+// be disjoint: argument-buffer sets [0..7], push_constant [8], vertex-input
+// [9..15], SPIRV-Cross aux [20..30]. SPIRV-Cross emits the set + push buffers;
+// the .mm side binds vertex streams in [9..15] by construction (shared constant
+// kVertexBufferBaseIndex). This test PROVES the emitted MSL never places any
+// SPIRV-Cross-owned [[buffer]] (set argument buffer, push block, or aux buffer)
+// in the reserved vertex range, so a host-side vertex bind can never alias one.
+TEST(MetalShaderToolchain, EmittedBufferIndicesAvoidVertexRange)
+{
+    auto c = make_compiler_or_null();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::rhi::metal::GlslToMslDesc d {};
+    d.glsl_source = kEngineFS;
+    d.stage = cd::rhi::ShaderStage::kFragment;
+    d.source_name = "engine_fs_ranges";
+    // Default binding: argument_buffers ON, push at kPushConstantBufferIndex (8).
+
+    const auto r = cd::rhi::metal::compose_glsl_to_msl(*c, d);
+    ASSERT_TRUE(r.has_value()) << std::string(r.error().message);
+    const std::string& msl = r->source;
+
+    // The canonical map (MetalShaderToolchain.hpp shared constants).
+    constexpr std::uint32_t kSet0    = 0U;
+    const std::uint32_t     kPush    = cd::rhi::metal::kPushConstantBufferIndex;  // 8
+    const std::uint32_t     kVtxLo   = cd::rhi::metal::kVertexBufferBaseIndex;    // 9
+    const std::uint32_t     kVtxHi   =
+        cd::rhi::metal::kVertexBufferBaseIndex + cd::rhi::metal::kMaxVertexBufferSlots - 1U;  // 15
+    const std::uint32_t     kAuxLo   = cd::rhi::metal::kSpirvCrossAuxBaseIndex;   // 20
+
+    // Sanity on the contract itself: the four classes are ordered + disjoint.
+    static_assert(cd::rhi::metal::kPushConstantBufferIndex
+                  >= cd::rhi::metal::kMaxVertexBufferSlots,
+                  "push slot must sit above the set range");
+    EXPECT_LT(kSet0, kPush);
+    EXPECT_LT(kPush, kVtxLo);
+    EXPECT_LT(kVtxHi, kAuxLo) << "vertex range must be strictly below the aux floor";
+
+    // (1) The set-0 argument buffer lands at [[buffer(0)]]; the push block lands
+    //     at [[buffer(kPush)]]. Both must be present (proves the map is live).
+    EXPECT_NE(msl.find("[[buffer(0)]]"), std::string::npos)
+        << "set-0 argument buffer must bind at [[buffer(0)]]:\n" << msl;
+    const std::string push_attr = "[[buffer(" + std::to_string(kPush) + ")]]";
+    EXPECT_NE(msl.find(push_attr), std::string::npos)
+        << "push_constant must bind at " << push_attr << ":\n" << msl;
+
+    // (2) THE CONTRACT: NO emitted [[buffer(N)]] may fall in the vertex range
+    //     [kVtxLo .. kVtxHi]. SPIRV-Cross owns set + push + aux buffers; if any
+    //     of those landed in the vertex range it would alias a host vertex bind.
+    const std::vector<std::uint32_t> indices = collect_buffer_indices(msl);
+    ASSERT_FALSE(indices.empty()) << "expected at least the set + push buffers:\n" << msl;
+    for (const std::uint32_t idx : indices)
+    {
+        EXPECT_FALSE(idx >= kVtxLo && idx <= kVtxHi)
+            << "emitted [[buffer(" << idx << ")]] collides with the reserved "
+            << "vertex range [" << kVtxLo << ".." << kVtxHi << "]:\n" << msl;
+        // Every emitted index must also stay within Metal's per-stage cap.
+        EXPECT_LE(idx, 30U)
+            << "emitted [[buffer(" << idx << ")]] exceeds the Metal 31-slot cap:\n" << msl;
+    }
 }
 
 // The push slot is configurable: changing it moves the [[buffer(n)]] attribute.
