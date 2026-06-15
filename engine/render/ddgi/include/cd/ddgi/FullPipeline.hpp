@@ -44,6 +44,7 @@
 #include <cd/core/Result.hpp>
 #include <cd/ddgi/DispatchPass.hpp>
 #include <cd/math/Matrix.hpp>
+#include <cd/math/Vector.hpp>
 #include <cd/rhi/Handles.hpp>
 
 #include <cstdint>
@@ -80,17 +81,42 @@ public:
     /// uninitialised instance.
     void shutdown(cd::rhi::IDevice& device) noexcept;
 
-    /// Wire the sample-pass G-buffer + output bindings. Must be called once
-    /// before the first `execute()`. The image views must reference RGBA16F
-    /// (or compatible) storage-capable textures the caller has transitioned
-    /// to kUnorderedAccess.
+    /// Wire the sample-pass output + depth + world-normal bindings. Must be
+    /// called once before the first `execute()` (and again on resize).
+    ///
+    /// phase1146 (P1): `depth_view` is the scene DEPTH target (combined image
+    /// sampler) — world position is reconstructed in the shader from depth +
+    /// the inverse view-projection (set via set_inv_vp()). `output_view` is
+    /// the HDR scene image (indirect is ADDED into it). The caller transitions
+    /// output + normal to kUnorderedAccess and depth to kShaderResource.
     [[nodiscard]] cd::core::Result<void>
     bind_sample_resources(cd::rhi::IDevice&          device,
                           cd::rhi::TextureViewHandle output_view,
-                          cd::rhi::TextureViewHandle world_pos_view,
+                          cd::rhi::TextureViewHandle depth_view,
                           cd::rhi::TextureViewHandle world_normal_view,
                           std::uint32_t              output_width,
                           std::uint32_t              output_height);
+
+    /// phase1146 (P1) — forward the inverse view-projection to the sample
+    /// pass for depth -> world reconstruction. Call once per frame before
+    /// execute().
+    [[nodiscard]] cd::core::Result<void>
+    set_inv_vp(cd::rhi::IDevice& device, const cd::math::Mat4f& inv_vp)
+    {
+        return pass_.set_inv_vp(device, inv_vp);
+    }
+
+    /// phase1146 (P6) — forward the scene sun direction + colour to the trace
+    /// pass for first-bounce Lambertian shading. Call once per frame before
+    /// execute(). No-op error on the smoke variant (no light binding).
+    [[nodiscard]] cd::core::Result<void>
+    set_sun_light(cd::rhi::IDevice&      device,
+                  const cd::math::Vec3f& sun_dir,
+                  const cd::math::Vec3f& sun_col,
+                  float                  ambient)
+    {
+        return pass_.set_sun_light(device, sun_dir, sun_col, ambient);
+    }
 
     /// Record the four-pass DDGI pipeline into `cmd`. The caller is
     /// responsible for transitioning the trace + atlas + G-buffer + output

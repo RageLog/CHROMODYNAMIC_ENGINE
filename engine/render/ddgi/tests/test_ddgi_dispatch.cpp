@@ -477,11 +477,16 @@ TEST(DdgiDispatch, SamplePassDispatch)
         GTEST_SKIP() << "DispatchPass::init failed (likely no glslang backend): "
                      << init_r.error().message;
 
-    // ---- Allocate dummy 32x32 G-buffer + output storage images. ----------
+    // ---- Allocate dummy 32x32 depth + normal + output images. ------------
+    // phase1146 (P1): binding 1 is now a sampled depth texture, not a
+    // world-position storage image. We allocate an RGBA16F sampled image to
+    // stand in for the depth target (sampler2D reads .r) so the smoke
+    // dispatch exercises the combined-image-sampler path; the output + normal
+    // stay storage images.
     constexpr std::uint32_t kW = 32U;
     constexpr std::uint32_t kH = 32U;
 
-    auto make_storage_image = [&](std::string_view debug_name)
+    auto make_image = [&](std::string_view debug_name, bool storage)
         -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
     {
         cd::rhi::TextureDesc td {};
@@ -491,7 +496,8 @@ TEST(DdgiDispatch, SamplePassDispatch)
         td.mip_levels   = 1;
         td.array_layers = 1;
         td.samples      = cd::rhi::SampleCount::k1;
-        td.usage        = cd::rhi::TextureUsage::kStorage |
+        td.usage        = (storage ? cd::rhi::TextureUsage::kStorage
+                                   : cd::rhi::TextureUsage::kNone) |
                           cd::rhi::TextureUsage::kSampled;
         td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
         td.debug_name   = debug_name;
@@ -515,16 +521,16 @@ TEST(DdgiDispatch, SamplePassDispatch)
         return { *tex, *view };
     };
 
-    auto [world_pos_tex,    world_pos_view]    = make_storage_image("ddgi_test_world_pos");
-    auto [world_normal_tex, world_normal_view] = make_storage_image("ddgi_test_world_normal");
-    auto [output_tex,       output_view]       = make_storage_image("ddgi_test_sample_output");
-    ASSERT_TRUE(world_pos_tex.is_valid());
+    auto [depth_tex,        depth_view]        = make_image("ddgi_test_depth",  /*storage=*/false);
+    auto [world_normal_tex, world_normal_view] = make_image("ddgi_test_world_normal", /*storage=*/true);
+    auto [output_tex,       output_view]       = make_image("ddgi_test_sample_output", /*storage=*/true);
+    ASSERT_TRUE(depth_tex.is_valid());
     ASSERT_TRUE(world_normal_tex.is_valid());
     ASSERT_TRUE(output_tex.is_valid());
 
     auto bind_r = pass.bind_sample_resources(*dev,
                                              output_view,
-                                             world_pos_view,
+                                             depth_view,
                                              world_normal_view,
                                              kW, kH);
     ASSERT_TRUE(bind_r.has_value()) << bind_r.error().message;
@@ -533,9 +539,9 @@ TEST(DdgiDispatch, SamplePassDispatch)
     ASSERT_NE(cmd, nullptr);
     cmd->begin();
 
-    // Transition every storage image UNDEFINED → kUnorderedAccess. The two
-    // atlases owned by the pass need transitioning too — the sample shader
-    // reads them via imageLoad, and Vulkan validation rejects reads from
+    // Transition images. The two atlases + normal + output go to
+    // kUnorderedAccess (storage read/write); the depth texture goes to
+    // kShaderResource (sampled). Vulkan validation rejects reads from
     // VK_IMAGE_LAYOUT_UNDEFINED.
     std::array<cd::rhi::TextureBarrier, 5> tex_barriers {
         cd::rhi::TextureBarrier {
@@ -551,9 +557,9 @@ TEST(DdgiDispatch, SamplePassDispatch)
             .range   = { 0U, 1U, 0U, 1U },
         },
         cd::rhi::TextureBarrier {
-            .texture = world_pos_tex,
+            .texture = depth_tex,
             .from    = cd::rhi::ResourceState::kUndefined,
-            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .to      = cd::rhi::ResourceState::kShaderResource,
             .range   = { 0U, 1U, 0U, 1U },
         },
         cd::rhi::TextureBarrier {
@@ -589,10 +595,10 @@ TEST(DdgiDispatch, SamplePassDispatch)
     // Caller-owned image cleanup. Pass cleanup destroys the atlases.
     dev->destroy_texture_view(output_view);
     dev->destroy_texture_view(world_normal_view);
-    dev->destroy_texture_view(world_pos_view);
+    dev->destroy_texture_view(depth_view);
     dev->destroy_texture(output_tex);
     dev->destroy_texture(world_normal_tex);
-    dev->destroy_texture(world_pos_tex);
+    dev->destroy_texture(depth_tex);
 
     pass.shutdown(*dev);
 }
@@ -643,10 +649,10 @@ TEST(DdgiDispatch, SamplePassCheckedRejectsUnboundInputs)
         << pre_bind.error().message;
     EXPECT_EQ(pass.sample_call_count(), 0U);
 
-    // -- 2. Allocate G-buffer + output, wire bindings, retry. ---------------
+    // -- 2. Allocate depth + normal + output, wire bindings, retry. ---------
     constexpr std::uint32_t kW = 32U;
     constexpr std::uint32_t kH = 32U;
-    auto make_storage_image = [&](std::string_view debug_name)
+    auto make_image = [&](std::string_view debug_name, bool storage)
         -> std::pair<cd::rhi::TextureHandle, cd::rhi::TextureViewHandle>
     {
         cd::rhi::TextureDesc td {};
@@ -656,7 +662,8 @@ TEST(DdgiDispatch, SamplePassCheckedRejectsUnboundInputs)
         td.mip_levels   = 1;
         td.array_layers = 1;
         td.samples      = cd::rhi::SampleCount::k1;
-        td.usage        = cd::rhi::TextureUsage::kStorage |
+        td.usage        = (storage ? cd::rhi::TextureUsage::kStorage
+                                   : cd::rhi::TextureUsage::kNone) |
                           cd::rhi::TextureUsage::kSampled;
         td.memory       = cd::rhi::MemoryUsage::kGpuOnly;
         td.debug_name   = debug_name;
@@ -680,16 +687,16 @@ TEST(DdgiDispatch, SamplePassCheckedRejectsUnboundInputs)
         return { *tex, *view };
     };
 
-    auto [world_pos_tex,    world_pos_view]    = make_storage_image("ddgi_chk_world_pos");
-    auto [world_normal_tex, world_normal_view] = make_storage_image("ddgi_chk_world_normal");
-    auto [output_tex,       output_view]       = make_storage_image("ddgi_chk_sample_output");
-    ASSERT_TRUE(world_pos_tex.is_valid());
+    auto [depth_tex,        depth_view]        = make_image("ddgi_chk_depth",  /*storage=*/false);
+    auto [world_normal_tex, world_normal_view] = make_image("ddgi_chk_world_normal", /*storage=*/true);
+    auto [output_tex,       output_view]       = make_image("ddgi_chk_sample_output", /*storage=*/true);
+    ASSERT_TRUE(depth_tex.is_valid());
     ASSERT_TRUE(world_normal_tex.is_valid());
     ASSERT_TRUE(output_tex.is_valid());
 
     auto bind_r = pass.bind_sample_resources(*dev,
                                              output_view,
-                                             world_pos_view,
+                                             depth_view,
                                              world_normal_view,
                                              kW, kH);
     ASSERT_TRUE(bind_r.has_value()) << bind_r.error().message;
@@ -719,9 +726,9 @@ TEST(DdgiDispatch, SamplePassCheckedRejectsUnboundInputs)
             .range   = { 0U, 1U, 0U, 1U },
         },
         cd::rhi::TextureBarrier {
-            .texture = world_pos_tex,
+            .texture = depth_tex,
             .from    = cd::rhi::ResourceState::kUndefined,
-            .to      = cd::rhi::ResourceState::kUnorderedAccess,
+            .to      = cd::rhi::ResourceState::kShaderResource,
             .range   = { 0U, 1U, 0U, 1U },
         },
         cd::rhi::TextureBarrier {
@@ -755,10 +762,10 @@ TEST(DdgiDispatch, SamplePassCheckedRejectsUnboundInputs)
     // Cleanup.
     dev->destroy_texture_view(output_view);
     dev->destroy_texture_view(world_normal_view);
-    dev->destroy_texture_view(world_pos_view);
+    dev->destroy_texture_view(depth_view);
     dev->destroy_texture(output_tex);
     dev->destroy_texture(world_normal_tex);
-    dev->destroy_texture(world_pos_tex);
+    dev->destroy_texture(depth_tex);
 
     pass.shutdown(*dev);
 }

@@ -43,14 +43,14 @@ void FullPipeline::shutdown(cd::rhi::IDevice& device) noexcept
 cd::core::Result<void>
 FullPipeline::bind_sample_resources(cd::rhi::IDevice&          device,
                                     cd::rhi::TextureViewHandle output_view,
-                                    cd::rhi::TextureViewHandle world_pos_view,
+                                    cd::rhi::TextureViewHandle depth_view,
                                     cd::rhi::TextureViewHandle world_normal_view,
                                     std::uint32_t              output_width,
                                     std::uint32_t              output_height)
 {
     return pass_.bind_sample_resources(device,
                                        output_view,
-                                       world_pos_view,
+                                       depth_view,
                                        world_normal_view,
                                        output_width,
                                        output_height);

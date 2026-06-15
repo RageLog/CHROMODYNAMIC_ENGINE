@@ -354,6 +354,15 @@ void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& i
 void VulkanCommandBuffer::end_render_pass()
 {
     vkCmdEndRendering(cmd_);
+    // phase1146: a graphics pipeline can only be used inside a render pass.
+    // Clear the remembered graphics layout so a follow-up COMPUTE dispatch
+    // (e.g. the DDGI trace/blend/sample passes recorded between the HDR pass
+    // and the composite pass) has bind_descriptor_set / push_constants route
+    // to the compute layout. Without this the stale graphics layout makes
+    // bind_descriptor_set pick VK_PIPELINE_BIND_POINT_GRAPHICS for a compute
+    // pipeline — the descriptors silently never reach the dispatch. The next
+    // begin_render_pass + bind_graphics_pipeline re-establishes the layout.
+    current_graphics_layout_ = VK_NULL_HANDLE;
 }
 
 void VulkanCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle pipeline)

@@ -63,6 +63,7 @@
 #include <cd/core/Defines.hpp>
 #include <cd/core/Result.hpp>
 #include <cd/ddgi/Ddgi.hpp>
+#include <cd/math/Matrix.hpp>
 #include <cd/rhi/Handles.hpp>
 
 #include <cstdint>
@@ -72,6 +73,29 @@ namespace cd::rhi { class ICommandBuffer; }
 
 namespace cd::ddgi
 {
+
+/// phase1146 (P6) — scene light UBO consumed by kDdgiTraceCS binding 3.
+/// Mirrors the GLSL `CdDdgiLights` block (2 × vec4, std140). The trace pass
+/// shades a ray-query hit with Lambertian radiance from this sun so DDGI is
+/// no longer a uniform-grey no-op.
+struct alignas(16) SceneLightUbo
+{
+    float sun_dir[4] { 0.0F, 1.0F, 0.0F, 1.0F };  ///< xyz = unit dir toward sun, w = intensity scale
+    float sun_col[4] { 1.0F, 1.0F, 1.0F, 0.05F }; ///< xyz = linear colour, w = ambient floor
+};
+static_assert(sizeof(SceneLightUbo) == 32,
+              "SceneLightUbo must match kDdgiTraceCS CdDdgiLights block");
+
+/// phase1146 (P1) — sample-pass UBO consumed by kDdgiSampleCS binding 5.
+/// Carries the inverse view-projection used to reconstruct world position
+/// from depth (kept out of the push-constant block — a mat4 would push
+/// SamplePushConstants past the 128-byte floor).
+struct alignas(16) SampleReconstructUbo
+{
+    cd::math::Mat4f inv_vp { cd::math::Mat4f::identity() };
+};
+static_assert(sizeof(SampleReconstructUbo) == 64,
+              "SampleReconstructUbo must match kDdgiSampleCS CdDdgiSampleUbo block");
 
 /// Layout of the push-constant block consumed by kDdgiTraceCS. Matches the
 /// `layout(push_constant) uniform PC { ... } pc;` declaration in the shader,
@@ -229,18 +253,45 @@ public:
     execute_blend_visibility(std::uint32_t frame_index);
 
     /// Sprint-3 (phase570) — point the sample-pass descriptor set at the
-    /// caller-supplied G-buffer + output images. Must be called once before
-    /// the first execute_sample(). The image views must reference RGBA16F
-    /// (or compatible) storage-capable textures the caller has transitioned
-    /// to kUnorderedAccess. The irradiance + visibility atlases are bound
+    /// caller-supplied output + depth + world-normal images. Must be called
+    /// once before the first execute_sample() (and again on resize).
+    ///
+    /// phase1146 (P1): the second argument is now the scene DEPTH view
+    /// (bound as a combined-image-sampler) rather than an explicit
+    /// world-position G-buffer — world position is reconstructed inside the
+    /// shader from depth + the inverse view-projection (set via
+    /// set_inv_vp()). `output_view` is the HDR scene image (the indirect
+    /// bounce is ADDED into it); `world_normal_view` is the G-buffer normal
+    /// (RGBA16F storage). The caller transitions output + normal to
+    /// kUnorderedAccess and depth to kShaderResource before execute. The
+    /// irradiance + visibility atlases + the reconstruct UBO are bound
     /// automatically — they are owned by the pass.
     [[nodiscard]] cd::core::Result<void>
     bind_sample_resources(cd::rhi::IDevice& device,
                           cd::rhi::TextureViewHandle output_view,
-                          cd::rhi::TextureViewHandle world_pos_view,
+                          cd::rhi::TextureViewHandle depth_view,
                           cd::rhi::TextureViewHandle world_normal_view,
                           std::uint32_t              output_width,
                           std::uint32_t              output_height);
+
+    /// phase1146 (P1) — upload the inverse view-projection used by the
+    /// sample pass to reconstruct world position from depth. Cheap host->GPU
+    /// UBO write; call once per frame before execute_sample(). No-op (returns
+    /// an error) before init().
+    [[nodiscard]] cd::core::Result<void>
+    set_inv_vp(cd::rhi::IDevice& device, const cd::math::Mat4f& inv_vp);
+
+    /// phase1146 (P6) — upload the scene sun direction + colour consumed by
+    /// the trace pass for first-bounce Lambertian shading. `sun_dir` is the
+    /// unit direction TOWARD the sun; `sun_col` is linear radiance; `ambient`
+    /// is a small sky floor. Call once per frame before execute(). No-op
+    /// (returns an error) before init() or on the smoke (needs_tlas=false)
+    /// variant (which has no light binding).
+    [[nodiscard]] cd::core::Result<void>
+    set_sun_light(cd::rhi::IDevice&      device,
+                  const cd::math::Vec3f& sun_dir,
+                  const cd::math::Vec3f& sun_col,
+                  float                  ambient);
 
     /// Sprint-3 (phase570) — record the sample-pass dispatch. Reads the
     /// caller-supplied G-buffer (world_pos + world_normal) and the
@@ -364,6 +415,9 @@ private:
     cd::rhi::TextureViewHandle         ray_radiance_view_  {};
     cd::rhi::TextureViewHandle         ray_dir_dist_view_  {};
     cd::rhi::BufferHandle              trace_ubo_          {};
+    // phase1146 (P6): scene light UBO bound at trace binding 3 (full path
+    // only). Allocated + wired at init; contents refreshed via set_sun_light().
+    cd::rhi::BufferHandle              trace_light_ubo_    {};
 
     // ── owned GPU resources — Sprint-2 blend passes ────────────────────────
     cd::rhi::ShaderModuleHandle        blend_irr_module_         {};
@@ -385,6 +439,11 @@ private:
     cd::rhi::PipelineLayoutHandle      sample_pipeline_layout_  {};
     cd::rhi::ComputePipelineHandle     sample_pipeline_         {};
     cd::rhi::DescriptorSetHandle       sample_descriptor_set_   {};
+    // phase1146 (P1): combined-image-sampler for the scene depth read +
+    // the inverse-VP reconstruct UBO bound at sample binding 5. Both
+    // owned by the pass; the UBO contents refreshed via set_inv_vp().
+    cd::rhi::SamplerHandle             depth_sampler_           {};
+    cd::rhi::BufferHandle              sample_recon_ubo_        {};
 
     // ── cached parameters ─────────────────────────────────────────────────
     ProbeGrid     grid_     {};

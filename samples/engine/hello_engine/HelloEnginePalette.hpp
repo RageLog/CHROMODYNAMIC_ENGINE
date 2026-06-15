@@ -64,11 +64,17 @@ register_engine_gi_rhi_fx_palette_commands(cd::editor::CommandPalette&          
     );
     palette.register_command(
         112,
-        "GI: Toggle DDGI probe update (queued v1.7)",
+        "GI: Toggle DDGI indirect bounce (real GPU dispatch)",
         [&]
         {
             fx.ddgi_on = !fx.ddgi_on;
-            log_push(fx.ddgi_on ? "[gi] DDGI queued (v1.7 needs probe-volume RT)" : "[gi] DDGI off");
+            // phase1146: ddgi_on now drives the real cd::ddgi::FullPipeline
+            // GPU dispatch (trace -> blend -> sample, ADDs indirect into HDR).
+            // Needs a ray-query device + a valid TLAS; falls back to a no-op
+            // if either is missing (logged once at boot).
+            log_push(fx.ddgi_on
+                         ? "[gi] DDGI ON - real GPU indirect bounce (8x4x8 probes)"
+                         : "[gi] DDGI off");
         }
     );
     palette.register_command(

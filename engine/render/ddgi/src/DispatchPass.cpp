@@ -21,7 +21,9 @@
 #include <cd/gluon/ModuleRegistry.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstring>
+#include <span>
 #include <string>
 
 namespace cd::ddgi
@@ -208,9 +210,10 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
     shader_module_ = *sm;
 
     // 3. descriptor-set layout.
-    //    full path:    binding 0 = TLAS, 1 = ray_radiance, 2 = ray_dir_dist.
+    //    full path:    binding 0 = TLAS, 1 = ray_radiance, 2 = ray_dir_dist,
+    //                  3 = scene light UBO (phase1146 P6).
     //    no-TLAS path: binding 0 = ray_radiance, 1 = ray_dir_dist.
-    std::array<cd::rhi::DescriptorSetLayoutBinding, 3> bindings_full {
+    std::array<cd::rhi::DescriptorSetLayoutBinding, 4> bindings_full {
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 0,
             .type    = cd::rhi::DescriptorType::kAccelerationStructure,
@@ -226,6 +229,12 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
         cd::rhi::DescriptorSetLayoutBinding {
             .binding = 2,
             .type    = cd::rhi::DescriptorType::kStorageImage,
+            .count   = 1,
+            .stages  = cd::rhi::ShaderStage::kCompute,
+        },
+        cd::rhi::DescriptorSetLayoutBinding {
+            .binding = 3,
+            .type    = cd::rhi::DescriptorType::kUniformBuffer,
             .count   = 1,
             .stages  = cd::rhi::ShaderStage::kCompute,
         },
@@ -313,6 +322,33 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
             return std::unexpected(buf.error());
         }
         trace_ubo_ = *buf;
+    }
+
+    // phase1146 (P6): scene light UBO bound at trace binding 3. Only the
+    // full (ray-query) path shades hits — the smoke variant has no light
+    // binding, so we only allocate the UBO when needs_tlas_ is true. Seed
+    // with a sensible default so a trace before the first set_sun_light()
+    // produces non-grey radiance instead of reading uninitialised memory.
+    if (needs_tlas_)
+    {
+        cd::rhi::BufferDesc bd {};
+        bd.size       = sizeof(SceneLightUbo);
+        bd.usage      = cd::rhi::BufferUsage::kUniform;
+        bd.memory     = cd::rhi::MemoryUsage::kCpuToGpu;
+        bd.debug_name = "ddgi_trace_light_ubo";
+        auto buf = device.create_buffer(bd);
+        if (!buf.has_value())
+        {
+            shutdown(device);
+            return std::unexpected(buf.error());
+        }
+        trace_light_ubo_ = *buf;
+
+        const SceneLightUbo seed {};
+        (void)device.upload_buffer(
+            trace_light_ubo_, 0U,
+            std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(&seed), sizeof(seed)));
     }
 
     // 7. ray_radiance image (RGBA16F).
@@ -417,6 +453,29 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
         {
             shutdown(device);
             return std::unexpected(upd.error());
+        }
+    }
+
+    // 9b. phase1146 (P6): wire the scene light UBO at trace binding 3 (full
+    //     path only). The TLAS at binding 0 is still bound later via
+    //     bind_tlas(); the light UBO is owned by the pass so we bind it now.
+    if (needs_tlas_ && trace_light_ubo_.is_valid())
+    {
+        std::array<cd::rhi::DescriptorWrite, 1> lw {
+            cd::rhi::DescriptorWrite {
+                .binding       = 3,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer        = trace_light_ubo_,
+                .buffer_offset = 0,
+                .buffer_range  = sizeof(SceneLightUbo),
+            },
+        };
+        auto lupd = device.update_descriptor_set(descriptor_set_, lw);
+        if (!lupd.has_value())
+        {
+            shutdown(device);
+            return std::unexpected(lupd.error());
         }
     }
 
@@ -631,13 +690,14 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
     // Sprint-3 — sample pass (kDdgiSampleCS)
     // -----------------------------------------------------------------------
     // 17. sample descriptor-set layout:
-    //     binding 0 = out_indirect       (storage image, write)
-    //     binding 1 = world_pos_image    (storage image, read)
-    //     binding 2 = world_normal_image (storage image, read)
-    //     binding 3 = irradiance_atlas   (storage image, read)
-    //     binding 4 = visibility_atlas   (storage image, read)
+    //     binding 0 = out_indirect        (storage image, read-modify-write HDR)
+    //     binding 1 = depth_tex           (combined image sampler — phase1146 P1)
+    //     binding 2 = world_normal_image  (storage image, read)
+    //     binding 3 = irradiance_atlas    (storage image, read)
+    //     binding 4 = visibility_atlas    (storage image, read)
+    //     binding 5 = reconstruct UBO     (inv_vp — phase1146 P1)
     {
-        std::array<cd::rhi::DescriptorSetLayoutBinding, 5> sample_bindings {
+        std::array<cd::rhi::DescriptorSetLayoutBinding, 6> sample_bindings {
             cd::rhi::DescriptorSetLayoutBinding {
                 .binding = 0,
                 .type    = cd::rhi::DescriptorType::kStorageImage,
@@ -646,7 +706,7 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
             },
             cd::rhi::DescriptorSetLayoutBinding {
                 .binding = 1,
-                .type    = cd::rhi::DescriptorType::kStorageImage,
+                .type    = cd::rhi::DescriptorType::kCombinedImageSampler,
                 .count   = 1,
                 .stages  = cd::rhi::ShaderStage::kCompute,
             },
@@ -668,12 +728,50 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
                 .count   = 1,
                 .stages  = cd::rhi::ShaderStage::kCompute,
             },
+            cd::rhi::DescriptorSetLayoutBinding {
+                .binding = 5,
+                .type    = cd::rhi::DescriptorType::kUniformBuffer,
+                .count   = 1,
+                .stages  = cd::rhi::ShaderStage::kCompute,
+            },
         };
         cd::rhi::DescriptorSetLayoutDesc ssld {};
         ssld.bindings = sample_bindings;
         auto ssl = device.create_descriptor_set_layout(ssld);
         if (!ssl.has_value()) { shutdown(device); return std::unexpected(ssl.error()); }
         sample_set_layout_ = *ssl;
+    }
+
+    // 17b. phase1146 (P1): depth sampler + reconstruct UBO owned by the
+    //      sample pass. The sampler is a plain nearest/clamp (depth read is
+    //      a texelFetch in the shader, so filtering is irrelevant, but a
+    //      valid sampler is still required for the combined-image-sampler).
+    {
+        cd::rhi::SamplerDesc smd {};
+        smd.mag_filter  = cd::rhi::SamplerFilter::kNearest;
+        smd.min_filter  = cd::rhi::SamplerFilter::kNearest;
+        smd.mipmap_mode = cd::rhi::SamplerMipmapMode::kNearest;
+        smd.address_u   = cd::rhi::SamplerAddressMode::kClampToEdge;
+        smd.address_v   = cd::rhi::SamplerAddressMode::kClampToEdge;
+        smd.address_w   = cd::rhi::SamplerAddressMode::kClampToEdge;
+        auto sr = device.create_sampler(smd);
+        if (!sr.has_value()) { shutdown(device); return std::unexpected(sr.error()); }
+        depth_sampler_ = *sr;
+
+        cd::rhi::BufferDesc bd {};
+        bd.size       = sizeof(SampleReconstructUbo);
+        bd.usage      = cd::rhi::BufferUsage::kUniform;
+        bd.memory     = cd::rhi::MemoryUsage::kCpuToGpu;
+        bd.debug_name = "ddgi_sample_recon_ubo";
+        auto buf = device.create_buffer(bd);
+        if (!buf.has_value()) { shutdown(device); return std::unexpected(buf.error()); }
+        sample_recon_ubo_ = *buf;
+
+        const SampleReconstructUbo seed {};
+        (void)device.upload_buffer(
+            sample_recon_ubo_, 0U,
+            std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(&seed), sizeof(seed)));
     }
 
     // 18. sample pipeline layout.
@@ -720,7 +818,7 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
         if (!sds.has_value()) { shutdown(device); return std::unexpected(sds.error()); }
         sample_descriptor_set_ = *sds;
 
-        std::array<cd::rhi::DescriptorWrite, 2> sw {
+        std::array<cd::rhi::DescriptorWrite, 3> sw {
             cd::rhi::DescriptorWrite {
                 .binding       = 3,
                 .array_element = 0,
@@ -732,6 +830,15 @@ DispatchPass::init(cd::rhi::IDevice& device, const DispatchPassDesc& desc)
                 .array_element = 0,
                 .type          = cd::rhi::DescriptorType::kStorageImage,
                 .view          = visibility_atlas_view_,
+            },
+            // phase1146 (P1): reconstruct UBO (inv_vp) — owned by the pass.
+            cd::rhi::DescriptorWrite {
+                .binding       = 5,
+                .array_element = 0,
+                .type          = cd::rhi::DescriptorType::kUniformBuffer,
+                .buffer        = sample_recon_ubo_,
+                .buffer_offset = 0,
+                .buffer_range  = sizeof(SampleReconstructUbo),
             },
         };
         auto supd = device.update_descriptor_set(sample_descriptor_set_, sw);
@@ -753,6 +860,9 @@ void DispatchPass::shutdown(cd::rhi::IDevice& device) noexcept
     if (sample_pipeline_layout_.is_valid())  { device.destroy_pipeline_layout(sample_pipeline_layout_);  sample_pipeline_layout_  = {}; }
     if (sample_set_layout_.is_valid())       { device.destroy_descriptor_set_layout(sample_set_layout_); sample_set_layout_       = {}; }
     if (sample_module_.is_valid())           { device.destroy_shader_module(sample_module_);             sample_module_           = {}; }
+    // phase1146 (P1): depth sampler + reconstruct UBO owned by the sample pass.
+    if (sample_recon_ubo_.is_valid())        { device.destroy_buffer(sample_recon_ubo_);                 sample_recon_ubo_        = {}; }
+    if (depth_sampler_.is_valid())           { device.destroy_sampler(depth_sampler_);                   depth_sampler_           = {}; }
     sample_output_width_  = 0;
     sample_output_height_ = 0;
 
@@ -775,6 +885,7 @@ void DispatchPass::shutdown(cd::rhi::IDevice& device) noexcept
     if (ray_radiance_view_.is_valid())   { device.destroy_texture_view(ray_radiance_view_);   ray_radiance_view_   = {}; }
     if (ray_dir_dist_.is_valid())        { device.destroy_texture(ray_dir_dist_);             ray_dir_dist_        = {}; }
     if (ray_radiance_.is_valid())        { device.destroy_texture(ray_radiance_);             ray_radiance_        = {}; }
+    if (trace_light_ubo_.is_valid())     { device.destroy_buffer(trace_light_ubo_);           trace_light_ubo_     = {}; }
     if (trace_ubo_.is_valid())           { device.destroy_buffer(trace_ubo_);                 trace_ubo_           = {}; }
     if (descriptor_set_.is_valid())      { device.destroy_descriptor_set(descriptor_set_);    descriptor_set_      = {}; }
     if (pipeline_.is_valid())            { device.destroy_compute_pipeline(pipeline_);        pipeline_            = {}; }
@@ -1007,7 +1118,7 @@ DispatchPass::execute_blend_visibility(std::uint32_t /*frame_index*/)
 cd::core::Result<void>
 DispatchPass::bind_sample_resources(cd::rhi::IDevice&          device,
                                     cd::rhi::TextureViewHandle output_view,
-                                    cd::rhi::TextureViewHandle world_pos_view,
+                                    cd::rhi::TextureViewHandle depth_view,
                                     cd::rhi::TextureViewHandle world_normal_view,
                                     std::uint32_t              output_width,
                                     std::uint32_t              output_height)
@@ -1019,7 +1130,7 @@ DispatchPass::bind_sample_resources(cd::rhi::IDevice&          device,
             "DispatchPass::bind_sample_resources called before init()"));
     }
     if (!output_view.is_valid() ||
-        !world_pos_view.is_valid() ||
+        !depth_view.is_valid() ||
         !world_normal_view.is_valid())
     {
         return std::unexpected(cd::rhi::rhi_errors::make(
@@ -1034,11 +1145,13 @@ DispatchPass::bind_sample_resources(cd::rhi::IDevice&          device,
             .type          = cd::rhi::DescriptorType::kStorageImage,
             .view          = output_view,
         },
+        // phase1146 (P1): scene depth bound as a combined image sampler.
         cd::rhi::DescriptorWrite {
             .binding       = 1,
             .array_element = 0,
-            .type          = cd::rhi::DescriptorType::kStorageImage,
-            .view          = world_pos_view,
+            .type          = cd::rhi::DescriptorType::kCombinedImageSampler,
+            .view          = depth_view,
+            .sampler       = depth_sampler_,
         },
         cd::rhi::DescriptorWrite {
             .binding       = 2,
@@ -1054,6 +1167,57 @@ DispatchPass::bind_sample_resources(cd::rhi::IDevice&          device,
     sample_output_width_  = output_width;
     sample_output_height_ = output_height;
     return {};
+}
+
+// ---------------------------------------------------------------------------
+// phase1146 (P1) — set_inv_vp
+// ---------------------------------------------------------------------------
+cd::core::Result<void>
+DispatchPass::set_inv_vp(cd::rhi::IDevice& device, const cd::math::Mat4f& inv_vp)
+{
+    if (!sample_recon_ubo_.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::set_inv_vp called before init()"));
+    }
+    SampleReconstructUbo u {};
+    u.inv_vp = inv_vp;
+    return device.upload_buffer(
+        sample_recon_ubo_, 0U,
+        std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(&u), sizeof(u)));
+}
+
+// ---------------------------------------------------------------------------
+// phase1146 (P6) — set_sun_light
+// ---------------------------------------------------------------------------
+cd::core::Result<void>
+DispatchPass::set_sun_light(cd::rhi::IDevice&      device,
+                            const cd::math::Vec3f& sun_dir,
+                            const cd::math::Vec3f& sun_col,
+                            float                  ambient)
+{
+    if (!trace_light_ubo_.is_valid())
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kInvalidArgument,
+            "DispatchPass::set_sun_light called before init() or on the "
+            "smoke (needs_tlas=false) variant (no light binding)"));
+    }
+    SceneLightUbo u {};
+    u.sun_dir[0] = sun_dir.x;
+    u.sun_dir[1] = sun_dir.y;
+    u.sun_dir[2] = sun_dir.z;
+    u.sun_dir[3] = 1.0F;
+    u.sun_col[0] = sun_col.x;
+    u.sun_col[1] = sun_col.y;
+    u.sun_col[2] = sun_col.z;
+    u.sun_col[3] = ambient;
+    return device.upload_buffer(
+        trace_light_ubo_, 0U,
+        std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>(&u), sizeof(u)));
 }
 
 // ---------------------------------------------------------------------------

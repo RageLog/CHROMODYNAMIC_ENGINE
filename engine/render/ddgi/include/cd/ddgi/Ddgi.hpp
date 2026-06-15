@@ -370,6 +370,16 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT cd_tlas;
 layout(set = 0, binding = 1, rgba16f) uniform image2D ray_radiance;
 // rg16f:   per-ray hit direction (packed octahedral) and distance.
 layout(set = 0, binding = 2, rg16f)   uniform image2D ray_dir_dist;
+// phase1146 (P6 visual gate): scene light UBO. Mirrors the host
+// cd::ddgi::SceneLightUbo POD — the same sun direction + colour the
+// prim shader consumes — so a ray-query hit shades with REAL Lambertian
+// radiance instead of the old ~0.1 grey placeholder. sun_dir.xyz is the
+// world-space direction TOWARD the sun (normalised host-side);
+// sun_col.xyz is the linear radiance, sun_col.w an ambient/sky floor.
+layout(set = 0, binding = 3) uniform CdDdgiLights {
+    vec4 sun_dir;     // xyz = unit dir toward sun, w = intensity scale
+    vec4 sun_col;     // xyz = linear colour, w = ambient floor
+} cd_lights;
 
 layout(push_constant) uniform PC {
     vec3  grid_origin;   float max_distance;
@@ -418,8 +428,27 @@ void main() {
         gl_RayQueryCommittedIntersectionTriangleEXT)
     {
         dist = rayQueryGetIntersectionTEXT(rq, true);
-        // Placeholder: real shading via material/light UBO goes here (phase527).
-        radiance = vec4(0.1, 0.1, 0.1, dist);
+
+        // phase1146 (P6 visual gate): REAL first-bounce Lambertian shading.
+        // ray_query (no closest-hit shader) gives us no interpolated normal
+        // or albedo at the hit, so we approximate the diffuse response the
+        // surface returns toward the probe. The probe collects the radiance
+        // leaving the hit surface back along -dir; for a Lambertian surface
+        // lit by the sun this is rho/pi * sun_col * max(0, N·L). We do not
+        // have N, so we use the most physically defensible surrogate: the
+        // surface faces back toward the probe (N ≈ -dir), giving N·L =
+        // max(0, dot(-dir, sun_dir)). A constant grey-ish albedo (0.5)
+        // stands in for the unknown material — this is the standard DDGI
+        // "diffuse-only first bounce" approximation when a hit-shader is not
+        // wired. Plus a small ambient floor so fully shadowed hits still
+        // bleed a little colour (Majercik §4 sky fallback intent).
+        const float kInvPi  = 0.31830988618;
+        const float kAlbedo = 0.5;
+        vec3  L      = normalize(cd_lights.sun_dir.xyz);
+        float ndotl  = max(0.0, dot(-dir, L));
+        vec3  direct = cd_lights.sun_col.rgb * (kAlbedo * kInvPi * ndotl);
+        vec3  ambient = pc.sky_color * cd_lights.sun_col.w;
+        radiance = vec4(direct + ambient, dist);
     }
 
     ivec2 px_out = ivec2(int(ray_idx), int(probe_idx));
@@ -709,15 +738,25 @@ constexpr std::string_view kDdgiSampleCS = R"glsl(
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Output: per-pixel indirect irradiance.
+// Output: HDR scene buffer. The indirect irradiance is ADDED (read-modify-
+// write) into the existing scene colour, so DDGI is one extra diffuse bounce
+// on top of the direct lighting the raster pass already wrote.
 layout(set = 0, binding = 0, rgba16f) uniform image2D out_indirect;
-// G-Buffer: world position (xyz) — w unused.
-layout(set = 0, binding = 1, rgba16f) uniform image2D world_pos_image;
-// G-Buffer: world normal (xyz, normalised) — w unused.
+// phase1146 (P1): scene depth (sampled, NOT a storage image — D32F cannot be
+// a storage image). World position is reconstructed from depth + inv_vp,
+// avoiding a 9th render target for an explicit world-position G-buffer.
+layout(set = 0, binding = 1) uniform sampler2D depth_tex;
+// G-Buffer: world normal (xyz, normalised) — w = surface flag.
 layout(set = 0, binding = 2, rgba16f) uniform image2D world_normal_image;
 // Probe atlases.
 layout(set = 0, binding = 3, rgba16f) uniform image2D irradiance_atlas;
 layout(set = 0, binding = 4, rg16f)   uniform image2D visibility_atlas;
+// phase1146 (P1): inverse view-projection for depth -> world reconstruction.
+// Kept in a tiny UBO (not the push-constant block) because mat4 would push
+// SamplePushConstants to 144 B, over the 128 B push-constant floor.
+layout(set = 0, binding = 5) uniform CdDdgiSampleUbo {
+    mat4 inv_vp;
+} cd_ddgi;
 
 layout(push_constant) uniform PC {
     vec3  grid_origin;   float _pad0;
@@ -758,7 +797,23 @@ void main() {
     if (pix.x >= pc.output_width || pix.y >= pc.output_height) return;
 
     ivec2 ipix = ivec2(pix);
-    vec3 wp = imageLoad(world_pos_image,    ipix).xyz;
+
+    // phase1146 (P1): reconstruct world position from depth + inv_vp.
+    // The depth target stores gl_Position.z/w in [0,1] (Vulkan clip). The
+    // raster vertex shader applied clip.y = -clip.y, so the framebuffer is
+    // upright; we undo that here by negating the NDC y when building the clip
+    // point fed to inverse(VP). depth == 1.0 is the cleared far plane (sky /
+    // no geometry) — leave those pixels untouched so DDGI never tints the sky.
+    float depth = texelFetch(depth_tex, ipix, 0).r;
+    if (depth >= 1.0) return;
+
+    vec2 uv  = (vec2(pix) + 0.5) / vec2(float(pc.output_width),
+                                        float(pc.output_height));
+    vec2 ndc = uv * 2.0 - 1.0;                 // [-1, 1]
+    vec4 clip = vec4(ndc.x, -ndc.y, depth, 1.0);
+    vec4 wp4  = cd_ddgi.inv_vp * clip;
+    vec3 wp   = wp4.xyz / wp4.w;
+
     vec3 n_raw = imageLoad(world_normal_image, ipix).xyz;
     float nl = length(n_raw);
     vec3 n  = (nl > 1e-6) ? (n_raw / nl) : vec3(0.0, 1.0, 0.0);
@@ -811,7 +866,16 @@ void main() {
     }
 
     vec3 indirect = (w_total > 1e-6) ? (irr_accum / w_total) : pc.sky_color;
-    imageStore(out_indirect, ipix, vec4(indirect, 1.0));
+
+    // phase1146 (P4): ADD the indirect diffuse bounce into the HDR scene
+    // colour (read-modify-write) rather than overwriting it. A Lambertian
+    // surface re-radiates albedo/pi * irradiance; the trace pass already
+    // folded the 1/pi + albedo surrogate into the stored radiance, so here
+    // we add the gathered irradiance modulated by a conservative albedo so
+    // the bounce reads as a subtle fill, not a wash-out.
+    const float kSurfaceAlbedo = 0.6;
+    vec3 prev = imageLoad(out_indirect, ipix).rgb;
+    imageStore(out_indirect, ipix, vec4(prev + indirect * kSurfaceAlbedo, 1.0));
 }
 )glsl";
 

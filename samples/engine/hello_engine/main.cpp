@@ -193,6 +193,7 @@
 #include "HelloRayQuery.hpp"
 #include "HelloPbrGrid.hpp"
 #include "HelloEngineFx.hpp"
+#include "HelloDdgi.hpp"
 #include "HelloDebugOverlays.hpp"
 #include "HelloSkinned.hpp"
 #include "HelloTlasRing.hpp"
@@ -2436,6 +2437,18 @@ inline void draw_r_showcase_panel(cd_sample::HelloEngineFx& fx,
     // ImGui panel.
     if (ImGui::CollapsingHeader("R4  GI (ReSTIR / DDGI / NRC)"))
     {
+        // phase1146: REAL DDGI GPU dispatch toggle. Drives the
+        // cd::ddgi::FullPipeline (trace -> blend -> sample) that ADDs an
+        // indirect diffuse bounce into the HDR scene each frame. Needs a
+        // ray-query device + a valid scene TLAS; the render loop falls back
+        // to a no-op when either is missing. Default OFF (golden parity).
+        ImGui::Separator();
+        ImGui::TextUnformatted("DDGI indirect bounce (real GPU):");
+        if (ImGui::Checkbox("DDGI ON (8x4x8 probes, ADDs into HDR)", &fx.ddgi_on))
+            log_push(fx.ddgi_on ? "[gi] DDGI ON - real GPU indirect bounce"
+                                : "[gi] DDGI off");
+        ImGui::TextDisabled("Trace via ray-query TLAS; Sponza-aligned grid.");
+
         // phase991-r-showcase-passive-cleanup: removed the 4 BulletText
         // gtest pointer lines (pure docs); the live CPU demos below
         // are the active surface.
@@ -5170,6 +5183,10 @@ struct HelloEngineApp::EngineState
     cd_sample::HelloMeshes                   meshes;
     cd::rhi::AccelStructureHandle            current_tlas    {};
     std::deque<cd_sample::DeferredTlas>      tlas_destroy_queue;
+    // phase1146 — DDGI (Dynamic Diffuse GI) GPU pipeline. Booted lazily
+    // after the first TLAS build; the per-frame dispatch is gated on
+    // fx.ddgi_on (default OFF, so the golden fixture path is untouched).
+    cd_sample::HelloDdgi                     ddgi;
     // phase465-perprim: per-Sponza-prim representative reflection colour.
     // One entry per gltf_prim_range[i]; matches the multi-geometry BLAS
     // geometry ordering 1:1.  Used by rebuild_tlas_and_transition_depth's
@@ -6207,6 +6224,10 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 continue;
             cd_sample::bind_bloom_descriptors(s);
             cd_sample::bind_composite_hdr_descriptors(s);
+            // phase1146: the HDR / depth / normal views the DDGI sample pass
+            // points at were just destroyed + recreated — force a rebind on
+            // the next frame against the fresh views.
+            s.ddgi.bound = false;
             s.depth_initialised_on_gpu = false;
             s.needs_rebuild = false;
         }
@@ -6496,6 +6517,31 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
                 s.meshes.gltf_cesium_prim_ranges,
                 s.current_tlas, s.inst_mat_ssbo,
                 cd::hello_engine::kInstMatBytes);
+        }
+
+        // phase1146 (P2/P3): boot + bind the DDGI GPU pipeline lazily. Boot
+        // once after the first TLAS exists (the trace pass needs ray-query);
+        // bind the sample pass to HDR (output, ADD) + depth (world-pos
+        // reconstruct) + G-buffer normal whenever the bound viewport extent
+        // changes (boot + window resize). This is pure resource setup — no
+        // dispatch is recorded here, so the golden fixture (ddgi OFF) path
+        // stays byte-identical regardless of whether the pipeline is booted.
+        const bool ddgi_wanted = (s.fx.ddgi_on || cd_sample::g_ddgi_force_on)
+                                 && s.current_tlas.is_valid()
+                                 && device.features().ray_query;
+        if (ddgi_wanted)
+        {
+            if (!s.ddgi.inited)
+                (void)s.ddgi.boot(device);
+            if (s.ddgi.inited &&
+                (!s.ddgi.bound ||
+                 s.ddgi.vp_w != frame.extent.width ||
+                 s.ddgi.vp_h != frame.extent.height))
+            {
+                (void)s.ddgi.bind(device, s.rts.hdr.view, s.rts.depth.view,
+                                  s.rts.gbuf_normal.view,
+                                  frame.extent.width, frame.extent.height);
+            }
         }
 
         const SunLight sun = resolve_sun_light(s.lights);
@@ -6839,6 +6885,49 @@ void HelloEngineApp::on_frame(const cd::sample::FrameContext& /*fc*/)
             cmd.barrier({}, hb);
         }
 
+        // phase1146 (P4): DDGI indirect bounce. Runs AFTER the HDR scene pass
+        // closed (hdr + gbuf_normal now kShaderResource, depth kDepthWrite)
+        // and BEFORE the composite reads HDR, so the diffuse GI ADDS into the
+        // HDR buffer. Gated on (fx.ddgi_on || force) && a valid TLAS — the
+        // golden fixture path leaves ddgi_on false so the chrome golden is
+        // untouched. Depth is bounced kDepthWrite -> kShaderResource for the
+        // dispatch (world-pos reconstruct) then restored to kDepthWrite so
+        // the velocity pass's kDepthWrite -> kDepthRead transition stays valid.
+        if (ddgi_wanted && s.ddgi.inited && s.ddgi.bound)
+        {
+            {
+                std::array<cd::rhi::TextureBarrier, 1> dsr {
+                    cd::rhi::TextureBarrier { .texture = s.rts.depth.image,
+                        .from = cd::rhi::ResourceState::kDepthWrite,
+                        .to   = cd::rhi::ResourceState::kShaderResource,
+                        .range = { 0, 1, 0, 1 } }
+                };
+                cmd.barrier({}, dsr);
+            }
+
+            // SunLight::dir is the direction light TRAVELS; the DDGI trace
+            // shader wants the direction TOWARD the sun (for N·L), so negate.
+            // Scale colour by the sun strength so the indirect bounce tracks
+            // the scene's direct-light intensity.
+            const cd::math::Vec3f ddgi_sun_dir { -sun.dir.x, -sun.dir.y, -sun.dir.z };
+            const float ddgi_sun_k = (sun.strength > 0.0F) ? sun.strength : 1.0F;
+            const cd::math::Vec3f ddgi_sun_col {
+                sun.col.x * ddgi_sun_k, sun.col.y * ddgi_sun_k, sun.col.z * ddgi_sun_k };
+            s.ddgi.execute_frame(
+                device, cmd, s.rts.hdr.image, s.rts.gbuf_normal.image,
+                s.current_tlas, vp, ddgi_sun_dir, ddgi_sun_col, s.frame_idx);
+
+            {
+                std::array<cd::rhi::TextureBarrier, 1> dre {
+                    cd::rhi::TextureBarrier { .texture = s.rts.depth.image,
+                        .from = cd::rhi::ResourceState::kShaderResource,
+                        .to   = cd::rhi::ResourceState::kDepthWrite,
+                        .range = { 0, 1, 0, 1 } }
+                };
+                cmd.barrier({}, dre);
+            }
+        }
+
         velocity_gbuffer_pass(cmd, s.frame_idx, s.rts.gbuf_velocity, s.rts.depth,
                               frame.extent, s.materials.velocity,
                               s.entities, s.scene, s.prev_vp_unjittered, vp_unj, mesh_for);
@@ -7159,6 +7248,9 @@ void HelloEngineApp::on_shutdown() noexcept
     if (s.mr_tex.image.is_valid())     device.destroy_texture(s.mr_tex.image);
 
     device.wait_idle();
+    // phase1146: free the DDGI GPU pipeline (pipelines / atlases / UBOs /
+    // sampler) before the TLAS + device teardown.
+    s.ddgi.shutdown(device);
     if (s.current_tlas.is_valid())
         device.destroy_acceleration_structure(s.current_tlas);
     while (!s.tlas_destroy_queue.empty())
@@ -7189,6 +7281,16 @@ int main(int argc, char** argv)
     // --golden-frames N before App construction. Runtime path is
     // unchanged when the flag is absent.
     (void)cd::hello_engine::golden::parse(argc, argv);
+    // phase1146 (VERIFY step 4): --ddgi-force-on forces DDGI on for a
+    // capture run (proves the on-path is non-trivial vs the off baseline)
+    // without touching the default / golden-fixture path. Kept as a plain
+    // argv scan so it composes with --golden-fixture for an on-capture.
+    for (int i = 1; i < argc; ++i)
+    {
+        if (argv[i] != nullptr &&
+            std::string_view { argv[i] } == "--ddgi-force-on")
+            cd_sample::g_ddgi_force_on = true;
+    }
     return cd::sample::run<HelloEngineApp>(argc, argv);
 }
 // ============================================================================
