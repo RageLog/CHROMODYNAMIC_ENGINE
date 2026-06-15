@@ -177,7 +177,17 @@
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/NullCommandBuffer.hpp>
 
+// M6 (ADR-20260615): the host-side GLSL/SPIR-V -> MSL toolchain
+// (cd::rhi_metal_shader) + the glslang front-end + the gluon include resolver.
+// The .mm CONSUMES the MSL text these produce; it never inlines the
+// cross-compile logic (ADR invariant iv).
+#include <cd/rhi/metal/MetalShaderToolchain.hpp>
+#include <cd/shader/Compiler.hpp>
+#include <cd/gluon/ModuleRegistry.hpp>
+
 #include "MetalInternal.hpp"
+
+#include <span>
 
 #include <atomic>
 #include <cstdio>
@@ -195,6 +205,8 @@ namespace cd::rhi::metal
 namespace
 {
 
+using detail::MetalAccelObj;
+using detail::MetalBufferObj;
 using detail::MetalCommandBufferImpl;
 using detail::MetalComputePipelineObj;
 using detail::MetalDescriptorSetLayoutObj;
@@ -203,10 +215,12 @@ using detail::MetalDeviceCtx;
 using detail::MetalEventObj;
 using detail::MetalFenceObj;
 using detail::MetalGraphicsPipelineObj;
+using detail::MetalGraphicsPipelineStateObj;
 using detail::MetalPipelineLayoutObj;
 using detail::MetalSamplerObj;
 using detail::MetalShaderModuleObj;
 using detail::MetalSwapchainObj;
+using detail::MetalTextureObj;
 using detail::MetalTextureViewObj;
 using detail::MetalTimelineObj;
 
@@ -244,6 +258,145 @@ kNotImpl(const char* fn) noexcept
 }
 
 // ---------------------------------------------------------------------------
+// M1/M2 (ADR-20260615) — shared format + resource-state helpers.
+//
+// These mirror the Vulkan back-end's map_* helpers (VulkanDevice.cpp:286+
+// map_format, 158 map_texture_type, 137 map_texture_usage) so the same
+// cd::rhi::Format / TextureType / TextureUsage produce parity-equivalent
+// native objects. The list intentionally covers the formats the engine
+// actually uses (swapchain BGRA, HDR RGBA16F, depth D32/D24S8, sampled
+// RGBA8); the ADR's follow-up MetalFormat.mm hosts the long tail.
+// ---------------------------------------------------------------------------
+[[nodiscard]] MTLPixelFormat
+metal_pixel_format(Format f, MTLPixelFormat fallback) noexcept
+{
+    switch (f)
+    {
+    case Format::kUndefined:       return fallback;
+    case Format::kR8Unorm:         return MTLPixelFormatR8Unorm;
+    case Format::kRG8Unorm:        return MTLPixelFormatRG8Unorm;
+    case Format::kRGBA8Unorm:      return MTLPixelFormatRGBA8Unorm;
+    case Format::kRGBA8Srgb:       return MTLPixelFormatRGBA8Unorm_sRGB;
+    case Format::kBGRA8Unorm:      return MTLPixelFormatBGRA8Unorm;
+    case Format::kBGRA8Srgb:       return MTLPixelFormatBGRA8Unorm_sRGB;
+    case Format::kR16Float:        return MTLPixelFormatR16Float;
+    case Format::kRG16Float:       return MTLPixelFormatRG16Float;
+    case Format::kRGBA16Float:     return MTLPixelFormatRGBA16Float;
+    case Format::kR32Float:        return MTLPixelFormatR32Float;
+    case Format::kRG32Float:       return MTLPixelFormatRG32Float;
+    case Format::kRGBA32Float:     return MTLPixelFormatRGBA32Float;
+    case Format::kRG32Uint:        return MTLPixelFormatRG32Uint;
+    case Format::kR32Uint:         return MTLPixelFormatR32Uint;
+    case Format::kRGBA32Uint:      return MTLPixelFormatRGBA32Uint;
+    case Format::kR11G11B10Float:  return MTLPixelFormatRG11B10Float;
+    case Format::kRGB10A2Unorm:    return MTLPixelFormatRGB10A2Unorm;
+    case Format::kRGB9E5Float:     return MTLPixelFormatRGB9E5Float;
+    case Format::kD16Unorm:        return MTLPixelFormatDepth16Unorm;
+    case Format::kD32Float:        return MTLPixelFormatDepth32Float;
+    case Format::kD24UnormS8Uint:  return MTLPixelFormatDepth24Unorm_Stencil8;
+    case Format::kD32FloatS8Uint:  return MTLPixelFormatDepth32Float_Stencil8;
+    case Format::kS8Uint:          return MTLPixelFormatStencil8;
+    default:                       return fallback;
+    }
+}
+
+[[nodiscard]] MTLTextureType metal_texture_type(TextureType t) noexcept
+{
+    switch (t)
+    {
+    case TextureType::k1D:        return MTLTextureType1D;
+    case TextureType::k2D:        return MTLTextureType2D;
+    case TextureType::k3D:        return MTLTextureType3D;
+    case TextureType::kCube:      return MTLTextureTypeCube;
+    case TextureType::k1DArray:   return MTLTextureType1DArray;
+    case TextureType::k2DArray:   return MTLTextureType2DArray;
+    case TextureType::kCubeArray: return MTLTextureTypeCubeArray;
+    }
+    return MTLTextureType2D;
+}
+
+[[nodiscard]] MTLTextureUsage metal_texture_usage(TextureUsage u) noexcept
+{
+    MTLTextureUsage out = MTLTextureUsageUnknown;
+    if (has(u, TextureUsage::kSampled))
+    {
+        out |= MTLTextureUsageShaderRead;
+    }
+    if (has(u, TextureUsage::kStorage))
+    {
+        out |= MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    }
+    if (has(u, TextureUsage::kColorAttachment)
+        || has(u, TextureUsage::kDepthStencilAttachment)
+        || has(u, TextureUsage::kInputAttachment))
+    {
+        out |= MTLTextureUsageRenderTarget;
+    }
+    return out;
+}
+
+// Storage mode for a buffer's MemoryUsage. Apple-Silicon unified memory means
+// Shared covers every CPU-visible case (the engine never targets discrete
+// Intel macs in Fork-A); GPU-only buffers use Private. Mirrors
+// VulkanDevice::map_vma_usage's host_visible decision.
+[[nodiscard]] MTLResourceOptions storage_options_for(MemoryUsage u) noexcept
+{
+    switch (u)
+    {
+    case MemoryUsage::kGpuOnly:
+        return MTLResourceStorageModePrivate;
+    case MemoryUsage::kCpuToGpu:
+    case MemoryUsage::kGpuToCpu:
+    case MemoryUsage::kCpuRandomAccess:
+    case MemoryUsage::kAuto:
+        return MTLResourceStorageModeShared;
+    }
+    return MTLResourceStorageModeShared;
+}
+
+// ---------------------------------------------------------------------------
+// M4 (ADR-20260615) — DescriptorType -> MTLArgumentDescriptor mapping. Each
+// Vulkan binding becomes one [[id(binding)]] entry inside the argument-buffer
+// struct; the dataType selects how update_descriptor_set encodes it
+// (setBuffer / setTexture / setSamplerState / setAccelerationStructure).
+// ---------------------------------------------------------------------------
+[[nodiscard]] MTLDataType arg_data_type_for(DescriptorType t) noexcept
+{
+    switch (t)
+    {
+    case DescriptorType::kUniformBuffer:
+    case DescriptorType::kStorageBuffer:
+    case DescriptorType::kUniformBufferDynamic:
+    case DescriptorType::kStorageBufferDynamic:
+        return MTLDataTypePointer;
+    case DescriptorType::kSampledImage:
+    case DescriptorType::kStorageImage:
+    case DescriptorType::kCombinedImageSampler:
+    case DescriptorType::kInputAttachment:
+    case DescriptorType::kBindlessSampledImage:
+        return MTLDataTypeTexture;
+    case DescriptorType::kSampler:
+        return MTLDataTypeSampler;
+    case DescriptorType::kAccelerationStructure:
+        return MTLDataTypeInstanceAccelerationStructure;
+    }
+    return MTLDataTypePointer;
+}
+
+[[nodiscard]] MTLArgumentAccess arg_access_for(DescriptorType t) noexcept
+{
+    switch (t)
+    {
+    case DescriptorType::kStorageBuffer:
+    case DescriptorType::kStorageBufferDynamic:
+    case DescriptorType::kStorageImage:
+        return MTLArgumentAccessReadWrite;
+    default:
+        return MTLArgumentAccessReadOnly;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MetalDevice — IDevice backed by an MTLDevice instance.
 //
 // phase548: MTLDevice is acquired via MTLCreateSystemDefaultDevice on
@@ -266,6 +419,19 @@ public:
         // is honoured; concrete values will come in Sprint 2.
         limits_ = DeviceLimits {};
         features_ = DeviceFeatures {};
+        // M9 (ADR-20260615): the Metal RT path is ray-query (inline RT) via
+        // MTLAccelerationStructure + the MSL metal::raytracing intersector,
+        // exactly the path the engine consumes (rayQueryEXT analog). Gate the
+        // bits on macOS Metal-3 ray-tracing support so callers branch on the
+        // real capability. ray_tracing here means "AS build + ray-query"
+        // (NOT the SBT pipeline — that stays kNotImplemented on every backend
+        // including Vulkan).
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            const bool rt = [mtl_device_ supportsRaytracing];
+            features_.ray_tracing = rt;
+            features_.ray_query   = rt;
+        }
     }
 
     ~MetalDevice() override = default;
@@ -287,26 +453,117 @@ public:
     [[nodiscard]] const DeviceFeatures& features() const noexcept override { return features_; }
 
     // ---- Resource creation ---------------------------------------------------
-    // create_buffer and create_texture return valid stub handles so callers
-    // can exercise the factory path without a real GPU allocation. Sprint 2
-    // backs these with actual MTLBuffer / MTLTexture objects.
+    // M1 (ADR-20260615): real [device newBufferWithLength:options:] allocation
+    // with a handle->id<MTLBuffer> registry. The storage mode is chosen from
+    // BufferDesc::memory exactly as the Vulkan back-end picks a VMA usage:
+    //   * kGpuOnly             -> Private (GPU-only; uploads go via blit copy)
+    //   * kCpuToGpu/kGpuToCpu/
+    //     kCpuRandomAccess/kAuto -> Shared (CPU-visible unified memory; the
+    //                              dominant Apple-Silicon case — host writes
+    //                              land straight in the GPU-visible region).
+    // Mirrors VulkanDevice::create_buffer (size==0 -> kInvalidArgument; alloc
+    // failure -> kResourceCreationFailed). Once this lights up, every path
+    // that resolves a buffer (copy_buffer, bind_vertex_buffer, draw_indexed,
+    // upload_buffer) does real work instead of a graceful skip.
     [[nodiscard]] cd::core::Result<BufferHandle>
-    create_buffer(const BufferDesc& /*desc*/) override
+    create_buffer(const BufferDesc& desc) override
     {
+        if (desc.size == 0u)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_buffer: size == 0"));
+        }
+        const MTLResourceOptions opts = storage_options_for(desc.memory);
+        id<MTLBuffer> buf =
+            [mtl_device_ newBufferWithLength:static_cast<NSUInteger>(desc.size)
+                                     options:opts];
+        if (buf == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_buffer: newBufferWithLength returned nil"));
+        }
+
         const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
-        return BufferHandle { id, 1u };
+        const BufferHandle h { id, 1u };
+
+        const std::scoped_lock lock { buffers_mu_ };
+        buffers_.emplace(h.index(),
+                         std::make_unique<MetalBufferObj>(buf, desc.memory));
+        return h;
     }
 
-    void destroy_buffer(BufferHandle /*h*/) override {}
+    void destroy_buffer(BufferHandle h) override
+    {
+        const std::scoped_lock lock { buffers_mu_ };
+        buffers_.erase(h.index());
+    }
 
+    // M1 (ADR-20260615): real [device newTextureWithDescriptor:] allocation.
+    // MTLTextureDescriptor mirrors the Vulkan VkImageCreateInfo translation:
+    // pixelFormat from Format, width/height/depth from extent, mipmapLevelCount
+    // from mip_levels, arrayLength from array_layers, usage from TextureUsage,
+    // sampleCount from samples, textureType from TextureType. storageMode is
+    // Private by default (GPU-only render targets / sampled textures);
+    // host-visible texture memory is uncommon and uploads go via blit. Mirrors
+    // VulkanDevice::create_texture validation (zero extent / kUndefined format
+    // -> kInvalidArgument; alloc failure -> kResourceCreationFailed).
     [[nodiscard]] cd::core::Result<TextureHandle>
-    create_texture(const TextureDesc& /*desc*/) override
+    create_texture(const TextureDesc& desc) override
     {
+        if (desc.extent.width == 0u || desc.extent.height == 0u)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_texture: zero extent"));
+        }
+        if (desc.format == Format::kUndefined)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_texture: kUndefined format"));
+        }
+
+        MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
+        td.textureType      = metal_texture_type(desc.type);
+        td.pixelFormat      = metal_pixel_format(desc.format,
+                                                 MTLPixelFormatRGBA8Unorm);
+        td.width            = static_cast<NSUInteger>(desc.extent.width);
+        td.height           = static_cast<NSUInteger>(desc.extent.height);
+        td.depth            = (desc.type == TextureType::k3D)
+                                  ? static_cast<NSUInteger>(desc.extent.depth)
+                                  : 1u;
+        td.mipmapLevelCount = static_cast<NSUInteger>(
+            desc.mip_levels == 0u ? 1u : desc.mip_levels);
+        td.arrayLength      = static_cast<NSUInteger>(
+            desc.array_layers == 0u ? 1u : desc.array_layers);
+        td.sampleCount      = static_cast<NSUInteger>(desc.samples);
+        td.usage            = metal_texture_usage(desc.usage);
+        td.storageMode      = MTLStorageModePrivate;
+
+        id<MTLTexture> tex = [mtl_device_ newTextureWithDescriptor:td];
+        if (tex == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_texture: newTextureWithDescriptor returned nil"));
+        }
+
         const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
-        return TextureHandle { id, 1u };
+        const TextureHandle h { id, 1u };
+
+        const std::scoped_lock lock { textures_mu_ };
+        textures_.emplace(h.index(),
+                          std::make_unique<MetalTextureObj>(tex, desc.format));
+        return h;
     }
 
-    void destroy_texture(TextureHandle /*h*/) override {}
+    void destroy_texture(TextureHandle h) override
+    {
+        const std::scoped_lock lock { textures_mu_ };
+        textures_.erase(h.index());
+    }
 
     // phase649 (Sprint-5): real id<MTLTexture> newTextureViewWith* path.
     //
@@ -385,18 +642,49 @@ public:
         samplers_.erase(h.index());
     }
 
-    // phase572 (Sprint-3): real MTLLibrary + MTLFunction path.
+    // M6 (ADR-20260615): create_shader_module routes the source language to
+    // MSL exactly as the D3D12 backend routes it to DXIL (D16 symmetry).
     //
-    // ShaderModuleDesc::code is a UTF-8 MSL source string of length
-    // code_size; build_metal_shader_function compiles it via
-    // newLibraryWithSource: and resolves the entry-point function. Both
-    // the library and the function are retained inside MetalShaderModuleObj
-    // so the create_compute_pipeline factory can fetch them without
-    // re-compiling. Errors map to kResourceCreationFailed (not kNotImpl)
-    // so they surface as actionable shader-compile diagnostics to callers.
+    //   * kGlsl  -> compose_glsl_to_msl(spirv_compiler, GlslToMslDesc{...})
+    //              GLSL -> SPIR-V (glslang) -> MSL (SPIRV-Cross), with the M3
+    //              set-per-argument-buffer binding contract enforced
+    //              (argument_buffers = true, push_constant -> [[buffer(16)]]).
+    //   * kSpirv -> compose_spirv_to_msl(words, ...) — SPIR-V tail only.
+    //   * kBytecode (kMsl-equivalent legacy) -> the existing raw-MSL path.
+    //
+    // The MSL text from the toolchain feeds [device newLibraryWithSource:];
+    // the cleansed entry name (SPIRV-Cross renames "main" -> "main0" per
+    // stage) comes from MslArtifact::entry_point — we look the MTLFunction up
+    // by that name, NOT by assuming "main". The .mm only CONSUMES the toolchain
+    // output; the GLSL/SPIR-V->MSL logic stays host-side in cd::rhi_metal_shader.
     [[nodiscard]] cd::core::Result<ShaderModuleHandle>
     create_shader_module(const ShaderModuleDesc& desc) override
     {
+        if (desc.code == nullptr || desc.code_size == 0u)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_shader_module: empty source/bytecode"));
+        }
+
+        // Cross-compile path (kGlsl / kSpirv) -> MSL text via the M3 toolchain.
+        if (desc.language == ShaderSourceLanguage::kGlsl
+            || desc.language == ShaderSourceLanguage::kSpirv)
+        {
+            auto msl = cross_compile_to_msl(desc);
+            if (!msl.has_value())
+            {
+                return std::unexpected(rhi_errors::make_owning(
+                    rhi_errors::Code::kResourceCreationFailed,
+                    std::string { "Metal::create_shader_module (->MSL): " }
+                        + std::string { msl.error().message }));
+            }
+            return build_module_from_msl(msl->source, msl->entry_point,
+                                         desc.stage);
+        }
+
+        // Legacy path: desc.code is raw MSL/native (kBytecode default, or kMsl
+        // equivalent) — compile directly via build_metal_shader_function.
         std::string err_msg;
         id<MTLLibrary>  lib = nil;
         id<MTLFunction> fn  = detail::build_metal_shader_function(
@@ -501,37 +789,54 @@ public:
         pipeline_layouts_.erase(h.index());
     }
 
-    // --------------------------------------------------------------------------
-    // create_graphics_pipeline — Sprint-1 inline-MSL triangle pipeline.
-    // The descriptor is mostly ignored at this stage; we always build the
-    // same hard-coded triangle PSO so the swapchain pipeline can be smoke-
-    // tested end-to-end. The colour-attachment format is taken from
-    // desc.color_attachment_formats[0] when supplied, else BGRA8 sRGB.
-    // Sprint 2 wires in real shader-module compilation + vertex layouts.
-    // --------------------------------------------------------------------------
+    // M2 (ADR-20260615): desc-driven graphics pipeline. Builds a real
+    // MTLRenderPipelineState from the GraphicsPipelineDesc (vertex descriptor,
+    // colour-attachment format + blend, depth/stencil format, MSAA) + the
+    // M6-resolved vertex/fragment MTLFunctions, plus the matching
+    // MTLDepthStencilState and resolved raster state. Mirrors the Vulkan
+    // VkGraphicsPipelineCreateInfo translation. The triangle-only Sprint-1
+    // path is gone — the engine's real Sponza/PBR/IBL/shadow pipelines now
+    // build from their descriptors.
     [[nodiscard]] cd::core::Result<GraphicsPipelineHandle>
     create_graphics_pipeline(const GraphicsPipelineDesc& desc) override
     {
-        MTLPixelFormat fmt = MTLPixelFormatBGRA8Unorm_sRGB;
-        if (!desc.color_attachment_formats.empty())
+        // Resolve the vertex (required) + fragment (optional, e.g. depth-only)
+        // shader modules from the registry. Unknown handles -> kInvalidArgument
+        // so callers fix bind-order bugs rather than chase a Metal validation
+        // assert.
+        const MetalShaderModuleObj* vs =
+            lookup_shader_module(desc.vertex_shader);
+        if (vs == nullptr || vs->fn() == nil)
         {
-            // Re-use the swapchain's format mapping by routing through the
-            // same lookup helper would create a circular dependency; for
-            // Sprint-1 we only need to honour the most common cases.
-            switch (desc.color_attachment_formats[0])
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_graphics_pipeline: unknown / unresolved "
+                "vertex shader module"));
+        }
+        id<MTLFunction> fs_fn = nil;
+        if (desc.fragment_shader.is_valid())
+        {
+            const MetalShaderModuleObj* fs =
+                lookup_shader_module(desc.fragment_shader);
+            if (fs == nullptr || fs->fn() == nil)
             {
-            case Format::kBGRA8Unorm:  fmt = MTLPixelFormatBGRA8Unorm; break;
-            case Format::kBGRA8Srgb:   fmt = MTLPixelFormatBGRA8Unorm_sRGB; break;
-            case Format::kRGBA8Unorm:  fmt = MTLPixelFormatRGBA8Unorm; break;
-            case Format::kRGBA8Srgb:   fmt = MTLPixelFormatRGBA8Unorm_sRGB; break;
-            case Format::kRGBA16Float: fmt = MTLPixelFormatRGBA16Float; break;
-            default: break;
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::create_graphics_pipeline: unknown / unresolved "
+                    "fragment shader module"));
             }
+            fs_fn = fs->fn();
         }
 
         std::string err_msg;
+        id<MTLDepthStencilState> dss = nil;
+        MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+        MTLCullMode      cull = MTLCullModeNone;
+        MTLWinding       winding = MTLWindingClockwise;
         id<MTLRenderPipelineState> pso =
-            detail::build_sprint1_triangle_pipeline(mtl_device_, fmt, &err_msg);
+            detail::build_metal_graphics_pipeline(
+                mtl_device_, desc, vs->fn(), fs_fn,
+                &dss, &primitive, &cull, &winding, &err_msg);
         if (pso == nil)
         {
             return std::unexpected(rhi_errors::make_owning(
@@ -544,7 +849,10 @@ public:
         const GraphicsPipelineHandle h { id, 1u };
 
         const std::scoped_lock lock { pipelines_mu_ };
-        pipelines_.emplace(h.index(), std::make_unique<MetalGraphicsPipelineObj>(pso));
+        pipelines_.emplace(
+            h.index(),
+            std::make_unique<MetalGraphicsPipelineStateObj>(
+                pso, dss, primitive, cull, winding));
         return h;
     }
 
@@ -611,6 +919,96 @@ public:
         compute_pipelines_.erase(h.index());
     }
 
+    // M9 (ADR-20260615): create a BLAS / TLAS as a real
+    // id<MTLAccelerationStructure>. The descriptor is built here (host side)
+    // and the actual build runs on the command-buffer-side AS encoder (so it
+    // can be batched + barriered with the rest of the frame, mirroring the
+    // Vulkan vkCmdBuildAccelerationStructures path). This is the RHI's REAL
+    // RT surface (AS build + ray-query); the SBT-pipeline surface
+    // (create_rt_pipeline) intentionally stays kNotImplemented exactly as it
+    // is on Vulkan.
+    //
+    //   * BLAS: MTLPrimitiveAccelerationStructureDescriptor +
+    //           MTLAccelerationStructureTriangleGeometryDescriptor per
+    //           AccelTriangleGeometry (vertex/index buffer resolved from the
+    //           M1 registry).
+    //   * TLAS: MTLInstanceAccelerationStructureDescriptor referencing the
+    //           per-instance BLAS list + a Shared instance-descriptor buffer
+    //           (MTLAccelerationStructureInstanceDescriptor packed from
+    //           AccelInstance: transform / mask / instance_id).
+    [[nodiscard]] cd::core::Result<AccelStructureHandle>
+    create_acceleration_structure(const AccelStructureDesc& desc) override
+    {
+        if (!features_.ray_tracing)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_acceleration_structure: device does not "
+                "support ray tracing"));
+        }
+
+        MTLAccelerationStructureDescriptor* as_desc = nil;
+        if (desc.kind == AccelStructureKind::kBottomLevel)
+        {
+            auto built = build_blas_descriptor(desc);
+            if (!built.has_value())
+            {
+                return std::unexpected(built.error());
+            }
+            as_desc = *built;
+        }
+        else
+        {
+            auto built = build_tlas_descriptor(desc);
+            if (!built.has_value())
+            {
+                return std::unexpected(built.error());
+            }
+            as_desc = *built;
+        }
+
+        const MTLAccelerationStructureSizes sizes =
+            [mtl_device_ accelerationStructureSizesWithDescriptor:as_desc];
+        id<MTLAccelerationStructure> as =
+            [mtl_device_ newAccelerationStructureWithSize:sizes.accelerationStructureSize];
+        if (as == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_acceleration_structure: "
+                "newAccelerationStructureWithSize returned nil"));
+        }
+        id<MTLBuffer> scratch = nil;
+        if (sizes.buildScratchBufferSize > 0u)
+        {
+            scratch = [mtl_device_
+                newBufferWithLength:sizes.buildScratchBufferSize
+                            options:MTLResourceStorageModePrivate];
+            if (scratch == nil)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kResourceCreationFailed,
+                    "Metal::create_acceleration_structure: scratch buffer "
+                    "allocation failed"));
+            }
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const AccelStructureHandle h { id, 1u };
+
+        const std::scoped_lock lock { accels_mu_ };
+        accels_.emplace(
+            h.index(),
+            std::make_unique<MetalAccelObj>(as, as_desc, scratch, desc.kind));
+        return h;
+    }
+
+    void destroy_acceleration_structure(AccelStructureHandle h) override
+    {
+        const std::scoped_lock lock { accels_mu_ };
+        accels_.erase(h.index());
+    }
+
     // phase649 (Sprint-5): real id<MTLArgumentEncoder> path.
     //
     // The argument encoder is built from the DescriptorSetLayoutBinding
@@ -634,36 +1032,67 @@ public:
     [[nodiscard]] cd::core::Result<DescriptorSetHandle>
     allocate_descriptor_set(DescriptorSetLayoutHandle layout) override
     {
-        // Resolve the layout — we don't actually need the binding table
-        // beyond confirming the handle is live for Sprint-5 (the encoder
-        // is built from a synthesised single-buffer argument so the
-        // engine's existing call sites compile end-to-end). The bindings
-        // table is still captured for the post-Sprint-5 promotion to
-        // per-binding MTLDataType emission.
+        // M4 (ADR-20260615): build a per-binding [MTLArgumentDescriptor] array
+        // from the layout's REAL binding table (M3 set-per-argument-buffer
+        // contract) instead of the Sprint-5 single-slot encoder. Each binding
+        // maps index = binding, dataType from DescriptorType:
+        //   kUniformBuffer / kStorageBuffer(*Dynamic) -> MTLDataTypePointer
+        //   kSampledImage / kStorageImage / kCombinedImageSampler /
+        //     kInputAttachment / kBindlessSampledImage  -> MTLDataTypeTexture
+        //   kSampler                                    -> MTLDataTypeSampler
+        //   kAccelerationStructure                      -> MTLDataTypeInstance
+        //                                                  AccelerationStructure
+        // arrayLength = binding.count (>= 1; bindless slot_count).
+        NSMutableArray<MTLArgumentDescriptor*>* args = [[NSMutableArray alloc] init];
         {
             const std::scoped_lock lock { dsl_mu_ };
-            if (layout.is_valid() && dsls_.find(layout.index()) == dsls_.end())
+            const auto it = (layout.is_valid())
+                                ? dsls_.find(layout.index())
+                                : dsls_.end();
+            if (layout.is_valid() && it == dsls_.end())
             {
                 return std::unexpected(rhi_errors::make(
                     rhi_errors::Code::kInvalidArgument,
                     "Metal::allocate_descriptor_set: unknown "
                     "DescriptorSetLayoutHandle"));
             }
+            if (it != dsls_.end())
+            {
+                for (const DescriptorSetLayoutBinding& b : it->second->bindings())
+                {
+                    MTLArgumentDescriptor* slot =
+                        [MTLArgumentDescriptor argumentDescriptor];
+                    slot.index = static_cast<NSUInteger>(b.binding);
+                    slot.dataType = arg_data_type_for(b.type);
+                    slot.access = arg_access_for(b.type);
+                    slot.arrayLength = static_cast<NSUInteger>(
+                        b.count == 0u ? 1u : b.count);
+                    if (slot.dataType == MTLDataTypeTexture)
+                    {
+                        slot.textureType = MTLTextureType2D;
+                    }
+                    [args addObject:slot];
+                }
+            }
         }
 
-        // Build a one-slot argument descriptor (Sprint-5 minimal surface).
-        // Per-binding MTLDataType / access emission expands here in a
-        // follow-up sprint once the engine wires bind_descriptor_set
-        // through to setBuffer:offset:atIndex: against the argument
-        // encoder.
-        MTLArgumentDescriptor* slot = [MTLArgumentDescriptor argumentDescriptor];
-        slot.index = 0;
-        slot.dataType = MTLDataTypePointer;
-        slot.access = MTLArgumentAccessReadWrite;
-        slot.arrayLength = 1;
+        // Empty layouts (zero bindings) are legal -- the engine binds an empty
+        // set as a "no resources" marker (VkDescriptorSet parity). Synthesise a
+        // single pointer slot so newArgumentEncoder does not reject an empty
+        // argument list; the cmd-buffer treats the resulting buffer as a no-op.
+        if ([args count] == 0u)
+        {
+            MTLArgumentDescriptor* slot =
+                [MTLArgumentDescriptor argumentDescriptor];
+            slot.index = 0;
+            slot.dataType = MTLDataTypePointer;
+            slot.access = MTLArgumentAccessReadWrite;
+            slot.arrayLength = 1;
+            [args addObject:slot];
+        }
 
         id<MTLArgumentEncoder> encoder =
-            [mtl_device_ newArgumentEncoderWithArguments:@[ slot ]];
+            [mtl_device_ newArgumentEncoderWithArguments:args];
         if (encoder == nil)
         {
             return std::unexpected(rhi_errors::make(
@@ -749,29 +1178,122 @@ public:
     // (writes are validated; their resolution feeds the lookup hooks but
     // no encoder side-effect lands yet). The existing call sites do not
     // change.
+    // M4 (ADR-20260615): real argument-encoder writes. For each DescriptorWrite
+    // we encode the resolved native object at [[id(binding)]] inside the
+    // argument buffer:
+    //   * UBO/SSBO(+dynamic) -> [encoder setBuffer:buf offset:o atIndex:binding]
+    //   * sampled/storage image / input attachment / combined / bindless ->
+    //     [encoder setTexture:tex atIndex:binding]
+    //   * sampler             -> [encoder setSamplerState:s atIndex:binding]
+    //   * acceleration struct -> [encoder setAccelerationStructure:as
+    //                             atIndex:binding] (the M9 ray-query TLAS
+    //                             binding; this is where the Sprint-5
+    //                             kInvalidArgument branch LIGHTS UP).
+    // Every referenced resource is also recorded for residency so
+    // bind_descriptor_set can [encoder useResource:] it. Unknown set / handle
+    // -> kInvalidArgument (matches the IDevice contract).
     [[nodiscard]] cd::core::Result<void>
-    update_descriptor_set(DescriptorSetHandle /*set*/,
+    update_descriptor_set(DescriptorSetHandle set,
                           std::span<const DescriptorWrite> writes) override
     {
+        MetalDescriptorSetObj* ds = lookup_descriptor_set(set);
+        if (ds == nullptr || ds->encoder() == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::update_descriptor_set: unknown descriptor set"));
+        }
+        id<MTLArgumentEncoder> enc = ds->encoder();
+        // The encoder already points at the argument buffer (set during
+        // allocate_descriptor_set). Resident lists are rebuilt from scratch so
+        // a re-write does not retain stale resources.
+        ds->reset_residents();
+
         for (const DescriptorWrite& w : writes)
         {
-            if (w.type == DescriptorType::kAccelerationStructure)
+            const NSUInteger idx = static_cast<NSUInteger>(w.binding);
+            switch (w.type)
             {
-                return std::unexpected(rhi_errors::make(
-                    rhi_errors::Code::kInvalidArgument,
-                    "Metal::update_descriptor_set: "
-                    "DescriptorType::kAccelerationStructure is not "
-                    "supported on the Metal backend yet (Metal RT is a "
-                    "separate roadmap tier; use the Vulkan / D3D12 "
-                    "backends for ray-tracing pipelines until then)"));
+            case DescriptorType::kUniformBuffer:
+            case DescriptorType::kStorageBuffer:
+            case DescriptorType::kUniformBufferDynamic:
+            case DescriptorType::kStorageBufferDynamic:
+            {
+                id<MTLBuffer> buf = lookup_buffer(w.buffer);
+                if (buf == nil)
+                {
+                    return std::unexpected(rhi_errors::make(
+                        rhi_errors::Code::kInvalidArgument,
+                        "Metal::update_descriptor_set: unknown buffer "
+                        "handle in a buffer descriptor write"));
+                }
+                [enc setBuffer:buf
+                        offset:static_cast<NSUInteger>(w.buffer_offset)
+                       atIndex:idx];
+                ds->add_resident_buffer(buf);
+                break;
             }
-            // Buffer / view / sampler resolutions are best-effort in
-            // Sprint-2; a nil result simply means the resource registry
-            // does not yet back the handle. Sprint-3 promotes any
-            // structural failure to kInvalidArgument.
-            (void)lookup_buffer(w.buffer);
-            (void)lookup_swapchain_view_texture(w.view);
-            (void)lookup_sampler(w.sampler);
+            case DescriptorType::kSampledImage:
+            case DescriptorType::kStorageImage:
+            case DescriptorType::kCombinedImageSampler:
+            case DescriptorType::kInputAttachment:
+            case DescriptorType::kBindlessSampledImage:
+            {
+                id<MTLTexture> tex = lookup_texture_view(w.view);
+                if (tex == nil)
+                {
+                    return std::unexpected(rhi_errors::make(
+                        rhi_errors::Code::kInvalidArgument,
+                        "Metal::update_descriptor_set: unknown texture "
+                        "view handle in an image descriptor write"));
+                }
+                [enc setTexture:tex atIndex:idx];
+                ds->add_resident_texture(tex);
+                // Combined image+sampler also encodes the sampler at the same
+                // logical binding+1 convention is NOT used here; SPIRV-Cross
+                // splits the sampler into its own binding, so a bare sampler
+                // descriptor handles it. If a sampler is supplied alongside,
+                // bind it at the same index (Metal allows a sampler slot
+                // co-located only when the MSL declares one; the engine uses
+                // split bindings, so this is a no-op when sampler is null).
+                if (w.type == DescriptorType::kCombinedImageSampler
+                    && w.sampler.is_valid())
+                {
+                    if (id<MTLSamplerState> s = lookup_sampler(w.sampler);
+                        s != nil)
+                    {
+                        [enc setSamplerState:s atIndex:idx];
+                    }
+                }
+                break;
+            }
+            case DescriptorType::kSampler:
+            {
+                id<MTLSamplerState> s = lookup_sampler(w.sampler);
+                if (s == nil)
+                {
+                    return std::unexpected(rhi_errors::make(
+                        rhi_errors::Code::kInvalidArgument,
+                        "Metal::update_descriptor_set: unknown sampler "
+                        "handle in a sampler descriptor write"));
+                }
+                [enc setSamplerState:s atIndex:idx];
+                break;
+            }
+            case DescriptorType::kAccelerationStructure:
+            {
+                MetalAccelObj* as = lookup_accel(w.accel);
+                if (as == nullptr || as->as() == nil)
+                {
+                    return std::unexpected(rhi_errors::make(
+                        rhi_errors::Code::kInvalidArgument,
+                        "Metal::update_descriptor_set: unknown / unbuilt "
+                        "acceleration-structure handle"));
+                }
+                [enc setAccelerationStructure:as->as() atIndex:idx];
+                break;
+            }
+            }
         }
         return {};
     }
@@ -1450,6 +1972,25 @@ public:
         return (it == pipelines_.end()) ? nil : it->second->pso();
     }
 
+    // M2 (ADR-20260615): richer pipeline-state lookup carrying the
+    // MTLDepthStencilState + resolved raster state.
+    [[nodiscard]] const MetalGraphicsPipelineStateObj*
+    lookup_graphics_pipeline_state(GraphicsPipelineHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { pipelines_mu_ };
+        const auto it = pipelines_.find(h.index());
+        return (it == pipelines_.end()) ? nullptr : it->second.get();
+    }
+
+    // M9 (ADR-20260615): acceleration-structure lookup.
+    [[nodiscard]] MetalAccelObj*
+    lookup_accel(AccelStructureHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { accels_mu_ };
+        const auto it = accels_.find(h.index());
+        return (it == accels_.end()) ? nullptr : it->second.get();
+    }
+
     [[nodiscard]] id<MTLTexture>
     lookup_swapchain_view_texture(TextureViewHandle h) const noexcept override
     {
@@ -1482,27 +2023,24 @@ public:
         return (it == swapchains_.end()) ? nullptr : it->second.get();
     }
 
-    // phase559 (Sprint-2): buffer / texture / sampler registry lookups.
-    //
-    // Sprint-2 only the sampler map can be non-empty — create_buffer +
-    // create_texture still hand out unbacked stub handles, so the buffer +
-    // texture lookups always miss. That keeps the cmd-buffer copy paths
-    // gracefully no-op until Sprint-3 ships real allocation.
+    // M1 (ADR-20260615): buffer / texture registry lookups now resolve to the
+    // real id<MTLBuffer> / id<MTLTexture> created by create_buffer /
+    // create_texture. nil for unknown handles (graceful skip on the cmd-buffer
+    // side, same shape as the rest of the resolver contract).
     [[nodiscard]] id<MTLBuffer>
-    lookup_buffer(BufferHandle /*h*/) const noexcept override
+    lookup_buffer(BufferHandle h) const noexcept override
     {
-        // Sprint-2 has no real buffer storage; buffer_objects_ is intentionally
-        // absent. Sprint-3 adds an `mutable std::mutex buffers_mu_;
-        // std::unordered_map<std::uint32_t, id<MTLBuffer>> buffer_objects_;`
-        // here and lights up this lookup.
-        return nil;
+        const std::scoped_lock lock { buffers_mu_ };
+        const auto it = buffers_.find(h.index());
+        return (it == buffers_.end()) ? nil : it->second->buffer();
     }
 
     [[nodiscard]] id<MTLTexture>
-    lookup_texture(TextureHandle /*h*/) const noexcept override
+    lookup_texture(TextureHandle h) const noexcept override
     {
-        // Same Sprint-3 promotion path as lookup_buffer above.
-        return nil;
+        const std::scoped_lock lock { textures_mu_ };
+        const auto it = textures_.find(h.index());
+        return (it == textures_.end()) ? nil : it->second->texture();
     }
 
     [[nodiscard]] id<MTLSamplerState>
@@ -1611,6 +2149,271 @@ private:
         return (it == swapchains_.end()) ? nullptr : it->second.get();
     }
 
+    // M6 (ADR-20260615): lazily-created glslang compiler (cd::shader). Only
+    // minted on the first kGlsl create_shader_module; the SPIR-V tail (kSpirv)
+    // does not need it. Single-threaded per the IDevice resource-thread
+    // contract (rule 1), so no extra lock beyond the global resource lock the
+    // caller already holds. Returns nullptr when glslang is unavailable
+    // (CD_ENABLE_GLSLANG=OFF) — surfaced as kResourceCreationFailed.
+    [[nodiscard]] cd::shader::ICompiler* glsl_compiler()
+    {
+        if (glsl_compiler_ == nullptr)
+        {
+            glsl_compiler_ = cd::shader::make_glslang_compiler();
+        }
+        return glsl_compiler_.get();
+    }
+
+    // M6: run the host-side GLSL/SPIR-V -> MSL toolchain (cd::rhi_metal_shader).
+    // The .mm only consumes the MSL text; the cross-compile logic stays in the
+    // host-side library so it compiles + tests on Windows. Honours the M3
+    // set-per-argument-buffer + [[buffer(16)]] push contract via the default
+    // MslBindingModel. The include_resolver follows the ADR-20260614 consumer
+    // pattern: a null desc.include_resolver bridges to the embedded cd::gluon
+    // catalogue through a function-local ModuleResolver kept in scope for the
+    // whole compile.
+    [[nodiscard]] cd::core::Result<MslArtifact>
+    cross_compile_to_msl(const ShaderModuleDesc& desc)
+    {
+        GlslToMslDesc gd {};
+        gd.stage = desc.stage;
+        gd.source_name = desc.debug_name.empty()
+                             ? std::string_view { "<inline>" }
+                             : desc.debug_name;
+        // Default MslBindingModel = { argument_buffers = true,
+        // push_constant_buffer_index = 16 } — the M3 contract. Leave as-is.
+
+        if (desc.language == ShaderSourceLanguage::kSpirv)
+        {
+            if ((desc.code_size % 4u) != 0u)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::create_shader_module: SPIR-V must be 32-bit "
+                    "aligned"));
+            }
+            const std::span<const std::uint32_t> words {
+                static_cast<const std::uint32_t*>(desc.code),
+                static_cast<std::size_t>(desc.code_size / 4u) };
+            return compose_spirv_to_msl(words, gd);
+        }
+
+        // kGlsl.
+        cd::shader::ICompiler* compiler = glsl_compiler();
+        if (compiler == nullptr)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_shader_module: GLSL requested but the glslang "
+                "front-end is unavailable (CD_ENABLE_GLSLANG=OFF)"));
+        }
+        cd::gluon::ModuleResolver default_resolver {};
+        auto* injected =
+            static_cast<cd::shader::IIncludeResolver*>(desc.include_resolver);
+        gd.glsl_source = std::string_view {
+            static_cast<const char*>(desc.code),
+            static_cast<std::size_t>(desc.code_size) };
+        gd.include_resolver =
+            (injected != nullptr) ? injected : &default_resolver;
+        return compose_glsl_to_msl(*compiler, gd);
+    }
+
+    // M6: compile MSL text into an MTLLibrary + resolve the cleansed entry
+    // function (SPIRV-Cross "main0" etc. via MslArtifact::entry_point), then
+    // register a MetalShaderModuleObj. Shared by the kGlsl + kSpirv paths.
+    [[nodiscard]] cd::core::Result<ShaderModuleHandle>
+    build_module_from_msl(const std::string& msl_source,
+                          const std::string& entry_point,
+                          ShaderStage stage)
+    {
+        NSString* src =
+            [[NSString alloc] initWithBytes:msl_source.data()
+                                     length:static_cast<NSUInteger>(msl_source.size())
+                                   encoding:NSUTF8StringEncoding];
+        if (src == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_shader_module: MSL text is not valid UTF-8"));
+        }
+
+        MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+        // Argument buffers (the M3 contract) need MSL 2.0+; pin 2.2 to match
+        // the toolchain's argument-buffer floor (MetalShaderToolchain.hpp:73).
+        opts.languageVersion = MTLLanguageVersion2_2;
+
+        NSError* err = nil;
+        id<MTLLibrary> lib =
+            [mtl_device_ newLibraryWithSource:src options:opts error:&err];
+        if (lib == nil)
+        {
+            std::string m = (err != nil)
+                ? std::string { [[err localizedDescription] UTF8String] }
+                : std::string { "newLibraryWithSource returned nil" };
+            return std::unexpected(rhi_errors::make_owning(
+                rhi_errors::Code::kResourceCreationFailed,
+                std::string { "Metal::create_shader_module (MSL compile): " }
+                    + std::move(m)));
+        }
+
+        NSString* ns_ep =
+            [[NSString alloc] initWithBytes:entry_point.data()
+                                     length:static_cast<NSUInteger>(entry_point.size())
+                                   encoding:NSUTF8StringEncoding];
+        id<MTLFunction> fn =
+            (ns_ep != nil) ? [lib newFunctionWithName:ns_ep] : nil;
+        if (fn == nil)
+        {
+            return std::unexpected(rhi_errors::make_owning(
+                rhi_errors::Code::kResourceCreationFailed,
+                std::string {
+                    "Metal::create_shader_module: entry point '" }
+                    + entry_point + "' not found in compiled MTLLibrary"));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const ShaderModuleHandle h { id, 1u };
+
+        const std::scoped_lock lock { shader_modules_mu_ };
+        shader_modules_.emplace(
+            h.index(),
+            std::make_unique<MetalShaderModuleObj>(lib, fn, stage));
+        return h;
+    }
+
+    // M9 (ADR-20260615): build a primitive (BLAS) acceleration-structure
+    // descriptor from the triangle geometries. Vertex / index buffers are
+    // resolved from the M1 registry; nil resolution -> kInvalidArgument
+    // (matches the Vulkan BLAS build which requires live VkBuffers).
+    [[nodiscard]] cd::core::Result<MTLPrimitiveAccelerationStructureDescriptor*>
+    build_blas_descriptor(const AccelStructureDesc& desc)
+    {
+        if (desc.triangles.empty())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_acceleration_structure: BLAS has no "
+                "triangle geometry"));
+        }
+        NSMutableArray<MTLAccelerationStructureGeometryDescriptor*>* geoms =
+            [[NSMutableArray alloc] init];
+        for (const AccelTriangleGeometry& tri : desc.triangles)
+        {
+            id<MTLBuffer> vb = lookup_buffer(tri.vertex_buffer);
+            if (vb == nil)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::create_acceleration_structure: BLAS vertex "
+                    "buffer handle does not resolve"));
+            }
+            MTLAccelerationStructureTriangleGeometryDescriptor* g =
+                [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+            g.vertexBuffer = vb;
+            g.vertexBufferOffset = static_cast<NSUInteger>(tri.vertex_offset);
+            g.vertexStride = static_cast<NSUInteger>(tri.vertex_stride);
+            if (tri.index_count > 0u)
+            {
+                id<MTLBuffer> ib = lookup_buffer(tri.index_buffer);
+                if (ib == nil)
+                {
+                    return std::unexpected(rhi_errors::make(
+                        rhi_errors::Code::kInvalidArgument,
+                        "Metal::create_acceleration_structure: BLAS index "
+                        "buffer handle does not resolve"));
+                }
+                g.indexBuffer = ib;
+                g.indexBufferOffset = static_cast<NSUInteger>(tri.index_offset);
+                g.indexType = (tri.index_type == IndexType::kUInt32)
+                                  ? MTLIndexTypeUInt32
+                                  : MTLIndexTypeUInt16;
+                g.triangleCount = static_cast<NSUInteger>(tri.index_count / 3u);
+            }
+            else
+            {
+                g.triangleCount = static_cast<NSUInteger>(tri.vertex_count / 3u);
+            }
+            [geoms addObject:g];
+        }
+        MTLPrimitiveAccelerationStructureDescriptor* pd =
+            [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        pd.geometryDescriptors = geoms;
+        return pd;
+    }
+
+    // M9 (ADR-20260615): build an instance (TLAS) acceleration-structure
+    // descriptor. References the per-instance BLAS list + a Shared
+    // instance-descriptor buffer packed from AccelInstance (the 3x4 row-major
+    // transform becomes Metal's MTLPackedFloat4x3, plus mask / instance_id).
+    [[nodiscard]] cd::core::Result<MTLInstanceAccelerationStructureDescriptor*>
+    build_tlas_descriptor(const AccelStructureDesc& desc)
+    {
+        if (desc.instances.empty())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_acceleration_structure: TLAS has no "
+                "instances"));
+        }
+        NSMutableArray<id<MTLAccelerationStructure>>* blas_list =
+            [[NSMutableArray alloc] init];
+        const NSUInteger count =
+            static_cast<NSUInteger>(desc.instances.size());
+        id<MTLBuffer> inst_buf = [mtl_device_
+            newBufferWithLength:count * sizeof(MTLAccelerationStructureInstanceDescriptor)
+                        options:MTLResourceStorageModeShared];
+        if (inst_buf == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_acceleration_structure: TLAS instance buffer "
+                "allocation failed"));
+        }
+        auto* inst =
+            static_cast<MTLAccelerationStructureInstanceDescriptor*>(
+                [inst_buf contents]);
+        for (std::size_t i = 0; i < desc.instances.size(); ++i)
+        {
+            const AccelInstance& src = desc.instances[i];
+            MetalAccelObj* blas = lookup_accel(src.blas);
+            if (blas == nullptr || blas->as() == nil)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::create_acceleration_structure: TLAS instance "
+                    "references an unknown / unbuilt BLAS"));
+            }
+            [blas_list addObject:blas->as()];
+
+            MTLAccelerationStructureInstanceDescriptor& dst = inst[i];
+            // AccelInstance.transform is 3x4 ROW-major (column 3 is
+            // translation). Metal's MTLPackedFloat4x3 is COLUMN-major with 4
+            // columns of 3 rows (column 3 is translation). Transpose: dst
+            // columns[c].elements[r] = src.transform[r*4 + c].
+            for (int c = 0; c < 4; ++c)
+            {
+                dst.transformationMatrix.columns[c].x = src.transform[0 * 4 + c];
+                dst.transformationMatrix.columns[c].y = src.transform[1 * 4 + c];
+                dst.transformationMatrix.columns[c].z = src.transform[2 * 4 + c];
+            }
+            dst.options = MTLAccelerationStructureInstanceOptionNone;
+            dst.mask = src.mask;
+            dst.intersectionFunctionTableOffset = 0;
+            dst.accelerationStructureIndex =
+                static_cast<uint32_t>([blas_list count] - 1u);
+        }
+
+        MTLInstanceAccelerationStructureDescriptor* td =
+            [MTLInstanceAccelerationStructureDescriptor descriptor];
+        td.instancedAccelerationStructures = blas_list;
+        td.instanceCount = count;
+        td.instanceDescriptorBuffer = inst_buf;
+        td.instanceDescriptorBufferOffset = 0;
+        td.instanceDescriptorStride =
+            sizeof(MTLAccelerationStructureInstanceDescriptor);
+        return td;
+    }
+
     id<MTLDevice>        mtl_device_ { nil };
     id<MTLCommandQueue>  mtl_queue_ { nil };
     std::string          adapter_name_;
@@ -1625,13 +2428,32 @@ private:
     mutable std::mutex   swapchains_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalSwapchainObj>> swapchains_;
 
+    // M2 (ADR-20260615): graphics-pipeline registry now stores the richer
+    // MetalGraphicsPipelineStateObj (MTLRenderPipelineState + matching
+    // MTLDepthStencilState + resolved cull/winding/primitive) instead of the
+    // Sprint-1 PSO-only wrapper, so bind_graphics_pipeline can apply the full
+    // raster + depth state.
     mutable std::mutex   pipelines_mu_;
-    std::unordered_map<std::uint32_t, std::unique_ptr<MetalGraphicsPipelineObj>> pipelines_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalGraphicsPipelineStateObj>> pipelines_;
 
-    // phase559: sampler-state registry. Buffer + texture maps land in
-    // Sprint 3 alongside the matching create_* promotions.
+    // phase559: sampler-state registry.
     mutable std::mutex   samplers_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalSamplerObj>> samplers_;
+
+    // M1 (ADR-20260615): real MTLBuffer / MTLTexture registries. These back
+    // the handle->object maps the Sprint-3 comments promised; lookup_buffer /
+    // lookup_texture resolve through them and every dependent path lights up.
+    mutable std::mutex   buffers_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalBufferObj>> buffers_;
+
+    mutable std::mutex   textures_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalTextureObj>> textures_;
+
+    // M9 (ADR-20260615): acceleration-structure registry (BLAS + TLAS). The
+    // ray-query RT path (NOT the SBT pipeline) consumes these via
+    // build_acceleration_structure + the argument-buffer TLAS binding.
+    mutable std::mutex   accels_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalAccelObj>> accels_;
 
     // phase572 (Sprint-3): shader-module + compute-pipeline registries.
     // The shader-module map owns the MTLLibrary + MTLFunction so the
@@ -1640,6 +2462,10 @@ private:
     mutable std::mutex   shader_modules_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalShaderModuleObj>>
         shader_modules_;
+
+    // M6 (ADR-20260615): lazily-minted glslang front-end for the kGlsl
+    // create_shader_module path. Constructed on first use via glsl_compiler().
+    std::unique_ptr<cd::shader::ICompiler> glsl_compiler_;
 
     mutable std::mutex   compute_pipelines_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalComputePipelineObj>>

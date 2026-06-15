@@ -209,6 +209,41 @@ build_sprint1_triangle_pipeline(id<MTLDevice> device, MTLPixelFormat color_forma
                                 std::string* error_out) noexcept;
 
 // ---------------------------------------------------------------------------
+// build_metal_graphics_pipeline — M2 (ADR-20260615) desc-driven PSO.
+//
+// Builds a real MTLRenderPipelineState + MTLDepthStencilState from a
+// GraphicsPipelineDesc, mirroring the Vulkan VkGraphicsPipelineCreateInfo
+// translation method-by-method:
+//   * vertexFunction / fragmentFunction  <- the M6-resolved MTLFunctions.
+//   * vertexDescriptor (MTLVertexDescriptor) <- VertexAttribute (format /
+//     offset / buffer-index) + VertexBinding (stride / step function).
+//   * colorAttachments[i] pixelFormat + blend <- color_attachment_formats[i]
+//     + BlendAttachmentState[i].
+//   * depthAttachmentPixelFormat / stencilAttachmentPixelFormat <-
+//     depth_attachment_format / stencil_attachment_format.
+//   * rasterSampleCount <- samples (MSAA).
+// The matching depth-stencil state object (depthCompareFunction +
+// depthWriteEnabled, gated on a present depth attachment exactly like the
+// Vulkan back-end) is emitted via `dss_out`. The resolved cull mode,
+// front-facing winding, and primitive type are emitted so the command
+// buffer can apply them on the render encoder (Metal carries these on the
+// encoder, not the PSO). Returns nil PSO on failure with `error_out`
+// populated.
+//
+// `vertex_fn` / `fragment_fn` are resolved by the caller from the bound
+// shader-module registry. `fragment_fn` may be nil for a depth-only pass.
+[[nodiscard]] id<MTLRenderPipelineState>
+build_metal_graphics_pipeline(id<MTLDevice> device,
+                              const GraphicsPipelineDesc& desc,
+                              id<MTLFunction> vertex_fn,
+                              id<MTLFunction> fragment_fn,
+                              id<MTLDepthStencilState>* dss_out,
+                              MTLPrimitiveType* primitive_out,
+                              MTLCullMode* cull_out,
+                              MTLWinding* winding_out,
+                              std::string* error_out) noexcept;
+
+// ---------------------------------------------------------------------------
 // MetalShaderModuleObj — phase572 / Sprint-3.
 //
 // Holds the id<MTLLibrary> compiled from MSL source plus the id<MTLFunction>
@@ -437,8 +472,117 @@ public:
 
     [[nodiscard]] std::size_t binding_count() const noexcept { return bindings_.size(); }
 
+    // M4 (ADR-20260615): expose the binding table so allocate_descriptor_set
+    // can build a per-binding [MTLArgumentDescriptor] array (index = binding,
+    // dataType from DescriptorType) instead of the Sprint-5 single-slot
+    // encoder. Honours the M3 set-per-argument-buffer contract.
+    [[nodiscard]] const std::vector<DescriptorSetLayoutBinding>&
+    bindings() const noexcept { return bindings_; }
+
 private:
     std::vector<DescriptorSetLayoutBinding> bindings_;
+};
+
+// ---------------------------------------------------------------------------
+// MetalBufferObj — id<MTLBuffer> wrapper (M1 — ADR-20260615 registry).
+//
+// Backs a cd::rhi::BufferHandle with a real MTLBuffer created via
+// [device newBufferWithLength:options:]. The storage mode is chosen from
+// BufferDesc::memory (kGpuOnly -> Private; host-visible variants -> Shared)
+// and cached so upload_buffer / download_buffer can validate host
+// visibility without re-querying. The original cd::rhi::MemoryUsage is kept
+// too so the device can mirror the Vulkan back-end's host_visible
+// precondition logic exactly.
+// ---------------------------------------------------------------------------
+class MetalBufferObj final
+{
+public:
+    MetalBufferObj(id<MTLBuffer> buffer, MemoryUsage memory) noexcept
+        : buffer_(buffer), memory_(memory) {}
+    ~MetalBufferObj() = default;
+    MetalBufferObj(const MetalBufferObj&) = delete;
+    MetalBufferObj& operator=(const MetalBufferObj&) = delete;
+    MetalBufferObj(MetalBufferObj&&) = delete;
+    MetalBufferObj& operator=(MetalBufferObj&&) = delete;
+
+    [[nodiscard]] id<MTLBuffer> buffer() const noexcept { return buffer_; }
+    [[nodiscard]] MemoryUsage   memory() const noexcept { return memory_; }
+
+private:
+    id<MTLBuffer> buffer_ { nil };
+    MemoryUsage   memory_ { MemoryUsage::kAuto };
+};
+
+// ---------------------------------------------------------------------------
+// MetalTextureObj — id<MTLTexture> wrapper (M1 — ADR-20260615 registry).
+//
+// Backs a cd::rhi::TextureHandle with a real MTLTexture created via
+// [device newTextureWithDescriptor:]. The originating cd::rhi::Format is
+// cached so texture-view resolution + copy-region row-stride derivation can
+// read it back without round-tripping through MTLPixelFormat.
+// ---------------------------------------------------------------------------
+class MetalTextureObj final
+{
+public:
+    MetalTextureObj(id<MTLTexture> texture, Format format) noexcept
+        : texture_(texture), format_(format) {}
+    ~MetalTextureObj() = default;
+    MetalTextureObj(const MetalTextureObj&) = delete;
+    MetalTextureObj& operator=(const MetalTextureObj&) = delete;
+    MetalTextureObj(MetalTextureObj&&) = delete;
+    MetalTextureObj& operator=(MetalTextureObj&&) = delete;
+
+    [[nodiscard]] id<MTLTexture> texture() const noexcept { return texture_; }
+    [[nodiscard]] Format         format() const noexcept { return format_; }
+
+private:
+    id<MTLTexture> texture_ { nil };
+    Format         format_ { Format::kUndefined };
+};
+
+// ---------------------------------------------------------------------------
+// MetalDepthStencilStateObj — id<MTLDepthStencilState> wrapper (M2 —
+// ADR-20260615 pipeline). Metal carries depth-test / depth-write / compare
+// in a SEPARATE state object from the render-pipeline-state (unlike Vulkan
+// which folds VkPipelineDepthStencilStateCreateInfo into the PSO). The
+// graphics-pipeline registry therefore owns BOTH the MTLRenderPipelineState
+// and the matching MTLDepthStencilState; the command buffer binds the
+// depth-stencil state with [encoder setDepthStencilState:] right after
+// [encoder setRenderPipelineState:]. We also carry the resolved cull mode /
+// winding / primitive type so the draw path can apply them per the bound
+// pipeline (Metal sets these on the encoder, not the PSO).
+// ---------------------------------------------------------------------------
+class MetalGraphicsPipelineStateObj final
+{
+public:
+    MetalGraphicsPipelineStateObj(id<MTLRenderPipelineState> pso,
+                                  id<MTLDepthStencilState> dss,
+                                  MTLPrimitiveType primitive,
+                                  MTLCullMode cull,
+                                  MTLWinding winding) noexcept
+        : pso_(pso)
+        , dss_(dss)
+        , primitive_(primitive)
+        , cull_(cull)
+        , winding_(winding) {}
+    ~MetalGraphicsPipelineStateObj() = default;
+    MetalGraphicsPipelineStateObj(const MetalGraphicsPipelineStateObj&) = delete;
+    MetalGraphicsPipelineStateObj& operator=(const MetalGraphicsPipelineStateObj&) = delete;
+    MetalGraphicsPipelineStateObj(MetalGraphicsPipelineStateObj&&) = delete;
+    MetalGraphicsPipelineStateObj& operator=(MetalGraphicsPipelineStateObj&&) = delete;
+
+    [[nodiscard]] id<MTLRenderPipelineState> pso() const noexcept { return pso_; }
+    [[nodiscard]] id<MTLDepthStencilState>   dss() const noexcept { return dss_; }
+    [[nodiscard]] MTLPrimitiveType primitive() const noexcept { return primitive_; }
+    [[nodiscard]] MTLCullMode      cull() const noexcept { return cull_; }
+    [[nodiscard]] MTLWinding       winding() const noexcept { return winding_; }
+
+private:
+    id<MTLRenderPipelineState> pso_ { nil };
+    id<MTLDepthStencilState>   dss_ { nil };
+    MTLPrimitiveType           primitive_ { MTLPrimitiveTypeTriangle };
+    MTLCullMode                cull_ { MTLCullModeNone };
+    MTLWinding                 winding_ { MTLWindingClockwise };
 };
 
 // ---------------------------------------------------------------------------
@@ -534,7 +678,10 @@ class MetalDescriptorSetObj final
 public:
     MetalDescriptorSetObj(id<MTLArgumentEncoder> encoder,
                           id<MTLBuffer> arg_buffer) noexcept
-        : encoder_(encoder), arg_buffer_(arg_buffer) {}
+        : encoder_(encoder)
+        , arg_buffer_(arg_buffer)
+        , resident_buffers_([[NSMutableArray alloc] init])
+        , resident_textures_([[NSMutableArray alloc] init]) {}
     ~MetalDescriptorSetObj() = default;
     MetalDescriptorSetObj(const MetalDescriptorSetObj&) = delete;
     MetalDescriptorSetObj& operator=(const MetalDescriptorSetObj&) = delete;
@@ -544,9 +691,40 @@ public:
     [[nodiscard]] id<MTLArgumentEncoder> encoder() const noexcept { return encoder_; }
     [[nodiscard]] id<MTLBuffer>          arg_buffer() const noexcept { return arg_buffer_; }
 
+    // M4 (ADR-20260615): every resource an argument buffer REFERENCES must be
+    // made resident with [encoder useResource:usage:] before a draw, otherwise
+    // the GPU cannot fault it in (the W8-BE cross-encoder visibility rule,
+    // ADR-20260530 §8.5.1). update_descriptor_set records the referenced
+    // MTLBuffer / MTLTexture here; bind_descriptor_set replays them on the
+    // active encoder. We reset the lists at the start of each update so a
+    // re-write does not accumulate stale residents.
+    void reset_residents() noexcept
+    {
+        [resident_buffers_ removeAllObjects];
+        [resident_textures_ removeAllObjects];
+    }
+    void add_resident_buffer(id<MTLBuffer> b)
+    {
+        if (b != nil) { [resident_buffers_ addObject:b]; }
+    }
+    void add_resident_texture(id<MTLTexture> t)
+    {
+        if (t != nil) { [resident_textures_ addObject:t]; }
+    }
+    [[nodiscard]] NSArray<id<MTLBuffer>>* resident_buffers() const noexcept
+    {
+        return resident_buffers_;
+    }
+    [[nodiscard]] NSArray<id<MTLTexture>>* resident_textures() const noexcept
+    {
+        return resident_textures_;
+    }
+
 private:
-    id<MTLArgumentEncoder> encoder_ { nil };
-    id<MTLBuffer>          arg_buffer_ { nil };
+    id<MTLArgumentEncoder>           encoder_ { nil };
+    id<MTLBuffer>                    arg_buffer_ { nil };
+    NSMutableArray<id<MTLBuffer>>*   resident_buffers_ { nil };
+    NSMutableArray<id<MTLTexture>>*  resident_textures_ { nil };
 };
 
 // ---------------------------------------------------------------------------
@@ -603,6 +781,50 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// MetalAccelObj — id<MTLAccelerationStructure> wrapper (M9 — ADR-20260615).
+//
+// Backs a cd::rhi::AccelStructureHandle with a real MTLAccelerationStructure.
+// The descriptor (MTLPrimitiveAccelerationStructureDescriptor for a BLAS,
+// MTLInstanceAccelerationStructureDescriptor for a TLAS) is retained so the
+// command-buffer-side build (buildAccelerationStructure:descriptor:scratch
+// Buffer:scratchBufferOffset:) can run without re-deriving geometry. The
+// scratch buffer is sized from [device accelerationStructureSizesWithDescriptor:]
+// .buildScratchBufferSize and kept alive for the rebuild path. `kind`
+// distinguishes BLAS vs TLAS so the command buffer can pick the right barrier
+// scope. This mirrors the Vulkan VkAccelerationStructureKHR + the
+// vkCmdBuildAccelerationStructures ray-query path (NOT the SBT pipeline path,
+// which stays kNotImplemented on Metal exactly as it is on Vulkan).
+// ---------------------------------------------------------------------------
+class MetalAccelObj final
+{
+public:
+    MetalAccelObj(id<MTLAccelerationStructure> as,
+                  MTLAccelerationStructureDescriptor* descriptor,
+                  id<MTLBuffer> scratch,
+                  AccelStructureKind kind) noexcept
+        : as_(as), descriptor_(descriptor), scratch_(scratch), kind_(kind) {}
+    ~MetalAccelObj() = default;
+    MetalAccelObj(const MetalAccelObj&) = delete;
+    MetalAccelObj& operator=(const MetalAccelObj&) = delete;
+    MetalAccelObj(MetalAccelObj&&) = delete;
+    MetalAccelObj& operator=(MetalAccelObj&&) = delete;
+
+    [[nodiscard]] id<MTLAccelerationStructure> as() const noexcept { return as_; }
+    [[nodiscard]] MTLAccelerationStructureDescriptor* descriptor() const noexcept
+    {
+        return descriptor_;
+    }
+    [[nodiscard]] id<MTLBuffer> scratch() const noexcept { return scratch_; }
+    [[nodiscard]] AccelStructureKind kind() const noexcept { return kind_; }
+
+private:
+    id<MTLAccelerationStructure>        as_ { nil };
+    MTLAccelerationStructureDescriptor* descriptor_ { nil };
+    id<MTLBuffer>                       scratch_ { nil };
+    AccelStructureKind                  kind_ { AccelStructureKind::kBottomLevel };
+};
+
+// ---------------------------------------------------------------------------
 // MetalCommandBufferImpl — ICommandBuffer wrapper around
 // id<MTLCommandBuffer> + the active id<MTLRenderCommandEncoder>.
 //
@@ -636,7 +858,15 @@ public:
     // closing any active render / blit encoder first (Metal disallows
     // nested encoders on a single cmd-buf).
     void bind_compute_pipeline(ComputePipelineHandle pipeline) override;
-    void bind_descriptor_set(std::uint32_t /*set_index*/, DescriptorSetHandle /*set*/) override {}
+    // M4 (ADR-20260615): bind a descriptor set as a Metal argument buffer.
+    // Vulkan descriptor set N -> Metal [[buffer(N)]] (M3 contract); the
+    // argument buffer is bound to BOTH the vertex + fragment slots so a set
+    // declared for either stage resolves, and every resource the argument
+    // buffer references is made resident via [encoder useResource:usage:]
+    // (mandatory for argument buffers — otherwise the GPU cannot see the
+    // referenced MTLBuffer/MTLTexture). On a compute encoder the set is bound
+    // via [computeEncoder setBuffer:offset:atIndex:].
+    void bind_descriptor_set(std::uint32_t set_index, DescriptorSetHandle set) override;
 
     // phase572 (Sprint-3): real setVertexBuffer path. Vertex buffer table
     // indices are taken from the `binding` parameter (which maps to the
@@ -698,8 +928,29 @@ public:
     void copy_image_to_buffer(TextureHandle src, BufferHandle dst,
                               std::span<const BufferImageCopyRegion> regions) override;
 
-    void barrier(std::span<const BufferBarrier> /*bb*/,
-                 std::span<const TextureBarrier> /*tb*/) override {}
+    // M5 (ADR-20260615): Metal auto-tracks most synchronisation at encoder
+    // boundaries for tracked resources; an explicit barrier is only needed
+    // for ordering/visibility WITHIN an open encoder. We translate the
+    // buffer/texture barrier spans into [renderEncoder memoryBarrierWith
+    // Scope:afterStages:beforeStages:] / [computeEncoder memoryBarrierWith
+    // Scope:] on the active encoder. Cross-encoder / queue ordering is
+    // already covered by Metal's automatic hazard tracking + the submit-time
+    // MTLSharedEvent hand-off (no MTLFence needed for the engine's tracked
+    // resources). Layout transitions do not exist on Metal (storageMode is
+    // fixed) so only the scope (buffers/textures) is mapped.
+    void barrier(std::span<const BufferBarrier> bb,
+                 std::span<const TextureBarrier> tb) override;
+
+    // M9 (ADR-20260615): build a BLAS/TLAS on an MTLAccelerationStructure
+    // CommandEncoder (closes any open render/blit/compute encoder first, as
+    // Metal forbids nested encoders). Ray-query path — NOT the SBT pipeline.
+    void build_acceleration_structure(AccelStructureHandle as) override;
+    // M9: barrier between an AS build and a subsequent AS build/use on the
+    // same command buffer (TLAS rebuild after an in-place BLAS rebuild). On
+    // Metal the AS encoder boundary + the render/compute encoder that consumes
+    // the TLAS via ray-query is the synchronisation point; we issue a buffer-
+    // scope memory barrier on the active encoder when one is open.
+    void acceleration_structure_barrier() override;
 
     void push_debug_group(std::string_view name) override;
     void pop_debug_group() override;
@@ -726,12 +977,31 @@ private:
     void ensure_compute_encoder_open();
     void close_compute_encoder_if_open() noexcept;
 
+    // M9 (ADR-20260615): lazy-open the acceleration-structure encoder for AS
+    // builds; same encoder-transition discipline (closes render/blit/compute
+    // first). Closed by submit_internal + any other encoder-open helper.
+    void ensure_accel_encoder_open();
+    void close_accel_encoder_if_open() noexcept;
+
+    // M8 (ADR-20260615): resolve a render-target / depth attachment view to a
+    // live MTLTexture (swapchain drawable OR M1-backed offscreen target).
+    [[nodiscard]] id<MTLTexture>
+    resolve_attachment_texture(TextureViewHandle view) noexcept;
+
     id<MTLCommandQueue>          queue_ { nil };
     id<MTLCommandBuffer>         cmd_ { nil };
     id<MTLRenderCommandEncoder>  encoder_ { nil };
     id<MTLBlitCommandEncoder>    blit_ { nil };
     id<MTLComputeCommandEncoder> compute_ { nil };
+    id<MTLAccelerationStructureCommandEncoder> accel_ { nil };
     MetalDeviceCtx*              ctx_ { nullptr };  // observer, not owning
+
+    // M2 (ADR-20260615): primitive type of the currently-bound graphics
+    // pipeline, applied to draw() / draw_indexed(). Sourced from the bound
+    // MetalGraphicsPipelineStateObj (replaces the hard-coded Triangle in the
+    // Sprint-1 baseline). Defaults to Triangle so an un-bound draw matches the
+    // legacy behaviour.
+    MTLPrimitiveType             bound_primitive_ { MTLPrimitiveTypeTriangle };
     // Cached attachment view for the active render pass — used to derive
     // the colour-target texture when no real TextureViewHandle registry
     // exists yet (Sprint-1 ties views to swapchain drawables only).
@@ -765,6 +1035,22 @@ public:
     // Returns nil for unknown / invalid handles.
     [[nodiscard]] virtual id<MTLRenderPipelineState>
     lookup_pipeline(GraphicsPipelineHandle h) const noexcept = 0;
+
+    // M2 (ADR-20260615): the richer graphics-pipeline-state object carrying
+    // the MTLRenderPipelineState + the matching MTLDepthStencilState + the
+    // resolved cull/winding/primitive. bind_graphics_pipeline consumes this
+    // so the depth-stencil state + raster state apply on the encoder. Returns
+    // nullptr for unknown / invalid handles.
+    [[nodiscard]] virtual const MetalGraphicsPipelineStateObj*
+    lookup_graphics_pipeline_state(GraphicsPipelineHandle h) const noexcept = 0;
+
+    // M9 (ADR-20260615): the acceleration-structure object bound by an
+    // AccelStructureHandle. build_acceleration_structure consumes it; the
+    // argument-buffer update path binds the TLAS into a descriptor set via
+    // [argEncoder setAccelerationStructure:atIndex:]. nullptr for unknown
+    // handles.
+    [[nodiscard]] virtual MetalAccelObj*
+    lookup_accel(AccelStructureHandle h) const noexcept = 0;
 
     // Look up the drawable's MTLTexture for the colour attachment named by
     // a TextureViewHandle that came from swapchain_image_view(). Returns nil

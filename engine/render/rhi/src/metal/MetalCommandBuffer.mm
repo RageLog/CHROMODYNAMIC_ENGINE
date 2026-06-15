@@ -51,6 +51,9 @@
 #include "MetalInternal.hpp"
 
 #include <cd/rhi/Descriptors.hpp>
+// M4 (ADR-20260615): the canonical push-constant argument-buffer slot
+// (kPushConstantBufferIndex = 16) the M3 toolchain emits push blocks to.
+#include <cd/rhi/metal/MetalShaderToolchain.hpp>
 
 namespace cd::rhi::metal::detail
 {
@@ -74,63 +77,128 @@ void MetalCommandBufferImpl::end()
     // happens in submit_internal so present can ride on the same cmd-buf.
 }
 
+// M8 (ADR-20260615): begin_render_pass now handles MULTIPLE colour
+// attachments + a depth/stencil attachment (was Sprint-1 single-color, no
+// depth). Each ColorAttachmentInfo loops into rpd.colorAttachments[i];
+// render-target views resolve through lookup_texture_view (real MTLTextures
+// allocated by M1) OR the swapchain-drawable path. The optional depth_stencil
+// attachment maps to rpd.depthAttachment (+ stencilAttachment when the format
+// carries stencil). Load/store/clear honour the per-attachment ops.
+//
+// M4-Y (ADR-20260615): the default viewport uses a NEGATIVE HEIGHT
+// (originY = render_area + height, height = -height) so Metal's +Y-up
+// framebuffer renders the same as Vulkan's +Y-down — the mandatory cross-
+// backend NDC parity (phase1196 D16 lesson, identical to the D3D12 negative-
+// height-viewport). set_viewport() applies the same flip for caller-supplied
+// viewports.
 void MetalCommandBufferImpl::begin_render_pass(const RenderPassBeginInfo& info)
 {
-    // Sprint-1 supports exactly one colour attachment and no depth.
-    // Multi-target and depth land in Sprint 2 once we have a real
-    // TextureView registry beyond swapchain-drawable views.
-    if (info.color_attachments.empty())
+    if (info.color_attachments.empty() && info.depth_stencil == nullptr)
     {
         return;
     }
-    // phase559: a blit encoder open from a prior copy_* call must be
-    // closed before the render encoder opens — Metal forbids nested
-    // encoders on a single cmd-buf.
+    // phase559/572: close any blit/compute encoder before a render encoder
+    // opens — Metal forbids nested encoders on a single cmd-buf.
     close_blit_encoder_if_open();
-    // phase572: same rule for a compute encoder left open by a prior
-    // bind_compute_pipeline / dispatch sequence.
     close_compute_encoder_if_open();
-    const ColorAttachmentInfo& att = info.color_attachments[0];
-
-    id<MTLTexture> tex = (ctx_ != nullptr)
-        ? ctx_->lookup_swapchain_view_texture(att.view)
-        : nil;
-    if (tex == nil)
-    {
-        // Cannot resolve a render target — skip the pass rather than crash.
-        // Sprint-1 only knows how to render into swapchain drawables.
-        return;
-    }
+    close_accel_encoder_if_open();
 
     MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
-    rpd.colorAttachments[0].texture     = tex;
-    rpd.colorAttachments[0].loadAction  =
-        (att.load_op == LoadOp::kClear) ? MTLLoadActionClear
-      : (att.load_op == LoadOp::kLoad ) ? MTLLoadActionLoad
-                                        : MTLLoadActionDontCare;
-    rpd.colorAttachments[0].storeAction =
-        (att.store_op == StoreOp::kStore) ? MTLStoreActionStore
-                                          : MTLStoreActionDontCare;
-    rpd.colorAttachments[0].clearColor  = MTLClearColorMake(
-        static_cast<double>(att.clear_color.f32[0]),
-        static_cast<double>(att.clear_color.f32[1]),
-        static_cast<double>(att.clear_color.f32[2]),
-        static_cast<double>(att.clear_color.f32[3]));
+
+    bool any_target = false;
+    for (std::size_t i = 0; i < info.color_attachments.size(); ++i)
+    {
+        const ColorAttachmentInfo& att = info.color_attachments[i];
+        id<MTLTexture> tex = resolve_attachment_texture(att.view);
+        if (tex == nil)
+        {
+            // Cannot resolve this target — skip it but keep going so a valid
+            // sibling attachment still renders (matches the graceful-skip
+            // pattern of the rest of the backend).
+            continue;
+        }
+        any_target = true;
+        MTLRenderPassColorAttachmentDescriptor* ca =
+            rpd.colorAttachments[static_cast<NSUInteger>(i)];
+        ca.texture     = tex;
+        ca.loadAction  =
+            (att.load_op == LoadOp::kClear) ? MTLLoadActionClear
+          : (att.load_op == LoadOp::kLoad ) ? MTLLoadActionLoad
+                                            : MTLLoadActionDontCare;
+        ca.storeAction =
+            (att.store_op == StoreOp::kStore) ? MTLStoreActionStore
+                                              : MTLStoreActionDontCare;
+        ca.clearColor  = MTLClearColorMake(
+            static_cast<double>(att.clear_color.f32[0]),
+            static_cast<double>(att.clear_color.f32[1]),
+            static_cast<double>(att.clear_color.f32[2]),
+            static_cast<double>(att.clear_color.f32[3]));
+    }
+
+    if (info.depth_stencil != nullptr)
+    {
+        const DepthStencilAttachmentInfo& ds = *info.depth_stencil;
+        id<MTLTexture> dtex = resolve_attachment_texture(ds.view);
+        if (dtex != nil)
+        {
+            any_target = true;
+            rpd.depthAttachment.texture    = dtex;
+            rpd.depthAttachment.loadAction =
+                (ds.depth_load == LoadOp::kClear) ? MTLLoadActionClear
+              : (ds.depth_load == LoadOp::kLoad ) ? MTLLoadActionLoad
+                                                  : MTLLoadActionDontCare;
+            rpd.depthAttachment.storeAction =
+                (ds.depth_store == StoreOp::kStore) ? MTLStoreActionStore
+                                                    : MTLStoreActionDontCare;
+            rpd.depthAttachment.clearDepth =
+                static_cast<double>(ds.clear.depth);
+
+            // Stencil rides the same texture only when the format is a
+            // combined depth+stencil one (Depth24Unorm_Stencil8 /
+            // Depth32Float_Stencil8). Setting it unconditionally is harmless
+            // for depth-only formats because Metal ignores a stencil
+            // attachment whose pixel format lacks stencil; we gate on the
+            // texture's pixelFormat to avoid a validation warning.
+            const MTLPixelFormat pf = [dtex pixelFormat];
+            if (pf == MTLPixelFormatDepth24Unorm_Stencil8
+                || pf == MTLPixelFormatDepth32Float_Stencil8
+                || pf == MTLPixelFormatStencil8)
+            {
+                rpd.stencilAttachment.texture    = dtex;
+                rpd.stencilAttachment.loadAction =
+                    (ds.stencil_load == LoadOp::kClear) ? MTLLoadActionClear
+                  : (ds.stencil_load == LoadOp::kLoad ) ? MTLLoadActionLoad
+                                                        : MTLLoadActionDontCare;
+                rpd.stencilAttachment.storeAction =
+                    (ds.stencil_store == StoreOp::kStore) ? MTLStoreActionStore
+                                                          : MTLStoreActionDontCare;
+                rpd.stencilAttachment.clearStencil = ds.clear.stencil;
+            }
+        }
+    }
+
+    if (!any_target)
+    {
+        // Nothing resolved — do not open an encoder against an empty
+        // descriptor (Metal would assert). Skip the pass.
+        return;
+    }
 
     encoder_ = [cmd_ renderCommandEncoderWithDescriptor:rpd];
     encoder_.label = @"cd::rhi::metal::RenderEncoder";
 
-    // Default viewport / scissor to the render area so the encoder is
-    // immediately usable without an explicit set_viewport call. Callers
-    // that need a custom region overwrite this via set_viewport().
+    // Default viewport / scissor to the render area (NDC-Y flipped — M4-Y).
     const auto& ext = info.render_area.extent;
     if (ext.width > 0 && ext.height > 0)
     {
+        const double h = static_cast<double>(ext.height);
         MTLViewport vp {
             .originX = static_cast<double>(info.render_area.offset.x),
-            .originY = static_cast<double>(info.render_area.offset.y),
+            // Negative-height viewport: origin moves to the bottom and height
+            // goes negative so +Y points down (Vulkan parity). M4-Y.
+            .originY = static_cast<double>(info.render_area.offset.y) + h,
             .width   = static_cast<double>(ext.width),
-            .height  = static_cast<double>(ext.height),
+            .height  = -h,
             .znear   = 0.0,
             .zfar    = 1.0
         };
@@ -148,6 +216,25 @@ void MetalCommandBufferImpl::begin_render_pass(const RenderPassBeginInfo& info)
     }
 }
 
+// M8 helper: resolve a render-target / depth attachment view to a live
+// MTLTexture. Tries the swapchain-drawable path first (the most common colour
+// target) then the regular texture-view registry (M1-backed offscreen
+// targets: HDR scene, G-Buffer, shadow map, etc.).
+id<MTLTexture>
+MetalCommandBufferImpl::resolve_attachment_texture(TextureViewHandle view) noexcept
+{
+    if (ctx_ == nullptr)
+    {
+        return nil;
+    }
+    if (id<MTLTexture> sc = ctx_->lookup_swapchain_view_texture(view);
+        sc != nil)
+    {
+        return sc;
+    }
+    return ctx_->lookup_texture_view(view);
+}
+
 void MetalCommandBufferImpl::end_render_pass()
 {
     if (encoder_ != nil)
@@ -157,20 +244,101 @@ void MetalCommandBufferImpl::end_render_pass()
     }
 }
 
+// M2 (ADR-20260615): bind the full graphics-pipeline state. Metal carries
+// depth-stencil, cull mode, and winding on the ENCODER (not the PSO), so we
+// apply all four from the bound MetalGraphicsPipelineStateObj:
+//   * [encoder setRenderPipelineState:pso]
+//   * [encoder setDepthStencilState:dss]   (when the pipeline has depth)
+//   * [encoder setCullMode:] + [encoder setFrontFacingWinding:]
+// The pipeline's primitive type is cached for draw() / draw_indexed().
 void MetalCommandBufferImpl::bind_graphics_pipeline(GraphicsPipelineHandle pipeline)
 {
     if (encoder_ == nil || ctx_ == nullptr)
     {
         return;
     }
-    id<MTLRenderPipelineState> pso = ctx_->lookup_pipeline(pipeline);
-    if (pso == nil)
+    const MetalGraphicsPipelineStateObj* state =
+        ctx_->lookup_graphics_pipeline_state(pipeline);
+    if (state == nullptr || state->pso() == nil)
     {
         return;
     }
-    [encoder_ setRenderPipelineState:pso];
+    [encoder_ setRenderPipelineState:state->pso()];
+    if (state->dss() != nil)
+    {
+        [encoder_ setDepthStencilState:state->dss()];
+    }
+    [encoder_ setCullMode:state->cull()];
+    [encoder_ setFrontFacingWinding:state->winding()];
+    bound_primitive_ = state->primitive();
 }
 
+// M4 (ADR-20260615): bind a descriptor set as a Metal argument buffer.
+//
+//   Vulkan descriptor set N  ->  Metal [[buffer(N)]] argument buffer.
+//
+// The argument buffer is bound to slot `set_index` on BOTH the vertex and
+// fragment stages (render) or the compute stage (compute) so a set declared
+// for either stage resolves — matches the SPIRV-Cross MSL the M3 toolchain
+// emits (set-per-argument-buffer at [[buffer(set)]]). Every resource the
+// argument buffer references is then made resident via
+// [encoder useResource:usage:] (MANDATORY for argument buffers — the GPU
+// cannot fault in a resource the encoder has not been told the argument
+// buffer reaches; the W8-BE cross-encoder visibility rule, ADR-20260530
+// §8.5.1). Lookup miss / empty set -> graceful skip.
+void MetalCommandBufferImpl::bind_descriptor_set(std::uint32_t set_index,
+                                                 DescriptorSetHandle set)
+{
+    if (ctx_ == nullptr)
+    {
+        return;
+    }
+    MetalDescriptorSetObj* ds = ctx_->lookup_descriptor_set(set);
+    if (ds == nullptr || ds->arg_buffer() == nil)
+    {
+        return;
+    }
+    const NSUInteger slot = static_cast<NSUInteger>(set_index);
+    id<MTLBuffer> arg = ds->arg_buffer();
+
+    if (encoder_ != nil)
+    {
+        [encoder_ setVertexBuffer:arg offset:0 atIndex:slot];
+        [encoder_ setFragmentBuffer:arg offset:0 atIndex:slot];
+        // Residency: make every referenced resource resident for both stages.
+        for (id<MTLBuffer> b in ds->resident_buffers())
+        {
+            [encoder_ useResource:b
+                            usage:MTLResourceUsageRead | MTLResourceUsageWrite
+                           stages:MTLRenderStageVertex | MTLRenderStageFragment];
+        }
+        for (id<MTLTexture> t in ds->resident_textures())
+        {
+            [encoder_ useResource:t
+                            usage:MTLResourceUsageRead
+                           stages:MTLRenderStageVertex | MTLRenderStageFragment];
+        }
+    }
+    else if (compute_ != nil)
+    {
+        [compute_ setBuffer:arg offset:0 atIndex:slot];
+        for (id<MTLBuffer> b in ds->resident_buffers())
+        {
+            [compute_ useResource:b
+                            usage:MTLResourceUsageRead | MTLResourceUsageWrite];
+        }
+        for (id<MTLTexture> t in ds->resident_textures())
+        {
+            [compute_ useResource:t usage:MTLResourceUsageRead];
+        }
+    }
+}
+
+// M4-Y (ADR-20260615): caller viewports get the same NEGATIVE-HEIGHT flip as
+// the default render-pass viewport so Metal's +Y-up framebuffer matches
+// Vulkan's +Y-down (cross-backend NDC parity; phase1196 D16 lesson). The flip
+// is applied in ONE place per the ADR invariant (ii) — here + begin_render_pass
+// — keeping the shader backend-agnostic (no clip-space flip in MSL).
 void MetalCommandBufferImpl::set_viewport(const Viewport& vp)
 {
     if (encoder_ == nil)
@@ -179,9 +347,9 @@ void MetalCommandBufferImpl::set_viewport(const Viewport& vp)
     }
     MTLViewport mvp {
         .originX = static_cast<double>(vp.x),
-        .originY = static_cast<double>(vp.y),
+        .originY = static_cast<double>(vp.y) + static_cast<double>(vp.height),
         .width   = static_cast<double>(vp.width),
-        .height  = static_cast<double>(vp.height),
+        .height  = -static_cast<double>(vp.height),
         .znear   = static_cast<double>(vp.min_depth),
         .zfar    = static_cast<double>(vp.max_depth)
     };
@@ -212,9 +380,9 @@ void MetalCommandBufferImpl::draw(std::uint32_t vertex_count,
     {
         return;
     }
-    // Sprint-1: only TriangleList topology is supported; the pipeline is
-    // hardcoded that way. Sprint 2 reads topology from the bound pipeline.
-    [encoder_ drawPrimitives:MTLPrimitiveTypeTriangle
+    // M2 (ADR-20260615): primitive type sourced from the bound pipeline
+    // (was hard-coded Triangle in Sprint-1).
+    [encoder_ drawPrimitives:bound_primitive_
                  vertexStart:static_cast<NSUInteger>(first_vertex)
                  vertexCount:static_cast<NSUInteger>(vertex_count)
                instanceCount:static_cast<NSUInteger>(instance_count == 0 ? 1
@@ -286,6 +454,8 @@ void MetalCommandBufferImpl::submit_internal(id<CAMetalDrawable> drawable_to_pre
     close_blit_encoder_if_open();
     // phase572: also close any pending compute encoder.
     close_compute_encoder_if_open();
+    // M9 (ADR-20260615): also close any pending acceleration-structure encoder.
+    close_accel_encoder_if_open();
     if (drawable_to_present != nil)
     {
         [cmd_ presentDrawable:drawable_to_present];
@@ -326,6 +496,8 @@ void MetalCommandBufferImpl::ensure_blit_encoder_open()
     // phase572: same rule for a compute encoder left open by a prior
     // bind_compute_pipeline / dispatch sequence.
     close_compute_encoder_if_open();
+    // M9: same rule for an acceleration-structure encoder.
+    close_accel_encoder_if_open();
     if (blit_ != nil)
     {
         // Already open — nothing to do.
@@ -345,21 +517,24 @@ void MetalCommandBufferImpl::close_blit_encoder_if_open() noexcept
 }
 
 // ---------------------------------------------------------------------------
-// push_constants — Metal inline-byte fast path.
+// push_constants — Metal inline-byte fast path (M4 / ADR-20260615).
 //
-// Metal does not have a native "push constants" concept; the canonical
-// replacement for the small (≤4 KB) per-draw constants is
-// setVertexBytes:length:atIndex: / setFragmentBytes:length:atIndex:.
-// SPIRV-Cross mlsls Vulkan push-constant blocks to `[[buffer(n)]]` where
-// `n` is the buffer-argument index — we use `offset` for that index so the
-// engine can pre-compute it from the pipeline layout.
+// Metal has no native "push constants"; the canonical replacement for small
+// (≤4 KB) per-draw constants is setVertexBytes / setFragmentBytes. The M3
+// toolchain remaps the Vulkan push_constant block to a FIXED argument-buffer
+// slot [[buffer(kPushConstantBufferIndex = 16)]] that sits ABOVE the engine's
+// descriptor-set range (sets 0/1 -> [[buffer(0/1)]]), so there is no
+// collision. We therefore bind at THAT constant, NOT the caller's `offset`
+// (the offset is a byte offset INTO the push range, which Metal's inline-byte
+// path does not subdivide; the engine pushes the whole block per draw). This
+// is the M4.4 contract fix — the Sprint-2 path mis-used `offset` as the arg
+// index.
 //
-// `size` is clamped at 4 KB per Metal's documented inline-arg cap; larger
-// constants must go through a regular buffer write, which is Sprint-3 work.
+// `size` is clamped at 4 KB per Metal's documented inline-arg cap.
 // ---------------------------------------------------------------------------
 void MetalCommandBufferImpl::push_constants(PipelineLayoutHandle /*layout*/,
                                             ShaderStage stages,
-                                            std::uint32_t offset,
+                                            std::uint32_t /*offset*/,
                                             std::uint32_t size,
                                             const void* data)
 {
@@ -370,19 +545,20 @@ void MetalCommandBufferImpl::push_constants(PipelineLayoutHandle /*layout*/,
     constexpr std::uint32_t kMetalInlineByteCap = 4096u;
     const NSUInteger byte_len =
         (size > kMetalInlineByteCap) ? kMetalInlineByteCap : size;
-    const NSUInteger arg_index = static_cast<NSUInteger>(offset);
+    const NSUInteger push_slot =
+        static_cast<NSUInteger>(cd::rhi::metal::kPushConstantBufferIndex);
 
     if (has(stages, ShaderStage::kVertex))
     {
         [encoder_ setVertexBytes:data
                           length:byte_len
-                         atIndex:arg_index];
+                         atIndex:push_slot];
     }
     if (has(stages, ShaderStage::kFragment))
     {
         [encoder_ setFragmentBytes:data
                             length:byte_len
-                           atIndex:arg_index];
+                           atIndex:push_slot];
     }
 }
 
@@ -571,6 +747,8 @@ void MetalCommandBufferImpl::ensure_compute_encoder_open()
         [blit_ endEncoding];
         blit_ = nil;
     }
+    // M9: close any acceleration-structure encoder before opening compute.
+    close_accel_encoder_if_open();
     if (compute_ != nil)
     {
         // Already open — nothing to do.
@@ -741,7 +919,9 @@ void MetalCommandBufferImpl::draw_indexed(std::uint32_t index_count,
     const NSUInteger inst =
         (instance_count == 0u) ? 1u : static_cast<NSUInteger>(instance_count);
 
-    [encoder_ drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+    // M2 (ADR-20260615): primitive type sourced from the bound pipeline
+    // (was hard-coded Triangle in Sprint-3).
+    [encoder_ drawIndexedPrimitives:bound_primitive_
                          indexCount:static_cast<NSUInteger>(index_count)
                           indexType:index_type_
                         indexBuffer:index_buf_
@@ -749,6 +929,138 @@ void MetalCommandBufferImpl::draw_indexed(std::uint32_t index_count,
                       instanceCount:inst
                          baseVertex:static_cast<NSInteger>(vertex_offset)
                        baseInstance:static_cast<NSUInteger>(first_instance)];
+}
+
+// ---------------------------------------------------------------------------
+// M5 (ADR-20260615) — barrier.
+//
+// Metal auto-tracks hazards at encoder boundaries for tracked resources, so an
+// explicit barrier is only needed for ordering/visibility WITHIN an open
+// encoder (e.g. a compute write read by a later dispatch on the same encoder,
+// or untracked argument-buffer resources). We translate the buffer/texture
+// barrier spans into a memory-barrier scope on the active encoder:
+//   * render encoder  -> [encoder memoryBarrierWithScope:afterStages:beforeStages:]
+//   * compute encoder -> [encoder memoryBarrierWithScope:]
+// Layout transitions do not exist on Metal (storageMode is fixed) so only the
+// scope (buffers / textures) is mapped. Cross-encoder / queue ordering is
+// already covered by Metal's automatic hazard tracking + the submit-time
+// MTLSharedEvent hand-off, so no MTLFence is needed for the engine's tracked
+// resources.
+void MetalCommandBufferImpl::barrier(std::span<const BufferBarrier> bb,
+                                     std::span<const TextureBarrier> tb)
+{
+    MTLBarrierScope scope = static_cast<MTLBarrierScope>(0);
+    if (!bb.empty())
+    {
+        scope |= MTLBarrierScopeBuffers;
+    }
+    if (!tb.empty())
+    {
+        scope |= MTLBarrierScopeTextures;
+    }
+    if (scope == static_cast<MTLBarrierScope>(0))
+    {
+        return;
+    }
+    if (encoder_ != nil)
+    {
+        [encoder_ memoryBarrierWithScope:scope
+                             afterStages:MTLRenderStageFragment
+                            beforeStages:MTLRenderStageVertex];
+    }
+    else if (compute_ != nil)
+    {
+        [compute_ memoryBarrierWithScope:scope];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M9 (ADR-20260615) — acceleration-structure encoder + build.
+//
+// The AS encoder is lazy-opened by ensure_accel_encoder_open() and follows the
+// SAME nested-encoder discipline as the blit / compute encoders (Metal forbids
+// two open encoders on one cmd-buf). build_acceleration_structure runs the
+// device-built descriptor via buildAccelerationStructure:descriptor:scratch
+// Buffer:scratchBufferOffset:. This is the RHI's REAL RT path (AS build +
+// ray-query, the rayQueryEXT analog); the SBT pipeline (dispatch_rays) stays
+// a no-op on Metal exactly as on Vulkan.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::ensure_accel_encoder_open()
+{
+    if (cmd_ == nil)
+    {
+        return;
+    }
+    if (encoder_ != nil)
+    {
+        [encoder_ endEncoding];
+        encoder_ = nil;
+    }
+    if (blit_ != nil)
+    {
+        [blit_ endEncoding];
+        blit_ = nil;
+    }
+    if (compute_ != nil)
+    {
+        [compute_ endEncoding];
+        compute_ = nil;
+    }
+    if (accel_ != nil)
+    {
+        return;
+    }
+    accel_ = [cmd_ accelerationStructureCommandEncoder];
+    accel_.label = @"cd::rhi::metal::AccelEncoder";
+}
+
+void MetalCommandBufferImpl::close_accel_encoder_if_open() noexcept
+{
+    if (accel_ != nil)
+    {
+        [accel_ endEncoding];
+        accel_ = nil;
+    }
+}
+
+void MetalCommandBufferImpl::build_acceleration_structure(AccelStructureHandle as)
+{
+    if (cmd_ == nil || ctx_ == nullptr)
+    {
+        return;
+    }
+    MetalAccelObj* obj = ctx_->lookup_accel(as);
+    if (obj == nullptr || obj->as() == nil || obj->descriptor() == nil)
+    {
+        return;
+    }
+    ensure_accel_encoder_open();
+    if (accel_ == nil)
+    {
+        return;
+    }
+    [accel_ buildAccelerationStructure:obj->as()
+                            descriptor:obj->descriptor()
+                         scratchBuffer:obj->scratch()
+                   scratchBufferOffset:0];
+}
+
+void MetalCommandBufferImpl::acceleration_structure_barrier()
+{
+    // The AS-encoder boundary itself orders an AS build vs. its consumer; when
+    // a render/compute encoder is already open (consuming a TLAS via
+    // ray-query) we additionally issue a buffer-scope memory barrier so a TLAS
+    // rebuilt earlier on the same cmd-buf is visible to the ray-query reads.
+    if (encoder_ != nil)
+    {
+        [encoder_ memoryBarrierWithScope:MTLBarrierScopeBuffers
+                             afterStages:MTLRenderStageVertex
+                            beforeStages:MTLRenderStageFragment];
+    }
+    else if (compute_ != nil)
+    {
+        [compute_ memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
 }
 
 }  // namespace cd::rhi::metal::detail

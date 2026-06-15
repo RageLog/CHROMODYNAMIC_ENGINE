@@ -193,6 +193,12 @@ if(CD_RHI_METAL_ENABLED)
 endif()
 
 if(CD_RHI_METAL_ENABLED)
+  # M6 (ADR-20260615): the .mm MetalDevice consumes the host-side
+  # GLSL/SPIR-V -> MSL toolchain (cd::rhi_metal_shader) for
+  # create_shader_module(kGlsl/kSpirv) — the D16 parity contract (a single
+  # create_shader_module(kGlsl) works on every backend). It also names the
+  # glslang front-end (cd::shader) and the gluon include resolver (cd::gluon)
+  # directly in the .mm compile branch, so both are PUBLIC/PRIVATE deps here.
   cd_add_library(rhi_metal
     TYPE STATIC
     SOURCES
@@ -200,7 +206,11 @@ if(CD_RHI_METAL_ENABLED)
       src/metal/MetalCommandBuffer.mm
       src/metal/MetalSwapchain.mm
       src/metal/MetalPipeline.mm
-    PUBLIC_DEPS cd::core cd::rhi
+    PUBLIC_DEPS cd::core cd::rhi cd::rhi_metal_shader cd::shader
+    # PRIVATE — only the .mm compile branch names the gluon resolver type
+    # (ADR-20260614-gluon-consumer-resolver-pattern §2.1, symmetric with the
+    # Vulkan / D3D12 backends).
+    PRIVATE_DEPS cd::gluon
   )
 
   # Link the Metal, Foundation, and QuartzCore frameworks (present on all

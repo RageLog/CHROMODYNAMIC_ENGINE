@@ -383,6 +383,340 @@ build_metal_shader_function(id<MTLDevice> device,
     return fn;
 }
 
+// ===========================================================================
+// build_metal_graphics_pipeline — M2 (ADR-20260615) desc-driven PSO.
+//
+// Translates a GraphicsPipelineDesc into an MTLRenderPipelineDescriptor +
+// MTLVertexDescriptor + MTLDepthStencilDescriptor, method-by-method against
+// the Vulkan VkGraphicsPipelineCreateInfo path (VulkanDevice.cpp:1650-1841).
+// The format / topology / cull / blend mapping tables mirror the Vulkan
+// map_* helpers (VulkanDevice.cpp:286+) so identical descriptors produce
+// parity-equivalent native pipelines.
+// ===========================================================================
+namespace
+{
+
+[[nodiscard]] MTLPixelFormat to_pixel_format(Format f) noexcept
+{
+    switch (f)
+    {
+    case Format::kUndefined:       return MTLPixelFormatInvalid;
+    case Format::kR8Unorm:         return MTLPixelFormatR8Unorm;
+    case Format::kRG8Unorm:        return MTLPixelFormatRG8Unorm;
+    case Format::kRGBA8Unorm:      return MTLPixelFormatRGBA8Unorm;
+    case Format::kRGBA8Srgb:       return MTLPixelFormatRGBA8Unorm_sRGB;
+    case Format::kBGRA8Unorm:      return MTLPixelFormatBGRA8Unorm;
+    case Format::kBGRA8Srgb:       return MTLPixelFormatBGRA8Unorm_sRGB;
+    case Format::kR16Float:        return MTLPixelFormatR16Float;
+    case Format::kRG16Float:       return MTLPixelFormatRG16Float;
+    case Format::kRGBA16Float:     return MTLPixelFormatRGBA16Float;
+    case Format::kR32Float:        return MTLPixelFormatR32Float;
+    case Format::kRG32Float:       return MTLPixelFormatRG32Float;
+    case Format::kRGBA32Float:     return MTLPixelFormatRGBA32Float;
+    case Format::kR32Uint:         return MTLPixelFormatR32Uint;
+    case Format::kRG32Uint:        return MTLPixelFormatRG32Uint;
+    case Format::kRGBA32Uint:      return MTLPixelFormatRGBA32Uint;
+    case Format::kR11G11B10Float:  return MTLPixelFormatRG11B10Float;
+    case Format::kRGB10A2Unorm:    return MTLPixelFormatRGB10A2Unorm;
+    case Format::kRGB9E5Float:     return MTLPixelFormatRGB9E5Float;
+    case Format::kD16Unorm:        return MTLPixelFormatDepth16Unorm;
+    case Format::kD32Float:        return MTLPixelFormatDepth32Float;
+    case Format::kD24UnormS8Uint:  return MTLPixelFormatDepth24Unorm_Stencil8;
+    case Format::kD32FloatS8Uint:  return MTLPixelFormatDepth32Float_Stencil8;
+    case Format::kS8Uint:          return MTLPixelFormatStencil8;
+    default:                       return MTLPixelFormatInvalid;
+    }
+}
+
+// Vertex-attribute format. The engine's vertex layouts use float / packed
+// formats; the Vulkan side maps these through map_format too.
+[[nodiscard]] MTLVertexFormat to_vertex_format(Format f) noexcept
+{
+    switch (f)
+    {
+    case Format::kR32Float:     return MTLVertexFormatFloat;
+    case Format::kRG32Float:    return MTLVertexFormatFloat2;
+    case Format::kRGB32Float:   return MTLVertexFormatFloat3;
+    case Format::kRGBA32Float:  return MTLVertexFormatFloat4;
+    case Format::kRGBA8Unorm:   return MTLVertexFormatUChar4Normalized;
+    case Format::kRGBA8Uint:    return MTLVertexFormatUChar4;
+    case Format::kRG16Float:    return MTLVertexFormatHalf2;
+    case Format::kRGBA16Float:  return MTLVertexFormatHalf4;
+    case Format::kR32Uint:      return MTLVertexFormatUInt;
+    case Format::kRG32Uint:     return MTLVertexFormatUInt2;
+    case Format::kRGB32Uint:    return MTLVertexFormatUInt3;
+    case Format::kRGBA32Uint:   return MTLVertexFormatUInt4;
+    default:                    return MTLVertexFormatFloat3;
+    }
+}
+
+[[nodiscard]] MTLPrimitiveType to_primitive_type(PrimitiveTopology t) noexcept
+{
+    switch (t)
+    {
+    case PrimitiveTopology::kPointList:     return MTLPrimitiveTypePoint;
+    case PrimitiveTopology::kLineList:      return MTLPrimitiveTypeLine;
+    case PrimitiveTopology::kLineStrip:     return MTLPrimitiveTypeLineStrip;
+    case PrimitiveTopology::kTriangleList:  return MTLPrimitiveTypeTriangle;
+    case PrimitiveTopology::kTriangleStrip: return MTLPrimitiveTypeTriangleStrip;
+    case PrimitiveTopology::kTriangleFan:   return MTLPrimitiveTypeTriangle;  // no fan on Metal
+    }
+    return MTLPrimitiveTypeTriangle;
+}
+
+// Topology class for the PSO's inputPrimitiveTopology (tessellation/restart).
+[[nodiscard]] MTLPrimitiveTopologyClass
+to_topology_class(PrimitiveTopology t) noexcept
+{
+    switch (t)
+    {
+    case PrimitiveTopology::kPointList:
+        return MTLPrimitiveTopologyClassPoint;
+    case PrimitiveTopology::kLineList:
+    case PrimitiveTopology::kLineStrip:
+        return MTLPrimitiveTopologyClassLine;
+    default:
+        return MTLPrimitiveTopologyClassTriangle;
+    }
+}
+
+[[nodiscard]] MTLCullMode to_cull_mode(CullMode m) noexcept
+{
+    switch (m)
+    {
+    case CullMode::kNone:         return MTLCullModeNone;
+    case CullMode::kFront:        return MTLCullModeFront;
+    case CullMode::kBack:         return MTLCullModeBack;
+    case CullMode::kFrontAndBack: return MTLCullModeNone;  // Metal has no both
+    }
+    return MTLCullModeNone;
+}
+
+// FrontFace -> MTLWinding. NOTE (M4-Y): the command buffer applies a
+// negative-height viewport so Metal's +Y-up framebuffer matches Vulkan's
+// +Y-down. A negative-height viewport flips the effective winding, so we keep
+// the SAME FrontFace->Winding mapping as the geometric sense: kClockwise ->
+// Clockwise. The viewport flip + this mapping together reproduce the Vulkan
+// back-face-cull result on screen (D16/phase1196 lesson, D3D12-symmetric).
+[[nodiscard]] MTLWinding to_winding(FrontFace f) noexcept
+{
+    return (f == FrontFace::kClockwise) ? MTLWindingClockwise
+                                        : MTLWindingCounterClockwise;
+}
+
+[[nodiscard]] MTLBlendFactor to_blend_factor(BlendFactor f) noexcept
+{
+    switch (f)
+    {
+    case BlendFactor::kZero:                 return MTLBlendFactorZero;
+    case BlendFactor::kOne:                  return MTLBlendFactorOne;
+    case BlendFactor::kSrcColor:             return MTLBlendFactorSourceColor;
+    case BlendFactor::kOneMinusSrcColor:     return MTLBlendFactorOneMinusSourceColor;
+    case BlendFactor::kDstColor:             return MTLBlendFactorDestinationColor;
+    case BlendFactor::kOneMinusDstColor:     return MTLBlendFactorOneMinusDestinationColor;
+    case BlendFactor::kSrcAlpha:             return MTLBlendFactorSourceAlpha;
+    case BlendFactor::kOneMinusSrcAlpha:     return MTLBlendFactorOneMinusSourceAlpha;
+    case BlendFactor::kDstAlpha:             return MTLBlendFactorDestinationAlpha;
+    case BlendFactor::kOneMinusDstAlpha:     return MTLBlendFactorOneMinusDestinationAlpha;
+    case BlendFactor::kConstantColor:        return MTLBlendFactorBlendColor;
+    case BlendFactor::kOneMinusConstantColor:return MTLBlendFactorOneMinusBlendColor;
+    case BlendFactor::kConstantAlpha:        return MTLBlendFactorBlendAlpha;
+    case BlendFactor::kOneMinusConstantAlpha:return MTLBlendFactorOneMinusBlendAlpha;
+    case BlendFactor::kSrcAlphaSaturate:     return MTLBlendFactorSourceAlphaSaturated;
+    }
+    return MTLBlendFactorZero;
+}
+
+[[nodiscard]] MTLBlendOperation to_blend_op(BlendOp o) noexcept
+{
+    switch (o)
+    {
+    case BlendOp::kAdd:             return MTLBlendOperationAdd;
+    case BlendOp::kSubtract:        return MTLBlendOperationSubtract;
+    case BlendOp::kReverseSubtract: return MTLBlendOperationReverseSubtract;
+    case BlendOp::kMin:             return MTLBlendOperationMin;
+    case BlendOp::kMax:             return MTLBlendOperationMax;
+    }
+    return MTLBlendOperationAdd;
+}
+
+[[nodiscard]] MTLColorWriteMask to_color_write_mask(std::uint8_t m) noexcept
+{
+    MTLColorWriteMask out = MTLColorWriteMaskNone;
+    if ((m & 0x1u) != 0u) { out |= MTLColorWriteMaskRed; }
+    if ((m & 0x2u) != 0u) { out |= MTLColorWriteMaskGreen; }
+    if ((m & 0x4u) != 0u) { out |= MTLColorWriteMaskBlue; }
+    if ((m & 0x8u) != 0u) { out |= MTLColorWriteMaskAlpha; }
+    return out;
+}
+
+[[nodiscard]] MTLCompareFunction depth_compare(CompareOp op) noexcept
+{
+    switch (op)
+    {
+    case CompareOp::kNever:        return MTLCompareFunctionNever;
+    case CompareOp::kLess:         return MTLCompareFunctionLess;
+    case CompareOp::kEqual:        return MTLCompareFunctionEqual;
+    case CompareOp::kLessEqual:    return MTLCompareFunctionLessEqual;
+    case CompareOp::kGreater:      return MTLCompareFunctionGreater;
+    case CompareOp::kNotEqual:     return MTLCompareFunctionNotEqual;
+    case CompareOp::kGreaterEqual: return MTLCompareFunctionGreaterEqual;
+    case CompareOp::kAlways:       return MTLCompareFunctionAlways;
+    }
+    return MTLCompareFunctionLess;
+}
+
+}  // namespace
+
+id<MTLRenderPipelineState>
+build_metal_graphics_pipeline(id<MTLDevice> device,
+                              const GraphicsPipelineDesc& desc,
+                              id<MTLFunction> vertex_fn,
+                              id<MTLFunction> fragment_fn,
+                              id<MTLDepthStencilState>* dss_out,
+                              MTLPrimitiveType* primitive_out,
+                              MTLCullMode* cull_out,
+                              MTLWinding* winding_out,
+                              std::string* error_out) noexcept
+{
+    if (device == nil || vertex_fn == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out =
+                "Metal::build_metal_graphics_pipeline: nil device / vertex fn";
+        }
+        return nil;
+    }
+
+    MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+    pd.label = @"cd::rhi::metal::graphics_pipeline";
+    pd.vertexFunction = vertex_fn;
+    pd.fragmentFunction = fragment_fn;  // may be nil for depth-only
+    pd.rasterSampleCount = static_cast<NSUInteger>(desc.samples);
+    pd.inputPrimitiveTopology = to_topology_class(desc.topology);
+
+    // --- Vertex descriptor (MTLVertexDescriptor) ---------------------------
+    // VertexAttribute: location -> attribute index, binding -> bufferIndex,
+    // format, offset. VertexBinding: stride + per_instance step function.
+    if (!desc.vertex_attributes.empty() || !desc.vertex_bindings.empty())
+    {
+        MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+        for (const VertexAttribute& a : desc.vertex_attributes)
+        {
+            const NSUInteger loc = static_cast<NSUInteger>(a.location);
+            vd.attributes[loc].format = to_vertex_format(a.format);
+            vd.attributes[loc].offset = static_cast<NSUInteger>(a.offset);
+            vd.attributes[loc].bufferIndex = static_cast<NSUInteger>(a.binding);
+        }
+        for (const VertexBinding& b : desc.vertex_bindings)
+        {
+            const NSUInteger slot = static_cast<NSUInteger>(b.binding);
+            vd.layouts[slot].stride = static_cast<NSUInteger>(b.stride);
+            vd.layouts[slot].stepFunction = b.per_instance
+                ? MTLVertexStepFunctionPerInstance
+                : MTLVertexStepFunctionPerVertex;
+            vd.layouts[slot].stepRate = 1;
+        }
+        pd.vertexDescriptor = vd;
+    }
+
+    // --- Colour attachments (format + blend) -------------------------------
+    for (std::size_t i = 0; i < desc.color_attachment_formats.size(); ++i)
+    {
+        MTLRenderPipelineColorAttachmentDescriptor* ca =
+            pd.colorAttachments[static_cast<NSUInteger>(i)];
+        ca.pixelFormat = to_pixel_format(desc.color_attachment_formats[i]);
+        // Per-attachment blend state when supplied, else "opaque, write-all"
+        // (mirrors the Vulkan synthesised default when blend_attachments is
+        // empty).
+        if (i < desc.blend_attachments.size())
+        {
+            const BlendAttachmentState& b = desc.blend_attachments[i];
+            ca.blendingEnabled = b.blend_enable ? YES : NO;
+            ca.sourceRGBBlendFactor = to_blend_factor(b.src_color);
+            ca.destinationRGBBlendFactor = to_blend_factor(b.dst_color);
+            ca.rgbBlendOperation = to_blend_op(b.color_op);
+            ca.sourceAlphaBlendFactor = to_blend_factor(b.src_alpha);
+            ca.destinationAlphaBlendFactor = to_blend_factor(b.dst_alpha);
+            ca.alphaBlendOperation = to_blend_op(b.alpha_op);
+            ca.writeMask = to_color_write_mask(b.color_write_mask);
+        }
+        else
+        {
+            ca.blendingEnabled = NO;
+            ca.writeMask = MTLColorWriteMaskAll;
+        }
+    }
+
+    // --- Depth / stencil attachment formats --------------------------------
+    const bool has_depth =
+        desc.depth_attachment_format != Format::kUndefined;
+    const bool has_stencil =
+        desc.stencil_attachment_format != Format::kUndefined;
+    if (has_depth)
+    {
+        pd.depthAttachmentPixelFormat =
+            to_pixel_format(desc.depth_attachment_format);
+    }
+    if (has_stencil)
+    {
+        pd.stencilAttachmentPixelFormat =
+            to_pixel_format(desc.stencil_attachment_format);
+    }
+
+    NSError* err = nil;
+    id<MTLRenderPipelineState> pso =
+        [device newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (pso == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = (err != nil)
+                ? std::string { [[err localizedDescription] UTF8String] }
+                : std::string {
+                    "Metal::build_metal_graphics_pipeline: nil PSO" };
+        }
+        return nil;
+    }
+
+    // --- Depth-stencil state (SEPARATE Metal object) -----------------------
+    // Gated on a present depth attachment exactly like the Vulkan back-end
+    // (depthTest && has_depth_attach). When there is no depth attachment we
+    // emit nil so the command buffer skips setDepthStencilState.
+    if (dss_out != nullptr)
+    {
+        *dss_out = nil;
+        if (has_depth)
+        {
+            MTLDepthStencilDescriptor* dsd =
+                [[MTLDepthStencilDescriptor alloc] init];
+            dsd.depthCompareFunction = desc.depth_stencil.depth_test
+                ? depth_compare(desc.depth_stencil.depth_compare)
+                : MTLCompareFunctionAlways;
+            dsd.depthWriteEnabled =
+                (desc.depth_stencil.depth_write && desc.depth_stencil.depth_test)
+                    ? YES
+                    : NO;
+            *dss_out = [device newDepthStencilStateWithDescriptor:dsd];
+        }
+    }
+
+    if (primitive_out != nullptr)
+    {
+        *primitive_out = to_primitive_type(desc.topology);
+    }
+    if (cull_out != nullptr)
+    {
+        *cull_out = to_cull_mode(desc.raster.cull);
+    }
+    if (winding_out != nullptr)
+    {
+        *winding_out = to_winding(desc.raster.front_face);
+    }
+    return pso;
+}
+
 }  // namespace cd::rhi::metal::detail
 
 #endif  // __APPLE__
