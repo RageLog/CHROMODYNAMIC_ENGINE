@@ -240,6 +240,24 @@ else()
   endif()
 endif() # CD_RHI_METAL_ENABLED
 
+# ── cd::rhi_metal_shader (HOST-SIDE, UNCONDITIONAL) ────────────────────────
+# phase M3: GLSL -> SPIR-V -> MSL shader toolchain (compose_glsl_to_msl). The
+# output is MSL *text* (no MTLDevice / Metal framework), so this TU is PURE
+# host-side C++ and builds + tests on Windows. It is NOT gated behind
+# CD_RHI_METAL_ENABLED / APPLE — only the .mm MetalDevice code above is. This is
+# the Metal analog of cd::rhi_d3d12's D3D12ShaderToolchain.cpp, mirroring the
+# GLSL->SPIR-V->HLSL->DXIL chain with GLSL->SPIR-V->MSL.
+cd_add_library(rhi_metal_shader
+  TYPE STATIC
+  EXCLUDE_FROM_INSTALL  # vendored SPIRV-Cross via FetchContent
+  SOURCES
+    src/metal/MetalShaderToolchain.cpp
+  PUBLIC_DEPS cd::core cd::rhi cd::shader cd::spirv_cross_glue
+  # PRIVATE — only the .cpp compile branch names the gluon resolver type
+  # (ADR-20260614-gluon-consumer-resolver-pattern §2.1).
+  PRIVATE_DEPS cd::gluon
+)
+
 # ── cd::rhi_opengl ─────────────────────────────────────────────────────────
 # OpenGL 4.6 backend. Phase 18.B boot-only. 3rd API priority.
 cd_add_library(rhi_opengl

@@ -163,6 +163,15 @@ cd_add_test(parallel_recorder
   DEPS    cd::rhi cd::core
 )
 
+# phase M3 (Metal backend): GLSL -> SPIR-V -> MSL host-side shader toolchain.
+# PURE host-side (MSL is text; no MTLDevice) so it runs on EVERY CI lane
+# including Windows. No DXC/Metal runtime DLL needed. SKIPs cleanly when the
+# engine is built without glslang (CD_ENABLE_GLSLANG=OFF).
+cd_add_test(metal_shader_toolchain
+  SOURCES test_metal_shader_toolchain.cpp
+  DEPS    cd::rhi_metal_shader cd::shader cd::spirv_cross_glue cd::gluon cd::rhi cd::core
+)
+
 # phase1186 (D3 + D5): D3D12 begin_render_pass depth/MRT + PSO depth-compare
 # GPU smokes. Builds GLSL through the device DXIL path (so it needs the same
 # dxcompiler.dll/dxil.dll runtime as the toolchain test) and runs a real

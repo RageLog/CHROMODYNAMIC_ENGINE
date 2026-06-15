@@ -39,6 +39,7 @@
     #pragma GCC diagnostic pop
 #endif
 
+#include <algorithm>
 #include <stdexcept>
 #include <vector>
 
@@ -52,6 +53,9 @@ namespace
 constexpr std::uint32_t kDefaultGlslVersion = 450U;    // GLSL 4.50
 constexpr std::uint32_t kDefaultHlslVersion = 60U;     // HLSL SM 6.0
 constexpr std::uint32_t kDefaultMslVersion  = 20200U;  // MSL 2.2
+// Argument buffers require MSL 2.0 (packed 20000). The set-per-argument-buffer
+// binding model (phase M3) raises any lower request to this floor.
+constexpr std::uint32_t kMinArgumentBufferMslVersion = 20000U;  // MSL 2.0
 
 [[nodiscard]] TranslateResult translate_glsl(
     const std::vector<std::uint32_t>& words,
@@ -135,9 +139,11 @@ constexpr std::uint32_t kDefaultMslVersion  = 20200U;  // MSL 2.2
     }
 }
 
-[[nodiscard]] TranslateResult translate_msl(
+[[nodiscard]] TranslateResult translate_msl_impl(
     const std::vector<std::uint32_t>& words,
-    std::uint32_t                      version)
+    std::uint32_t                      version,
+    bool                               argument_buffers,
+    std::uint32_t                      push_constant_buffer_index)
 {
     try
     {
@@ -145,6 +151,83 @@ constexpr std::uint32_t kDefaultMslVersion  = 20200U;  // MSL 2.2
         spirv_cross::CompilerMSL::Options msl_opts {};
         // msl_version is a packed (major*10000 + minor*100) integer.
         // Default: MSL 2.2 → 20200.
+        msl_opts.msl_version = (version == 0U) ? kDefaultMslVersion : version;
+
+        // ---- Binding model (phase M3, ADR-20260614-d3d12-binding-model §4)
+        // SET-PER-ARGUMENT-BUFFER — the Metal analog of D3D12 space-per-set.
+        // With argument_buffers ON, SPIRV-Cross emits one argument-buffer
+        // struct per Vulkan descriptor set; the engine convention binds the
+        // argument buffer for set N at Metal [[buffer(N)]]. Resources inside a
+        // set keep their `binding` as the [[id(binding)]] within the struct, so
+        // (set, binding) survives 1:1 — exactly mirroring "space N == set N".
+        // Argument buffers require MSL >= 2.0; raise the floor defensively.
+        if (argument_buffers)
+        {
+            msl_opts.argument_buffers = true;
+            // Raise to the MSL 2.0 floor argument buffers require.
+            msl_opts.msl_version =
+                std::max(msl_opts.msl_version, kMinArgumentBufferMslVersion);
+        }
+        compiler.set_msl_options(msl_opts);
+
+        // ---- push_constant -> its own dedicated [[buffer(n)]] slot.
+        // SPIRV-Cross addresses the push_constant block with the reserved
+        // (desc_set, binding) == (kPushConstDescSet, kPushConstBinding). Remap
+        // it to a fixed buffer index OUTSIDE the descriptor-set range so the
+        // device can `setVertex/FragmentBytes` the push range at one stable
+        // slot regardless of how many sets the shader declares — the analog of
+        // the D3D12 "push_constant -> b0/space1 root constants" decision.
+        if (!words.empty())
+        {
+            const spirv_cross::ShaderResources res = compiler.get_shader_resources();
+            if (!res.push_constant_buffers.empty())
+            {
+                spirv_cross::MSLResourceBinding pc {};
+                pc.stage    = compiler.get_execution_model();
+                pc.desc_set = spirv_cross::kPushConstDescSet;
+                pc.binding  = spirv_cross::kPushConstBinding;
+                pc.count    = 1U;
+                pc.msl_buffer  = push_constant_buffer_index;
+                pc.msl_texture = 0U;
+                pc.msl_sampler = 0U;
+                compiler.add_msl_resource_binding(pc);
+            }
+        }
+
+        std::string source = compiler.compile();
+        // SPIRV-Cross renames the MSL entry point per stage (reserved-word
+        // dodge: a fragment "main" becomes "main0"). Report the cleansed name
+        // so the device looks the function up correctly on the MTLLibrary.
+        const spirv_cross::SmallVector<spirv_cross::EntryPoint> eps =
+            compiler.get_entry_points_and_stages();
+        std::string entry;
+        if (!eps.empty())
+        {
+            entry = compiler.get_cleansed_entry_point_name(
+                eps.front().name, eps.front().execution_model);
+        }
+        TranslateResult out {};
+        out.source = std::move(source);
+        out.entry_point = std::move(entry);
+        return out;
+    }
+    catch (const std::exception& ex)
+    {
+        return TranslateResult { {}, std::string("spirv-cross MSL: ") + ex.what() };
+    }
+}
+
+[[nodiscard]] TranslateResult translate_msl(
+    const std::vector<std::uint32_t>& words,
+    std::uint32_t                      version)
+{
+    // Plain Target::kMsl path: classic flat binding (no argument buffers),
+    // push_constant left at SPIRV-Cross's default auto-allocated buffer slot.
+    // Preserves the historical `translate(..., kMsl)` output byte-for-byte.
+    try
+    {
+        spirv_cross::CompilerMSL compiler { words };
+        spirv_cross::CompilerMSL::Options msl_opts {};
         msl_opts.msl_version = (version == 0U) ? kDefaultMslVersion : version;
         compiler.set_msl_options(msl_opts);
         return TranslateResult { compiler.compile(), {} };
@@ -182,6 +265,19 @@ TranslateResult translate(
 
     // Unreachable: switch is exhaustive over the enum.
     return TranslateResult { {}, "spirv-cross: unknown target" };
+}
+
+TranslateResult translate_msl(
+    std::span<const std::uint32_t> spirv,
+    const MslBindingConfig&        cfg)
+{
+    if (spirv.empty())
+    {
+        return TranslateResult { {}, "spirv-cross: empty SPIR-V input" };
+    }
+    const std::vector<std::uint32_t> words { spirv.begin(), spirv.end() };
+    return translate_msl_impl(words, cfg.version, cfg.argument_buffers,
+                              cfg.push_constant_buffer_index);
 }
 
 }  // namespace cd::spirv_cross_glue
