@@ -1077,7 +1077,7 @@ public:
         rec.cpu_handle = dst;
         ++sampler_cursor_;
         const auto id = next_id_++;
-        samplers_.emplace(id, std::move(rec));
+        samplers_.emplace(id, rec);
         return cd::rhi::SamplerHandle { id, 1u };
     }
     void destroy_sampler(cd::rhi::SamplerHandle h) override
@@ -2597,7 +2597,7 @@ public:
         rec.view_count = vcount;
         cpu_heap_cursor_ += vcount;
         const auto id = next_id_++;
-        descriptor_sets_.emplace(id, std::move(rec));
+        descriptor_sets_.emplace(id, rec);
         return cd::rhi::DescriptorSetHandle { id, 1u };
     }
     void destroy_descriptor_set(cd::rhi::DescriptorSetHandle h) override
@@ -3551,7 +3551,7 @@ public:
             vrec.parent = rec.image_handles[i];
             vrec.format = fmt;
             vrec.rtv_cpu = rtv_cpu;
-            texture_views_.emplace(view_id, std::move(vrec));
+            texture_views_.emplace(view_id, vrec);
             rec.image_view_handles[i] = cd::rhi::TextureViewHandle { view_id, 1u };
 
             rtv_cpu.ptr += rec.rtv_descriptor_size;
@@ -3950,7 +3950,7 @@ public:
             }
             for (const auto& inst : desc.instances)
             {
-                if (!inst.blas.is_valid() || accels_.find(inst.blas.index()) == accels_.end())
+                if (!inst.blas.is_valid() || !accels_.contains(inst.blas.index()))
                 {
                     return std::unexpected(cd::rhi::rhi_errors::make(
                         cd::rhi::rhi_errors::Code::kInvalidArgument,
@@ -4654,6 +4654,13 @@ public:
             if (auto r = ensure_unified_heap_(); !r.has_value())
                 return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
         }
+        // B6b safety: a single set whose view_count exceeds kGpuHeapCap would
+        // wrap past the end of the ring and overflow into the bindless region
+        // at [kGpuHeapCap, kUnifiedHeapCap), violating the non-overlap invariant.
+        // Assert structurally so the bug surfaces at the allocation site rather
+        // than as silent corruption of bindless descriptors.
+        assert(set.view_count <= kGpuHeapCap &&
+               "D3D12 descriptor set view_count exceeds kGpuHeapCap — would overflow into bindless region");
         // Wrap stays bounded by kGpuHeapCap so the ring NEVER stomps the bindless
         // region at [kGpuHeapCap, kUnifiedHeapCap); rely on wait_idle() between
         // frames to keep the ring sane.
@@ -6005,6 +6012,7 @@ D3D12Device::do_create_command_buffer(cd::rhi::QueueType)
 
 void D3D12Device::submit(cd::rhi::ICommandBuffer& cb)
 {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast) — safe by construction: only D3D12CommandBuffer instances are submitted on the D3D12 device path.
     auto* d3d_cb = static_cast<D3D12CommandBuffer*>(&cb);
     ID3D12CommandList* lists[] = { d3d_cb->native() };
     graphics_queue_->ExecuteCommandLists(1, lists);
@@ -6053,6 +6061,7 @@ cd::core::Result<void> D3D12Device::submit(const cd::rhi::SubmitDesc& desc)
         for (auto* cb : desc.command_buffers)
         {
             if (cb == nullptr) continue;
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-static-cast-downcast) — safe by construction: all ICommandBuffer* in SubmitDesc::command_buffers are D3D12CommandBuffer on this backend.
             auto* d3d_cb = static_cast<D3D12CommandBuffer*>(cb);
             lists.push_back(d3d_cb->native());
         }
