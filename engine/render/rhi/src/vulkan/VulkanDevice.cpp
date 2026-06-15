@@ -31,6 +31,11 @@
 #include <cd/rhi/vulkan/VulkanDevice.hpp>  // QueueFamilyInfo (multi-queue introspection bridge)
 #include <cd/rhi/vulkan/VulkanFormat.hpp>  // vk_aspect_for_format public alias
 
+// D16 (parity): in-device GLSL/HLSL→SPIR-V cross-compile in create_shader_module
+// so a single create_shader_module(kGlsl, <source>) works on BOTH backends.
+#include <cd/gluon/ModuleRegistry.hpp>     // cd::gluon::ModuleResolver (#include catalogue)
+#include <cd/shader/Compiler.hpp>          // cd::shader::ICompiler / make_glslang_compiler
+
 #include <array>
 #include <cstdio>   // env-driven device selection diagnostic
 #include <cstdlib>  // std::getenv / std::atoi for CD_VULKAN_DEVICE_INDEX
@@ -555,6 +560,31 @@ struct VmaUsageMapping
     if (cd::rhi::has(s, SS::kCompute))
         out |= VK_SHADER_STAGE_COMPUTE_BIT;
     return out;
+}
+
+// D16 (parity): cd::rhi::ShaderStage (single-stage) → cd::shader::ShaderStage,
+// for the in-device GLSL/HLSL→SPIR-V cross-compile path in create_shader_module.
+// Mirrors the D3D12 backend's to_shader_stage (Compiler.hpp keeps the shader
+// library free of the RHI headers, so the mapping is an explicit copy). The
+// argument carries exactly one stage bit (a shader module is single-stage).
+[[nodiscard]] cd::shader::ShaderStage map_shader_stage(cd::rhi::ShaderStage s)
+{
+    using RS = cd::rhi::ShaderStage;
+    using CS = cd::shader::ShaderStage;
+    if (cd::rhi::has(s, RS::kFragment))     return CS::kFragment;
+    if (cd::rhi::has(s, RS::kCompute))      return CS::kCompute;
+    if (cd::rhi::has(s, RS::kGeometry))     return CS::kGeometry;
+    if (cd::rhi::has(s, RS::kTessControl))  return CS::kTessControl;
+    if (cd::rhi::has(s, RS::kTessEval))     return CS::kTessEval;
+    if (cd::rhi::has(s, RS::kRayGen))       return CS::kRaygen;
+    if (cd::rhi::has(s, RS::kAnyHit))       return CS::kAnyHit;
+    if (cd::rhi::has(s, RS::kClosestHit))   return CS::kClosestHit;
+    if (cd::rhi::has(s, RS::kMiss))         return CS::kMiss;
+    if (cd::rhi::has(s, RS::kIntersection)) return CS::kIntersection;
+    if (cd::rhi::has(s, RS::kCallable))     return CS::kCallable;
+    if (cd::rhi::has(s, RS::kMesh))         return CS::kMesh;
+    if (cd::rhi::has(s, RS::kTask))         return CS::kTask;
+    return CS::kVertex;  // kVertex or kNone default
 }
 
 [[nodiscard]] VkDescriptorType map_descriptor_type(cd::rhi::DescriptorType d)
@@ -1093,19 +1123,131 @@ public:
     [[nodiscard]] cd::core::Result<cd::rhi::ShaderModuleHandle>
     create_shader_module(const cd::rhi::ShaderModuleDesc& desc) override
     {
-        if (desc.code == nullptr || desc.code_size == 0 || (desc.code_size % 4) != 0)
+        if (desc.code == nullptr || desc.code_size == 0)
         {
             return std::unexpected(make_err(
                 cd::rhi::rhi_errors::Code::kInvalidArgument,
-                "shader_module: SPIR-V code must be non-empty 32-bit aligned"
+                "shader_module: code must be non-empty"
             ));
+        }
+
+        // D16 (parity): honour desc.language symmetrically with the D3D12
+        // backend so a SINGLE create_shader_module(kGlsl, <source>) call works
+        // on BOTH backends. kBytecode/kSpirv consume the 32-bit SPIR-V words
+        // verbatim (the legacy contract); kGlsl cross-compiles GLSL→SPIR-V via
+        // the glslang front-end (mirroring D3D12's GLSL→SPIR-V→DXIL chain — on
+        // Vulkan the SPIR-V IS the native bytecode so we stop after stage 1).
+        std::vector<std::uint32_t> compiled;  // backing store for the kGlsl path
+        const std::uint32_t* words = nullptr;
+        std::size_t          word_bytes = 0;
+
+        switch (desc.language)
+        {
+            case cd::rhi::ShaderSourceLanguage::kBytecode:
+            case cd::rhi::ShaderSourceLanguage::kSpirv:
+            {
+                if ((desc.code_size % 4) != 0)
+                {
+                    return std::unexpected(make_err(
+                        cd::rhi::rhi_errors::Code::kInvalidArgument,
+                        "shader_module: SPIR-V code must be 32-bit aligned"));
+                }
+                words      = static_cast<const std::uint32_t*>(desc.code);
+                word_bytes = static_cast<std::size_t>(desc.code_size);
+                break;
+            }
+            case cd::rhi::ShaderSourceLanguage::kGlsl:
+            {
+                auto compiler = cd::shader::make_glslang_compiler();
+                if (compiler == nullptr)
+                {
+                    return std::unexpected(make_err(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        "shader module: GLSL requested but the glslang front-end "
+                        "is unavailable (CD_ENABLE_GLSLANG=OFF)"));
+                }
+                // ADR-20260614 consumer-resolver pattern: a null include_resolver
+                // bridges to the embedded cd::gluon catalogue via a FUNCTION-LOCAL
+                // resolver; an injected resolver is respected. It must outlive the
+                // compile() call so it lives for the whole branch.
+                cd::gluon::ModuleResolver default_resolver {};
+                auto* injected = static_cast<cd::shader::IIncludeResolver*>(
+                    desc.include_resolver);
+                cd::shader::CompileDesc sd {};
+                sd.source = std::string_view {
+                    static_cast<const char*>(desc.code),
+                    static_cast<std::size_t>(desc.code_size) };
+                sd.stage = map_shader_stage(desc.stage);
+                sd.lang  = cd::shader::ShaderLanguage::kGlsl;
+                sd.target = cd::shader::TargetEnv::kVulkan13;
+                sd.entry_point = desc.entry_point;
+                sd.source_name = desc.debug_name.empty()
+                                     ? std::string_view { "<inline>" }
+                                     : desc.debug_name;
+                sd.include_resolver =
+                    injected != nullptr ? injected : &default_resolver;
+                auto spirv_r = compiler->compile(sd);
+                if (!spirv_r.has_value())
+                {
+                    return std::unexpected(make_err(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        std::string { "shader module (GLSL→SPIR-V): " } +
+                            std::string { spirv_r.error().message }));
+                }
+                compiled   = std::move(spirv_r->spirv);
+                words      = compiled.data();
+                word_bytes = compiled.size() * sizeof(std::uint32_t);
+                break;
+            }
+            case cd::rhi::ShaderSourceLanguage::kHlsl:
+            {
+                // glslang has an HLSL front-end; route it the same way as GLSL.
+                auto compiler = cd::shader::make_glslang_compiler();
+                if (compiler == nullptr)
+                {
+                    return std::unexpected(make_err(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        "shader module: HLSL requested but the glslang front-end "
+                        "is unavailable (CD_ENABLE_GLSLANG=OFF)"));
+                }
+                cd::shader::CompileDesc sd {};
+                sd.source = std::string_view {
+                    static_cast<const char*>(desc.code),
+                    static_cast<std::size_t>(desc.code_size) };
+                sd.stage = map_shader_stage(desc.stage);
+                sd.lang  = cd::shader::ShaderLanguage::kHlsl;
+                sd.target = cd::shader::TargetEnv::kVulkan13;
+                sd.entry_point = desc.entry_point;
+                sd.source_name = desc.debug_name.empty()
+                                     ? std::string_view { "<inline>" }
+                                     : desc.debug_name;
+                auto spirv_r = compiler->compile(sd);
+                if (!spirv_r.has_value())
+                {
+                    return std::unexpected(make_err(
+                        cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                        std::string { "shader module (HLSL→SPIR-V): " } +
+                            std::string { spirv_r.error().message }));
+                }
+                compiled   = std::move(spirv_r->spirv);
+                words      = compiled.data();
+                word_bytes = compiled.size() * sizeof(std::uint32_t);
+                break;
+            }
+        }
+
+        if (words == nullptr || word_bytes == 0 || (word_bytes % 4) != 0)
+        {
+            return std::unexpected(make_err(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "shader_module: empty/misaligned SPIR-V after compile"));
         }
         const VkShaderModuleCreateInfo ci {
             .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
             .pNext = nullptr,
             .flags = 0,
-            .codeSize = desc.code_size,
-            .pCode = static_cast<const std::uint32_t*>(desc.code),
+            .codeSize = word_bytes,
+            .pCode = words,
         };
         VkShaderModule m {};
         if (vkCreateShaderModule(device_, &ci, nullptr, &m) != VK_SUCCESS)

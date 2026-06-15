@@ -37,6 +37,34 @@ cd_add_test(d3d12_parity_m4
   DEPS    cd::rhi cd::core
 )
 
+# D16: cross-backend PIXEL-PARITY capstone. ONE engine GLSL textured/lit/
+# depth-tested scene is compiled to SPIR-V (Vulkan) AND DXIL (D3D12) via the
+# SAME create_shader_module(kGlsl) call, rendered to a 256x256 offscreen on
+# BOTH devices, read back, and diffed. This is the integration net the per-
+# feature WARP smokes can't be: it catches inter-backend disagreement (UV-origin
+# flip / NDC-Y handedness / sRGB / winding) that each single-backend smoke
+# passes. Needs both the Vulkan AND D3D12 backends + the GLSL->DXIL toolchain
+# DLLs; SKIPs cleanly when either device or dxc is absent. Windows-only (D3D12).
+if(WIN32 AND CD_ENABLE_VULKAN AND TARGET cd_rhi_vulkan)
+  cd_add_test(backend_pixel_parity
+    SOURCES test_backend_pixel_parity.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_pix_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_pix_list)
+  if(_cd_dxc_pix_list AND TARGET cd_test_backend_pixel_parity)
+    list(POP_BACK _cd_dxc_pix_list _cd_dxc_pix_dll)
+    get_filename_component(_cd_dxc_pix_dir "${_cd_dxc_pix_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_backend_pixel_parity POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_pix_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_backend_pixel_parity>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_pix_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_backend_pixel_parity>")
+  endif()
+endif()
+
 # phase656-rt-tlas-coverage-all-kinds: T1.11 — TLAS accepts all eligible
 # geometry kinds.  Locks the tlas_eligible host-side contract so a glTF
 # prim with default flags enters the TLAS instance list, a sphere prim

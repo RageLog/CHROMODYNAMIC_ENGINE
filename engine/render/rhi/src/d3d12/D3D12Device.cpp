@@ -4879,11 +4879,17 @@ public:
             pass_state_.rtv_count > 0 ? pass_state_.rtvs.data() : nullptr,
             FALSE,
             pass_state_.has_dsv ? &pass_state_.dsv : nullptr);
+        // D16 (parity): same NEGATIVE-HEIGHT Y-flip as set_viewport so the
+        // implicit parallel-pass re-bind viewport matches Vulkan's NDC-Y-down
+        // convention (anchor at the bottom edge, flip the height sign). Without
+        // this, a parallel pass that does not re-issue set_viewport would render
+        // un-flipped versus the serial path.
         D3D12_VIEWPORT vp {};
         vp.TopLeftX = static_cast<float>(render_area.offset.x);
-        vp.TopLeftY = static_cast<float>(render_area.offset.y);
+        vp.TopLeftY = static_cast<float>(render_area.offset.y) +
+                      static_cast<float>(render_area.extent.height);
         vp.Width    = static_cast<float>(render_area.extent.width);
-        vp.Height   = static_cast<float>(render_area.extent.height);
+        vp.Height   = -static_cast<float>(render_area.extent.height);
         vp.MinDepth = 0.0F;
         vp.MaxDepth = 1.0F;
         list_->RSSetViewports(1, &vp);
@@ -5120,11 +5126,22 @@ public:
     }
     void set_viewport(const cd::rhi::Viewport& vp) override
     {
+        // D16 (cross-backend parity): the engine authors clip space in the
+        // Vulkan convention (NDC +Y points DOWN in framebuffer space — the
+        // reference backend). D3D12's NDC +Y points UP, so the SAME clip-space
+        // triangle would rasterize VERTICALLY MIRRORED versus Vulkan. The
+        // cross-API-standard cure is a NEGATIVE-HEIGHT viewport: anchor at the
+        // bottom edge (TopLeftY = y + height) and flip the height sign so D3D12
+        // maps NDC +Y downward too, matching Vulkan pixel-for-pixel. (D3D12 has
+        // supported negative viewport height on all feature levels since the
+        // Windows 10 Anniversary update; the engine's min target is well past
+        // that.) This is the fix the D16 pixel-parity test surfaced — it makes
+        // the D3D12 readback byte-flip-identical to the Vulkan reference.
         D3D12_VIEWPORT v {};
         v.TopLeftX = vp.x;
-        v.TopLeftY = vp.y;
+        v.TopLeftY = vp.y + vp.height;  // anchor at the bottom edge…
         v.Width = vp.width;
-        v.Height = vp.height;
+        v.Height = -vp.height;          // …and flip Y so +Y NDC goes downward
         v.MinDepth = vp.min_depth;
         v.MaxDepth = vp.max_depth;
         list_->RSSetViewports(1, &v);

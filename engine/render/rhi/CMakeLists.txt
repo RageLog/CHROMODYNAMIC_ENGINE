@@ -122,7 +122,14 @@ if(CD_ENABLE_VULKAN)
       src/vulkan/VulkanCommandBuffer.cpp
       src/vulkan/VulkanVma.cpp
       src/vulkan/NativeHandles.cpp
-    PUBLIC_DEPS  cd::rhi
+    # D16 (parity): create_shader_module now honours desc.language == kGlsl by
+    # cross-compiling GLSL→SPIR-V via the glslang front-end (symmetric with the
+    # D3D12 GLSL→DXIL path), so a SINGLE create_shader_module(kGlsl) call works
+    # on both backends. cd::shader provides make_glslang_compiler; cd::gluon's
+    # ModuleResolver bridges #include <cd/gluon/*.glsl> to the embedded catalogue.
+    PUBLIC_DEPS  cd::rhi cd::shader
+    # PRIVATE — only the .cpp compile branch names the gluon resolver type.
+    PRIVATE_DEPS cd::gluon
   )
 
   # Internal headers live alongside .cpp in src/vulkan/
