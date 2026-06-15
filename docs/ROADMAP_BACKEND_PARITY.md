@@ -225,6 +225,25 @@ parallel, then verification):
 
 ## §3. Metal completion — build up to the Vulkan bar (PHASE C)
 
+> **✅ STATUS (2026-06-15): METAL SOURCE SURFACE M1–M9 WRITTEN + REVIEWED;
+> .mm Mac-COMPILE/GPU-test DEFERRED per user "donanım yok" directive.**
+> M1 buffer/texture registry + M2/M8 pipeline & depth/MRT render-pass + M3
+> SPIR-V→MSL toolchain (`MetalShaderToolchain`, **host-verified on Windows,
+> 11/11 `cd_test_metal_shader_toolchain`**) + M4 argument-encoder descriptors +
+> M5 barriers + M6 shader-module + M7 CAMetalLayer swapchain + M9 ray tracing
+> (MTLAccelerationStructure BLAS/TLAS build + **ray-query MSL lowering
+> host-verified**: SPIRV-Cross lowers `SPV_KHR_ray_query` → `intersection_query<>`,
+> MSL 2.4 floor) — phases 1197–1202. The `.mm` translation units are gated
+> behind `CD_RHI_METAL_ENABLED+APPLE` (OFF on Windows) so they are written +
+> structurally reviewed but compile + run only on an Apple host. The remaining
+> open items (M0 macOS build, M10 mesh-shader, M11 bindless-array, M12
+> windowed `hello_metal`, and on-device GPU verification of M1–M9) are tracked
+> in **`docs/METAL_MAC_TESTING.md`** (the on-Mac checklist) and
+> **`docs/ADR/ADR-20260615-metal-backend-completion.md`** (the binding-model +
+> RT decision record). Metal is NOT a blocker: yaz-ama-Mac-doğrulamasını-ertele.
+> The gap table below is the ORIGINAL (2026-06-14) pre-work audit, kept for
+> historical reference.
+
 Metal is "skeleton + 5 sprint": broad source surface, **shallow functional
 depth**, and — critically — **NEVER compiled or tested** on the current
 Windows CI (`if(NOT APPLE)` FORCE-OFF, `engine/render/rhi/CMakeLists.txt:169`).
