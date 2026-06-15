@@ -51,8 +51,10 @@
 #endif
 
 #include <array>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -4842,8 +4844,56 @@ public:
         list_->OMSetRenderTargets(
             rtv_count, rtv_count > 0 ? rtvs.data() : nullptr,
             FALSE, has_dsv ? &dsv : nullptr);
+
+        // D11 — capture the RESOLVED pass RTV/DSV state so a parallel-pass
+        // recorder can re-bind it per lane. A D3D12 command list inherits NO
+        // state, so each parallel lane must (re)set OMSetRenderTargets with
+        // exactly these handles before it draws. We snapshot here (after the
+        // clears + barriers have fired once on the primary) so the lanes use
+        // LOAD semantics — they never re-clear.
+        pass_state_.rtv_count = rtv_count;
+        pass_state_.rtvs      = rtvs;
+        pass_state_.has_dsv   = has_dsv;
+        pass_state_.dsv       = dsv;
     }
     void end_render_pass() override {}
+
+    // D11 — re-establish the captured render-pass output-merger state on THIS
+    // command list. Called by D3D12ParallelPassRecorder at the head of every
+    // lane replay because a freshly-recorded lane inherits no OM/RS state. On
+    // the sequential-replay-onto-primary path this is a benign redundant set
+    // (the primary already has it bound from begin_render_pass), but it makes
+    // the per-lane state-isolation contract explicit and keeps the path robust
+    // if a lane's pipeline mutates render-target/viewport state.
+    void rebind_parallel_pass_state(const cd::rhi::Rect2D& render_area)
+    {
+        list_->OMSetRenderTargets(
+            pass_state_.rtv_count,
+            pass_state_.rtv_count > 0 ? pass_state_.rtvs.data() : nullptr,
+            FALSE,
+            pass_state_.has_dsv ? &pass_state_.dsv : nullptr);
+        D3D12_VIEWPORT vp {};
+        vp.TopLeftX = static_cast<float>(render_area.offset.x);
+        vp.TopLeftY = static_cast<float>(render_area.offset.y);
+        vp.Width    = static_cast<float>(render_area.extent.width);
+        vp.Height   = static_cast<float>(render_area.extent.height);
+        vp.MinDepth = 0.0F;
+        vp.MaxDepth = 1.0F;
+        list_->RSSetViewports(1, &vp);
+        D3D12_RECT sc {};
+        sc.left   = render_area.offset.x;
+        sc.top    = render_area.offset.y;
+        sc.right  = render_area.offset.x + static_cast<LONG>(render_area.extent.width);
+        sc.bottom = render_area.offset.y + static_cast<LONG>(render_area.extent.height);
+        list_->RSSetScissorRects(1, &sc);
+    }
+
+    // D11 — parallel render pass over per-lane deferred command recording.
+    // Definition is out-of-line (after D3D12ParallelPassRecorder) because the
+    // recorder type is declared below this class.
+    [[nodiscard]] std::unique_ptr<cd::rhi::IParallelPassRecorder>
+    begin_parallel_render_pass(const cd::rhi::RenderPassBeginInfo& info,
+                               std::uint32_t lane_count) override;
 
     // PSO + draw surface (Phase 14.C / v0.36.0). The rest of the
     // ICommandBuffer surface (compute dispatch, descriptor sets,
@@ -5746,7 +5796,199 @@ private:
     // D14 (phase1188) — nesting depth so pop_debug_group never calls
     // EndEvent more times than push_debug_group called BeginEvent.
     std::uint32_t debug_group_depth_ { 0 };
+    // D11 (phase1191) — resolved OM render-target state of the most recent
+    // begin_render_pass, snapshotted so a parallel-pass recorder can re-bind
+    // it per lane (a D3D12 list inherits no state). See rebind_parallel_pass_state.
+    struct PassState
+    {
+        UINT rtv_count { 0 };
+        std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 8> rtvs {};
+        bool has_dsv { false };
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv {};
+    };
+    PassState pass_state_ {};
 };
+
+// ===========================================================================
+// D11 (phase1191) — D3D12 parallel render pass.
+//
+// MODEL: sequential-replay-onto-primary fallback (the roadmap-sanctioned
+// CORRECTNESS-parity option). D3D12 has no Vulkan-style secondary/inheriting
+// command lists — a direct list cannot be replayed *inside* another list's
+// render-pass scope, and a bundle forbids OMSetRenderTargets/RSSetViewports,
+// so the Vulkan vkCmdExecuteCommands-into-a-RENDER_PASS_CONTINUE secondary has
+// no direct D3D12 analogue. Instead each lane is a thread-confined RECORDER
+// that captures its draw-subset calls (bind pipeline / VB / IB / descriptor /
+// push-constants / viewport / scissor / draw / debug-group) into its own
+// std::function command list. Lanes can therefore be filled fully in PARALLEL
+// (no shared mutable state). finish() then REPLAYS the lane command lists onto
+// the primary command list IN LANE ORDER (lane 0, then lane 1, ...), so the
+// emitted command stream is BYTE-IDENTICAL to a single thread that recorded
+// the same draws in lane order. Each lane replay is prefixed with a
+// rebind_parallel_pass_state() so the per-lane state-isolation contract is
+// honoured explicitly (each lane re-sets the pass RTVs/DSV + viewport +
+// scissor before its draws).
+//
+// This gives true parallel RECORDING (the X1-FU-F scaling win) with a
+// deterministic, single-threaded-identical RESULT — which is exactly the
+// correctness bar the task sets. A future true-parallel variant would need
+// per-lane ID3D12GraphicsCommandLists; that is deferred (see report).
+// ===========================================================================
+class D3D12ParallelPassRecorder final : public cd::rhi::IParallelPassRecorder
+{
+public:
+    // A single lane: an IDrawRecorder that defers every call into a
+    // thread-confined command vector. Captures only by value / handle so the
+    // replay is independent of caller lifetime within the pass.
+    class LaneRecorder final : public cd::rhi::IDrawRecorder
+    {
+    public:
+        using Cmd = std::function<void(D3D12CommandBuffer&)>;
+
+        void bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle p) override
+        {
+            cmds_.emplace_back([p](D3D12CommandBuffer& c) { c.bind_graphics_pipeline(p); });
+        }
+        void bind_rt_pipeline(cd::rhi::RtPipelineHandle p) override
+        {
+            cmds_.emplace_back([p](D3D12CommandBuffer& c) { c.bind_rt_pipeline(p); });
+        }
+        void bind_descriptor_set(std::uint32_t set, cd::rhi::DescriptorSetHandle h) override
+        {
+            cmds_.emplace_back([set, h](D3D12CommandBuffer& c) { c.bind_descriptor_set(set, h); });
+        }
+        void bind_bindless_texture_array(std::uint32_t set,
+                                         cd::rhi::BindlessTextureArrayHandle a) override
+        {
+            cmds_.emplace_back([set, a](D3D12CommandBuffer& c) { c.bind_bindless_texture_array(set, a); });
+        }
+        void bind_vertex_buffer(std::uint32_t binding, cd::rhi::BufferHandle b,
+                                std::uint64_t offset) override
+        {
+            cmds_.emplace_back([binding, b, offset](D3D12CommandBuffer& c) { c.bind_vertex_buffer(binding, b, offset); });
+        }
+        void bind_index_buffer(cd::rhi::BufferHandle b, std::uint64_t offset,
+                               cd::rhi::IndexType t) override
+        {
+            cmds_.emplace_back([b, offset, t](D3D12CommandBuffer& c) { c.bind_index_buffer(b, offset, t); });
+        }
+        void push_constants(cd::rhi::PipelineLayoutHandle layout, cd::rhi::ShaderStage stages,
+                            std::uint32_t offset, std::uint32_t size, const void* data) override
+        {
+            // The source bytes are NOT guaranteed to outlive recording, so the
+            // lane OWNS a copy that the deferred replay reads.
+            std::vector<std::byte> bytes(size);
+            if (data != nullptr && size != 0u)
+                std::memcpy(bytes.data(), data, size);
+            cmds_.emplace_back(
+                [layout, stages, offset, size, store = std::move(bytes)](D3D12CommandBuffer& c)
+                { c.push_constants(layout, stages, offset, size, store.data()); });
+        }
+        void set_viewport(const cd::rhi::Viewport& vp) override
+        {
+            cmds_.emplace_back([vp](D3D12CommandBuffer& c) { c.set_viewport(vp); });
+        }
+        void set_scissor(const cd::rhi::Rect2D& r) override
+        {
+            cmds_.emplace_back([r](D3D12CommandBuffer& c) { c.set_scissor(r); });
+        }
+        void draw(std::uint32_t vc, std::uint32_t ic, std::uint32_t fv,
+                  std::uint32_t fi) override
+        {
+            cmds_.emplace_back([vc, ic, fv, fi](D3D12CommandBuffer& c) { c.draw(vc, ic, fv, fi); });
+        }
+        void draw_indexed(std::uint32_t ic, std::uint32_t inst, std::uint32_t fi,
+                          std::int32_t vo, std::uint32_t finst) override
+        {
+            cmds_.emplace_back([ic, inst, fi, vo, finst](D3D12CommandBuffer& c) { c.draw_indexed(ic, inst, fi, vo, finst); });
+        }
+        void draw_mesh_tasks(std::uint32_t gx, std::uint32_t gy, std::uint32_t gz) override
+        {
+            cmds_.emplace_back([gx, gy, gz](D3D12CommandBuffer& c) { c.draw_mesh_tasks(gx, gy, gz); });
+        }
+        void push_debug_group(std::string_view name) override
+        {
+            cmds_.emplace_back([s = std::string { name }](D3D12CommandBuffer& c) { c.push_debug_group(s); });
+        }
+        void pop_debug_group() override
+        {
+            cmds_.emplace_back([](D3D12CommandBuffer& c) { c.pop_debug_group(); });
+        }
+
+        void replay(D3D12CommandBuffer& primary) const
+        {
+            for (const auto& cmd : cmds_)
+                cmd(primary);
+        }
+
+    private:
+        std::vector<Cmd> cmds_;
+    };
+
+    D3D12ParallelPassRecorder(D3D12CommandBuffer& primary,
+                              const cd::rhi::Rect2D& render_area,
+                              std::uint32_t lane_count)
+        : primary_ { &primary }, render_area_ { render_area }
+    {
+        lanes_.reserve(lane_count);
+        for (std::uint32_t i = 0; i < lane_count; ++i)
+            lanes_.push_back(std::make_unique<LaneRecorder>());
+    }
+    ~D3D12ParallelPassRecorder() override = default;
+    D3D12ParallelPassRecorder(const D3D12ParallelPassRecorder&) = delete;
+    D3D12ParallelPassRecorder& operator=(const D3D12ParallelPassRecorder&) = delete;
+    D3D12ParallelPassRecorder(D3D12ParallelPassRecorder&&) = delete;
+    D3D12ParallelPassRecorder& operator=(D3D12ParallelPassRecorder&&) = delete;
+
+    [[nodiscard]] std::uint32_t lane_count() const noexcept override
+    {
+        return static_cast<std::uint32_t>(lanes_.size());
+    }
+    [[nodiscard]] cd::rhi::IDrawRecorder& lane(std::uint32_t i) noexcept override
+    {
+        // Mirror the Vulkan contract: out-of-range is a caller bug — assert in
+        // debug, clamp to the last lane in release.
+        assert(i < lanes_.size() && "lane index out of range");
+        const auto idx = i < lanes_.size() ? i : lanes_.size() - 1u;
+        return *lanes_[idx];
+    }
+    void finish() override
+    {
+        if (finished_)
+            return;
+        // Join lanes onto the primary IN LANE ORDER. Each lane re-binds the
+        // captured pass state first (D3D12 lists inherit nothing); on this
+        // shared-primary path that is a benign redundant set, but it makes the
+        // per-lane isolation contract explicit and replay-order-independent.
+        for (const auto& l : lanes_)
+        {
+            primary_->rebind_parallel_pass_state(render_area_);
+            l->replay(*primary_);
+        }
+        primary_->end_render_pass();
+        finished_ = true;
+    }
+
+private:
+    D3D12CommandBuffer* primary_ { nullptr };
+    cd::rhi::Rect2D render_area_ {};
+    std::vector<std::unique_ptr<LaneRecorder>> lanes_;
+    bool finished_ { false };
+};
+
+std::unique_ptr<cd::rhi::IParallelPassRecorder>
+D3D12CommandBuffer::begin_parallel_render_pass(
+    const cd::rhi::RenderPassBeginInfo& info, std::uint32_t lane_count)
+{
+    if (lane_count == 0)
+        lane_count = 1;
+    // Open the pass on the primary exactly like the serial path: RTV/DSV bind +
+    // clears + implicit barriers fire ONCE here (lanes draw with LOAD
+    // semantics). This also snapshots pass_state_ for per-lane rebinding.
+    begin_render_pass(info);
+    return std::make_unique<D3D12ParallelPassRecorder>(
+        *this, info.render_area, lane_count);
+}
 
 std::unique_ptr<cd::rhi::ICommandBuffer>
 D3D12Device::do_create_command_buffer(cd::rhi::QueueType)

@@ -159,6 +159,32 @@ if(WIN32)
   endif()
 endif()
 
+# phase1191 (D11): D3D12 begin_parallel_render_pass / IParallelPassRecorder
+# GPU correctness smoke. Renders K colored quads SERIALLY and via a PARALLEL
+# render pass (K draws split across L lanes, recorded from worker threads,
+# joined in lane order) and asserts the two readback images are BYTE-IDENTICAL.
+# Same GLSL->DXIL device path + WARP render/readback as the depth/MRT test;
+# SKIPs cleanly when no D3D12 adapter or no DXC DLL.
+if(WIN32)
+  cd_add_test(d3d12_parallel_pass
+    SOURCES test_d3d12_parallel_pass.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_pp_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_pp_list)
+  if(_cd_dxc_pp_list AND TARGET cd_test_d3d12_parallel_pass)
+    list(POP_BACK _cd_dxc_pp_list _cd_dxc_pp_dll)
+    get_filename_component(_cd_dxc_pp_dir "${_cd_dxc_pp_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_parallel_pass POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_pp_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_parallel_pass>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_pp_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_parallel_pass>")
+  endif()
+endif()
+
 # phase1187 (D4 + D6): D3D12 PSO per-attachment blend + per-binding vertex
 # stride GPU smokes. Same GLSL->DXIL device path + WARP render/readback as the
 # depth/MRT test; SKIPs cleanly when no D3D12 adapter or no DXC DLL.
