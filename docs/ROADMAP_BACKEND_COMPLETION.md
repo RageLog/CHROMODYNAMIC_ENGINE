@@ -4,6 +4,49 @@
 >
 > Source: 3 per-backend deep audits (2026-06-15), each impl-now claim re-verified against source by the synthesizing architect.
 
+## 0. ✅ STATUS: ALL IMPL-NOW DONE (2026-06-15) — BACKEND IMPLEMENTATION COMPLETE
+
+Every impl-now item below is closed. The 3 RHI backends are implementation-complete;
+the ONLY remaining work is tests + Metal Mac-GPU verification + documented intentional-defers.
+
+| Item | Backend | Status | Commit |
+| --- | --- | --- | --- |
+| (none — already complete) | Vulkan | ✅ phase1183 TAM | — |
+| D1 MSAA SampleCount | D3D12 | ✅ DONE + bidirectional test | phase1206 `7c74702` |
+| D3 8 DeviceFeatures flags | D3D12 | ✅ DONE + test | phase1206 `7c74702` |
+| D4 storage-image UAV dim | D3D12 | ✅ DONE + test | phase1206 `7c74702` |
+| D2 sampler bindability | D3D12 | ✅ DONE + bidirectional test | phase1207 `7ed9e51` |
+| (winding-compensation) | D3D12 | ✅ DONE + test (pre-plan) | phase1204 `57d283b` |
+| M6 dispatch threadgroup | Metal | ✅ DONE — host-tested reflection + .mm | phase1208 `02cc47b` |
+| M-caps limits/features | Metal | ✅ DONE (.mm) | phase1208 `02cc47b` |
+| M-readback device-copy | Metal | ✅ DONE (.mm) | phase1208 `02cc47b` |
+| M10 mesh-shader | Metal | ✅ DONE — host-tested MSL lowering + .mm | phase1209 `7448759` |
+| M11 bindless array | Metal | ✅ DONE (.mm) | phase1209 `7448759` |
+| winding-compensation | Metal | ✅ DONE (.mm, mirrors D3D12) | phase1209 `7448759` |
+| M12 windowed sample + acquire/swapchain | Metal | ✅ DONE (.mm + Windows stub) | phase1209 `7448759` |
+| macOS CI skeleton | Metal | ✅ DONE | phase1209 `7448759` |
+
+**Metal structural quality gate (Mac can't GPU-test → adversarial review is the gate):**
+architect review = **SHIP** (0 bugs / 7 categories: override-signatures exact, @available
+self-consistent, dispatch group-count correct, winding symmetric+single-applied, bindless
+own-set, transient swapchain handle no-double-free, binding map respected). safety-integration
+review = **SHIP** (M9-class residency does NOT recur — every bindless slot made resident;
+ARC/lifetime, dispatch zero-group, mesh-PSO aliasing, acquire-signal monotonicity, new-state
+locking all sound).
+
+**ALLOWED RESIDUE (the only backend work that legitimately remains):**
+
+1. **Tests** — D3D12 has bidirectional parity tests for all 4 fixes + M6/M10 have host MSL tests;
+   remaining = Metal GPU-side gtests (Mac-gated) + a Metal cull-parity GPU test (D3D12 analog).
+2. **Mac-GPU verification (M0)** — build all `.mm` with `CD_RHI_METAL_ENABLED=ON` on macOS +
+   GPU-run; see `docs/METAL_MAC_TESTING.md`. The code is written + structurally reviewed now.
+3. **Intentionally-deferred** (documented decisions, NOT gaps): AS compaction/refit (V3),
+   SBT-vs-ray-query (engine uses inline ray-query), indirect draw (out-of-scope, not in the
+   interface). One future-hardening note: make `MetalEventObj::signal_counter_` atomic IF
+   multi-thread acquire/submit is ever added (not a regression today).
+
+**⇒ Backend implementation is FROZEN. Next work is feature-tier (X5 shader hot-reload, DDGI).**
+
 ## 1. Per-Backend Completion Status
 
 ### Vulkan — IMPLEMENTATION-COMPLETE (nothing to do)
