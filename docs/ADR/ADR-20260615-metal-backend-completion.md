@@ -13,7 +13,16 @@
 > READY-TO-START verdict) BU ADR tarafindan **uygulanir**; o ADR "ne/neden", bu ADR
 > "nasil/hangi-sira".
 
-- **Status**: Proposed (tasarim; .mm implementasyonunu yonlendirir — KOD YOK)
+<!-- STATUS BANNER (updated 2026-06-15, phases 1197-1201)
+     M1-M9 source written (.mm + MetalShaderToolchain.cpp);
+     Windows ninja-debug build CLEAN (CD_RHI_METAL_ENABLED=OFF, MetalDevice.cpp stub);
+     cd_test_metal_shader_toolchain 11/11 PASS (host-side, Windows-verified);
+     Mac compile + GPU golden (FLIP/SSIM vs Vulkan) PENDING on-device — see docs/METAL_MAC_TESTING.md.
+     M9 open question CLOSED: SPIRV-Cross CompilerMSL lowers SPV_KHR_ray_query to
+     MSL 2.4 metal::raytracing::intersector<> — host-verified by toolchain tests.
+     AS useResource residency IMPLEMENTED in MetalCommandBuffer.mm (bind_descriptor_set). -->
+
+- **Status**: M1-M9 Written — Mac GPU verify pending (see status banner above)
 - **Date**: 2026-06-15
 - **Branch**: dev
 - **Deciders**: Cemal TATLI
@@ -73,13 +82,24 @@ zaten derlenir + test edilir (PURE host-side C++, MTLDevice gerektirmez).
 `CMakeLists.txt:125-129` Vulkan; D3D12 `compile_glsl_to_dxil`). Metal'de bu
 zincir KURULMAMIS.
 
-### Kanit 3 — M3 BINDING CONTRACT (phase1197, set-per-argument-buffer)
+### Kanit 3 — M3 BINDING CONTRACT (phase1197, set-per-argument-buffer) — FINAL
 
-`MetalShaderToolchain.hpp:41-63` MSL binding sozlesmesini sabitler:
-- **Vulkan descriptor set N -> Metal `[[buffer(N)]]` argument buffer**
-- resources `[[id(binding)]]` ile argument-buffer struct ICINDE
-- **push_constant -> `[[buffer(16)]]`** (`kPushConstantBufferIndex = 16U`,
-  set 0/1 araliginin USTUNDE — cakisma yok)
+`MetalShaderToolchain.hpp` ve `MetalInternal.hpp` birlikte FINAL [[buffer(N)]] haritasini
+sabitler (DISJOINT — hicbir aralik cakismaz):
+
+| [[buffer(N)]] aralik | Sahip | Sabit |
+| --- | --- | --- |
+| `[0..7]` | descriptor-set argument buffers (set index == buffer index) | `kMaxDescriptorSetSlots = 8U` |
+| `[8]` | push_constant block | `kMetalPushConstantBufferIndex = 8U` (NOT 16) |
+| `[9..15]` | vertex-input (stage_in) buffers | `kVertexBufferBaseIndex = 9U` |
+| `[16..19]` | HEADROOM (gelecek kullanim, unowned) | — |
+| `[20..30]` | SPIRV-Cross CompilerMSL aux buffers (pinned) | `kSpirvCrossAuxBufferBaseIndex = 20U` |
+
+**push_constant slotu [8]'dir, [16] DEGIL** (`kPushConstantBufferIndex = 8U` —
+`MetalShaderToolchain.hpp:58`, `kMetalPushConstantBufferIndex = 8U` —
+`MetalInternal.hpp:188`). Set araliginin [0..7] HEMEN USTUNDE, vertex araliginin
+[9..15] HEMEN ALTINDA — boyle ki hicbir set veya vertex buffer ile cakismaz.
+ADR yazimindaki [16] degeri stale-taslak degeriydi; kod 8'de karar kildi.
 
 Bu, ADR-20260614-d3d12-binding-model §"Sonuclar" (satir 200-207) ile DOGRUDAN
 simetrik: "space-per-set karari Metal'de set-per-argument-buffer'a dogal olarak
@@ -126,7 +146,7 @@ Mevcut `MetalDevice.mm` / `MetalCommandBuffer.mm` / `MetalPipeline.mm` /
 | **M6** shader | ham MSL bekler | `compose_glsl_to_msl` (M3) -> `newLibraryWithSource:` -> `newFunctionWithName:` (cleansed `main0`) | `VulkanDevice.cpp` create_shader_module kGlsl dali (D16); D3D12 `compile_glsl_to_dxil` | **M** | `MetalDevice.mm` edit + CMake link |
 | **M2** pipeline | hard-coded ucgen | `MTLRenderPipelineDescriptor` desc'ten (vertex layout/blend/format) -> `newRenderPipelineStateWithDescriptor:` | `VulkanDevice.cpp` create_graphics_pipeline (VkGraphicsPipelineCreateInfo) | **L** | `MetalPipeline.mm` edit |
 | **M8** render-pass | tek-color, depth yok | `MTLRenderPassDescriptor` color[i]+depth, load/store/clear -> `renderCommandEncoderWithDescriptor:` + `MTLDepthStencilState` | `VulkanDevice.cpp` dynamic-rendering / VkRenderingInfo | **M** | `MetalRenderPass.mm` (yeni) + `MetalCommandBuffer.mm` edit |
-| **M4** descriptors | tek-slot encoder + bos bind | per-set `MTLArgumentEncoder` ([[buffer(N)]] layout'tan) + `[[id(binding)]]` encode + `setVertex/FragmentBuffer` slot N + push `setVertex/FragmentBytes` [[buffer(16)]] | `VulkanDevice.cpp:1303-1435` (DSL/layout), update_descriptor_set | **XL** | `MetalArgumentBuffer.mm` (yeni) + `MetalDevice.mm`/`MetalCommandBuffer.mm` edit |
+| **M4** descriptors | tek-slot encoder + bos bind | per-set `MTLArgumentEncoder` ([[buffer(N)]] layout'tan) + `[[id(binding)]]` encode + `setVertex/FragmentBuffer` slot N + push `setVertex/FragmentBytes` [[buffer(8)]] | `VulkanDevice.cpp:1303-1435` (DSL/layout), update_descriptor_set | **XL** | `MetalArgumentBuffer.mm` (yeni) + `MetalDevice.mm`/`MetalCommandBuffer.mm` edit |
 | **M4-Y** NDC-Y | yok | viewport negatif-height VEYA clip-space Y-flip (Vulkan-Y-down esitleme) | phase1196 D16 (D3D12 negatif-height-viewport) | **S** | `MetalCommandBuffer.mm` edit |
 | **M5** barriers | bos `{}` | `MTLFence` / `memoryBarrierWithScope:` (untracked heap kaynaklari icin) | `VulkanCommandBuffer.cpp` barrier (vkCmdPipelineBarrier2) | **M** | `MetalBarrier.mm` (yeni) + `MetalCommandBuffer.mm` edit |
 | **M7** swapchain | CAMetalLayer var; resize/HDR yok | `nextDrawable`/`present` var; resize/out-of-date + EDR (HDR) ekle | `VulkanDevice.cpp` create_swapchain + acquire/present | **S** | `MetalSwapchain.mm` edit |
@@ -235,10 +255,10 @@ Hedef (M3 contract'i HONOR ederek):
    ETTIGI her kaynagi resident yap (Metal argument-buffer kurali — aksi halde
    GPU kaynagi goremez; bu, W8-BE bindless cross-encoder visibility dersi
    ADR-20260530 §8.5.1 ile ayni).
-4. push_constants: `set_index >= 16` cakismaz; `[[buffer(16)]]`'e
+4. push_constants: `set_index >= 8` cakismaz; `[[buffer(8)]]`'e
    `setVertex/FragmentBytes` (mevcut `push_constants`,
    `MetalCommandBuffer.mm:360-387` `offset`'i arg-index olarak kullaniyor —
-   `kPushConstantBufferIndex=16` SABITINE baglanmali, caller offset'ine degil).
+   `kMetalPushConstantBufferIndex=8U` SABITINE baglanmali, caller offset'ine degil).
 
 **M4-Y — NDC-Y parity (efort: S, MANDATORY)**: Metal clip-space +Y YUKARI
 (D3D12 gibi); Vulkan +Y ASAGI. Ekran goruntusu ters cikmamasi icin
@@ -369,15 +389,16 @@ Yukarida M9'da gerekceli reddedildi.
   build_acceleration_structure + ray-query dispatch (M9) eklenir.
 - **`MetalPipeline.mm`**: build_sprint1_triangle_pipeline -> gercek
   desc-driven `build_metal_graphics_pipeline` (M2) genisler.
-- **Shader corpus**: SPIRV-Cross MSL ciktisi argument-buffer + [[buffer(16)]]
+- **Shader corpus**: SPIRV-Cross MSL ciktisi argument-buffer + [[buffer(8)]]
   push + ray-query intersector uretmeli — `cd::spirv_cross_glue` MSL tarafi
   (`compose_glsl_to_msl`) M3 contract'ina (set-per-argument-buffer) zaten
-  baglanmis (`MetalShaderToolchain.hpp:41-63`); RT lowering icin `CompilerMSL`
-  ray-query opsiyonu dogrulanmali.
+  baglanmis (`MetalShaderToolchain.hpp:41-63`); **M9 RT lowering KAPALI SORU**:
+  `CompilerMSL` SPV_KHR_ray_query'yi MSL 2.4 `metal::raytracing::intersector<>`'e
+  dusurur — host-side toolchain testlerinde dogrulandi (cd_test_metal_shader_toolchain).
 - **Test (Mac-gated)**: `chrome_sponza_baseline` golden fixture
   (ADR-20260530 §8.5.5) Metal'de Vulkan ile FLIP/SSIM parite olculur. .mm-disi
   M3 toolchain testleri Win11'de KOSAR (MSL-string golden: set-per-arg-buffer
-  + [[buffer(16)]] + ray-query intersector uretildigini assert eden golden).
+  + [[buffer(8)]] + ray-query intersector uretildigini assert eden golden).
 - **macOS BUILD/CI**: Kullanici Mac'te `cmake --preset <mac> -DCD_RHI_METAL_
   ENABLED=ON` ile .mm derler; `ctest` Metal GPU testlerini (golden diff)
   kosar. Win11'de `CD_RHI_METAL_ENABLED=OFF` (default) — .mm derlenmez, stub
@@ -403,11 +424,14 @@ Yukarida M9'da gerekceli reddedildi.
 5. **M10/M11 (Metal-native, opsiyonel)**: mesh shader + bindless tier2 —
    parite-otesi; ayri faz.
 
-**Invariantlar**: (i) M3 contract — set N -> [[buffer(N)]], push -> [[buffer(16)]]
-HER pipeline'da; (ii) NDC-Y — viewport negatif-height TEK yerde, tum backend'ler
-ayni ekran ciktisi; (iii) M9 — SBT-pipeline yolu Metal'de DE stub (Vulkan
-paritesi), gercek RT ray-query; (iv) .mm SADECE `compose_glsl_to_msl` ciktisini
-tuketir, shader-compile mantigini inline ETMEZ.
+**Invariantlar**: (i) M3 contract — set N -> [[buffer(N)]] [0..7], push -> [[buffer(8)]]
+HER pipeline'da (kMetalPushConstantBufferIndex=8U, vertex [9..15], aux [20..30]);
+(ii) NDC-Y — viewport negatif-height TEK yerde, tum backend'ler ayni ekran ciktisi;
+(iii) M9 — SBT-pipeline yolu Metal'de DE stub (Vulkan paritesi), gercek RT
+ray-query (KAPALI SORU: SPIRV-Cross lowering host-dogrulandi); (iv) .mm SADECE
+`compose_glsl_to_msl` ciktisini tuketir, shader-compile mantigini inline ETMEZ;
+(v) AS useResource residency — `bind_descriptor_set` ICINDE IMPLEMENT EDILMIS
+(`MetalCommandBuffer.mm` render + compute encoder her ikisi icin).
 
 **Implementasyonu kim yapmali**: `developer` (Mac-gated .mm) — bu ADR yapisal
 kontrat; M3 toolchain (host-side) parcalari Win11'de simdi test edilebilir,
