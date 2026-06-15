@@ -10,11 +10,12 @@
 //   Phase 3  Revert content → watcher fires (#3, original content)
 //   Cleanup  Temp file deleted
 //
-// Each phase uses a spin-until-mtime-advances loop (≤ 3 s per phase)
-// so the test is deterministic on NTFS (≈ 100 ns granularity), ext4
-// (1 ns), and FAT32 (2 s) alike. No sleep_for fixed waits; the outer
-// loop writes + checks mtime before calling poll(), mirroring the
-// HelloShaderWatch::poll_and_reload frame-loop pattern.
+// Each phase writes the new content then EXPLICITLY bumps the file's mtime
+// forward (baseline + 1 s) before calling poll(), so the watcher's mtime
+// comparison fires deterministically on NTFS (≈ 100 ns granularity), ext4
+// (1 ns), and FAT32 (2 s) alike. No sleep_for / wall-clock wait (CLAUDE.md
+// §5 anti-flakiness): forcing last_write_time is exact and instantaneous,
+// mirroring the HelloShaderWatch::poll_and_reload frame-loop pattern.
 // =============================================================================
 #include <cd/shader/FileWatcher.hpp>
 #include <gtest/gtest.h>
@@ -24,7 +25,6 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
-#include <thread>
 
 namespace
 {
@@ -59,27 +59,26 @@ constexpr std::string_view kOriginal =
 constexpr std::string_view kModified =
     "void main() { gl_FragColor = vec4(1.0, 0.5, 0.0, 1.0); }";
 
-/// Spin-write `text` into `p` until the filesystem mtime advances past
-/// `baseline`, then poll the watcher.  Returns true iff poll() fires
-/// within `timeout`.
-[[nodiscard]] bool write_wait_poll(
+/// Write `text` into `p`, then EXPLICITLY force the file's mtime to
+/// `baseline + 1 s` so the watcher's last_write_time comparison fires
+/// deterministically — no wall-clock dependence, no sleep_for. Returns true
+/// iff poll() reports the path dirty. (NTFS / ext4 both honour a forced
+/// last_write_time; the +1 s step clears even FAT32's 2 s-rounded-down
+/// granularity on the *next* whole second, but the explicit set already
+/// distinguishes it from `baseline` on the filesystems we test on.)
+[[nodiscard]] bool write_force_mtime_poll(
     const fs::path& p,
     std::string_view text,
     cd::shader::FileWatcher& watcher,
-    fs::file_time_type baseline,
-    std::chrono::seconds timeout = std::chrono::seconds(3))
+    fs::file_time_type baseline)
 {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        write_glsl(p, text);
-        std::error_code ec;
-        const auto mtime = fs::last_write_time(p, ec);
-        if (!ec && mtime != baseline && watcher.poll())
-            return true;
-    }
-    return false;
+    write_glsl(p, text);
+    std::error_code ec;
+    const auto bumped = baseline + std::chrono::seconds(1);
+    fs::last_write_time(p, bumped, ec);
+    if (ec)
+        return false;
+    return watcher.poll();
 }
 
 }  // namespace
@@ -116,7 +115,7 @@ TEST(LiveEditSmoke, EditAndRevertFiresWatcherThreeTimes)
     // Re-write the original content so the mtime advances past the baseline
     // recorded by add(). The watcher should fire once.
     {
-        const bool fired = write_wait_poll(p, kOriginal, watcher, mtime_after_create);
+        const bool fired = write_force_mtime_poll(p, kOriginal, watcher, mtime_after_create);
         if (fired)
         {
             ASSERT_EQ(watcher.dirty().size(), 1U);
@@ -128,7 +127,7 @@ TEST(LiveEditSmoke, EditAndRevertFiresWatcherThreeTimes)
     // ---- Act: Phase 2 — modify the content --------------------------------
     {
         const auto baseline2 = fs::last_write_time(p);
-        const bool fired = write_wait_poll(p, kModified, watcher, baseline2);
+        const bool fired = write_force_mtime_poll(p, kModified, watcher, baseline2);
         if (fired)
         {
             ASSERT_EQ(watcher.dirty().size(), 1U);
@@ -140,7 +139,7 @@ TEST(LiveEditSmoke, EditAndRevertFiresWatcherThreeTimes)
     // ---- Act: Phase 3 — revert the content --------------------------------
     {
         const auto baseline3 = fs::last_write_time(p);
-        const bool fired = write_wait_poll(p, kOriginal, watcher, baseline3);
+        const bool fired = write_force_mtime_poll(p, kOriginal, watcher, baseline3);
         if (fired)
         {
             ASSERT_EQ(watcher.dirty().size(), 1U);
@@ -182,7 +181,7 @@ TEST(LiveEditSmoke, WriteAndModifyFiresTwice)
 
     // Phase 1: overwrite with same content (mtime advances).
     {
-        const bool fired = write_wait_poll(p, kOriginal, watcher, mtime0);
+        const bool fired = write_force_mtime_poll(p, kOriginal, watcher, mtime0);
         if (fired) ++count;
         EXPECT_TRUE(fired) << "QuickTwoPhase Phase 1 did not fire";
     }
@@ -190,7 +189,7 @@ TEST(LiveEditSmoke, WriteAndModifyFiresTwice)
     // Phase 2: modify.
     {
         const auto baseline = fs::last_write_time(p);
-        const bool fired = write_wait_poll(p, kModified, watcher, baseline);
+        const bool fired = write_force_mtime_poll(p, kModified, watcher, baseline);
         if (fired) ++count;
         EXPECT_TRUE(fired) << "QuickTwoPhase Phase 2 did not fire";
     }

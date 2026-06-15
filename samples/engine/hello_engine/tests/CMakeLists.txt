@@ -94,3 +94,34 @@ if(TARGET cd_test_sample_sponza_golden)
     add_dependencies(cd_test_sample_sponza_golden cd_sample_hello_engine)
   endif()
 endif()
+
+# X5-3(b) (ADR-20260608 addendum A.3) — pre-golden EXE-side staleness guard.
+# Asserts sha256(SOURCE shader) == sha256(EXE-side copied shader) for every
+# hello_engine *.glsl, run as a FIXTURES_SETUP step so it executes BEFORE any
+# golden-image compare (FIXTURES_REQUIRED on the golden test). A stale exe-side
+# copy (the relink-only-build trap) fails LOUDLY here instead of producing a
+# false byte-identical golden. No gtest binary — a pure CMake -P script keyed
+# off the configure-time source dir + the build-time exe dir.
+if(TARGET cd_sample_hello_engine)
+  add_test(NAME cd_test_hello_engine_shader_staleness
+    COMMAND ${CMAKE_COMMAND}
+      -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../shaders
+      -DEXE_DIR=$<TARGET_FILE_DIR:cd_sample_hello_engine>/shaders
+      -P ${CMAKE_SOURCE_DIR}/scripts/check_shader_staleness.cmake)
+  set_tests_properties(cd_test_hello_engine_shader_staleness PROPERTIES
+    LABELS "golden;sample;shader-staleness"
+    FIXTURES_SETUP HELLO_ENGINE_SHADERS_FRESH
+    TIMEOUT 60)
+  # The fixture asserts what the POST_BUILD copy staged — it reads the
+  # exe-side shaders/ that the cd_sample_hello_engine POST_BUILD step copies.
+  # CTest cannot build a target before a `cmake -P` script test, so freshness
+  # is guaranteed by the normal `cmake --build` ordering (the exe + its copy
+  # step are built before `ctest` runs). The guard catches the case where a
+  # shader edit slipped through a relink-only build.
+  # Any golden-image compare that reads the exe-side shaders must run AFTER
+  # this guard. The Sponza golden's GPU-subprocess tier launches
+  # hello_engine.exe which reads shaders/ from its cwd, so it depends on the
+  # exe-side copy being fresh.
+  set_tests_properties(cd_test_sample_sponza_golden PROPERTIES
+    FIXTURES_REQUIRED HELLO_ENGINE_SHADERS_FRESH)
+endif()

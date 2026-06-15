@@ -117,13 +117,30 @@ public:
 
     /// Poll the watcher; on dirty paths, invoke each affected entry's
     /// `recreate`. Call once per frame after Present (so the old pipeline
-    /// finishes the in-flight frame). Returns the number of entries that
-    /// were successfully recreated.
+    /// finishes the in-flight frame). On a dirty cycle this drains the
+    /// device (`wait_idle`) BEFORE any pipeline swap per the X5-2 deferred-
+    /// release invariant (ADR-20260608 addendum A.2). Returns the number of
+    /// entries that were successfully recreated.
     int poll_and_reload(cd::rhi::IDevice& device, cd::shader::ICompiler* compiler)
     {
         if (!watcher_.poll())
             return 0;
         const auto& dirty = watcher_.dirty();
+
+        // X5-2 (ADR-20260608 addendum A.2) — deferred-release / GPU-lifetime
+        // guard lives HERE in the reload path, NOT in Material::operator=.
+        // A dirty edit means at least one live pipeline is about to be
+        // destroyed by the recreate closure's move-assign. Draining the
+        // device first upholds the invariant: an old PSO is NEVER destroyed
+        // while the GPU may still reference it (Vulkan PSO destroy mid-flight
+        // = TDR / device-lost). This is the MVP guard (~1 ms once per edit);
+        // a future non-blocking variant routes through cd::rhi::DeferredDestroy
+        // (frame-fence-keyed retirement) — OUT OF X5 MVP scope. The drain is
+        // done once per dirty poll-cycle, before ANY swap, so a multi-file
+        // "save all" amortises a single idle-drain across all swapped
+        // pipelines.
+        device.wait_idle();
+
         int recreated = 0;
         for (auto& entry : entries_)
         {

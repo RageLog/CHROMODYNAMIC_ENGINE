@@ -30,7 +30,7 @@ follow-up board in `ADR-20260528-job-system-design.md` Sonuclar.
 | --------- | ------------------------------------------ | -------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------- |
 | **SL**    | SOTA shader library (cd::gluon)   | ACTIVE (user-priority 2026-06-12) | SOTA research (running); X4-A toolchain ADR cross-input | researcher → architect → developer × N → tester |
 | **X4**    | D3D12 backend parity + RT                  | QUEUED (3-4 weeks)   | RHI surface stable; ~~image-readback API~~ ✅ phase1127; SPIRV-Cross or DXIL path   | architect → researcher → developer × N → tester → build-devops       |
-| **X5**    | Shader on-disk + hot-reload                | QUEUED (1 week)      | `cd::shader::FileWatcher` + `cd::shader::ICompiler` already live   | architect → developer → tester → doc-writer                          |
+| **X5**    | Shader on-disk + hot-reload                | **DONE (MVP, 2026-06-15)** — see §3.7 | `cd::shader::FileWatcher` + `cd::shader::ICompiler` already live   | architect → developer → tester → doc-writer                          |
 | **X1-FU-F** | Vulkan secondary command buffer pipeline | QUEUED (~1 week)     | `cd::rhi::ICommandBuffer` surface review; 4-backend impl needed    | architect → safety-integration → developer × 4 → tester              |
 | X1-FU-A   | `cv` → `std::atomic::wait/notify_one`      | Polish (1-2 days)    | X1-FU-B (TSan run) green                                           | safety-integration → developer → tester                              |
 | X1-FU-B   | TSan preset run                            | Polish (1 day)       | X3 CI multi-runner matrix                                          | build-devops → tester                                                |
@@ -282,6 +282,46 @@ Critical-path: X5-A → X5-B parallel X5-C → X5-D → X5-E → X5-F.
   future contributors can't introduce a hot-swap-by-patching-PSO
   regression (Vulkan PSOs are immutable; this is a permanent
   invariant).
+
+### 3.7 Shipped (MVP, 2026-06-15)
+
+X5 closed as a **harden-the-shipped-path MVP** rather than the §2/§3.3
+greenfield surface. A codebase read showed hot-reload was already ~85%
+live in hello_engine via `cd::shader::FileWatcher` plus a
+`Material::create` + move-assign closure (the proposed
+`Material::recreate` / `source_kind` / `load_shader_source` surface was
+never built and is **superseded** — see ADR-20260608 addendum A.1). The
+MVP envelope is **dev-only /
+single-shader / single-pipeline** (the `prim` / `shadow` / `debug_line`
+materials in hello_engine).
+
+Delivered:
+
+- **X5-2 deferred-release guard** — `device.wait_idle()` in
+  `HelloShaderWatch::poll_and_reload`, after dirty-detect and before any
+  pipeline swap (reload path, NOT `Material::operator=`; addendum A.2).
+  Rendered output byte-identical.
+- **X5-3 EXE-side staleness guard** — (a) the hello_engine POST_BUILD
+  shader copy now uses `copy_if_different` + explicit `DEPENDS` so a
+  shader-only edit re-fires the copy on a relink-only build; (b) a
+  pre-golden CTest fixture `cd_test_hello_engine_shader_staleness`
+  (`scripts/check_shader_staleness.cmake`) asserts `sha256(source) ==
+  sha256(exe-side copy)`, wired `FIXTURES_SETUP`/`FIXTURES_REQUIRED`
+  ahead of the Sponza golden compare.
+- **X5-4 deterministic test gate** — new
+  `engine/render/material/tests/test_material_recreate.cpp` (Null RHI +
+  stub `ICompiler`, no GPU/glslang): (A) source precedence, (B) handle
+  swap, (C) deferred-release ordering via an instrumented Null-device
+  call-log, (D) broken-edit non-fatal. `test_live_edit_smoke.cpp`'s
+  `sleep_for(20 ms)` spin replaced with an explicit `last_write_time`
+  bump (event/mtime determinism, CLAUDE.md §5).
+- **X5-6 docs** — `samples/engine/hello_engine/README.md` (new) +
+  `engine/render/material/README.md` "Shader hot-reload" section.
+
+Deferred follow-ups (tracked, addendum A.4): non-blocking
+`DeferredDestroy` swap (drop the `wait_idle` stall), `HotReloadBus`
+throttle migration, include-closure-aware reload (blocked on SL-B cache
+key), release-mode `.spv` fast-path, and all-pipeline generalization.
 
 ---
 

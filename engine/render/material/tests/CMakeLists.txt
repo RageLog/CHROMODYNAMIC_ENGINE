@@ -3,6 +3,16 @@ cd_add_test(material
   DEPS    cd::material cd::rhi cd::shader cd::core $<$<BOOL:${CD_ENABLE_VULKAN}>:cd::rhi_vulkan>
 )
 
+# X5-4 (ADR-20260608 addendum A.4) — deterministic shader hot-reload test
+# gate. Host-portable: Null RHI backend + a stub ICompiler (no GPU, no
+# glslang). Four cases: (A) source precedence, (B) handle swap on recreate,
+# (C) deferred-release ordering (wait_idle precedes old-PSO destroy, observed
+# via an instrumented Null device call-log), (D) broken edit non-fatal.
+cd_add_test(material_recreate
+  SOURCES test_material_recreate.cpp
+  DEPS    cd::material cd::rhi cd::shader cd::core
+)
+
 # M3 W1B Sprint-1: UI variant factory + spec tests.
 cd_add_test(ui_variant
   SOURCES test_ui_variant.cpp

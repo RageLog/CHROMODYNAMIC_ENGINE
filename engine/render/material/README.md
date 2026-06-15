@@ -175,3 +175,62 @@ The unit-test target `cd_test_rt_hit_general_geometry` locks in the
 contract: case 1 (valid glTF prim → non-zero sample.albedo), case 2
 (inert instance → neutral-grey fallback). Future RT integration work
 re-runs this test before touching downstream shader code.
+
+## Shader hot-reload (X5)
+
+`Material` is the swap unit for on-disk GLSL hot-reload. The full
+reload mechanism lives sample-side in
+`samples/engine/hello_engine/HelloShaderWatch.hpp`; this section
+documents the two `cd::material` contracts the reload path relies on.
+
+### How it works
+
+1. A `MaterialDesc` carries `vertex_glsl_path` / `fragment_glsl_path`
+   (on-disk source) instead of (or alongside) inline `vertex_glsl` /
+   `fragment_glsl`. `Material::create` reads the file, compiles it via
+   the supplied `ICompiler`, and builds the pipeline.
+2. The sample loop polls a `cd::shader::FileWatcher`; when a watched
+   `.glsl` changes on disk, the reload closure calls `Material::create`
+   again with the same desc and **move-assigns** the fresh Material over
+   the live one (`material = std::move(*r)`). The move-assignment frees
+   the old pipeline / layouts / shader modules via `release()`.
+3. On a compile failure `Material::create` returns the `ErrorCode`
+   verbatim and the closure leaves the live Material untouched, so a
+   broken edit keeps the previous pipeline rendering (never bricks the
+   live session).
+
+### Source precedence (authoritative)
+
+`*_spirv` > `*_glsl_path` > `*_glsl`. The first non-empty `MaterialDesc`
+field wins; selection is at the call site, not a runtime enum. A pure
+`*_spirv` desc needs no compiler (`compiler == nullptr` is valid).
+
+### Deferred-release / GPU-lifetime invariant (X5-2)
+
+The old pipeline must NOT be destroyed while the GPU may still reference
+it (Vulkan PSO destroy mid-flight = TDR / device-lost). The
+`wait_idle`-before-swap guard lives in the **reload path**
+(`HelloShaderWatch::poll_and_reload`), NOT in `Material::operator=(Material&&)`
+— putting it in move-assign would tax the boot-time spawn path with a
+needless device drain on every move. See
+`docs/ADR/ADR-20260608-x5-shader-on-disk-hot-reload.md` addendum A.2.
+A future non-blocking variant routes old-handle retirement through
+`cd::rhi::DeferredDestroy` (frame-fence-keyed); that is out of the X5 MVP.
+
+### Three cases NOT eligible for hot-reload
+
+- **Inline GLSL** (`vertex_glsl` / `fragment_glsl`) — the literal IS the
+  source; there is no on-disk file to diff, so the watcher has no signal.
+- **Precompiled SPIR-V** (`vertex_spirv` / `fragment_spirv`) — an asset-
+  pipeline blob, not a watched text file.
+- **Inert Material** (`is_valid() == false`) — no handles to swap.
+
+### Test command
+
+`ctest --preset ninja-debug -R cd_test_material_recreate --output-on-failure`
+
+`cd_test_material_recreate` (host-portable, Null RHI + stub ICompiler, no
+GPU/glslang) locks the four contracts: (A) source precedence, (B) handle
+swap on recreate, (C) deferred-release ordering — `wait_idle` precedes the
+old-PSO destroy, observed via an instrumented Null-device call-log — and
+(D) broken-edit non-fatal.

@@ -100,11 +100,30 @@ target_compile_definitions(cd_sample_hello_engine PRIVATE
 
 # Copy shaders folder next to exe so on-disk hot-reload works from
 # build/bin/Debug/ (or Release/) cwd without needing to run from repo root.
+#
+# X5-3(a) (ADR-20260608 addendum A.3) — EXE-side staleness guard. The prior
+# `copy_directory` had two problems: (1) it did not list the shader files as
+# DEPENDS, so a shader-ONLY edit (no .cpp touched) triggered a relink-only
+# build that NEVER re-fired this POST_BUILD step, leaving the exe-side copy
+# STALE while the source was fresh; (2) a stale exe-side copy produces a FALSE
+# byte-identical golden (the golden is computed against the unchanged blob,
+# masking the edit). Fix: enumerate the shader sources, use copy_if_different
+# (per-file, no needless rewrites), and add the files as explicit DEPENDS so
+# CMake re-runs the copy whenever ANY shader source changes — even when no
+# translation unit recompiled. Belt-and-braces: the pre-golden sha256 fixture
+# in tests/ (cd_test_hello_engine_shader_staleness) still asserts source ==
+# exe-side before any golden compare runs. The default runtime path stays
+# identical (exe-side shaders/), so the chrome golden remains byte-identical.
+file(GLOB HELLO_ENGINE_SHADER_SOURCES CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
 add_custom_command(TARGET cd_sample_hello_engine POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/shaders
+  COMMAND ${CMAKE_COMMAND} -E make_directory
     $<TARGET_FILE_DIR:cd_sample_hello_engine>/shaders
-  COMMENT "Stage hello_engine shaders for on-disk hot-reload")
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${HELLO_ENGINE_SHADER_SOURCES}
+    $<TARGET_FILE_DIR:cd_sample_hello_engine>/shaders
+  DEPENDS ${HELLO_ENGINE_SHADER_SOURCES}
+  COMMENT "Stage hello_engine shaders for on-disk hot-reload (copy_if_different)")
 
 # phase508-generic-gltf-path: stage the sample-local Generic glTF folder
 # next to the exe so HelloGenericGltf.hpp's "assets/samples/Generic/"
