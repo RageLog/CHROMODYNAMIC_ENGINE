@@ -492,16 +492,37 @@ to_topology_class(PrimitiveTopology t) noexcept
     return MTLCullModeNone;
 }
 
-// FrontFace -> MTLWinding. NOTE (M4-Y): the command buffer applies a
-// negative-height viewport so Metal's +Y-up framebuffer matches Vulkan's
-// +Y-down. A negative-height viewport flips the effective winding, so we keep
-// the SAME FrontFace->Winding mapping as the geometric sense: kClockwise ->
-// Clockwise. The viewport flip + this mapping together reproduce the Vulkan
-// back-face-cull result on screen (D16/phase1196 lesson, D3D12-symmetric).
+// FrontFace -> MTLWinding, INVERTED vs the engine descriptor (winding
+// compensation; ADR-20260615-ndc-y-handedness §Karar 3 + Sonuclar, the Metal
+// analog of the D3D12 phase1204 FrontCounterClockwise inversion).
+//
+// The command buffer applies a NEGATIVE-HEIGHT viewport (MetalCommandBuffer.mm
+// set_viewport / begin_render_pass) so Metal's +Y-up framebuffer matches
+// Vulkan's +Y-down pixel-for-pixel. The rasterizer decides front/back facing in
+// WINDOW space (after the viewport transform), so a negative-height viewport
+// flips the sign of the window-space signed area -> it INVERTS the apparent
+// winding the rasterizer sees. The SAME clip-space triangle Vulkan classifies as
+// FRONT therefore reaches the Metal rasterizer with the OPPOSITE winding.
+//
+// To keep engine cull semantics backend-IDENTICAL (a front_face=kClockwise +
+// cull=kBack triangle visible under Vulkan stays visible under Metal),
+// setFrontFacingWinding must be the LOGICAL NEGATION of the geometric mapping,
+// exactly like D3D12 sets FrontCounterClockwise = (kClockwise ? TRUE : FALSE):
+//   kClockwise        -> MTLWindingCounterClockwise
+//   kCounterClockwise -> MTLWindingClockwise
+//
+// The PRE-FIX mapping honoured the descriptor directly (kClockwise ->
+// MTLWindingClockwise) on the stale premise that the viewport flip "cancels out"
+// — true before the negative-height viewport landed (D16/phase1196), a face-cull
+// parity bug after it. This compensation is the Metal half of the cross-backend
+// invariant the D3D12 cull-parity test locks; a Metal cull-parity GPU test is a
+// future strand (ROADMAP_PHASE_2 backend-parity mega-marathon). The inversion is
+// BOUND to the negative-height viewport: if set_viewport ever returns to a
+// positive height, this compensation becomes wrong (documented in the ADR).
 [[nodiscard]] MTLWinding to_winding(FrontFace f) noexcept
 {
-    return (f == FrontFace::kClockwise) ? MTLWindingClockwise
-                                        : MTLWindingCounterClockwise;
+    return (f == FrontFace::kClockwise) ? MTLWindingCounterClockwise
+                                        : MTLWindingClockwise;
 }
 
 [[nodiscard]] MTLBlendFactor to_blend_factor(BlendFactor f) noexcept
@@ -733,6 +754,144 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
     {
         *cull_out = to_cull_mode(desc.raster.cull);
     }
+    if (winding_out != nullptr)
+    {
+        *winding_out = to_winding(desc.raster.front_face);
+    }
+    return pso;
+}
+
+// ---------------------------------------------------------------------------
+// build_metal_mesh_pipeline — M10 (B2 — ADR-20260615). See MetalInternal.hpp.
+//
+// Mirrors build_metal_graphics_pipeline method-by-method, but uses the
+// Metal-3 MTLMeshRenderPipelineDescriptor (object/mesh/fragment functions +
+// colour/depth/stencil attachment state + MSAA). No MTLVertexDescriptor — the
+// object/mesh chain replaces the input assembler. The resulting PSO is stored
+// in the SAME graphics-pipeline registry (the engine binds mesh pipelines via
+// bind_graphics_pipeline + draw_mesh_tasks, exactly like Vulkan/D3D12 bind
+// them on the graphics bind point).
+id<MTLRenderPipelineState>
+build_metal_mesh_pipeline(id<MTLDevice> device,
+                          const MeshPipelineDesc& desc,
+                          id<MTLFunction> object_fn,
+                          id<MTLFunction> mesh_fn,
+                          id<MTLFunction> fragment_fn,
+                          id<MTLDepthStencilState>* dss_out,
+                          MTLCullMode* cull_out,
+                          MTLWinding* winding_out,
+                          std::string* error_out) noexcept
+    API_AVAILABLE(macos(13.0), ios(16.0))
+{
+    if (device == nil || mesh_fn == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out =
+                "Metal::build_metal_mesh_pipeline: nil device / mesh fn";
+        }
+        return nil;
+    }
+
+    MTLMeshRenderPipelineDescriptor* pd =
+        [[MTLMeshRenderPipelineDescriptor alloc] init];
+    pd.label = @"cd::rhi::metal::mesh_pipeline";
+    pd.objectFunction = object_fn;        // may be nil for a mesh-only pipeline
+    pd.meshFunction = mesh_fn;            // required
+    pd.fragmentFunction = fragment_fn;    // required for rasterized output
+    pd.rasterSampleCount = static_cast<NSUInteger>(desc.samples);
+
+    // --- Colour attachments (format + blend) — identical mapping to the
+    //     graphics builder (MTLMeshRenderPipelineColorAttachmentDescriptorArray
+    //     has the same shape as the classic one). -------------------------
+    for (std::size_t i = 0; i < desc.color_attachment_formats.size(); ++i)
+    {
+        MTLRenderPipelineColorAttachmentDescriptor* ca =
+            pd.colorAttachments[static_cast<NSUInteger>(i)];
+        ca.pixelFormat = to_pixel_format(desc.color_attachment_formats[i]);
+        if (i < desc.blend_attachments.size())
+        {
+            const BlendAttachmentState& b = desc.blend_attachments[i];
+            ca.blendingEnabled = b.blend_enable ? YES : NO;
+            ca.sourceRGBBlendFactor = to_blend_factor(b.src_color);
+            ca.destinationRGBBlendFactor = to_blend_factor(b.dst_color);
+            ca.rgbBlendOperation = to_blend_op(b.color_op);
+            ca.sourceAlphaBlendFactor = to_blend_factor(b.src_alpha);
+            ca.destinationAlphaBlendFactor = to_blend_factor(b.dst_alpha);
+            ca.alphaBlendOperation = to_blend_op(b.alpha_op);
+            ca.writeMask = to_color_write_mask(b.color_write_mask);
+        }
+        else
+        {
+            ca.blendingEnabled = NO;
+            ca.writeMask = MTLColorWriteMaskAll;
+        }
+    }
+
+    // --- Depth / stencil attachment formats --------------------------------
+    const bool has_depth =
+        desc.depth_attachment_format != Format::kUndefined;
+    const bool has_stencil =
+        desc.stencil_attachment_format != Format::kUndefined;
+    if (has_depth)
+    {
+        pd.depthAttachmentPixelFormat =
+            to_pixel_format(desc.depth_attachment_format);
+    }
+    if (has_stencil)
+    {
+        pd.stencilAttachmentPixelFormat =
+            to_pixel_format(desc.stencil_attachment_format);
+    }
+
+    NSError* err = nil;
+    // newRenderPipelineStateWithMeshDescriptor:options:reflection:error: is the
+    // Metal-3 factory for a mesh PSO. options=0 (no reflection requested).
+    id<MTLRenderPipelineState> pso =
+        [device newRenderPipelineStateWithMeshDescriptor:pd
+                                                 options:MTLPipelineOptionNone
+                                              reflection:nil
+                                                   error:&err];
+    if (pso == nil)
+    {
+        if (error_out != nullptr)
+        {
+            *error_out = (err != nil)
+                ? std::string { [[err localizedDescription] UTF8String] }
+                : std::string {
+                    "Metal::build_metal_mesh_pipeline: nil PSO" };
+        }
+        return nil;
+    }
+
+    // --- Depth-stencil state (SEPARATE Metal object) — same gating as the
+    //     graphics builder. -------------------------------------------------
+    if (dss_out != nullptr)
+    {
+        *dss_out = nil;
+        if (has_depth)
+        {
+            MTLDepthStencilDescriptor* dsd =
+                [[MTLDepthStencilDescriptor alloc] init];
+            dsd.depthCompareFunction = desc.depth_stencil.depth_test
+                ? depth_compare(desc.depth_stencil.depth_compare)
+                : MTLCompareFunctionAlways;
+            dsd.depthWriteEnabled =
+                (desc.depth_stencil.depth_write && desc.depth_stencil.depth_test)
+                    ? YES
+                    : NO;
+            *dss_out = [device newDepthStencilStateWithDescriptor:dsd];
+        }
+    }
+
+    if (cull_out != nullptr)
+    {
+        *cull_out = to_cull_mode(desc.raster.cull);
+    }
+    // Winding compensation applies to mesh pipelines too: the same
+    // negative-height viewport flip + descriptor-inverted MTLWinding keeps
+    // engine cull semantics backend-identical (ADR-20260615-ndc-y-handedness;
+    // the D3D12 phase1204 mesh-PSO FrontCounterClockwise inversion analog).
     if (winding_out != nullptr)
     {
         *winding_out = to_winding(desc.raster.front_face);

@@ -29,9 +29,11 @@ endif()
 # coverage lives in hello_path_trace + engine/render/rhi/tests.
 add_subdirectory(hello_path_trace)
 
-# Metal boot smoke — macOS / iOS only; requires CD_RHI_METAL_ENABLED=ON.
-# On Win11 / Linux CD_RHI_METAL_ENABLED defaults to OFF so this block
-# is skipped and the Win11 build stays clean.
-if(CD_RHI_METAL_ENABLED)
-  add_subdirectory(hello_metal)
-endif()
+# hello_metal — M12 (B2 — ADR-20260615): a WINDOWED Metal host on Apple
+# (NSWindow + CAMetalLayer + clear/draw/present loop), with a Windows-compilable
+# #else stub. The TARGET builds on EVERY platform now (the sample's main.cpp
+# gates the Apple-only code behind `#if defined(__APPLE__) && CD_RHI_METAL_ENABLED`
+# and links cd::rhi_metal, which is the kBackendInitFailed stub off-Apple). On
+# Apple the sample's CMakeLists flips main.cpp to Objective-C++ + links the
+# Cocoa/Metal/QuartzCore frameworks. Win11 stays clean: the #else stub compiles.
+add_subdirectory(hello_metal)

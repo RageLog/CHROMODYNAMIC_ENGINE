@@ -339,6 +339,42 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
                               std::string* error_out) noexcept;
 
 // ---------------------------------------------------------------------------
+// build_metal_mesh_pipeline — M10 (B2 — ADR-20260615) mesh-shader PSO.
+//
+// Builds a Metal-3 MTLMeshRenderPipelineState from a MeshPipelineDesc, the
+// mesh-shader analog of build_metal_graphics_pipeline. The classic
+// vertex-input assembler is replaced by an OBJECT (task) -> MESH -> FRAGMENT
+// chain, so there is no MTLVertexDescriptor; instead the descriptor carries
+// the resolved object/mesh/fragment MTLFunctions:
+//   * objectFunction   <- `object_fn` (the GL_EXT_mesh_shader task stage;
+//                          optional — a mesh-only pipeline passes nil).
+//   * meshFunction     <- `mesh_fn` (required — the primitive-output stage).
+//   * fragmentFunction <- `fragment_fn` (required for rasterized output).
+//   * colorAttachments[i] pixelFormat + blend  <- color_attachment_formats[i]
+//                                                  + BlendAttachmentState[i].
+//   * depthAttachmentPixelFormat / stencil...  <- depth/stencil format.
+//   * rasterSampleCount                         <- samples (MSAA).
+// The matching MTLDepthStencilState + resolved cull mode / front-facing
+// winding / (mesh pipelines drive the rasterizer directly, so the primitive
+// type is fixed to Triangle for the encoder draw path) are emitted exactly
+// like the graphics builder so the command buffer applies them on the encoder.
+//
+// The whole call is @available(macOS 13.0/iOS 16.0)-gated by the caller
+// (MTLMeshRenderPipelineDescriptor is Metal 3); on older OSes the caller
+// surfaces kNotImplemented BEFORE reaching this builder, so it can assume the
+// API exists. Returns nil PSO on failure with `error_out` populated.
+[[nodiscard]] id<MTLRenderPipelineState>
+build_metal_mesh_pipeline(id<MTLDevice> device,
+                          const MeshPipelineDesc& desc,
+                          id<MTLFunction> object_fn,
+                          id<MTLFunction> mesh_fn,
+                          id<MTLFunction> fragment_fn,
+                          id<MTLDepthStencilState>* dss_out,
+                          MTLCullMode* cull_out,
+                          MTLWinding* winding_out,
+                          std::string* error_out) noexcept API_AVAILABLE(macos(13.0), ios(16.0));
+
+// ---------------------------------------------------------------------------
 // MetalShaderModuleObj — phase572 / Sprint-3.
 //
 // Holds the id<MTLLibrary> compiled from MSL source plus the id<MTLFunction>
@@ -702,12 +738,41 @@ public:
     [[nodiscard]] MTLCullMode      cull() const noexcept { return cull_; }
     [[nodiscard]] MTLWinding       winding() const noexcept { return winding_; }
 
+    // M10 (B2 — ADR-20260615): for a MESH-shader pipeline, the threads per
+    // object (task) threadgroup + threads per mesh threadgroup, reflected from
+    // the GLSL layout(local_size_*) of each stage (surfaced host-side via
+    // MslArtifact::workgroup, captured at create_mesh_pipeline time). The Metal
+    // [renderEncoder drawMeshThreadgroups:threadsPerObjectThreadgroup:
+    // threadsPerMeshThreadgroup:] call needs BOTH (the group COUNT comes from
+    // draw_mesh_tasks args; the threads-per-group from the shader). A classic
+    // graphics pipeline leaves these at (1,1,1) — harmless, draw_mesh_tasks is
+    // never issued against one. is_mesh marks whether this record is a mesh PSO
+    // (so draw_mesh_tasks can refuse to drive a non-mesh pipeline).
+    void set_mesh_threadgroups(MTLSize object_tg, MTLSize mesh_tg) noexcept
+    {
+        is_mesh_ = true;
+        object_threads_per_threadgroup_ = object_tg;
+        mesh_threads_per_threadgroup_ = mesh_tg;
+    }
+    [[nodiscard]] bool    is_mesh() const noexcept { return is_mesh_; }
+    [[nodiscard]] MTLSize object_threads_per_threadgroup() const noexcept
+    {
+        return object_threads_per_threadgroup_;
+    }
+    [[nodiscard]] MTLSize mesh_threads_per_threadgroup() const noexcept
+    {
+        return mesh_threads_per_threadgroup_;
+    }
+
 private:
     id<MTLRenderPipelineState> pso_ { nil };
     id<MTLDepthStencilState>   dss_ { nil };
     MTLPrimitiveType           primitive_ { MTLPrimitiveTypeTriangle };
     MTLCullMode                cull_ { MTLCullModeNone };
     MTLWinding                 winding_ { MTLWindingClockwise };
+    bool                       is_mesh_ { false };
+    MTLSize                    object_threads_per_threadgroup_ { 1, 1, 1 };
+    MTLSize                    mesh_threads_per_threadgroup_ { 1, 1, 1 };
 };
 
 // ---------------------------------------------------------------------------
@@ -871,6 +936,84 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// MetalBindlessArrayObj — M11 (B2 — ADR-20260615) bindless texture array.
+//
+// CHROMODYNAMIC's BindlessTextureArrayHandle is a runtime-indexed sampler2D
+// array (the chrome-Sponza ray-side texture-sampling path, ADR W8-BE). The SOTA
+// Metal expression is a SINGLE argument buffer holding an unbounded texture
+// array: an MTLArgumentEncoder built from one MTLArgumentDescriptor whose
+// dataType=MTLDataTypeTexture + arrayLength=slot_count, backed by an MTLBuffer
+// sized to [encoder encodedLength]. write_bindless_texture_slot encodes a
+// texture at [[id(slot)]]; bind_bindless_texture_array binds the arg buffer at
+// the DEDICATED bindless set slot (its own descriptor set, per Memory rule 9 —
+// bindless lives on its own set, not the shared per-prim set) and makes every
+// POPULATED slot's texture resident (the M9-residency lesson: an argument-buffer
+// resource not made resident is faulted as garbage).
+//
+// The bound sampler is per-array (BindlessTextureArrayDesc::sampler, one sampler
+// for all slots in v1 — per-slot sampler variation is not supported); the .mm
+// device looks it up and the shader's static sampler/`constexpr sampler`
+// (SPIRV-Cross splits combined image+sampler) covers the sample. We retain the
+// SamplerHandle so a future per-array sampler bind can read it.
+//
+// Residency list: write_bindless_texture_slot records each populated slot's
+// id<MTLTexture> in `populated_` (a dictionary keyed by slot so a re-write of
+// the same slot replaces, not duplicates). bind_bindless_texture_array replays
+// `populated_.allValues` via [encoder useResource:usage:Read stages:...].
+// ---------------------------------------------------------------------------
+class MetalBindlessArrayObj final
+{
+public:
+    MetalBindlessArrayObj(id<MTLArgumentEncoder> encoder,
+                          id<MTLBuffer> arg_buffer,
+                          std::uint32_t slot_count,
+                          SamplerHandle sampler) noexcept
+        : encoder_(encoder)
+        , arg_buffer_(arg_buffer)
+        , slot_count_(slot_count)
+        , sampler_(sampler)
+        , populated_([[NSMutableDictionary alloc] init]) {}
+    ~MetalBindlessArrayObj() = default;
+    MetalBindlessArrayObj(const MetalBindlessArrayObj&) = delete;
+    MetalBindlessArrayObj& operator=(const MetalBindlessArrayObj&) = delete;
+    MetalBindlessArrayObj(MetalBindlessArrayObj&&) = delete;
+    MetalBindlessArrayObj& operator=(MetalBindlessArrayObj&&) = delete;
+
+    [[nodiscard]] id<MTLArgumentEncoder> encoder() const noexcept { return encoder_; }
+    [[nodiscard]] id<MTLBuffer>          arg_buffer() const noexcept { return arg_buffer_; }
+    [[nodiscard]] std::uint32_t          slot_count() const noexcept { return slot_count_; }
+    [[nodiscard]] SamplerHandle          sampler() const noexcept { return sampler_; }
+
+    // Record the texture that now occupies `slot` for residency replay. The
+    // per-slot dictionary (slot -> texture) is the source of truth so a re-write
+    // of the SAME slot REPLACES rather than appends — bind_bindless_texture_array
+    // makes each value resident exactly once. NSMutableDictionary matches the
+    // NSMutableArray residency idiom used by MetalDescriptorSetObj (ARC-managed).
+    void record_slot(std::uint32_t slot, id<MTLTexture> tex)
+    {
+        if (slot >= slot_count_ || tex == nil)
+        {
+            return;
+        }
+        populated_[@(slot)] = tex;
+    }
+    // The unique populated textures, for the useResource residency replay.
+    [[nodiscard]] NSArray<id<MTLTexture>>* resident_textures() const noexcept
+    {
+        return [populated_ allValues];
+    }
+
+private:
+    id<MTLArgumentEncoder>          encoder_ { nil };
+    id<MTLBuffer>                   arg_buffer_ { nil };
+    std::uint32_t                   slot_count_ { 0 };
+    SamplerHandle                   sampler_ {};
+    // slot -> id<MTLTexture> for every populated slot. allValues feeds the
+    // residency replay (each texture made resident once).
+    NSMutableDictionary<NSNumber*, id<MTLTexture>>* populated_ { nil };
+};
+
+// ---------------------------------------------------------------------------
 // MetalTimelineObj — phase649 / Sprint-5.
 //
 // id<MTLSharedEvent> doubles as Vulkan-style timeline semaphore: the
@@ -1011,6 +1154,17 @@ public:
     // via [computeEncoder setBuffer:offset:atIndex:].
     void bind_descriptor_set(std::uint32_t set_index, DescriptorSetHandle set) override;
 
+    // M11 (B2 — ADR-20260615): bind a bindless texture array's argument buffer
+    // at the DEDICATED bindless set slot (its own descriptor set, Memory rule 9)
+    // and make every populated slot's texture resident via [encoder useResource:]
+    // (the M9-residency lesson — an arg-buffer resource not made resident reads
+    // as garbage). Render encoder: bound to BOTH vertex + fragment stages (the
+    // ray-side sample is fragment-stage, but spanning both is the never-under-
+    // resident direction). Compute encoder: bound + made resident for the
+    // compute stage. Lookup miss / no encoder -> graceful skip.
+    void bind_bindless_texture_array(std::uint32_t set_index,
+                                     BindlessTextureArrayHandle array) override;
+
     // phase572 (Sprint-3): real setVertexBuffer path. Vertex buffer table
     // indices are taken from the `binding` parameter (which maps to the
     // VertexBinding::binding index in the engine's vertex layout). When
@@ -1048,6 +1202,15 @@ public:
     void draw_indexed(std::uint32_t index_count, std::uint32_t instance_count,
                       std::uint32_t first_index, std::int32_t vertex_offset,
                       std::uint32_t first_instance) override;
+    // M10 (B2 — ADR-20260615): [renderEncoder drawMeshThreadgroups:
+    // threadsPerObjectThreadgroup:threadsPerMeshThreadgroup:]. The (x,y,z) args
+    // are the THREADGROUP COUNTS — matching Vulkan vkCmdDrawMeshTasksEXT and
+    // D3D12 DispatchMesh group semantics; the per-group thread counts come from
+    // the bound mesh PSO's reflected object/mesh local sizes (cached by
+    // bind_graphics_pipeline). Gracefully no-ops when no MESH pipeline is bound
+    // (a classic graphics pipeline cannot service drawMeshThreadgroups).
+    void draw_mesh_tasks(std::uint32_t group_x, std::uint32_t group_y,
+                         std::uint32_t group_z) override;
     // phase572 (Sprint-3): MTLComputeCommandEncoder dispatchThreadgroups
     // path. Threads-per-threadgroup is taken from the bound compute PSO's
     // maxTotalThreadsPerThreadgroup property when not specified by the
@@ -1145,6 +1308,16 @@ private:
     // Sprint-1 baseline). Defaults to Triangle so an un-bound draw matches the
     // legacy behaviour.
     MTLPrimitiveType             bound_primitive_ { MTLPrimitiveTypeTriangle };
+
+    // M10 (B2 — ADR-20260615): mesh-pipeline draw state, cached by
+    // bind_graphics_pipeline from the bound MetalGraphicsPipelineStateObj.
+    // bound_is_mesh_ gates draw_mesh_tasks (a classic graphics pipeline cannot
+    // service drawMeshThreadgroups); the two threadgroup sizes are the reflected
+    // object/mesh local sizes fed to drawMeshThreadgroups:... Reset to the
+    // non-mesh default whenever a classic graphics pipeline is bound.
+    bool                         bound_is_mesh_ { false };
+    MTLSize                      bound_object_threads_per_tg_ { 1, 1, 1 };
+    MTLSize                      bound_mesh_threads_per_tg_ { 1, 1, 1 };
     // Cached attachment view for the active render pass — used to derive
     // the colour-target texture when no real TextureViewHandle registry
     // exists yet (Sprint-1 ties views to swapchain drawables only).
@@ -1269,6 +1442,13 @@ public:
 
     [[nodiscard]] virtual MetalTimelineObj*
     lookup_timeline(TimelineSemaphoreHandle h) const noexcept = 0;
+
+    // M11 (B2 — ADR-20260615): bindless texture-array lookup. Consumed by
+    // bind_bindless_texture_array (binds the arg buffer + replays the populated
+    // slots' residency). nullptr for unknown handles, matching the resolver
+    // contract.
+    [[nodiscard]] virtual MetalBindlessArrayObj*
+    lookup_bindless_array(BindlessTextureArrayHandle h) const noexcept = 0;
 };
 
 }  // namespace cd::rhi::metal::detail

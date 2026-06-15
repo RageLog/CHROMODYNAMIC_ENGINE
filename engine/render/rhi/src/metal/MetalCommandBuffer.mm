@@ -271,6 +271,12 @@ void MetalCommandBufferImpl::bind_graphics_pipeline(GraphicsPipelineHandle pipel
     [encoder_ setCullMode:state->cull()];
     [encoder_ setFrontFacingWinding:state->winding()];
     bound_primitive_ = state->primitive();
+    // M10 (B2 — ADR-20260615): cache the mesh-pipeline draw state so
+    // draw_mesh_tasks can feed the reflected per-group thread counts. A classic
+    // graphics pipeline resets these to the non-mesh default.
+    bound_is_mesh_ = state->is_mesh();
+    bound_object_threads_per_tg_ = state->object_threads_per_threadgroup();
+    bound_mesh_threads_per_tg_ = state->mesh_threads_per_threadgroup();
 }
 
 // M4 (ADR-20260615): bind a descriptor set as a Metal argument buffer.
@@ -354,6 +360,61 @@ void MetalCommandBufferImpl::bind_descriptor_set(std::uint32_t set_index,
         for (id<MTLAccelerationStructure> a in ds->resident_accels())
         {
             [compute_ useResource:a usage:MTLResourceUsageRead];
+        }
+    }
+}
+
+// M11 (B2 — ADR-20260615): bind a bindless texture array.
+//
+// The bindless array's argument buffer (holding the unbounded sampler2D array)
+// binds at [[buffer(set_index)]] — its OWN descriptor set, distinct from the
+// per-prim set (Memory rule 9: a bindless binding MUST live on its own set, not
+// the shared per-prim set; the Vulkan dedicated-SET fix, phase 864). set_index
+// must stay inside the reserved set range [0..kMaxDescriptorSetSlots-1] so it
+// can never alias the push / vertex / aux ranges; out-of-range is dropped.
+//
+// Then EVERY populated slot's texture is made resident via [encoder useResource:]
+// — the M9-residency lesson: an argument-buffer resource the encoder has not been
+// told the buffer reaches is faulted as garbage (a dynamic-indexed read of an
+// unresident slot returns junk, not the texel). The chrome RT-reflection path
+// dynamic-indexes this array from the ray-hit mesh slot, so the textures span
+// both the vertex + fragment stages (never-under-resident direction).
+void MetalCommandBufferImpl::bind_bindless_texture_array(
+    std::uint32_t set_index, BindlessTextureArrayHandle array)
+{
+    if (ctx_ == nullptr)
+    {
+        return;
+    }
+    MetalBindlessArrayObj* arr = ctx_->lookup_bindless_array(array);
+    if (arr == nullptr || arr->arg_buffer() == nil)
+    {
+        return;
+    }
+    if (set_index >= kMaxDescriptorSetSlots)
+    {
+        return;
+    }
+    const NSUInteger slot = static_cast<NSUInteger>(set_index);
+    id<MTLBuffer> arg = arr->arg_buffer();
+
+    if (encoder_ != nil)
+    {
+        [encoder_ setVertexBuffer:arg offset:0 atIndex:slot];
+        [encoder_ setFragmentBuffer:arg offset:0 atIndex:slot];
+        for (id<MTLTexture> t in arr->resident_textures())
+        {
+            [encoder_ useResource:t
+                            usage:MTLResourceUsageRead
+                           stages:MTLRenderStageVertex | MTLRenderStageFragment];
+        }
+    }
+    else if (compute_ != nil)
+    {
+        [compute_ setBuffer:arg offset:0 atIndex:slot];
+        for (id<MTLTexture> t in arr->resident_textures())
+        {
+            [compute_ useResource:t usage:MTLResourceUsageRead];
         }
     }
 }
@@ -988,6 +1049,46 @@ void MetalCommandBufferImpl::draw_indexed(std::uint32_t index_count,
                       instanceCount:inst
                          baseVertex:static_cast<NSInteger>(vertex_offset)
                        baseInstance:static_cast<NSUInteger>(first_instance)];
+}
+
+// M10 (B2 — ADR-20260615): mesh-shader dispatch via
+// [renderEncoder drawMeshThreadgroups:threadsPerObjectThreadgroup:
+// threadsPerMeshThreadgroup:].
+//
+// The engine's draw_mesh_tasks(group_x, group_y, group_z) contract passes the
+// THREADGROUP COUNTS — confirmed against the cross-backend reference:
+//   * Vulkan: vkCmdDrawMeshTasksEXT(groupX, groupY, groupZ) — group counts.
+//   * D3D12:  ID3D12GraphicsCommandList6::DispatchMesh(gx, gy, gz) — group counts.
+// Metal's drawMeshThreadgroups: takes the threadgroups-per-grid (== group
+// counts) PLUS the threads-per-object-group and threads-per-mesh-group; the
+// latter two are NOT in the engine draw arg, they come from each stage's GLSL
+// layout(local_size_*) reflected onto the bound mesh PSO (cached here by
+// bind_graphics_pipeline). A mesh-only pipeline (no task/object stage) reports
+// (1,1,1) object threads, which is the correct neutral value.
+//
+// Guards: a draw_mesh_tasks against a CLASSIC graphics pipeline (bound_is_mesh_
+// false) is dropped — drawMeshThreadgroups: requires the bound PSO be a mesh
+// pipeline; issuing it otherwise is a Metal validation error. A zero group
+// count in any dimension is also a no-op (Vulkan/D3D12 both treat a 0-group
+// dispatch as drawing nothing).
+void MetalCommandBufferImpl::draw_mesh_tasks(std::uint32_t group_x,
+                                             std::uint32_t group_y,
+                                             std::uint32_t group_z)
+{
+    if (encoder_ == nil || !bound_is_mesh_)
+    {
+        return;
+    }
+    if (group_x == 0u || group_y == 0u || group_z == 0u)
+    {
+        return;
+    }
+    const MTLSize threadgroups = MTLSizeMake(static_cast<NSUInteger>(group_x),
+                                             static_cast<NSUInteger>(group_y),
+                                             static_cast<NSUInteger>(group_z));
+    [encoder_ drawMeshThreadgroups:threadgroups
+       threadsPerObjectThreadgroup:bound_object_threads_per_tg_
+         threadsPerMeshThreadgroup:bound_mesh_threads_per_tg_];
 }
 
 // ---------------------------------------------------------------------------

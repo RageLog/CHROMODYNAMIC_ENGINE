@@ -1,0 +1,95 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: CI / Metal (macOS)
+
+# B2 (ADR-20260615) — Metal backend CI lane.
+#
+# Triggered manually (workflow_dispatch) and on release tags so we never burn
+# hosted-runner minutes on every push. The HOST-side toolchain tests
+# (cd_test_metal_shader_toolchain — GLSL/SPIR-V -> MSL text, no MTLDevice) run on
+# ANY macOS runner; the GPU tests (cd_test_metal_*, a real Apple GPU) only run
+# when the runner reports runner.os == macOS with a live Metal device.
+#
+# Gating mirrors .github/workflows/ci-amd-radv.yml: workflow_dispatch +
+# tag-gated, repository-guarded so forks never trigger it, and skips (not fails)
+# when no labelled runner comes online. Until a macOS runner is wired the job
+# stays dispatch-only and never costs hosted minutes.
+#
+# Source: docs/METAL_MAC_TESTING.md §6.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_gpu_tests:
+        description: "Run the Tier-2 GPU tests (requires a real Apple GPU)"
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  metal-macos:
+    name: macOS / Metal / Debug
+    # Self-hosted Apple runner labelled `metal-gpu` — see docs/METAL_MAC_TESTING.md
+    # for setup. When no such runner is online the job is skipped (not failed),
+    # so this lane never burns hosted GitHub minutes.
+    runs-on: [self-hosted, metal-gpu, macos]
+    timeout-minutes: 45
+    if: github.repository == 'RageLog/CHROMODYNAMIC_ENGINE'
+
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain probe
+        run: |
+          xcrun clang++ --version   # Apple clang 15+
+          xcrun metal --version || echo "[probe] metal compiler not on PATH (host-only OK)"
+          cmake --version
+          ninja --version
+
+      - name: Configure (Metal ON, Debug)
+        run: |
+          cmake -S . -B build/ninja-metal \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCD_RHI_METAL_ENABLED=ON \
+            -DCD_ENABLE_TESTING=ON
+
+      - name: Build
+        run: cmake --build build/ninja-metal
+
+      - name: Test (host-side toolchain, ALWAYS)
+        # GLSL/SPIR-V -> MSL text incl. the M9 ray-query + M10 mesh/object
+        # lowering proofs. No MTLDevice — runs on any macOS runner.
+        run: |
+          ctest --test-dir build/ninja-metal \
+            -R cd_test_metal_shader_toolchain --output-on-failure
+
+      - name: Test (GPU, Apple device only)
+        if: ${{ inputs.run_gpu_tests && runner.os == 'macOS' }}
+        # Tier-2: instantiate a real MTLDevice (buffer / texture / pipeline /
+        # descriptor / barrier / swapchain / RT / compute(M6) / mesh(M10) /
+        # bindless(M11) / readback). Metal API + shader validation on so a slot
+        # collision or missing residency surfaces immediately.
+        env:
+          MTL_DEBUG_LAYER: "1"
+          MTL_SHADER_VALIDATION: "1"
+        run: |
+          ctest --test-dir build/ninja-metal \
+            -R cd_test_metal --output-on-failure
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-failure-artifacts
+          path: |
+            build/ninja-metal/Testing/Temporary/LastTest.log
+            *.log
+          retention-days: 14

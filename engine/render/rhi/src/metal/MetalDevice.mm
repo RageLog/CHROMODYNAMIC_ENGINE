@@ -241,6 +241,16 @@ constexpr std::uint16_t kSwapchainViewGen = 0xF00D;
 // a debugger.
 constexpr std::uint16_t kRegularViewGen = 0xBADE;
 
+// M12 (B2 — ADR-20260615): sentinel generation for a TRANSIENT swapchain-IMAGE
+// handle returned by swapchain_image() (the raw TextureHandle wrapping the
+// current drawable's MTLTexture, for callers that barrier the swapchain image
+// directly — Vulkan-parity). lookup_texture resolves this to the live
+// [drawable texture] just like lookup_swapchain_view_texture resolves a
+// swapchain VIEW handle. The index field encodes the swapchain index. A
+// different bit pattern from the view sentinels so a misrouted handle is
+// obvious in a debugger.
+constexpr std::uint16_t kSwapchainImageGen = 0xCAFE;
+
 // ---------------------------------------------------------------------------
 // kNotImpl — convenience wrapper for the kNotImplemented error code.
 // Avoids repeating the long namespace path in every method body. Kept
@@ -997,6 +1007,128 @@ public:
         pipelines_.erase(h.index());
     }
 
+    // M10 (B2 — ADR-20260615): desc-driven MESH-SHADER pipeline. Builds a
+    // Metal-3 MTLMeshRenderPipelineState from the MeshPipelineDesc — the
+    // object(task) -> mesh -> fragment chain that replaces the classic
+    // vertex-input assembler. Mirrors create_graphics_pipeline: resolve the
+    // task/mesh/fragment MTLFunctions from the shader-module registry, build
+    // the PSO + matching MTLDepthStencilState + resolved raster state, and
+    // store it in the SAME graphics-pipeline registry (the engine binds mesh
+    // pipelines via bind_graphics_pipeline + draw_mesh_tasks, exactly like
+    // Vulkan/D3D12 bind them on the graphics bind point). The returned
+    // GraphicsPipelineHandle is therefore drop-in for bind_graphics_pipeline.
+    //
+    // Gated on features_.mesh_shader (Metal-3 family) so callers see
+    // kNotImplemented on a device that lacks mesh shading — exactly the Vulkan
+    // (no VK_EXT_mesh_shader) / D3D12 (no MESH_SHADER_TIER_1) contract. Unknown
+    // / wrong-stage shader handles surface kInvalidArgument so callers fix
+    // bind-order bugs rather than chase a Metal validation assert.
+    [[nodiscard]] cd::core::Result<GraphicsPipelineHandle>
+    create_mesh_pipeline(const MeshPipelineDesc& desc) override
+    {
+        if (!features_.mesh_shader)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_mesh_pipeline: device does not support mesh "
+                "shaders (no Metal-3 family)"));
+        }
+
+        // Mesh stage is required; task stage is optional (mesh-only pipeline).
+        const MetalShaderModuleObj* ms = lookup_shader_module(desc.mesh_shader);
+        if (ms == nullptr || ms->fn() == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_mesh_pipeline: unknown / unresolved mesh "
+                "shader module"));
+        }
+        id<MTLFunction> object_fn = nil;
+        // Object (task) stage threads-per-threadgroup, captured here so we do not
+        // re-look-up the module after validation. (1,1,1) for a mesh-only
+        // pipeline (no task module) — the correct neutral value.
+        MTLSize object_tg = MTLSizeMake(1, 1, 1);
+        if (desc.task_shader.is_valid())
+        {
+            const MetalShaderModuleObj* ts =
+                lookup_shader_module(desc.task_shader);
+            if (ts == nullptr || ts->fn() == nil)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::create_mesh_pipeline: unknown / unresolved task "
+                    "(object) shader module"));
+            }
+            object_fn = ts->fn();
+            object_tg = ts->workgroup();
+        }
+        id<MTLFunction> fs_fn = nil;
+        if (desc.fragment_shader.is_valid())
+        {
+            const MetalShaderModuleObj* fs =
+                lookup_shader_module(desc.fragment_shader);
+            if (fs == nullptr || fs->fn() == nil)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::create_mesh_pipeline: unknown / unresolved "
+                    "fragment shader module"));
+            }
+            fs_fn = fs->fn();
+        }
+
+        std::string err_msg;
+        id<MTLDepthStencilState> dss = nil;
+        MTLCullMode cull = MTLCullModeNone;
+        MTLWinding  winding = MTLWindingClockwise;
+        id<MTLRenderPipelineState> pso = nil;
+        // MTLMeshRenderPipelineDescriptor is Metal 3 — guard the build behind
+        // the availability check so older-SDK builds compile. features_
+        // .mesh_shader is itself only ever set under @available(macOS 13), so
+        // this branch always runs when the feature bit is true.
+        if (@available(macOS 13.0, iOS 16.0, *))
+        {
+            pso = detail::build_metal_mesh_pipeline(
+                mtl_device_, desc, object_fn, ms->fn(), fs_fn,
+                &dss, &cull, &winding, &err_msg);
+        }
+        else
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_mesh_pipeline: MTLMeshRenderPipelineDescriptor "
+                "requires macOS 13 / iOS 16"));
+        }
+        if (pso == nil)
+        {
+            return std::unexpected(rhi_errors::make_owning(
+                rhi_errors::Code::kResourceCreationFailed,
+                err_msg.empty() ? "Metal::create_mesh_pipeline: nil PSO"
+                                : err_msg));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const GraphicsPipelineHandle h { id, 1u };
+
+        // Mesh pipelines drive the rasterizer directly (drawMeshThreadgroups);
+        // the encoder draw_mesh_tasks path does not consult bound_primitive_, so
+        // a fixed Triangle primitive is a harmless placeholder for the shared
+        // MetalGraphicsPipelineStateObj record (matches D3D12 ignoring IA
+        // topology for mesh PSOs).
+        auto state = std::make_unique<MetalGraphicsPipelineStateObj>(
+            pso, dss, MTLPrimitiveTypeTriangle, cull, winding);
+        // Each stage's reflected threads-per-threadgroup (GLSL
+        // layout(local_size_*)) so draw_mesh_tasks can feed Metal's
+        // drawMeshThreadgroups:threadsPerObjectThreadgroup:threadsPerMesh
+        // Threadgroup:. object_tg was captured at task-module validation (1,1,1
+        // for a mesh-only pipeline); mesh_tg from the (required) mesh module.
+        state->set_mesh_threadgroups(object_tg, ms->workgroup());
+
+        const std::scoped_lock lock { pipelines_mu_ };
+        pipelines_.emplace(h.index(), std::move(state));
+        return h;
+    }
+
     // phase572 (Sprint-3): newComputePipelineStateWithFunction:error: path.
     //
     // The shader-module lookup MUST resolve and the module's stage MUST be
@@ -1277,6 +1409,135 @@ public:
     {
         const std::scoped_lock lock { descriptor_sets_mu_ };
         descriptor_sets_.erase(h.index());
+    }
+
+    // M11 (B2 — ADR-20260615): bindless texture-array lifecycle.
+    //
+    // create: a SINGLE argument buffer holding an unbounded sampler2D array.
+    // Build one MTLArgumentDescriptor (dataType=Texture, arrayLength=slot_count,
+    // textureType=2D), let [device newArgumentEncoderWithArguments:] size the
+    // encoder, allocate a Shared arg buffer of [encoder encodedLength], and bind
+    // the encoder to it. Mirror create_bindless_texture_array on Vulkan: gate on
+    // features_.bindless_resources (Metal argument-buffers Tier 2), reject
+    // slot_count==0, validate the sampler handle. The chrome reflection path
+    // dynamic-indexes the resulting texture array from the ray-hit mesh slot.
+    [[nodiscard]] cd::core::Result<BindlessTextureArrayHandle>
+    create_bindless_texture_array(const BindlessTextureArrayDesc& desc) override
+    {
+        if (!features_.bindless_resources)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_bindless_texture_array: device lacks "
+                "argument-buffers tier 2 (no bindless support)"));
+        }
+        if (desc.slot_count == 0u)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_bindless_texture_array: slot_count must be > 0"));
+        }
+        // The sampler is per-array (one sampler for all slots in v1). Validate it
+        // up-front so callers fix a bad handle here, not at draw time. A bindless
+        // array with an invalid sampler is a caller bug (the desc requires one).
+        if (desc.sampler.is_valid() && lookup_sampler(desc.sampler) == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::create_bindless_texture_array: unknown sampler handle"));
+        }
+
+        MTLArgumentDescriptor* slot =
+            [MTLArgumentDescriptor argumentDescriptor];
+        slot.index = 0;
+        slot.dataType = MTLDataTypeTexture;
+        slot.access = MTLArgumentAccessReadOnly;
+        slot.textureType = MTLTextureType2D;
+        slot.arrayLength = static_cast<NSUInteger>(desc.slot_count);
+        NSArray<MTLArgumentDescriptor*>* args = @[ slot ];
+
+        id<MTLArgumentEncoder> encoder =
+            [mtl_device_ newArgumentEncoderWithArguments:args];
+        if (encoder == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_bindless_texture_array: "
+                "newArgumentEncoderWithArguments returned nil"));
+        }
+        NSUInteger arg_len = [encoder encodedLength];
+        if (arg_len == 0u)
+        {
+            arg_len = 16u;
+        }
+        id<MTLBuffer> arg_buf =
+            [mtl_device_ newBufferWithLength:arg_len
+                                     options:MTLResourceStorageModeShared];
+        if (arg_buf == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_bindless_texture_array: newBufferWithLength "
+                "(argument buffer) returned nil"));
+        }
+        [encoder setArgumentBuffer:arg_buf offset:0];
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const BindlessTextureArrayHandle h { id, 1u };
+
+        const std::scoped_lock lock { bindless_arrays_mu_ };
+        bindless_arrays_.emplace(
+            h.index(),
+            std::make_unique<MetalBindlessArrayObj>(
+                encoder, arg_buf, desc.slot_count, desc.sampler));
+        return h;
+    }
+
+    // write: encode one texture into slot `slot` of the array's argument buffer
+    // ([encoder setTexture:tex atIndex:slot]) and record it for residency replay.
+    // Out-of-range slot / unknown array / unresolved view surface kInvalidArgument
+    // (matches the Vulkan write_bindless_texture_slot contract). The encoder
+    // already points at the array's arg buffer (set at create time), so the write
+    // lands straight in the GPU-visible Shared region.
+    [[nodiscard]] cd::core::Result<void>
+    write_bindless_texture_slot(BindlessTextureArrayHandle array,
+                                std::uint32_t              slot,
+                                TextureViewHandle          view) override
+    {
+        MetalBindlessArrayObj* arr = lookup_bindless_array(array);
+        if (arr == nullptr || arr->encoder() == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::write_bindless_texture_slot: unknown bindless array "
+                "handle"));
+        }
+        if (slot >= arr->slot_count())
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::write_bindless_texture_slot: slot out of range"));
+        }
+        id<MTLTexture> tex = lookup_texture_view(view);
+        if (tex == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::write_bindless_texture_slot: unknown / unresolved "
+                "texture view handle"));
+        }
+        [arr->encoder() setTexture:tex atIndex:static_cast<NSUInteger>(slot)];
+        arr->record_slot(slot, tex);
+        return {};
+    }
+
+    void destroy_bindless_texture_array(BindlessTextureArrayHandle h) override
+    {
+        // ARC releases the encoder + arg buffer when the obj is erased. The
+        // per-slot textures are caller-owned (the desc contract: per-slot views
+        // are not destroyed here), so dropping the residency references is safe.
+        const std::scoped_lock lock { bindless_arrays_mu_ };
+        bindless_arrays_.erase(h.index());
     }
 
     // phase559 (Sprint-2): validate-and-resolve descriptor writes.
@@ -1630,15 +1891,26 @@ public:
 
     // --------------------------------------------------------------------------
     // acquire_next_image — pull the next CAMetalDrawable from the layer.
-    // Sprint-1 ignores `signal` / `fence` / `timeout_ns` because Metal handles
-    // drawable synchronization internally (nextDrawable blocks until a slot
-    // is available). The returned index is always 0; image_count() reflects
-    // the layer's drawable pool size for diagnostics only.
+    //
+    // M12 (B2 — ADR-20260615): honor the `signal` SemaphoreHandle + `fence`
+    // FenceHandle. On Vulkan vkAcquireNextImageKHR signals the
+    // semaphore/fence WHEN the image is ready for rendering. On Metal
+    // [layer nextDrawable] returns a drawable that is READY synchronously (it
+    // blocks internally until a pool slot frees), so the acquire is satisfied
+    // the moment this call returns -> we signal both right here. The signal
+    // semaphore is an id<MTLSharedEvent>: we bump it to its next value so a
+    // queue-side wait_semaphores entry that waits on it un-blocks (the producer
+    // is the acquire). The fence is the dispatch_semaphore_t CPU completion
+    // fence: we release one waiter so a CPU wait_for_fence right after acquire
+    // un-blocks. Both stay OPTIONAL (the frame loop may pass invalid handles
+    // when it relies on Metal's internal drawable gating). Still returns index 0
+    // (single live drawable per frame); image_count() reflects the pool size for
+    // diagnostics only. `timeout_ns` is unused — nextDrawable does its own wait.
     // --------------------------------------------------------------------------
     [[nodiscard]] cd::core::Result<std::uint32_t>
     acquire_next_image(SwapchainHandle swapchain,
-                       SemaphoreHandle /*signal*/,
-                       FenceHandle /*fence*/,
+                       SemaphoreHandle signal,
+                       FenceHandle fence,
                        std::uint64_t /*timeout_ns*/) override
     {
         MetalSwapchainObj* sc = lookup_swapchain(swapchain);
@@ -1654,6 +1926,28 @@ public:
             return std::unexpected(rhi_errors::make(
                 rhi_errors::Code::kSwapchainOutOfDate,
                 "Metal::acquire_next_image: nextDrawable returned nil"));
+        }
+
+        // The drawable is ready now -> raise the acquire sync primitives.
+        if (signal.is_valid())
+        {
+            if (MetalEventObj* ev = lookup_event(signal); ev != nullptr)
+            {
+                // Bump the shared event to its next value so a queue-side
+                // encodeWaitForEvent on this semaphore (a submit's
+                // wait_semaphores entry) un-blocks immediately — the acquire is
+                // the producer of this binary semaphore.
+                [ev->event() setSignaledValue:ev->next_signal_value()];
+            }
+        }
+        if (fence.is_valid())
+        {
+            if (MetalFenceObj* f = lookup_fence(fence); f != nullptr)
+            {
+                // Release one CPU waiter so a wait_for_fence right after acquire
+                // un-blocks (VkFence acquire-signal parity).
+                f->signal_from_completion();
+            }
         }
         return 0u;
     }
@@ -1711,14 +2005,27 @@ public:
         return (it == swapchains_.end()) ? 0u : it->second->image_count();
     }
 
+    // M12 (B2 — ADR-20260615): return a TRANSIENT TextureHandle wrapping the
+    // current drawable's [drawable texture], for callers that barrier the raw
+    // swapchain image (Vulkan-parity — Vulkan returns the VkImage of the
+    // acquired swapchain image). The handle encodes (swapchain index,
+    // kSwapchainImageGen); lookup_texture resolves it back to the live drawable
+    // texture without an entry in the texture registry (the drawable is owned by
+    // Metal + recreated every frame, so it must NOT be registered/destroyed).
+    // Unknown swapchain -> empty handle. The handle is valid only for the
+    // current frame's acquired drawable (transient), like the swapchain-view
+    // handle the render-pass path already uses.
     [[nodiscard]] TextureHandle
-    swapchain_image(SwapchainHandle /*swapchain*/,
+    swapchain_image(SwapchainHandle swapchain,
                     std::uint32_t /*image_index*/) const override
     {
-        // Sprint-1 does not expose raw swapchain images to user code;
-        // the only legitimate consumer is the cmd-buffer render-pass
-        // path which goes through lookup_swapchain_view_texture instead.
-        return TextureHandle {};
+        const std::scoped_lock lock { swapchains_mu_ };
+        const auto it = swapchains_.find(swapchain.index());
+        if (it == swapchains_.end())
+        {
+            return TextureHandle {};
+        }
+        return TextureHandle { swapchain.index(), kSwapchainImageGen };
     }
 
     // phase649 (Sprint-5): real memcpy into [MTLBuffer contents] path.
@@ -2325,6 +2632,21 @@ public:
     [[nodiscard]] id<MTLTexture>
     lookup_texture(TextureHandle h) const noexcept override
     {
+        // M12 (B2 — ADR-20260615): a transient swapchain-IMAGE handle (returned
+        // by swapchain_image) carries kSwapchainImageGen and the swapchain index;
+        // resolve it to the current drawable's live MTLTexture instead of the
+        // registry (the drawable is Metal-owned + per-frame, never registered).
+        if (h.generation() == kSwapchainImageGen)
+        {
+            const std::scoped_lock lock { swapchains_mu_ };
+            const auto sit = swapchains_.find(h.index());
+            if (sit == swapchains_.end())
+            {
+                return nil;
+            }
+            id<CAMetalDrawable> d = sit->second->current_drawable();
+            return (d == nil) ? nil : [d texture];
+        }
         const std::scoped_lock lock { textures_mu_ };
         const auto it = textures_.find(h.index());
         return (it == textures_.end()) ? nil : it->second->texture();
@@ -2435,6 +2757,16 @@ public:
         const std::scoped_lock lock { timelines_mu_ };
         const auto it = timelines_.find(h.index());
         return (it == timelines_.end()) ? nullptr : it->second.get();
+    }
+
+    // M11 (B2 — ADR-20260615): bindless texture-array lookup. nullptr for
+    // unknown handles, matching the rest of the Metal-side resolver contract.
+    [[nodiscard]] MetalBindlessArrayObj*
+    lookup_bindless_array(BindlessTextureArrayHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { bindless_arrays_mu_ };
+        const auto it = bindless_arrays_.find(h.index());
+        return (it == bindless_arrays_.end()) ? nullptr : it->second.get();
     }
 
 private:
@@ -2805,6 +3137,14 @@ private:
     mutable std::mutex   timelines_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalTimelineObj>>
         timelines_;
+
+    // M11 (B2 — ADR-20260615): bindless texture-array registry. Each entry owns
+    // an MTLArgumentEncoder + a Shared argument buffer holding an unbounded
+    // sampler2D array; bind_bindless_texture_array binds it at the dedicated
+    // bindless set slot + replays the populated slots' residency.
+    mutable std::mutex   bindless_arrays_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalBindlessArrayObj>>
+        bindless_arrays_;
 
     // Pending present hand-off — present() records the swapchain whose
     // drawable should ride out on the next submit's command-buffer commit.
