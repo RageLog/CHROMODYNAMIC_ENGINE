@@ -328,6 +328,15 @@ void MetalCommandBufferImpl::bind_descriptor_set(std::uint32_t set_index,
                             usage:MTLResourceUsageRead
                            stages:MTLRenderStageVertex | MTLRenderStageFragment];
         }
+        // M9 (ADR-20260615): the ray-query TLAS is read-only; the engine reads
+        // it in the fragment stage (and the vertex stage for skinned paths), so
+        // span both stages — the conservative, never-under-resident direction.
+        for (id<MTLAccelerationStructure> a in ds->resident_accels())
+        {
+            [encoder_ useResource:a
+                            usage:MTLResourceUsageRead
+                           stages:MTLRenderStageVertex | MTLRenderStageFragment];
+        }
     }
     else if (compute_ != nil)
     {
@@ -340,6 +349,11 @@ void MetalCommandBufferImpl::bind_descriptor_set(std::uint32_t set_index,
         for (id<MTLTexture> t in ds->resident_textures())
         {
             [compute_ useResource:t usage:MTLResourceUsageRead];
+        }
+        // M9 (ADR-20260615): ray-query TLAS residency for compute-side reads.
+        for (id<MTLAccelerationStructure> a in ds->resident_accels())
+        {
+            [compute_ useResource:a usage:MTLResourceUsageRead];
         }
     }
 }

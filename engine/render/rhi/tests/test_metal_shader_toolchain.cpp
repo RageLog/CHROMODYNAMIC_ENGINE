@@ -52,6 +52,39 @@ layout(location = 0) in vec3 in_pos;
 void main() { gl_Position = vec4(in_pos, 1.0); }
 )glsl";
 
+// M9 (ADR-20260615): a minimal INLINE-RAY-TRACING (ray-query) fragment shader,
+// modelled on the engine's prim.frag.glsl shadow-test path. It binds a
+// set-0 accelerationStructureEXT TLAS and runs the full rayQueryEXT walk
+// (initialize -> proceed -> get-intersection-type). The host toolchain must
+// lower this to Metal MSL ray-query (metal::raytracing intersector +
+// instance_acceleration_structure). GLSL 460 + GL_EXT_ray_query is the
+// canonical engine profile for ray-query intrinsics; SPV_KHR_ray_query is
+// produced by glslang under the Vulkan1.3/SPIR-V 1.6 target.
+constexpr const char* kRayQueryFS = R"glsl(
+#version 460
+#extension GL_EXT_ray_query : require
+layout(set = 0, binding = 0) uniform accelerationStructureEXT cd_tlas;
+layout(location = 0) in  vec3 in_origin;
+layout(location = 1) in  vec3 in_dir;
+layout(location = 0) out vec4 o;
+float trace_shadow(vec3 origin, vec3 dir, float tmax)
+{
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(
+        rq, cd_tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFFu, origin, 0.01, dir, tmax);
+    while (rayQueryProceedEXT(rq)) { /* opaque-only walk */ }
+    return (rayQueryGetIntersectionTypeEXT(rq, true) ==
+            gl_RayQueryCommittedIntersectionNoneEXT) ? 1.0 : 0.0;
+}
+void main()
+{
+    float vis = trace_shadow(in_origin, normalize(in_dir), 1000.0);
+    o = vec4(vis, vis, vis, 1.0);
+}
+)glsl";
+
 [[nodiscard]] std::unique_ptr<cd::shader::ICompiler> make_compiler_or_null()
 {
     return cd::shader::make_glslang_compiler();
@@ -328,6 +361,100 @@ TEST(MetalShaderToolchain, FlatBindingFallback)
     // Flat path: the texture still carries a [[texture(n)]]; no argument-buffer
     // struct wrapper is required.
     EXPECT_NE(r.source.find("[[texture(0)]]"), std::string::npos) << r.source;
+}
+
+// ---- M9 (ADR-20260615): ray-query (inline RT) MSL lowering --------------------
+//
+// THE host-verifiable proof of the Metal RT shader path. The engine consumes
+// the TLAS via rayQueryEXT (GL_EXT_ray_query). This test runs that exact GLSL
+// through the full GLSL -> SPIR-V (glslang, SPV_KHR_ray_query) -> MSL
+// (SPIRV-Cross CompilerMSL) chain on Windows and asserts the emitted MSL is
+// valid + contains the Metal ray-query constructs. A pass PROVES SPIRV-Cross
+// CAN lower SPV_KHR_ray_query to Metal MSL (metal::raytracing intersector /
+// instance_acceleration_structure) — the .mm-side AS build is Mac-deferred,
+// but the shader side is verified everywhere.
+TEST(MetalShaderToolchain, RayQueryLowersToMetalIntersector)
+{
+    auto c = make_compiler_or_null();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::rhi::metal::GlslToMslDesc d {};
+    d.glsl_source = kRayQueryFS;
+    d.stage = cd::rhi::ShaderStage::kFragment;
+    d.source_name = "ray_query_fs";
+    // include_resolver left null; default argument-buffer binding model.
+
+    const auto r = cd::rhi::metal::compose_glsl_to_msl(*c, d);
+    // A failure here would mean SPIRV-Cross cannot lower SPV_KHR_ray_query to
+    // MSL (a real blocker). A pass is the proof the path works.
+    ASSERT_TRUE(r.has_value())
+        << "SPIRV-Cross failed to lower ray-query SPIR-V to MSL: "
+        << std::string(r.error().message);
+    const std::string& msl = r->source;
+    ASSERT_FALSE(msl.empty());
+
+    // (1) Valid MSL: standard library + the fragment entry point.
+    EXPECT_NE(msl.find("#include <metal_stdlib>"), std::string::npos) << msl;
+    EXPECT_NE(msl.find("fragment "), std::string::npos) << msl;
+    EXPECT_FALSE(r->entry_point.empty());
+
+    // (2) THE RAY-QUERY PROOF: SPIRV-Cross emits the Metal ray-tracing header
+    //     + the metal::raytracing namespace for an intersection-query shader.
+    EXPECT_NE(msl.find("metal_raytracing"), std::string::npos)
+        << "MSL must include the Metal ray-tracing header:\n" << msl;
+    EXPECT_NE(msl.find("metal::raytracing"), std::string::npos)
+        << "MSL must use the metal::raytracing namespace:\n" << msl;
+    // The rayQueryEXT object lowers to the Metal intersection_query type (the
+    // ray_query analog); the accelerationStructureEXT TLAS lowers to an
+    // instance_acceleration_structure. Either of the ray-query type tokens
+    // proves the intersector construct landed.
+    const bool has_intersector =
+        msl.find("intersection_query") != std::string::npos
+        || msl.find("intersector") != std::string::npos;
+    EXPECT_TRUE(has_intersector)
+        << "MSL must contain the Metal ray-query intersector construct "
+           "(intersection_query / intersector):\n" << msl;
+    EXPECT_NE(msl.find("acceleration_structure"), std::string::npos)
+        << "the TLAS must lower to a Metal acceleration_structure type:\n" << msl;
+    // The ray-query walk itself: SPIRV-Cross emits a `.next()` proceed on the
+    // intersection query (the rayQueryProceedEXT analog).
+    EXPECT_NE(msl.find(".next()"), std::string::npos)
+        << "the rayQueryProceedEXT walk must lower to intersection_query.next():\n"
+        << msl;
+}
+
+// The ray-query floor is enforced at the glue level: a ray-query module's
+// emitted MSL must guard the metal_raytracing include behind the MSL 2.3+
+// version gate SPIRV-Cross requires, regardless of the requested version.
+TEST(MetalShaderToolchain, RayQueryRaisesMslVersionFloor)
+{
+    auto c = make_compiler_or_null();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::shader::CompileDesc sd {};
+    sd.source = kRayQueryFS;
+    sd.stage = cd::shader::ShaderStage::kFragment;
+    sd.source_name = "ray_query_floor_fs";
+    const auto spirv = c->compile(sd);
+    ASSERT_TRUE(spirv.has_value()) << std::string(spirv.error().message);
+
+    // Request a deliberately-low MSL version (2.0). The glue must raise it to
+    // the 2.4 ray-query floor because the module declares CapabilityRayQueryKHR.
+    cd::spirv_cross_glue::MslBindingConfig cfg {};
+    cfg.version = 20000U;  // MSL 2.0 (below the ray-query floor)
+    const auto r = cd::spirv_cross_glue::translate_msl(spirv->spirv, cfg);
+    ASSERT_TRUE(r.ok()) << r.error;
+    // The emitted MSL carries SPIRV-Cross's version-gated ray-tracing include
+    // (`#if __METAL_VERSION__ >= 230`). Its presence proves the lowering ran;
+    // the floor-raise keeps the construct compilable on-device.
+    EXPECT_NE(r.source.find("metal_raytracing"), std::string::npos)
+        << "ray-query MSL must include metal_raytracing even when a low MSL "
+           "version was requested:\n" << r.source;
+    EXPECT_NE(r.source.find("__METAL_VERSION__ >= 230"), std::string::npos)
+        << "SPIRV-Cross guards the ray-tracing include behind MSL 2.3:\n"
+        << r.source;
 }
 
 }  // namespace

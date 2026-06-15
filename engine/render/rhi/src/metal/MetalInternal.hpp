@@ -776,7 +776,8 @@ public:
         : encoder_(encoder)
         , arg_buffer_(arg_buffer)
         , resident_buffers_([[NSMutableArray alloc] init])
-        , resident_textures_([[NSMutableArray alloc] init]) {}
+        , resident_textures_([[NSMutableArray alloc] init])
+        , resident_accels_([[NSMutableArray alloc] init]) {}
     ~MetalDescriptorSetObj() = default;
     MetalDescriptorSetObj(const MetalDescriptorSetObj&) = delete;
     MetalDescriptorSetObj& operator=(const MetalDescriptorSetObj&) = delete;
@@ -797,6 +798,7 @@ public:
     {
         [resident_buffers_ removeAllObjects];
         [resident_textures_ removeAllObjects];
+        [resident_accels_ removeAllObjects];
     }
     void add_resident_buffer(id<MTLBuffer> b)
     {
@@ -806,6 +808,16 @@ public:
     {
         if (t != nil) { [resident_textures_ addObject:t]; }
     }
+    // M9 (ADR-20260615): an MTLAccelerationStructure referenced through an
+    // argument buffer (the ray-query TLAS binding) MUST be made resident with
+    // [encoder useResource:usage:Read] before the ray-query draw, exactly like
+    // the buffers / textures above — otherwise the GPU cannot fault the TLAS in
+    // and the rayQueryEXT walk reads garbage. bind_descriptor_set replays this
+    // list on the active encoder alongside the buffer / texture residents.
+    void add_resident_accel(id<MTLAccelerationStructure> a)
+    {
+        if (a != nil) { [resident_accels_ addObject:a]; }
+    }
     [[nodiscard]] NSArray<id<MTLBuffer>>* resident_buffers() const noexcept
     {
         return resident_buffers_;
@@ -814,12 +826,18 @@ public:
     {
         return resident_textures_;
     }
+    [[nodiscard]] NSArray<id<MTLAccelerationStructure>>*
+    resident_accels() const noexcept
+    {
+        return resident_accels_;
+    }
 
 private:
     id<MTLArgumentEncoder>           encoder_ { nil };
     id<MTLBuffer>                    arg_buffer_ { nil };
     NSMutableArray<id<MTLBuffer>>*   resident_buffers_ { nil };
     NSMutableArray<id<MTLTexture>>*  resident_textures_ { nil };
+    NSMutableArray<id<MTLAccelerationStructure>>* resident_accels_ { nil };
 };
 
 // ---------------------------------------------------------------------------

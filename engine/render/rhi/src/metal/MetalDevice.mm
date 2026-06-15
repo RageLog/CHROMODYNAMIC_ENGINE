@@ -1291,6 +1291,10 @@ public:
                         "acceleration-structure handle"));
                 }
                 [enc setAccelerationStructure:as->as() atIndex:idx];
+                // M9 (ADR-20260615): the TLAS referenced through this argument
+                // buffer must be made resident on the consuming encoder before
+                // the ray-query draw, exactly like buffers / textures above.
+                ds->add_resident_accel(as->as());
                 break;
             }
             }

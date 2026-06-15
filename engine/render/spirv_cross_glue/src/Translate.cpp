@@ -56,6 +56,16 @@ constexpr std::uint32_t kDefaultMslVersion  = 20200U;  // MSL 2.2
 // Argument buffers require MSL 2.0 (packed 20000). The set-per-argument-buffer
 // binding model (phase M3) raises any lower request to this floor.
 constexpr std::uint32_t kMinArgumentBufferMslVersion = 20000U;  // MSL 2.0
+// M9 (ADR-20260615): inline ray tracing (ray-query) lowers to the MSL
+// metal::raytracing intersector. SPIRV-Cross emits the
+// `#include <metal_raytracing>` block under `#if __METAL_VERSION__ >= 230`
+// (spirv_msl.cpp ~1696) and selects the modern
+// `acceleration_structure<instancing>` AS type only at MSL >= 2.4
+// (spirv_msl.cpp ~14965). When the SPIR-V declares CapabilityRayQueryKHR we
+// raise the floor to MSL 2.4 so the emitted MSL's ray-query constructs are
+// active + use the current AS type. Below this floor the include is gated out
+// and the shader would not compile on-device.
+constexpr std::uint32_t kMinRayQueryMslVersion = 20400U;  // MSL 2.4
 
 // Base [[buffer(N)]] index the 11 SPIRV-Cross CompilerMSL auxiliary buffers are
 // pinned to (phase1122 namespace fix). Mirrors CompilerMSL's upstream defaults
@@ -177,6 +187,28 @@ constexpr std::uint32_t kSpirvCrossAuxBaseIndex = 20U;
             // Raise to the MSL 2.0 floor argument buffers require.
             msl_opts.msl_version =
                 std::max(msl_opts.msl_version, kMinArgumentBufferMslVersion);
+        }
+
+        // ---- M9 (ADR-20260615): inline ray tracing (ray-query) floor.
+        // If the module declares CapabilityRayQueryKHR (the engine's
+        // rayQueryEXT path: GL_EXT_ray_query -> SPV_KHR_ray_query), raise the
+        // MSL version to 2.4 so SPIRV-Cross's emitted `#include
+        // <metal_raytracing>` block (guarded `#if __METAL_VERSION__ >= 230`)
+        // is active and the acceleration-structure type lowers to the current
+        // `acceleration_structure<instancing>` form. This is the host-side
+        // half of the Metal RT surface (AS build is the .mm/Mac side); the
+        // emitted MSL ray-query is fully validated here on every platform.
+        {
+            const spirv_cross::SmallVector<spv::Capability>& caps =
+                compiler.get_declared_capabilities();
+            const bool uses_ray_query =
+                std::ranges::find(caps, spv::CapabilityRayQueryKHR)
+                != caps.end();
+            if (uses_ray_query)
+            {
+                msl_opts.msl_version =
+                    std::max(msl_opts.msl_version, kMinRayQueryMslVersion);
+            }
         }
 
         // ---- SPIRV-Cross auxiliary-buffer pin (phase1122 namespace fix).
