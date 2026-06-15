@@ -1387,6 +1387,15 @@ public:
         all_ranges.reserve(desc.set_layouts.size() * 2);
         std::vector<std::uint32_t> table_params;
         table_params.reserve(desc.set_layouts.size());
+        // D2 — one SAMPLER descriptor-table root-param index per set (or
+        // UINT32_MAX when the set declares no bare-`kSampler` binding). A
+        // SAMPLER range cannot share a table with CBV/SRV/UAV, so these live
+        // in their own root parameters. Storage for the per-set ranges must
+        // outlive serialization (pointers held by D3D12_ROOT_PARAMETER).
+        std::vector<std::uint32_t> sampler_table_params;
+        sampler_table_params.reserve(desc.set_layouts.size());
+        std::vector<std::vector<D3D12_DESCRIPTOR_RANGE>> all_sampler_ranges;
+        all_sampler_ranges.reserve(desc.set_layouts.size());
 
         // ADR-20260614-d3d12-binding-model: space-per-set. The N-th descriptor
         // set layout maps to HLSL register space N — matching the SPIRV-Cross
@@ -1440,9 +1449,27 @@ public:
             // a separate table when present).
             std::vector<D3D12_DESCRIPTOR_RANGE> ranges;
             ranges.reserve(layout.bindings.size());
+            // D2 — bare-`kSampler` ranges for THIS set, collected into a
+            // dedicated SAMPLER table below (cannot share the CBV/SRV/UAV one).
+            std::vector<D3D12_DESCRIPTOR_RANGE> set_sampler_ranges;
             for (const auto& b : layout.bindings)
             {
-                if (b.type == cd::rhi::DescriptorType::kSampler) continue;
+                if (b.type == cd::rhi::DescriptorType::kSampler)
+                {
+                    // D2 — a SAMPLER range at (sM, spaceN) backed at bind time
+                    // by the shader-visible sampler ring (the descriptor copied
+                    // there from the SamplerRecord). Mirrors the Vulkan kSampler
+                    // descriptor; replaces the prior silent-default behaviour.
+                    D3D12_DESCRIPTOR_RANGE sr {};
+                    sr.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+                    sr.NumDescriptors     = b.count == 0u ? 1u : b.count;
+                    sr.BaseShaderRegister = b.binding;  // sM
+                    sr.RegisterSpace      = set_space;   // spaceN
+                    sr.OffsetInDescriptorsFromTableStart =
+                        D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+                    set_sampler_ranges.push_back(sr);
+                    continue;
+                }
                 D3D12_DESCRIPTOR_RANGE r {};
                 switch (b.type)
                 {
@@ -1548,11 +1575,41 @@ public:
             // no CBV/SRV/UAV ranges — hence the increment lives before the
             // early-out below, not at the bottom of the loop.
             ++set_space;
+
+            // D2 — emit the SAMPLER descriptor table for THIS set's bare
+            // samplers (a separate root parameter; SAMPLER ranges cannot share
+            // a table with CBV/SRV/UAV). bind_descriptor_set points it at the
+            // set's region in the shader-visible sampler ring. Recorded per set
+            // ordinal so the index lines up with set_index at bind time.
+            if (!set_sampler_ranges.empty())
+            {
+                all_sampler_ranges.push_back(std::move(set_sampler_ranges));
+                D3D12_ROOT_PARAMETER sp {};
+                sp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+                sp.DescriptorTable.NumDescriptorRanges =
+                    static_cast<UINT>(all_sampler_ranges.back().size());
+                sp.DescriptorTable.pDescriptorRanges = all_sampler_ranges.back().data();
+                sp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                sampler_table_params.push_back(
+                    static_cast<std::uint32_t>(params.size()));
+                params.push_back(sp);
+            }
+            else
+            {
+                sampler_table_params.push_back(~std::uint32_t { 0 });
+            }
+
             if (ranges.empty())
             {
-                // Edge case: layout has nothing but samplers. Skip the
-                // CBV/SRV/UAV table; a future wave can add a sampler
-                // table when sample code needs it.
+                // Edge case: layout has nothing but samplers. The CBV/SRV/UAV
+                // table is skipped (no view ranges), but the SAMPLER table
+                // above is still emitted so a sampler-only set binds correctly.
+                // Record UINT32_MAX so table_params stays indexed by set ordinal
+                // (a sampler table for THIS set may have shifted the next view
+                // table's root-param index off the set ordinal — bind_descriptor_set
+                // therefore resolves the view table through table_params, never
+                // assuming root-param == set_index).
+                table_params.push_back(~std::uint32_t { 0 });
                 continue;
             }
             all_ranges.push_back(std::move(ranges));
@@ -1668,6 +1725,7 @@ public:
         rec.root_sig = root_sig;
         rec.root_sig_blob = blob;
         rec.table_params = std::move(table_params);
+        rec.sampler_table_params = std::move(sampler_table_params);
         rec.push_constants_param  = pc_param_idx;
         rec.push_constants_dwords = pc_dwords;
         rec.bindless_sampler_param = bindless_sampler_param_idx;
@@ -2759,6 +2817,26 @@ public:
         rec.cpu_heap_offset = cpu_heap_cursor_;
         rec.view_count = vcount;
         cpu_heap_cursor_ += vcount;
+
+        // D2 — reserve CPU sampler-staging slots for the set's bare-`kSampler`
+        // bindings (parity with the CBV/SRV/UAV reservation above). Zero when
+        // the layout declares no kSampler binding — classic combined-sampler /
+        // bindless sets keep their existing sampler handling.
+        const auto scount = it->second.sampler_count;
+        if (scount > 0)
+        {
+            if (auto r = ensure_sampler_set_cpu_heap_(); !r.has_value())
+                return std::unexpected(r.error());
+            if (sampler_set_cpu_cursor_ + scount > kSamplerSetCpuCap)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "allocate_descriptor_set: per-set sampler staging heap exhausted"));
+            }
+            rec.sampler_cpu_offset = sampler_set_cpu_cursor_;
+            rec.sampler_count      = scount;
+            sampler_set_cpu_cursor_ += scount;
+        }
         const auto id = next_id_++;
         descriptor_sets_.emplace(id, rec);
         return cd::rhi::DescriptorSetHandle { id, 1u };
@@ -2800,8 +2878,10 @@ public:
         {
             // Find the offset of this binding within the set's
             // descriptor table. Sum view-typed binding counts of
-            // earlier bindings.
+            // earlier bindings for the CBV/SRV/UAV table, and (D2)
+            // sampler-typed counts for the separate SAMPLER table.
             std::uint32_t offset = 0;
+            std::uint32_t sampler_offset = 0;
             bool found = false;
             for (const auto& b : layout.bindings)
             {
@@ -2812,6 +2892,8 @@ public:
                 }
                 if (b.type != cd::rhi::DescriptorType::kSampler)
                     offset += b.count;
+                else
+                    sampler_offset += b.count;
             }
             if (!found)
             {
@@ -3034,13 +3116,37 @@ public:
                     break;
                 }
                 case cd::rhi::DescriptorType::kSampler:
-                    // Sampler writes belong in a separate sampler heap;
-                    // this CBV/SRV/UAV-only update path skips them.
-                    // The root signature currently bakes static
-                    // samplers (LINEAR clamp by default) so this
-                    // skip is safe for the v0.47.0 short-list of
-                    // forward-shaded samples.
+                {
+                    // D2 (parity with VulkanDevice kSampler — it writes the
+                    // real VkDescriptorImageInfo.sampler into the set). Copy
+                    // the SamplerRecord's staged descriptor into THIS set's
+                    // CPU sampler-staging slot. bind_descriptor_set later
+                    // copies the staged range into the shader-visible sampler
+                    // ring and points the SAMPLER root table at it — so the
+                    // dynamically-created sampler actually drives sampling
+                    // instead of being silently ignored (the previous no-op
+                    // resolved everything to a baked LINEAR-clamp default).
+                    auto samp_it = samplers_.find(w.sampler.index());
+                    if (samp_it == samplers_.end())
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: kSampler write references unknown sampler"));
+                    if (set.sampler_count == 0 || sampler_set_cpu_heap_ == nullptr)
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "update_descriptor_set: set has no sampler staging slot "
+                            "(layout declared no kSampler binding)"));
+                    D3D12_CPU_DESCRIPTOR_HANDLE samp_dst =
+                        sampler_set_cpu_heap_->GetCPUDescriptorHandleForHeapStart();
+                    samp_dst.ptr +=
+                        static_cast<SIZE_T>(set.sampler_cpu_offset + sampler_offset +
+                                            w.array_element) *
+                        sampler_heap_increment_;
+                    device_->CopyDescriptorsSimple(
+                        1, samp_dst, samp_it->second.cpu_handle,
+                        D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
                     break;
+                }
                 case cd::rhi::DescriptorType::kInputAttachment:
                 {
                     // Phase 129 — D3D12 doesn't have a distinct "input
@@ -4365,6 +4471,15 @@ public:
         /// table_params[i] == root-signature parameter index of the
         /// descriptor table that backs descriptor-set index i.
         std::vector<std::uint32_t> table_params;
+        /// D2 (parity with Vulkan kSampler write path): root-signature
+        /// parameter index of the SAMPLER descriptor table that backs the
+        /// set's bare-`kSampler` bindings, per descriptor-set slot.
+        /// sampler_table_params[i] == UINT32_MAX when set i declares no
+        /// `kSampler` binding (the classic combined-sampler / bindless paths
+        /// keep their own sampler handling). A separate vector from
+        /// table_params because a SAMPLER range cannot share a descriptor
+        /// table with CBV/SRV/UAV ranges on D3D12.
+        std::vector<std::uint32_t> sampler_table_params;
         /// phase466 — root-signature parameter index for the 32-bit
         /// constants slot that backs push_constants. UINT32_MAX means
         /// "no push-constant range declared at layout creation".
@@ -4392,6 +4507,16 @@ public:
         /// heap by bind_descriptor_set.
         std::uint32_t cpu_heap_offset { 0 };
         std::uint32_t view_count { 0 };
+        /// D2 (parity with Vulkan kSampler write path): CPU-staging
+        /// sampler-heap slot range that holds this set's bare-`kSampler`
+        /// descriptors. update_descriptor_set's kSampler case copies the
+        /// SamplerRecord's descriptor into [sampler_cpu_offset,
+        /// sampler_cpu_offset + sampler_count); bind_descriptor_set copies
+        /// that range into the per-frame shader-visible sampler ring.
+        /// sampler_count == 0 → no dynamic sampler (classic static-sampler
+        /// or bindless path).
+        std::uint32_t sampler_cpu_offset { 0 };
+        std::uint32_t sampler_count { 0 };
     };
 
     struct GraphicsPipelineRecord
@@ -4593,10 +4718,35 @@ private:
     std::uint32_t                 dsv_cursor_    { 0 };
 
     // phase466 — sampler descriptor heap (CPU-visible, bump allocator).
+    // This is the per-create_sampler STAGING heap: each create_sampler bumps
+    // one slot here and the SamplerRecord caches the resulting CPU handle. It
+    // is the CopyDescriptors SOURCE for the kSampler write path (D2).
     static constexpr std::uint32_t kSamplerHeapCap = 256;
     ComPtr<ID3D12DescriptorHeap> sampler_heap_;
     UINT                          sampler_heap_increment_ { 0 };
     std::uint32_t                 sampler_cursor_         { 0 };
+
+    // D2 (parity with Vulkan kSampler) — per-DESCRIPTOR-SET sampler staging +
+    // a shader-visible sampler RING.
+    //
+    //   * sampler_set_cpu_heap_ (CPU-only): update_descriptor_set's kSampler
+    //     case copies each set's bound sampler descriptors here (one slot per
+    //     declared sampler binding), reserved at allocate_descriptor_set time.
+    //     Mirrors how cpu_heap_ stages CBV/SRV/UAV writes.
+    //   * gpu_sampler_heap_ (SHADER-VISIBLE): bind_descriptor_set copies the
+    //     set's staged sampler descriptors into this ring and points the
+    //     layout's SAMPLER descriptor table at the resulting GPU region.
+    //     Mirrors copy_set_to_gpu_heap / unified_heap_ for the CBV/SRV/UAV ring.
+    //
+    // Both are separate from bindless_sampler_heap_ (the bindless `sampler2D[]`
+    // default-LINEAR pool) — D3D12 binds at most ONE SAMPLER heap per draw, so
+    // a set carrying real dynamic samplers binds THIS ring instead.
+    static constexpr std::uint32_t kSamplerSetCpuCap = 1024;
+    static constexpr UINT          kGpuSamplerRingCap = 2048;  // sampler heaps cap at 2048
+    ComPtr<ID3D12DescriptorHeap> sampler_set_cpu_heap_;
+    std::uint32_t                 sampler_set_cpu_cursor_ { 0 };
+    ComPtr<ID3D12DescriptorHeap> gpu_sampler_heap_;
+    std::uint32_t                 gpu_sampler_cursor_     { 0 };
 
     [[nodiscard]] cd::core::Result<void> ensure_rtv_pool_()
     {
@@ -4647,6 +4797,46 @@ private:
         }
         cpu_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        return {};
+    }
+    // D2 — CPU-only staging heap that holds per-descriptor-set sampler
+    // descriptors written by update_descriptor_set's kSampler case. Idempotent.
+    [[nodiscard]] cd::core::Result<void> ensure_sampler_set_cpu_heap_()
+    {
+        if (sampler_set_cpu_heap_ != nullptr) return {};
+        if (sampler_heap_increment_ == 0)
+            sampler_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        D3D12_DESCRIPTOR_HEAP_DESC hd {};
+        hd.NumDescriptors = kSamplerSetCpuCap;
+        hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&sampler_set_cpu_heap_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "per-set sampler staging heap creation failed"));
+        }
+        return {};
+    }
+    // D2 — shader-visible sampler RING that bind_descriptor_set copies each
+    // set's staged samplers into (the SAMPLER-heap analogue of unified_heap_).
+    [[nodiscard]] cd::core::Result<void> ensure_gpu_sampler_heap_()
+    {
+        if (gpu_sampler_heap_ != nullptr) return {};
+        if (sampler_heap_increment_ == 0)
+            sampler_heap_increment_ = device_->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        D3D12_DESCRIPTOR_HEAP_DESC hd {};
+        hd.NumDescriptors = kGpuSamplerRingCap;
+        hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        if (FAILED(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&gpu_sampler_heap_))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "shader-visible sampler ring heap creation failed"));
+        }
         return {};
     }
     // UNIFIED shader-visible CBV/SRV/UAV heap (phase1190 B6 follow-up). D3D12
@@ -4879,6 +5069,45 @@ public:
         return out;
     }
     [[nodiscard]] ID3D12DescriptorHeap* gpu_heap() noexcept { return unified_heap_.Get(); }
+
+    /// D2 — copy this set's staged sampler descriptors from the CPU sampler
+    /// staging heap into the shader-visible sampler ring and return the GPU
+    /// handle of the set's sampler-table base. Mirrors copy_set_to_gpu_heap
+    /// for the SAMPLER heap type. Returns ptr == 0 on failure or when the set
+    /// has no dynamic samplers (caller falls back to the bindless sampler heap).
+    [[nodiscard]] D3D12_GPU_DESCRIPTOR_HANDLE
+    copy_set_samplers_to_gpu_heap(const DescriptorSetRecord& set)
+    {
+        if (set.sampler_count == 0 || sampler_set_cpu_heap_ == nullptr)
+            return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
+        if (gpu_sampler_heap_ == nullptr)
+        {
+            if (auto r = ensure_gpu_sampler_heap_(); !r.has_value())
+                return D3D12_GPU_DESCRIPTOR_HANDLE { 0 };
+        }
+        // Ring wrap (bounded by the heap cap). wait_idle() between frames keeps
+        // the ring sane, same contract as the CBV/SRV/UAV ring.
+        if (gpu_sampler_cursor_ + set.sampler_count > kGpuSamplerRingCap)
+            gpu_sampler_cursor_ = 0;
+        const auto slot = gpu_sampler_cursor_;
+        gpu_sampler_cursor_ += set.sampler_count;
+        D3D12_CPU_DESCRIPTOR_HANDLE src =
+            sampler_set_cpu_heap_->GetCPUDescriptorHandleForHeapStart();
+        src.ptr += static_cast<SIZE_T>(set.sampler_cpu_offset) * sampler_heap_increment_;
+        D3D12_CPU_DESCRIPTOR_HANDLE gpu_cpu =
+            gpu_sampler_heap_->GetCPUDescriptorHandleForHeapStart();
+        gpu_cpu.ptr += static_cast<SIZE_T>(slot) * sampler_heap_increment_;
+        device_->CopyDescriptorsSimple(set.sampler_count, gpu_cpu, src,
+                                       D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        D3D12_GPU_DESCRIPTOR_HANDLE out =
+            gpu_sampler_heap_->GetGPUDescriptorHandleForHeapStart();
+        out.ptr += static_cast<UINT64>(slot) * sampler_heap_increment_;
+        return out;
+    }
+    [[nodiscard]] ID3D12DescriptorHeap* gpu_sampler_heap() noexcept
+    {
+        return gpu_sampler_heap_.Get();
+    }
 };
 
 // ---- Trivial command buffer (Phase 13.C — clear-only) ----------------------
@@ -5149,14 +5378,45 @@ public:
         // descriptor table for parameter `set_index`.
         auto* rec = owner_->find_descriptor_set(set);
         if (rec == nullptr) return;
-        const auto gpu = owner_->copy_set_to_gpu_heap(*rec);
-        if (gpu.ptr == 0) return;
+        // A sampler-only set (view_count == 0) has no CBV/SRV/UAV table to
+        // bind — only the SAMPLER table below. Skip the view-heap copy then.
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu { 0 };
+        if (rec->view_count > 0)
+        {
+            gpu = owner_->copy_set_to_gpu_heap(*rec);
+            if (gpu.ptr == 0) return;
+        }
+
+        const bool is_compute = bound_compute_layout_.value() != 0u;
+
+        // D2 — when the set carries bare dynamic samplers (kSampler bindings),
+        // stage them into the shader-visible sampler RING and bind THAT heap
+        // (D3D12 binds at most one SAMPLER heap per draw). A set with no dynamic
+        // sampler keeps the prior behaviour BYTE-FOR-BYTE: bind the bindless
+        // default-LINEAR sampler heap (classic combined samplers are served by
+        // static samplers baked into the root signature, so the golden does not
+        // move). Resolve the layout up front so both the heap choice and the
+        // root-table indices use the SAME layout record.
+        const auto* lrec = owner_->find_pipeline_layout(
+            is_compute ? bound_compute_layout_ : bound_graphics_layout_);
+        D3D12_GPU_DESCRIPTOR_HANDLE samp_gpu { 0 };
+        UINT samp_param = ~UINT { 0 };
+        if (rec->sampler_count > 0 && lrec != nullptr &&
+            set_index < lrec->sampler_table_params.size() &&
+            lrec->sampler_table_params[set_index] != ~std::uint32_t { 0 })
+        {
+            samp_gpu   = owner_->copy_set_samplers_to_gpu_heap(*rec);
+            samp_param = static_cast<UINT>(lrec->sampler_table_params[set_index]);
+        }
+
         // Bind the unified CBV/SRV/UAV heap (gpu_heap() and bindless_heap() now
         // return the SAME heap, so a later bind_bindless_texture_array in the
-        // same draw does NOT swap it out — the B6 follow-up co-bind fix). Bind
-        // the bindless sampler heap alongside (different heap type, co-bindable)
-        // so a co-bound set-1 array's sampler table also resolves.
-        ID3D12DescriptorHeap* samp0 = owner_->bindless_sampler_heap();
+        // same draw does NOT swap it out — the B6 follow-up co-bind fix). The
+        // SAMPLER heap that rides alongside is either this set's dynamic sampler
+        // ring (D2) or the bindless default-LINEAR pool (preserved default).
+        ID3D12DescriptorHeap* samp0 = (samp_gpu.ptr != 0)
+            ? owner_->gpu_sampler_heap()
+            : owner_->bindless_sampler_heap();
         if (samp0 != nullptr)
         {
             ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap(), samp0 };
@@ -5167,11 +5427,32 @@ public:
             ID3D12DescriptorHeap* heaps[] = { owner_->gpu_heap() };
             list_->SetDescriptorHeaps(1, heaps);
         }
+
+        // Resolve the CBV/SRV/UAV table's actual root-param index from the
+        // layout (a sampler table emitted for an earlier set can shift the view
+        // table off the set ordinal). Fall back to set_index when the layout /
+        // mapping is unavailable — identical to the pre-D2 value for every set
+        // whose root-param index already equals its ordinal (the golden path).
+        UINT view_param = set_index;
+        if (lrec != nullptr && set_index < lrec->table_params.size() &&
+            lrec->table_params[set_index] != ~std::uint32_t { 0 })
+            view_param = static_cast<UINT>(lrec->table_params[set_index]);
+
         // phase466 — route to compute or graphics based on the last-bound pipeline.
-        if (bound_compute_layout_.value() != 0u)
-            list_->SetComputeRootDescriptorTable(set_index, gpu);
+        if (is_compute)
+        {
+            if (gpu.ptr != 0)
+                list_->SetComputeRootDescriptorTable(view_param, gpu);
+            if (samp_gpu.ptr != 0)
+                list_->SetComputeRootDescriptorTable(samp_param, samp_gpu);
+        }
         else
-            list_->SetGraphicsRootDescriptorTable(set_index, gpu);
+        {
+            if (gpu.ptr != 0)
+                list_->SetGraphicsRootDescriptorTable(view_param, gpu);
+            if (samp_gpu.ptr != 0)
+                list_->SetGraphicsRootDescriptorTable(samp_param, samp_gpu);
+        }
     }
     // D10 — point root param `set_index` at the array's GPU base inside the
     // unified heap's bindless sub-region. The bindless pool is NOW a sub-region

@@ -437,6 +437,34 @@ if(WIN32)
   endif()
 endif()
 
+# FINISH-ALL-BACKEND Wave A2 / D2: D3D12 custom-sampler BINDABILITY parity vs
+# Vulkan. A SEPARATE texture2D + sampler (the sampler half is a real kSampler
+# binding — the descriptor the bug ignored) samples a sharp 2x2 checkerboard on
+# WARP; a POINT vs LINEAR sampler must DIFFER (filter case) and WRAP vs CLAMP
+# must DIFFER (address case) — both identical under the pre-fix silent-ignore
+# (everything resolved to a baked LINEAR-clamp default). Same GLSL->DXIL device
+# path + DXC runtime as the depth/MRT smoke; SKIPs cleanly when no adapter / no
+# glslang / no DXC DLL.
+if(WIN32)
+  cd_add_test(d3d12_sampler_bind_parity
+    SOURCES test_d3d12_sampler_bind_parity.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_sb_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_sb_list)
+  if(_cd_dxc_sb_list AND TARGET cd_test_d3d12_sampler_bind_parity)
+    list(POP_BACK _cd_dxc_sb_list _cd_dxc_sb_dll)
+    get_filename_component(_cd_dxc_sb_dir "${_cd_dxc_sb_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_d3d12_sampler_bind_parity POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_sb_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_sampler_bind_parity>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_sb_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_d3d12_sampler_bind_parity>")
+  endif()
+endif()
+
 # phase1188 (D13 + D14): D3D12 DeviceLimits fill + PIX debug-group markers.
 # Pure CPU-side limits read + an empty command list push/pop — no shaders or
 # DXC runtime needed. Windows links the real d3d12 backend (SKIPs when no
