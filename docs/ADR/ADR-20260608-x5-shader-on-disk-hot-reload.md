@@ -365,3 +365,72 @@ The ADR assumes none; (c) is the most useful for a developer who edits via "rebu
 ## 7. Demir Kural status
 
 No academic citation. Shader hot-reload + deferred-release-after-wait_idle are industry-standard engineering practice (Filament `Engine::flushAndWait` pattern, Unreal `FRHIResource::AddRef/Release` deferred deletion queue, Unity SRP shader stripping pipeline). No peer-reviewed paper is needed and none is cited — per CLAUDE.md §2, citation without a verified PDF + bibliography entry is forbidden.
+
+---
+
+## Decision Addendum (2026-06-15) — reconciliation with shipped reality
+
+- **Status of this addendum**: Accepted. Supersedes the §2.2/§2.3 proposed surface and re-locates the §2.5 invariant. The original §1–§7 body above is preserved verbatim as append-only history; only this section is authoritative where the two conflict.
+- **Author**: architect subagent
+- **Trigger**: a full read of the codebase shows X5 hot-reload is ALREADY SHIPPED and live in `hello_engine` via a different, simpler mechanism than §2 proposed. This addendum encodes the shipped reality and the one load-bearing safety decision the shipped path still owes.
+
+### A.0 Context — what is actually in the tree (evidence)
+
+The live path, verified by Grep:
+
+- **`cd::shader::FileWatcher` (poll-based)** drives reload. `samples/engine/hello_engine/HelloShaderWatch.hpp:158` owns one `FileWatcher`; `poll_and_reload(device, compiler)` (`:122`) is pumped at frame-top from `main.cpp`. No `HotReloadBus`, no background thread, no native event API.
+- **The recreate is a closure calling `Material::create` + move-assign.** `HelloShaderWatch.hpp:101` calls `cd::material::Material::create(device, compiler, desc)`; on success `:111` does `material = std::move(*r)`. On failure (`:102–:110`) it logs and returns `false` WITHOUT touching `*material` — so a broken edit keeps the old pipeline rendering. This is exactly the "never crash the editor on a typo" property §2.2 wanted, achieved without a new method.
+- **The proposed surface does NOT exist.** Grep for `Material::recreate`, `source_kind`, `MaterialShaderSource`, `load_shader_source`, `LoadedShaderSource` returns ZERO hits in `engine/render/material`. The live `Material` surface (`Material.hpp:174` `create`, `:181` `operator=(Material&&)`) is the entire public API the shipped reload path uses.
+
+### A.1 Decision — SUPERSEDE the proposed `recreate` / `source_kind` / loader surface
+
+`Material::recreate()`, `Material::source_kind()`, `enum MaterialShaderSource`, and `load_shader_source()` / `LoadedShaderSource` (§2.2 + §2.3 above) are marked **not implemented; superseded by the shipped `Material::create` + move-assign closure pattern in `HelloShaderWatch`, which is simpler and proven.**
+
+**Why**: a dedicated `recreate()` would duplicate the working `create` + move-assign closure with no behavioural delta. The closure already (a) re-runs the full `MaterialDesc` factory, (b) keeps the old pipeline on compile failure, and (c) is type-erased through `std::function`, so the call-site — not the `Material` class — owns "what to rebuild". Adding `recreate()` would split that ownership and create a second, parallel reload entry-point for a future contributor to wire incorrectly. The diagnostic `source_kind()` enum and the `load_shader_source()` loader were scaffolding for the `.spv`-fast-path + bus-registration gate that this addendum also defers (A.4); without those consumers they are dead surface. Inline-vs-on-disk-vs-precompiled selection already happens at the call-site via `MaterialDesc` field precedence (the §2.1 precedence rule is untouched and remains authoritative), so no runtime enum is needed.
+
+### A.2 Decision (LOAD-BEARING) — deferred-release / GPU-lifetime contract lives in the RELOAD PATH, not in move-assign
+
+The old pipeline must not be destroyed while the GPU may still reference it (Vulkan PSO destroy mid-flight = TDR / device-lost). §2.5 above placed the `wait_idle`-before-release guard inside `Material::operator=(Material&&)`. **This addendum relocates it: the `wait_idle`-before-swap guard belongs in the reload path (`HelloShaderWatch::poll_and_reload`, immediately before invoking the recreate closure), NOT inside `Material::operator=(Material&&)`.**
+
+**Rationale**:
+
+- `operator=(Material&&)` is also used at **boot-time spawn** (every material the sample builds is move-assigned into its slot during setup). Coupling `wait_idle` into move-assign pays a full device idle-drain on every move — a hidden, wasteful cost on a path where nothing is in flight.
+- The reload path is the **only** place a live, possibly in-flight pipeline is swapped. That is the single correct home for the drain.
+- **MVP guard = `wait_idle`.** Simple, ~1 ms stall per edit, acceptable for a dev-only hot-reload. The guard is: in `poll_and_reload`, after a dirty path is detected and before the recreate closure swaps the Material, call `device.wait_idle()`.
+- **FUTURE non-blocking variant**: route old-handle destruction through the existing `cd::rhi::DeferredDestroy` (frame-fence-keyed retirement, `enqueue(frame_idx + frames_in_flight, action)` → `flush_completed(last_completed_frame)`; see `engine/render/rhi/include/cd/rhi/DeferredDestroy.hpp`). This drops the stall entirely by retiring the old PSO only after its last-using frame's fence completes. OUT OF MVP.
+
+**Why codify now (the latent-hazard note)**: today the shipped `poll_and_reload` carries NO `wait_idle` and NO deferred retirement — it relies purely on `Material::create` succeeding before the move-assign frees the old handles. This is only **LATENT-safe** because hello_engine runs **single-frame-in-flight** and polls **at frame-top** (the previous frame's GPU work has effectively drained by the time the swap happens). The moment the renderer moves to **multi-frame-in-flight**, the swapped-out PSO can still be referenced by an in-flight command buffer and this becomes a **real TDR** — invisible until it fires, in the BLAS-truncation / bindless-crash silent-failure class that has cost ~30 commits each. Recording the guard's location now makes the contract explicit before that regression is reachable.
+
+### A.3 Decision — EXE-SIDE staleness guard (R1)
+
+`USE_ON_DISK_SHADERS=ON` copies `shaders/` POST_BUILD into the exe-side tree. A shader-only edit triggers a relink-only build (no shader recompile of the embedded path), so the **exe-side copy can go stale** while the source is fresh — producing a **FALSE byte-identical golden** (the golden is computed against the unchanged exe-side blob, masking the edit). The decision is two-pronged:
+
+- (a) the **dev-mode watcher points at the SOURCE tree** (not the exe-side copy), and the build uses `copy_if_different` so an edited source always re-copies;
+- (b) a **pre-golden SOURCE == EXE-side sha256 fixture** runs before any golden-image comparison, failing loudly if the two diverge.
+
+(Reference memory rule `feedback_ondisk_shader_golden_staleness`.)
+
+### A.4 Decision — SCOPE
+
+**X5 MVP** = harden the shipped path: the R1 staleness fix (A.3) + the R2 deferred-release guard (A.2) + a test gate + docs. Envelope is **dev-only / single-shader / single-pipeline** (the `prim` material in hello_engine).
+
+**OUT OF MVP** (tracked follow-ups):
+
+1. **Include-closure-aware hot-reload** — blocked on **SL-B**: `CachedCompiler`'s cache key omits the `#include` closure, so editing a `cd::gluon` shader-library module does NOT invalidate cached roots that include it. Hot-reload of a module edit is therefore silently a no-op until SL-B keys on the resolved include closure.
+2. **HotReloadBus throttle migration** (the §2.4 / §2.6 bus routing) — deferred; the direct `FileWatcher` poll is sufficient for the single-pipeline MVP. Revisit when L5 editor + G5.x material live-edit need a shared debounce.
+3. **Release-mode `.spv` fast-path** (the §2.1 / §2.3 co-located-blob loader) — deferred; debug-mode glslang runtime compile is the only live path.
+4. **All-pipeline generalization** — deferred; MVP watches one material.
+
+### A.5 Rejected alternatives (this addendum)
+
+- **Implement `Material::recreate()` as originally specced.** Rejected — duplicates the proven closure with no delta; see A.1.
+- **Keep the `wait_idle` guard inside `operator=(Material&&)` per §2.5.** Rejected — taxes the boot-time spawn path with a needless device drain; the reload path is the only correct home; see A.2.
+- **Rely on single-frame-in-flight + poll-at-frame-top latent safety and ship no guard.** Rejected — it is a silent TDR the moment frames-in-flight > 1; the guard is cheap and the failure mode is in the expensive-to-debug silent class.
+
+### A.6 Consequences
+
+- The X5 `Material` surface stays at `create` + `operator=(Material&&)`; no new public method lands. `HelloShaderWatch` is the entire reload surface.
+- The implementer's task narrows to: add the `wait_idle`-before-swap guard in `poll_and_reload` (A.2), add the SOURCE==EXE-side sha256 pre-golden fixture (A.3), and document the dev-only/single-pipeline envelope. No `Material.hpp` surface change.
+- §2.2/§2.3 of the original body are now documentation of a rejected design, retained for history only.
+- The multi-frame-in-flight TDR is converted from a latent landmine into a recorded, guarded contract; the `DeferredDestroy` upgrade path is named for the future non-blocking variant.
+- Follow-ups (A.4) are explicitly tracked so the deferred bus / `.spv` / include-closure work is not lost.
