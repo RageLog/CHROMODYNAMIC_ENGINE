@@ -33,6 +33,20 @@ enum class Target : std::uint8_t
     kMsl,   ///< Metal Shading Language (MSL). Target for Apple Metal backend.
 };
 
+/// Reflected compute-shader local workgroup size (the GLSL
+/// `layout(local_size_x/y/z)` declaration). Populated by `translate_msl` from
+/// SPIRV-Cross `CompilerMSL::get_entry_point().workgroup_size`. For non-compute
+/// stages every component stays 1 (the SPIR-V execution mode is absent, which
+/// SPIRV-Cross reports as a 1x1x1 size). This is the M6 source of truth: Metal
+/// `dispatchThreadgroups:threadsPerThreadgroup:` needs the threads-per-group
+/// from the shader because `ComputePipelineDesc` carries no workgroup field.
+struct WorkgroupSize
+{
+    std::uint32_t x { 1 };
+    std::uint32_t y { 1 };
+    std::uint32_t z { 1 };
+};
+
 /// Result of a `translate()` call.
 struct TranslateResult
 {
@@ -44,6 +58,10 @@ struct TranslateResult
     /// `translate_msl` (SPIRV-Cross renames the MSL entry point per stage, e.g.
     /// a fragment "main" -> "main0"); empty for the HLSL/GLSL `translate` paths.
     std::string entry_point {};
+    /// Reflected compute local workgroup size (M6). Populated by `translate_msl`
+    /// only; the HLSL/GLSL `translate` paths leave the 1x1x1 default. For a
+    /// non-compute module it stays 1x1x1.
+    WorkgroupSize workgroup {};
 
     /// Returns true when the translation succeeded (error is empty).
     [[nodiscard]] bool ok() const noexcept { return error.empty(); }

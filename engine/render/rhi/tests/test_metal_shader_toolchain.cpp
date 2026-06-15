@@ -52,6 +52,20 @@ layout(location = 0) in vec3 in_pos;
 void main() { gl_Position = vec4(in_pos, 1.0); }
 )glsl";
 
+// M6 (ADR-20260615): a compute shader with a NON-TRIVIAL local workgroup size.
+// The whole point of M6: the .mm dispatch path must read this (8,4,2) from
+// SPIRV-Cross reflection — hardcoding (1,1,1) under-counts the dispatch by
+// 8*4*2 = 64x. This source proves the host toolchain reflects the size.
+constexpr const char* kComputeCS = R"glsl(
+#version 450
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 2) in;
+layout(set = 0, binding = 0) buffer Out { float data[]; } out_buf;
+void main()
+{
+    out_buf.data[gl_GlobalInvocationID.x] = float(gl_LocalInvocationIndex);
+}
+)glsl";
+
 // M9 (ADR-20260615): a minimal INLINE-RAY-TRACING (ray-query) fragment shader,
 // modelled on the engine's prim.frag.glsl shadow-test path. It binds a
 // set-0 accelerationStructureEXT TLAS and runs the full rayQueryEXT walk
@@ -455,6 +469,67 @@ TEST(MetalShaderToolchain, RayQueryRaisesMslVersionFloor)
     EXPECT_NE(r.source.find("__METAL_VERSION__ >= 230"), std::string::npos)
         << "SPIRV-Cross guards the ray-tracing include behind MSL 2.3:\n"
         << r.source;
+}
+
+// ---- M6 (ADR-20260615): compute workgroup-size reflection ---------------------
+//
+// THE host-verifiable proof of the M6 dispatch fix. The Metal .mm dispatch path
+// was hardcoding threadsPerThreadgroup = (1,1,1); ComputePipelineDesc carries no
+// workgroup field, so the only source of truth is SPIRV-Cross reflection of the
+// GLSL `layout(local_size_x/y/z)` execution mode. This test runs the exact
+// GLSL -> SPIR-V (glslang) -> MSL (SPIRV-Cross) chain on Windows and asserts the
+// toolchain surfaces the workgroup size as (8,4,2). A pass PROVES the host
+// reflection path the .mm create_compute_pipeline consumes is correct — the .mm
+// capture-onto-PSO + dispatch divide is Mac-deferred, but the size derivation is
+// verified everywhere.
+TEST(MetalShaderToolchain, ComputeWorkgroupSizeIsReflected)
+{
+    auto c = make_compiler_or_null();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::rhi::metal::GlslToMslDesc d {};
+    d.glsl_source = kComputeCS;
+    d.stage = cd::rhi::ShaderStage::kCompute;
+    d.source_name = "compute_workgroup_cs";
+
+    const auto r = cd::rhi::metal::compose_glsl_to_msl(*c, d);
+    ASSERT_TRUE(r.has_value()) << std::string(r.error().message);
+    ASSERT_FALSE(r->source.empty());
+
+    // (1) Valid MSL: standard library + a kernel (compute) entry point.
+    EXPECT_NE(r->source.find("#include <metal_stdlib>"), std::string::npos)
+        << r->source;
+    EXPECT_NE(r->source.find("kernel "), std::string::npos) << r->source;
+    EXPECT_FALSE(r->entry_point.empty());
+
+    // (2) THE M6 PROOF: the reflected workgroup size matches the GLSL
+    //     layout(local_size_x=8, local_size_y=4, local_size_z=2). Anything but
+    //     (8,4,2) means the .mm would dispatch the wrong threads-per-threadgroup.
+    EXPECT_EQ(r->workgroup.x, 8u) << "local_size_x must reflect as 8";
+    EXPECT_EQ(r->workgroup.y, 4u) << "local_size_y must reflect as 4";
+    EXPECT_EQ(r->workgroup.z, 2u) << "local_size_z must reflect as 2";
+}
+
+// A non-compute stage carries no LocalSize execution mode; the reflected
+// workgroup size must normalise to 1x1x1 (never 0) so the .mm dispatch never
+// computes a 0-thread threadgroup. Guards the glue's 0 -> 1 normalisation.
+TEST(MetalShaderToolchain, NonComputeWorkgroupSizeDefaultsToOne)
+{
+    auto c = make_compiler_or_null();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::rhi::metal::GlslToMslDesc d {};
+    d.glsl_source = kMinimalVS;
+    d.stage = cd::rhi::ShaderStage::kVertex;
+    d.source_name = "non_compute_workgroup_vs";
+
+    const auto r = cd::rhi::metal::compose_glsl_to_msl(*c, d);
+    ASSERT_TRUE(r.has_value()) << std::string(r.error().message);
+    EXPECT_EQ(r->workgroup.x, 1u);
+    EXPECT_EQ(r->workgroup.y, 1u);
+    EXPECT_EQ(r->workgroup.z, 1u);
 }
 
 }  // namespace

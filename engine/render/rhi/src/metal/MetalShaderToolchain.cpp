@@ -83,6 +83,12 @@ spirv_to_msl_tail(std::span<const std::uint32_t> spirv, const GlslToMslDesc& des
     MslArtifact out {};
     out.source = msl.source;
     out.entry_point = msl.entry_point;
+    // M6 (ADR-20260615): surface the reflected compute local workgroup size so
+    // the .mm dispatch path can use the real threads-per-threadgroup instead of
+    // the hardcoded 1x1x1. 1x1x1 for a non-compute module (glue normalises 0).
+    out.workgroup.x = msl.workgroup.x;
+    out.workgroup.y = msl.workgroup.y;
+    out.workgroup.z = msl.workgroup.z;
     return out;
 }
 

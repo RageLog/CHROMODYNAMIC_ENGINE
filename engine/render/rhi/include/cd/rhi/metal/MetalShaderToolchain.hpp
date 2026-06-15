@@ -104,6 +104,20 @@ struct GlslToMslDesc
     cd::shader::IIncludeResolver* include_resolver { nullptr };
 };
 
+/// Reflected compute local workgroup size (M6 — ADR-20260615). The GLSL
+/// `layout(local_size_x/y/z)` declaration, read from SPIRV-Cross reflection
+/// after the SPIR-V -> MSL compile. For non-compute stages every component is
+/// 1. This is the threads-per-threadgroup the Metal `.mm` dispatch path needs:
+/// Metal's `dispatchThreadgroups:threadsPerThreadgroup:` requires the threads-
+/// per-group, and `ComputePipelineDesc` carries no workgroup field, so the
+/// shader's reflected local size is the only source of truth.
+struct MslWorkgroupSize
+{
+    std::uint32_t x { 1 };
+    std::uint32_t y { 1 };
+    std::uint32_t z { 1 };
+};
+
 /// MSL output of the chain: the source text + the entry-point name SPIRV-Cross
 /// emits. SPIRV-Cross renames the MSL entry point per stage (e.g. a fragment
 /// "main" becomes "main0" to dodge MSL's reserved `main`), so the device must
@@ -112,6 +126,11 @@ struct MslArtifact
 {
     std::string source;       ///< Full MSL text, ready for newLibraryWithSource:.
     std::string entry_point;  ///< MSL function name to look up on the MTLLibrary.
+    /// M6: reflected compute local workgroup size. The .mm
+    /// create_compute_pipeline path captures this onto the
+    /// MetalComputePipelineObj so dispatch() can divide-and-conquer the global
+    /// size. 1x1x1 for a non-compute module.
+    MslWorkgroupSize workgroup {};
 };
 
 /// Run the chain. `spirv_compiler` is caller-owned (X5's CachedCompiler may be

@@ -77,6 +77,20 @@ constexpr std::uint32_t kMinRayQueryMslVersion = 20400U;  // MSL 2.4
 // design (one number, two layers); the host test asserts both agree.
 constexpr std::uint32_t kSpirvCrossAuxBaseIndex = 20U;
 
+// M6 (ADR-20260615): normalise a SPIRV-Cross reflected entry-point workgroup
+// size into our WorkgroupSize. A non-compute module reports 0 for each
+// component (no SPIR-V LocalSize execution mode); we clamp to 1 so the Metal
+// threads-per-threadgroup never collapses to a 0-thread dispatch.
+[[nodiscard]] WorkgroupSize reflect_workgroup_size(
+    const spirv_cross::SPIREntryPoint& ep) noexcept
+{
+    WorkgroupSize w {};
+    w.x = ep.workgroup_size.x != 0U ? ep.workgroup_size.x : 1U;
+    w.y = ep.workgroup_size.y != 0U ? ep.workgroup_size.y : 1U;
+    w.z = ep.workgroup_size.z != 0U ? ep.workgroup_size.z : 1U;
+    return w;
+}
+
 [[nodiscard]] TranslateResult translate_glsl(
     const std::vector<std::uint32_t>& words,
     std::uint32_t                      version)
@@ -276,6 +290,23 @@ constexpr std::uint32_t kSpirvCrossAuxBaseIndex = 20U;
         TranslateResult out {};
         out.source = std::move(source);
         out.entry_point = std::move(entry);
+        // M6 (ADR-20260615): reflect the compute local workgroup size from the
+        // entry point's SPIR-V LocalSize execution mode
+        // (SPIREntryPoint::WorkgroupSize, the GLSL layout(local_size_*) decl).
+        // compile() above runs the reflection passes, so the entry point's
+        // workgroup_size is now populated; a non-compute module reports 0 here,
+        // which we normalise to 1 so the Metal threads-per-threadgroup never
+        // collapses to a 0-thread dispatch. This is the source of truth the .mm
+        // dispatch() consumes (ComputePipelineDesc has no workgroup field).
+        // The base Compiler::get_entry_point() is protected, so query through
+        // the public named overload using the entry point we already enumerated.
+        if (!eps.empty())
+        {
+            const spirv_cross::SPIREntryPoint& ep =
+                compiler.get_entry_point(eps.front().name,
+                                         eps.front().execution_model);
+            out.workgroup = reflect_workgroup_size(ep);
+        }
         return out;
     }
     catch (const std::exception& ex)
@@ -297,7 +328,20 @@ constexpr std::uint32_t kSpirvCrossAuxBaseIndex = 20U;
         spirv_cross::CompilerMSL::Options msl_opts {};
         msl_opts.msl_version = (version == 0U) ? kDefaultMslVersion : version;
         compiler.set_msl_options(msl_opts);
-        return TranslateResult { compiler.compile(), {} };
+        TranslateResult out {};
+        out.source = compiler.compile();
+        // M6: same workgroup reflection on the flat-binding path (see above);
+        // query through the public named get_entry_point overload.
+        const spirv_cross::SmallVector<spirv_cross::EntryPoint> eps =
+            compiler.get_entry_points_and_stages();
+        if (!eps.empty())
+        {
+            const spirv_cross::SPIREntryPoint& ep =
+                compiler.get_entry_point(eps.front().name,
+                                         eps.front().execution_model);
+            out.workgroup = reflect_workgroup_size(ep);
+        }
+        return out;
     }
     catch (const std::exception& ex)
     {

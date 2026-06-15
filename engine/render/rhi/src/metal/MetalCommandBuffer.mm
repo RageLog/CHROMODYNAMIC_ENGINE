@@ -809,8 +809,11 @@ void MetalCommandBufferImpl::bind_compute_pipeline(ComputePipelineHandle pipelin
     {
         return;
     }
-    id<MTLComputePipelineState> pso = ctx_->lookup_compute_pipeline(pipeline);
-    if (pso == nil)
+    // M6 (ADR-20260615): resolve the richer pipeline object so we capture the
+    // reflected threads-per-threadgroup alongside the PSO. A lookup miss is
+    // silently skipped (matches the Sprint-1 render-pipeline behaviour).
+    const MetalComputePipelineObj* obj = ctx_->lookup_compute_pipeline_obj(pipeline);
+    if (obj == nullptr || obj->pso() == nil)
     {
         return;
     }
@@ -819,17 +822,31 @@ void MetalCommandBufferImpl::bind_compute_pipeline(ComputePipelineHandle pipelin
     {
         return;
     }
-    [compute_ setComputePipelineState:pso];
-    current_compute_pso_ = pso;
+    [compute_ setComputePipelineState:obj->pso()];
+    current_compute_pso_ = obj->pso();
+    // M6: cache the reflected threadgroup size so dispatch() uses the real
+    // threads-per-group (GLSL local_size_*) instead of the Sprint-3 (1,1,1).
+    current_threads_per_threadgroup_ = obj->threads_per_threadgroup();
 }
 
 // ---------------------------------------------------------------------------
-// dispatch — Sprint-3 dispatchThreadgroups path.
+// dispatch — Sprint-3 dispatchThreadgroups path, M6 (ADR-20260615) fixed.
 //
-// Sprint-3 surface uses a 1x1x1 threadgroup size; real compute shaders
-// override this via SPIRV-Cross attributes (`[[threads_per_threadgroup]]`)
-// once SPIR-V → MSL translation lands. The (x, y, z) grid dimensions are
-// passed straight through as the threadgroup count.
+// DISPATCH CONTRACT (matched against the Vulkan + D3D12 backends): the engine
+// dispatch(x, y, z) argument is a GROUP COUNT, not a thread count —
+// VulkanCommandBuffer::dispatch forwards (x,y,z) straight to
+// vkCmdDispatch(group_x, group_y, group_z) and D3D12 forwards to
+// ID3D12GraphicsCommandList::Dispatch(gx, gy, gz), both group-count semantics.
+// Metal's [encoder dispatchThreadgroups:threadsPerThreadgroup:] takes the SAME
+// group count as its first argument PLUS the threads-per-group as its second.
+// So `groups` = the engine arg verbatim (NO division — the arg is already the
+// group count, exactly like Vulkan) and `threads` = the reflected local size.
+//
+// M6 FIX: the Sprint-3 baseline hardcoded threadsPerThreadgroup = (1,1,1), so
+// a `layout(local_size_x=8,...)` shader ran 1 invocation per group — undercounting
+// the dispatch by the product of the local size. We now apply the
+// threads-per-group reflected from the shader (GLSL local_size_x/y/z, surfaced
+// host-side via MslArtifact::workgroup, captured onto the bound PSO).
 //
 // If the caller invokes dispatch without first binding a compute PSO the
 // call is silently skipped — matches the Sprint-1 render-pipeline-not-bound
@@ -851,8 +868,11 @@ void MetalCommandBufferImpl::dispatch(std::uint32_t x,
         static_cast<NSUInteger>(x),
         static_cast<NSUInteger>(y),
         static_cast<NSUInteger>(z));
-    const MTLSize threads = MTLSizeMake(1, 1, 1);
-    [compute_ dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+    // M6: real threads-per-threadgroup from the bound PSO's reflected GLSL
+    // local_size (defaults to 1x1x1 when the shader declared none, so a missing
+    // reflection degrades to the legacy behaviour rather than a 0-thread group).
+    [compute_ dispatchThreadgroups:groups
+             threadsPerThreadgroup:current_threads_per_threadgroup_];
 }
 
 // ---------------------------------------------------------------------------

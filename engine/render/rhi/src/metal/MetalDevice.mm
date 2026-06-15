@@ -176,6 +176,8 @@
 #include <cd/rhi/IDevice.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
 #include <cd/rhi/NullCommandBuffer.hpp>
+// M-readback (ADR-20260615): info_of(Format) for the readback bytes-per-row.
+#include <cd/rhi/Format.hpp>
 
 // M6 (ADR-20260615): the host-side GLSL/SPIR-V -> MSL toolchain
 // (cd::rhi_metal_shader) + the glslang front-end + the gluon include resolver.
@@ -415,10 +417,94 @@ public:
         , adapter_name_(std::string { [[device name] UTF8String] })
         , enable_validation_(info.enable_validation)
     {
-        // Zero-initialise limits / features so the NullDevice pattern
-        // is honoured; concrete values will come in Sprint 2.
+        // M-caps (ADR-20260615): populate DeviceLimits + DeviceFeatures from the
+        // live MTLDevice instead of the all-zero NullDevice placeholder. The
+        // values mirror the Vulkan limit-population shape (VulkanDevice
+        // query_capabilities) so the parity tests + capability-gated callers see
+        // the same shape across backends.
+        populate_caps();
+    }
+
+    // M-caps (ADR-20260615): fill limits_ / features_ from the MTLDevice. Mac-
+    // deferred (gated behind CD_RHI_METAL_ENABLED / Apple — this whole .mm does
+    // not compile on Windows); structural review now, GPU-verify on a Mac.
+    //
+    // Metal does not expose a single VkPhysicalDeviceLimits-style struct, so the
+    // limits come from a mix of MTLDevice properties + GPU-family-conditioned
+    // constants documented in Apple's "Metal Feature Set Tables". We pick the
+    // conservative-but-correct values for the families the engine targets:
+    //   * max 2D/cube texture dim 16384, 3D 2048, array layers 2048 — common to
+    //     every Apple GPU family + the Mac2 family.
+    //   * max color attachments 8 — the Metal hard cap on render targets.
+    //   * max buffer length from [dev maxBufferLength].
+    //   * max threads-per-threadgroup is informational here; the engine reads
+    //     the limits it actually gates on (uniform/storage range, push size).
+    void populate_caps() noexcept
+    {
         limits_ = DeviceLimits {};
+
+        // Texture dimension caps. Apple GPU family 7+ (A14/M1+) and the Mac2
+        // family both allow 16384 for 1D/2D/cube and 2048 for 3D. We branch on
+        // the modern family and fall back to the older 8192 cap otherwise so a
+        // pre-A11 device still reports a true (smaller) limit.
+        std::uint32_t max_2d = 8192U;
+        std::uint32_t max_3d = 2048U;
+        std::uint32_t max_layers = 2048U;
+        if (@available(macOS 10.15, iOS 13.0, *))
+        {
+            if ([mtl_device_ supportsFamily:MTLGPUFamilyApple3]
+                || [mtl_device_ supportsFamily:MTLGPUFamilyMac2])
+            {
+                max_2d = 16384U;
+            }
+        }
+        limits_.max_texture_dimension_1d   = max_2d;
+        limits_.max_texture_dimension_2d   = max_2d;
+        limits_.max_texture_dimension_3d   = max_3d;
+        limits_.max_texture_array_layers   = max_layers;
+
+        // Buffer ranges. Metal binds uniform + storage data through the same
+        // MTLBuffer object; [dev maxBufferLength] is the single source for both.
+        // Clamp into the std::uint32_t fields (a 64-bit length can exceed
+        // UINT32_MAX on Apple silicon; the engine's range fields are 32-bit so
+        // we saturate rather than wrap — matches the Vulkan field width).
+        const std::uint64_t max_buf =
+            (@available(macOS 10.14, iOS 12.0, *))
+                ? static_cast<std::uint64_t>([mtl_device_ maxBufferLength])
+                : (256ULL * 1024ULL * 1024ULL);
+        const std::uint32_t max_buf_u32 =
+            (max_buf > 0xFFFFFFFFULL) ? 0xFFFFFFFFU
+                                      : static_cast<std::uint32_t>(max_buf);
+        limits_.max_uniform_buffer_range = max_buf_u32;
+        limits_.max_storage_buffer_range = max_buf_u32;
+
+        // Push constants: the engine binds the push block via setVertexBytes /
+        // setFragmentBytes, capped at Metal's 4 KB inline-argument limit.
+        limits_.max_push_constants_size = 4096U;
+
+        // Descriptor sets: the engine's Metal binding map reserves argument-
+        // buffer slots [0..7] (detail::kMaxDescriptorSetSlots).
+        limits_.max_bound_descriptor_sets = detail::kMaxDescriptorSetSlots;
+
+        // Vertex input: 31 attributes is the Metal per-stage cap; the engine's
+        // vertex-input buffer range [9..15] gives 7 binding slots
+        // (detail::kMaxVertexBufferSlots).
+        limits_.max_vertex_input_attributes = 31U;
+        limits_.max_vertex_input_bindings   = detail::kMaxVertexBufferSlots;
+
+        // Color attachments: Metal's hard render-target cap is 8.
+        limits_.max_color_attachments = 8U;
+
+        // Anisotropy: Metal's MTLSamplerDescriptor.maxAnisotropy caps at 16.
+        limits_.max_anisotropy = 16.0F;
+
+        // Buffer-offset alignment: 256 B is the safe cross-family constant
+        // alignment Apple recommends for setBuffer:offset:; storage shares it.
+        limits_.min_uniform_buffer_offset_alignment = 256U;
+        limits_.min_storage_buffer_offset_alignment = 256U;
+
         features_ = DeviceFeatures {};
+
         // M9 (ADR-20260615): the Metal RT path is ray-query (inline RT) via
         // MTLAccelerationStructure + the MSL metal::raytracing intersector,
         // exactly the path the engine consumes (rayQueryEXT analog). Gate the
@@ -431,6 +517,49 @@ public:
             const bool rt = [mtl_device_ supportsRaytracing];
             features_.ray_tracing = rt;
             features_.ray_query   = rt;
+        }
+
+        // M-caps: advertise the remaining capabilities Metal supports on the
+        // engine's target families. Mirrors the Vulkan feature-population shape.
+        //   * sampler_anisotropy: every Metal GPU supports anisotropic sampling.
+        //   * dual_source_blend: supported on Apple family 4+ and Mac families.
+        //   * timestamp_queries: MTLCounterSampleBuffer at-stage-boundary
+        //     timestamps (supportsCounterSampling), guarded on availability.
+        features_.sampler_anisotropy = true;
+        features_.depth_clamp        = true;  // MTLDepthClipMode.clamp
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            features_.dual_source_blend =
+                [mtl_device_ supportsFamily:MTLGPUFamilyApple4]
+                || [mtl_device_ supportsFamily:MTLGPUFamilyMac2];
+        }
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            features_.timestamp_queries = [mtl_device_
+                supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary];
+        }
+
+        // mesh_shader / bindless_resources: TRUE on the families that support
+        // them. The override impls land in B2 (M10 create_mesh_pipeline +
+        // draw_mesh_tasks, M11 bindless array create/write/destroy + bind), but
+        // we advertise the capability now so the B2 wiring + capability-gated
+        // callers see the bit. Gate on the GPU family that actually supports
+        // each feature so a device that lacks it still reports false.
+        if (@available(macOS 13.0, iOS 16.0, *))
+        {
+            // Mesh shaders require Metal 3 (Apple7+ / Mac2 with the Metal-3
+            // feature set). supportsFamily:MTLGPUFamilyMetal3 is the canonical
+            // probe.
+            features_.mesh_shader =
+                [mtl_device_ supportsFamily:MTLGPUFamilyMetal3];
+        }
+        if (@available(macOS 10.15, iOS 13.0, *))
+        {
+            // Argument buffers tier 2 = bindless: unbounded resource arrays in
+            // an argument buffer (the engine's bindless texture-array path).
+            features_.bindless_resources =
+                ([mtl_device_ argumentBuffersSupport]
+                 == MTLArgumentBuffersTier2);
         }
     }
 
@@ -679,8 +808,14 @@ public:
                     std::string { "Metal::create_shader_module (->MSL): " }
                         + std::string { msl.error().message }));
             }
+            // M6 (ADR-20260615): forward the reflected workgroup size so a
+            // compute module carries its threads-per-threadgroup to the PSO.
+            const MTLSize wg = MTLSizeMake(
+                static_cast<NSUInteger>(msl->workgroup.x),
+                static_cast<NSUInteger>(msl->workgroup.y),
+                static_cast<NSUInteger>(msl->workgroup.z));
             return build_module_from_msl(msl->source, msl->entry_point,
-                                         desc.stage);
+                                         desc.stage, wg);
         }
 
         // Legacy path: desc.code is raw MSL/native (kBytecode default, or kMsl
@@ -906,10 +1041,13 @@ public:
         const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
         const ComputePipelineHandle h { id, 1u };
 
+        // M6 (ADR-20260615): stamp the reflected threads-per-threadgroup from
+        // the bound compute module onto the PSO so dispatch() applies the real
+        // GLSL local_size_* instead of the Sprint-3 (1,1,1).
         const std::scoped_lock lock { compute_pipelines_mu_ };
         compute_pipelines_.emplace(
             h.index(),
-            std::make_unique<MetalComputePipelineObj>(pso));
+            std::make_unique<MetalComputePipelineObj>(pso, mod->workgroup()));
         return h;
     }
 
@@ -1691,6 +1829,134 @@ public:
     }
 
     // --------------------------------------------------------------------------
+    // M-readback (ADR-20260615): device-level blocking image readback.
+    //
+    // Mirrors the Vulkan one-shot-submit readback (VulkanDevice
+    // copy_image_to_buffer): allocate a one-shot MTLCommandBuffer, blit-copy the
+    // region from the source texture into the readback buffer, commit, and
+    // waitUntilCompleted so the data is host-visible on return. The command-
+    // buffer-level building block already exists
+    // (MetalCommandBufferImpl::copy_image_to_buffer); this device-level variant
+    // is the blocking convenience the parity/golden tests + the image-readback
+    // API consume.
+    //
+    // OFFSCREEN TARGETS ONLY: a swapchain drawable's MTLTexture is created with
+    // framebufferOnly = YES, which BLOCKS [blit copyFromTexture:toBuffer:]. The
+    // engine reads back rendered results from an OFFSCREEN colour target
+    // (MemoryUsage-backed MTLTexture from create_texture), never the drawable —
+    // matching the Vulkan path which reads an offscreen image. There is no
+    // layout transition on Metal (storageMode is fixed at creation), so the
+    // region.src_state field is intentionally unused on this backend, exactly
+    // like D3D12 tracks state internally and ignores it.
+    [[nodiscard]] cd::core::Result<void> copy_image_to_buffer(
+        TextureHandle      src_image,
+        BufferHandle       dst_buffer,
+        std::uint64_t      dst_offset,
+        const ImageRegion& region) override
+    {
+        // Resolve source texture + its Format (for the readback bytes-per-row),
+        // and the destination MTLBuffer. We hold the texture lock only long
+        // enough to copy the id<MTLTexture> + Format out.
+        id<MTLTexture> src_tex = nil;
+        Format src_fmt = Format::kUndefined;
+        {
+            const std::scoped_lock lock { textures_mu_ };
+            const auto it = textures_.find(src_image.index());
+            if (it == textures_.end())
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::copy_image_to_buffer: unknown src_image handle"));
+            }
+            src_tex = it->second->texture();
+            src_fmt = it->second->format();
+        }
+        if (src_tex == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::copy_image_to_buffer: src_image has no backing MTLTexture"));
+        }
+
+        id<MTLBuffer> dst_buf = lookup_buffer(dst_buffer);
+        if (dst_buf == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::copy_image_to_buffer: unknown dst_buffer handle"));
+        }
+        // Readback requires CPU-visible storage (the Vulkan host_visible /
+        // kGpuToCpu precondition). A Private buffer cannot be read on the host.
+        if ([dst_buf storageMode] == MTLStorageModePrivate)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::copy_image_to_buffer: dst_buffer is GPU-only "
+                "(Private); create it with MemoryUsage::kGpuToCpu"));
+        }
+        // framebufferOnly textures (swapchain drawables) cannot be blit-read.
+        if ([src_tex isFramebufferOnly])
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::copy_image_to_buffer: src_image is framebufferOnly "
+                "(swapchain drawable); read back from an offscreen target"));
+        }
+
+        // Tightly-packed bytes-per-row (matches the Vulkan bufferRowLength=0
+        // tightly-packed contract): bytes_per_pixel * region.width.
+        const std::uint32_t bpp =
+            static_cast<std::uint32_t>(info_of(src_fmt).bytes_per_block);
+        if (bpp == 0u || region.width == 0u || region.height == 0u)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::copy_image_to_buffer: zero-size region or unknown "
+                "format byte size"));
+        }
+        const NSUInteger bytes_per_row =
+            static_cast<NSUInteger>(bpp) * static_cast<NSUInteger>(region.width);
+
+        // One-shot command buffer: blit-copy + commit + wait (blocking).
+        id<MTLCommandBuffer> cmd = [mtl_queue_ commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+        const MTLOrigin origin = MTLOriginMake(
+            static_cast<NSUInteger>(region.x),
+            static_cast<NSUInteger>(region.y),
+            0);
+        const MTLSize size = MTLSizeMake(
+            static_cast<NSUInteger>(region.width),
+            static_cast<NSUInteger>(region.height),
+            1);
+        [blit copyFromTexture:src_tex
+                  sourceSlice:static_cast<NSUInteger>(region.base_layer)
+                  sourceLevel:static_cast<NSUInteger>(region.mip_level)
+                 sourceOrigin:origin
+                   sourceSize:size
+                     toBuffer:dst_buf
+            destinationOffset:static_cast<NSUInteger>(dst_offset)
+       destinationBytesPerRow:bytes_per_row
+     destinationBytesPerImage:bytes_per_row * static_cast<NSUInteger>(region.height)];
+        // Managed-storage readback needs an explicit synchronize so the CPU
+        // page mirror is up to date after the GPU writes (Shared is unified).
+        if ([dst_buf storageMode] == MTLStorageModeManaged)
+        {
+            [blit synchronizeResource:dst_buf];
+        }
+        [blit endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        if ([cmd status] == MTLCommandBufferStatusError)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::copy_image_to_buffer: blit command buffer failed"));
+        }
+        return {};
+    }
+
+    // --------------------------------------------------------------------------
     // create_swapchain — attach a CAMetalLayer that the caller already
     // bound to its NSView. SwapchainDesc.window_handle is treated as a
     // CAMetalLayer* by the Metal backend. If it is nil we fail rather than
@@ -2091,6 +2357,17 @@ public:
         return (it == compute_pipelines_.end()) ? nil : it->second->pso();
     }
 
+    // M6 (ADR-20260615): the richer compute-pipeline object (PSO + reflected
+    // threads-per-threadgroup). bind_compute_pipeline reads the workgroup size
+    // from it. nullptr for unknown handles, matching the resolver contract.
+    [[nodiscard]] const MetalComputePipelineObj*
+    lookup_compute_pipeline_obj(ComputePipelineHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { compute_pipelines_mu_ };
+        const auto it = compute_pipelines_.find(h.index());
+        return (it == compute_pipelines_.end()) ? nullptr : it->second.get();
+    }
+
     // phase615 (Sprint-4): fence + event lookups. Both return nullptr for
     // unknown handles, matching the rest of the Metal-side resolver
     // contract.
@@ -2245,7 +2522,8 @@ private:
     [[nodiscard]] cd::core::Result<ShaderModuleHandle>
     build_module_from_msl(const std::string& msl_source,
                           const std::string& entry_point,
-                          ShaderStage stage)
+                          ShaderStage stage,
+                          MTLSize workgroup)
     {
         NSString* src =
             [[NSString alloc] initWithBytes:msl_source.data()
@@ -2298,7 +2576,7 @@ private:
         const std::scoped_lock lock { shader_modules_mu_ };
         shader_modules_.emplace(
             h.index(),
-            std::make_unique<MetalShaderModuleObj>(lib, fn, stage));
+            std::make_unique<MetalShaderModuleObj>(lib, fn, stage, workgroup));
         return h;
     }
 

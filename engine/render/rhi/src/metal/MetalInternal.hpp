@@ -355,8 +355,15 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
 class MetalShaderModuleObj final
 {
 public:
-    MetalShaderModuleObj(id<MTLLibrary> lib, id<MTLFunction> fn, ShaderStage stage) noexcept
-        : lib_(lib), fn_(fn), stage_(stage) {}
+    // M6 (ADR-20260615): a compute module carries its reflected
+    // threads-per-threadgroup (GLSL local_size_x/y/z, surfaced host-side via
+    // MslArtifact::workgroup). create_compute_pipeline reads it and stamps it
+    // onto the MetalComputePipelineObj so dispatch() uses the real threadgroup
+    // size. Non-compute / raw-MSL modules default to (1,1,1) — harmless, since
+    // they never feed a compute pipeline.
+    MetalShaderModuleObj(id<MTLLibrary> lib, id<MTLFunction> fn, ShaderStage stage,
+                         MTLSize workgroup = MTLSizeMake(1, 1, 1)) noexcept
+        : lib_(lib), fn_(fn), stage_(stage), workgroup_(workgroup) {}
     ~MetalShaderModuleObj() = default;
     MetalShaderModuleObj(const MetalShaderModuleObj&) = delete;
     MetalShaderModuleObj& operator=(const MetalShaderModuleObj&) = delete;
@@ -366,11 +373,14 @@ public:
     [[nodiscard]] id<MTLLibrary>  lib() const noexcept { return lib_; }
     [[nodiscard]] id<MTLFunction> fn() const noexcept { return fn_; }
     [[nodiscard]] ShaderStage     stage() const noexcept { return stage_; }
+    // M6: reflected threads-per-threadgroup for a compute module.
+    [[nodiscard]] MTLSize workgroup() const noexcept { return workgroup_; }
 
 private:
     id<MTLLibrary>  lib_ { nil };
     id<MTLFunction> fn_ { nil };
     ShaderStage     stage_ { ShaderStage::kNone };
+    MTLSize         workgroup_ { 1, 1, 1 };
 };
 
 // Compile MSL source into an MTLLibrary and resolve the named entry-point
@@ -384,18 +394,29 @@ build_metal_shader_function(id<MTLDevice> device,
                             std::string* error_out) noexcept;
 
 // ---------------------------------------------------------------------------
-// MetalComputePipelineObj — phase572 / Sprint-3.
+// MetalComputePipelineObj — phase572 / Sprint-3, M6 (ADR-20260615) extension.
 //
 // Wraps id<MTLComputePipelineState> built via
 // [device newComputePipelineStateWithFunction:error:]. The PSO is opaque
 // once created; the cmd-buffer binds it via setComputePipelineState: on
 // the active MTLComputeCommandEncoder.
+//
+// M6: the PSO ALSO carries the threads-per-threadgroup MTLSize reflected from
+// the compute shader's GLSL layout(local_size_*) (surfaced host-side through
+// MslArtifact::workgroup and captured here at create_compute_pipeline time).
+// dispatch() needs it because Metal's
+// [encoder dispatchThreadgroups:threadsPerThreadgroup:] takes BOTH the group
+// count (the engine dispatch(x,y,z) argument — matches Vulkan vkCmdDispatch /
+// D3D12 Dispatch group semantics) AND the threads-per-group. Without it the
+// Sprint-3 baseline hardcoded (1,1,1), running 1 thread per group — a
+// local_size>1 shader was under-dispatched by the product of its local size.
 // ---------------------------------------------------------------------------
 class MetalComputePipelineObj final
 {
 public:
-    explicit MetalComputePipelineObj(id<MTLComputePipelineState> pso) noexcept
-        : pso_(pso) {}
+    MetalComputePipelineObj(id<MTLComputePipelineState> pso,
+                            MTLSize threads_per_threadgroup) noexcept
+        : pso_(pso), threads_per_threadgroup_(threads_per_threadgroup) {}
     ~MetalComputePipelineObj() = default;
     MetalComputePipelineObj(const MetalComputePipelineObj&) = delete;
     MetalComputePipelineObj& operator=(const MetalComputePipelineObj&) = delete;
@@ -404,8 +425,17 @@ public:
 
     [[nodiscard]] id<MTLComputePipelineState> pso() const noexcept { return pso_; }
 
+    // M6: reflected threads-per-threadgroup (GLSL local_size_x/y/z). Consumed
+    // by bind_compute_pipeline -> cached on the cmd buffer -> applied by
+    // dispatch().
+    [[nodiscard]] MTLSize threads_per_threadgroup() const noexcept
+    {
+        return threads_per_threadgroup_;
+    }
+
 private:
     id<MTLComputePipelineState> pso_ { nil };
+    MTLSize                     threads_per_threadgroup_ { 1, 1, 1 };
 };
 
 // ---------------------------------------------------------------------------
@@ -1127,10 +1157,13 @@ private:
     NSUInteger                   index_offset_ { 0 };
     MTLIndexType                 index_type_ { MTLIndexTypeUInt16 };
 
-    // phase572 (Sprint-3): currently-bound compute PSO. Used to recover
-    // threads-per-threadgroup at dispatch time when the caller does not
-    // pre-supply a workgroup size (Sprint-3 surface uses 1x1x1).
+    // phase572 (Sprint-3): currently-bound compute PSO. M6 (ADR-20260615):
+    // bind_compute_pipeline also caches the bound PSO's reflected
+    // threads-per-threadgroup (GLSL local_size_x/y/z) here so dispatch() applies
+    // the real threadgroup size instead of the Sprint-3 (1,1,1). Reset to
+    // (1,1,1) whenever no PSO is bound.
     id<MTLComputePipelineState>  current_compute_pso_ { nil };
+    MTLSize                      current_threads_per_threadgroup_ { 1, 1, 1 };
 };
 
 // ---------------------------------------------------------------------------
@@ -1203,6 +1236,14 @@ public:
 
     [[nodiscard]] virtual id<MTLComputePipelineState>
     lookup_compute_pipeline(ComputePipelineHandle h) const noexcept = 0;
+
+    // M6 (ADR-20260615): the richer compute-pipeline object carrying the PSO
+    // PLUS the reflected threads-per-threadgroup MTLSize. bind_compute_pipeline
+    // reads the workgroup size from here so dispatch() can apply the real
+    // threads-per-group instead of the Sprint-3 (1,1,1). nullptr for unknown
+    // handles.
+    [[nodiscard]] virtual const MetalComputePipelineObj*
+    lookup_compute_pipeline_obj(ComputePipelineHandle h) const noexcept = 0;
 
     // phase615 (Sprint-4): fence + event lookups. Consumed by
     // submit(SubmitDesc) for completion-handler fence signal + queue-side
