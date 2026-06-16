@@ -1,11 +1,11 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/rhi/d3d12/D3D12Device.hpp
-// Phase 8 / Sprint 12 / Wave 97 — D3D12 backend for cd::rhi (skeleton).
+// Phase 8 / Sprint 12 / Wave 97 → phases 1215–1225 — D3D12 backend for cd::rhi.
 //
-// Windows-native D3D12 backend factory. Wave 97 ships the public
-// header + stub factory; the concrete D3D12Device (D3D12CreateDevice
-// + CommandQueue + Root Signature + DescriptorHeap) lands in
-// Phase 9 Sprint 2 (after Metal).
+// Windows-native D3D12 backend. Full IDevice surface implemented and
+// GPU-verified on RTX 3080 + WARP (IMPL-100%, VERIFY ~90%). Residual:
+// operator CI golden gate (one-time runner registration). See
+// docs/RHI_COMPLETION_STATUS.md §A for the current per-backend table.
 //
 // Why a D3D12 backend in addition to Vulkan on Windows:
 //   * NVAPI / AMD AGS extensions exposed in the native path.

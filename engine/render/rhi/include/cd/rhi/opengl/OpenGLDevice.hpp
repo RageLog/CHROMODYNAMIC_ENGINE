@@ -1,6 +1,9 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/rhi/opengl/OpenGLDevice.hpp
-// Phase 18.B / Wave 178 — OpenGL 4.6 backend (boot only).
+// Phase 18.B / Wave 178 — OpenGL 4.6 backend.
+// Status: intentionally out-of-charter (ADR-20260616 §B-OPENGL, wontfix).
+// create_buffer + GL context init implemented; remainder returns kNotImplemented
+// by design. Not counted in the 3-backend (Vulkan/D3D12/Metal) parity bar.
 // =============================================================================
 #pragma once
 

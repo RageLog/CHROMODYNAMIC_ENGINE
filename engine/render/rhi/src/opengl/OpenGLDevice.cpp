@@ -1,6 +1,8 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/rhi/opengl/OpenGLDevice.cpp
-// Phase 18.B / Wave 178 — boot-only OpenGL 4.6 backend.
+// Phase 18.B / Wave 178 — OpenGL 4.6 backend (out-of-charter, wontfix).
+// create_buffer + GL context init implemented; remainder returns kNotImplemented
+// by design per ADR-20260616 §B-OPENGL. Not part of the 3-backend parity bar.
 // =============================================================================
 #include <cd/rhi/opengl/OpenGLDevice.hpp>
 
@@ -473,7 +475,7 @@ public:
 
         // Phase 137 — bind DSA buffer entry points via wglGetProcAddress.
         // Other entry points (texture, swapchain, pipeline) stay
-        // kNotImplemented until their respective phases land.
+        // kNotImplemented by design (OpenGL wontfix, ADR-20260616 §B-OPENGL).
         gl_ = load_dsa_buffer_funcs();
 
         if (const auto* version = glGetString(GL_VERSION))
@@ -534,8 +536,8 @@ public:
         "OpenGL backend is boot-only at v0.49.0; entry point queued for "         \
         "follow-up waves"))
 
-    // Phase 137 — DSA buffer create. Texture + swapchain stay stubbed
-    // until their loader-tax-equivalent lands.
+    // Phase 137 — DSA buffer create. Texture + swapchain remain
+    // kNotImplemented by design (OpenGL wontfix, ADR-20260616 §B-OPENGL).
     [[nodiscard]] cd::core::Result<cd::rhi::BufferHandle>
     create_buffer(const cd::rhi::BufferDesc& desc) override
     {

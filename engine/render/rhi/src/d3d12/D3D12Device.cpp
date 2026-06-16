@@ -1,17 +1,14 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/render/rhi_d3d12/src/D3D12Device.cpp
 //
-// Phase 12.B / v0.27.0 — D3D12 boot-only backend. Creates an
+// Phase 12.B / v0.27.0 → phases 1215–1225 — D3D12 backend (IMPL-100%).
 // ID3D12Device + DXGIFactory + adapter selection + direct command
-// queue + a fence so wait_idle() works. The rest of the IDevice
-// surface (50 virtuals total) is stubbed to return kNotImplemented;
-// subsequent v0.27.x patches will fill in PSO, draw, buffer/texture
-// upload, swapchain, present.
-//
-// This commit ships "the D3D12 path is reachable, the device + queue
-// exist on this machine, adapter introspection works". That's the
-// smallest defensible milestone for a backend the marathon author
-// cannot rely on a human to pixel-check.
+// queue + fence (wait_idle). Full IDevice surface implemented across
+// subsequent phases; GPU-verified on RTX 3080 + WARP. Every
+// `kNotImplemented` return remaining is a runtime capability-gate
+// (adapter lacks DXR / mesh-shader tier / bindless binding tier) or a
+// defensive guard on an unhandled enum variant — not a TODO stub.
+// See docs/RHI_KNOTIMPL_INVENTORY.md §D3D12 for the site-by-site table.
 // =============================================================================
 #include <algorithm>
 #include <cd/rhi/d3d12/D3D12Device.hpp>
@@ -343,10 +340,13 @@ to_d3d12_blend_op(cd::rhi::BlendOp o) noexcept
     return D3D12_HEAP_TYPE_UPLOAD;
 }
 
-/// Phase 13.C v0.32.0 D3D12 backend: buffer + texture + swapchain wired,
-/// plus a minimal command-list path sufficient for `hello_d3d12_clear`.
-/// Other resource types (PSO, descriptor sets, shaders) remain stubbed
-/// and surface kNotImplemented.
+/// D3D12 backend — IDevice implementation (IMPL-100%, GPU-verified RTX 3080).
+/// All resource types implemented: buffers, textures, texture views, samplers,
+/// swapchain (incl. HDR), PSO (graphics/compute/mesh/RT), descriptor sets,
+/// shaders (DXIL), RT (BLAS/TLAS/compaction/refit), query pools, indirect
+/// draw/dispatch, pipeline cache, readback, debug groups. Remaining
+/// kNotImplemented returns are capability-gates, not stubs. (Phase 13.C was
+/// the first scaffolding commit; the surface closed at phases 1215–1225.)
 class D3D12Device final : public cd::rhi::IDevice
 {
 public:

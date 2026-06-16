@@ -1,22 +1,24 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/rhi/metal/MetalDevice.hpp
-// Phase 8 / Sprint 12 / Wave 97 — Metal backend for cd::rhi (skeleton).
+// Phase 8 / Sprint 12 / Wave 97 → phases 1215–1225 — Metal backend for cd::rhi.
 //
 // Mirrors the cd::rhi_vulkan factory shape: a single create function
-// returns an `IDevice` implementation backed by the platform GPU API.
-// Wave 97 ships the public header + a stub factory; the concrete
-// MetalDevice (MTLDevice + MTLCommandQueue + MTLLibrary) lands in
-// Phase 9 Sprint 1.
+// returns an `IDevice` implementation backed by MTLDevice. Full
+// IDevice surface written and structurally reviewed (IMPL ~95% on-paper
+// per docs/RHI_COMPLETION_STATUS.md §A). GPU verification is
+// Mac/Apple-Silicon-gated — 10 authored GPU test binaries behind
+// `#if __APPLE__` await an Apple-Clang run; no code work remains,
+// only hardware execution. See docs/METAL_MAC_TESTING.md.
 //
 // Why a separate library from rhi_vulkan: each backend has its own
 // dependency chain (Vulkan headers / MoltenVK / Metal frameworks);
 // dragging them into rhi_vulkan would force every consumer to link
 // the union. Application code calls `cd::rhi::create_native_device()`
-// (Wave 97+) which selects the right backend per platform.
+// which selects the right backend per platform.
 //
-// Build gate: on non-Apple platforms the factory returns nullptr
-// (Wave 79 CoreAudio pattern). On Apple the Phase 9 implementation
-// will return a concrete device.
+// Build gate: on non-Apple platforms `MetalDevice.cpp` provides the
+// kBackendInitFailed fallback. On Apple Clang, `MetalDevice.mm`
+// compiles the concrete device (CD_RHI_METAL_ENABLED=ON).
 // =============================================================================
 #pragma once
 

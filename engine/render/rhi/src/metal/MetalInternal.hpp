@@ -14,9 +14,12 @@
 //            registry + upload/download_buffer shared-storage memcpy +
 //            SubmitDesc timeline-encode hand-off). Closes the remaining
 //            9 kNotImpl sites and brings the Metal backend to 27/27
-//            implemented coverage on the IDevice surface (RT-related
-//            DescriptorWrite::kAccelerationStructure still surfaces
-//            kInvalidArgument since Metal RT is a separate roadmap item).
+//            implemented coverage on the IDevice surface *as it stood at
+//            phase649* (RT-related DescriptorWrite::kAccelerationStructure
+//            still surfaces kInvalidArgument). The IDevice surface has since
+//            expanded (RT/mesh/bindless/query/indirect/pipeline-cache added
+//            post-phase649); current status is ~95% on-paper per
+//            docs/RHI_COMPLETION_STATUS.md §A.
 //
 // This header is INTERNAL to the cd_rhi_metal target. It is only included
 // from the four .mm translation units (MetalDevice.mm, MetalCommandBuffer.mm,
