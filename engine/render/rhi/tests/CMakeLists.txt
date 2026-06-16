@@ -731,6 +731,101 @@ while(_CD_METAL_TESTS)
   endif()
 endwhile()
 
+# =============================================================================
+# Backend-to-100 Wave 3d — cross-backend CONFORMANCE + COVERAGE tests.
+# =============================================================================
+
+# C-CAPS-CONFORMANCE: every DeviceLimits field sane + every TRUE DeviceFeatures
+# flag backed by a real capability, over Null + Vulkan + (Windows) D3D12; PINs
+# the deliberate cross-backend inconsistencies (Metal no-geo/no-tess, D3D12
+# mandated geo/tess) and LOCKS variable_rate_shading OFF (dead flag, no command
+# surface). Pure device introspection + a few create probes — no shaders, no
+# DXC. Links Vulkan + (Windows) D3D12; SKIPs cleanly when a backend is absent.
+if(WIN32)
+  cd_add_test(rhi_caps_conformance
+    SOURCES test_rhi_caps_conformance.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::rhi cd::core
+  )
+else()
+  cd_add_test(rhi_caps_conformance
+    SOURCES test_rhi_caps_conformance.cpp
+    DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+endif()
+
+# C-LEAK-LIFETIME: create-every-resource-kind -> use -> destroy -> wait_idle ->
+# repeat N rounds + negative double-destroy safety, on Vulkan + (Windows) D3D12.
+# (ASAN-Release is the documented leak config; the gtest just must not crash /
+# must keep the device + handle table alive.) Drives the GLSL->SPIR-V/DXIL device
+# path so it needs cd::shader (glslang) + the DXC runtime DLL on D3D12.
+if(WIN32)
+  cd_add_test(rhi_lifetime_stress
+    SOURCES test_rhi_lifetime_stress.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_ll_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_ll_list)
+  if(_cd_dxc_ll_list AND TARGET cd_test_rhi_lifetime_stress)
+    list(POP_BACK _cd_dxc_ll_list _cd_dxc_ll_dll)
+    get_filename_component(_cd_dxc_ll_dir "${_cd_dxc_ll_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_rhi_lifetime_stress POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_ll_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_lifetime_stress>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_ll_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_lifetime_stress>")
+  endif()
+else()
+  cd_add_test(rhi_lifetime_stress
+    SOURCES test_rhi_lifetime_stress.cpp
+    DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
+  )
+endif()
+
+# C-FORMAT-MATRIX: per-backend Format support (sample/RT/storage) via
+# create_texture, asserting the engine's CORE formats are supported consistently
+# on Vulkan + D3D12 and documenting per-backend exceptions. Pure create_texture
+# probes — no shaders, no DXC. SKIPs cleanly when a backend is absent.
+if(WIN32)
+  cd_add_test(rhi_format_support
+    SOURCES test_rhi_format_support.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::rhi cd::core
+  )
+else()
+  cd_add_test(rhi_format_support
+    SOURCES test_rhi_format_support.cpp
+    DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+endif()
+
+# C-VK-PARALLEL-PIXEL: Vulkan serial-record == parallel-secondary-record pixel
+# equivalence + lane order (D3D12 has test_d3d12_parallel_pass; Vulkan had none).
+# Real lavapipe/RTX render + readback through the GLSL->SPIR-V device path; needs
+# cd::shader (glslang). SKIPs cleanly when no ICD / no glslang.
+cd_add_test(rhi_vulkan_parallel_pixel
+  SOURCES test_rhi_vulkan_parallel_pixel.cpp
+  DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
+)
+
+# C-VK-TIMELINE: timeline-semaphore-gated cross-queue overlap (async-compute
+# gated on graphics via a timeline value) completes correctly. Real Vulkan
+# submit + timeline wait; no shaders (clear + copy only). SKIPs when no ICD.
+cd_add_test(rhi_vk_timeline
+  SOURCES test_rhi_vk_timeline.cpp
+  DEPS    cd::rhi_vulkan cd::rhi cd::core
+)
+
+# C-VK-RT-SBT: Vulkan SBT host-side STRUCTURAL test (shader-group-handle size /
+# alignment + SBT region stride math + empty-shader-list rejection). The pure
+# host-side region-math runs on EVERY lane (no device); the device arm builds an
+# RT pipeline + pulls real group handles when the ICD exposes ray tracing
+# (RTX-here), else honest-SKIP. Needs cd::shader (glslang) for the GLSL RT stages.
+cd_add_test(rhi_vk_rt_sbt
+  SOURCES test_vk_rt_sbt.cpp
+  DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
+)
+
 # D-SRV-MS: sample a 4x-MSAA texture (Texture2DMS SRV). Real WARP render +
 # sampling pass; needs the GLSL->DXIL DXC runtime.
 # D-MIPSTATE: per-subresource state — UAV-write mip 1 while mip 0 is shader-
