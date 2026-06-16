@@ -14,6 +14,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -197,4 +199,74 @@ TEST(AsyncSubmitN, DestructorDrainsAndJoins)
         // Let destructor handle drain + stop + join.
     }
     SUCCEED();
+}
+
+// =============================================================================
+// BAND 3 — genuinely-untested AsyncSubmitN ring edges. The minimal-primitive
+// scope (no frame-fence integration) is sealed in
+// ADR-20260616-band3-render-core-scope.md §2.2; these pin the constructor +
+// ring-wrap branches the existing tests never exercised.
+// =============================================================================
+
+TEST(AsyncSubmitN, ZeroCapacityDefaultsToTwo)
+{
+    // The `capacity == 0 ? 2 : capacity` constructor branch was never hit —
+    // every other test passes an explicit capacity. Default ctor + explicit 0
+    // must both land on 2.
+    cd::render::AsyncSubmitN q_default;
+    EXPECT_EQ(q_default.capacity(), 2u);
+    cd::render::AsyncSubmitN q_zero { 0 };
+    EXPECT_EQ(q_zero.capacity(), 2u);
+}
+
+TEST(AsyncSubmitN, CapacityOneSerializesAndWrapsRing)
+{
+    // capacity == 1 forces the head_ = (head_+1) % capacity_ wrap to fire on
+    // every job (modulo-1 is the degenerate ring). Many jobs through a 1-slot
+    // queue must all complete in FIFO with no lost slot.
+    cd::render::AsyncSubmitN q { 1 };
+    EXPECT_EQ(q.capacity(), 1u);
+    std::atomic<int> order { 0 };
+    std::vector<int> seen;
+    std::mutex seen_mu;
+    constexpr int kJobs = 20;
+    for (int i = 0; i < kJobs; ++i)
+    {
+        q.enqueue([&, i] {
+            const int rank = order.fetch_add(1, std::memory_order_acq_rel);
+            (void)rank;
+            std::lock_guard guard { seen_mu };
+            seen.push_back(i);
+        });
+    }
+    q.wait_idle();
+    ASSERT_EQ(seen.size(), static_cast<std::size_t>(kJobs));
+    for (int i = 0; i < kJobs; ++i)
+        EXPECT_EQ(seen[static_cast<std::size_t>(i)], i);  // strict FIFO
+    EXPECT_EQ(q.completion_count(), static_cast<std::uint64_t>(kJobs));
+    EXPECT_EQ(q.enqueue_count(), static_cast<std::uint64_t>(kJobs));
+    EXPECT_EQ(q.size(), 0u);
+}
+
+TEST(AsyncSubmitN, WaitIdleOnFreshQueueReturnsImmediately)
+{
+    // wait_idle() with size_==0 && !running_ must not block (the predicate is
+    // already satisfied) — the "nothing enqueued yet" branch.
+    cd::render::AsyncSubmitN q { 3 };
+    q.wait_idle();
+    EXPECT_EQ(q.size(), 0u);
+    EXPECT_EQ(q.completion_count(), 0u);
+    EXPECT_EQ(q.enqueue_count(), 0u);
+}
+
+// ----- AsyncSubmit (single-slot) untested counters/empty edges --------------
+
+TEST(AsyncSubmit, FreshSubmitterHasZeroCounters)
+{
+    cd::render::AsyncSubmit async;
+    EXPECT_EQ(async.enqueue_count(), 0u);
+    EXPECT_EQ(async.completion_count(), 0u);
+    EXPECT_FALSE(async.is_busy());
+    async.wait_idle();  // no-op on an idle fresh submitter
+    EXPECT_FALSE(async.is_busy());
 }

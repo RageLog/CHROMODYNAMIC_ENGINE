@@ -17,6 +17,7 @@
 #include <cd/render/Renderer.hpp>
 #include <cd/render/SortKey.hpp>
 #include <cd/rhi/ICommandBuffer.hpp>
+#include <cd/rhi/NullCommandBuffer.hpp>
 #include <cd/rhi/vulkan/VulkanDevice.hpp>
 #include <gtest/gtest.h>
 
@@ -389,6 +390,70 @@ TEST(SortKey, AscendingSortGroupsByLayerThenMaterialThenDepth)
     EXPECT_LT(b.value, c.value);
 }
 
+// ----- BAND 3: genuinely-untested SortKey aggregation branches --------------
+
+TEST(SortKey, LayerOfRoundTripsEveryLayer)
+{
+    // layer_of() (the bit-63..62 extractor) was never asserted directly for
+    // every enum value — only the opaque<ui inequality. Round-trip all four.
+    using cd::render::layer_of;
+    for (auto l : { SortLayer::kOpaque, SortLayer::kSkybox,
+                    SortLayer::kTransparent, SortLayer::kUi })
+    {
+        const auto k = make_sort_key(l, 0, SortBlend::kOff, 0, 0, 0);
+        EXPECT_EQ(layer_of(k), l);
+    }
+}
+
+TEST(SortKey, BlendGroupOrdersAboveMaterialBelowPass)
+{
+    // Layout (most→least significant): layer | pass | blend(57..56) |
+    // material(55..32) | depth | user_lo. So the 2-bit blend group is MORE
+    // significant than the 24-bit material id but LESS significant than pass.
+    // Same layer/pass/material: blend mode breaks ties ascending.
+    const auto off   = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kOff,          7, 10, 0);
+    const auto alpha = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kAlpha,        7, 10, 0);
+    const auto premul= make_sort_key(SortLayer::kTransparent, 0, SortBlend::kPremultiplied,7, 10, 0);
+    EXPECT_LT(off.value, alpha.value);
+    EXPECT_LT(alpha.value, premul.value);
+    // Blend group outranks material id: blend kAlpha + material 0 sorts AFTER
+    // blend kOff + material 0xFFFFFF (the highest material under a lower blend).
+    const auto off_hi_mat   = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kOff,   0xFFFFFFu, 10, 0);
+    const auto alpha_lo_mat = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kAlpha, 0,          10, 0);
+    EXPECT_LT(off_hi_mat.value, alpha_lo_mat.value);
+    // But pass (bits 61..58) outranks blend: pass 1 + blend kOff sorts after
+    // pass 0 + the highest blend.
+    const auto pass1 = make_sort_key(SortLayer::kTransparent, 1, SortBlend::kOff, 0, 10, 0);
+    EXPECT_LT(premul.value, pass1.value);
+}
+
+TEST(SortKey, UserLoIsLeastSignificant)
+{
+    // user_lo (bits 7..0) is the final tie-break — equal everything-else but
+    // differing user_lo must order by user_lo and not perturb any field above.
+    const auto a = make_sort_key(SortLayer::kOpaque, 3, SortBlend::kAlpha, 9, 42, 1);
+    const auto b = make_sort_key(SortLayer::kOpaque, 3, SortBlend::kAlpha, 9, 42, 250);
+    EXPECT_LT(a.value, b.value);
+    EXPECT_EQ(material_id_of(a), material_id_of(b));
+    EXPECT_EQ(depth_bits_of(a), depth_bits_of(b));
+}
+
+TEST(SortKey, TransparentBackToFrontViaPreFlippedDepth)
+{
+    // The library's documented contract: callers pre-flip depth bits for
+    // transparent draws so an ascending sort yields back-to-front. Model a
+    // far (depth 0x100) and near (depth 0xF00) draw; for transparent the
+    // caller flips (0xFFFFFF - depth), so FAR must sort AFTER near.
+    constexpr std::uint32_t kMaxDepth = 0xFFFFFFu;
+    const std::uint32_t far_d  = 0x000100u;
+    const std::uint32_t near_d = 0x000F00u;
+    const auto far_k  = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kAlpha, 0, kMaxDepth - far_d,  0);
+    const auto near_k = make_sort_key(SortLayer::kTransparent, 0, SortBlend::kAlpha, 0, kMaxDepth - near_d, 0);
+    // Near has a SMALLER flipped value → sorts first; far renders last
+    // (painter's algorithm for blended geometry).
+    EXPECT_LT(near_k.value, far_k.value);
+}
+
 #include <cd/render/PostProcessChain.hpp>
 
 TEST(PostProcessChain, AddAndQuerySize)
@@ -430,6 +495,67 @@ TEST(PostProcessChain, InsertionOrderPreserved)
     c.add("Third");
     EXPECT_EQ(c.passes()[0].name, "First");
     EXPECT_EQ(c.passes()[2].name, "Third");
+}
+
+// ----- BAND 3: genuinely-untested PostProcessChain aggregation branches -----
+
+TEST(PostProcessChain, EnabledViewEmptyWhenAllDisabled)
+{
+    // enabled_view() over an all-disabled chain must return an empty view
+    // (the loop's "no pass enabled" branch was never asserted).
+    cd::render::PostProcessChain c;
+    c.add("ToneMap");
+    c.add("FXAA");
+    c.set_enabled("ToneMap", false);
+    c.set_enabled("FXAA", false);
+    EXPECT_TRUE(c.enabled_view().empty());
+}
+
+TEST(PostProcessChain, EnabledViewEmptyOnEmptyChain)
+{
+    cd::render::PostProcessChain c;
+    EXPECT_EQ(c.size(), 0u);
+    EXPECT_TRUE(c.enabled_view().empty());
+}
+
+TEST(PostProcessChain, SetEnabledOnMissingNameIsNoOp)
+{
+    // set_enabled() with no matching pass must silently do nothing and leave
+    // every existing pass untouched — the no-match path was untested.
+    cd::render::PostProcessChain c;
+    c.add("ToneMap");
+    c.set_enabled("DoesNotExist", false);
+    auto view = c.enabled_view();
+    ASSERT_EQ(view.size(), 1u);
+    EXPECT_EQ(view[0]->name, "ToneMap");
+}
+
+TEST(PostProcessChain, ClearEmptiesChain)
+{
+    cd::render::PostProcessChain c;
+    c.add("A");
+    c.add("B");
+    c.clear();
+    EXPECT_EQ(c.size(), 0u);
+    EXPECT_TRUE(c.passes().empty());
+}
+
+TEST(PostProcessChain, RemoveOnEmptyChainReturnsFalse)
+{
+    cd::render::PostProcessChain c;
+    EXPECT_FALSE(c.remove("Anything"));
+}
+
+TEST(PostProcessChain, ParamsRoundTripAndDefaultZero)
+{
+    // add() with an explicit params value + the defaulted-zero overload were
+    // never asserted on the stored PostProcessPass.
+    cd::render::PostProcessChain c;
+    c.add("WithParams", 0xC0FFEEu);
+    c.add("Defaulted");
+    EXPECT_EQ(c.passes()[0].params, 0xC0FFEEu);
+    EXPECT_EQ(c.passes()[1].params, 0u);
+    EXPECT_TRUE(c.passes()[0].enabled);
 }
 
 #include <cd/render/Tonemap.hpp>
@@ -630,6 +756,64 @@ TEST(DrawBucket, StableSortPreservesInsertionOrderOnEqualKeys)
     b.sort();
     // Three same-key items: stable_sort preserves insertion order.
     EXPECT_EQ(b.size(), 3u);
+}
+
+// ----- BAND 3: DrawBucket emit_all replay (GPU-free via NullCommandBuffer) ---
+// emit_all() auto-sorts an unsorted bucket then replays — that branch was
+// only covered through the Vulkan SubmitDraws path (ICD-gated, SKIPs without a
+// GPU). NullCommandBuffer drives it deterministically on every host.
+
+TEST(DrawBucket, EmitAllAutoSortsThenReplaysInKeyOrder)
+{
+    cd::render::DrawBucket b;
+    std::vector<std::uint64_t> emitted;
+    for (auto v : { 70u, 10u, 50u, 30u })
+    {
+        cd::render::SortKey k; k.value = v;
+        b.add(k, [&emitted, v](cd::rhi::ICommandBuffer&) { emitted.push_back(v); });
+    }
+    EXPECT_FALSE(b.is_sorted_cached());
+
+    cd::rhi::NullCommandBuffer cmd;
+    b.emit_all(cmd);  // must sort() internally before replaying
+
+    ASSERT_EQ(emitted.size(), 4u);
+    EXPECT_EQ(emitted[0], 10u);
+    EXPECT_EQ(emitted[1], 30u);
+    EXPECT_EQ(emitted[2], 50u);
+    EXPECT_EQ(emitted[3], 70u);
+    EXPECT_TRUE(b.is_sorted_cached());
+}
+
+TEST(DrawBucket, EmitAllDoesNotClearSoBucketIsReusable)
+{
+    cd::render::DrawBucket b;
+    int calls = 0;
+    cd::render::SortKey k; k.value = 1;
+    b.add(k, [&calls](cd::rhi::ICommandBuffer&) { ++calls; });
+
+    cd::rhi::NullCommandBuffer cmd;
+    b.emit_all(cmd);
+    b.emit_all(cmd);  // emit_all does NOT clear; a second replay runs again
+    EXPECT_EQ(calls, 2);
+    EXPECT_EQ(b.size(), 1u);
+}
+
+TEST(DrawBucket, EmitAllOnEmptyBucketIsNoOp)
+{
+    cd::render::DrawBucket b;
+    EXPECT_TRUE(b.empty());
+    cd::rhi::NullCommandBuffer cmd;
+    b.emit_all(cmd);  // no items → no callbacks, no crash
+    EXPECT_TRUE(b.empty());
+}
+
+TEST(DrawBucket, ReserveDoesNotChangeLogicalSize)
+{
+    cd::render::DrawBucket b;
+    b.reserve(128);
+    EXPECT_EQ(b.size(), 0u);
+    EXPECT_TRUE(b.empty());
 }
 
 
