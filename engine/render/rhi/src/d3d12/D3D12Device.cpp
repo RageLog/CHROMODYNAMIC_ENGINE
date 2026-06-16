@@ -3727,6 +3727,165 @@ public:
         return it->second.fence->GetCompletedValue() >= it->second.target_value;
     }
 
+    // --- GPU query pool (A-QUERY, Backend-to-100 Wave 3a) ----------------
+    //
+    // An ID3D12QueryHeap of the matching type plus a per-pool READBACK buffer
+    // that ResolveQueryData targets (D3D12 resolves query data into a buffer,
+    // unlike Vulkan's vkGetQueryPoolResults reading the pool directly). The
+    // cmd-buffer records EndQuery (timestamp) / Begin+EndQuery (occlusion /
+    // pipeline-stats) then ResolveQueryData into the readback buffer; the host
+    // maps that buffer in get_query_results.
+    [[nodiscard]] cd::core::Result<cd::rhi::QueryPoolHandle>
+    create_query_pool(const cd::rhi::QueryPoolDesc& desc) override
+    {
+        if (desc.count == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument, "create_query_pool: count == 0"));
+        }
+        D3D12_QUERY_HEAP_TYPE heap_type { D3D12_QUERY_HEAP_TYPE_TIMESTAMP };
+        D3D12_QUERY_TYPE      query_type { D3D12_QUERY_TYPE_TIMESTAMP };
+        UINT                  result_stride { sizeof(std::uint64_t) };
+        switch (desc.type)
+        {
+            case cd::rhi::QueryType::kTimestamp:
+                heap_type     = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+                query_type    = D3D12_QUERY_TYPE_TIMESTAMP;
+                result_stride = sizeof(std::uint64_t);
+                break;
+            case cd::rhi::QueryType::kOcclusion:
+                heap_type     = D3D12_QUERY_HEAP_TYPE_OCCLUSION;
+                query_type    = D3D12_QUERY_TYPE_OCCLUSION;
+                result_stride = sizeof(std::uint64_t);
+                break;
+            case cd::rhi::QueryType::kPipelineStatistics:
+                heap_type     = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+                query_type    = D3D12_QUERY_TYPE_PIPELINE_STATISTICS;
+                result_stride = sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
+                break;
+        }
+
+        D3D12_QUERY_HEAP_DESC qhd {};
+        qhd.Type     = heap_type;
+        qhd.Count    = desc.count;
+        qhd.NodeMask = 0;
+        ComPtr<ID3D12QueryHeap> heap;
+        if (FAILED(device_->CreateQueryHeap(&qhd, IID_PPV_ARGS(&heap))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed, "CreateQueryHeap failed"));
+        }
+
+        // READBACK destination buffer for ResolveQueryData.
+        D3D12_HEAP_PROPERTIES hp {};
+        hp.Type = D3D12_HEAP_TYPE_READBACK;
+        hp.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        hp.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        hp.CreationNodeMask = 1;
+        hp.VisibleNodeMask = 1;
+        D3D12_RESOURCE_DESC rd {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width  = static_cast<UINT64>(result_stride) * desc.count;
+        rd.Height = 1;
+        rd.DepthOrArraySize = 1;
+        rd.MipLevels = 1;
+        rd.Format = DXGI_FORMAT_UNKNOWN;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> readback;
+        if (FAILED(device_->CreateCommittedResource(
+                &hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr, IID_PPV_ARGS(&readback))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "CreateCommittedResource(query readback) failed"));
+        }
+
+        const auto id = next_id_++;
+        QueryPoolRecord rec;
+        rec.heap           = std::move(heap);
+        rec.readback       = std::move(readback);
+        rec.type           = desc.type;
+        rec.count          = desc.count;
+        rec.d3d_query_type = query_type;
+        query_pools_.emplace(id, std::move(rec));
+        return cd::rhi::QueryPoolHandle { id, 1u };
+    }
+
+    void destroy_query_pool(cd::rhi::QueryPoolHandle h) override
+    {
+        query_pools_.erase(h.index());
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    get_query_results(cd::rhi::QueryPoolHandle pool,
+                      std::uint32_t first,
+                      std::uint32_t count,
+                      std::span<std::uint64_t> out) override
+    {
+        auto it = query_pools_.find(pool.index());
+        if (it == query_pools_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument, "get_query_results: unknown pool"));
+        }
+        const auto& rec = it->second;
+        if (count == 0 || first + count > rec.count || out.size() < count)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "get_query_results: out-of-range / undersized"));
+        }
+
+        const UINT result_stride =
+            (rec.type == cd::rhi::QueryType::kPipelineStatistics)
+                ? static_cast<UINT>(sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS))
+                : static_cast<UINT>(sizeof(std::uint64_t));
+
+        // Map only the [first, first+count) slot window.
+        D3D12_RANGE read_range {};
+        read_range.Begin = static_cast<SIZE_T>(first) * result_stride;
+        read_range.End   = static_cast<SIZE_T>(first + count) * result_stride;
+        void* mapped = nullptr;
+        if (FAILED(rec.readback->Map(0, &read_range, &mapped)) || mapped == nullptr)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost, "Map(query readback) failed"));
+        }
+
+        // Timestamps: ticks -> ns via the queue's timestamp frequency
+        // (ns = ticks * 1e9 / freq). Occlusion / pipeline-stats pass through.
+        UINT64 ts_freq = 0;
+        if (rec.type == cd::rhi::QueryType::kTimestamp)
+            graphics_queue_->GetTimestampFrequency(&ts_freq);
+
+        const auto* base = static_cast<const std::byte*>(mapped) + read_range.Begin;
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            const auto* slot = base + static_cast<std::size_t>(i) * result_stride;
+            if (rec.type == cd::rhi::QueryType::kPipelineStatistics)
+            {
+                D3D12_QUERY_DATA_PIPELINE_STATISTICS stats {};
+                std::memcpy(&stats, slot, sizeof(stats));
+                out[i] = stats.IAVertices;  // single-counter parity with Vulkan
+            }
+            else
+            {
+                std::uint64_t v = 0;
+                std::memcpy(&v, slot, sizeof(v));
+                out[i] = (rec.type == cd::rhi::QueryType::kTimestamp && ts_freq != 0)
+                             ? static_cast<std::uint64_t>(
+                                   static_cast<double>(v) * 1'000'000'000.0 /
+                                   static_cast<double>(ts_freq))
+                             : v;
+            }
+        }
+        const D3D12_RANGE no_write { 0, 0 };
+        rec.readback->Unmap(0, &no_write);
+        return {};
+    }
+
     [[nodiscard]] cd::core::Result<cd::rhi::TimelineSemaphoreHandle>
     create_timeline_semaphore(std::uint64_t initial_value) override
     {
@@ -5088,6 +5247,24 @@ private:
     std::unordered_map<std::uint32_t, FenceRecord>     fences_;
     std::unordered_map<std::uint32_t, TimelineRecord>  timelines_;
 
+    // A-INDIRECT (Backend-to-100 Wave 3a) — ExecuteIndirect command-signature
+    // cache, keyed (stride << 8 | IndirectKind). See command_signature_for.
+    std::unordered_map<std::uint64_t, ComPtr<ID3D12CommandSignature>> command_signatures_;
+    // A-QUERY (Backend-to-100 Wave 3a) — query-heap pool record + storage.
+    // An ID3D12QueryHeap of the matching type plus a per-pool READBACK buffer
+    // that ResolveQueryData targets (D3D12 resolves into a buffer; get_query_-
+    // results maps it). The command buffer records EndQuery / Begin+EndQuery
+    // then ResolveQueryData into `readback` at end().
+    struct QueryPoolRecord
+    {
+        ComPtr<ID3D12QueryHeap> heap;
+        ComPtr<ID3D12Resource>  readback;   // RESOLVE destination (READBACK heap)
+        cd::rhi::QueryType      type { cd::rhi::QueryType::kTimestamp };
+        UINT                    count { 0 };
+        D3D12_QUERY_TYPE        d3d_query_type { D3D12_QUERY_TYPE_TIMESTAMP };
+    };
+    std::unordered_map<std::uint32_t, QueryPoolRecord> query_pools_;
+
     // Phase 124 — device-level RTV / DSV pools for create_texture_view.
     // Bump allocators. The swapchain RTV path uses its own per-swapchain
     // heap (Phase 13.C); these pools are for non-swapchain attachments
@@ -5413,6 +5590,60 @@ public:
         return it == descriptor_sets_.end() ? nullptr : &it->second;
     }
 
+    // A-INDIRECT (Backend-to-100 Wave 3a) — cached ID3D12CommandSignature for
+    // ExecuteIndirect. The signature describes ONE argument-record kind (draw /
+    // draw-indexed / dispatch) at a given byte stride; it carries no root-arg
+    // changes, so the root signature is null (the bound pipeline's root sig and
+    // index buffer stay in effect, mirroring the Vulkan vkCmdDrawIndirect
+    // contract). Cached per (kind, stride) so repeated indirect draws reuse one
+    // object. Returns nullptr if creation fails (the cmd-buffer then no-ops).
+    enum class IndirectKind : std::uint8_t { kDraw, kDrawIndexed, kDispatch };
+
+    [[nodiscard]] ID3D12CommandSignature*
+    command_signature_for(IndirectKind kind, UINT stride) noexcept
+    {
+        const std::uint64_t key =
+            (static_cast<std::uint64_t>(stride) << 8) | static_cast<std::uint64_t>(kind);
+        if (auto it = command_signatures_.find(key); it != command_signatures_.end())
+            return it->second.Get();
+
+        D3D12_INDIRECT_ARGUMENT_DESC arg {};
+        switch (kind)
+        {
+            case IndirectKind::kDraw:
+                arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+                break;
+            case IndirectKind::kDrawIndexed:
+                arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+                break;
+            case IndirectKind::kDispatch:
+                arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+                break;
+        }
+        D3D12_COMMAND_SIGNATURE_DESC csd {};
+        csd.ByteStride       = stride;
+        csd.NumArgumentDescs = 1;
+        csd.pArgumentDescs   = &arg;
+        csd.NodeMask         = 0;
+
+        ComPtr<ID3D12CommandSignature> sig;
+        // A pure draw/dispatch signature touches no root arguments, so the
+        // root signature MUST be null per the D3D12 spec.
+        if (FAILED(device_->CreateCommandSignature(&csd, nullptr, IID_PPV_ARGS(&sig))))
+            return nullptr;
+        auto* raw = sig.Get();
+        command_signatures_.emplace(key, std::move(sig));
+        return raw;
+    }
+
+    // A-QUERY (Backend-to-100 Wave 3a) — query-pool record accessor for the
+    // command buffer (EndQuery / BeginQuery / ResolveQueryData record paths).
+    [[nodiscard]] QueryPoolRecord* find_query_pool(cd::rhi::QueryPoolHandle h) noexcept
+    {
+        auto it = query_pools_.find(h.index());
+        return it == query_pools_.end() ? nullptr : &it->second;
+    }
+
     /// Copy `view_count` descriptors from this set's CPU heap slots into
     /// the per-frame GPU-visible heap and return the resulting GPU
     /// descriptor handle. Allocates a fresh GPU heap on first call.
@@ -5533,9 +5764,14 @@ public:
         // EndEvent of a subsequent recording, causing PIX/RenderDoc event-tree
         // desync (phase1189 B5 fix).
         debug_group_depth_ = 0;
+        // A-QUERY: a recycled command buffer must not inherit pending resolves.
+        pending_query_resolves_.clear();
     }
     void end() override
     {
+        // A-QUERY (Backend-to-100 Wave 3a): resolve every query pool written
+        // this recording into its readback buffer before the list closes.
+        resolve_pending_queries_();
         // Final transition: RENDER_TARGET → PRESENT if we wrote to a
         // swapchain image. After end() the consumer queues a Present().
         if (target_texture_.value() != 0u)
@@ -6036,6 +6272,86 @@ public:
     {
         if (gx == 0u || gy == 0u || gz == 0u) return;
         list_->Dispatch(gx, gy, gz);
+    }
+    // A-INDIRECT (Backend-to-100 Wave 3a) — GPU-driven draw/dispatch via
+    // ExecuteIndirect + a cached ID3D12CommandSignature. The signature carries
+    // a single DRAW / DRAW_INDEXED / DISPATCH argument (no root-arg changes), so
+    // the currently-bound pipeline + root signature + index buffer stay in
+    // effect — matching the Vulkan vkCmdDrawIndirect contract. An unknown args
+    // handle / failed signature is a graceful no-op.
+    void draw_indirect(cd::rhi::BufferHandle args, std::uint64_t offset,
+                       std::uint32_t draw_count, std::uint32_t stride) override
+    {
+        if (owner_ == nullptr || draw_count == 0u) return;
+        auto* b = owner_->find_buffer(args);
+        if (b == nullptr || !b->resource) return;
+        auto* sig = owner_->command_signature_for(
+            D3D12Device::IndirectKind::kDraw, static_cast<UINT>(stride));
+        if (sig == nullptr) return;
+        list_->ExecuteIndirect(sig, draw_count, b->resource.Get(),
+                               static_cast<UINT64>(offset), nullptr, 0);
+    }
+    void draw_indexed_indirect(cd::rhi::BufferHandle args, std::uint64_t offset,
+                               std::uint32_t draw_count, std::uint32_t stride) override
+    {
+        if (owner_ == nullptr || draw_count == 0u) return;
+        auto* b = owner_->find_buffer(args);
+        if (b == nullptr || !b->resource) return;
+        auto* sig = owner_->command_signature_for(
+            D3D12Device::IndirectKind::kDrawIndexed, static_cast<UINT>(stride));
+        if (sig == nullptr) return;
+        list_->ExecuteIndirect(sig, draw_count, b->resource.Get(),
+                               static_cast<UINT64>(offset), nullptr, 0);
+    }
+    void dispatch_indirect(cd::rhi::BufferHandle args, std::uint64_t offset) override
+    {
+        if (owner_ == nullptr) return;
+        auto* b = owner_->find_buffer(args);
+        if (b == nullptr || !b->resource) return;
+        // DISPATCH argument record is 3×u32 = 12 bytes (D3D12_DISPATCH_ARGUMENTS).
+        auto* sig = owner_->command_signature_for(
+            D3D12Device::IndirectKind::kDispatch,
+            static_cast<UINT>(sizeof(D3D12_DISPATCH_ARGUMENTS)));
+        if (sig == nullptr) return;
+        list_->ExecuteIndirect(sig, 1, b->resource.Get(),
+                               static_cast<UINT64>(offset), nullptr, 0);
+    }
+    // A-QUERY (Backend-to-100 Wave 3a) — query-heap recording.
+    //   * write_timestamp — EndQuery(TIMESTAMP) writes the GPU clock at `index`
+    //     (a timestamp is a point sample; D3D12 has no BeginQuery for it). The
+    //     resolve into the readback buffer happens in end() so the host map in
+    //     get_query_results sees fresh data after the submit completes.
+    //   * begin_query / end_query — bracket occlusion / pipeline-statistics.
+    //   * reset_query_pool — no-op on D3D12 (heaps need no reset; the readback
+    //     is overwritten by the next resolve), kept for cross-backend parity.
+    void write_timestamp(cd::rhi::QueryPoolHandle pool, std::uint32_t index) override
+    {
+        if (owner_ == nullptr) return;
+        auto* rec = owner_->find_query_pool(pool);
+        if (rec == nullptr || !rec->heap) return;
+        list_->EndQuery(rec->heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, index);
+        note_query_pool_for_resolve_(pool);
+    }
+    void begin_query(cd::rhi::QueryPoolHandle pool, std::uint32_t index) override
+    {
+        if (owner_ == nullptr) return;
+        auto* rec = owner_->find_query_pool(pool);
+        if (rec == nullptr || !rec->heap) return;
+        list_->BeginQuery(rec->heap.Get(), rec->d3d_query_type, index);
+    }
+    void end_query(cd::rhi::QueryPoolHandle pool, std::uint32_t index) override
+    {
+        if (owner_ == nullptr) return;
+        auto* rec = owner_->find_query_pool(pool);
+        if (rec == nullptr || !rec->heap) return;
+        list_->EndQuery(rec->heap.Get(), rec->d3d_query_type, index);
+        note_query_pool_for_resolve_(pool);
+    }
+    void reset_query_pool(cd::rhi::QueryPoolHandle /*pool*/,
+                          std::uint32_t /*first*/,
+                          std::uint32_t /*count*/) override
+    {
+        // D3D12 query heaps require no reset (parity no-op — see contract note).
     }
     // phase766 — mesh-shading dispatch via ID3D12GraphicsCommandList6::DispatchMesh.
     // Caller MUST have a mesh-shading PSO bound (bound_is_mesh_shader_)
@@ -6792,6 +7108,34 @@ private:
         D3D12_CPU_DESCRIPTOR_HANDLE dsv {};
     };
     PassState pass_state_ {};
+
+    // A-QUERY (Backend-to-100 Wave 3a) — query pools that received a write in
+    // this recording. end() resolves each one (ResolveQueryData ALL its slots)
+    // into its readback buffer so the host map in get_query_results sees fresh
+    // data after the producing submit completes. Cleared at begin().
+    std::vector<cd::rhi::QueryPoolHandle> pending_query_resolves_;
+    void note_query_pool_for_resolve_(cd::rhi::QueryPoolHandle pool)
+    {
+        for (const auto& p : pending_query_resolves_)
+            if (p.index() == pool.index())
+                return;
+        pending_query_resolves_.push_back(pool);
+    }
+    // Emit ResolveQueryData for every query pool written this recording. Called
+    // from end() (before Close()), with each readback buffer left in COPY_DEST
+    // (its creation state) — the resolve target requirement.
+    void resolve_pending_queries_()
+    {
+        if (owner_ == nullptr) return;
+        for (const auto& pool : pending_query_resolves_)
+        {
+            auto* rec = owner_->find_query_pool(pool);
+            if (rec == nullptr || !rec->heap || !rec->readback) continue;
+            list_->ResolveQueryData(rec->heap.Get(), rec->d3d_query_type, 0,
+                                    rec->count, rec->readback.Get(), 0);
+        }
+        pending_query_resolves_.clear();
+    }
 };
 
 // ===========================================================================

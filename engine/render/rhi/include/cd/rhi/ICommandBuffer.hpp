@@ -138,6 +138,30 @@ public:
         std::uint32_t first_instance
     ) = 0;
 
+    // ---- Indirect draw (A-INDIRECT, Backend-to-100 Wave 3a) ----------------
+    //
+    // GPU-driven draws: the draw parameters live in a buffer (created with
+    // BufferUsage::kIndirect) instead of being passed by value, so a compute
+    // pass can author the call without a CPU round-trip. `args` holds one or
+    // more packed argument records starting at `offset`; `draw_count` records
+    // are consumed `stride` bytes apart. The record layout matches the bound
+    // backend's native struct (Vulkan VkDrawIndirectCommand /
+    // VkDrawIndexedIndirectCommand, D3D12 D3D12_DRAW_ARGUMENTS /
+    // D3D12_DRAW_INDEXED_ARGUMENTS — the two are field-for-field identical).
+    //
+    // Default no-op so backends without an indirect path (and the Null
+    // reference) compile unchanged; the GPU backends override. Mirrors the
+    // draw() / draw_indexed() contract: the caller binds the pipeline (and,
+    // for draw_indexed_indirect, the index buffer) first.
+    virtual void draw_indirect(BufferHandle /*args*/,
+                               std::uint64_t /*offset*/,
+                               std::uint32_t /*draw_count*/,
+                               std::uint32_t /*stride*/) {}
+    virtual void draw_indexed_indirect(BufferHandle /*args*/,
+                                       std::uint64_t /*offset*/,
+                                       std::uint32_t /*draw_count*/,
+                                       std::uint32_t /*stride*/) {}
+
     // ---- Mesh shader ----------------------------------------------------------
     // Default no-op so backends without mesh-shader support compile
     // unchanged (full contract notes preserved from the pre-split
@@ -219,6 +243,14 @@ public:
     virtual void bind_compute_pipeline(ComputePipelineHandle pipeline) = 0;
     virtual void dispatch(std::uint32_t group_x, std::uint32_t group_y, std::uint32_t group_z) = 0;
 
+    /// A-INDIRECT (Backend-to-100 Wave 3a) — GPU-driven dispatch. The group
+    /// counts (x,y,z) are read from `args` at `offset` (a 3×u32 record matching
+    /// Vulkan VkDispatchIndirectCommand / D3D12 D3D12_DISPATCH_ARGUMENTS).
+    /// `args` must be created with BufferUsage::kIndirect. Default no-op so
+    /// backends without an indirect path (and Null) compile unchanged; the
+    /// caller binds the compute pipeline first, exactly like dispatch().
+    virtual void dispatch_indirect(BufferHandle /*args*/, std::uint64_t /*offset*/) {}
+
     // ---- Copies / clears ---------------------------------------------------
     virtual void copy_buffer(BufferHandle src, BufferHandle dst, std::span<const BufferCopyRegion> regions) = 0;
 
@@ -268,6 +300,31 @@ public:
     virtual void acceleration_structure_barrier() {}
 
     virtual void dispatch_rays(const DispatchRaysDesc& /*desc*/) {}
+
+    // ---- GPU queries (A-QUERY, Backend-to-100 Wave 3a) ---------------------
+    //
+    // Record into a query pool created via IDevice::create_query_pool. The
+    // pool MUST be reset (reset_query_pool, or the device's create-time reset)
+    // before the first write in a submission — Vulkan requires every query be
+    // reset before use, and the D3D12/Metal backends treat the reset as a
+    // no-op so a single contract works on all three.
+    //
+    //   * write_timestamp — record the GPU clock at `index` (kTimestamp pool).
+    //     Issued OUTSIDE begin_query/end_query (a timestamp is a point sample).
+    //   * begin_query / end_query — bracket the work whose occlusion /
+    //     pipeline-statistics counters land in slot `index` (kOcclusion /
+    //     kPipelineStatistics pools).
+    //   * reset_query_pool — clear `count` slots from `first` so they can be
+    //     written again in this submission.
+    //
+    // Default no-ops so backends without a query path (and Null) compile
+    // unchanged; the GPU backends override.
+    virtual void write_timestamp(QueryPoolHandle /*pool*/, std::uint32_t /*index*/) {}
+    virtual void begin_query(QueryPoolHandle /*pool*/, std::uint32_t /*index*/) {}
+    virtual void end_query(QueryPoolHandle /*pool*/, std::uint32_t /*index*/) {}
+    virtual void reset_query_pool(QueryPoolHandle /*pool*/,
+                                  std::uint32_t /*first*/,
+                                  std::uint32_t /*count*/) {}
 
     // ---- Test/diagnostic observability ------------------------------------
     /// Returns the current debug-group nesting depth for this recording.

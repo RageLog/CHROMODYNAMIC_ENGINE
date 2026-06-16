@@ -870,6 +870,14 @@ public:
         {
             vkDestroyFence(device_, f, nullptr);
         }
+        // A-QUERY (Backend-to-100 Wave 3a): query pools outlive every submit
+        // that referenced them; we already wait_idle'd above.
+        for (auto& [_, q] : query_pools_)
+        {
+            vkDestroyQueryPool(device_, q.pool, nullptr);
+        }
+        query_pools_.clear();
+        query_pool_handles_.clear();
         // Order: pipelines/layouts before shaders/set-layouts (depend on them);
         //        views before images (views reference images);
         //        samplers and pipeline_layouts are independent.
@@ -2624,6 +2632,105 @@ public:
         return vkGetFenceStatus(device_, it->second) == VK_SUCCESS;
     }
 
+    // --- GPU query pool (A-QUERY, Backend-to-100 Wave 3a) ----------------
+    [[nodiscard]] cd::core::Result<cd::rhi::QueryPoolHandle>
+    create_query_pool(const cd::rhi::QueryPoolDesc& desc) override
+    {
+        if (desc.count == 0)
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "create_query_pool: count == 0"));
+        }
+        VkQueryType vk_type { VK_QUERY_TYPE_TIMESTAMP };
+        VkQueryPipelineStatisticFlags stat_flags { 0 };
+        switch (desc.type)
+        {
+            case cd::rhi::QueryType::kTimestamp:
+                vk_type = VK_QUERY_TYPE_TIMESTAMP;
+                break;
+            case cd::rhi::QueryType::kOcclusion:
+                vk_type = VK_QUERY_TYPE_OCCLUSION;
+                break;
+            case cd::rhi::QueryType::kPipelineStatistics:
+                vk_type = VK_QUERY_TYPE_PIPELINE_STATISTICS;
+                // One counter (input-assembly vertices) is enough to make the
+                // pool valid; callers reading pipeline-statistics interpret the
+                // single u64 result accordingly.
+                stat_flags = VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT;
+                break;
+        }
+        const VkQueryPoolCreateInfo ci {
+            .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .queryType = vk_type,
+            .queryCount = desc.count,
+            .pipelineStatistics = stat_flags,
+        };
+        VkQueryPool pool { VK_NULL_HANDLE };
+        if (vkCreateQueryPool(device_, &ci, nullptr, &pool) != VK_SUCCESS)
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kResourceCreationFailed, "vkCreateQueryPool failed"));
+        }
+        const auto id = next_id_++;
+        query_pools_.emplace(id, QueryPoolRecord { pool, desc.type, desc.count });
+        query_pool_handles_.emplace(id, pool);
+        return cd::rhi::QueryPoolHandle { id, 1u };
+    }
+
+    void destroy_query_pool(cd::rhi::QueryPoolHandle h) override
+    {
+        if (auto it = query_pools_.find(h.index()); it != query_pools_.end())
+        {
+            vkDestroyQueryPool(device_, it->second.pool, nullptr);
+            query_pools_.erase(it);
+            query_pool_handles_.erase(h.index());
+        }
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    get_query_results(cd::rhi::QueryPoolHandle pool,
+                      std::uint32_t first,
+                      std::uint32_t count,
+                      std::span<std::uint64_t> out) override
+    {
+        auto it = query_pools_.find(pool.index());
+        if (it == query_pools_.end())
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "get_query_results: unknown pool"));
+        }
+        const auto& rec = it->second;
+        if (count == 0 || first + count > rec.count || out.size() < count)
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kInvalidArgument, "get_query_results: out-of-range / undersized"));
+        }
+        std::vector<std::uint64_t> raw(count, 0);
+        const VkResult r = vkGetQueryPoolResults(
+            device_, rec.pool, first, count,
+            static_cast<std::size_t>(count) * sizeof(std::uint64_t),
+            raw.data(), sizeof(std::uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        if (r != VK_SUCCESS)
+        {
+            return std::unexpected(
+                make_err(cd::rhi::rhi_errors::Code::kDeviceLost, "vkGetQueryPoolResults failed"));
+        }
+        // Timestamps are reported in GPU ticks; scale to nanoseconds via the
+        // device's timestamp period. Occlusion / pipeline-statistics counters
+        // are passed through verbatim.
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            out[i] = (rec.type == cd::rhi::QueryType::kTimestamp)
+                         ? static_cast<std::uint64_t>(
+                               static_cast<double>(raw[i]) * static_cast<double>(timestamp_period_ns_))
+                         : raw[i];
+        }
+        return {};
+    }
+
     // --- Timeline semaphores (Vulkan 1.2+ core) -------------------------
     [[nodiscard]] cd::core::Result<cd::rhi::TimelineSemaphoreHandle>
     create_timeline_semaphore(std::uint64_t initial_value) override
@@ -3318,6 +3425,7 @@ public:
                 .pipeline_layouts = &pipeline_layouts_,
                 .pipeline_to_layout = &pipeline_to_layout_,
                 .descriptor_sets = &descriptor_sets_,
+                .query_pools = &query_pool_handles_,
                 .view_formats = &view_formats_,
                 .image_formats = &image_formats_,
                 // Per-lane pools (parallel render pass) always live on the
@@ -4604,6 +4712,10 @@ public:
         // vkCmdWriteTimestamp2). D3D12 already sets this flag; Vulkan was
         // leaving it false despite the capability being readily queryable.
         features_.timestamp_queries = (p.limits.timestampComputeAndGraphics != 0);
+        // A-QUERY (Backend-to-100 Wave 3a): nanoseconds-per-timestamp-tick.
+        // get_query_results multiplies the raw GPU tick delta by this to
+        // return a nanosecond duration (0 on adapters without timestamps).
+        timestamp_period_ns_ = p.limits.timestampPeriod;
 
         // V-FEAT-PS: pipeline-statistics queries gate the inactive-but-real
         // pipelineStatisticsQuery feature already queried above. (We do NOT
@@ -4835,6 +4947,23 @@ public:
     // misuse (binary↔timeline are not interchangeable at the API level).
     std::unordered_map<std::uint32_t, VkSemaphore> timeline_semaphores_;
     std::unordered_map<std::uint32_t, VkFence> fences_;
+
+    // A-QUERY (Backend-to-100 Wave 3a): VkQueryPool storage + the query
+    // type each pool was created with (get_query_results applies the
+    // timestamp period only to kTimestamp pools). `timestamp_period_ns_` is
+    // captured from VkPhysicalDeviceLimits::timestampPeriod in populate_limits.
+    struct QueryPoolRecord
+    {
+        VkQueryPool        pool { VK_NULL_HANDLE };
+        cd::rhi::QueryType type { cd::rhi::QueryType::kTimestamp };
+        std::uint32_t      count { 0 };
+    };
+    std::unordered_map<std::uint32_t, QueryPoolRecord> query_pools_;
+    // Flat query-pool-id -> VkQueryPool mirror handed to the cmd-buffer
+    // ResourceTables (same pattern as buffers_/images_); kept in sync with
+    // query_pools_ on create/destroy.
+    std::unordered_map<std::uint32_t, VkQueryPool> query_pool_handles_;
+    float timestamp_period_ns_ { 1.0f };
 
     /// VkPipelineCache used by vkCreate{Graphics,Compute}Pipelines.
     /// Loaded from disk on first create_*_pipeline call (lazy because the

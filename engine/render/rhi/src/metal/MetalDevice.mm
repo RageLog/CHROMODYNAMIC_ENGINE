@@ -1279,6 +1279,124 @@ public:
         accels_.erase(h.index());
     }
 
+    // --- GPU query pool (A-QUERY, Backend-to-100 Wave 3a, gated-off) -----
+    //
+    // Timestamp pools allocate an MTLCounterSampleBuffer against the device's
+    // MTLCommonCounterSetTimestamp counter set (gated on
+    // features_.timestamp_queries / supportsCounterSampling). Occlusion +
+    // pipeline-statistics have no MTLCounterSampleBuffer analogue on Metal, so
+    // they return kNotImplemented gated on counter support — exactly the
+    // capability-gate semantics the IDevice contract documents.
+    [[nodiscard]] cd::core::Result<QueryPoolHandle>
+    create_query_pool(const QueryPoolDesc& desc) override
+    {
+        if (desc.count == 0)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument, "Metal::create_query_pool: count == 0"));
+        }
+        if (desc.type != QueryType::kTimestamp)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_query_pool: only timestamp queries are expressible "
+                "via MTLCounterSampleBuffer (occlusion/pipeline-statistics gated)"));
+        }
+        if (!features_.timestamp_queries)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_query_pool: device lacks timestamp counter sampling"));
+        }
+
+        // Find the timestamp counter set on this device.
+        id<MTLCounterSet> ts_set = nil;
+        for (id<MTLCounterSet> cs in [mtl_device_ counterSets])
+        {
+            if ([[cs name] isEqualToString:MTLCommonCounterSetTimestamp])
+            {
+                ts_set = cs;
+                break;
+            }
+        }
+        if (ts_set == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::create_query_pool: timestamp counter set not present"));
+        }
+
+        MTLCounterSampleBufferDescriptor* sbd =
+            [[MTLCounterSampleBufferDescriptor alloc] init];
+        sbd.counterSet = ts_set;
+        sbd.storageMode = MTLStorageModeShared;
+        sbd.sampleCount = static_cast<NSUInteger>(desc.count);
+        NSError* err = nil;
+        id<MTLCounterSampleBuffer> sb =
+            [mtl_device_ newCounterSampleBufferWithDescriptor:sbd error:&err];
+        if (sb == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::create_query_pool: newCounterSampleBufferWithDescriptor failed"));
+        }
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const QueryPoolHandle h { id, 1u };
+        const std::scoped_lock lock { query_pools_mu_ };
+        query_pools_.emplace(
+            h.index(),
+            std::make_unique<MetalQueryPoolObj>(sb, desc.type, desc.count));
+        return h;
+    }
+
+    void destroy_query_pool(QueryPoolHandle h) override
+    {
+        const std::scoped_lock lock { query_pools_mu_ };
+        query_pools_.erase(h.index());
+    }
+
+    [[nodiscard]] cd::core::Result<void>
+    get_query_results(QueryPoolHandle pool,
+                      std::uint32_t first,
+                      std::uint32_t count,
+                      std::span<std::uint64_t> out) override
+    {
+        MetalQueryPoolObj* qp = lookup_query_pool(pool);
+        if (qp == nullptr || qp->sample_buffer() == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument, "Metal::get_query_results: unknown pool"));
+        }
+        if (count == 0 || first + count > qp->count() || out.size() < count)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kInvalidArgument,
+                "Metal::get_query_results: out-of-range / undersized"));
+        }
+        // Resolve the sampled GPU ticks for [first, first+count).
+        NSData* data = [qp->sample_buffer()
+            resolveCounterRange:NSMakeRange(static_cast<NSUInteger>(first),
+                                            static_cast<NSUInteger>(count))];
+        if (data == nil || [data length] < count * sizeof(MTLCounterResultTimestamp))
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kDeviceLost, "Metal::get_query_results: resolveCounterRange failed"));
+        }
+        // Correlate GPU ticks -> nanoseconds via [device sampleTimestamps:].
+        // The MTLCounterResultTimestamp::timestamp is in GPU ticks; the host
+        // converts with the CPU/GPU correlation captured at sample time. For
+        // the gated-off structural arm we surface the raw GPU timestamp (Mac
+        // verification refines the ns scaling with a sampleTimestamps: pair).
+        const auto* results =
+            static_cast<const MTLCounterResultTimestamp*>([data bytes]);
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            out[i] = static_cast<std::uint64_t>(results[i].timestamp);
+        }
+        return {};
+    }
+
     // phase649 (Sprint-5): real id<MTLArgumentEncoder> path.
     //
     // The argument encoder is built from the DescriptorSetLayoutBinding
@@ -2786,6 +2904,16 @@ public:
         return (it == bindless_arrays_.end()) ? nullptr : it->second.get();
     }
 
+    // A-QUERY (Backend-to-100 Wave 3a, gated-off / structural): query-pool
+    // lookup. nullptr for unknown handles, matching the resolver contract.
+    [[nodiscard]] MetalQueryPoolObj*
+    lookup_query_pool(QueryPoolHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { query_pools_mu_ };
+        const auto it = query_pools_.find(h.index());
+        return (it == query_pools_.end()) ? nullptr : it->second.get();
+    }
+
 private:
     // Internal helper: not part of MetalDeviceCtx, used by present/acquire
     // which take a SwapchainHandle directly.
@@ -3163,6 +3291,14 @@ private:
     mutable std::mutex   bindless_arrays_mu_;
     std::unordered_map<std::uint32_t, std::unique_ptr<MetalBindlessArrayObj>>
         bindless_arrays_;
+
+    // A-QUERY (Backend-to-100 Wave 3a, gated-off / structural): query-pool
+    // registry. Each entry owns an MTLCounterSampleBuffer (timestamp counter
+    // set). Occlusion / pipeline-statistics are kNotImplemented (no Metal
+    // MTLCounterSampleBuffer analogue), so only kTimestamp pools land here.
+    mutable std::mutex   query_pools_mu_;
+    std::unordered_map<std::uint32_t, std::unique_ptr<MetalQueryPoolObj>>
+        query_pools_;
 
     // Pending present hand-off — present() records the swapchain whose
     // drawable should ride out on the next submit's command-buffer commit.

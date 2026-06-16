@@ -59,6 +59,12 @@ struct ResourceTables
     const std::unordered_map<std::uint32_t, VkPipelineLayout>* pipeline_to_layout { nullptr };
     const std::unordered_map<std::uint32_t, VkDescriptorSet>* descriptor_sets { nullptr };
 
+    /// A-QUERY (Backend-to-100 Wave 3a): query-pool-id -> VkQueryPool. The
+    /// cmd-buffer record path (write_timestamp / begin_query / end_query /
+    /// reset_query_pool) resolves the handle through this map. Same stability
+    /// contract as the other tables (no concurrent mutation during recording).
+    const std::unordered_map<std::uint32_t, VkQueryPool>* query_pools { nullptr };
+
     /// phase1116 (X1-FU-F step 2): view-id -> VkFormat, needed by the
     /// parallel-lane inheritance info (dynamic rendering secondaries
     /// must declare attachment formats up front).
@@ -168,6 +174,28 @@ public:
         std::uint32_t first_instance
     ) override;
     void dispatch(std::uint32_t group_x, std::uint32_t group_y, std::uint32_t group_z) override;
+
+    // A-INDIRECT (Backend-to-100 Wave 3a) — vkCmdDrawIndirect /
+    // vkCmdDrawIndexedIndirect / vkCmdDispatchIndirect on the resolved
+    // buffer + offset (honours the bound pipeline + index buffer).
+    void draw_indirect(cd::rhi::BufferHandle args,
+                       std::uint64_t offset,
+                       std::uint32_t draw_count,
+                       std::uint32_t stride) override;
+    void draw_indexed_indirect(cd::rhi::BufferHandle args,
+                               std::uint64_t offset,
+                               std::uint32_t draw_count,
+                               std::uint32_t stride) override;
+    void dispatch_indirect(cd::rhi::BufferHandle args, std::uint64_t offset) override;
+
+    // A-QUERY (Backend-to-100 Wave 3a) — VkQueryPool recording: reset +
+    // vkCmdWriteTimestamp2 + vkCmdBeginQuery / vkCmdEndQuery.
+    void write_timestamp(cd::rhi::QueryPoolHandle pool, std::uint32_t index) override;
+    void begin_query(cd::rhi::QueryPoolHandle pool, std::uint32_t index) override;
+    void end_query(cd::rhi::QueryPoolHandle pool, std::uint32_t index) override;
+    void reset_query_pool(cd::rhi::QueryPoolHandle pool,
+                          std::uint32_t first,
+                          std::uint32_t count) override;
 
     void copy_buffer(
         cd::rhi::BufferHandle src,

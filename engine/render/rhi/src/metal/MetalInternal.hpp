@@ -1119,6 +1119,43 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// MetalQueryPoolObj — MTLCounterSampleBuffer wrapper (A-QUERY, Backend-to-100
+// Wave 3a, gated-off / structural).
+//
+// Backs a cd::rhi::QueryPoolHandle for the kTimestamp case with an
+// MTLCounterSampleBuffer created against the device's MTLCommonCounterSet
+// "timestamp" counter set. The command buffer samples the GPU timestamp at a
+// slot via [encoder sampleCountersInBuffer:atSampleIndex:withBarrier:] (or
+// [cmd sampleTimestamps:...]); the device resolves nanosecond deltas via
+// [device sampleTimestamps:gpuTimestamp:] correlation in get_query_results.
+// Occlusion / pipeline-statistics have no MTLCounterSampleBuffer analogue —
+// the device's create_query_pool returns kNotImplemented for those, gated on
+// counter support, so this object is only ever constructed for kTimestamp.
+// ---------------------------------------------------------------------------
+class MetalQueryPoolObj final
+{
+public:
+    MetalQueryPoolObj(id<MTLCounterSampleBuffer> sample_buffer,
+                      QueryType type,
+                      std::uint32_t count) noexcept
+        : sample_buffer_(sample_buffer), type_(type), count_(count) {}
+    ~MetalQueryPoolObj() = default;
+    MetalQueryPoolObj(const MetalQueryPoolObj&) = delete;
+    MetalQueryPoolObj& operator=(const MetalQueryPoolObj&) = delete;
+    MetalQueryPoolObj(MetalQueryPoolObj&&) = delete;
+    MetalQueryPoolObj& operator=(MetalQueryPoolObj&&) = delete;
+
+    [[nodiscard]] id<MTLCounterSampleBuffer> sample_buffer() const noexcept { return sample_buffer_; }
+    [[nodiscard]] QueryType type() const noexcept { return type_; }
+    [[nodiscard]] std::uint32_t count() const noexcept { return count_; }
+
+private:
+    id<MTLCounterSampleBuffer> sample_buffer_ { nil };
+    QueryType                  type_ { QueryType::kTimestamp };
+    std::uint32_t              count_ { 0 };
+};
+
+// ---------------------------------------------------------------------------
 // MetalCommandBufferImpl — ICommandBuffer wrapper around
 // id<MTLCommandBuffer> + the active id<MTLRenderCommandEncoder>.
 //
@@ -1225,6 +1262,34 @@ public:
     // caller (Sprint-3 surface uses 1x1x1 threadgroup size — real compute
     // shaders override via SPIRV-Cross attributes when they land).
     void dispatch(std::uint32_t x, std::uint32_t y, std::uint32_t z) override;
+
+    // A-INDIRECT (Backend-to-100 Wave 3a, gated-off / structural): GPU-driven
+    // draw/dispatch via Metal indirect-buffer encoder calls
+    // ([encoder drawPrimitives:indirectBuffer:indirectBufferOffset:],
+    //  [encoder drawIndexedPrimitives:...indirectBuffer:...],
+    //  [computeEncoder dispatchThreadgroupsWithIndirectBuffer:...]). The bound
+    // primitive / index buffer state is honoured exactly like the by-value
+    // draw paths; a lookup miss (unbacked handle) gracefully skips. draw_count
+    // > 1 issues one indirect draw per record (Metal indirect draws consume a
+    // single record), advancing the offset by `stride` each iteration.
+    void draw_indirect(BufferHandle args, std::uint64_t offset,
+                       std::uint32_t draw_count, std::uint32_t stride) override;
+    void draw_indexed_indirect(BufferHandle args, std::uint64_t offset,
+                               std::uint32_t draw_count, std::uint32_t stride) override;
+    void dispatch_indirect(BufferHandle args, std::uint64_t offset) override;
+
+    // A-QUERY (Backend-to-100 Wave 3a, gated-off / structural): timestamp
+    // queries via MTLCounterSampleBuffer. write_timestamp samples the GPU
+    // timestamp counter at `index` ([encoder sampleCountersInBuffer:...] on the
+    // active encoder, or sampleTimestamps on the cmd buffer); occlusion +
+    // pipeline-statistics have no direct MTLCounterSampleBuffer analogue and
+    // are handled by the device (create_query_pool returns kNotImplemented for
+    // those gated on counter support), so begin/end/reset are parity no-ops.
+    void write_timestamp(QueryPoolHandle pool, std::uint32_t index) override;
+    void begin_query(QueryPoolHandle pool, std::uint32_t index) override;
+    void end_query(QueryPoolHandle pool, std::uint32_t index) override;
+    void reset_query_pool(QueryPoolHandle pool, std::uint32_t first,
+                          std::uint32_t count) override;
 
     // phase559 (Sprint-2): real MTLBlitCommandEncoder paths.
     //
@@ -1457,6 +1522,12 @@ public:
     // contract.
     [[nodiscard]] virtual MetalBindlessArrayObj*
     lookup_bindless_array(BindlessTextureArrayHandle h) const noexcept = 0;
+
+    // A-QUERY (Backend-to-100 Wave 3a, gated-off / structural): query-pool
+    // lookup. Consumed by write_timestamp (samples the MTLCounterSampleBuffer
+    // slot). nullptr for unknown handles, matching the resolver contract.
+    [[nodiscard]] virtual MetalQueryPoolObj*
+    lookup_query_pool(QueryPoolHandle h) const noexcept = 0;
 };
 
 }  // namespace cd::rhi::metal::detail

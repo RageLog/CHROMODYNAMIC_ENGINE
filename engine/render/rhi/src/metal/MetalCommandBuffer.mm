@@ -1057,6 +1057,160 @@ void MetalCommandBufferImpl::draw_indexed(std::uint32_t index_count,
                        baseInstance:static_cast<NSUInteger>(first_instance)];
 }
 
+// ---------------------------------------------------------------------------
+// A-INDIRECT (Backend-to-100 Wave 3a, gated-off / structural) — GPU-driven
+// draw/dispatch via Metal indirect-buffer encoder calls.
+//
+// The argument records live in `args` (a kIndirect buffer) at `offset`; the
+// record layout is the engine's cross-backend draw/dispatch struct, identical
+// to the Vulkan VkDraw[Indexed]IndirectCommand / VkDispatchIndirectCommand the
+// reference backend consumes. Metal's indirect draw consumes EXACTLY ONE record
+// per call, so a draw_count > 1 issues one indirect draw per record, advancing
+// the indirect-buffer offset by `stride` each iteration (mirrors the multi-draw
+// the Vulkan vkCmdDrawIndirect drawCount expresses). The bound primitive /
+// index buffer state is honoured exactly like the by-value draw paths; a lookup
+// miss (unbacked handle) gracefully skips — matching every other Metal cmd path.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::draw_indirect(BufferHandle args,
+                                           std::uint64_t offset,
+                                           std::uint32_t draw_count,
+                                           std::uint32_t stride)
+{
+    if (encoder_ == nil || ctx_ == nullptr || draw_count == 0)
+    {
+        return;
+    }
+    id<MTLBuffer> arg_buf = ctx_->lookup_buffer(args);
+    if (arg_buf == nil)
+    {
+        return;
+    }
+    for (std::uint32_t i = 0; i < draw_count; ++i)
+    {
+        const NSUInteger rec_offset =
+            static_cast<NSUInteger>(offset) +
+            static_cast<NSUInteger>(i) * static_cast<NSUInteger>(stride);
+        [encoder_ drawPrimitives:bound_primitive_
+                  indirectBuffer:arg_buf
+            indirectBufferOffset:rec_offset];
+    }
+}
+
+void MetalCommandBufferImpl::draw_indexed_indirect(BufferHandle args,
+                                                   std::uint64_t offset,
+                                                   std::uint32_t draw_count,
+                                                   std::uint32_t stride)
+{
+    if (encoder_ == nil || ctx_ == nullptr || index_buf_ == nil || draw_count == 0)
+    {
+        return;
+    }
+    id<MTLBuffer> arg_buf = ctx_->lookup_buffer(args);
+    if (arg_buf == nil)
+    {
+        return;
+    }
+    for (std::uint32_t i = 0; i < draw_count; ++i)
+    {
+        const NSUInteger rec_offset =
+            static_cast<NSUInteger>(offset) +
+            static_cast<NSUInteger>(i) * static_cast<NSUInteger>(stride);
+        [encoder_ drawIndexedPrimitives:bound_primitive_
+                              indexType:index_type_
+                            indexBuffer:index_buf_
+                      indexBufferOffset:index_offset_
+                         indirectBuffer:arg_buf
+                   indirectBufferOffset:rec_offset];
+    }
+}
+
+void MetalCommandBufferImpl::dispatch_indirect(BufferHandle args,
+                                               std::uint64_t offset)
+{
+    if (compute_ == nil || current_compute_pso_ == nil || ctx_ == nullptr)
+    {
+        return;
+    }
+    id<MTLBuffer> arg_buf = ctx_->lookup_buffer(args);
+    if (arg_buf == nil)
+    {
+        return;
+    }
+    // The indirect record is a 3×u32 threadgroup count (matches Vulkan
+    // VkDispatchIndirectCommand); threads-per-threadgroup is the reflected
+    // local size cached by bind_compute_pipeline (M6), exactly as dispatch().
+    [compute_ dispatchThreadgroupsWithIndirectBuffer:arg_buf
+                               indirectBufferOffset:static_cast<NSUInteger>(offset)
+                              threadsPerThreadgroup:current_threads_per_threadgroup_];
+}
+
+// ---------------------------------------------------------------------------
+// A-QUERY (Backend-to-100 Wave 3a, gated-off / structural) — timestamp queries
+// via MTLCounterSampleBuffer.
+//
+// write_timestamp samples the GPU timestamp counter into slot `index` of the
+// pool's MTLCounterSampleBuffer. Metal samples counters at an ENCODER boundary
+// via [encoder sampleCountersInBuffer:atSampleIndex:withBarrier:]; we sample on
+// whichever encoder is currently open (render / compute / blit). If no encoder
+// is open the sample is skipped (a timestamp with no surrounding GPU work has
+// no defined boundary to attach to) — the honest gated-off behaviour, since the
+// real Mac-side verification confirms which encoder must carry the sample.
+//
+// Occlusion / pipeline-statistics have no MTLCounterSampleBuffer analogue, so
+// the device's create_query_pool returns kNotImplemented for those (gated on
+// counter support) and begin/end/reset are cross-backend-parity no-ops here.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::write_timestamp(QueryPoolHandle pool,
+                                             std::uint32_t index)
+{
+    if (ctx_ == nullptr)
+    {
+        return;
+    }
+    MetalQueryPoolObj* qp = ctx_->lookup_query_pool(pool);
+    if (qp == nullptr || qp->sample_buffer() == nil)
+    {
+        return;
+    }
+    id<MTLCounterSampleBuffer> sb = qp->sample_buffer();
+    const NSUInteger slot = static_cast<NSUInteger>(index);
+    if (encoder_ != nil)
+    {
+        [encoder_ sampleCountersInBuffer:sb atSampleIndex:slot withBarrier:YES];
+    }
+    else if (compute_ != nil)
+    {
+        [compute_ sampleCountersInBuffer:sb atSampleIndex:slot withBarrier:YES];
+    }
+    else if (blit_ != nil)
+    {
+        [blit_ sampleCountersInBuffer:sb atSampleIndex:slot withBarrier:YES];
+    }
+    // No open encoder -> skip (no boundary to attach the sample to).
+}
+
+void MetalCommandBufferImpl::begin_query(QueryPoolHandle /*pool*/,
+                                         std::uint32_t /*index*/)
+{
+    // Occlusion / pipeline-statistics not expressible via MTLCounterSampleBuffer
+    // (kNotImplemented at create_query_pool); cross-backend-parity no-op.
+}
+
+void MetalCommandBufferImpl::end_query(QueryPoolHandle /*pool*/,
+                                       std::uint32_t /*index*/)
+{
+    // See begin_query — parity no-op.
+}
+
+void MetalCommandBufferImpl::reset_query_pool(QueryPoolHandle /*pool*/,
+                                              std::uint32_t /*first*/,
+                                              std::uint32_t /*count*/)
+{
+    // MTLCounterSampleBuffer slots are overwritten by the next sample; no reset
+    // primitive exists. Cross-backend-parity no-op (Vulkan resets, D3D12/Metal
+    // need none).
+}
+
 // M10 (B2 — ADR-20260615): mesh-shader dispatch via
 // [renderEncoder drawMeshThreadgroups:threadsPerObjectThreadgroup:
 // threadsPerMeshThreadgroup:].

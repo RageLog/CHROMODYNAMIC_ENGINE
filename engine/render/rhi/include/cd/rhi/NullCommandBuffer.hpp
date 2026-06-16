@@ -25,6 +25,9 @@ struct NullCommandLog
     std::uint64_t begin_count { 0 }, end_count { 0 };
     std::uint64_t begin_pass_count { 0 }, end_pass_count { 0 };
     std::uint64_t draws { 0 }, indexed_draws { 0 }, dispatches { 0 };
+    // A-INDIRECT / A-QUERY (Backend-to-100 Wave 3a) recording counters.
+    std::uint64_t indirect_draws { 0 }, indirect_dispatches { 0 };
+    std::uint64_t query_writes { 0 }, query_begins { 0 }, query_ends { 0 }, query_resets { 0 };
     std::uint64_t buffer_barriers { 0 }, texture_barriers { 0 };
     std::uint64_t bind_graphics_pipeline { 0 }, bind_compute_pipeline { 0 };
     std::uint64_t set_viewport { 0 }, set_scissor { 0 };
@@ -43,6 +46,12 @@ struct NullCommandLog
         draws += o.draws;
         indexed_draws += o.indexed_draws;
         dispatches += o.dispatches;
+        indirect_draws += o.indirect_draws;
+        indirect_dispatches += o.indirect_dispatches;
+        query_writes += o.query_writes;
+        query_begins += o.query_begins;
+        query_ends += o.query_ends;
+        query_resets += o.query_resets;
         buffer_barriers += o.buffer_barriers;
         texture_barriers += o.texture_barriers;
         bind_graphics_pipeline += o.bind_graphics_pipeline;
@@ -141,6 +150,44 @@ public:
     void dispatch(std::uint32_t, std::uint32_t, std::uint32_t) override
     {
         ++log_.dispatches;
+    }
+
+    // A-INDIRECT (Backend-to-100 Wave 3a) — no-op overrides; count them so a
+    // headless test can assert the call was recorded.
+    void draw_indirect(BufferHandle, std::uint64_t, std::uint32_t, std::uint32_t) override
+    {
+        ++log_.indirect_draws;
+    }
+
+    void draw_indexed_indirect(BufferHandle, std::uint64_t, std::uint32_t, std::uint32_t) override
+    {
+        ++log_.indirect_draws;
+    }
+
+    void dispatch_indirect(BufferHandle, std::uint64_t) override
+    {
+        ++log_.indirect_dispatches;
+    }
+
+    // A-QUERY (Backend-to-100 Wave 3a) — no-op recording overrides.
+    void write_timestamp(QueryPoolHandle, std::uint32_t) override
+    {
+        ++log_.query_writes;
+    }
+
+    void begin_query(QueryPoolHandle, std::uint32_t) override
+    {
+        ++log_.query_begins;
+    }
+
+    void end_query(QueryPoolHandle, std::uint32_t) override
+    {
+        ++log_.query_ends;
+    }
+
+    void reset_query_pool(QueryPoolHandle, std::uint32_t, std::uint32_t) override
+    {
+        ++log_.query_resets;
     }
 
     void copy_buffer(BufferHandle, BufferHandle, std::span<const BufferCopyRegion> regions) override

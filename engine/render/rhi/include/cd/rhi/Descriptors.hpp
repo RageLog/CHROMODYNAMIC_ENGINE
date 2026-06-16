@@ -455,6 +455,20 @@ struct BindlessTextureArrayDesc
     std::string_view debug_name {};
 };
 
+// ---- GPU query pool (A-QUERY, Backend-to-100 Wave 3a) --------------------
+//
+// A pool of `count` query slots of a single `type`. Timestamp pools size
+// `count` to the number of vkCmdWriteTimestamp / EndQuery(TIMESTAMP) sites
+// (typically 2 for a begin/end pair); occlusion + pipeline-statistics pools
+// size it to the number of begin_query/end_query pairs. The device resolves
+// results through `get_query_results` after the producing submit completes.
+struct QueryPoolDesc
+{
+    QueryType     type  { QueryType::kTimestamp };
+    std::uint32_t count { 1 };
+    std::string_view debug_name {};
+};
+
 // ---- Device limits & capabilities ----------------------------------------
 
 struct DeviceLimits

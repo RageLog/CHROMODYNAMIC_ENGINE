@@ -286,6 +286,23 @@ enum class QueueType : std::uint8_t
     kTransfer
 };
 
+// ---- GPU query subsystem (A-QUERY, Backend-to-100 Wave 3a) ----------------
+//
+// The kind of measurement a query pool records. `kTimestamp` writes a GPU
+// clock tick (resolved to nanoseconds via the device's timestamp period);
+// `kOcclusion` counts samples that pass the depth/stencil test between
+// begin_query/end_query; `kPipelineStatistics` accumulates the pipeline-stage
+// counters Vulkan VkQueryPipelineStatisticFlags / D3D12
+// D3D12_QUERY_DATA_PIPELINE_STATISTICS expose. Backends gate each type on the
+// matching DeviceFeatures flag (timestamp_queries / pipeline_statistics_queries)
+// or the per-backend occlusion capability.
+enum class QueryType : std::uint8_t
+{
+    kTimestamp,
+    kPipelineStatistics,
+    kOcclusion,
+};
+
 // ---- Bit-flag helpers -----------------------------------------------------
 
 #define CD_RHI_DEFINE_FLAG_OPS(E)                                                             \

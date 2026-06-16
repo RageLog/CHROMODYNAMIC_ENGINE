@@ -405,6 +405,48 @@ public:
             "copy_image_to_buffer: not implemented by this backend"));
     }
 
+    // ---- GPU query pool (A-QUERY, Backend-to-100 Wave 3a) -----------------
+    //
+    // Allocate / release / read a pool of GPU queries (timestamp /
+    // pipeline-statistics / occlusion). The command buffer records into the
+    // pool (write_timestamp / begin_query / end_query); after the producing
+    // submit completes the host reads the values via get_query_results.
+    //
+    // Callers gate on the matching DeviceFeatures flag (timestamp_queries /
+    // pipeline_statistics_queries) before creating a pool. Backends without a
+    // query implementation return kNotImplemented; the base default reports
+    // that so non-implementing backends (and Null) need no override.
+
+    [[nodiscard]] virtual cd::core::Result<QueryPoolHandle>
+    create_query_pool(const QueryPoolDesc& /*desc*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "create_query_pool: backend has no GPU-query implementation"));
+    }
+
+    virtual void destroy_query_pool(QueryPoolHandle /*h*/) {}
+
+    /// Read `count` resolved query values from `pool` starting at `first` into
+    /// `out` (one std::uint64_t per query). For kTimestamp pools the value is
+    /// in NANOSECONDS (the backend applies the device timestamp period). For
+    /// kOcclusion pools it is the passing-sample count. `out.size()` must be
+    /// >= `count`. Blocks until the values are ready is NOT implied — the
+    /// caller must wait_for_fence / wait_idle on the producing submit first;
+    /// the backend reads whatever is currently resolved. Returns
+    /// kNotImplemented on backends without a query path, kInvalidArgument on an
+    /// unknown handle / out-of-range slice / undersized `out`.
+    [[nodiscard]] virtual cd::core::Result<void>
+    get_query_results(QueryPoolHandle /*pool*/,
+                      std::uint32_t /*first*/,
+                      std::uint32_t /*count*/,
+                      std::span<std::uint64_t> /*out*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "get_query_results: backend has no GPU-query implementation"));
+    }
+
     // ---- Ray tracing (Phase 14.G — API shape only at v0.40.0) -------------
     //
     // Backends that don't yet implement RT return kNotImplemented from

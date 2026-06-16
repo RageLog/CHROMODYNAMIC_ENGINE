@@ -523,6 +523,100 @@ void VulkanCommandBuffer::dispatch(std::uint32_t group_x, std::uint32_t group_y,
     vkCmdDispatch(cmd_, group_x, group_y, group_z);
 }
 
+// A-INDIRECT (Backend-to-100 Wave 3a) — GPU-driven draw/dispatch. The
+// argument records live in `args` (created with BufferUsage::kIndirect) at
+// `offset`; the bound pipeline (+ index buffer for the indexed variant) is
+// honoured exactly like the by-value draw paths. An unknown handle resolves
+// to a graceful no-op, matching every other Vulkan record path.
+void VulkanCommandBuffer::draw_indirect(
+    cd::rhi::BufferHandle args,
+    std::uint64_t offset,
+    std::uint32_t draw_count,
+    std::uint32_t stride
+)
+{
+    if (tables_.buffers == nullptr || draw_count == 0)
+        return;
+    auto it = tables_.buffers->find(args.index());
+    if (it == tables_.buffers->end())
+        return;
+    vkCmdDrawIndirect(cmd_, it->second, offset, draw_count, stride);
+}
+
+void VulkanCommandBuffer::draw_indexed_indirect(
+    cd::rhi::BufferHandle args,
+    std::uint64_t offset,
+    std::uint32_t draw_count,
+    std::uint32_t stride
+)
+{
+    if (tables_.buffers == nullptr || draw_count == 0)
+        return;
+    auto it = tables_.buffers->find(args.index());
+    if (it == tables_.buffers->end())
+        return;
+    vkCmdDrawIndexedIndirect(cmd_, it->second, offset, draw_count, stride);
+}
+
+void VulkanCommandBuffer::dispatch_indirect(cd::rhi::BufferHandle args, std::uint64_t offset)
+{
+    if (tables_.buffers == nullptr)
+        return;
+    auto it = tables_.buffers->find(args.index());
+    if (it == tables_.buffers->end())
+        return;
+    vkCmdDispatchIndirect(cmd_, it->second, offset);
+}
+
+// A-QUERY (Backend-to-100 Wave 3a) — VkQueryPool recording. write_timestamp
+// uses vkCmdWriteTimestamp2 (Vulkan 1.3 core; the device enables sync2);
+// begin/end bracket occlusion / pipeline-statistics queries; reset clears the
+// slots so they may be (re)written in this submission (Vulkan requires every
+// query be reset before use). An unknown handle is a graceful no-op.
+void VulkanCommandBuffer::write_timestamp(cd::rhi::QueryPoolHandle pool, std::uint32_t index)
+{
+    if (tables_.query_pools == nullptr)
+        return;
+    auto it = tables_.query_pools->find(pool.index());
+    if (it == tables_.query_pools->end())
+        return;
+    vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, it->second, index);
+}
+
+void VulkanCommandBuffer::begin_query(cd::rhi::QueryPoolHandle pool, std::uint32_t index)
+{
+    if (tables_.query_pools == nullptr)
+        return;
+    auto it = tables_.query_pools->find(pool.index());
+    if (it == tables_.query_pools->end())
+        return;
+    vkCmdBeginQuery(cmd_, it->second, index, 0);
+}
+
+void VulkanCommandBuffer::end_query(cd::rhi::QueryPoolHandle pool, std::uint32_t index)
+{
+    if (tables_.query_pools == nullptr)
+        return;
+    auto it = tables_.query_pools->find(pool.index());
+    if (it == tables_.query_pools->end())
+        return;
+    vkCmdEndQuery(cmd_, it->second, index);
+}
+
+void VulkanCommandBuffer::reset_query_pool(
+    cd::rhi::QueryPoolHandle pool,
+    std::uint32_t first,
+    std::uint32_t count
+)
+{
+    if (tables_.query_pools == nullptr || count == 0)
+        return;
+    auto it = tables_.query_pools->find(pool.index());
+    if (it == tables_.query_pools->end())
+        return;
+    vkCmdResetQueryPool(cmd_, it->second, first, count);
+}
+
 void VulkanCommandBuffer::copy_buffer(
     cd::rhi::BufferHandle src,
     cd::rhi::BufferHandle dst,

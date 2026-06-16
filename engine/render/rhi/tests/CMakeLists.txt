@@ -37,6 +37,49 @@ cd_add_test(d3d12_parity_m4
   DEPS    cd::rhi cd::core
 )
 
+# Backend-to-100 Wave 3a / A-INDIRECT: indirect draw/dispatch. Null reference
+# records the no-op overrides; Vulkan (lavapipe/RTX) + D3D12 (WARP) record a
+# real vkCmdDrawIndirect / ExecuteIndirect + vkCmdDispatchIndirect against a
+# kIndirect buffer and submit (submit-clean + fence-signal assertion). SKIPs
+# cleanly when no device is present.
+# Backend-to-100 Wave 3a / A-QUERY: GPU timestamp query round-trip. Null returns
+# kNotImplemented; Vulkan + D3D12 create a kTimestamp pool(2), bracket a copy,
+# read back, and assert t1 >= t0. SKIPs when timestamp_queries is unavailable.
+if(WIN32)
+  cd_add_test(rhi_indirect
+    SOURCES test_rhi_indirect.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  cd_add_test(rhi_query
+    SOURCES test_rhi_query.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::rhi cd::core
+  )
+  # rhi_indirect drives the in-device GLSL->DXIL compute path on D3D12, so it
+  # needs the same dxcompiler.dll/dxil.dll runtime as the depth/MRT smoke.
+  file(GLOB _cd_dxc_ind_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_ind_list)
+  if(_cd_dxc_ind_list AND TARGET cd_test_rhi_indirect)
+    list(POP_BACK _cd_dxc_ind_list _cd_dxc_ind_dll)
+    get_filename_component(_cd_dxc_ind_dir "${_cd_dxc_ind_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_rhi_indirect POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_ind_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_indirect>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_ind_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_indirect>")
+  endif()
+else()
+  cd_add_test(rhi_indirect
+    SOURCES test_rhi_indirect.cpp
+    DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
+  )
+  cd_add_test(rhi_query
+    SOURCES test_rhi_query.cpp
+    DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+endif()
+
 # D16: cross-backend PIXEL-PARITY capstone. ONE engine GLSL textured/lit/
 # depth-tested scene is compiled to SPIR-V (Vulkan) AND DXIL (D3D12) via the
 # SAME create_shader_module(kGlsl) call, rendered to a 256x256 offscreen on
