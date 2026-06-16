@@ -244,6 +244,53 @@ TEST(SaveCompressionRle, BenchmarkReturnsSaneStats)
 }
 
 // ============================================================================
+// T8 — decompress rejects a repeat-run header with no payload byte
+//
+// The header doc lists "a repeat run header is at the final byte of blob (no
+// payload byte)" as a corruption case. T5 covers a truncated *literal* payload;
+// this covers the distinct *repeat* path (decompress_rle line ~180).
+// ============================================================================
+TEST(SaveCompressionRle, DecompressRejectsRepeatRunMissingPayload)
+{
+    // Arrange: a single repeat-run header (bit7=1, count-1=2 -> 3 repeats) but
+    // NO payload byte follows. Header = 0x80 | 0x02 = 0x82.
+    CompressedSave corrupt;
+    corrupt.original_size = 3U;     // header claims 3 repeated bytes
+    corrupt.blob.push_back(0x82U);  // repeat header, count=3, no payload
+    corrupt.ratio = 0.33;
+
+    // Act
+    const auto out = decompress_rle(corrupt);
+
+    // Assert
+    EXPECT_FALSE(out.has_value())
+        << "decompress_rle should return nullopt for a repeat header with no payload";
+}
+
+// ============================================================================
+// T9 — decompress rejects an empty blob paired with a non-zero original_size
+//
+// The empty-blob early-out (decompress_rle line ~155) returns an empty vector
+// ONLY when original_size == 0; otherwise it is corrupt. T4 covers the
+// original_size == 0 happy path; this covers the corrupt branch.
+// ============================================================================
+TEST(SaveCompressionRle, DecompressRejectsEmptyBlobWithNonZeroSize)
+{
+    // Arrange: empty blob but the envelope claims 64 original bytes.
+    CompressedSave corrupt;
+    corrupt.original_size = 64U;
+    // corrupt.blob intentionally left empty.
+    corrupt.ratio = 0.0;
+
+    // Act
+    const auto out = decompress_rle(corrupt);
+
+    // Assert
+    EXPECT_FALSE(out.has_value())
+        << "decompress_rle should return nullopt for an empty blob with size > 0";
+}
+
+// ============================================================================
 // Sprint-2 LZ4 tests — compiled only when lz4 is available at configure time.
 // ============================================================================
 #if CD_SAVE_COMPRESSION_HAS_LZ4

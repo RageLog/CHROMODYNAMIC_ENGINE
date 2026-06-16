@@ -312,4 +312,64 @@ TEST(GameQuery, RemoveEntityIsSurgical)
     EXPECT_TRUE(saw_c);
 }
 
+// -----------------------------------------------------------------------------
+// 11) Degenerate: sphere_query with a negative radius returns an empty set
+//     (header contract `radius < 0.0F` -> empty), and an empty world returns
+//     empty regardless of radius. Locks the early-out guards in sphere_query.
+// -----------------------------------------------------------------------------
+TEST(GameQuery, SphereQueryNegativeRadiusAndEmptyWorld)
+{
+    // Empty world: any radius -> empty.
+    QueryWorld empty { 2.0F };
+    EXPECT_TRUE(empty.sphere_query(Vec3f { 0, 0, 0 }, 5.0F).empty());
+
+    World w;
+    Entity a = w.create();
+    QueryWorld q { 2.0F };
+    q.add_entity(a, Vec3f { 0.0F, 0.0F, 0.0F }, box_at(Vec3f { 0.0F, 0.0F, 0.0F }, 0.5F));
+    q.rebuild();
+
+    // Negative radius -> empty (degenerate query, not a crash).
+    EXPECT_TRUE(q.sphere_query(Vec3f { 0, 0, 0 }, -1.0F).empty());
+    // Sanity: a valid radius still finds the entity.
+    EXPECT_EQ(q.sphere_query(Vec3f { 0, 0, 0 }, 1.0F).size(), 1U);
+}
+
+// -----------------------------------------------------------------------------
+// 12) Degenerate ray: a ray parallel to a slab whose origin lies OUTSIDE that
+//     slab misses the box (the `d[i] == 0` parallel-slab branch of
+//     intersect_ray_aabb). Prior tests only covered axis-aligned hits/misses
+//     where every component was non-zero.
+// -----------------------------------------------------------------------------
+TEST(GameQuery, RayParallelToSlabOutsideMisses)
+{
+    const Aabb box = box_at(Vec3f { 5.0F, 0.0F, 0.0F }, 1.0F);  // y,z in [-1,1]
+
+    // Ray travels +x but is offset to y=5 (outside the box's y-slab [-1,1]).
+    // dir.y == 0 and origin.y is outside the slab -> miss.
+    auto miss = intersect_ray_aabb(Vec3f { 0.0F, 5.0F, 0.0F },
+                                   Vec3f { 1.0F, 0.0F, 0.0F }, box, 100.0F);
+    EXPECT_FALSE(miss.has_value());
+
+    // Same ray but offset INSIDE the y-slab (y=0.5) -> hits.
+    auto hit = intersect_ray_aabb(Vec3f { 0.0F, 0.5F, 0.0F },
+                                  Vec3f { 1.0F, 0.0F, 0.0F }, box, 100.0F);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_NEAR(hit->t, 4.0F, 1e-5F);
+}
+
+// -----------------------------------------------------------------------------
+// 13) Degenerate ray: origin already INSIDE the box reports t == 0 (the
+//     `tmin < 0 -> t_hit = 0` clamp in intersect_ray_aabb). Locks the
+//     "ray starts inside" branch untouched by prior tests.
+// -----------------------------------------------------------------------------
+TEST(GameQuery, RayOriginInsideBoxReportsZeroT)
+{
+    const Aabb box = box_at(Vec3f { 0.0F, 0.0F, 0.0F }, 2.0F);  // [-2,2]^3
+    auto hit = intersect_ray_aabb(Vec3f { 0.0F, 0.0F, 0.0F },
+                                  Vec3f { 1.0F, 0.0F, 0.0F }, box, 100.0F);
+    ASSERT_TRUE(hit.has_value());
+    EXPECT_NEAR(hit->t, 0.0F, 1e-5F);  // entry behind origin -> clamped to 0
+}
+
 }  // namespace

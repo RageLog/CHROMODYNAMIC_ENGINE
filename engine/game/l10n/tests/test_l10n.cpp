@@ -350,3 +350,84 @@ TEST(L10n, LoadFromDiskRoundTrip)
 
     std::remove(path.c_str());
 }
+
+// -----------------------------------------------------------------------------
+// 15. Plural edge: a negative count is a valid integer for {n} substitution and
+//     routes through the rule's "other" category (n != 1). Locks the
+//     substitute_count + plural_rule_en behaviour for n < 0, which prior tests
+//     never exercised (they only used 0/1/2/5).
+// -----------------------------------------------------------------------------
+TEST(L10n, PluralNegativeCountSubstitutes)
+{
+    // plural_rule_en: anything != 1 -> kOther (including negatives).
+    EXPECT_EQ(plural_rule_en(-1), PluralCategory::kOther);
+    EXPECT_EQ(plural_rule_en(-5), PluralCategory::kOther);
+
+    StringTable t;
+    ASSERT_EQ(t.load_from_string("debt.one={n} coin\ndebt.other={n} coins\n", "en"),
+              LoadResult::kOk);
+
+    auto neg = t.get_plural("debt", -3, &plural_rule_en);
+    ASSERT_TRUE(neg.has_value());
+    EXPECT_EQ(*neg, "-3 coins");  // negative routes to .other, "{n}" -> "-3"
+}
+
+// -----------------------------------------------------------------------------
+// 16. Plural edge: multiple "{n}" placeholders in a single template are ALL
+//     substituted (one-pass replace), and a "{n}" at the very end of the
+//     string substitutes correctly (off-by-one boundary in substitute_count).
+// -----------------------------------------------------------------------------
+TEST(L10n, PluralMultipleAndTrailingPlaceholders)
+{
+    StringTable t;
+    ASSERT_EQ(t.load_from_string(
+                  "score.other={n} of {n} (total: {n})\ncount.other=items: {n}\n",
+                  "en"),
+              LoadResult::kOk);
+
+    auto multi = t.get_plural("score", 7, &plural_rule_en);
+    ASSERT_TRUE(multi.has_value());
+    EXPECT_EQ(*multi, "7 of 7 (total: 7)");  // all three {n} replaced
+
+    auto trailing = t.get_plural("count", 42, &plural_rule_en);
+    ASSERT_TRUE(trailing.has_value());
+    EXPECT_EQ(*trailing, "items: 42");  // trailing {n} at end-of-string
+}
+
+// -----------------------------------------------------------------------------
+// 17. Plural edge: a literal token that is NOT exactly "{n}" is left verbatim
+//     (an unterminated "{n" or a "{m}" placeholder is untouched — the
+//     substitution is intentionally a single literal "{n}" match, no parser).
+// -----------------------------------------------------------------------------
+TEST(L10n, PluralLeavesNonMatchingTokensVerbatim)
+{
+    StringTable t;
+    ASSERT_EQ(t.load_from_string("raw.other={m} and {n and {n}\n", "en"),
+              LoadResult::kOk);
+
+    auto s = t.get_plural("raw", 9, &plural_rule_en);
+    ASSERT_TRUE(s.has_value());
+    // "{m}" and the unterminated "{n " are verbatim; only the final "{n}" fires.
+    EXPECT_EQ(*s, "{m} and {n and 9");
+}
+
+// -----------------------------------------------------------------------------
+// 18. plural_rule_for returns the safe neutral default (one/other, == en rule)
+//     for an unknown locale and never returns nullptr. Locks the manager-side
+//     plural-rule fallback contract (header: "never returns nullptr").
+// -----------------------------------------------------------------------------
+TEST(L10n, PluralRuleForUnknownLocaleFallsBackToEn)
+{
+    L10nManager mgr;
+    // Pre-baked rules are "en" and "tr"; an unregistered locale must fall back.
+    EXPECT_EQ(mgr.plural_rule_for("xx"), &plural_rule_en);
+    EXPECT_EQ(mgr.plural_rule_for(""),   &plural_rule_en);
+    // Registered locales return their own rule.
+    EXPECT_EQ(mgr.plural_rule_for("tr"), &plural_rule_tr);
+    EXPECT_EQ(mgr.plural_rule_for("en"), &plural_rule_en);
+
+    // A locale whose rule was explicitly set to nullptr also falls back (the
+    // header promises plural_rule_for never returns nullptr).
+    mgr.set_plural_rule("zz", nullptr);
+    EXPECT_EQ(mgr.plural_rule_for("zz"), &plural_rule_en);
+}

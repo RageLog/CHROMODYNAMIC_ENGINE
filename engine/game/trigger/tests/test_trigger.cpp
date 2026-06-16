@@ -380,3 +380,76 @@ TEST(GameTrigger, DisableThenFindStillSucceeds)
     // set_enabled on an unknown owner returns false.
     EXPECT_FALSE(world.set_enabled(make_entity(999), true));
 }
+
+// ----------------------------------------------------------------------------
+// 13. Re-adding a volume under the same owner WIPES prior occupancy so the
+//     replacement starts dispatch fresh: a subject that was inside the old
+//     volume fires on_enter (NOT on_stay) on the first tick of the new volume.
+//     Locks the Trigger.cpp add_trigger occupancy-wipe contract (the new shape
+//     has no relationship to prior "was inside" pairs).
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, ReAddWipesOccupancyAndReEnters)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner   = make_entity(1);
+    const Entity subject = make_entity(100);
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+
+    // Subject inside the original volume -> on_enter fires once.
+    const std::vector<Subject> inside {{subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}};
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+
+    // Replace the volume under the same owner. Occupancy must be wiped, so the
+    // subject (still inside the new identical box) is treated as a NEW enter
+    // rather than a stay.
+    EventCounts counts2;
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts2));
+    EXPECT_FALSE(world.is_inside(owner, subject));
+
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_EQ(counts2.enter, 1);  // fresh enter, not stay
+    EXPECT_EQ(counts2.stay,  0);
+    // The original callbacks must NOT fire again (the volume was replaced).
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_EQ(counts.stay,  0);
+}
+
+// ----------------------------------------------------------------------------
+// 14. A volume with NO callbacks set (all std::function empty) must not crash
+//     across enter/stay/exit/subject-removal transitions; occupancy bookkeeping
+//     still tracks correctly so is_inside reflects reality. Locks the "any
+//     unset callback is a no-op" header contract on every dispatch branch.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, EmptyCallbacksAreNoOpAcrossAllTransitions)
+{
+    TriggerWorld world;
+    const Entity owner   = make_entity(1);
+    const Entity subject = make_entity(100);
+
+    TriggerVolume v;
+    v.name  = "no-callbacks";
+    v.shape = unit_box();
+    // on_enter / on_stay / on_exit deliberately left empty.
+    world.add_trigger(owner, std::move(v));
+
+    const std::vector<Subject> inside  {{subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}};
+    const std::vector<Subject> outside {{subject, Vec3f {5.0F, 0.0F, 0.0F}, 0U}};
+
+    // enter (no crash) -> occupancy set.
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+    // stay (no crash) -> still occupied.
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+    // exit (no crash) -> occupancy cleared.
+    world.tick(nullptr, 0.016F, outside);
+    EXPECT_FALSE(world.is_inside(owner, subject));
+    // re-enter then subject-removal exit (no crash) -> occupancy cleared.
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+    world.tick(nullptr, 0.016F, {});
+    EXPECT_FALSE(world.is_inside(owner, subject));
+}
