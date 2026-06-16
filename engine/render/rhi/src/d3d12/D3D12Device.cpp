@@ -6025,6 +6025,12 @@ public:
         debug_group_depth_ = 0;
         // A-QUERY: a recycled command buffer must not inherit pending resolves.
         pending_query_resolves_.clear();
+        // A-BINDPOINT / A-RESULT-DIAG (Backend-to-100 Wave 3c): a recycled command
+        // buffer starts at the default graphics bind point with a clean error
+        // flag so neither leaks from a previous recording.
+        bound_point_ = cd::rhi::BindPoint::kGraphics;
+        recording_error_ = false;
+        pending_resolves_.clear();
     }
     void end() override
     {
@@ -6105,6 +6111,24 @@ public:
             ++rtv_count;
             if (a.load_op == cd::rhi::LoadOp::kClear)
                 list_->ClearRenderTargetView(rtv, a.clear_color.f32, 0, nullptr);
+
+            // V-MSAA-RESOLVE (Backend-to-100 Wave 3c): when the attachment names
+            // a single-sample resolve target AND the source is multisampled,
+            // queue a ResolveSubresource for end_render_pass (D3D12 has no
+            // render-pass resolve attachment; we do it explicitly after the
+            // pass). A non-MSAA source or an absent / unresolvable resolve_view
+            // queues nothing, so the single-sample path is byte-identical.
+            if (a.resolve_view.is_valid() && trec->sample_count > 1u)
+            {
+                if (auto* rvrec = owner_->find_texture_view(a.resolve_view))
+                {
+                    if (auto* rtrec = owner_->find_texture(rvrec->parent))
+                    {
+                        pending_resolves_.push_back(
+                            PendingResolve { trec, rtrec, trec->format });
+                    }
+                }
+            }
         }
 
         // Depth-stencil attachment (optional). The DSV CPU handle lives in
@@ -6170,7 +6194,55 @@ public:
         pass_state_.has_dsv   = has_dsv;
         pass_state_.dsv       = dsv;
     }
-    void end_render_pass() override {}
+    void end_render_pass() override
+    {
+        // V-MSAA-RESOLVE (Backend-to-100 Wave 3c): perform the colour resolves
+        // queued by begin_render_pass. ResolveSubresource requires the MSAA
+        // source in RESOLVE_SOURCE and the single-sample dest in RESOLVE_DEST;
+        // we barrier into those states, resolve, then restore the source to
+        // RENDER_TARGET (its pass state) and the dest to RENDER_TARGET (so it can
+        // be used as a target later) — leaving both in a known state for the
+        // caller's follow-up barriers. No-op when nothing was queued (the common
+        // single-sample path), so this stays byte-identical for non-MSAA passes.
+        for (const auto& pr : pending_resolves_)
+        {
+            if (pr.src == nullptr || pr.dst == nullptr) continue;
+            std::array<D3D12_RESOURCE_BARRIER, 2> pre {};
+            pre[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            pre[0].Transition.pResource   = pr.src->resource.Get();
+            pre[0].Transition.StateBefore = pr.src->state;
+            pre[0].Transition.StateAfter  = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+            pre[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            pre[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            pre[1].Transition.pResource   = pr.dst->resource.Get();
+            pre[1].Transition.StateBefore = pr.dst->state;
+            pre[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+            pre[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list_->ResourceBarrier(2, pre.data());
+
+            list_->ResolveSubresource(
+                pr.dst->resource.Get(), 0,
+                pr.src->resource.Get(), 0,
+                pr.format);
+
+            std::array<D3D12_RESOURCE_BARRIER, 2> post {};
+            post[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            post[0].Transition.pResource   = pr.src->resource.Get();
+            post[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+            post[0].Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            post[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            post[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            post[1].Transition.pResource   = pr.dst->resource.Get();
+            post[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+            post[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            post[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            list_->ResourceBarrier(2, post.data());
+
+            pr.src->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            pr.dst->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        }
+        pending_resolves_.clear();
+    }
 
     // D11 — re-establish the captured render-pass output-merger state on THIS
     // command list. Called by D3D12ParallelPassRecorder at the head of every
@@ -6234,6 +6306,12 @@ public:
             bound_graphics_layout_ = rec->layout_handle;
             bound_graphics_pipeline_ = h;
             bound_is_mesh_shader_ = rec->is_mesh_shader;
+            // A-BINDPOINT: route follow-up descriptor / push-constant binds to graphics.
+            bound_point_ = cd::rhi::BindPoint::kGraphics;
+        }
+        else
+        {
+            note_recording_error_("bind_graphics_pipeline: unknown pipeline handle");
         }
     }
     // phase466 — compute pipeline bind.
@@ -6241,13 +6319,19 @@ public:
     {
         if (owner_ == nullptr) return;
         auto* rec = owner_->find_compute_pipeline(h);
-        if (rec == nullptr) return;
+        if (rec == nullptr)
+        {
+            note_recording_error_("bind_compute_pipeline: unknown pipeline handle");
+            return;
+        }
         list_->SetPipelineState(rec->pso.Get());
         if (auto* layout = owner_->find_pipeline_layout(rec->layout_handle))
             list_->SetComputeRootSignature(layout->root_sig.Get());
         bound_compute_layout_  = rec->layout_handle;
         bound_graphics_layout_ = {};
         bound_graphics_pipeline_ = {};
+        // A-BINDPOINT: route follow-up descriptor / push-constant binds to compute.
+        bound_point_ = cd::rhi::BindPoint::kCompute;
     }
     void bind_descriptor_set(std::uint32_t set_index, cd::rhi::DescriptorSetHandle set) override
     {
@@ -6255,7 +6339,11 @@ public:
         // into the per-frame GPU-visible heap and bind it as the root
         // descriptor table for parameter `set_index`.
         auto* rec = owner_->find_descriptor_set(set);
-        if (rec == nullptr) return;
+        if (rec == nullptr)
+        {
+            note_recording_error_("bind_descriptor_set: unknown descriptor-set handle");
+            return;
+        }
         // A sampler-only set (view_count == 0) has no CBV/SRV/UAV table to
         // bind — only the SAMPLER table below. Skip the view-heap copy then.
         D3D12_GPU_DESCRIPTOR_HANDLE gpu { 0 };
@@ -6265,7 +6353,11 @@ public:
             if (gpu.ptr == 0) return;
         }
 
-        const bool is_compute = bound_compute_layout_.value() != 0u;
+        // A-BINDPOINT: route by the EXPLICIT bind point, not "compute layout
+        // non-zero". kCompute AND kRayTracing both bind through the compute
+        // root path (DXR root args use the compute root-binding model — the
+        // documented RT-aliases-compute convention); kGraphics binds graphics.
+        const bool is_compute = (bound_point_ != cd::rhi::BindPoint::kGraphics);
 
         // D2 — when the set carries bare dynamic samplers (kSampler bindings),
         // stage them into the shader-visible sampler RING and bind THAT heap
@@ -6346,7 +6438,9 @@ public:
         if (heap == nullptr) return;
         const auto gpu = owner_->bindless_array_gpu_base(array);
         if (gpu.ptr == 0) return;
-        const bool is_compute = bound_compute_layout_.value() != 0u;
+        // A-BINDPOINT: explicit bind point (RT aliases compute) instead of the
+        // "compute layout non-zero" heuristic.
+        const bool is_compute = (bound_point_ != cd::rhi::BindPoint::kGraphics);
         // Bind the unified CBV/SRV/UAV heap AND its sampler heap together — D3D12
         // allows one CBV/SRV/UAV + one SAMPLER heap bound simultaneously, so the
         // bindless texture half (in the unified heap) and its sampler half are
@@ -6447,9 +6541,16 @@ public:
     {
         if (owner_ == nullptr || data == nullptr || size == 0u) return;
         auto* lrec = owner_->find_pipeline_layout(layout);
-        if (lrec == nullptr) return;
+        if (lrec == nullptr)
+        {
+            note_recording_error_("push_constants: unknown pipeline-layout handle");
+            return;
+        }
         if (lrec->push_constants_param == ~std::uint32_t { 0 }) return;
 
+        // A-BINDPOINT: explicit bind point (RT aliases compute) instead of the
+        // "compute layout non-zero" heuristic.
+        const bool is_compute = (bound_point_ != cd::rhi::BindPoint::kGraphics);
         const std::uint32_t dst_dword_offset = offset / 4u;
         const std::uint32_t num_dwords       = (size + 3u) / 4u;
         if (dst_dword_offset + num_dwords > lrec->push_constants_dwords)
@@ -6460,7 +6561,7 @@ public:
                 : 0u;
             if (clamped == 0u) return;
             // Re-evaluate locally so the call is still safe.
-            if (bound_compute_layout_.value() != 0u)
+            if (is_compute)
             {
                 list_->SetComputeRoot32BitConstants(
                     lrec->push_constants_param, clamped, data, dst_dword_offset);
@@ -6472,7 +6573,7 @@ public:
             }
             return;
         }
-        if (bound_compute_layout_.value() != 0u)
+        if (is_compute)
         {
             list_->SetComputeRoot32BitConstants(
                 lrec->push_constants_param, num_dwords, data, dst_dword_offset);
@@ -6934,6 +7035,60 @@ public:
             retained_uploads_.push_back(std::move(intermediate));
         }
     }
+    // V-COPY-IMG (Backend-to-100 Wave 3c) — image→image copy via
+    // CopyTextureRegion (subresource-index source + dest, with a source D3D12_BOX
+    // for the region). The caller owns the surrounding barriers (src in
+    // COPY_SOURCE / kTransferSrc, dst in COPY_DEST / kTransferDst), symmetric
+    // with the buffer↔image copies. An unknown handle latches the recording-error
+    // flag and is a graceful no-op.
+    void copy_texture_to_texture(cd::rhi::TextureHandle src,
+                                 cd::rhi::TextureHandle dst,
+                                 std::span<const cd::rhi::TextureCopyRegion> regions) override
+    {
+        if (owner_ == nullptr || regions.empty()) return;
+        auto* src_t = owner_->find_texture(src);
+        auto* dst_t = owner_->find_texture(dst);
+        if (src_t == nullptr || dst_t == nullptr)
+        {
+            note_recording_error_("copy_texture_to_texture: unknown texture handle");
+            return;
+        }
+        const UINT src_mips = src_t->mip_levels;
+        const UINT dst_mips = dst_t->mip_levels;
+        for (const auto& r : regions)
+        {
+            for (std::uint32_t layer = 0; layer < r.layer_count; ++layer)
+            {
+                D3D12_TEXTURE_COPY_LOCATION src_loc {};
+                src_loc.pResource        = src_t->resource.Get();
+                src_loc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                src_loc.SubresourceIndex =
+                    r.src_mip_level + ((r.src_base_layer + layer) * src_mips);
+
+                D3D12_TEXTURE_COPY_LOCATION dst_loc {};
+                dst_loc.pResource        = dst_t->resource.Get();
+                dst_loc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                dst_loc.SubresourceIndex =
+                    r.dst_mip_level + ((r.dst_base_layer + layer) * dst_mips);
+
+                const D3D12_BOX src_box {
+                    .left   = static_cast<UINT>(r.src_offset.x),
+                    .top    = static_cast<UINT>(r.src_offset.y),
+                    .front  = static_cast<UINT>(r.src_offset.z),
+                    .right  = static_cast<UINT>(r.src_offset.x) + r.extent.width,
+                    .bottom = static_cast<UINT>(r.src_offset.y) + r.extent.height,
+                    .back   = static_cast<UINT>(r.src_offset.z) +
+                              std::max<std::uint32_t>(1u, r.extent.depth),
+                };
+                list_->CopyTextureRegion(
+                    &dst_loc,
+                    static_cast<UINT>(r.dst_offset.x),
+                    static_cast<UINT>(r.dst_offset.y),
+                    static_cast<UINT>(r.dst_offset.z),
+                    &src_loc, &src_box);
+            }
+        }
+    }
     // phase466 — explicit state-transition barriers. Vulkan ResourceState
     // is mapped to the matching D3D12_RESOURCE_STATES bitmask; we batch
     // all transitions into a single ResourceBarrier call.
@@ -7137,6 +7292,12 @@ public:
         return debug_group_depth_;
     }
 
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c) — queryable recording-error flag.
+    [[nodiscard]] bool recording_error() const noexcept override
+    {
+        return recording_error_;
+    }
+
     // ---- DXR AS build (REAL — phase466 v0.99.93 M4-parity-closeout) -------
     //
     // phase466 wires cached inputs: BLAS replays the stored geometry desc
@@ -7253,6 +7414,11 @@ public:
             bound_compute_layout_  = rec->layout_handle;
             bound_graphics_layout_ = {};
             bound_graphics_pipeline_ = {};
+            // A-BINDPOINT: RT aliases compute for descriptor binding — the DXR
+            // root args bind through the compute root path. The explicit point
+            // makes the convention visible; bind_descriptor_set treats
+            // kRayTracing like kCompute.
+            bound_point_ = cd::rhi::BindPoint::kRayTracing;
         }
     }
 
@@ -7370,6 +7536,18 @@ private:
     // entry point without an additional API surface change.
     cd::rhi::PipelineLayoutHandle bound_graphics_layout_ {};
     cd::rhi::PipelineLayoutHandle bound_compute_layout_  {};
+    // A-BINDPOINT (Backend-to-100 Wave 3c) — the EXPLICIT bind point the next
+    // bind_descriptor_set / bind_bindless_texture_array / push_constants routes
+    // to. Set by bind_graphics_pipeline (kGraphics) / bind_compute_pipeline
+    // (kCompute) / bind_rt_pipeline (kRayTracing, which aliases compute for the
+    // DXR root-binding model). Replaces the old "bound_compute_layout_ non-zero
+    // => compute" heuristic so the bind point is tracked, not inferred. Reset to
+    // kGraphics in begin() (the D3D12 default before any compute bind), matching
+    // the historical heuristic's value for the existing scene (golden-identical).
+    cd::rhi::BindPoint bound_point_ { cd::rhi::BindPoint::kGraphics };
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c) — latched true on any recording-time
+    // lookup miss; reset in begin(); queried via recording_error().
+    bool recording_error_ { false };
     // D6 (phase1187) — last-bound graphics PSO so bind_vertex_buffer can
     // look up the per-binding vertex stride captured at PSO creation.
     cd::rhi::GraphicsPipelineHandle bound_graphics_pipeline_ {};
@@ -7397,10 +7575,34 @@ private:
     };
     PassState pass_state_ {};
 
+    // V-MSAA-RESOLVE (Backend-to-100 Wave 3c) — colour resolves to perform at
+    // end_render_pass(). D3D12 render passes do NOT carry a resolve attachment
+    // the way Vulkan's VkRenderingAttachmentInfo does, so begin_render_pass
+    // records (msaa-source-texture, single-sample-dest-texture, DXGI format) and
+    // end_render_pass barriers both into RESOLVE_SOURCE/RESOLVE_DEST, calls
+    // ResolveSubresource, and restores them to RENDER_TARGET so the cross-backend
+    // MSAA-resolve contract holds on D3D12 too. Cleared at begin().
+    struct PendingResolve
+    {
+        D3D12Device::TextureRecord* src { nullptr };
+        D3D12Device::TextureRecord* dst { nullptr };
+        DXGI_FORMAT format { DXGI_FORMAT_UNKNOWN };
+    };
+    std::vector<PendingResolve> pending_resolves_;
+
     // A-QUERY (Backend-to-100 Wave 3a) — query pools that received a write in
     // this recording. end() resolves each one (ResolveQueryData ALL its slots)
     // into its readback buffer so the host map in get_query_results sees fresh
     // data after the producing submit completes. Cleared at begin().
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c) — latch the queryable error flag and
+    // assert in debug builds at the lookup-miss site so a stale/invalid handle in
+    // a recording call is LOUD in debug, queryable in release, never a crash.
+    void note_recording_error_(const char* where) noexcept
+    {
+        recording_error_ = true;
+        assert((!cd::rhi::recording_error_assert_enabled() || false) && where);
+        (void)where;
+    }
     std::vector<cd::rhi::QueryPoolHandle> pending_query_resolves_;
     void note_query_pool_for_resolve_(cd::rhi::QueryPoolHandle pool)
     {

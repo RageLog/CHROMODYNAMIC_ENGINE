@@ -596,6 +596,58 @@ if(WIN32)
   endif()
 endif()
 
+# =============================================================================
+# Backend-to-100 Wave 3c — command-buffer hardening + Vulkan render-pass/copy.
+# =============================================================================
+
+# A-BINDPOINT + A-RESULT-DIAG: explicit per-CB bind point + queryable recording-
+# error flag. The bind-point test records a graphics render pass THEN a compute
+# dispatch with its own descriptor set and asserts (via readback) the compute set
+# reached the dispatch (regression-locks the phase1213 DDGI bug class); it drives
+# the GLSL->DXIL device path on D3D12 so it needs the dxcompiler.dll/dxil.dll
+# runtime. The recording-error + Null cases are CPU-side. SKIPs cleanly when no
+# device / no glslang / no DXC DLL / compute unsupported.
+if(WIN32)
+  cd_add_test(rhi_bindpoint
+    SOURCES test_rhi_bindpoint.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_bp_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_bp_list)
+  if(_cd_dxc_bp_list AND TARGET cd_test_rhi_bindpoint)
+    list(POP_BACK _cd_dxc_bp_list _cd_dxc_bp_dll)
+    get_filename_component(_cd_dxc_bp_dir "${_cd_dxc_bp_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_rhi_bindpoint POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_bp_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_bindpoint>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_bp_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_bindpoint>")
+  endif()
+else()
+  cd_add_test(rhi_bindpoint
+    SOURCES test_rhi_bindpoint.cpp
+    DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
+  )
+endif()
+
+# V-MSAA-RESOLVE + V-COPY-IMG: render-pass MSAA resolve attachment +
+# copy_texture_to_texture (image→image). No shaders (clear + copies only), so no
+# DXC runtime needed. Links the Vulkan + (Windows) D3D12 backends; SKIPs cleanly
+# when no device / 4x MSAA unsupported.
+if(WIN32)
+  cd_add_test(rhi_msaa_copyimg
+    SOURCES test_rhi_msaa_copyimg.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::rhi cd::core
+  )
+else()
+  cd_add_test(rhi_msaa_copyimg
+    SOURCES test_rhi_msaa_copyimg.cpp
+    DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+endif()
+
 # D-SRV-MS: sample a 4x-MSAA texture (Texture2DMS SRV). Real WARP render +
 # sampling pass; needs the GLSL->DXIL DXC runtime.
 # D-MIPSTATE: per-subresource state — UAV-write mip 1 while mip 0 is shader-

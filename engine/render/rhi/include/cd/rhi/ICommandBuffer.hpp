@@ -20,6 +20,7 @@
 #include <cd/rhi/Handles.hpp>
 #include <cd/rhi/Pipeline.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -33,6 +34,56 @@ struct ColorAttachmentInfo
     LoadOp load_op { LoadOp::kClear };
     StoreOp store_op { StoreOp::kStore };
     ClearColor clear_color {};
+    /// V-MSAA-RESOLVE (Backend-to-100 Wave 3c) — optional single-sample resolve
+    /// target. When `view` names a multisample texture and this names a 1x
+    /// texture of the same format/extent, the backend resolves (averages) the
+    /// MSAA samples into it at pass end: Vulkan wires
+    /// VkRenderingAttachmentInfo.resolveMode = AVERAGE + resolveImageView;
+    /// D3D12 records ResolveSubresource after the pass; Metal sets the
+    /// colorAttachment's resolveTexture + MultisampleResolve store action.
+    /// Default-invalid (`is_valid() == false`) = no resolve, byte-identical to
+    /// the pre-Wave-3c single-sample path.
+    TextureViewHandle resolve_view {};
+};
+
+/// A-RESULT-DIAG (Backend-to-100 Wave 3c) — process-wide toggle for the debug
+/// recording-error ASSERT. The recording-error contract (see ICommandBuffer)
+/// asserts at a lookup-miss site in debug builds so a stale handle is LOUD.
+/// A test that DELIBERATELY feeds a bad handle (to prove recording_error()
+/// latches) disables the assert around that one call so the deliberate miss does
+/// not abort the process; the queryable flag is still set either way. Default
+/// enabled — real (unintended) misses stay loud. Implemented as a function-local
+/// static so the single definition lives in the header (no extra TU).
+[[nodiscard]] inline std::atomic<bool>& detail_recording_error_assert_enabled() noexcept
+{
+    static std::atomic<bool> enabled { true };
+    return enabled;
+}
+inline void set_recording_error_assert_enabled(bool on) noexcept
+{
+    detail_recording_error_assert_enabled().store(on, std::memory_order_relaxed);
+}
+[[nodiscard]] inline bool recording_error_assert_enabled() noexcept
+{
+    return detail_recording_error_assert_enabled().load(std::memory_order_relaxed);
+}
+
+/// A-BINDPOINT (Backend-to-100 Wave 3c) — the pipeline bind point a command
+/// buffer is currently routing descriptor-set / push-constant binds to. Tracked
+/// EXPLICITLY per command buffer (set by bind_graphics_pipeline -> kGraphics,
+/// bind_compute_pipeline -> kCompute, bind_rt_pipeline -> kRayTracing) instead
+/// of inferring it from "which native layout handle is non-null", which made a
+/// compute bind after a render pass silently pick the GRAPHICS bind point when
+/// end_render_pass forgot to clear the stale graphics layout (the DDGI bug class,
+/// phase1213). CONVENTION: ray tracing ALIASES compute for descriptor binding —
+/// DXR root arguments and Vulkan RT descriptors both bind through the compute
+/// path — so a kRayTracing bind point resolves descriptors the same way kCompute
+/// does. end_render_pass() resets the bind point to a safe non-graphics state.
+enum class BindPoint : std::uint8_t
+{
+    kGraphics,
+    kCompute,
+    kRayTracing,
 };
 
 struct DepthStencilAttachmentInfo
@@ -73,6 +124,26 @@ struct BufferImageCopyRegion
     std::uint32_t layer_count { 1 };
     Offset3D image_offset { 0, 0, 0 };
     Extent3D image_extent { 1, 1, 1 };
+};
+
+/// V-COPY-IMG (Backend-to-100 Wave 3c) — one sub-region of an image→image copy.
+/// Both sides are addressed by mip / array layer / 3D offset+extent. Used by
+/// mip-chain generation and image blits (the buffer round-trip of
+/// copy_image_to_buffer + copy_buffer_to_image is the slow alternative this
+/// avoids). Maps to Vulkan vkCmdCopyImage (or vkCmdBlitImage when the extents
+/// differ), D3D12 CopyTextureRegion, Metal copyFromTexture:toTexture:. The
+/// caller owns the surrounding barriers: src in kTransferSrc, dst in
+/// kTransferDst, symmetric with the buffer↔image copies.
+struct TextureCopyRegion
+{
+    std::uint32_t src_mip_level { 0 };
+    std::uint32_t src_base_layer { 0 };
+    Offset3D src_offset { 0, 0, 0 };
+    std::uint32_t dst_mip_level { 0 };
+    std::uint32_t dst_base_layer { 0 };
+    Offset3D dst_offset { 0, 0, 0 };
+    std::uint32_t layer_count { 1 };
+    Extent3D extent { 1, 1, 1 };
 };
 
 /// phase1115 (X1-FU-F) — the DRAW-SUBSET recording surface: exactly
@@ -272,6 +343,19 @@ public:
     virtual void
     copy_image_to_buffer(TextureHandle src, BufferHandle dst, std::span<const BufferImageCopyRegion> regions) = 0;
 
+    /// V-COPY-IMG (Backend-to-100 Wave 3c) — copy region(s) image→image. Both
+    /// textures must already be in the expected transfer states (src in
+    /// kTransferSrc, dst in kTransferDst); the caller owns those barriers,
+    /// symmetric with the buffer↔image copies. The backend uses a same-size
+    /// copy (vkCmdCopyImage / CopyTextureRegion / copyFromTexture:toTexture:)
+    /// per region; Vulkan additionally promotes to vkCmdBlitImage when a
+    /// region's src and dst extents differ (a scaling blit). Default no-op so
+    /// backends without an image-copy path (and the Null reference, which only
+    /// counts it) compile unchanged; the GPU backends override.
+    virtual void
+    copy_texture_to_texture(TextureHandle /*src*/, TextureHandle /*dst*/,
+                            std::span<const TextureCopyRegion> /*regions*/) {}
+
     // ---- Barriers ----------------------------------------------------------
     virtual void
     barrier(std::span<const BufferBarrier> buffer_barriers, std::span<const TextureBarrier> texture_barriers) = 0;
@@ -346,6 +430,23 @@ public:
     /// when a command buffer is recycled (phase1189 B5 fix).
     /// Default returns 0; backends that track depth override this.
     [[nodiscard]] virtual std::uint32_t debug_group_depth() const noexcept { return 0; }
+
+    // ---- A-RESULT-DIAG (Backend-to-100 Wave 3c) ---------------------------
+    /// RECORDING-ERROR CONTRACT. The recording API is `void` by design — a
+    /// record call cannot return a Result because the GPU error is deferred to
+    /// submit time. Historically a stale/invalid handle passed to a record call
+    /// (bind_*, copy_*, dispatch, draw_*, ...) was a SILENT no-op: the call did
+    /// nothing and nothing surfaced (the silent-failure class). This contract
+    /// makes such a miss LOUD without changing the void signature:
+    ///   * in a debug build (NDEBUG undefined) any lookup-miss in a recording
+    ///     call fires an assert() at the miss site, and
+    ///   * on EVERY build the per-command-buffer error flag below is latched
+    ///     true, so a caller / test can query it after recording (the call
+    ///     itself stays a safe no-op in release, never a crash).
+    /// The flag mirrors the debug_group_depth() member pattern: latched on any
+    /// recording-time lookup miss, reset in begin() so a recycled buffer starts
+    /// clean, queryable here. Default false; backends that track it override.
+    [[nodiscard]] virtual bool recording_error() const noexcept { return false; }
 };
 
 }  // namespace cd::rhi

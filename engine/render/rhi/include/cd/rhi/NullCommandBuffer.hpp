@@ -205,6 +205,14 @@ public:
         log_.copies += regions.size();
     }
 
+    // V-COPY-IMG (Backend-to-100 Wave 3c) — image→image copy. Headless count
+    // only (no real resources), so a test can assert the call was recorded.
+    void copy_texture_to_texture(TextureHandle, TextureHandle,
+                                 std::span<const TextureCopyRegion> regions) override
+    {
+        log_.copies += regions.size();
+    }
+
     void barrier(std::span<const BufferBarrier> bb, std::span<const TextureBarrier> tb) override
     {
         log_.buffer_barriers += bb.size();

@@ -69,6 +69,10 @@ void MetalCommandBufferImpl::begin()
     // Each begin() opens a fresh cmd-buf; recordings are not re-used.
     cmd_ = [queue_ commandBuffer];
     cmd_.label = @"cd::rhi::metal::MetalCommandBuffer";
+    // A-BINDPOINT / A-RESULT-DIAG (Backend-to-100 Wave 3c): a recycled buffer
+    // starts at the safe (non-graphics) bind point with a clean error flag.
+    bound_point_ = cd::rhi::BindPoint::kCompute;
+    recording_error_ = false;
 }
 
 void MetalCommandBufferImpl::end()
@@ -133,6 +137,28 @@ void MetalCommandBufferImpl::begin_render_pass(const RenderPassBeginInfo& info)
             static_cast<double>(att.clear_color.f32[1]),
             static_cast<double>(att.clear_color.f32[2]),
             static_cast<double>(att.clear_color.f32[3]));
+
+        // V-MSAA-RESOLVE (Backend-to-100 Wave 3c): when the attachment names a
+        // single-sample resolve target AND the colour target is multisampled,
+        // set resolveTexture + the appropriate Multisample store action so Metal
+        // averages the MSAA samples into it at pass end (cross-backend parity
+        // with Vulkan resolveMode=AVERAGE / D3D12 ResolveSubresource). A
+        // non-MSAA target or an absent / unresolvable resolve_view leaves the
+        // legacy store action untouched, byte-identical to the single-sample
+        // path. StoreAndMultisampleResolve keeps the MSAA contents too when the
+        // store op asked to store; otherwise MultisampleResolve resolves only.
+        if (att.resolve_view.is_valid() && [tex sampleCount] > 1)
+        {
+            id<MTLTexture> resolve_tex = resolve_attachment_texture(att.resolve_view);
+            if (resolve_tex != nil)
+            {
+                ca.resolveTexture = resolve_tex;
+                ca.storeAction =
+                    (att.store_op == StoreOp::kStore)
+                        ? MTLStoreActionStoreAndMultisampleResolve
+                        : MTLStoreActionMultisampleResolve;
+            }
+        }
     }
 
     if (info.depth_stencil != nullptr)
@@ -242,6 +268,11 @@ void MetalCommandBufferImpl::end_render_pass()
         [encoder_ endEncoding];
         encoder_ = nil;
     }
+    // A-BINDPOINT: reset the explicit bind point off graphics (mirrors
+    // Vulkan/D3D12). On Metal the encoder is already nil so the next
+    // bind_descriptor_set would route to a compute encoder anyway — this keeps
+    // the tracked point consistent with the cross-backend contract.
+    bound_point_ = cd::rhi::BindPoint::kCompute;
 }
 
 // M2 (ADR-20260615): bind the full graphics-pipeline state. Metal carries
@@ -261,9 +292,12 @@ void MetalCommandBufferImpl::bind_graphics_pipeline(GraphicsPipelineHandle pipel
         ctx_->lookup_graphics_pipeline_state(pipeline);
     if (state == nullptr || state->pso() == nil)
     {
+        note_recording_error_("bind_graphics_pipeline: unknown / unbacked pipeline");
         return;
     }
     [encoder_ setRenderPipelineState:state->pso()];
+    // A-BINDPOINT: route follow-up descriptor binds to graphics.
+    bound_point_ = cd::rhi::BindPoint::kGraphics;
     if (state->dss() != nil)
     {
         [encoder_ setDepthStencilState:state->dss()];
@@ -302,6 +336,7 @@ void MetalCommandBufferImpl::bind_descriptor_set(std::uint32_t set_index,
     MetalDescriptorSetObj* ds = ctx_->lookup_descriptor_set(set);
     if (ds == nullptr || ds->arg_buffer() == nil)
     {
+        note_recording_error_("bind_descriptor_set: unknown descriptor-set handle");
         return;
     }
     // FIX 1 (ADR-20260615 namespace, hardened phase1122): the argument buffer
@@ -807,6 +842,62 @@ void MetalCommandBufferImpl::copy_image_to_buffer(
 }
 
 // ---------------------------------------------------------------------------
+// copy_texture_to_texture — V-COPY-IMG (Backend-to-100 Wave 3c). Image→image
+// blit via [blit copyFromTexture:...toTexture:...]. The caller owns the
+// surrounding barriers (Metal auto-tracks tracked resources, so this is
+// implicit for the engine's resources). A lookup miss latches recording_error_
+// and gracefully skips, mirroring the buffer↔image copies.
+// ---------------------------------------------------------------------------
+void MetalCommandBufferImpl::copy_texture_to_texture(
+    TextureHandle src, TextureHandle dst,
+    std::span<const TextureCopyRegion> regions)
+{
+    if (cmd_ == nil || ctx_ == nullptr || regions.empty())
+    {
+        return;
+    }
+    id<MTLTexture> src_tex = ctx_->lookup_texture(src);
+    id<MTLTexture> dst_tex = ctx_->lookup_texture(dst);
+    if (src_tex == nil || dst_tex == nil)
+    {
+        note_recording_error_("copy_texture_to_texture: unknown texture handle");
+        return;
+    }
+    ensure_blit_encoder_open();
+    if (blit_ == nil)
+    {
+        return;
+    }
+    for (const TextureCopyRegion& r : regions)
+    {
+        const MTLOrigin src_origin = MTLOriginMake(
+            static_cast<NSUInteger>(r.src_offset.x < 0 ? 0 : r.src_offset.x),
+            static_cast<NSUInteger>(r.src_offset.y < 0 ? 0 : r.src_offset.y),
+            static_cast<NSUInteger>(r.src_offset.z < 0 ? 0 : r.src_offset.z));
+        const MTLOrigin dst_origin = MTLOriginMake(
+            static_cast<NSUInteger>(r.dst_offset.x < 0 ? 0 : r.dst_offset.x),
+            static_cast<NSUInteger>(r.dst_offset.y < 0 ? 0 : r.dst_offset.y),
+            static_cast<NSUInteger>(r.dst_offset.z < 0 ? 0 : r.dst_offset.z));
+        const MTLSize size = MTLSizeMake(
+            static_cast<NSUInteger>(r.extent.width),
+            static_cast<NSUInteger>(r.extent.height),
+            static_cast<NSUInteger>(r.extent.depth));
+        for (std::uint32_t layer = 0; layer < r.layer_count; ++layer)
+        {
+            [blit_ copyFromTexture:src_tex
+                       sourceSlice:static_cast<NSUInteger>(r.src_base_layer + layer)
+                       sourceLevel:static_cast<NSUInteger>(r.src_mip_level)
+                      sourceOrigin:src_origin
+                        sourceSize:size
+                         toTexture:dst_tex
+                  destinationSlice:static_cast<NSUInteger>(r.dst_base_layer + layer)
+                  destinationLevel:static_cast<NSUInteger>(r.dst_mip_level)
+                 destinationOrigin:dst_origin];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // phase572 (Sprint-3) — compute encoder + vertex/index binding +
 // draw_indexed implementations.
 //
@@ -882,6 +973,7 @@ void MetalCommandBufferImpl::bind_compute_pipeline(ComputePipelineHandle pipelin
     const MetalComputePipelineObj* obj = ctx_->lookup_compute_pipeline_obj(pipeline);
     if (obj == nullptr || obj->pso() == nil)
     {
+        note_recording_error_("bind_compute_pipeline: unknown compute pipeline");
         return;
     }
     ensure_compute_encoder_open();
@@ -891,6 +983,8 @@ void MetalCommandBufferImpl::bind_compute_pipeline(ComputePipelineHandle pipelin
     }
     [compute_ setComputePipelineState:obj->pso()];
     current_compute_pso_ = obj->pso();
+    // A-BINDPOINT: route follow-up descriptor binds to compute.
+    bound_point_ = cd::rhi::BindPoint::kCompute;
     // M6: cache the reflected threadgroup size so dispatch() uses the real
     // threads-per-group (GLSL local_size_*) instead of the Sprint-3 (1,1,1).
     current_threads_per_threadgroup_ = obj->threads_per_threadgroup();

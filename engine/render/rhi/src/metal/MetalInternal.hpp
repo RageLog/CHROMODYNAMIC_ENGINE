@@ -115,6 +115,7 @@
 #include <cd/rhi/Pipeline.hpp>
 
 #include <atomic>
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -1319,6 +1320,13 @@ public:
                               std::span<const BufferImageCopyRegion> regions) override;
     void copy_image_to_buffer(TextureHandle src, BufferHandle dst,
                               std::span<const BufferImageCopyRegion> regions) override;
+    // V-COPY-IMG (Backend-to-100 Wave 3c): image→image copy via the blit encoder
+    // [blit copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:
+    //  toTexture:destinationSlice:destinationLevel:destinationOrigin:]. Caller
+    // owns the surrounding barriers; lookup miss latches recording_error_ and
+    // gracefully skips, mirroring the buffer↔image copies.
+    void copy_texture_to_texture(TextureHandle src, TextureHandle dst,
+                                 std::span<const TextureCopyRegion> regions) override;
 
     // M5 (ADR-20260615): Metal auto-tracks most synchronisation at encoder
     // boundaries for tracked resources; an explicit barrier is only needed
@@ -1350,6 +1358,9 @@ public:
 
     void push_debug_group(std::string_view name) override;
     void pop_debug_group() override;
+
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c) — queryable recording-error flag.
+    [[nodiscard]] bool recording_error() const noexcept override { return recording_error_; }
 
     // Sprint-1 commit/submit wiring. submit() is called by MetalDevice::submit;
     // it commits the underlying MTLCommandBuffer to the queue. If a swapchain
@@ -1427,6 +1438,31 @@ private:
     // (1,1,1) whenever no PSO is bound.
     id<MTLComputePipelineState>  current_compute_pso_ { nil };
     MTLSize                      current_threads_per_threadgroup_ { 1, 1, 1 };
+
+    // A-BINDPOINT (Backend-to-100 Wave 3c): on Metal the descriptor-set bind
+    // point is ROBUST BY CONSTRUCTION — a render encoder and a compute encoder
+    // are mutually exclusive on one command buffer (Metal forbids nested
+    // encoders), so bind_descriptor_set routes to whichever encoder is open
+    // (encoder_ => graphics, compute_ => compute). The phase1213 DDGI bug class
+    // (a compute bind after a render pass silently picking graphics) CANNOT occur
+    // here because begin_render_pass / ensure_compute_encoder_open close the
+    // other encoder first. We still track an EXPLICIT bind point for the
+    // cross-backend contract + diagnostics: set by bind_graphics_pipeline
+    // (kGraphics) / bind_compute_pipeline (kCompute) / a future RT pipeline
+    // (kRayTracing); reset to kCompute in end_render_pass to mirror Vulkan/D3D12.
+    cd::rhi::BindPoint           bound_point_ { cd::rhi::BindPoint::kCompute };
+
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c): latched true on any recording-time
+    // lookup miss; reset in begin(); queried via recording_error(). Latched via
+    // note_recording_error_ which also fires the gated debug assert (LOUD in
+    // debug, queryable in release) — same contract as Vulkan/D3D12.
+    bool                         recording_error_ { false };
+    void note_recording_error_(const char* where) noexcept
+    {
+        recording_error_ = true;
+        assert((!cd::rhi::recording_error_assert_enabled() || false) && where);
+        (void)where;
+    }
 };
 
 // ---------------------------------------------------------------------------

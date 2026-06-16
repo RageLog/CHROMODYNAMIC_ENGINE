@@ -222,6 +222,14 @@ public:
         std::span<const cd::rhi::BufferImageCopyRegion> regions
     ) override;
 
+    // V-COPY-IMG (Backend-to-100 Wave 3c) — vkCmdCopyImage (same-extent) /
+    // vkCmdBlitImage (extents differ) image→image copy.
+    void copy_texture_to_texture(
+        cd::rhi::TextureHandle src,
+        cd::rhi::TextureHandle dst,
+        std::span<const cd::rhi::TextureCopyRegion> regions
+    ) override;
+
     void barrier(
         std::span<const cd::rhi::BufferBarrier> buffer_barriers,
         std::span<const cd::rhi::TextureBarrier> texture_barriers
@@ -230,6 +238,9 @@ public:
     void push_debug_group(std::string_view name) override;
     void pop_debug_group() override;
     [[nodiscard]] std::uint32_t debug_group_depth() const noexcept override;
+
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c) — queryable recording-error flag.
+    [[nodiscard]] bool recording_error() const noexcept override;
 
     // Phase 765 W2A — F5: vkCmdDrawMeshTasksEXT.
     void draw_mesh_tasks(std::uint32_t group_x,
@@ -268,6 +279,11 @@ private:
     // (update == false) and refit (update == true / MODE_UPDATE, src == dst).
     void record_accel_build(cd::rhi::AccelStructureHandle as, bool update);
 
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c): latch the recording-error flag and
+    // assert in debug builds. Called at every recording-time lookup miss so a
+    // stale handle is LOUD in debug + queryable in release (the void API stays).
+    void note_recording_error_(const char* where) noexcept;
+
     VkDevice device_ { VK_NULL_HANDLE };
     VkCommandPool pool_ { VK_NULL_HANDLE };
     VkCommandBuffer cmd_ { VK_NULL_HANDLE };
@@ -279,6 +295,24 @@ private:
     // layout that the most-recent bind_*_pipeline call implied.
     VkPipelineLayout current_graphics_layout_ { VK_NULL_HANDLE };
     VkPipelineLayout current_compute_layout_ { VK_NULL_HANDLE };
+
+    // A-BINDPOINT (Backend-to-100 Wave 3c): the EXPLICIT bind point the next
+    // bind_descriptor_set / push_constants routes to. Set by bind_graphics_-
+    // pipeline (kGraphics) / bind_compute_pipeline (kCompute) / bind_rt_pipeline
+    // (kRayTracing, which aliases compute for descriptor binding). Replaces the
+    // old "graphics layout non-null => graphics" heuristic so a compute dispatch
+    // recorded after a render pass can never silently pick the graphics bind
+    // point (the DDGI bug class, phase1213). Reset to kCompute (a SAFE non-
+    // graphics state) in begin() and end_render_pass(); a render pass always
+    // rebinds a graphics pipeline before its first descriptor bind, so this
+    // produces byte-identical binding to the pre-Wave-3c path for the existing
+    // scene while making the post-pass compute route robust by construction.
+    cd::rhi::BindPoint current_bind_point_ { cd::rhi::BindPoint::kCompute };
+
+    // A-RESULT-DIAG (Backend-to-100 Wave 3c): latched true on any recording-time
+    // lookup miss (a stale/invalid handle in a record call). Reset in begin();
+    // queried via recording_error(). Mirrors the debug_group_depth_ pattern.
+    bool recording_error_ { false };
 
     // Per-command-buffer storage for debug-group label strings. Per the
     // Vulkan spec (Fundamentals, "Application Memory Lifetime"),

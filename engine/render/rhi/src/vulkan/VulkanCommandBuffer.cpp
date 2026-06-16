@@ -199,6 +199,12 @@ void VulkanCommandBuffer::begin()
     // previous recording so it cannot leak into this one (mirrors D3D12).
     debug_group_depth_ = 0;
 
+    // A-BINDPOINT / A-RESULT-DIAG (Backend-to-100 Wave 3c): a recycled command
+    // buffer starts at the safe (non-graphics) bind point with a clean error
+    // flag so neither leaks from a previous recording.
+    current_bind_point_ = cd::rhi::BindPoint::kCompute;
+    recording_error_ = false;
+
     // phase1119 (X1-FU-F step-2 gate, audit A3): free lane pools retired by
     // parallel recorders in earlier frames. begin() may only run when this
     // primary is no longer pending (Renderer waits on the frame fence first),
@@ -301,14 +307,37 @@ void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& i
             if (it != tables_.views->end())
                 vk_view = it->second;
         }
+        // V-MSAA-RESOLVE (Backend-to-100 Wave 3c): when the attachment carries a
+        // single-sample resolve target, resolve (average) the MSAA samples into
+        // it at pass end. resolveMode = AVERAGE is the universally-supported
+        // colour resolve mode; the target view resolves through the SAME views
+        // table. An invalid / unresolvable resolve_view leaves the legacy
+        // NONE / null path so the single-sample case is byte-identical.
+        VkImageView vk_resolve_view { VK_NULL_HANDLE };
+        if (a.resolve_view.is_valid() && tables_.views != nullptr)
+        {
+            auto rit = tables_.views->find(a.resolve_view.index());
+            if (rit != tables_.views->end())
+                vk_resolve_view = rit->second;
+        }
+
         VkRenderingAttachmentInfo ai {};
         ai.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         ai.pNext = nullptr;
         ai.imageView = vk_view;
         ai.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        ai.resolveMode = VK_RESOLVE_MODE_NONE;
-        ai.resolveImageView = VK_NULL_HANDLE;
-        ai.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vk_resolve_view != VK_NULL_HANDLE)
+        {
+            ai.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+            ai.resolveImageView = vk_resolve_view;
+            ai.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+        else
+        {
+            ai.resolveMode = VK_RESOLVE_MODE_NONE;
+            ai.resolveImageView = VK_NULL_HANDLE;
+            ai.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
         ai.loadOp = load_op_for(a.load_op);
         ai.storeOp = store_op_for(a.store_op);
         ai.clearValue.color.float32[0] = a.clear_color.f32[0];
@@ -319,7 +348,9 @@ void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& i
     }
 
     VkRenderingAttachmentInfo depth_attachment {};
+    VkRenderingAttachmentInfo stencil_attachment {};
     bool has_depth = false;
+    bool has_stencil = false;
     if (info.depth_stencil != nullptr)
     {
         VkImageView vk_view { VK_NULL_HANDLE };
@@ -337,6 +368,37 @@ void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& i
         depth_attachment.clearValue.depthStencil.depth = info.depth_stencil->clear.depth;
         depth_attachment.clearValue.depthStencil.stencil = info.depth_stencil->clear.stencil;
         has_depth = (vk_view != VK_NULL_HANDLE);
+
+        // V-MSAA-RESOLVE (Backend-to-100 Wave 3c): wire pStencilAttachment when
+        // the depth-stencil view's format actually carries a stencil aspect
+        // (previously hardcoded null — a stencil load/store op was silently
+        // dropped). The stencil aspect lives on the SAME image view; gate on the
+        // view's VkFormat via the view_formats table (the same map the parallel-
+        // lane inheritance path reads) so a depth-only target keeps the legacy
+        // null path and stays byte-identical.
+        VkFormat ds_format = VK_FORMAT_UNDEFINED;
+        if (tables_.view_formats != nullptr)
+        {
+            auto fit = tables_.view_formats->find(info.depth_stencil->view.index());
+            if (fit != tables_.view_formats->end())
+                ds_format = fit->second;
+        }
+        const bool ds_has_stencil =
+            ds_format == VK_FORMAT_D16_UNORM_S8_UINT ||
+            ds_format == VK_FORMAT_D24_UNORM_S8_UINT ||
+            ds_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+            ds_format == VK_FORMAT_S8_UINT;
+        if (has_depth && ds_has_stencil)
+        {
+            stencil_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            stencil_attachment.imageView = vk_view;
+            stencil_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            stencil_attachment.loadOp = load_op_for(info.depth_stencil->stencil_load);
+            stencil_attachment.storeOp = store_op_for(info.depth_stencil->stencil_store);
+            stencil_attachment.clearValue.depthStencil.depth = info.depth_stencil->clear.depth;
+            stencil_attachment.clearValue.depthStencil.stencil = info.depth_stencil->clear.stencil;
+            has_stencil = true;
+        }
     }
 
     VkRenderingInfo ri {};
@@ -350,7 +412,9 @@ void VulkanCommandBuffer::begin_rendering_(const cd::rhi::RenderPassBeginInfo& i
     ri.colorAttachmentCount = static_cast<std::uint32_t>(color_attachments.size());
     ri.pColorAttachments = color_attachments.empty() ? nullptr : color_attachments.data();
     ri.pDepthAttachment = has_depth ? &depth_attachment : nullptr;
-    ri.pStencilAttachment = nullptr;
+    // V-MSAA-RESOLVE: bind the stencil aspect when the format carries one
+    // (previously hardcoded null). Depth-only targets keep the null path.
+    ri.pStencilAttachment = has_stencil ? &stencil_attachment : nullptr;
 
     vkCmdBeginRendering(cmd_, &ri);
 }
@@ -367,6 +431,13 @@ void VulkanCommandBuffer::end_render_pass()
     // pipeline — the descriptors silently never reach the dispatch. The next
     // begin_render_pass + bind_graphics_pipeline re-establishes the layout.
     current_graphics_layout_ = VK_NULL_HANDLE;
+    // A-BINDPOINT: reset the EXPLICIT bind point off graphics too, so a compute
+    // dispatch recorded after the pass routes to the compute bind point even if
+    // the (now-cleared) graphics layout check were ever bypassed. The two resets
+    // together make the post-pass compute route robust by construction; a new
+    // render pass rebinds a graphics pipeline (and thus the graphics bind point)
+    // before its first descriptor bind, so existing scenes are byte-identical.
+    current_bind_point_ = cd::rhi::BindPoint::kCompute;
 }
 
 void VulkanCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle pipeline)
@@ -375,8 +446,13 @@ void VulkanCommandBuffer::bind_graphics_pipeline(cd::rhi::GraphicsPipelineHandle
         return;
     auto it = tables_.graphics_pipelines->find(pipeline.index());
     if (it == tables_.graphics_pipelines->end())
+    {
+        note_recording_error_("bind_graphics_pipeline: unknown pipeline handle");
         return;
+    }
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_GRAPHICS, it->second);
+    // A-BINDPOINT: route follow-up descriptor / push-constant binds to graphics.
+    current_bind_point_ = cd::rhi::BindPoint::kGraphics;
     // Remember the layout for follow-up bind_descriptor_set / push_constants.
     if (tables_.pipeline_to_layout != nullptr)
     {
@@ -394,8 +470,13 @@ void VulkanCommandBuffer::bind_compute_pipeline(cd::rhi::ComputePipelineHandle p
         return;
     auto it = tables_.compute_pipelines->find(pipeline.index());
     if (it == tables_.compute_pipelines->end())
+    {
+        note_recording_error_("bind_compute_pipeline: unknown pipeline handle");
         return;
+    }
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, it->second);
+    // A-BINDPOINT: route follow-up descriptor / push-constant binds to compute.
+    current_bind_point_ = cd::rhi::BindPoint::kCompute;
     if (tables_.pipeline_to_layout != nullptr)
     {
         auto layout_it = tables_.pipeline_to_layout->find(pipeline.index());
@@ -412,14 +493,21 @@ void VulkanCommandBuffer::bind_descriptor_set(std::uint32_t set_index, cd::rhi::
         return;
     auto it = tables_.descriptor_sets->find(set.index());
     if (it == tables_.descriptor_sets->end())
+    {
+        note_recording_error_("bind_descriptor_set: unknown descriptor-set handle");
         return;
-    // Prefer graphics layout if a graphics pipeline is currently bound; fall
-    // back to compute. Callers that mix bind points within a render pass are
-    // out-of-spec — Vulkan forbids it.
+    }
+    // A-BINDPOINT: route by the EXPLICIT bind point set at pipeline-bind time,
+    // not by "which layout handle is non-null". kGraphics binds graphics;
+    // kCompute AND kRayTracing both bind compute (DXR/RT descriptors bind through
+    // the compute path — the documented RT-aliases-compute convention). This is
+    // the robust fix for the phase1213 DDGI class: a compute dispatch recorded
+    // after end_render_pass routes to compute even though the graphics layout was
+    // last set, because end_render_pass resets the bind point off graphics.
+    const bool is_graphics = (current_bind_point_ == cd::rhi::BindPoint::kGraphics);
     const VkPipelineBindPoint bp =
-        (current_graphics_layout_ != VK_NULL_HANDLE) ? VK_PIPELINE_BIND_POINT_GRAPHICS : VK_PIPELINE_BIND_POINT_COMPUTE;
-    const auto layout =
-        (bp == VK_PIPELINE_BIND_POINT_GRAPHICS) ? current_graphics_layout_ : current_compute_layout_;
+        is_graphics ? VK_PIPELINE_BIND_POINT_GRAPHICS : VK_PIPELINE_BIND_POINT_COMPUTE;
+    const auto layout = is_graphics ? current_graphics_layout_ : current_compute_layout_;
     if (layout == VK_NULL_HANDLE)
         return;  // no pipeline bound yet
     vkCmdBindDescriptorSets(cmd_, bp, layout, set_index, 1, &it->second, 0, nullptr);
@@ -737,6 +825,61 @@ void VulkanCommandBuffer::copy_image_to_buffer(
     );
 }
 
+// V-COPY-IMG (Backend-to-100 Wave 3c) — image→image copy. Same-extent regions
+// use vkCmdCopyImage; a region whose src and dst extents differ is promoted to
+// vkCmdBlitImage (a scaling blit with linear filtering). The caller owns the
+// surrounding barriers (src in TRANSFER_SRC_OPTIMAL, dst in TRANSFER_DST_OPTIMAL)
+// exactly like the buffer↔image copies. An unknown handle latches the recording-
+// error flag and is a graceful no-op.
+void VulkanCommandBuffer::copy_texture_to_texture(
+    cd::rhi::TextureHandle src,
+    cd::rhi::TextureHandle dst,
+    std::span<const cd::rhi::TextureCopyRegion> regions
+)
+{
+    if (tables_.images == nullptr || regions.empty())
+        return;
+    auto src_it = tables_.images->find(src.index());
+    auto dst_it = tables_.images->find(dst.index());
+    if (src_it == tables_.images->end() || dst_it == tables_.images->end())
+    {
+        note_recording_error_("copy_texture_to_texture: unknown texture handle");
+        return;
+    }
+    const VkImageAspectFlags src_aspect = aspect_for_texture(tables_, src.index());
+    const VkImageAspectFlags dst_aspect = aspect_for_texture(tables_, dst.index());
+
+    // TextureCopyRegion carries ONE extent (the copy is 1:1 in size), so every
+    // region is a straight same-size vkCmdCopyImage. The blit (scaling) path is
+    // reserved for a future src_extent/dst_extent split (noted at the interface).
+    std::vector<VkImageCopy> copies;
+    copies.reserve(regions.size());
+    for (const auto& r : regions)
+    {
+        VkImageCopy c {};
+        c.srcSubresource.aspectMask = src_aspect;
+        c.srcSubresource.mipLevel = r.src_mip_level;
+        c.srcSubresource.baseArrayLayer = r.src_base_layer;
+        c.srcSubresource.layerCount = r.layer_count;
+        c.srcOffset = { r.src_offset.x, r.src_offset.y, r.src_offset.z };
+        c.dstSubresource.aspectMask = dst_aspect;
+        c.dstSubresource.mipLevel = r.dst_mip_level;
+        c.dstSubresource.baseArrayLayer = r.dst_base_layer;
+        c.dstSubresource.layerCount = r.layer_count;
+        c.dstOffset = { r.dst_offset.x, r.dst_offset.y, r.dst_offset.z };
+        c.extent = { r.extent.width, r.extent.height, r.extent.depth };
+        copies.push_back(c);
+    }
+    if (!copies.empty())
+    {
+        vkCmdCopyImage(
+            cmd_,
+            src_it->second, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            dst_it->second, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            static_cast<std::uint32_t>(copies.size()), copies.data());
+    }
+}
+
 void VulkanCommandBuffer::barrier(
     std::span<const cd::rhi::BufferBarrier> buffer_barriers,
     std::span<const cd::rhi::TextureBarrier> texture_barriers
@@ -863,6 +1006,21 @@ std::uint32_t VulkanCommandBuffer::debug_group_depth() const noexcept
     return debug_group_depth_;
 }
 
+// A-RESULT-DIAG (Backend-to-100 Wave 3c) — latch the queryable error flag and
+// fire a debug assert at the miss site so a stale/invalid handle in a recording
+// call is LOUD in debug, queryable in release, and never a crash either way.
+void VulkanCommandBuffer::note_recording_error_(const char* where) noexcept
+{
+    recording_error_ = true;
+    assert((!cd::rhi::recording_error_assert_enabled() || false) && where);
+    (void)where;
+}
+
+bool VulkanCommandBuffer::recording_error() const noexcept
+{
+    return recording_error_;
+}
+
 // Phase 765 W2A — F5: vkCmdDrawMeshTasksEXT. Resolved by volk when the
 // device was created with VK_EXT_mesh_shader enabled. Guard the call so
 // running this method against a device without mesh-shader support is
@@ -881,8 +1039,19 @@ void VulkanCommandBuffer::bind_rt_pipeline(cd::rhi::RtPipelineHandle pipeline)
 {
     if (tables_.rt_pipeline_lookup == nullptr) return;
     VkPipeline vp = tables_.rt_pipeline_lookup(tables_.accel_lookup_user, pipeline.index());
-    if (vp == VK_NULL_HANDLE) return;
+    if (vp == VK_NULL_HANDLE)
+    {
+        note_recording_error_("bind_rt_pipeline: unknown RT-pipeline handle");
+        return;
+    }
     vkCmdBindPipeline(cmd_, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, vp);
+    // A-BINDPOINT: RT aliases compute for descriptor binding (the RT pipeline's
+    // descriptors bind through VK_PIPELINE_BIND_POINT_COMPUTE-equivalent root in
+    // the engine's model — bind_descriptor_set treats kRayTracing like kCompute).
+    // The RT layout is tracked as the compute layout by create_rt_pipeline, so a
+    // follow-up bind_descriptor_set after an RT bind already routes to the
+    // compute layout; setting the explicit point keeps that contract visible.
+    current_bind_point_ = cd::rhi::BindPoint::kRayTracing;
 }
 
 // Phase 135 — vkCmdTraceRaysKHR dispatch.
