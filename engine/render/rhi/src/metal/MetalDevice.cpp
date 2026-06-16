@@ -1,10 +1,11 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/render/rhi_metal/src/MetalDevice.cpp
 //
-// Metal backend skeleton. On non-Apple platforms the factory returns
-// kBackendInitFailed. On Apple this TU compiles to the same stub for
-// Wave 97; Phase 9 Sprint 1 swaps in the concrete MTLDevice +
-// MTLCommandQueue + MTLLibrary wiring.
+// Plain-C++ Metal factory fallback. The real Apple-Clang device factory lives
+// in MetalDevice.mm (compiled only when CD_RHI_METAL_ENABLED is ON, i.e. on
+// Apple). This .cpp is the non-Obj-C++ TU that always compiles; it provides
+// the kBackendInitFailed factory used when the Metal backend is unavailable on
+// the current toolchain/platform.
 // =============================================================================
 #include <cd/rhi/metal/MetalDevice.hpp>
 
@@ -17,10 +18,16 @@ cd::core::Result<std::unique_ptr<cd::rhi::IDevice>>
 create_metal_device(MetalCreateInfo /*info*/)
 {
 #if defined(__APPLE__)
-    // Phase 9 Sprint 1 — MTLCreateSystemDefaultDevice + queue + library.
+    // Dead branch: when CD_RHI_METAL_ENABLED is ON (the only way this TU sees
+    // an Apple toolchain with a real device), the CMake build compiles
+    // MetalDevice.mm INSTEAD of this .cpp — so this .cpp factory is the
+    // unavailable-backend fallback on every path that actually compiles it.
+    // kBackendInitFailed (not kNotImplemented): the backend is genuinely
+    // unavailable on this toolchain config, it is not a missing capability.
     return std::unexpected(cd::rhi::rhi_errors::make(
-        cd::rhi::rhi_errors::Code::kNotImplemented,
-        "Metal backend skeleton — Phase 9 Sprint 1 wires the concrete impl"));
+        cd::rhi::rhi_errors::Code::kBackendInitFailed,
+        "Metal backend not built in this configuration "
+        "(CD_RHI_METAL_ENABLED=OFF) — enable it on an Apple toolchain"));
 #else
     return std::unexpected(cd::rhi::rhi_errors::make(
         cd::rhi::rhi_errors::Code::kBackendInitFailed,

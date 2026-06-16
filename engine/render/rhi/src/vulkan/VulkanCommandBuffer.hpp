@@ -194,6 +194,7 @@ public:
 
     void push_debug_group(std::string_view name) override;
     void pop_debug_group() override;
+    [[nodiscard]] std::uint32_t debug_group_depth() const noexcept override;
 
     // Phase 765 W2A — F5: vkCmdDrawMeshTasksEXT.
     void draw_mesh_tasks(std::uint32_t group_x,
@@ -249,6 +250,14 @@ private:
     // (phase1120: earlier comments here claimed the driver may read the
     // pointer "until execution completes" — that misread the spec.)
     std::deque<std::string> debug_label_arena_ {};
+
+    // V-DBGDEPTH: balanced push/pop nesting depth, mirroring the D3D12
+    // backend's tracker. ++ in push_debug_group, guarded -- in
+    // pop_debug_group (clamps at 0 so an unmatched pop is a safe no-op),
+    // reset to 0 in begin() so a stale depth from a previous (possibly
+    // unbalanced) recording never leaks into the next. The base
+    // ICommandBuffer getter returns 0; this override exposes the real value.
+    std::uint32_t debug_group_depth_ { 0 };
 
     /// phase1116: pools handed over by finished parallel recorders;
     /// destroyed in the dtor (which implies GPU completion in the

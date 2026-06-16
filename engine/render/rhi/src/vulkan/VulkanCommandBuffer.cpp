@@ -195,6 +195,10 @@ void VulkanCommandBuffer::begin()
     // command buffer that will refill the arena immediately.
     debug_label_arena_.clear();
 
+    // V-DBGDEPTH: erase any stale nesting depth left by an unbalanced
+    // previous recording so it cannot leak into this one (mirrors D3D12).
+    debug_group_depth_ = 0;
+
     // phase1119 (X1-FU-F step-2 gate, audit A3): free lane pools retired by
     // parallel recorders in earlier frames. begin() may only run when this
     // primary is no longer pending (Renderer waits on the frame fence first),
@@ -725,6 +729,10 @@ void VulkanCommandBuffer::barrier(
 
 void VulkanCommandBuffer::push_debug_group(std::string_view name)
 {
+    // V-DBGDEPTH: track nesting even when the debug-utils ext is absent so
+    // the depth is meaningful regardless of tooling. The matching pop also
+    // decrements unconditionally (clamped), keeping the counter balanced.
+    ++debug_group_depth_;
     if (vkCmdBeginDebugUtilsLabelEXT == nullptr)
         return;
     // Per the Vulkan spec pLabelName is consumed at RECORD time (it is
@@ -745,9 +753,20 @@ void VulkanCommandBuffer::push_debug_group(std::string_view name)
 
 void VulkanCommandBuffer::pop_debug_group()
 {
+    // V-DBGDEPTH: an unmatched pop is a safe no-op — clamp at 0 and emit
+    // vkCmdEndDebugUtilsLabelEXT only for a label this buffer actually
+    // opened, so the begin/end pairing stays balanced for the driver.
+    if (debug_group_depth_ == 0)
+        return;
+    --debug_group_depth_;
     if (vkCmdEndDebugUtilsLabelEXT == nullptr)
         return;
     vkCmdEndDebugUtilsLabelEXT(cmd_);
+}
+
+std::uint32_t VulkanCommandBuffer::debug_group_depth() const noexcept
+{
+    return debug_group_depth_;
 }
 
 // Phase 765 W2A — F5: vkCmdDrawMeshTasksEXT. Resolved by volk when the

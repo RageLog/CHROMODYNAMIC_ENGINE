@@ -2953,6 +2953,9 @@ public:
             }
         }
 #else
+        // B-PLATFORM-GUARD: correct-by-design compile-time platform guard (the
+        // active path here is VK_USE_PLATFORM_WIN32_KHR); not a runtime hole.
+        // See ADR-20260616 backend-wontfix.
         return std::unexpected(
             make_err(cd::rhi::rhi_errors::Code::kNotImplemented, "swapchain: no platform surface extension compiled in")
         );
@@ -4595,6 +4598,18 @@ public:
         features_.dual_source_blend = (f.dualSrcBlend != 0);
         features_.geometry_shader = (f.geometryShader != 0);
         features_.tessellation_shader = (f.tessellationShader != 0);
+
+        // V-FEAT-TS: timestamp queries are usable iff the device reports
+        // timestampComputeAndGraphics (every graphics+compute queue supports
+        // vkCmdWriteTimestamp2). D3D12 already sets this flag; Vulkan was
+        // leaving it false despite the capability being readily queryable.
+        features_.timestamp_queries = (p.limits.timestampComputeAndGraphics != 0);
+
+        // V-FEAT-PS: pipeline-statistics queries gate the inactive-but-real
+        // pipelineStatisticsQuery feature already queried above. (We do NOT
+        // set variable_rate_shading: there is no VRS command surface yet, so
+        // lighting it would be a dead flag — deferred to Wave 3.)
+        features_.pipeline_statistics_queries = (f.pipelineStatisticsQuery != 0);
 
         // Phase 12.D / v0.29.0 — RT + mesh shader detection. We probe
         // the device extension list (the cheapest possible signal) and

@@ -557,9 +557,17 @@ public:
 
     // Bump and return the next signal value (caller passes it to
     // encodeSignalEvent:value:). Symmetric with next_wait_value below.
+    //
+    // M-EVENT-ATOMIC: next_signal_value() is called from submit() on
+    // arbitrary submitting threads (the engine submits from worker threads),
+    // so the counter must be incremented atomically. fetch_add returns the
+    // PRE-increment value, so +1 reproduces the prior `++counter` semantics
+    // (the first call yields 1, matching the old pre-increment). relaxed
+    // ordering suffices: the only invariant is monotonic uniqueness of the
+    // returned value, not ordering against other memory.
     [[nodiscard]] std::uint64_t next_signal_value() noexcept
     {
-        return ++signal_counter_;
+        return signal_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 
     // Return the highest value that has been encoded for signalling so far.
@@ -567,12 +575,12 @@ public:
     // is reached (the producer queue raises it; the consumer waits on it).
     [[nodiscard]] std::uint64_t current_signal_value() const noexcept
     {
-        return signal_counter_;
+        return signal_counter_.load(std::memory_order_relaxed);
     }
 
 private:
-    id<MTLSharedEvent> event_ { nil };
-    std::uint64_t      signal_counter_ { 0 };
+    id<MTLSharedEvent>         event_ { nil };
+    std::atomic<std::uint64_t> signal_counter_ { 0 };
 };
 
 // ---------------------------------------------------------------------------

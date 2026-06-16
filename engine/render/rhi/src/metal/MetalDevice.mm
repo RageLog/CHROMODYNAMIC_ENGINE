@@ -2210,10 +2210,23 @@ public:
                 "(swapchain drawable); read back from an offscreen target"));
         }
 
-        // Tightly-packed bytes-per-row (matches the Vulkan bufferRowLength=0
-        // tightly-packed contract): bytes_per_pixel * region.width.
+        // M-BCN-PITCH: tightly-packed bytes-per-row (matches the Vulkan
+        // bufferRowLength=0 tightly-packed contract). bytes_per_block is the
+        // byte count of ONE format block — a 4x4 texel block for BCn, a single
+        // texel for uncompressed (block_width == block_height == 1). The row
+        // pitch is therefore (blocks-across) * bytes_per_block, NOT width *
+        // bytes_per_block: for BCn the latter was 4x too large (it multiplied
+        // by the texel width instead of the block-column count). The general
+        // block-dimension form below reduces to width*bpp for uncompressed.
+        const FormatInfo fmt_info = info_of(src_fmt);
         const std::uint32_t bpp =
-            static_cast<std::uint32_t>(info_of(src_fmt).bytes_per_block);
+            static_cast<std::uint32_t>(fmt_info.bytes_per_block);
+        const std::uint32_t bw =
+            fmt_info.block_width == 0u ? 1u
+                                       : static_cast<std::uint32_t>(fmt_info.block_width);
+        const std::uint32_t bh =
+            fmt_info.block_height == 0u ? 1u
+                                        : static_cast<std::uint32_t>(fmt_info.block_height);
         if (bpp == 0u || region.width == 0u || region.height == 0u)
         {
             return std::unexpected(rhi_errors::make(
@@ -2221,8 +2234,12 @@ public:
                 "Metal::copy_image_to_buffer: zero-size region or unknown "
                 "format byte size"));
         }
+        const NSUInteger blocks_across =
+            static_cast<NSUInteger>((region.width + bw - 1u) / bw);
+        const NSUInteger blocks_down =
+            static_cast<NSUInteger>((region.height + bh - 1u) / bh);
         const NSUInteger bytes_per_row =
-            static_cast<NSUInteger>(bpp) * static_cast<NSUInteger>(region.width);
+            static_cast<NSUInteger>(bpp) * blocks_across;
 
         // One-shot command buffer: blit-copy + commit + wait (blocking).
         id<MTLCommandBuffer> cmd = [mtl_queue_ commandBuffer];
@@ -2243,7 +2260,7 @@ public:
                      toBuffer:dst_buf
             destinationOffset:static_cast<NSUInteger>(dst_offset)
        destinationBytesPerRow:bytes_per_row
-     destinationBytesPerImage:bytes_per_row * static_cast<NSUInteger>(region.height)];
+     destinationBytesPerImage:bytes_per_row * blocks_down];
         // Managed-storage readback needs an explicit synchronize so the CPU
         // page mirror is up to date after the GPU writes (Shared is unified).
         if ([dst_buf storageMode] == MTLStorageModeManaged)
@@ -2811,7 +2828,8 @@ private:
                              ? std::string_view { "<inline>" }
                              : desc.debug_name;
         // Default MslBindingModel = { argument_buffers = true,
-        // push_constant_buffer_index = 16 } — the M3 contract. Leave as-is.
+        // push_constant_buffer_index = 8 (kPushConstantBufferIndex) } — the
+        // M3 contract. Leave as-is. (M-DOC-PUSHIDX: was stale "16".)
 
         if (desc.language == ShaderSourceLanguage::kSpirv)
         {

@@ -730,9 +730,15 @@ void MetalCommandBufferImpl::copy_buffer_to_image(
             static_cast<NSUInteger>(r.image_extent.height),
             static_cast<NSUInteger>(r.image_extent.depth));
         // sourceBytesPerRow == 0 + sourceBytesPerImage == 0 = "auto" for
-        // non-compressed formats; Metal computes from the texture's
-        // pixel format and the supplied size. Sprint 3 will resolve a
-        // real texel-byte count for compressed formats.
+        // UNCOMPRESSED formats; Metal computes from the texture's pixel
+        // format and the supplied size.
+        // M-BCN-PITCH note: this auto-path is INVALID for block-compressed
+        // (BCn) textures — Metal requires an explicit row pitch of
+        // (ceil(w/block_w) * bytes_per_block) for those. The blocking
+        // device-side readback (MetalDevice.mm copy_image_to_buffer) now
+        // computes that block-correct pitch; this command-buffer copy is
+        // exercised only for uncompressed targets today. Plumbing the source
+        // cd::rhi::Format here to lift the BCn restriction is a follow-up.
         for (std::uint32_t layer = 0; layer < r.layer_count; ++layer)
         {
             const NSUInteger slice =

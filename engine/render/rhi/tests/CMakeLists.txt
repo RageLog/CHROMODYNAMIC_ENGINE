@@ -481,3 +481,16 @@ else()
     DEPS    cd::rhi cd::core
   )
 endif()
+
+# Backend-to-100 Wave 0a / V-DBGDEPTH: Vulkan analog of the D3D12 debug-group
+# test. Locks the new VulkanCommandBuffer::debug_group_depth() override (push
+# ++ / guarded pop -- / begin() reset) that replaced the inherited 0-stub. Pure
+# host-side depth-counter check on the real Vulkan command buffer — no shaders,
+# no submit, no DXC. Links the real Vulkan backend; honest GTEST_SKIP when no
+# ICD is present. Guarded on the Vulkan target so non-Vulkan lanes still build.
+if(TARGET cd_rhi_vulkan)
+  cd_add_test(vulkan_debug_group_depth
+    SOURCES test_vulkan_debug_group_depth.cpp
+    DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+endif()
