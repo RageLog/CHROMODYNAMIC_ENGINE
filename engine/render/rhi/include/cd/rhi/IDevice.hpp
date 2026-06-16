@@ -465,6 +465,36 @@ public:
 
     virtual void destroy_acceleration_structure(AccelStructureHandle /*h*/) {}
 
+    /// A-COMPACTION (Backend-to-100 Wave 3b) — compact a BLAS/TLAS that was
+    /// created with `AccelBuildFlags::kAllowCompaction` to its tight size.
+    /// The source AS must already be BUILT on the device timeline (the
+    /// implementation waits for the build to finish before querying the
+    /// compacted size). Returns a NEW, SMALLER AccelStructureHandle that
+    /// traces identically to the source; the caller owns it and must destroy
+    /// it. The source handle is left intact (the caller may destroy it after
+    /// the compacted copy is in use). Backends without RT (or without the
+    /// compaction flag set on the source) return kNotImplemented /
+    /// kInvalidArgument; the base default is kNotImplemented.
+    [[nodiscard]] virtual cd::core::Result<AccelStructureHandle>
+    compact_acceleration_structure(AccelStructureHandle /*src*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "compact_acceleration_structure: backend has no RT implementation"));
+    }
+
+    /// A-COMPACTION (Backend-to-100 Wave 3b) — DEBUG/TEST observability of the
+    /// backend's result-data byte size for an AS. Used by the compaction tests
+    /// to assert the compacted AS is strictly smaller than the source. Returns
+    /// 0 on backends without RT / unknown handle (the base default), so this is
+    /// a no-op everywhere it isn't implemented. NOT a stable ABI — it is the
+    /// device-reported AS storage size, which differs per driver.
+    [[nodiscard]] virtual std::uint64_t
+    acceleration_structure_size(AccelStructureHandle /*h*/) const noexcept
+    {
+        return 0u;
+    }
+
     // Phase 134 — ray-tracing pipeline. Backends without RT return
     // kNotImplemented; callers gate on `features().ray_tracing`.
     [[nodiscard]] virtual cd::core::Result<RtPipelineHandle>

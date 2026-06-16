@@ -1462,6 +1462,49 @@ void MetalCommandBufferImpl::build_acceleration_structure(AccelStructureHandle a
                    scratchBufferOffset:0];
 }
 
+// A-REFIT (Backend-to-100 Wave 3b) — in-place refit on the AS encoder. Safe
+// fallback: if the AS was not created with kAllowUpdate (the descriptor lacks
+// MTLAccelerationStructureUsageRefit), a full build is the only valid path, so
+// we demote to buildAccelerationStructure: — the caller always gets a valid AS.
+//
+// GATED OFF on this Windows host; written + structurally self-reviewed. GPU
+// verification is the Mac-gated residual; the Vulkan + D3D12 arms are the
+// host-verified parity reference.
+void MetalCommandBufferImpl::refit_acceleration_structure(AccelStructureHandle as)
+{
+    if (cmd_ == nil || ctx_ == nullptr)
+    {
+        return;
+    }
+    MetalAccelObj* obj = ctx_->lookup_accel(as);
+    if (obj == nullptr || obj->as() == nil || obj->descriptor() == nil)
+    {
+        return;
+    }
+    ensure_accel_encoder_open();
+    if (accel_ == nil)
+    {
+        return;
+    }
+    if (has(obj->build_flags(), AccelBuildFlags::kAllowUpdate))
+    {
+        // In-place refit: source AND destination are the same AS object. The
+        // scratch buffer sized for the build also covers the (cheaper) refit.
+        [accel_ refitAccelerationStructure:obj->as()
+                                descriptor:obj->descriptor()
+                               destination:obj->as()
+                             scratchBuffer:obj->scratch()
+                       scratchBufferOffset:0];
+    }
+    else
+    {
+        [accel_ buildAccelerationStructure:obj->as()
+                                descriptor:obj->descriptor()
+                             scratchBuffer:obj->scratch()
+                       scratchBufferOffset:0];
+    }
+}
+
 void MetalCommandBufferImpl::acceleration_structure_barrier()
 {
     // FIX 2 (ADR-20260615): the AS-encoder boundary already orders an AS build

@@ -4654,6 +4654,30 @@ public:
     [[nodiscard]] cd::core::Result<void>
     submit(const cd::rhi::SubmitDesc& desc) override;
 
+    // A-AS-FLAGS (Backend-to-100 Wave 3b) — map the engine's AccelBuildFlags
+    // onto D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS. kPreferFastTrace
+    // is the default on AccelStructureDesc, so an untouched descriptor maps to
+    // the historical hardcoded PREFER_FAST_TRACE. Stored in the AccelRecord and
+    // re-applied by build_acceleration_structure so a refit's PERFORM_UPDATE
+    // build carries the same flags the prebuild query saw.
+    [[nodiscard]] static D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS
+    d3d12_build_flags_from(cd::rhi::AccelBuildFlags f) noexcept
+    {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS out =
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kAllowUpdate))
+            out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kAllowCompaction))
+            out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kPreferFastTrace))
+            out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kPreferFastBuild))
+            out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kLowMemory))
+            out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_MINIMIZE_MEMORY;
+        return out;
+    }
+
     // ---- Phase 142 step 2 — DXR acceleration-structure create/destroy -----
     //
     // Builds the result + scratch UAV buffers per
@@ -4672,7 +4696,9 @@ public:
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs {};
         inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        // A-AS-FLAGS — thread the descriptor's build flags into the prebuild
+        // query. The default kPreferFastTrace reproduces the old hardcode.
+        inputs.Flags = d3d12_build_flags_from(desc.build_flags);
 
         std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geos;
         if (desc.kind == cd::rhi::AccelStructureKind::kBottomLevel)
@@ -4819,6 +4845,10 @@ public:
         rec.result_size = info.ResultDataMaxSizeInBytes;
         rec.scratch_size = info.ScratchDataSizeInBytes;
         rec.num_descs = inputs.NumDescs;
+        // A-AS-FLAGS — retain the build flags so build_acceleration_structure /
+        // refit re-apply them (D3D12 requires the build flags match the
+        // prebuild-info flags; PERFORM_UPDATE additionally requires ALLOW_UPDATE).
+        rec.build_flags = desc.build_flags;
 
         // phase466 — retain BLAS geometry descriptors so a subsequent
         // build_acceleration_structure can re-issue BuildRTAS with the
@@ -4889,6 +4919,230 @@ public:
     void destroy_acceleration_structure(cd::rhi::AccelStructureHandle h) override
     {
         accels_.erase(h.index());
+    }
+
+    // A-COMPACTION (Backend-to-100 Wave 3b) — DEBUG/TEST observability of the
+    // AS result-data size. The compaction tests assert the compacted AS is
+    // strictly smaller than its source.
+    [[nodiscard]] std::uint64_t
+    acceleration_structure_size(cd::rhi::AccelStructureHandle h) const noexcept override
+    {
+        auto it = accels_.find(h.index());
+        if (it == accels_.end()) return 0u;
+        return static_cast<std::uint64_t>(it->second.result_size);
+    }
+
+    // A-COMPACTION (Backend-to-100 Wave 3b) — compact a BUILT AS that opted into
+    // kAllowCompaction. Self-contained one-shot path mirroring copy_image_to_
+    // buffer: (1) EmitRaytracingAccelerationStructurePostbuildInfo(COMPACTED_SIZE)
+    // into a UAV buffer + copy to readback, execute+wait; (2) read the compacted
+    // size; (3) allocate a smaller result buffer + AS; (4) CopyRaytracing-
+    // AccelerationStructure(COMPACT) src->dst, execute+wait. Returns a NEW,
+    // smaller handle that traces identically; the source is left intact.
+    [[nodiscard]] cd::core::Result<cd::rhi::AccelStructureHandle>
+    compact_acceleration_structure(cd::rhi::AccelStructureHandle src) override
+    {
+        if (!features_.ray_tracing || !device5_)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "compact_acceleration_structure: adapter lacks DXR"));
+        }
+        auto src_it = accels_.find(src.index());
+        if (src_it == accels_.end() || !src_it->second.result)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "compact_acceleration_structure: unknown source AS handle"));
+        }
+        if (!cd::rhi::has(src_it->second.build_flags,
+                          cd::rhi::AccelBuildFlags::kAllowCompaction))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "compact_acceleration_structure: source AS was not created with "
+                "AccelBuildFlags::kAllowCompaction"));
+        }
+        const D3D12_GPU_VIRTUAL_ADDRESS src_gva = src_it->second.result_gva;
+        const cd::rhi::AccelStructureKind kind = src_it->second.kind;
+
+        // Helper: default-heap UAV buffer in a given state (AS result / scratch /
+        // postbuild-info destination all share this allocation shape).
+        auto alloc_uav = [this](UINT64 size, D3D12_RESOURCE_STATES st)
+            -> ComPtr<ID3D12Resource>
+        {
+            D3D12_HEAP_PROPERTIES hp {}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC rd {};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = size; rd.Height = 1; rd.DepthOrArraySize = 1;
+            rd.MipLevels = 1; rd.Format = DXGI_FORMAT_UNKNOWN;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ComPtr<ID3D12Resource> res;
+            if (FAILED(device_->CreateCommittedResource(
+                    &hp, D3D12_HEAP_FLAG_NONE, &rd, st, nullptr,
+                    IID_PPV_ARGS(&res))))
+                return {};
+            return res;
+        };
+
+        // --- Step 1: emit COMPACTED_SIZE into a UAV buffer, copy to readback --
+        auto postbuild = alloc_uav(sizeof(UINT64),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (!postbuild)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: postbuild buffer alloc failed"));
+        }
+        D3D12_HEAP_PROPERTIES rb_hp {}; rb_hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC rb_rd {};
+        rb_rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rb_rd.Width = sizeof(UINT64); rb_rd.Height = 1; rb_rd.DepthOrArraySize = 1;
+        rb_rd.MipLevels = 1; rb_rd.Format = DXGI_FORMAT_UNKNOWN;
+        rb_rd.SampleDesc.Count = 1; rb_rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> readback;
+        if (FAILED(device_->CreateCommittedResource(
+                &rb_hp, D3D12_HEAP_FLAG_NONE, &rb_rd,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: readback buffer alloc failed"));
+        }
+
+        ComPtr<ID3D12GraphicsCommandList4> list4;
+        ComPtr<ID3D12CommandAllocator>     alloc;
+        if (auto e = make_oneshot_dxr_list(alloc, list4); !e.has_value())
+            return std::unexpected(e.error());
+
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC pbi {};
+        pbi.InfoType =
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+        pbi.DestBuffer = postbuild->GetGPUVirtualAddress();
+        list4->EmitRaytracingAccelerationStructurePostbuildInfo(&pbi, 1, &src_gva);
+        // Transition the postbuild UAV buffer to COPY_SOURCE, copy to readback.
+        D3D12_RESOURCE_BARRIER to_src {};
+        to_src.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_src.Transition.pResource = postbuild.Get();
+        to_src.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        to_src.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        to_src.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        list4->ResourceBarrier(1, &to_src);
+        list4->CopyResource(readback.Get(), postbuild.Get());
+        if (FAILED(list4->Close()))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: size-query Close failed"));
+        }
+        ID3D12CommandList* l1[] = { list4.Get() };
+        graphics_queue_->ExecuteCommandLists(1, l1);
+        if (FAILED(wait_idle_internal()))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "compact_acceleration_structure: size-query wait failed"));
+        }
+
+        UINT64 compacted_size = 0;
+        {
+            void* mapped = nullptr;
+            const D3D12_RANGE rr { 0, sizeof(UINT64) };
+            if (FAILED(readback->Map(0, &rr, &mapped)) || mapped == nullptr)
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                    "compact_acceleration_structure: readback Map failed"));
+            }
+            std::memcpy(&compacted_size, mapped, sizeof(UINT64));
+            const D3D12_RANGE no_write { 0, 0 };
+            readback->Unmap(0, &no_write);
+        }
+        if (compacted_size == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: compacted size reported 0"));
+        }
+
+        // --- Step 2: allocate the smaller result buffer ----------------------
+        auto dst_res = alloc_uav(compacted_size,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+        if (!dst_res)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: compacted result alloc failed"));
+        }
+
+        // --- Step 3: copy-compact src -> dst ---------------------------------
+        ComPtr<ID3D12GraphicsCommandList4> list4b;
+        ComPtr<ID3D12CommandAllocator>     allocb;
+        if (auto e = make_oneshot_dxr_list(allocb, list4b); !e.has_value())
+            return std::unexpected(e.error());
+        list4b->CopyRaytracingAccelerationStructure(
+            dst_res->GetGPUVirtualAddress(), src_gva,
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+        if (FAILED(list4b->Close()))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: copy-compact Close failed"));
+        }
+        ID3D12CommandList* l2[] = { list4b.Get() };
+        graphics_queue_->ExecuteCommandLists(1, l2);
+        if (FAILED(wait_idle_internal()))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "compact_acceleration_structure: copy-compact wait failed"));
+        }
+
+        // --- Step 4: register the compacted AS as a new handle ---------------
+        AccelRecord rec;
+        rec.kind = kind;
+        rec.result = dst_res;
+        rec.result_gva = dst_res->GetGPUVirtualAddress();
+        rec.result_size = compacted_size;
+        // The compacted copy is read-only (no rebuild/refit/compaction); it has
+        // no scratch/instance buffers and no build flags.
+        rec.build_flags = cd::rhi::AccelBuildFlags::kNone;
+        const auto id = next_id_++;
+        accels_.emplace(id, std::move(rec));
+        return cd::rhi::AccelStructureHandle { id, 1u };
+    }
+
+    // A-COMPACTION helper: a one-shot DIRECT command list QI'd to List4 (DXR).
+    [[nodiscard]] cd::core::Result<void>
+    make_oneshot_dxr_list(ComPtr<ID3D12CommandAllocator>& alloc,
+                        ComPtr<ID3D12GraphicsCommandList4>& list4)
+    {
+        if (FAILED(device_->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: CreateCommandAllocator failed"));
+        }
+        ComPtr<ID3D12GraphicsCommandList> list;
+        if (FAILED(device_->CreateCommandList(
+                0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr,
+                IID_PPV_ARGS(&list))))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: CreateCommandList failed"));
+        }
+        if (FAILED(list.As(&list4)) || !list4)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "compact_acceleration_structure: ID3D12GraphicsCommandList4 "
+                "unavailable (no DXR)"));
+        }
+        return {};
     }
 
     // ---- Resource records (Phase 13.C) ------------------------------------
@@ -5178,6 +5432,11 @@ private:
         ComPtr<ID3D12Resource>                          tlas_instances;  // upload heap
         D3D12_GPU_VIRTUAL_ADDRESS                       tlas_instances_gva { 0 };
         UINT                                            num_descs { 0 };
+        // A-AS-FLAGS / A-REFIT / A-COMPACTION (Backend-to-100 Wave 3b): the
+        // build flags this AS was created with. build_acceleration_structure
+        // re-applies them; refit ORs in PERFORM_UPDATE only when ALLOW_UPDATE
+        // is set; compact requires ALLOW_COMPACTION.
+        cd::rhi::AccelBuildFlags build_flags { cd::rhi::AccelBuildFlags::kPreferFastTrace };
     };
     std::unordered_map<std::uint32_t, AccelRecord> accels_;
 
@@ -6886,6 +7145,22 @@ public:
     // raygen reading TLAS result) wait for the build to drain.
     void build_acceleration_structure(cd::rhi::AccelStructureHandle h) override
     {
+        // A-REFIT — a fresh build is `update == false`.
+        record_accel_build(h, /*update=*/false);
+    }
+
+    // A-REFIT (Backend-to-100 Wave 3b) — in-place PERFORM_UPDATE refit.
+    // Safe fallback: when the source AS was not created with ALLOW_UPDATE,
+    // record_accel_build demotes to a full rebuild so the caller always gets a
+    // valid AS; only the cost differs.
+    void refit_acceleration_structure(cd::rhi::AccelStructureHandle h) override
+    {
+        record_accel_build(h, /*update=*/true);
+    }
+
+    // A-AS-FLAGS / A-REFIT — shared record path for both build and refit.
+    void record_accel_build(cd::rhi::AccelStructureHandle h, bool update)
+    {
         if (owner_ == nullptr) return;
         auto* rec = owner_->find_accel(h);
         if (rec == nullptr) return;
@@ -6894,11 +7169,24 @@ public:
         ComPtr<ID3D12GraphicsCommandList4> list4;
         if (FAILED(list_.As(&list4)) || !list4) return;
 
+        const bool allows_update = cd::rhi::has(
+            rec->build_flags, cd::rhi::AccelBuildFlags::kAllowUpdate);
+        // PERFORM_UPDATE is only valid when the AS opted into ALLOW_UPDATE;
+        // otherwise fall back to a full rebuild (the A-REFIT contract).
+        const bool do_update = update && allows_update;
+
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC bd {};
         bd.DestAccelerationStructureData    = rec->result_gva;
         bd.ScratchAccelerationStructureData = rec->scratch_gva;
         bd.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-        bd.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+        // A-AS-FLAGS — re-apply the create-time flags; PERFORM_UPDATE additionally
+        // sets SourceAccelerationStructureData = dst (in-place refit).
+        bd.Inputs.Flags = D3D12Device::d3d12_build_flags_from(rec->build_flags);
+        if (do_update)
+        {
+            bd.Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+            bd.SourceAccelerationStructureData = rec->result_gva;
+        }
 
         if (rec->kind == cd::rhi::AccelStructureKind::kBottomLevel)
         {

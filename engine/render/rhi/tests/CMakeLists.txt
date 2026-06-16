@@ -54,8 +54,16 @@ if(WIN32)
     SOURCES test_rhi_query.cpp
     DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::rhi cd::core
   )
-  # rhi_indirect drives the in-device GLSL->DXIL compute path on D3D12, so it
-  # needs the same dxcompiler.dll/dxil.dll runtime as the depth/MRT smoke.
+  # Backend-to-100 Wave 3b / A-AS-FLAGS + A-COMPACTION + A-REFIT. FLAGS slice is
+  # device-free; COMPACTION + REFIT build a BLAS/TLAS and inline-ray-query it
+  # (GLSL on Vulkan, HLSL SM6.5 via compile_hlsl on D3D12). Needs the Vulkan +
+  # D3D12 backends + cd::shader (glslang) + the DXC runtime DLLs.
+  cd_add_test(rhi_as_flags_compaction_refit
+    SOURCES test_rhi_as_flags_compaction_refit.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  # rhi_indirect + rhi_as_flags_compaction_refit drive the DXC SM6.x path on
+  # D3D12, so they need the same dxcompiler.dll/dxil.dll runtime.
   file(GLOB _cd_dxc_ind_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
   list(SORT _cd_dxc_ind_list)
   if(_cd_dxc_ind_list AND TARGET cd_test_rhi_indirect)
@@ -69,6 +77,16 @@ if(WIN32)
               "${_cd_dxc_ind_dir}/dxil.dll"
               "$<TARGET_FILE_DIR:cd_test_rhi_indirect>")
   endif()
+  if(_cd_dxc_ind_list AND TARGET cd_test_rhi_as_flags_compaction_refit)
+    get_filename_component(_cd_dxc_asf_dir "${_cd_dxc_ind_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_rhi_as_flags_compaction_refit POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_asf_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_as_flags_compaction_refit>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_asf_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_as_flags_compaction_refit>")
+  endif()
 else()
   cd_add_test(rhi_indirect
     SOURCES test_rhi_indirect.cpp
@@ -77,6 +95,10 @@ else()
   cd_add_test(rhi_query
     SOURCES test_rhi_query.cpp
     DEPS    cd::rhi_vulkan cd::rhi cd::core
+  )
+  cd_add_test(rhi_as_flags_compaction_refit
+    SOURCES test_rhi_as_flags_compaction_refit.cpp
+    DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
   )
 endif()
 

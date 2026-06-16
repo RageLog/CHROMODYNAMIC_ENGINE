@@ -913,6 +913,23 @@ void VulkanCommandBuffer::dispatch_rays(const cd::rhi::DispatchRaysDesc& desc)
 // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
 void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHandle as)
 {
+    // A-REFIT — a fresh build is `update == false`.
+    record_accel_build(as, /*update=*/false);
+}
+
+// A-REFIT (Backend-to-100 Wave 3b) — in-place update (MODE_UPDATE, src == dst).
+// Safe fallback: if the AS was not created with kAllowUpdate, record_accel_build
+// silently demotes to a full MODE_BUILD so the caller always gets a valid AS.
+void VulkanCommandBuffer::refit_acceleration_structure(cd::rhi::AccelStructureHandle as)
+{
+    record_accel_build(as, /*update=*/true);
+}
+
+// A-AS-FLAGS / A-REFIT — shared record path for both build and refit. `update`
+// selects MODE_UPDATE (src == dst), which is only valid when the AS opted into
+// kAllowUpdate; otherwise it is demoted to a full MODE_BUILD.
+void VulkanCommandBuffer::record_accel_build(cd::rhi::AccelStructureHandle as, bool update)
+{
     if (tables_.accel_lookup == nullptr || vkCmdBuildAccelerationStructuresKHR == nullptr)
         return;
     AccelBuildView view {};
@@ -921,10 +938,20 @@ void VulkanCommandBuffer::build_acceleration_structure(cd::rhi::AccelStructureHa
     if (view.as == VK_NULL_HANDLE || view.scratch_device_address == 0)
         return;
 
+    // MODE_UPDATE requires the AS to have been created with ALLOW_UPDATE; if it
+    // wasn't, fall back to a full rebuild (the documented A-REFIT contract).
+    const bool do_update = update && view.allows_update;
+
     VkAccelerationStructureBuildGeometryInfoKHR bgi {};
     bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-    bgi.mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    bgi.mode  = do_update
+        ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR
+        : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    // A-AS-FLAGS — re-apply the EXACT flags the size query used at create time
+    // (Vulkan requires the build flags to match the size-query flags).
+    bgi.flags = view.build_flags;
+    // MODE_UPDATE refits in place: source AND destination are the same AS.
+    bgi.srcAccelerationStructure = do_update ? view.as : VK_NULL_HANDLE;
     bgi.dstAccelerationStructure = view.as;
     bgi.scratchData.deviceAddress = view.scratch_device_address;
 

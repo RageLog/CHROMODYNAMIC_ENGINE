@@ -294,6 +294,13 @@ struct AccelStructureDesc
     /// TLAS: one or more BLAS instances (Phase 117). Ignored when
     /// `kind == kBottomLevel`.
     std::span<const AccelInstance>         instances;
+    /// A-AS-FLAGS (Backend-to-100 Wave 3b) — build-flag hints threaded into
+    /// every backend's AS build call. DEFAULT `kPreferFastTrace` reproduces the
+    /// historical hardcoded behaviour, so existing callers are byte-for-byte
+    /// unchanged. Set `kAllowCompaction` to make the AS eligible for
+    /// `IDevice::compact_acceleration_structure`; set `kAllowUpdate` to make it
+    /// eligible for in-place `ICommandBuffer::refit_acceleration_structure`.
+    AccelBuildFlags  build_flags { AccelBuildFlags::kPreferFastTrace };
     std::string_view debug_name {};
 };
 

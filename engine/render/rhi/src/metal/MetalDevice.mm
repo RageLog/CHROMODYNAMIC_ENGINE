@@ -1236,6 +1236,11 @@ public:
             }
             as_desc = *built;
         }
+        // A-AS-FLAGS (Backend-to-100 Wave 3b) — thread the engine's build flags
+        // into MTLAccelerationStructureUsage. kPreferFastTrace maps to
+        // MTLAccelerationStructureUsageNone (Metal's trace-optimised default),
+        // so an untouched descriptor reproduces the historical behaviour.
+        as_desc.usage = mtl_accel_usage_from(desc.build_flags);
 
         const MTLAccelerationStructureSizes sizes =
             [mtl_device_ accelerationStructureSizesWithDescriptor:as_desc];
@@ -1267,9 +1272,11 @@ public:
         const AccelStructureHandle h { id, 1u };
 
         const std::scoped_lock lock { accels_mu_ };
-        accels_.emplace(
-            h.index(),
-            std::make_unique<MetalAccelObj>(as, as_desc, scratch, desc.kind));
+        auto obj = std::make_unique<MetalAccelObj>(
+            as, as_desc, scratch, desc.kind, desc.build_flags);
+        obj->set_as_size(
+            static_cast<std::uint64_t>(sizes.accelerationStructureSize));
+        accels_.emplace(h.index(), std::move(obj));
         return h;
     }
 
@@ -1277,6 +1284,126 @@ public:
     {
         const std::scoped_lock lock { accels_mu_ };
         accels_.erase(h.index());
+    }
+
+    // A-COMPACTION (Backend-to-100 Wave 3b) — DEBUG/TEST observability of the
+    // device-reported AS size.
+    [[nodiscard]] std::uint64_t
+    acceleration_structure_size(AccelStructureHandle h) const noexcept override
+    {
+        const std::scoped_lock lock { accels_mu_ };
+        auto it = accels_.find(h.index());
+        return it == accels_.end() ? 0u : it->second->as_size();
+    }
+
+    // A-COMPACTION (Backend-to-100 Wave 3b) — compact a BUILT AS that opted into
+    // kAllowCompaction. Mirrors the Vulkan/D3D12 flow: query the compacted size
+    // (compactedAccelerationStructureSize after a build), allocate a smaller AS,
+    // and record copyAndCompactAccelerationStructure:toAccelerationStructure: on
+    // an MTLAccelerationStructureCommandEncoder. The encode/commit happens on a
+    // private one-shot command buffer + waitUntilCompleted.
+    //
+    // GATED OFF on this Windows host (CD_RHI_METAL_ENABLED auto-forces OFF on
+    // non-Apple). Written + structurally self-reviewed; GPU verification is the
+    // single Mac-gated residual (D-METAL-GPU) — the Vulkan + D3D12 arms are the
+    // host-verified parity reference.
+    [[nodiscard]] cd::core::Result<AccelStructureHandle>
+    compact_acceleration_structure(AccelStructureHandle src) override
+    {
+        if (!features_.ray_tracing)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kNotImplemented,
+                "Metal::compact_acceleration_structure: device lacks RT"));
+        }
+        id<MTLAccelerationStructure> src_as = nil;
+        std::uint64_t src_size = 0;
+        {
+            const std::scoped_lock lock { accels_mu_ };
+            auto it = accels_.find(src.index());
+            if (it == accels_.end() || it->second->as() == nil)
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::compact_acceleration_structure: unknown source AS"));
+            }
+            if (!has(it->second->build_flags(), AccelBuildFlags::kAllowCompaction))
+            {
+                return std::unexpected(rhi_errors::make(
+                    rhi_errors::Code::kInvalidArgument,
+                    "Metal::compact_acceleration_structure: source AS was not "
+                    "created with AccelBuildFlags::kAllowCompaction"));
+            }
+            src_as = it->second->as();
+            src_size = it->second->as_size();
+        }
+
+        // SELF-REVIEW NOTE (Mac-gated, D-METAL-GPU): the compacted size is read
+        // from the source AS post-build. `compactedAccelerationStructureSize` is
+        // the convenience accessor; the spec-canonical path is
+        // [encoder writeCompactedAccelerationStructureSize:toBuffer:offset:] then
+        // a readback — the Mac run must confirm whichever the running OS exposes
+        // (Sonoma+ ships the property). The Vulkan + D3D12 arms (host-verified on
+        // the RTX 3080: 2816 B -> 1152 B) are the authoritative parity reference.
+        const NSUInteger compacted =
+            [src_as compactedAccelerationStructureSize];
+        if (compacted == 0u || compacted >= src_size)
+        {
+            // No shrink possible (or query unavailable) — surface as a typed
+            // error rather than returning a non-smaller AS that would defeat the
+            // contract's "compacted < original" guarantee.
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::compact_acceleration_structure: no compaction gain"));
+        }
+        id<MTLAccelerationStructure> dst_as =
+            [mtl_device_ newAccelerationStructureWithSize:compacted];
+        if (dst_as == nil)
+        {
+            return std::unexpected(rhi_errors::make(
+                rhi_errors::Code::kResourceCreationFailed,
+                "Metal::compact_acceleration_structure: dst alloc failed"));
+        }
+
+        id<MTLCommandBuffer> cb = [mtl_queue_ commandBuffer];
+        id<MTLAccelerationStructureCommandEncoder> enc =
+            [cb accelerationStructureCommandEncoder];
+        [enc copyAndCompactAccelerationStructure:src_as
+                         toAccelerationStructure:dst_as];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+
+        const auto id = next_id_.fetch_add(1u, std::memory_order_relaxed);
+        const AccelStructureHandle h { id, 1u };
+        const std::scoped_lock lock { accels_mu_ };
+        // The compacted copy is read-only (no rebuild/refit/compaction): nil
+        // descriptor + scratch, kNone flags.
+        auto obj = std::make_unique<MetalAccelObj>(
+            dst_as, nil, nil,
+            (accels_.count(src.index()) != 0)
+                ? accels_[src.index()]->kind()
+                : AccelStructureKind::kBottomLevel,
+            AccelBuildFlags::kNone);
+        obj->set_as_size(static_cast<std::uint64_t>(compacted));
+        accels_.emplace(h.index(), std::move(obj));
+        return h;
+    }
+
+    // A-AS-FLAGS (Backend-to-100 Wave 3b) — map the engine's AccelBuildFlags
+    // onto MTLAccelerationStructureUsage. kPreferFastTrace / kPreferFastBuild /
+    // kLowMemory have no distinct Metal usage bit (Metal optimises for trace by
+    // default), so only kAllowUpdate (refit) and kAllowCompaction (preferred-
+    // fast-build is implied by the refittable usage) carry across.
+    [[nodiscard]] static MTLAccelerationStructureUsage
+    mtl_accel_usage_from(AccelBuildFlags f) noexcept
+    {
+        MTLAccelerationStructureUsage out = MTLAccelerationStructureUsageNone;
+        if (has(f, AccelBuildFlags::kAllowUpdate))
+            out |= MTLAccelerationStructureUsageRefit;
+        if (has(f, AccelBuildFlags::kPreferFastBuild))
+            out |= MTLAccelerationStructureUsagePreferFastBuild;
+        return out;
     }
 
     // --- GPU query pool (A-QUERY, Backend-to-100 Wave 3a, gated-off) -----

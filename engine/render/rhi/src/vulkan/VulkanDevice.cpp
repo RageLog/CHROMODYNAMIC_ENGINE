@@ -3467,6 +3467,11 @@ public:
         out.triangle_geos = rec.vk_triangle_geos.data();
         out.triangle_primitive_counts = rec.vk_primitive_counts.data();
         out.triangle_count = static_cast<std::uint32_t>(rec.vk_triangle_geos.size());
+        // A-AS-FLAGS / A-REFIT — re-apply the create-time build flags + carry
+        // the update-eligibility bit to the cmd-buffer build/refit path.
+        out.build_flags = vk_build_flags_from(rec.build_flags);
+        out.allows_update =
+            cd::rhi::has(rec.build_flags, cd::rhi::AccelBuildFlags::kAllowUpdate);
         return true;
     }
 
@@ -3705,6 +3710,80 @@ public:
         return {};
     }
 
+    // ---- One-shot command-buffer helpers (A-COMPACTION reuse) --------------
+    //
+    // Factor out the lazy-pool + allocate + begin + submit-and-wait pattern
+    // copy_image_to_buffer already uses, so compact_acceleration_structure can
+    // run its two one-shot submissions (size-query, copy-compact) without
+    // duplicating the boilerplate. These mirror that path exactly.
+
+    [[nodiscard]] VkResult ensure_graphics_pool_internal() noexcept
+    {
+        if (graphics_pool_ != VK_NULL_HANDLE)
+            return VK_SUCCESS;
+        const VkCommandPoolCreateInfo pi {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = graphics_family_,
+        };
+        return vkCreateCommandPool(device_, &pi, nullptr, &graphics_pool_);
+    }
+
+    [[nodiscard]] VkResult alloc_oneshot_cmd_internal(VkCommandBuffer& out) noexcept
+    {
+        const VkCommandBufferAllocateInfo ai {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .pNext = nullptr,
+            .commandPool = graphics_pool_,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        return vkAllocateCommandBuffers(device_, &ai, &out);
+    }
+
+    void begin_oneshot_cmd_internal(VkCommandBuffer cmd) noexcept
+    {
+        const VkCommandBufferBeginInfo bi {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            .pInheritanceInfo = nullptr,
+        };
+        vkBeginCommandBuffer(cmd, &bi);
+    }
+
+    [[nodiscard]] VkResult submit_oneshot_wait_internal(VkCommandBuffer cmd) noexcept
+    {
+        VkFenceCreateInfo fci {};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence { VK_NULL_HANDLE };
+        if (vkCreateFence(device_, &fci, nullptr, &fence) != VK_SUCCESS)
+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        const VkCommandBufferSubmitInfo cb_info {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+            .pNext = nullptr,
+            .commandBuffer = cmd,
+            .deviceMask = 0,
+        };
+        const VkSubmitInfo2 si {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .pNext = nullptr,
+            .flags = 0,
+            .waitSemaphoreInfoCount = 0,
+            .pWaitSemaphoreInfos = nullptr,
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &cb_info,
+            .signalSemaphoreInfoCount = 0,
+            .pSignalSemaphoreInfos = nullptr,
+        };
+        const VkResult sr = vkQueueSubmit2(graphics_queue_, 1, &si, fence);
+        if (sr == VK_SUCCESS)
+            vkWaitForFences(device_, 1, &fence, VK_TRUE, ~std::uint64_t { 0 });
+        vkDestroyFence(device_, fence, nullptr);
+        return sr;
+    }
+
     void submit(cd::rhi::ICommandBuffer& cmd) override
     {
         // Single-command shorthand. Forward to the full submit() so the queue
@@ -3888,6 +3967,30 @@ public:
             vkDeviceWaitIdle(device_);
     }
 
+    // A-AS-FLAGS (Backend-to-100 Wave 3b) — map the engine's AccelBuildFlags
+    // onto VkBuildAccelerationStructureFlagsKHR. kPreferFastTrace is the
+    // default on AccelStructureDesc, so an untouched descriptor reproduces the
+    // historical hardcoded PREFER_FAST_TRACE flag exactly. The flags are stored
+    // in the AccelRecord and re-applied by the command-buffer build path (so a
+    // refit's MODE_UPDATE build carries the SAME flags as the create-time size
+    // query — Vulkan requires the build flags to match the size-query flags).
+    [[nodiscard]] static VkBuildAccelerationStructureFlagsKHR
+    vk_build_flags_from(cd::rhi::AccelBuildFlags f) noexcept
+    {
+        VkBuildAccelerationStructureFlagsKHR out = 0;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kAllowUpdate))
+            out |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kAllowCompaction))
+            out |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kPreferFastTrace))
+            out |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kPreferFastBuild))
+            out |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+        if (cd::rhi::has(f, cd::rhi::AccelBuildFlags::kLowMemory))
+            out |= VK_BUILD_ACCELERATION_STRUCTURE_LOW_MEMORY_BIT_KHR;
+        return out;
+    }
+
     // ---- Ray tracing (Phase 17.A — BLAS creation) -------------------------
     //
     // Creates the AS object + its backing buffer. The BUILD is deferred
@@ -3940,11 +4043,15 @@ public:
             g.geometry.instances.arrayOfPointers = VK_FALSE;
             g.geometry.instances.data.deviceAddress = 0;  // placeholder
 
+            // A-AS-FLAGS — thread the descriptor's build flags into the size
+            // query (the default kPreferFastTrace reproduces the old hardcode).
+            const VkBuildAccelerationStructureFlagsKHR tlas_flags =
+                vk_build_flags_from(desc.build_flags);
             VkAccelerationStructureBuildGeometryInfoKHR bgi {};
             bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
             bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
             bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-            bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+            bgi.flags = tlas_flags;
             bgi.geometryCount = 1;
             bgi.pGeometries = &g;
 
@@ -3992,7 +4099,13 @@ public:
             rec.as = as;
             rec.storage_buf = storage_buf;
             rec.storage_alloc = storage_alloc;
-            rec.scratch_size = sizes.buildScratchSize;
+            // A-REFIT — refit (MODE_UPDATE) needs at least updateScratchSize
+            // scratch. Size the single scratch buffer to the larger of the two
+            // so the SAME buffer backs both the initial build and every refit.
+            rec.scratch_size = std::max(sizes.buildScratchSize, sizes.updateScratchSize);
+            rec.update_scratch_size = sizes.updateScratchSize;
+            rec.as_size = sizes.accelerationStructureSize;
+            rec.build_flags = desc.build_flags;
             rec.kind = desc.kind;
             rec.instances.assign(desc.instances.begin(), desc.instances.end());
 
@@ -4142,11 +4255,15 @@ public:
                 t.index_count > 0 ? t.index_count / 3 : t.vertex_count / 3);
         }
 
+        // A-AS-FLAGS — thread the descriptor's build flags into the BLAS size
+        // query (default kPreferFastTrace reproduces the old hardcode).
+        const VkBuildAccelerationStructureFlagsKHR blas_flags =
+            vk_build_flags_from(desc.build_flags);
         VkAccelerationStructureBuildGeometryInfoKHR bgi {};
         bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         bgi.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
         bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-        bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        bgi.flags = blas_flags;
         bgi.geometryCount = static_cast<std::uint32_t>(geos.size());
         bgi.pGeometries = geos.data();
 
@@ -4194,7 +4311,12 @@ public:
         rec.as = as;
         rec.storage_buf = storage_buf;
         rec.storage_alloc = storage_alloc;
-        rec.scratch_size = sizes.buildScratchSize;
+        // A-REFIT — size the scratch buffer to cover both the build and the
+        // (cheaper) in-place update so a refit re-uses the same allocation.
+        rec.scratch_size = std::max(sizes.buildScratchSize, sizes.updateScratchSize);
+        rec.update_scratch_size = sizes.updateScratchSize;
+        rec.as_size = sizes.accelerationStructureSize;
+        rec.build_flags = desc.build_flags;
         rec.kind = desc.kind;
         rec.triangles.assign(desc.triangles.begin(), desc.triangles.end());
         // Phase 132 — keep the Vk-format triangle list for the build pass.
@@ -4252,6 +4374,204 @@ public:
         if (it->second.storage_buf != VK_NULL_HANDLE)
             vmaDestroyBuffer(vma_allocator_, it->second.storage_buf, it->second.storage_alloc);
         accels_.erase(it);
+    }
+
+    // A-COMPACTION (Backend-to-100 Wave 3b) — DEBUG/TEST observability of the
+    // device-reported result-data size of an AS. The compaction tests assert
+    // the compacted AS is strictly smaller than its source.
+    [[nodiscard]] std::uint64_t
+    acceleration_structure_size(cd::rhi::AccelStructureHandle h) const noexcept override
+    {
+        auto it = accels_.find(h.index());
+        if (it == accels_.end()) return 0u;
+        return static_cast<std::uint64_t>(it->second.as_size);
+    }
+
+    // A-COMPACTION (Backend-to-100 Wave 3b) — compact a BUILT AS that opted into
+    // kAllowCompaction. Self-contained one-shot path mirroring copy_image_to_
+    // buffer: (1) record vkCmdWriteAccelerationStructuresPropertiesKHR(
+    // COMPACTED_SIZE) into a VkQueryPool, submit+wait; (2) read the compacted
+    // size back; (3) create a smaller storage buffer + AS; (4) record
+    // vkCmdCopyAccelerationStructureKHR(MODE_COMPACT) src->dst, submit+wait.
+    // Returns a NEW, smaller AccelStructureHandle that traces identically. The
+    // source handle is left intact for the caller to destroy.
+    [[nodiscard]] cd::core::Result<cd::rhi::AccelStructureHandle>
+    compact_acceleration_structure(cd::rhi::AccelStructureHandle src) override
+    {
+        if (!features_.ray_tracing)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kNotImplemented,
+                "compact_acceleration_structure: device lacks RT extensions"));
+        }
+        auto src_it = accels_.find(src.index());
+        if (src_it == accels_.end() || src_it->second.as == VK_NULL_HANDLE)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "compact_acceleration_structure: unknown source AS handle"));
+        }
+        if (!cd::rhi::has(src_it->second.build_flags,
+                          cd::rhi::AccelBuildFlags::kAllowCompaction))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "compact_acceleration_structure: source AS was not created with "
+                "AccelBuildFlags::kAllowCompaction"));
+        }
+        // NB: VkAccelerationStructureKHR is a pointer typedef — a top-level
+        // const would const-qualify the pointer (misc-misplaced-const), not the
+        // pointee, so it is intentionally non-const here (the handle is only
+        // read, never mutated).
+        VkAccelerationStructureKHR src_as = src_it->second.as;
+        const cd::rhi::AccelStructureKind kind = src_it->second.kind;
+
+        if (ensure_graphics_pool_internal() != VK_SUCCESS)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: vkCreateCommandPool failed"));
+        }
+
+        // --- Step 1: query the compacted size ------------------------------
+        VkQueryPoolCreateInfo qpci {};
+        qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType =
+            VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+        qpci.queryCount = 1;
+        VkQueryPool qpool { VK_NULL_HANDLE };
+        if (vkCreateQueryPool(device_, &qpci, nullptr, &qpool) != VK_SUCCESS)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: vkCreateQueryPool failed"));
+        }
+
+        VkCommandBuffer cmd { VK_NULL_HANDLE };
+        if (alloc_oneshot_cmd_internal(cmd) != VK_SUCCESS)
+        {
+            vkDestroyQueryPool(device_, qpool, nullptr);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: cmd alloc failed (size query)"));
+        }
+        begin_oneshot_cmd_internal(cmd);
+        vkCmdResetQueryPool(cmd, qpool, 0, 1);
+        vkCmdWriteAccelerationStructuresPropertiesKHR(
+            cmd, 1, &src_as,
+            VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+            qpool, 0);
+        vkEndCommandBuffer(cmd);
+        if (submit_oneshot_wait_internal(cmd) != VK_SUCCESS)
+        {
+            vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd);
+            vkDestroyQueryPool(device_, qpool, nullptr);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "compact_acceleration_structure: size-query submit failed"));
+        }
+        vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd);
+
+        VkDeviceSize compacted_size { 0 };
+        const VkResult qres = vkGetQueryPoolResults(
+            device_, qpool, 0, 1, sizeof(compacted_size), &compacted_size,
+            sizeof(compacted_size),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        vkDestroyQueryPool(device_, qpool, nullptr);
+        if (qres != VK_SUCCESS || compacted_size == 0)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: compacted-size readback failed"));
+        }
+
+        // --- Step 2: allocate the smaller storage buffer + AS --------------
+        VkBufferCreateInfo bci {};
+        bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bci.size = compacted_size;
+        bci.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo aci {};
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        VkBuffer dst_buf { VK_NULL_HANDLE };
+        VmaAllocation dst_alloc { VK_NULL_HANDLE };
+        if (vmaCreateBuffer(vma_allocator_, &bci, &aci, &dst_buf, &dst_alloc, nullptr)
+            != VK_SUCCESS)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: compacted storage alloc failed"));
+        }
+
+        VkAccelerationStructureCreateInfoKHR ci {};
+        ci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+        ci.type = (kind == cd::rhi::AccelStructureKind::kTopLevel)
+            ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
+            : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        ci.buffer = dst_buf;
+        ci.offset = 0;
+        ci.size = compacted_size;
+        VkAccelerationStructureKHR dst_as { VK_NULL_HANDLE };
+        if (vkCreateAccelerationStructureKHR(device_, &ci, nullptr, &dst_as)
+            != VK_SUCCESS)
+        {
+            vmaDestroyBuffer(vma_allocator_, dst_buf, dst_alloc);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: vkCreateAccelerationStructure "
+                "(compacted) failed"));
+        }
+
+        // --- Step 3: copy-compact src -> dst -------------------------------
+        VkCommandBuffer cmd2 { VK_NULL_HANDLE };
+        if (alloc_oneshot_cmd_internal(cmd2) != VK_SUCCESS)
+        {
+            vkDestroyAccelerationStructureKHR(device_, dst_as, nullptr);
+            vmaDestroyBuffer(vma_allocator_, dst_buf, dst_alloc);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kResourceCreationFailed,
+                "compact_acceleration_structure: cmd alloc failed (copy)"));
+        }
+        begin_oneshot_cmd_internal(cmd2);
+        VkCopyAccelerationStructureInfoKHR copy {};
+        copy.sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR;
+        copy.src = src_as;
+        copy.dst = dst_as;
+        copy.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+        vkCmdCopyAccelerationStructureKHR(cmd2, &copy);
+        vkEndCommandBuffer(cmd2);
+        if (submit_oneshot_wait_internal(cmd2) != VK_SUCCESS)
+        {
+            vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd2);
+            vkDestroyAccelerationStructureKHR(device_, dst_as, nullptr);
+            vmaDestroyBuffer(vma_allocator_, dst_buf, dst_alloc);
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "compact_acceleration_structure: copy-compact submit failed"));
+        }
+        vkFreeCommandBuffers(device_, graphics_pool_, 1, &cmd2);
+
+        // --- Step 4: register the compacted AS as a new handle -------------
+        AccelRecord rec;
+        rec.as = dst_as;
+        rec.storage_buf = dst_buf;
+        rec.storage_alloc = dst_alloc;
+        rec.as_size = compacted_size;
+        // The compacted copy is read-only (no further build/refit/compaction);
+        // it has no scratch/instance buffers and no build flags.
+        rec.build_flags = cd::rhi::AccelBuildFlags::kNone;
+        rec.kind = kind;
+        {
+            VkAccelerationStructureDeviceAddressInfoKHR info {};
+            info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+            info.accelerationStructure = dst_as;
+            rec.as_device_address =
+                vkGetAccelerationStructureDeviceAddressKHR(device_, &info);
+        }
+        const auto id = next_id_++;
+        accels_.emplace(id, std::move(rec));
+        return cd::rhi::AccelStructureHandle { id, 1u };
     }
 
     // ===== phase838-W8-BE-rt-bindless-texture-sampling ====================
@@ -4899,6 +5219,17 @@ public:
         VmaAllocation scratch_alloc { VK_NULL_HANDLE };
         VkDeviceAddress scratch_device_address { 0 };
         VkDeviceAddress as_device_address { 0 };
+        // A-AS-FLAGS / A-REFIT / A-COMPACTION (Backend-to-100 Wave 3b):
+        //   build_flags         — re-applied by the cmd-buffer build/refit path
+        //                          (Vulkan requires build flags to match the
+        //                          size-query flags).
+        //   update_scratch_size — scratch bytes a MODE_UPDATE refit needs.
+        //   as_size             — result-data size reported by the size query;
+        //                          exposed via acceleration_structure_size and
+        //                          used as the compaction shrink baseline.
+        cd::rhi::AccelBuildFlags build_flags { cd::rhi::AccelBuildFlags::kPreferFastTrace };
+        VkDeviceSize update_scratch_size { 0 };
+        VkDeviceSize as_size { 0 };
         cd::rhi::AccelStructureKind kind { cd::rhi::AccelStructureKind::kBottomLevel };
         std::vector<cd::rhi::AccelTriangleGeometry> triangles;
         std::vector<cd::rhi::AccelInstance>         instances;

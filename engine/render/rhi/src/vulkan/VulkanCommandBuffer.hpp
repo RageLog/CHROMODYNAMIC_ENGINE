@@ -38,6 +38,13 @@ struct AccelBuildView
     const VkAccelerationStructureGeometryKHR* triangle_geos { nullptr };
     const std::uint32_t*                      triangle_primitive_counts { nullptr };
     std::uint32_t                             triangle_count { 0 };
+    // A-AS-FLAGS / A-REFIT (Backend-to-100 Wave 3b): the VkBuildAcceleration-
+    // StructureFlagsKHR computed from AccelStructureDesc::build_flags, plus
+    // whether the AS opted into kAllowUpdate (so refit can pick MODE_UPDATE
+    // and fall back to a full rebuild otherwise). The cmd-buffer build/refit
+    // path re-applies the SAME flags Vulkan saw at the size query.
+    VkBuildAccelerationStructureFlagsKHR      build_flags { 0 };
+    bool                                      allows_update { false };
 };
 
 /// Non-owning views into the producing VulkanDevice's resource tables. The
@@ -232,6 +239,9 @@ public:
     // Phase 132 — vkCmdBuildAccelerationStructuresKHR override.
     void build_acceleration_structure(cd::rhi::AccelStructureHandle as) override;
 
+    // A-REFIT (Backend-to-100 Wave 3b) — in-place MODE_UPDATE refit override.
+    void refit_acceleration_structure(cd::rhi::AccelStructureHandle as) override;
+
     // Phase 251 — vkCmdPipelineBarrier2 AS-build → AS-build memory barrier.
     void acceleration_structure_barrier() override;
 
@@ -254,6 +264,10 @@ public:
     [[nodiscard]] cd::rhi::QueueType queue_type() const noexcept { return queue_type_; }
 
 private:
+    // A-REFIT (Backend-to-100 Wave 3b) — shared record path for both build
+    // (update == false) and refit (update == true / MODE_UPDATE, src == dst).
+    void record_accel_build(cd::rhi::AccelStructureHandle as, bool update);
+
     VkDevice device_ { VK_NULL_HANDLE };
     VkCommandPool pool_ { VK_NULL_HANDLE };
     VkCommandBuffer cmd_ { VK_NULL_HANDLE };

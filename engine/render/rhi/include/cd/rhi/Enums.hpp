@@ -303,6 +303,42 @@ enum class QueryType : std::uint8_t
     kOcclusion,
 };
 
+// ---- Acceleration-structure build flags (A-AS-FLAGS, Backend-to-100 Wave 3b)
+//
+// Bit-flags that drive how a BLAS/TLAS is built. They map 1:1 onto the
+// backend build-flag enums:
+//   * Vulkan  -> VkBuildAccelerationStructureFlagBitsKHR
+//   * D3D12   -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS
+//   * Metal   -> MTLAccelerationStructureUsage (gated, Mac-deferred)
+//
+// `kPreferFastTrace` is the DEFAULT on `AccelStructureDesc::build_flags`, so a
+// caller that doesn't touch the field reproduces the historical behaviour
+// (the build path previously hardcoded PREFER_FAST_TRACE on all 3 backends).
+//
+// kAllowUpdate   -> the AS may later be REFIT in place (cheaper than a full
+//                   rebuild; the skinned-mesh BLAS that rebuilds every frame).
+//                   Without it, refit_acceleration_structure falls back to a
+//                   full rebuild.
+// kAllowCompaction -> the AS may later be COMPACTED to its tight size via
+//                   IDevice::compact_acceleration_structure. Without it that
+//                   call returns kInvalidArgument.
+// kPreferFastTrace / kPreferFastBuild -> mutually-advisory build hints (trace
+//                   throughput vs. build time). kLowMemory minimises scratch +
+//                   result memory at a build/trace cost.
+//
+// kPreferFastTrace and kPreferFastBuild are mutually exclusive at the driver
+// level; the backend mappers pass whatever the caller set straight through and
+// let the driver arbitrate (matching the Vulkan/DXR spec contract).
+enum class AccelBuildFlags : std::uint32_t
+{
+    kNone            = 0u,
+    kAllowUpdate     = 1u << 0,  ///< enables in-place refit (MODE_UPDATE / PERFORM_UPDATE)
+    kAllowCompaction = 1u << 1,  ///< enables compact_acceleration_structure
+    kPreferFastTrace = 1u << 2,  ///< trace-throughput hint (the safe default)
+    kPreferFastBuild = 1u << 3,  ///< build-time hint
+    kLowMemory       = 1u << 4,  ///< minimise AS + scratch memory
+};
+
 // ---- Bit-flag helpers -----------------------------------------------------
 
 #define CD_RHI_DEFINE_FLAG_OPS(E)                                                             \
@@ -342,6 +378,7 @@ CD_RHI_DEFINE_FLAG_OPS(ShaderStage)
 CD_RHI_DEFINE_FLAG_OPS(BufferUsage)
 CD_RHI_DEFINE_FLAG_OPS(TextureUsage)
 CD_RHI_DEFINE_FLAG_OPS(ResourceState)
+CD_RHI_DEFINE_FLAG_OPS(AccelBuildFlags)
 
 #undef CD_RHI_DEFINE_FLAG_OPS
 

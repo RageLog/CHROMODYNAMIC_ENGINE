@@ -287,6 +287,20 @@ public:
 
     virtual void build_acceleration_structure(AccelStructureHandle /*as*/) {}
 
+    /// A-REFIT (Backend-to-100 Wave 3b) — in-place update (refit) of an AS
+    /// whose source data (vertex positions / instance transforms) changed but
+    /// whose TOPOLOGY (primitive/instance count) did not. This is the cheap
+    /// per-frame path for the skinned-mesh BLAS (CesiumMan) that otherwise
+    /// rebuilds every frame. Maps to Vulkan MODE_UPDATE (src == dst) using the
+    /// update-scratch size / D3D12 PERFORM_UPDATE / Metal refitAccelerationStructure.
+    ///
+    /// Contract: the AS must have been created with
+    /// `AccelBuildFlags::kAllowUpdate`. When it was NOT, the implementation
+    /// SAFELY FALLS BACK to a full rebuild (identical to
+    /// build_acceleration_structure) — so a caller can always issue refit and
+    /// get a valid AS; only the cost differs. Backends without RT no-op.
+    virtual void refit_acceleration_structure(AccelStructureHandle /*as*/) {}
+
     /// Phase 251 — pipeline barrier between an AS build (BLAS or TLAS)
     /// and a subsequent AS build/use on the same command buffer. Required
     /// when a BLAS is rebuilt in-place every frame (e.g. CPU-LBS skinning

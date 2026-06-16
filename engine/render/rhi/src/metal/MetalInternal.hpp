@@ -1095,8 +1095,10 @@ public:
     MetalAccelObj(id<MTLAccelerationStructure> as,
                   MTLAccelerationStructureDescriptor* descriptor,
                   id<MTLBuffer> scratch,
-                  AccelStructureKind kind) noexcept
-        : as_(as), descriptor_(descriptor), scratch_(scratch), kind_(kind) {}
+                  AccelStructureKind kind,
+                  AccelBuildFlags build_flags) noexcept
+        : as_(as), descriptor_(descriptor), scratch_(scratch), kind_(kind),
+          build_flags_(build_flags) {}
     ~MetalAccelObj() = default;
     MetalAccelObj(const MetalAccelObj&) = delete;
     MetalAccelObj& operator=(const MetalAccelObj&) = delete;
@@ -1110,12 +1112,23 @@ public:
     }
     [[nodiscard]] id<MTLBuffer> scratch() const noexcept { return scratch_; }
     [[nodiscard]] AccelStructureKind kind() const noexcept { return kind_; }
+    // A-AS-FLAGS / A-REFIT (Backend-to-100 Wave 3b): the build flags this AS
+    // was created with. refit_acceleration_structure picks
+    // refitAccelerationStructure: only when kAllowUpdate is set; otherwise it
+    // falls back to a full buildAccelerationStructure:.
+    [[nodiscard]] AccelBuildFlags build_flags() const noexcept { return build_flags_; }
+    // A-COMPACTION: the device-reported result size, set at create time and
+    // overwritten by the compacted size on a compacted copy.
+    [[nodiscard]] std::uint64_t as_size() const noexcept { return as_size_; }
+    void set_as_size(std::uint64_t s) noexcept { as_size_ = s; }
 
 private:
     id<MTLAccelerationStructure>        as_ { nil };
     MTLAccelerationStructureDescriptor* descriptor_ { nil };
     id<MTLBuffer>                       scratch_ { nil };
     AccelStructureKind                  kind_ { AccelStructureKind::kBottomLevel };
+    AccelBuildFlags                     build_flags_ { AccelBuildFlags::kPreferFastTrace };
+    std::uint64_t                       as_size_ { 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -1324,6 +1337,10 @@ public:
     // CommandEncoder (closes any open render/blit/compute encoder first, as
     // Metal forbids nested encoders). Ray-query path — NOT the SBT pipeline.
     void build_acceleration_structure(AccelStructureHandle as) override;
+    // A-REFIT (Backend-to-100 Wave 3b): in-place refit on the AS encoder via
+    // refitAccelerationStructure:descriptor:destination:scratchBuffer: when the
+    // AS opted into kAllowUpdate; falls back to a full build otherwise.
+    void refit_acceleration_structure(AccelStructureHandle as) override;
     // M9: barrier between an AS build and a subsequent AS build/use on the
     // same command buffer (TLAS rebuild after an in-place BLAS rebuild). On
     // Metal the AS encoder boundary + the render/compute encoder that consumes
