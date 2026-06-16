@@ -36,6 +36,25 @@ TEST(CoreSmoke, EngineNameAndVersion)
     EXPECT_GT(cd::core::kEngineVersion.packed(), 0u);
 }
 
+TEST(CoreSmoke, VersionPackedFieldOrdering)
+{
+    // Locks the packed() bit-layout contract: major occupies the high 16
+    // bits (<<16), minor the next byte (<<8), patch the low byte. A regression
+    // that swapped the field order would silently break version comparisons.
+    constexpr cd::core::Version v { 1, 2, 3, "" };
+    static_assert(v.packed() == ((1u << 16) | (2u << 8) | 3u));
+    EXPECT_EQ(v.packed(), 0x010203u);
+
+    // Higher major must dominate the ordering regardless of minor/patch.
+    constexpr cd::core::Version older { 1, 9, 9, "" };
+    constexpr cd::core::Version newer { 2, 0, 0, "" };
+    EXPECT_LT(older.packed(), newer.packed());
+
+    // Zero version packs to zero (the "unconfigured build" sentinel).
+    constexpr cd::core::Version zero {};
+    static_assert(zero.packed() == 0u);
+}
+
 TEST(CoreDefines, PlatformDetected)
 {
 #if defined(CD_PLATFORM_WINDOWS) || defined(CD_PLATFORM_LINUX) || defined(CD_PLATFORM_MACOS)

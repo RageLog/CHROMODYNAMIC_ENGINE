@@ -50,7 +50,8 @@ TEST(EventBus, SubscribeAndPublish)
 TEST(EventBus, MultipleSubscribers)
 {
     cd::events::EventBus bus;
-    std::atomic<int> a { 0 }, b { 0 };
+    std::atomic<int> a { 0 };
+    std::atomic<int> b { 0 };
     auto c1 = bus.subscribe<PingEvent>(
         [&](const PingEvent& e)
         {
@@ -141,7 +142,10 @@ TEST(ScopedConnection, MoveTransfersOwnership)
         }
     );
     auto b = std::move(a);
-    EXPECT_FALSE(a.active());
+    // Intentional use-after-move: the contract under test is precisely that a
+    // moved-from ScopedConnection is left inert (active() == false). The
+    // moved-from read is deliberate, not a bug.
+    EXPECT_FALSE(a.active());  // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved)
     EXPECT_TRUE(b.active());
     bus.publish(PingEvent {});
     EXPECT_EQ(hits.load(), 1);
@@ -266,6 +270,75 @@ TEST(EventBus, QueueIsThreadSafe)
     const auto drained = bus.drain();
     EXPECT_EQ(drained, static_cast<std::size_t>(kProducers * kPerProducer));
     EXPECT_EQ(hits.load(), kProducers * kPerProducer);
+}
+
+// --- Priority-ordered delivery (Band-2 foundation-to-100) -------------------
+
+TEST(EventBus, HigherPriorityRunsFirst)
+{
+    cd::events::EventBus bus;
+    std::vector<int> order;
+    // Subscribe LOW first, then HIGH — priority, not subscription order,
+    // must determine delivery sequence.
+    auto low = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(1); }, 1);
+    auto high = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(100); }, 100);
+    auto mid = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(50); }, 50);
+
+    EXPECT_EQ(bus.publish(PingEvent {}), 3u);
+    ASSERT_EQ(order.size(), 3u);
+    EXPECT_EQ(order[0], 100);
+    EXPECT_EQ(order[1], 50);
+    EXPECT_EQ(order[2], 1);
+}
+
+TEST(EventBus, EqualPriorityKeepsSubscriptionOrder)
+{
+    cd::events::EventBus bus;
+    std::vector<int> order;
+    // Three handlers at the SAME priority — must run in subscription order.
+    auto a = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(1); }, 10);
+    auto b = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(2); }, 10);
+    auto c = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(3); }, 10);
+
+    bus.publish(PingEvent {});
+    ASSERT_EQ(order.size(), 3u);
+    EXPECT_EQ(order[0], 1);
+    EXPECT_EQ(order[1], 2);
+    EXPECT_EQ(order[2], 3);
+}
+
+TEST(EventBus, DefaultOverloadIsPriorityZeroFifo)
+{
+    cd::events::EventBus bus;
+    std::vector<int> order;
+    // A default (no-priority) subscribe is priority 0; a positive-priority
+    // handler must precede it, and a negative-priority handler must follow.
+    auto def = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(0); });
+    auto pos = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(5); }, 5);
+    auto neg = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(-5); }, -5);
+
+    bus.publish(PingEvent {});
+    ASSERT_EQ(order.size(), 3u);
+    EXPECT_EQ(order[0], 5);
+    EXPECT_EQ(order[1], 0);
+    EXPECT_EQ(order[2], -5);
+}
+
+TEST(EventBus, PriorityUnsubscribeRemovesCorrectEntry)
+{
+    cd::events::EventBus bus;
+    std::vector<int> order;
+    auto high = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(100); }, 100);
+    {
+        auto mid = bus.subscribe<PingEvent>([&](const PingEvent&) { order.push_back(50); }, 50);
+        EXPECT_EQ(bus.subscriber_count_for<PingEvent>(), 2u);
+    }
+    // mid unsubscribed via RAII; only the high-priority handler remains, and
+    // the bucket ordering of the survivors is intact.
+    EXPECT_EQ(bus.subscriber_count_for<PingEvent>(), 1u);
+    bus.publish(PingEvent {});
+    ASSERT_EQ(order.size(), 1u);
+    EXPECT_EQ(order[0], 100);
 }
 
 }  // namespace

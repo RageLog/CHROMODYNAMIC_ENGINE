@@ -15,16 +15,30 @@
 //     enqueue, the main tick drains, no shared-state races inside the
 //     handler bodies.
 //
-// Async delivery / priority / oneShot / maxConcurrency / weak-token aliveness
-// from the DfH original return in Sprint S2.3+ once the ThreadPool / coroutine
-// scheduler land.
+// v3 surface (Band-2 foundation-to-100, ADR-20260616 §events):
+//   - Priority-ordered delivery: subscribe<EventT>(handler, priority).
+//     Higher priority runs FIRST; ties preserve subscription order
+//     (stable). The no-priority overload defaults to priority 0, so the
+//     v1/v2 FIFO behaviour is unchanged. This is a synchronous-bus
+//     ordering knob (e.g. a logging/audit handler that must observe an
+//     event before gameplay handlers mutate state) — it needs no new
+//     dependency, so it lands here rather than being deferred.
+//
+// Async delivery / oneShot / maxConcurrency / weak-token aliveness are
+// SEALED out of this synchronous bus (see ADR-20260616 §events): the
+// async fan-out path already lives in cd::concurrency::EventBus, and the
+// weak-token/coroutine variants promote-on-need once a real consumer
+// appears. This bus's charter is deterministic, in-order, same-thread
+// pub/sub.
 // =============================================================================
 #pragma once
 
 #include <cd/core/Defines.hpp>
 #include <cd/events/ScopedConnection.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -47,19 +61,49 @@ public:
     EventBus(EventBus&&) = delete;
     EventBus& operator=(EventBus&&) = delete;
 
+    /// Priority for an event handler. Higher values are delivered FIRST;
+    /// equal priorities preserve subscription order (stable). The default,
+    /// `kDefaultPriority`, reproduces v1/v2 FIFO delivery.
+    using Priority = std::int32_t;
+    static constexpr Priority kDefaultPriority = 0;
+
     /// Subscribe to events of type `EventT`. Handler signature: `void(const EventT&)`.
     /// Returns a movable RAII handle; destruction auto-unsubscribes.
     template <class EventT, class Handler>
     [[nodiscard]] ScopedConnection subscribe(Handler&& handler)
     {
+        return subscribe<EventT>(std::forward<Handler>(handler), kDefaultPriority);
+    }
+
+    /// Priority-ordered subscribe. Handlers with a higher `priority` run
+    /// before lower-priority ones for the same event type; ties keep the
+    /// order in which they subscribed (stable insertion). All other
+    /// semantics (RAII unsubscribe, snapshot-under-lock publish, thread
+    /// safety) are identical to the no-priority overload.
+    template <class EventT, class Handler>
+    [[nodiscard]] ScopedConnection subscribe(Handler&& handler, Priority priority)
+    {
         static_assert(std::is_invocable_v<Handler, const EventT&>, "Handler must be callable as void(const EventT&)");
         auto id = next_id_.fetch_add(1, std::memory_order_relaxed) + 1;
         auto entry = std::make_shared<TypedEntry<EventT>>();
         entry->id = id;
+        entry->priority = priority;
         entry->fn = std::forward<Handler>(handler);
 
         std::unique_lock guard { mutex_ };
-        bucket_for<EventT>().push_back(std::move(entry));
+        auto& bucket = bucket_for<EventT>();
+        // Stable, priority-descending insert: find the first element whose
+        // priority is strictly LESS than ours and insert before it. Equal
+        // priorities therefore stay in subscription order.
+        const auto pos = std::find_if(
+            bucket.begin(),
+            bucket.end(),
+            [priority](const std::shared_ptr<EntryBase>& e)
+            {
+                return e->priority < priority;
+            }
+        );
+        bucket.insert(pos, std::move(entry));
         return ScopedConnection { this, id };
     }
 
@@ -111,7 +155,7 @@ public:
         auto fn = [this, ev = std::move(event)]() mutable {
             (void)publish<EventT>(ev);
         };
-        std::lock_guard guard { queue_mutex_ };
+        std::scoped_lock guard { queue_mutex_ };
         queue_.push_back(std::move(fn));
     }
 
@@ -124,7 +168,7 @@ public:
     {
         std::vector<std::function<void()>> local;
         {
-            std::lock_guard guard { queue_mutex_ };
+            std::scoped_lock guard { queue_mutex_ };
             std::swap(local, queue_);
         }
         for (auto& f : local)
@@ -136,7 +180,7 @@ public:
     /// queue_publish calls can change this between read and use.
     [[nodiscard]] std::size_t queued_count() const noexcept
     {
-        std::lock_guard guard { queue_mutex_ };
+        std::scoped_lock guard { queue_mutex_ };
         return queue_.size();
     }
 
@@ -185,6 +229,7 @@ private:
     struct EntryBase
     {
         ScopedConnection::IdType id { 0 };
+        Priority priority { kDefaultPriority };
         virtual ~EntryBase() = default;
     };
 

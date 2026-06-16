@@ -49,7 +49,7 @@ public:
 
     void record(std::string type, std::string description)
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         RecordedEvent e;
         e.sequence = ++next_sequence_;
         e.timestamp = std::chrono::steady_clock::now();
@@ -63,13 +63,13 @@ public:
     /// Snapshot of the current ring contents (chronological order).
     [[nodiscard]] std::vector<RecordedEvent> snapshot() const
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         return { entries_.begin(), entries_.end() };
     }
 
     [[nodiscard]] std::size_t size() const noexcept
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         return entries_.size();
     }
 
@@ -80,7 +80,7 @@ public:
 
     void clear() noexcept
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         entries_.clear();
     }
 

@@ -71,6 +71,35 @@ TEST(Profile, BufferSinkRingDropsOldestOnOverflow)
         EXPECT_EQ(s.name, "loop");
 }
 
+TEST(Profile, BufferSinkClearEmptiesButKeepsCapacity)
+{
+    cd::profile::BufferSink sink { 8 };
+    for (int i = 0; i < 5; ++i)
+        sink.submit(cd::profile::Sample { "s", 0U, 1U, 0U });
+    EXPECT_EQ(sink.size(), 5U);
+    sink.clear();
+    EXPECT_EQ(sink.size(), 0U);
+    EXPECT_EQ(sink.capacity(), 8U);  // capacity is unchanged by clear()
+    // Sink still usable after clear — submit refills from empty.
+    sink.submit(cd::profile::Sample { "again", 0U, 2U, 0U });
+    ASSERT_EQ(sink.size(), 1U);
+    EXPECT_EQ(sink.snapshot().front().name, "again");
+}
+
+TEST(Profile, BufferSinkZeroCapacityClampsToOne)
+{
+    // A 0-capacity sink would divide-by-zero in the ring-rotate path; the
+    // ctor clamps to 1 so the sink is always a valid (if tiny) ring.
+    cd::profile::BufferSink sink { 0 };
+    EXPECT_EQ(sink.capacity(), 1U);
+    sink.submit(cd::profile::Sample { "a", 0U, 1U, 0U });
+    sink.submit(cd::profile::Sample { "b", 0U, 2U, 0U });
+    sink.submit(cd::profile::Sample { "c", 0U, 3U, 0U });
+    const auto snap = sink.snapshot();
+    ASSERT_EQ(snap.size(), 1U);
+    EXPECT_EQ(snap.front().name, "c");  // only the newest survives
+}
+
 TEST(Profile, SetSinkReturnsPreviousAndRestoresOnSwap)
 {
     cd::profile::BufferSink a;
