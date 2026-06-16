@@ -6,6 +6,9 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <system_error>
 #include <vector>
 
 namespace
@@ -355,6 +358,97 @@ TEST(ScriptMixed, NonCallableGlobalFails)
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code,
               static_cast<std::uint32_t>(cd::script::script_errors::Code::kRuntimeError));
+}
+
+// --- Band-2 topup: error-path + edge branches (ALL-MODULES-TO-100) ----------
+//
+// These cover Engine.cpp branches the prior suites left untested: a *nil*
+// (never-set) global on the call path (existing tests only set a non-function
+// VALUE), the non-matching-return-type fallbacks in call_global_numeric /
+// call_global_mixed, register_function rebinding the same name, and the
+// run_file compile-error branch (distinct from the missing-file branch).
+
+TEST(ScriptError, CallGlobalNilGlobalFails)
+{
+    // Distinct from CallGlobalOnNonFunctionFails: here the global was never
+    // set, so lua_getglobal yields nil (not a value of the wrong type). The
+    // "not callable" path must still fire and populate last_error().
+    cd::script::Engine eng;
+    auto r = eng.call_global("never_defined_zxyq");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::script::script_errors::Code::kRuntimeError));
+    EXPECT_NE(eng.last_error().find("not callable"), std::string_view::npos);
+}
+
+TEST(ScriptNumeric, NonNumericReturnSlotFallsBackToZero)
+{
+    // A function that returns a string occupies the result slot with a
+    // non-number; call_global_numeric must coerce that slot to 0.0 rather
+    // than reject the call (exercises the else-branch in the result loop).
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string(
+        "function mixed_ret() return 'not-a-number' end").has_value());
+    std::vector<double> out;
+    auto r = eng.call_global_numeric("mixed_ret", {}, out, 1);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 1U);
+    EXPECT_DOUBLE_EQ(out[0], 0.0);
+}
+
+TEST(ScriptMixed, UnsupportedReturnSlotEncodesAsFalse)
+{
+    // nil is outside the LuaValue variant (number/string/bool); the mixed
+    // path encodes such slots as bool(false) so positional access still
+    // yields `expected_returns` entries instead of silently dropping one.
+    cd::script::Engine eng;
+    ASSERT_TRUE(eng.run_string(
+        "function with_nil() return 1, nil, 3 end").has_value());
+    std::vector<cd::script::LuaValue> out;
+    auto r = eng.call_global_mixed("with_nil", {}, out, 3);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(out.size(), 3U);
+    ASSERT_TRUE(std::holds_alternative<double>(out[0]));
+    EXPECT_DOUBLE_EQ(std::get<double>(out[0]), 1.0);
+    ASSERT_TRUE(std::holds_alternative<bool>(out[1]));  // nil → false
+    EXPECT_FALSE(std::get<bool>(out[1]));
+    ASSERT_TRUE(std::holds_alternative<double>(out[2]));
+    EXPECT_DOUBLE_EQ(std::get<double>(out[2]), 3.0);
+}
+
+TEST(ScriptFunctions, RebindSameNameLatestWins)
+{
+    // Registering twice under the same global name keeps both slots alive
+    // (the Engine owns them via unique_ptr) but Lua resolves to the latest
+    // binding. Exercises the second push_back into the callbacks vector.
+    cd::script::Engine eng;
+    int first = 0;
+    int second = 0;
+    eng.register_function("hook", [&] { ++first; });
+    eng.register_function("hook", [&] { ++second; });
+    ASSERT_TRUE(eng.run_string("hook(); hook()").has_value());
+    EXPECT_EQ(first, 0);
+    EXPECT_EQ(second, 2);
+}
+
+TEST(ScriptEngine, RunFileWithSyntaxErrorIsCompileError)
+{
+    // run_file's compile-error branch (load_rc != LUA_OK but != LUA_ERRFILE)
+    // is distinct from the missing-file (kFileNotFound) branch. Write a
+    // syntactically-broken chunk to a temp file and confirm kCompileError.
+    const auto path =
+        std::filesystem::temp_directory_path() / "cd_script_band2_broken.lua";
+    {
+        std::ofstream f { path };
+        f << "local x = = =";  // syntax error: dangling assignment
+    }
+    cd::script::Engine eng;
+    auto r = eng.run_file(path.string());
+    std::error_code ec;
+    std::filesystem::remove(path, ec);  // best-effort cleanup
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::script::script_errors::Code::kCompileError));
 }
 
 }  // namespace
