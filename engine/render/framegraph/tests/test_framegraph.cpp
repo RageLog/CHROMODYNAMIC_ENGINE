@@ -265,6 +265,169 @@ TEST(FrameGraph, ManyPassesBatchAndOrder)
     EXPECT_EQ(cb.log().texture_barriers, 4U);
 }
 
+// ---------------------------------------------------------------------------
+// Dead-pass culling (band2-render-core feature). Default OFF must reproduce
+// the v1 "execute every registered pass" contract byte-for-byte; ON prunes
+// passes whose writes never reach a sink.
+// ---------------------------------------------------------------------------
+
+TEST(FrameGraphCull, DefaultOffKeepsEveryPass)
+{
+    // Same shape as ManyPassesBatchAndOrder but with culling left at its
+    // default (off): pass 2 writes 'b' which nobody reads, yet it must still
+    // run — proving the default contract is unchanged.
+    cd::rhi::NullDevice dev;
+    FrameGraph g { dev };
+    EXPECT_FALSE(g.dead_pass_culling_enabled());
+
+    TransientTextureDesc td {};
+    td.extent = { 16, 16, 1 };
+    auto a = g.create_texture(td, "a");
+    auto b = g.create_texture(td, "b");
+
+    std::vector<int> order;
+    std::array<PassResource, 1> wa {
+        PassResource { .resource = a, .state = cd::rhi::ResourceState::kColorAttachment }
+    };
+    std::array<PassResource, 1> wb {
+        PassResource { .resource = b, .state = cd::rhi::ResourceState::kColorAttachment }
+    };
+    PassDesc p0 {}; p0.name = "writes_a"; p0.writes = wa;
+    p0.execute = [&order](cd::rhi::ICommandBuffer&) { order.push_back(0); };
+    PassDesc p1 {}; p1.name = "writes_b_unread"; p1.writes = wb;
+    p1.execute = [&order](cd::rhi::ICommandBuffer&) { order.push_back(1); };
+    g.add_pass(p0);
+    g.add_pass(p1);
+
+    ASSERT_TRUE(g.compile().has_value());
+    EXPECT_EQ(g.culled_pass_count(), 0U);
+    cd::rhi::NullCommandBuffer cb;
+    ASSERT_TRUE(g.execute(cb).has_value());
+    EXPECT_EQ(order, (std::vector<int> { 0, 1 }));  // both ran
+}
+
+TEST(FrameGraphCull, PrunesPassWritingUnconsumedTransient)
+{
+    // Pass 0 writes transient 'dead' that NO later pass reads and that is NOT
+    // a sink → culled. Pass 1 writes an imported swapchain (final=PRESENT) →
+    // live. With culling ON only pass 1 executes.
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc swd {};
+    swd.extent = { 8, 8, 1 };
+    swd.format = cd::rhi::Format::kRGBA8Unorm;
+    auto sw_tex = dev.create_texture(swd);
+    ASSERT_TRUE(sw_tex.has_value());
+
+    FrameGraph g { dev };
+    g.set_dead_pass_culling(true);
+    EXPECT_TRUE(g.dead_pass_culling_enabled());
+
+    TransientTextureDesc td {};
+    td.extent = { 8, 8, 1 };
+    auto dead = g.create_texture(td, "dead");
+
+    ImportedTextureDesc id {};
+    id.texture       = *sw_tex;
+    id.initial_state = cd::rhi::ResourceState::kColorAttachment;
+    id.final_state   = cd::rhi::ResourceState::kPresent;
+    auto sw = g.import_texture(id, "swapchain");
+
+    std::vector<int> order;
+    std::array<PassResource, 1> w_dead {
+        PassResource { .resource = dead, .state = cd::rhi::ResourceState::kColorAttachment }
+    };
+    std::array<PassResource, 1> w_sw {
+        PassResource { .resource = sw, .state = cd::rhi::ResourceState::kColorAttachment }
+    };
+    PassDesc pdead {}; pdead.name = "dead_pass"; pdead.writes = w_dead;
+    pdead.execute = [&order](cd::rhi::ICommandBuffer&) { order.push_back(99); };
+    PassDesc plive {}; plive.name = "present_pass"; plive.writes = w_sw;
+    plive.execute = [&order](cd::rhi::ICommandBuffer&) { order.push_back(1); };
+    g.add_pass(pdead);
+    g.add_pass(plive);
+
+    ASSERT_TRUE(g.compile().has_value());
+    EXPECT_EQ(g.culled_pass_count(), 1U);
+    EXPECT_EQ(g.pass_count(), 1U);
+    cd::rhi::NullCommandBuffer cb;
+    ASSERT_TRUE(g.execute(cb).has_value());
+    EXPECT_EQ(order, (std::vector<int> { 1 }));  // only the live pass ran
+    dev.destroy_texture(*sw_tex);
+}
+
+TEST(FrameGraphCull, KeepsProducerChainFeedingSink)
+{
+    // Producer (writes transient t) -> Consumer (reads t, writes sink). Both
+    // are live by backward reachability even though the producer's output is
+    // not itself a sink.
+    cd::rhi::NullDevice dev;
+    cd::rhi::TextureDesc swd {};
+    swd.extent = { 8, 8, 1 };
+    swd.format = cd::rhi::Format::kRGBA8Unorm;
+    auto sw_tex = dev.create_texture(swd);
+    ASSERT_TRUE(sw_tex.has_value());
+
+    FrameGraph g { dev };
+    g.set_dead_pass_culling(true);
+
+    TransientTextureDesc td {};
+    td.extent = { 8, 8, 1 };
+    auto t = g.create_texture(td, "t");
+    ImportedTextureDesc id {};
+    id.texture       = *sw_tex;
+    id.initial_state = cd::rhi::ResourceState::kColorAttachment;
+    id.final_state   = cd::rhi::ResourceState::kPresent;
+    auto sink = g.import_texture(id, "sink");
+
+    std::vector<int> order;
+    std::array<PassResource, 1> w_t {
+        PassResource { .resource = t, .state = cd::rhi::ResourceState::kColorAttachment }
+    };
+    std::array<PassResource, 1> r_t {
+        PassResource { .resource = t, .state = cd::rhi::ResourceState::kShaderResource }
+    };
+    std::array<PassResource, 1> w_sink {
+        PassResource { .resource = sink, .state = cd::rhi::ResourceState::kColorAttachment }
+    };
+    PassDesc producer {}; producer.name = "producer"; producer.writes = w_t;
+    producer.execute = [&order](cd::rhi::ICommandBuffer&) { order.push_back(0); };
+    PassDesc consumer {}; consumer.name = "consumer";
+    consumer.reads = r_t; consumer.writes = w_sink;
+    consumer.execute = [&order](cd::rhi::ICommandBuffer&) { order.push_back(1); };
+    g.add_pass(producer);
+    g.add_pass(consumer);
+
+    ASSERT_TRUE(g.compile().has_value());
+    EXPECT_EQ(g.culled_pass_count(), 0U);
+    cd::rhi::NullCommandBuffer cb;
+    ASSERT_TRUE(g.execute(cb).has_value());
+    EXPECT_EQ(order, (std::vector<int> { 0, 1 }));
+    dev.destroy_texture(*sw_tex);
+}
+
+TEST(FrameGraphCull, WriteOnlyNoSinkPassWithoutWritesIsKept)
+{
+    // A pass with NO declared writes is always kept (untracked side effects in
+    // its execute callback). Culling ON must not drop it even though it has no
+    // outputs the analysis can see.
+    cd::rhi::NullDevice dev;
+    FrameGraph g { dev };
+    g.set_dead_pass_culling(true);
+
+    bool ran = false;
+    PassDesc side_effect {};
+    side_effect.name = "barrier_only";
+    side_effect.execute = [&ran](cd::rhi::ICommandBuffer&) { ran = true; };
+    g.add_pass(side_effect);
+
+    ASSERT_TRUE(g.compile().has_value());
+    EXPECT_EQ(g.culled_pass_count(), 0U);
+    EXPECT_EQ(g.pass_count(), 1U);
+    cd::rhi::NullCommandBuffer cb;
+    ASSERT_TRUE(g.execute(cb).has_value());
+    EXPECT_TRUE(ran);
+}
+
 }  // namespace
 
 TEST(PassTopology, LinearChainPreservesOrder)

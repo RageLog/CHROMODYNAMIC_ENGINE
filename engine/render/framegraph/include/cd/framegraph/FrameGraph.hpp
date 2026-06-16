@@ -203,6 +203,35 @@ public:
         instrumentation_cb_ = std::move(cb);
     }
 
+    // ---- Optimization toggles --------------------------------------------
+
+    /// Enable dead-pass culling (phase: band2-render-core).
+    ///
+    /// When enabled, `compile()` prunes passes whose written resources are
+    /// never consumed by a "live" sink — i.e. a pass contributes to the frame
+    /// output ONLY if (a) it writes an imported resource with a meaningful
+    /// `final_state` (the swapchain / an externally-observed target), or (b)
+    /// one of its written resources is later read or written by another live
+    /// pass (transitive backward reachability over the read-after-write
+    /// dependency graph). Passes that fail both are dropped before execute().
+    ///
+    /// DEFAULT: OFF. Off preserves the original "execute every registered
+    /// pass in order" v1 contract byte-for-byte (no consumer/golden change).
+    /// A pass with NO declared writes is always kept (its side effects —
+    /// clears, queries, copies expressed through the execute callback — are
+    /// not visible to the write-dependency analysis, so culling it would be
+    /// unsound). Toggle BEFORE compile(); calling after compile() has no
+    /// effect on the already-pruned set.
+    void set_dead_pass_culling(bool enabled) noexcept
+    {
+        dead_pass_culling_ = enabled;
+    }
+
+    [[nodiscard]] bool dead_pass_culling_enabled() const noexcept
+    {
+        return dead_pass_culling_;
+    }
+
     // ---- Compile / Execute -----------------------------------------------
 
     /// Materialize transient resources. Must be called once before execute().
@@ -227,6 +256,14 @@ public:
     [[nodiscard]] std::size_t resource_count() const noexcept
     {
         return resources_.size();
+    }
+
+    /// Passes dropped by dead-pass culling during the last compile(). Zero
+    /// when culling is disabled or every pass was live. (Introspection for
+    /// tests / profiling overlays.)
+    [[nodiscard]] std::size_t culled_pass_count() const noexcept
+    {
+        return culled_pass_count_;
     }
 
     /// Resolve a graph handle to its underlying RHI texture (post-compile).
@@ -265,11 +302,18 @@ private:
         PassExecuteFn execute {};
     };
 
+    /// Backward-reachability dead-pass cull. Returns the surviving passes in
+    /// their original registration order; `culled_pass_count_` is updated.
+    /// Pure (no device touch); operates on `passes_` + `resources_`.
+    void cull_dead_passes_();
+
     cd::rhi::IDevice*       device_ { nullptr };
     std::vector<Resource>   resources_ {};
     std::vector<Pass>       passes_ {};
     InstrumentationCallback instrumentation_cb_ {};
     bool                    compiled_ { false };
+    bool                    dead_pass_culling_ { false };
+    std::size_t             culled_pass_count_ { 0 };
     std::uint32_t           next_generation_ { 1 };
 };
 

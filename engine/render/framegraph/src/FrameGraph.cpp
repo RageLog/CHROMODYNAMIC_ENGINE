@@ -42,13 +42,15 @@ FrameGraph::~FrameGraph()
 }
 
 FrameGraph::FrameGraph(FrameGraph&& other) noexcept
+    : device_ { other.device_ }
+    , resources_ { std::move(other.resources_) }
+    , passes_ { std::move(other.passes_) }
+    , instrumentation_cb_ { std::move(other.instrumentation_cb_) }
+    , compiled_ { other.compiled_ }
+    , dead_pass_culling_ { other.dead_pass_culling_ }
+    , culled_pass_count_ { other.culled_pass_count_ }
+    , next_generation_ { other.next_generation_ }
 {
-    device_              = other.device_;
-    resources_           = std::move(other.resources_);
-    passes_              = std::move(other.passes_);
-    instrumentation_cb_  = std::move(other.instrumentation_cb_);
-    compiled_            = other.compiled_;
-    next_generation_     = other.next_generation_;
     other.device_        = nullptr;
     other.compiled_      = false;
 }
@@ -63,6 +65,8 @@ FrameGraph& FrameGraph::operator=(FrameGraph&& other) noexcept
         passes_              = std::move(other.passes_);
         instrumentation_cb_  = std::move(other.instrumentation_cb_);
         compiled_            = other.compiled_;
+        dead_pass_culling_   = other.dead_pass_culling_;
+        culled_pass_count_   = other.culled_pass_count_;
         next_generation_     = other.next_generation_;
         other.device_        = nullptr;
         other.compiled_      = false;
@@ -131,6 +135,128 @@ void FrameGraph::add_pass(const PassDesc& desc)
     passes_.push_back(std::move(p));
 }
 
+// ---- Dead-pass culling -----------------------------------------------------
+
+void FrameGraph::cull_dead_passes_()
+{
+    culled_pass_count_ = 0;
+    if (passes_.empty())
+        return;
+
+    const std::size_t n = passes_.size();
+
+    // A resource index is a "sink" if it is an imported resource with a
+    // meaningful final_state (externally observed, e.g. the swapchain). Any
+    // pass that writes a sink resource is unconditionally live, and so is any
+    // pass whose output another live pass consumes.
+    auto resource_is_sink = [this](std::uint32_t idx) -> bool
+    {
+        if (idx >= resources_.size())
+            return false;
+        const auto& r = resources_[idx];
+        return r.kind == ResourceKind::kImported &&
+               r.final_state != cd::rhi::ResourceState::kUndefined;
+    };
+
+    // For each resource, the ordered list of passes that read it and that
+    // write it (registration order). Used for backward reachability.
+    const std::size_t res_n = resources_.size();
+    std::vector<std::vector<std::size_t>> writers(res_n);
+    std::vector<std::vector<std::size_t>> readers(res_n);
+    for (std::size_t p = 0; p < n; ++p)
+    {
+        for (const auto& w : passes_[p].writes)
+        {
+            const auto i = w.resource.index;
+            if (i < res_n && resources_[i].generation == w.resource.generation)
+                writers[i].push_back(p);
+        }
+        for (const auto& rd : passes_[p].reads)
+        {
+            const auto i = rd.resource.index;
+            if (i < res_n && resources_[i].generation == rd.resource.generation)
+                readers[i].push_back(p);
+        }
+    }
+
+    std::vector<bool> live(n, false);
+    std::vector<std::size_t> work;
+
+    // Seed: a pass is live if it has no declared writes (its execute callback
+    // may carry untracked side effects — clears/queries/copies — so culling it
+    // is unsound), or if it writes a sink resource.
+    for (std::size_t p = 0; p < n; ++p)
+    {
+        bool seed = passes_[p].writes.empty();
+        if (!seed)
+        {
+            for (const auto& w : passes_[p].writes)
+            {
+                if (resource_is_sink(w.resource.index))
+                {
+                    seed = true;
+                    break;
+                }
+            }
+        }
+        if (seed)
+        {
+            live[p] = true;
+            work.push_back(p);
+        }
+    }
+
+    // Backward reachability: a producer feeding a live consumer is live.
+    // For every resource a live pass READS, mark all passes that WRITE that
+    // resource live (a write-before-read producer). For every resource a live
+    // pass WRITES, mark earlier writers live too (read-modify-write chains
+    // where a later live pass depends on the accumulated content).
+    while (!work.empty())
+    {
+        const std::size_t p = work.back();
+        work.pop_back();
+
+        auto promote = [&](std::size_t producer)
+        {
+            if (!live[producer])
+            {
+                live[producer] = true;
+                work.push_back(producer);
+            }
+        };
+
+        for (const auto& rd : passes_[p].reads)
+        {
+            const auto i = rd.resource.index;
+            if (i >= res_n)
+                continue;
+            for (const std::size_t producer : writers[i])
+                promote(producer);
+        }
+        for (const auto& w : passes_[p].writes)
+        {
+            const auto i = w.resource.index;
+            if (i >= res_n)
+                continue;
+            for (const std::size_t producer : writers[i])
+                if (producer < p)  // earlier writer feeds this RMW
+                    promote(producer);
+        }
+    }
+
+    // Compact: keep live passes in original order.
+    std::vector<Pass> kept;
+    kept.reserve(n);
+    for (std::size_t p = 0; p < n; ++p)
+    {
+        if (live[p])
+            kept.push_back(std::move(passes_[p]));
+        else
+            ++culled_pass_count_;
+    }
+    passes_ = std::move(kept);
+}
+
 // ---- Compile --------------------------------------------------------------
 
 cd::core::Result<void> FrameGraph::compile()
@@ -147,6 +273,12 @@ cd::core::Result<void> FrameGraph::compile()
             fg_errors::make(fg_errors::Code::kAlreadyCompiled,
                             "FrameGraph::compile twice"));
     }
+
+    // Dead-pass culling (opt-in; default OFF preserves the v1 "run every
+    // registered pass" contract). Runs before transient allocation so the
+    // RT-ordering invariant below sees only the surviving passes.
+    if (dead_pass_culling_)
+        cull_dead_passes_();
 
     // Allocate transient textures.
     for (auto& r : resources_)
