@@ -438,4 +438,57 @@ TEST(LevelStreamer, BadLevelAndMissingFileFail)
     EXPECT_EQ(streamer.tracked_count(), 0u);
 }
 
+// BAND-2 world topup: the SwitchDestroys... test only covers deactivate()
+// when the active level marks NOTHING persistent (everything dies). The
+// survivor branch of deactivate() — an entity on a layer the OUTGOING
+// (active) level marks persistent must SURVIVE and stay tracked — and the
+// no-active early-return no-op were unasserted contract branches.
+TEST(LevelStreamer, DeactivateKeepsPersistentOfActiveLevelAndNoOpWhenInactive)
+{
+    using namespace cd::world_container;
+    const auto dir = std::filesystem::temp_directory_path() / "cd_streamer_deact_test";
+    std::filesystem::create_directories(dir);
+
+    // Scene A: entity0 on persistent "Keep", entity1 on Default.
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "a.cdscene", scratch, 2,
+                         [](int i) { return i == 0 ? "Keep" : "Default"; });
+    }
+
+    Project proj { "Deact Test" };
+    Level* a = proj.add_level("A");
+    a->set_scene_path("a.cdscene");
+    Layer* keep = a->add_layer("Keep");
+    keep->set_persistent(true);
+
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+
+    // Inactive no-op branch: deactivate before any activate must not crash
+    // and must leave the streamer inactive with nothing tracked.
+    streamer.deactivate(proj);
+    EXPECT_FALSE(streamer.has_active());
+    EXPECT_EQ(streamer.tracked_count(), 0u);
+
+    std::vector<cd::ecs::Entity> loaded;
+    auto r = streamer.activate(proj, 0, dir,
+                               [&](cd::ecs::Entity e, const cd::asset::json::Object&)
+                               { loaded.push_back(e); });
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(loaded.size(), 2u);
+
+    // Deactivate WHILE A is active: A marks "Keep" persistent → entity0
+    // survives and stays tracked; entity1 (Default) dies. active is forgotten.
+    streamer.deactivate(proj);
+    EXPECT_NE(scene.local(loaded[0]), nullptr) << "persistent survivor destroyed";
+    EXPECT_EQ(scene.local(loaded[1]), nullptr) << "non-persistent entity leaked";
+    EXPECT_EQ(streamer.tracked_count(), 1u) << "survivor must remain tracked";
+    EXPECT_FALSE(streamer.has_active());
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 }  // namespace
