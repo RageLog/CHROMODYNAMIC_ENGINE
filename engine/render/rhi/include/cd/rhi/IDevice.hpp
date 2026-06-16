@@ -263,6 +263,26 @@ public:
     [[nodiscard]] virtual cd::core::Result<void>
     present(SwapchainHandle swapchain, std::uint32_t image_index, std::span<const SemaphoreHandle> wait) = 0;
 
+    /// Resize the swapchain's back-buffers in place to (`width`, `height`)
+    /// WITHOUT tearing down the underlying surface — the cheaper alternative
+    /// to destroy + recreate on a window-resize. `width == 0 || height == 0`
+    /// is a no-op refresh of the current extent (validates the chain is
+    /// healthy). On success the swapchain's image/view handles are re-issued
+    /// (call `swapchain_image_view` / `swapchain_image` again). Returns
+    /// kSwapchainOutOfDate when the in-place resize is rejected and the caller
+    /// must fall back to a full destroy + create_swapchain. Backends without
+    /// an in-place resize primitive return kNotImplemented (the caller then
+    /// uses the destroy/recreate path); the base default reports that so
+    /// non-D3D12 backends need no override.
+    [[nodiscard]] virtual cd::core::Result<void>
+    resize_swapchain(SwapchainHandle /*swapchain*/, std::uint32_t /*width*/, std::uint32_t /*height*/)
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kNotImplemented,
+            "resize_swapchain: backend has no in-place resize; use "
+            "destroy_swapchain + create_swapchain"));
+    }
+
     /// Look up the image view for a specific swapchain slot. Returns an invalid
     /// handle if the swapchain or index is unknown.
     [[nodiscard]] virtual TextureViewHandle
@@ -421,6 +441,24 @@ public:
     [[nodiscard]] virtual std::uint32_t rt_shader_group_handle_size() const noexcept { return 0; }
     [[nodiscard]] virtual std::uint32_t rt_shader_group_handle_alignment() const noexcept { return 0; }
     [[nodiscard]] virtual std::uint32_t rt_shader_group_base_alignment() const noexcept { return 0; }
+
+    /// D-MIPSTATE (Backend-to-100 Wave 1) — DEBUG/TEST observability of the
+    /// backend's per-subresource resource-state tracking. Returns an
+    /// opaque, backend-specific encoding of the CURRENT tracked state of the
+    /// (texture, mip, layer) subresource (on D3D12 the D3D12_RESOURCE_STATES
+    /// value). Two subresources that the backend tracks in DIFFERENT states
+    /// return DIFFERENT values; that is the only contract — the encoding is
+    /// NOT a stable ABI and is for tests asserting that a subset barrier left
+    /// the other subresource in its prior state (the mip-gen pattern). Returns
+    /// the sentinel `~0u` on backends without per-subresource tracking (the
+    /// base default) so this is a no-op everywhere but D3D12.
+    [[nodiscard]] virtual std::uint32_t
+    debug_texture_subresource_state(TextureHandle /*texture*/,
+                                    std::uint32_t /*mip*/,
+                                    std::uint32_t /*layer*/) const noexcept
+    {
+        return ~std::uint32_t { 0 };
+    }
 
     /// Phase 134 — copy a contiguous block of shader-group handles
     /// (raygen + miss + hit) out of an RT pipeline into a caller-

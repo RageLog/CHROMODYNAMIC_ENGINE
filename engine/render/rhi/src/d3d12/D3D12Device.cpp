@@ -79,32 +79,129 @@ class D3D12CommandBuffer;
 
 // ---- Format mapping -----------------------------------------------------
 //
-// Phase 13.C v0.32.0 — only the subset that `hello_d3d12_clear` and a
-// future MVP renderer actually need is wired. Adding the rest of the
-// table is one obvious-shape line per entry; deferred until a sample
-// actually requires the format.
+// D-FORMAT-MAP (Backend-to-100 Wave 1): full Format → DXGI_FORMAT table,
+// mirroring the Vulkan reference `map_format` (VulkanDevice.cpp:286). The
+// historical table covered only ~13 of the interface Formats; the rest fell
+// to UNKNOWN and were silently REJECTED by create_texture / create_swapchain.
+// Now every renderable / vertex / depth / block-compressed Format the engine
+// exposes resolves to a real DXGI value (the only intentional UNKNOWN returns
+// are kUndefined / kCount, which carry no pixel format).
+//
+// Depth formats: the DSV/RTV path in create_texture_view + create_swapchain
+// already passes the mapped (typed) format straight into the depth-stencil
+// view, matching the prior kD32Float / kD24UnormS8Uint behaviour. When a depth
+// texture is ALSO sampled as an SRV, D3D12 requires the *resource* to be
+// created TYPELESS and the SRV to use the R-typed sibling — that resource-side
+// TYPELESS promotion is handled separately at create_texture; this map returns
+// the canonical typed DSV format so the existing depth attachment path is
+// unchanged.
 [[nodiscard]] DXGI_FORMAT to_dxgi_format(cd::rhi::Format f) noexcept
 {
     using F = cd::rhi::Format;
     switch (f)
     {
+        // 8-bit single
+        case F::kR8Unorm:     return DXGI_FORMAT_R8_UNORM;
+        case F::kR8Snorm:     return DXGI_FORMAT_R8_SNORM;
+        case F::kR8Uint:      return DXGI_FORMAT_R8_UINT;
+        case F::kR8Sint:      return DXGI_FORMAT_R8_SINT;
+        // 8-bit dual
+        case F::kRG8Unorm:    return DXGI_FORMAT_R8G8_UNORM;
+        case F::kRG8Snorm:    return DXGI_FORMAT_R8G8_SNORM;
+        case F::kRG8Uint:     return DXGI_FORMAT_R8G8_UINT;
+        case F::kRG8Sint:     return DXGI_FORMAT_R8G8_SINT;
+        // 8-bit quad
         case F::kRGBA8Unorm:  return DXGI_FORMAT_R8G8B8A8_UNORM;
+        case F::kRGBA8Snorm:  return DXGI_FORMAT_R8G8B8A8_SNORM;
+        case F::kRGBA8Uint:   return DXGI_FORMAT_R8G8B8A8_UINT;
+        case F::kRGBA8Sint:   return DXGI_FORMAT_R8G8B8A8_SINT;
         case F::kRGBA8Srgb:   return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
         case F::kBGRA8Unorm:  return DXGI_FORMAT_B8G8R8A8_UNORM;
         case F::kBGRA8Srgb:   return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        // 16-bit single
+        case F::kR16Unorm:    return DXGI_FORMAT_R16_UNORM;
+        case F::kR16Snorm:    return DXGI_FORMAT_R16_SNORM;
+        case F::kR16Uint:     return DXGI_FORMAT_R16_UINT;
+        case F::kR16Sint:     return DXGI_FORMAT_R16_SINT;
+        case F::kR16Float:    return DXGI_FORMAT_R16_FLOAT;
+        // 16-bit dual
+        case F::kRG16Unorm:   return DXGI_FORMAT_R16G16_UNORM;
+        case F::kRG16Snorm:   return DXGI_FORMAT_R16G16_SNORM;
+        case F::kRG16Uint:    return DXGI_FORMAT_R16G16_UINT;
+        case F::kRG16Sint:    return DXGI_FORMAT_R16G16_SINT;
+        case F::kRG16Float:   return DXGI_FORMAT_R16G16_FLOAT;
+        // 16-bit quad
+        case F::kRGBA16Unorm: return DXGI_FORMAT_R16G16B16A16_UNORM;
+        case F::kRGBA16Snorm: return DXGI_FORMAT_R16G16B16A16_SNORM;
+        case F::kRGBA16Uint:  return DXGI_FORMAT_R16G16B16A16_UINT;
+        case F::kRGBA16Sint:  return DXGI_FORMAT_R16G16B16A16_SINT;
         case F::kRGBA16Float: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-        case F::kRGBA32Float: return DXGI_FORMAT_R32G32B32A32_FLOAT;
-        // Vertex-attribute formats (Phase 14.C). These don't render
-        // textures so they don't appear in the create_texture or
-        // swapchain-format paths, but the input layout consumes them.
-        case F::kRG32Float:   return DXGI_FORMAT_R32G32_FLOAT;
-        case F::kRGB32Float:  return DXGI_FORMAT_R32G32B32_FLOAT;
-        case F::kR32Float:    return DXGI_FORMAT_R32_FLOAT;
+        // 32-bit
         case F::kR32Uint:     return DXGI_FORMAT_R32_UINT;
+        case F::kR32Sint:     return DXGI_FORMAT_R32_SINT;
+        case F::kR32Float:    return DXGI_FORMAT_R32_FLOAT;
         case F::kRG32Uint:    return DXGI_FORMAT_R32G32_UINT;
-        case F::kD32Float:    return DXGI_FORMAT_D32_FLOAT;
+        case F::kRG32Sint:    return DXGI_FORMAT_R32G32_SINT;
+        case F::kRG32Float:   return DXGI_FORMAT_R32G32_FLOAT;
+        case F::kRGB32Uint:   return DXGI_FORMAT_R32G32B32_UINT;
+        case F::kRGB32Sint:   return DXGI_FORMAT_R32G32B32_SINT;
+        case F::kRGB32Float:  return DXGI_FORMAT_R32G32B32_FLOAT;
+        case F::kRGBA32Uint:  return DXGI_FORMAT_R32G32B32A32_UINT;
+        case F::kRGBA32Sint:  return DXGI_FORMAT_R32G32B32A32_SINT;
+        case F::kRGBA32Float: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        // Packed / HDR
+        case F::kR11G11B10Float: return DXGI_FORMAT_R11G11B10_FLOAT;
+        case F::kRGB10A2Unorm:   return DXGI_FORMAT_R10G10B10A2_UNORM;
+        case F::kRGB10A2Uint:    return DXGI_FORMAT_R10G10B10A2_UINT;
+        case F::kRGB9E5Float:    return DXGI_FORMAT_R9G9B9E5_SHAREDEXP;
+        // Depth / stencil (typed DSV formats; see TYPELESS note above)
+        case F::kD16Unorm:       return DXGI_FORMAT_D16_UNORM;
+        case F::kD32Float:       return DXGI_FORMAT_D32_FLOAT;
         case F::kD24UnormS8Uint: return DXGI_FORMAT_D24_UNORM_S8_UINT;
-        default:              return DXGI_FORMAT_UNKNOWN;
+        case F::kD32FloatS8Uint: return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
+        case F::kS8Uint:         return DXGI_FORMAT_R8_UINT;  // no DXGI S8-only; R8_UINT sibling
+        // Block-compressed (BC1-BC7)
+        case F::kBC1RGBUnorm:
+        case F::kBC1RGBAUnorm:   return DXGI_FORMAT_BC1_UNORM;
+        case F::kBC1RGBSrgb:
+        case F::kBC1RGBASrgb:    return DXGI_FORMAT_BC1_UNORM_SRGB;
+        case F::kBC2Unorm:       return DXGI_FORMAT_BC2_UNORM;
+        case F::kBC2Srgb:        return DXGI_FORMAT_BC2_UNORM_SRGB;
+        case F::kBC3Unorm:       return DXGI_FORMAT_BC3_UNORM;
+        case F::kBC3Srgb:        return DXGI_FORMAT_BC3_UNORM_SRGB;
+        case F::kBC4Unorm:       return DXGI_FORMAT_BC4_UNORM;
+        case F::kBC4Snorm:       return DXGI_FORMAT_BC4_SNORM;
+        case F::kBC5Unorm:       return DXGI_FORMAT_BC5_UNORM;
+        case F::kBC5Snorm:       return DXGI_FORMAT_BC5_SNORM;
+        case F::kBC6HUFloat:     return DXGI_FORMAT_BC6H_UF16;
+        case F::kBC6HSFloat:     return DXGI_FORMAT_BC6H_SF16;
+        case F::kBC7Unorm:       return DXGI_FORMAT_BC7_UNORM;
+        case F::kBC7Srgb:        return DXGI_FORMAT_BC7_UNORM_SRGB;
+        // No pixel format — intentional UNKNOWN.
+        case F::kUndefined:
+        case F::kCount:
+        default:                 return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+// D-HDR-SWAPCHAIN (Backend-to-100 Wave 1): map the engine ColorSpace to the
+// DXGI colour-space the swapchain's SetColorSpace1 understands. Mirrors the
+// Vulkan reference's VkColorSpaceKHR selection:
+//   kSrgbNonlinear → RGB_FULL_G22_NONE_P709     (sRGB / SDR; gamma 2.2, BT.709)
+//   kHdr10St2084   → RGB_FULL_G2084_NONE_P2020  (HDR10 PQ; ST.2084, BT.2020)
+//   kScrgbLinear   → RGB_FULL_G10_NONE_P709      (scRGB FP16 linear, BT.709)
+[[nodiscard]] DXGI_COLOR_SPACE_TYPE
+to_dxgi_color_space(cd::rhi::ColorSpace cs) noexcept
+{
+    switch (cs)
+    {
+        case cd::rhi::ColorSpace::kHdr10St2084:
+            return DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        case cd::rhi::ColorSpace::kScrgbLinear:
+            return DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+        case cd::rhi::ColorSpace::kSrgbNonlinear:
+        default:
+            return DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     }
 }
 
@@ -789,6 +886,13 @@ public:
         rec.usage = desc.usage;
         rec.type  = desc.type;
         rec.sample_count = rd.SampleDesc.Count;  // D1: remember the MSAA count.
+        // D-MIPSTATE: remember the subresource grid so a per-mip barrier can
+        // compute the D3D12 subresource index (mip + layer * mip_levels). A 3D
+        // texture has 1 array layer (depth slices are NOT subresources).
+        rec.mip_levels = std::max<UINT>(1u, static_cast<UINT>(rd.MipLevels));
+        rec.array_layers = (desc.type == cd::rhi::TextureType::k3D)
+            ? 1u
+            : std::max<UINT>(1u, static_cast<UINT>(rd.DepthOrArraySize));
         textures_.emplace(id, std::move(rec));
         return cd::rhi::TextureHandle { id, 1u };
     }
@@ -863,6 +967,7 @@ public:
         vrec.is_cube = is_cube_view;
         vrec.is_1d   = is_1d_view;
         vrec.is_3d   = is_3d_view;
+        vrec.is_ms   = (trec->sample_count > 1u);  // D-SRV-MS
 
         const auto u = static_cast<std::uint32_t>(trec->usage);
         const bool is_rt    = (u & static_cast<std::uint32_t>(cd::rhi::TextureUsage::kColorAttachment)) != 0;
@@ -1009,6 +1114,18 @@ public:
                     sd.Texture3D.MostDetailedMip = desc.base_mip;
                     sd.Texture3D.MipLevels = mip_count;
                     sd.Texture3D.ResourceMinLODClamp = 0.0F;
+                }
+                else if (trec->sample_count > 1u)
+                {
+                    // D-SRV-MS (Backend-to-100 Wave 1): a multisampled texture
+                    // can be SAMPLED (Texture2DMS in HLSL) only through a
+                    // TEXTURE2DMS SRV — a plain TEXTURE2D SRV over an MSAA
+                    // resource is an invalid view (device-removal under the
+                    // debug layer). The RTV/DSV paths already branch to *2DMS;
+                    // this is the named A1 follow-up that completes the SRV
+                    // side. TEXTURE2DMS carries no mip fields (an MSAA target
+                    // has a single mip).
+                    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
                 }
                 else
                 {
@@ -1648,9 +1765,7 @@ public:
         // constants parameters but for parity with the engine push_constants()
         // call shape (single (layout, stages, offset, size, data)), we
         // collapse all ranges into one root parameter that spans the union
-        // of all (offset, size) pairs. Cap at D3D12_MAX_ROOT_COST=64 DWORDs;
-        // beyond that the engine's contract guarantees the caller routes
-        // through a uniform buffer.
+        // of all (offset, size) pairs.
         std::uint32_t pc_param_idx = ~std::uint32_t { 0 };
         std::uint32_t pc_dwords    = 0;
         if (!desc.push_constants.empty())
@@ -1663,11 +1778,24 @@ public:
             }
             // Round up to 4 bytes — root constants are u32 (DWORD) sized.
             pc_dwords = (max_end + 3u) / 4u;
-            // D3D12_MAX_ROOT_COST is 64 DWORDs total. A descriptor table
-            // costs 1 DWORD; reserve at least params.size() for them.
-            if (pc_dwords + static_cast<std::uint32_t>(params.size()) > 64u)
+            // D-ROOTCOST (Backend-to-100 Wave 1): D3D12_MAX_ROOT_COST is 64
+            // DWORDs total and a descriptor table costs 1 DWORD each. The
+            // historical code SILENTLY clamped pc_dwords when the union root
+            // cost overflowed 64 — the silent-truncation bug class (same as
+            // the BLAS-geo-cap lesson): the caller's push_constants() writes
+            // past the clamped tail would land nowhere and corrupt nothing
+            // visibly, an invisible miswire. Vulkan rejects an over-budget
+            // pipeline layout at vkCreatePipelineLayout; mirror that and
+            // FAIL LOUDLY with kInvalidArgument instead of clamping.
+            const auto table_cost = static_cast<std::uint32_t>(params.size());
+            if (pc_dwords + table_cost > 64u)
             {
-                pc_dwords = 64u - static_cast<std::uint32_t>(params.size());
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kInvalidArgument,
+                    "create_pipeline_layout: push-constant root cost exceeds "
+                    "the 64-DWORD D3D12 root-signature budget (descriptor "
+                    "tables + 32-bit constants). Route the oversized block "
+                    "through a uniform/constant buffer."));
             }
             if (pc_dwords > 0u)
             {
@@ -2971,6 +3099,11 @@ public:
                         srv.Texture3D.MipLevels = 1;
                         srv.Texture3D.ResourceMinLODClamp = 0.0F;
                     }
+                    else if (view_it->second.is_ms)
+                    {
+                        // D-SRV-MS: sample a multisampled texture (Texture2DMS).
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                    }
                     else
                     {
                         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -3106,6 +3239,11 @@ public:
                         srv.Texture3D.MipLevels = 1;
                         srv.Texture3D.ResourceMinLODClamp = 0.0F;
                     }
+                    else if (view_it->second.is_ms)
+                    {
+                        // D-SRV-MS: combined sampler over an MSAA texture.
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                    }
                     else
                     {
                         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -3171,10 +3309,19 @@ public:
                             "update_descriptor_set: input-attachment texture unknown"));
                     D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
                     srv.Format = view_it->second.format;
-                    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     srv.Shader4ComponentMapping =
                         D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                    srv.Texture2D.MipLevels = 1;
+                    if (view_it->second.is_ms)
+                    {
+                        // D-SRV-MS: an input attachment fed by an MSAA render
+                        // target is read back as Texture2DMS.
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
+                    }
+                    else
+                    {
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                        srv.Texture2D.MipLevels = 1;
+                    }
                     device_->CreateShaderResourceView(
                         tex_it->second.resource.Get(), &srv, dst);
                     break;
@@ -3270,6 +3417,11 @@ public:
                         srv.Texture3D.MostDetailedMip = 0;
                         srv.Texture3D.MipLevels = 1;
                         srv.Texture3D.ResourceMinLODClamp = 0.0F;
+                    }
+                    else if (view_it->second.is_ms)
+                    {
+                        // D-SRV-MS: bindless slot over an MSAA texture.
+                        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DMS;
                     }
                     else
                     {
@@ -3703,16 +3855,150 @@ public:
                 cd::rhi::rhi_errors::Code::kInvalidArgument, "present: unknown swapchain"));
         }
         const UINT sync_interval = it->second.vsync ? 1u : 0u;
-        HRESULT hr = it->second.swap->Present(sync_interval, 0);
+        const HRESULT hr = it->second.swap->Present(sync_interval, 0);
+
+        // D-SWAPCHAIN-RESIZE (Backend-to-100 Wave 1): the historical path
+        // mapped EVERY non-S_OK Present result to kDeviceLost, so a window
+        // resize / occlusion never produced the kSwapchainOutOfDate contract
+        // the engine consumes (hello_triangle / hello_engine recreate the
+        // swapchain on that code) — on D3D12 a resize silently looked like a
+        // lost device. Mirror the Vulkan kSwapchainOutOfDate path
+        // (VulkanDevice.cpp:2840, VK_ERROR_OUT_OF_DATE / VK_SUBOPTIMAL):
+        //
+        //   * DXGI_STATUS_OCCLUDED — a SUCCEEDED status (window minimised /
+        //     covered): not an error; signal out-of-date so the caller backs
+        //     off + retries (matches VK_SUBOPTIMAL semantics).
+        //   * DXGI_ERROR_DEVICE_REMOVED / _RESET — a genuinely lost device.
+        //   * Any other failure where the back-buffer extent no longer
+        //     matches the window — the engine must recreate; report
+        //     out-of-date rather than a fatal device-lost.
+        if (hr == DXGI_STATUS_OCCLUDED)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kSwapchainOutOfDate,
+                "present: swapchain occluded (out of date)"));
+        }
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kDeviceLost,
+                "present: device removed/reset"));
+        }
         if (FAILED(hr))
         {
-            char msg[160] {};
-            std::snprintf(msg, sizeof(msg),
-                          "IDXGISwapChain3::Present failed: HRESULT 0x%08lx",
-                          static_cast<unsigned long>(hr));
-            return std::unexpected(cd::rhi::rhi_errors::make_owning(
-                cd::rhi::rhi_errors::Code::kDeviceLost,
-                std::string { msg }));
+            // A non-removal failure on Present is almost always an
+            // out-of-date back-buffer (extent/format drift after a resize the
+            // app didn't yet service). Treat it as recoverable
+            // out-of-date — the caller recreates — instead of a fatal
+            // device-lost.
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kSwapchainOutOfDate,
+                "present: swapchain out of date (recreate required)"));
+        }
+        return {};
+    }
+
+    // D-SWAPCHAIN-RESIZE: in-place back-buffer resize via ResizeBuffers. The
+    // engine's recreate-on-kSwapchainOutOfDate normally destroys + recreates
+    // the whole swapchain, but a flip-model DXGI chain supports an in-place
+    // ResizeBuffers that re-allocates the back-buffers at the new extent
+    // WITHOUT tearing down the IDXGISwapChain3 (cheaper; preserves the
+    // colour-space + present queue binding). This IDevice::resize_swapchain
+    // override is the D3D12 implementation: it releases the engine-side
+    // back-buffer Texture/View
+    // records (they alias the soon-to-be-freed ID3D12Resources), calls
+    // ResizeBuffers(0 = keep count, new w/h, UNKNOWN = keep format, keep
+    // flags), then re-registers the new back-buffers + RTVs. Returns
+    // kSwapchainOutOfDate (not kDeviceLost) if the resize is rejected so the
+    // caller can fall back to full recreate. Width/height 0 = no-op refresh of
+    // the current extent (the canonical "validate the chain is healthy" call).
+    [[nodiscard]] cd::core::Result<void>
+    resize_swapchain(cd::rhi::SwapchainHandle h,
+                     std::uint32_t new_width,
+                     std::uint32_t new_height) override
+    {
+        auto it = swapchains_.find(h.index());
+        if (it == swapchains_.end())
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kInvalidArgument,
+                "resize_swapchain_buffers: unknown swapchain"));
+        }
+        SwapchainRecord& rec = it->second;
+
+        // The back-buffers must be fully idle before ResizeBuffers — the
+        // engine fences the queue before calling this; we also wait_idle to
+        // be safe against the one-shot test path.
+        (void)wait_idle_internal();
+
+        // Drop the engine-side records that ALIAS the back-buffer resources
+        // (ResizeBuffers frees the underlying ID3D12Resources; a dangling
+        // ComPtr in textures_ would keep a stale resource alive and the RTVs
+        // would point at freed memory).
+        for (auto th : rec.image_handles)
+            textures_.erase(th.index());
+        for (auto vh : rec.image_view_handles)
+            texture_views_.erase(vh.index());
+        rec.images.clear();
+
+        const UINT w = (new_width  == 0u) ? rec.extent.width  : new_width;
+        const UINT hgt = (new_height == 0u) ? rec.extent.height : new_height;
+        const HRESULT hr = rec.swap->ResizeBuffers(
+            0,                       // keep current back-buffer count
+            w, hgt,
+            DXGI_FORMAT_UNKNOWN,     // keep current format
+            0);                      // keep current flags
+        if (FAILED(hr))
+        {
+            return std::unexpected(cd::rhi::rhi_errors::make(
+                cd::rhi::rhi_errors::Code::kSwapchainOutOfDate,
+                "resize_swapchain_buffers: ResizeBuffers rejected — full "
+                "recreate required"));
+        }
+        rec.extent = { w, hgt };
+
+        // Re-register the freshly-allocated back-buffers + RTVs into the same
+        // RTV heap (slot order preserved) and re-fill the handle vectors.
+        const auto count = static_cast<std::uint32_t>(rec.image_handles.size());
+        rec.images.resize(count);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv_cpu =
+            rec.rtv_heap->GetCPUDescriptorHandleForHeapStart();
+        for (std::uint32_t i = 0; i < count; ++i)
+        {
+            ComPtr<ID3D12Resource> back;
+            if (FAILED(rec.swap->GetBuffer(i, IID_PPV_ARGS(&back))))
+            {
+                return std::unexpected(cd::rhi::rhi_errors::make(
+                    cd::rhi::rhi_errors::Code::kSwapchainOutOfDate,
+                    "resize_swapchain_buffers: GetBuffer failed post-resize"));
+            }
+            rec.images[i] = back;
+
+            D3D12_RENDER_TARGET_VIEW_DESC rtv_desc {};
+            rtv_desc.Format = rec.format;
+            rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+            device_->CreateRenderTargetView(back.Get(), &rtv_desc, rtv_cpu);
+
+            const auto tex_id = next_id_++;
+            TextureRecord trec;
+            trec.resource = back;
+            trec.format = rec.format;
+            trec.extent = { w, hgt, 1 };
+            trec.usage = cd::rhi::TextureUsage::kColorAttachment;
+            trec.is_swapchain_image = true;
+            trec.rtv_cpu = rtv_cpu;
+            textures_.emplace(tex_id, std::move(trec));
+            rec.image_handles[i] = cd::rhi::TextureHandle { tex_id, 1u };
+
+            const auto view_id = next_id_++;
+            TextureViewRecord vrec;
+            vrec.parent = rec.image_handles[i];
+            vrec.format = rec.format;
+            vrec.rtv_cpu = rtv_cpu;
+            texture_views_.emplace(view_id, vrec);
+            rec.image_view_handles[i] = cd::rhi::TextureViewHandle { view_id, 1u };
+
+            rtv_cpu.ptr += rec.rtv_descriptor_size;
         }
         return {};
     }
@@ -3783,6 +4069,30 @@ public:
             return std::unexpected(cd::rhi::rhi_errors::make(
                 cd::rhi::rhi_errors::Code::kResourceCreationFailed,
                 "IDXGISwapChain3 QueryInterface failed"));
+        }
+
+        // D-HDR-SWAPCHAIN (Backend-to-100 Wave 1): honor desc.colour_space.
+        // The historical path created the chain and NEVER read colour_space
+        // nor called SetColorSpace1 — an HDR10 / scRGB request was silently
+        // downgraded to SDR (the IDXGISwapChain3 was already in hand but
+        // unused for colour management). The Vulkan reference selects the
+        // VkColorSpaceKHR at surface-format pick time; mirror that by mapping
+        // the engine ColorSpace → DXGI_COLOR_SPACE_TYPE, probing
+        // CheckColorSpaceSupport, and applying SetColorSpace1 when the surface
+        // supports it. scRGB linear requires an FP16 back-buffer; an SDR-only
+        // panel reports no support and we leave the default sRGB space (the
+        // documented fall-back-to-kSrgbNonlinear contract), never failing the
+        // swapchain create over a display capability.
+        const DXGI_COLOR_SPACE_TYPE requested_cs =
+            to_dxgi_color_space(desc.colour_space);
+        UINT cs_support = 0;
+        if (SUCCEEDED(chain3->CheckColorSpaceSupport(requested_cs, &cs_support)) &&
+            (cs_support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT) != 0)
+        {
+            // Ignore the HRESULT of the apply: a driver that advertised
+            // support but transiently rejects the call leaves the chain in
+            // its (valid) default space rather than aborting creation.
+            (void)chain3->SetColorSpace1(requested_cs);
         }
 
         SwapchainRecord rec;
@@ -4228,14 +4538,45 @@ public:
                 g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
                 g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
                 g.Triangles.Transform3x4 = 0;
-                g.Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
                 g.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-                g.Triangles.IndexCount = t.index_count;
                 g.Triangles.VertexCount = t.vertex_count;
-                g.Triangles.IndexBuffer = 0;
                 g.Triangles.VertexBuffer.StartAddress =
                     vb_it->second.resource->GetGPUVirtualAddress() + t.vertex_offset;
                 g.Triangles.VertexBuffer.StrideInBytes = t.vertex_stride;
+                // D-BLAS-INDEXED (Backend-to-100 Wave 1): honor the desc's
+                // index buffer instead of dropping it. The historical code
+                // hardcoded IndexFormat=UNKNOWN + IndexBuffer=0, silently
+                // truncating every indexed BLAS to a non-indexed build (the
+                // BLAS-geo-cap silent-truncation bug class). The Vulkan
+                // reference (VulkanDevice.cpp:4022) maps IndexType→VkIndexType
+                // and feeds indexData.deviceAddress; mirror that here:
+                // resolve the index buffer GPU-VA + map kUInt16/kUInt32 →
+                // R16_UINT/R32_UINT and set IndexCount. A zero index_count is
+                // a non-indexed geometry (IndexFormat=UNKNOWN, IndexBuffer=0).
+                if (t.index_count > 0u && t.index_buffer.is_valid())
+                {
+                    auto ib_it = buffers_.find(t.index_buffer.index());
+                    if (ib_it == buffers_.end())
+                    {
+                        return std::unexpected(cd::rhi::rhi_errors::make(
+                            cd::rhi::rhi_errors::Code::kInvalidArgument,
+                            "create_acceleration_structure: unknown index buffer"));
+                    }
+                    g.Triangles.IndexFormat =
+                        (t.index_type == cd::rhi::IndexType::kUInt16)
+                            ? DXGI_FORMAT_R16_UINT
+                            : DXGI_FORMAT_R32_UINT;
+                    g.Triangles.IndexCount = t.index_count;
+                    g.Triangles.IndexBuffer =
+                        ib_it->second.resource->GetGPUVirtualAddress() +
+                        t.index_offset;
+                }
+                else
+                {
+                    g.Triangles.IndexFormat = DXGI_FORMAT_UNKNOWN;
+                    g.Triangles.IndexCount = 0;
+                    g.Triangles.IndexBuffer = 0;
+                }
                 geos.push_back(g);
             }
             inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
@@ -4414,6 +4755,19 @@ public:
         // for an MSAA resource MUST use the TEXTURE2DMS dimension or the view is
         // invalid; the SRV/UAV likewise need TEXTURE2DMS for sampling.
         UINT sample_count { 1u };
+        // D-MIPSTATE (Backend-to-100 Wave 1): mip/layer counts + per-subresource
+        // state. The `state` field above is the WHOLE-RESOURCE state used by the
+        // implicit render-pass/present transitions (ALL_SUBRESOURCES). Vulkan
+        // tracks layout per subresource (VkImageSubresourceRange), which is what
+        // makes a mip-chain generate (read mip N as SRV / write mip N+1 as
+        // render-target/UAV) expressible. `subresource_states`, when non-empty,
+        // holds the per-subresource D3D12_RESOURCE_STATES indexed by
+        // (mip + layer * mip_levels); it is lazily materialised the first time a
+        // SUBSET barrier targets the texture, seeded from `state`. While empty,
+        // the texture is whole-resource-coherent and `state` alone is authority.
+        UINT mip_levels { 1u };
+        UINT array_layers { 1u };
+        std::vector<D3D12_RESOURCE_STATES> subresource_states;
     };
 
     struct TextureViewRecord
@@ -4429,6 +4783,12 @@ public:
         /// Phase 393/395 — true when the view was created with k1D/k3D.
         bool is_1d { false };
         bool is_3d { false };
+        /// D-SRV-MS (Backend-to-100 Wave 1) — true when the parent texture is
+        /// multisampled (sample_count > 1). update_descriptor_set reads this
+        /// to pick D3D12_SRV_DIMENSION_TEXTURE2DMS instead of TEXTURE2D when
+        /// (re-)creating the SRV at descriptor-set update time, so an MSAA
+        /// texture can be sampled through the generic descriptor surface too.
+        bool is_ms { false };
     };
 
     struct ShaderModuleRecord
@@ -4575,6 +4935,29 @@ public:
         return it == texture_views_.end() ? nullptr : &it->second;
     }
     [[nodiscard]] ID3D12Device5* device5() const noexcept { return device5_.Get(); }
+
+    // D-MIPSTATE: expose the tracked per-subresource state for tests. Returns
+    // the D3D12_RESOURCE_STATES value of (mip, layer); when the texture is
+    // whole-resource-coherent (no divergent map) every subresource reports the
+    // single `state`. Sentinel ~0u for an unknown handle.
+    [[nodiscard]] std::uint32_t
+    debug_texture_subresource_state(cd::rhi::TextureHandle texture,
+                                    std::uint32_t mip,
+                                    std::uint32_t layer) const noexcept override
+    {
+        auto it = textures_.find(texture.index());
+        if (it == textures_.end())
+            return ~std::uint32_t { 0 };
+        const TextureRecord& tr = it->second;
+        if (tr.subresource_states.empty())
+            return static_cast<std::uint32_t>(tr.state);
+        const std::size_t sub =
+            static_cast<std::size_t>(mip) +
+            static_cast<std::size_t>(layer) * tr.mip_levels;
+        if (sub >= tr.subresource_states.size())
+            return static_cast<std::uint32_t>(tr.state);
+        return static_cast<std::uint32_t>(tr.subresource_states[sub]);
+    }
 
 private:
     [[nodiscard]] HRESULT wait_idle_internal()
@@ -6029,17 +6412,114 @@ public:
         {
             auto* tr = owner_->find_texture(t.texture);
             if (tr == nullptr) continue;
-            D3D12_RESOURCE_BARRIER tb {};
-            tb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            tb.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-            tb.Transition.pResource   = tr->resource.Get();
-            tb.Transition.StateBefore = rs_to_d3d12(t.from);
-            tb.Transition.StateAfter  = rs_to_d3d12(t.to);
-            tb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            if (tb.Transition.StateBefore != tb.Transition.StateAfter)
+            const D3D12_RESOURCE_STATES after = rs_to_d3d12(t.to);
+
+            // D-MIPSTATE (Backend-to-100 Wave 1): honor the barrier's
+            // subresource range. The historical code ALWAYS used
+            // ALL_SUBRESOURCES, so a per-mip transition (read mip N as a
+            // shader resource while writing mip N+1 as a render target — the
+            // mip-generation pattern) was impossible: the whole resource
+            // flipped to one state, the debug layer flagged the mismatch, and
+            // a mip-gen pass produced wrong pixels. Vulkan tracks layout per
+            // VkImageSubresourceRange; mirror that here.
+            const std::uint32_t total_mips   = tr->mip_levels;
+            const std::uint32_t total_layers = tr->array_layers;
+            const std::uint32_t base_mip   = t.range.base_mip;
+            const std::uint32_t base_layer = t.range.base_layer;
+            const std::uint32_t mip_count =
+                (t.range.mip_count == 0u)
+                    ? (total_mips - std::min(base_mip, total_mips))
+                    : t.range.mip_count;
+            const std::uint32_t layer_count =
+                (t.range.layer_count == 0u)
+                    ? (total_layers - std::min(base_layer, total_layers))
+                    : t.range.layer_count;
+            const bool whole_resource =
+                base_mip == 0u && base_layer == 0u &&
+                mip_count >= total_mips && layer_count >= total_layers;
+
+            if (whole_resource)
             {
-                bars.push_back(tb);
-                tr->state = tb.Transition.StateAfter;
+                if (tr->subresource_states.empty())
+                {
+                    // Fast path — the resource is whole-resource-coherent, so
+                    // one ALL_SUBRESOURCES barrier suffices and `state` alone
+                    // stays authoritative.
+                    D3D12_RESOURCE_BARRIER tb {};
+                    tb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    tb.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    tb.Transition.pResource   = tr->resource.Get();
+                    tb.Transition.StateBefore = tr->state;
+                    tb.Transition.StateAfter  = after;
+                    tb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    if (tb.Transition.StateBefore != tb.Transition.StateAfter)
+                    {
+                        bars.push_back(tb);
+                        tr->state = after;
+                    }
+                    continue;
+                }
+                // The resource has DIVERGENT per-subresource states from an
+                // earlier subset barrier. A single ALL_SUBRESOURCES barrier
+                // with `state` as the before-state would lie about the
+                // subresources that diverged — emit one barrier PER
+                // subresource from its tracked state, then re-collapse to a
+                // coherent whole-resource state (`state` = after, drop map).
+                for (std::uint32_t layer = 0; layer < total_layers; ++layer)
+                {
+                    for (std::uint32_t mip = 0; mip < total_mips; ++mip)
+                    {
+                        const std::uint32_t sub = mip + layer * total_mips;
+                        const D3D12_RESOURCE_STATES before =
+                            tr->subresource_states[sub];
+                        if (before == after) continue;
+                        D3D12_RESOURCE_BARRIER tb {};
+                        tb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        tb.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                        tb.Transition.pResource   = tr->resource.Get();
+                        tb.Transition.StateBefore = before;
+                        tb.Transition.StateAfter  = after;
+                        tb.Transition.Subresource = sub;
+                        bars.push_back(tb);
+                    }
+                }
+                tr->state = after;
+                tr->subresource_states.clear();
+                continue;
+            }
+
+            // Subset path — materialise the per-subresource state map (seeded
+            // from the whole-resource state) and emit one barrier per
+            // (mip, layer) in the range, using the D3D12 subresource index
+            // = mip + layer * mip_levels.
+            if (tr->subresource_states.empty())
+            {
+                tr->subresource_states.assign(
+                    static_cast<std::size_t>(total_mips) * total_layers,
+                    tr->state);
+            }
+            const std::uint32_t mip_end =
+                std::min(base_mip + mip_count, total_mips);
+            const std::uint32_t layer_end =
+                std::min(base_layer + layer_count, total_layers);
+            for (std::uint32_t layer = base_layer; layer < layer_end; ++layer)
+            {
+                for (std::uint32_t mip = base_mip; mip < mip_end; ++mip)
+                {
+                    const std::uint32_t sub = mip + layer * total_mips;
+                    const D3D12_RESOURCE_STATES before =
+                        tr->subresource_states[sub];
+                    if (before == after) continue;
+                    D3D12_RESOURCE_BARRIER tb {};
+                    tb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    tb.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    tb.Transition.pResource   = tr->resource.Get();
+                    tb.Transition.StateBefore = before;
+                    tb.Transition.StateAfter  = after;
+                    tb.Transition.Subresource = sub;
+                    bars.push_back(tb);
+                    tr->subresource_states[sub] = after;
+                }
             }
         }
         if (!bars.empty())

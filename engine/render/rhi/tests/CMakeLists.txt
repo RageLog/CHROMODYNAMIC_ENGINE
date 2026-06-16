@@ -494,3 +494,71 @@ if(TARGET cd_rhi_vulkan)
     DEPS    cd::rhi_vulkan cd::rhi cd::core
   )
 endif()
+
+# =============================================================================
+# Backend-to-100 Wave 1 / C-D3D12-FIXES: one focused fail-on-revert gtest per
+# A.3 D3D12 implement-slice fix. The three DEVICE-ONLY tests (no shaders, no
+# DXC) cover the create-path fixes; the two SHADER tests run a real WARP
+# render/dispatch and need the same dxcompiler.dll/dxil.dll runtime as the
+# depth/MRT smoke. All SKIP cleanly when no D3D12 adapter is present.
+# =============================================================================
+
+# D-FORMAT-MAP: full Format -> DXGI_FORMAT table coverage (device-only).
+# D-ROOTCOST: push-constant root-cost overflow rejection (device-only).
+# D-BLAS-INDEXED: indexed-BLAS index-buffer honored (device-only, DXR-gated).
+# D-HDR-SWAPCHAIN + D-SWAPCHAIN-RESIZE: colour-space + ResizeBuffers (device +
+# a hidden Win32 window; links d3d12/dxgi import libs for the direct
+# CheckColorSpaceSupport probe).
+if(WIN32)
+  cd_add_test(d3d12_format_map
+    SOURCES test_d3d12_format_map.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+  cd_add_test(d3d12_root_cost
+    SOURCES test_d3d12_root_cost.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+  cd_add_test(d3d12_blas_indexed
+    SOURCES test_d3d12_blas_indexed.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+  cd_add_test(d3d12_swapchain
+    SOURCES test_d3d12_swapchain.cpp
+    DEPS    cd::rhi_d3d12 cd::rhi cd::core
+  )
+  if(TARGET cd_test_d3d12_swapchain)
+    target_link_libraries(cd_test_d3d12_swapchain PRIVATE d3d12 dxgi)
+  endif()
+endif()
+
+# D-SRV-MS: sample a 4x-MSAA texture (Texture2DMS SRV). Real WARP render +
+# sampling pass; needs the GLSL->DXIL DXC runtime.
+# D-MIPSTATE: per-subresource state — UAV-write mip 1 while mip 0 is shader-
+# resource. Real WARP compute dispatch; needs the GLSL->DXIL DXC runtime.
+if(WIN32)
+  cd_add_test(d3d12_srv_ms
+    SOURCES test_d3d12_srv_ms.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  cd_add_test(d3d12_mip_state
+    SOURCES test_d3d12_mip_state.cpp
+    DEPS    cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_w1_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_w1_list)
+  if(_cd_dxc_w1_list)
+    list(POP_BACK _cd_dxc_w1_list _cd_dxc_w1_dll)
+    get_filename_component(_cd_dxc_w1_dir "${_cd_dxc_w1_dll}" DIRECTORY)
+    foreach(_cd_w1_t cd_test_d3d12_srv_ms cd_test_d3d12_mip_state)
+      if(TARGET ${_cd_w1_t})
+        add_custom_command(TARGET ${_cd_w1_t} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_cd_dxc_w1_dir}/dxcompiler.dll"
+                  "$<TARGET_FILE_DIR:${_cd_w1_t}>"
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "${_cd_dxc_w1_dir}/dxil.dll"
+                  "$<TARGET_FILE_DIR:${_cd_w1_t}>")
+      endif()
+    endforeach()
+  endif()
+endif()
