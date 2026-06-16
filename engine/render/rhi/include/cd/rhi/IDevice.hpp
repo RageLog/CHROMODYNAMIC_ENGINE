@@ -30,10 +30,12 @@
                                       // returns unique_ptr<ICommandBuffer>
 #include <cd/rhi/Pipeline.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace cd::rhi
 {
@@ -180,6 +182,59 @@ public:
     [[nodiscard]] virtual cd::core::Result<ComputePipelineHandle>
     create_compute_pipeline(const ComputePipelineDesc& desc) = 0;
     virtual void destroy_compute_pipeline(ComputePipelineHandle h) = 0;
+
+    // ---- Pipeline cache (V-PIPECACHE, Backend-to-100) ---------------------
+    //
+    // A backend-agnostic, OPTIONAL, TRANSPARENT cache of compiled pipeline
+    // state. The device owns a backend cache object created at init (Vulkan
+    // VkPipelineCache, D3D12 ID3D12PipelineLibrary, Metal MTLBinaryArchive);
+    // every create_graphics/compute/rt_pipeline call routes through it. A cache
+    // changes ONLY compile TIME — never the resulting pipeline or any rendered
+    // pixel. With no seed blob the behaviour is exactly as today.
+    //
+    // Lifecycle (no new init param needed — the create-info structs carry an
+    // optional `pipeline_cache_blob` seed):
+    //   * Boot:  the device seeds the backend cache from the create-info blob
+    //            (or, on Vulkan, the legacy on-disk cache) — silently falling
+    //            back to an empty cache if the blob is stale / from another
+    //            driver / GPU.
+    //   * Run:   pipeline creation populates the cache (cache hits skip the
+    //            expensive compile; misses compile + store).
+    //   * Save:  `get_pipeline_cache_data()` serialises the current cache to a
+    //            byte blob the caller persists (engine config dir / asset DB).
+    //   * Reseed: `load_pipeline_cache(blob)` merges an additional blob into the
+    //            live cache at run time (rarely needed; boot-seed covers most
+    //            cases).
+    //
+    // Backends without a pipeline-cache primitive (Null / OpenGL, or a D3D12
+    // runtime/driver that lacks ID3D12PipelineLibrary) report the base defaults:
+    // an EMPTY blob from get_pipeline_cache_data() and kNotImplemented from
+    // load_pipeline_cache(). Pipeline creation NEVER fails because of a missing
+    // or rejected cache.
+
+    /// Serialise the device's pipeline cache into a portable byte blob the
+    /// caller can write to disk and feed back via the next device's create-info
+    /// `pipeline_cache_blob`. Returns an EMPTY vector on backends without a
+    /// cache, when the cache is empty, or on serialisation failure (a missing
+    /// cache is always correct behaviour). The blob is backend- AND
+    /// driver-AND-GPU-specific; a stale blob is rejected on seed, not here.
+    [[nodiscard]] virtual std::vector<std::byte> get_pipeline_cache_data() const
+    {
+        return {};
+    }
+
+    /// Merge `blob` (from a previous get_pipeline_cache_data()) into the live
+    /// pipeline cache. Normally unnecessary — the create-info seed covers boot.
+    /// Returns kNotImplemented on backends without a cache primitive, kOk when
+    /// the blob was accepted (or harmlessly ignored as stale). Never fails the
+    /// device.
+    [[nodiscard]] virtual cd::core::Result<void>
+    load_pipeline_cache(std::span<const std::byte> /*blob*/)
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "load_pipeline_cache: backend has no pipeline-cache primitive"));
+    }
 
     // ---- Descriptor sets (S3.4) -------------------------------------------
     /// Allocate a descriptor set from the device's internal pool, matching the

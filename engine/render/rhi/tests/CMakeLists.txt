@@ -102,6 +102,40 @@ else()
   )
 endif()
 
+# Backend-to-100 Wave 3 / V-PIPECACHE: cross-backend device-level pipeline cache.
+# Builds a real graphics + compute PSO on device A (GLSL -> SPIR-V on Vulkan /
+# DXIL on D3D12), serialises the backend pipeline cache (VkPipelineCache /
+# ID3D12PipelineLibrary) -> asserts the blob is non-empty + (Vulkan) carries a
+# valid VkPipelineCacheHeader, then seeds device B with the blob and rebuilds the
+# SAME pipelines -> asserts success. Null returns empty-blob + kNotImplemented.
+# Needs the Vulkan + (Windows) D3D12 backends + cd::shader (glslang); D3D12 drives
+# the DXC SM6.x path so it needs the dxcompiler.dll/dxil.dll runtime. SKIPs
+# cleanly when no device / no glslang / no DXC DLL / no pipeline-library support.
+if(WIN32)
+  cd_add_test(rhi_pipeline_cache
+    SOURCES test_rhi_pipeline_cache.cpp
+    DEPS    cd::rhi_vulkan cd::rhi_d3d12 cd::shader cd::rhi cd::core
+  )
+  file(GLOB _cd_dxc_pc_list "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxcompiler.dll")
+  list(SORT _cd_dxc_pc_list)
+  if(_cd_dxc_pc_list AND TARGET cd_test_rhi_pipeline_cache)
+    list(POP_BACK _cd_dxc_pc_list _cd_dxc_pc_dll)
+    get_filename_component(_cd_dxc_pc_dir "${_cd_dxc_pc_dll}" DIRECTORY)
+    add_custom_command(TARGET cd_test_rhi_pipeline_cache POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_pc_dir}/dxcompiler.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_pipeline_cache>"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${_cd_dxc_pc_dir}/dxil.dll"
+              "$<TARGET_FILE_DIR:cd_test_rhi_pipeline_cache>")
+  endif()
+else()
+  cd_add_test(rhi_pipeline_cache
+    SOURCES test_rhi_pipeline_cache.cpp
+    DEPS    cd::rhi_vulkan cd::shader cd::rhi cd::core
+  )
+endif()
+
 # D16: cross-backend PIXEL-PARITY capstone. ONE engine GLSL textured/lit/
 # depth-tested scene is compiled to SPIR-V (Vulkan) AND DXIL (D3D12) via the
 # SAME create_shader_module(kGlsl) call, rendered to a 256x256 offscreen on

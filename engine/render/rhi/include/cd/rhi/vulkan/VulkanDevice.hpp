@@ -15,6 +15,7 @@
 #include <cd/core/Result.hpp>
 #include <cd/rhi/IDevice.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -36,6 +37,13 @@ struct VulkanCreateInfo
     std::vector<std::string> device_extensions {};
     /// If true, prefer a discrete GPU when more than one device is available.
     bool prefer_discrete_gpu { true };
+    /// V-PIPECACHE — optional seed for the device's VkPipelineCache. When
+    /// non-empty it is the blob from a previous device's
+    /// IDevice::get_pipeline_cache_data(); the device tries it FIRST (an empty
+    /// or driver/GPU-mismatched blob is silently rejected, falling back to the
+    /// legacy on-disk `.shader_cache/pipeline_cache.bin` and then an empty
+    /// cache). Pipeline creation never fails because of this seed.
+    std::vector<std::byte> pipeline_cache_blob {};
 };
 
 /// Construct a Vulkan-backed IDevice. Returns an error when:

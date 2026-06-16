@@ -328,6 +328,12 @@ build_sprint1_triangle_pipeline(id<MTLDevice> device, MTLPixelFormat color_forma
 //
 // `vertex_fn` / `fragment_fn` are resolved by the caller from the bound
 // shader-module registry. `fragment_fn` may be nil for a depth-only pass.
+//
+// V-PIPECACHE: `archive` is the device's optional MTLBinaryArchive. When
+// non-nil it is attached to the descriptor (pd.binaryArchives = @[archive]) so
+// the runtime first looks up an already-compiled function variant in the
+// archive (cache hit, no recompile) and otherwise compiles + stores into it for
+// the next serializeToURL:. A nil archive runs uncached, exactly as before.
 [[nodiscard]] id<MTLRenderPipelineState>
 build_metal_graphics_pipeline(id<MTLDevice> device,
                               const GraphicsPipelineDesc& desc,
@@ -337,7 +343,8 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
                               MTLPrimitiveType* primitive_out,
                               MTLCullMode* cull_out,
                               MTLWinding* winding_out,
-                              std::string* error_out) noexcept;
+                              std::string* error_out,
+                              id<MTLBinaryArchive> archive = nil) noexcept;
 
 // ---------------------------------------------------------------------------
 // build_metal_mesh_pipeline — M10 (B2 — ADR-20260615) mesh-shader PSO.

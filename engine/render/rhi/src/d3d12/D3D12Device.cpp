@@ -52,6 +52,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -542,7 +543,81 @@ public:
         // ---- 9. DeviceLimits fill (D13 — parity with Vulkan) ---------------
         fill_device_limits();
 
+        // ---- 10. Pipeline library (V-PIPECACHE — parity with Vulkan) -------
+        // ID3D12PipelineLibrary caches compiled PSOs so a second device (or a
+        // second run) Loads instead of re-compiling. It is OPTIONAL and
+        // TRANSPARENT: a null library_ makes every create_*_pipeline run
+        // uncached, identical to today's behaviour. CreatePipelineLibrary lives
+        // on ID3D12Device1; a runtime/driver without it (or that rejects the
+        // seed blob) leaves the library null and never fails pipeline creation.
+        init_pipeline_library_(info.pipeline_cache_blob);
+
         return S_OK;
+    }
+
+    // V-PIPECACHE: create the ID3D12PipelineLibrary, seeded from `blob` when it
+    // is a valid library serialised by this driver/adapter. A stale blob
+    // (E_INVALIDARG / D3D12_ERROR_DRIVER_VERSION_MISMATCH /
+    // D3D12_ERROR_ADAPTER_NOT_FOUND) is rejected; we retry with an EMPTY library
+    // so the cache is still active for new pipelines. If ID3D12Device1 or
+    // CreatePipelineLibrary is entirely unavailable the library stays null and
+    // the device runs uncached.
+    void init_pipeline_library_(const std::vector<std::byte>& blob)
+    {
+        if (FAILED(device_.As(&device1_)) || !device1_)
+            return;  // runtime predates ID3D12Device1 — run uncached.
+
+        // Keep the seed bytes alive: CreatePipelineLibrary does NOT copy the
+        // blob; the library reads from it for its whole lifetime.
+        pipeline_library_seed_ = blob;
+        const void* data = pipeline_library_seed_.empty()
+            ? nullptr : pipeline_library_seed_.data();
+        const SIZE_T size = pipeline_library_seed_.size();
+
+        HRESULT hr = device1_->CreatePipelineLibrary(
+            data, size, IID_PPV_ARGS(&pipeline_library_));
+        if (FAILED(hr) && size != 0)
+        {
+            // Stale / foreign blob — drop it and create an empty library so new
+            // pipelines still populate the cache for this run's Serialize.
+            pipeline_library_seed_.clear();
+            pipeline_library_.Reset();
+            hr = device1_->CreatePipelineLibrary(
+                nullptr, 0, IID_PPV_ARGS(&pipeline_library_));
+        }
+        if (FAILED(hr))
+            pipeline_library_.Reset();  // driver lacks libraries — run uncached.
+    }
+
+    // V-PIPECACHE: deterministic 64-bit FNV-1a over the bytes that uniquely
+    // identify a PSO, rendered as a 16-hex-digit wide name. The pipeline
+    // library is keyed by name; the same inputs on a second device produce the
+    // same name, so LoadGraphics/ComputePipeline finds the stored PSO. We hash
+    // shader-bytecode CONTENT (not pointers, which differ per run) plus the
+    // fixed-function state struct bytes the caller passes.
+    [[nodiscard]] static std::uint64_t fnv1a_(const void* data, std::size_t n,
+                                              std::uint64_t seed) noexcept
+    {
+        std::uint64_t h = seed;
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            h ^= static_cast<std::uint64_t>(p[i]);
+            h *= 0x100000001b3ULL;
+        }
+        return h;
+    }
+
+    [[nodiscard]] static std::wstring pipeline_cache_name_(std::uint64_t h)
+    {
+        wchar_t buf[17] {};
+        static constexpr wchar_t kHex[] = L"0123456789abcdef";
+        for (int i = 15; i >= 0; --i)
+        {
+            buf[i] = kHex[h & 0xFu];
+            h >>= 4u;
+        }
+        return std::wstring { buf, 16 };
     }
 
     // ---- D13: populate DeviceLimits from real D3D12 caps -------------------
@@ -2127,9 +2202,52 @@ public:
         psd.CachedPSO = {};
         psd.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
+        // V-PIPECACHE: derive the deterministic cache name from shader-bytecode
+        // CONTENT (VS/PS/GS) plus the fixed-function state structs that affect
+        // the compiled PSO. Two devices with identical inputs hash identically,
+        // so the second device's LoadGraphicsPipeline hits the stored PSO.
         ComPtr<ID3D12PipelineState> pso;
-        HRESULT hr = device_->CreateGraphicsPipelineState(&psd, IID_PPV_ARGS(&pso));
-        if (FAILED(hr))
+        std::wstring cache_name;
+        if (pipeline_library_)
+        {
+            std::uint64_t h = 0xcbf29ce484222325ULL;
+            h = fnv1a_(vs_it->second.bytecode.data(), vs_it->second.bytecode.size(), h);
+            h = fnv1a_(fs_it->second.bytecode.data(), fs_it->second.bytecode.size(), h);
+            if (gs != nullptr)
+                h = fnv1a_(gs->bytecode.data(), gs->bytecode.size(), h);
+            h = fnv1a_(&psd.BlendState,        sizeof(psd.BlendState),        h);
+            h = fnv1a_(&psd.RasterizerState,   sizeof(psd.RasterizerState),   h);
+            h = fnv1a_(&psd.DepthStencilState, sizeof(psd.DepthStencilState),  h);
+            h = fnv1a_(&psd.PrimitiveTopologyType, sizeof(psd.PrimitiveTopologyType), h);
+            h = fnv1a_(&psd.NumRenderTargets,  sizeof(psd.NumRenderTargets),   h);
+            h = fnv1a_(psd.RTVFormats,         sizeof(psd.RTVFormats),         h);
+            h = fnv1a_(&psd.DSVFormat,         sizeof(psd.DSVFormat),          h);
+            h = fnv1a_(&psd.SampleDesc,        sizeof(psd.SampleDesc),         h);
+            for (const auto& e : input_elements)
+            {
+                h = fnv1a_(&e.SemanticIndex, sizeof(e.SemanticIndex), h);
+                h = fnv1a_(&e.Format,        sizeof(e.Format),        h);
+                h = fnv1a_(&e.InputSlot,     sizeof(e.InputSlot),     h);
+                h = fnv1a_(&e.AlignedByteOffset, sizeof(e.AlignedByteOffset), h);
+            }
+            cache_name = pipeline_cache_name_(h);
+            // Cache hit: Load the previously-stored PSO (skips the compile).
+            // A miss returns E_INVALIDARG — we then build + Store below.
+            (void)pipeline_library_->LoadGraphicsPipeline(
+                cache_name.c_str(), &psd, IID_PPV_ARGS(&pso));
+        }
+        HRESULT hr = S_OK;
+        if (!pso)
+        {
+            hr = device_->CreateGraphicsPipelineState(&psd, IID_PPV_ARGS(&pso));
+            if (SUCCEEDED(hr) && pipeline_library_ && !cache_name.empty())
+            {
+                // Store for the next Load / Serialize. A duplicate name returns
+                // E_INVALIDARG (already present) — harmless; ignore.
+                (void)pipeline_library_->StorePipeline(cache_name.c_str(), pso.Get());
+            }
+        }
+        if (FAILED(hr) || !pso)
         {
             char buf[160] {};
             std::snprintf(buf, sizeof(buf),
@@ -2481,9 +2599,25 @@ public:
         cpd.NodeMask = 0;
         cpd.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
+        // V-PIPECACHE: cache the compute PSO keyed on CS bytecode content.
         ComPtr<ID3D12PipelineState> pso;
-        HRESULT hr = device_->CreateComputePipelineState(&cpd, IID_PPV_ARGS(&pso));
-        if (FAILED(hr))
+        std::wstring cache_name;
+        if (pipeline_library_)
+        {
+            std::uint64_t h = 0xcbf29ce484222325ULL;
+            h = fnv1a_(cs_it->second.bytecode.data(), cs_it->second.bytecode.size(), h);
+            cache_name = pipeline_cache_name_(h);
+            (void)pipeline_library_->LoadComputePipeline(
+                cache_name.c_str(), &cpd, IID_PPV_ARGS(&pso));
+        }
+        HRESULT hr = S_OK;
+        if (!pso)
+        {
+            hr = device_->CreateComputePipelineState(&cpd, IID_PPV_ARGS(&pso));
+            if (SUCCEEDED(hr) && pipeline_library_ && !cache_name.empty())
+                (void)pipeline_library_->StorePipeline(cache_name.c_str(), pso.Get());
+        }
+        if (FAILED(hr) || !pso)
         {
             char buf[160] {};
             std::snprintf(buf, sizeof(buf),
@@ -2504,6 +2638,41 @@ public:
     void destroy_compute_pipeline(cd::rhi::ComputePipelineHandle h) override
     {
         compute_pipelines_.erase(h.index());
+    }
+
+    // ---- Pipeline cache (V-PIPECACHE — parity with Vulkan) ----------------
+    //
+    // Serialise the ID3D12PipelineLibrary into a portable blob (the D3D12
+    // pipeline-library on-disk format: header + per-PSO cached driver
+    // bytecode). GetSerializedSize gives the byte count; Serialize fills the
+    // buffer. The blob is driver/adapter-specific — a foreign one is rejected
+    // by the next device's CreatePipelineLibrary, not here.
+    [[nodiscard]] std::vector<std::byte> get_pipeline_cache_data() const override
+    {
+        if (!pipeline_library_)
+            return {};
+        const SIZE_T size = pipeline_library_->GetSerializedSize();
+        if (size == 0)
+            return {};
+        std::vector<std::byte> blob(static_cast<std::size_t>(size));
+        if (FAILED(pipeline_library_->Serialize(blob.data(), size)))
+            return {};
+        return blob;
+    }
+
+    // D3D12 pipeline libraries are seeded ONCE at CreatePipelineLibrary
+    // (boot, via D3D12CreateInfo::pipeline_cache_blob) and cannot merge an
+    // additional blob into a live library — the runtime offers no equivalent of
+    // vkMergePipelineCaches. Run-time reseeding is therefore unsupported;
+    // callers persist get_pipeline_cache_data() and seed the NEXT device at
+    // create time. Reported honestly as kNotImplemented (never fails a frame).
+    [[nodiscard]] cd::core::Result<void>
+    load_pipeline_cache(std::span<const std::byte> /*blob*/) override
+    {
+        return std::unexpected(cd::rhi::rhi_errors::make(
+            cd::rhi::rhi_errors::Code::kNotImplemented,
+            "load_pipeline_cache: D3D12 seeds the pipeline library at device "
+            "create (D3D12CreateInfo::pipeline_cache_blob); no live merge"));
     }
 
     // ---- DXR pipeline state object (Phase 398) ----------------------------
@@ -5393,6 +5562,16 @@ private:
     ComPtr<ID3D12Device> device_;
     ComPtr<ID3D12Device5> device5_;  // DXR entry points (Phase 142)
     ComPtr<ID3D12Device2> device2_;  // CreatePipelineState(stream) for mesh PSOs (phase766)
+    ComPtr<ID3D12Device1> device1_;  // V-PIPECACHE — CreatePipelineLibrary
+    // The library BORROWS the seed blob's memory for its lifetime
+    // (CreatePipelineLibrary does NOT copy), so the bytes must OUTLIVE it.
+    // Declared BEFORE pipeline_library_ so member-destruction order (reverse
+    // declaration) tears the library DOWN first, then frees the seed.
+    std::vector<std::byte> pipeline_library_seed_;
+    // V-PIPECACHE — ID3D12PipelineLibrary the create_*_pipeline paths Load
+    // from (cache hit) / Store into (miss). VK_NULL_HANDLE equivalent: a null
+    // pipeline_library_ means "no cache" and pipeline creation runs uncached.
+    ComPtr<ID3D12PipelineLibrary> pipeline_library_;
     ComPtr<ID3D12CommandQueue> graphics_queue_;
     ComPtr<ID3D12Fence> idle_fence_;
     UINT64 idle_value_ { 0 };

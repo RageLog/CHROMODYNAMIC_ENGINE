@@ -37,6 +37,7 @@
 #include <cd/shader/Compiler.hpp>          // cd::shader::ICompiler / make_glslang_compiler
 
 #include <array>
+#include <cstddef>  // std::byte (V-PIPECACHE blob)
 #include <cstdio>   // env-driven device selection diagnostic
 #include <cstdlib>  // std::getenv / std::atoi for CD_VULKAN_DEVICE_INDEX
 #include <cstring>
@@ -57,7 +58,8 @@ namespace cd::rhi::vulkan
 [[nodiscard]] cd::core::Result<std::unique_ptr<cd::rhi::IDevice>> create_device(
     std::unique_ptr<VulkanInstance> inst,
     const std::vector<std::string>& device_extensions,
-    bool prefer_discrete
+    bool prefer_discrete,
+    std::vector<std::byte> pipeline_cache_blob = {}
 );
 
 namespace
@@ -672,7 +674,8 @@ public:
         VkQueue gfx_queue,
         VmaAllocator allocator,
         std::string name,
-        QueueSet queues
+        QueueSet queues,
+        std::vector<std::byte> pipeline_cache_seed = {}
     ) noexcept
         : inst_ { std::move(inst) }
         , physical_ { pd }
@@ -689,34 +692,49 @@ public:
         , transfer_dedicated_ { queues.transfer_dedicated }
         , vma_allocator_ { allocator }
         , adapter_name_ { std::move(name) }
+        , pipeline_cache_seed_ { std::move(pipeline_cache_seed) }
     {
         populate_limits();
         init_pipeline_cache_();
     }
 
-    /// Create the VkPipelineCache, seeded from `.shader_cache/pipeline_cache.bin`
-    /// if it exists. Best-effort: if the seed file is corrupt or comes from a
-    /// different driver/GPU, Vulkan rejects it silently and we fall back to
-    /// an empty cache. Either way we end up with a valid VkPipelineCache so
-    /// the rest of the device init can pass it to vkCreate*Pipelines.
+    /// Create the VkPipelineCache. The seed is, in priority order:
+    ///   1. The in-memory blob from VulkanCreateInfo::pipeline_cache_blob
+    ///      (V-PIPECACHE — a previous device's get_pipeline_cache_data()).
+    ///   2. The legacy on-disk `.shader_cache/pipeline_cache.bin`.
+    ///   3. Empty.
+    /// Best-effort: if the seed is corrupt or comes from a different
+    /// driver/GPU, Vulkan rejects it silently and we fall back to an empty
+    /// cache. Either way we end up with a valid VkPipelineCache so the rest of
+    /// the device init can pass it to vkCreate*Pipelines.
     void init_pipeline_cache_()
     {
         std::vector<std::uint8_t> seed;
-        std::error_code ec;
-        const auto path = pipeline_cache_path_();
-        if (std::filesystem::exists(path, ec) && !ec)
+        // 1. Prefer the explicitly-supplied in-memory blob (V-PIPECACHE).
+        if (!pipeline_cache_seed_.empty())
         {
-            std::ifstream in(path, std::ios::binary | std::ios::ate);
-            if (in.is_open())
+            seed.resize(pipeline_cache_seed_.size());
+            std::memcpy(seed.data(), pipeline_cache_seed_.data(), pipeline_cache_seed_.size());
+        }
+        // 2. Otherwise fall back to the legacy on-disk cache.
+        if (seed.empty())
+        {
+            std::error_code ec;
+            const auto path = pipeline_cache_path_();
+            if (std::filesystem::exists(path, ec) && !ec)
             {
-                const auto sz = in.tellg();
-                if (sz > 0)
+                std::ifstream in(path, std::ios::binary | std::ios::ate);
+                if (in.is_open())
                 {
-                    seed.resize(static_cast<std::size_t>(sz));
-                    in.seekg(0);
-                    in.read(reinterpret_cast<char*>(seed.data()), static_cast<std::streamsize>(sz));
-                    if (!in.good() && !in.eof())
-                        seed.clear();
+                    const auto sz = in.tellg();
+                    if (sz > 0)
+                    {
+                        seed.resize(static_cast<std::size_t>(sz));
+                        in.seekg(0);
+                        in.read(reinterpret_cast<char*>(seed.data()), static_cast<std::streamsize>(sz));
+                        if (!in.good() && !in.eof())
+                            seed.clear();
+                    }
                 }
             }
         }
@@ -1956,6 +1974,49 @@ public:
             compute_pipelines_.erase(it);
         }
         pipeline_to_layout_.erase(h.index());
+    }
+
+    // ---- Pipeline cache (V-PIPECACHE) -----------------------------------
+    //
+    // Serialise the live VkPipelineCache via vkGetPipelineCacheData. The blob
+    // is the Vulkan-defined pipeline-cache format: an 8-byte+ header (length /
+    // version / vendorID / deviceID / UUID) followed by driver payload. A
+    // matching device validates the header on seed and rejects a mismatch,
+    // falling back to an empty cache — so the blob is safe to hand to any device
+    // (a stale one is just ignored, never a crash).
+    [[nodiscard]] std::vector<std::byte> get_pipeline_cache_data() const override
+    {
+        if (pipeline_cache_ == VK_NULL_HANDLE)
+            return {};
+        std::size_t sz = 0;
+        if (vkGetPipelineCacheData(device_, pipeline_cache_, &sz, nullptr) != VK_SUCCESS || sz == 0)
+            return {};
+        std::vector<std::byte> blob(sz);
+        if (vkGetPipelineCacheData(device_, pipeline_cache_, &sz, blob.data()) != VK_SUCCESS)
+            return {};
+        blob.resize(sz);  // driver may report a smaller final size
+        return blob;
+    }
+
+    // Merge an additional blob into the live cache via vkMergePipelineCaches
+    // (route through a temporary source cache built from the blob). A blob from
+    // a different driver/GPU fails vkCreatePipelineCache and is harmlessly
+    // skipped — the live cache is untouched and we still return kOk.
+    [[nodiscard]] cd::core::Result<void>
+    load_pipeline_cache(std::span<const std::byte> blob) override
+    {
+        if (pipeline_cache_ == VK_NULL_HANDLE || blob.empty())
+            return {};
+        VkPipelineCacheCreateInfo ci {};
+        ci.sType           = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+        ci.initialDataSize = blob.size();
+        ci.pInitialData    = blob.data();
+        VkPipelineCache src { VK_NULL_HANDLE };
+        if (vkCreatePipelineCache(device_, &ci, nullptr, &src) != VK_SUCCESS || src == VK_NULL_HANDLE)
+            return {};  // stale/foreign blob — ignore, never fail
+        (void)vkMergePipelineCaches(device_, pipeline_cache_, 1, &src);
+        vkDestroyPipelineCache(device_, src, nullptr);
+        return {};
     }
 
     // --- Mesh-shader pipeline (Phase 765 W2A — F5) -----------------------
@@ -4910,8 +4971,10 @@ public:
         pci.layout     = layout_it->second;
 
         VkPipeline pipeline { VK_NULL_HANDLE };
+        // V-PIPECACHE: route RT pipeline creation through the device cache too
+        // (deferred-operation handle stays VK_NULL_HANDLE — synchronous build).
         VkResult res = vkCreateRayTracingPipelinesKHR(
-            device_, VK_NULL_HANDLE, VK_NULL_HANDLE,
+            device_, VK_NULL_HANDLE, pipeline_cache_,
             1, &pci, nullptr, &pipeline);
         if (res != VK_SUCCESS || pipeline == VK_NULL_HANDLE)
         {
@@ -5302,6 +5365,11 @@ public:
     /// to disk in the dtor. Empty cache is a valid state — Vulkan just
     /// builds pipelines from scratch as if VK_NULL_HANDLE were passed.
     VkPipelineCache pipeline_cache_ { VK_NULL_HANDLE };
+
+    /// V-PIPECACHE — in-memory seed blob from VulkanCreateInfo, consulted by
+    /// init_pipeline_cache_() before the on-disk fallback. Empty when the caller
+    /// supplied no blob (the legacy disk path then drives the seed).
+    std::vector<std::byte> pipeline_cache_seed_ {};
 };
 
 // ---------------------------------------------------------------------------
@@ -5484,7 +5552,8 @@ select_queue_families(VkPhysicalDevice pd, VkSurfaceKHR surface) noexcept
 [[nodiscard]] cd::core::Result<std::unique_ptr<cd::rhi::IDevice>> create_device(
     std::unique_ptr<VulkanInstance> inst,
     const std::vector<std::string>& device_extensions,
-    bool prefer_discrete
+    bool prefer_discrete,
+    std::vector<std::byte> pipeline_cache_blob
 )
 {
     auto pd_res = pick_physical_device(inst->instance, prefer_discrete);
@@ -5812,7 +5881,8 @@ select_queue_families(VkPhysicalDevice pd, VkSurfaceKHR surface) noexcept
                 .present_queue = present_q,
                 .compute_dedicated = sel.compute_dedicated,
                 .transfer_dedicated = sel.transfer_dedicated,
-            })
+            },
+            std::move(pipeline_cache_blob))
     };
 }
 

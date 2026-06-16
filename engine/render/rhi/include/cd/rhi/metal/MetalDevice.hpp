@@ -23,9 +23,11 @@
 #include <cd/core/Result.hpp>
 #include <cd/rhi/IDevice.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace cd::rhi::metal
 {
@@ -39,6 +41,13 @@ struct MetalCreateInfo
     /// Enable Metal API validation layer (debug-only). Mirrors the
     /// Vulkan validation layer toggle on the rhi_vulkan side.
     bool enable_validation { true };
+    /// V-PIPECACHE — optional seed for the device's MTLBinaryArchive. When
+    /// non-empty it is the blob from a previous device's
+    /// IDevice::get_pipeline_cache_data() (serialised via serializeToURL: into a
+    /// temp file, then read back here). A blob from another GPU/driver makes
+    /// newBinaryArchiveWithDescriptor: fail and the device falls back to a fresh
+    /// archive. Never fails the device.
+    std::vector<std::byte> pipeline_cache_blob {};
 };
 
 /// Construct a Metal-backed IDevice. Returns nullptr (kBackendError)

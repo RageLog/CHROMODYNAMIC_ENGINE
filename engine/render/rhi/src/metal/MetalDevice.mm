@@ -433,6 +433,47 @@ public:
         // query_capabilities) so the parity tests + capability-gated callers see
         // the same shape across backends.
         populate_caps();
+        // V-PIPECACHE: create the MTLBinaryArchive, seeded from the create-info
+        // blob when present (mac-gated; self-review only).
+        init_binary_archive(info.pipeline_cache_blob);
+    }
+
+    // V-PIPECACHE: create the device's MTLBinaryArchive. When `blob` is
+    // non-empty it is written to a temp file and the descriptor's `url` is set
+    // so the runtime seeds the archive from it; a blob from another GPU/driver
+    // makes newBinaryArchiveWithDescriptor: fail and we fall back to a fresh,
+    // empty archive (the cache is still active for new compilations). A nil
+    // archive (older OS / creation failure) runs uncached. Never fails init.
+    void init_binary_archive(const std::vector<std::byte>& blob) noexcept
+    {
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            MTLBinaryArchiveDescriptor* d =
+                [[MTLBinaryArchiveDescriptor alloc] init];
+            if (!blob.empty())
+            {
+                // Persist the seed to a temp file — MTLBinaryArchiveDescriptor
+                // seeds only from a URL, not raw bytes.
+                NSData* data = [NSData dataWithBytes:blob.data()
+                                              length:static_cast<NSUInteger>(blob.size())];
+                NSString* tmp = [NSTemporaryDirectory()
+                    stringByAppendingPathComponent:@"cd_pipeline_cache_seed.metallib"];
+                if ([data writeToFile:tmp atomically:YES])
+                    d.url = [NSURL fileURLWithPath:tmp];
+            }
+            NSError* err = nil;
+            binary_archive_ =
+                [mtl_device_ newBinaryArchiveWithDescriptor:d error:&err];
+            if (binary_archive_ == nil && d.url != nil)
+            {
+                // Stale / foreign seed — retry with an empty archive so new
+                // pipelines still populate the cache for this run.
+                d.url = nil;
+                err = nil;
+                binary_archive_ =
+                    [mtl_device_ newBinaryArchiveWithDescriptor:d error:&err];
+            }
+        }
     }
 
     // M-caps (ADR-20260615): fill limits_ / features_ from the MTLDevice. Mac-
@@ -981,7 +1022,8 @@ public:
         id<MTLRenderPipelineState> pso =
             detail::build_metal_graphics_pipeline(
                 mtl_device_, desc, vs->fn(), fs_fn,
-                &dss, &primitive, &cull, &winding, &err_msg);
+                &dss, &primitive, &cull, &winding, &err_msg,
+                binary_archive_);  // V-PIPECACHE
         if (pso == nil)
         {
             return std::unexpected(rhi_errors::make_owning(
@@ -1157,9 +1199,34 @@ public:
         }
 
         NSError* err = nil;
-        id<MTLComputePipelineState> pso =
-            [mtl_device_ newComputePipelineStateWithFunction:mod->fn()
-                                                       error:&err];
+        id<MTLComputePipelineState> pso = nil;
+        // V-PIPECACHE: when a binary archive is present, build via a
+        // MTLComputePipelineDescriptor so the archive can cache + store the
+        // compiled compute function. addComputePipelineFunctionsWithDescriptor:
+        // pre-warms the archive; a failure is harmless (the PSO still builds).
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            if (binary_archive_ != nil)
+            {
+                MTLComputePipelineDescriptor* cpd =
+                    [[MTLComputePipelineDescriptor alloc] init];
+                cpd.computeFunction = mod->fn();
+                cpd.binaryArchives  = @[ binary_archive_ ];
+                NSError* arch_err = nil;
+                [binary_archive_ addComputePipelineFunctionsWithDescriptor:cpd
+                                                                     error:&arch_err];
+                pso = [mtl_device_
+                    newComputePipelineStateWithDescriptor:cpd
+                                                  options:MTLPipelineOptionNone
+                                               reflection:nil
+                                                    error:&err];
+            }
+        }
+        if (pso == nil)
+        {
+            pso = [mtl_device_ newComputePipelineStateWithFunction:mod->fn()
+                                                             error:&err];
+        }
         if (pso == nil)
         {
             std::string err_msg = (err != nil)
@@ -1187,6 +1254,52 @@ public:
     {
         const std::scoped_lock lock { compute_pipelines_mu_ };
         compute_pipelines_.erase(h.index());
+    }
+
+    // ---- Pipeline cache (V-PIPECACHE — parity with Vulkan / D3D12) --------
+    //
+    // Serialise the MTLBinaryArchive. Metal serialises an archive to a URL
+    // (serializeToURL:error:) — there is no in-memory Serialize — so we write to
+    // a temp file and read the bytes back. The blob is GPU/driver-specific; a
+    // foreign one is rejected by the next device's newBinaryArchiveWithDescriptor:,
+    // not here. Mac-gated (self-review only).
+    [[nodiscard]] std::vector<std::byte> get_pipeline_cache_data() const override
+    {
+        if (binary_archive_ == nil)
+            return {};
+        std::vector<std::byte> out;
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            NSString* tmp = [NSTemporaryDirectory()
+                stringByAppendingPathComponent:@"cd_pipeline_cache_out.metallib"];
+            NSURL* url = [NSURL fileURLWithPath:tmp];
+            NSError* err = nil;
+            if ([binary_archive_ serializeToURL:url error:&err])
+            {
+                NSData* data = [NSData dataWithContentsOfURL:url];
+                if (data != nil && [data length] > 0)
+                {
+                    out.resize(static_cast<std::size_t>([data length]));
+                    std::memcpy(out.data(), [data bytes],
+                                static_cast<std::size_t>([data length]));
+                }
+            }
+        }
+        return out;
+    }
+
+    // Metal seeds an MTLBinaryArchive at creation (newBinaryArchiveWithDescriptor:
+    // with the descriptor's url) and offers no live-merge primitive, mirroring
+    // D3D12. Reseeding is therefore unsupported at run time — callers persist
+    // get_pipeline_cache_data() and seed the NEXT device via
+    // MetalCreateInfo::pipeline_cache_blob. Reported honestly as kNotImplemented.
+    [[nodiscard]] cd::core::Result<void>
+    load_pipeline_cache(std::span<const std::byte> /*blob*/) override
+    {
+        return std::unexpected(rhi_errors::make(
+            rhi_errors::Code::kNotImplemented,
+            "load_pipeline_cache: Metal seeds the binary archive at device "
+            "create (MetalCreateInfo::pipeline_cache_blob); no live merge"));
     }
 
     // M9 (ADR-20260615): create a BLAS / TLAS as a real
@@ -3322,6 +3435,10 @@ private:
     id<MTLCommandQueue>  mtl_queue_ { nil };
     std::string          adapter_name_;
     bool                 enable_validation_ { false };
+    // V-PIPECACHE — MTLBinaryArchive attached to every PSO descriptor so
+    // compiled function variants are cached + serialised (serializeToURL:). nil
+    // means "no cache" and pipeline creation runs uncached, identical to before.
+    id<MTLBinaryArchive> binary_archive_ { nil };
     DeviceLimits         limits_ {};
     DeviceFeatures       features_ {};
     std::atomic<std::uint32_t> next_id_ { 1 };

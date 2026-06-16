@@ -598,7 +598,8 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
                               MTLPrimitiveType* primitive_out,
                               MTLCullMode* cull_out,
                               MTLWinding* winding_out,
-                              std::string* error_out) noexcept
+                              std::string* error_out,
+                              id<MTLBinaryArchive> archive) noexcept
 {
     if (device == nil || vertex_fn == nil)
     {
@@ -707,6 +708,22 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
     {
         pd.stencilAttachmentPixelFormat =
             to_pixel_format(desc.stencil_attachment_format);
+    }
+
+    // V-PIPECACHE: attach the device's MTLBinaryArchive so the runtime reuses an
+    // already-compiled variant (cache hit) and stores new compilations for the
+    // next serializeToURL:. addFunctionsWithDescriptor: pre-warms the archive
+    // with this descriptor's stages; a nil archive leaves the path uncached.
+    if (archive != nil)
+    {
+        if (@available(macOS 11.0, iOS 14.0, *))
+        {
+            pd.binaryArchives = @[ archive ];
+            NSError* arch_err = nil;
+            // Best-effort store: a failure (variant already present / unsupported
+            // stage) is harmless — the PSO still builds below.
+            [archive addRenderPipelineFunctionsWithDescriptor:pd error:&arch_err];
+        }
     }
 
     NSError* err = nil;
