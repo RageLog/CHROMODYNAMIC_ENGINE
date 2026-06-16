@@ -304,6 +304,27 @@ void MetalCommandBufferImpl::bind_graphics_pipeline(GraphicsPipelineHandle pipel
     }
     [encoder_ setCullMode:state->cull()];
     [encoder_ setFrontFacingWinding:state->winding()];
+    // M-DEPTHBIAS (Backend-to-100 Wave 4a): depth bias + depth-clip mode are
+    // encoder state on Metal (not the PSO), so apply them here from the bound
+    // pipeline's resolved MetalDepthBiasState — mirroring how cull / winding
+    // are applied above. setDepthBias:slopeScale:clamp: takes the constant
+    // factor, the slope-scaled factor, and the clamp (Vulkan
+    // depthBiasConstantFactor / depthBiasSlopeFactor / depthBiasClamp). When
+    // the pipeline did not request bias we still issue an explicit (0,0,0) so a
+    // pipeline switch resets any bias a prior bound pipeline left on the
+    // encoder (encoder state is sticky across binds). setDepthClipMode applies
+    // the depth_clamp toggle (Clamp vs Clip), the Vulkan depthClampEnable
+    // analog.
+    const MetalDepthBiasState& db = state->depth_bias();
+    if (db.enable)
+    {
+        [encoder_ setDepthBias:db.constant slopeScale:db.slope clamp:db.clamp];
+    }
+    else
+    {
+        [encoder_ setDepthBias:0.0F slopeScale:0.0F clamp:0.0F];
+    }
+    [encoder_ setDepthClipMode:db.clip_mode];
     bound_primitive_ = state->primitive();
     // M10 (B2 — ADR-20260615): cache the mesh-pipeline draw state so
     // draw_mesh_tasks can feed the reflected per-group thread counts. A classic

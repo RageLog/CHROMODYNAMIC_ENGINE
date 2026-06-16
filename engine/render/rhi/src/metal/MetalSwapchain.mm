@@ -30,6 +30,8 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Foundation/Foundation.h>
+#import <CoreGraphics/CGColorSpace.h>
+#include <TargetConditionals.h>
 
 #include "MetalInternal.hpp"
 
@@ -54,6 +56,49 @@ namespace
     default:                  return MTLPixelFormatBGRA8Unorm_sRGB;
     }
 }
+
+// M-HDR-EDR (Backend-to-100 Wave 4a): does this colour space request HDR
+// (extended-dynamic-range) presentation? Both HDR10 PQ and scRGB-linear drive
+// the layer's EDR path; SDR sRGB stays on the standard 0..1 path.
+[[nodiscard]] bool is_hdr_colour_space(ColorSpace cs) noexcept
+{
+    return cs == ColorSpace::kHdr10St2084 || cs == ColorSpace::kScrgbLinear;
+}
+
+// M-HDR-EDR (Backend-to-100 Wave 4a): map the engine ColorSpace to the
+// CGColorSpace the CAMetalLayer.colorspace property understands. Mirrors the
+// Vulkan VkColorSpaceKHR / D3D12 DXGI_COLOR_SPACE_TYPE selection 1:1:
+//   kSrgbNonlinear → kCGColorSpaceSRGB                (sRGB / SDR, BT.709 g2.2)
+//   kHdr10St2084   → kCGColorSpaceITUR_2100_PQ        (HDR10 PQ; ST.2084, BT.2020)
+//   kScrgbLinear   → kCGColorSpaceExtendedLinearSRGB  (scRGB FP16 linear, BT.709)
+//
+// OWNERSHIP: CGColorSpaceCreateWithName returns a +1-retained CGColorSpaceRef
+// (Core Foundation create-rule; ARC does NOT manage CF types). The caller MUST
+// CGColorSpaceRelease the returned reference after handing it to the layer
+// (CAMetalLayer.colorspace retains its own copy). Returns nullptr if the OS
+// lacks the requested colour-space name (caller falls back to SDR).
+//
+// @available-gated by the CALLER: kCGColorSpaceITUR_2100_PQ is macOS 10.15.4+ /
+// iOS 13.4+; kCGColorSpaceExtendedLinearSRGB is macOS 10.12+ / iOS 10+. The
+// colorspace PROPERTY itself is macOS 10.12+ (no iOS equivalent — CAMetalLayer
+// on iOS infers the colour space from the pixel format + EDR flags), so the
+// whole helper is compiled only on macOS (TARGET_OS_OSX) — the lone call site
+// lives under the same guard.
+#if TARGET_OS_OSX
+[[nodiscard]] CGColorSpaceRef
+create_cg_color_space(ColorSpace cs) noexcept API_AVAILABLE(macos(10.15.4))
+{
+    CFStringRef name = kCGColorSpaceSRGB;
+    switch (cs)
+    {
+    case ColorSpace::kHdr10St2084: name = kCGColorSpaceITUR_2100_PQ;       break;
+    case ColorSpace::kScrgbLinear: name = kCGColorSpaceExtendedLinearSRGB; break;
+    case ColorSpace::kSrgbNonlinear:
+    default:                       name = kCGColorSpaceSRGB;               break;
+    }
+    return CGColorSpaceCreateWithName(name);
+}
+#endif  // TARGET_OS_OSX
 
 }  // namespace
 
@@ -95,6 +140,57 @@ MetalSwapchainObj::MetalSwapchainObj(CAMetalLayer* layer, id<MTLDevice> device,
         layer_.displaySyncEnabled = desc.vsync ? YES : NO;
     }
 #endif
+
+    // M-HDR-EDR (Backend-to-100 Wave 4a): honour desc.colour_space. The
+    // historical Sprint-1 path created the layer and NEVER read colour_space nor
+    // touched wantsExtendedDynamicRange/colorspace — an HDR10 / scRGB request was
+    // silently presented as SDR (Vulkan picks a matching VkColorSpaceKHR at
+    // surface-format time; D3D12 calls SetColorSpace1 — D-HDR-SWAPCHAIN Wave 1).
+    // Mirror that here:
+    //   * wantsExtendedDynamicRange = YES for an HDR colour space lets Metal
+    //     present values > 1.0 to an EDR-capable display (macOS 10.11+);
+    //   * colorspace tags the drawable contents so the compositor tone-maps PQ /
+    //     scRGB correctly (macOS 10.12+).
+    // SDR sRGB takes the fallback branch: EDR off + the sRGB CGColorSpace, which
+    // is byte-identical in presented output to the pre-Wave-4a path (the layer's
+    // default colour space already matches an sRGB pixel format).
+    //
+    // NOTE: an HDR colour space additionally requires a float swapchain pixel
+    // format (RGBA16Float) to actually carry > 1.0 / wide-gamut values — the
+    // caller selects that via SwapchainDesc.format (to_mtl_format already maps
+    // kRGBA16Float). We do NOT silently override the caller's format here, to
+    // keep the colour-space and pixel-format choices independent + explicit,
+    // matching the Vulkan/D3D12 backends which also leave format selection to
+    // the caller's desc.format.
+    is_hdr_ = is_hdr_colour_space(desc.colour_space);
+    // wantsExtendedDynamicRange + colorspace are macOS-ONLY CAMetalLayer
+    // properties (the iOS layer infers HDR from the pixel format + the display's
+    // current EDR headroom, so there is nothing to set there). TARGET_OS_OSX
+    // is the compile-time platform gate; @available is the runtime OS-version
+    // gate nested inside it. Both are required: the property must EXIST in the
+    // SDK (TARGET_OS_OSX) AND the running OS must be new enough (@available).
+#if TARGET_OS_OSX
+#if defined(__has_builtin) && __has_builtin(__builtin_available)
+    if (@available(macOS 10.11, *))
+    {
+        layer_.wantsExtendedDynamicRange = is_hdr_ ? YES : NO;
+    }
+    if (@available(macOS 10.15.4, *))
+    {
+        // create_cg_color_space returns a +1 CGColorSpaceRef (CF create-rule,
+        // NOT ARC-managed). Assigning to layer_.colorspace makes the layer
+        // retain its own reference; we must release ours afterwards to avoid a
+        // leak. nullptr (unsupported name) leaves the layer's default colour
+        // space, the safe SDR fallback.
+        CGColorSpaceRef cs = create_cg_color_space(desc.colour_space);
+        if (cs != nullptr)
+        {
+            layer_.colorspace = cs;
+            CGColorSpaceRelease(cs);
+        }
+    }
+#endif
+#endif  // TARGET_OS_OSX
 
     // Reflect the Metal default drawable count (3 on macOS as of 10.13.2).
     image_count_ = static_cast<std::uint32_t>(desc.image_count > 0 ? desc.image_count : 3);

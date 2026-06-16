@@ -1019,10 +1019,14 @@ public:
         MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
         MTLCullMode      cull = MTLCullModeNone;
         MTLWinding       winding = MTLWindingClockwise;
+        // M-DEPTHBIAS (Wave 4a): the builder resolves the encoder-side
+        // depth-bias + depth-clip state from desc.raster; we forward it into
+        // the pipeline-state object so bind_graphics_pipeline can apply it.
+        detail::MetalDepthBiasState depth_bias {};
         id<MTLRenderPipelineState> pso =
             detail::build_metal_graphics_pipeline(
                 mtl_device_, desc, vs->fn(), fs_fn,
-                &dss, &primitive, &cull, &winding, &err_msg,
+                &dss, &primitive, &cull, &winding, &depth_bias, &err_msg,
                 binary_archive_);  // V-PIPECACHE
         if (pso == nil)
         {
@@ -1039,7 +1043,7 @@ public:
         pipelines_.emplace(
             h.index(),
             std::make_unique<MetalGraphicsPipelineStateObj>(
-                pso, dss, primitive, cull, winding));
+                pso, dss, primitive, cull, winding, depth_bias));
         return h;
     }
 
@@ -1123,6 +1127,9 @@ public:
         id<MTLDepthStencilState> dss = nil;
         MTLCullMode cull = MTLCullModeNone;
         MTLWinding  winding = MTLWindingClockwise;
+        // M-DEPTHBIAS (Wave 4a): encoder-side depth-bias + depth-clip resolved
+        // by the mesh builder, forwarded into the shared pipeline-state object.
+        detail::MetalDepthBiasState depth_bias {};
         id<MTLRenderPipelineState> pso = nil;
         // MTLMeshRenderPipelineDescriptor is Metal 3 — guard the build behind
         // the availability check so older-SDK builds compile. features_
@@ -1132,7 +1139,7 @@ public:
         {
             pso = detail::build_metal_mesh_pipeline(
                 mtl_device_, desc, object_fn, ms->fn(), fs_fn,
-                &dss, &cull, &winding, &err_msg);
+                &dss, &cull, &winding, &depth_bias, &err_msg);
         }
         else
         {
@@ -1158,7 +1165,7 @@ public:
         // MetalGraphicsPipelineStateObj record (matches D3D12 ignoring IA
         // topology for mesh PSOs).
         auto state = std::make_unique<MetalGraphicsPipelineStateObj>(
-            pso, dss, MTLPrimitiveTypeTriangle, cull, winding);
+            pso, dss, MTLPrimitiveTypeTriangle, cull, winding, depth_bias);
         // Each stage's reflected threads-per-threadgroup (GLSL
         // layout(local_size_*)) so draw_mesh_tasks can feed Metal's
         // drawMeshThreadgroups:threadsPerObjectThreadgroup:threadsPerMesh

@@ -682,6 +682,55 @@ else()
   )
 endif()
 
+# =============================================================================
+# Backend-to-100 Wave 4b / C-METAL-TIER2 + C-METAL-CULL: the Metal GPU test
+# suite, AUTHORED windows-now + RUN mac-gated. The Metal backend (cd_rhi_metal,
+# Objective-C++ .mm) compiles + runs ONLY on Apple with CD_RHI_METAL_ENABLED=ON
+# (auto-forced OFF on Windows — CMakeLists.txt:180-193). Each test source is
+# gated:
+#   * #if defined(__APPLE__) && defined(CD_RHI_METAL_ENABLED)  — real MTLDevice
+#     assertions (needs the .mm symbols + the host MSL toolchain).
+#   * #else                                                    — a skip-stub
+#     TEST that GTEST_SKIPs "Metal backend disabled on this platform
+#     (Apple-only)". References NO Metal symbols, so it compiles + links with
+#     just gtest.
+#
+# Registration mirrors the d3d12_device_features split: on Apple WITH the .mm
+# backend built we link the full Metal chain (cd::rhi_metal + the host MSL
+# toolchain + cd::shader); everywhere else (Windows here) we link only
+# cd::rhi + cd::core so the skip-stub builds clean under -Werror and the test
+# REGISTERS + RUNs as SKIPPED. CD_RHI_METAL_ENABLED is PUBLIC on cd_rhi_metal,
+# so linking it propagates the gate macro that unlocks the __APPLE__ body.
+set(_CD_METAL_TESTS
+  metal_device      test_metal_device.cpp
+  metal_buffer      test_metal_buffer.cpp
+  metal_texture     test_metal_texture.cpp
+  metal_pipeline    test_metal_pipeline.cpp
+  metal_shader      test_metal_shader.cpp
+  metal_descriptor  test_metal_descriptor.cpp
+  metal_barrier     test_metal_barrier.cpp
+  metal_swapchain   test_metal_swapchain.cpp
+  metal_rt          test_metal_rt.cpp
+  metal_face_cull_parity test_metal_face_cull_parity.cpp
+)
+while(_CD_METAL_TESTS)
+  list(POP_FRONT _CD_METAL_TESTS _cd_metal_name _cd_metal_src)
+  if(APPLE AND CD_RHI_METAL_ENABLED)
+    # The __APPLE__ body names create_metal_device + the IDevice surface + the
+    # in-device GLSL->MSL path: link the .mm backend + the host toolchain.
+    cd_add_test(${_cd_metal_name}
+      SOURCES ${_cd_metal_src}
+      DEPS    cd::rhi_metal cd::rhi_metal_shader cd::shader cd::rhi cd::core
+    )
+  else()
+    # Windows / non-Apple: the #else skip-stub references no Metal symbols.
+    cd_add_test(${_cd_metal_name}
+      SOURCES ${_cd_metal_src}
+      DEPS    cd::rhi cd::core
+    )
+  endif()
+endwhile()
+
 # D-SRV-MS: sample a 4x-MSAA texture (Texture2DMS SRV). Real WARP render +
 # sampling pass; needs the GLSL->DXIL DXC runtime.
 # D-MIPSTATE: per-subresource state — UAV-write mip 1 while mip 0 is shader-

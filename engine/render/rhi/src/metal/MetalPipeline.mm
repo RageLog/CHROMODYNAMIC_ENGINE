@@ -587,6 +587,109 @@ to_topology_class(PrimitiveTopology t) noexcept
     return MTLCompareFunctionLess;
 }
 
+// M-STENCIL (Backend-to-100 Wave 4a): engine StencilOp -> MTLStencilOperation.
+// Mirrors the Vulkan map (VK_STENCIL_OP_*) + the D3D12 D5 (phase1186)
+// D3D12_STENCIL_OP_* table 1:1 so the wrap/clamp distinction is preserved
+// across backends. Metal's increment/decrement come in clamp + wrap variants
+// exactly like Vulkan/D3D12. [[maybe_unused]] until the engine
+// `DepthStencilState` grows per-face op fields — the table is compiled +
+// verified now so wiring it later is a one-line change in
+// fill_metal_stencil_state (same staging the D3D12 backend uses).
+[[maybe_unused]] [[nodiscard]] MTLStencilOperation
+to_mtl_stencil_op(StencilOp op) noexcept
+{
+    switch (op)
+    {
+    case StencilOp::kKeep:           return MTLStencilOperationKeep;
+    case StencilOp::kZero:           return MTLStencilOperationZero;
+    case StencilOp::kReplace:        return MTLStencilOperationReplace;
+    case StencilOp::kIncrementClamp: return MTLStencilOperationIncrementClamp;
+    case StencilOp::kDecrementClamp: return MTLStencilOperationDecrementClamp;
+    case StencilOp::kInvert:         return MTLStencilOperationInvert;
+    case StencilOp::kIncrementWrap:  return MTLStencilOperationIncrementWrap;
+    case StencilOp::kDecrementWrap:  return MTLStencilOperationDecrementWrap;
+    }
+    return MTLStencilOperationKeep;
+}
+
+// M-STENCIL (Backend-to-100 Wave 4a): build front + back MTLStencilDescriptors
+// and attach them to a MTLDepthStencilDescriptor. The engine `DepthStencilState`
+// currently carries ONLY a `stencil_test` toggle (no per-face fail / depth-fail
+// / pass ops, compare func, or read/write masks) — exactly like the Vulkan
+// reference (VkPipelineDepthStencilStateCreateInfo leaves `.front = {}` /
+// `.back = {}` zero, gated by `stencilTestEnable`) and the D3D12 D5
+// (phase1186) `fill_d3d12_stencil_state`. Metal's MTLStencilDescriptor defaults
+// (Keep/Keep/Keep + CompareFunctionAlways + read/write mask 0xFF) are ALREADY
+// the valid pass-through state, so when stencil is enabled we install an
+// explicit pass-through descriptor on both faces (matching the D3D12
+// KEEP/KEEP/KEEP/ALWAYS + default masks the reference picks rather than the
+// all-zero Vulkan layout, which on D3D12 would be an INVALID enum). When the
+// engine surface grows per-face StencilOpState fields (compare op, fail/
+// depthFail/pass ops, read/write mask), THIS is the single Metal translation
+// point that consumes them via to_mtl_stencil_op / depth_compare, exactly like
+// the D3D12 helper is for that backend.
+void fill_metal_stencil_state(MTLDepthStencilDescriptor* dsd,
+                              bool stencil_test) noexcept
+{
+    if (!stencil_test)
+    {
+        // Leave dsd.frontFaceStencil / backFaceStencil at nil (Metal treats a
+        // nil face descriptor as "stencil disabled" — the default), mirroring
+        // VkStencilTestEnable=FALSE / D3D12 StencilEnable=FALSE.
+        return;
+    }
+    // Two distinct descriptors so a future per-face engine surface can diverge
+    // front vs back without aliasing; today both carry identical pass-through
+    // state. (Metal copies the descriptor into the immutable state object, so
+    // sharing one instance would also be correct, but separate objects match
+    // the D3D12 front/back StencilOpDesc pair and the Vulkan front/back split.)
+    MTLStencilDescriptor* front = [[MTLStencilDescriptor alloc] init];
+    front.stencilCompareFunction    = MTLCompareFunctionAlways;
+    front.stencilFailureOperation   = MTLStencilOperationKeep;
+    front.depthFailureOperation     = MTLStencilOperationKeep;
+    front.depthStencilPassOperation = MTLStencilOperationKeep;
+    front.readMask  = 0xFFFFFFFFU;   // MTLStencilDescriptor default read mask
+    front.writeMask = 0xFFFFFFFFU;   // MTLStencilDescriptor default write mask
+
+    MTLStencilDescriptor* back = [[MTLStencilDescriptor alloc] init];
+    back.stencilCompareFunction    = MTLCompareFunctionAlways;
+    back.stencilFailureOperation   = MTLStencilOperationKeep;
+    back.depthFailureOperation     = MTLStencilOperationKeep;
+    back.depthStencilPassOperation = MTLStencilOperationKeep;
+    back.readMask  = 0xFFFFFFFFU;
+    back.writeMask = 0xFFFFFFFFU;
+
+    dsd.frontFaceStencil = front;
+    dsd.backFaceStencil  = back;
+}
+
+// M-DEPTHBIAS (Backend-to-100 Wave 4a): resolve the engine RasterState into the
+// encoder-side MetalDepthBiasState. Metal carries depth bias + depth-clip mode
+// on the render ENCODER (set in bind_graphics_pipeline), not the PSO, so the
+// builder resolves the values here and the command buffer applies them.
+//
+// Mapping (mirrors Vulkan VkPipelineRasterizationStateCreateInfo):
+//   depth_bias_enable    -> gates whether [encoder setDepthBias:..] is issued.
+//   depth_bias_constant  -> setDepthBias: `bias`        (constant factor).
+//   depth_bias_slope     -> setDepthBias: `slopeScale`  (slope factor).
+//   depth_bias_clamp     -> NOT in RasterState today; Vulkan also hardcodes
+//                           depthBiasClamp = 0.0F (VulkanDevice.cpp:1744), so
+//                           we mirror 0.0F for parity. Single update point when
+//                           the engine surface grows a clamp field.
+//   depth_clamp          -> MTLDepthClipMode: depth_clamp ? Clamp : Clip
+//                           (Vulkan depthClampEnable; Metal expresses the same
+//                           toggle as a clip MODE rather than a bool).
+[[nodiscard]] MetalDepthBiasState resolve_depth_bias(const RasterState& rs) noexcept
+{
+    MetalDepthBiasState out {};
+    out.enable    = rs.depth_bias_enable;
+    out.constant  = rs.depth_bias_constant;
+    out.slope     = rs.depth_bias_slope;
+    out.clamp     = 0.0F;  // RasterState has no clamp field yet (Vulkan parity).
+    out.clip_mode = rs.depth_clamp ? MTLDepthClipModeClamp : MTLDepthClipModeClip;
+    return out;
+}
+
 }  // namespace
 
 id<MTLRenderPipelineState>
@@ -598,6 +701,7 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
                               MTLPrimitiveType* primitive_out,
                               MTLCullMode* cull_out,
                               MTLWinding* winding_out,
+                              MetalDepthBiasState* depth_bias_out,
                               std::string* error_out,
                               id<MTLBinaryArchive> archive) noexcept
 {
@@ -742,23 +846,37 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
     }
 
     // --- Depth-stencil state (SEPARATE Metal object) -----------------------
-    // Gated on a present depth attachment exactly like the Vulkan back-end
-    // (depthTest && has_depth_attach). When there is no depth attachment we
-    // emit nil so the command buffer skips setDepthStencilState.
+    // Gated on a present depth OR stencil attachment, mirroring the Vulkan
+    // back-end (depthTestEnable gated on has_depth_attach, stencilTestEnable
+    // gated on has_stencil_attach). When neither attachment is present we emit
+    // nil so the command buffer skips setDepthStencilState.
+    //
+    // M-STENCIL (Wave 4a): the front/back MTLStencilDescriptor is filled by
+    // fill_metal_stencil_state gated on (stencil_test && has_stencil) — the
+    // same has_stencil_attach gate the Vulkan/D3D12 backends apply, so an
+    // engine that asks for stencil_test without a stencil attachment format
+    // gets stencil OFF (no validation trap) exactly like the other backends.
     if (dss_out != nullptr)
     {
         *dss_out = nil;
-        if (has_depth)
+        if (has_depth || has_stencil)
         {
             MTLDepthStencilDescriptor* dsd =
                 [[MTLDepthStencilDescriptor alloc] init];
-            dsd.depthCompareFunction = desc.depth_stencil.depth_test
-                ? depth_compare(desc.depth_stencil.depth_compare)
-                : MTLCompareFunctionAlways;
-            dsd.depthWriteEnabled =
-                (desc.depth_stencil.depth_write && desc.depth_stencil.depth_test)
-                    ? YES
-                    : NO;
+            // Depth compare/write are only meaningful with a depth attachment;
+            // a stencil-only pass leaves the Metal defaults (Always + write NO).
+            if (has_depth)
+            {
+                dsd.depthCompareFunction = desc.depth_stencil.depth_test
+                    ? depth_compare(desc.depth_stencil.depth_compare)
+                    : MTLCompareFunctionAlways;
+                dsd.depthWriteEnabled =
+                    (desc.depth_stencil.depth_write && desc.depth_stencil.depth_test)
+                        ? YES
+                        : NO;
+            }
+            fill_metal_stencil_state(
+                dsd, desc.depth_stencil.stencil_test && has_stencil);
             *dss_out = [device newDepthStencilStateWithDescriptor:dsd];
         }
     }
@@ -774,6 +892,17 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
     if (winding_out != nullptr)
     {
         *winding_out = to_winding(desc.raster.front_face);
+    }
+    // M-DEPTHBIAS (Wave 4a): resolve the encoder-side depth-bias + depth-clip
+    // state. Metal applies these on the render encoder, not the PSO; the
+    // command buffer reads this back in bind_graphics_pipeline. Mirrors the
+    // Vulkan RasterizationState (depthBiasEnable / depthBiasConstantFactor /
+    // depthBiasSlopeFactor / depthBiasClamp + depthClampEnable). When
+    // depth_bias_enable is false we leave (0,0,0) so [encoder setDepthBias:..]
+    // is a no-op, byte-identical to the pre-Wave-4a path.
+    if (depth_bias_out != nullptr)
+    {
+        *depth_bias_out = resolve_depth_bias(desc.raster);
     }
     return pso;
 }
@@ -797,6 +926,7 @@ build_metal_mesh_pipeline(id<MTLDevice> device,
                           id<MTLDepthStencilState>* dss_out,
                           MTLCullMode* cull_out,
                           MTLWinding* winding_out,
+                          MetalDepthBiasState* depth_bias_out,
                           std::string* error_out) noexcept
     API_AVAILABLE(macos(13.0), ios(16.0))
 {
@@ -882,21 +1012,26 @@ build_metal_mesh_pipeline(id<MTLDevice> device,
     }
 
     // --- Depth-stencil state (SEPARATE Metal object) — same gating as the
-    //     graphics builder. -------------------------------------------------
+    //     graphics builder, incl. M-STENCIL (Wave 4a) front/back stencil. ----
     if (dss_out != nullptr)
     {
         *dss_out = nil;
-        if (has_depth)
+        if (has_depth || has_stencil)
         {
             MTLDepthStencilDescriptor* dsd =
                 [[MTLDepthStencilDescriptor alloc] init];
-            dsd.depthCompareFunction = desc.depth_stencil.depth_test
-                ? depth_compare(desc.depth_stencil.depth_compare)
-                : MTLCompareFunctionAlways;
-            dsd.depthWriteEnabled =
-                (desc.depth_stencil.depth_write && desc.depth_stencil.depth_test)
-                    ? YES
-                    : NO;
+            if (has_depth)
+            {
+                dsd.depthCompareFunction = desc.depth_stencil.depth_test
+                    ? depth_compare(desc.depth_stencil.depth_compare)
+                    : MTLCompareFunctionAlways;
+                dsd.depthWriteEnabled =
+                    (desc.depth_stencil.depth_write && desc.depth_stencil.depth_test)
+                        ? YES
+                        : NO;
+            }
+            fill_metal_stencil_state(
+                dsd, desc.depth_stencil.stencil_test && has_stencil);
             *dss_out = [device newDepthStencilStateWithDescriptor:dsd];
         }
     }
@@ -912,6 +1047,13 @@ build_metal_mesh_pipeline(id<MTLDevice> device,
     if (winding_out != nullptr)
     {
         *winding_out = to_winding(desc.raster.front_face);
+    }
+    // M-DEPTHBIAS (Wave 4a): same encoder-side depth-bias + depth-clip
+    // resolution as the graphics builder — mesh pipelines drive the rasterizer
+    // and benefit from depth bias identically (e.g. mesh-shader shadow casters).
+    if (depth_bias_out != nullptr)
+    {
+        *depth_bias_out = resolve_depth_bias(desc.raster);
     }
     return pso;
 }

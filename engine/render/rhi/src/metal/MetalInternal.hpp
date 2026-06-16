@@ -210,6 +210,28 @@ inline constexpr std::uint32_t kSpirvCrossAuxBufferBaseIndex = 20U;
 class MetalDeviceCtx;
 
 // ---------------------------------------------------------------------------
+// MetalDepthBiasState — M-DEPTHBIAS (Backend-to-100 Wave 4a).
+//
+// Depth bias + depth-clip mode ride on the RENDER ENCODER in Metal (like cull /
+// winding), NOT the MTLRenderPipelineState. The pipeline builders resolve this
+// from the engine RasterState (depth_bias_enable / _constant / _slope +
+// depth_clamp) and the command buffer applies it in bind_graphics_pipeline via
+// [encoder setDepthBias:slopeScale:clamp:] + [encoder setDepthClipMode:]. When
+// disabled the (0,0,0) bias is a Metal no-op, so a non-shadow pipeline behaves
+// byte-identically to the pre-Wave-4a path. Declared here (ahead of the builder
+// declarations) so both the free-function out-param and the pipeline-state
+// object can name the same type.
+// ---------------------------------------------------------------------------
+struct MetalDepthBiasState
+{
+    bool             enable     { false };
+    float            constant   { 0.0F };
+    float            slope      { 0.0F };
+    float            clamp      { 0.0F };
+    MTLDepthClipMode clip_mode  { MTLDepthClipModeClip };
+};
+
+// ---------------------------------------------------------------------------
 // MetalSwapchainObj — CAMetalLayer-backed swapchain.
 //
 // Sprint-1 contract:
@@ -260,6 +282,10 @@ public:
     [[nodiscard]] MTLPixelFormat pixel_format() const noexcept { return pixel_format_; }
     [[nodiscard]] std::uint32_t width() const noexcept { return width_; }
     [[nodiscard]] std::uint32_t height() const noexcept { return height_; }
+    // M-HDR-EDR (Wave 4a): true when the swapchain was created for an HDR colour
+    // space (wantsExtendedDynamicRange enabled). Lets the device / present path
+    // report the EDR state back to callers (Vulkan/D3D12 parity).
+    [[nodiscard]] bool is_hdr() const noexcept { return is_hdr_; }
 
 private:
     CAMetalLayer*       layer_ { nil };
@@ -268,6 +294,7 @@ private:
     std::uint32_t       width_ { 0 };
     std::uint32_t       height_ { 0 };
     MTLPixelFormat      pixel_format_ { MTLPixelFormatBGRA8Unorm_sRGB };
+    bool                is_hdr_ { false };
 };
 
 // ---------------------------------------------------------------------------
@@ -343,6 +370,7 @@ build_metal_graphics_pipeline(id<MTLDevice> device,
                               MTLPrimitiveType* primitive_out,
                               MTLCullMode* cull_out,
                               MTLWinding* winding_out,
+                              MetalDepthBiasState* depth_bias_out,
                               std::string* error_out,
                               id<MTLBinaryArchive> archive = nil) noexcept;
 
@@ -380,6 +408,7 @@ build_metal_mesh_pipeline(id<MTLDevice> device,
                           id<MTLDepthStencilState>* dss_out,
                           MTLCullMode* cull_out,
                           MTLWinding* winding_out,
+                          MetalDepthBiasState* depth_bias_out,
                           std::string* error_out) noexcept API_AVAILABLE(macos(13.0), ios(16.0));
 
 // ---------------------------------------------------------------------------
@@ -732,16 +761,23 @@ private:
 class MetalGraphicsPipelineStateObj final
 {
 public:
+    // M-DEPTHBIAS (Backend-to-100 Wave 4a): depth bias + depth-clip mode ride
+    // on the RENDER ENCODER in Metal (like cull / winding), NOT the PSO. The
+    // builders resolve a MetalDepthBiasState from RasterState; the command
+    // buffer applies it in bind_graphics_pipeline. Default = Metal no-bias /
+    // clip state, byte-identical to the pre-Wave-4a path.
     MetalGraphicsPipelineStateObj(id<MTLRenderPipelineState> pso,
                                   id<MTLDepthStencilState> dss,
                                   MTLPrimitiveType primitive,
                                   MTLCullMode cull,
-                                  MTLWinding winding) noexcept
+                                  MTLWinding winding,
+                                  MetalDepthBiasState depth_bias = {}) noexcept
         : pso_(pso)
         , dss_(dss)
         , primitive_(primitive)
         , cull_(cull)
-        , winding_(winding) {}
+        , winding_(winding)
+        , depth_bias_(depth_bias) {}
     ~MetalGraphicsPipelineStateObj() = default;
     MetalGraphicsPipelineStateObj(const MetalGraphicsPipelineStateObj&) = delete;
     MetalGraphicsPipelineStateObj& operator=(const MetalGraphicsPipelineStateObj&) = delete;
@@ -753,6 +789,7 @@ public:
     [[nodiscard]] MTLPrimitiveType primitive() const noexcept { return primitive_; }
     [[nodiscard]] MTLCullMode      cull() const noexcept { return cull_; }
     [[nodiscard]] MTLWinding       winding() const noexcept { return winding_; }
+    [[nodiscard]] const MetalDepthBiasState& depth_bias() const noexcept { return depth_bias_; }
 
     // M10 (B2 — ADR-20260615): for a MESH-shader pipeline, the threads per
     // object (task) threadgroup + threads per mesh threadgroup, reflected from
@@ -786,6 +823,7 @@ private:
     MTLPrimitiveType           primitive_ { MTLPrimitiveTypeTriangle };
     MTLCullMode                cull_ { MTLCullModeNone };
     MTLWinding                 winding_ { MTLWindingClockwise };
+    MetalDepthBiasState        depth_bias_ {};
     bool                       is_mesh_ { false };
     MTLSize                    object_threads_per_threadgroup_ { 1, 1, 1 };
     MTLSize                    mesh_threads_per_threadgroup_ { 1, 1, 1 };
