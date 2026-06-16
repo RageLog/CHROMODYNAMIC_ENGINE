@@ -422,3 +422,210 @@ TEST(QuestLog, RestoreFromEmptyOrCorruptBufferLeavesLogEmpty)
               RestoreResult::kTruncated);
     EXPECT_TRUE(log.empty());
 }
+
+// ============================================================================
+// BAND-1 branch/failure-path + rollback depth (ADR-20260616 §2.3).
+// ============================================================================
+
+// 12. Every mutation on a non-active quest reports kQuestNotActive and leaves
+//     the quest untouched (no silent progress on an inactive/complete quest).
+TEST(QuestLog, MutationsOnNonActiveQuestRejected)
+{
+    QuestLog log;
+    ASSERT_EQ(log.add_quest(make_relic_quest()), AddResult::kOk);
+
+    // Quest is still kInactive (never activated).
+    EXPECT_EQ(log.progress("main_q01", "find_relic", 1),
+              MutateResult::kQuestNotActive);
+    EXPECT_EQ(log.complete_objective("main_q01", "find_relic"),
+              MutateResult::kQuestNotActive);
+    EXPECT_EQ(log.fail_objective("main_q01", "find_relic"),
+              MutateResult::kQuestNotActive);
+
+    // Objective state unchanged.
+    const Quest* q = log.find_quest("main_q01");
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->status, QuestStatus::kInactive);
+    EXPECT_EQ(q->objectives[0].status, ObjectiveStatus::kInactive);
+    EXPECT_EQ(q->objectives[0].progress, 0);
+}
+
+// 13. Mutating an already-completed/failed objective reports
+//     kObjectiveNotActive (drift detection), not a silent no-op.
+TEST(QuestLog, MutatingFinishedObjectiveReportsNotActive)
+{
+    QuestLog log;
+    ASSERT_EQ(log.add_quest(make_relic_quest()), AddResult::kOk);
+    ASSERT_EQ(log.activate("main_q01"), MutateResult::kOk);
+
+    // Complete one objective, then try to mutate it again.
+    ASSERT_EQ(log.complete_objective("main_q01", "find_relic"),
+              MutateResult::kOk);
+    EXPECT_EQ(log.complete_objective("main_q01", "find_relic"),
+              MutateResult::kObjectiveNotActive);
+    EXPECT_EQ(log.progress("main_q01", "find_relic", 1),
+              MutateResult::kObjectiveNotActive);
+    EXPECT_EQ(log.fail_objective("main_q01", "find_relic"),
+              MutateResult::kObjectiveNotActive);
+
+    // The other objective is still mutable.
+    EXPECT_EQ(log.complete_objective("main_q01", "return_mentor"),
+              MutateResult::kOk);
+    const Quest* q = log.find_quest("main_q01");
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->status, QuestStatus::kComplete);
+}
+
+// 14. Unknown quest / unknown objective produce granular error codes.
+TEST(QuestLog, UnknownQuestAndObjectiveReported)
+{
+    QuestLog log;
+    ASSERT_EQ(log.add_quest(make_relic_quest()), AddResult::kOk);
+    ASSERT_EQ(log.activate("main_q01"), MutateResult::kOk);
+
+    EXPECT_EQ(log.activate("ghost_quest"),     MutateResult::kUnknownQuest);
+    EXPECT_EQ(log.progress("ghost_quest", "x", 1), MutateResult::kUnknownQuest);
+    EXPECT_EQ(log.progress("main_q01", "ghost_obj", 1),
+              MutateResult::kUnknownObjective);
+    EXPECT_EQ(log.complete_objective("main_q01", "ghost_obj"),
+              MutateResult::kUnknownObjective);
+    EXPECT_EQ(log.fail_objective("main_q01", "ghost_obj"),
+              MutateResult::kUnknownObjective);
+}
+
+// 15. Re-activate signals: activate on active/complete/failed quest returns
+//     the matching drift code without mutating state.
+TEST(QuestLog, ReactivateReportsDriftCodes)
+{
+    QuestLog log;
+    ASSERT_EQ(log.add_quest(make_wolf_quest()), AddResult::kOk);
+    ASSERT_EQ(log.activate("side_wolves"), MutateResult::kOk);
+    EXPECT_EQ(log.activate("side_wolves"), MutateResult::kAlreadyActive);
+
+    // Drive it to complete, then activate again.
+    ASSERT_EQ(log.progress("side_wolves", "slay_wolves", 7), MutateResult::kOk);
+    EXPECT_EQ(log.activate("side_wolves"), MutateResult::kAlreadyCompleted);
+
+    // A separate quest taken to failure.
+    ASSERT_EQ(log.add_quest(make_relic_quest()), AddResult::kOk);
+    ASSERT_EQ(log.activate("main_q01"), MutateResult::kOk);
+    ASSERT_EQ(log.fail_objective("main_q01", "find_relic"), MutateResult::kOk);
+    EXPECT_EQ(log.activate("main_q01"), MutateResult::kAlreadyFailed);
+}
+
+// 16. Zero-objective quest auto-completes on activation; a quest authored
+//     with every objective pre-completed also auto-completes.
+TEST(QuestLog, ActivateAutoCompletesVacuousQuests)
+{
+    QuestLog log;
+
+    // (a) zero-objective "discovered location" pseudo-quest.
+    Quest loc;
+    loc.id    = "found_cave";
+    loc.title = "Discovered: Echo Cave";
+    ASSERT_EQ(log.add_quest(std::move(loc)), AddResult::kOk);
+    ASSERT_EQ(log.activate("found_cave"), MutateResult::kOk);
+    {
+        const Quest* q = log.find_quest("found_cave");
+        ASSERT_NE(q, nullptr);
+        EXPECT_EQ(q->status, QuestStatus::kComplete);
+    }
+
+    // (b) all objectives pre-authored kComplete -> auto-complete on activate.
+    Quest pre;
+    pre.id = "prefab_done";
+    {
+        Objective o;
+        o.id     = "step";
+        o.target = 1;
+        o.status = ObjectiveStatus::kComplete;  // pre-completed by author
+        pre.objectives.push_back(std::move(o));
+    }
+    ASSERT_EQ(log.add_quest(std::move(pre)), AddResult::kOk);
+    ASSERT_EQ(log.activate("prefab_done"), MutateResult::kOk);
+    {
+        const Quest* q = log.find_quest("prefab_done");
+        ASSERT_NE(q, nullptr);
+        EXPECT_EQ(q->status, QuestStatus::kComplete);
+    }
+}
+
+// 17. Restore ROLLBACK: a populated log fed a structurally-corrupt buffer
+//     (duplicate quest ids) is wiped to empty (never half-restored), and a
+//     version-mismatch / bad-status-byte buffer likewise leaves it empty.
+TEST(QuestLog, RestoreRollbackLeavesLogEmptyOnStructuralCorruption)
+{
+    // Build a valid two-quest blob, then corrupt it two ways. Because
+    // add_quest forbids duplicate ids, we cannot serialize a duplicate-id
+    // log directly; instead we corrupt the version (kVersionMismatch) and a
+    // status byte (kCorrupt) — both must roll the destination log back to
+    // empty rather than leaving a half-restored state.
+    QuestLog src;
+    ASSERT_EQ(src.add_quest(make_relic_quest()), AddResult::kOk);
+    ASSERT_EQ(src.add_quest(make_wolf_quest()),  AddResult::kOk);
+    const std::vector<std::byte> blob = src.serialize();
+
+    // (a) Version mismatch: byte 4..7 hold the u32 version (==1). Bump it.
+    {
+        std::vector<std::byte> bad_ver = blob;
+        ASSERT_GE(bad_ver.size(), 8U);
+        bad_ver[4] = static_cast<std::byte>(0x09);  // version 9 != 1
+
+        QuestLog dst;
+        ASSERT_EQ(dst.add_quest(make_relic_quest()), AddResult::kOk);
+        EXPECT_FALSE(dst.empty());
+        EXPECT_EQ(dst.restore(std::span<const std::byte> {bad_ver}),
+                  RestoreResult::kVersionMismatch);
+        EXPECT_TRUE(dst.empty());  // rolled back to empty
+    }
+
+    // (b) Corrupt status byte: flip the first quest's status byte to an
+    //     out-of-range value (> kFailed == 3) -> kCorrupt + empty.
+    {
+        // Status byte sits after id+title+description+reward strings. Rather
+        // than hand-compute the offset, build a minimal one-quest blob and
+        // poke its single status byte.
+        QuestLog one;
+        Quest q;
+        q.id = "q";
+        ASSERT_EQ(one.add_quest(std::move(q)), AddResult::kOk);
+        std::vector<std::byte> mini = one.serialize();
+        // header(12) + id-string("q": 4 len + 1) + title(4) + desc(4) +
+        // reward(4) -> status byte at index 12 + 5 + 4 + 4 + 4 = 29.
+        constexpr std::size_t kStatusByte = 12U + 5U + 4U + 4U + 4U;
+        ASSERT_GT(mini.size(), kStatusByte);
+        mini[kStatusByte] = static_cast<std::byte>(0x7F);  // > kFailed
+
+        QuestLog dst;
+        ASSERT_EQ(dst.add_quest(make_relic_quest()), AddResult::kOk);
+        EXPECT_EQ(dst.restore(std::span<const std::byte> {mini}),
+                  RestoreResult::kCorrupt);
+        EXPECT_TRUE(dst.empty());
+    }
+}
+
+// 18. Restore-then-mutate: a restored mid-progress log accepts further
+//     mutations and the auto-complete rule still fires post-restore.
+TEST(QuestLog, RestoredLogContinuesToProgress)
+{
+    QuestLog src;
+    ASSERT_EQ(src.add_quest(make_relic_quest()), AddResult::kOk);
+    ASSERT_EQ(src.activate("main_q01"), MutateResult::kOk);
+    ASSERT_EQ(src.complete_objective("main_q01", "find_relic"),
+              MutateResult::kOk);
+    const std::vector<std::byte> blob = src.serialize();
+
+    QuestLog dst;
+    ASSERT_EQ(dst.restore(std::span<const std::byte> {blob}),
+              RestoreResult::kOk);
+
+    // Quest is still active mid-progress; finishing the last objective
+    // auto-completes it after restore.
+    EXPECT_EQ(dst.active_quests().size(), 1U);
+    ASSERT_EQ(dst.complete_objective("main_q01", "return_mentor"),
+              MutateResult::kOk);
+    const Quest* q = dst.find_quest("main_q01");
+    ASSERT_NE(q, nullptr);
+    EXPECT_EQ(q->status, QuestStatus::kComplete);
+    EXPECT_EQ(dst.completed_quests().size(), 1U);
+}

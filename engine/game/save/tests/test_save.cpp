@@ -32,7 +32,6 @@ using cd::game::save::CloudUploadFn;
 using cd::game::save::MigrationFn;
 using cd::game::save::SaveFormat;
 using cd::game::save::SaveMeta;
-using cd::game::save::SaveSlot;
 using cd::game::save::SaveSystem;
 using cd::game::save::default_storage_root;
 using cd::game::save::is_valid_slot_id;
@@ -233,7 +232,7 @@ TEST(SaveSystem, JsonFormatRoundtripPreservesBytes)
     auto root = make_unique_root("json");
     SaveSystem sys(root);
 
-    const auto blob = bytes_from("{\"hp\":100,\"xp\":4242}");
+    const auto blob = bytes_from(R"({"hp":100,"xp":4242})");
     ASSERT_TRUE(sys.save("slot", blob, SaveFormat::kJson).has_value());
 
     auto loaded = sys.load("slot", SaveFormat::kJson);
@@ -722,6 +721,262 @@ TEST(SaveSystemV2, CloudDownloadFallbackRestoresMissingSlot)
     EXPECT_EQ(download_calls,           1);  // unchanged
     EXPECT_EQ(cached->meta.version,     7U);
     EXPECT_TRUE(sys.slot_exists("cloud_slot"));
+}
+
+// =============================================================================
+// BAND-1 corrupt/partial-file + version-migration forward-compat fuzz
+// (ADR-20260616 §2.4).
+// =============================================================================
+
+// 22) Partial-body fuzz: truncating the body file to N random lengths must
+//     never crash and must return exactly the bytes that remain on disk
+//     (load() trusts the file length, not the stale meta size_bytes).
+TEST(SaveSystemFuzz, PartialBodyTruncationIsDeterministic)
+{
+    auto root = make_unique_root("fuzz_partial");
+    SaveSystem sys(root);
+
+    const auto full = random_bytes(4096, /*seed=*/0xBADF00DU);
+    std::mt19937 rng(0x1234U);
+    for (int trial = 0; trial < 32; ++trial)
+    {
+        ASSERT_TRUE(sys.save("slot", full, SaveFormat::kBinary).has_value());
+        const auto body = sys.slot_directory("slot") / "body.bin";
+
+        // Truncate the body to a random length in [0, full.size()].
+        const auto cut = static_cast<std::uintmax_t>(rng() % (full.size() + 1U));
+        {
+            std::error_code ec;
+            std::filesystem::resize_file(body, cut, ec);
+            ASSERT_FALSE(ec) << "resize_file failed";
+        }
+
+        auto loaded = sys.load("slot");
+        ASSERT_TRUE(loaded.has_value())
+            << "truncated-body load should still succeed (length-based read)";
+        EXPECT_EQ(loaded->size(), static_cast<std::size_t>(cut));
+        if (cut > 0)
+        {
+            EXPECT_EQ(std::memcmp(loaded->data(), full.data(),
+                                  static_cast<std::size_t>(cut)), 0);
+        }
+    }
+}
+
+// 23) Corrupt-meta fuzz: a set of structurally-broken meta.json variants
+//     must each yield kCorruptHeader (never a crash, never a silent OK).
+TEST(SaveSystemFuzz, CorruptMetaVariantsSurfaceCorruptHeader)
+{
+    auto root = make_unique_root("fuzz_corrupt_meta");
+    SaveSystem sys(root);
+    ASSERT_TRUE(sys.save("slot", bytes_from("body"), SaveFormat::kBinary).has_value());
+
+    const std::vector<std::string> broken = {
+        "",                                                // empty file
+        "{",                                               // unterminated object
+        R"({ "id": })",                                    // missing value
+        R"({ "id": "slot" )",                              // missing close + others
+        R"({ "id": "slot", "timestamp": 12 })",           // no "format" (required)
+        R"({ "timestamp": 12, "format": "binary" })",      // no "id" (required)
+        R"({ "id": "slot", "format": "binary" })",        // no "timestamp" (required)
+        "not json at all",                                 // garbage
+        R"({ "id": "slot", "timestamp": 1Z, "format": "binary" })", // bad number
+    };
+
+    const auto meta = sys.slot_directory("slot") / "meta.json";
+    for (const auto& text : broken)
+    {
+        {
+            std::ofstream f(meta, std::ios::trunc | std::ios::binary);
+            ASSERT_TRUE(f.is_open());
+            f << text;
+        }
+        auto loaded = sys.load("slot");
+        ASSERT_FALSE(loaded.has_value()) << "accepted broken meta: '" << text << "'";
+        EXPECT_EQ(loaded.error().code,
+                  static_cast<std::uint32_t>(Code::kCorruptHeader))
+            << "wrong error for: '" << text << "'";
+        // list_slots must tolerate the broken header (skip, not crash).
+        EXPECT_EQ(sys.list_slots().size(), 0U);
+    }
+}
+
+// 24) Forward compatibility: a meta.json carrying UNKNOWN future keys (and
+//     extra whitespace) is read by today's parser — unknown keys are
+//     silently ignored, the known fields survive. This proves a Phase-1
+//     reader can open a file written by a later Phase-N writer.
+TEST(SaveSystemFuzz, ForwardCompatUnknownKeysIgnored)
+{
+    auto root = make_unique_root("fuzz_fwd_compat");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version     = 3U;
+    meta.format      = SaveFormat::kBinary;
+    meta.app_name    = "FwdGame";
+    meta.app_version = "3.1";
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, bytes_from("payload")).has_value());
+
+    // Hand-write a meta.json that adds future keys around the known ones.
+    const auto meta_path = sys.slot_directory("slot") / "meta.json";
+    {
+        std::ofstream f(meta_path, std::ios::trunc | std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({
+  "id": "slot",
+  "future_string_field": "this key did not exist in Phase 1",
+  "label": "Forward",
+  "future_number_field": 99999,
+  "timestamp": 1234567,
+  "format": "binary",
+  "size_bytes": 7,
+  "version": 5,
+  "app_name": "FwdGame",
+  "app_version": "9.9",
+  "payload_size": 7,
+  "another_future_block": 42
+})";
+    }
+
+    auto loaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(loaded.has_value()) << "forward-compat meta must still load";
+    EXPECT_EQ(loaded->meta.version,     5U);
+    EXPECT_EQ(loaded->meta.app_name,    "FwdGame");
+    EXPECT_EQ(loaded->meta.app_version, "9.9");
+    EXPECT_EQ(loaded->meta.format,      SaveFormat::kBinary);
+    EXPECT_EQ(loaded->blob.size(),      7U);
+}
+
+// 25) Migration-chain fuzz: register a chain of N edges (each appends one
+//     byte) and migrate v1 -> vN. The final blob length and version are
+//     deterministic regardless of how far we migrate, and every step is
+//     persisted (a reload reflects the latest version).
+TEST(SaveSystemFuzz, MigrationChainFuzzDeterministicAcrossDepths)
+{
+    std::mt19937 rng(0xC0DEU);
+    for (int trial = 0; trial < 16; ++trial)
+    {
+        auto root = make_unique_root("fuzz_migrate_" + std::to_string(trial));
+        SaveSystem sys(root);
+
+        SaveMeta meta;
+        meta.version  = 1U;
+        meta.format   = SaveFormat::kBinary;
+        meta.app_name = "Chain";
+        const auto base = bytes_from("S");  // 1 byte seed
+        ASSERT_TRUE(sys.save_with_meta("slot", meta, base).has_value());
+
+        // Register edges 1->2->...->(target). Each edge appends one byte.
+        const std::uint32_t target = 2U + (rng() % 30U);  // [2, 31]
+        for (std::uint32_t v = 1U; v < target; ++v)
+        {
+            sys.register_migration(v, v + 1U,
+                [](std::span<const std::byte> in)
+                    -> cd::core::Result<std::vector<std::byte>> {
+                    std::vector<std::byte> out(in.begin(), in.end());
+                    out.push_back(static_cast<std::byte>('x'));
+                    return out;
+                });
+        }
+
+        auto migrated = sys.migrate("slot", target);
+        ASSERT_TRUE(migrated.has_value())
+            << "migrate to v" << target << " failed";
+        EXPECT_EQ(migrated->version, target);
+        // base (1 byte) + (target - 1) appended bytes.
+        EXPECT_EQ(migrated->payload_size,
+                  static_cast<std::uint64_t>(1U + (target - 1U)));
+
+        // Every step persisted: a fresh reload reports the final version.
+        auto reloaded = sys.load_with_meta("slot");
+        ASSERT_TRUE(reloaded.has_value());
+        EXPECT_EQ(reloaded->meta.version, target);
+        EXPECT_EQ(reloaded->blob.size(),
+                  static_cast<std::size_t>(1U + (target - 1U)));
+    }
+}
+
+// 26) Migration mid-chain gap: a missing edge halts the chain with
+//     kMigrationMissing and the on-disk blob is left at the last good step
+//     (resume-from-here semantics), not reverted to v1.
+TEST(SaveSystemFuzz, MigrationStopsAtGapAndPersistsLastGoodStep)
+{
+    auto root = make_unique_root("fuzz_migrate_gap");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Gap";
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, bytes_from("A")).has_value());
+
+    // Edges 1->2 and 2->3 exist, but 3->4 is MISSING.
+    auto appender = [](char tag) {
+        return [tag](std::span<const std::byte> in)
+                   -> cd::core::Result<std::vector<std::byte>> {
+            std::vector<std::byte> out(in.begin(), in.end());
+            out.push_back(static_cast<std::byte>(tag));
+            return out;
+        };
+    };
+    sys.register_migration(1U, 2U, appender('2'));
+    sys.register_migration(2U, 3U, appender('3'));
+
+    auto migrated = sys.migrate("slot", 4U);
+    ASSERT_FALSE(migrated.has_value());
+    EXPECT_EQ(migrated.error().code,
+              static_cast<std::uint32_t>(Code::kMigrationMissing));
+
+    // Disk is at v3 (the last completed step), not v1.
+    auto reloaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->meta.version, 3U);
+    const std::string expected = "A23";
+    ASSERT_EQ(reloaded->blob.size(), expected.size());
+    EXPECT_EQ(std::memcmp(reloaded->blob.data(), expected.data(),
+                          expected.size()), 0);
+}
+
+// 27) A migration function that reports failure halts with kMigrationFailed
+//     and leaves the blob at the last good step (does not corrupt it).
+TEST(SaveSystemFuzz, MigrationFunctionFailureLeavesLastGoodStep)
+{
+    auto root = make_unique_root("fuzz_migrate_fail");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Fail";
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, bytes_from("Z")).has_value());
+
+    sys.register_migration(1U, 2U,
+        [](std::span<const std::byte> in)
+            -> cd::core::Result<std::vector<std::byte>> {
+            std::vector<std::byte> out(in.begin(), in.end());
+            out.push_back(static_cast<std::byte>('2'));
+            return out;
+        });
+    sys.register_migration(2U, 3U,
+        [](std::span<const std::byte>)
+            -> cd::core::Result<std::vector<std::byte>> {
+            return std::unexpected(cd::game::save::save_errors::make(
+                Code::kMigrationFailed, "deliberate"));
+        });
+
+    auto migrated = sys.migrate("slot", 3U);
+    ASSERT_FALSE(migrated.has_value());
+    EXPECT_EQ(migrated.error().code,
+              static_cast<std::uint32_t>(Code::kMigrationFailed));
+
+    // Disk advanced to v2 (the step that succeeded) and stopped.
+    auto reloaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(reloaded.has_value());
+    EXPECT_EQ(reloaded->meta.version, 2U);
+    const std::string expected = "Z2";
+    ASSERT_EQ(reloaded->blob.size(), expected.size());
+    EXPECT_EQ(std::memcmp(reloaded->blob.data(), expected.data(),
+                          expected.size()), 0);
 }
 
 }  // namespace

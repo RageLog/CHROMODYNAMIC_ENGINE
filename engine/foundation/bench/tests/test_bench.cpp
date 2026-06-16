@@ -169,6 +169,42 @@ TEST(BenchTest, JsonArrayConcatenatesEntries)
     EXPECT_NE(arr.find("},{"), std::string::npos);  // two objects joined
 }
 
+// ---------------------------------------------------------------------------
+// BAND-1 edge depth (ADR-20260616 §2.2): min_samples floor honored even when
+// the time budget is zero; a default-constructed Report prints/serialises
+// safely (the "no run yet" path that a HUD may hit before the first bench).
+// ---------------------------------------------------------------------------
+
+TEST(BenchTest, MinSamplesHonoredWhenTimeBudgetZero)
+{
+    // With min_time_ms == 0 the deadline is immediately past, so the loop
+    // must keep going purely on the min_samples floor.
+    cd::bench::Config cfg;
+    cfg.min_samples = 24;
+    cfg.min_time_ms = 0;
+    auto r = cd::bench::run("zero_budget", cheap_body, cfg);
+    EXPECT_GE(r.samples, cfg.min_samples);
+}
+
+TEST(BenchTest, DefaultReportSerialisesWithoutCrash)
+{
+    // A Report that was never produced by run() (all-zero) must still emit
+    // valid CSV/JSON and not divide-by-zero in print().
+    const cd::bench::Report empty;
+    const auto csv = empty.to_csv();
+    std::size_t commas = 0;
+    for (char c : csv)
+        if (c == ',')
+            ++commas;
+    EXPECT_EQ(commas, 8u);  // 9 fields even when empty
+    const auto js = empty.to_json();
+    EXPECT_EQ(js.front(), '{');
+    EXPECT_EQ(js.back(), '}');
+    std::ostringstream oss;
+    empty.print(oss);
+    EXPECT_NE(oss.str().find("[bench]"), std::string::npos);
+}
+
 TEST(BenchTest, MeasurableWorkScalesWithIterationCount)
 {
     // Sanity check: a body that does ~32k integer multiplies must measure

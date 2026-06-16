@@ -29,9 +29,11 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <random>
 #include <span>
 #include <string>
 #include <vector>
@@ -596,6 +598,193 @@ TEST(CutscenePlayerTest, T13_DeeplyNestedPhasesPreserved)
 
     std::error_code ec;
     std::filesystem::remove(tmp_path, ec);
+}
+
+// ============================================================================
+// BAND-1 event-window boundary + dt-straddle fuzz (ADR-20260616 §2.6).
+// ============================================================================
+
+// T14: An event at offset == phase_duration fires exactly when the phase
+//      ends (the half-open window [prev, phase_duration] includes the
+//      upper bound at end-of-phase).
+TEST(CutscenePlayerTest, T14_EventAtPhaseEndBoundaryFires)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase(
+        "cs_t14", 500.0F,
+        {{500.0F, EventKind::kFadeOut}});  // exactly at the boundary
+
+    player.play(cs);
+    // One tick that ends the phase precisely.
+    player.tick(500.0F);
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kFadeOut);
+    EXPECT_TRUE(player.is_complete());
+}
+
+// T15: An event one epsilon below the boundary fires in the tick that
+//      crosses it; an event past the boundary (clamped out) never fires.
+TEST(CutscenePlayerTest, T15_NearBoundaryAndPastBoundaryEvents)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase(
+        "cs_t15", 1000.0F,
+        {{999.0F, EventKind::kPlaySound},   // just below end -> fires
+         {1500.0F, EventKind::kCameraMove}}); // beyond duration -> never fires
+
+    player.play(cs);
+    player.tick(1000.0F);  // consume the whole phase in one tick
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kPlaySound);
+    EXPECT_TRUE(player.is_complete());
+}
+
+// T16: A negative-offset event is silently skipped (lower bound is >= 0
+//      at phase start).
+TEST(CutscenePlayerTest, T16_NegativeOffsetEventSkipped)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase(
+        "cs_t16", 500.0F,
+        {{-10.0F, EventKind::kSetFlag},     // negative -> skipped
+         {100.0F, EventKind::kFadeIn}});    // valid -> fires
+
+    player.play(cs);
+    player.tick(200.0F);
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kFadeIn);
+}
+
+// T17: In-phase event ordering follows authoring order when multiple events
+//      fall in the same tick window (matches documented contract).
+TEST(CutscenePlayerTest, T17_EventOrderWithinWindowIsAuthoringOrder)
+{
+    CutscenePlayer player;
+    Cutscene cs;
+    cs.cutscene_id = "cs_t17";
+    cs.can_skip    = true;
+    CutscenePhase ph;
+    ph.phase_id    = "p0";
+    ph.duration_ms = 1000.0F;
+    // Authoring order deliberately NOT ascending by offset.
+    auto add = [&](float off, EventKind k) {
+        CutsceneEvent e; e.offset_ms = off; e.kind = k; ph.events.push_back(e);
+    };
+    add(300.0F, EventKind::kCameraMove);   // authored 1st
+    add(100.0F, EventKind::kPlaySound);    // authored 2nd
+    add(200.0F, EventKind::kFadeIn);       // authored 3rd
+    cs.phases.push_back(std::move(ph));
+
+    player.play(cs);
+    player.tick(400.0F);  // window (0,400] captures all three at once
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 3U);
+    // Order == authoring order, NOT offset order.
+    EXPECT_EQ(fired[0].kind, EventKind::kCameraMove);
+    EXPECT_EQ(fired[1].kind, EventKind::kPlaySound);
+    EXPECT_EQ(fired[2].kind, EventKind::kFadeIn);
+}
+
+// T18: dt-straddle fuzz — feeding the SAME total time as one big tick vs.
+//      many small random ticks must fire the EXACT same set of events
+//      (each exactly once, no double-fire, no drop across the boundary).
+TEST(CutscenePlayerTest, T18_DtStraddleFuzzManySmallEqualsOneBig)
+{
+    // Three phases, several events spread across boundaries.
+    auto build = [] {
+        Cutscene cs;
+        cs.cutscene_id = "cs_t18";
+        cs.can_skip    = true;
+        auto phase = [](const std::string& id, float dur,
+                        std::vector<std::pair<float, EventKind>> evs) {
+            CutscenePhase p;
+            p.phase_id = id; p.duration_ms = dur;
+            for (auto& [o, k] : evs) {
+                CutsceneEvent e; e.offset_ms = o; e.kind = k; p.events.push_back(e);
+            }
+            return p;
+        };
+        cs.phases.push_back(phase("a", 100.0F,
+            {{0.0F, EventKind::kFadeIn}, {50.0F, EventKind::kPlaySound},
+             {100.0F, EventKind::kCameraMove}}));
+        cs.phases.push_back(phase("b", 250.0F,
+            {{1.0F, EventKind::kCharacterTalk}, {249.0F, EventKind::kSpawnEntity}}));
+        cs.phases.push_back(phase("c", 80.0F,
+            {{40.0F, EventKind::kDespawnEntity}, {80.0F, EventKind::kFadeOut}}));
+        return cs;
+    };
+
+    const float total = 100.0F + 250.0F + 80.0F;  // sum of all durations
+
+    // Reference run: one big tick.
+    std::vector<EventKind> big;
+    {
+        CutscenePlayer player;
+        player.play(build());
+        player.tick(total + 1.0F);  // a hair past the end
+        for (const auto& e : player.events_fired_this_tick())
+            big.push_back(e.kind);
+        EXPECT_TRUE(player.is_complete());
+    }
+
+    // Fuzz: drive with many small random ticks summing to >= total. Collect
+    // every fired event across all ticks.
+    std::mt19937 rng(0x5EED1U);
+    for (int trial = 0; trial < 24; ++trial)
+    {
+        CutscenePlayer player;
+        player.play(build());
+        std::vector<EventKind> small;
+        float elapsed = 0.0F;
+        // Step until complete; cap iterations defensively.
+        for (int step = 0; step < 100000 && !player.is_complete(); ++step)
+        {
+            const float dt = 0.5F + static_cast<float>(rng() % 70U);  // [0.5,69.5]
+            elapsed += dt;
+            player.tick(dt);
+            for (const auto& e : player.events_fired_this_tick())
+                small.push_back(e.kind);
+        }
+        EXPECT_TRUE(player.is_complete()) << "trial " << trial;
+        // Same multiset AND same overall order as the one-big-tick run.
+        ASSERT_EQ(small.size(), big.size()) << "trial " << trial
+            << " elapsed=" << elapsed;
+        for (std::size_t i = 0; i < big.size(); ++i)
+            EXPECT_EQ(small[i], big[i]) << "trial " << trial << " idx " << i;
+    }
+}
+
+// T19: A single tick that straddles a phase boundary fires the trailing
+//      event of phase N and the leading event of phase N+1 in one tick,
+//      in phase order, each exactly once.
+TEST(CutscenePlayerTest, T19_SingleTickStraddlesBoundaryFiresBothPhases)
+{
+    CutscenePlayer player;
+    Cutscene cs;
+    cs.cutscene_id = "cs_t19";
+    cs.can_skip    = true;
+    auto phase = [](const std::string& id, float dur, float off, EventKind k) {
+        CutscenePhase p; p.phase_id = id; p.duration_ms = dur;
+        CutsceneEvent e; e.offset_ms = off; e.kind = k; p.events.push_back(e);
+        return p;
+    };
+    cs.phases.push_back(phase("p0", 100.0F, 90.0F, EventKind::kFadeOut));  // trailing
+    cs.phases.push_back(phase("p1", 100.0F, 10.0F, EventKind::kFadeIn));   // leading
+    player.play(cs);
+
+    // Park at 80 ms in p0, then one tick of 40 ms -> crosses 90 (p0) AND
+    // 100 (boundary) into p1 reaching offset 20 (>10 in p1).
+    player.tick(80.0F);
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+    player.tick(40.0F);
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 2U);
+    EXPECT_EQ(fired[0].kind, EventKind::kFadeOut);  // phase 0 trailing first
+    EXPECT_EQ(fired[1].kind, EventKind::kFadeIn);   // phase 1 leading second
+    EXPECT_EQ(player.current_phase_index(), 1U);
 }
 
 }  // namespace cd::game::cutscene_player::tests

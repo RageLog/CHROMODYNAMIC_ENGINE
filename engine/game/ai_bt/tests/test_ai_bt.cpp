@@ -312,4 +312,201 @@ TEST(BehaviorTree, RepeaterForeverYields)
     EXPECT_EQ(bb.get_int("ticks"), 3);
 }
 
+// ---------------------------------------------------------------------------
+// BAND-1 running-state + abort + decorator/threshold edge depth
+// (ADR-20260616 §2.5).
+// ---------------------------------------------------------------------------
+
+// A leaf whose result is driven by a captured Status pointer, so a test can
+// flip its behaviour between ticks.
+[[nodiscard]] std::unique_ptr<Node> gated_leaf(const Status* gate)
+{
+    return make_leaf([gate](Blackboard&) { return *gate; });
+}
+
+// 13) Parallel exact success-threshold boundary: with success_threshold==2
+//     two successes (others running) flips it to kSuccess; one short stays
+//     kRunning.
+TEST(BehaviorTree, ParallelExactSuccessThresholdBoundary)
+{
+    Status g0 = Status::kSuccess;
+    Status g1 = Status::kRunning;
+    Status g2 = Status::kRunning;
+
+    auto par = std::make_unique<ParallelNode>(/*success=*/2, /*failure=*/3);
+    par->add_child(gated_leaf(&g0));
+    par->add_child(gated_leaf(&g1));
+    par->add_child(gated_leaf(&g2));
+
+    Blackboard bb;
+    EXPECT_EQ(par->tick(bb), Status::kRunning);  // 1 success < 2
+
+    g1 = Status::kSuccess;                        // now 2 successes
+    EXPECT_EQ(par->tick(bb), Status::kSuccess);
+}
+
+// 14) Parallel exact failure-threshold boundary: failure_threshold==2 needs
+//     two failures to abort; one failure (others running) stays kRunning.
+TEST(BehaviorTree, ParallelExactFailureThresholdBoundary)
+{
+    Status g0 = Status::kFailure;
+    Status g1 = Status::kRunning;
+    Status g2 = Status::kRunning;
+
+    auto par = std::make_unique<ParallelNode>(/*success=*/3, /*failure=*/2);
+    par->add_child(gated_leaf(&g0));
+    par->add_child(gated_leaf(&g1));
+    par->add_child(gated_leaf(&g2));
+
+    Blackboard bb;
+    EXPECT_EQ(par->tick(bb), Status::kRunning);  // 1 failure < 2
+
+    g1 = Status::kFailure;                        // now 2 failures
+    EXPECT_EQ(par->tick(bb), Status::kFailure);
+}
+
+// 15) Empty Parallel is vacuously successful (Colledanchise & Ögren).
+TEST(BehaviorTree, EmptyParallelIsVacuouslySuccessful)
+{
+    ParallelNode par;
+    Blackboard bb;
+    EXPECT_EQ(par.tick(bb), Status::kSuccess);
+}
+
+// 16) Reset ABORTS an in-flight running branch: a Sequence parked on a
+//     running child, when reset(), drops its cursor so the next tick
+//     restarts from child 0 (the running grandchild's state is cleared).
+TEST(BehaviorTree, ResetAbortsInFlightSequence)
+{
+    Status gate = Status::kRunning;
+
+    auto seq = std::make_unique<SequenceNode>();
+    seq->add_child(counter_leaf("first"));   // succeeds each entry
+    seq->add_child(gated_leaf(&gate));        // parks the sequence
+
+    Blackboard bb;
+    EXPECT_EQ(seq->tick(bb), Status::kRunning);
+    EXPECT_EQ(bb.get_int("first"), 1);
+
+    // Abort: reset drops the cursor. The next tick re-enters child 0.
+    // (*seq).reset() disambiguates Node::reset from unique_ptr::reset —
+    // matches CompositeNode's own `(*c).reset()` convention.)
+    (*seq).reset();
+    gate = Status::kSuccess;  // let the second child finish this time
+    EXPECT_EQ(seq->tick(bb), Status::kSuccess);
+    EXPECT_EQ(bb.get_int("first"), 2);  // child 0 re-ticked after abort
+}
+
+// 17) Selector resumes from a running alternative, then a later abort via
+//     reset restarts option scanning from the top.
+TEST(BehaviorTree, SelectorResumeThenResetRestartsScan)
+{
+    Status gate = Status::kRunning;
+
+    auto sel = std::make_unique<SelectorNode>();
+    sel->add_child(fail_leaf());          // always fails -> skipped
+    sel->add_child(gated_leaf(&gate));    // parks here on kRunning
+    sel->add_child(counter_leaf("never_first")); // not reached while parked
+
+    Blackboard bb;
+    EXPECT_EQ(sel->tick(bb), Status::kRunning);
+    EXPECT_FALSE(bb.has("never_first"));
+
+    // Resume: flip the parked child to success.
+    gate = Status::kSuccess;
+    EXPECT_EQ(sel->tick(bb), Status::kSuccess);
+    EXPECT_FALSE(bb.has("never_first"));   // short-circuited before option 3
+}
+
+// 18) Repeater whose child FAILS mid-loop still runs the full count and
+//     propagates the last (failure) result — the loop is a control
+//     construct, not an early-out.
+TEST(BehaviorTree, RepeaterPropagatesFailureAfterFullCount)
+{
+    int calls = 0;
+    auto child = make_leaf([&calls](Blackboard&) {
+        ++calls;
+        return Status::kFailure;
+    });
+    RepeaterNode rep(std::move(child), /*count=*/4);
+
+    Blackboard bb;
+    EXPECT_EQ(rep.tick(bb), Status::kFailure);
+    EXPECT_EQ(calls, 4);  // ran the full count despite each failing
+    EXPECT_EQ(rep.current_iter(), 0U);  // reset for re-entry
+}
+
+// 19) Nested running propagation: Parallel-of-Sequences keeps kRunning
+//     while any branch is mid-sequence, then flips to success once both
+//     branches complete.
+TEST(BehaviorTree, NestedRunningPropagatesThroughComposites)
+{
+    Status inner_gate = Status::kRunning;
+
+    auto inner_seq = std::make_unique<SequenceNode>();
+    inner_seq->add_child(ok_leaf());
+    inner_seq->add_child(gated_leaf(&inner_gate));
+
+    auto par = std::make_unique<ParallelNode>();  // all-success / any-fail
+    par->add_child(ok_leaf());          // completes immediately
+    par->add_child(std::move(inner_seq)); // parked until gate flips
+
+    Blackboard bb;
+    EXPECT_EQ(par->tick(bb), Status::kRunning);  // one branch still running
+
+    inner_gate = Status::kSuccess;
+    EXPECT_EQ(par->tick(bb), Status::kSuccess);
+}
+
+// 20) Decorators with a null child fall back to kFailure rather than
+//     dereferencing a null pointer (defensive contract).
+TEST(BehaviorTree, NullChildDecoratorsReturnFailure)
+{
+    Blackboard bb;
+
+    InverterNode inv(nullptr);
+    EXPECT_EQ(inv.tick(bb), Status::kFailure);
+
+    RepeaterNode rep(nullptr, 3);
+    EXPECT_EQ(rep.tick(bb), Status::kFailure);
+
+    UntilSuccessNode until(nullptr);
+    EXPECT_EQ(until.tick(bb), Status::kFailure);
+}
+
+// 21) UntilSuccess resets its child between failing attempts so a stateful
+//     child re-enters cleanly each retry (no leaked cursor across retries).
+TEST(BehaviorTree, UntilSuccessResetsChildBetweenAttempts)
+{
+    // Child is a Sequence [counter, gated]. On a failing attempt UntilSuccess
+    // resets it, so the counter increments once per *attempt*, proving the
+    // child restarts from cursor 0 each retry.
+    Status gate = Status::kFailure;
+
+    auto inner = std::make_unique<SequenceNode>();
+    inner->add_child(counter_leaf("attempts"));
+    inner->add_child(gated_leaf(&gate));
+
+    UntilSuccessNode until(std::move(inner));
+    Blackboard bb;
+
+    EXPECT_EQ(until.tick(bb), Status::kRunning);  // attempt 1: counter=1, fail
+    EXPECT_EQ(until.tick(bb), Status::kRunning);  // attempt 2: counter=2, fail
+    EXPECT_EQ(bb.get_int("attempts"), 2);
+
+    gate = Status::kSuccess;
+    EXPECT_EQ(until.tick(bb), Status::kSuccess);  // attempt 3: counter=3, win
+    EXPECT_EQ(bb.get_int("attempts"), 3);
+}
+
+// 22) BehaviorTree with no root reports kFailure and still publishes dt.
+TEST(BehaviorTree, NoRootTickReturnsFailureButPublishesDt)
+{
+    BehaviorTree tree;  // no root
+    Blackboard bb;
+    constexpr float kDt = 0.02F;
+    EXPECT_EQ(tree.tick(bb, kDt), Status::kFailure);
+    EXPECT_FLOAT_EQ(bb.get_float("dt"), kDt);
+}
+
 }  // namespace

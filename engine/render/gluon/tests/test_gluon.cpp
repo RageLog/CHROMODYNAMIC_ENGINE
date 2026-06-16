@@ -6,14 +6,20 @@
 // Pattern: Arrange / Act / Assert. GPU-free — glslang compiles to SPIR-V
 // in-process; tests SKIP when the engine is built without glslang.
 // =============================================================================
+#include <cd/shader/CachedCompiler.hpp>
 #include <cd/shader/Compiler.hpp>
 #include <cd/gluon/ModuleRegistry.hpp>
 #include <cd/gluon/VariantDomain.hpp>
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -775,6 +781,311 @@ TEST(VariantDomain, DefinesSerialiseAlphabetically)
     EXPECT_EQ(defines[0].value, 1u);
     EXPECT_EQ(defines[1].value, 0u);
     EXPECT_EQ(defines[2].value, 3u);
+}
+
+// ---- BAND-1 untested-module entry-point coverage (ADR-20260616 §2.7) -------
+//
+// Four modules had no DEDICATED entry-point test (only the indirect
+// EveryModuleCompilesStandalone pass): cone_atten, cotangent_frame,
+// light_atten, ltc_polygon. Pin each entry point by calling it through the
+// resolver so a signature regression fails here, not silently downstream.
+
+// light_atten.glsl: Frostbite windowed inverse-square distance attenuation.
+TEST(ShaderLibCompile, LightAttenCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/light_atten.glsl>\n"
+        "layout(location = 0) in vec3 v_p;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    float d = length(v_p);\n"
+        "    float a = distance_atten(d, 25.0);\n"
+        "    o = vec4(vec3(a), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// cone_atten.glsl: spot-cone falloff (t^2).
+TEST(ShaderLibCompile, ConeAttenCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/cone_atten.glsl>\n"
+        "layout(location = 0) in vec3 v_l;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 l = normalize(v_l);\n"
+        "    vec3 spot = vec3(0.0, 0.0, -1.0);\n"
+        "    float cos_in  = cos(radians(20.0));\n"
+        "    float cos_out = cos(radians(30.0));\n"
+        "    float a = cone_atten(dot(-l, spot), cos_in, cos_out);\n"
+        "    o = vec4(vec3(a), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// cotangent_frame.glsl: derivative-based TBN (Mikkelsen 2010).
+TEST(ShaderLibCompile, CotangentFrameCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/cotangent_frame.glsl>\n"
+        "layout(location = 0) in vec3 v_p;\n"
+        "layout(location = 1) in vec3 v_n;\n"
+        "layout(location = 2) in vec2 v_uv;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n);\n"
+        "    mat3 tbn = cotangent_frame(n, v_p, v_uv);\n"
+        "    vec3 mapped = normalize(tbn * vec3(0.0, 0.0, 1.0));\n"
+        "    o = vec4(mapped * 0.5 + 0.5, 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// ltc_polygon.glsl: LTC Lambert form-factor (atan2 edge integral).
+TEST(ShaderLibCompile, LtcPolygonCompiles)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const std::string src =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include <cd/gluon/ltc_polygon.glsl>\n"
+        "layout(location = 0) in vec3 v_n;\n"
+        "layout(location = 0) out vec4 o;\n"
+        "void main()\n"
+        "{\n"
+        "    vec3 n = normalize(v_n);\n"
+        "    float d = cd_ltc_polygon_irradiance(n,\n"
+        "        vec3(-1.0,  1.0, 1.0), vec3(1.0,  1.0, 1.0),\n"
+        "        vec3( 1.0, -1.0, 1.0), vec3(-1.0, -1.0, 1.0));\n"
+        "    o = vec4(vec3(d), 1.0);\n"
+        "}\n";
+
+    cd::gluon::ModuleResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source = src;
+    desc.stage = cd::shader::ShaderStage::kFragment;
+    desc.include_resolver = &resolver;
+    const auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value())
+        << (r.has_value() ? "" : std::string(r.error().message));
+    EXPECT_FALSE(r->spirv.empty());
+}
+
+// ---- BAND-1 include-closure cache-key test (ADR-20260616 §2.7) -------------
+//
+// The CENTRAL gluon contract (ADR-20260612 §2.3): editing a shared module
+// must invalidate every cached root that includes it. We drive a CachedCompiler
+// with a MUTABLE in-memory resolver so we can edit a shared module's content
+// between compiles and observe the cache hit/miss transitions.
+
+namespace
+{
+// A resolver whose shared module ("cd/gluon/_band1_shared.glsl") content can
+// be edited at runtime, plus a dependent module ("cd/gluon/_band1_dep.glsl")
+// that #includes the shared one, and an unrelated module.
+class MutableResolver final : public cd::shader::IIncludeResolver
+{
+public:
+    std::string shared_content {
+        "#ifndef CD_BAND1_SHARED\n#define CD_BAND1_SHARED\n"
+        "float band1_shared() { return 1.0; }\n#endif\n" };
+
+    [[nodiscard]] std::optional<Resolved> resolve(
+        std::string_view requested,
+        std::string_view /*requester*/,
+        bool /*system_include*/) override
+    {
+        if (requested == "cd/gluon/_band1_shared.glsl")
+            return Resolved { std::string { requested }, shared_content };
+        if (requested == "cd/gluon/_band1_dep.glsl")
+            return Resolved {
+                std::string { requested },
+                "#ifndef CD_BAND1_DEP\n#define CD_BAND1_DEP\n"
+                "#include <cd/gluon/_band1_shared.glsl>\n"
+                "float band1_dep() { return band1_shared() + 1.0; }\n#endif\n" };
+        if (requested == "cd/gluon/_band1_indep.glsl")
+            return Resolved {
+                std::string { requested },
+                "#ifndef CD_BAND1_INDEP\n#define CD_BAND1_INDEP\n"
+                "float band1_indep() { return 2.0; }\n#endif\n" };
+        return std::nullopt;
+    }
+};
+
+[[nodiscard]] std::filesystem::path make_unique_cache_dir()
+{
+    static std::atomic<std::uint64_t> seq { 0 };
+    const auto n  = seq.fetch_add(1, std::memory_order_relaxed);
+    const auto ts = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto dir = std::filesystem::temp_directory_path() /
+               ("cd_gluon_closure_cache_" + std::to_string(n) + "_" +
+                std::to_string(ts));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    return dir;
+}
+
+[[nodiscard]] std::string dependent_root_src()
+{
+    return "#version 450\n"
+           "#extension GL_GOOGLE_include_directive : enable\n"
+           "#include <cd/gluon/_band1_dep.glsl>\n"
+           "layout(location = 0) out vec4 o;\n"
+           "void main() { o = vec4(band1_dep()); }\n";
+}
+}  // namespace
+
+TEST(ShaderLibClosureCache, EditingSharedModuleInvalidatesDependent)
+{
+    auto inner = cd::shader::make_glslang_compiler();
+    if (inner == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const auto cache_dir = make_unique_cache_dir();
+    cd::shader::CachedCompiler cached(*inner, cache_dir);
+    MutableResolver resolver;
+
+    auto compile_dep = [&]() {
+        const std::string src = dependent_root_src();
+        cd::shader::CompileDesc desc {};
+        desc.source           = src;
+        desc.stage            = cd::shader::ShaderStage::kFragment;
+        desc.source_name      = "band1_dep_root.frag";
+        desc.include_resolver = &resolver;
+        return cached.compile(desc);
+    };
+
+    // 1) First compile: cache MISS + write.
+    {
+        const auto r = compile_dep();
+        ASSERT_TRUE(r.has_value())
+            << (r.has_value() ? "" : std::string(r.error().message));
+        EXPECT_FALSE(r->spirv.empty());
+    }
+    EXPECT_EQ(cached.stats().misses, 1u);
+    EXPECT_EQ(cached.stats().hits,   0u);
+    EXPECT_EQ(cached.stats().writes, 1u);
+
+    // 2) Recompile with the SAME shared content: cache HIT (no new write).
+    {
+        const auto r = compile_dep();
+        ASSERT_TRUE(r.has_value());
+    }
+    EXPECT_EQ(cached.stats().misses, 1u);
+    EXPECT_EQ(cached.stats().hits,   1u);
+    EXPECT_EQ(cached.stats().writes, 1u);
+
+    // 3) EDIT the shared module's content. The dependent root's SOURCE text
+    //    is byte-identical, but its include-CLOSURE changed -> the closure
+    //    hash changes -> the cache key changes -> this MUST be a fresh MISS
+    //    (a stale hit here would be the exact bug closure-hashing prevents).
+    resolver.shared_content =
+        "#ifndef CD_BAND1_SHARED\n#define CD_BAND1_SHARED\n"
+        "float band1_shared() { return 42.0; }\n#endif\n";  // changed body
+    {
+        const auto r = compile_dep();
+        ASSERT_TRUE(r.has_value());
+    }
+    EXPECT_EQ(cached.stats().misses, 2u) << "edited shared module must miss";
+    EXPECT_EQ(cached.stats().hits,   1u);
+    EXPECT_EQ(cached.stats().writes, 2u);
+
+    // 4) Recompile again after the edit: HIT (the new closure is now cached).
+    {
+        const auto r = compile_dep();
+        ASSERT_TRUE(r.has_value());
+    }
+    EXPECT_EQ(cached.stats().misses, 2u);
+    EXPECT_EQ(cached.stats().hits,   2u);
+}
+
+TEST(ShaderLibClosureCache, EditingSharedModuleDoesNotInvalidateUnrelatedRoot)
+{
+    auto inner = cd::shader::make_glslang_compiler();
+    if (inner == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    const auto cache_dir = make_unique_cache_dir();
+    cd::shader::CachedCompiler cached(*inner, cache_dir);
+    MutableResolver resolver;
+
+    // An INDEPENDENT root that includes only _band1_indep (NOT the shared one).
+    auto compile_indep = [&]() {
+        const std::string src =
+            "#version 450\n"
+            "#extension GL_GOOGLE_include_directive : enable\n"
+            "#include <cd/gluon/_band1_indep.glsl>\n"
+            "layout(location = 0) out vec4 o;\n"
+            "void main() { o = vec4(band1_indep()); }\n";
+        cd::shader::CompileDesc desc {};
+        desc.source           = src;
+        desc.stage            = cd::shader::ShaderStage::kFragment;
+        desc.source_name      = "band1_indep_root.frag";
+        desc.include_resolver = &resolver;
+        return cached.compile(desc);
+    };
+
+    ASSERT_TRUE(compile_indep().has_value());
+    EXPECT_EQ(cached.stats().misses, 1u);
+
+    // Editing the SHARED module must NOT affect the independent root's key.
+    resolver.shared_content =
+        "#ifndef CD_BAND1_SHARED\n#define CD_BAND1_SHARED\n"
+        "float band1_shared() { return 7.0; }\n#endif\n";
+    ASSERT_TRUE(compile_indep().has_value());
+    EXPECT_EQ(cached.stats().misses, 1u) << "unrelated root must stay cached";
+    EXPECT_EQ(cached.stats().hits,   1u);
 }
 
 TEST(VariantDomain, PreambleCompilesWithModules)
