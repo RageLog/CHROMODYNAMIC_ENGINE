@@ -14,6 +14,9 @@
 //   * Simplified bicycle model: front axle steers, rear axle drives (or all
 //     four when all wheels have is_driven=true).
 //   * Longitudinal speed integration via semi-implicit Euler.
+//   * Kinematic-bicycle lateral response: yaw_rate = v * tan(delta) / wheelbase
+//     and lateral_accel = v * yaw_rate (linear small-slip; a Pacejka slip-angle
+//     tyre model is deferred — see ADR-20260616-band3-world-scope §2.4).
 //   * Gear selection based on RPM threshold crossing.
 //   * Anti-roll and suspension stiffness influence handled as tuning constants
 //     (not full spring-damper integration — deferred to Sprint-2 + Jolt).
@@ -159,6 +162,18 @@ struct VehicleState
     /// Normalised steer input in use this frame [-1, 1].
     float steer { 0.0F };
 
+    /// Body yaw rate (rad/s) from the kinematic bicycle model. Positive = the
+    /// nose turns toward +steer. Computed as v * tan(delta) / wheelbase, where
+    /// delta is the front-wheel steer angle. Zero at standstill or zero steer.
+    /// This is the linear (small-slip) lateral response; a Pacejka slip-angle
+    /// tyre model is deferred (ADR-20260616-band3-world-scope §2.4).
+    float yaw_rate_rad_s { 0.0F };
+
+    /// Lateral (centripetal) acceleration (m/s^2) in the body frame from the
+    /// same kinematic bicycle model: a_lat = v * yaw_rate = v^2 * tan(delta)/L.
+    /// Useful for tyre-load transfer, camera shake, and grip-limit checks.
+    float lateral_accel_ms2 { 0.0F };
+
     /// True when each wheel is considered in contact with the ground.
     /// Sprint-1: always true (no terrain query yet; set by suspension model).
     bool wheels_grounded[4] { true, true, true, true };
@@ -235,6 +250,16 @@ private:
     /// Advance gear up if RPM > max_rpm; down if RPM < idle_rpm (hysteresis
     /// built in via idle_rpm guard). Returns new gear index.
     [[nodiscard]] uint8_t auto_shift(float rpm, uint8_t current_gear) const noexcept;
+
+    /// Effective wheelbase (m) = front-to-rear axle distance, derived from the
+    /// wheel attachment longitudinal span when available, else from the chassis
+    /// length. Always strictly positive.
+    [[nodiscard]] float wheelbase() const noexcept;
+
+    /// Kinematic-bicycle lateral response for a forward speed `v_ms` (m/s) and
+    /// the current steer input. Writes yaw_rate_rad_s + lateral_accel_ms2 into
+    /// `out`. Linear small-slip model (no Pacejka); deterministic.
+    void compute_lateral(float v_ms, VehicleState& out) const noexcept;
 
     // ---- State -------------------------------------------------------------
 

@@ -320,6 +320,56 @@ TEST(DspFx_Reverb, ResetRestoresDeterminism)
 }
 
 // ---------------------------------------------------------------------------
+// TEST 12 — Reverb: the FDN impulse-response tail stays finite (no NaN/Inf)
+//           AND decays toward silence. This locks the feedback-gain stability
+//           of the RT60-derived comb gains: an unstable network (|g| >= 1 in
+//           any feedback loop) would either blow up or sustain forever. The
+//           existing tests check room-size/dry/reset but none assert that the
+//           tail is bounded and monotone-ish decaying — a real untested branch.
+// ---------------------------------------------------------------------------
+TEST(DspFx_Reverb, ImpulseTailIsFiniteAndDecays)
+{
+    cd::audio::dsp_fx::Reverb reverb;
+    // Large, lively room with low damping is the worst case for stability
+    // (longest RT60 → feedback gains closest to 1).
+    reverb.configure({ .room_size = 0.95F, .damping = 0.1F, .wet_dry_mix = 1.0F });
+
+    // Single unit impulse, then a long run of silence so we observe the tail.
+    constexpr std::size_t kN = 48000;  // ~1 s at 48 kHz
+    std::vector<float> input(kN, 0.0F);
+    input[0] = 1.0F;
+
+    std::vector<float> output(kN, 0.0F);
+    reverb.process(std::span<const float>{ input }, std::span<float>{ output });
+
+    // 1) Every sample must be finite (no runaway / NaN from an unstable loop).
+    for (std::size_t i = 0; i < kN; ++i)
+    {
+        ASSERT_TRUE(std::isfinite(output[i]))
+            << "Reverb output must stay finite at index " << i;
+    }
+
+    // 2) The late tail must carry less energy than the early response — i.e.
+    //    the network is decaying, not sustaining or growing. Compare the RMS
+    //    of an early window against a much later window.
+    auto window_rms = [&](std::size_t begin, std::size_t end) {
+        float sum = 0.0F;
+        for (std::size_t i = begin; i < end && i < output.size(); ++i)
+            sum += output[i] * output[i];
+        const auto n = static_cast<float>(end - begin);
+        return std::sqrt(sum / n);
+    };
+
+    const float early_rms = window_rms(0, 4000);
+    const float late_rms  = window_rms(40000, 44000);
+
+    EXPECT_GT(early_rms, 0.0F) << "Early impulse response must carry energy.";
+    EXPECT_LT(late_rms, early_rms)
+        << "The reverb tail must decay (late energy < early energy): early="
+        << early_rms << " late=" << late_rms;
+}
+
+// ---------------------------------------------------------------------------
 // TEST 9 — LowPass: reset() clears state; fresh run is deterministic
 // ---------------------------------------------------------------------------
 TEST(DspFx_LowPass, ResetRestoresDeterminism)

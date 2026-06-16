@@ -8,8 +8,11 @@
 //   LowPass       — Biquad low-pass filter (direct-form II transposed).
 //   HighPass      — Biquad high-pass filter (same topology).
 //   DelayLine     — Simple integer-sample delay with read/write interface.
-//   Reverb        — Sprint-1 stub: passthrough. Sprint-2 will implement a
-//                   Schroeder comb-filter + allpass network using DelayLine.
+//   Reverb        — Schroeder/Freeverb-style FDN: 4 parallel low-pass feedback
+//                   comb filters (RT60-derived feedback, mutually-prime delays)
+//                   feeding 2 series allpass diffusers, with a wet/dry mix.
+//                   Scalar v1 (no SIMD; SIMD is a perf promote-on-need —
+//                   ADR-20260616-band3-world-scope §2.3).
 //
 // Filter coefficient formulae follow:
 //   [unverified] Robert Bristow-Johnson, "Cookbook formulae for audio EQ

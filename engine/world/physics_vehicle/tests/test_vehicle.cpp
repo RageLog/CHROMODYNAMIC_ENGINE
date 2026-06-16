@@ -249,3 +249,84 @@ TEST(Vehicle, ConfigureResetsState)
     EXPECT_EQ(v.state().gear, 0U)
         << "configure() must reset gear.";
 }
+
+// ---------------------------------------------------------------------------
+// 8. Lateral kinematics: at speed with steer the body develops a yaw rate
+//    and a centripetal lateral acceleration; straight-line driving does not.
+//    Verifies the kinematic-bicycle term (v * tan(delta) / wheelbase).
+// ---------------------------------------------------------------------------
+TEST(Vehicle, SteeringAtSpeedProducesYawAndLateralAccel)
+{
+    Vehicle v;
+    v.configure(make_test_config());
+
+    // Build up speed driving straight first.
+    v.set_input(/*throttle=*/1.0F, 0.0F, /*steer=*/0.0F);
+    for (int i = 0; i < 20; ++i)
+    {
+        v.tick(0.1F);
+    }
+    const float speed = v.state().speed_kph;
+    ASSERT_GT(speed, 0.0F) << "Pre-condition: vehicle must be moving.";
+
+    // Straight-line: yaw rate and lateral acceleration are ~zero.
+    EXPECT_NEAR(v.state().yaw_rate_rad_s, 0.0F, 1e-5F)
+        << "No steer → no yaw rate.";
+    EXPECT_NEAR(v.state().lateral_accel_ms2, 0.0F, 1e-5F)
+        << "No steer → no lateral acceleration.";
+
+    // Now apply right steer; one tick is enough — the term is algebraic.
+    v.set_input(/*throttle=*/1.0F, 0.0F, /*steer=*/1.0F);
+    v.tick(0.1F);
+
+    EXPECT_GT(v.state().yaw_rate_rad_s, 0.0F)
+        << "Right steer at speed must produce a positive yaw rate.";
+    EXPECT_GT(v.state().lateral_accel_ms2, 0.0F)
+        << "Right steer at speed must produce centripetal lateral acceleration.";
+
+    // Cross-check the closed-form kinematic relation a_lat = v * yaw_rate.
+    const float v_ms = v.state().speed_kph / 3.6F;
+    EXPECT_NEAR(v.state().lateral_accel_ms2,
+                v_ms * v.state().yaw_rate_rad_s, 1e-3F)
+        << "lateral_accel must equal v * yaw_rate (kinematic bicycle).";
+}
+
+// ---------------------------------------------------------------------------
+// 9. Lateral kinematics are sign-symmetric (left steer mirrors right steer at
+//    the same speed) and yaw rate scales with speed (faster ⇒ more yaw for the
+//    same steer angle — the v factor in v*tan(delta)/L).
+// ---------------------------------------------------------------------------
+TEST(Vehicle, LateralIsSignSymmetricAndScalesWithSpeed)
+{
+    // Drive to a given speed, then apply `steer` for one tick and read state.
+    auto state_after_steer = [](int spin_ticks, float steer) {
+        Vehicle v;
+        v.configure(make_test_config());
+        v.set_input(1.0F, 0.0F, 0.0F);
+        for (int i = 0; i < spin_ticks; ++i)
+        {
+            v.tick(0.1F);
+        }
+        v.set_input(1.0F, 0.0F, steer);
+        v.tick(0.1F);
+        return v.state();
+    };
+
+    // Sign symmetry: same speed, opposite steer → opposite yaw + lateral accel.
+    const auto right = state_after_steer(20, +1.0F);
+    const auto left  = state_after_steer(20, -1.0F);
+
+    EXPECT_NEAR(right.yaw_rate_rad_s, -left.yaw_rate_rad_s, 1e-4F)
+        << "Left/right yaw rates must be opposite for symmetric steer.";
+    EXPECT_NEAR(right.lateral_accel_ms2, -left.lateral_accel_ms2, 1e-3F)
+        << "Left/right lateral accelerations must be opposite.";
+
+    // Speed scaling: at higher speed the same steer angle yields a larger yaw
+    // rate (the linear v factor in the kinematic-bicycle relation).
+    const auto slow = state_after_steer(5,  +1.0F);
+    const auto fast = state_after_steer(40, +1.0F);
+    ASSERT_GT(fast.speed_kph, slow.speed_kph)
+        << "Pre-condition: the 'fast' run must be travelling faster.";
+    EXPECT_GT(fast.yaw_rate_rad_s, slow.yaw_rate_rad_s)
+        << "Higher speed must produce a larger yaw rate for the same steer.";
+}

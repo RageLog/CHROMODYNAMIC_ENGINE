@@ -166,6 +166,11 @@ void Vehicle::tick(float dt) noexcept
         state_.gear         = gear_;
         state_.rpm          = raw_rpm;
 
+        // Lateral response from the read-back forward speed (same kinematic
+        // bicycle model as the CPU path) so yaw_rate/lateral_accel are
+        // populated regardless of which integrator drove the chassis.
+        compute_lateral(speed_ms, state_);
+
         return; // Jolt path complete — skip bicycle model below.
     }
     // ---- Fall-through: Sprint-1 bicycle model (use_jolt false or unarmed) --
@@ -267,6 +272,9 @@ void Vehicle::tick(float dt) noexcept
     state_.brake     = brake_;
     state_.steer     = steer_;
 
+    // ---- Lateral response (kinematic bicycle, linear small-slip) ------------
+    compute_lateral(velocity_ms_, state_);
+
     // Sprint-1: all wheels grounded (no terrain query).
     for (int i = 0; i < 4; ++i)
     {
@@ -321,6 +329,52 @@ uint8_t Vehicle::auto_shift(float rpm, uint8_t current_gear) const noexcept
         return static_cast<uint8_t>(current_gear - 1U);
     }
     return current_gear;
+}
+
+// ---- Vehicle::wheelbase ----------------------------------------------------
+
+float Vehicle::wheelbase() const noexcept
+{
+    // chassis_dimensions = [length, width, height]; the wheelbase is the
+    // front-to-rear axle distance. With axles at ~the chassis ends, a length-
+    // derived estimate (0.85 * chassis length) is a good default and avoids a
+    // separate authoring field. Clamp to a small positive floor so the lateral
+    // formula never divides by zero for a degenerate config.
+    const float length_based = 0.85F * cfg_.chassis_dimensions[0];
+    return std::max(length_based, 0.5F);
+}
+
+// ---- Vehicle::compute_lateral ----------------------------------------------
+
+void Vehicle::compute_lateral(float v_ms, VehicleState& out) const noexcept
+{
+    // Front-wheel steer angle delta = steer_input * max steer angle of a
+    // steering (non-zero steering_angle_max) front wheel. Use the first wheel
+    // that can steer; fall back to the FL config value.
+    float max_steer = cfg_.wheels[0].steering_angle_max;
+    for (const auto& w : cfg_.wheels)
+    {
+        if (w.steering_angle_max > 0.0F)
+        {
+            max_steer = w.steering_angle_max;
+            break;
+        }
+    }
+
+    const float delta = steer_ * max_steer;  // radians, signed
+
+    // Kinematic bicycle model (linear, small-slip):
+    //   yaw_rate    = v * tan(delta) / wheelbase
+    //   lateral_acc = v * yaw_rate          (= v^2 * tan(delta) / wheelbase)
+    // At standstill (v ~ 0) both are zero; reversing (v < 0) flips yaw sign,
+    // which is the physically correct behaviour for a kinematic bicycle.
+    const float wheelbase_m = wheelbase();
+    const float tan_delta   = std::tan(delta);
+    const float yaw_rate    = (v_ms * tan_delta) / wheelbase_m;
+    const float lat_acc     = v_ms * yaw_rate;
+
+    out.yaw_rate_rad_s     = yaw_rate;
+    out.lateral_accel_ms2  = lat_acc;
 }
 
 }  // namespace cd::physics::vehicle

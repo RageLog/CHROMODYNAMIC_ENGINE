@@ -119,8 +119,14 @@ if(_CD_JOLT_FOUND)
   if(TARGET ${_CD_JOLT_TARGET})
     cd_mark_target_system_includes(${_CD_JOLT_TARGET})
   endif()
+
+  # Mirror the active backend define to the test binary (the .cpp keeps it
+  # PRIVATE; the test only needs the selector to cross-check is_stub_backend()
+  # against the build config — see test_jolt_world.cpp BackendSelectionMatches).
+  set(_CD_JOLT_TEST_DEFINE CD_PHYSICS_JOLT_REAL=1)
 else()
   target_compile_definitions(cd_physics_jolt PRIVATE CD_PHYSICS_JOLT_STUB=1)
+  set(_CD_JOLT_TEST_DEFINE CD_PHYSICS_JOLT_STUB=1)
 endif()
 
 if(CD_ENABLE_TESTING)

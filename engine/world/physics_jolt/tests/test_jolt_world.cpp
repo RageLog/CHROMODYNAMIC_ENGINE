@@ -44,6 +44,30 @@ TEST(JoltWorld, FactoryReturnsLiveWorld)
     (void)cd::physics_jolt::is_stub_backend();
 }
 
+// ---- 1b. Backend-selection invariant (build-flag gating, ADR §2.2) ---------
+//
+// The real Jolt backend (CD_PHYSICS_JOLT_REAL) is the DEFAULT configuration:
+// when Jolt resolves via vcpkg/find_package or FetchContent the .cpp compiles
+// JoltWorldReal and is_stub_backend() returns false. When the vendor is absent
+// (network-isolated CI or CD_PHYSICS_JOLT_FORCE_STUB=ON) the Euler stub
+// compiles and is_stub_backend() returns true. We pin whichever path the build
+// selected against its compile definition so a silent mis-gating (e.g. the real
+// path falling back to the stub without anyone noticing) fails on revert.
+TEST(JoltWorld, BackendSelectionMatchesBuildDefinition)
+{
+#if defined(CD_PHYSICS_JOLT_REAL)
+    EXPECT_FALSE(cd::physics_jolt::is_stub_backend())
+        << "CD_PHYSICS_JOLT_REAL is defined → the real Jolt backend MUST be live";
+#elif defined(CD_PHYSICS_JOLT_STUB)
+    EXPECT_TRUE(cd::physics_jolt::is_stub_backend())
+        << "CD_PHYSICS_JOLT_STUB is defined → the Euler stub MUST be live";
+#else
+    // Neither define present: the .cpp falls through to the stub branch.
+    EXPECT_TRUE(cd::physics_jolt::is_stub_backend())
+        << "No backend define → the Euler stub fallback MUST be live";
+#endif
+}
+
 // ---- 2. Static box + dynamic falling ball ----------------------------------
 
 TEST(JoltWorld, StaticBoxAndDynamicBallFallsUnderGravity)

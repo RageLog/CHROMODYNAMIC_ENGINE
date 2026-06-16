@@ -1,8 +1,9 @@
 // =============================================================================
 // CHROMODYNAMIC — cd::net::session_replay tests
 // Phase 600
+// BAND-3 world close-out — +3 edge tests over the real untested load branches.
 //
-// Tests: 7
+// Tests: 10
 //   1. RecordSaveLoadRoundTrip         — record + save + load verifies payload/meta
 //   2. RecordingStoppedRejectsPacket   — record_packet ignored when not recording
 //   3. ReplayReturnsNulloptAtEnd       — next_packet returns nullopt after all consumed
@@ -10,6 +11,9 @@
 //   5. MalformedFileRejected           — load_from_file returns false on bad magic
 //   6. ReplayTimeGatedDelivery         — next_packet respects current_ms threshold
 //   7. EmptyRecordingSaveAndLoad       — zero-packet file round-trips cleanly
+//   8. VersionMismatchRejected         — load rejects a future/unsupported version
+//   9. TruncatedRecordBodyRejected     — count says N but the body is short
+//  10. MissingFileRejected             — load of a non-existent path returns false
 // =============================================================================
 #include <cd/net/session_replay/SessionReplay.hpp>
 #include <gtest/gtest.h>
@@ -302,4 +306,82 @@ TEST(SessionReplay, EmptyRecordingSaveAndLoad)
     EXPECT_FALSE(rep.next_packet(9999.0).has_value());
 
     std::filesystem::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// 8. A file with a correct magic but an unsupported version is rejected
+//    (exercises the `version != kVersion` branch of load_from_file, which
+//    test 5 — bad magic — does NOT reach).
+// ---------------------------------------------------------------------------
+TEST(SessionReplay, VersionMismatchRejected)
+{
+    const std::filesystem::path path = make_temp_path("version");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        // Correct magic "SRPK", but version = 2 (only 1 is supported), count = 0.
+        const std::array<std::uint8_t, 12> bytes {
+            0x53, 0x52, 0x50, 0x4B,  // magic "SRPK"
+            0x02, 0x00, 0x00, 0x00,  // version = 2 (LE) — unsupported
+            0x00, 0x00, 0x00, 0x00   // count = 0
+        };
+        out.write(reinterpret_cast<const char*>(bytes.data()),  // NOLINT
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+
+    Replayer rep;
+    EXPECT_FALSE(rep.load_from_file(path))
+        << "load_from_file must reject an unsupported format version";
+
+    std::filesystem::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// 9. A file whose header claims more records than the body actually contains
+//    is rejected cleanly (no partial/garbage state). This exercises the
+//    mid-record `read_pod` failure path in the per-record loop — the body is
+//    truncated after the count field, so the very first timestamp read fails.
+// ---------------------------------------------------------------------------
+TEST(SessionReplay, TruncatedRecordBodyRejected)
+{
+    const std::filesystem::path path = make_temp_path("truncated");
+
+    {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(out.is_open());
+        // Valid header announcing 3 records, but ZERO record bytes follow.
+        const std::array<std::uint8_t, 12> header {
+            0x53, 0x52, 0x50, 0x4B,  // magic "SRPK"
+            0x01, 0x00, 0x00, 0x00,  // version = 1
+            0x03, 0x00, 0x00, 0x00   // count = 3 — but no record bodies written
+        };
+        out.write(reinterpret_cast<const char*>(header.data()),  // NOLINT
+                  static_cast<std::streamsize>(header.size()));
+    }
+
+    Replayer rep;
+    EXPECT_FALSE(rep.load_from_file(path))
+        << "load_from_file must reject a truncated record body";
+
+    // The Replayer must remain in a clean, empty state after a failed load.
+    EXPECT_EQ(rep.all().size(), 0U);
+    EXPECT_FALSE(rep.next_packet(9999.0).has_value());
+
+    std::filesystem::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// 10. Loading a path that does not exist returns false (the !is_open() guard).
+// ---------------------------------------------------------------------------
+TEST(SessionReplay, MissingFileRejected)
+{
+    const std::filesystem::path path =
+        make_temp_path("does_not_exist_4f2c9a");
+    // Make sure it really is absent.
+    std::filesystem::remove(path);
+
+    Replayer rep;
+    EXPECT_FALSE(rep.load_from_file(path))
+        << "load_from_file must return false for a non-existent path";
 }
