@@ -492,37 +492,33 @@ to_topology_class(PrimitiveTopology t) noexcept
     return MTLCullModeNone;
 }
 
-// FrontFace -> MTLWinding, INVERTED vs the engine descriptor (winding
-// compensation; ADR-20260615-ndc-y-handedness §Karar 3 + Sonuclar, the Metal
-// analog of the D3D12 phase1204 FrontCounterClockwise inversion).
+// FrontFace -> MTLWinding, HONORING the engine descriptor DIRECTLY (same polarity
+// as Vulkan VkFrontFace and the corrected D3D12 FrontCounterClockwise):
+//   kClockwise        -> MTLWindingClockwise
+//   kCounterClockwise -> MTLWindingCounterClockwise
 //
-// The command buffer applies a NEGATIVE-HEIGHT viewport (MetalCommandBuffer.mm
-// set_viewport / begin_render_pass) so Metal's +Y-up framebuffer matches
-// Vulkan's +Y-down pixel-for-pixel. The rasterizer decides front/back facing in
-// WINDOW space (after the viewport transform), so a negative-height viewport
-// flips the sign of the window-space signed area -> it INVERTS the apparent
-// winding the rasterizer sees. The SAME clip-space triangle Vulkan classifies as
-// FRONT therefore reaches the Metal rasterizer with the OPPOSITE winding.
-//
-// To keep engine cull semantics backend-IDENTICAL (a front_face=kClockwise +
-// cull=kBack triangle visible under Vulkan stays visible under Metal),
-// setFrontFacingWinding must be the LOGICAL NEGATION of the geometric mapping,
-// exactly like D3D12 sets FrontCounterClockwise = (kClockwise ? TRUE : FALSE):
-//   kClockwise        -> MTLWindingCounterClockwise
-//   kCounterClockwise -> MTLWindingClockwise
-//
-// The PRE-FIX mapping honoured the descriptor directly (kClockwise ->
-// MTLWindingClockwise) on the stale premise that the viewport flip "cancels out"
-// — true before the negative-height viewport landed (D16/phase1196), a face-cull
-// parity bug after it. This compensation is the Metal half of the cross-backend
-// invariant the D3D12 cull-parity test locks; a Metal cull-parity GPU test is a
-// future strand (ROADMAP_PHASE_2 backend-parity mega-marathon). The inversion is
-// BOUND to the negative-height viewport: if set_viewport ever returns to a
-// positive height, this compensation becomes wrong (documented in the ADR).
+// NO inversion. Rationale (ADR-20260615-ndc-y-handedness §Karar 3, corrected by
+// parity1224's EMPIRICAL RTX-3080 RCA on the D3D12 analog): the command buffer
+// applies a NEGATIVE-HEIGHT viewport (MetalCommandBuffer.mm, originY=y+h, height=-h)
+// so Metal's +Y-up NDC lands the SAME source geometry at BYTE-IDENTICAL window
+// pixels as Vulkan's +Y-down NDC (this is the cross-backend pixel-coverage parity
+// proven 0/255 for D3D12). Because the window pixels are identical, the window-space
+// signed area — and therefore the facing the rasterizer computes — is IDENTICAL to
+// Vulkan. So MTLWinding must match front_face directly; a second flip would
+// MIS-cull. The earlier "the neg-height viewport flips the signed area -> invert"
+// argument (phase1209, mirroring the D3D12 phase1204 inversion) was a hand-derived
+// winding error: it counted the viewport's Y-flip in isolation without the +Y-up-vs
+// -+Y-down NDC difference the flip exists to compensate. parity1224 PROVED on real
+// hardware that the D3D12 inversion mis-culled real engine geometry and removed it;
+// Metal uses the identical negative-height mechanism, so the identical fix applies.
+// Locked on D3D12 by test_backend_pixel_parity::CrossBackendCullFacingRealGeom;
+// the Metal half is verified on Apple hardware by test_metal_face_cull_parity
+// (C-METAL-CULL). BOUND to the negative-height viewport: if set_viewport returns to
+// a positive height, this (and the Vulkan/D3D12 mapping) must be revisited together.
 [[nodiscard]] MTLWinding to_winding(FrontFace f) noexcept
 {
-    return (f == FrontFace::kClockwise) ? MTLWindingCounterClockwise
-                                        : MTLWindingClockwise;
+    return (f == FrontFace::kClockwise) ? MTLWindingClockwise
+                                        : MTLWindingCounterClockwise;
 }
 
 [[nodiscard]] MTLBlendFactor to_blend_factor(BlendFactor f) noexcept

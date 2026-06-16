@@ -34,7 +34,7 @@
 | Readback (image→buffer) | 90 → **~95** | Device-level Metal readback added (Mac-verify). |
 | Pipeline cache | **0 → ~90** | Vulkan + D3D12 + Metal; D3D12 RT/mesh PSO not in the library (noted). |
 | Debug / observability | 85 → **100** | Vulkan debug_group_depth + cross-backend recording_error. |
-| Cross-backend pixel parity | 30 → **~70** | Broadened to alpha/sRGB/MRT (byte-identical Vk==D3D12); Metal arm Mac-gated; raw-clip-space cull-facing parity is a deferred backend finding. |
+| Cross-backend pixel parity | 30 → **~75** | Broadened to alpha/sRGB/MRT (byte-identical Vk==D3D12); Metal arm Mac-gated; cull-facing parity RESOLVED (parity1224: real D3D12 bug fixed — phase1204 FrontCounterClockwise inversion removed — locked by `CrossBackendCullFacingRealGeom`). |
 
 ## C. Engine module groups (broader context — unchanged; this push was RHI-focused)
 
@@ -59,6 +59,6 @@
 
 1. **Metal-on-Mac GPU verification (Wave 5, HARDWARE-gated)** — `CD_RHI_METAL_ENABLED=ON` compile on Apple Clang + run the 10 authored GPU tests + windowed `hello_metal` + the MSAA/stencil/depth-bias/HDR-EDR draft pixel verification + a Metal arm in the cross-backend golden. Needs an Apple-Silicon Mac/runner + Fork-A sign-off. NOT code work — execution of already-authored tests. See `docs/METAL_MAC_TESTING.md`.
 2. **Operator CI actions** (not hardware-impossible, one-time): register the NVIDIA self-hosted runner; activate the standing golden-image gate (lavapipe + RTX 3080); install VK validation layer on the lane.
-3. **Deferred backend finding** (recorded, not a gap): raw-clip-space cull=kBack facing parity between Vulkan and D3D12 under the negative-height-viewport winding inversion — the engine's real geometry renders byte-identically, so this is a narrow investigation, not a regression.
+3. **Cross-backend cull-facing parity — RESOLVED (parity1224, fixed).** The Wave-3d deferred finding was investigated empirically (RTX 3080 + WARP): the same engine geometry — through a real proj matrix + the `prim.vert` `clip.y=-clip.y` convention — was rendered on BOTH backends with byte-identical pixel coverage, and Vulkan vs D3D12 classified the same face with OPPOSITE facing under `cull=kBack`. That was a REAL D3D12 bug (the phase1204 `FrontCounterClockwise` inversion). The inversion was removed (D3D12 now honors `front_face` directly, same polarity as Vulkan); the two backends now agree byte-for-byte on cull facing for both raw-clip and real geometry. Locked by `test_backend_pixel_parity::CrossBackendCullFacingRealGeom` (revert-proof) and the corrected `test_d3d12_face_cull_parity`; chrome golden BYTE-IDENTICAL (Vulkan path untouched). See ADR-20260615-ndc-y-handedness (Karar 3 GUNCELLEME + "Raw-clip vs authored-convention"). No deferral remains.
 
 **⇒ The Backend chapter is at IMPL-100% on all 3 backends (Metal on-paper + structurally reviewed). Vulkan + D3D12 are GPU-verified on this RTX 3080. From here it is bug-fix + maintenance + the Mac-GPU sign-off.**

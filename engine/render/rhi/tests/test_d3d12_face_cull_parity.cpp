@@ -1,48 +1,55 @@
 // =============================================================================
 // CHROMODYNAMIC — engine/render/rhi/tests/test_d3d12_face_cull_parity.cpp
 //
-// STRAND 2 (parity1121): D3D12 FACE-CULL parity under the NEGATIVE-HEIGHT
-// viewport (phase1196).
+// STRAND 2 (parity1121, CORRECTED parity1224): D3D12 FACE-CULL parity under the
+// NEGATIVE-HEIGHT viewport (phase1196).
 //
 // BACKGROUND. The engine authors clip space in the Vulkan +Y-down NDC
 // convention; the reference Vulkan backend uses a positive-height viewport so
 // NDC +Y maps straight to framebuffer-down. D3D12's NDC is +Y-up, so
 // set_viewport maps with a NEGATIVE height (TopLeftY = y+height, Height =
-// -height) to match Vulkan pixel-for-pixel (D16 byte-exact). That Y-axis flip
-// in the NDC->window transform INVERTS the window-space signed area the
-// rasterizer uses for front/back-face determination — so the SAME clip-space
-// triangle arrives at the D3D12 rasterizer with the OPPOSITE apparent winding
-// versus Vulkan. If D3D12_RASTERIZER_DESC::FrontCounterClockwise honored the
-// engine descriptor DIRECTLY (the pre-fix behavior), a triangle the engine
-// intends as FRONT (front_face=kClockwise) would be classified BACK by D3D12
-// and CULLED by cull=kBack — invisible on D3D12, visible on Vulkan. That is a
-// face-cull parity bug. The fix INVERTS FrontCounterClockwise to compensate
-// the viewport flip (D3D12Device.cpp graphics + mesh PSO sites).
+// -height). That makes the D3D12 readback land at the SAME top-left-origin
+// window pixels as Vulkan (D16 byte-exact). Because BOTH rasterizers decide
+// facing from the window-space signed area, and the neg-height viewport has
+// already made those window coordinates identical, D3D12 reproduces Vulkan's
+// front/back classification EXACTLY when FrontCounterClockwise honors the engine
+// descriptor with the same polarity as Vulkan's frontFace (kClockwise ==
+// VK_FRONT_FACE_CLOCKWISE == FrontCounterClockwise=FALSE). NO winding inversion
+// is needed — the neg-height viewport is not a second flip on top of an
+// already-correct facing.
 //
-// WHAT THIS TEST PROVES (real WARP render, no Vulkan device needed — the bug
-// lives entirely on the D3D12 flip side, so an intra-backend invariant pins it
-// and remains stable on hosts without a Vulkan ICD):
+// HISTORY (why this test was rewritten). phase1204 added an INVERSION to
+// FrontCounterClockwise on the hand-derived premise that the neg-height viewport
+// flips the window signed area, and pinned it with this test labeling the raw
+// winding {(0,0.8),(0.8,-0.8),(-0.8,-0.8)} "front-wound". That premise was never
+// cross-checked against the Vulkan reference. parity1224 built the missing
+// CROSS-backend cull-facing test (test_backend_pixel_parity
+// CrossBackendCullFacingRealGeom): it renders the SAME engine-authored geometry
+// (real cd::math::perspective proj + the prim.vert clip.y=-clip.y convention) on
+// BOTH backends with byte-identical pixel coverage and measured that the
+// inversion made D3D12 classify the OPPOSITE face vs Vulkan under cull=kBack.
+// That is the REAL bug; the inversion was removed (D3D12 honors the descriptor
+// directly), and this test's vertex-winding LABELS were corrected: the raw
+// winding above is the BACK face under the engine convention (Vulkan culls it
+// under cull=kBack), and the reversed winding is the FRONT face.
 //
-//   The engine ships front_face = kClockwise as the default precisely so that
-//   back-face culling WORKS for engine-authored geometry. So for ANY triangle:
-//     * cull = kNone  -> visible            (baseline: the triangle covers the
-//                                             centre pixel at all)
+// WHAT THIS TEST PROVES (real WARP render, no Vulkan device needed — an intra-
+// backend invariant that is now consistent with the Vulkan reference, stable on
+// hosts without a Vulkan ICD):
+//
+//   The engine ships front_face = kClockwise as the default so back-face culling
+//   WORKS for engine-authored geometry. For ANY non-degenerate triangle:
+//     * cull = kNone  -> visible            (baseline: covers the centre pixel)
 //     * cull = kBack  -> visible IFF the triangle is FRONT-facing
 //     * cull = kFront -> visible IFF the triangle is BACK-facing
-//   and {kBack culled} XOR {kFront culled} must hold (exactly one of the two
-//   single-sided modes culls a given non-degenerate triangle).
+//   and {kBack culled} XOR {kFront culled} must hold.
 //
-//   We author ONE triangle that is FRONT-facing under the engine convention
-//   and assert: visible under kNone AND kBack, culled under kFront. Then a
-//   REVERSED-winding triangle: visible under kNone AND kFront, culled under
-//   kBack. With the pre-fix (un-compensated) FrontCounterClockwise the kBack /
-//   kFront roles SWAP — the front triangle vanishes under kBack — so this test
-//   FAILS on the bug and PASSES on the fix.
-//
-// The "front-facing under the engine convention" triangle is derived by the
-// SAME logic the engine uses: vertices wound clockwise in the Vulkan-NDC
-// (+Y-down) clip space, which after the neg-height D3D12 viewport flip lands as
-// the front face when FrontCounterClockwise is correctly inverted.
+//   The raw winding {(0,0.8),(0.8,-0.8),(-0.8,-0.8)} (u_reverse=0) is the BACK
+//   face under the engine convention: culled by kBack, visible under kFront.
+//   The reversed winding (u_reverse=1) is the FRONT face: visible under kBack,
+//   culled by kFront. Re-introducing the phase1204 inversion SWAPS the kBack /
+//   kFront roles — this test FAILS on the inversion and PASSES without it, AND
+//   the cross-backend test proves "without it" matches Vulkan byte-for-byte.
 //
 // Real D3D12 backend (WARP if no hardware adapter). GTEST_SKIP when no adapter
 // / no glslang / no dxcompiler.dll. Pattern: Arrange/Act/Assert.
@@ -85,20 +92,22 @@ constexpr std::uint32_t kH = 16;
 
 // A vertex shader that emits a SMALL screen-centred triangle from
 // gl_VertexIndex, with the winding selected by push-constant DWORD 0
-// (u_reverse: 0 = front-wound under the engine convention, 1 = reversed).
+// (u_reverse: 0 = the BACK face under the engine convention, 1 = the FRONT
+// face). Verified empirically against the Vulkan reference (parity1224): the
+// u_reverse=0 winding is culled by cull=kBack on BOTH backends.
 //
 // The three positions span the centre of clip space so the rasterized triangle
-// covers the centre pixel (which we read back). The winding here is authored in
-// the Vulkan-NDC (+Y-down) clip space the engine targets; when u_reverse != 0
-// we swap two vertices to flip the winding.
+// covers the centre pixel (which we read back). The winding is authored in the
+// Vulkan-NDC (+Y-down) clip space the engine targets; when u_reverse != 0 we
+// swap two vertices to flip the winding.
 constexpr const char* kCullVS = R"glsl(
 #version 450
 layout(push_constant) uniform Push { uint u_reverse; } pc;
 void main()
 {
-    // Three clip-space positions forming a centred triangle. v0/v1/v2 wound so
-    // that, in the Vulkan +Y-down NDC the engine authors in, the triangle is
-    // FRONT under front_face = kClockwise (the engine default).
+    // Three clip-space positions forming a centred triangle. As wound below
+    // (u_reverse=0) this is the BACK face under front_face = kClockwise (the
+    // engine default) — Vulkan culls it under cull=kBack; D3D12 matches.
     vec2 verts[3] = vec2[3](
         vec2( 0.0,  0.8),   // top    (NDC +Y is DOWN, so this is screen-bottom)
         vec2( 0.8, -0.8),   // right-up
@@ -315,13 +324,14 @@ read_center_texel(cd::rhi::IDevice& dev, cd::rhi::TextureHandle tex)
     return px.r > 200 && px.g > 200 && px.b > 200;
 }
 
-// The decisive parity assertion. A FRONT-wound (engine convention) triangle
-// must survive cull=kBack and be killed by cull=kFront; a REVERSED triangle
-// the opposite. With the un-compensated FrontCounterClockwise (pre-fix) the
-// neg-height viewport flips the winding the rasterizer sees, swapping the
-// kBack/kFront roles — the front triangle vanishes under kBack and this test
-// FAILS. With the compensating inversion it PASSES, matching Vulkan.
-TEST(D3D12FaceCullParity, FrontFaceSurvivesBackCullUnderNegHeightViewport)
+// The decisive intra-backend invariant, CORRECTED (parity1224) to agree with
+// the Vulkan reference. The raw winding {(0,0.8),(0.8,-0.8),(-0.8,-0.8)}
+// (u_reverse=0) is the BACK face under the engine convention: Vulkan culls it
+// under cull=kBack and the cross-backend test proves D3D12 now matches that
+// byte-for-byte. So this winding must be CULLED by kBack and VISIBLE under
+// kFront. Re-introducing the phase1204 FrontCounterClockwise inversion swaps the
+// kBack/kFront roles and FAILs this test.
+TEST(D3D12FaceCullParity, RawWindingIsBackFaceUnderNegHeightViewport)
 {
     if (!glslang_available())
         GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
@@ -332,34 +342,36 @@ TEST(D3D12FaceCullParity, FrontFaceSurvivesBackCullUnderNegHeightViewport)
 
     bool skip = false;
 
-    // Baseline: with NO cull, the front-wound triangle must cover the centre —
-    // proves the geometry+viewport actually rasterize there (guards a degenerate
-    // / off-screen authoring mistake from silently masking the cull assertions).
-    const bool front_none = triangle_visible(d, cd::rhi::CullMode::kNone, 0u, &skip);
+    // Baseline: with NO cull, the triangle must cover the centre — proves the
+    // geometry+viewport actually rasterize there (guards a degenerate /
+    // off-screen authoring mistake from silently masking the cull assertions).
+    const bool back_none = triangle_visible(d, cd::rhi::CullMode::kNone, 0u, &skip);
     if (skip) GTEST_SKIP() << "dxcompiler.dll unavailable at runtime";
-    EXPECT_TRUE(front_none) << "front-wound triangle must cover the centre pixel under cull=kNone";
+    EXPECT_TRUE(back_none) << "the raw-wound triangle must cover the centre pixel under cull=kNone";
 
-    // FRONT-wound triangle: survives kBack (it IS the front face), culled by kFront.
-    const bool front_back  = triangle_visible(d, cd::rhi::CullMode::kBack,  0u, &skip);
-    const bool front_front = triangle_visible(d, cd::rhi::CullMode::kFront, 0u, &skip);
+    // BACK-facing winding: culled by kBack, survives kFront (matching Vulkan).
+    const bool back_back  = triangle_visible(d, cd::rhi::CullMode::kBack,  0u, &skip);
+    const bool back_front = triangle_visible(d, cd::rhi::CullMode::kFront, 0u, &skip);
     if (skip) GTEST_SKIP() << "dxcompiler.dll unavailable at runtime";
 
-    EXPECT_TRUE(front_back)
-        << "BUG: engine front_face=kClockwise triangle was CULLED by cull=kBack on D3D12 — "
-           "FrontCounterClockwise is not compensated for the neg-height viewport flip "
-           "(this is what Vulkan keeps VISIBLE).";
-    EXPECT_FALSE(front_front)
-        << "a front-facing triangle must be removed by cull=kFront";
+    EXPECT_FALSE(back_back)
+        << "the raw winding is the BACK face under the engine convention (Vulkan "
+           "culls it under cull=kBack) — D3D12 must too. If it is VISIBLE here the "
+           "phase1204 FrontCounterClockwise inversion has been re-introduced, "
+           "diverging D3D12 from the Vulkan reference.";
+    EXPECT_TRUE(back_front)
+        << "a back-facing triangle must survive cull=kFront";
 
     // Exactly one single-sided mode culls a given non-degenerate triangle.
-    EXPECT_NE(front_back, front_front)
+    EXPECT_NE(back_back, back_front)
         << "kBack and kFront must disagree for a non-degenerate triangle";
 }
 
-// Mirror with a REVERSED-wound triangle: it is the BACK face under the engine
-// convention, so kFront keeps it, kBack culls it. Locks the symmetry so a future
-// regression that simply force-sets FrontCounterClockwise can't pass by luck.
-TEST(D3D12FaceCullParity, ReversedTriangleIsBackFaceUnderNegHeightViewport)
+// Mirror with the REVERSED winding: it is the FRONT face under the engine
+// convention, so kBack keeps it and kFront culls it (matching Vulkan). Locks the
+// symmetry so a regression that force-sets FrontCounterClockwise can't pass by
+// luck.
+TEST(D3D12FaceCullParity, ReversedWindingIsFrontFaceUnderNegHeightViewport)
 {
     if (!glslang_available())
         GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
@@ -378,10 +390,11 @@ TEST(D3D12FaceCullParity, ReversedTriangleIsBackFaceUnderNegHeightViewport)
     const bool rev_front = triangle_visible(d, cd::rhi::CullMode::kFront, 1u, &skip);
     if (skip) GTEST_SKIP() << "dxcompiler.dll unavailable at runtime";
 
-    EXPECT_FALSE(rev_back)
-        << "a reversed (back-facing) triangle must be removed by cull=kBack";
-    EXPECT_TRUE(rev_front)
-        << "a reversed (back-facing) triangle must survive cull=kFront";
+    EXPECT_TRUE(rev_back)
+        << "the reversed winding is the FRONT face under the engine convention — "
+           "it must survive cull=kBack (matching Vulkan).";
+    EXPECT_FALSE(rev_front)
+        << "a reversed (front-facing) triangle must be removed by cull=kFront";
     EXPECT_NE(rev_back, rev_front)
         << "kBack and kFront must disagree for a non-degenerate triangle";
 }

@@ -53,15 +53,16 @@ transform sonrasi) imzali alan (signed area) isaretiyle verir. Negatif-yukseklik
 viewport, NDC->window transform'unda Y eksenini tersine cevirir; bu da window-space
 imzali alanin isaretini, dolayisiyla rasterizer'in gordugu winding'i **TERS** cevirir.
 
-Sonuc: AYNI clip-space ucgeni Vulkan'da FRONT siniflanirken, D3D12'ye negatif-yukseklik
-viewport ile ulastiginda **TERS apparent winding** ile gelir. Eger
-`D3D12_RASTERIZER_DESC::FrontCounterClockwise` engine descriptor'unu DOGRUDAN
-onurlandirirsa (phase1196 sonrasi kalan eski davranis), engine'in FRONT olarak
-amacladigi ucgen (`front_face = kClockwise`) D3D12 tarafinda BACK siniflanir ve
-`cull = kBack` ile **culling'e** ugrar — Vulkan'da gorunur, D3D12'de gorunmez.
-Bu bir **face-cull parity bug**'idir. phase1196 yorumu ("D3D12 doesn't Y-flip in
-NDC so we honor the descriptor directly") phase1196 ONCESI dogruydu; negatif-yukseklik
-viewport eklendikten SONRA bayat (stale) ve hatali oldu.
+phase1204 bu mantiktan yola cikip `FrontCounterClockwise`'i terslemisti. Ancak
+**parity1224 ampirik RCA bu cikarimin YANLIS oldugunu gosterdi**: negatif-yukseklik
+viewport zaten window-space piksellerini Vulkan ile bayt-ozdes uretir, ve her iki
+API'nin facing kurali da window-space imzali alana gore tanimlidir. Window
+koordinatlari ozdeslesince facing karari da ozdeslesir — descriptor DOGRUDAN
+onurlandirildiginde (telafisiz). Terslemek IKINCI bir flip ekler ve facing'i Vulkan'a
+gore TERS cevirir: o zaman engine'in FRONT amacladigi ucgen D3D12'de BACK siniflanir
+ve `cull = kBack` altinda culling'e ugrar — Vulkan'da gorunur, D3D12'de gorunmez.
+ASIL **face-cull parity bug** budur (telafi degil). Ayrinti: Karar 3 GUNCELLEME +
+asagidaki "Raw-clip vs authored-convention".
 
 D16 pixel-parity testi bu hatayi yakalayamadi cunku `cull = kNone` kullanir
 (`test_backend_pixel_parity.cpp:460`) — winding-agnostic, kasitli olarak cull
@@ -79,25 +80,52 @@ parity (neg-height winding flip; cull testi YOK)".
    Projeksiyon-matris Y-flip satiri veya per-shader/per-vertex flip DEGIL
    (bkz. Reddedilen alternatifler).
 
-3. **Negatif-yukseklik viewport'unun winding flip'i, D3D12 tarafinda
-   `FrontCounterClockwise`'in engine descriptor'una gore MANTIKSAL OLARAK
-   TERSLENMESI ile telafi edilir** (parity1121 STRAND 2 fix):
+3. **D3D12 `FrontCounterClockwise`, engine descriptor'unu DOGRUDAN (telafisiz)
+   onurlandirir** — Vulkan `frontFace` ile AYNI polariteyle:
 
    ```
-   // D3D12Device.cpp graphics PSO (1635-1653) + mesh-shader PSO (1951-1956)
+   // D3D12Device.cpp graphics PSO + mesh-shader PSO
    rs.FrontCounterClockwise =
-       (desc.raster.front_face == cd::rhi::FrontFace::kClockwise) ? TRUE : FALSE;
+       (desc.raster.front_face == cd::rhi::FrontFace::kCounterClockwise) ? TRUE : FALSE;
    ```
 
-   Yani `kClockwise -> TRUE`, `kCounterClockwise -> FALSE` (flip oncesi
-   eslesmenin mantiksal degili). Boylece Vulkan'in FRONT siniflandirdigi ucgen
-   D3D12'de de FRONT siniflanir; engine cull semantikleri backend-ozdes olur.
+   Yani `kClockwise -> FALSE`, `kCounterClockwise -> TRUE`. Negatif-yukseklik
+   viewport (Karar 2) zaten window piksellerini Vulkan ile bayt-ozdes yapar; her
+   iki rasterizer da facing'i window-space imzali alandan belirledigi icin,
+   window koordinatlari ozdeslesince facing karari da ozdeslesir — IKINCI bir
+   flip GEREKMEZ. Boylece Vulkan'in FRONT siniflandirdigi ucgen D3D12'de de FRONT
+   siniflanir; engine cull semantikleri backend-ozdes olur.
 
-4. **Cull parity bir regresyon ag'i ile kilitlenir**:
-   `engine/render/rhi/tests/test_d3d12_face_cull_parity.cpp` (WARP'ta gercek
-   render): `front_face = kClockwise` ile front-wound bir ucgen `cull = kBack`
-   altinda GORUNUR ve `cull = kFront` altinda CULL'lanir kalir; reversed ucgen
-   tersi. Test bug'da FAIL, fix'te PASS eder (bidirectional ispat — bkz. Sonuclar).
+   > **GUNCELLEME (parity1224):** Bu maddenin ILK hali (phase1204)
+   > `FrontCounterClockwise`'i TERSLEMISTI (`kClockwise -> TRUE`), "negatif-yukseklik
+   > window imzali alani flip'ler, o yuzden telafi gerek" el-cikarimina dayanarak.
+   > O cikarim Vulkan REFERANSI ile hicbir zaman capraz dogrulanmamisti. parity1224
+   > eksik olan CAPRAZ-backend cull-facing testini kurdu
+   > (`test_backend_pixel_parity` `CrossBackendCullFacingRealGeom`) ve ampirik
+   > olarak olctu: AYNI engine-authored geometri (gercek `cd::math::perspective`
+   > proj + `prim.vert` `clip.y = -clip.y` konvansiyonu), BAYT-OZDES piksel kapsami
+   > ile, inversion ACIKKEN D3D12'yi Vulkan'a gore TERS yuz siniflamaya itiyordu
+   > (`cull = kBack` altinda Vulkan'in cull'ladigini D3D12 gosteriyor ve tersi) —
+   > GERCEK bir cull-parity bug. Inversion KALDIRILDI; descriptor dogrudan
+   > onurlandiriliyor ve iki backend facing'de bayt-bayt eslesiyor. Bu, Reddedilen
+   > alternatifler'in disinda kalan, ampirik olarak kanitlanmis dogru telafidir
+   > (bkz. asagidaki "Raw-clip vs authored-convention" aciklamasi).
+
+4. **Cull parity iki test ile kilitlenir**:
+   - **CAPRAZ-backend (asil net):** `test_backend_pixel_parity`
+     `CrossBackendCullFacingRealGeom` — GERCEK engine geometrisi (gercek proj
+     matris + `prim.vert` `clip.y = -clip.y`) Vulkan VE D3D12 uzerinde render
+     edilir; `cull = kNone` goruntuleri bayt-ozdes (ayni piksel kapsami) DOGRULANIR
+     ve `cull = kBack` / `cull = kFront` altinda merkez-piksel facing karari iki
+     backend'de OZDES olmalidir. phase1204 inversion'u geri konursa FAIL eder
+     (revert-proof).
+   - **INTRA-backend (host-stabil):** `test_d3d12_face_cull_parity` (WARP'ta gercek
+     render, Vulkan ICD gerektirmez): ham winding
+     `{(0,0.8),(0.8,-0.8),(-0.8,-0.8)}` engine konvansiyonunda **BACK** yuzdur —
+     `cull = kBack` ile CULL'lanir, `cull = kFront` ile GORUNUR; reversed winding
+     FRONT'tur ve tersi. (parity1224'te bu testin etiketleri duzeltildi: eski hali
+     ham winding'i hatali olarak "front-wound" etiketleyip `kBack`'te gormeyi iddia
+     ediyordu — Vulkan referansiyla celisen, inversion'a bagli yanlis varsayim.)
 
 ## Reddedilen alternatifler
 
@@ -136,36 +164,76 @@ dikey aynalanir ve golden image diff'leri (FLIP/SSIM) yapay olarak basarisiz olu
   artik ayri bir testle (`test_d3d12_face_cull_parity`) kapsanir.
 
 **Olumsuz / dikkat:**
-- `FrontCounterClockwise` eslesmesi negatif-yukseklik viewport'una BAGLI bir
-  invariant'tir. Birisi set_viewport'u pozitif-yukseklige cevirirse (orn. parity'yi
-  baska bir yolla cozmeye kalkarsa) bu telafi YANLIS olur. Bu bagimlilik hem her
-  iki PSO site'indaki yorumda hem bu ADR'de belgelenmistir; `test_d3d12_face_cull_parity`
-  bu invariant'i kilitler (set_viewport degisirse test FAIL eder).
-- Metal tarafi ayni mantigi izlemelidir: negatif-yukseklik flip + winding telafisi.
-  Metal'in `MTLWinding`/`setFrontFacingWinding` ayari D3D12 ile ayni mantikla
-  (descriptor'a gore terslenmis) set edilmelidir; Metal cull parity testi gelecekteki
-  bir strand'a birakildi (ROADMAP_PHASE_2 backend-parity mega-marathon kapsaminda).
+- `FrontCounterClockwise` = descriptor (telafisiz) eslesmesi negatif-yukseklik
+  viewport'una BAGLI bir invariant'tir. Birisi set_viewport'u pozitif-yukseklige
+  cevirirse (orn. parity'yi baska bir yolla cozmeye kalkarsa) bu eslesme YANLIS
+  olur ve bir winding telafisi gerekir. Bu bagimlilik hem her iki PSO site'indaki
+  yorumda hem bu ADR'de belgelenmistir; `CrossBackendCullFacingRealGeom` (capraz)
+  ve `test_d3d12_face_cull_parity` (intra) birlikte bu invariant'i kilitler.
+- Metal tarafi DA AYNI SEKILDE DUZELTILDI (parity1224, ayni commit): Metal de
+  D3D12 ile birebir ayni negatif-yukseklik viewport mekanizmasini kullaniyor
+  (`MetalCommandBuffer.mm` originY=y+h, height=-h), yani ayni RCA gecerli. phase1209
+  Metal `to_winding` INVERSION'u (bu da phase1204 D3D12 inversion'unu aynaliyordu)
+  KALDIRILDI: `MetalPipeline.mm to_winding` artik descriptor'u DOGRUDAN onurlandiriyor
+  (`kClockwise -> MTLWindingClockwise`, terslemeden — Vulkan/duzeltilmis-D3D12 ile ayni
+  polarite). Metal `.mm` Windows'ta gated-off oldugu icin bu Mac derlemesinde dogrulanir;
+  `test_metal_face_cull_parity` (C-METAL-CULL) duzeltilmis beklentiyle (raw winding = BACK,
+  reversed = FRONT) Apple donaniminda kilitler. Yani 3 backend de ayni polarite; ertelenen
+  veya bilinen-yanlis bir winding kalmadi.
 
-**Dogrulama (parity1121 STRAND 2):**
-- `cmake --build --preset ninja-debug` CLEAN.
-- `ctest -R d3d12_face_cull_parity` PASS (2 test); fix temp-revert edildiginde
-  4 assertion FAIL (front ucgen kBack ile cull'lanir, kBack/kFront rolleri swap) —
-  bidirectional regresyon ag'i ispatli.
-- `d3d12_depth_mrt` + `backend_pixel_parity` (D16) + `d3d12_parity_m4` +
-  `backend_parity` PASS (paylasilan D3D12 PSO path'inde regresyon yok).
-- chrome golden (hello_engine --golden-fixture 5) baseline ile BYTE-IDENTICAL
-  (Vulkan default path dokunulmadi).
+### Raw-clip vs authored-convention (parity1224 acikligi)
+
+Wave-3d "deferred finding"i, AYNI **ham clip-space** ucgenin (proj matrissiz,
+dogrudan clip koordinatlariyla yazilmis) iki backend'de `cull = kBack` altinda
+TERS facing aldigini gozledi. Bu cozumlendi ve onemli bir noktayi netlestirir:
+
+- **Rasterizer proj matrisini GORMEZ — yalnizca son clip koordinatlarini gorur.**
+  Bu yuzden "ham clip-space ucgen" ile "gercek geometriden uretilmis ama AYNI clip
+  koordinatlarina dusen ucgen" rasterizer icin OZDESTIR. Dolayisiyla facing farki
+  ham/gercek ayriminA bagli DEGILDI — parity1224 RCA bunu gercek
+  `cd::math::perspective` + `clip.y = -clip.y` yolundan gecen GERCEK geometriyle
+  birebir tekrar uretti (`CrossBackendCullFacingRealGeom`, iki winding, iki cull
+  modu, `cull = kNone` goruntuleri bayt-ozdes).
+- Yani gozlenen fark **authoring konvansiyonu artefakti DEGIL, gercek bir D3D12
+  facing bug'iydi** (phase1204 inversion'u). Inversion kaldirilinca hem ham-clip
+  hem gercek-geometri durumlari iki backend'de BAYT-OZDES facing verir.
+- Sonuc: cull facing icin gecerli sozlesme **"AYNI window pikselleri => AYNI
+  facing karari (ayni `front_face`/`cull_mode` ile)"**; bu, ham veya proj-uretilmis
+  geometri ayrimindan BAGIMSIZDIR. Deferral KAPANDI (bug-fixed + `CrossBackend-
+  CullFacingRealGeom` ile kilitli), askida birakilmadi.
+
+**Dogrulama (parity1224 — RTX 3080 + WARP, ampirik RCA):**
+- `cmake --build --preset ninja-debug` CLEAN (-Werror, 0 yeni clang-tidy).
+- **Ampirik RCA:** AYNI gercek geometri iki backend'de render edildi —
+  `cull = kNone` goruntuleri VK-vs-DX bayt-ozdes (max diff 0/255); inversion ACIKKEN
+  `cull = kBack` altinda VULKAN cull'larken D3D12 gosteriyordu (reverse'te tersi).
+  Inversion KALDIRILINCA iki backend tum durumlarda OZDES (VK back=25/DX back=25 vb.).
+- `ctest -R backend_pixel_parity` PASS — `CrossBackendCullFacingRealGeom` dahil;
+  inversion temp-geri konunca FAIL (revert-proof).
+- `ctest -R d3d12_face_cull_parity` PASS (2 test, etiketler duzeltildi: ham winding
+  = BACK yuz).
+- `d3d12_depth_mrt` + `framegraph_vulkan` + `ddgi_dispatch` + `rhi_caps_conformance`
+  PASS (paylasilan D3D12 PSO path'inde regresyon yok).
+- chrome golden (`hello_engine --golden-fixture 5 --golden-frames 3`) baseline ile
+  BYTE-IDENTICAL (`cmp` ile dogrulandi; Vulkan default path dokunulmadi — fix
+  yalnizca D3D12 PSO mapping'i).
 
 ## Referanslar
 
 - phase1196 — D16 negatif-yukseklik viewport, byte-exact pixel parity.
-- `engine/render/rhi/src/d3d12/D3D12Device.cpp` set_viewport 5127-5148; parallel
-  rebind 4882-4895; graphics PSO FrontCounterClockwise 1635-1653; mesh PSO 1951-1956.
-- `engine/render/rhi/src/vulkan/VulkanDevice.cpp` map_front_face 484-487;
-  rasterization state 1707-1715 / 2063-2071. `VulkanCommandBuffer.cpp:465-476`
-  set_viewport (pozitif yukseklik).
-- `engine/render/rhi/include/cd/rhi/Descriptors.hpp:179-203` RasterState varsayilani.
-- `engine/render/rhi/tests/test_d3d12_face_cull_parity.cpp` — cull parity regresyon ag'i.
-- `engine/render/rhi/tests/test_backend_pixel_parity.cpp:460` — D16 cull=kNone (parity
-  testinin cull'u test ETMEDIGINE dair kanit).
+- phase1204 — ilk (hatali) `FrontCounterClockwise` inversion + bu ADR'nin ilk hali.
+- parity1224 — ampirik capraz-backend RCA; inversion kaldirildi (descriptor dogrudan);
+  `CrossBackendCullFacingRealGeom` testi + `test_d3d12_face_cull_parity` etiket duzeltmesi.
+- `engine/render/rhi/src/d3d12/D3D12Device.cpp` — `set_viewport` neg-height (~6766-6787);
+  parallel-pass rebind neg-height (~6443-6453); graphics PSO `FrontCounterClockwise`
+  (~2040, descriptor dogrudan); mesh-shader PSO (~2415, descriptor dogrudan).
+- `engine/render/rhi/src/vulkan/VulkanDevice.cpp` `map_front_face` (~486-489),
+  rasterization state `frontFace` (~1741 / ~2140); `VulkanCommandBuffer.cpp` set_viewport
+  (~566-577, pozitif yukseklik).
+- `engine/render/rhi/include/cd/rhi/Descriptors.hpp` RasterState varsayilani (`kClockwise`).
+- `engine/render/rhi/tests/test_backend_pixel_parity.cpp` —
+  `CrossBackendCullFacingRealGeom` (capraz-backend cull facing, gercek geometri) +
+  `Vulkan/D3D12CullFacingInvariant` (intra) + D16 `cull=kNone` capstone.
+- `engine/render/rhi/tests/test_d3d12_face_cull_parity.cpp` — intra-backend cull parity
+  ag'i (ham winding = BACK yuz, parity1224 duzeltmesi).
 - ADR-20260615-metal-backend-completion (Metal flip baglami).

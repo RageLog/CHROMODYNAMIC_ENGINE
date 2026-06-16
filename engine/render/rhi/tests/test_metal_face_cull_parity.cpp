@@ -5,31 +5,34 @@
 // negative-height / flipped-viewport convention (phase1209) — the Metal analog
 // of test_d3d12_face_cull_parity.cpp (phase1196).
 //
-// BACKGROUND (mirrors the D3D12 story). The engine authors clip space in the
-// Vulkan +Y-down NDC convention. The reference Vulkan backend uses a
-// positive-height viewport so NDC +Y maps straight to framebuffer-down. Metal's
-// NDC is +Y-up (like D3D12), so the Metal backend maps the viewport with the
-// Y-axis flipped to match Vulkan pixel-for-pixel. That Y flip in the NDC->window
-// transform INVERTS the window-space signed area the rasterizer uses for
-// front/back-face determination — so the SAME clip-space triangle arrives at the
-// Metal rasterizer with the OPPOSITE apparent winding versus Vulkan. If the
-// Metal PSO honored the engine FrontFace DIRECTLY (the pre-fix behavior), a
-// triangle the engine intends as FRONT (front_face=kClockwise) would be
-// classified BACK by Metal and CULLED by cull=kBack — invisible on Metal,
-// visible on Vulkan. That is a face-cull parity bug. The fix INVERTS the
-// MTLWinding the PSO sets to compensate the viewport flip.
+// BACKGROUND (mirrors the D3D12 story, CORRECTED by parity1224). The engine
+// authors clip space in the Vulkan +Y-down NDC convention. Metal's NDC is +Y-up
+// (like D3D12), so the Metal backend applies a NEGATIVE-HEIGHT viewport
+// (MetalCommandBuffer.mm, originY=y+h, height=-h) so the SAME source geometry
+// lands at BYTE-IDENTICAL window pixels as Vulkan's +Y-down NDC + positive
+// viewport. Because the window pixels are identical, the window-space signed
+// area — and therefore the facing the rasterizer computes — is IDENTICAL to
+// Vulkan. So MTLWinding must HONOR front_face DIRECTLY (kClockwise ->
+// MTLWindingClockwise), exactly like Vulkan VkFrontFace and the corrected D3D12
+// FrontCounterClockwise. NO inversion. The earlier phase1209 inversion (mirroring
+// the D3D12 phase1204 inversion) was disproven: parity1224's empirical RTX-3080
+// RCA showed the analogous D3D12 inversion MIS-culled real engine geometry; the
+// inversion was removed on D3D12 and the identical fix applies to Metal (same
+// negative-height mechanism). See MetalPipeline.mm to_winding +
+// ADR-20260615-ndc-y-handedness.
 //
-// WHAT THIS TEST PROVES (intra-backend invariant; no Vulkan device needed —
-// the bug lives entirely on the Metal flip side):
+// WHAT THIS TEST PROVES (Metal cull facing matches the cross-backend convention;
+// run on Apple hardware — C-METAL-CULL):
 //   For the engine default front_face = kClockwise, ANY non-degenerate triangle:
 //     * cull = kNone  -> visible (covers the centre pixel at all)
 //     * cull = kBack  -> visible IFF the triangle is FRONT-facing
 //     * cull = kFront -> visible IFF the triangle is BACK-facing
-//   and {kBack culled} XOR {kFront culled} holds. We render a FRONT-wound
-//   triangle and a REVERSED one through an offscreen pass and read back the
-//   centre texel. With the pre-fix (un-compensated) winding the kBack/kFront
-//   roles SWAP — the front triangle vanishes under kBack — so this FAILS on the
-//   bug and PASSES on the fix.
+//   and {kBack culled} XOR {kFront culled} holds. The raw winding
+//   {(0,0.8),(0.8,-0.8),(-0.8,-0.8)} (u_reverse=0) is the BACK face under the
+//   engine convention (Vulkan culls it under cull=kBack — Metal now matches);
+//   the reversed winding (u_reverse=1) is the FRONT face. Re-introducing the
+//   phase1209 MTLWinding inversion SWAPS the kBack/kFront roles -> this FAILS on
+//   the inversion and PASSES honoring the descriptor directly.
 //
 // PLATFORM GATE (see test_metal_device.cpp for the full rationale): real
 // MTLDevice on Apple; skip-stub everywhere else. GLSL is cross-compiled to MSL
@@ -257,34 +260,37 @@ read_center_texel(cd::rhi::IDevice& dev, cd::rhi::TextureHandle tex)
     return px.r > 200 && px.g > 200 && px.b > 200;
 }
 
-// ---- The decisive parity assertion: front-wound triangle survives kBack -----
-TEST(MetalFaceCullParity, FrontFaceSurvivesBackCullUnderFlippedViewport)
+// ---- The decisive parity assertion: the raw winding is the BACK face ----------
+// (u_reverse=0 = {(0,0.8),(0.8,-0.8),(-0.8,-0.8)} = BACK face under front_face=
+// kClockwise; Vulkan culls it under cull=kBack — Metal now matches honoring the
+// descriptor directly. Re-introducing the phase1209 inversion swaps the roles.)
+TEST(MetalFaceCullParity, RawWindingIsBackFaceUnderFlippedViewport)
 {
     auto dev = make_metal_device_or_null();
     if (dev == nullptr)
         GTEST_SKIP() << "no Metal device on this Mac";
     auto& d = *dev;
 
-    // Baseline: with NO cull the front-wound triangle covers the centre.
+    // Baseline: with NO cull the raw-wound triangle covers the centre.
     EXPECT_TRUE(triangle_visible(d, cd::rhi::CullMode::kNone, 0u))
-        << "front-wound triangle must cover the centre under cull=kNone";
+        << "raw-wound triangle must cover the centre under cull=kNone";
 
-    const bool front_back  = triangle_visible(d, cd::rhi::CullMode::kBack,  0u);
-    const bool front_front = triangle_visible(d, cd::rhi::CullMode::kFront, 0u);
+    const bool back_back  = triangle_visible(d, cd::rhi::CullMode::kBack,  0u);
+    const bool back_front = triangle_visible(d, cd::rhi::CullMode::kFront, 0u);
 
-    EXPECT_TRUE(front_back)
-        << "BUG: engine front_face=kClockwise triangle was CULLED by cull=kBack on "
-           "Metal — MTLWinding is not compensated for the flipped viewport "
-           "(this is what Vulkan keeps VISIBLE).";
-    EXPECT_FALSE(front_front)
-        << "a front-facing triangle must be removed by cull=kFront";
-    EXPECT_NE(front_back, front_front)
+    EXPECT_FALSE(back_back)
+        << "the raw winding is the BACK face (Vulkan convention) — must be CULLED "
+           "by cull=kBack on Metal; if VISIBLE, the phase1209 MTLWinding inversion "
+           "has crept back (it mis-matches the corrected D3D12/Vulkan polarity).";
+    EXPECT_TRUE(back_front)
+        << "a back-facing triangle must survive cull=kFront";
+    EXPECT_NE(back_back, back_front)
         << "kBack and kFront must disagree for a non-degenerate triangle";
 }
 
-// Mirror with a REVERSED-wound triangle (the back face under the engine
-// convention): kFront keeps it, kBack culls it.
-TEST(MetalFaceCullParity, ReversedTriangleIsBackFaceUnderFlippedViewport)
+// Mirror with the REVERSED-wound triangle (the FRONT face under the engine
+// convention): visible under kBack, culled by kFront.
+TEST(MetalFaceCullParity, ReversedWindingIsFrontFaceUnderFlippedViewport)
 {
     auto dev = make_metal_device_or_null();
     if (dev == nullptr)
@@ -297,10 +303,10 @@ TEST(MetalFaceCullParity, ReversedTriangleIsBackFaceUnderFlippedViewport)
     const bool rev_back  = triangle_visible(d, cd::rhi::CullMode::kBack,  1u);
     const bool rev_front = triangle_visible(d, cd::rhi::CullMode::kFront, 1u);
 
-    EXPECT_FALSE(rev_back)
-        << "a reversed (back-facing) triangle must be removed by cull=kBack";
-    EXPECT_TRUE(rev_front)
-        << "a reversed (back-facing) triangle must survive cull=kFront";
+    EXPECT_TRUE(rev_back)
+        << "the reversed winding is the FRONT face — must be VISIBLE under cull=kBack";
+    EXPECT_FALSE(rev_front)
+        << "a front-facing triangle must be removed by cull=kFront";
     EXPECT_NE(rev_back, rev_front)
         << "kBack and kFront must disagree for a non-degenerate triangle";
 }

@@ -2021,24 +2021,34 @@ public:
             // doesn't suppress the entire geometry).
             case cd::rhi::CullMode::kFrontAndBack: rs.CullMode = D3D12_CULL_MODE_NONE; break;
         }
-        // D3D12 "FrontCounterClockwise" — INVERTED vs the engine descriptor to
-        // compensate for the NEGATIVE-HEIGHT viewport flip (phase1196,
-        // set_viewport). The engine authors clip space in the Vulkan +Y-down
-        // NDC convention; D3D12's NDC is +Y-up, so set_viewport maps with a
-        // negative height (TopLeftY = y+height, Height = -height) to match
-        // Vulkan pixel-for-pixel. That Y-axis flip in the NDC->window transform
-        // INVERTS the window-space signed area the rasterizer uses for facing,
-        // so the SAME clip-space triangle that Vulkan classifies as front
-        // arrives at the D3D12 rasterizer with the OPPOSITE apparent winding.
-        // To keep engine cull semantics backend-identical (a front_face=kCW +
-        // cull=kBack triangle visible under Vulkan stays visible under D3D12),
-        // FrontCounterClockwise must therefore be the LOGICAL NEGATION of the
-        // un-flipped mapping: kClockwise -> TRUE, kCounterClockwise -> FALSE.
-        // (Pre-fix this honored the descriptor directly on the stale premise
-        // that "D3D12 doesn't Y-flip in NDC" — true before phase1196, a face-
-        // cull parity bug after it. See ADR-20260615-ndc-y-handedness.)
+        // D3D12 "FrontCounterClockwise" — honor the engine descriptor DIRECTLY,
+        // with NO inversion: kCounterClockwise -> TRUE, kClockwise -> FALSE.
+        //
+        // The negative-height viewport (phase1196, set_viewport: TopLeftY =
+        // y+height, Height = -height) already maps the engine's Vulkan +Y-down
+        // NDC to the SAME top-left-origin window pixels as Vulkan — D16 readback
+        // is byte-identical. Both the Vulkan and the D3D12 rasterizer determine
+        // facing from the window-space signed area; once the neg-height viewport
+        // has made the window coordinates identical, the facing decision is
+        // identical too, PROVIDED FrontCounterClockwise maps the descriptor with
+        // the SAME polarity Vulkan's frontFace uses (kClockwise == clockwise-in-
+        // window == VK_FRONT_FACE_CLOCKWISE == D3D12 FrontCounterClockwise=FALSE).
+        // No second flip is needed; the neg-height viewport is NOT a winding flip
+        // on top of an already-correct facing.
+        //
+        // phase1204 added an INVERSION here on a hand-derived "neg-height flips
+        // the window signed area" argument that was never cross-checked against
+        // the Vulkan reference. Empirical cross-backend RCA (parity1224,
+        // test_backend_pixel_parity CrossBackendCullFacingRealGeom) renders the
+        // SAME engine-authored geometry (real cd::math::perspective proj, no
+        // matrix Y-flip + the prim.vert clip.y=-clip.y convention) on BOTH
+        // backends with byte-identical pixel coverage and shows the inversion
+        // made D3D12 classify the OPPOSITE face vs Vulkan under cull=kBack —
+        // visible-where-Vulkan-culls and vice-versa: a real cull-parity bug.
+        // Honoring the descriptor directly makes the two backends agree exactly.
+        // See ADR-20260615-ndc-y-handedness (Karar 3 + the parity1224 RCA).
         rs.FrontCounterClockwise =
-            (desc.raster.front_face == cd::rhi::FrontFace::kClockwise)
+            (desc.raster.front_face == cd::rhi::FrontFace::kCounterClockwise)
                 ? TRUE : FALSE;
         rs.DepthBias = 0;
         rs.DepthBiasClamp = 0.0F;
@@ -2398,12 +2408,14 @@ public:
             case cd::rhi::CullMode::kBack:  rs.CullMode = D3D12_CULL_MODE_BACK;  break;
             case cd::rhi::CullMode::kFrontAndBack: rs.CullMode = D3D12_CULL_MODE_NONE; break;
         }
-        // FrontCounterClockwise INVERTED vs the descriptor — compensates the
-        // negative-height viewport flip (phase1196) so engine cull semantics
-        // match Vulkan. See the graphics-PSO site above + ADR-20260615 for the
-        // winding-flip derivation. (mesh-shader PSO path.)
+        // FrontCounterClockwise honors the descriptor DIRECTLY (no inversion):
+        // kCounterClockwise -> TRUE, kClockwise -> FALSE. Same polarity as the
+        // Vulkan frontFace; the neg-height viewport (phase1196) already gives
+        // byte-identical window pixels so the facing decision matches Vulkan
+        // without a second flip. See the graphics-PSO site above + ADR-20260615
+        // (parity1224 empirical cross-backend RCA). (mesh-shader PSO path.)
         rs.FrontCounterClockwise =
-            (desc.raster.front_face == cd::rhi::FrontFace::kClockwise) ? TRUE : FALSE;
+            (desc.raster.front_face == cd::rhi::FrontFace::kCounterClockwise) ? TRUE : FALSE;
         rs.DepthClipEnable = TRUE;
         // D1: MSAA rasterization rules when samples > 1.
         rs.MultisampleEnable = (ms_sample_count > 1u) ? TRUE : FALSE;

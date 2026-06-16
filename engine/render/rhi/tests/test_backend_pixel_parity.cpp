@@ -73,6 +73,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -575,21 +576,26 @@ render_scene(cd::rhi::IDevice& dev, bool* skip)
 //   (All three use cull=kNone so they isolate blend / sRGB / MRT.)
 //
 //   INTRA-BACKEND cull-facing invariant (per backend — VulkanCullFacingInvariant
-//   / D3D12CullFacingInvariant): on EACH backend a front-wound triangle is
+//   / D3D12CullFacingInvariant): on EACH backend the front-facing winding is
 //   VISIBLE under cull=kBack (byte-identical to cull=kNone) and CULLED under
-//   cull=kFront. This pins the negative-viewport winding inversion (D3D12) + the
-//   Vulkan front-face convention. NOTE: a CROSS-backend cull=kBack pixel-equality
-//   is intentionally NOT asserted — empirically the two backends classify the
-//   SAME raw clip-space winding with OPPOSITE facing under front_face=kClockwise,
-//   a real backend-facing question recorded as a DEFERRED FINDING in the Wave-3d
-//   report (out of test-authoring scope; not faked green here).
+//   cull=kFront. This pins the Vulkan front-face convention + the D3D12 neg-
+//   height-viewport facing.
+//
+//   CROSS-BACKEND cull-facing parity (CrossBackendCullFacingRealGeom):
+//   RESOLVED (parity1224). The Wave-3d report DEFERRED a finding that the two
+//   backends classified the SAME clip-space winding with OPPOSITE facing under
+//   front_face=kClockwise. The empirical RCA (the new test below) renders REAL
+//   engine geometry through a real proj matrix + the prim.vert clip.y=-clip.y
+//   convention on BOTH backends with byte-identical pixel coverage and showed
+//   the divergence was a REAL bug: the phase1204 D3D12 FrontCounterClockwise
+//   INVERSION. Removing the inversion (D3D12 honors front_face directly) makes
+//   the two backends agree byte-for-byte on facing. The deferral is closed; the
+//   cross-backend test below locks it (and FAILs if the inversion returns).
 // =============================================================================
 
-// The cull dimension is covered separately by the INTRA-backend cull-facing
-// invariant tests (run_cull_invariant) — the cross-backend kinds below use
-// cull=kNone so they exercise blend / sRGB / MRT in isolation without entangling
-// the cull-facing question (which Vulkan and D3D12 currently answer differently
-// for a raw clip-space winding; documented in the Wave-3d report).
+// The cull dimension is covered both INTRA-backend (run_cull_invariant) and
+// CROSS-backend (CrossBackendCullFacingRealGeom, below). The three broadened
+// kinds below use cull=kNone so they exercise blend / sRGB / MRT in isolation.
 enum class BroadenKind { kAlphaBlend, kSrgbTarget, kMrt };
 
 // A centred triangle (inside NDC) that fills the middle of the frame; corners
@@ -1137,23 +1143,16 @@ void run_broaden_parity(BroadenKind kind, const char* name)
 
 // ---- Cull-facing INTRA-backend invariant (per backend) ----------------------
 //
-// The cross-backend pixel-equality the other three scenes assert does NOT hold
-// for a RAW clip-space triangle under cull=kBack: empirically (this host, RTX
-// 3080 + the lavapipe/Vulkan ICD) the Vulkan reference and D3D12 classify the
-// SAME directly-authored clip-space winding with OPPOSITE facing under
-// front_face=kClockwise + the D3D12 negative-height-viewport winding inversion.
-// That is a real backend-facing question (documented as a DEFERRED FINDING in
-// the Wave-3d report) and is OUT of test-authoring scope — faking a cross-backend
-// equality here would be dishonest.
-//
-// What IS true and engine-relevant — and what this test pins — is the
-// INTRA-backend cull invariant on EACH backend (mirrors test_d3d12_face_cull_-
-// parity, now extended to cover the Vulkan reference too):
-//   * the front-wound triangle is VISIBLE under cull=kNone AND cull=kBack, and
-//   * CULLED under cull=kFront,
-// using each backend's own front winding. This proves the negative-viewport
-// winding inversion keeps front geometry visible under back-culling (the
-// property the engine actually depends on), on BOTH backends.
+// Cross-backend cull-facing parity IS now asserted directly, on REAL engine
+// geometry, by CrossBackendCullFacingRealGeom below (parity1224 — it resolved
+// the Wave-3d deferred finding by RCA, fixing the D3D12 FrontCounterClockwise
+// inversion). This per-backend invariant complements it: it pins, on EACH
+// backend independently (so it stays meaningful on hosts without a second
+// device), that for each backend's own front winding:
+//   * the front-facing triangle is VISIBLE under cull=kNone AND cull=kBack, and
+//   * CULLED under cull=kFront.
+// This proves single-sided culling keeps front geometry visible under back-
+// culling (the property the engine depends on) on BOTH backends.
 
 void run_cull_invariant(cd::rhi::IDevice& dev, const char* who)
 {
@@ -1221,6 +1220,231 @@ TEST(BackendPixelParity, D3D12CullFacingInvariant)
     if (dx == nullptr)
         GTEST_SKIP() << "no D3D12 adapter on this host";
     run_cull_invariant(*dx, "D3D12");
+}
+
+// =============================================================================
+// CROSS-BACKEND CULL-FACING PARITY on REAL engine geometry (parity1224).
+//
+// THE test that was missing. The three broadened scenes above and the D16 quad
+// all use cull=kNone, and test_d3d12_face_cull_parity is INTRA-backend only — so
+// NOTHING compared cull FACING across backends. The Wave-3d report deferred a
+// finding that Vulkan and D3D12 classified the SAME clip-space winding with
+// OPPOSITE facing; this test resolves it empirically and locks the resolution.
+//
+// We render REAL engine-style geometry — a world-space triangle fed through a
+// real right-handed perspective projection (cd::math::perspective: m[1][1] =
+// +1/tan, NO matrix Y-flip) followed by the per-shader clip.y = -clip.y flip the
+// engine's prim.vert (PrimShader.hpp:77 / prim.vert.glsl:43) applies — on BOTH
+// the Vulkan reference and D3D12, with front_face=kClockwise (engine default),
+// under cull=kBack AND cull=kFront, for BOTH windings. Because the neg-height
+// D3D12 viewport makes the pixel coverage byte-identical to Vulkan (asserted
+// here too), the front/back facing DECISION must also be identical on both
+// backends. It IS — once the D3D12 backend honors front_face directly (no
+// phase1204 FrontCounterClockwise inversion). Re-introducing the inversion makes
+// D3D12 classify the opposite face and FAILs the EXPECT_EQ below — revert-proof.
+//
+// helper used here + by the diagnostic above. The world triangle is wound CCW
+// (math convention) at reverse=0; reverse=1 swaps two verts to flip it.
+constexpr const char* kRealVS = R"glsl(
+#version 450
+layout(push_constant) uniform Push { mat4 mvp; uint reverse; } pc;
+void main()
+{
+    // A triangle in world XY at z=0, wound CCW in a right-handed world (math
+    // convention) when reverse==0. Camera looks down -Z at it.
+    vec3 w[3] = vec3[3](
+        vec3( 0.0,  0.6, 0.0),
+        vec3(-0.6, -0.6, 0.0),
+        vec3( 0.6, -0.6, 0.0));
+    int i = int(gl_VertexIndex);
+    if (pc.reverse != 0u) { if (i==1) i=2; else if (i==2) i=1; }
+    vec4 clip = pc.mvp * vec4(w[i], 1.0);
+    clip.y = -clip.y;          // engine authoring convention (prim.vert:43)
+    gl_Position = clip;
+}
+)glsl";
+
+[[nodiscard]] std::optional<std::vector<std::uint8_t>>
+render_real_culled(cd::rhi::IDevice& dev, cd::rhi::CullMode cull, bool reverse, bool* skip)
+{
+    const auto vs = make_module(dev, cd::rhi::ShaderStage::kVertex,   kRealVS, skip);
+    const auto fs = make_module(dev, cd::rhi::ShaderStage::kFragment, kCullFS, skip);
+    if (*skip) return std::nullopt;
+    if (!vs.is_valid() || !fs.is_valid()) return std::nullopt;
+
+    cd::rhi::PushConstantRange pcr {};
+    pcr.offset = 0; pcr.size = 80; pcr.stages = cd::rhi::ShaderStage::kAllGraphics;
+    cd::rhi::PipelineLayoutDesc pld {};
+    pld.push_constants = std::span<const cd::rhi::PushConstantRange>(&pcr, 1);
+    const auto layout = *dev.create_pipeline_layout(pld);
+
+    cd::rhi::TextureDesc td {};
+    td.type = cd::rhi::TextureType::k2D; td.format = cd::rhi::Format::kRGBA8Unorm;
+    td.extent = { kW, kH, 1 }; td.mip_levels = 1; td.array_layers = 1;
+    td.usage = cd::rhi::TextureUsage::kColorAttachment |
+               cd::rhi::TextureUsage::kTransferSrc | cd::rhi::TextureUsage::kSampled;
+    const auto color = *dev.create_texture(td);
+    const auto view = make_view(dev, color);
+
+    const std::array<cd::rhi::Format, 1> fmts { cd::rhi::Format::kRGBA8Unorm };
+    cd::rhi::GraphicsPipelineDesc gpd {};
+    gpd.layout = layout; gpd.vertex_shader = vs; gpd.fragment_shader = fs;
+    gpd.topology = cd::rhi::PrimitiveTopology::kTriangleList;
+    gpd.raster.cull = cull; gpd.raster.front_face = cd::rhi::FrontFace::kClockwise;
+    gpd.depth_stencil.depth_test = false; gpd.depth_stencil.depth_write = false;
+    gpd.color_attachment_formats = fmts;
+    const auto pso = *dev.create_graphics_pipeline(gpd);
+
+    // Real RH perspective (NO matrix Y-flip — exactly cd::math::perspective),
+    // camera at world +Z=2 looking down -Z. mvp = P * V, column-major m[col*4+row].
+    const float fovy = 1.0F;             // ~57 deg
+    const float aspect = 1.0F;
+    const float nearz = 0.1F;
+    const float farz = 10.0F;
+    const float tanh = std::tan(fovy * 0.5F);
+    std::array<float, 16> P {};
+    P[0]  = 1.0F / (aspect * tanh);          // m00
+    P[5]  = 1.0F / tanh;                      // m11 (positive — no flip)
+    P[10] = farz / (nearz - farz);            // m22
+    P[11] = -1.0F;                            // m23 (row 3 of col 2)
+    P[14] = (nearz * farz) / (nearz - farz);  // m32 (row 2 of col 3)
+    // View V = translate(0,0,-2): column-major, V[col*4+row], translation in col 3.
+    std::array<float, 16> V {};
+    V[0] = V[5] = V[10] = V[15] = 1.0F;
+    V[14] = -2.0F;                            // col 3, row 2
+    std::array<float, 16> mvp {};
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+        {
+            float s = 0.0F;
+            for (int k = 0; k < 4; ++k)
+                s += P[static_cast<std::size_t>(k) * 4 + static_cast<std::size_t>(r)] *
+                     V[static_cast<std::size_t>(c) * 4 + static_cast<std::size_t>(k)];
+            mvp[static_cast<std::size_t>(c) * 4 + static_cast<std::size_t>(r)] = s;
+        }
+
+    struct RealPush { float mvp[16]; std::uint32_t reverse; std::uint32_t pad[3]; };
+    RealPush push {};
+    for (int i = 0; i < 16; ++i) push.mvp[static_cast<std::size_t>(i)] = mvp[static_cast<std::size_t>(i)];
+    push.reverse = reverse ? 1u : 0u;
+
+    auto cmd = dev.create_command_buffer(cd::rhi::QueueType::kGraphics);
+    cmd->begin();
+    cd::rhi::ColorAttachmentInfo catt {};
+    catt.view = view; catt.load_op = cd::rhi::LoadOp::kClear; catt.store_op = cd::rhi::StoreOp::kStore;
+    catt.clear_color = { .f32 = { 0.10F, 0.50F, 0.20F, 1.0F } };
+    cd::rhi::RenderPassBeginInfo rp {};
+    rp.color_attachments = std::span<const cd::rhi::ColorAttachmentInfo>(&catt, 1);
+    rp.render_area.extent = { kW, kH };
+    cmd->begin_render_pass(rp);
+    cmd->set_viewport({ 0, 0, static_cast<float>(kW), static_cast<float>(kH), 0.0F, 1.0F });
+    cmd->set_scissor(cd::rhi::Rect2D { {}, { kW, kH } });
+    cmd->bind_graphics_pipeline(pso);
+    cmd->push_constants(layout, cd::rhi::ShaderStage::kAllGraphics, 0, sizeof(push), &push);
+    cmd->draw(3, 1, 0, 0);
+    cmd->end_render_pass();
+    cd::rhi::TextureBarrier to_read {};
+    to_read.texture = color; to_read.from = cd::rhi::ResourceState::kColorAttachment;
+    to_read.to = cd::rhi::ResourceState::kShaderResource; to_read.range = { 0, 1, 0, 1 };
+    cmd->barrier({}, std::span<const cd::rhi::TextureBarrier>(&to_read, 1));
+    cmd->end();
+    dev.submit(*cmd);
+    dev.wait_idle();
+
+    constexpr std::uint64_t kBytes = std::uint64_t { kW } * kH * 4u;
+    cd::rhi::BufferDesc rbd {};
+    rbd.size = kBytes; rbd.usage = cd::rhi::BufferUsage::kTransferDst;
+    rbd.memory = cd::rhi::MemoryUsage::kGpuToCpu;
+    const auto rb = *dev.create_buffer(rbd);
+    cd::rhi::IDevice::ImageRegion ir {};
+    ir.width = kW; ir.height = kH; ir.src_state = cd::rhi::ResourceState::kShaderResource;
+    (void)dev.copy_image_to_buffer(color, rb, 0, ir);
+    std::vector<std::byte> raw(static_cast<std::size_t>(kBytes));
+    (void)dev.download_buffer(rb, 0, std::span<std::byte> { raw });
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(kBytes));
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = std::to_integer<std::uint8_t>(raw[i]);
+    dev.destroy_buffer(rb); dev.destroy_graphics_pipeline(pso);
+    dev.destroy_texture_view(view); dev.destroy_texture(color);
+    dev.destroy_pipeline_layout(layout);
+    dev.destroy_shader_module(vs); dev.destroy_shader_module(fs);
+    return out;
+}
+
+// The cross-backend cull-FACING parity test that was missing (parity1224). For
+// REAL engine geometry, both windings, both single-sided cull modes: Vulkan and
+// D3D12 must agree on facing — proven by (1) byte-identical pixel coverage and
+// (2) the centre-pixel visible/culled decision matching across backends.
+TEST(BackendPixelParity, CrossBackendCullFacingRealGeom)
+{
+    if (!glslang_available())
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    auto vk = make_vulkan_device_or_null();
+    if (vk == nullptr)
+        GTEST_SKIP() << "no Vulkan ICD on this host";
+    auto dx = make_d3d12_device_or_null();
+    if (dx == nullptr)
+        GTEST_SKIP() << "no D3D12 adapter on this host";
+
+    bool s = false;
+    // Centre-pixel R: 204 when the triangle drew, 25 when culled/cleared.
+    const auto drew = [](const std::vector<std::uint8_t>& img) {
+        const std::size_t c = (static_cast<std::size_t>(kH / 2) * kW + kW / 2) * 4u;
+        return img[c] > 120;
+    };
+
+    bool saw_back_cull  = false;  // at least one (winding,mode) actually culled
+    bool saw_front_cull = false;
+    for (int rev = 0; rev <= 1; ++rev)
+    {
+        const bool r = (rev != 0);
+        auto vk_n = render_real_culled(*vk, cd::rhi::CullMode::kNone,  r, &s);
+        auto vk_b = render_real_culled(*vk, cd::rhi::CullMode::kBack,  r, &s);
+        auto vk_f = render_real_culled(*vk, cd::rhi::CullMode::kFront, r, &s);
+        auto dx_n = render_real_culled(*dx, cd::rhi::CullMode::kNone,  r, &s);
+        auto dx_b = render_real_culled(*dx, cd::rhi::CullMode::kBack,  r, &s);
+        auto dx_f = render_real_culled(*dx, cd::rhi::CullMode::kFront, r, &s);
+        if (s) GTEST_SKIP() << "dxcompiler.dll unavailable at runtime";
+        ASSERT_TRUE(vk_n && vk_b && vk_f && dx_n && dx_b && dx_f)
+            << "real-geom cull scene failed to render (rev=" << rev << ")";
+
+        // Coverage: the no-cull image must be byte-identical across backends —
+        // proves the triangle lands at the SAME window pixels, so any facing
+        // disagreement is a pure cull-logic divergence, not a geometry one.
+        const FlatDiff dn = flat_diff(*vk_n, *dx_n, 0);
+        EXPECT_EQ(dn.max_diff, 0)
+            << "rev=" << rev << ": cull=kNone images differ across backends ("
+            << dn.max_diff << "/255 at " << dn.wx << "," << dn.wy
+            << ") — geometry coverage is not byte-identical, the facing compare "
+               "below would be confounded.";
+
+        // Baseline: the triangle must actually cover the centre under kNone on
+        // both backends (guards a degenerate/off-screen authoring mistake).
+        ASSERT_TRUE(drew(*vk_n)) << "rev=" << rev << ": Vulkan kNone did not cover centre";
+        ASSERT_TRUE(drew(*dx_n)) << "rev=" << rev << ": D3D12 kNone did not cover centre";
+
+        // THE assertion: facing decision identical across backends, per mode.
+        EXPECT_EQ(drew(*vk_b), drew(*dx_b))
+            << "rev=" << rev << ": cull=kBack FACING differs across backends — "
+               "Vulkan " << (drew(*vk_b) ? "kept" : "culled") << " the triangle, "
+               "D3D12 " << (drew(*dx_b) ? "kept" : "culled") << " it. The D3D12 "
+               "FrontCounterClockwise mapping diverged from the Vulkan reference "
+               "(re-introduced phase1204 inversion?).";
+        EXPECT_EQ(drew(*vk_f), drew(*dx_f))
+            << "rev=" << rev << ": cull=kFront FACING differs across backends.";
+
+        // Single-sided sanity: exactly one of kBack/kFront culls this triangle,
+        // identically on both backends.
+        EXPECT_NE(drew(*vk_b), drew(*vk_f)) << "rev=" << rev << ": Vulkan kBack/kFront agree (no single-sided cull)";
+        EXPECT_NE(drew(*dx_b), drew(*dx_f)) << "rev=" << rev << ": D3D12 kBack/kFront agree (no single-sided cull)";
+
+        if (!drew(*vk_b)) saw_back_cull  = true;
+        if (!drew(*vk_f)) saw_front_cull = true;
+    }
+    // Across the two windings both single-sided modes must have culled at least
+    // once — otherwise the test never exercised real culling (trivially green).
+    EXPECT_TRUE(saw_back_cull)  << "no winding was ever culled by cull=kBack";
+    EXPECT_TRUE(saw_front_cull) << "no winding was ever culled by cull=kFront";
 }
 
 TEST(BackendPixelParity, TrueNonOpaqueAlphaBlend)
