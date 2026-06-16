@@ -144,6 +144,90 @@ TEST(FrameGraphTimeline_TimelineOverlay, DrawEmitsAtLeastOneQuadPerPass)
 }
 
 // ---------------------------------------------------------------------------
+// Test 5b: TimelineOverlay::draw emits the EXACT per-pass draw output for a
+//          known begin/record_pass/end_frame sequence — bar geometry + colour
+//          + merged draw command, inspected on the DrawBatcher with no GPU.
+//          This is the visual-side coverage the lib was missing.
+// ---------------------------------------------------------------------------
+namespace
+{
+// Mirror of TimelineOverlay's internal djb2 hash → pass colour.
+[[nodiscard]] cd::ui::renderer::Color expected_pass_colour(std::string_view name)
+{
+    std::uint32_t h = 5381U;
+    for (const char c : name)
+        h = ((h << 5U) + h) + static_cast<std::uint32_t>(static_cast<unsigned char>(c));
+    return cd::ui::renderer::Color {
+        static_cast<std::uint8_t>(h & 0xFFu),
+        static_cast<std::uint8_t>((h >> 8U) & 0xFFu),
+        static_cast<std::uint8_t>((h >> 16U) & 0xFFu),
+        210U
+    };
+}
+}  // namespace
+
+TEST(FrameGraphTimeline_TimelineOverlay, DrawEmitsExactPerPassOutput)
+{
+    // Feed the Timeline a known sequence, then render its last frame.
+    Timeline tl;
+    tl.begin_frame();
+    tl.record_pass("GBuffer",  0.0, 3.0, 1U);  // bar at window-left
+    tl.record_pass("Lighting", 4.0, 2.0, 2U);  // 4 ms later
+    tl.end_frame();
+
+    const auto passes = tl.last_frame_passes();
+    ASSERT_EQ(passes.size(), 2U);
+
+    cd::ui::renderer::DrawBatcher batcher;
+    batcher.begin_frame();
+
+    const double window_ms = 16.0;
+    TimelineOverlay overlay { window_ms };
+    const Rect bounds { 10.0F, 20.0F, 320.0F, 40.0F };
+    overlay.draw(batcher, passes, bounds);
+
+    // Single lane for all GPU passes: bar_h = 75% height, centred vertically.
+    const float pixels_per_ms = bounds.width / static_cast<float>(window_ms);
+    const float bar_h = bounds.height * 0.75F;
+    const float bar_y = bounds.y + (bounds.height - bar_h) * 0.5F;
+
+    // Exactly 2 quads → 8 vertices, 12 indices, 1 merged solid command.
+    ASSERT_EQ(batcher.vertex_count(), 8U);
+    ASSERT_EQ(batcher.index_count(), 12U);
+    ASSERT_EQ(batcher.command_count(), 1U);
+
+    const auto verts = batcher.vertices();
+
+    // Pass 0 ("GBuffer"): rel_start 0 → bar at bounds.x, vertically centred.
+    EXPECT_FLOAT_EQ(verts[0].pos_x, bounds.x);
+    EXPECT_FLOAT_EQ(verts[0].pos_y, bar_y);
+    EXPECT_FLOAT_EQ(verts[3].pos_y, bar_y + bar_h);  // bottom-left edge
+    const float expected_w0 = 3.0F * pixels_per_ms;  // 3 ms wide
+    EXPECT_FLOAT_EQ(verts[1].pos_x, bounds.x + expected_w0);  // top-right edge
+    const auto c0 = expected_pass_colour("GBuffer");
+    EXPECT_EQ(verts[0].r, c0.r);
+    EXPECT_EQ(verts[0].g, c0.g);
+    EXPECT_EQ(verts[0].b, c0.b);
+    EXPECT_EQ(verts[0].a, c0.a);
+
+    // Pass 1 ("Lighting"): rel_start 4 ms → bar_x offset by 4 * pixels_per_ms.
+    const float expected_x1 = bounds.x + 4.0F * pixels_per_ms;
+    EXPECT_FLOAT_EQ(verts[4].pos_x, expected_x1);
+    EXPECT_FLOAT_EQ(verts[4].pos_y, bar_y);
+    const auto c1 = expected_pass_colour("Lighting");
+    EXPECT_EQ(verts[4].r, c1.r);
+    EXPECT_EQ(verts[4].g, c1.g);
+    EXPECT_EQ(verts[4].b, c1.b);
+
+    // The merged command is a solid (untextured) draw of both bars.
+    const auto cmds = batcher.commands();
+    ASSERT_EQ(cmds.size(), 1U);
+    EXPECT_EQ(cmds[0].variant, cd::ui::renderer::material::kSolid);
+    EXPECT_EQ(cmds[0].index_count, 12U);
+    EXPECT_EQ(cmds[0].texture_slot, 0xFFFFFFFFu);
+}
+
+// ---------------------------------------------------------------------------
 // Test 6: TimelineOverlay::draw with empty passes is a no-op
 // ---------------------------------------------------------------------------
 TEST(FrameGraphTimeline_TimelineOverlay, DrawEmptyPassesNoOp)

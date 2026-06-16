@@ -152,6 +152,78 @@ TEST(PageAllocator, BasicAllocate)
     alloc.deallocate(p);
 }
 
+// Records the rounded mapping length so POSIX munmap(ptr, len) reclaims the
+// reservation instead of leaking it (the former v1 TODO). The length must be
+// the size rounded up to a whole number of pages.
+TEST(PageAllocator, MappingLengthRecordedAndRounded)
+{
+    cd::mem::PageAllocator alloc;
+    const std::size_t ps = cd::mem::PageAllocator::page_size();
+
+    // Request one byte past a page boundary → rounds up to two pages.
+    void* p = alloc.allocate(ps + 1U);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(alloc.mapping_length(p), 2U * ps);
+    EXPECT_EQ(alloc.live_mapping_count(), 1U);
+
+    alloc.deallocate(p);
+    // After free the side-table no longer knows the pointer.
+    EXPECT_EQ(alloc.mapping_length(p), 0U);
+    EXPECT_EQ(alloc.live_mapping_count(), 0U);
+}
+
+// Allocate and free many pages; the live-mapping side-table must balance back
+// to zero (no leak, no length lost) — this is the regression guard for the
+// POSIX munmap length fix.
+TEST(PageAllocator, ManyPagesNoLeak)
+{
+    cd::mem::PageAllocator alloc;
+    constexpr std::size_t kCount = 64;
+
+    std::vector<void*> pages;
+    pages.reserve(kCount);
+    for (std::size_t i = 0; i < kCount; ++i)
+    {
+        void* p = alloc.allocate(4096);
+        ASSERT_NE(p, nullptr) << "page " << i;
+        EXPECT_GT(alloc.mapping_length(p), 0U) << "page " << i;
+        pages.push_back(p);
+    }
+    EXPECT_EQ(alloc.live_mapping_count(), kCount);
+
+    for (void* p : pages)
+    {
+        alloc.deallocate(p);
+    }
+    EXPECT_EQ(alloc.live_mapping_count(), 0U);
+}
+
+// A second deallocate() of the same pointer is a no-op: the length was already
+// erased, so the allocator refuses to unmap an unknown length (no double-free).
+TEST(PageAllocator, DoubleFreeIsNoOp)
+{
+    cd::mem::PageAllocator alloc;
+    void* p = alloc.allocate(4096);
+    ASSERT_NE(p, nullptr);
+
+    alloc.deallocate(p);
+    EXPECT_EQ(alloc.live_mapping_count(), 0U);
+
+    // Second free must not touch the (now-unknown) pointer.
+    alloc.deallocate(p);
+    EXPECT_EQ(alloc.live_mapping_count(), 0U);
+}
+
+// deallocate() of a pointer this allocator never handed out is rejected.
+TEST(PageAllocator, ForeignPointerRejected)
+{
+    cd::mem::PageAllocator alloc;
+    int local = 0;
+    EXPECT_EQ(alloc.mapping_length(&local), 0U);
+    alloc.deallocate(&local);  // must not crash / must not unmap
+    EXPECT_EQ(alloc.live_mapping_count(), 0U);
+}
+
 // ---------- TrackingAllocator ----------------------------------------------
 TEST(TrackingAllocator, StatsRecorded)
 {

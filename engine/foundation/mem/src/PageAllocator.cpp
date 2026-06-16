@@ -15,9 +15,21 @@
 #endif
 
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 namespace cd::mem
 {
+
+// Side-table mapping each live base pointer to the rounded mapping length we
+// passed to the OS. POSIX munmap() requires that exact length; Windows
+// VirtualFree(MEM_RELEASE) ignores it but we still track so the table stays
+// balanced and tests can assert no leak / double-free portably.
+struct PageAllocator::Impl
+{
+    mutable std::mutex mtx;
+    std::unordered_map<const void*, std::size_t> lengths;
+};
 
 namespace
 {
@@ -35,6 +47,13 @@ std::size_t query_page_size() noexcept
 #endif
 }
 }  // namespace
+
+PageAllocator::PageAllocator() noexcept
+    : impl_(std::make_unique<Impl>())
+{
+}
+
+PageAllocator::~PageAllocator() = default;
 
 std::size_t PageAllocator::page_size() noexcept
 {
@@ -61,11 +80,25 @@ void* PageAllocator::do_allocate(std::size_t size, std::size_t alignment) noexce
     }
     const std::size_t rounded = detail::align_up(size, ps);
 #if CD_OS_WINDOWS
-    return ::VirtualAlloc(nullptr, rounded, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    void* p = ::VirtualAlloc(nullptr, rounded, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #else
     void* p = ::mmap(nullptr, rounded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    return p == MAP_FAILED ? nullptr : p;
+    if (p == MAP_FAILED)
+    {
+        p = nullptr;
+    }
 #endif
+    if (p != nullptr)
+    {
+        // Record the rounded length so deallocate() can hand POSIX munmap() the
+        // exact mapping size. The map insert may throw bad_alloc; if it does the
+        // mapping is leaked rather than the process aborting in this noexcept
+        // function — acceptable under OOM, which is the only way the small
+        // insert fails.
+        const std::scoped_lock lock(impl_->mtx);
+        impl_->lengths[p] = rounded;
+    }
+    return p;
 }
 
 void PageAllocator::deallocate(void* ptr) noexcept
@@ -74,17 +107,48 @@ void PageAllocator::deallocate(void* ptr) noexcept
     {
         return;
     }
+
+    std::size_t rounded = 0;
+    {
+        const std::scoped_lock lock(impl_->mtx);
+        const auto it = impl_->lengths.find(ptr);
+        if (it == impl_->lengths.end())
+        {
+            // Not a live mapping owned by this allocator (double-free / foreign
+            // pointer). Refuse to unmap an unknown length.
+            return;
+        }
+        rounded = it->second;
+        impl_->lengths.erase(it);
+    }
+
 #if CD_OS_WINDOWS
+    // VirtualFree(MEM_RELEASE) reclaims the whole reservation; length must be 0.
+    (void)rounded;
     ::VirtualFree(ptr, 0, MEM_RELEASE);
 #else
-    // POSIX munmap requires the original length; we did not store it. Callers
-    // that need true page-granularity reclamation should track lengths
-    // externally. For Sprint S2.1.b this is documented as a v1 limitation —
-    // PageAllocator on POSIX is intended primarily for long-lived blocks that
-    // outlive the process address space anyway.
-    // TODO(S2.1.c): record (ptr, length) in a side map for correct munmap.
-    (void)ptr;
+    // POSIX munmap requires the original mapping length, now recovered from the
+    // side-table above. This releases the address-space reservation correctly
+    // instead of leaking it (the former v1 limitation).
+    ::munmap(ptr, rounded);
 #endif
+}
+
+std::size_t PageAllocator::mapping_length(const void* ptr) const noexcept
+{
+    if (ptr == nullptr)
+    {
+        return 0;
+    }
+    const std::scoped_lock lock(impl_->mtx);
+    const auto it = impl_->lengths.find(ptr);
+    return it == impl_->lengths.end() ? 0U : it->second;
+}
+
+std::size_t PageAllocator::live_mapping_count() const noexcept
+{
+    const std::scoped_lock lock(impl_->mtx);
+    return impl_->lengths.size();
 }
 
 }  // namespace cd::mem
