@@ -7,16 +7,29 @@
 //             write_timestamp / QueryPool / gpu_tick_frequency are NOT in
 //             the cd::rhi surface yet; this header pins down the exact
 //             contract additions required to lift the stub to real timing.
+// BAND5-foundation (2026-06-16) — the A-QUERY subsystem shipped (phase1218):
+//             IDevice::create_query_pool(QueryType::kTimestamp),
+//             ICommandBuffer::write_timestamp, IDevice::get_query_results
+//             (resolves timestamp slots to NANOSECONDS — the backend applies
+//             the device timestamp period for us). Recorder is now wired to a
+//             real RHI timestamp QueryPool: call prepare(device, max_markers)
+//             before recording on a device whose features().timestamp_queries
+//             is true, and resolve(device) reads real ns via get_query_results.
+//             Devices WITHOUT timestamp support (Null, headless, mobile GLES2)
+//             stay on the deterministic 1 GHz monotonic-counter path with no
+//             API change — prepare() is a no-op there and resolve() falls back.
+//             See ADR-20260616-band5-foundation-scope.md §profile_gpu_marker.
 //
 // Provides:
 //   GpuMarkerSample — one resolved GPU marker event (name, gpu_start_tick,
 //                     gpu_end_tick, duration_ms_computed).
 //   MarkerHandle    — opaque index returned by Recorder::begin_marker().
-//   Recorder        — accumulates GPU markers per command buffer; resolves
-//                     raw ticks to milliseconds via IDevice::gpu_tick_frequency
-//                     once available. Until ICommandBuffer::write_timestamp()
-//                     lands, a stub implementation uses a monotonic counter so
-//                     the library compiles and the API surface is exercised.
+//   Recorder        — accumulates GPU markers per command buffer. On a device
+//                     with timestamp_queries, prepare() owns a kTimestamp
+//                     QueryPool (2 slots per marker), begin/end_marker emit
+//                     write_timestamp, and resolve() reads real nanoseconds via
+//                     IDevice::get_query_results. Without timestamp support a
+//                     1 GHz monotonic counter keeps the API exercised + tested.
 //   Scope           — RAII wrapper around Recorder::begin_marker / end_marker.
 //
 // Design notes:
@@ -29,66 +42,34 @@
 //     (after wait_idle / fence signal) before reading samples().
 //
 // -----------------------------------------------------------------------------
-// RHI_CONTRACT_GAP — phase739 (B9 BLOCKED)
+// RHI_CONTRACT_GAP — CLOSED (BAND5-foundation, was phase739 B9 BLOCKED)
 // -----------------------------------------------------------------------------
-// Lifting Recorder from monotonic-counter stub to real GPU timestamps requires
-// the following additions to cd::rhi. Each entry maps 1:1 to the existing
-// Vulkan / D3D12 / Metal primitive so backends translate directly.
+// The five cd::rhi additions this stub was waiting for ALL shipped in the
+// A-QUERY subsystem (phase1218). They map 1:1 to the wired calls below:
 //
-// 1. cd::rhi::QueryPoolDesc + IDevice::create_query_pool / destroy_query_pool
-//      struct QueryPoolDesc { QueryType type; std::uint32_t count; };
-//      enum class QueryType { kTimestamp, kPipelineStatistics, kOcclusion };
-//      Result<QueryPoolHandle> create_query_pool(const QueryPoolDesc&);
-//      void                    destroy_query_pool(QueryPoolHandle);
-//    Vulkan: vkCreateQueryPool(VK_QUERY_TYPE_TIMESTAMP, count).
-//    D3D12 : ID3D12Device::CreateQueryHeap(D3D12_QUERY_HEAP_TYPE_TIMESTAMP).
-//    Metal : MTLCounterSampleBufferDescriptor + MTLDevice newCounterSampleBufferWithDescriptor.
+//   IDevice::create_query_pool(QueryPoolDesc{QueryType::kTimestamp, count})
+//       Vulkan vkCreateQueryPool / D3D12 CreateQueryHeap / Metal counter buffer.
+//   ICommandBuffer::reset_query_pool(pool, first, count)
+//       Vulkan vkCmdResetQueryPool (required); D3D12/Metal no-op.
+//   ICommandBuffer::write_timestamp(pool, index)
+//       Vulkan vkCmdWriteTimestamp2 / D3D12 EndQuery(TIMESTAMP) / Metal sample.
+//   IDevice::get_query_results(pool, first, count, std::span<uint64> out)
+//       Returns kTimestamp slots already in NANOSECONDS — the backend applies
+//       the device timestamp period, so the lib needs NO gpu_tick_frequency().
+//   DeviceFeatures::timestamp_queries
+//       Recorder::prepare() gates pool creation on this flag; resolve() reads
+//       real ns when a pool exists and otherwise falls back to the stub clock.
 //
-// 2. ICommandBuffer::reset_query_pool(QueryPoolHandle, first, count)
-//    Vulkan: vkCmdResetQueryPool — REQUIRED once per frame before writes.
-//    D3D12 : no-op (heap entries are write-only per submit).
-//
-// 3. ICommandBuffer::write_timestamp(PipelineStage stage,
-//                                    QueryPoolHandle pool,
-//                                    std::uint32_t index)
-//    Vulkan: vkCmdWriteTimestamp2(stage_mask, pool, index).
-//    D3D12 : ID3D12GraphicsCommandList::EndQuery(heap,
-//               D3D12_QUERY_TYPE_TIMESTAMP, index).
-//    Metal : MTLComputeCommandEncoder sampleCountersInBuffer: atSampleIndex:
-//               (or render-encoder sampleCountAtEnd/Begin attachments).
-//
-// 4. IDevice::get_query_pool_results(QueryPoolHandle pool,
-//                                    std::uint32_t first, std::uint32_t count,
-//                                    std::span<std::uint64_t> dst,
-//                                    QueryResultFlags flags)
-//    Vulkan: vkGetQueryPoolResults(..., VK_QUERY_RESULT_64_BIT |
-//                                       VK_QUERY_RESULT_WAIT_BIT).
-//    D3D12 : ResolveQueryData into a readback buffer, then map.
-//    Metal : resolveCounters:inRange:destinationBuffer:.
-//
-// 5. IDevice::gpu_tick_frequency() -> std::uint64_t  (ticks per second)
-//    Vulkan: VkPhysicalDeviceLimits::timestampPeriod (ns/tick) inverted.
-//    D3D12 : ID3D12CommandQueue::GetTimestampFrequency().
-//    Metal : MTLDevice sampleTimestamps:gpuTimestamp:  delta over a known
-//               wall-clock window (or MTLCounterSampleBuffer scale).
-//
-// 6. DeviceFeatures::timestamp_queries is already declared (Descriptors.hpp
-//    line 460). Backends must populate it from
-//    VkPhysicalDeviceLimits::timestampComputeAndGraphics (Vulkan) or
-//    D3D12_FEATURE_DATA_D3D12_OPTIONS3::WriteBufferImmediateSupportFlags
-//    + COMMAND_LIST_SUPPORT_FLAG_DIRECT (D3D12). Recorder::resolve() will
-//    branch on this flag to keep the stub path live on backends without
-//    timestamp support (mobile GLES2 fallback, headless null device).
-//
-// Once items 1–5 land, GpuMarker.cpp swaps `monotonic_counter` for a
-// QueryPoolHandle owned by Impl, allocates two indices per begin/end pair,
-// emits cmd.write_timestamp(...) inside begin_marker / end_marker, and
-// resolve() calls device.get_query_pool_results into a u64 vector that
-// then feeds gpu_start_tick / gpu_end_tick. The duration_ms math (delta
-// / freq * 1000.0) is unchanged — only the data source differs.
-//
-// Tracking: docs/FINALE_PLAN.md FINALE-2 B9; resumes when items 1–5 ship
-// (suggested ADR: ADR-YYYYMMDD-rhi-query-pool-timestamps.md).
+// Recorder owns the QueryPool end-to-end (created in prepare, destroyed in the
+// destructor / clear), so the integration needs NO renderer-side plumbing: the
+// consumer only has to (1) call prepare(device, max_markers) once, (2) record
+// begin/end_marker on its command buffer as before, and (3) call resolve(device)
+// after the producing submit has completed (fence/wait_idle) — the same lifetime
+// the stub already required. Verified deterministically by a fake timestamp
+// IDevice in the gtest; on-GPU (RTX 3080 / Vulkan) verification runs through the
+// renderer's existing query-pool device tests, not this foundation binary
+// (that would force a foundation→backend link). See
+// ADR-20260616-band5-foundation-scope.md §profile_gpu_marker.
 // =============================================================================
 #pragma once
 
@@ -155,27 +136,42 @@ public:
     Recorder(Recorder&&)                 = delete;
     Recorder& operator=(Recorder&&)      = delete;
 
+    /// Enable the real RHI timestamp path. On a device whose
+    /// features().timestamp_queries is true this allocates a kTimestamp
+    /// QueryPool with `2 * max_markers` slots (one begin + one end per marker);
+    /// begin/end_marker then emit write_timestamp into it and resolve() reads
+    /// real nanoseconds via IDevice::get_query_results. On a device WITHOUT
+    /// timestamp support (Null, headless) this is a no-op and the recorder
+    /// stays on the deterministic 1 GHz monotonic-counter stub — no API change.
+    ///
+    /// Idempotent per device: a second prepare() on the same already-created
+    /// pool is a no-op; preparing with a larger max_markers grows the pool.
+    /// Returns true when a real timestamp pool is active afterward.
+    bool prepare(cd::rhi::IDevice& device, std::uint32_t max_markers);
+
     /// Open a named GPU region on `cmd`. Returns an opaque handle that MUST
     /// be passed to end_marker(). The handle is invalidated after end_marker().
     ///
-    /// Stub: emits a push_debug_group on cmd for capture-tool visibility and
-    /// records a monotonic counter tick. Real timestamp write comes when
-    /// ICommandBuffer::write_timestamp lands.
+    /// Emits a push_debug_group on cmd for capture-tool visibility. When a
+    /// timestamp pool is active (see prepare) also emits write_timestamp at the
+    /// marker's begin slot; otherwise records a monotonic counter tick.
     [[nodiscard]] MarkerHandle begin_marker(cd::rhi::ICommandBuffer& cmd,
                                             std::string_view         name);
 
     /// Close the GPU region identified by handle and record its end tick.
     /// Calling end_marker() with an invalid handle is a no-op.
     ///
-    /// Stub: emits pop_debug_group on cmd.
+    /// Emits pop_debug_group on cmd. When a timestamp pool is active also emits
+    /// write_timestamp at the marker's end slot.
     void end_marker(cd::rhi::ICommandBuffer& cmd, MarkerHandle handle);
 
-    /// Resolve raw ticks to duration_ms_computed using the device GPU tick
-    /// frequency. Call once per frame after GPU work finishes (fence/wait_idle).
+    /// Resolve durations into duration_ms_computed. Call once per frame after
+    /// the producing GPU submit has completed (fence/wait_idle).
     ///
-    /// Stub: uses an internal frequency of 1 GHz (1e9 ticks/s) so that
-    /// duration_ms_computed = (end_tick - start_tick) * 1e-6. When
-    /// IDevice::gpu_tick_frequency() exists, replace the stub frequency.
+    /// Real path (timestamp pool active): reads the slot values via
+    /// IDevice::get_query_results — they are already in NANOSECONDS — and sets
+    /// duration_ms_computed = (end_ns - start_ns) * 1e-6. Stub path: a 1 GHz
+    /// monotonic counter gives duration_ms_computed = (end - start) * 1e-6.
     void resolve(cd::rhi::IDevice& device);
 
     /// View of all resolved samples. Valid after resolve(); invalidated by clear().
