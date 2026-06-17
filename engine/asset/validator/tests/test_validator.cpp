@@ -13,6 +13,10 @@
 //   T8  GLB version != 2 => kWarning
 //   T9  RIFF without WAVE tag => kError
 //   T10 configure() replaces previous policy (looser limit clears warning)
+//   T11 truncated GLB header (glTF magic but < 12 bytes) => kError, not a crash
+//   T12 truncated WAV header (RIFF magic but < 12 bytes, no room for WAVE tag)
+//       => kError; and a 1-byte unknown-magic blob => kError (no out-of-bounds
+//       read on a sub-magic-length blob).
 // =============================================================================
 
 #include <cd/asset/validator/Validator.hpp>
@@ -314,6 +318,52 @@ TEST(Validator, ConfigureReplacesPolicy)
         std::span<const std::uint8_t>{ kPngSig }, "test.png");
     EXPECT_FALSE(has_warning(issues))
         << "Loose policy must not warn on tiny PNG blob";
+}
+
+// ---- T11: truncated GLB header (glTF magic but < 12 bytes) => kError ---------
+
+TEST(Validator, TruncatedGlbHeaderIsError)
+{
+    const Validator v;
+    // "glTF" magic present but only 8 bytes total — header is < 12, so the
+    // version field at offset 4 is the last word and the declared 12-byte
+    // minimum is not met.
+    constexpr std::array<std::uint8_t, 8> kGlbTrunc{
+        0x67U, 0x6CU, 0x54U, 0x46U,  // "glTF"
+        0x02U, 0x00U, 0x00U, 0x00U   // version = 2, then EOF (no length word)
+    };
+    const auto issues = v.validate_gltf_blob(
+        std::span<const std::uint8_t>{ kGlbTrunc }, "trunc.glb");
+    EXPECT_TRUE(has_error(issues))
+        << "Expected kError for GLB blob with glTF magic but < 12-byte header";
+}
+
+// ---- T12: truncated WAV header + 1-byte unknown blob => kError --------------
+
+TEST(Validator, TruncatedWavAndTinyBlobAreErrors)
+{
+    const Validator v;
+
+    // (a) "RIFF" magic but only 4 bytes — no room for the WAVE tag at offset 8.
+    constexpr std::array<std::uint8_t, 4> kRiffOnly{ 'R', 'I', 'F', 'F' };
+    const auto wav_issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kRiffOnly }, "trunc.wav");
+    EXPECT_TRUE(has_error(wav_issues))
+        << "Expected kError for RIFF blob too short to carry a WAVE tag";
+
+    // (b) 1-byte blob with no recognised magic — must not read out of bounds and
+    //     must still report an unrecognised-format error.
+    constexpr std::array<std::uint8_t, 1> kTiny{ 0x00U };
+    const auto tiny_issues = v.validate_audio_blob(
+        std::span<const std::uint8_t>{ kTiny }, "tiny.bin");
+    EXPECT_TRUE(has_error(tiny_issues))
+        << "Expected kError for a 1-byte unknown-magic audio blob";
+
+    // (c) Same 1-byte blob through the texture path — unknown magic => kError.
+    const auto tex_issues = v.validate_texture_blob(
+        std::span<const std::uint8_t>{ kTiny }, "tiny.bin");
+    EXPECT_TRUE(has_error(tex_issues))
+        << "Expected kError for a 1-byte unknown-magic texture blob";
 }
 
 }  // namespace

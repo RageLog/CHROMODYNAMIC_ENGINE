@@ -14,6 +14,10 @@
 //   T9  load_from_json: missing 'emitter_kind' -> nullopt.
 //   T10 load_from_json: missing optional fields -> falls back to AuthoredVfx
 //       defaults (emit_rate_per_sec=30, life_seconds=1, etc.).
+//   T11 load_from_json: malformed JSON (unterminated object) -> nullopt
+//       (parse error, no exception escapes).
+//   T12 load_from_json: unknown / extra keys are tolerated — known fields still
+//       load and the surplus keys are ignored without error.
 // =============================================================================
 
 #include <cd/asset/vfx_authoring/VfxAuthoring.hpp>
@@ -245,6 +249,63 @@ TEST(VfxAuthoring, T10_LoadMissingOptionalFieldsFallsBackToDefaults)
     EXPECT_NEAR(result->size_start,        defaults.size_start,        1e-4F);
     EXPECT_NEAR(result->size_end,          defaults.size_end,          1e-4F);
     EXPECT_EQ(result->texture_path, "");
+
+    std::filesystem::remove(tmp);
+}
+
+// ---- T11: load — malformed JSON -> nullopt ----------------------------------
+
+TEST(VfxAuthoring, T11_LoadMalformedJsonReturnsNullopt)
+{
+    const std::filesystem::path tmp =
+        std::filesystem::temp_directory_path() / "cd_vfx_malformed.json";
+
+    {
+        std::ofstream ofs { tmp };
+        // Unterminated object + dangling key — not parseable JSON.
+        ofs << R"({"id":"broken","emitter_kind":)";
+    }
+
+    const auto result = load_from_json(tmp);
+    EXPECT_FALSE(result.has_value())
+        << "malformed JSON must yield nullopt, not a partial AuthoredVfx";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---- T12: load — unknown / extra keys are tolerated -------------------------
+
+TEST(VfxAuthoring, T12_LoadUnknownKeysAreIgnored)
+{
+    const std::filesystem::path tmp =
+        std::filesystem::temp_directory_path() / "cd_vfx_unknown_keys.json";
+
+    {
+        std::ofstream ofs { tmp };
+        // Required + known optional fields plus several keys the loader does not
+        // recognise (future schema additions / authoring-tool metadata).
+        ofs << R"({)"
+               R"("id":"surplus_vfx",)"
+               R"("emitter_kind":"burst",)"
+               R"("life_seconds":2.0,)"
+               R"("author":"designer_a",)"
+               R"("editor_revision":7,)"
+               R"("tags":["smoke","warm"],)"
+               R"("nested":{"k":"v"})"
+               R"(})";
+    }
+
+    const auto result = load_from_json(tmp);
+    ASSERT_TRUE(result.has_value())
+        << "unknown keys must not cause load to fail";
+
+    EXPECT_EQ(result->id,           "surplus_vfx");
+    EXPECT_EQ(result->emitter_kind, "burst");
+    EXPECT_NEAR(result->life_seconds, 2.0F, 1e-4F);
+
+    // The surplus keys must not have disturbed defaulted fields.
+    const AuthoredVfx defaults;
+    EXPECT_NEAR(result->emit_rate_per_sec, defaults.emit_rate_per_sec, 1e-4F);
 
     std::filesystem::remove(tmp);
 }

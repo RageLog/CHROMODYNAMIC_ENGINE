@@ -10,14 +10,21 @@
 //   T5  Different inputs produce different ShaderKey hashes (no collision).
 //   T6  put() returns true for a new key, false for an overwrite.
 //   T7  Overwrite via put() replaces SPIR-V; get() returns updated blob.
+//   T8  load_from_disk rejects a file whose magic version bytes differ from the
+//       current CDSC format (version-mismatch invalidation) without clobbering
+//       any already-loaded entries.
+//   T9  load_from_disk rejects a corrupt / truncated header (garbage prefix and
+//       a header that ends mid-entry-count) — returns false, no partial load.
 // =============================================================================
 
 #include <cd/asset/shader_cache/ShaderCache.hpp>
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <optional>
 #include <vector>
@@ -223,6 +230,112 @@ TEST(ShaderCache, OverwriteReplacesSpirv)
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ((*r)->spirv, updated);
     EXPECT_NE((*r)->spirv, original);
+}
+
+// ---------------------------------------------------------------------------
+// T8 — version-mismatch invalidation: a file with a different CDSC version in
+//      the magic suffix is rejected, leaving any pre-existing entries intact.
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, VersionMismatchRejectedAndDoesNotClobber)
+{
+    // Write a valid file first, then corrupt only the version bytes (offset 4-7)
+    // of the 8-byte "CDSC\x00\x01\x00\x00" magic to a bumped major version.
+    const auto tmp = std::filesystem::temp_directory_path()
+                   / "cd_shader_cache_test_version_mismatch.bin";
+    {
+        ShaderCache       src;
+        const ShaderKey   k = make_key("vm_src", "main", 1, 0);
+        src.put(k, make_spirv(0x5A5A, 6), "main", 1);
+        ASSERT_TRUE(src.save_to_disk(tmp));
+    }
+
+    // Flip the minor-version byte (offset 5) from 0x01 to 0x02 — a future format.
+    {
+        std::fstream f(tmp, std::ios::binary | std::ios::in | std::ios::out);
+        ASSERT_TRUE(f.is_open());
+        f.seekp(5, std::ios::beg);
+        const char bumped = 0x02;
+        f.write(&bumped, 1);
+        ASSERT_TRUE(f.good());
+    }
+
+    // Target cache already holds one good entry — load must fail and NOT wipe it.
+    ShaderCache       dst;
+    const ShaderKey   existing = make_key("kept", "main", 1, 0);
+    dst.put(existing, make_spirv(0x1234, 4), "main", 1);
+    ASSERT_EQ(dst.entry_count(), 1U);
+
+    EXPECT_FALSE(dst.load_from_disk(tmp))
+        << "version-mismatched magic must be rejected";
+    EXPECT_TRUE(dst.get(existing).has_value())
+        << "rejected load must not clobber the pre-existing entry";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---------------------------------------------------------------------------
+// T9 — corrupt / truncated header reject: garbage magic and a header that ends
+//      before the entry-count both return false (no exception, no partial load).
+// ---------------------------------------------------------------------------
+
+TEST(ShaderCache, CorruptAndTruncatedHeaderRejected)
+{
+    // (a) Garbage 8-byte magic.
+    {
+        const auto tmp = std::filesystem::temp_directory_path()
+                       / "cd_shader_cache_test_corrupt_magic.bin";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(f.is_open());
+            const std::array<std::uint8_t, 8> garbage{
+                'X', 'X', 'X', 'X', 0x00U, 0x00U, 0x00U, 0x00U
+            };
+            f.write(reinterpret_cast<const char*>(garbage.data()),
+                    static_cast<std::streamsize>(garbage.size()));
+        }
+
+        ShaderCache cache;
+        EXPECT_FALSE(cache.load_from_disk(tmp))
+            << "garbage magic must be rejected";
+        EXPECT_EQ(cache.entry_count(), 0U);
+        std::filesystem::remove(tmp);
+    }
+
+    // (b) Correct magic but the file ends before the 4-byte entry count.
+    {
+        const auto tmp = std::filesystem::temp_directory_path()
+                       / "cd_shader_cache_test_truncated_header.bin";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            ASSERT_TRUE(f.is_open());
+            const std::array<std::uint8_t, 8> magic{
+                'C', 'D', 'S', 'C', 0x00U, 0x01U, 0x00U, 0x00U
+            };
+            f.write(reinterpret_cast<const char*>(magic.data()),
+                    static_cast<std::streamsize>(magic.size()));
+            // Only 2 of the 4 entry-count bytes follow — header is truncated.
+            const std::array<std::uint8_t, 2> partial{ 0x01U, 0x00U };
+            f.write(reinterpret_cast<const char*>(partial.data()),
+                    static_cast<std::streamsize>(partial.size()));
+        }
+
+        ShaderCache cache;
+        EXPECT_FALSE(cache.load_from_disk(tmp))
+            << "header truncated before entry count must be rejected";
+        EXPECT_EQ(cache.entry_count(), 0U);
+        std::filesystem::remove(tmp);
+    }
+
+    // (c) Non-existent path — load must fail cleanly (no throw).
+    {
+        ShaderCache cache;
+        const auto missing = std::filesystem::temp_directory_path()
+                           / "cd_shader_cache_test_does_not_exist_q9.bin";
+        std::filesystem::remove(missing);  // ensure absent
+        EXPECT_FALSE(cache.load_from_disk(missing));
+        EXPECT_EQ(cache.entry_count(), 0U);
+    }
 }
 
 }  // namespace

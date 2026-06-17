@@ -15,6 +15,15 @@
 //   T6  shader cache stats reflected in shader_completed
 //   T7  tick on all-zero pending is a no-op (no crash, no spurious counts)
 //   T8  detach by passing nullptr stops tick dispatch
+//   T9  zero-weight streamer: a priority-0 streamer is intentionally never
+//       scheduled (weight 0 == "do not dispatch"); a positive-weight streamer
+//       sharing the pool still drains fully and the deficit math does not
+//       divide by zero when the only pending streamer carries weight 0.
+//   T10 single-streamer: the sole active positive-weight streamer receives every
+//       token (no weight is wasted when only one streamer competes).
+//   T11 fairness / no-starvation: across many ticks a much-lower-priority
+//       streamer is still serviced (Bresenham deficit prevents permanent
+//       starvation) and both streamers fully drain.
 // =============================================================================
 
 #include <cd/asset/streamer_pool/StreamerPool.hpp>
@@ -264,6 +273,122 @@ TEST(StreamerPool, DetachNullptrStopsDispatch)
     // Pool stats see nothing attached.
     EXPECT_EQ(pool.stats().audio_pending,   0U);
     EXPECT_EQ(pool.stats().audio_completed, 0U);
+}
+
+// ---- T9: zero-weight streamer is not scheduled, positive one still drains ----
+//
+// audio_priority = 0  -> audio must never receive a token while it is the only
+// active streamer (weight 0 means "do not dispatch"), and the deficit math must
+// not divide by zero. A scene streamer with a positive weight, enqueued in the
+// same pool, still drains its queue normally.
+
+TEST(StreamerPool, ZeroWeightStreamerNeverScheduled)
+{
+    cd::asset::audio_streamer::AudioStreamer audio;
+    cd::asset::scene_streamer::SceneStreamer scene;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        audio.enqueue({ "audio/zw" + std::to_string(i) + ".wav", 0U, 100U });
+        scene.enqueue({ "scene/zw" + std::to_string(i) + ".glb", 100U });
+    }
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{
+        .max_concurrent_loads = 4U,
+        .scene_priority       = 10U,
+        .texture_priority     = 8U,
+        .audio_priority       = 0U,   // zero weight -> never dispatched
+        .shader_priority      = 4U,
+    });
+    pool.attach_scene(&scene);
+    pool.attach_audio(&audio);
+
+    // Tick enough to drain everything that *can* be drained.
+    for (int t = 0; t < 32; ++t) { pool.tick(0.016F); }
+
+    // Scene (positive weight) fully dequeued; audio (zero weight) untouched.
+    EXPECT_EQ(pool.stats().scene_pending, 0U)
+        << "positive-weight scene streamer must drain";
+    EXPECT_EQ(pool.stats().audio_pending, 4U)
+        << "zero-weight audio streamer must never be scheduled";
+    EXPECT_EQ(pool.stats().audio_completed, 0U);
+}
+
+// ---- T10: single active streamer receives every token -----------------------
+
+TEST(StreamerPool, SingleStreamerGetsAllTokens)
+{
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    // Enqueue exactly max_concurrent_loads items so a single tick should drain
+    // them all if the sole streamer truly receives every token.
+    for (int i = 0; i < 4; ++i)
+    {
+        audio.enqueue({ "audio/single" + std::to_string(i) + ".wav", 0U, 100U });
+    }
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{
+        .max_concurrent_loads = 4U,
+        .scene_priority       = 10U,
+        .texture_priority     = 8U,
+        .audio_priority       = 6U,
+        .shader_priority      = 4U,
+    });
+    pool.attach_audio(&audio);  // audio is the ONLY attached streamer
+
+    EXPECT_EQ(pool.stats().audio_pending, 4U);
+
+    // One tick: total_weight == audio_priority, so audio gets all 4 tokens.
+    pool.tick(0.016F);
+
+    EXPECT_EQ(pool.stats().audio_pending,   0U)
+        << "sole active streamer must receive every token in one tick";
+    EXPECT_EQ(pool.stats().audio_completed, 4U);
+}
+
+// ---- T11: fairness — a much-lower-priority streamer is never starved --------
+//
+// scene_priority = 12, audio_priority = 1. Even though audio's weight is 12x
+// smaller, the Bresenham deficit accumulator must eventually grant it tokens so
+// that, given enough ticks, audio fully drains rather than being starved forever.
+
+TEST(StreamerPool, LowPriorityStreamerNotStarved)
+{
+    cd::asset::scene_streamer::SceneStreamer scene;
+    cd::asset::audio_streamer::AudioStreamer audio;
+
+    constexpr int kSceneItems = 30;
+    constexpr int kAudioItems = 5;
+    for (int i = 0; i < kSceneItems; ++i)
+    {
+        scene.enqueue({ "scene/fair" + std::to_string(i) + ".glb", 100U });
+    }
+    for (int i = 0; i < kAudioItems; ++i)
+    {
+        audio.enqueue({ "audio/fair" + std::to_string(i) + ".wav", 0U, 100U });
+    }
+
+    StreamerPool pool;
+    pool.configure(PoolConfig{
+        .max_concurrent_loads = 4U,
+        .scene_priority       = 12U,
+        .texture_priority     = 8U,
+        .audio_priority       = 1U,   // 12x lower than scene
+        .shader_priority      = 4U,
+    });
+    pool.attach_scene(&scene);
+    pool.attach_audio(&audio);
+
+    // Bounded number of ticks — must be enough to drain both queues if the
+    // low-priority streamer is genuinely never starved.
+    drain(pool, /*max_ticks=*/256U);
+
+    EXPECT_EQ(pool.stats().scene_pending, 0U) << "scene queue must drain";
+    EXPECT_EQ(pool.stats().audio_pending, 0U)
+        << "low-priority audio must not be starved — it must fully drain";
+    EXPECT_EQ(pool.stats().audio_completed, static_cast<std::uint32_t>(kAudioItems));
 }
 
 }  // namespace
