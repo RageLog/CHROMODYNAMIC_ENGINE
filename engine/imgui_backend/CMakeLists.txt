@@ -92,3 +92,8 @@ foreach(_src IN LISTS _cd_imgui_sources)
     set_source_files_properties(${_src} PROPERTIES COMPILE_OPTIONS "-w")
   endif()
 endforeach()
+
+# Band4 singletons — host-side (device-free) tests.
+if(CD_ENABLE_TESTING)
+  add_subdirectory(tests)
+endif()

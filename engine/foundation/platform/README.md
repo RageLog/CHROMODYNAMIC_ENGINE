@@ -16,6 +16,6 @@
 **Test command**: `ctest --preset ninja-debug -R cd_test_platform --output-on-failure`.
 
 **Notes**:
-- Header-only public API; per-OS backends in `cd::platform::detail` (Win32 today; X11/Wayland queued).
+- `IWindow` is the backend-agnostic interface; the `create_window()` factory hides every per-OS TU. Desktop backends Win32 (`Win32Window.cpp`) and X11 (`X11Window.cpp`, opt-in `-DCD_PLATFORM_XLIB=ON`) are complete and the supported v1 path; macOS Cocoa, iOS UIKit, Android NativeActivity and Web/Emscripten backends are real platform-specific ports compiled only under their own SDK (`CD_PLATFORM_COCOA`, `IOS`, `ANDROID`, `EMSCRIPTEN`) — promote-on-need per ADR-20260616-band4-singletons-scope §platform. Wayland stays on the backlog.
 - Used by all engine samples for their main window + input loop (hello_engine drives WASD + right-mouse + scroll via this layer).
 - The InputEvent visitor pattern lets samples bind only the events they care about without a giant switch.

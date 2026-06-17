@@ -54,10 +54,10 @@ namespace
         case XK_Escape:       return KeyCode::kEscape;
         case XK_Tab:          return KeyCode::kTab;
         case XK_BackSpace:    return KeyCode::kBackspace;
-        case XK_Left:         return KeyCode::kArrowLeft;
-        case XK_Right:        return KeyCode::kArrowRight;
-        case XK_Up:           return KeyCode::kArrowUp;
-        case XK_Down:         return KeyCode::kArrowDown;
+        case XK_Left:         return KeyCode::kLeft;
+        case XK_Right:        return KeyCode::kRight;
+        case XK_Up:           return KeyCode::kUp;
+        case XK_Down:         return KeyCode::kDown;
         case XK_Control_L:    return KeyCode::kLCtrl;
         case XK_Control_R:    return KeyCode::kRCtrl;
         case XK_Shift_L:      return KeyCode::kLShift;

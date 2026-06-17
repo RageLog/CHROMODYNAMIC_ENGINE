@@ -214,3 +214,149 @@ TEST(ParticleSystem, SnapshotClampedToParticleCount)
     const std::size_t written = sys.snapshot(snaps);
     EXPECT_EQ(written, n);
 }
+
+// ===========================================================================
+// Band4 singletons topup — real untested CPU-sim branches.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// 8. tick() with dt <= 0 is a no-op (the `if (dt <= 0.0F) return;` guard).
+//    Neither spawning nor integration nor ageing happens.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, ZeroAndNegativeDtAreNoOps)
+{
+    System sys;
+    sys.add_emitter(make_spec(/*rate=*/100.0F, /*life_s=*/5.0F));
+
+    sys.tick(0.0F);
+    EXPECT_EQ(sys.particle_count(), 0U) << "dt=0 must not spawn";
+
+    sys.tick(-1.0F);
+    EXPECT_EQ(sys.particle_count(), 0U) << "dt<0 must not spawn";
+
+    // Spawn one particle, then confirm a zero-dt tick neither ages it out nor
+    // moves it.
+    sys.tick(0.01F);  // 100 p/s * 0.01 = 1.0 -> exactly one particle
+    ASSERT_EQ(sys.particle_count(), 1U);
+
+    std::vector<ParticleSnapshot> before(1);
+    ASSERT_EQ(sys.snapshot(before), 1U);
+    sys.tick(0.0F);  // no-op: position + age unchanged
+    std::vector<ParticleSnapshot> after(1);
+    ASSERT_EQ(sys.snapshot(after), 1U);
+    EXPECT_FLOAT_EQ(after[0].pos[1], before[0].pos[1]);
+}
+
+// ---------------------------------------------------------------------------
+// 9. Spawn accumulator carries the fractional remainder forward across ticks.
+//    Rate=10 p/s, dt=0.05s -> 0.5 particle/tick. After one tick: 0 spawned,
+//    accum=0.5. After the second tick: accum=1.0 -> exactly one spawn.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, SpawnAccumulatorCarriesFractionForward)
+{
+    System sys;
+    sys.add_emitter(make_spec(/*rate=*/10.0F, /*life_s=*/100.0F));
+
+    sys.tick(0.05F);  // accum = 0.5 -> below threshold, no spawn yet
+    EXPECT_EQ(sys.particle_count(), 0U);
+
+    sys.tick(0.05F);  // accum = 1.0 -> exactly one spawn, remainder 0
+    EXPECT_EQ(sys.particle_count(), 1U);
+
+    sys.tick(0.05F);  // accum = 0.5 again -> still one particle
+    EXPECT_EQ(sys.particle_count(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// 10. A single large dt can consume multiple whole spawns from the
+//     accumulator in one tick (the `while (accum >= 1.0F)` loop).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, LargeDtConsumesMultipleWholeSpawns)
+{
+    System sys;
+    sys.add_emitter(make_spec(/*rate=*/10.0F, /*life_s=*/100.0F));
+
+    sys.tick(0.35F);  // 10 * 0.35 = 3.5 -> 3 spawns, remainder 0.5
+    EXPECT_EQ(sys.particle_count(), 3U);
+}
+
+// ---------------------------------------------------------------------------
+// 11. Dead-particle compaction: the middle particle of a batch expires while
+//     younger neighbours survive. swap-and-pop moves the last live particle
+//     into the freed slot and must NOT skip processing it. Verifies the
+//     "do NOT increment i" branch in tick().
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, DeadParticleCompactionKeepsSurvivors)
+{
+    System sys;
+    // Emitter A: short life — its particle dies first.
+    EmitterSpec short_lived = make_spec(/*rate=*/1.0F, /*life_s=*/0.3F);
+    short_lived.position = {5.0F, 0.0F, 0.0F};
+    short_lived.velocity_min = {0.0F, 0.0F, 0.0F};
+    short_lived.velocity_max = {0.0F, 0.0F, 0.0F};
+
+    // Emitter B: long life — its particle survives the compaction.
+    EmitterSpec long_lived = make_spec(/*rate=*/1.0F, /*life_s=*/10.0F);
+    long_lived.position = {-7.0F, 0.0F, 0.0F};
+    long_lived.velocity_min = {0.0F, 0.0F, 0.0F};
+    long_lived.velocity_max = {0.0F, 0.0F, 0.0F};
+
+    const EmitterId a = sys.add_emitter(short_lived);
+    const EmitterId b = sys.add_emitter(long_lived);
+
+    sys.tick(1.0F);  // both spawn at least one (1 p/s * 1s); short one (life 0.3)
+                     // ages to 1.0 > 0.3 and is compacted out this same tick.
+
+    sys.remove_emitter(a);
+    sys.remove_emitter(b);
+
+    // Exactly the long-lived survivor remains, at its emitter origin (x=-7),
+    // proving the swapped-in particle wasn't dropped or corrupted.
+    ASSERT_EQ(sys.particle_count(), 1U);
+    std::vector<ParticleSnapshot> snaps(1);
+    ASSERT_EQ(sys.snapshot(snaps), 1U);
+    EXPECT_NEAR(snaps[0].pos[0], -7.0F, 0.01F);
+}
+
+// ---------------------------------------------------------------------------
+// 12. Velocity spread: with a non-degenerate [min,max] envelope every sampled
+//     component stays within the authored bounds (random_range happy path).
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, VelocitySpreadStaysWithinBounds)
+{
+    System sys;
+    EmitterSpec spec = make_spec(/*rate=*/50.0F, /*life_s=*/100.0F);
+    spec.velocity_min = {-2.0F, 1.0F, -3.0F};
+    spec.velocity_max = { 2.0F, 5.0F,  3.0F};
+    sys.add_emitter(spec);
+
+    sys.tick(1.0F);  // ~50 particles
+    const std::size_t n = sys.particle_count();
+    ASSERT_GE(n, 1U);
+
+    // After one second of constant-velocity integration the X displacement
+    // equals vx (dt=1). Bounds: vx in [-2,2] -> |x| <= 2 + small float slack.
+    std::vector<ParticleSnapshot> snaps(n);
+    ASSERT_EQ(sys.snapshot(snaps), n);
+    for (const auto& s : snaps)
+    {
+        EXPECT_GE(s.pos[0], -2.0001F);
+        EXPECT_LE(s.pos[0],  2.0001F);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 13. remove_emitter() with an unknown / invalid id is a silent no-op and
+//     does not disturb existing emitters.
+// ---------------------------------------------------------------------------
+TEST(ParticleSystem, RemoveUnknownEmitterIsNoOp)
+{
+    System sys;
+    const EmitterId valid = sys.add_emitter(make_spec(/*rate=*/10.0F, /*life_s=*/5.0F));
+
+    sys.remove_emitter(kInvalidEmitter);          // unknown sentinel — no-op
+    sys.remove_emitter(valid + 12345U);           // out-of-range id — no-op
+
+    sys.tick(1.0F);  // the still-registered valid emitter keeps spawning
+    EXPECT_EQ(sys.particle_count(), 10U);
+}

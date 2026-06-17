@@ -109,7 +109,7 @@ inline void profiler_flamegraph(std::span<const cd::profile::Sample> samples,
                           / window_ns * static_cast<double>(canvas_w);
         const float fx0 = origin.x + static_cast<float>(x0);
         const float fx1 = origin.x + std::max(static_cast<float>(x1), static_cast<float>(x0) + 1.0F);
-        const float fy0 = origin.y + row * row_height;
+        const float fy0 = origin.y + static_cast<float>(row) * row_height;
         const float fy1 = fy0 + row_height - 2.0F;
         dl->AddRectFilled(ImVec2 { fx0, fy0 }, ImVec2 { fx1, fy1 },
                           detail::color_from_name_hash(s.name));

@@ -58,10 +58,10 @@ namespace
         case 0x24: return KeyCode::kEnter;
         case 0x30: return KeyCode::kTab;
         case 0x33: return KeyCode::kBackspace;
-        case 0x7B: return KeyCode::kArrowLeft;
-        case 0x7C: return KeyCode::kArrowRight;
-        case 0x7E: return KeyCode::kArrowUp;
-        case 0x7D: return KeyCode::kArrowDown;
+        case 0x7B: return KeyCode::kLeft;
+        case 0x7C: return KeyCode::kRight;
+        case 0x7E: return KeyCode::kUp;
+        case 0x7D: return KeyCode::kDown;
         default:   return KeyCode::kUnknown;
     }
 }
