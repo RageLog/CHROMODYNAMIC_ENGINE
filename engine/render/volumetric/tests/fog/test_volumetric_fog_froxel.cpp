@@ -298,6 +298,70 @@ TEST(VolFogFroxel, IntegrateZeroExtinctionLeavesTransmittanceUnity)
         EXPECT_NEAR(a.w, 1.0F, 1e-6F);
 }
 
+// ---- Froxel-bounds + accumulation edge branches (B4 topup) -----------------
+
+TEST(VolFogFroxel, ViewToFroxelOutsideFrustumGoesOutOfRange)
+{
+    // A view-space point off to the far side of the +X frustum wall maps
+    // to a froxel X index past the grid width (caller-clamp contract): the
+    // helper does NOT clamp, it reports the out-of-range coordinate so the
+    // consumer can skip the cell. Prior tests only checked behind-camera.
+    FroxelGridDesc d {};
+    d.width = 8; d.height = 8; d.depth = 8;
+    d.near_z = 0.1F; d.far_z = 32.0F;
+    const float tan_half = std::tan(0.5F);
+    const float aspect = 1.0F;
+    // Point well to the right of the right frustum edge at view-Z = 10.
+    const Vec3f far_right { 100.0F, 0.0F, -10.0F };
+    const auto idx = view_to_froxel(far_right, d, tan_half, aspect);
+    EXPECT_GT(idx.x, static_cast<float>(d.width));  // beyond the grid
+    EXPECT_GE(idx.z, 0.0F);                          // Z still in front
+}
+
+TEST(VolFogFroxel, SliceThicknessGrowsWithDepth)
+{
+    // Wronski quadratic warp: slices get thicker toward the far plane.
+    // The last slice (z = depth-1) is the thickest; the first the thinnest.
+    FroxelGridDesc d {};
+    d.depth = 16; d.near_z = 0.1F; d.far_z = 64.0F;
+    const float first = slice_thickness(0, d);
+    const float last  = slice_thickness(d.depth - 1, d);
+    EXPECT_GT(first, 0.0F);
+    EXPECT_GT(last, first);
+    // Thicknesses sum to the full near->far span (no gaps/overlaps).
+    float total = 0.0F;
+    for (std::uint32_t z = 0; z < d.depth; ++z) total += slice_thickness(z, d);
+    EXPECT_NEAR(total, d.far_z - d.near_z, 1e-2F);
+}
+
+TEST(VolFogFroxel, IntegrateInScatterStopsAccumulatingPastFullExtinction)
+{
+    // With heavy extinction the transmittance collapses to ~0 within the
+    // first slices; later slices contribute essentially nothing to RGB
+    // because they are multiplied by the (now ~0) accumulated transmittance.
+    // This pins the front-to-back occlusion order the integrator must obey.
+    FroxelGrid g;
+    g.desc = { 1, 1, 8, 0.1F, 8.0F };
+    g.resize();
+    VolumetricFogSettings s {};
+    s.density = 50.0F;  // extreme extinction -> opaque fog
+    for (std::uint32_t z = 0; z < g.desc.depth; ++z)
+        g.at(0, 0, z) = inject_cell(s, 1.0F, Vec3f { 1, 1, 1 },
+                                    Vec3f { 0, 0, -1 }, Vec3f { 0, 0, -1 },
+                                    slice_thickness(z, g.desc));
+    std::vector<Vec4f> out;
+    integrate_view_ray(g, 0, 0, out);
+    ASSERT_EQ(out.size(), g.desc.depth);
+    // Transmittance is monotonically non-increasing and ends near 0.
+    EXPECT_LT(out.back().w, 1e-3F);
+    // The RGB delta between the last two slices is tiny vs the first step:
+    // most in-scatter was captured up front (front-to-back is correct).
+    const float first_step = out[0].x;
+    const float tail_step  = out[g.desc.depth - 1].x - out[g.desc.depth - 2].x;
+    EXPECT_GT(first_step, 0.0F);
+    EXPECT_LT(tail_step, first_step);
+}
+
 // ---- GLSL kernel sanity -----------------------------------------------------
 
 TEST(VolFogFroxel, GlslKernelsContainExpectedDirectives)

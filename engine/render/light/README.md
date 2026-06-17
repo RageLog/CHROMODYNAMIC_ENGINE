@@ -6,22 +6,21 @@
 
 **Headers**: `cd/light/{Light,Attenuation,CascadedShadow,ClusterGrid,ColorTemperature}.hpp`.
 
-**Primary types**:
-- `cd::light::Light` -- tagged union { type, position, direction, color, intensity, range, inner_cone, outer_cone, area extents }. Plays nicely with cd::ecs as a component.
-- `cd::light::Attenuation` -- inverse-square + smooth-cutoff falloff helpers (matches Karis 2013 + Frostbite punctual-light attenuation).
-- `cd::light::CascadedShadow` -- splits a directional light frustum into N cascades + builds per-cascade tight light-space orthographic projections.
-- `cd::light::ClusterGrid` -- 16x9x24 (default) view-space cluster index, used by the forward+ cluster_pbr / cluster_gpu libraries.
-- `cd::light::kelvin_to_linear_rgb(K)` -- physically-based Kelvin-temperature to linear RGB helper.
+**Primary types + free functions**:
+- `cd::light::Light` -- 112-byte std140-packable POD { type, position, direction, color, intensity, range, cone terms, area extents, slots }. Plays nicely with cd::ecs as a component. Construct via `directional()` / `point()` / `spot()` / `rect_area()`.
+- `Attenuation.hpp` -- free functions `distance_attenuation()` (Frostbite windowed inverse-square) + `cone_attenuation()` + `lumens_to_point_intensity()` / `lumens_to_spot_intensity()` / `lux_to_directional_intensity()`.
+- `CascadedShadow.hpp` -- free functions `practical_split_distances()` + `slice_frustum_corners_world()` + `fit_cascade_light_matrix()` + `build_cascades()` (splits a directional light frustum into N cascades + builds per-cascade tight light-space ortho projections).
+- `cd::light::ClusterGrid` -- default 16x9x24 view-space cluster index, **data-only froxel copy**. SEALED data-only-v1; it migrates to the single froxel owner `cd::lighting_clusters::Clusterer` (see ADR-20260616-band4-render-features-scope §light + ADR-20260616-band3-render-features-scope §5).
+- `cd::light::cct_to_linear_rgb(kelvin)` -- correlated-colour-temperature (Kelvin) to linear sRGB (Krystek 1985 / CIE-1931 fit).
 
 **Usage**:
 ```cpp
 #include <cd/light/Light.hpp>
+#include <cd/light/ColorTemperature.hpp>
 
-cd::light::Light sun {};
-sun.type = cd::light::LightType::kDirectional;
-sun.direction = { 0.3F, -1.0F, 0.2F };
-sun.color = cd::light::kelvin_to_linear_rgb(5600.0F);
-sun.intensity = 50.0F;
+auto sun = cd::light::directional({ 0.3F, -1.0F, 0.2F },
+                                  cd::light::cct_to_linear_rgb(5600.0F),
+                                  /*lux=*/50000.0F);
 ```
 
 **Test command**: `ctest --preset ninja-debug -R cd_test_light --output-on-failure`.

@@ -87,6 +87,73 @@ TEST(Denoise, OidnStubReturnsInputUnchanged)
     EXPECT_NEAR(out[0].x, 0.1F, kEps);
 }
 
+// ---- A-trous edge branches (B4 topup) --------------------------------------
+
+TEST(Denoise, EdgeWeightDropsAcrossNormalDiscontinuity)
+{
+    // A large normal delta must lower the tap weight (geometry-aware
+    // edge stop) — the (1 - clamp(w_n)) normal branch that the prior
+    // tests (zero/colour-only deltas) never exercised.
+    AtrousSettings s {};
+    const float w_flat = edge_weight({ 0, 0, 0 }, { 0, 0, 0 }, 0.0F, s);
+    const float w_edge = edge_weight({ 0, 0, 0 }, { 2.0F, 0, 0 }, 0.0F, s);
+    EXPECT_LT(w_edge, w_flat);
+}
+
+TEST(Denoise, AtrousPreservesSharpDepthEdge)
+{
+    // Two flat halves at different depths: a-trous must NOT bleed across
+    // the depth discontinuity (the edge-stop keeps the step crisp). This
+    // exercises the per-tap reject path (large d0 - d1 -> ~0 weight).
+    const std::uint32_t W = 16;
+    const std::uint32_t H = 16;
+    const std::size_t n = static_cast<std::size_t>(W) * H;
+    std::vector<cd::math::Vec3f> color(n);
+    std::vector<cd::math::Vec3f> albedo(n);
+    std::vector<cd::math::Vec3f> normal(n, { 0, 0, 1 });
+    std::vector<float> depth(n);
+    for (std::uint32_t y = 0; y < H; ++y)
+        for (std::uint32_t x = 0; x < W; ++x)
+        {
+            const std::size_t i = static_cast<std::size_t>(y) * W + x;
+            const bool left = x < W / 2;
+            color[i] = left ? cd::math::Vec3f { 0.2F, 0.2F, 0.2F }
+                            : cd::math::Vec3f { 0.8F, 0.8F, 0.8F };
+            depth[i] = left ? 0.1F : 5.0F;  // big depth gap at the seam
+        }
+    AuxBuffers aux { W, H, color, albedo, normal, depth };
+    AtrousSettings s {};
+    s.sigma_depth = 0.05F;  // tight depth tolerance -> hard edge
+    const auto out = denoise_atrous(aux, s);
+    // Column just left of the seam stays near 0.2; just right near 0.8.
+    const std::size_t li = static_cast<std::size_t>(H / 2) * W + (W / 2 - 1);
+    const std::size_t ri = static_cast<std::size_t>(H / 2) * W + (W / 2);
+    EXPECT_NEAR(out[li].x, 0.2F, 0.06F);
+    EXPECT_NEAR(out[ri].x, 0.8F, 0.06F);
+}
+
+TEST(Denoise, AtrousZeroIterationsReturnsInputCopy)
+{
+    // iterations = 0 -> the loop never runs, output equals the input
+    // buffer verbatim (the degenerate-settings early-return-of-copy path).
+    const std::uint32_t W = 4;
+    const std::uint32_t H = 4;
+    const std::size_t n = static_cast<std::size_t>(W) * H;
+    std::vector<cd::math::Vec3f> color(n);
+    for (std::size_t i = 0; i < n; ++i)
+        color[i] = { static_cast<float>(i) * 0.01F, 0.0F, 0.0F };
+    std::vector<cd::math::Vec3f> albedo(n);
+    std::vector<cd::math::Vec3f> normal(n, { 0, 0, 1 });
+    std::vector<float> depth(n, 0.5F);
+    AuxBuffers aux { W, H, color, albedo, normal, depth };
+    AtrousSettings s {};
+    s.iterations = 0;
+    const auto out = denoise_atrous(aux, s);
+    ASSERT_EQ(out.size(), n);
+    for (std::size_t i = 0; i < n; ++i)
+        EXPECT_FLOAT_EQ(out[i].x, color[i].x);
+}
+
 TEST(Denoise, GlslKernelNonEmpty)
 {
     EXPECT_FALSE(cd::denoise::kAtrousCS.empty());

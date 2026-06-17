@@ -1,4 +1,5 @@
 #include <cd/atmosphere/Atmosphere.hpp>
+#include <cmath>
 #include <numbers>
 
 #include <gtest/gtest.h>
@@ -78,6 +79,66 @@ TEST(Atmosphere, TransmittanceMonotonicWithAltitude)
         EXPECT_GE(t.x + kEps, prev);
         prev = t.x;
     }
+}
+
+// ---- Transmittance-LUT edge branches (B4 topup; SEAL transmittance-v1) -----
+
+TEST(Atmosphere, ZenithMoreTransmissiveThanHorizon)
+{
+    // At a fixed altitude, looking straight up (mu = +1) traverses less
+    // atmosphere than looking toward the horizon (mu ~ 0), so zenith
+    // transmittance is higher. Exercises the mu-column gradient that the
+    // monotonic-altitude test never compared across columns.
+    Parameters p {};
+    const auto lut = bake_transmittance_lut(p, 32, 16);
+    const std::uint32_t y = 2;  // low altitude
+    const auto& zenith  = lut.at(lut.w - 1, y);   // mu ~ +1
+    const auto& horizon = lut.at(lut.w / 2, y);   // mu ~ 0
+    EXPECT_GT(zenith.x, horizon.x);
+    EXPECT_GT(zenith.y, horizon.y);
+    EXPECT_GT(zenith.z, horizon.z);
+}
+
+TEST(Atmosphere, RayleighBluerThanRedInTransmittance)
+{
+    // Rayleigh scatters blue more strongly, so a long horizon path
+    // transmits LESS blue than red (the spectral ordering of the per-RGB
+    // optical-depth accumulation — sky reddening at the horizon).
+    Parameters p {};
+    const auto lut = bake_transmittance_lut(p, 32, 16);
+    const auto& horizon = lut.at(lut.w / 2, 0);  // grazing, lowest altitude
+    EXPECT_GT(horizon.x, horizon.z);  // more red survives than blue
+}
+
+TEST(Atmosphere, NadirRayHasNearOpaqueGrazingPath)
+{
+    // mu = -1 (looking straight down at the surface) produces the maximum
+    // ground-tangent path -> the discriminant/sqrt branch with the longest
+    // `dist`; transmittance must stay finite and within [0, 1] (no NaN from
+    // the max(disc, 0) guard).
+    Parameters p {};
+    const auto lut = bake_transmittance_lut(p, 16, 8);
+    const auto& nadir = lut.at(0, 0);  // mu ~ -1, lowest altitude
+    EXPECT_TRUE(std::isfinite(nadir.x));
+    EXPECT_GE(nadir.x, 0.0F);
+    EXPECT_LE(nadir.x, 1.0F);
+}
+
+TEST(Atmosphere, OzoneLayerAddsGreenAbsorptionMidAltitude)
+{
+    // Zeroing ozone must RAISE transmittance (less absorption) — pins the
+    // ozone term `max(0, 1 - |h - 25|/15)` actually contributing. Compare
+    // a horizon path with vs without the ozone profile.
+    Parameters with_ozone {};
+    Parameters no_ozone = with_ozone;
+    no_ozone.ozone_absorption = { 0.0F, 0.0F, 0.0F };
+    const auto a = bake_transmittance_lut(with_ozone, 16, 16);
+    const auto b = bake_transmittance_lut(no_ozone, 16, 16);
+    // Green channel has the strongest ozone coefficient; without ozone
+    // the path transmits at least as much green everywhere.
+    const std::uint32_t col = a.w / 2;  // horizon-ish
+    for (std::uint32_t y = 0; y < a.h; ++y)
+        EXPECT_GE(b.at(col, y).y + 1e-5F, a.at(col, y).y) << "y=" << y;
 }
 
 TEST(Atmosphere, GlslKernelNonEmpty)

@@ -9,23 +9,25 @@ Path-tracing image denoiser with two backends: edge-aware a-trous wavelet (Damme
 ## Public headers
 - `Denoise.hpp` — Denoiser interface and filter implementations
 
-## Primary types
-- `AtrousFilter` — Edge-aware a-trous wavelet denoiser (Dammertz 2010); CPU + GLSL
-- `OidnFilter` — OpenImageDenoise backend slot (requires CD_ENABLE_OIDN)
+## Primary API (free functions; header-only)
+- `denoise_atrous(AuxBuffers, AtrousSettings) -> std::vector<Vec3f>` — edge-aware
+  a-trous wavelet denoiser (Dammertz 2010), CPU reference; **fully implemented +
+  tested**. The matching GLSL compute kernel is `kAtrousCS`.
+- `edge_weight(dc, dn, dz, AtrousSettings)` — the per-tap edge-stopping weight.
+- `denoise_oidn(AuxBuffers, OidnFilterKind)` — OpenImageDenoise (Intel) backend
+  slot. **Pass-through stub today** (returns the input unchanged) so call sites
+  can be written against the final API; the real body lands in
+  `cd/denoise/OidnBackend.cpp` when `CD_ENABLE_OIDN` + the OIDN dep are wired
+  (see ADR-20260616-band4-render-features-scope §denoise).
 
 ## Usage example
 ```cpp
 #include <cd/denoise/Denoise.hpp>
 
-// Create a-trous denoiser
-auto denoiser = cd::denoise::create_atrous_filter(
-  /*color_buffer=*/noisy_image,
-  /*normal_buffer=*/normal_map,
-  /*passes=*/3
-);
-
-// Denoise in-place
-denoiser->apply();
+cd::denoise::AuxBuffers aux { width, height,
+                              noisy_color, albedo, normal, depth };  // spans
+cd::denoise::AtrousSettings settings {};   // iterations = 5 (SVGF default)
+std::vector<cd::math::Vec3f> clean = cd::denoise::denoise_atrous(aux, settings);
 ```
 
 ## Build
