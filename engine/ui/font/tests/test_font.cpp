@@ -515,3 +515,67 @@ TEST(Font, StbBackendAlwaysCompilesAndRasterizes)
         EXPECT_EQ(shaped[i].glyph_id, 0x41U + i);
     }
 }
+
+// (9) shape() guards on the unloaded + empty-text branches. These are the
+//     default-build (no-HarfBuzz) shaping-gate edges: shape() must return an
+//     empty span — never dereference the null backend handle — when the font
+//     has not been parsed OR the text is empty. Neither branch was exercised
+//     before (every prior shape() test loads a font + passes non-empty text).
+//     This locks the front-of-function guard in Font::shape() that protects
+//     the identity fallback from touching impl_->stb_info on an unloaded Font.
+TEST(Font, ShapeReturnsEmptyForUnloadedOrEmptyText)
+{
+    // Unloaded font: shape() must short-circuit (no crash, empty result).
+    cd::ui::font::Font unloaded;
+    EXPECT_FALSE(unloaded.is_loaded());
+    EXPECT_TRUE(unloaded.shape("Hello", "en").empty());
+
+    // Loaded font but empty text: still empty (the text.empty() guard).
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0020U, 0x007EU, 16.0F, 1024U));
+    EXPECT_TRUE(f.shape("", "en").empty());
+}
+
+// (10) Identity shaper decodes MULTI-BYTE UTF-8 in the default (no-HarfBuzz)
+//      path. Every prior identity-path test used pure-ASCII input, so the
+//      2-/3-byte UTF-8 decode branch of the identity fallback was never
+//      covered. We feed a string mixing 1-byte ('A'), 2-byte (U+00E9 'é' =
+//      0xC3 0xA9) and 3-byte (U+20AC '€' = 0xE2 0x82 0xAC) sequences and
+//      assert the fallback emits exactly THREE glyphs whose glyph_id equals
+//      the decoded Unicode codepoint (identity contract: glyph_id == codepoint
+//      when no real shaper is present). On a HarfBuzz build shape() may map to
+//      real GIDs, so the codepoint-equality assertion is gated on !has_harfbuzz.
+TEST(Font, IdentityShaperDecodesMultiByteUtf8)
+{
+    const auto ttf = find_system_font();
+    if (ttf.empty())
+    {
+        GTEST_SKIP() << "No system TTF found at expected paths";
+    }
+    cd::ui::font::Font f;
+    // Force stb so we exercise the identity fallback regardless of build.
+    f.select_backend(cd::ui::font::Backend::kStb);
+    ASSERT_TRUE(f.load_ttf_in_memory(
+        std::span<const std::uint8_t>(ttf.data(), ttf.size())));
+    ASSERT_TRUE(f.rasterize_range(0x0020U, 0x00FFU, 16.0F, 1024U));
+
+    // "A" + "é"(U+00E9) + "€"(U+20AC) as raw UTF-8 bytes.
+    const char* mixed = "A\xC3\xA9\xE2\x82\xAC";
+    const auto  glyphs = f.shape(mixed, "en");
+
+    // 3 codepoints in → 3 ShapedGlyphs out (identity is 1:1, no ligatures).
+    ASSERT_EQ(glyphs.size(), 3U);
+    // Forcing kStb means the active backend is stb_truetype → identity shaper,
+    // so glyph_id carries the decoded codepoint even on an FT/HB-enabled build.
+    EXPECT_EQ(glyphs[0].glyph_id, 0x0041U);  // 'A'
+    EXPECT_EQ(glyphs[1].glyph_id, 0x00E9U);  // 'é'
+    EXPECT_EQ(glyphs[2].glyph_id, 0x20ACU);  // '€'
+}

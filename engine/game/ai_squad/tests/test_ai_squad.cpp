@@ -255,4 +255,70 @@ TEST(AiSquad, FourAgentCentroidIsMean)
     EXPECT_NEAR(f.radius, expected_radius, 1e-3F);
 }
 
+// =============================================================================
+// 11) Capacity cap: add_member is a no-op past 255 members (Formation.member_count
+//     is uint8_t). This locks the early-return guard in add_member() that was
+//     never exercised before — without it, member 256 would silently corrupt
+//     the uint8_t formation count. (Band-3 squad-v1 seal: CPU charter edge.)
+// =============================================================================
+TEST(AiSquad, CapacityCappedAt255)
+{
+    Squad sq;
+    for (std::uint64_t id = 1U; id <= 300U; ++id)
+    {
+        sq.add_member(id, SquadRole::kSuppressor);
+    }
+    // Only the first 255 enlistments succeed; 256..300 are dropped.
+    EXPECT_EQ(sq.size(), 255U);
+
+    sq.tick(0.0F);
+    // member_count is uint8_t — 255 must round-trip exactly, no overflow to 0.
+    EXPECT_EQ(sq.formation().member_count, 255U);
+
+    // Entities 1..255 are present; 256 was rejected by the cap.
+    EXPECT_NE(sq.find_member(255U), nullptr);
+    EXPECT_EQ(sq.find_member(256U), nullptr);
+}
+
+// =============================================================================
+// 12) raise_threat clamps to [0, 1] at BOTH boundaries. Existing decay test
+//     never drives threat above 1 or below 0, so the std::clamp upper/lower
+//     edges in raise_threat() were untested.
+// =============================================================================
+TEST(AiSquad, RaiseThreatClampsToUnitRange)
+{
+    Squad sq;
+    // Overshoot the upper bound: 0.7 + 0.6 = 1.3 → clamped to 1.0.
+    sq.raise_threat(0.7F);
+    sq.raise_threat(0.6F);
+    EXPECT_NEAR(sq.blackboard().threat_level, 1.0F, kEps);
+
+    // Negative delta drives toward 0 and clamps at the lower bound (no
+    // negative threat). 1.0 + (-5.0) = -4.0 → clamped to 0.0.
+    sq.raise_threat(-5.0F);
+    EXPECT_NEAR(sq.blackboard().threat_level, 0.0F, kEps);
+}
+
+// =============================================================================
+// 13) update_health clamps to [0, 1] and ignores unknown entities. The health
+//     clamp + the not-a-member early-return were both untested branches.
+// =============================================================================
+TEST(AiSquad, UpdateHealthClampsAndIgnoresUnknown)
+{
+    Squad sq;
+    sq.add_member(1U, SquadRole::kPointman);
+
+    sq.update_health(1U, 2.5F);   // above 1 → clamps to 1.
+    ASSERT_NE(sq.find_member(1U), nullptr);
+    EXPECT_NEAR(sq.find_member(1U)->health, 1.0F, kEps);
+
+    sq.update_health(1U, -3.0F);  // below 0 → clamps to 0.
+    EXPECT_NEAR(sq.find_member(1U)->health, 0.0F, kEps);
+
+    // Unknown entity is a no-op: the known member's health is untouched.
+    sq.update_health(999U, 0.5F);
+    EXPECT_NEAR(sq.find_member(1U)->health, 0.0F, kEps);
+    EXPECT_EQ(sq.find_member(999U), nullptr);
+}
+
 }  // namespace

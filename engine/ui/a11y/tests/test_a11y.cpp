@@ -283,3 +283,119 @@ TEST(A11y, FocusIndicatorIntegratesWithWidget)
     EXPECT_NEAR(ring.w, 84.0F,  kEps);
     EXPECT_NEAR(ring.h, 28.0F,  kEps);
 }
+
+// ---- Case 12: single-element tab order wraps to itself --------------------
+//
+// The wrap arithmetic in focus_next/focus_prev uses (cur + 1) % size and the
+// 0 -> last branch. With size()==1 both reduce to "stay on the only entry".
+// The multi-element wrap case is covered above; this pins the degenerate
+// single-element wrap that the modulo/branch would mishandle if changed.
+
+TEST(A11y, SingleElementTabOrderWrapsToSelf)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(5U, { a11y::Role::kButton, "Only", "", false });
+    const std::array<cd::ui::WidgetId, 1> order { 5U };
+    tree.set_tab_order(order);
+
+    tree.focus_next();           // no focus -> first entry
+    EXPECT_EQ(*tree.focus(), 5U);
+    tree.focus_next();           // wrap (0 + 1) % 1 == 0 -> stays on 5
+    EXPECT_EQ(*tree.focus(), 5U);
+    tree.focus_prev();           // 0 -> last == 0 -> stays on 5
+    EXPECT_EQ(*tree.focus(), 5U);
+    EXPECT_TRUE(tree.meta(5U).focused);
+}
+
+// ---- Case 13: unregistering the focused widget clears focus + tab slot -----
+//
+// unregister_widget has three coupled effects (erase meta, ranges::remove from
+// tab_order_, reset focused_ when it matches) and the "removed id was the
+// FOCUSED one mid-navigation" path was never asserted. After removing the
+// focused entry, focus() must be empty AND a following focus_next() must skip
+// the now-absent id and land on a surviving entry (no dangling focus, no
+// re-focusing the removed widget).
+
+TEST(A11y, UnregisterFocusedClearsFocusAndTabSlot)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(1U, { a11y::Role::kButton, "A", "", false });
+    tree.register_widget(2U, { a11y::Role::kButton, "B", "", false });
+    const std::array<cd::ui::WidgetId, 2> order { 1U, 2U };
+    tree.set_tab_order(order);
+
+    tree.focus_next();                       // focus 1
+    ASSERT_EQ(*tree.focus(), 1U);
+
+    tree.unregister_widget(1U);              // remove the focused widget
+    EXPECT_FALSE(tree.focus().has_value());  // focus cleared
+    EXPECT_FALSE(tree.has(1U));
+    EXPECT_EQ(tree.tab_order().size(), 1U);  // dropped from tab order too
+
+    // Next navigation skips the removed id and lands on the survivor.
+    tree.focus_next();
+    ASSERT_TRUE(tree.focus().has_value());
+    EXPECT_EQ(*tree.focus(), 2U);
+}
+
+// ---- Case 14: contrast boundary is inclusive at the threshold --------------
+//
+// passes_contrast uses `>=`, so a ratio at/above the AA cut-off (4.5) must
+// PASS and a value below must FAIL. Prior tests only checked comfortably-above
+// (21:1) and comfortably-below (~3.95) cases, never the boundary region. A
+// pure-grey colour with r=g=b=L has relative_luminance == L (the 709 weights
+// sum to 1), so L tunes the ratio against black directly:
+// ratio = (L + 0.05) / 0.05. The exact boundary is L == 0.175; we test a hair
+// ABOVE (L=0.18 -> ratio 4.6, provably >= 4.5 after float rounding) and a hair
+// BELOW (L=0.17 -> ratio 4.4) so the inclusive `>=` edge is pinned without
+// tripping on the single-ULP ambiguity that an exactly-4.5 float would carry.
+
+TEST(A11y, ContrastBoundaryIsInclusiveAtThreshold)
+{
+    // Just ABOVE the AA cut-off: ratio = (0.18 + 0.05)/0.05 = 4.6 >= 4.5.
+    constexpr a11y::Rgba kJustOver { 0.18F, 0.18F, 0.18F, 1.0F };
+    EXPECT_GE(a11y::compute_contrast_ratio(kJustOver, kBlack), 4.5F);
+    EXPECT_TRUE(a11y::passes_contrast(kJustOver, kBlack,
+                                      a11y::ThemeVariant::kStandardTheme));
+
+    // Just BELOW: ratio = (0.17 + 0.05)/0.05 = 4.4 < 4.5 -> fails.
+    constexpr a11y::Rgba kJustUnder { 0.17F, 0.17F, 0.17F, 1.0F };
+    EXPECT_LT(a11y::compute_contrast_ratio(kJustUnder, kBlack), 4.5F);
+    EXPECT_FALSE(a11y::passes_contrast(kJustUnder, kBlack,
+                                       a11y::ThemeVariant::kStandardTheme));
+
+    // The exact threshold value the helper enforces is 4.5 (AA body text).
+    EXPECT_NEAR(a11y::min_required_contrast(a11y::ThemeVariant::kStandardTheme),
+                4.5F, kEps);
+}
+
+// ---- Case 15: set_tab_order tolerates unknown ids (pre-bake contract) ------
+//
+// The header documents "Unknown ids are silently ignored at navigation time
+// so callers can pre-bake a stable order before all widgets are registered."
+// set_tab_order stores ids verbatim (including unknown ones); navigation must
+// still focus whatever id the order points at — even one with no registered
+// meta — without crashing, and meta() on it returns the default. This pins the
+// pre-bake-before-register workflow that the parallel-tree design depends on.
+
+TEST(A11y, TabOrderToleratesUnknownIds)
+{
+    a11y::A11yTree tree;
+    tree.register_widget(2U, { a11y::Role::kButton, "Known", "", false });
+
+    // Order references id 1 + 3 which are NOT registered yet.
+    const std::array<cd::ui::WidgetId, 3> order { 1U, 2U, 3U };
+    tree.set_tab_order(order);
+    EXPECT_EQ(tree.tab_order().size(), 3U);
+
+    // Navigating onto an unregistered id is safe: focus points at it, meta()
+    // returns the default (kUnknown), and no crash occurs.
+    tree.focus_next();
+    ASSERT_TRUE(tree.focus().has_value());
+    EXPECT_EQ(*tree.focus(), 1U);
+    EXPECT_EQ(tree.meta(1U).role, a11y::Role::kUnknown);
+
+    tree.focus_next();                       // -> 2 (the registered one)
+    EXPECT_EQ(*tree.focus(), 2U);
+    EXPECT_TRUE(tree.meta(2U).focused);
+}

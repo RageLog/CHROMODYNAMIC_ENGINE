@@ -200,6 +200,111 @@ TEST(UiWidget, ParentRelativeDrawCommandsCompose)
     EXPECT_FLOAT_EQ(cmds[1].rect.y, 120.0F);
 }
 
+// ---- Band-3 umbrella-v1 topup: deeper widget-tree branches ----------------
+//
+// The existing cases cover single-level hit-test, two-level parent-relative
+// hit, and topmost-of-two siblings. These add the genuinely-untested branches
+// the umbrella-v1 seal rests on: 3-deep nested coordinate composition through
+// hit_test, dispatch reaching the DEEPEST widget (not an ancestor), absolute
+// draw-command ordering across nesting, and remove_child on a NESTED node.
+
+// (a) 3-deep nested hit-test composes coordinate frames at every level.
+//     root@(100,100) > mid@(20,20) > leaf@(5,5,10,10). A screen-space click at
+//     (128,128) maps to mid-local (8,8) then leaf-local (3,3) — inside the leaf.
+//     A click at (122,122) lands in mid but OUTSIDE leaf -> returns mid.
+TEST(UiWidget, ThreeDeepNestedHitTestComposesFrames)
+{
+    cd::ui::Panel root {};
+    root.set_bounds({ 100.0F, 100.0F, 200.0F, 200.0F });
+    auto* mid = root.add_child<cd::ui::Panel>();
+    mid->set_bounds({ 20.0F, 20.0F, 80.0F, 80.0F });
+    auto* leaf = mid->add_child<cd::ui::Panel>();
+    leaf->set_bounds({ 5.0F, 5.0F, 10.0F, 10.0F });
+
+    // (128,128) -> mid-local (8,8) -> leaf-local (3,3): inside leaf.
+    EXPECT_EQ(root.hit_test(128.0F, 128.0F), leaf);
+    // (122,122) -> mid-local (2,2): inside mid but before leaf origin (5,5).
+    EXPECT_EQ(root.hit_test(122.0F, 122.0F), mid);
+    // Far corner inside root but outside mid -> returns root itself.
+    EXPECT_EQ(root.hit_test(290.0F, 290.0F), &root);
+}
+
+// (b) dispatch_click routes to the DEEPEST widget under the point, firing only
+//     the leaf button's handler — not an ancestor's. Confirms dispatch uses the
+//     same deepest-hit result, not a shallow first-match.
+TEST(UiWidget, DispatchReachesDeepestButton)
+{
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 200.0F, 200.0F });
+    auto* container = root.add_child<cd::ui::Panel>();
+    container->set_bounds({ 50.0F, 50.0F, 100.0F, 100.0F });
+    auto* btn = container->add_child<cd::ui::Button>("Deep");
+    btn->set_bounds({ 10.0F, 10.0F, 40.0F, 20.0F });
+
+    int fired { 0 };
+    btn->set_on_click([&] { ++fired; });
+
+    // Screen (75,75) -> container-local (25,25) -> button-local (15,15): inside.
+    root.dispatch_click(75.0F, 75.0F);
+    EXPECT_EQ(fired, 1);
+    EXPECT_EQ(btn->click_count(), 1U);
+
+    // A click inside container but OUTSIDE the button must NOT fire the button.
+    root.dispatch_click(55.0F, 55.0F);  // container-local (5,5): before button.
+    EXPECT_EQ(fired, 1);
+    EXPECT_EQ(btn->click_count(), 1U);
+}
+
+// (c) Draw-command emission order is parent-before-child (painter's algorithm)
+//     and absolute rects compose through 3 levels. Order matters for the
+//     frontend's back-to-front blit; this pins it.
+TEST(UiWidget, DrawOrderIsParentBeforeChildAcrossNesting)
+{
+    cd::ui::Panel root { cd::ui::Color { 1.0F, 0.0F, 0.0F, 1.0F } };
+    root.set_bounds({ 10.0F, 10.0F, 100.0F, 100.0F });
+    auto* mid = root.add_child<cd::ui::Panel>(cd::ui::Color { 0.0F, 1.0F, 0.0F, 1.0F });
+    mid->set_bounds({ 5.0F, 5.0F, 50.0F, 50.0F });
+    mid->add_child<cd::ui::Label>("leaf");  // text, drawn after mid's rect.
+
+    std::vector<cd::ui::DrawCommand> cmds;
+    root.collect_draw_commands(cmds);
+    // root rect, mid rect, leaf text = 3 commands, parent first.
+    ASSERT_EQ(cmds.size(), 3U);
+    EXPECT_EQ(cmds[0].kind, cd::ui::DrawKind::kRect);   // root
+    EXPECT_FLOAT_EQ(cmds[0].rect.x, 10.0F);
+    EXPECT_EQ(cmds[1].kind, cd::ui::DrawKind::kRect);   // mid (10+5)
+    EXPECT_FLOAT_EQ(cmds[1].rect.x, 15.0F);
+    EXPECT_EQ(cmds[2].kind, cd::ui::DrawKind::kText);   // leaf text (10+5+0)
+    EXPECT_FLOAT_EQ(cmds[2].rect.x, 15.0F);
+}
+
+// (d) remove_child detaches a NESTED child (not a direct root child). The
+//     mid-level panel removes its own leaf; root's subtree shrinks accordingly
+//     and the removed leaf no longer appears in draw collection.
+TEST(UiWidget, RemoveNestedChildPrunesSubtree)
+{
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 100.0F, 100.0F });
+    auto* mid = root.add_child<cd::ui::Panel>();
+    mid->set_bounds({ 0.0F, 0.0F, 80.0F, 80.0F });
+    auto* leaf = mid->add_child<cd::ui::Label>("gone-soon");
+    EXPECT_EQ(mid->child_count(), 1U);
+
+    // root cannot remove a grandchild — only the direct parent can.
+    EXPECT_FALSE(root.remove_child(leaf));
+    EXPECT_TRUE(mid->remove_child(leaf));
+    EXPECT_EQ(mid->child_count(), 0U);
+
+    std::vector<cd::ui::DrawCommand> cmds;
+    root.collect_draw_commands(cmds);
+    // root rect + mid rect only; the label text is gone.
+    EXPECT_EQ(cmds.size(), 2U);
+    for (const auto& c : cmds)
+    {
+        EXPECT_EQ(c.kind, cd::ui::DrawKind::kRect);
+    }
+}
+
 
 TEST(Anchor, StretchFillsParent)
 {
