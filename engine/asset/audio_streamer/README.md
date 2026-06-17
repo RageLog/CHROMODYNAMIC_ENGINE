@@ -63,10 +63,22 @@ stereo:  [L0 R0 L1 R1 L2 R2 ...]                    2 samples per frame
 5.1:     [FL FR FC LFE BL BR | FL FR FC LFE BL BR | ...]
 ```
 
-The decoder layer (`cd::asset_wav` / `cd::asset_ogg`) handles the raw
-format; the streamer interface presents a single uniform PCM type so
-downstream audio (`cd::audio`) does not need to switch on format at
-mix time.
+## Decode (Band 6)
+
+The decode payload is **real**, not a path-hash placeholder.
+`decode_audio_file()` runs the real `cd::asset::wav` RIFF/WAVE decoder on the
+worker (async) or owner (sync) thread, so a completion carries the file's REAL
+interleaved PCM + `{channels, sample_rate, frame_count}` metadata. Query the
+decoded format via `get_format()`.
+
+`.wav` is the wired path. `.ogg` (Vorbis) is **sealed** — there is no Vorbis
+decoder at the asset layer yet (no `cd::asset_ogg` exists), so an `.ogg`
+request fails to decode (silently dropped) rather than fabricating a
+placeholder. See `docs/ADR/ADR-20260616-band6-asset-streamers-scope.md` for
+the trigger to lift the seal (a `cd::asset_ogg` loader).
+
+The streamer interface presents a single uniform PCM type so downstream audio
+(`cd::audio`) does not need to switch on format at mix time.
 
 ## Sync vs async determinism
 

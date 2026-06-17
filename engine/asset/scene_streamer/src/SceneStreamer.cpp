@@ -1,19 +1,19 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/asset/scene_streamer/SceneStreamer.cpp
 // Phase 586 — cd::asset::scene_streamer implementation (Sprint-1: synchronous)
-// Phase 755 — Sprint-2: opt-in async path via AsyncScenePool
+// Phase 755 — opt-in async path via AsyncScenePool
+// Band 6   — real glTF parse wired into BOTH the sync and async paths.
 //
-// Sprint-1 strategy (use_async == false, default):
+// Sync mode (use_async == false, default):
 //   * On tick(), pick the highest-priority pending entry via O(n) scan.
-//   * Perform synchronous load via cd::asset::gltf::load_scene().
-//   * Failure results in the entry being silently dropped.
+//   * Parse via cd::asset::gltf::load_scene(); failure → silently dropped.
 //
-// Sprint-2 strategy (use_async == true):
-//   * AsyncScenePool is started with config_.worker_count threads.
+// Async mode (use_async == true):
+//   * AsyncScenePool workers run cd::asset::gltf::load_scene() per file and
+//     hand back a real owning LoadedScene.
 //   * tick() submits all pending requests to the pool, then drains the
-//     completion queue into completed_paths_.
-//   * Placeholder SceneIds are synthesised on the owner thread from each
-//     completed path — avoiding cross-thread ECS ingest issues.
+//     completed scenes into completed_ (real LoadedScene data, real SceneIds).
+//   * GPU/ECS ingest of the LoadedScene remains the render-side consumer's job.
 // =============================================================================
 
 #include <cd/asset/scene_streamer/SceneStreamer.hpp>
@@ -131,21 +131,20 @@ void SceneStreamer::tick_async_impl()
 // accept_async_completions (private helper)
 // ---------------------------------------------------------------------------
 
-void SceneStreamer::accept_async_completions(std::vector<std::string> paths)
+void SceneStreamer::accept_async_completions(std::vector<CompletedScene> done)
 {
-    // Sprint-2: synthesise placeholder SceneIds on the owner thread so that
-    // cross-thread ECS ingest races are avoided. Real scene data integration
-    // is a future Sprint deliverable once the ECS thread model is finalised.
-    for (auto& path : paths)
+    // Each completion already carries a fully-parsed LoadedScene from a worker.
+    // We register the real data + a real SceneId on the owner thread (the GPU/
+    // ECS ingest of the scene is the render-side consumer's job).
+    for (auto& item : done)
     {
-        if (completed_paths_.contains(path))
+        if (completed_paths_.contains(item.path))
         {
             continue;  // async pool may complete a path that was already cancelled
         }
         const auto new_id = SceneId{ static_cast<std::uint32_t>(completed_.size()) };
-        // Push a default-constructed LoadedScene as the placeholder.
-        completed_.push_back(LoadedRecord{ cd::asset::gltf::LoadedScene{}, new_id });
-        completed_paths_.emplace(path, new_id);
+        completed_.push_back(LoadedRecord{ std::move(item.scene), new_id });
+        completed_paths_.emplace(item.path, new_id);
     }
 }
 
@@ -205,6 +204,17 @@ SceneStreamer::get_loaded(std::string_view asset_path) const
         return std::nullopt;
     }
     return it->second;
+}
+
+const cd::asset::gltf::LoadedScene*
+SceneStreamer::get_scene(std::string_view asset_path) const
+{
+    const auto it = completed_paths_.find(std::string{ asset_path });
+    if (it == completed_paths_.cend())
+    {
+        return nullptr;
+    }
+    return &completed_.at(it->second.index).scene;
 }
 
 std::size_t SceneStreamer::pending_count() const noexcept

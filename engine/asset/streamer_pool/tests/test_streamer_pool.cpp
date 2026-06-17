@@ -36,15 +36,132 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
 
+namespace fs = std::filesystem;
+
 using cd::asset::streamer_pool::PoolConfig;
 using cd::asset::streamer_pool::PoolStats;
 using cd::asset::streamer_pool::StreamerPool;
+
+// ---- fixtures ----------------------------------------------------------------
+//
+// Band 6 wired real decode into the streamers, so completion now requires a
+// real file on disk. The pool's *orchestration* (token dispatch / deficit /
+// draining) is unchanged and decode-agnostic; these helpers just give the
+// completion-count assertions a real .cdtex / .wav to decode.
+
+[[nodiscard]] fs::path tmp_path(const char* ext)
+{
+    static std::atomic<std::uint64_t> seq { 0 };
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    return fs::temp_directory_path() /
+           ("cd_sp_" + std::to_string(static_cast<std::uint64_t>(stamp)) + "_" +
+            std::to_string(seq.fetch_add(1)) + ext);
+}
+
+struct PathGuard
+{
+    fs::path path;
+
+    explicit PathGuard(fs::path p)
+        : path { std::move(p) }
+    {
+    }
+
+    ~PathGuard()
+    {
+        std::error_code ec;
+        fs::remove(path, ec);
+    }
+
+    PathGuard(const PathGuard&)            = delete;
+    PathGuard& operator=(const PathGuard&) = delete;
+    PathGuard(PathGuard&&)                 = delete;
+    PathGuard& operator=(PathGuard&&)      = delete;
+};
+
+void put_u16(std::vector<std::uint8_t>& v, std::uint16_t x)
+{
+    v.push_back(static_cast<std::uint8_t>(x & 0xFFU));
+    v.push_back(static_cast<std::uint8_t>((x >> 8U) & 0xFFU));
+}
+
+void put_u32(std::vector<std::uint8_t>& v, std::uint32_t x)
+{
+    v.push_back(static_cast<std::uint8_t>(x & 0xFFU));
+    v.push_back(static_cast<std::uint8_t>((x >> 8U) & 0xFFU));
+    v.push_back(static_cast<std::uint8_t>((x >> 16U) & 0xFFU));
+    v.push_back(static_cast<std::uint8_t>((x >> 24U) & 0xFFU));
+}
+
+void put_tag(std::vector<std::uint8_t>& v, const char (&tag)[5])
+{
+    for (int i = 0; i < 4; ++i)
+    {
+        v.push_back(static_cast<std::uint8_t>(tag[i]));
+    }
+}
+
+/// Write a valid single-mip .cdtex (CDBC7 v1) 4x4 fixture.
+void write_cdtex(const fs::path& p)
+{
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f.write("CDBC7", 5);
+    const std::uint8_t version = 1;
+    f.write(reinterpret_cast<const char*>(&version), 1);
+    const std::vector<std::uint8_t> dims { 4U, 0U, 0U, 0U, 4U, 0U, 0U, 0U };  // w=4, h=4
+    f.write(reinterpret_cast<const char*>(dims.data()), 8);
+    const std::uint8_t bw[2] { 1U, 0U };
+    const std::uint8_t bh[2] { 1U, 0U };
+    f.write(reinterpret_cast<const char*>(bw), 2);
+    f.write(reinterpret_cast<const char*>(bh), 2);
+    const std::vector<std::uint8_t> block(16U, 0xAAU);  // one BC7 block
+    f.write(reinterpret_cast<const char*>(block.data()), 16);
+}
+
+/// Write a minimal valid mono s16 PCM .wav fixture.
+void write_wav(const fs::path& p)
+{
+    const std::uint32_t frames    = 16U;
+    const std::uint16_t channels  = 1U;
+    const std::uint16_t bits      = 16U;
+    const std::uint32_t rate      = 44100U;
+    const std::uint32_t data_size = frames * channels * (bits / 8U);
+    const std::uint32_t fmt_size  = 16U;
+    const std::uint32_t riff_size = 4U + 8U + fmt_size + 8U + data_size;
+
+    std::vector<std::uint8_t> v;
+    put_tag(v, "RIFF");
+    put_u32(v, riff_size);
+    put_tag(v, "WAVE");
+    put_tag(v, "fmt ");
+    put_u32(v, fmt_size);
+    put_u16(v, 1U);
+    put_u16(v, channels);
+    put_u32(v, rate);
+    put_u32(v, rate * channels * (bits / 8U));
+    put_u16(v, static_cast<std::uint16_t>(channels * (bits / 8U)));
+    put_u16(v, bits);
+    put_tag(v, "data");
+    put_u32(v, data_size);
+    for (std::uint32_t i = 0; i < data_size; ++i)
+    {
+        v.push_back(0U);
+    }
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f.write(reinterpret_cast<const char*>(v.data()), static_cast<std::streamsize>(v.size()));
+}
 
 // ---- helpers -----------------------------------------------------------------
 
@@ -87,10 +204,14 @@ TEST(StreamerPool, StatsAllZeroWhenNoStreamersAttached)
 
 TEST(StreamerPool, AudioOnlyTickDrainsPending)
 {
-    cd::asset::audio_streamer::AudioStreamer audio;
+    PathGuard ga { tmp_path(".wav") };
+    PathGuard gb { tmp_path(".wav") };
+    write_wav(ga.path);
+    write_wav(gb.path);
 
-    audio.enqueue({ "audio/clip_a.wav", 0U, 100U });
-    audio.enqueue({ "audio/clip_b.wav", 0U, 100U });
+    cd::asset::audio_streamer::AudioStreamer audio;
+    audio.enqueue({ ga.path.string(), 0U, 100U });
+    audio.enqueue({ gb.path.string(), 0U, 100U });
 
     StreamerPool pool;
     pool.attach_audio(&audio);
@@ -193,12 +314,19 @@ TEST(StreamerPool, ReconfigureResetsDeficit)
 
 TEST(StreamerPool, TextureStreamerDrainsViaTick)
 {
+    PathGuard g0 { tmp_path(".cdtex") };
+    PathGuard g1 { tmp_path(".cdtex") };
+    PathGuard g2 { tmp_path(".cdtex") };
+    write_cdtex(g0.path);
+    write_cdtex(g1.path);
+    write_cdtex(g2.path);
+
     cd::rhi::NullDevice                          device;
     cd::asset::texture_streamer::TextureStreamer texture;
 
-    texture.enqueue({ "textures/albedo.cdtex",  0U, 200U });
-    texture.enqueue({ "textures/normal.cdtex",  0U, 150U });
-    texture.enqueue({ "textures/roughness.cdtex", 0U, 100U });
+    texture.enqueue({ g0.path.string(), 0U, 200U });
+    texture.enqueue({ g1.path.string(), 0U, 150U });
+    texture.enqueue({ g2.path.string(), 0U, 100U });
 
     StreamerPool pool;
     pool.configure(PoolConfig{ .max_concurrent_loads = 4U });
@@ -319,14 +447,23 @@ TEST(StreamerPool, ZeroWeightStreamerNeverScheduled)
 
 TEST(StreamerPool, SingleStreamerGetsAllTokens)
 {
+    PathGuard g0 { tmp_path(".wav") };
+    PathGuard g1 { tmp_path(".wav") };
+    PathGuard g2 { tmp_path(".wav") };
+    PathGuard g3 { tmp_path(".wav") };
+    write_wav(g0.path);
+    write_wav(g1.path);
+    write_wav(g2.path);
+    write_wav(g3.path);
+
     cd::asset::audio_streamer::AudioStreamer audio;
 
     // Enqueue exactly max_concurrent_loads items so a single tick should drain
     // them all if the sole streamer truly receives every token.
-    for (int i = 0; i < 4; ++i)
-    {
-        audio.enqueue({ "audio/single" + std::to_string(i) + ".wav", 0U, 100U });
-    }
+    audio.enqueue({ g0.path.string(), 0U, 100U });
+    audio.enqueue({ g1.path.string(), 0U, 100U });
+    audio.enqueue({ g2.path.string(), 0U, 100U });
+    audio.enqueue({ g3.path.string(), 0U, 100U });
 
     StreamerPool pool;
     pool.configure(PoolConfig{
@@ -361,13 +498,21 @@ TEST(StreamerPool, LowPriorityStreamerNotStarved)
 
     constexpr int kSceneItems = 30;
     constexpr int kAudioItems = 5;
+    // Scene uses non-existent paths — the load fails (parse drops it), but the
+    // dispatch still DEQUEUES them, which is what scene_pending==0 verifies.
     for (int i = 0; i < kSceneItems; ++i)
     {
         scene.enqueue({ "scene/fair" + std::to_string(i) + ".glb", 100U });
     }
+    // Audio needs real fixtures so the 5 completions are genuine PCM decodes.
+    std::vector<std::unique_ptr<PathGuard>> audio_guards;
+    audio_guards.reserve(static_cast<std::size_t>(kAudioItems));
     for (int i = 0; i < kAudioItems; ++i)
     {
-        audio.enqueue({ "audio/fair" + std::to_string(i) + ".wav", 0U, 100U });
+        auto guard = std::make_unique<PathGuard>(tmp_path(".wav"));
+        write_wav(guard->path);
+        audio.enqueue({ guard->path.string(), 0U, 100U });
+        audio_guards.push_back(std::move(guard));
     }
 
     StreamerPool pool;

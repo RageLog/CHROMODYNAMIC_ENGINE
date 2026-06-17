@@ -1,14 +1,18 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/asset/scene_streamer/AsyncScenePool.cpp
-// Phase 755 — cd::asset::scene_streamer Sprint-2 (async path)
+// Phase 755 — cd::asset::scene_streamer async path
+// Band 6   — workers run the real glTF parse; completions carry LoadedScene.
 //
 // Implementation strategy:
 //   * Worker threads block on work_cv_ until a pending request arrives or
 //     stop_ is signalled.
 //   * Each worker grabs ONE request under the lock, releases the lock, then
-//     performs the (simulated) I/O outside the lock to maximise concurrency.
-//   * On completion the worker pushes the asset path onto completed_queue_
-//     under the lock and notifies idle_cv_ so join_all() can detect quiescence.
+//     runs cd::asset::gltf::load_scene() outside the lock to maximise
+//     concurrency. The glTF parse is a pure CPU read; no shared mutable state.
+//   * A successful parse pushes a CompletedScene (path + LoadedScene) onto
+//     completed_queue_ under the lock and notifies idle_cv_. A failed parse is
+//     dropped (not reported) but still decrements inflight_ so join_all() can
+//     reach quiescence.
 //   * poll_completed() swaps out completed_queue_ under the lock (O(1) swap).
 //   * join_all() waits on idle_cv_ until pending_queue_ + inflight_ == 0,
 //     then sets stop_ and joins all threads.
@@ -22,8 +26,11 @@
 
 #include <cd/asset/scene_streamer/SceneStreamer.hpp>
 
+#include <cd/asset/gltf/SceneLoader.hpp>
+
 #include <algorithm>
 #include <cassert>
+#include <utility>
 
 namespace cd::asset::scene_streamer
 {
@@ -88,9 +95,9 @@ void AsyncScenePool::submit_async(StreamRequest request)
 // poll_completed — non-blocking drain
 // ---------------------------------------------------------------------------
 
-std::vector<std::string> AsyncScenePool::poll_completed()
+std::vector<CompletedScene> AsyncScenePool::poll_completed()
 {
-    std::vector<std::string> out;
+    std::vector<CompletedScene> out;
     {
         const std::scoped_lock lk { mutex_ };
         out.swap(completed_queue_);
@@ -168,19 +175,25 @@ void AsyncScenePool::worker_loop()
             inflight_.fetch_add(1U, std::memory_order_relaxed);
         }
 
-        // --- Simulate I/O outside the lock ---
-        // Sprint-2 stub: real glTF decode via cd::asset::gltf::load_scene()
-        // is a future deliverable once thread-safe scene ingest is wired up.
-        // The path is used as the completion token.
-        const std::string completed_path = std::move(entry.path);
+        // --- Real glTF parse outside the lock ---
+        // load_scene() is a pure CPU read of a distinct file per worker; no
+        // shared mutable state, so it is safe to run concurrently. A failed
+        // parse yields no value → dropped (not reported as completed).
+        auto parsed = cd::asset::gltf::load_scene(entry.path);
 
-        // --- Publish completion ---
+        // --- Publish completion (only on a successful parse) ---
         {
             const std::scoped_lock lk { mutex_ };
-            completed_queue_.push_back(completed_path);
+            if (parsed.has_value())
+            {
+                completed_queue_.push_back(CompletedScene{ std::move(entry.path), std::move(*parsed) });
+            }
             inflight_.fetch_sub(1U, std::memory_order_relaxed);
         }
-        completed_count_.fetch_add(1U, std::memory_order_relaxed);
+        if (parsed.has_value())
+        {
+            completed_count_.fetch_add(1U, std::memory_order_relaxed);
+        }
         idle_cv_.notify_all();  // wake join_all() if waiting
     }
 }

@@ -2,18 +2,26 @@
 // CHROMODYNAMIC — cd/asset/audio_streamer/AudioStreamer.hpp
 // Phase 619 — cd::asset::audio_streamer (Sprint-1: synchronous)
 // Phase 756 — cd::asset::audio_streamer (Sprint-2: opt-in async path)
+// Band 6   — real WAV PCM decode wired behind the orchestration. OGG SEALED
+//            (no decoder at the asset layer yet — see ADR-20260616-band6).
 //
 // Audio clip streaming coordinator. Accepts enqueue/cancel requests keyed by
-// asset path and drives "load" on each tick() call. Resolved clips are
+// asset path and drives a decode on each tick() call. Resolved clips are
 // identified by cd::asset::AssetId derived from the asset path.
 //
-// Sprint-1: synchronous — highest-priority pending request processed inline.
-// Sprint-2: opt-in async via AsyncAudioPool + AudioStreamerConfig.
-//   * Set use_async = true (and optionally worker_count > 0) to offload I/O
-//     to background threads while tick() only drains the completion queue.
+// Sync mode  — highest-priority pending request decoded inline.
+// Async mode — opt-in via AsyncAudioPool + AudioStreamerConfig.
+//   * Set use_async = true (and optionally worker_count > 0) to offload the
+//     decode to background threads while tick() only drains completions.
 //   * Priority: higher uint8 value = higher priority (255 = highest, 0 = lowest).
 //   * channel_target: target audio bus index; reserved for routing; carried
-//     through but not acted on in Sprint-1 or Sprint-2 stub.
+//     through but not acted on yet.
+//
+// DECODE: BOTH paths run the real cd::asset::wav::load() RIFF/WAVE decoder, so
+//   a completion carries real PCM bytes + (channels, sample_rate, frame_count)
+//   metadata. ".ogg" inputs are SEALED — there is no Vorbis decoder at the
+//   asset layer; an .ogg request fails to decode (silently dropped) until a
+//   cd::asset::ogg loader lands (trigger documented in the Band-6 ADR).
 //
 // Sibling to:
 //   cd::asset::scene_streamer   (Phase 586)
@@ -54,6 +62,37 @@ struct StreamRequest
     std::uint8_t priority       { 128U };
 };
 
+/// Decoded CPU audio — the REAL payload produced by a worker (or the sync
+/// path). Carries the raw interleaved PCM bytes + the format metadata read
+/// from the file so consumers + tests can verify a genuine decode happened
+/// (not a path-hash placeholder).
+struct DecodedAudio
+{
+    std::uint16_t             channels        { 0U };
+    std::uint32_t             sample_rate     { 0U };
+    std::uint16_t             bits_per_sample { 0U };
+    std::uint64_t             frame_count     { 0U };  ///< frames = channels-grouped samples
+    std::vector<std::uint8_t> pcm;                     ///< interleaved PCM bytes
+
+    [[nodiscard]] bool has_samples() const noexcept
+    {
+        return !pcm.empty();
+    }
+};
+
+/// Worker → owner completion record: the asset path plus its decoded PCM.
+struct CompletedAudio
+{
+    std::string  path;
+    DecodedAudio decoded;
+};
+
+/// Decode an audio file from disk into a DecodedAudio. ".wav" → real
+/// cd::asset::wav RIFF/WAVE decoder. ".ogg" (and any other extension) is NOT
+/// supported at the asset layer yet → std::nullopt (SEALED, see Band-6 ADR).
+/// CPU-only — no audio-device upload. Returns nullopt on any decode/IO failure.
+[[nodiscard]] std::optional<DecodedAudio> decode_audio_file(std::string_view path);
+
 // ---- AsyncAudioPool ---------------------------------------------------------
 
 /// Thread-pool that executes StreamRequests on background worker threads.
@@ -69,8 +108,9 @@ struct StreamRequest
 ///   individually thread-safe via internal mutex + condition_variable.
 ///   Do NOT call join_all while another thread holds a lock on the pool.
 ///
-/// The pool simulates I/O completion via a lightweight stub (same AssetId
-/// hash strategy as Sprint-1) — real WAV/OGG decode is a future Sprint.
+/// Each worker runs the REAL cd::asset::wav decoder (decode_audio_file) outside
+/// the lock, so a completion carries the decoded PCM + format. A path that
+/// fails to decode (incl. any .ogg input) is NOT reported as completed.
 class AsyncAudioPool
 {
 public:
@@ -90,10 +130,10 @@ public:
     /// Enqueue a request for async processing. Thread-safe.
     void submit_async(StreamRequest request);
 
-    /// Drain and return asset paths that have been fully processed since the
+    /// Drain and return decoded clips that have been fully processed since the
     /// last poll_completed() call. Thread-safe. Returns an empty vector if
     /// nothing has finished yet. Does NOT block.
-    [[nodiscard]] std::vector<std::string> poll_completed();
+    [[nodiscard]] std::vector<CompletedAudio> poll_completed();
 
     /// Signal all workers to finish outstanding work, then join them.
     /// Blocks until all submitted requests are processed. Safe to call from
@@ -119,8 +159,8 @@ private:
     std::condition_variable work_cv_;    // workers wait for work or stop
     std::condition_variable idle_cv_;    // join_all waits for quiescence
 
-    std::vector<PendingEntry>  pending_queue_;   // protected by mutex_
-    std::vector<std::string>   completed_queue_; // protected by mutex_
+    std::vector<PendingEntry>   pending_queue_;   // protected by mutex_
+    std::vector<CompletedAudio> completed_queue_; // protected by mutex_
 
     std::atomic<std::size_t>   completed_count_ { 0U };
     std::atomic<std::uint32_t> inflight_        { 0U }; // jobs in-progress
@@ -213,6 +253,18 @@ public:
     [[nodiscard]] std::optional<cd::asset::AssetId>
     get_loaded(std::string_view asset_path) const;
 
+    /// Returns the REAL decoded format (channels, sample_rate, frame_count) of
+    /// a loaded clip, or std::nullopt if the path is not loaded. Lets consumers
+    /// + tests verify a genuine PCM decode happened, not a path-hash placeholder.
+    struct ClipFormat
+    {
+        std::uint16_t channels    { 0U };
+        std::uint32_t sample_rate { 0U };
+        std::uint64_t frame_count { 0U };
+    };
+    [[nodiscard]] std::optional<ClipFormat>
+    get_format(std::string_view asset_path) const;
+
     /// Number of enqueued requests not yet loaded or failed.
     [[nodiscard]] std::size_t pending_count() const noexcept;
 
@@ -235,6 +287,9 @@ private:
     {
         cd::asset::AssetId id {};
         std::uint8_t       channel_target { 0U };
+        std::uint16_t      channels       { 0U };  // REAL decoded channels
+        std::uint32_t      sample_rate    { 0U };  // REAL decoded sample rate
+        std::uint64_t      frame_count    { 0U };  // REAL decoded frame count
     };
 
     // Configuration (set at construction, immutable thereafter).
@@ -249,14 +304,20 @@ private:
     // Completion table indexed by insertion order.
     std::vector<LoadedRecord> completed_;
 
-    // Reverse lookup: path → AssetId for completed assets.
-    std::unordered_map<std::string, cd::asset::AssetId> completed_paths_;
+    // Reverse lookup: path → index into completed_ for completed assets.
+    std::unordered_map<std::string, std::size_t> completed_index_;
 
     // ---- Helpers ------------------------------------------------------------
 
-    /// Accept a batch of completed asset paths from the async pool and register
-    /// AssetId entries in completed_ / completed_paths_.
-    void accept_async_completions(std::vector<std::string> paths);
+    /// Accept a batch of decoded clips from the async pool and register the
+    /// real PCM metadata + AssetId in completed_ / completed_index_.
+    void accept_async_completions(std::vector<CompletedAudio> done);
+
+    /// Owner-thread record registration from a decoded clip. Stores the AssetId
+    /// + REAL decoded format in completed_ / completed_index_.
+    void register_clip(const std::string& path,
+                       std::uint8_t        channel,
+                       const DecodedAudio& decoded);
 
     /// Sprint-1 sync tick: process the single highest-priority pending entry.
     void tick_sync_impl();

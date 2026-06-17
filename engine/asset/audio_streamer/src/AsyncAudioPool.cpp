@@ -1,14 +1,18 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/asset/audio_streamer/AsyncAudioPool.cpp
-// Phase 756 — cd::asset::audio_streamer Sprint-2 (async path)
+// Phase 756 — cd::asset::audio_streamer async path
+// Band 6   — workers run the real WAV decode; completions carry real PCM.
 //
-// Implementation strategy (mirrors AsyncTexturePool exactly):
+// Implementation strategy (mirrors AsyncTexturePool):
 //   * Worker threads block on work_cv_ until a pending request arrives or
 //     stop_ is signalled.
 //   * Each worker grabs ONE request under the lock, releases the lock, then
-//     performs the (simulated) I/O outside the lock to maximise concurrency.
-//   * On completion the worker pushes the asset path onto completed_queue_
-//     under the lock and notifies idle_cv_ so join_all() can detect quiescence.
+//     runs the REAL decode (decode_audio_file) outside the lock to maximise
+//     concurrency. CPU-only — no audio-device contact.
+//   * A successful decode pushes a CompletedAudio (path + PCM) onto
+//     completed_queue_ under the lock and notifies idle_cv_. A failed decode
+//     (incl. any sealed .ogg) is dropped but still decrements inflight_ so
+//     join_all() can reach quiescence.
 //   * poll_completed() swaps out completed_queue_ under the lock (O(1) swap).
 //   * join_all() waits on idle_cv_ until pending_queue_ + inflight_ == 0,
 //     then sets stop_ and joins all threads.
@@ -23,6 +27,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <optional>
+#include <utility>
 
 namespace cd::asset::audio_streamer
 {
@@ -88,9 +94,9 @@ void AsyncAudioPool::submit_async(StreamRequest request)
 // poll_completed — non-blocking drain
 // ---------------------------------------------------------------------------
 
-std::vector<std::string> AsyncAudioPool::poll_completed()
+std::vector<CompletedAudio> AsyncAudioPool::poll_completed()
 {
-    std::vector<std::string> out;
+    std::vector<CompletedAudio> out;
     {
         const std::scoped_lock lk { mutex_ };
         out.swap(completed_queue_);
@@ -168,18 +174,24 @@ void AsyncAudioPool::worker_loop()
             inflight_.fetch_add(1U, std::memory_order_relaxed);
         }
 
-        // --- Simulate I/O outside the lock ---
-        // Sprint-2 stub: real WAV/OGG decode is a future deliverable.
-        // The path is used as the completion token; no actual file I/O here.
-        const std::string completed_path = std::move(entry.path);
+        // --- Real CPU decode outside the lock ---
+        // decode_audio_file runs the WAV decoder (or returns nullopt for a
+        // sealed .ogg / IO failure → dropped, not completed).
+        std::optional<DecodedAudio> decoded = decode_audio_file(entry.path);
 
-        // --- Publish completion ---
+        // --- Publish completion (only on a successful decode) ---
         {
             const std::scoped_lock lk { mutex_ };
-            completed_queue_.push_back(completed_path);
+            if (decoded.has_value())
+            {
+                completed_queue_.push_back(CompletedAudio{ std::move(entry.path), std::move(*decoded) });
+            }
             inflight_.fetch_sub(1U, std::memory_order_relaxed);
         }
-        completed_count_.fetch_add(1U, std::memory_order_relaxed);
+        if (decoded.has_value())
+        {
+            completed_count_.fetch_add(1U, std::memory_order_relaxed);
+        }
         idle_cv_.notify_all();  // wake join_all() if waiting
     }
 }

@@ -8,6 +8,7 @@
 # asset-streaming family.
 #
 # Depends on cd::asset for AssetId (clip identity) and cd::core for Defines.
+# Band 6: real WAV PCM decode via cd::asset_wav (OGG sealed — no loader yet).
 cd_add_library(asset_audio_streamer
   TYPE STATIC
   SOURCES
@@ -16,6 +17,8 @@ cd_add_library(asset_audio_streamer
   PUBLIC_DEPS
     cd::core
     cd::asset
+  PRIVATE_DEPS
+    cd::asset_wav
 )
 
 if(CD_ENABLE_TESTING)

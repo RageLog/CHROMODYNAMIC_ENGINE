@@ -1,14 +1,18 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/asset/texture_streamer/AsyncTexturePool.cpp
-// Phase 714 — cd::asset::texture_streamer Sprint-2 (async path)
+// Phase 714 — cd::asset::texture_streamer async path
+// Band 6   — workers run the real CPU decode; completions carry decoded data.
 //
 // Implementation strategy:
 //   * Worker threads block on work_cv_ until a pending request arrives or
 //     stop_ is signalled.
 //   * Each worker grabs ONE request under the lock, releases the lock, then
-//     performs the (simulated) I/O outside the lock to maximise concurrency.
-//   * On completion the worker pushes the asset path onto completed_queue_
-//     under the lock and notifies idle_cv_ so join_all() can detect quiescence.
+//     runs the REAL decode (decode_texture_file) outside the lock to maximise
+//     concurrency. CPU-only — workers never touch IDevice.
+//   * A successful decode pushes a CompletedTexture (path + decoded payload)
+//     onto completed_queue_ under the lock and notifies idle_cv_. A failed
+//     decode is dropped (not reported as completed) but still decrements
+//     inflight_ so join_all() can reach quiescence.
 //   * poll_completed() swaps out completed_queue_ under the lock (O(1) swap).
 //   * join_all() waits on idle_cv_ until pending_queue_ + inflight_ == 0,
 //     then sets stop_ and joins all threads.
@@ -21,6 +25,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <optional>
+#include <utility>
 
 namespace cd::asset::texture_streamer
 {
@@ -87,9 +93,9 @@ void AsyncTexturePool::submit_async(StreamRequest request)
 // poll_completed — non-blocking drain
 // ---------------------------------------------------------------------------
 
-std::vector<std::string> AsyncTexturePool::poll_completed()
+std::vector<CompletedTexture> AsyncTexturePool::poll_completed()
 {
-    std::vector<std::string> out;
+    std::vector<CompletedTexture> out;
     {
         const std::scoped_lock lk { mutex_ };
         out.swap(completed_queue_);
@@ -167,18 +173,24 @@ void AsyncTexturePool::worker_loop()
             inflight_.fetch_add(1U, std::memory_order_relaxed);
         }
 
-        // --- Simulate I/O outside the lock ---
-        // Sprint-2 stub: real cdtex decode is a future deliverable.
-        // The path is used as the completion token; no actual file I/O here.
-        const std::string completed_path = std::move(entry.path);
+        // --- Real CPU decode outside the lock ---
+        // decode_texture_file dispatches cdtex vs. stb image. CPU-only; no
+        // IDevice contact. A failure yields nullopt → dropped (not completed).
+        std::optional<DecodedTexture> decoded = decode_texture_file(entry.path);
 
-        // --- Publish completion ---
+        // --- Publish completion (only on a successful decode) ---
         {
             const std::scoped_lock lk { mutex_ };
-            completed_queue_.push_back(completed_path);
+            if (decoded.has_value())
+            {
+                completed_queue_.push_back(CompletedTexture{ std::move(entry.path), std::move(*decoded) });
+            }
             inflight_.fetch_sub(1U, std::memory_order_relaxed);
         }
-        completed_count_.fetch_add(1U, std::memory_order_relaxed);
+        if (decoded.has_value())
+        {
+            completed_count_.fetch_add(1U, std::memory_order_relaxed);
+        }
         idle_cv_.notify_all();  // wake join_all() if waiting
     }
 }

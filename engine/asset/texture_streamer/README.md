@@ -72,6 +72,20 @@ The async path **decouples** upload latency from frame work but
 sacrifices per-frame determinism — runtime games on PC / console use
 this; deterministic captures use the sync path.
 
+## Decode (Band 6)
+
+The decode payload is **real**, not a placeholder. `decode_texture_file()`
+runs the real `cd::asset::cdtex` BC7 reader on the worker (async) or owner
+(sync) thread, so a completion carries the file's REAL block bytes +
+dimensions; the owner thread then creates a GPU texture sized to that real
+extent. Query the decoded size via `get_dimensions()`.
+
+`.cdtex` (the engine's cooked texture format) is the wired path. The RGBA8
+image path (PNG/JPG via `cd::asset_image`) is **sealed** — its vendored
+`stb_image` copy collides with `cd::asset_gltf`'s when `streamer_pool` links
+both streamers; see `docs/ADR/ADR-20260616-band6-asset-streamers-scope.md`
+for the trigger to lift the seal.
+
 ## Dependencies
 
 * `cd::core` — Defines, expected, error infra.

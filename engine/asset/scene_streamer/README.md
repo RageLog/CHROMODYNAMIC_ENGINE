@@ -64,6 +64,12 @@ public:
 nodes + meshes + textures + materials in glTF order. Caller is
 responsible for the ECS ingest step (`cd::render::scene_ingest`).
 
+**Band 6:** the async path now carries a REAL parsed `LoadedScene` too — the
+`AsyncScenePool` worker runs `cd::asset::gltf::load_scene()` per file (a pure
+CPU parse) and hands the owning scene back to the owner thread; the earlier
+synthesised empty-`SceneId` placeholder is gone. Read the parsed scene via
+`get_scene()`. See `docs/ADR/ADR-20260616-band6-asset-streamers-scope.md`.
+
 ## ECS ingest
 
 `scene_streamer` produces `LoadedScene` but **does not** push it into

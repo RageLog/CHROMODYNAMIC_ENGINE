@@ -2,16 +2,22 @@
 // CHROMODYNAMIC — cd/asset/scene_streamer/SceneStreamer.hpp
 // Phase 586 — cd::asset::scene_streamer (Sprint-1: synchronous)
 // Phase 755 — cd::asset::scene_streamer (Sprint-2: opt-in async path)
+// Band 6   — real glTF parse wired behind the async orchestration.
 //
 // High-level scene streaming coordinator. Accepts enqueue/cancel requests
-// keyed by asset path and drives synchronous load via cd::asset::gltf::
-// load_scene() on each tick() call.
+// keyed by asset path and drives a load via cd::asset::gltf::load_scene().
 //
-// Sprint-1: synchronous — highest-priority pending request processed inline.
-// Sprint-2: opt-in async via AsyncScenePool + SceneStreamerConfig.
-//   * Set use_async = true (and optionally worker_count > 0) to offload I/O
-//     to background threads while tick() only drains the completion queue.
+// Sync mode  — highest-priority pending request parsed inline.
+// Async mode — opt-in via AsyncScenePool + SceneStreamerConfig.
+//   * Set use_async = true (and optionally worker_count > 0) to offload the
+//     glTF parse to background threads while tick() only drains completions.
 //   * Priority: higher uint8 value = higher priority (255 = highest, 0 = lowest).
+//
+// DECODE: BOTH paths run the real cd::asset::gltf::load_scene() parser, so a
+//   completion carries a real owning LoadedScene (node/mesh/material/texture
+//   tree + bounds), not a synthetic placeholder. load_scene() is a pure CPU
+//   parse safe to run per-file on a worker thread; the GPU/ECS ingest of the
+//   LoadedScene stays the render-side consumer's job.
 //
 // Namespace: cd::asset::scene_streamer
 // =============================================================================
@@ -53,6 +59,14 @@ struct StreamRequest
     std::uint8_t priority { 128U };
 };
 
+/// Worker → owner completion record: the asset path plus the REAL parsed
+/// scene produced by cd::asset::gltf::load_scene() on a worker thread.
+struct CompletedScene
+{
+    std::string                  path;
+    cd::asset::gltf::LoadedScene scene;
+};
+
 // ---- AsyncScenePool ---------------------------------------------------------
 
 /// Thread-pool that executes StreamRequests on background worker threads.
@@ -68,9 +82,9 @@ struct StreamRequest
 ///   individually thread-safe via internal mutex + condition_variable.
 ///   Do NOT call join_all while another thread holds a lock on the pool.
 ///
-/// The pool simulates I/O completion via a lightweight stub — real glTF
-/// decode is driven by cd::asset::gltf::load_scene() in future production
-/// integration; Sprint-2 validates the threading infrastructure end-to-end.
+/// Each worker runs the REAL cd::asset::gltf::load_scene() parser outside the
+/// lock, so a completion carries a fully-parsed LoadedScene. A path that fails
+/// to parse is NOT reported as completed (matches the sync silent-drop).
 class AsyncScenePool
 {
 public:
@@ -90,10 +104,10 @@ public:
     /// Enqueue a request for async processing. Thread-safe.
     void submit_async(StreamRequest request);
 
-    /// Drain and return asset paths that have been fully processed since the
-    /// last poll_completed() call. Thread-safe. Returns an empty vector if
-    /// nothing has finished yet. Does NOT block.
-    [[nodiscard]] std::vector<std::string> poll_completed();
+    /// Drain and return scenes that have been fully parsed since the last
+    /// poll_completed() call. Thread-safe. Returns an empty vector if nothing
+    /// has finished yet. Does NOT block.
+    [[nodiscard]] std::vector<CompletedScene> poll_completed();
 
     /// Signal all workers to finish outstanding work, then join them.
     /// Blocks until all submitted requests are processed. Safe to call from
@@ -118,8 +132,8 @@ private:
     std::condition_variable work_cv_;    // workers wait for work or stop
     std::condition_variable idle_cv_;    // join_all waits for quiescence
 
-    std::vector<PendingEntry>  pending_queue_;   // protected by mutex_
-    std::vector<std::string>   completed_queue_; // protected by mutex_
+    std::vector<PendingEntry>   pending_queue_;   // protected by mutex_
+    std::vector<CompletedScene> completed_queue_; // protected by mutex_
 
     std::atomic<std::size_t>   completed_count_ { 0U };
     std::atomic<std::uint32_t> inflight_        { 0U }; // jobs in-progress
@@ -207,6 +221,13 @@ public:
     [[nodiscard]] std::optional<SceneId>
     get_loaded(std::string_view asset_path) const;
 
+    /// Read-only access to the REAL parsed scene for a loaded path, or nullptr
+    /// if not loaded. Lets consumers + tests verify a genuine node/mesh tree
+    /// was parsed (not an empty placeholder). Pointer is stable until the
+    /// streamer is destroyed (completed_ never erases entries).
+    [[nodiscard]] const cd::asset::gltf::LoadedScene*
+    get_scene(std::string_view asset_path) const;
+
     /// Number of enqueued requests not yet loaded or failed.
     [[nodiscard]] std::size_t pending_count() const noexcept;
 
@@ -247,9 +268,9 @@ private:
 
     // ---- Helpers ------------------------------------------------------------
 
-    /// Accept a batch of completed asset paths from the async pool and register
-    /// placeholder SceneIds in completed_ / completed_paths_.
-    void accept_async_completions(std::vector<std::string> paths);
+    /// Accept a batch of parsed scenes from the async pool and register them
+    /// (with real LoadedScene data) in completed_ / completed_paths_.
+    void accept_async_completions(std::vector<CompletedScene> done);
 
     /// Sprint-1 sync tick: process the single highest-priority pending entry.
     void tick_sync_impl();
