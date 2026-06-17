@@ -2,15 +2,23 @@
 // CHROMODYNAMIC — cd/light_shafts/LightShafts.hpp
 // Day 18 — Sun shafts / god rays.
 //
-// Two paths:
+// IMPLEMENTED (radial-blur-v1, sealed in
+// docs/ADR/ADR-20260616-band6-render-misc-scope.md §3):
 //   * Screen-space radial blur (Mitchell 2007 / Hoffman) — cheap,
-//     occlusion-aware, runs on the back buffer after sky.
-//   * Analytic single-scattering (Kim & Marsalek 2014 epipolar) — for
-//     finely-detailed shafts at sunset.
+//     occlusion-aware, runs on the back buffer after sky. This is the
+//     functional path: sun_screen_pos() projection + kRadialBlurCS +
+//     the kInlineConeShaftGlsl fallback.
+//
+// NOT IMPLEMENTED (promote-on-need — a separate algorithm, not a TODO of
+// the above):
+//   * Analytic single-scattering epipolar sampling (Engelhardt & Dachsbacher
+//     2010 / Kim & Marsalek 2014) — for finely-detailed shafts at sunset.
+//     Deferred by scope; the radial-blur path covers the shipped look.
 //
 // References:
 //   * Mitchell 2007 — "Volumetric Light Scattering as a Post-Process".
-//   * Kim & Marsalek 2014 — "Epipolar sampling for shadows".
+//   * Engelhardt & Dachsbacher 2010 — "Epipolar Sampling for Shadows and
+//     Crepuscular Rays in Participating Media with Single Scattering".
 // =============================================================================
 #pragma once
 

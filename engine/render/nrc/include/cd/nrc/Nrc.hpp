@@ -7,11 +7,18 @@
 // path tracer with a single MLP query for substantial variance
 // reduction at constant ray cost.
 //
+// STATUS: research-skeleton-v1 (sealed in
+// docs/ADR/ADR-20260616-band6-render-misc-scope.md §4). This is a CPU
+// reference / research skeleton, NOT a production radiance cache. A usable
+// NRC needs an on-GPU trainable MLP (16-wide fully-fused tensor-core layers,
+// Adam, frequency encoding) — a multi-month subsystem.
+//
 // This header ships the **public API** and a **CPU reference MLP**
-// (tiny, single-threaded) so consumer code can compile today. The
-// production backends — Tiny CUDA NN, OneAPI MLP, custom SPIR-V
-// compute — live behind a `CD_NRC_BACKEND` selector (CMake option)
-// and are wired by separate translation units.
+// (tiny, single hidden layer, SGD, single-threaded) so consumer code can
+// compile + smoke-test the contract today. The production backends — Tiny
+// CUDA NN, OneAPI MLP, custom SPIR-V compute — live behind a
+// `CD_NRC_BACKEND` selector (CMake option) and are wired by separate
+// translation units (promote-on-need; trigger in the ADR).
 //
 // References:
 //   * Müller, Rousselle, Novák, Keller — "Real-time Neural Radiance

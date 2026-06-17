@@ -1,6 +1,14 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/ibl_gpu/Upload.hpp
 //
+// upload-helper-v1 (sealed in
+// docs/ADR/ADR-20260616-band6-render-misc-scope.md §1).
+//
+// LIBRARY BOUNDARY: cd::ibl bakes IBL products on the CPU (B3 — irradiance,
+// prefiltered specular, split-sum BRDF LUT, equirect->cube). cd::ibl_gpu
+// uploads those baked products to a live cd::rhi device. Bake = ibl;
+// upload = ibl_gpu. This header owns ONLY the upload side.
+//
 // GPU upload of cd::ibl CPU-baked products. Three helpers:
 //
 //   upload_cubemap_rgba16f       — single-mip CubeMapRgbF -> kCube
@@ -9,6 +17,10 @@
 //
 // Output is a small POD: { TextureHandle, TextureViewHandle, mip_count }.
 // Caller is responsible for destroying the texture + view at shutdown.
+//
+// VERIFIED: tests/test_ibl_gpu.cpp checks float_to_half / byte-layout /
+// mip-count host-side (always) + an upload->readback->compare round-trip of
+// upload_brdf_lut on a live Vulkan device (RTX 3080; GTEST_SKIP without ICD).
 // =============================================================================
 #pragma once
 

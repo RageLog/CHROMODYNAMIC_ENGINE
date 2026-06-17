@@ -12,6 +12,5 @@ cd_add_library(ibl_gpu
 )
 
 if(CD_ENABLE_TESTING)
-  # No CTest target yet — GPU upload requires a live device; lands
-  # with the renderer-integration suite.
+  add_subdirectory(tests)
 endif()

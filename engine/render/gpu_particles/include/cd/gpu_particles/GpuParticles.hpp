@@ -2,9 +2,18 @@
 // CHROMODYNAMIC — cd/gpu_particles/GpuParticles.hpp
 // Day 23 — GPU compute particle simulation.
 //
-// Header-only API for a compute-driven particle system. CPU
-// reference advance + GLSL simulation + emit kernels + indirect draw
-// argument layout for the render pass.
+// IMPLEMENTED (sim-CS-v1, sealed in
+// docs/ADR/ADR-20260616-band6-render-misc-scope.md §2):
+//   * CPU reference advance() + compact_alive() (tested, drive
+//     vkCmdDrawIndirect from the live count).
+//   * One simulate compute kernel (kSimulateCS) that advances the buffer
+//     in place and atomically accumulates the live instance_count into the
+//     indirect-draw args layout it declares.
+//
+// NOT IMPLEMENTED (promote-on-need — needs the GPU-driven-particles
+// consumer integration, not a TODO of the above):
+//   * GPU emit/spawn kernel (CPU-side spawn is the caller's job today).
+//   * Host-side indirect-draw buffer ownership + render-pass wiring.
 //
 // Reference: Riccio 2014 (AMD GPU particles) + standard compute-
 // shader particle pipelines (Frostbite, UE).
