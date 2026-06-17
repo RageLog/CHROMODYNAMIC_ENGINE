@@ -8,12 +8,22 @@
 
 ---
 
-## Integration status
+## Status (honest — BAND-7 sealed: a FUTURE-TARGET, not a working backend)
 
-| State | How |
-| ----- | --- |
-| **STUB (auto-probe)** | `CD_ENABLE_WEBGPU=ON` (default since phase753). CMake probes for Dawn; falls back to stub if not found. Opaque handles, no-op GPU calls. All four build-only tests pass on every CI tier. |
-| **REAL (requires Dawn)** | Run `vcpkg install "chromodynamic[webgpu]"`, then reconfigure. `find_package(Dawn)` resolves `Dawn::webgpu_cpp`; `CreateBuffer` / `Queue::WriteBuffer` paths activate. No extra CMake flag needed. |
+The WebGPU UI backend is a **future-platform target**, sealed in
+`docs/ADR/ADR-20260616-band7-scope.md` §2 — like the Metal-on-Mac
+situation, it ships its public API + a green default build but does **not**
+draw a UI frame today.
+
+| State | What it actually does |
+| ----- | --------------------- |
+| **DEFAULT (no Dawn)** | `CD_UI_WEBGPU_HAVE_DAWN == 0`. A pure **no-op**: handles are opaque integers; `create`/`upload`/`record`/`destroy` only do CPU buffer-accounting (vertex / index / command counts) so the build stays green on every host without Dawn. **No GPU work happens.** |
+| **DAWN PRESENT (partial)** | `vcpkg install "chromodynamic[webgpu]"` + reconfigure → `CD_UI_WEBGPU_HAVE_DAWN == 1`. `CreateBuffer` allocates the ring vb/ib and `Queue::WriteBuffer` uploads them. **But the WGSL vertex/fragment pipeline + shader are NOT authored yet** — so even with Dawn installed this is not a working UI renderer; it allocates + uploads buffers and records draw calls against an unbound pipeline. |
+
+**Promote-on-need trigger** (to make this a real backend): vendor Dawn into
+CI (cached sysroot) **and** author the WGSL UI pipeline + shader (the
+deferred "Phase 5.5 `hello_ui_webgpu`" work), driven by a real WebGPU
+surface. Until then the no-op default is the honest terminal state.
 
 Dawn is available in the project's vcpkg baseline (version `20251202.213730`, BSD-3-Clause) but is **not installed by default** because it requires Abseil + Python host tooling and adds ~800 MB to the build.
 

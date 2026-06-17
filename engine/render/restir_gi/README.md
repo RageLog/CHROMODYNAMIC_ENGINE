@@ -1,36 +1,55 @@
 # cd::restir_gi
 
-## Purpose
-ReSTIR global illumination — extends weighted reservoir sampling to bounce-sample selection for arbitrary-bounce path tracing. Enables efficient importance sampling of bounce directions with temporal/spatial reuse, achieving convergence on challenging indirect lighting scenarios.
+## Scope (honest — BAND-7 sealed)
+
+This library is the **reservoir-resampling-math-v1** core of ReSTIR GI
+(Ouyang 2021). It ships:
+
+- the correct WRS streaming update, the cross-pixel reservoir **combine**
+  (RIS estimator), the history **clamp**, and the temporal **age / blend** —
+  CPU reference (header-only) + matching GLSL helper strings;
+- three embedded compute-shader strings (sample / temporal-reuse /
+  spatial-reuse) that exercise that reservoir math end-to-end.
+
+**GI is NOT actually traced here.** The sample kernel (`kRestirGiSampleCS`)
+fills each candidate with a clearly-marked **DEFERRED-TRACE** hit (a
+synthesised bounce point + a constant cached radiance) instead of issuing a
+ray query against the scene TLAS. A real GI gather (ray-query + radiance
+cache, driven by a render-graph consumer following the
+`cd::restir_di::DispatchPass` pattern — 4 reservoir SSBOs, 3 compute
+pipelines, descriptor sets, a TLAS binding) is a substantial RHI-dispatch
+subsystem and is a **promote-on-need** item, not a gap in this header's
+stated scope. See `docs/ADR/ADR-20260616-band7-scope.md` §1.
+
+So: **reservoir-math-v1 = done + tested; GI-trace = deferred-by-design.**
 
 ## Namespace
-`cd::<render>::restir_gi::`
+`cd::restir_gi::`
 
-## Public headers
-- `include/cd/restir_gi/BounceSample.hpp` — Bounce direction reservoir and history
-- `include/cd/restir_gi/ReuseKernel.hpp` — Spatial neighbor tap patterns
+## Public header
+- `include/cd/restir_gi/GiReservoir.hpp` — `Sample`, `Reservoir`,
+  `update` / `combine` / `clamp_history` / `temporal_blend`, plus the GLSL
+  helper + compute-kernel strings.
 
 ## Primary types
-- `Restir_gi::BounceSample` — Sampled bounce direction + PDF + visibility history
-- `Restir_gi::ReuseKernel` — Correlation window for spatial reuse compatibility
+- `cd::restir_gi::Sample` — one indirect-bounce sample (hit point + normal +
+  cached incoming radiance + visibility marker).
+- `cd::restir_gi::Reservoir` — WRS reservoir (survivor + `weight_sum` + `M` +
+  `age`); `final_weight(target_pdf)` is the RIS unbiased denominator.
 
 ## Usage example
 ```cpp
-#include <cd/restir_gi/BounceSample.hpp>
+#include <cd/restir_gi/GiReservoir.hpp>
 
-// Multi-bounce path tracing with ReSTIR.
-cd::restir_gi::BounceSample bounce;
-
-for (int bounce_idx = 0; bounce_idx < max_bounces; ++bounce_idx) {
-  // Sample next direction via WRS from candidate directions.
-  bounce = reservoir_sample_direction(
-    current_ray, radiance_candidates, rng()
-  );
-  
-  // Trace next segment.
-  Ray next_ray = current_ray.bounce_along(bounce.direction);
-  radiance += trace(next_ray, bounce.pdf);
-}
+cd::restir_gi::Reservoir r {};
+// Stream candidate bounces through the WRS update.
+cd::restir_gi::update(r, candidate, weight, rng01());
+// Spatial / temporal reuse: combine a neighbour's reservoir, re-evaluating
+// its target PDF at the receiver geometry.
+cd::restir_gi::combine(r, neighbour, neighbour_pdf, rng01(),
+    [&](const cd::restir_gi::Sample& s) { return eval_target_pdf(s); });
+// Cap history so disocclusion artefacts don't linger.
+cd::restir_gi::clamp_history(r, 20U);
 ```
 
 ## Build/Test
@@ -41,14 +60,17 @@ ctest --preset ninja-debug -R restir_gi
 
 ## Dependencies
 - `cd::core` — engine types
-- `cd::math` — vector/matrix math
+- `cd::math` — vector math
 
 ## References
-- **Ouyang et al. 2021**, "ReSTIR GI: Path Resampling for Real-Time Global Illumination" (SIGGRAPH)
-- **Dahlberg et al. 2022**, "Improved Resampling for Global Illumination" (survey)
+- **Ouyang, Liu, Toth, Ramani, Whaley, Lefohn 2021**, "ReSTIR GI: Path
+  Resampling for Real-Time Path Tracing" (HPG 2021).
+- **Bitterli et al. 2020**, "Spatiotemporal reservoir resampling for
+  real-time ray tracing with dynamic direct lighting" (SIGGRAPH / TOG 39:4)
+  — the DI sibling whose reservoir algebra this mirrors.
 
 ## Notes
-- Header-only CPU reference + GLSL kernel support.
-- Complements direct illumination ReSTIR (cd::restir_di) for full-path convergence.
-- Requires temporal coherency for maximum efficiency.
-- Pairs with denoisers (cd::denoise) for production quality.
+- Header-only (INTERFACE) CPU reference + GLSL kernel strings.
+- The reservoir math is byte-for-byte the same shape as `cd::restir_di`, so
+  the promote-on-need GI trace can reuse that library's proven dispatch path.
+- Pairs with a denoiser (`cd::denoise`) once the real trace lands.

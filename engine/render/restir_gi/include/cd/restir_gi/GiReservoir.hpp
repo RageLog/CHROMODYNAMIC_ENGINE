@@ -2,12 +2,27 @@
 // CHROMODYNAMIC — cd/restir_gi/GiReservoir.hpp
 // Day 7/L — ReSTIR GI (Ouyang 2021).
 //
-// Reservoir-based indirect illumination. A GI sample is one full
-// bounce (origin + direction + cached incoming radiance). The
-// per-pixel reservoir streams candidate bounces and reuses them
-// spatially / temporally — same shape as DI's reservoir (Day 6) but
-// the survivors carry the world-space geometry of the bounce point
-// instead of a light index.
+// SCOPE BANNER (honest, BAND-7 sealed — see
+//   docs/ADR/ADR-20260616-band7-scope.md §1):
+//
+//   This header is the *reservoir-resampling-math-v1* core of ReSTIR GI:
+//   the WRS streaming update, the cross-pixel reservoir combine (RIS
+//   estimator), the history clamp and the temporal age/blend — all CPU
+//   reference + matching GLSL helper strings. That math IS correct and IS
+//   the reusable load-bearing part (same algebra as the proven
+//   cd::restir_di reservoir, which is 83%).
+//
+//   GI is NOT actually traced here. The sample compute shader
+//   (`kRestirGiSampleCS`) currently fills each candidate with a *deferred-
+//   trace* hit (a fixed bounce point + a constant cached radiance) instead
+//   of issuing a real ray query against the TLAS — see the clearly-marked
+//   DEFERRED-TRACE block in that shader. A real GI gather (ray-query +
+//   radiance cache, wired by a render-graph consumer following the
+//   cd::restir_di::DispatchPass pattern — 4 reservoir SSBOs, 3 compute
+//   pipelines, descriptor sets, a scene-TLAS binding) is a substantial
+//   RHI-dispatch subsystem and is a *promote-on-need* item, not a gap in
+//   this header's stated scope. So: reservoir-math-v1 = done + tested;
+//   GI-trace = deferred-by-design.
 //
 // Reference: Ouyang, Liu, Toth, Ramani, Whaley, Lefohn —
 // "ReSTIR GI: Path Resampling for Real-Time Path Tracing" (HPG 2021).
@@ -145,8 +160,14 @@ void gi_reservoir_update(inout GiReservoir r, GiSample s, float w, float rnd) {
 // ---- ReSTIR GI compute shader strings ---------------------------------------
 
 /// Initial GI sample generation.
-/// Each invocation traces one path (primary + one bounce) and stores
-/// the secondary hit geometry + incoming radiance into the output reservoir.
+///
+/// NOTE (honest scope): the WRS streaming logic below is the real,
+/// reusable reservoir-math-v1. The hit-generation block is a DEFERRED
+/// TRACE: it synthesises a fixed bounce point + a constant cached
+/// radiance instead of issuing a ray query against `u_TLAS`. Promoting
+/// this to a real GI gather (ray-query + radiance cache) follows the
+/// cd::restir_di::DispatchPass pattern and is a render-graph-consumer
+/// task — see docs/ADR/ADR-20260616-band7-scope.md §1.
 constexpr std::string_view kRestirGiSampleCS = R"glsl(
 #version 460
 #extension GL_EXT_ray_tracing : require
@@ -204,13 +225,19 @@ void main() {
 
     for (uint i = 0u; i < pc.candidates; ++i) {
         vec3 dir = cosine_sample(N, seed);
-        // Placeholder: actual RT traversal would fill hit point + incoming.
-        // In a real shader this issues a ray query against u_TLAS.
+        // ---- DEFERRED TRACE (reservoir-math-v1; GI-trace promote-on-need) ----
+        // A production kernel issues a ray query against u_TLAS here and
+        // fills the hit geometry + the radiance arriving from the next
+        // bounce. Until a render-graph GI consumer wires that (the
+        // cd::restir_di::DispatchPass pattern), each candidate uses a
+        // synthesised bounce point + a constant cached radiance so the WRS
+        // selection below is still exercised end-to-end.
         GiSample s;
-        s.point    = pc.camera_pos.xyz + dir * 1.0; // placeholder hit
+        s.point    = pc.camera_pos.xyz + dir * 1.0; // deferred-trace hit point
         s.normal   = -dir;
-        s.incoming = vec3(0.1);   // placeholder cached radiance
+        s.incoming = vec3(0.1);   // deferred-trace cached radiance
         s.valid    = 1u;
+        // ---------------------------------------------------------------------
         float p_hat = max(0.0, dot(N, dir));
         float w = p_hat;
         R.weight_sum += w;

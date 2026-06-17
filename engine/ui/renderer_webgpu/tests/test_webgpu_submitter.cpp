@@ -20,6 +20,9 @@
 #include <cd/ui/renderer_webgpu/Submitter.hpp>
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <utility>
+
 namespace rw = cd::ui::renderer_webgpu;
 namespace ur = cd::ui::renderer;
 
@@ -131,6 +134,279 @@ TEST(WebGpuSubmitter, DestroyIsIdempotent)
     sub.destroy();   // second call must not crash
     EXPECT_FALSE(sub.is_valid());
 }
+
+// ===========================================================================
+// BAND-7 hardening (docs/ADR/ADR-20260616-band7-scope.md §2): the no-op
+// default backend is a FUTURE-TARGET, not a working WebGPU UI backend. The
+// load-bearing contract it MUST honour today is the CPU buffer-accounting +
+// the Dawn-absent (stub) behaviour. The cases below lock that contract so a
+// regression in the counting / overflow / lifecycle math fails on revert.
+// All run on the stub path (CD_UI_WEBGPU_HAVE_DAWN == 0); no GPU required.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Case 6: create rejects a zero max_vertices / max_indices config
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, CreateRejectsZeroLimits)
+{
+    rw::WgpuDevice null_device {};
+
+    rw::SubmitterCreateInfo zero_v {};
+    zero_v.max_vertices = 0U;
+    zero_v.max_indices  = 64U;
+    EXPECT_FALSE(rw::Submitter::create(null_device, zero_v).has_value());
+
+    rw::SubmitterCreateInfo zero_i {};
+    zero_i.max_vertices = 64U;
+    zero_i.max_indices  = 0U;
+    EXPECT_FALSE(rw::Submitter::create(null_device, zero_i).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// Case 7: upload of an over-capacity batcher returns false (vertex overflow)
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, UploadRejectsVertexOverflow)
+{
+    rw::WgpuDevice null_device {};
+
+    // 1 quad = 4 verts; cap the submitter at 4 verts so a 2nd quad overflows.
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 4U;
+    info.max_indices  = 4096U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 8.0F, 8.0F, ur::Color::white());
+    batcher.quad(8.0F, 0.0F, 8.0F, 8.0F, ur::Color::white());  // 8 verts > 4
+
+    EXPECT_FALSE(sub.upload(batcher));
+    // A rejected upload must NOT mutate the last-good counts (still 0).
+    EXPECT_EQ(sub.vertex_count(), 0U);
+    EXPECT_EQ(sub.index_count(),  0U);
+    EXPECT_EQ(sub.command_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 8: upload of an over-capacity batcher returns false (index overflow)
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, UploadRejectsIndexOverflow)
+{
+    rw::WgpuDevice null_device {};
+
+    // 1 quad = 6 indices; cap indices at 4 so a single quad overflows.
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 4096U;
+    info.max_indices  = 4U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 8.0F, 8.0F, ur::Color::white());  // 6 indices > 4
+
+    EXPECT_FALSE(sub.upload(batcher));
+    EXPECT_EQ(sub.index_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 9: upload exactly at capacity succeeds (boundary is inclusive)
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, UploadAtExactCapacitySucceeds)
+{
+    rw::WgpuDevice null_device {};
+
+    // 1 quad = 4 verts, 6 indices; size the caps to exactly that.
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 4U;
+    info.max_indices  = 6U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 8.0F, 8.0F, ur::Color::white());
+
+    EXPECT_TRUE(sub.upload(batcher));
+    EXPECT_EQ(sub.vertex_count(), 4U);
+    EXPECT_EQ(sub.index_count(),  6U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 10: an empty-frame upload is valid and zeroes the per-frame counts
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, EmptyFrameUploadIsValidAndZeroed)
+{
+    rw::WgpuDevice null_device {};
+
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 256U;
+    info.max_indices  = 768U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    // First a non-empty frame so the counts are non-zero...
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 16.0F, 16.0F, ur::Color::white());
+    ASSERT_TRUE(sub.upload(batcher));
+    ASSERT_EQ(sub.vertex_count(), 4U);
+
+    // ...then an empty frame must reset them to zero (per-frame snapshot).
+    ur::DrawBatcher empty;
+    empty.begin_frame();
+    EXPECT_TRUE(sub.upload(empty));
+    EXPECT_EQ(sub.vertex_count(),  0U);
+    EXPECT_EQ(sub.index_count(),   0U);
+    EXPECT_EQ(sub.command_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 11: successive uploads re-snapshot the counts (growth + shrink)
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, SuccessiveUploadsResnapshotCounts)
+{
+    rw::WgpuDevice null_device {};
+
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 1024U;
+    info.max_indices  = 4096U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    // Frame A: 3 quads = 12 verts, 18 indices, 1 merged command.
+    ur::DrawBatcher a;
+    a.begin_frame();
+    for (int i = 0; i < 3; ++i)
+        a.quad(static_cast<float>(i * 20), 0.0F, 16.0F, 16.0F, ur::Color::white());
+    ASSERT_TRUE(sub.upload(a));
+    EXPECT_EQ(sub.vertex_count(), 12U);
+    EXPECT_EQ(sub.index_count(),  18U);
+
+    // Frame B: 1 quad — counts must shrink, not accumulate.
+    ur::DrawBatcher b;
+    b.begin_frame();
+    b.quad(0.0F, 0.0F, 16.0F, 16.0F, ur::Color::white());
+    ASSERT_TRUE(sub.upload(b));
+    EXPECT_EQ(sub.vertex_count(), 4U);
+    EXPECT_EQ(sub.index_count(),  6U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 12: scissor-separated quads produce multiple counted DrawCommands
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, ScissorBoundariesProduceMultipleCommands)
+{
+    rw::WgpuDevice null_device {};
+
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 1024U;
+    info.max_indices  = 4096U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 16.0F, 16.0F, ur::Color::white());     // batch 1
+    batcher.push_scissor(ur::ScissorRect { 10, 10, 100U, 100U });
+    batcher.quad(12.0F, 12.0F, 8.0F, 8.0F, ur::Color::black());      // batch 2
+    batcher.pop_scissor();
+    batcher.push_scissor(ur::ScissorRect { 50, 50, 200U, 200U });
+    batcher.quad(60.0F, 60.0F, 8.0F, 8.0F, ur::Color::white());      // batch 3
+    batcher.pop_scissor();
+
+    const auto expected = static_cast<std::uint32_t>(batcher.command_count());
+    ASSERT_GE(expected, 2U);
+    ASSERT_TRUE(sub.upload(batcher));
+    EXPECT_EQ(sub.command_count(), expected);
+    EXPECT_EQ(sub.vertex_count(),  12U);  // 3 quads regardless of batching
+    EXPECT_EQ(sub.index_count(),   18U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 13: record() before any upload is a safe no-op (no crash, no state)
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, RecordBeforeUploadIsNoOp)
+{
+    rw::WgpuDevice null_device {};
+
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 64U;
+    info.max_indices  = 192U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+    auto& sub = *r;
+
+    rw::WgpuCommandEncoder null_encoder {};
+    sub.record(null_encoder, rw::Extent2D { 800U, 600U });  // must not crash
+    EXPECT_EQ(sub.command_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Case 14: move transfers ownership; the moved-from submitter is inert and
+// crash-safe — the Dawn-absent default contract (impl_ is null after move).
+//
+// NOTE: we obtain the inert handle via move (not default-construction): the
+// PIMPL `Impl` is incomplete in the header, so a default-constructed
+// `Submitter` cannot be destroyed in a test TU. `create()` builds the object
+// in the .cpp where `Impl` is complete; moving from it is the supported way
+// to reach the "no impl_" state from here.
+// ---------------------------------------------------------------------------
+TEST(WebGpuSubmitter, MoveTransfersOwnershipAndLeavesSourceInert)
+{
+    rw::WgpuDevice null_device {};
+
+    rw::SubmitterCreateInfo info {};
+    info.max_vertices = 256U;
+    info.max_indices  = 768U;
+    auto r = rw::Submitter::create(null_device, info);
+    ASSERT_TRUE(r.has_value());
+
+    rw::Submitter moved = std::move(*r);
+    EXPECT_TRUE(moved.is_valid());
+
+    // The moved-into handle owns the impl and works.
+    ur::DrawBatcher batcher;
+    batcher.begin_frame();
+    batcher.quad(0.0F, 0.0F, 16.0F, 16.0F, ur::Color::white());
+    EXPECT_TRUE(moved.upload(batcher));
+    EXPECT_EQ(moved.vertex_count(), 4U);
+
+    // The moved-from handle is inert: no impl_ -> every accessor reports zero
+    // and every operation is a safe no-op (no crash).
+    rw::Submitter& src = *r;
+    EXPECT_FALSE(src.is_valid());
+    EXPECT_EQ(src.vertex_count(),  0U);
+    EXPECT_EQ(src.index_count(),   0U);
+    EXPECT_EQ(src.command_count(), 0U);
+    EXPECT_FALSE(src.upload(batcher));            // no impl_ -> false, no crash
+    rw::WgpuCommandEncoder enc {};
+    src.record(enc, rw::Extent2D { 1U, 1U });     // must not crash
+    src.destroy();                                // must not crash
+}
+
+// ---------------------------------------------------------------------------
+// Case 16: stub handles default to the null/zero opaque value (Dawn-absent
+// contract). Only meaningful when Dawn is NOT present.
+// ---------------------------------------------------------------------------
+#if !CD_UI_WEBGPU_HAVE_DAWN
+TEST(WebGpuSubmitter, StubHandlesAreNullByDefault)
+{
+    rw::WgpuDevice         dev {};
+    rw::WgpuCommandEncoder enc {};
+    EXPECT_EQ(dev.opaque, 0U);
+    EXPECT_EQ(enc.opaque, 0U);
+    EXPECT_EQ(dev, rw::WgpuDevice {});          // defaulted operator==
+    EXPECT_EQ(enc, rw::WgpuCommandEncoder {});
+}
+#endif  // !CD_UI_WEBGPU_HAVE_DAWN
 
 // ---------------------------------------------------------------------------
 // Case 5 (phase551): record() emits the expected draw-call count — Dawn only
