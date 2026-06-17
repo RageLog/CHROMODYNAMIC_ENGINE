@@ -24,8 +24,6 @@ namespace
 {
 
 using cd::asset::scene_streamer::SceneStreamer;
-using cd::asset::scene_streamer::StreamRequest;
-using cd::asset::scene_streamer::SceneId;
 
 // ---- T1: enqueue + tick + is_loaded (missing file stays not loaded) ---------
 

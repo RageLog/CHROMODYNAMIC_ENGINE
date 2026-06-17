@@ -34,6 +34,7 @@ class EventTrack
 public:
     void add(float t, std::uint32_t id)
     {
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (AnimEvent vs float key) has no clean ranges-projection form.
         auto it = std::lower_bound(events_.begin(), events_.end(), t,
             [](const AnimEvent& a, float v) { return a.t < v; });
         events_.insert(it, AnimEvent { t, id });

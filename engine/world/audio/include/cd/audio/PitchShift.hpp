@@ -43,7 +43,7 @@ public:
     [[nodiscard]] float process() noexcept
     {
         if (source_.empty()) return 0.0F;
-        const std::size_t i0 = static_cast<std::size_t>(read_pos_);
+        const auto i0 = static_cast<std::size_t>(read_pos_);
         if (i0 >= source_.size())
         {
             read_pos_ = 0.0F;   // wrap loop

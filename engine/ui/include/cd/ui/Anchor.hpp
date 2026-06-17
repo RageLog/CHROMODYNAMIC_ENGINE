@@ -47,8 +47,8 @@ struct Anchor
 
 [[nodiscard]] inline IntRect resolve(const IntRect& parent, const Anchor& a) noexcept
 {
-    const float pwf = static_cast<float>(parent.w);
-    const float phf = static_cast<float>(parent.h);
+    const auto pwf = static_cast<float>(parent.w);
+    const auto phf = static_cast<float>(parent.h);
     const auto x0 = parent.x + static_cast<std::int32_t>(a.min_x * pwf) + a.offset_min_x;
     const auto y0 = parent.y + static_cast<std::int32_t>(a.min_y * phf) + a.offset_min_y;
     const auto x1 = parent.x + static_cast<std::int32_t>(a.max_x * pwf) + a.offset_max_x;

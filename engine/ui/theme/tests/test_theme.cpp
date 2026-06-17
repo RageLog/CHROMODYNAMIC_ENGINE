@@ -21,7 +21,7 @@ namespace tt = cd::ui::theme;
 namespace
 {
 constexpr float kEps = 1e-4F;
-}
+} // namespace
 
 // ---- Case 1: dark theme has a dark surface ---------------------------------
 

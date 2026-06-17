@@ -267,8 +267,8 @@ TEST(CommandPalette, FuzzyFindsSubsequence)
     p.register_command(3, "Save All", [] {});
     const auto hits = p.filter("of");
     EXPECT_GE(hits.size(), 2u);
-    EXPECT_NE(std::find(hits.begin(), hits.end(), std::size_t { 0 }), hits.end());
-    EXPECT_NE(std::find(hits.begin(), hits.end(), std::size_t { 1 }), hits.end());
+    EXPECT_NE(std::ranges::find(hits, std::size_t { 0 }), hits.end());
+    EXPECT_NE(std::ranges::find(hits, std::size_t { 1 }), hits.end());
 }
 
 TEST(CommandPalette, NoMatchReturnsEmpty)

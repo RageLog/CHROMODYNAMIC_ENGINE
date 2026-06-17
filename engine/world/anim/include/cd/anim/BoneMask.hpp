@@ -52,7 +52,7 @@ public:
 
     void fill(float w) noexcept
     {
-        std::fill(weights_.begin(), weights_.end(), std::clamp(w, 0.0F, 1.0F));
+        std::ranges::fill(weights_, std::clamp(w, 0.0F, 1.0F));
     }
 
     [[nodiscard]] const std::vector<float>& weights() const noexcept { return weights_; }

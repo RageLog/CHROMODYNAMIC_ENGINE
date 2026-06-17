@@ -208,8 +208,7 @@ TEST_F(CdprojTest, RecentFilesFifoEvicts)
     EXPECT_EQ(data.recent_files.front(), "path_10.cdscene");
 
     // The very first push (path_00) must have been evicted.
-    const auto it = std::find(data.recent_files.begin(),
-                              data.recent_files.end(),
+    const auto it = std::ranges::find(data.recent_files,
                               "path_00.cdscene");
     EXPECT_EQ(it, data.recent_files.end()) << "path_00.cdscene should have been evicted";
 }

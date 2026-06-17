@@ -54,7 +54,7 @@ public:
         auto it = buckets_.find(tag_hash(name));
         if (it == buckets_.end()) return;
         auto& v = it->second;
-        v.erase(std::remove(v.begin(), v.end(), e), v.end());
+        v.erase(std::ranges::remove(v, e).begin(), v.end());
         if (v.empty()) buckets_.erase(it);
     }
 

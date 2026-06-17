@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
+#include <ranges>
 #include <ios>
 #include <string>
 #include <utility>
@@ -48,9 +49,8 @@ namespace cd::asset::json
     auto entries = registry.snapshot();
     // The registry's snapshot is implementation-defined order; sort here
     // so the JSON is git-friendly.
-    std::sort(
-        entries.begin(),
-        entries.end(),
+    std::ranges::sort(
+        entries,
         [](const auto& a, const auto& b)
         {
             return a.first < b.first;

@@ -153,7 +153,7 @@ TEST(EcsQueryCache, ReusedAcrossManyTicks)
     w.for_each<Pos>(
         [&](cd::ecs::Entity, Pos& p)
         {
-            const float expected = static_cast<float>(static_cast<int>(p.x - 30.0F));  // round to original index
+            const auto expected = static_cast<float>(static_cast<int>(p.x - 30.0F));  // round to original index
             EXPECT_NEAR(p.x - expected, 30.0F, 1e-4F);
             ++verified;
         }

@@ -61,7 +61,8 @@ TEST(ConfigSerialize, OutputIsCanonicalOrder)
     b.set("mu", static_cast<std::int64_t>(2));
     b.set("zeta", static_cast<std::int64_t>(3));
 
-    cd::io::BinaryWriter wa, wb;
+    cd::io::BinaryWriter wa;
+    cd::io::BinaryWriter wb;
     cd::config::save(wa, a);
     cd::config::save(wb, b);
     ASSERT_EQ(wa.data().size(), wb.data().size());

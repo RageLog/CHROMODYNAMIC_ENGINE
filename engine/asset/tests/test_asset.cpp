@@ -217,7 +217,7 @@ std::filesystem::path fw_tmp_path(const char* suffix)
             std::to_string(static_cast<unsigned long long>(
                 std::chrono::steady_clock::now().time_since_epoch().count())));
 }
-}
+} // namespace
 
 TEST(FileWatcher, FreshFileDoesNotFireOnFirstPoll)
 {

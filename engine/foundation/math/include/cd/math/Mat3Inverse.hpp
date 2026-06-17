@@ -26,9 +26,15 @@ template <class T>
 [[nodiscard]] constexpr Mat<T, 3> inverse_3(const Mat<T, 3>& m) noexcept
 {
     // column-major access: m[col][row]
-    const T a00 = m[0][0], a01 = m[1][0], a02 = m[2][0];
-    const T a10 = m[0][1], a11 = m[1][1], a12 = m[2][1];
-    const T a20 = m[0][2], a21 = m[1][2], a22 = m[2][2];
+    const T a00 = m[0][0];
+    const T a01 = m[1][0];
+    const T a02 = m[2][0];
+    const T a10 = m[0][1];
+    const T a11 = m[1][1];
+    const T a12 = m[2][1];
+    const T a20 = m[0][2];
+    const T a21 = m[1][2];
+    const T a22 = m[2][2];
 
     const T c00 = a11 * a22 - a12 * a21;
     const T c01 = a12 * a20 - a10 * a22;

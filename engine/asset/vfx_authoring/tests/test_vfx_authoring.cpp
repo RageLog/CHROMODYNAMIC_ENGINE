@@ -185,7 +185,7 @@ TEST(VfxAuthoring, T7_ValidateVelocityMinExceedsMax)
     EXPECT_FALSE(validate_authored(vfx, issues));
     EXPECT_TRUE(has_error(issues));
     // Confirm the axis is mentioned
-    EXPECT_TRUE(std::any_of(issues.begin(), issues.end(),
+    EXPECT_TRUE(std::ranges::any_of(issues,
         [](const std::string& s) { return s.find('Y') != std::string::npos; }));
 }
 

@@ -157,7 +157,8 @@ TEST(EditorUI, EscChainHigherPriorityRunsFirst)
 TEST(EditorUI, EscChainFallsThroughWhenAllHandlersDecline)
 {
     cd::editor::ui::EscChain c;
-    bool first = false, second = false;
+    bool first = false;
+    bool second = false;
     c.register_handler(cd::editor::ui::EscPriority::kModalDialog,
         [&]{ first = true; return false; });
     c.register_handler(cd::editor::ui::EscPriority::kPalette,

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <ranges>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -44,7 +45,7 @@ TEST(VfsMemorySource, ListByPrefix)
     src.put_text("shaders/b.frag", "");
     src.put_text("audio/x.wav", "");
     auto shaders = src.list("shaders/");
-    std::sort(shaders.begin(), shaders.end());
+    std::ranges::sort(shaders);
     ASSERT_EQ(shaders.size(), 2u);
     EXPECT_EQ(shaders[0], "shaders/a.vert");
     EXPECT_EQ(shaders[1], "shaders/b.frag");
@@ -100,7 +101,7 @@ TEST(VfsOverlay, ListUnion)
     vfs.mount_back(a);
     vfs.mount_back(b);
     auto all = vfs.list("");
-    std::sort(all.begin(), all.end());
+    std::ranges::sort(all);
     ASSERT_EQ(all.size(), 3u);  // x, y, shared (de-duped)
     EXPECT_EQ(all[0], "shared");
     EXPECT_EQ(all[1], "x");
@@ -174,7 +175,7 @@ TEST_F(VfsFilesystemTest, ListRecursively)
     write_file("nested/deeper/c.txt", "");
     cd::vfs::FilesystemSource src { temp_root_ };
     auto all = src.list("");
-    std::sort(all.begin(), all.end());
+    std::ranges::sort(all);
     ASSERT_EQ(all.size(), 3u);
 }
 

@@ -237,7 +237,9 @@ TEST(HotReloadBus, MultipleSubscribersAllFire)
 
     HotReloadBus bus(HotReloadBus::Duration { 0 });
 
-    int a_count = 0, b_count = 0, c_count = 0;
+    int a_count = 0;
+    int b_count = 0;
+    int c_count = 0;
     AssetCategory a_seen { AssetCategory::kMesh };
     AssetCategory b_seen { AssetCategory::kMesh };
     AssetCategory c_seen { AssetCategory::kMesh };

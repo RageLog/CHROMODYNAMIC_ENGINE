@@ -35,7 +35,6 @@ namespace
 {
 
 using cd::physics::soft_body::Particle;
-using cd::physics::soft_body::SelfCollision;
 using cd::physics::soft_body::SoftBody;
 using cd::physics::soft_body::SoftBodyConfig;
 using cd::physics::soft_body::SpringConstraint;
@@ -200,7 +199,8 @@ TEST(SoftBodySprint1, MoreIterationsImproveStability)
     // Arrange two identical ropes, one with 1 iteration, one with 20.
     constexpr std::array<float, 3> kGravity { 0.0F, -9.81F, 0.0F };
 
-    SoftBody sb_low, sb_high;
+    SoftBody sb_low;
+    SoftBody sb_high;
     auto cfg_low  = make_rope(5, 1.0F, /*solver_iterations=*/1);
     auto cfg_high = make_rope(5, 1.0F, /*solver_iterations=*/20);
     sb_low.configure(cfg_low);
@@ -428,7 +428,7 @@ TEST(SoftBodySprint2, RopeSelfFoldDoesNotPenetrate)
         else
         {
             // Folded leg comes back: i=4 sits ~at i=3, i=5 ~at i=2 etc.
-            const float backward_idx = static_cast<float>(3U - (i - 4U));
+            const auto backward_idx = static_cast<float>(3U - (i - 4U));
             p.position = { backward_idx * kSegment, 0.0F, kFoldZ };
         }
         p.prev_position = p.position;

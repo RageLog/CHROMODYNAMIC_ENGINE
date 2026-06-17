@@ -168,14 +168,14 @@ TEST(SsimLite, BigDifferenceDropsScore)
 {
     // Half-image swap: top half black, bottom half white in B; A is
     // mid-grey everywhere. Luminance differs strongly.
-    std::vector<std::uint8_t> a(16 * 16 * 4U, 128);
+    std::vector<std::uint8_t> a(static_cast<std::size_t>(16) * 16 * 4U, 128);
     for (std::size_t i = 3; i < a.size(); i += 4)
         a[i] = 255;  // alpha
     std::vector<std::uint8_t> b = a;
     for (std::uint32_t y = 0; y < 8; ++y)
         for (std::uint32_t x = 0; x < 16; ++x)
         {
-            const std::size_t i = (y * 16 + x) * 4;
+            const std::size_t i = (static_cast<std::size_t>(y) * 16 + x) * 4;
             b[i + 0] = 0;
             b[i + 1] = 0;
             b[i + 2] = 0;
@@ -183,7 +183,7 @@ TEST(SsimLite, BigDifferenceDropsScore)
     for (std::uint32_t y = 8; y < 16; ++y)
         for (std::uint32_t x = 0; x < 16; ++x)
         {
-            const std::size_t i = (y * 16 + x) * 4;
+            const std::size_t i = (static_cast<std::size_t>(y) * 16 + x) * 4;
             b[i + 0] = 255;
             b[i + 1] = 255;
             b[i + 2] = 255;
@@ -200,7 +200,7 @@ TEST(SsimLite, BigDifferenceDropsScore)
 TEST(SsimLite, MeanGreaterOrEqualMin)
 {
     // Aggregate invariant: mean across windows >= worst window.
-    std::vector<std::uint8_t> a(8 * 8 * 4U, 100);
+    std::vector<std::uint8_t> a(static_cast<std::size_t>(8) * 8 * 4U, 100);
     for (std::size_t i = 3; i < a.size(); i += 4)
         a[i] = 255;
     auto b = a;
@@ -262,10 +262,10 @@ TEST(GaussianBlur, SinglePixelSpikeSpreads)
 {
     // Black image, one white pixel in the center → after blur, the
     // center is lower than 255 and adjacent pixels are above 0.
-    std::vector<std::uint8_t> img(8 * 8 * 4, 0);
+    std::vector<std::uint8_t> img(static_cast<std::size_t>(8) * 8 * 4, 0);
     for (std::size_t i = 3; i < img.size(); i += 4)
         img[i] = 255;  // alpha = 255 everywhere
-    const std::size_t center = (4 * 8 + 4) * 4;
+    const std::size_t center = static_cast<std::size_t>(4 * 8 + 4) * 4;
     img[center + 0] = 255;
     img[center + 1] = 255;
     img[center + 2] = 255;
@@ -275,7 +275,7 @@ TEST(GaussianBlur, SinglePixelSpikeSpreads)
     EXPECT_LT((*r)[center + 0], 255U);
     EXPECT_GT((*r)[center + 0], 0U);
     // Adjacent pixel right of center must have picked up some intensity.
-    const std::size_t right = (4 * 8 + 5) * 4;
+    const std::size_t right = static_cast<std::size_t>(4 * 8 + 5) * 4;
     EXPECT_GT((*r)[right + 0], 0U);
 }
 
@@ -292,7 +292,7 @@ TEST(GaussianBlur, ImprovesSsimOnNoisyBaseline)
     // score higher SSIM against itself-blurred than against the noisy
     // original — i.e., the blur produces a perceptually similar
     // image, not a different scene.
-    std::vector<std::uint8_t> base(32 * 32 * 4, 128);
+    std::vector<std::uint8_t> base(static_cast<std::size_t>(32) * 32 * 4, 128);
     for (std::size_t i = 3; i < base.size(); i += 4)
         base[i] = 255;
     // Pepper 8 pixels with white.
@@ -370,13 +370,13 @@ TEST(FlipLite, P95IsAtLeastMean)
 {
     // Synthetic: half black, half white. p95 should be at the white
     // end → ≥ mean which averages across both halves.
-    std::vector<std::uint8_t> mixed(16 * 16 * 4, 0);
+    std::vector<std::uint8_t> mixed(static_cast<std::size_t>(16) * 16 * 4, 0);
     for (std::size_t i = 3; i < mixed.size(); i += 4)
         mixed[i] = 255;
     for (std::uint32_t y = 0; y < 16; ++y)
         for (std::uint32_t x = 8; x < 16; ++x)
         {
-            const std::size_t k = (y * 16 + x) * 4;
+            const std::size_t k = (static_cast<std::size_t>(y) * 16 + x) * 4;
             mixed[k + 0] = 255;
             mixed[k + 1] = 255;
             mixed[k + 2] = 255;

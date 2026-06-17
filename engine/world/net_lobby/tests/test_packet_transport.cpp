@@ -86,7 +86,7 @@ TEST(PacketCodec, EncodeDecodeRoundTrip)
 // ---------------------------------------------------------------------------
 TEST(PacketCodec, AllKindsRoundTrip)
 {
-    constexpr std::underlying_type_t<PacketKind> kCount =
+    constexpr auto kCount =
         static_cast<std::underlying_type_t<PacketKind>>(PacketKind::kCount_);
 
     for (std::underlying_type_t<PacketKind> i = 0; i < kCount; ++i)

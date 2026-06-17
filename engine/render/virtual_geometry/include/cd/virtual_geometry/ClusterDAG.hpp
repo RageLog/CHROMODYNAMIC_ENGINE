@@ -202,7 +202,7 @@ public:
         std::vector<Cluster> all_nodes;
 
         // --- LOD 0: partition input triangles into leaf clusters ----------
-        const std::uint32_t tri_count =
+        const auto tri_count =
             static_cast<std::uint32_t>(indices.size() / 3);
 
         std::vector<std::uint32_t> leaf_tris(tri_count);
@@ -226,7 +226,7 @@ public:
             auto [simp_verts, simp_indices] =
                 simplify_level(vertices, indices, current_level);
 
-            const std::uint32_t s_tri_count =
+            const auto s_tri_count =
                 static_cast<std::uint32_t>(simp_indices.size() / 3);
             std::vector<std::uint32_t> s_tris(s_tri_count);
             for (std::uint32_t t = 0; t < s_tri_count; ++t) s_tris[t] = t;
@@ -369,8 +369,8 @@ private:
         // Deduplicate adjacency lists
         for (auto& list : adj)
         {
-            std::sort(list.begin(), list.end());
-            list.erase(std::unique(list.begin(), list.end()), list.end());
+            std::ranges::sort(list);
+            list.erase(std::ranges::unique(list).begin(), list.end());
         }
     }
 
@@ -407,7 +407,7 @@ private:
                     auto it = remap.find(orig_v);
                     if (it == remap.end())
                     {
-                        const std::uint32_t nv =
+                        const auto nv =
                             static_cast<std::uint32_t>(new_verts.size());
                         remap[orig_v] = nv;
                         new_verts.push_back(orig_verts[orig_v]);
@@ -428,7 +428,7 @@ private:
         // For each triangle, collapse edge (v0,v1) to midpoint -> replaces
         // both with a new vertex. This is a structural skeleton that
         // approximately halves triangle count by degenerate-triangle removal.
-        const std::uint32_t nverts =
+        const auto nverts =
             static_cast<std::uint32_t>(new_verts.size());
         std::vector<std::uint32_t> collapse_target(nverts);
         for (std::uint32_t i = 0; i < nverts; ++i) collapse_target[i] = i;

@@ -180,7 +180,9 @@ TEST(Scene, ForEachNodeVisitsEveryCreatedEntity)
     auto b = s.create_node();
     auto c = s.create_node();
     std::size_t seen = 0;
-    bool got_a = false, got_b = false, got_c = false;
+    bool got_a = false;
+    bool got_b = false;
+    bool got_c = false;
     s.for_each_node(
         [&](cd::ecs::Entity e, cd::scene::LocalTransform&)
         {
@@ -553,7 +555,7 @@ cd::scene::Frustum make_unit_box_frustum()
     return f;
 }
 
-}  // anonymous
+} // namespace
 
 TEST(Frustum, AabbInsideIsAccepted)
 {
@@ -796,7 +798,8 @@ TEST(MarkerSet, RemoveDrops)
 TEST(MarkerSet, AddOverwritesSameName)
 {
     cd::scene::MarkerSet ms;
-    cd::math::Transformf a, b;
+    cd::math::Transformf a;
+    cd::math::Transformf b;
     a.position = { 1, 0, 0 };
     b.position = { 2, 0, 0 };
     ms.add("Slot", a);

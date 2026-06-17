@@ -47,7 +47,7 @@
 namespace cd::asset
 {
 class FileWatcher;
-}
+}  // namespace cd::asset
 
 namespace cd::game::asset_hot_reload
 {

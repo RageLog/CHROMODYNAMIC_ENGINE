@@ -174,8 +174,8 @@ inline void compute_surround_gains(SpeakerLayout layout,
     for (std::size_t i = 0; i < slots.size(); ++i)
         if (!slots[i].is_lfe)
             sorted.emplace_back(slots[i].azimuth_rad, i);
-    std::sort(sorted.begin(), sorted.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::ranges::sort(sorted,
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
 
     // Wrap so the source angle has bracketing speakers in the circular
     // sense: copy the first entry at the end with +2π, last at start
@@ -183,6 +183,7 @@ inline void compute_surround_gains(SpeakerLayout layout,
     constexpr float kTwoPi = 6.2831853F;
     sorted.insert(sorted.begin(),
                   { sorted.back().first - kTwoPi, sorted.back().second });
+    // NOLINTNEXTLINE(modernize-use-emplace): braced std::pair init can't be deduced by emplace_back.
     sorted.push_back({ sorted[1].first + kTwoPi, sorted[1].second });
 
     // Find the pair (a, b) with a.az <= theta <= b.az.

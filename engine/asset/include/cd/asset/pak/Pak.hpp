@@ -246,7 +246,7 @@ public:
         bytes_ = bytes;
         size_ = size;
         entries_.clear();
-        std::size_t cursor = static_cast<std::size_t>(toc_off);
+        auto cursor = static_cast<std::size_t>(toc_off);
         for (std::uint32_t i = 0; i < entry_count; ++i)
         {
             if (cursor + 2 > size)

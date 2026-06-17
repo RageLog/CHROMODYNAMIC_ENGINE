@@ -81,8 +81,10 @@ public:
     /// `axis.z` walks along view forward.
     void move(float dt, cd::math::Vec3f axis) noexcept
     {
-        const float cp = std::cos(pitch_), sp = std::sin(pitch_);
-        const float cy = std::cos(yaw_),   sy = std::sin(yaw_);
+        const float cp = std::cos(pitch_);
+        const float sp = std::sin(pitch_);
+        const float cy = std::cos(yaw_);
+        const float sy = std::sin(yaw_);
         const cd::math::Vec3f fwd { cp * sy, sp, -cp * cy };
         const cd::math::Vec3f right { cy,    0.0F, sy };
         const float spd = move_speed * dt;
@@ -110,8 +112,10 @@ public:
         c.target[1] += target_offset_.y;
         c.target[2] += target_offset_.z;
         target_offset_ = { 0.0F, 0.0F, 0.0F };
-        const float cp = std::cos(pitch_), sp = std::sin(pitch_);
-        const float cy = std::cos(yaw_),   sy = std::sin(yaw_);
+        const float cp = std::cos(pitch_);
+        const float sp = std::sin(pitch_);
+        const float cy = std::cos(yaw_);
+        const float sy = std::sin(yaw_);
         const cd::math::Vec3f fwd { cp * sy, sp, -cp * cy };
         c.eye[0] = c.target[0] - fwd.x * dist_;
         c.eye[1] = c.target[1] - fwd.y * dist_;

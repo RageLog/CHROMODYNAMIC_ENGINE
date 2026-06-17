@@ -34,7 +34,7 @@ struct RetryPolicy
     [[nodiscard]] std::uint32_t attempt_delay_ms(std::uint32_t attempt) const noexcept
     {
         if (attempt <= 1) return base_delay_ms;
-        float d = static_cast<float>(base_delay_ms);
+        auto d = static_cast<float>(base_delay_ms);
         for (std::uint32_t i = 1; i < attempt; ++i) d *= factor;
         d = std::min(d, static_cast<float>(max_delay_ms));
         return static_cast<std::uint32_t>(d);

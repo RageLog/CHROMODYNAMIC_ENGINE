@@ -691,17 +691,18 @@ TEST(Flag, WaitUnblocksFromOtherThread)
 // ---------------------------------------------------------------------------
 #include <algorithm>
 #include <numeric>
+#include <ranges>
 
 TEST(ParallelFor, MatchesStdForEachBaseline)
 {
     constexpr std::size_t kN = 4096;
     std::vector<int> input(kN);
-    std::iota(input.begin(), input.end(), 1);  // 1, 2, 3, ..., kN
+    std::ranges::iota(input, 1);  // 1, 2, 3, ..., kN
 
     // Reference output via std::for_each (sequential).
     std::vector<int> reference(kN);
-    std::for_each(
-        input.begin(), input.end(),
+    std::ranges::for_each(
+        input,
         [&reference, &input](int v)
         {
             const auto idx = static_cast<std::size_t>(v - 1);
@@ -783,10 +784,10 @@ TEST(ParallelFor, TlasInstanceBuildPattern_MatchesSerial)
         FakeInst inst {};
         for (std::size_t r = 0; r < 3; ++r)
         {
-            inst.xform[r * 4 + 0] = e.m.m[0 * 4 + r];
-            inst.xform[r * 4 + 1] = e.m.m[1 * 4 + r];
-            inst.xform[r * 4 + 2] = e.m.m[2 * 4 + r];
-            inst.xform[r * 4 + 3] = e.m.m[3 * 4 + r];
+            inst.xform[r * 4 + 0] = e.m.m[static_cast<std::size_t>(0) * 4 + r];
+            inst.xform[r * 4 + 1] = e.m.m[static_cast<std::size_t>(1) * 4 + r];
+            inst.xform[r * 4 + 2] = e.m.m[static_cast<std::size_t>(2) * 4 + r];
+            inst.xform[r * 4 + 3] = e.m.m[static_cast<std::size_t>(3) * 4 + r];
         }
         inst.blas_id = 0xFEEDU;
         inst.mask    = 0xFFU;
@@ -905,7 +906,9 @@ TEST(ParallelFor, PrimPushPrepPattern_MatchesSerial)
     }
 
     const float sun_str = 1.5F;
-    const float sun_x = 0.3F, sun_y = -0.7F, sun_z = 0.2F;
+    const float sun_x = 0.3F;
+    const float sun_y = -0.7F;
+    const float sun_z = 0.2F;
 
     auto build = [&](std::size_t i, FakePush& pp)
     {

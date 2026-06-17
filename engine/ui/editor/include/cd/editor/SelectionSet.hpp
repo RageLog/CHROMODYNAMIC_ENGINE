@@ -33,6 +33,7 @@ class SelectionSet
 public:
     void add(cd::ecs::Entity e)
     {
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (Entity vs uint32 id) has no clean ranges-projection form.
         auto it = std::lower_bound(entries_.begin(), entries_.end(), e.id,
             [](cd::ecs::Entity a, std::uint32_t v) { return a.id < v; });
         if (it == entries_.end() || it->id != e.id)
@@ -42,6 +43,7 @@ public:
 
     void remove(cd::ecs::Entity e)
     {
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (Entity vs uint32 id) has no clean ranges-projection form.
         auto it = std::lower_bound(entries_.begin(), entries_.end(), e.id,
             [](cd::ecs::Entity a, std::uint32_t v) { return a.id < v; });
         if (it != entries_.end() && it->id == e.id)
@@ -54,6 +56,7 @@ public:
 
     [[nodiscard]] bool contains(cd::ecs::Entity e) const noexcept
     {
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (Entity vs uint32 id) has no clean ranges-projection form.
         auto it = std::lower_bound(entries_.begin(), entries_.end(), e.id,
             [](cd::ecs::Entity a, std::uint32_t v) { return a.id < v; });
         return it != entries_.end() && it->id == e.id;

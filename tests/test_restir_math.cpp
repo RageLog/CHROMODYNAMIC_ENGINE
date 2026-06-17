@@ -102,7 +102,8 @@ TEST(RestirMath, Case2_WrsOverIidSamplesIsUnbiasedInExpectation)
 // ============================================================================
 TEST(RestirMath, Case3_ReservoirMergePreservesExpectedWeight)
 {
-    DI::Reservoir a{}, b{};
+    DI::Reservoir a{};
+    DI::Reservoir b{};
     DI::update(a, DI::Sample{ 1U, { 1, 0, 0 }, 2.0F }, 2.0F, 0.0F);
     DI::update(b, DI::Sample{ 2U, { 0, 1, 0 }, 3.0F }, 3.0F, 0.0F);
 
@@ -257,8 +258,10 @@ TEST(RestirMath, GiTemporalBlendAlphaZeroReturnsCurrentFrame)
 
 TEST(RestirMath, GiCombineInvalidatesVisibilityFlag)
 {
-    GI::Reservoir dst{}, src{};
-    GI::Sample sa{}, sb{};
+    GI::Reservoir dst{};
+    GI::Reservoir src{};
+    GI::Sample sa{};
+    GI::Sample sb{};
     sb.valid = 1U;
     GI::update(dst, sa, 1.0F, 0.5F);
     GI::update(src, sb, 1.0F, 0.5F);

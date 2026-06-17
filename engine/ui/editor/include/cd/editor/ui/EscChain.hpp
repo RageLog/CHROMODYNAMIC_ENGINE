@@ -36,7 +36,7 @@ public:
     void register_handler(EscPriority priority, EscHandler handler)
     {
         handlers_.push_back({ priority, std::move(handler) });
-        std::sort(handlers_.begin(), handlers_.end(),
+        std::ranges::sort(handlers_,
                   [](const Entry& a, const Entry& b) {
                       return static_cast<std::uint8_t>(a.priority) <
                              static_cast<std::uint8_t>(b.priority);

@@ -136,7 +136,7 @@ TEST(CompositeFxBinding, ApplyCinematicRoundTripsAllFields)
 TEST(CompositeFxBinding, ApplyDefaultsPreservesUserTonemap)
 {
     float exposure { 0 };
-    std::int32_t tonemap = static_cast<std::int32_t>(ep::TonemapOp::kAgx);
+    auto tonemap = static_cast<std::int32_t>(ep::TonemapOp::kAgx);
 
     const ep::CompositeFxBinding b {
         .exposure   = &exposure,
@@ -186,7 +186,7 @@ TEST(CompositeFxBinding, ApplyPartialBindingSkipsNullPointers)
 {
     float exposure { 99.0F };
     float bloom { 99.0F };
-    std::int32_t tonemap = static_cast<std::int32_t>(ep::TonemapOp::kHable);
+    auto tonemap = static_cast<std::int32_t>(ep::TonemapOp::kHable);
 
     const ep::CompositeFxBinding b {
         .exposure   = &exposure,

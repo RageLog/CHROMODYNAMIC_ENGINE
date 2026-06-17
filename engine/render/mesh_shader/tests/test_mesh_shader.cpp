@@ -10,8 +10,7 @@ namespace
 using cd::mesh_shader::build_meshlets;
 using cd::mesh_shader::kTrianglesPerMeshlet;
 using cd::mesh_shader::kVerticesPerMeshlet;
-using cd::mesh_shader::Meshlet;
-using cd::mesh_shader::MeshletData;
+
 
 TEST(MeshShader, EmptyInputProducesEmptyOutput)
 {
@@ -35,8 +34,9 @@ TEST(MeshShader, MeshletsRespectVertexCap)
     // Build a strip with 200 unique vertices, 200 - 2 = 198 triangles.
     std::vector<std::uint32_t> idx;
     std::vector<cd::math::Vec3f> pos;
-    for (std::uint32_t i = 0; i < 200; ++i)
-        pos.push_back({ static_cast<float>(i), 0.0F, 0.0F });
+    pos.reserve(200);
+for (std::uint32_t i = 0; i < 200; ++i)
+        pos.emplace_back( static_cast<float>(i), 0.0F, 0.0F );
     for (std::uint32_t i = 0; i + 2 < 200; ++i)
     {
         idx.push_back(i);

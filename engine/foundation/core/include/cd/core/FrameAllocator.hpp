@@ -38,7 +38,7 @@ public:
     {
         const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(storage_.get()) + used_;
         const std::uintptr_t aligned = (base + (align - 1)) & ~static_cast<std::uintptr_t>(align - 1);
-        const std::size_t pad = static_cast<std::size_t>(aligned - base);
+        const auto pad = static_cast<std::size_t>(aligned - base);
         if (used_ + pad + bytes > capacity_)
             return nullptr;
         used_ += pad + bytes;

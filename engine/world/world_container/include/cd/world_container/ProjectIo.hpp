@@ -200,7 +200,8 @@ inline void read_num_(const cd::asset::json::Object& o, const char* key, T& out)
 [[nodiscard]] inline cd::core::Result<std::unique_ptr<Project>>
 deserialize_project(const cd::asset::json::Value& json)
 {
-    using namespace project_io_errors;
+    using project_io_errors::make;
+    using project_io_errors::Code;
     if (!json.is_object())
         return std::unexpected(make(Code::kBadShape, "root is not an object"));
     const auto& root = json.as_object();
@@ -323,7 +324,8 @@ deserialize_project(const cd::asset::json::Value& json)
 [[nodiscard]] inline cd::core::Result<void>
 save_project_file(const std::filesystem::path& path, const Project& p)
 {
-    using namespace project_io_errors;
+    using project_io_errors::make;
+    using project_io_errors::Code;
     const auto txt = cd::asset::json::serialize(serialize_project(p), true);
     auto tmp = path;
     tmp += ".tmp";
@@ -348,7 +350,8 @@ save_project_file(const std::filesystem::path& path, const Project& p)
 [[nodiscard]] inline cd::core::Result<std::unique_ptr<Project>>
 load_project_file(const std::filesystem::path& path)
 {
-    using namespace project_io_errors;
+    using project_io_errors::make;
+    using project_io_errors::Code;
     std::ifstream f { path, std::ios::binary };
     if (!f)
         return std::unexpected(make(Code::kIoFailure, "cannot open project file"));

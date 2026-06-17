@@ -4,6 +4,8 @@
 #include <cd/concurrency/WorkStealingThreadPool.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <ranges>
 #include <atomic>
 #include <cstddef>
 #include <future>
@@ -359,8 +361,8 @@ TEST(WorkStealingThreadPool, HighPriorityPopsBeforeLowOnOneWorker)
     pool.wait_all();
     ASSERT_EQ(order.size(), static_cast<std::size_t>(2 * kEach));
     // Every High (1) must precede every Low (0).
-    const auto first_low = std::find(order.begin(), order.end(), 0);
-    const auto last_high = std::find(order.rbegin(), order.rend(), 1);
+    const auto first_low = std::ranges::find(order, 0);
+    const auto last_high = std::ranges::find(order | std::views::reverse, 1);
     const auto last_high_idx =
         static_cast<std::size_t>(std::distance(order.begin(), last_high.base()) - 1);
     const auto first_low_idx =

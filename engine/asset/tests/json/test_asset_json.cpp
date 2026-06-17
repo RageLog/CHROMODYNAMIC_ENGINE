@@ -155,7 +155,7 @@ TEST(AssetJsonTest, RoundTripPretty)
 
 TEST(AssetJsonTest, EmitsEscapedQuotesAndBackslashes)
 {
-    Value v { std::string { "say \"hi\" \\path" } };
+    Value v { std::string { R"(say "hi" \path)" } };
     const auto txt = serialize(v);
     EXPECT_NE(txt.find("\\\""), std::string::npos);
     EXPECT_NE(txt.find("\\\\"), std::string::npos);

@@ -37,6 +37,7 @@ class CurveTrack
 public:
     void add_key(float t, float value)
     {
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (CurveKey vs float key) has no clean ranges-projection form.
         auto it = std::lower_bound(keys_.begin(), keys_.end(), t,
             [](const CurveKey& a, float v) { return a.t < v; });
         keys_.insert(it, CurveKey { t, value });
@@ -53,6 +54,7 @@ public:
         if (keys_.empty()) return 0.0F;
         if (t <= keys_.front().t) return keys_.front().value;
         if (t >= keys_.back().t)  return keys_.back().value;
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (CurveKey vs float key) has no clean ranges-projection form.
         const auto it = std::lower_bound(keys_.begin(), keys_.end(), t,
             [](const CurveKey& a, float v) { return a.t < v; });
         const auto& k1 = *it;

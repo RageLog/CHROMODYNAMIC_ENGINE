@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <ranges>
 #include <string_view>
 #include <vector>
 
@@ -58,19 +59,19 @@ class AssetTagSet
 public:
     void add(AssetTag t)
     {
-        auto it = std::lower_bound(tags_.begin(), tags_.end(), t);
+        auto it = std::ranges::lower_bound(tags_, t);
         if (it == tags_.end() || *it != t) tags_.insert(it, t);
     }
 
     void remove(AssetTag t)
     {
-        auto it = std::lower_bound(tags_.begin(), tags_.end(), t);
+        auto it = std::ranges::lower_bound(tags_, t);
         if (it != tags_.end() && *it == t) tags_.erase(it);
     }
 
     [[nodiscard]] bool contains(AssetTag t) const noexcept
     {
-        return std::binary_search(tags_.begin(), tags_.end(), t);
+        return std::ranges::binary_search(tags_, t);
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return tags_.size(); }

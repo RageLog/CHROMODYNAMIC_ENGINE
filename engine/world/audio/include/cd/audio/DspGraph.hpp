@@ -170,7 +170,9 @@ private:
         const float cos_w = std::cos(omega);
         const float alpha = sin_w / (2.0F * std::max(0.0001F, q_));
 
-        float b0u, b1u, b2u;
+        float b0u;
+        float b1u;
+        float b2u;
         if (kind_ == BiquadKind::kLowpass)
         {
             const float one_m = 1.0F - cos_w;

@@ -154,7 +154,8 @@ TEST(ClusterGrid, MultipleLightsPackedCorrectly)
     g.assign_light(10, a);
     g.assign_light(20, b);
     g.finalize();
-    bool found_10 = false, found_20 = false;
+    bool found_10 = false;
+    bool found_20 = false;
     for (std::uint32_t z = 0; z < cfg.cells_z; ++z)
         for (std::uint32_t y = 0; y < cfg.cells_y; ++y)
             for (std::uint32_t x = 0; x < cfg.cells_x; ++x)
@@ -251,8 +252,8 @@ TEST(ReferenceCompute, ParityWithClusterGrid)
                 std::vector<std::uint32_t> grid_sorted(from_grid.begin(), from_grid.end());
                 std::vector<std::uint32_t> ref_sorted(ref.light_indices.data() + begin,
                                                       ref.light_indices.data() + end);
-                std::sort(grid_sorted.begin(), grid_sorted.end());
-                std::sort(ref_sorted.begin(), ref_sorted.end());
+                std::ranges::sort(grid_sorted);
+                std::ranges::sort(ref_sorted);
                 EXPECT_EQ(grid_sorted, ref_sorted)
                     << "membership mismatch at cluster (" << x << "," << y << "," << z << ")";
             }

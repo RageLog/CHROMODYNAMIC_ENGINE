@@ -43,6 +43,7 @@ class CameraPath
 public:
     void add_key(const CameraKey& k)
     {
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (CameraKey vs float key) has no clean ranges-projection form.
         auto it = std::lower_bound(keys_.begin(), keys_.end(), k.t,
             [](const CameraKey& a, float v) { return a.t < v; });
         keys_.insert(it, k);
@@ -60,6 +61,7 @@ public:
         if (t <= keys_.front().t) return keys_.front();
         if (t >= keys_.back().t)  return keys_.back();
 
+        // NOLINTNEXTLINE(modernize-use-ranges): heterogeneous comparator (CameraKey vs float key) has no clean ranges-projection form.
         const auto it = std::lower_bound(keys_.begin(), keys_.end(), t,
             [](const CameraKey& a, float v) { return a.t < v; });
         const std::size_t i = static_cast<std::size_t>(it - keys_.begin());

@@ -103,7 +103,9 @@ TEST(WorldContainer, ActiveLayerSelection)
 /// Build a fully-populated project exercising every serialized field.
 [[nodiscard]] inline std::unique_ptr<cd::world_container::Project> make_rich_project()
 {
-    using namespace cd::world_container;
+    using cd::world_container::Project;
+    using cd::world_container::Level;
+    using cd::world_container::Layer;
     auto p = std::make_unique<Project>("Rich Project");
     p->settings().enable_bloom      = true;
     p->settings().enable_rt_shadows = false;
@@ -133,7 +135,10 @@ TEST(WorldContainer, ActiveLayerSelection)
 
 TEST(ProjectIo, RoundTripPreservesEveryField)
 {
-    using namespace cd::world_container;
+    using cd::world_container::serialize_project;
+    using cd::world_container::deserialize_project;
+    using cd::world_container::Level;
+    using cd::world_container::Layer;
     const auto original = make_rich_project();
     const auto json = serialize_project(*original);
     const auto txt  = cd::asset::json::serialize(json, true);
@@ -208,7 +213,8 @@ TEST(ProjectIo, AbsentOptionalKeysKeepDefaults)
 
 TEST(ProjectIo, FileRoundTripIsAtomic)
 {
-    using namespace cd::world_container;
+    using cd::world_container::save_project_file;
+    using cd::world_container::load_project_file;
     const auto dir  = std::filesystem::temp_directory_path() / "cd_projectio_test";
     std::filesystem::create_directories(dir);
     const auto path = dir / "demo.cdproject";
@@ -247,7 +253,10 @@ TEST(ProjectIo, LoadMissingFileFails)
 
 TEST(LayerMember, ImplicitDefaultAndAssignment)
 {
-    using namespace cd::world_container;
+    using cd::world_container::layer_of;
+    using cd::world_container::assign_layer;
+    using cd::world_container::clear_layer;
+    using cd::world_container::kDefaultLayerName;
     cd::ecs::World w;
     const auto e = w.create();
 
@@ -265,7 +274,9 @@ TEST(LayerMember, ImplicitDefaultAndAssignment)
 
 TEST(LayerMember, CountAndVisitFilterByName)
 {
-    using namespace cd::world_container;
+    using cd::world_container::assign_layer;
+    using cd::world_container::count_members;
+    using cd::world_container::for_each_member;
     cd::ecs::World w;
     const auto a = w.create();
     const auto b = w.create();
@@ -292,7 +303,10 @@ TEST(LayerMember, CountAndVisitFilterByName)
 
 TEST(LayerMember, RenameMigratesMembers)
 {
-    using namespace cd::world_container;
+    using cd::world_container::assign_layer;
+    using cd::world_container::rename_layer_members;
+    using cd::world_container::layer_of;
+    using cd::world_container::count_members;
     cd::ecs::World w;
     const auto a = w.create();
     const auto b = w.create();
@@ -348,7 +362,12 @@ void write_scene_file(const std::filesystem::path& path,
 
 TEST(LevelStreamer, SwitchDestroysNonPersistentAndKeepsPersistent)
 {
-    using namespace cd::world_container;
+    using cd::world_container::Project;
+    using cd::world_container::Level;
+    using cd::world_container::Layer;
+    using cd::world_container::LevelStreamer;
+    using cd::world_container::layer_of;
+    using cd::world_container::kDefaultLayerName;
     const auto dir = std::filesystem::temp_directory_path() / "cd_streamer_test";
     std::filesystem::create_directories(dir);
 
@@ -414,7 +433,9 @@ TEST(LevelStreamer, SwitchDestroysNonPersistentAndKeepsPersistent)
 
 TEST(LevelStreamer, BadLevelAndMissingFileFail)
 {
-    using namespace cd::world_container;
+    using cd::world_container::Project;
+    using cd::world_container::Level;
+    using cd::world_container::LevelStreamer;
     Project proj { "Errs" };
     proj.add_level("NoScene");  // empty scene_path
     Level* missing = proj.add_level("Missing");
@@ -445,7 +466,10 @@ TEST(LevelStreamer, BadLevelAndMissingFileFail)
 // no-active early-return no-op were unasserted contract branches.
 TEST(LevelStreamer, DeactivateKeepsPersistentOfActiveLevelAndNoOpWhenInactive)
 {
-    using namespace cd::world_container;
+    using cd::world_container::Project;
+    using cd::world_container::Level;
+    using cd::world_container::Layer;
+    using cd::world_container::LevelStreamer;
     const auto dir = std::filesystem::temp_directory_path() / "cd_streamer_deact_test";
     std::filesystem::create_directories(dir);
 

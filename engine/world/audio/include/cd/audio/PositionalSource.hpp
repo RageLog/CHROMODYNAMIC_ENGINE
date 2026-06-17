@@ -113,8 +113,8 @@ public:
     /// same Source object.
     void reset() noexcept
     {
-        std::fill(delay_l_.begin(), delay_l_.end(), 0.0F);
-        std::fill(delay_r_.begin(), delay_r_.end(), 0.0F);
+        std::ranges::fill(delay_l_, 0.0F);
+        std::ranges::fill(delay_r_, 0.0F);
         head_l_ = head_r_ = 0;
     }
 

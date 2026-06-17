@@ -153,7 +153,9 @@ TEST(WorkStealingDeque, PointerPayload)
 {
     // T must be trivially copyable — verify T* works for object payloads.
     cd::concurrency::WorkStealingDeque<int*> d { 4 };
-    int a = 1, b = 2, c = 3;
+    int a = 1;
+    int b = 2;
+    int c = 3;
     d.push(&a);
     d.push(&b);
     d.push(&c);

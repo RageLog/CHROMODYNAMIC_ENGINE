@@ -67,7 +67,8 @@ TEST_F(CrashReporterTest, NullReporterRejected)
 
 TEST_F(CrashReporterTest, DoubleInstallRejected)
 {
-    cd::diag::CrashReporter a, b;
+    cd::diag::CrashReporter a;
+    cd::diag::CrashReporter b;
     ASSERT_TRUE(a.install(test_reporter));
     EXPECT_FALSE(b.install(test_reporter));
 }

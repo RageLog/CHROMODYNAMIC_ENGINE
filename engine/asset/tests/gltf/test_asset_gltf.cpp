@@ -186,8 +186,8 @@ void write_file(const fs::path& p, std::span<const std::uint8_t> bytes)
     while ((j.size() % 4) != 0)
         j.push_back(' ');  // JSON chunk must be 4-byte aligned (space-padded).
 
-    const std::uint32_t json_chunk_len = static_cast<std::uint32_t>(j.size());
-    const std::uint32_t bin_chunk_len = static_cast<std::uint32_t>(bin.size());
+    const auto json_chunk_len = static_cast<std::uint32_t>(j.size());
+    const auto bin_chunk_len = static_cast<std::uint32_t>(bin.size());
     const std::uint32_t total = 12U                    // header
                                 + 8U + json_chunk_len  // JSON chunk header + payload
                                 + 8U + bin_chunk_len;  // BIN  chunk header + payload

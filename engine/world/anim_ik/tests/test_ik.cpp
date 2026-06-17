@@ -270,9 +270,12 @@ TEST(CcdSolver_Degenerate, EmptyChainNoCrash)
 
 // Helper: extract intrinsic XYZ Euler angles from a quaternion [x,y,z,w].
 // Mirrors the logic in Ik.cpp (not exposed in public API, replicated here).
-static std::array<float, 3> euler_from_quat(std::array<float, 4> q) noexcept
+std::array<float, 3> euler_from_quat(std::array<float, 4> q) noexcept
 {
-    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const float qx = q[0];
+    const float qy = q[1];
+    const float qz = q[2];
+    const float qw = q[3];
     const float m20 = 2.0F * (qx * qz - qy * qw);
     const float m21 = 2.0F * (qy * qz + qx * qw);
     const float m22 = 1.0F - 2.0F * (qx * qx + qy * qy);

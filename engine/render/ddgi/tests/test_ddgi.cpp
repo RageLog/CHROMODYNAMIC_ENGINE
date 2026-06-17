@@ -34,7 +34,7 @@ namespace
 using cd::ddgi::IrradianceField;
 using cd::ddgi::ProbeAtlas;
 using cd::ddgi::ProbeGrid;
-using cd::ddgi::TraceSettings;
+
 using cd::ddgi::octahedral_decode;
 using cd::ddgi::octahedral_encode;
 using cd::ddgi::probe_world_pos;

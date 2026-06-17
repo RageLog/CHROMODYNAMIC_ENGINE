@@ -39,7 +39,7 @@ public:
     void record(double x) noexcept
     {
         const double t = (x - min_) / (max_ - min_);
-        std::size_t idx = static_cast<std::size_t>(t * static_cast<double>(counts_.size()));
+        auto idx = static_cast<std::size_t>(t * static_cast<double>(counts_.size()));
         if (t < 0.0) idx = 0;
         if (idx >= counts_.size()) idx = counts_.size() - 1;
         ++counts_[idx];
@@ -72,7 +72,7 @@ public:
 
     void clear() noexcept
     {
-        std::fill(counts_.begin(), counts_.end(), 0u);
+        std::ranges::fill(counts_, 0u);
         total_ = 0;
     }
 

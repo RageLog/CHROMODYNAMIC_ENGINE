@@ -26,6 +26,7 @@
 #include <cd/io/BinaryStream.hpp>
 
 #include <algorithm>
+#include <ranges>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -71,9 +72,8 @@ enum class TypeTag : std::uint8_t
 inline void save(cd::io::BinaryWriter& writer, const cd::core::CVarRegistry& registry)
 {
     auto entries = registry.snapshot();
-    std::sort(
-        entries.begin(),
-        entries.end(),
+    std::ranges::sort(
+        entries,
         [](const auto& a, const auto& b)
         {
             return a.first < b.first;

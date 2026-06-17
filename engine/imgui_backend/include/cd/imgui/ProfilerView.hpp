@@ -41,9 +41,9 @@ namespace detail
     std::uint32_t h = 2166136261u;
     for (char c : name) { h ^= static_cast<std::uint8_t>(c); h *= 16777619u; }
     // HSV-like shuffle to keep adjacent hashes distinct.
-    const std::uint8_t r = static_cast<std::uint8_t>(60 + ((h >>  0) & 0x7F));
-    const std::uint8_t g = static_cast<std::uint8_t>(60 + ((h >>  8) & 0x7F));
-    const std::uint8_t b = static_cast<std::uint8_t>(60 + ((h >> 16) & 0x7F));
+    const auto r = static_cast<std::uint8_t>(60 + ((h >>  0) & 0x7F));
+    const auto g = static_cast<std::uint8_t>(60 + ((h >>  8) & 0x7F));
+    const auto b = static_cast<std::uint8_t>(60 + ((h >> 16) & 0x7F));
     return IM_COL32(r, g, b, 220);
 }
 
@@ -62,7 +62,8 @@ inline void profiler_flamegraph(std::span<const cd::profile::Sample> samples,
     }
 
     // Build the time window from the samples themselves.
-    std::uint64_t t_min = UINT64_MAX, t_max = 0;
+    std::uint64_t t_min = UINT64_MAX;
+    std::uint64_t t_max = 0;
     for (const auto& s : samples)
     {
         if (s.start_ns < t_min) t_min = s.start_ns;
@@ -74,7 +75,7 @@ inline void profiler_flamegraph(std::span<const cd::profile::Sample> samples,
         ImGui::TextDisabled("(degenerate sample range)");
         return;
     }
-    const double window_ns = static_cast<double>(t_max - t_min);
+    const auto window_ns = static_cast<double>(t_max - t_min);
 
     // Group samples by thread_hash → row index.
     std::unordered_map<std::uint64_t, int> thread_row;

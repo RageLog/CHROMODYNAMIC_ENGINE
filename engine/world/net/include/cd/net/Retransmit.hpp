@@ -496,7 +496,7 @@ private:
         seqs.reserve(inbound_.size());
         for (const auto& [k, _] : inbound_)
             seqs.push_back(k);
-        std::sort(seqs.begin(), seqs.end());
+        std::ranges::sort(seqs);
 
         std::vector<std::pair<std::uint32_t, std::uint32_t>> ranges;
         ranges.reserve(seqs.size());

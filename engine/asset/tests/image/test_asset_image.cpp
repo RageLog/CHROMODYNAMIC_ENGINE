@@ -267,7 +267,7 @@ TEST(AssetImage, GenerateMipsFullChainOn256Square)
     src.width = 256;
     src.height = 256;
     src.has_alpha = true;
-    src.rgba.assign(256U * 256U * 4U, 128U);  // solid gray
+    src.rgba.assign(static_cast<std::size_t>(256U) * 256U * 4U, 128U);  // solid gray
     auto r = cd::asset::image::generate_mips(src);
     ASSERT_TRUE(r.has_value());
     // 256 → 128 → 64 → 32 → 16 → 8 → 4 → 2 → 1 = 9 levels.
@@ -285,7 +285,7 @@ TEST(AssetImage, GenerateMipsCappedLevels)
     cd::asset::image::Image src;
     src.width = 32;
     src.height = 32;
-    src.rgba.assign(32U * 32U * 4U, 200U);
+    src.rgba.assign(static_cast<std::size_t>(32U) * 32U * 4U, 200U);
     auto r = cd::asset::image::generate_mips(src, 3);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->size(), 3U);
@@ -300,7 +300,7 @@ TEST(AssetImage, GenerateMipsNonSquareWidthOrHeightOf1)
     cd::asset::image::Image src;
     src.width = 4;
     src.height = 1;
-    src.rgba.assign(4U * 1U * 4U, 99U);
+    src.rgba.assign(static_cast<std::size_t>(4U) * 1U * 4U, 99U);
     auto r = cd::asset::image::generate_mips(src);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->size(), 3U);

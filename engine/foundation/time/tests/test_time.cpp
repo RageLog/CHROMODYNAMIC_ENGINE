@@ -151,7 +151,8 @@ TEST(SimClock, ResetClearsAccumulatedAndCount)
 
 TEST(SimClock, DeterministicSequence)
 {
-    cd::time::SimClock a, b;
+    cd::time::SimClock a;
+    cd::time::SimClock b;
     for (int i = 0; i < 100; ++i)
     {
         a.tick(Milliseconds { 16 });

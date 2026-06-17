@@ -134,14 +134,16 @@ TEST(Attenuation, DistancePositiveAtHalfRange)
 
 TEST(Attenuation, ConeOneInsideInner)
 {
-    const float ci = std::cos(0.3F), co = std::cos(0.6F);
+    const float ci = std::cos(0.3F);
+    const float co = std::cos(0.6F);
     const float ct = std::cos(0.1F);  // inside inner cone
     EXPECT_FLOAT_EQ(cd::light::cone_attenuation(ct, ci, co), 1.0F);
 }
 
 TEST(Attenuation, ConeZeroOutsideOuter)
 {
-    const float ci = std::cos(0.3F), co = std::cos(0.6F);
+    const float ci = std::cos(0.3F);
+    const float co = std::cos(0.6F);
     const float ct = std::cos(0.9F);  // outside outer cone
     EXPECT_FLOAT_EQ(cd::light::cone_attenuation(ct, ci, co), 0.0F);
 }

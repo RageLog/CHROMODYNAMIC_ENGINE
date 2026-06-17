@@ -55,8 +55,8 @@ inline void ndc_to_screen(const ViewportInfo& v,
                           float x_ndc, float y_ndc,
                           float& px, float& py) noexcept
 {
-    const float w = static_cast<float>(v.width);
-    const float h = static_cast<float>(v.height);
+    const auto w = static_cast<float>(v.width);
+    const auto h = static_cast<float>(v.height);
     const float u  = (x_ndc + 1.0F) * 0.5F;
     const float vv = (1.0F - y_ndc) * 0.5F;
     px = static_cast<float>(v.x) + u  * w;

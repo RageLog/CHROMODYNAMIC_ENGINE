@@ -36,4 +36,4 @@ namespace cd::post::fx
 {
 // Re-export tag — empty namespace so consumers can write
 // `using namespace cd::post::fx;` to ADL across member namespaces.
-}
+}  // namespace cd::post::fx

@@ -68,7 +68,7 @@ namespace
         }
         return bt::BehaviorTree(std::move(current));
     }
-}
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Sprint-1 tests (legacy API, unchanged behaviour)

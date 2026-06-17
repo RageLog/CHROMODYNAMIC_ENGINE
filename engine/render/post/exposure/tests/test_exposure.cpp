@@ -27,7 +27,7 @@ namespace pex = cd::post::exposure;
 TEST(Exposure, LogAvgLuminanceOnUniformGreyMatchesLog2)
 {
     const std::uint32_t pixels = 4U;
-    std::vector<float> rgba(pixels * 4U, 0.18F);  // 18% grey, fully opaque
+    std::vector<float> rgba(static_cast<std::size_t>(pixels) * 4U, 0.18F);  // 18% grey, fully opaque
     for (std::uint32_t i = 0; i < pixels; ++i) rgba[i * 4U + 3U] = 1.0F;
 
     const float la = pex::log_avg_luminance(rgba.data(), pixels);

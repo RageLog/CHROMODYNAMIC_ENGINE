@@ -432,7 +432,7 @@ TEST(FrameGraphCull, WriteOnlyNoSinkPassWithoutWritesIsKept)
 
 TEST(PassTopology, LinearChainPreservesOrder)
 {
-    using namespace cd::framegraph;
+    using cd::framegraph::topo_sort;
     auto r = topo_sort(4, { {0, 1}, {1, 2}, {2, 3} });
     EXPECT_FALSE(r.has_cycle);
     ASSERT_EQ(r.order.size(), 4u);
@@ -442,7 +442,7 @@ TEST(PassTopology, LinearChainPreservesOrder)
 
 TEST(PassTopology, IndependentNodesAllAppear)
 {
-    using namespace cd::framegraph;
+    using cd::framegraph::topo_sort;
     auto r = topo_sort(3, {});
     EXPECT_FALSE(r.has_cycle);
     EXPECT_EQ(r.order.size(), 3u);
@@ -450,7 +450,7 @@ TEST(PassTopology, IndependentNodesAllAppear)
 
 TEST(PassTopology, DiamondPattern)
 {
-    using namespace cd::framegraph;
+    using cd::framegraph::topo_sort;
     // 0 → 1 → 3; 0 → 2 → 3
     auto r = topo_sort(4, { {0, 1}, {0, 2}, {1, 3}, {2, 3} });
     EXPECT_FALSE(r.has_cycle);
@@ -461,7 +461,7 @@ TEST(PassTopology, DiamondPattern)
 
 TEST(PassTopology, CycleDetected)
 {
-    using namespace cd::framegraph;
+    using cd::framegraph::topo_sort;
     auto r = topo_sort(3, { {0, 1}, {1, 2}, {2, 0} });
     EXPECT_TRUE(r.has_cycle);
     EXPECT_LT(r.order.size(), 3u);
@@ -469,7 +469,7 @@ TEST(PassTopology, CycleDetected)
 
 TEST(PassTopology, OutOfRangeEdgesIgnored)
 {
-    using namespace cd::framegraph;
+    using cd::framegraph::topo_sort;
     auto r = topo_sort(2, { {0, 5} });  // 5 invalid → silently dropped
     EXPECT_FALSE(r.has_cycle);
     EXPECT_EQ(r.order.size(), 2u);

@@ -235,7 +235,9 @@ TEST(Skeleton, ComputeSkinningMatricesAtBindGivesIdentity)
 
 TEST(BlendTree2, ZeroWeightReturnsPoseA)
 {
-    std::array<cd::math::Transformf, 1> a {}, b {}, out {};
+    std::array<cd::math::Transformf, 1> a {};
+    std::array<cd::math::Transformf, 1> b {};
+    std::array<cd::math::Transformf, 1> out {};
     a[0].position = cd::math::Vec3f { 1, 0, 0 };
     b[0].position = cd::math::Vec3f { 5, 0, 0 };
     ASSERT_TRUE(cd::anim::blend2(a, b, 0.0F, out));
@@ -244,7 +246,9 @@ TEST(BlendTree2, ZeroWeightReturnsPoseA)
 
 TEST(BlendTree2, FullWeightReturnsPoseB)
 {
-    std::array<cd::math::Transformf, 1> a {}, b {}, out {};
+    std::array<cd::math::Transformf, 1> a {};
+    std::array<cd::math::Transformf, 1> b {};
+    std::array<cd::math::Transformf, 1> out {};
     a[0].position = cd::math::Vec3f { 1, 0, 0 };
     b[0].position = cd::math::Vec3f { 5, 0, 0 };
     ASSERT_TRUE(cd::anim::blend2(a, b, 1.0F, out));
@@ -253,7 +257,9 @@ TEST(BlendTree2, FullWeightReturnsPoseB)
 
 TEST(BlendTree2, HalfWeightInterpolatesPosition)
 {
-    std::array<cd::math::Transformf, 1> a {}, b {}, out {};
+    std::array<cd::math::Transformf, 1> a {};
+    std::array<cd::math::Transformf, 1> b {};
+    std::array<cd::math::Transformf, 1> out {};
     a[0].position = cd::math::Vec3f { 0, 0, 0 };
     b[0].position = cd::math::Vec3f { 10, 0, 0 };
     ASSERT_TRUE(cd::anim::blend2(a, b, 0.5F, out));
@@ -454,7 +460,8 @@ TEST(PoseAlign, ComposeAddsWorldRoot)
 
 TEST(PoseAlign, VelocityFromPosDelta)
 {
-    cd::math::Transformf prev {}, cur {};
+    cd::math::Transformf prev {};
+    cd::math::Transformf cur {};
     prev.position = { 0, 0, 0 };
     cur.position = { 10, 0, 0 };
     auto v = cd::anim::root_velocity(prev, cur, 0.5F);
@@ -463,7 +470,8 @@ TEST(PoseAlign, VelocityFromPosDelta)
 
 TEST(PoseAlign, VelocityZeroDtSafeFallback)
 {
-    cd::math::Transformf p {}, c {};
+    cd::math::Transformf p {};
+    cd::math::Transformf c {};
     auto v = cd::anim::root_velocity(p, c, 0.0F);
     EXPECT_FLOAT_EQ(v.x, 0.0F);
 }
@@ -502,7 +510,8 @@ TEST(BoneSocketSet, ClearEmpties)
 
 TEST(PoseBlend, WeightZeroReturnsLeft)
 {
-    cd::anim::Pose a, b;
+    cd::anim::Pose a;
+    cd::anim::Pose b;
     a.joint_locals.resize(2);
     b.joint_locals.resize(2);
     a.joint_locals[0].position = { 1.0F, 0.0F, 0.0F };
@@ -514,7 +523,8 @@ TEST(PoseBlend, WeightZeroReturnsLeft)
 
 TEST(PoseBlend, WeightOneReturnsRight)
 {
-    cd::anim::Pose a, b;
+    cd::anim::Pose a;
+    cd::anim::Pose b;
     a.joint_locals.resize(2);
     b.joint_locals.resize(2);
     a.joint_locals[0].position = { 1.0F, 0.0F, 0.0F };
@@ -527,7 +537,8 @@ TEST(PoseBlend, WeightOneReturnsRight)
 
 TEST(PoseBlend, WeightHalfLerpsLinearly)
 {
-    cd::anim::Pose a, b;
+    cd::anim::Pose a;
+    cd::anim::Pose b;
     a.joint_locals.resize(1);
     b.joint_locals.resize(1);
     a.joint_locals[0].position = { 2.0F, 0.0F, 0.0F };
@@ -540,7 +551,8 @@ TEST(PoseBlend, WeightHalfLerpsLinearly)
 
 TEST(PoseBlend, FilterSkipsExcludedJoints)
 {
-    cd::anim::Pose target, b;
+    cd::anim::Pose target;
+    cd::anim::Pose b;
     target.joint_locals.resize(2);
     b.joint_locals.resize(2);
     target.joint_locals[0].position = { 1.0F, 0.0F, 0.0F };
@@ -555,7 +567,8 @@ TEST(PoseBlend, FilterSkipsExcludedJoints)
 
 TEST(PoseBlend, AdditiveWithWeightZeroIsBase)
 {
-    cd::anim::Pose base, additive;
+    cd::anim::Pose base;
+    cd::anim::Pose additive;
     base.joint_locals.resize(1);
     additive.joint_locals.resize(1);
     base.joint_locals[0].position     = { 1.0F, 0.0F, 0.0F };
@@ -567,7 +580,8 @@ TEST(PoseBlend, AdditiveWithWeightZeroIsBase)
 
 TEST(PoseBlend, AdditiveWithWeightOneAppliesFullOffset)
 {
-    cd::anim::Pose base, additive;
+    cd::anim::Pose base;
+    cd::anim::Pose additive;
     base.joint_locals.resize(1);
     additive.joint_locals.resize(1);
     base.joint_locals[0].position     = { 1.0F, 0.0F, 0.0F };

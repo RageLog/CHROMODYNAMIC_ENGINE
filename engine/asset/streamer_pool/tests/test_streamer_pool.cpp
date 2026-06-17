@@ -166,7 +166,7 @@ void write_wav(const fs::path& p)
 // ---- helpers -----------------------------------------------------------------
 
 /// Drain a pool for up to `max_ticks` frames.  Returns the actual count.
-static std::uint32_t drain(StreamerPool& pool,
+std::uint32_t drain(StreamerPool& pool,
                             std::uint32_t max_ticks = 64U,
                             float         dt         = 0.016F)
 {

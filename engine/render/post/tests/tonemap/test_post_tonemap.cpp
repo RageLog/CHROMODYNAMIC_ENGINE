@@ -9,7 +9,6 @@ namespace
 {
 
 using cd::post::tonemap::agx;
-using cd::post::tonemap::hable;
 using cd::post::tonemap::hill_aces;
 using cd::post::tonemap::narkowicz;
 using cd::post::tonemap::Operator;

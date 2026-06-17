@@ -24,7 +24,10 @@
 namespace
 {
 
-using namespace cd::game::dialog_tree;
+using cd::game::dialog_tree::DialogNode;
+using cd::game::dialog_tree::DialogTree;
+using cd::game::dialog_tree::DialogTreeRuntime;
+using cd::game::dialog_tree::NodeKind;
 
 // ---------------------------------------------------------------------------
 // Helper: build the canonical 5-node test tree

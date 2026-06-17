@@ -84,7 +84,8 @@ public:
     activate(const Project& proj, std::size_t level_idx,
              const std::filesystem::path& root, ReadExtras&& extras)
     {
-        using namespace level_streamer_errors;
+        using level_streamer_errors::make;
+        using level_streamer_errors::Code;
         const Level* next = proj.level(level_idx);
         if (next == nullptr || next->scene_path().empty())
             return std::unexpected(make(Code::kBadLevel,

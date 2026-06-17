@@ -15,6 +15,8 @@
 #include <cd/core/Version.hpp>
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <ranges>
 #include <string>
 #include <type_traits>
 
@@ -553,7 +555,7 @@ TEST(CoreHandleStore, ForEachVisitsLiveOnly)
             seen.push_back(r.id);
         }
     );
-    std::sort(seen.begin(), seen.end());
+    std::ranges::sort(seen);
     EXPECT_EQ(seen.size(), 2u);
     EXPECT_EQ(seen[0], 1);
     EXPECT_EQ(seen[1], 3);
@@ -727,7 +729,9 @@ TEST(FixedString, TruncatesAtCapacity)
 
 TEST(FixedString, EqualityComparesContents)
 {
-    cd::core::FixedString<16> a { "abc" }, b { "abc" }, c { "def" };
+    cd::core::FixedString<16> a { "abc" };
+    cd::core::FixedString<16> b { "abc" };
+    cd::core::FixedString<16> c { "def" };
     EXPECT_TRUE(a == b);
     EXPECT_FALSE(a == c);
 }

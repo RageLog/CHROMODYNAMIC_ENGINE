@@ -19,14 +19,11 @@
 
 namespace
 {
-using cd::hello_engine::PbrGridSlot;
 using cd::hello_engine::build_pbr_demo_grid;
 using cd::hello_engine::kPbrGridChromeAlbedo;
 using cd::hello_engine::kPbrGridCols;
 using cd::hello_engine::kPbrGridRows;
 using cd::hello_engine::kPbrGridScale;
-using cd::hello_engine::kPbrGridSpacing;
-using cd::hello_engine::kPbrGridYBase;
 using cd::hello_engine::kPbrGridZ;
 } // namespace
 

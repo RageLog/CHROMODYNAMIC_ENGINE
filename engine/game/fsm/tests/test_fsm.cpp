@@ -47,7 +47,6 @@ using cd::game::fsm::HistoryKind;
 using cd::game::fsm::State;
 using cd::game::fsm::StateId;
 using cd::game::fsm::StateMachine;
-using cd::game::fsm::kInvalidStateId;
 
 // Convenience: build a State<Ctx> that traces its name on every callback.
 std::unique_ptr<State<Ctx>> make_traced_state(std::string name)

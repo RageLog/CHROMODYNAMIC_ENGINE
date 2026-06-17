@@ -27,9 +27,12 @@ namespace cd::math
     const float hx = euler_rad.x * 0.5F;
     const float hy = euler_rad.y * 0.5F;
     const float hz = euler_rad.z * 0.5F;
-    const float cx = std::cos(hx), sx = std::sin(hx);
-    const float cy = std::cos(hy), sy = std::sin(hy);
-    const float cz = std::cos(hz), sz = std::sin(hz);
+    const float cx = std::cos(hx);
+    const float sx = std::sin(hx);
+    const float cy = std::cos(hy);
+    const float sy = std::sin(hy);
+    const float cz = std::cos(hz);
+    const float sz = std::sin(hz);
     return Quatf {
         sx * cy * cz + cx * sy * sz,   // x
         cx * sy * cz - sx * cy * sz,   // y

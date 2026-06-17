@@ -312,7 +312,8 @@ TEST(EntityRange, EmptyInputReturnsZeroPages)
 TEST(EntityRange, SinglePageFits)
 {
     std::vector<cd::ecs::Entity> all;
-    for (std::uint32_t i = 0; i < 3; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    all.reserve(3);
+for (std::uint32_t i = 0; i < 3; ++i) all.push_back(cd::ecs::Entity { i, 1 });
     auto p = cd::ecs::paginate(all, 10, 0);
     EXPECT_EQ(p.total, 3u);
     EXPECT_EQ(p.page_count, 1u);
@@ -322,7 +323,8 @@ TEST(EntityRange, SinglePageFits)
 TEST(EntityRange, MultiPagePartitions)
 {
     std::vector<cd::ecs::Entity> all;
-    for (std::uint32_t i = 0; i < 25; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    all.reserve(25);
+for (std::uint32_t i = 0; i < 25; ++i) all.push_back(cd::ecs::Entity { i, 1 });
     auto p0 = cd::ecs::paginate(all, 10, 0);
     auto p1 = cd::ecs::paginate(all, 10, 1);
     auto p2 = cd::ecs::paginate(all, 10, 2);
@@ -335,7 +337,8 @@ TEST(EntityRange, MultiPagePartitions)
 TEST(EntityRange, OutOfRangeClampsToLastPage)
 {
     std::vector<cd::ecs::Entity> all;
-    for (std::uint32_t i = 0; i < 5; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    all.reserve(5);
+for (std::uint32_t i = 0; i < 5; ++i) all.push_back(cd::ecs::Entity { i, 1 });
     auto p = cd::ecs::paginate(all, 2, 99);
     EXPECT_EQ(p.page_count, 3u);
     EXPECT_EQ(p.page_index, 2u);
@@ -394,7 +397,8 @@ TEST(LifecycleRegistry, HandlerCountsAccurate)
 TEST(FilterFn, KeepsMatchingEntities)
 {
     std::vector<cd::ecs::Entity> all;
-    for (std::uint32_t i = 0; i < 10; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    all.reserve(10);
+for (std::uint32_t i = 0; i < 10; ++i) all.push_back(cd::ecs::Entity { i, 1 });
     auto evens = cd::ecs::filter_entities(all,
         [](cd::ecs::Entity e) { return (e.id % 2) == 0; });
     EXPECT_EQ(evens.size(), 5u);
@@ -405,7 +409,8 @@ TEST(FilterFn, KeepsMatchingEntities)
 TEST(FilterFn, CountVariantNoAllocation)
 {
     std::vector<cd::ecs::Entity> all;
-    for (std::uint32_t i = 0; i < 20; ++i) all.push_back(cd::ecs::Entity { i, 1 });
+    all.reserve(20);
+for (std::uint32_t i = 0; i < 20; ++i) all.push_back(cd::ecs::Entity { i, 1 });
     auto n = cd::ecs::count_entities(all,
         [](cd::ecs::Entity e) { return e.id < 5; });
     EXPECT_EQ(n, 5u);

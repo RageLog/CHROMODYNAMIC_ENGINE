@@ -34,7 +34,7 @@ struct PipelineCacheKey
 
     [[nodiscard]] constexpr std::uint64_t hash() const noexcept
     {
-        std::uint64_t h = static_cast<std::uint64_t>(vs_hash);
+        auto h = static_cast<std::uint64_t>(vs_hash);
         h ^= (static_cast<std::uint64_t>(fs_hash) << 32);
         h ^= static_cast<std::uint64_t>(vertex_layout) * 0x100000001B3ULL;
         h ^= static_cast<std::uint64_t>(blend_preset) << 8;

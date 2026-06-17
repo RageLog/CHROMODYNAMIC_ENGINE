@@ -27,7 +27,6 @@ namespace
 using cd::particle::system::EmitterId;
 using cd::particle::system::EmitterSpec;
 using cd::particle::system::ParticleSnapshot;
-using cd::particle::system::ParticleSpec;
 using cd::particle::system::System;
 using cd::particle::system::kInvalidEmitter;
 

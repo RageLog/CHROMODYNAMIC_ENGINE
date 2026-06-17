@@ -11,7 +11,6 @@
 namespace
 {
 
-using cd::gameplay::input_binding::ActionKind;
 using cd::gameplay::input_binding::ActionMap;
 using cd::gameplay::input_binding::InputBinding;
 using cd::gameplay::input_binding::RawInputSnapshot;

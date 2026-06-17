@@ -83,7 +83,6 @@
 namespace
 {
 using cd::hello_engine::sponza_fixtures::Fixture;
-using cd::hello_engine::sponza_fixtures::kChromeProbePosition;
 using cd::hello_engine::sponza_fixtures::kChromeProbeScale;
 using cd::hello_engine::sponza_fixtures::kFixtureCount;
 using cd::hello_engine::sponza_fixtures::kFixtureHeight;

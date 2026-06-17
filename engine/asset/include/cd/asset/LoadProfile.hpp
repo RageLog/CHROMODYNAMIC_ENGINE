@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <ranges>
 #include <unordered_map>
 #include <vector>
 
@@ -67,7 +68,7 @@ public:
     [[nodiscard]] std::vector<LoadSample> slowest(std::size_t n) const
     {
         std::vector<LoadSample> sorted = samples_;
-        std::sort(sorted.begin(), sorted.end(),
+        std::ranges::sort(sorted,
             [](const LoadSample& a, const LoadSample& b)
             { return a.duration_us > b.duration_us; });
         if (sorted.size() > n) sorted.resize(n);

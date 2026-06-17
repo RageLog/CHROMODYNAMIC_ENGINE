@@ -159,7 +159,7 @@ TEST(WasapiPushStream, CreateAcceptsValidParamsAndPushAppendsToQueue)
     ASSERT_TRUE(stream.has_value()) << stream.error().message;
     EXPECT_EQ(backend->stream_count(), 1u);
 
-    std::vector<float> chunk(480 * 2, 0.1F);  // 10 ms of stereo @ 48 kHz
+    std::vector<float> chunk(static_cast<std::size_t>(480) * 2, 0.1F);  // 10 ms of stereo @ 48 kHz
     EXPECT_TRUE(backend->push_stream_samples(*stream, chunk).has_value());
     EXPECT_GE(backend->stream_pending_frames(*stream), 0u);
 
@@ -293,7 +293,7 @@ TEST(PositionalSource, PrimeAndProcessSizeContract)
     cd::audio::ListenerPose listener {};
     const cd::math::Vec3f pos { 0.0F, 0.0F, -1.0F };
     std::vector<float> mono(64, 0.5F);
-    std::vector<float> stereo(64 * 2, 0.0F);
+    std::vector<float> stereo(static_cast<std::size_t>(64) * 2, 0.0F);
     src.process(mono, listener, pos, stereo);
     // Front source → near-equal L/R gains.
     EXPECT_NEAR(stereo[0], stereo[1], 0.1F);
@@ -320,7 +320,7 @@ TEST(PositionalSource, RightSourceFavoursRightChannel)
     cd::audio::ListenerPose listener {};
     const cd::math::Vec3f pos { 5.0F, 0.0F, 0.0F };  // hard right
     std::vector<float> mono(128, 1.0F);
-    std::vector<float> stereo(128 * 2, 0.0F);
+    std::vector<float> stereo(static_cast<std::size_t>(128) * 2, 0.0F);
     src.process(mono, listener, pos, stereo);
     // Sample a late index after the delay-line warmup.
     EXPECT_GT(stereo[200 + 1], stereo[200 + 0]);  // right > left
@@ -337,11 +337,12 @@ TEST(PositionalSource, ItdDelaysFartherEar)
     const cd::math::Vec3f pos { 1.0F, 0.0F, -1.0F };
     std::vector<float> mono(64, 0.0F);
     mono[0] = 1.0F;  // impulse at t=0
-    std::vector<float> stereo(64 * 2, 0.0F);
+    std::vector<float> stereo(static_cast<std::size_t>(64) * 2, 0.0F);
     src.process(mono, listener, pos, stereo);
 
     // Find first non-zero index in each channel.
-    int first_left = -1, first_right = -1;
+    int first_left = -1;
+    int first_right = -1;
     for (std::size_t i = 0; i < 64; ++i)
     {
         if (first_right < 0 && stereo[i * 2 + 1] != 0.0F)
@@ -501,7 +502,8 @@ TEST(AnalyticalHRTF, RightSourceDelaysLeftEar)
     EXPECT_NEAR(c.left[0], 0.0F, 1e-5F);
     // Sum across left's coefficients should still be < right's broadband
     // due to head-shadow ILD attenuation.
-    float left_sum = 0.0F, right_sum = 0.0F;
+    float left_sum = 0.0F;
+    float right_sum = 0.0F;
     for (std::uint32_t i = 0; i < cd::audio::kFirTaps; ++i)
     {
         left_sum += std::abs(c.left[i]);

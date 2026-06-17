@@ -43,7 +43,7 @@ public:
         auto it = reverse_.find(child.value());
         if (it == reverse_.end()) return out;
         out.reserve(it->second.size());
-        for (auto v : it->second) out.push_back(AssetId { v });
+        for (auto v : it->second) out.emplace_back(v);
         return out;
     }
 
@@ -63,7 +63,7 @@ public:
             {
                 if (seen.insert(parent).second)
                 {
-                    out.push_back(AssetId { parent });
+                    out.emplace_back(parent);
                     q.push(parent);
                 }
             }

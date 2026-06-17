@@ -258,7 +258,7 @@ TEST(LightingClusters, ManyLightsAssignmentsAreSublinear)
     lights.reserve(200U);
     for (std::uint32_t i = 0U; i < 200U; ++i)
     {
-        const float fi     = static_cast<float>(i);
+        const auto fi     = static_cast<float>(i);
         const float depth  = 5.0F + (fi * 4.5F); // depths 5 to ~900
         const float offset = std::sin(fi * 0.3F) * 2.0F;
         lights.push_back(make_light(offset, offset * 0.5F, -depth, 2.5F));

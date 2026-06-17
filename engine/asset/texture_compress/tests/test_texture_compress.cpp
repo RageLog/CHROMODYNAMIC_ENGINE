@@ -51,7 +51,11 @@
 namespace
 {
 
-using namespace cd::asset::texture_compress;
+using cd::asset::texture_compress::analyze;
+using cd::asset::texture_compress::CompressedTexture;
+using cd::asset::texture_compress::EncodeOptions;
+using cd::asset::texture_compress::encode;
+using cd::asset::texture_compress::Format;
 
 // ---- Test helpers -----------------------------------------------------------
 
@@ -149,7 +153,7 @@ TEST(TextureCompress, T3_WrongPixelCountReturnsNullopt)
 
 TEST(TextureCompress, T4_NonMultipleDimensionsReturnsNullopt)
 {
-    const std::vector<std::uint8_t> img(5U * 5U * 4U, 128U);
+    const std::vector<std::uint8_t> img(static_cast<std::size_t>(5U) * 5U * 4U, 128U);
     const EncodeOptions opts{ .target = Format::kBC1, .quality = 128U, .generate_mips = false };
     const auto result = encode(std::span{ img }, 5U, 5U, opts);
     EXPECT_FALSE(result.has_value());

@@ -30,12 +30,10 @@ namespace
 
 using cd::anim::Joint;
 using cd::anim::Keyframe;
-using cd::anim::Pose;
 using cd::anim::Skeleton;
 using cd::anim::SkinnedClip;
 
 using cd::game::anim_graph::AnimGraph;
-using cd::game::anim_graph::AnimNode;
 using cd::game::anim_graph::Blackboard;
 using cd::game::anim_graph::Blend1DNode;
 using cd::game::anim_graph::Blend2DNode;

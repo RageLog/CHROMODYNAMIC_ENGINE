@@ -112,7 +112,7 @@ TEST(Ktx2, BC7Minimal4x4Roundtrips)
 
 TEST(Ktx2, RGBA8RoundtripsFromMemory)
 {
-    std::vector<std::uint8_t> payload(8 * 8 * 4, 0x77);
+    std::vector<std::uint8_t> payload(static_cast<std::size_t>(8) * 8 * 4, 0x77);
     const auto bytes =
         build_minimal_ktx2(static_cast<std::uint32_t>(cd::asset::ktx2::Ktx2VkFormat::kR8G8B8A8_Unorm), 8, 8, payload);
     auto r = cd::asset::ktx2::load_from_memory(bytes);
@@ -313,7 +313,7 @@ TEST(Ktx2Encode, EmptyMipsRejected)
 TEST(Ktx2AssetLoader, AdapterDecodesValid)
 {
     constexpr std::uint32_t VK_FORMAT_R8G8B8A8_UNORM = 37;
-    std::vector<std::uint8_t> payload(4 * 4 * 4, 0x55);
+    std::vector<std::uint8_t> payload(static_cast<std::size_t>(4) * 4 * 4, 0x55);
     auto u8 = build_minimal_ktx2(VK_FORMAT_R8G8B8A8_UNORM, 4, 4, std::move(payload));
     std::vector<std::byte> bytes(u8.size());
     std::memcpy(bytes.data(), u8.data(), u8.size());

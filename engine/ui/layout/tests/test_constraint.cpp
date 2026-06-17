@@ -32,7 +32,13 @@ constexpr float kEps = 1e-4F;
 }
 }  // namespace
 
-using namespace cd::ui::layout;
+using cd::ui::layout::ConstraintSolver;
+using cd::ui::layout::VariableId;
+using cd::ui::layout::Constraint;
+using cd::ui::layout::ConstraintRel;
+using cd::ui::layout::ConstraintError;
+using cd::ui::layout::Strength;
+using cd::ui::layout::Term;
 
 // ---- Case 1: Single equality -----------------------------------------------
 

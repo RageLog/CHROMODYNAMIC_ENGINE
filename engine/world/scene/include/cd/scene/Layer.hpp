@@ -33,7 +33,7 @@ class LayerRegistry
 public:
     LayerIndex add(std::string name)
     {
-        const LayerIndex idx = static_cast<LayerIndex>(names_.size());
+        const auto idx = static_cast<LayerIndex>(names_.size());
         names_.push_back(std::move(name));
         return idx;
     }

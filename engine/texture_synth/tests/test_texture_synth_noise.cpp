@@ -51,7 +51,9 @@ TEST(TextureSynthNoise, ValueNoise2InBounds)
 // fbm2: weighted average of 3 octaves → [0, 1].
 TEST(TextureSynthNoise, Fbm2InBoundsAndMatchesWeightedSum)
 {
-    const float u = 0.37F, v = 0.62F, base = 3.0F;
+    const float u = 0.37F;
+    const float v = 0.62F;
+    const float base = 3.0F;
     const float n = cd::texture_synth::fbm2(u, v, base);
     EXPECT_GE(n, 0.0F);
     EXPECT_LE(n, 1.0F);

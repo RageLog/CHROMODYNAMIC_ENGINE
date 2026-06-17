@@ -41,7 +41,7 @@ public:
         t = std::min(t, 1.0F);
         const std::size_t segments = n - 3;
         const float scaled = t * static_cast<float>(segments);
-        std::size_t seg = static_cast<std::size_t>(scaled);
+        auto seg = static_cast<std::size_t>(scaled);
         if (seg >= segments) seg = segments - 1;
         const float local = scaled - static_cast<float>(seg);
         return at_segment_(seg, local);

@@ -145,7 +145,7 @@ compute_flip_lite(ImageView a, ImageView b, double pixels_per_degree = 67.0)
 
     // 3. 95th percentile (sort copy — N ≤ ~1M is acceptable for offline use).
     std::vector<double> sorted = r.error_map;
-    std::sort(sorted.begin(), sorted.end());
+    std::ranges::sort(sorted);
     const auto p95_idx = static_cast<std::size_t>(
         std::min(static_cast<double>(sorted.size() - 1),
                  static_cast<double>(sorted.size()) * 0.95));
@@ -284,9 +284,9 @@ inline void rgb_to_ycxcz(const std::uint8_t* rgba, std::uint32_t W, std::uint32_
     Cz.resize(n);
     for (std::size_t i = 0; i < n; ++i)
     {
-        const double r = static_cast<double>(rgba[i * 4 + 0]);
-        const double g = static_cast<double>(rgba[i * 4 + 1]);
-        const double b = static_cast<double>(rgba[i * 4 + 2]);
+        const auto r = static_cast<double>(rgba[i * 4 + 0]);
+        const auto g = static_cast<double>(rgba[i * 4 + 1]);
+        const auto b = static_cast<double>(rgba[i * 4 + 2]);
         Y[i]  = 0.2126 * r + 0.7152 * g + 0.0722 * b;       // luminance
         Cx[i] = (r - g) * 0.5;                              // red-green opponent
         Cz[i] = b - 0.5 * (r + g);                          // blue-yellow opponent
@@ -316,11 +316,21 @@ compute_flip_full(ImageView a, ImageView b, double pixels_per_degree = 67.0)
     const std::uint32_t W = a.width;
     const std::uint32_t H = a.height;
 
-    std::vector<double> Y_a, Cx_a, Cz_a, Y_b, Cx_b, Cz_b;
+    std::vector<double> Y_a;
+    std::vector<double> Cx_a;
+    std::vector<double> Cz_a;
+    std::vector<double> Y_b;
+    std::vector<double> Cx_b;
+    std::vector<double> Cz_b;
     flip_detail::rgb_to_ycxcz(a.rgba, W, H, Y_a, Cx_a, Cz_a);
     flip_detail::rgb_to_ycxcz(b.rgba, W, H, Y_b, Cx_b, Cz_b);
 
-    std::vector<double> Y_a_b, Cx_a_b, Cz_a_b, Y_b_b, Cx_b_b, Cz_b_b;
+    std::vector<double> Y_a_b;
+    std::vector<double> Cx_a_b;
+    std::vector<double> Cz_a_b;
+    std::vector<double> Y_b_b;
+    std::vector<double> Cx_b_b;
+    std::vector<double> Cz_b_b;
     flip_detail::blur_channel(Y_a, Y_a_b, W, H, sigma_y);
     flip_detail::blur_channel(Y_b, Y_b_b, W, H, sigma_y);
     flip_detail::blur_channel(Cx_a, Cx_a_b, W, H, sigma_c);
@@ -353,7 +363,7 @@ compute_flip_full(ImageView a, ImageView b, double pixels_per_degree = 67.0)
     r.mean_error = sum / static_cast<double>(r.pixel_count);
 
     std::vector<double> sorted = r.error_map;
-    std::sort(sorted.begin(), sorted.end());
+    std::ranges::sort(sorted);
     const auto p95_idx = static_cast<std::size_t>(
         std::min(static_cast<double>(sorted.size() - 1),
                  static_cast<double>(sorted.size()) * 0.95));

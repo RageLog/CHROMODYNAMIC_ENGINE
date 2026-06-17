@@ -54,9 +54,9 @@ std::unique_ptr<cd::rhi::IDevice> try_make_device()
 class HiddenWindow
 {
 public:
-    HiddenWindow()
+    HiddenWindow() : instance_(GetModuleHandleW(nullptr))
     {
-        instance_ = GetModuleHandleW(nullptr);
+        
         WNDCLASSEXW wc {};
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = DefWindowProcW;

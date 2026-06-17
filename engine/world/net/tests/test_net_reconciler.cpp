@@ -9,7 +9,7 @@
 namespace cd::net
 {
 extern const char* snapshot_reconciler_translation_unit() noexcept;
-}
+} // namespace cd::net
 
 namespace
 {

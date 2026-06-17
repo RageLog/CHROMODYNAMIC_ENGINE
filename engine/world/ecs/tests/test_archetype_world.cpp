@@ -132,7 +132,8 @@ TEST(ArchetypeWorld, DestroyRemovesEntityAndShrinksChunk)
 {
     ArchetypeWorld w;
     std::vector<Entity> ents;
-    for (int i = 0; i < 5; ++i) {
+    ents.reserve(5);
+for (int i = 0; i < 5; ++i) {
         ents.push_back(w.emplace<Position, Velocity>(
             Position { static_cast<float>(i), 0, 0 },
             Velocity {}));

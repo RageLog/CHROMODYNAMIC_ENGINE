@@ -68,14 +68,14 @@ constexpr float kGap    =  4.0F;
 {
     const auto bounds  = standard_bounds();
     const float cell_w = (bounds.w - 2.0F * kPad - (kCols - 1.0F) * kGap) / kCols;
-    const float col    = static_cast<float>(i % 3U);
+    const auto col    = static_cast<float>(i % 3U);
     return bounds.x + kPad + col * (cell_w + kGap) + cell_w * 0.5F;
 }
 
 [[nodiscard]] float swatch_cy(std::size_t i) noexcept
 {
     const auto bounds = standard_bounds();
-    const float row   = static_cast<float>(i / 3U);
+    const auto row   = static_cast<float>(i / 3U);
     return bounds.y + kPad + row * (kSwatchH + kGap) + kSwatchH * 0.5F;
 }
 

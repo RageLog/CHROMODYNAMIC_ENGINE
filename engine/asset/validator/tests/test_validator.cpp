@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <ranges>
 #include <cstdint>
 #include <span>
 #include <string_view>
@@ -43,7 +44,7 @@ using cd::asset::validator::ValidatorPolicy;
 bool has_severity(const std::vector<ValidationIssue>& issues,
                   Severity                             sev)
 {
-    return std::any_of(issues.begin(), issues.end(),
+    return std::ranges::any_of(issues,
                        [sev](const ValidationIssue& i) { return i.severity == sev; });
 }
 

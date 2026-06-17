@@ -175,7 +175,7 @@ TEST(DspFx_DelayLine, HundredSampleDelayRoundTrip)
     // Write kTotal distinct values
     for (std::size_t i = 0; i < kTotal; ++i)
     {
-        const float val = static_cast<float>(i + 1);  // 1, 2, 3, ...
+        const auto val = static_cast<float>(i + 1);  // 1, 2, 3, ...
         dl.write(val);
     }
 
@@ -216,6 +216,9 @@ TEST(DspFx_Reverb, DryMixPreservesSignal)
 
     constexpr std::size_t kN = 256;
     std::vector<float> input(kN);
+    // std::ranges::iota requires a weakly_incrementable seed; float is not one,
+    // so the classic algorithm is kept here.
+    // NOLINTNEXTLINE(modernize-use-ranges)
     std::iota(input.begin(), input.end(), 0.0F);  // 0, 1, 2, ..., 255
 
     std::vector<float> output(kN, 0.0F);

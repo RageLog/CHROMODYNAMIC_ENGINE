@@ -28,7 +28,6 @@
 namespace
 {
 
-using cd::net::session_replay::PacketRecord;
 using cd::net::session_replay::Recorder;
 using cd::net::session_replay::Replayer;
 

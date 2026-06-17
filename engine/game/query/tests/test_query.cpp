@@ -32,10 +32,7 @@ namespace
 
 using cd::ecs::Entity;
 using cd::ecs::World;
-using cd::game::query::AabbHit;
 using cd::game::query::QueryWorld;
-using cd::game::query::RayHit;
-using cd::game::query::SphereOverlap;
 using cd::game::query::intersect_ray_aabb;
 using cd::math::Vec3f;
 using cd::physics::Aabb;
@@ -204,7 +201,9 @@ TEST(GameQuery, BoxQueryReturnsOverlappingOnly)
     // `inside` (centre 0) and `touch` (face touching at x=1.5) must be in.
     // `outside` at x=10 must not.
     ASSERT_EQ(hits.size(), 2U);
-    bool saw_inside = false, saw_touch = false, saw_outside = false;
+    bool saw_inside = false;
+    bool saw_touch = false;
+    bool saw_outside = false;
     for (auto e : hits)
     {
         if (e == inside)  saw_inside  = true;
@@ -236,7 +235,9 @@ TEST(GameQuery, FrustumQueryKeepsInsideDropsOutside)
     auto hits = q.frustum_query(f);
 
     ASSERT_EQ(hits.size(), 2U);
-    bool saw_a = false, saw_b = false, saw_out = false;
+    bool saw_a = false;
+    bool saw_b = false;
+    bool saw_out = false;
     for (auto e : hits)
     {
         if (e == in_a) saw_a = true;
@@ -255,7 +256,8 @@ TEST(GameQuery, RebuildFromCallbackPopulates)
 {
     World w;
     std::vector<Entity> es;
-    for (int i = 0; i < 5; ++i)
+    es.reserve(5);
+for (int i = 0; i < 5; ++i)
         es.push_back(w.create());
 
     QueryWorld q { 2.0F };
@@ -264,7 +266,7 @@ TEST(GameQuery, RebuildFromCallbackPopulates)
         {
             for (std::size_t i = 0; i < es.size(); ++i)
             {
-                const float fi = static_cast<float>(i);
+                const auto fi = static_cast<float>(i);
                 target.add_entity(es[i], Vec3f { fi, 0.0F, 0.0F },
                                   box_at(Vec3f { fi, 0.0F, 0.0F }, 0.25F));
             }
@@ -300,7 +302,9 @@ TEST(GameQuery, RemoveEntityIsSurgical)
 
     auto hits = q.sphere_query(Vec3f { 1.0F, 0.0F, 0.0F }, 10.0F);
     ASSERT_EQ(hits.size(), 2U);
-    bool saw_a = false, saw_b = false, saw_c = false;
+    bool saw_a = false;
+    bool saw_b = false;
+    bool saw_c = false;
     for (const auto& h : hits)
     {
         if (h.entity == a) saw_a = true;

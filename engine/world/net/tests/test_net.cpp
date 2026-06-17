@@ -976,7 +976,8 @@ TEST(RleCodec, EncodesRunOfZeros)
 TEST(RleCodec, RoundTripMixedData)
 {
     std::vector<std::uint8_t> src;
-    for (int i = 0; i < 5; ++i) src.push_back(0xAA);
+    src.reserve(5);
+for (int i = 0; i < 5; ++i) src.push_back(0xAA);
     for (int i = 0; i < 8; ++i) src.push_back(0x55);
     src.push_back(0x77);
     for (int i = 0; i < 3; ++i) src.push_back(0xFF);

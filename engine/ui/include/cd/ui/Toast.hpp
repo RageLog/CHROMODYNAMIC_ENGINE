@@ -98,8 +98,8 @@ public:
     /// Drop toasts whose expiry has passed. Call once per frame.
     void update(double now)
     {
-        toasts_.erase(std::remove_if(toasts_.begin(), toasts_.end(),
-            [now](const Toast& t) { return t.expiry_t <= now; }),
+        toasts_.erase(std::ranges::remove_if(toasts_,
+            [now](const Toast& t) { return t.expiry_t <= now; }).begin(),
             toasts_.end());
     }
 

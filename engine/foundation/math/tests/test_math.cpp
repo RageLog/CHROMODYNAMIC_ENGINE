@@ -1362,7 +1362,8 @@ TEST(DuffOnb, PrecisionNearSouthPoleBetterThanFrisvad)
     const float duff_err = std::abs(cd::math::dot(d_b1, n));
 
     // Frisvad inline (branch-free form, Frisvad 2012 eq. 2-3):
-    cd::math::Vec3f f_b1, f_b2;
+    cd::math::Vec3f f_b1;
+    cd::math::Vec3f f_b2;
     if (n.z > -1.0F + 1e-7F) {
         const float inv = 1.0F / (1.0F + n.z);
         f_b1 = { 1.0F - n.x * n.x * inv, -n.x * n.y * inv, -n.x };
