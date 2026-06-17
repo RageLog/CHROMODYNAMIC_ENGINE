@@ -19,6 +19,18 @@
 //                                   that node's id via selected_node_id().
 //   * SimulateClickOutsideClearsSelection — click outside all node rects
 //                                           clears any prior selection.
+//   * SetTreeClearsPriorSelectionAndRects — rebinding via set_tree() must reset
+//                                           the current selection AND drop the
+//                                           cached node rects (so a stale click
+//                                           cannot re-select on the new tree
+//                                           before the next draw()).
+//   * OrphanNodeUnreachableFromRootStillRenders — a node not reachable from
+//                                           root_id is assigned depth 0 by the
+//                                           BFS fallback and still gets a rect
+//                                           (it is selectable). Prior fixtures
+//                                           were all fully reachable, so the
+//                                           "unreachable -> depth 0" branch was
+//                                           never exercised.
 // =============================================================================
 #include <cd/editor/panel_dialog_tree_editor/DialogTreeEditor.hpp>
 
@@ -302,4 +314,119 @@ TEST(DialogTreeEditor, SimulateClickOutsideClearsSelection)
 
     // Selection should be cleared.
     EXPECT_FALSE(panel.selected_node_id().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 8 — SetTreeClearsPriorSelectionAndRects
+//   set_tree() must reset selected_id_ and the cached node_rects_. We select a
+//   node, then rebind to a different tree; the selection must be gone and a
+//   click that would have hit the OLD rect must NOT re-select before a fresh
+//   draw() repopulates the cache. This exercises the clear-on-rebind branch
+//   (set_tree clears both selected_id_ and node_rects_), which no prior test
+//   covered because none re-bound after selecting.
+// ---------------------------------------------------------------------------
+TEST(DialogTreeEditor, SetTreeClearsPriorSelectionAndRects)
+{
+    const dtr::DialogTree tree = make_test_tree();
+
+    dte::DialogTreeEditor panel;
+    panel.set_tree(&tree);
+
+    const cd::ui::widgets::Rect bounds { 0.0F, 0.0F, 800.0F, 600.0F };
+
+    // Populate the rect cache and make a selection in the first column.
+    cd::ui::renderer::DrawBatcher batcher;
+    const cd::ui::widgets::Theme  theme {};
+    batcher.begin_frame();
+    panel.draw(batcher, theme, bounds);
+
+    float hit_y = 0.0F;
+    for (int yi = 0; yi < 600; yi += 4)
+    {
+        panel.simulate_click(46.0F, static_cast<float>(yi), bounds);
+        if (panel.selected_node_id().has_value())
+        {
+            hit_y = static_cast<float>(yi);
+            break;
+        }
+    }
+    ASSERT_TRUE(panel.selected_node_id().has_value());
+
+    // Rebind to a fresh tree: selection must clear immediately.
+    const dtr::DialogTree single = make_single_node_tree();
+    panel.set_tree(&single);
+    EXPECT_FALSE(panel.selected_node_id().has_value());
+
+    // The cached rects were dropped by set_tree(); a click at the previously
+    // hit coordinate must NOT re-select anything until the next draw().
+    panel.simulate_click(46.0F, hit_y, bounds);
+    EXPECT_FALSE(panel.selected_node_id().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 9 — OrphanNodeUnreachableFromRootStillRenders
+//   A node with an id never referenced by any next_ids (and that is not the
+//   root) is unreachable in the BFS. The layout falls back to depth 0 for it
+//   ("Nodes not reachable from root get depth 0 (they still render)"). We
+//   verify it still produces a rect by selecting it via a column-0 click
+//   sweep, and that draw() emits more geometry than a single-node tree.
+//   Prior fixtures were all fully reachable, so this fallback branch was
+//   untested.
+// ---------------------------------------------------------------------------
+TEST(DialogTreeEditor, OrphanNodeUnreachableFromRootStillRenders)
+{
+    // root (kSay, no edges) + orphan (kEnd, never referenced) — disconnected.
+    dtr::DialogTree tree;
+    tree.tree_id = "orphan_tree";
+    tree.root_id = "root";
+    {
+        dtr::DialogNode root_node;
+        root_node.node_id = "root";
+        root_node.kind    = dtr::NodeKind::kSay;
+        root_node.text    = "Alone at the top.";
+        // No next_ids -> nothing reachable below root.
+        tree.nodes.push_back(std::move(root_node));
+    }
+    {
+        dtr::DialogNode orphan;
+        orphan.node_id = "orphan";   // never appears in any next_ids
+        orphan.kind    = dtr::NodeKind::kEnd;
+        tree.nodes.push_back(std::move(orphan));
+    }
+
+    dte::DialogTreeEditor panel;
+    panel.set_tree(&tree);
+
+    const cd::ui::widgets::Rect bounds { 0.0F, 0.0F, 800.0F, 600.0F };
+
+    cd::ui::renderer::DrawBatcher batcher;
+    const cd::ui::widgets::Theme  theme {};
+    batcher.begin_frame();
+    panel.draw(batcher, theme, bounds);
+
+    // Both root and orphan land in column 0 (depth 0). A column-0 sweep must
+    // be able to land on a node rect -> the orphan participates in layout.
+    bool hit = false;
+    for (int yi = 0; yi < 600; ++yi)
+    {
+        panel.simulate_click(46.0F, static_cast<float>(yi), bounds);
+        if (panel.selected_node_id().has_value())
+        {
+            hit = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(hit) << "an unreachable orphan node must still receive a rect";
+
+    // The two-node disconnected tree must emit more geometry than a lone node.
+    std::size_t verts_two = batcher.vertex_count();
+
+    const dtr::DialogTree single = make_single_node_tree();
+    dte::DialogTreeEditor panel_single;
+    panel_single.set_tree(&single);
+    cd::ui::renderer::DrawBatcher batcher_single;
+    batcher_single.begin_frame();
+    panel_single.draw(batcher_single, theme, bounds);
+
+    EXPECT_GT(verts_two, batcher_single.vertex_count());
 }

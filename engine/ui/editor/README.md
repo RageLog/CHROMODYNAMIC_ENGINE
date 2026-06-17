@@ -33,7 +33,19 @@ ctest --preset ninja-debug -R editor --output-on-failure
 - **Input**: gizmo interaction via mouse/keyboard bindings.
 
 **Notes**:
-- Editor UI lives in cd::editor_ui (ImGui panels, property widget library).
+- Editor UI lives in cd::editor_ui (renderer-agnostic widget tree + DrawBatcher
+  draw path). Of the 27 panels, only `panel_inspector` currently has a real
+  ImGui draw path (`Inspector::draw_imgui`); the rest emit placeholder
+  DrawBatcher visuals (accent bars / gradient strips / colour-coded quads) and
+  carry no in-panel glyph text. This is the editor-v1 visual-fidelity scope,
+  sealed in `docs/ADR/ADR-20260616-band4-editor-scope.md`; full DCC text/glyph
+  + ImGui-izing all panels is a promote-on-need enhancement (depends on
+  ui_font shaping + ui umbrella glyph layout, both B3-sealed).
+- There is no single `editor.exe` entry point yet; the standalone editor binary
+  (`apps/editor/`, `chroma::editor::app`) is designed in
+  `docs/ADR/ADR-20260530-editor-binary.md` (~6 KLOC, ~6.5-week Phase-2 build)
+  and remains deferred-by-design. Panels are exercised today via their gtest
+  binaries and the `hello_engine` sample, not a packaged app.
 - Game can run while editor is open (pause game to edit, resume to test).
 - All editor operations are undoable (EditHistory records commands).
 - Gizmo interaction threadsafe via job-queue command recording.

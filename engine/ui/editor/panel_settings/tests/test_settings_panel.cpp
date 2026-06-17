@@ -22,6 +22,14 @@
 //           on an empty panel (same bounds).
 //   7. SetValue_NoopForUnknownKey
 //         — set_value on unknown key leaves all entries unchanged.
+//   8. DuplicateKey_FirstMatchWins
+//         — the header's documented "duplicate keys allowed (last write wins in
+//           set_value; first match wins in get_value)" contract: two entries
+//           share the key "vsync"; set_value updates only the FIRST match and
+//           get_value returns the FIRST match. Prior tests only ever used
+//           unique keys, so neither the first-match-early-return in set_value
+//           nor the first-match-return in get_value was exercised against a
+//           genuine duplicate.
 // =============================================================================
 #include <cd/editor/panel_settings/SettingsPanel.hpp>
 
@@ -188,4 +196,38 @@ TEST(SettingsPanelTest, SetValue_NoopForUnknownKey)
 
     // Entry count must not have changed.
     EXPECT_EQ(panel.entry_count(), static_cast<std::size_t>(6U));
+}
+
+// ---------------------------------------------------------------------------
+// TEST 8 — DuplicateKey_FirstMatchWins
+//   Exercises the header's documented duplicate-key contract:
+//     "Duplicate keys are allowed (last write wins in set_value; first match
+//      wins in get_value)."
+//   set_value returns on the FIRST match, so only the first duplicate is
+//   updated; get_value returns the FIRST match. Neither branch had been hit
+//   against a real duplicate before (all prior fixtures used unique keys).
+// ---------------------------------------------------------------------------
+TEST(SettingsPanelTest, DuplicateKey_FirstMatchWins)
+{
+    sp::SettingsPanel panel;
+
+    // Two entries sharing key "vsync" with distinct values.
+    panel.register_entry({ "vsync", "V-Sync (A)", "first",  "", sp::Category::kGraphics });
+    panel.register_entry({ "vsync", "V-Sync (B)", "second", "", sp::Category::kGraphics });
+    ASSERT_EQ(panel.entry_count(), static_cast<std::size_t>(2U));
+
+    // get_value returns the FIRST match before any mutation.
+    const auto before = panel.get_value("vsync");
+    ASSERT_TRUE(before.has_value());
+    EXPECT_EQ(*before, "first");
+
+    // set_value updates only the FIRST match (early return on first hit);
+    // get_value still returns that first (now-updated) match.
+    panel.set_value("vsync", "third");
+    const auto after = panel.get_value("vsync");
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(*after, "third");
+
+    // Both duplicate rows still exist (set_value never removes/adds).
+    EXPECT_EQ(panel.entry_count(), static_cast<std::size_t>(2U));
 }

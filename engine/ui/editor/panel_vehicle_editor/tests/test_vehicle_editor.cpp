@@ -20,6 +20,16 @@
 //   7. DrawZeroBoundsIsNoop
 //                           — draw() with zero-size bounds does not crash and
 //                              emits only the background quad.
+//   8. SimulateClickApplyInvalidBoundsDoesNotArm
+//                           — simulate_click_apply guards on bounds.is_valid();
+//                              an invalid (zero-size) bounds must NOT arm the
+//                              pending-apply flag. Prior tests always passed
+//                              standard_bounds(), so the guard's false branch
+//                              was never exercised.
+//   9. ApplyFlagCanRearmAfterConsume
+//                           — the click->pending->consume->click cycle: after
+//                              consume_apply() a fresh valid click re-arms the
+//                              flag (the re-arm path was untested).
 // =============================================================================
 #include <cd/editor/panel_vehicle_editor/VehicleEditor.hpp>
 
@@ -218,4 +228,44 @@ TEST(VehicleEditorPanel, DrawZeroBoundsIsNoop)
     EXPECT_NO_THROW(editor.draw(batcher, standard_theme(), zero_bounds));
     EXPECT_EQ(batcher.command_count(), static_cast<std::size_t>(0U));
     EXPECT_EQ(batcher.vertex_count(),  static_cast<std::size_t>(0U));
+}
+
+// ---------------------------------------------------------------------------
+// TEST 8 — SimulateClickApplyInvalidBoundsDoesNotArm
+//   simulate_click_apply only arms apply_pending_ when bounds.is_valid().
+//   A zero-size (invalid) bounds must leave the flag clear — the guard's
+//   false branch, never hit by the standard_bounds() fixtures.
+// ---------------------------------------------------------------------------
+TEST(VehicleEditorPanel, SimulateClickApplyInvalidBoundsDoesNotArm)
+{
+    ve::VehicleEditor editor;
+    ASSERT_FALSE(editor.apply_pending());
+
+    const cd::ui::widgets::Rect invalid_bounds { 0.0F, 0.0F, 0.0F, 0.0F };
+    editor.simulate_click_apply(invalid_bounds);
+    EXPECT_FALSE(editor.apply_pending());
+
+    // A subsequent valid click still arms correctly (guard is per-call).
+    editor.simulate_click_apply(standard_bounds());
+    EXPECT_TRUE(editor.apply_pending());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 9 — ApplyFlagCanRearmAfterConsume
+//   click -> pending -> consume -> click must re-arm. The re-arm-after-consume
+//   path was untested (test 5 ended at consume).
+// ---------------------------------------------------------------------------
+TEST(VehicleEditorPanel, ApplyFlagCanRearmAfterConsume)
+{
+    ve::VehicleEditor editor;
+
+    editor.simulate_click_apply(standard_bounds());
+    ASSERT_TRUE(editor.apply_pending());
+
+    editor.consume_apply();
+    ASSERT_FALSE(editor.apply_pending());
+
+    // Re-arm: a fresh valid click sets the flag again.
+    editor.simulate_click_apply(standard_bounds());
+    EXPECT_TRUE(editor.apply_pending());
 }
