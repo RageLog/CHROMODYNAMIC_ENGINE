@@ -13,6 +13,18 @@
 //   T7  load_from_json: missing 'id' field -> returns nullopt.
 //   T8  load_from_json: missing optional fields -> falls back to defaults
 //       (metallic=0, roughness=0.5, alpha_mode=OPAQUE).
+//
+// BAND-3 edge tests (phase1241 — seal-the-v1, lock-the-untested-branches):
+//   T9  load_from_json: malformed JSON (parse error) -> nullopt (the json::load
+//       failure path was never exercised — every prior load test fed valid JSON).
+//   T10 load_from_json: 'id' present but wrong type (number, not string) -> nullopt
+//       (the `!(*id_r)->is_string()` half of the id guard; T7 only covered absent).
+//   T11 save_to_json: un-openable path -> returns false (the ofstream-not-open
+//       branch; T2 only ever exercised the success path).
+//   T12 validate_authored: NaN scalar -> [ERROR] (the std::isnan limb of each
+//       range check; prior tests used finite out-of-range values only).
+//   T13 validate_authored: out-of-range base_color channel -> [ERROR]
+//       (check #2 was never driven out of [0,1] by any prior test).
 // =============================================================================
 
 #include <cd/asset/material_authoring/MaterialAuthoring.hpp>
@@ -21,8 +33,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <ranges>
 #include <string>
 #include <vector>
@@ -252,6 +266,107 @@ TEST(MaterialAuthoring, MissingOptionalFieldsUseDefaults)
     EXPECT_TRUE(mat.mr_texture_path.empty());
 
     std::filesystem::remove(tmp);
+}
+
+// ============================================================================
+// BAND-3 edge tests — lock untested real branches
+// ============================================================================
+
+// ---- T9 — malformed JSON -> nullopt -----------------------------------------
+// Exercises the `if (!result) return nullopt` parse-failure path in
+// load_from_json(); every prior load test fed syntactically valid JSON.
+
+TEST(MaterialAuthoring, MalformedJsonReturnsNullopt)
+{
+    const auto tmp = std::filesystem::temp_directory_path() / "cd_mat_malformed.material.json";
+    {
+        std::ofstream ofs { tmp, std::ios::binary };
+        ASSERT_TRUE(ofs.is_open());
+        ofs << R"({"id": "broken", "metallic": )";  // truncated — unterminated object
+    }
+
+    const auto result = load_from_json(tmp);
+    EXPECT_FALSE(result.has_value()) << "Expected nullopt for malformed JSON.";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---- T10 — 'id' present but wrong type -> nullopt ----------------------------
+// Exercises the `!(*id_r)->is_string()` half of the required-id guard. T7 only
+// covered an ABSENT id; here the key exists but holds a number.
+
+TEST(MaterialAuthoring, IdWrongTypeReturnsNullopt)
+{
+    const auto tmp = std::filesystem::temp_directory_path() / "cd_mat_id_number.material.json";
+    {
+        std::ofstream ofs { tmp, std::ios::binary };
+        ASSERT_TRUE(ofs.is_open());
+        ofs << R"({"id": 42, "roughness": 0.5})";  // id is a number, not a string
+    }
+
+    const auto result = load_from_json(tmp);
+    EXPECT_FALSE(result.has_value()) << "Expected nullopt when 'id' is not a string.";
+
+    std::filesystem::remove(tmp);
+}
+
+// ---- T11 — save to an un-openable path -> false -----------------------------
+// Exercises the `if (!ofs.is_open()) return false` branch. A path whose parent
+// directory does not exist cannot be opened for writing.
+
+TEST(MaterialAuthoring, SaveToUnopenablePathReturnsFalse)
+{
+    const auto bad = std::filesystem::temp_directory_path() /
+                     "cd_mat_no_such_dir_zzz" / "deeper" / "out.material.json";
+    // Ensure the parent directory really is absent.
+    std::filesystem::remove_all(std::filesystem::temp_directory_path() /
+                                "cd_mat_no_such_dir_zzz");
+
+    const auto mat = AuthoringDefaults::dielectric();
+    EXPECT_FALSE(save_to_json(mat, bad))
+        << "Expected save_to_json to return false for an un-openable path.";
+}
+
+// ---- T12 — NaN scalar -> [ERROR] --------------------------------------------
+// Exercises the std::isnan limb of the metallic/roughness range checks, which
+// no prior test reached (T4 used finite 1.5 / -0.1 only).
+
+TEST(MaterialAuthoring, NanScalarIsError)
+{
+    AuthoredMaterial mat;
+    mat.id        = "mat_nan";
+    mat.metallic  = std::numeric_limits<float>::quiet_NaN();
+    mat.roughness = 0.5F;
+
+    std::vector<std::string> issues;
+    const bool ok = validate_authored(mat, issues);
+
+    EXPECT_FALSE(ok) << "NaN metallic must be reported as an error.";
+    EXPECT_TRUE(has_error(issues));
+}
+
+// ---- T13 — out-of-range base_color channel -> [ERROR] -----------------------
+// Exercises validation check #2 (base_color in [0,1]); no prior test pushed a
+// colour channel outside the unit range.
+
+TEST(MaterialAuthoring, OutOfRangeBaseColorIsError)
+{
+    AuthoredMaterial mat;
+    mat.id         = "mat_bad_color";
+    mat.base_color = { 1.4F, 0.5F, -0.2F };  // R too high, B too low
+    mat.metallic   = 0.0F;
+    mat.roughness  = 0.5F;
+
+    std::vector<std::string> issues;
+    const bool ok = validate_authored(mat, issues);
+
+    EXPECT_FALSE(ok);
+    EXPECT_TRUE(has_error(issues));
+
+    const auto error_count = std::ranges::count_if(
+        issues,
+        [](const std::string& s) { return s.starts_with("[ERROR]"); });
+    EXPECT_GE(error_count, 2);  // one per offending channel
 }
 
 }  // namespace

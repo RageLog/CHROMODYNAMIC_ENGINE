@@ -24,6 +24,17 @@
 //   T12 BC7 compression ratio: input / output = 4.0 for 16×16  [CD_TC_HAS_BC7ENC]
 //   T13 ASTC 4×4 encode: 4×4 → blob = 16 bytes        [CD_TC_HAS_ASTCENC]
 //   T14 ASTC 8×8 encode: 8×8 → blob = 16 bytes        [CD_TC_HAS_ASTCENC]
+//
+// BAND-3 edge tests (phase1241 — seal-the-v1, lock-the-untested-branches):
+//   T15 encode() BC3 / BC5 (not-yet-implemented format) → nullopt
+//   T16 analyze() rejects a non-BC1 format (BC7) → nullopt
+//   T17 analyze() rejects a blob shorter than one mip0 → nullopt
+//   T18 solid-WHITE (255,255,255) block: analyze RMSE == 0 (BC1 lossless for a
+//       single-colour block; the prior solid test only covered solid BLACK)
+//   T19 decode 3-colour+transparent BC1 mode (c0 <= c1): the encoder always
+//       emits 4-colour blocks (c0 >= c1), so the decoder's c0<=c1 branch
+//       (palette[2]=midpoint, palette[3]=black-transparent) was never exercised.
+//       A hand-crafted blob with c0 < c1 routed through analyze() reaches it.
 // =============================================================================
 
 #include <cd/asset/texture_compress/TextureCompress.hpp>
@@ -352,6 +363,117 @@ TEST(TextureCompress, T14_Astc8x8Encode8x8Produces16Bytes)
     EXPECT_EQ(result->blob.size(), 16UZ);
     EXPECT_FALSE(result->blob.empty());
 #endif
+}
+
+// ============================================================================
+// BAND-3 edge tests — lock untested real branches
+// ============================================================================
+
+// ---- T15: BC3 / BC5 are not implemented yet → encode returns nullopt -------
+// Exercises the final fall-through in encode() (the "BC3 / BC5 not yet
+// implemented" path) which no prior test reached — every other test targets
+// BC1 / BC7 / ASTC.
+
+TEST(TextureCompress, T15_Bc3Bc5ReturnNullopt)
+{
+    const auto img = make_gradient_image(4U, 4U);
+
+    const EncodeOptions bc3{ .target = Format::kBC3, .quality = 128U, .generate_mips = false };
+    const EncodeOptions bc5{ .target = Format::kBC5, .quality = 128U, .generate_mips = false };
+
+    EXPECT_FALSE(encode(std::span{ img }, 4U, 4U, bc3).has_value());
+    EXPECT_FALSE(encode(std::span{ img }, 4U, 4U, bc5).has_value());
+}
+
+// ---- T16: analyze() only supports BC1 → non-BC1 format returns nullopt -----
+// Exercises the `compressed.format != Format::kBC1` guard at the top of
+// analyze(); prior analyze tests only ever passed BC1 textures.
+
+TEST(TextureCompress, T16_AnalyzeRejectsNonBc1Format)
+{
+    const auto img = make_gradient_image(4U, 4U);
+
+    CompressedTexture fake_bc7;
+    fake_bc7.format = Format::kBC7;
+    fake_bc7.width  = 4U;
+    fake_bc7.height = 4U;
+    fake_bc7.blob.assign(16U, 0U);  // BC7 block size, contents irrelevant
+
+    const auto stats = analyze(std::span{ img }, fake_bc7);
+    EXPECT_FALSE(stats.has_value());
+}
+
+// ---- T17: analyze() rejects a blob shorter than one mip0 → nullopt ----------
+// Exercises the `compressed.blob.size() < mip0_bytes` guard. A 4×4 BC1 mip0 is
+// 8 bytes; a 7-byte blob must be rejected rather than read out of bounds.
+
+TEST(TextureCompress, T17_AnalyzeRejectsTruncatedBlob)
+{
+    const auto img = make_gradient_image(4U, 4U);
+
+    CompressedTexture truncated;
+    truncated.format = Format::kBC1;
+    truncated.width  = 4U;
+    truncated.height = 4U;
+    truncated.blob.assign(7U, 0U);  // one byte short of a single 8-byte block
+
+    const auto stats = analyze(std::span{ img }, truncated);
+    EXPECT_FALSE(stats.has_value());
+}
+
+// ---- T18: solid-WHITE block — BC1 is lossless, RMSE == 0 -------------------
+// The prior solid-colour test (T10) only covered solid BLACK (0,0,0), which is
+// also palette[3] in the transparent branch. Solid WHITE (255,255,255) drives a
+// distinct endpoint (max==min==white) — locking that the single-colour fast
+// path reconstructs exactly for a non-black colour too.
+
+TEST(TextureCompress, T18_AnalyzeRmseZeroForSolidWhite)
+{
+    constexpr std::uint32_t kW = 4U;
+    constexpr std::uint32_t kH = 4U;
+
+    const auto img = make_solid_image(kW, kH, 255U, 255U, 255U);
+    const EncodeOptions opts{ .target = Format::kBC1, .quality = 128U, .generate_mips = false };
+    const auto compressed = encode(std::span{ img }, kW, kH, opts);
+    ASSERT_TRUE(compressed.has_value());
+
+    const auto stats = analyze(std::span{ img }, *compressed);
+    ASSERT_TRUE(stats.has_value());
+
+    EXPECT_TRUE(std::isfinite(stats->rmse));
+    EXPECT_NEAR(stats->rmse, 0.0, 1e-6);
+}
+
+// ---- T19: decode 3-colour + transparent BC1 mode (c0 <= c1) ----------------
+// The encoder always normalises endpoints to c0 >= c1, so the decoder's
+// c0 <= c1 branch (palette[2] = (p0+p1)/2, palette[3] = transparent black) is
+// never reached through encode(). A hand-crafted blob with c0 < c1, decoded via
+// analyze(), is the only way to exercise it. We pick c0 = RGB565(black) = 0x0000
+// and c1 = RGB565(white) = 0xFFFF so c0 < c1, with all 16 texel indices = 0
+// (→ palette[0] = black) — a fully reconstructible solid-black image. This both
+// reaches the c0<=c1 decode branch AND verifies it decodes index 0 correctly.
+
+TEST(TextureCompress, T19_DecodeThreeColorTransparentModeBranch)
+{
+    // 4×4 solid-black original — the reference we compare the decode against.
+    const auto img = make_solid_image(4U, 4U, 0U, 0U, 0U);
+
+    CompressedTexture handcrafted;
+    handcrafted.format = Format::kBC1;
+    handcrafted.width  = 4U;
+    handcrafted.height = 4U;
+    handcrafted.blob.assign(8U, 0U);
+    // color0 = 0x0000 (black, low) ; color1 = 0xFFFF (white, high) → c0 < c1.
+    handcrafted.blob[0] = 0x00U;  handcrafted.blob[1] = 0x00U;  // c0 LE = 0x0000
+    handcrafted.blob[2] = 0xFFU;  handcrafted.blob[3] = 0xFFU;  // c1 LE = 0xFFFF
+    // indices [4..7] all zero → every texel selects palette[0] = p0 = black.
+
+    const auto stats = analyze(std::span{ img }, handcrafted);
+    ASSERT_TRUE(stats.has_value());
+
+    // palette[0] == black == the original image → exact reconstruction.
+    EXPECT_TRUE(std::isfinite(stats->rmse));
+    EXPECT_NEAR(stats->rmse, 0.0, 1e-6);
 }
 
 }  // namespace
