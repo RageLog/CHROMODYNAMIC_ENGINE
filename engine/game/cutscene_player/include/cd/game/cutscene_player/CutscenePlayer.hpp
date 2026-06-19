@@ -192,10 +192,32 @@ public:
     /// transitions to kIdle with is_complete() == true.
     void tick(float dt_ms);
 
+    // ---- seek / restart ------------------------------------------------------
+
+    /// Seek to an absolute playhead position `abs_ms` measured from the very
+    /// start of the cutscene (i.e. summing all preceding phase durations).
+    /// No events are fired during the seek — the playhead is repositioned
+    /// silently so that the next tick() fires only events beyond the new
+    /// position.
+    ///
+    /// Contract:
+    ///   * No-op if not kPlaying or kPaused.
+    ///   * abs_ms < 0 is clamped to 0 (beginning of cutscene).
+    ///   * abs_ms >= total_duration_ms() is clamped to the last phase end,
+    ///     which immediately transitions to kIdle with is_complete() == true.
+    ///   * fired_this_tick_ is cleared by this call (callers must re-drain).
+    void seek(float abs_ms);
+
+    /// Restart the active cutscene from the beginning. Equivalent to
+    /// play(active_cutscene_) but avoids forcing the caller to hold a copy.
+    /// Clears is_complete() and resets all transient state.
+    /// No-op if the player is kIdle (no cutscene has been loaded).
+    void restart();
+
     // ---- queries -------------------------------------------------------------
 
     /// Returns events fired during the most recent tick() call. Valid until
-    /// the next call to tick(), play(), or stop().
+    /// the next call to tick(), play(), stop(), seek(), or restart().
     CD_NODISCARD std::span<const CutsceneEvent> events_fired_this_tick() const noexcept;
 
     /// True while the player is in kPlaying state.
@@ -209,6 +231,10 @@ public:
 
     /// Current phase index (0-based). Returns 0 when kIdle.
     CD_NODISCARD std::size_t current_phase_index() const noexcept;
+
+    /// Sum of all phase durations in the active cutscene (ms). Returns 0 if
+    /// the player is kIdle or the cutscene has no phases.
+    CD_NODISCARD float total_duration_ms() const noexcept;
 
 private:
     // Advance within the current phase by `dt_ms`, firing events as they

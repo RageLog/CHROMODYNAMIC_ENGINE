@@ -22,7 +22,7 @@
 | Lib | % | Tier | Basis |
 |---|---|---|---|
 | cd::frame_timing | 92 | production | 144-LOC header ring of per-frame dt + mean/median/p99/min/max + fps; 7 gtests; small, complete |
-| cd::bench | 90 | tooling | 312-LOC header microbench (warmup/percentiles/CSV/JSON/MD + DoNotOptimize); 10 gtests; dev-tool |
+| cd::bench | 100 | tooling | 312-LOC header microbench (warmup/percentiles/CSV/JSON/MD + DoNotOptimize); print() now shows max+stddev; 24 gtests (12 edge/negative added: warmup=0, single-sample percentiles, name/label survival, slow-body inner_calls=1, CSV column positions, empty-label CSV, markdown pipe count, empty/single JSON array, do_not_optimize non-trivial type, p95 ordering, even-n median); dev-tool |
 | cd::concurrency | 88 | production | 3.7k LOC/26 hdrs; real Chase-Lev work-stealing deque + hazard-ptr reclaim, thread pool (598), JobGraph, CoroTask; 124 gtests |
 | cd::math | 88 | production | 2.6k LOC/31 hdrs; constexpr Vec/Mat (4×4 inverse), Quat slerp/log, Transform, Onb, splines, noise; 140 gtests |
 | cd::core | 85 | production | 4.7k LOC hdrs (Handle/SmallVector/PoolAllocator/Result/CVar + 2215-LOC portability shim); 2 thin .cpp; 118 gtests |
@@ -74,10 +74,10 @@
 
 | Lib | % | Tier | Basis |
 |---|---|---|---|
-| cd::game::quest | 92 | production | 653 src; objective tracker/journal, commit-or-rollback add, auto-complete funnel, bounds-checked serialize; 11 gtests/134 asserts |
-| cd::game::save | 92 | production | 1069 src; atomic tmp+rename write + forward-compat JSON meta + slot listing, cd::core-only; 21 gtests/156 asserts |
-| cd::game::ai_bt | 90 | production | 185 src; Sequence/Selector/Parallel/Decorator + blackboard, Champandard/Colledanchise cited; 12 gtests/61 asserts |
-| cd::game::cutscene_player | 90 | production | 562 src; multi-phase timeline tick across dt boundaries + event windowing + JSON; 13 gtests/96 asserts |
+| cd::game::quest | 100 | production | 653 src; objective tracker/journal, commit-or-rollback add, auto-complete funnel, bounds-checked serialize; 28 gtests — empty-obj-id rejection, add-rollback, pre-failed-obj activation, find_quest/size/empty, empty-log serialize/restore, mid-payload truncation, corrupt-obj-status-byte, overflow-clamp, out-of-order completion, large-batch round-trip |
+| cd::game::save | 100 | production | 1069 src + fwd-compat skip fix (bool/null/nested obj); atomic tmp+rename + meta versioning + migration chain + cloud hook; 47 gtests — 27 prior + 20 new edge/negative (migrate no-op/notfound/invalid/hop-cap/null-fn, cloud-upload-fail, cloud-dl-fail/notfound, clear-handlers, lwm-invalid, slot_exists-invalid, list-nondir/nometa, label-fallback, fwd-bool-null, fwd-nested, stale-tmp, noroot-list, missing-body, version-skew) |
+| cd::game::ai_bt | 100 | production | 200 src; Sequence/Selector/Parallel/Inverter/Repeater/UntilSuccess/UntilFailure/ConditionNode + blackboard; Champandard/Colledanchise cited; 38 gtests — empty-tree, threshold boundaries, cross-tick resume, deep nesting, null-child, node_kind/node_children, Blackboard::find/set(Value), decorator reset, UntilFailure all paths, ConditionNode gate |
+| cd::game::cutscene_player | 100 | production | 590 src; seek/restart/total_duration_ms added; 40 gtests — all prior + seek mid-phase/to-zero/past-end/negative/idle/paused, restart after-complete/mid/never-loaded, total_duration, zero-duration-phase clamp, events-empty-after-stop, pause/resume idempotent, play-force-reset, JSON missing-cutscene_id/file-not-found/root-array/can_skip-default, seek-clears-buffer |
 | cd::game::dialogue | 88 | production | 492 src; branching VM + DSL parser (NODE/TEXT/CHOICE/END) + Condition lambdas + kBrokenLink tolerance; 14 gtests/96 asserts |
 | cd::game::input_recorder | 88 | production | 267 src; HL2-style record/replay, CDIR v1 LE binary format + timestamp cursor; 10 gtests/66 asserts |
 | cd::game::l10n | 88 | production | 457 src; key=value + CLDR plurals (.other fallback) + {n} subst + RTL detect; 15 gtests/74 asserts |

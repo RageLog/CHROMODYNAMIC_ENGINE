@@ -173,6 +173,21 @@ Status UntilSuccessNode::tick(Blackboard& bb)
 }
 
 // -----------------------------------------------------------------------------
+// UntilFailureNode — re-tick on kSuccess; report kFailure the moment the
+// child fails. Propagates kRunning so other parallel branches breathe.
+// -----------------------------------------------------------------------------
+Status UntilFailureNode::tick(Blackboard& bb)
+{
+    if (!child_) { return Status::kFailure; }
+    const Status s = child_->tick(bb);
+    if (s == Status::kFailure) { return Status::kFailure; }
+    if (s == Status::kRunning) { return Status::kRunning; }
+    // kSuccess: reset and report kRunning so the caller re-enters next tick.
+    (*child_).reset();
+    return Status::kRunning;
+}
+
+// -----------------------------------------------------------------------------
 // BehaviorTree — publish `dt` into the blackboard then delegate to root.
 // -----------------------------------------------------------------------------
 Status BehaviorTree::tick(Blackboard& bb, float dt)

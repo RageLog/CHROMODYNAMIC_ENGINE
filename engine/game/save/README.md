@@ -24,9 +24,15 @@ versioning, migration, compression, and cloud-save hooks land in Phase G5.
   `load(slot, expected)`.
 - `SaveSlot` — `{ id, label, timestamp, format, size_bytes }`. Returned
   by `list_slots()` sorted by `timestamp` descending.
-- `SaveSystem` — owns one storage root; `save()`, `load()`,
+- `SaveMeta` — extended header block `{ version, format, timestamp,
+  app_name, app_version, payload_size }`. Persisted alongside the Phase-1
+  keys in `meta.json` (forward-compatible: Phase-1 readers ignore the
+  extra keys).
+- `SaveSystem` — owns one storage root. Phase-1: `save()`, `load()`,
   `delete_slot()`, `list_slots()`, `set_storage_root()`, `slot_exists()`,
-  `slot_directory()`.
+  `slot_directory()`. Phase-2: `save_with_meta()`, `load_with_meta()`,
+  `register_migration()`, `migrate()`, `set_cloud_handler()`,
+  `has_cloud_handler()`.
 
 ## On-disk layout
 ```

@@ -27,7 +27,13 @@ using cd::game::ai_bt::SelectorNode;
 using cd::game::ai_bt::SequenceNode;
 using cd::game::ai_bt::Status;
 using cd::game::ai_bt::UntilSuccessNode;
+using cd::game::ai_bt::UntilFailureNode;
+using cd::game::ai_bt::ConditionNode;
 using cd::game::ai_bt::make_leaf;
+using cd::game::ai_bt::make_condition;
+using cd::game::ai_bt::NodeKind;
+using cd::game::ai_bt::node_kind;
+using cd::game::ai_bt::node_children;
 
 // Tiny helpers — single-shot leaves with hard-coded outcomes.
 [[nodiscard]] std::unique_ptr<Node> ok_leaf()    { return make_leaf([](Blackboard&) { return Status::kSuccess; }); }
@@ -507,6 +513,289 @@ TEST(BehaviorTree, NoRootTickReturnsFailureButPublishesDt)
     constexpr float kDt = 0.02F;
     EXPECT_EQ(tree.tick(bb, kDt), Status::kFailure);
     EXPECT_FLOAT_EQ(bb.get_float("dt"), kDt);
+}
+
+// =============================================================================
+// Phase 473+ — gap-closure tests (100% push)
+// =============================================================================
+
+// 23) Empty SequenceNode is vacuously successful (no children to fail).
+TEST(BehaviorTree, EmptySequenceIsVacuouslySuccessful)
+{
+    SequenceNode seq;
+    Blackboard bb;
+    EXPECT_EQ(seq.tick(bb), Status::kSuccess);
+}
+
+// 24) Empty SelectorNode has nothing to succeed, so it returns kFailure.
+TEST(BehaviorTree, EmptySelectorReturnsFailure)
+{
+    SelectorNode sel;
+    Blackboard bb;
+    EXPECT_EQ(sel.tick(bb), Status::kFailure);
+}
+
+// 25) UntilFailureNode loops while child succeeds, then returns kFailure.
+TEST(BehaviorTree, UntilFailureLoopsUntilFail)
+{
+    int call_count = 0;
+    auto flaky = make_leaf([&call_count](Blackboard&) {
+        ++call_count;
+        return call_count >= 3 ? Status::kFailure : Status::kSuccess;
+    });
+
+    UntilFailureNode until(std::move(flaky));
+    Blackboard bb;
+
+    // call 1 -> success -> kRunning
+    EXPECT_EQ(until.tick(bb), Status::kRunning);
+    // call 2 -> success -> kRunning
+    EXPECT_EQ(until.tick(bb), Status::kRunning);
+    // call 3 -> failure -> kFailure
+    EXPECT_EQ(until.tick(bb), Status::kFailure);
+    EXPECT_EQ(call_count, 3);
+}
+
+// 26) UntilFailureNode passes kRunning through (child is in-flight).
+TEST(BehaviorTree, UntilFailurePassesThroughRunning)
+{
+    UntilFailureNode until(run_leaf());
+    Blackboard bb;
+    EXPECT_EQ(until.tick(bb), Status::kRunning);
+}
+
+// 27) UntilFailureNode with null child returns kFailure (defensive contract).
+TEST(BehaviorTree, UntilFailureNullChildReturnsFailure)
+{
+    UntilFailureNode until(nullptr);
+    Blackboard bb;
+    EXPECT_EQ(until.tick(bb), Status::kFailure);
+}
+
+// 28) UntilFailureNode resets child between successful attempts so a
+//     stateful child (e.g. a Sequence with a cursor) re-enters cleanly.
+TEST(BehaviorTree, UntilFailureResetsChildBetweenSuccessfulAttempts)
+{
+    // Inner sequence: [counter, gated]. When gated returns kSuccess the
+    // outer UntilFailure should reset the inner sequence. The counter
+    // increments once per ATTEMPT, proving cursor resets to 0 each retry.
+    Status gate = Status::kSuccess;
+
+    auto inner = std::make_unique<SequenceNode>();
+    inner->add_child(counter_leaf("attempts"));
+    inner->add_child(make_leaf([&gate](Blackboard&) { return gate; }));
+
+    UntilFailureNode until(std::move(inner));
+    Blackboard bb;
+
+    EXPECT_EQ(until.tick(bb), Status::kRunning);  // attempt 1: success -> running
+    EXPECT_EQ(until.tick(bb), Status::kRunning);  // attempt 2: success -> running
+    EXPECT_EQ(bb.get_int("attempts"), 2);
+
+    gate = Status::kFailure;
+    EXPECT_EQ(until.tick(bb), Status::kFailure);  // attempt 3: fail -> kFailure
+    EXPECT_EQ(bb.get_int("attempts"), 3);
+}
+
+// 29) ConditionNode: predicate returning true gives kSuccess, false gives kFailure.
+TEST(BehaviorTree, ConditionNodeTrueAndFalse)
+{
+    bool flag = true;
+    ConditionNode cond([&flag](Blackboard&) { return flag; });
+    Blackboard bb;
+
+    EXPECT_EQ(cond.tick(bb), Status::kSuccess);
+    flag = false;
+    EXPECT_EQ(cond.tick(bb), Status::kFailure);
+}
+
+// 30) make_condition factory produces a working ConditionNode.
+TEST(BehaviorTree, MakeConditionFactory)
+{
+    Blackboard bb;
+    bb.set_int("hp", 50);
+
+    auto low_health = make_condition([](Blackboard& b) {
+        return b.get_int("hp") < 30;
+    });
+
+    EXPECT_EQ(low_health->tick(bb), Status::kFailure);  // 50 >= 30
+    bb.set_int("hp", 10);
+    EXPECT_EQ(low_health->tick(bb), Status::kSuccess);  // 10 < 30
+}
+
+// 31) ConditionNode used inside a Sequence drives branch selection correctly.
+TEST(BehaviorTree, ConditionInsideSequenceGatesBranch)
+{
+    bool enemy_visible = false;
+
+    auto seq = std::make_unique<SequenceNode>();
+    seq->add_child(make_condition([&enemy_visible](Blackboard&) { return enemy_visible; }));
+    seq->add_child(counter_leaf("attack_count"));
+
+    Blackboard bb;
+    EXPECT_EQ(seq->tick(bb), Status::kFailure);
+    EXPECT_EQ(bb.get_int("attack_count"), 0);  // gated
+
+    enemy_visible = true;
+    EXPECT_EQ(seq->tick(bb), Status::kSuccess);
+    EXPECT_EQ(bb.get_int("attack_count"), 1);  // fired
+}
+
+// 32) node_kind() classifies all node types correctly; nullptr -> kLeaf.
+TEST(BehaviorTree, NodeKindClassifiesAllTypes)
+{
+    SequenceNode seq;
+    SelectorNode sel;
+    auto par_ptr = std::make_unique<ParallelNode>();
+    InverterNode inv(ok_leaf());
+    ConditionNode cond([](Blackboard&) { return true; });
+    auto leaf = ok_leaf();
+
+    EXPECT_EQ(node_kind(&seq),       NodeKind::kSequence);
+    EXPECT_EQ(node_kind(&sel),       NodeKind::kSelector);
+    EXPECT_EQ(node_kind(par_ptr.get()), NodeKind::kParallel);
+    EXPECT_EQ(node_kind(&inv),       NodeKind::kDecorator);
+    EXPECT_EQ(node_kind(&cond),      NodeKind::kLeaf);    // ConditionNode is a Leaf
+    EXPECT_EQ(node_kind(leaf.get()), NodeKind::kLeaf);
+    EXPECT_EQ(node_kind(nullptr),    NodeKind::kLeaf);    // null -> kLeaf
+}
+
+// 33) node_children() returns correct child views for each node family.
+TEST(BehaviorTree, NodeChildrenReturnsCorrectViews)
+{
+    // Composite: reports child_count() pointers.
+    auto seq = std::make_unique<SequenceNode>();
+    seq->add_child(ok_leaf());
+    seq->add_child(ok_leaf());
+    seq->add_child(ok_leaf());
+    {
+        const auto kids = node_children(seq.get());
+        EXPECT_EQ(kids.size(), 3U);
+        for (const auto* k : kids) { EXPECT_NE(k, nullptr); }
+    }
+
+    // Decorator: reports exactly 1 child.
+    InverterNode inv(ok_leaf());
+    {
+        const auto kids = node_children(&inv);
+        EXPECT_EQ(kids.size(), 1U);
+        EXPECT_EQ(kids[0], inv.child());
+    }
+
+    // Leaf: reports 0 children.
+    auto leaf = ok_leaf();
+    {
+        const auto kids = node_children(leaf.get());
+        EXPECT_TRUE(kids.empty());
+    }
+
+    // nullptr: reports 0 children.
+    {
+        const auto kids = node_children(nullptr);
+        EXPECT_TRUE(kids.empty());
+    }
+}
+
+// 34) node_children() on a Decorator with null child returns empty.
+TEST(BehaviorTree, NodeChildrenDecoratorNullChildReturnsEmpty)
+{
+    InverterNode inv(nullptr);
+    const auto kids = node_children(&inv);
+    EXPECT_TRUE(kids.empty());
+}
+
+// 35) Blackboard type-erased set(key, Value) round-trips correctly.
+TEST(BehaviorTree, BlackboardTypeErasedSet)
+{
+    Blackboard bb;
+    Blackboard::Value v_int   = 42;
+    Blackboard::Value v_float = 3.14F;
+    Blackboard::Value v_bool  = true;
+    Blackboard::Value v_str   = std::string{"hello"};
+
+    bb.set("i", v_int);
+    bb.set("f", v_float);
+    bb.set("b", v_bool);
+    bb.set("s", v_str);
+
+    EXPECT_EQ(bb.get_int("i"), 42);
+    EXPECT_FLOAT_EQ(bb.get_float("f"), 3.14F);
+    EXPECT_TRUE(bb.get_bool("b"));
+    EXPECT_EQ(bb.get_string("s"), "hello");
+}
+
+// 36) Blackboard::find() raw variant access — present key returns non-null,
+//     absent key returns null.
+TEST(BehaviorTree, BlackboardFindRawVariant)
+{
+    Blackboard bb;
+    bb.set_int("x", 7);
+
+    const Blackboard::Value* found = bb.find("x");
+    ASSERT_NE(found, nullptr);
+    EXPECT_EQ(std::get<int>(*found), 7);
+
+    EXPECT_EQ(bb.find("missing"), nullptr);
+}
+
+// 37) Deep nesting: Inverter -> Repeater -> Sequence -> Selector -> Leaf.
+//     Verifies that tick() propagates correctly through 4 decorator/composite
+//     levels and that reset() clears nested cursor state.
+TEST(BehaviorTree, DeepNestingTickAndReset)
+{
+    // Inner: Selector[fail, ok] -> always kSuccess
+    auto sel = std::make_unique<SelectorNode>();
+    sel->add_child(fail_leaf());
+    sel->add_child(counter_leaf("deep"));
+
+    // Sequence[ok, Selector] -> kSuccess when both succeed
+    auto seq = std::make_unique<SequenceNode>();
+    seq->add_child(ok_leaf());
+    seq->add_child(std::move(sel));
+
+    // Repeater(2): runs inner Sequence 2 times -> kSuccess, counter==2
+    auto rep = std::make_unique<RepeaterNode>(std::move(seq), 2);
+
+    // Inverter: flips kSuccess -> kFailure
+    InverterNode inv(std::move(rep));
+
+    Blackboard bb;
+    EXPECT_EQ(inv.tick(bb), Status::kFailure);   // inverted success
+    EXPECT_EQ(bb.get_int("deep"), 2);            // inner leaf ran twice
+
+    // Reset then re-tick produces the same result deterministically.
+    inv.reset();
+    EXPECT_EQ(inv.tick(bb), Status::kFailure);
+    EXPECT_EQ(bb.get_int("deep"), 4);            // ran twice again
+}
+
+// 38) Repeater with a kRunning child resumes from the correct iteration
+//     across multiple ticks (cross-tick state preservation).
+TEST(BehaviorTree, RepeaterResumesIterationAfterRunning)
+{
+    // The child returns kRunning on tick 1, then kSuccess on tick 2 (and
+    // any subsequent). The Repeater should: tick 1 -> kRunning (iter=0,
+    // parked), tick 2 -> child succeeds, iter advances, child resets and
+    // runs again completing iter 2, returning kSuccess (count=2 total).
+    int tick_num = 0;
+    auto child = make_leaf([&tick_num](Blackboard&) -> Status {
+        ++tick_num;
+        return tick_num == 1 ? Status::kRunning : Status::kSuccess;
+    });
+
+    RepeaterNode rep(std::move(child), /*count=*/2);
+    Blackboard bb;
+
+    // First outer tick: child returns kRunning -> iter still 0.
+    EXPECT_EQ(rep.tick(bb), Status::kRunning);
+    EXPECT_EQ(rep.current_iter(), 0U);
+
+    // Second outer tick: child returns kSuccess (iter 0 done), then
+    // immediately runs again (iter 1) and succeeds -> loop finishes -> kSuccess.
+    EXPECT_EQ(rep.tick(bb), Status::kSuccess);
+    EXPECT_EQ(rep.current_iter(), 0U);   // reset after completion
+    EXPECT_EQ(tick_num, 3);              // 1 running + 2 successes
 }
 
 }  // namespace

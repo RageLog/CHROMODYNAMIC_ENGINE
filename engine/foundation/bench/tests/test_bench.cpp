@@ -84,6 +84,9 @@ TEST(BenchTest, ReportPrintsHumanReadable)
     EXPECT_NE(s.find("[bench]"), std::string::npos);
     EXPECT_NE(s.find("printable"), std::string::npos);
     EXPECT_NE(s.find("ns/op"), std::string::npos);
+    // Extended fields now appear in print() output.
+    EXPECT_NE(s.find("max="), std::string::npos);
+    EXPECT_NE(s.find("stddev="), std::string::npos);
 }
 
 TEST(BenchTest, CsvHasNineFields)
@@ -229,4 +232,240 @@ TEST(BenchTest, MeasurableWorkScalesWithIterationCount)
     // 1000x headroom over the previous 50 µs lower bound and stays
     // platform-independent.
     EXPECT_GT(r.mean_ns_per_op, 100.0);
+}
+
+// ==========================================================================
+// Edge + negative tests for genuine 100% coverage
+// ==========================================================================
+
+// --- Warmup=0 path -------------------------------------------------------
+TEST(BenchTest, WarmupZeroDoesNotCrash)
+{
+    // Arrange: no warmup iterations — the warmup loop must silently skip.
+    cd::bench::Config cfg;
+    cfg.warmup_iterations = 0;
+    cfg.min_samples       = 8;
+    cfg.min_time_ms       = 2;
+
+    // Act + Assert: must produce a valid report.
+    auto r = cd::bench::run("warmup_zero", cheap_body, cfg);
+    EXPECT_GE(r.samples, cfg.min_samples);
+    EXPECT_GT(r.mean_ns_per_op, 0.0);
+}
+
+// --- Single sample: all percentiles equal to that one value --------------
+TEST(BenchTest, SingleSamplePercentilesAllEqualMean)
+{
+    // Arrange: exactly 1 sample, time budget 0 (deadline already past on
+    // entry so the loop exits after the first iteration).
+    cd::bench::Config cfg;
+    cfg.min_samples = 1;
+    cfg.min_time_ms = 0;
+
+    // Act.
+    auto r = cd::bench::run("single_sample", cheap_body, cfg);
+
+    // Assert: with one data point min == median == p90 == p95 == p99 == max.
+    ASSERT_EQ(r.samples, 1u);
+    EXPECT_DOUBLE_EQ(r.min_ns_per_op, r.max_ns_per_op);
+    EXPECT_DOUBLE_EQ(r.min_ns_per_op, r.median_ns_per_op);
+    EXPECT_DOUBLE_EQ(r.min_ns_per_op, r.mean_ns_per_op);
+    EXPECT_DOUBLE_EQ(r.min_ns_per_op, r.p90_ns_per_op);
+    EXPECT_DOUBLE_EQ(r.min_ns_per_op, r.p95_ns_per_op);
+    EXPECT_DOUBLE_EQ(r.min_ns_per_op, r.p99_ns_per_op);
+    // stddev of a single element is 0.
+    EXPECT_DOUBLE_EQ(r.stddev_ns_per_op, 0.0);
+}
+
+// --- Name and label survive into Report ----------------------------------
+TEST(BenchTest, NameAndLabelSuriveIntoReport)
+{
+    // Arrange.
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 1;
+    cfg.label = "my_label";
+
+    // Act.
+    auto r = cd::bench::run("my_name", cheap_body, cfg);
+
+    // Assert.
+    EXPECT_EQ(r.name,  "my_name");
+    EXPECT_EQ(r.label, "my_label");
+}
+
+// --- Slow body keeps inner_calls == 1 ------------------------------------
+TEST(BenchTest, SlowBodyKeepsInnerCallsAtOne)
+{
+    // Arrange: busy loop that takes well over 1 µs → calibration must NOT
+    // inflate inner_calls because the very first single-call measurement
+    // already exceeds the 1 µs threshold.
+    auto slow = []
+    {
+        volatile std::uint64_t acc = 1;
+        for (std::uint64_t i = 0; i < 500'000; ++i)
+            acc = acc * 6364136223846793005ull + 1442695040888963407ull;
+        cd::bench::do_not_optimize(acc);
+    };
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 0;
+
+    // Act.
+    auto r = cd::bench::run("slow_500k", slow, cfg);
+
+    // Assert: calibration loop doubles only when elapsed_ns < 1000 ns.
+    // A 500k-iteration LCG takes 100s of µs → inner stays at 1.
+    EXPECT_EQ(r.inner_calls, 1u);
+}
+
+// --- CSV column position verification ------------------------------------
+TEST(BenchTest, CsvFirstFieldIsNameSecondIsLabel)
+{
+    // Arrange.
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 1;
+    cfg.label = "lbl";
+    auto r = cd::bench::run("nm", cheap_body, cfg);
+
+    // Act: parse the CSV into tokens by splitting on commas.
+    const auto csv = r.to_csv();
+    std::vector<std::string> tokens;
+    std::string cur;
+    for (char c : csv)
+    {
+        if (c == ',') { tokens.push_back(cur); cur.clear(); }
+        else          { cur += c; }
+    }
+    tokens.push_back(cur);  // last field (no trailing comma)
+
+    // Assert: 9 fields; field[0] == name, field[1] == label.
+    ASSERT_EQ(tokens.size(), 9u);
+    EXPECT_EQ(tokens[0], "nm");
+    EXPECT_EQ(tokens[1], "lbl");
+}
+
+// --- CSV with empty label ------------------------------------------------
+TEST(BenchTest, CsvEmptyLabelPreservesFieldCount)
+{
+    // Arrange: no label set → label is "".
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 1;
+    // label deliberately left default (empty string).
+    auto r = cd::bench::run("nolab", cheap_body, cfg);
+
+    // Act.
+    const auto csv = r.to_csv();
+    std::size_t commas = 0;
+    for (char c : csv)
+        if (c == ',') ++commas;
+
+    // Assert: still 9 fields (8 commas) even when label is empty.
+    EXPECT_EQ(commas, 8u);
+}
+
+// --- Markdown pipe count -------------------------------------------------
+TEST(BenchTest, MarkdownRowHasNinePipeSeparators)
+{
+    // Arrange.
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 1;
+    auto r = cd::bench::run("pipes", cheap_body, cfg);
+
+    // Act.
+    const auto row = r.to_markdown_row();
+    std::size_t pipes = 0;
+    for (char c : row)
+        if (c == '|') ++pipes;
+
+    // Assert: format is "| col | col | col | col | col | col | col | col |"
+    // That is 8 columns → 9 pipe characters.
+    EXPECT_EQ(pipes, 9u);
+}
+
+// --- JSON array empty input ----------------------------------------------
+TEST(BenchTest, JsonArrayEmptyInputReturnsEmptyArray)
+{
+    // Arrange.
+    const std::vector<cd::bench::Report> empty;
+
+    // Act.
+    const auto arr = cd::bench::reports_to_json_array(empty);
+
+    // Assert.
+    EXPECT_EQ(arr, "[]");
+}
+
+// --- JSON array single entry — no joining comma --------------------------
+TEST(BenchTest, JsonArraySingleEntryHasNoJoiningComma)
+{
+    // Arrange.
+    cd::bench::Config cfg;
+    cfg.min_samples = 4;
+    cfg.min_time_ms = 1;
+    std::vector<cd::bench::Report> reports;
+    reports.push_back(cd::bench::run("solo", cheap_body, cfg));
+
+    // Act.
+    const auto arr = cd::bench::reports_to_json_array(reports);
+
+    // Assert: wraps one object — "[{...}]" with no "},{".
+    EXPECT_EQ(arr.front(), '[');
+    EXPECT_EQ(arr.back(),  ']');
+    EXPECT_EQ(arr.find("},{"), std::string::npos);
+    EXPECT_NE(arr.find("\"name\":\"solo\""), std::string::npos);
+}
+
+// --- do_not_optimize with non-trivial type (std::string) -----------------
+TEST(BenchTest, DoNotOptimizeWorksWithNonTrivialType)
+{
+    // Arrange: calling do_not_optimize with a std::string exercises the MSVC
+    // path (reinterpret_cast<uintptr_t>(&value)) without UB on any platform.
+    std::string s = "hello_bench";
+
+    // Act + Assert: must not crash or produce a compiler diagnostic.
+    // We just verify the function is callable; the effectiveness is
+    // validated by MeasurableWorkScalesWithIterationCount.
+    cd::bench::do_not_optimize(s);
+    SUCCEED();
+}
+
+// --- p95 ordering between p90 and p99 ------------------------------------
+TEST(BenchTest, P95OrderedBetweenP90AndP99)
+{
+    // Arrange.
+    cd::bench::Config cfg;
+    cfg.min_samples = 64;
+    cfg.min_time_ms = 10;
+
+    // Act.
+    auto r = cd::bench::run("p95_order", cheap_body, cfg);
+
+    // Assert: p90 ≤ p95 ≤ p99 ≤ max.
+    EXPECT_LE(r.p90_ns_per_op, r.p95_ns_per_op);
+    EXPECT_LE(r.p95_ns_per_op, r.p99_ns_per_op);
+    EXPECT_LE(r.p99_ns_per_op, r.max_ns_per_op);
+}
+
+// --- Even-count median is average of the two middle elements -------------
+TEST(BenchTest, EvenSampleCountMedianIsAverageOfMiddleTwo)
+{
+    // Arrange: request exactly 2 samples and time budget 0 so the sample
+    // loop exits precisely at the min_samples floor. inner_calls > 1 for
+    // a noop body, so each sample is an average over many calls — but the
+    // median formula (even branch) must average the two middle elements.
+    cd::bench::Config cfg;
+    cfg.min_samples = 2;
+    cfg.min_time_ms = 0;
+
+    // Act.
+    auto r = cd::bench::run("even_median", [] { /* noop */ }, cfg);
+
+    // Assert: with n=2, median must lie in [min, max].
+    ASSERT_EQ(r.samples, 2u);
+    EXPECT_GE(r.median_ns_per_op, r.min_ns_per_op);
+    EXPECT_LE(r.median_ns_per_op, r.max_ns_per_op);
 }

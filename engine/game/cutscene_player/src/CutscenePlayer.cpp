@@ -71,10 +71,7 @@ void CutscenePlayer::play(const Cutscene& cutscene)
     // a zero-length phase boundary loop.
     for (auto& phase : active_cutscene_.phases)
     {
-        if (phase.duration_ms < 1.0F)
-        {
-            phase.duration_ms = 1.0F;
-        }
+        phase.duration_ms = std::max(phase.duration_ms, 1.0F);
     }
 
     state_ = PlayerState::kPlaying;
@@ -133,10 +130,7 @@ void CutscenePlayer::tick(float dt_ms)
     fired_this_tick_.clear();
 
     // Clamp negative dt to zero (caller error protection).
-    if (dt_ms < 0.0F)
-    {
-        dt_ms = 0.0F;
-    }
+    dt_ms = std::max(dt_ms, 0.0F);
 
     // Drive a multi-phase consumption loop. advance_phase() returns the
     // leftover dt once the current phase ends; 0.0 means the phase is still
@@ -231,6 +225,65 @@ void CutscenePlayer::fire_events_in_window(float prev_offset, float new_offset)
 }
 
 // =============================================================================
+// Seek / Restart
+// =============================================================================
+
+void CutscenePlayer::seek(float abs_ms)
+{
+    if (state_ == PlayerState::kIdle)
+    {
+        return;
+    }
+
+    // Clear stale events so callers don't see events from a prior tick.
+    fired_this_tick_.clear();
+
+    // Clamp negative seek to beginning.
+    abs_ms = std::max(abs_ms, 0.0F);
+
+    const std::size_t n_phases = active_cutscene_.phases.size();
+
+    // Walk phases to find the target.
+    float accumulated = 0.0F;
+    for (std::size_t i = 0; i < n_phases; ++i)
+    {
+        const float phase_dur = active_cutscene_.phases[i].duration_ms;
+        const float phase_end = accumulated + phase_dur;
+
+        if (abs_ms < phase_end)
+        {
+            // Target falls inside phase i.
+            phase_index_     = i;
+            phase_offset_ms_ = abs_ms - accumulated;
+            return;
+        }
+        accumulated = phase_end;
+    }
+
+    // abs_ms >= total duration: seek to the end, complete immediately.
+    state_           = PlayerState::kIdle;
+    complete_        = true;
+    phase_index_     = (n_phases > 0U) ? (n_phases - 1U) : 0U;
+    phase_offset_ms_ = (n_phases > 0U) ? active_cutscene_.phases[phase_index_].duration_ms : 0.0F;
+}
+
+void CutscenePlayer::restart()
+{
+    // If no cutscene has ever been loaded (state is kIdle AND cutscene_id is
+    // empty) there is nothing to restart.
+    if (state_ == PlayerState::kIdle && active_cutscene_.phases.empty() &&
+        active_cutscene_.cutscene_id.empty())
+    {
+        return;
+    }
+
+    // Re-use the stored active cutscene (play() deep-copies so the stored
+    // copy is authoritative). We call play() on the stored copy, which resets
+    // all transient state exactly as a fresh play() would.
+    play(active_cutscene_);
+}
+
+// =============================================================================
 // Queries
 // =============================================================================
 
@@ -257,6 +310,16 @@ float CutscenePlayer::current_offset_ms() const noexcept
 std::size_t CutscenePlayer::current_phase_index() const noexcept
 {
     return phase_index_;
+}
+
+float CutscenePlayer::total_duration_ms() const noexcept
+{
+    float total = 0.0F;
+    for (const auto& ph : active_cutscene_.phases)
+    {
+        total += ph.duration_ms;
+    }
+    return total;
 }
 
 }  // namespace cd::game::cutscene_player

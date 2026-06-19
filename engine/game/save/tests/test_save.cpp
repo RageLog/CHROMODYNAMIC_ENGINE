@@ -979,4 +979,473 @@ TEST(SaveSystemFuzz, MigrationFunctionFailureLeavesLastGoodStep)
                           expected.size()), 0);
 }
 
+// =============================================================================
+// Edge / negative tests (batch 2) — paths not covered by tests 1-27.
+// =============================================================================
+
+// 28) migrate() when already at target version is a no-op: the loop body
+//     never executes, the on-disk blob is not touched, and the returned meta
+//     has version == target_version.
+TEST(SaveSystemEdge, MigrateAlreadyAtTargetIsNoOp)
+{
+    auto root = make_unique_root("edge_migrate_noop");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 3U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "NoOp";
+    const auto payload = bytes_from("stable-payload");
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, payload).has_value());
+
+    // No migration registered — if the loop runs it would fail with
+    // kMigrationMissing. Passing proves the loop never runs.
+    auto result = sys.migrate("slot", 3U);
+    ASSERT_TRUE(result.has_value()) << "already-at-target must succeed";
+    EXPECT_EQ(result->version, 3U);
+
+    // Body must be byte-identical.
+    auto reloaded = sys.load_with_meta("slot");
+    ASSERT_TRUE(reloaded.has_value());
+    ASSERT_EQ(reloaded->blob.size(), payload.size());
+    EXPECT_EQ(std::memcmp(reloaded->blob.data(), payload.data(), payload.size()), 0);
+}
+
+// 29) migrate() on a slot that does not exist returns kSlotNotFound.
+TEST(SaveSystemEdge, MigrateNonExistentSlotReturnsNotFound)
+{
+    auto root = make_unique_root("edge_migrate_notfound");
+    SaveSystem sys(root);
+
+    auto result = sys.migrate("ghost", 2U);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().domain, 0x4753U);
+    EXPECT_EQ(result.error().code, static_cast<std::uint32_t>(Code::kSlotNotFound));
+}
+
+// 30) migrate() with invalid slot_id returns kInvalidSlotId.
+TEST(SaveSystemEdge, MigrateInvalidSlotIdRejected)
+{
+    auto root = make_unique_root("edge_migrate_invalid");
+    SaveSystem sys(root);
+
+    auto result = sys.migrate("../bad", 2U);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, static_cast<std::uint32_t>(Code::kInvalidSlotId));
+}
+
+// 31) migrate() cycle-guard: registering a cycle (1->2->1) must stop with
+//     kMigrationFailed ("hop cap exceeded") rather than looping forever.
+TEST(SaveSystemEdge, MigrateHopCapPreventsInfiniteLoop)
+{
+    auto root = make_unique_root("edge_migrate_cycle");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "Cycle";
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, bytes_from("X")).has_value());
+
+    // Cyclic registration: 1->2, 2->1. The walker will alternate until the
+    // 64-hop hard cap fires and returns kMigrationFailed.
+    sys.register_migration(1U, 2U,
+        [](std::span<const std::byte> in) -> cd::core::Result<std::vector<std::byte>> {
+            return std::vector<std::byte>(in.begin(), in.end());
+        });
+    sys.register_migration(2U, 1U,
+        [](std::span<const std::byte> in) -> cd::core::Result<std::vector<std::byte>> {
+            return std::vector<std::byte>(in.begin(), in.end());
+        });
+
+    // target=99 is unreachable via the cycle — should hit the hop cap.
+    auto result = sys.migrate("slot", 99U);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, static_cast<std::uint32_t>(Code::kMigrationFailed));
+}
+
+// 32) register_migration with null fn is silently ignored; a subsequent
+//     migrate() for that edge returns kMigrationMissing (not a crash).
+TEST(SaveSystemEdge, RegisterMigrationNullFnIgnored)
+{
+    auto root = make_unique_root("edge_null_fn");
+    SaveSystem sys(root);
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "NullFn";
+    ASSERT_TRUE(sys.save_with_meta("slot", meta, bytes_from("Y")).has_value());
+
+    // Pass a null MigrationFn — must not crash and must not register the edge.
+    sys.register_migration(1U, 2U, MigrationFn{});
+
+    auto result = sys.migrate("slot", 2U);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, static_cast<std::uint32_t>(Code::kMigrationMissing));
+}
+
+// 33) Cloud upload failure: save_with_meta writes the local body atomically
+//     then calls the upload handler. If the handler fails, the function
+//     returns kCloudFailed but the local slot remains intact and loadable.
+TEST(SaveSystemEdge, CloudUploadFailureDoesNotRollBackLocalWrite)
+{
+    auto root = make_unique_root("edge_cloud_up_fail");
+    SaveSystem sys(root);
+
+    sys.set_cloud_handler(
+        [](std::string_view, const SaveMeta&,
+           std::span<const std::byte>) -> cd::core::Result<void> {
+            return std::unexpected(
+                cd::game::save::save_errors::make(Code::kCloudFailed, "network error"));
+        },
+        /*download=*/{});
+
+    SaveMeta meta;
+    meta.version  = 1U;
+    meta.format   = SaveFormat::kBinary;
+    meta.app_name = "UploadFail";
+    const auto payload = bytes_from("keep-me-on-disk");
+
+    auto wr = sys.save_with_meta("slot", meta, payload);
+    ASSERT_FALSE(wr.has_value()) << "upload failure must be surfaced";
+    EXPECT_EQ(wr.error().code, static_cast<std::uint32_t>(Code::kCloudFailed));
+
+    // Local write succeeded before the upload: the slot must be loadable.
+    EXPECT_TRUE(sys.slot_exists("slot"));
+    auto loaded = sys.load("slot");
+    ASSERT_TRUE(loaded.has_value()) << "local slot must survive upload failure";
+    ASSERT_EQ(loaded->size(), payload.size());
+    EXPECT_EQ(std::memcmp(loaded->data(), payload.data(), payload.size()), 0);
+}
+
+// 34) Cloud download error (non-kSlotNotFound) surfaces as kCloudFailed.
+TEST(SaveSystemEdge, CloudDownloadNonNotFoundErrorSurfacesCloudFailed)
+{
+    auto root = make_unique_root("edge_cloud_dl_fail");
+    SaveSystem sys(root);
+
+    sys.set_cloud_handler(
+        /*upload=*/{},
+        [](std::string_view) -> cd::core::Result<CloudPayload> {
+            return std::unexpected(
+                cd::game::save::save_errors::make(Code::kCloudFailed, "server error"));
+        });
+
+    // Slot is missing locally — triggers cloud download.
+    auto loaded = sys.load_with_meta("missing");
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_EQ(loaded.error().code, static_cast<std::uint32_t>(Code::kCloudFailed));
+}
+
+// 35) Cloud download reports kSlotNotFound: the original "missing locally and
+//     in cloud" kSlotNotFound is propagated (not kCloudFailed).
+TEST(SaveSystemEdge, CloudDownloadSlotNotFoundPropagatedCorrectly)
+{
+    auto root = make_unique_root("edge_cloud_dl_notfound");
+    SaveSystem sys(root);
+
+    sys.set_cloud_handler(
+        /*upload=*/{},
+        [](std::string_view) -> cd::core::Result<CloudPayload> {
+            return std::unexpected(
+                cd::game::save::save_errors::make(Code::kSlotNotFound));
+        });
+
+    auto loaded = sys.load_with_meta("ghost");
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_EQ(loaded.error().code, static_cast<std::uint32_t>(Code::kSlotNotFound));
+}
+
+// 36) set_cloud_handler with both arguments empty disables both directions;
+//     has_cloud_handler() returns false.
+TEST(SaveSystemEdge, ClearBothCloudHandlersReturnsNoClouds)
+{
+    auto root = make_unique_root("edge_clear_cloud");
+    SaveSystem sys(root);
+
+    // Install handlers.
+    sys.set_cloud_handler(
+        [](std::string_view, const SaveMeta&,
+           std::span<const std::byte>) -> cd::core::Result<void> { return {}; },
+        [](std::string_view) -> cd::core::Result<CloudPayload> {
+            CloudPayload p;
+            return p;
+        });
+    EXPECT_TRUE(sys.has_cloud_handler());
+
+    // Clear both by passing empty std::functions.
+    sys.set_cloud_handler({}, {});
+    EXPECT_FALSE(sys.has_cloud_handler());
+}
+
+// 37) load_with_meta with invalid slot_id returns kInvalidSlotId.
+TEST(SaveSystemEdge, LoadWithMetaInvalidSlotIdRejected)
+{
+    auto root = make_unique_root("edge_lwm_invalid");
+    SaveSystem sys(root);
+
+    auto result = sys.load_with_meta("../path");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, static_cast<std::uint32_t>(Code::kInvalidSlotId));
+}
+
+// 38) slot_exists returns false for an invalid slot id (not a crash).
+TEST(SaveSystemEdge, SlotExistsReturnsFalseForInvalidId)
+{
+    auto root = make_unique_root("edge_exists_invalid");
+    SaveSystem sys(root);
+
+    EXPECT_FALSE(sys.slot_exists(""));
+    EXPECT_FALSE(sys.slot_exists("CON"));
+    EXPECT_FALSE(sys.slot_exists("../etc/passwd"));
+}
+
+// 39) list_slots silently skips entries that are regular files (not dirs)
+//     inside the storage root. The valid slots still appear.
+TEST(SaveSystemEdge, ListSlotsSkipsNonDirectoryEntries)
+{
+    auto root = make_unique_root("edge_list_nondir");
+    SaveSystem sys(root);
+
+    ASSERT_TRUE(sys.save("slot_a", bytes_from("A"), SaveFormat::kBinary).has_value());
+
+    // Drop a regular file at the same level as the slot directories.
+    {
+        std::ofstream f(root / "stray_file.txt");
+        f << "I am not a slot directory";
+    }
+
+    const auto slots = sys.list_slots();
+    ASSERT_EQ(slots.size(), 1U);
+    EXPECT_EQ(slots.front().id, "slot_a");
+}
+
+// 40) list_slots silently skips a directory that looks like a slot name but
+//     has no meta.json inside (slot directory created but never written).
+TEST(SaveSystemEdge, ListSlotsSkipsSlotDirWithNoMeta)
+{
+    auto root = make_unique_root("edge_list_nometa");
+    SaveSystem sys(root);
+
+    ASSERT_TRUE(sys.save("real_slot", bytes_from("R"), SaveFormat::kBinary).has_value());
+
+    // Create an empty directory with a valid slot id name.
+    std::error_code ec;
+    std::filesystem::create_directories(root / "empty_slot", ec);
+    ASSERT_FALSE(ec);
+
+    const auto slots = sys.list_slots();
+    ASSERT_EQ(slots.size(), 1U);
+    EXPECT_EQ(slots.front().id, "real_slot");
+}
+
+// 41) label fallback chain: save() with empty label + no prior meta on disk
+//     stores the slot id as the label. On a second save() with empty label
+//     the previously-stored label is preserved.
+TEST(SaveSystemEdge, LabelFallbackChain)
+{
+    auto root = make_unique_root("edge_label_fallback");
+    SaveSystem sys(root);
+
+    // First save — no label, no prior meta → label becomes slot id.
+    ASSERT_TRUE(sys.save("myslot", bytes_from("v1"), SaveFormat::kBinary).has_value());
+    {
+        auto slots = sys.list_slots();
+        ASSERT_EQ(slots.size(), 1U);
+        EXPECT_EQ(slots.front().label, "myslot");
+    }
+
+    // Second save with an explicit label.
+    ASSERT_TRUE(sys.save("myslot", bytes_from("v2"), SaveFormat::kBinary,
+                         "Checkpoint 1").has_value());
+    {
+        auto slots = sys.list_slots();
+        ASSERT_EQ(slots.size(), 1U);
+        EXPECT_EQ(slots.front().label, "Checkpoint 1");
+    }
+
+    // Third save with empty label → reuses "Checkpoint 1" from previous meta.
+    ASSERT_TRUE(sys.save("myslot", bytes_from("v3"), SaveFormat::kBinary).has_value());
+    {
+        auto slots = sys.list_slots();
+        ASSERT_EQ(slots.size(), 1U);
+        EXPECT_EQ(slots.front().label, "Checkpoint 1");
+    }
+}
+
+// 42) Forward compat: meta.json carrying boolean (true/false) and null values
+//     in unknown keys is parsed without failure (the corrected unknown-value
+//     skip in parse_meta_json now handles these JSON types).
+TEST(SaveSystemEdge, ForwardCompatBoolAndNullUnknownValues)
+{
+    auto root = make_unique_root("edge_fwd_bool_null");
+    SaveSystem sys(root);
+
+    ASSERT_TRUE(sys.save("slot", bytes_from("body"), SaveFormat::kBinary).has_value());
+
+    const auto meta_path = sys.slot_directory("slot") / "meta.json";
+    {
+        std::ofstream f(meta_path, std::ios::trunc | std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({
+  "id": "slot",
+  "label": "Test",
+  "timestamp": 9999,
+  "format": "binary",
+  "size_bytes": 4,
+  "is_cloud": true,
+  "is_corrupt": false,
+  "checksum": null,
+  "extra_number": 12345
+})";
+    }
+
+    // Must load cleanly despite unknown keys of type bool and null.
+    auto loaded = sys.load("slot");
+    ASSERT_TRUE(loaded.has_value()) << "bool/null unknown keys must not break parsing";
+    EXPECT_EQ(loaded->size(), 4U);  // body.bin has 4 bytes ("body")
+}
+
+// 43) Forward compat: meta.json with a nested-object unknown value does not
+//     cause a parse failure (balanced-brace skip).
+TEST(SaveSystemEdge, ForwardCompatNestedObjectUnknownValue)
+{
+    auto root = make_unique_root("edge_fwd_nested");
+    SaveSystem sys(root);
+
+    ASSERT_TRUE(sys.save("slot", bytes_from("data"), SaveFormat::kBinary).has_value());
+
+    const auto meta_path = sys.slot_directory("slot") / "meta.json";
+    {
+        std::ofstream f(meta_path, std::ios::trunc | std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({
+  "id": "slot",
+  "label": "Nested",
+  "timestamp": 5555,
+  "format": "binary",
+  "size_bytes": 4,
+  "cloud_meta": { "provider": "steam", "version": 2, "flags": [1, 2, 3] },
+  "tags": ["autosave", "chapter1"]
+})";
+    }
+
+    auto loaded = sys.load("slot");
+    ASSERT_TRUE(loaded.has_value()) << "nested-object unknown key must not break parsing";
+    EXPECT_EQ(loaded->size(), 4U);
+}
+
+// 44) Atomic write: the .tmp file is overwritten by the next save() if a
+//     prior save left a stale .tmp behind (simulates crash-resume).
+//     After a clean save the final body is the new content.
+TEST(SaveSystemEdge, StaleBodyTmpIsOverwrittenOnResave)
+{
+    auto root = make_unique_root("edge_stale_tmp");
+    SaveSystem sys(root);
+
+    const auto v1 = bytes_from("first");
+    ASSERT_TRUE(sys.save("slot", v1, SaveFormat::kBinary).has_value());
+
+    // Leave a stale .tmp as if a prior save was interrupted after tmp-write
+    // but before rename.
+    const auto tmp_path = sys.slot_directory("slot") / "body.bin.tmp";
+    {
+        std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
+        f.write("STALE", 5);
+    }
+    EXPECT_TRUE(std::filesystem::exists(tmp_path));
+
+    // A subsequent save() must atomically overwrite tmp and produce the
+    // final body with the new content (stale tmp is gone or overwritten).
+    const auto v2 = bytes_from("second-content");
+    ASSERT_TRUE(sys.save("slot", v2, SaveFormat::kBinary).has_value());
+
+    auto loaded = sys.load("slot");
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->size(), v2.size());
+    EXPECT_EQ(std::memcmp(loaded->data(), v2.data(), v2.size()), 0);
+}
+
+// 45) list_slots on a non-existent storage root returns an empty vector
+//     without throwing.
+TEST(SaveSystemEdge, ListSlotsOnNonExistentRootReturnsEmpty)
+{
+    auto root = make_unique_root("edge_list_noroot");
+    SaveSystem sys(root / "does_not_exist");  // deliberately non-existent
+
+    EXPECT_TRUE(sys.list_slots().empty());
+}
+
+// 46) Partial-write recovery: if body.json.tmp exists but body.json does not
+//     (write crashed before rename), load() still finds body.json missing and
+//     returns kIoFailed (not a crash). This tests the no-partial-data
+//     guarantee from the caller side.
+TEST(SaveSystemEdge, LoadWhenBodyMissingAfterPartialWriteReturnsIoFailed)
+{
+    auto root = make_unique_root("edge_body_missing");
+    SaveSystem sys(root);
+
+    // Write a valid meta manually (format=json) but leave NO body.json.
+    std::error_code ec;
+    std::filesystem::create_directories(root / "slot", ec);
+    ASSERT_FALSE(ec);
+    {
+        std::ofstream f(root / "slot" / "meta.json", std::ios::trunc | std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"({
+  "id": "slot",
+  "label": "Manual",
+  "timestamp": 1000,
+  "format": "json",
+  "size_bytes": 5
+})";
+    }
+    // Only create the tmp file, NOT the final body.json.
+    {
+        std::ofstream f(root / "slot" / "body.json.tmp", std::ios::binary | std::ios::trunc);
+        f.write("hello", 5);
+    }
+
+    auto loaded = sys.load("slot");
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_EQ(loaded.error().code, static_cast<std::uint32_t>(Code::kIoFailed));
+}
+
+// 47) Version skew: save_with_meta persists version correctly; a reload
+//     after overwriting with a higher version sees the new version, not
+//     the old one (no stale cache).
+TEST(SaveSystemEdge, VersionSkewBetweenSavesIsPersisted)
+{
+    auto root = make_unique_root("edge_version_skew");
+    SaveSystem sys(root);
+
+    SaveMeta m1;
+    m1.version = 2U;
+    m1.format  = SaveFormat::kBinary;
+    ASSERT_TRUE(sys.save_with_meta("slot", m1, bytes_from("v2-data")).has_value());
+    {
+        auto r = sys.load_with_meta("slot");
+        ASSERT_TRUE(r.has_value());
+        EXPECT_EQ(r->meta.version, 2U);
+    }
+
+    // Overwrite with version 5 (simulates schema upgrade from another code path).
+    SaveMeta m5;
+    m5.version  = 5U;
+    m5.format   = SaveFormat::kBinary;
+    m5.app_name = "Upgraded";
+    ASSERT_TRUE(sys.save_with_meta("slot", m5, bytes_from("v5-data")).has_value());
+    {
+        auto r = sys.load_with_meta("slot");
+        ASSERT_TRUE(r.has_value());
+        EXPECT_EQ(r->meta.version,  5U);
+        EXPECT_EQ(r->meta.app_name, "Upgraded");
+        // Blob must reflect v5 content.
+        const auto expected = bytes_from("v5-data");
+        ASSERT_EQ(r->blob.size(), expected.size());
+        EXPECT_EQ(std::memcmp(r->blob.data(), expected.data(), expected.size()), 0);
+    }
+}
+
 }  // namespace

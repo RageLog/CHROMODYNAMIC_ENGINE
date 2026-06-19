@@ -392,6 +392,56 @@ public:
 };
 
 // -----------------------------------------------------------------------------
+// UntilFailureNode — dual of UntilSuccessNode.
+//
+// Re-ticks the child until it returns kFailure. Returns kRunning while the
+// child keeps succeeding; kFailure the moment it fails. Canonical use case:
+// "keep attacking until the enemy is dead (i.e., until the attack-check
+// fails because the target is gone)."
+//
+// Colledanchise & Ögren, "Behavior Trees in Robotics and AI", §2.3 lists
+// this as a standard decorator alongside UntilSuccess.
+// -----------------------------------------------------------------------------
+class UntilFailureNode final : public DecoratorNode
+{
+public:
+    using DecoratorNode::DecoratorNode;
+    [[nodiscard]] Status tick(Blackboard& bb) override;
+};
+
+// -----------------------------------------------------------------------------
+// ConditionNode — a named leaf that wraps a `bool(Blackboard&)` predicate.
+//
+// Semantically identical to a LeafNode that returns kSuccess / kFailure; the
+// distinct type makes Champandard's Action/Condition split explicit in tree
+// construction code and in `node_kind()` output (classifies as kLeaf, but
+// `dynamic_cast<ConditionNode*>` succeeds for tooling that distinguishes them).
+//
+// A condition *never* returns kRunning — predicates are instantaneous.
+// -----------------------------------------------------------------------------
+class ConditionNode final : public Node
+{
+public:
+    using Predicate = std::function<bool(Blackboard&)>;
+
+    explicit ConditionNode(Predicate pred) : pred_(std::move(pred)) {}
+
+    [[nodiscard]] Status tick(Blackboard& bb) override
+    {
+        return pred_(bb) ? Status::kSuccess : Status::kFailure;
+    }
+
+private:
+    Predicate pred_;
+};
+
+/// Convenience factory matching the `make_leaf` pattern.
+[[nodiscard]] inline std::unique_ptr<Node> make_condition(std::function<bool(Blackboard&)> pred)
+{
+    return std::make_unique<ConditionNode>(std::move(pred));
+}
+
+// -----------------------------------------------------------------------------
 // BehaviorTree — owns the root node and exposes a single tick entry point.
 //
 // `dt` is forwarded for callers that want a time-aware blackboard slot;

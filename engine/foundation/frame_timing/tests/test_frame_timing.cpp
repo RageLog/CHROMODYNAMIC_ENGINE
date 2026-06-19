@@ -208,4 +208,245 @@ TEST(FrameTimeRing, CopyInOrderLengthEqualsCapacityWhenOverflowed)
     EXPECT_FLOAT_EQ(out[3], 6.0F);
 }
 
+// ---------------------------------------------------------------------------
+// Gap-closure tests: copy_in_order (partial fill), last_dt, percentile,
+// jitter, median even-N, Stats::jitter(), boundary / edge / negative cases.
+// ---------------------------------------------------------------------------
+
+// copy_in_order on a PARTIALLY filled ring (not yet wrapped) must return
+// elements in push order starting from the very first push, not from an
+// uninitialised slot past write_idx_.
+TEST(FrameTimeRing, CopyInOrderPartialFillIsOldestFirst)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(10.0F);
+    ring.push(20.0F);
+    ring.push(30.0F);
+    std::vector<float> out;
+    ring.copy_in_order(out);
+    ASSERT_EQ(out.size(), 3U);
+    EXPECT_FLOAT_EQ(out[0], 10.0F);
+    EXPECT_FLOAT_EQ(out[1], 20.0F);
+    EXPECT_FLOAT_EQ(out[2], 30.0F);
+}
+
+// copy_in_order on an empty ring must return an empty vector.
+TEST(FrameTimeRing, CopyInOrderEmptyRingReturnsEmpty)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    std::vector<float> out;
+    ring.copy_in_order(out);
+    EXPECT_TRUE(out.empty());
+}
+
+// last_dt() returns 0 for an empty ring.
+TEST(FrameTimeRing, LastDtEmptyReturnsZero)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    EXPECT_FLOAT_EQ(ring.last_dt(), 0.0F);
+}
+
+// last_dt() returns the most-recently pushed value on a partially filled ring.
+TEST(FrameTimeRing, LastDtPartialFill)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(0.010F);
+    ring.push(0.016F);
+    ring.push(0.033F);
+    EXPECT_FLOAT_EQ(ring.last_dt(), 0.033F);
+}
+
+// last_dt() tracks the current write position correctly after wrap.
+TEST(FrameTimeRing, LastDtAfterWrap)
+{
+    cd::frame_timing::FrameTimeRing<4> ring;
+    ring.push(1.0F);
+    ring.push(2.0F);
+    ring.push(3.0F);
+    ring.push(4.0F);  // full
+    ring.push(5.0F);  // overwrites slot 0
+    EXPECT_FLOAT_EQ(ring.last_dt(), 5.0F);
+}
+
+// last_dt() returns 0 after reset().
+TEST(FrameTimeRing, LastDtAfterReset)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(0.016F);
+    ring.reset();
+    EXPECT_FLOAT_EQ(ring.last_dt(), 0.0F);
+}
+
+// percentile(0.0) == dt_min, percentile(1.0) == dt_max for any non-empty ring.
+TEST(FrameTimeRing, PercentileBoundaries)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(0.005F);
+    ring.push(0.010F);
+    ring.push(0.080F);
+    EXPECT_FLOAT_EQ(ring.percentile(0.0F), 0.005F);
+    EXPECT_FLOAT_EQ(ring.percentile(1.0F), 0.080F);
+}
+
+// percentile(0.5) is consistent with stats().median for an odd-count window.
+TEST(FrameTimeRing, PercentileHalfMatchesMedianOddN)
+{
+    // 5 samples; sorted = [0.001, 0.002, 0.003, 0.004, 0.005]; middle = 0.003
+    cd::frame_timing::FrameTimeRing<16> ring;
+    ring.push(0.003F);
+    ring.push(0.001F);
+    ring.push(0.005F);
+    ring.push(0.002F);
+    ring.push(0.004F);
+    // percentile(0.5): idx = floor(5 * 0.5) = 2 -> sorted[2] = 0.003
+    EXPECT_FLOAT_EQ(ring.percentile(0.5F), 0.003F);
+    EXPECT_FLOAT_EQ(ring.stats().median,   0.003F);
+}
+
+// percentile() on an empty ring returns 0.
+TEST(FrameTimeRing, PercentileEmptyReturnsZero)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    EXPECT_FLOAT_EQ(ring.percentile(0.99F), 0.0F);
+    EXPECT_FLOAT_EQ(ring.percentile(0.0F),  0.0F);
+}
+
+// percentile() clamps out-of-range p values without UB/assert.
+TEST(FrameTimeRing, PercentileClampsBelowZeroAndAboveOne)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(0.010F);
+    ring.push(0.020F);
+    // Negative p -> clamps to 0.0 -> smallest sample.
+    EXPECT_FLOAT_EQ(ring.percentile(-1.0F), ring.percentile(0.0F));
+    // p > 1.0 -> clamps to 1.0 -> largest sample.
+    EXPECT_FLOAT_EQ(ring.percentile(2.0F), ring.percentile(1.0F));
+}
+
+// jitter() == 0 for an empty ring.
+TEST(FrameTimeRing, JitterEmptyReturnsZero)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    EXPECT_FLOAT_EQ(ring.jitter(), 0.0F);
+}
+
+// jitter() == 0 for a uniform ring (all same value).
+TEST(FrameTimeRing, JitterUniformIsZero)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    for (int i = 0; i < 8; ++i)
+        ring.push(0.016F);
+    EXPECT_FLOAT_EQ(ring.jitter(), 0.0F);
+}
+
+// jitter() == dt_max - dt_min for a mixed-value ring.
+TEST(FrameTimeRing, JitterEqualsMaxMinusMed)
+{
+    cd::frame_timing::FrameTimeRing<16> ring;
+    ring.push(0.005F);
+    ring.push(0.010F);
+    ring.push(0.080F);
+    const auto s = ring.stats();
+    EXPECT_FLOAT_EQ(ring.jitter(), s.dt_max - s.dt_min);
+    EXPECT_NEAR(ring.jitter(), 0.075F, 1e-6F);
+}
+
+// Stats::jitter() helper on the Stats struct matches ring.jitter() output.
+TEST(FrameTimeRing, StatsJitterHelperConsistentWithRingJitter)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(0.004F);
+    ring.push(0.020F);
+    ring.push(0.100F);
+    const auto s = ring.stats();
+    EXPECT_FLOAT_EQ(s.jitter(), ring.jitter());
+}
+
+// True (interpolated) median for even N: 4-sample ring [0.010, 0.020,
+// 0.030, 0.040] -> median = (0.020 + 0.030) / 2 = 0.025.
+TEST(FrameTimeRing, MedianEvenNInterpolatesMiddlePair)
+{
+    cd::frame_timing::FrameTimeRing<4> ring;
+    ring.push(0.010F);
+    ring.push(0.040F);
+    ring.push(0.020F);
+    ring.push(0.030F);
+    const auto s = ring.stats();
+    EXPECT_EQ(s.filled, 4U);
+    EXPECT_NEAR(s.median, 0.025F, 1e-6F);
+}
+
+// Median for odd N: 3-sample ring [0.010, 0.020, 0.090] -> median = 0.020.
+TEST(FrameTimeRing, MedianOddNIsExactMiddleElement)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(0.090F);
+    ring.push(0.010F);
+    ring.push(0.020F);
+    const auto s = ring.stats();
+    EXPECT_EQ(s.filled, 3U);
+    EXPECT_NEAR(s.median, 0.020F, 1e-6F);
+}
+
+// Negative dt (misconfigured caller) must not crash; stats reflect the value.
+TEST(FrameTimeRing, NegativeDtDoesNotCrash)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    ring.push(-0.001F);
+    ring.push(0.016F);
+    const auto s = ring.stats();
+    EXPECT_EQ(s.filled, 2U);
+    EXPECT_FLOAT_EQ(s.dt_min, -0.001F);
+    EXPECT_FLOAT_EQ(s.dt_max,  0.016F);
+    // fps_mean with negative mean should not crash (returns 0 for mean <= 0).
+    EXPECT_GE(s.fps_mean(), 0.0);  // mean = (−0.001+0.016)/2 = 0.0075 > 0
+}
+
+// stats() on a single-sample ring after a full overflow reset+refill must
+// use only the new samples, not ghost data from prior fill.
+TEST(FrameTimeRing, ResetThenRefillNoGhostData)
+{
+    cd::frame_timing::FrameTimeRing<4> ring;
+    for (int i = 0; i < 4; ++i)
+        ring.push(9.0F);  // fill with large values
+    ring.reset();
+    ring.push(0.001F);
+    const auto s = ring.stats();
+    EXPECT_EQ(s.filled, 1U);
+    EXPECT_FLOAT_EQ(s.dt_min, 0.001F);
+    EXPECT_FLOAT_EQ(s.dt_max, 0.001F);
+    EXPECT_NEAR(s.mean, 0.001, 1e-7);
+}
+
+// capacity() always returns the template parameter.
+TEST(FrameTimeRing, CapacityMatchesTemplateParameter)
+{
+    cd::frame_timing::FrameTimeRing<17> ring;
+    EXPECT_EQ(ring.capacity(), 17U);
+}
+
+// After reset the ring is empty: last_dt, jitter, percentile all return 0.
+TEST(FrameTimeRing, ResetMakesAllAccessorsReturnZero)
+{
+    cd::frame_timing::FrameTimeRing<8> ring;
+    for (int i = 0; i < 8; ++i)
+        ring.push(0.016F);
+    ring.reset();
+    EXPECT_FLOAT_EQ(ring.last_dt(),       0.0F);
+    EXPECT_FLOAT_EQ(ring.jitter(),        0.0F);
+    EXPECT_FLOAT_EQ(ring.percentile(0.5F), 0.0F);
+    EXPECT_EQ(ring.filled(), 0U);
+}
+
+// Two-sample ring: p99 must not go out of range (floor(2*0.99)=1 -> sorted[1]).
+TEST(FrameTimeRing, TwoSampleP99IsLarger)
+{
+    // Use a 4-slot ring (minimum) with only 2 samples.
+    cd::frame_timing::FrameTimeRing<4> ring;
+    ring.push(0.005F);
+    ring.push(0.080F);
+    const auto s = ring.stats();
+    EXPECT_FLOAT_EQ(s.p99, 0.080F);
+}
+
 }  // namespace

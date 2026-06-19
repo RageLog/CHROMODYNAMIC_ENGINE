@@ -787,4 +787,444 @@ TEST(CutscenePlayerTest, T19_SingleTickStraddlesBoundaryFiresBothPhases)
     EXPECT_EQ(player.current_phase_index(), 1U);
 }
 
+// ============================================================================
+// T20: seek() repositions the playhead silently (no events fired).
+// ============================================================================
+TEST(CutscenePlayerTest, T20_SeekRepositionsPlayheadNoEventsFired)
+{
+    // Two phases: p0 = 500 ms (event at 200), p1 = 800 ms (event at 400).
+    Cutscene cs;
+    cs.cutscene_id = "cs_t20";
+    cs.can_skip    = true;
+    {
+        CutscenePhase ph;
+        ph.phase_id    = "p0";
+        ph.duration_ms = 500.0F;
+        CutsceneEvent ev; ev.offset_ms = 200.0F; ev.kind = EventKind::kFadeIn;
+        ph.events.push_back(ev);
+        cs.phases.push_back(ph);
+    }
+    {
+        CutscenePhase ph;
+        ph.phase_id    = "p1";
+        ph.duration_ms = 800.0F;
+        CutsceneEvent ev; ev.offset_ms = 400.0F; ev.kind = EventKind::kFadeOut;
+        ph.events.push_back(ev);
+        cs.phases.push_back(ph);
+    }
+
+    CutscenePlayer player;
+    player.play(cs);
+
+    // total = 1300 ms. Seek into p1 at abs 700 ms (p1 offset = 700-500 = 200).
+    player.seek(700.0F);
+    EXPECT_TRUE(player.events_fired_this_tick().empty()) << "seek must not fire events";
+    EXPECT_EQ(player.current_phase_index(), 1U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 200.0F);
+    EXPECT_TRUE(player.is_playing());
+
+    // Next tick crosses the p1 event at offset 400: fires kFadeOut.
+    player.tick(250.0F);  // 200 + 250 = 450 > 400
+    {
+        const auto fired = player.events_fired_this_tick();
+        ASSERT_EQ(fired.size(), 1U);
+        EXPECT_EQ(fired[0].kind, EventKind::kFadeOut);
+    }
+}
+
+// ============================================================================
+// T21: seek() to 0 repositions to the very start of phase 0.
+// ============================================================================
+TEST(CutscenePlayerTest, T21_SeekToZeroReposToStart)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t21", 1000.0F,
+        {{300.0F, EventKind::kPlaySound}});
+
+    player.play(cs);
+    player.tick(500.0F);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 500.0F);
+
+    player.seek(0.0F);
+    EXPECT_EQ(player.current_phase_index(), 0U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+
+    // The event at 300 ms must still fire after seeking back to 0.
+    player.tick(310.0F);
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kPlaySound);
+}
+
+// ============================================================================
+// T22: seek() past total_duration_ms() completes the cutscene immediately.
+// ============================================================================
+TEST(CutscenePlayerTest, T22_SeekPastEndCompletesImmediately)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t22", 1000.0F, {});
+
+    player.play(cs);
+    EXPECT_FLOAT_EQ(player.total_duration_ms(), 1000.0F);
+
+    player.seek(99999.0F);
+    EXPECT_FALSE(player.is_playing());
+    EXPECT_TRUE(player.is_complete());
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+}
+
+// ============================================================================
+// T23: seek() with negative value is clamped to 0.
+// ============================================================================
+TEST(CutscenePlayerTest, T23_SeekNegativeClampsToZero)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t23", 500.0F, {});
+
+    player.play(cs);
+    player.tick(200.0F);
+    player.seek(-100.0F);
+
+    EXPECT_EQ(player.current_phase_index(), 0U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+    EXPECT_TRUE(player.is_playing());
+}
+
+// ============================================================================
+// T24: seek() is a no-op when the player is kIdle.
+// ============================================================================
+TEST(CutscenePlayerTest, T24_SeekNoOpWhenIdle)
+{
+    CutscenePlayer player;  // never played — kIdle
+    player.seek(500.0F);
+    EXPECT_FALSE(player.is_playing());
+    EXPECT_FALSE(player.is_complete());
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+}
+
+// ============================================================================
+// T25: restart() replays from the beginning after natural completion.
+// ============================================================================
+TEST(CutscenePlayerTest, T25_RestartAfterCompletion)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t25", 100.0F,
+        {{50.0F, EventKind::kSetFlag}});
+
+    player.play(cs);
+    player.tick(200.0F);  // finish
+    EXPECT_TRUE(player.is_complete());
+
+    // Restart: must clear complete and begin again.
+    player.restart();
+    EXPECT_TRUE(player.is_playing());
+    EXPECT_FALSE(player.is_complete());
+    EXPECT_EQ(player.current_phase_index(), 0U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+
+    // Event fires again on the second playthrough.
+    player.tick(60.0F);
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kSetFlag);
+}
+
+// ============================================================================
+// T26: restart() is a no-op when the player has never been loaded.
+// ============================================================================
+TEST(CutscenePlayerTest, T26_RestartNoOpWhenNeverLoaded)
+{
+    CutscenePlayer player;
+    player.restart();
+    EXPECT_FALSE(player.is_playing());
+    EXPECT_FALSE(player.is_complete());
+}
+
+// ============================================================================
+// T27: total_duration_ms() sums all phase durations correctly.
+// ============================================================================
+TEST(CutscenePlayerTest, T27_TotalDurationMsSumsAllPhases)
+{
+    Cutscene cs;
+    cs.cutscene_id = "cs_t27";
+    cs.can_skip    = true;
+    auto add_phase = [&](float dur) {
+        CutscenePhase ph; ph.duration_ms = dur; cs.phases.push_back(ph);
+    };
+    add_phase(300.0F);
+    add_phase(700.0F);
+    add_phase(1000.0F);
+
+    CutscenePlayer player;
+    player.play(cs);
+    EXPECT_FLOAT_EQ(player.total_duration_ms(), 2000.0F);
+}
+
+// ============================================================================
+// T28: total_duration_ms() returns 0 when kIdle (never played).
+// ============================================================================
+TEST(CutscenePlayerTest, T28_TotalDurationMsZeroWhenIdle)
+{
+    CutscenePlayer player;
+    EXPECT_FLOAT_EQ(player.total_duration_ms(), 0.0F);
+}
+
+// ============================================================================
+// T29: Zero-duration phase clamped to 1 ms; event at offset 0 still fires.
+// ============================================================================
+TEST(CutscenePlayerTest, T29_ZeroDurationPhaseClamped)
+{
+    Cutscene cs;
+    cs.cutscene_id = "cs_t29";
+    cs.can_skip    = true;
+    CutscenePhase ph;
+    ph.phase_id    = "zero";
+    ph.duration_ms = 0.0F;  // will be clamped to 1 ms by play()
+    CutsceneEvent ev;
+    ev.offset_ms   = 0.0F;
+    ev.kind        = EventKind::kSetFlag;
+    ph.events.push_back(ev);
+    cs.phases.push_back(ph);
+
+    CutscenePlayer player;
+    player.play(cs);
+    EXPECT_TRUE(player.is_playing());
+    // A single tick of 1 ms (the clamped minimum) fires the offset-0 event
+    // and completes the cutscene.
+    player.tick(1.0F);
+    {
+        const auto fired = player.events_fired_this_tick();
+        ASSERT_EQ(fired.size(), 1U);
+        EXPECT_EQ(fired[0].kind, EventKind::kSetFlag);
+    }
+    EXPECT_TRUE(player.is_complete());
+}
+
+// ============================================================================
+// T30: events_fired_this_tick() is empty immediately after stop().
+// ============================================================================
+TEST(CutscenePlayerTest, T30_EventsFiredEmptyAfterStop)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t30", 500.0F,
+        {{100.0F, EventKind::kFadeIn}});
+
+    player.play(cs);
+    player.tick(150.0F);  // fires kFadeIn
+    ASSERT_EQ(player.events_fired_this_tick().size(), 1U);
+
+    player.stop();
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+}
+
+// ============================================================================
+// T31: pause() is idempotent — calling twice from kPaused is harmless.
+// ============================================================================
+TEST(CutscenePlayerTest, T31_PauseIdempotent)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t31", 1000.0F, {});
+
+    player.play(cs);
+    player.pause();
+    player.pause();  // second call must be a no-op
+    EXPECT_FALSE(player.is_playing());
+    player.resume();
+    EXPECT_TRUE(player.is_playing());
+}
+
+// ============================================================================
+// T32: resume() is idempotent — calling twice from kPlaying is harmless.
+// ============================================================================
+TEST(CutscenePlayerTest, T32_ResumeIdempotent)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t32", 1000.0F, {});
+
+    player.play(cs);
+    player.resume();  // already playing — no-op
+    player.resume();  // still playing — no-op
+    EXPECT_TRUE(player.is_playing());
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+}
+
+// ============================================================================
+// T33: play() on an already-playing cutscene force-resets regardless of
+//      can_skip, and clears is_complete().
+// ============================================================================
+TEST(CutscenePlayerTest, T33_PlayWhilePlayingForceResets)
+{
+    CutscenePlayer player;
+    const Cutscene cs_a = make_single_phase("cs_a", 1000.0F, {}, /*can_skip=*/false);
+    const Cutscene cs_b = make_single_phase("cs_b", 500.0F,
+        {{200.0F, EventKind::kCameraMove}});
+
+    player.play(cs_a);
+    player.tick(600.0F);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 600.0F);
+
+    // Force a new cutscene in, even though can_skip == false on the active one.
+    player.play(cs_b);
+    EXPECT_TRUE(player.is_playing());
+    EXPECT_FALSE(player.is_complete());
+    EXPECT_EQ(player.current_phase_index(), 0U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+
+    // cs_b event fires correctly.
+    player.tick(210.0F);
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kCameraMove);
+}
+
+// ============================================================================
+// T34: JSON — missing cutscene_id returns nullopt.
+// ============================================================================
+TEST(CutscenePlayerTest, T34_JsonMissingCutsceneIdReturnsNullopt)
+{
+    const auto tmp_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_t34.json";
+    {
+        std::ofstream f(tmp_path, std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        // Valid JSON, valid schema_version, but no cutscene_id.
+        f << R"({"schema_version":1,"can_skip":true,"phases":[]})";
+    }
+    const auto result = load_from_json(tmp_path);
+    EXPECT_FALSE(result.has_value())
+        << "load_from_json should return nullopt when cutscene_id is absent";
+
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
+}
+
+// ============================================================================
+// T35: JSON — file not found returns nullopt.
+// ============================================================================
+TEST(CutscenePlayerTest, T35_JsonFileNotFoundReturnsNullopt)
+{
+    const auto bad_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_nonexistent_xyz987.json";
+    // Ensure it really doesn't exist.
+    std::error_code ec;
+    std::filesystem::remove(bad_path, ec);
+
+    const auto result = load_from_json(bad_path);
+    EXPECT_FALSE(result.has_value())
+        << "load_from_json should return nullopt for a non-existent file";
+}
+
+// ============================================================================
+// T36: JSON — root is a JSON array (not object) returns nullopt.
+// ============================================================================
+TEST(CutscenePlayerTest, T36_JsonRootIsArrayReturnsNullopt)
+{
+    const auto tmp_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_t36.json";
+    {
+        std::ofstream f(tmp_path, std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        f << R"([1, 2, 3])";
+    }
+    const auto result = load_from_json(tmp_path);
+    EXPECT_FALSE(result.has_value())
+        << "load_from_json should return nullopt when root is a JSON array";
+
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
+}
+
+// ============================================================================
+// T37: JSON — can_skip absent defaults to true.
+// ============================================================================
+TEST(CutscenePlayerTest, T37_JsonCanSkipAbsentDefaultsToTrue)
+{
+    const auto tmp_path = std::filesystem::temp_directory_path()
+                        / "cd_test_cutscene_t37.json";
+    {
+        std::ofstream f(tmp_path, std::ios::binary);
+        ASSERT_TRUE(f.is_open());
+        // No "can_skip" key — must default to true.
+        f << R"({"schema_version":1,"cutscene_id":"default_skip","phases":[]})";
+    }
+    const auto result = load_from_json(tmp_path);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->can_skip);
+    EXPECT_EQ(result->cutscene_id, "default_skip");
+
+    std::error_code ec;
+    std::filesystem::remove(tmp_path, ec);
+}
+
+// ============================================================================
+// T38: seek() while paused repositions correctly; resume() + tick() then fires
+//      only events beyond the new position.
+// ============================================================================
+TEST(CutscenePlayerTest, T38_SeekWhilePausedThenResume)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t38", 1000.0F,
+        {{100.0F, EventKind::kFadeIn},
+         {600.0F, EventKind::kFadeOut}});
+
+    player.play(cs);
+    player.pause();
+    // Seek past the 100 ms event into the middle of the phase.
+    player.seek(400.0F);
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+    EXPECT_EQ(player.current_phase_index(), 0U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 400.0F);
+
+    player.resume();
+    // Tick to cross 600 ms event; kFadeIn at 100 ms must NOT fire (already past).
+    player.tick(250.0F);  // 400 + 250 = 650 > 600
+    const auto fired = player.events_fired_this_tick();
+    ASSERT_EQ(fired.size(), 1U);
+    EXPECT_EQ(fired[0].kind, EventKind::kFadeOut);
+}
+
+// ============================================================================
+// T39: restart() mid-playthrough resets and re-fires events from the start.
+// ============================================================================
+TEST(CutscenePlayerTest, T39_RestartMidPlaythrough)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t39", 500.0F,
+        {{0.0F,   EventKind::kFadeIn},
+         {300.0F, EventKind::kSetFlag}});
+
+    player.play(cs);
+    player.tick(350.0F);  // fires both events
+    ASSERT_EQ(player.events_fired_this_tick().size(), 2U);
+
+    player.restart();
+    EXPECT_TRUE(player.is_playing());
+    EXPECT_EQ(player.current_phase_index(), 0U);
+    EXPECT_FLOAT_EQ(player.current_offset_ms(), 0.0F);
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+
+    // Both events fire again on the fresh play.
+    player.tick(350.0F);
+    ASSERT_EQ(player.events_fired_this_tick().size(), 2U);
+}
+
+// ============================================================================
+// T40: events_fired_this_tick() is cleared by seek().
+// ============================================================================
+TEST(CutscenePlayerTest, T40_SeekClearsEventBuffer)
+{
+    CutscenePlayer player;
+    const Cutscene cs = make_single_phase("cs_t40", 1000.0F,
+        {{200.0F, EventKind::kCameraMove}});
+
+    player.play(cs);
+    player.tick(250.0F);  // fires kCameraMove
+    ASSERT_EQ(player.events_fired_this_tick().size(), 1U);
+
+    // seek() must clear the buffer.
+    player.seek(300.0F);
+    EXPECT_TRUE(player.events_fired_this_tick().empty());
+}
+
 }  // namespace cd::game::cutscene_player::tests

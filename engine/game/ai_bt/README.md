@@ -30,6 +30,8 @@ Phase 473 — G2.2 in the engine roadmap.
 | `InverterNode`      | Flips `kSuccess` <-> `kFailure`; passes `kRunning` through.     |
 | `RepeaterNode`      | Tick the child N times (0 = forever, yields each iteration).    |
 | `UntilSuccessNode`  | Retries the child until it reports `kSuccess`.                  |
+| `UntilFailureNode`  | Repeats the child until it reports `kFailure` (dual of above).  |
+| `ConditionNode`     | Leaf wrapping `bool(Blackboard&)`; never returns `kRunning`.    |
 | `BehaviorTree`      | Owns the root, publishes `dt`, exposes `tick(bb, dt)`.          |
 
 ## Semantics
@@ -99,10 +101,9 @@ ctest --preset ninja-debug -R game_ai_bt --output-on-failure
 
 ## Notes
 - Single TU (`src/BehaviorTree.cpp`); header carries only inline-trivial bits
-  + the templated `LeafNode<F>` so most call sites instantiate one leaf type
-  per lambda.
+  + the templated `LeafNode<F>` and `ConditionNode` so most call sites
+  instantiate one leaf type per lambda.
 - Thread-safety: not thread-safe by design. One tree per controller, ticked
   from the owning thread.
-- Future work (out of scope for G2.2): subtree references, condition-on-loop
-  decorators, time-budget decorators, parallel "all-running-keep-running"
-  policies, JSON / XML loader.
+- Sealed (out-of-charter, future work only): subtree references, time-budget
+  decorators, parallel "all-running-keep-running" policies, JSON / XML loader.

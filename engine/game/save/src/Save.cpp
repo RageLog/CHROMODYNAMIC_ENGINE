@@ -277,13 +277,49 @@ void skip_ws(const std::string& text, std::size_t& i)
         }
         else
         {
-            // Skip unknown value (string OR number) for forward compatibility.
+            // Skip unknown value for forward compatibility.
+            // Supported JSON value types: string, number, true, false, null.
+            // Nested objects {} and arrays [] are skipped by balanced-brace
+            // walking so a future writer can embed sub-objects without
+            // breaking a Phase-1 reader (forward compat guarantee).
             skip_ws(text, i);
-            if (i < text.size() && text[i] == '"')
+            if (i >= text.size()) return false;
+
+            if (text[i] == '"')
             {
                 std::string tmp;
                 if (!parse_string(text, i, tmp)) return false;
             }
+            else if (text[i] == '{' || text[i] == '[')
+            {
+                // Balanced-brace / bracket skip — handles any nesting depth.
+                const char open  = text[i];
+                const char close = (open == '{') ? '}' : ']';
+                int depth = 1;
+                ++i;
+                while (i < text.size() && depth > 0)
+                {
+                    if (text[i] == '"')
+                    {
+                        // Skip JSON string (handles \" escapes).
+                        ++i;
+                        while (i < text.size() && text[i] != '"')
+                        {
+                            if (text[i] == '\\') ++i;  // escape: skip next char
+                            ++i;
+                        }
+                        if (i >= text.size()) return false;
+                        ++i;  // closing quote
+                    }
+                    else if (text[i] == open)  { ++depth; ++i; }
+                    else if (text[i] == close) { --depth; ++i; }
+                    else                       { ++i; }
+                }
+                if (depth != 0) return false;
+            }
+            else if (text.compare(i, 4, "true")  == 0) { i += 4; }
+            else if (text.compare(i, 5, "false") == 0) { i += 5; }
+            else if (text.compare(i, 4, "null")  == 0) { i += 4; }
             else
             {
                 std::int64_t tmp = 0;
@@ -371,7 +407,9 @@ void skip_ws(const std::string& text, std::size_t& i)
 
 [[nodiscard]] std::int64_t now_epoch_seconds() noexcept
 {
-    using namespace std::chrono;
+    using std::chrono::duration_cast;
+    using std::chrono::seconds;
+    using std::chrono::system_clock;
     return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 }
 

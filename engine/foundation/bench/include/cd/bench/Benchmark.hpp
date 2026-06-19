@@ -82,16 +82,18 @@ struct Report
 
     void print(std::ostream& out) const
     {
-        char buf[256];
+        char buf[384];
         std::snprintf(
             buf,
             sizeof(buf),
-            "[bench] %-32s mean=%10.1f ns/op  med=%10.1f  min=%10.1f  p99=%10.1f  N=%llu*%u  wall=%.3fs\n",
+            "[bench] %-32s mean=%10.1f ns/op  med=%10.1f  min=%10.1f  max=%10.1f  p99=%10.1f  stddev=%8.1f  N=%llu*%u  wall=%.3fs\n",
             name.c_str(),
             mean_ns_per_op,
             median_ns_per_op,
             min_ns_per_op,
+            max_ns_per_op,
             p99_ns_per_op,
+            stddev_ns_per_op,
             static_cast<unsigned long long>(samples),
             inner_calls,
             total_seconds

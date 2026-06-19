@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -628,4 +629,374 @@ TEST(QuestLog, RestoredLogContinuesToProgress)
     ASSERT_NE(q, nullptr);
     EXPECT_EQ(q->status, QuestStatus::kComplete);
     EXPECT_EQ(dst.completed_quests().size(), 1U);
+}
+
+// ============================================================================
+// Edge / negative tests added for 100% coverage (tests 19-28).
+// ============================================================================
+
+// 19. add_quest rejects a quest that has an objective with an empty id.
+//     The log must be left fully unmodified (commit-or-rollback contract).
+TEST(QuestLog, AddQuestRejectsEmptyObjectiveId)
+{
+    QuestLog log;
+    // Pre-populate to verify size is preserved after a rejected add.
+    ASSERT_EQ(log.add_quest(make_wolf_quest()), AddResult::kOk);
+    ASSERT_EQ(log.size(), 1U);
+
+    Quest bad;
+    bad.id = "bad_quest";
+    {
+        Objective o;
+        o.id     = "";   // empty — should be rejected
+        o.target = 1;
+        bad.objectives.push_back(std::move(o));
+    }
+    EXPECT_EQ(log.add_quest(std::move(bad)), AddResult::kEmptyObjectiveId);
+
+    // Log unchanged: only the original wolf quest.
+    EXPECT_EQ(log.size(), 1U);
+    EXPECT_EQ(log.find_quest("bad_quest"), nullptr);
+}
+
+// 20. add_quest rollback: a quest with a second duplicate objective id is
+//     rejected and the log contains no partial record for that quest.
+TEST(QuestLog, AddQuestRollbackOnDuplicateObjectiveId)
+{
+    QuestLog log;
+
+    Quest bad;
+    bad.id = "dup_mid";
+    {
+        Objective a; a.id = "alpha"; a.target = 1;
+        Objective b; b.id = "beta";  b.target = 1;
+        Objective c; c.id = "alpha"; c.target = 1;  // duplicate of a
+        bad.objectives.push_back(std::move(a));
+        bad.objectives.push_back(std::move(b));
+        bad.objectives.push_back(std::move(c));
+    }
+    EXPECT_EQ(log.add_quest(std::move(bad)), AddResult::kDuplicateObjectiveId);
+
+    // Nothing committed — log is empty.
+    EXPECT_TRUE(log.empty());
+    EXPECT_EQ(log.size(), 0U);
+    EXPECT_EQ(log.find_quest("dup_mid"), nullptr);
+}
+
+// 21. A quest authored with a pre-failed objective: after activation that
+//     objective remains kFailed and is NOT mutatable (kObjectiveNotActive),
+//     while the parent quest is auto-failed by recompute.
+TEST(QuestLog, PreFailedObjectiveNotMutableAfterActivation)
+{
+    QuestLog log;
+
+    Quest q;
+    q.id = "pre_fail";
+    {
+        Objective ok;
+        ok.id     = "step_ok";
+        ok.target = 1;
+        q.objectives.push_back(std::move(ok));
+    }
+    {
+        Objective bad;
+        bad.id     = "step_bad";
+        bad.status = ObjectiveStatus::kFailed;  // pre-authored as failed
+        bad.target = 1;
+        q.objectives.push_back(std::move(bad));
+    }
+    ASSERT_EQ(log.add_quest(std::move(q)), AddResult::kOk);
+    ASSERT_EQ(log.activate("pre_fail"), MutateResult::kOk);
+
+    // Recompute should have auto-failed the quest because step_bad is kFailed.
+    const Quest* qp = log.find_quest("pre_fail");
+    ASSERT_NE(qp, nullptr);
+    EXPECT_EQ(qp->status, QuestStatus::kFailed);
+    EXPECT_EQ(log.failed_quests().size(), 1U);
+
+    // Mutations on the pre-failed objective return kQuestNotActive (quest is
+    // now kFailed) — not a silent no-op.
+    EXPECT_EQ(log.progress("pre_fail", "step_bad", 1),
+              MutateResult::kQuestNotActive);
+    EXPECT_EQ(log.complete_objective("pre_fail", "step_bad"),
+              MutateResult::kQuestNotActive);
+}
+
+// 22. find_quest returns nullptr for an absent id; size() and empty() track
+//     correctly across add + activate + fail cycles.
+TEST(QuestLog, FindQuestNullptrAndSizeEmpty)
+{
+    QuestLog log;
+    EXPECT_TRUE(log.empty());
+    EXPECT_EQ(log.size(), 0U);
+    EXPECT_EQ(log.find_quest("nowhere"), nullptr);
+
+    ASSERT_EQ(log.add_quest(make_wolf_quest()), AddResult::kOk);
+    EXPECT_FALSE(log.empty());
+    EXPECT_EQ(log.size(), 1U);
+    EXPECT_NE(log.find_quest("side_wolves"), nullptr);
+    EXPECT_EQ(log.find_quest("main_q01"), nullptr);
+
+    ASSERT_EQ(log.add_quest(make_relic_quest()), AddResult::kOk);
+    EXPECT_EQ(log.size(), 2U);
+
+    // size() does not change as quests transition between buckets.
+    ASSERT_EQ(log.activate("side_wolves"), MutateResult::kOk);
+    EXPECT_EQ(log.size(), 2U);
+    ASSERT_EQ(log.progress("side_wolves", "slay_wolves", 7), MutateResult::kOk);
+    EXPECT_EQ(log.size(), 2U);  // completed quest still in log
+}
+
+// 23. Serialize an empty log then restore it: result is kOk and the
+//     restored log is empty (NOT kEmptyBuffer — the blob is 12 bytes).
+TEST(QuestLog, SerializeAndRestoreEmptyLog)
+{
+    QuestLog empty_log;
+    EXPECT_TRUE(empty_log.empty());
+
+    const std::vector<std::byte> blob = empty_log.serialize();
+    // A non-empty blob (magic CDQL + version + quest_count=0) is produced.
+    EXPECT_FALSE(blob.empty());
+
+    QuestLog dst;
+    ASSERT_EQ(dst.add_quest(make_wolf_quest()), AddResult::kOk);
+    EXPECT_FALSE(dst.empty());
+
+    // Restoring an empty-log blob replaces the destination with an empty log.
+    EXPECT_EQ(dst.restore(std::span<const std::byte> {blob}), RestoreResult::kOk);
+    EXPECT_TRUE(dst.empty());
+    EXPECT_EQ(dst.size(), 0U);
+    EXPECT_EQ(dst.inactive_quests().size(), 0U);
+    EXPECT_EQ(dst.active_quests().size(),   0U);
+}
+
+// 24. Truncated mid-payload: valid header (quest_count=1) but the quest
+//     body is cut off.  Must return kTruncated, not UB or crash.
+TEST(QuestLog, RestoreTruncatedMidPayload)
+{
+    // Build a valid single-quest blob, then trim it to just past the header
+    // (12 bytes) + the quest_count field (4 bytes) = 16 bytes, which does
+    // NOT include any of the quest's id string.
+    QuestLog src;
+    ASSERT_EQ(src.add_quest(make_wolf_quest()), AddResult::kOk);
+    const std::vector<std::byte> full = src.serialize();
+    ASSERT_GT(full.size(), 16U);
+
+    // Clip at 16 bytes: header(12) + quest_count(4). The first read_string
+    // for q.id will attempt to read 4 bytes for the length prefix — fails.
+    const std::vector<std::byte> clipped(full.begin(), full.begin() + 16);
+
+    QuestLog dst;
+    EXPECT_EQ(dst.restore(std::span<const std::byte> {clipped}),
+              RestoreResult::kTruncated);
+    EXPECT_TRUE(dst.empty());
+
+    // Also test a clip that provides the id-length u32 but not the id bytes.
+    // header(12) + quest_count(4) + id_len(4) = 20 bytes.
+    if (full.size() > 20U)
+    {
+        const std::vector<std::byte> clipped2(full.begin(), full.begin() + 20);
+        QuestLog dst2;
+        EXPECT_EQ(dst2.restore(std::span<const std::byte> {clipped2}),
+                  RestoreResult::kTruncated);
+        EXPECT_TRUE(dst2.empty());
+    }
+}
+
+// 25. Corrupt objective status byte triggers kCorrupt, leaving the log empty.
+//     Complements test 17b which covers quest-level status corruption.
+TEST(QuestLog, RestoreCorruptObjectiveStatusByteReturnsCorrupt)
+{
+    // Build a minimal quest with one objective and a known serial layout.
+    // Quest id="q", objective id="o": header(12) + quest_count(4=16) +
+    // id("q": 4+1=5) + title(4=4) + desc(4=4) + reward(4=4) +
+    // quest_status(1) + obj_count(4) = 16+5+4+4+4+1+4 = 38 bytes before
+    // first objective starts.
+    // Objective: id("o": 4+1=5) + desc(4=4) = 9 bytes + obj_status(1) = byte 47.
+    QuestLog one;
+    {
+        Quest q;
+        q.id = "q";
+        Objective o;
+        o.id     = "o";
+        o.target = 1;
+        q.objectives.push_back(std::move(o));
+        ASSERT_EQ(one.add_quest(std::move(q)), AddResult::kOk);
+    }
+    std::vector<std::byte> blob = one.serialize();
+
+    // Locate the objective status byte: past header(8) + quest_count(4) +
+    // id(5) + title(4) + desc(4) + reward(4) + quest_status(1) + obj_count(4) +
+    // obj_id(5) + obj_desc(4) = 43. (kMagic is 4 bytes, not 8.)
+    constexpr std::size_t kObjStatusByte =
+        8U    // magic(4) + version(4)
+        + 4U  // quest_count
+        + 5U  // id "q" (u32 len + 1 char)
+        + 4U  // title (u32 len, empty)
+        + 4U  // desc  (u32 len, empty)
+        + 4U  // reward (u32 len, empty)
+        + 1U  // quest status byte
+        + 4U  // obj_count
+        + 5U  // obj id "o" (u32 len + 1 char)
+        + 4U; // obj desc (u32 len, empty)
+
+    ASSERT_GT(blob.size(), kObjStatusByte);
+    blob[kObjStatusByte] = static_cast<std::byte>(0xAA);  // > kFailed (3)
+
+    QuestLog dst;
+    ASSERT_EQ(dst.add_quest(make_wolf_quest()), AddResult::kOk);
+    EXPECT_EQ(dst.restore(std::span<const std::byte> {blob}),
+              RestoreResult::kCorrupt);
+    EXPECT_TRUE(dst.empty());  // rolled back to empty
+}
+
+// 26. Progress overflow clamp: a large positive delta that would exceed
+//     INT32_MAX on the counter is safely clamped at `target`.
+TEST(QuestLog, ProgressOverflowClampsAtTarget)
+{
+    QuestLog log;
+    // Wolf quest target == 7.
+    ASSERT_EQ(log.add_quest(make_wolf_quest()), AddResult::kOk);
+    ASSERT_EQ(log.activate("side_wolves"), MutateResult::kOk);
+
+    // First: bring counter to 3 (well below target).
+    ASSERT_EQ(log.progress("side_wolves", "slay_wolves", 3), MutateResult::kOk);
+    {
+        const Quest* q = log.find_quest("side_wolves");
+        ASSERT_NE(q, nullptr);
+        EXPECT_EQ(q->objectives[0].progress, 3);
+        EXPECT_EQ(q->objectives[0].status, ObjectiveStatus::kActive);
+    }
+
+    // Now supply INT32_MAX as delta; 3 + INT32_MAX overflows int32 but the
+    // i64 accumulator in progress() catches this and clamps to target (7).
+    ASSERT_EQ(
+        log.progress("side_wolves", "slay_wolves",
+                     std::numeric_limits<std::int32_t>::max()),
+        MutateResult::kOk);
+    {
+        const Quest* q = log.find_quest("side_wolves");
+        ASSERT_NE(q, nullptr);
+        EXPECT_EQ(q->objectives[0].progress, 7);          // clamped at target
+        EXPECT_EQ(q->objectives[0].status, ObjectiveStatus::kComplete);
+        EXPECT_EQ(q->status, QuestStatus::kComplete);
+    }
+}
+
+// 27. Out-of-order completion: complete objective B before A; quest stays
+//     active until the last open objective (A) is done, then auto-completes.
+TEST(QuestLog, OutOfOrderObjectiveCompletionAutoCompletes)
+{
+    QuestLog log;
+    // make_relic_quest: objectives [find_relic, return_mentor] in order.
+    ASSERT_EQ(log.add_quest(make_relic_quest()), AddResult::kOk);
+    ASSERT_EQ(log.activate("main_q01"), MutateResult::kOk);
+
+    // Complete the second objective first.
+    ASSERT_EQ(log.complete_objective("main_q01", "return_mentor"),
+              MutateResult::kOk);
+    {
+        const Quest* q = log.find_quest("main_q01");
+        ASSERT_NE(q, nullptr);
+        EXPECT_EQ(q->status, QuestStatus::kActive);          // still active
+        EXPECT_EQ(q->objectives[0].status, ObjectiveStatus::kActive);
+        EXPECT_EQ(q->objectives[1].status, ObjectiveStatus::kComplete);
+    }
+
+    // Now complete the first objective -> all done -> auto-complete.
+    ASSERT_EQ(log.complete_objective("main_q01", "find_relic"),
+              MutateResult::kOk);
+    {
+        const Quest* q = log.find_quest("main_q01");
+        ASSERT_NE(q, nullptr);
+        EXPECT_EQ(q->status, QuestStatus::kComplete);
+        EXPECT_EQ(q->objectives[0].status, ObjectiveStatus::kComplete);
+        EXPECT_EQ(q->objectives[1].status, ObjectiveStatus::kComplete);
+    }
+    EXPECT_EQ(log.completed_quests().size(), 1U);
+    EXPECT_EQ(log.active_quests().size(),    0U);
+}
+
+// 28. Serialize/restore round-trip for a large batch: 20 quests across all
+//     four status buckets.  Verifies the persistence layer does not truncate
+//     or corrupt data at scale and that bucket views rebuild correctly.
+TEST(QuestLog, SerializeRestoreLargeBatch)
+{
+    QuestLog src;
+
+    // Populate 20 quests then activate all: 10 stay active (0-4 partial +
+    // 15-19 zero-progress), 5 completed (5-9), 5 failed (10-14).
+    for (int i = 0; i < 20; ++i)
+    {
+        Quest q;
+        q.id    = "q" + std::to_string(i);
+        q.title = "Quest " + std::to_string(i);
+        Objective o;
+        o.id     = "step";
+        o.target = 10;
+        q.objectives.push_back(std::move(o));
+        ASSERT_EQ(src.add_quest(std::move(q)), AddResult::kOk);
+    }
+
+    // Activate all.
+    for (int i = 0; i < 20; ++i)
+    {
+        ASSERT_EQ(src.activate("q" + std::to_string(i)), MutateResult::kOk);
+    }
+
+    // Quests 0-4: active with partial progress (3/10).
+    for (int i = 0; i < 5; ++i)
+    {
+        ASSERT_EQ(src.progress("q" + std::to_string(i), "step", 3),
+                  MutateResult::kOk);
+    }
+
+    // Quests 5-9: complete.
+    for (int i = 5; i < 10; ++i)
+    {
+        ASSERT_EQ(src.complete_objective("q" + std::to_string(i), "step"),
+                  MutateResult::kOk);
+    }
+
+    // Quests 10-14: fail.
+    for (int i = 10; i < 15; ++i)
+    {
+        ASSERT_EQ(src.fail_objective("q" + std::to_string(i), "step"),
+                  MutateResult::kOk);
+    }
+
+    // Quests 15-19: remain active (no progress).
+    EXPECT_EQ(src.size(), 20U);
+    EXPECT_EQ(src.active_quests().size(),    10U);  // 0-4 in-progress + 15-19
+    EXPECT_EQ(src.completed_quests().size(), 5U);
+    EXPECT_EQ(src.failed_quests().size(),    5U);
+
+    const std::vector<std::byte> blob = src.serialize();
+    EXPECT_FALSE(blob.empty());
+
+    QuestLog dst;
+    ASSERT_EQ(dst.restore(std::span<const std::byte> {blob}),
+              RestoreResult::kOk);
+    EXPECT_EQ(dst.size(), 20U);
+    EXPECT_EQ(dst.active_quests().size(),    10U);
+    EXPECT_EQ(dst.completed_quests().size(), 5U);
+    EXPECT_EQ(dst.failed_quests().size(),    5U);
+
+    // Spot-check a few restored quests.
+    const Quest* q2 = dst.find_quest("q2");
+    ASSERT_NE(q2, nullptr);
+    EXPECT_EQ(q2->status, QuestStatus::kActive);
+    EXPECT_EQ(q2->objectives[0].progress, 3);
+    EXPECT_EQ(q2->objectives[0].status,   ObjectiveStatus::kActive);
+
+    const Quest* q7 = dst.find_quest("q7");
+    ASSERT_NE(q7, nullptr);
+    EXPECT_EQ(q7->status, QuestStatus::kComplete);
+    EXPECT_EQ(q7->objectives[0].progress, 10);
+    EXPECT_EQ(q7->objectives[0].status,   ObjectiveStatus::kComplete);
+
+    const Quest* q12 = dst.find_quest("q12");
+    ASSERT_NE(q12, nullptr);
+    EXPECT_EQ(q12->status, QuestStatus::kFailed);
+    EXPECT_EQ(q12->objectives[0].status,  ObjectiveStatus::kFailed);
 }
