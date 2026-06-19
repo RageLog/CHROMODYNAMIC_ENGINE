@@ -1095,3 +1095,626 @@ TEST(TagBucket, UnknownTagReturnsEmpty)
     cd::scene::TagBucket b;
     EXPECT_TRUE(b.entities_with("nope").empty());
 }
+
+// =============================================================================
+// ≥80→100 marathon — edge / negative depth pass (ADD-ONLY).
+// Every assumption below was verified against the actual header source:
+//   * Aabb::contains is inclusive on BOTH bounds (>= min && <= max).
+//   * JSON deser uses as_number() for id/version/parent; missing transform
+//     fields default to identity; dangling parent silently stays root.
+//   * Binary record layout: u32 id, u8 has_parent, [u32 parent], 40 B payload.
+//   * Frustum tests inclusive (signed_distance >= 0 / >= -radius).
+//   * LodSelector::select uses `distance < threshold` (exact == next LOD).
+// =============================================================================
+
+// ----- Scene graph: deeper hierarchy / dirty-flag / detach semantics -----
+
+TEST(SceneDepth, EmptySceneUpdateTransformsIsNoOp)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    s.update_transforms();  // must not crash with zero roots
+    EXPECT_EQ(w.alive_count(), 0u);
+}
+
+TEST(SceneDepth, RotationAndScaleComposeThroughHierarchy)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto root = s.create_node();
+    auto child = s.create_node();
+    ASSERT_TRUE(s.attach(child, root));
+
+    // Root scales x2 uniformly; child sits at local +(1,0,0). Child world
+    // position must be the parent scale applied to the child offset = (2,0,0).
+    s.local(root)->value.scale = { 2.0F, 2.0F, 2.0F };
+    s.local(child)->value.position = { 1.0F, 0.0F, 0.0F };
+    s.update_transforms();
+    const auto& wm = s.world_transform(child)->matrix;
+    EXPECT_TRUE(approx_eq(wm[3][0], 2.0F));
+    EXPECT_TRUE(approx_eq(wm[3][1], 0.0F));
+    EXPECT_TRUE(approx_eq(wm[3][2], 0.0F));
+}
+
+TEST(SceneDepth, DetachMidTreeRecomputesPromotedSubtreeAsRoot)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto root = s.create_node();
+    auto mid = s.create_node();
+    auto leaf = s.create_node();
+    ASSERT_TRUE(s.attach(mid, root));
+    ASSERT_TRUE(s.attach(leaf, mid));
+    s.local(root)->value.position = { 10.0F, 0.0F, 0.0F };
+    s.local(mid)->value.position = { 1.0F, 0.0F, 0.0F };
+    s.local(leaf)->value.position = { 1.0F, 0.0F, 0.0F };
+
+    s.update_transforms();
+    // Before detach: leaf world = 10 + 1 + 1 = 12.
+    EXPECT_TRUE(approx_eq(s.world_transform(leaf)->matrix[3][0], 12.0F));
+
+    // Promote `mid` (and its `leaf`) to root: parent contribution drops.
+    s.detach(mid);
+    EXPECT_FALSE(s.parent_of(mid).is_valid());
+    s.update_transforms();
+    // Now mid world = 1, leaf world = 1 + 1 = 2.
+    EXPECT_TRUE(approx_eq(s.world_transform(mid)->matrix[3][0], 1.0F));
+    EXPECT_TRUE(approx_eq(s.world_transform(leaf)->matrix[3][0], 2.0F));
+}
+
+TEST(SceneDepth, DeepChainPropagatesAccumulatedTranslation)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    constexpr int kDepth = 32;
+    std::vector<cd::ecs::Entity> chain;
+    chain.reserve(kDepth);
+    cd::ecs::Entity prev {};
+    for (int i = 0; i < kDepth; ++i)
+    {
+        auto e = s.create_node();
+        s.local(e)->value.position = { 1.0F, 0.0F, 0.0F };
+        if (prev.is_valid())
+            ASSERT_TRUE(s.attach(e, prev));
+        chain.push_back(e);
+        prev = e;
+    }
+    s.update_transforms();
+    // Leaf world x = sum of kDepth unit translations.
+    EXPECT_TRUE(approx_eq(s.world_transform(chain.back())->matrix[3][0],
+                          static_cast<float>(kDepth)));
+}
+
+TEST(SceneDepth, ForEachDescendantCountsAllNodesOfBalancedTree)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto root = s.create_node();
+    auto a = s.create_node();
+    auto b = s.create_node();
+    auto a1 = s.create_node();
+    auto a2 = s.create_node();
+    ASSERT_TRUE(s.attach(a, root));
+    ASSERT_TRUE(s.attach(b, root));
+    ASSERT_TRUE(s.attach(a1, a));
+    ASSERT_TRUE(s.attach(a2, a));
+    std::size_t count = 0;
+    s.for_each_descendant(root, [&](cd::ecs::Entity, std::uint32_t) { ++count; });
+    EXPECT_EQ(count, 5u);  // root + 2 children + 2 grandchildren
+}
+
+TEST(SceneDepth, DetachWithoutParentIsNoOp)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto e = s.create_node();
+    s.detach(e);  // no Parent component — must be a quiet no-op
+    EXPECT_FALSE(s.parent_of(e).is_valid());
+    EXPECT_TRUE(w.is_alive(e));
+}
+
+TEST(SceneDepth, DestroyDeadNodeIsNoOp)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto e = s.create_node();
+    s.destroy_node(e);
+    EXPECT_FALSE(w.is_alive(e));
+    s.destroy_node(e);  // already dead — must not crash or double-free
+    EXPECT_EQ(w.alive_count(), 0u);
+}
+
+// ----- JSON serializer: forward-compat / corrupt / defaulting paths -----
+
+TEST(SceneSerializerEdge, NodeMissingIdRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::asset::json::Object node;  // no "id"
+    node["translation"] = cd::scene::vec3_to_json({ 0, 0, 0 });
+    cd::asset::json::Array nodes;
+    nodes.emplace_back(std::move(node));
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(cd::scene::kSceneJsonVersion) };
+    root["nodes"] = cd::asset::json::Value { std::move(nodes) };
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
+}
+
+TEST(SceneSerializerEdge, NodesFieldNotArrayRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(cd::scene::kSceneJsonVersion) };
+    root["nodes"] = cd::asset::json::Value { 7 };  // wrong type
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
+}
+
+TEST(SceneSerializerEdge, MissingVersionRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::asset::json::Object root;
+    root["nodes"] = cd::asset::json::Value { cd::asset::json::Array {} };
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
+}
+
+TEST(SceneSerializerEdge, NodeNotObjectRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::asset::json::Array nodes;
+    nodes.emplace_back(42);  // scalar, not object
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(cd::scene::kSceneJsonVersion) };
+    root["nodes"] = cd::asset::json::Value { std::move(nodes) };
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
+}
+
+TEST(SceneSerializerEdge, MalformedTranslationArrayRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::asset::json::Array bad_xlate;  // length 2, not 3
+    bad_xlate.emplace_back(1.0);
+    bad_xlate.emplace_back(2.0);
+    cd::asset::json::Object node;
+    node["id"] = cd::asset::json::Value { static_cast<std::int64_t>(1) };
+    node["translation"] = cd::asset::json::Value { std::move(bad_xlate) };
+    cd::asset::json::Array nodes;
+    nodes.emplace_back(std::move(node));
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(cd::scene::kSceneJsonVersion) };
+    root["nodes"] = cd::asset::json::Value { std::move(nodes) };
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::serializer_errors::Code::kBadShape));
+}
+
+TEST(SceneSerializerEdge, MissingTransformFieldsDefaultToIdentity)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    // A node with only an id — every transform field omitted.
+    cd::asset::json::Object node;
+    node["id"] = cd::asset::json::Value { static_cast<std::int64_t>(5) };
+    cd::asset::json::Array nodes;
+    nodes.emplace_back(std::move(node));
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(cd::scene::kSceneJsonVersion) };
+    root["nodes"] = cd::asset::json::Value { std::move(nodes) };
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    ASSERT_EQ(r->size(), 1u);
+    const auto e = r->at(5);
+    const auto& lt = s.local(e)->value;
+    EXPECT_TRUE(approx_eq(lt.position.x, 0.0F));
+    EXPECT_TRUE(approx_eq(lt.scale.x, 1.0F));   // identity scale, not zero
+    EXPECT_TRUE(approx_eq(lt.rotation.w, 1.0F));
+}
+
+TEST(SceneSerializerEdge, DanglingParentReferenceLeavesNodeAsRoot)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::asset::json::Object node;
+    node["id"] = cd::asset::json::Value { static_cast<std::int64_t>(1) };
+    node["parent"] = cd::asset::json::Value { static_cast<std::int64_t>(999) };  // no such id
+    cd::asset::json::Array nodes;
+    nodes.emplace_back(std::move(node));
+    cd::asset::json::Object root;
+    root["version"] = cd::asset::json::Value { static_cast<int>(cd::scene::kSceneJsonVersion) };
+    root["nodes"] = cd::asset::json::Value { std::move(nodes) };
+    auto r = cd::scene::deserialize_scene(s, cd::asset::json::Value { std::move(root) });
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(r->size(), 1u);
+    EXPECT_FALSE(s.parent_of(r->at(1)).is_valid());  // silently left a root
+}
+
+TEST(SceneSerializerEdge, ExtrasCallbacksRoundTripCustomField)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto e = s.create_node();
+    s.local(e)->value.position = { 1.0F, 2.0F, 3.0F };
+
+    const auto json = cd::scene::serialize_scene_with(
+        s,
+        [](cd::ecs::Entity, cd::asset::json::Object& obj)
+        {
+            obj["custom_tag"] = cd::asset::json::Value { std::string { "hero" } };
+        });
+
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    std::string seen_tag;
+    auto r = cd::scene::deserialize_scene_with(
+        s2, json,
+        [&](cd::ecs::Entity, const cd::asset::json::Object& obj)
+        {
+            if (auto it = obj.find("custom_tag"); it != obj.end() && it->second.is_string())
+                seen_tag = it->second.as_string();
+        });
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(seen_tag, "hero");
+}
+
+// ----- Binary serializer: corrupt / truncated / forward-compat paths -----
+
+TEST(SceneBinaryEdge, NullPointerRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto r = cd::scene::deserialize_scene_binary(s, nullptr, 64);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kCorrupt));
+}
+
+TEST(SceneBinaryEdge, BufferSmallerThanHeaderRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    std::vector<std::byte> tiny(cd::scene::kBinaryHeaderSize - 1, std::byte { 0 });
+    auto r = cd::scene::deserialize_scene_binary(s, tiny.data(), tiny.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kCorrupt));
+}
+
+TEST(SceneBinaryEdge, BadVersionRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto a = s.create_node();
+    s.local(a)->value.position = { 1.0F, 0.0F, 0.0F };
+    auto bytes = cd::scene::serialize_scene_binary(s);
+    // Corrupt the version dword (bytes 4..7) to an unknown value.
+    bytes[4] = std::byte { 0xFF };
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kVersionMismatch));
+}
+
+TEST(SceneBinaryEdge, TruncatedRecordRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto a = s.create_node();
+    s.local(a)->value.position = { 1.0F, 2.0F, 3.0F };
+    auto bytes = cd::scene::serialize_scene_binary(s);
+    // Drop the trailing half of the single record — header still claims 1 node.
+    ASSERT_GT(bytes.size(), cd::scene::kBinaryHeaderSize + 4);
+    bytes.resize(cd::scene::kBinaryHeaderSize + 4);  // only the id survives
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kCorrupt));
+}
+
+TEST(SceneBinaryEdge, NodeCountClaimsMoreThanPresentRejected)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto bytes = cd::scene::serialize_scene_binary(s);  // empty scene = header only
+    // Forge node_count (bytes 8..11) to 1 while the payload is empty.
+    bytes[8] = std::byte { 1 };
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::scene::bin_errors::Code::kCorrupt));
+}
+
+TEST(SceneBinaryEdge, ReservedFlagsIgnoredForwardCompat)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto a = s.create_node();
+    s.local(a)->value.position = { 4.0F, 5.0F, 6.0F };
+    auto bytes = cd::scene::serialize_scene_binary(s);
+    // Set the reserved flags dword (bytes 12..15) — a forward-compatible
+    // reader must ignore unknown flag bits and still decode the payload.
+    bytes[12] = std::byte { 0xAB };
+    bytes[15] = std::byte { 0xCD };
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    ASSERT_EQ(r->size(), 1u);
+    const auto e = r->at(a.id);
+    EXPECT_TRUE(approx_eq(s2.local(e)->value.position.x, 4.0F));
+}
+
+TEST(SceneBinaryEdge, RootStaysRootAcrossRoundTrip)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    auto parent = s.create_node();
+    auto child = s.create_node();
+    s.attach(child, parent);
+    auto bytes = cd::scene::serialize_scene_binary(s);
+
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value());
+    const auto p2 = r->at(parent.id);
+    const auto c2 = r->at(child.id);
+    EXPECT_FALSE(s2.parent_of(p2).is_valid());  // parent has no has_parent byte set
+    EXPECT_EQ(s2.parent_of(c2), p2);            // child re-links to parent
+}
+
+TEST(SceneBinaryEdge, DeepHierarchyByteRoundTrip)
+{
+    cd::ecs::World w;
+    cd::scene::Scene s { w };
+    cd::ecs::Entity prev {};
+    std::vector<cd::ecs::Entity> chain;
+    for (int i = 0; i < 8; ++i)
+    {
+        auto e = s.create_node();
+        s.local(e)->value.position = { static_cast<float>(i), 0.0F, 0.0F };
+        if (prev.is_valid())
+            s.attach(e, prev);
+        chain.push_back(e);
+        prev = e;
+    }
+    auto bytes = cd::scene::serialize_scene_binary(s);
+    cd::ecs::World w2;
+    cd::scene::Scene s2 { w2 };
+    auto r = cd::scene::deserialize_scene_binary(s2, bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_EQ(r->size(), 8u);
+    // Verify the chain re-links: child 7's parent maps to original child 6.
+    const auto leaf = r->at(chain[7].id);
+    const auto mid = r->at(chain[6].id);
+    EXPECT_EQ(s2.parent_of(leaf), mid);
+}
+
+// ----- Frustum: exact-plane and degenerate radii -----
+
+TEST(FrustumEdge, AabbExactlyOnPlaneIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    // Box whose +X max face sits exactly on the x<=1 plane (p-vertex dist == 0).
+    cd::physics::Aabb on_plane { { 0.0F, -0.5F, -0.5F }, { 1.0F, 0.5F, 0.5F } };
+    EXPECT_TRUE(cd::scene::intersects(f, on_plane));
+}
+
+TEST(FrustumEdge, SphereExactlyAtNegativeRadiusBoundaryIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    // Center at x=1.5, radius 0.5 → signed_distance to x<=1 plane is -0.5,
+    // exactly -radius → inclusive boundary accepts.
+    EXPECT_TRUE(cd::scene::contains_sphere(f, { 1.5F, 0.0F, 0.0F }, 0.5F));
+}
+
+TEST(FrustumEdge, SphereJustBeyondNegativeRadiusIsRejected)
+{
+    const auto f = make_unit_box_frustum();
+    EXPECT_FALSE(cd::scene::contains_sphere(f, { 1.5001F, 0.0F, 0.0F }, 0.5F));
+}
+
+TEST(FrustumEdge, ZeroRadiusSphereBehavesLikePoint)
+{
+    const auto f = make_unit_box_frustum();
+    EXPECT_TRUE(cd::scene::contains_sphere(f, { 0.0F, 0.0F, 0.0F }, 0.0F));
+    EXPECT_FALSE(cd::scene::contains_sphere(f, { 2.0F, 0.0F, 0.0F }, 0.0F));
+}
+
+TEST(FrustumEdge, FullyContainsSphereTouchingPlaneIsAccepted)
+{
+    const auto f = make_unit_box_frustum();
+    // Center at origin, radius exactly 1 → touches every face from inside
+    // (signed_distance == radius) → inclusive strict-containment accepts.
+    EXPECT_TRUE(cd::scene::fully_contains_sphere(f, { 0.0F, 0.0F, 0.0F }, 1.0F));
+    EXPECT_FALSE(cd::scene::fully_contains_sphere(f, { 0.0F, 0.0F, 0.0F }, 1.0001F));
+}
+
+// ----- SpatialHash: empty / dense / boundary / negative-space queries -----
+
+TEST(SpatialHashEdge, QueryEmptyHashReturnsNothing)
+{
+    cd::scene::SpatialHash<int> sh { 4.0F };
+    std::vector<int> out;
+    sh.query_sphere({ 0, 0, 0 }, 10.0F, out);
+    EXPECT_TRUE(out.empty());
+    EXPECT_EQ(sh.cell_count(), 0u);
+}
+
+TEST(SpatialHashEdge, DenseSameCellReturnsAllItems)
+{
+    cd::scene::SpatialHash<int> sh { 10.0F };
+    for (int i = 0; i < 100; ++i)
+        sh.insert(i, cd::math::Vec3f { 1.0F, 1.0F, 1.0F });  // all in cell (0,0,0)
+    EXPECT_EQ(sh.cell_count(), 1u);
+    std::vector<int> out;
+    sh.query_sphere({ 1.0F, 1.0F, 1.0F }, 0.5F, out);
+    EXPECT_EQ(out.size(), 100u);
+}
+
+TEST(SpatialHashEdge, NegativeCoordinatesGetDistinctCells)
+{
+    cd::scene::SpatialHash<int> sh { 5.0F };
+    sh.insert(1, cd::math::Vec3f { -1.0F, 0.0F, 0.0F });   // floor(-0.2) = -1 → cell -1
+    sh.insert(2, cd::math::Vec3f { 1.0F, 0.0F, 0.0F });    // floor(0.2) = 0  → cell  0
+    EXPECT_EQ(sh.cell_count(), 2u);
+    std::vector<int> out;
+    sh.query_sphere({ -1.0F, 0.0F, 0.0F }, 0.1F, out);
+    bool saw_1 = false;
+    bool saw_2 = false;
+    for (int v : out)
+    {
+        if (v == 1) saw_1 = true;
+        if (v == 2) saw_2 = true;
+    }
+    EXPECT_TRUE(saw_1);
+    EXPECT_FALSE(saw_2);  // adjacent positive cell not touched by tiny radius
+}
+
+TEST(SpatialHashEdge, CellBoundaryFloorAssignment)
+{
+    cd::scene::SpatialHash<int> sh { 5.0F };
+    // Exactly on a cell boundary: floor(5.0/5.0) = 1 → cell 1, not cell 0.
+    sh.insert(1, cd::math::Vec3f { 5.0F, 0.0F, 0.0F });
+    sh.insert(2, cd::math::Vec3f { 4.999F, 0.0F, 0.0F });  // cell 0
+    EXPECT_EQ(sh.cell_count(), 2u);
+}
+
+TEST(SpatialHashEdge, NegativeRadiusClampedToZero)
+{
+    cd::scene::SpatialHash<int> sh { 5.0F };
+    sh.insert(1, cd::math::Vec3f { 0.0F, 0.0F, 0.0F });
+    std::vector<int> out;
+    sh.query_sphere({ 0.0F, 0.0F, 0.0F }, -100.0F, out);  // must not blow up the loop
+    // Negative radius clamps to 0 → still touches the center's own cell.
+    bool saw_1 = false;
+    for (int v : out) if (v == 1) saw_1 = true;
+    EXPECT_TRUE(saw_1);
+}
+
+TEST(SpatialHashEdge, NonPositiveCellSizeFallsBackToUnit)
+{
+    cd::scene::SpatialHash<int> sh { -2.0F };  // invalid → clamped to 1.0
+    EXPECT_FLOAT_EQ(sh.cell_size(), 1.0F);
+}
+
+// ----- Trigger: exact boundary + re-entry identity -----
+
+TEST(TriggerEdge, ExactBoundaryPositionCountsAsInside)
+{
+    cd::physics::Aabb v { { -1, -1, -1 }, { 1, 1, 1 } };
+    cd::scene::Trigger t { "Zone", v };
+    int enters = 0;
+    t.set_on_enter([&](cd::ecs::Entity) { ++enters; });
+    cd::ecs::Entity e { 1, 1 };
+    // Aabb::contains is inclusive — a point on max.x is inside.
+    t.update(e, { 1.0F, 0.0F, 0.0F });
+    EXPECT_EQ(enters, 1);
+    EXPECT_TRUE(t.is_occupied());
+}
+
+TEST(TriggerEdge, ReEntryAfterExitFiresEnterAgain)
+{
+    cd::physics::Aabb v { { -1, -1, -1 }, { 1, 1, 1 } };
+    cd::scene::Trigger t { "Zone", v };
+    int enters = 0;
+    int exits = 0;
+    t.set_on_enter([&](cd::ecs::Entity) { ++enters; });
+    t.set_on_exit([&](cd::ecs::Entity) { ++exits; });
+    cd::ecs::Entity e { 7, 3 };
+    t.update(e, { 0, 0, 0 });   // enter
+    t.update(e, { 5, 0, 0 });   // exit
+    t.update(e, { 0, 0, 0 });   // re-enter
+    EXPECT_EQ(enters, 2);
+    EXPECT_EQ(exits, 1);
+    EXPECT_TRUE(t.is_occupied());
+}
+
+TEST(TriggerEdge, ExitCallbackReceivesOriginalOccupant)
+{
+    cd::physics::Aabb v { { -1, -1, -1 }, { 1, 1, 1 } };
+    cd::scene::Trigger t { "Zone", v };
+    cd::ecs::Entity reported {};
+    t.set_on_exit([&](cd::ecs::Entity who) { reported = who; });
+    cd::ecs::Entity e { 11, 5 };
+    t.update(e, { 0, 0, 0 });   // enter — current_entity_ latches `e`
+    t.update(e, { 5, 0, 0 });   // exit
+    EXPECT_EQ(reported, e);
+    EXPECT_FALSE(t.is_occupied());
+    EXPECT_FALSE(t.occupant().is_valid());  // cleared after exit
+}
+
+// ----- LodSelector: degenerate / exact-threshold -----
+
+TEST(LodSelectorEdge, EmptyThresholdsAlwaysSelectsLodZero)
+{
+    cd::scene::LodSelector s { {} };
+    EXPECT_EQ(s.lod_count(), 1u);
+    EXPECT_EQ(s.select(0.0F), 0u);
+    EXPECT_EQ(s.select(1e9F), 0u);
+}
+
+TEST(LodSelectorEdge, ExactThresholdSelectsHigherLod)
+{
+    cd::scene::LodSelector s { { 10.0F } };
+    // select uses `distance < threshold`, so exactly 10.0 falls to LOD1.
+    EXPECT_EQ(s.select(9.999F), 0u);
+    EXPECT_EQ(s.select(10.0F), 1u);
+}
+
+// ----- Layer / NameRegistry / Polyline degenerate cases -----
+
+TEST(LayerRegistryEdge, DuplicateNamesGetDistinctIndices)
+{
+    cd::scene::LayerRegistry r;
+    const auto a = r.add("Geo");
+    const auto b = r.add("Geo");   // duplicate name allowed; distinct index
+    EXPECT_NE(a, b);
+    // find() returns the FIRST matching index by construction.
+    EXPECT_EQ(r.find("Geo"), a);
+}
+
+TEST(NameRegistryEdge, FindMissingNameReturnsInvalid)
+{
+    cd::scene::NameRegistry r;
+    EXPECT_FALSE(r.find("ghost").is_valid());
+    EXPECT_TRUE(r.name_of(cd::ecs::Entity { 99, 1 }).empty());
+}
+
+TEST(Polyline3DEdge, SinglePointSampleReturnsThatPoint)
+{
+    cd::scene::Polyline3D p;
+    p.add({ 3, 4, 5 });
+    EXPECT_FLOAT_EQ(p.length(), 0.0F);
+    const auto s = p.point_at(10.0F);  // arc-length past the lone vertex
+    EXPECT_FLOAT_EQ(s.x, 3.0F);
+    EXPECT_FLOAT_EQ(s.z, 5.0F);
+}
+
+TEST(Polyline3DEdge, ZeroLengthSegmentDoesNotDivideByZero)
+{
+    cd::scene::Polyline3D p;
+    p.add({ 1, 1, 1 });
+    p.add({ 1, 1, 1 });   // duplicate → zero-length segment
+    p.add({ 2, 1, 1 });
+    EXPECT_NEAR(p.length(), 1.0F, 1e-5F);
+    const auto mid = p.point_at(0.5F);  // guarded by `seg > 0.0F`
+    EXPECT_NEAR(mid.x, 1.5F, 1e-5F);
+}

@@ -33,11 +33,37 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <vector>
 
 namespace cd::debug_line
 {
+
+/// Pack a normalised [0,1] float RGBA colour into a 0xAABBGGRR word
+/// (little-endian byte order R,G,B,A — the bgfx `Color` convention).
+/// Components are clamped then rounded so the pack is total and the
+/// round-trip through `unpack_color` is stable for any input.
+[[nodiscard]] inline std::uint32_t pack_color(const cd::math::Vec4f& c) noexcept
+{
+    const auto to_byte = [](float v) noexcept -> std::uint32_t {
+        const float clamped = std::clamp(v, 0.0F, 1.0F);
+        return static_cast<std::uint32_t>(std::lround(clamped * 255.0F));
+    };
+    return to_byte(c.x) | (to_byte(c.y) << 8U) | (to_byte(c.z) << 16U) |
+           (to_byte(c.w) << 24U);
+}
+
+/// Inverse of `pack_color`: expand a 0xAABBGGRR word back to a
+/// normalised [0,1] float RGBA colour.
+[[nodiscard]] inline cd::math::Vec4f unpack_color(std::uint32_t rgba) noexcept
+{
+    constexpr float kInv255 = 1.0F / 255.0F;
+    return { static_cast<float>(rgba & 0xFFU) * kInv255,
+             static_cast<float>((rgba >> 8U) & 0xFFU) * kInv255,
+             static_cast<float>((rgba >> 16U) & 0xFFU) * kInv255,
+             static_cast<float>((rgba >> 24U) & 0xFFU) * kInv255 };
+}
 
 /// One line-list vertex. Tightly packed: 28 bytes (3 + 4 floats).
 /// The colour rides per-vertex so a single batch can mix shapes of
@@ -322,6 +348,81 @@ public:
                 { centre.x + axis_a.x * o + axis_b.x * extent,
                   centre.y + axis_a.y * o + axis_b.y * extent,
                   centre.z + axis_a.z * o + axis_b.z * extent },
+                color);
+        }
+    }
+
+    /// phase1253: append a colour-coded axis gizmo at `origin` — three
+    /// segments of `length` along `right` / `up` / `forward`, tinted
+    /// red / green / blue respectively (the editor/Bevy `axes`
+    /// convention). Pass unit axes for the world basis; pass a rotated
+    /// frame to visualise a node's local transform. Unlike `add_cross`
+    /// the three arms are single-sided (origin → +axis) and individually
+    /// coloured so handedness and orientation read at a glance.
+    void add_axes(const cd::math::Vec3f& origin,
+                  const cd::math::Vec3f& right,
+                  const cd::math::Vec3f& up,
+                  const cd::math::Vec3f& forward,
+                  float length)
+    {
+        constexpr cd::math::Vec4f kAxisX { 1.0F, 0.0F, 0.0F, 1.0F };
+        constexpr cd::math::Vec4f kAxisY { 0.0F, 1.0F, 0.0F, 1.0F };
+        constexpr cd::math::Vec4f kAxisZ { 0.0F, 0.0F, 1.0F, 1.0F };
+        const auto tip = [&](const cd::math::Vec3f& axis) {
+            return cd::math::Vec3f { origin.x + axis.x * length,
+                                     origin.y + axis.y * length,
+                                     origin.z + axis.z * length };
+        };
+        add_line(origin, tip(right), kAxisX);
+        add_line(origin, tip(up), kAxisY);
+        add_line(origin, tip(forward), kAxisZ);
+    }
+
+    /// phase1253: append a rectangular `lines_a` x `lines_b` reference
+    /// grid centred at `centre`, spanning the plane of `axis_a` /
+    /// `axis_b`. Unlike `add_grid` (which is a symmetric square keyed by
+    /// a single half-count), the two dimensions are independent — the
+    /// canonical non-square ground plane. `lines_a` / `lines_b` are the
+    /// number of cells along each axis (clamped to >= 0); a value of 0
+    /// in a dimension collapses that family of lines. The grid spans
+    /// [-lines_a/2, +lines_a/2] cells of `spacing` so it stays centred.
+    /// Total segments = (lines_a + 1) + (lines_b + 1).
+    void add_grid_rect(const cd::math::Vec3f& centre,
+                       const cd::math::Vec3f& axis_a,
+                       const cd::math::Vec3f& axis_b,
+                       int lines_a,
+                       int lines_b,
+                       float spacing,
+                       const cd::math::Vec4f& color)
+    {
+        lines_a = std::max(lines_a, 0);
+        lines_b = std::max(lines_b, 0);
+        const float half_a = static_cast<float>(lines_a) * spacing * 0.5F;
+        const float half_b = static_cast<float>(lines_b) * spacing * 0.5F;
+        // Lines parallel to axis_a (spanning ±half_a), stepped along b.
+        for (int i = 0; i <= lines_b; ++i)
+        {
+            const float o = static_cast<float>(i) * spacing - half_b;
+            add_line(
+                { centre.x - axis_a.x * half_a + axis_b.x * o,
+                  centre.y - axis_a.y * half_a + axis_b.y * o,
+                  centre.z - axis_a.z * half_a + axis_b.z * o },
+                { centre.x + axis_a.x * half_a + axis_b.x * o,
+                  centre.y + axis_a.y * half_a + axis_b.y * o,
+                  centre.z + axis_a.z * half_a + axis_b.z * o },
+                color);
+        }
+        // Lines parallel to axis_b (spanning ±half_b), stepped along a.
+        for (int i = 0; i <= lines_a; ++i)
+        {
+            const float o = static_cast<float>(i) * spacing - half_a;
+            add_line(
+                { centre.x + axis_a.x * o - axis_b.x * half_b,
+                  centre.y + axis_a.y * o - axis_b.y * half_b,
+                  centre.z + axis_a.z * o - axis_b.z * half_b },
+                { centre.x + axis_a.x * o + axis_b.x * half_b,
+                  centre.y + axis_a.y * o + axis_b.y * half_b,
+                  centre.z + axis_a.z * o + axis_b.z * half_b },
                 color);
         }
     }

@@ -129,7 +129,7 @@ void scan_includes(std::string_view text,
                   visited, 0);
     if (entries.empty())
         return 0;  // no includes -> key unchanged -> cache epoch preserved
-    std::sort(entries.begin(), entries.end());
+    std::ranges::sort(entries);
     std::uint64_t h = kFnvOffsetBasis;
     for (const auto e : entries)
         h = fnv1a_update(h, &e, sizeof(e));
@@ -196,8 +196,20 @@ cd::core::Result<CompileResult> CachedCompiler::compile(const CompileDesc& desc)
                     return r;
                 }
             }
-            // File present but malformed — count, fall through to recompile.
+            // File present but malformed (truncated, zero-size, non-word-
+            // aligned, or a short read) — count it, then EVICT the corrupt
+            // entry so it does not stay a permanent read-failure tripwire on
+            // every future compile of this key. Close the handle first
+            // (Windows holds a delete lock on an open file), then remove the
+            // .spv and its .meta sidecar best-effort. The subsequent miss
+            // re-publishes a clean entry via the atomic rename below. This
+            // touches ONLY the corrupt-file branch — valid cache hits and the
+            // compiled SPIR-V are unaffected.
+            in.close();
             ++stats_.read_failures;
+            std::error_code evict_ec;
+            std::filesystem::remove(spv_path, evict_ec);
+            std::filesystem::remove(path_for(key, ".meta"), evict_ec);
         }
     }
 

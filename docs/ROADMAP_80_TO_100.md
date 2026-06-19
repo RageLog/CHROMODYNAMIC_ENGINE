@@ -46,3 +46,10 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - **l10n**: plural_rule_ar (6 CLDR cats) + plural_rule_ru (4 cats) + 20 tests.
   - **input_recorder**: 12 edge/negative tests + README fix.
   - Gate fixes: dialogue nodiscard + 3 WAE (dialogue move-const, math use-auto, Color.hpp dup-include) + l10n test (Arabic one/two are exact n==1/n==2, not modular). Gate: build clean -Werror (0/0); ctest 320/320; golden/sponza/chrome byte-identical.
+- ✅ **Batch 3 (phase1255)** — tier 88 render/golden-sensitive, 5 libs → 100% (~101 new tests, all golden-safe):
+  - **gluon**: 12 GPU-free registry/resolver-contract tests (canonicalisation, determinism, find_module boundaries, guard triad). No shader-math touched.
+  - **material**: 15 CPU-contract tests across 2 new binaries (alpha/HDR clamp, lifecycle, AlphaMode predicates, multi-set layout). No BRDF/render change.
+  - **shader**: real corrupt-cache-file EVICT/self-heal (malformed branch only, no SPIR-V change) + 23 tests + Slang gate-seal ADR (ADR-20260620).
+  - **scene**: 51 edge tests (serializer corrupt/forward-compat, frustum exact-plane, spatial-hash boundary, trigger re-entry, deep-hierarchy transform). Zero production-code change.
+  - **debug_line**: pack_color/unpack_color + add_axes (colored gizmo) + add_grid_rect (N×M) + 15 tests. Existing shapes byte-identical. (1st agent under-delivered → re-dispatched.)
+  - Gate fixes: material unused-const + 4 WAE (shader use-ranges, scene emplace, debug_line redundant-expr/use-auto/incorrect-rounding→lround). Gate: build clean -Werror (0/0); ctest 322/322; golden/sponza/chrome BYTE-IDENTICAL.

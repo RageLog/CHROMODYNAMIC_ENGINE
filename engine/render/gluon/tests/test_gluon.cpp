@@ -15,11 +15,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace
 {
@@ -1122,6 +1124,181 @@ TEST(VariantDomain, PreambleCompilesWithModules)
     ASSERT_TRUE(r.has_value())
         << (r.has_value() ? "" : std::string(r.error().message));
     EXPECT_FALSE(r->spirv.empty());
+}
+
+// =============================================================================
+// 100%-DEPTH pass (≥80→100 marathon, docs/ROADMAP_80_TO_100.md): registry +
+// resolver CONTRACT pins. These are GPU-free (no glslang) so they exercise the
+// catalogue and the ModuleResolver canonicalisation/determinism behaviour even
+// in builds without CD_ENABLE_GLSLANG — the layer this library actually owns.
+// ADD-ONLY: every assertion is read-only over existing module text + the
+// resolver's existing output; nothing here alters shader math or resolver
+// output for the inputs the renderer uses.
+// =============================================================================
+
+// The catalogue size is pinned: the CMake authoring list has 21 modules and
+// the embedded array must carry exactly that many. A silent drop (e.g. a
+// module deleted but still referenced) regresses here, not downstream.
+TEST(ShaderLibRegistry, CatalogueCountMatchesManifest)
+{
+    EXPECT_EQ(cd::gluon::modules().size(), 21u);
+}
+
+// Every canonical virtual_path carries the "cd/gluon/" prefix and the ".glsl"
+// suffix — the include-path shape the resolver and all 3 RHI backends rely on.
+TEST(ShaderLibRegistry, EveryPathIsCanonicalGlsl)
+{
+    for (const auto& m : cd::gluon::modules())
+    {
+        EXPECT_TRUE(m.virtual_path.starts_with("cd/gluon/")) << m.virtual_path;
+        EXPECT_TRUE(m.virtual_path.ends_with(".glsl")) << m.virtual_path;
+    }
+}
+
+// virtual_path values are UNIQUE (the closure key is derived from the path; a
+// duplicate path would collide two distinct module bodies onto one cache key).
+TEST(ShaderLibRegistry, VirtualPathsAreUnique)
+{
+    std::unordered_set<std::string_view> seen;
+    for (const auto& m : cd::gluon::modules())
+        EXPECT_TRUE(seen.insert(m.virtual_path).second)
+            << "duplicate virtual_path: " << m.virtual_path;
+    EXPECT_EQ(seen.size(), cd::gluon::modules().size());
+}
+
+// Include-guard idempotency contract is WELL-FORMED per module: a matching
+// #ifndef CD_GLUON_<X> / #define CD_GLUON_<X> / #endif triad must exist, so a
+// double-include genuinely dedupes. (The existing CatalogueIsNonEmptyAndSorted
+// only checks the #ifndef token is present.)
+TEST(ShaderLibRegistry, EveryModuleHasMatchingGuardDefineAndEndif)
+{
+    for (const auto& m : cd::gluon::modules())
+    {
+        const std::string_view c = m.content;
+        const auto ifndef = c.find("#ifndef CD_GLUON_");
+        ASSERT_NE(ifndef, std::string_view::npos) << m.virtual_path;
+        // Pull the guard token following "#ifndef ".
+        const std::size_t tok_begin = ifndef + std::string_view("#ifndef ").size();
+        std::size_t tok_end = tok_begin;
+        while (tok_end < c.size() && c[tok_end] != '\n' && c[tok_end] != '\r')
+            ++tok_end;
+        const std::string_view guard = c.substr(tok_begin, tok_end - tok_begin);
+        const std::string define = "#define " + std::string(guard);
+        EXPECT_NE(c.find(define), std::string_view::npos)
+            << m.virtual_path << " missing " << define;
+        EXPECT_NE(c.find("#endif"), std::string_view::npos) << m.virtual_path;
+    }
+}
+
+// find_module: a BARE name that is only a partial suffix of a real module
+// (e.g. "common.glsl" vs "math_common.glsl") must NOT false-match — the
+// post-prefix comparison is exact, not a suffix test.
+TEST(ShaderLibRegistry, FindRejectsPartialSuffixAndWrongPrefix)
+{
+    EXPECT_EQ(cd::gluon::find_module("common.glsl"), nullptr);
+    EXPECT_EQ(cd::gluon::find_module("ath_common.glsl"), nullptr);
+    EXPECT_EQ(cd::gluon::find_module("cd/gluon/"), nullptr);   // prefix only
+    EXPECT_EQ(cd::gluon::find_module("gluon/brdf.glsl"), nullptr);
+    EXPECT_EQ(cd::gluon::find_module("/cd/gluon/brdf.glsl"), nullptr);
+    EXPECT_EQ(cd::gluon::find_module("brdf"), nullptr);        // no .glsl
+}
+
+// find_module canonical and bare lookups resolve to the SAME ModuleDesc — the
+// bare form is pure sugar, never a distinct entry.
+TEST(ShaderLibRegistry, FindCanonicalAndBareReturnSameEntry)
+{
+    const auto* canon = cd::gluon::find_module("cd/gluon/math_common.glsl");
+    const auto* bare  = cd::gluon::find_module("math_common.glsl");
+    ASSERT_NE(canon, nullptr);
+    EXPECT_EQ(canon, bare);
+}
+
+// Resolver canonicalisation (LOAD-BEARING for the cache key): resolving by the
+// BARE name must still report the CANONICAL virtual_path. If it echoed the bare
+// request, a root that includes "brdf.glsl" and one that includes
+// "cd/gluon/brdf.glsl" would get different closure keys for identical bytes.
+TEST(ShaderLibRegistry, ResolverReturnsCanonicalPathForBareRequest)
+{
+    cd::gluon::ModuleResolver resolver;
+    const auto bare  = resolver.resolve("brdf.glsl", "", true);
+    const auto canon = resolver.resolve("cd/gluon/brdf.glsl", "", true);
+    ASSERT_TRUE(bare.has_value());
+    ASSERT_TRUE(canon.has_value());
+    EXPECT_EQ(bare->virtual_path, "cd/gluon/brdf.glsl");
+    EXPECT_EQ(canon->virtual_path, "cd/gluon/brdf.glsl");
+    // Same module body regardless of the request spelling.
+    EXPECT_EQ(bare->content, canon->content);
+}
+
+// Resolver is DETERMINISTIC (ADR-20260612 §2.2): repeated calls with the same
+// request yield byte-identical Resolved output — the property the closure-hash
+// cache key depends on.
+TEST(ShaderLibRegistry, ResolverIsDeterministic)
+{
+    cd::gluon::ModuleResolver resolver;
+    const auto a = resolver.resolve("cd/gluon/tonemap.glsl", "", true);
+    const auto b = resolver.resolve("cd/gluon/tonemap.glsl", "", true);
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(a->virtual_path, b->virtual_path);
+    EXPECT_EQ(a->content, b->content);
+}
+
+// Resolver IGNORES requester and the system/local distinction (contract: module
+// identity is the path alone). The three spellings below must all serve the
+// same body — a requester- or angle-bracket-sensitive resolver would poison the
+// deterministic-closure guarantee.
+TEST(ShaderLibRegistry, ResolverIgnoresRequesterAndSystemFlag)
+{
+    cd::gluon::ModuleResolver resolver;
+    const auto sys   = resolver.resolve("cd/gluon/brdf.glsl", "", true);
+    const auto local = resolver.resolve("cd/gluon/brdf.glsl", "", false);
+    const auto reqd  = resolver.resolve("cd/gluon/brdf.glsl",
+                                        "some/other/root.frag", true);
+    ASSERT_TRUE(sys.has_value());
+    ASSERT_TRUE(local.has_value());
+    ASSERT_TRUE(reqd.has_value());
+    EXPECT_EQ(sys->content, local->content);
+    EXPECT_EQ(sys->content, reqd->content);
+    EXPECT_EQ(sys->virtual_path, local->virtual_path);
+    EXPECT_EQ(sys->virtual_path, reqd->virtual_path);
+}
+
+// Resolver returns nullopt for unknown / empty / malformed requests (the
+// "#include of a non-module is a compile error" contract).
+TEST(ShaderLibRegistry, ResolverRejectsUnknownAndEmpty)
+{
+    cd::gluon::ModuleResolver resolver;
+    EXPECT_FALSE(resolver.resolve("", "", true).has_value());
+    EXPECT_FALSE(resolver.resolve("does_not_exist.glsl", "", true).has_value());
+    EXPECT_FALSE(resolver.resolve("cd/gluon/", "", true).has_value());
+    EXPECT_FALSE(resolver.resolve("common.glsl", "", true).has_value());
+}
+
+// Every catalogue entry is resolvable by BOTH its canonical and bare spelling,
+// and find_module agrees with the resolver across the whole table — the full
+// round-trip the RHI backends depend on, pinned for all 21 modules at once.
+TEST(ShaderLibRegistry, EveryModuleResolvesByCanonicalAndBare)
+{
+    cd::gluon::ModuleResolver resolver;
+    constexpr std::string_view kPrefix { "cd/gluon/" };
+    for (const auto& m : cd::gluon::modules())
+    {
+        const std::string_view canon = m.virtual_path;
+        const std::string_view bare  = canon.substr(kPrefix.size());
+
+        EXPECT_EQ(cd::gluon::find_module(canon), &m) << canon;
+        EXPECT_EQ(cd::gluon::find_module(bare), &m) << canon;
+
+        const auto rc = resolver.resolve(canon, "", true);
+        const auto rb = resolver.resolve(bare, "", true);
+        ASSERT_TRUE(rc.has_value()) << canon;
+        ASSERT_TRUE(rb.has_value()) << bare;
+        EXPECT_EQ(rc->virtual_path, canon);
+        EXPECT_EQ(rb->virtual_path, canon);  // bare -> canonical
+        EXPECT_EQ(rc->content, m.content);
+        EXPECT_EQ(rb->content, m.content);
+    }
 }
 
 }  // namespace

@@ -68,3 +68,23 @@ cd_add_test(rt_chrome_sphere_reflects_geometry
   DEPS    cd::material cd::rhi cd::shader cd::core
           $<$<BOOL:${CD_ENABLE_VULKAN}>:cd::rhi_vulkan>
 )
+
+# ≥80→100 depth pass — MaterialInstance CPU-state contract edge cases:
+# alpha-cutoff clamp, set_alpha_params atomic write, out-of-range alpha-mode
+# cast defence, albedo/emissive HDR clamp, release()-restores-defaults,
+# move-preserves-state, update()-on-inert rejection. CPU-only, no rendered
+# output touched.
+cd_add_test(material_instance_cpu_state
+  SOURCES test_material_instance_cpu_state.cpp
+  DEPS    cd::material cd::rhi cd::core
+)
+
+# ≥80→100 depth pass — header-contract + multi-set edge cases: AlphaMode
+# predicate truth table, PbrParams::is_opaque 0.999 boundary, RtMaterialRecord
+# / RtSunBlock default contract, empty-span packer, phase864 extra_set_layouts
+# multi-set assembly (with + without an own set), missing-fragment-stage
+# rejection. CPU-only, no rendered output touched.
+cd_add_test(material_contracts
+  SOURCES test_material_contracts.cpp
+  DEPS    cd::material cd::rhi cd::core
+)

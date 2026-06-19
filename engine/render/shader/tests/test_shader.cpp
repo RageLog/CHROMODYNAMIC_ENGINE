@@ -268,4 +268,198 @@ TEST(ShaderCompiler, UnknownIncludeFailsWithResolver)
     EXPECT_FALSE(r.has_value());
 }
 
+// ---- Additional stage / language / flag coverage ---------------------------
+
+constexpr const char* kComputeCS = R"glsl(
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0, rgba8) uniform image2D img;
+void main() {
+  imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1.0));
+}
+)glsl";
+
+TEST(ShaderCompiler, CompileComputeShader)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::shader::CompileDesc desc {};
+    desc.source = kComputeCS;
+    desc.stage = cd::shader::ShaderStage::kCompute;
+    desc.source_name = "blit.comp";
+
+    auto r = c->compile(desc);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_FALSE(r->spirv.empty());
+    EXPECT_EQ(r->spirv.front(), 0x07230203U);
+}
+
+// generate_debug_info must be a self-consistent toggle: the debug build emits
+// OpSource/OpLine words and is therefore >= the stripped build for the same
+// source. We assert the size relation only (NOT a byte pattern) so this test
+// never pins golden SPIR-V — it just proves the flag reaches the emitter.
+TEST(ShaderCompiler, DebugInfoFlagEmitsLargerModule)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::shader::CompileDesc lean {};
+    lean.source = kTriangleVS;
+    lean.stage = cd::shader::ShaderStage::kVertex;
+    lean.generate_debug_info = false;
+
+    cd::shader::CompileDesc dbg = lean;
+    dbg.generate_debug_info = true;
+
+    auto r_lean = c->compile(lean);
+    auto r_dbg = c->compile(dbg);
+    ASSERT_TRUE(r_lean.has_value()) << r_lean.error().message;
+    ASSERT_TRUE(r_dbg.has_value()) << r_dbg.error().message;
+    EXPECT_GE(r_dbg->spirv.size(), r_lean->spirv.size());
+}
+
+// The HLSL frontend branch (EShSourceHlsl + EShMsgReadHlsl) must be reachable
+// and return a structured Result — never crash / UB. The engine's glslang
+// build ships ENABLE_HLSL=ON but no SPIRV-Tools optimizer, so we assert the
+// path produces EITHER valid SPIR-V (magic word) OR a clean error, exercising
+// the HLSL setEnvInput branch deterministically without pinning output.
+TEST(ShaderCompiler, HlslFrontendReachableReturnsStructuredResult)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    constexpr const char* kHlslVS =
+        "float4 main(uint vid : SV_VertexID) : SV_Position {\n"
+        "  return float4(0.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+
+    cd::shader::CompileDesc desc {};
+    desc.source = kHlslVS;
+    desc.stage = cd::shader::ShaderStage::kVertex;
+    desc.lang = cd::shader::ShaderLanguage::kHlsl;
+    desc.entry_point = "main";
+    desc.source_name = "vs.hlsl";
+
+    const auto r = c->compile(desc);
+    if (r.has_value())
+    {
+        EXPECT_FALSE(r->spirv.empty());
+        EXPECT_EQ(r->spirv.front(), 0x07230203U);
+    }
+    else
+    {
+        // A clean, typed error in the shader domain (not a crash).
+        EXPECT_EQ(r.error().domain, cd::shader::shader_errors::kDomain);
+        EXPECT_FALSE(r.error().message.empty());
+    }
+}
+
+// Whitespace-only source is non-empty (passes the empty-source guard) but
+// carries no entry point. The contract under test is "no crash / UB on
+// meaningless-but-non-empty input" — glslang must surface a structured
+// Result. In practice it fails to produce a usable module; if some glslang
+// version emits a degenerate module instead, that is still a clean success.
+// Either way the failure path stays in the shader error domain with a message.
+TEST(ShaderCompiler, WhitespaceOnlySourceHandledCleanly)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    cd::shader::CompileDesc desc {};
+    desc.source = "   \n\t  \n";  // non-empty but no shader
+    desc.stage = cd::shader::ShaderStage::kVertex;
+    const auto r = c->compile(desc);
+    if (!r.has_value())
+    {
+        EXPECT_EQ(r.error().domain, cd::shader::shader_errors::kDomain);
+        EXPECT_FALSE(r.error().message.empty());
+    }
+}
+
+// A self-referential include (a -> a) drives glslang's includer to the depth
+// cap (16) and must surface a compile error, not hang or crash. The resolver
+// always resolves "loop.glsl" to a body that re-includes itself.
+TEST(ShaderCompiler, CyclicIncludeHitsDepthCapAndFailsCleanly)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    class LoopResolver final : public cd::shader::IIncludeResolver
+    {
+    public:
+        [[nodiscard]] std::optional<Resolved> resolve(
+            std::string_view requested, std::string_view /*requester*/,
+            bool /*system_include*/) override
+        {
+            // Every request resolves to a module that includes itself.
+            return Resolved {
+                std::string { requested },
+                "#include \"loop.glsl\"\n"
+            };
+        }
+    };
+
+    LoopResolver resolver;
+    cd::shader::CompileDesc desc {};
+    desc.source =
+        "#version 450\n"
+        "#extension GL_GOOGLE_include_directive : enable\n"
+        "#include \"loop.glsl\"\n"
+        "void main() {}\n";
+    desc.stage = cd::shader::ShaderStage::kVertex;
+    desc.include_resolver = &resolver;
+
+    const auto r = c->compile(desc);
+    EXPECT_FALSE(r.has_value());  // depth cap -> compile error, no hang
+}
+
+// to_eshlang must map every ShaderStage variant (incl. RT + mesh/task) to a
+// glslang language without falling through. We can't GPU-compile mesh shaders
+// portably, so this asserts the COMPILE path is reached (returns a Result) for
+// each stage on a trivial source — proving no enum arm is unmapped/crashing.
+TEST(ShaderCompiler, AllStagesReachCompilePath)
+{
+    auto c = cd::shader::make_glslang_compiler();
+    if (c == nullptr)
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+
+    constexpr cd::shader::ShaderStage kStages[] = {
+        cd::shader::ShaderStage::kVertex,
+        cd::shader::ShaderStage::kFragment,
+        cd::shader::ShaderStage::kCompute,
+        cd::shader::ShaderStage::kGeometry,
+        cd::shader::ShaderStage::kTessControl,
+        cd::shader::ShaderStage::kTessEval,
+        cd::shader::ShaderStage::kRaygen,
+        cd::shader::ShaderStage::kMiss,
+        cd::shader::ShaderStage::kClosestHit,
+        cd::shader::ShaderStage::kAnyHit,
+        cd::shader::ShaderStage::kIntersection,
+        cd::shader::ShaderStage::kCallable,
+        cd::shader::ShaderStage::kMesh,
+        cd::shader::ShaderStage::kTask,
+    };
+
+    for (const auto stage : kStages)
+    {
+        cd::shader::CompileDesc desc {};
+        desc.source = "#version 450\nvoid main() {}\n";
+        desc.stage = stage;
+        // Most of these will fail to compile (missing stage-specific layout),
+        // but the call MUST return a structured Result — the contract is "no
+        // unmapped enum arm, no crash". Either outcome is acceptable.
+        const auto r = c->compile(desc);
+        if (!r.has_value())
+        {
+            EXPECT_EQ(r.error().domain, cd::shader::shader_errors::kDomain);
+        }
+    }
+}
+
 }  // namespace

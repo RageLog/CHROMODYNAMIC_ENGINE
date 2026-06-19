@@ -31,11 +31,17 @@ batch.add_polyline(points, color);               // N-1 segments
 batch.add_cross(centre, half_size, color);       // 3-axis marker
 batch.add_sphere(centre, radius, segs, color);   // 3 great circles
 batch.add_arrow(from, to, color);                // shaft + 4-wing head
-batch.add_grid(centre, ax_a, ax_b, n, step, c);  // editor floor grid
+batch.add_grid(centre, ax_a, ax_b, n, step, c);  // square editor grid
+batch.add_grid_rect(c, ax_a, ax_b, na, nb, s, col); // N×M ground grid
+batch.add_axes(origin, right, up, fwd, length);  // R/G/B axis gizmo
 
 upload(batch.vertices());                        // consumer-owned VB
 cmd.draw(batch.vertex_count(), 1, 0, 0);         // kLineList pipeline
 ```
+
+`pack_color` / `unpack_color` convert a `Vec4f` RGBA to/from a packed
+`0xAABBGGRR` `uint32` (bgfx `Color` convention) for callers that keep a
+compact per-shape colour palette.
 
 `LineVertex` = `Vec3f position` + `Vec4f color` (28 bytes, tightly
 packed). Colour rides per vertex so one batch mixes shapes of any
@@ -65,9 +71,26 @@ cluster view, ECS entity cloud and the seven pure-line plots.
 
 ## Tests
 
-`tests/test_debug_line.cpp` — 20 cases covering vertex counts,
+`tests/test_debug_line.cpp` — 61 cases covering vertex counts,
 endpoint placement, colour propagation, AABB normalisation, OBB
 rotation, frustum NDC recovery (both depth conventions), circle
 plane/radius invariants, sphere radius invariants, arrow topology
 (+ degenerate no-op), grid extents/plane confinement and degenerate
 inputs.
+
+Phase1253 additions (genuine-100% pass): colour pack/unpack round-trip,
+byte-order, clamp and known-word decode; `add_axes` 3-arm R/G/B gizmo
+(shared origin, zero-length, rotated-frame, colour-coded); `add_grid_rect`
+N×M independent dimensions, 0×0 / 1×1 / negative-clamp / centred-span;
+capacity growth across 5000 pushes and no-stale-vertex after a large
+fill then clear.
+
+Phase1252 additions (100% depth pass): empty-batch span, single-line
+full-RGBA layout, AABB zero-extent point and flat-rectangle, OBB
+zero-half-extents, frustum singular matrix (w=0 guard), circle 0/neg/2
+segment clamping and exact-3 equilateral, capacity-retention multi-cycle,
+cross 6-vertex coordinate check, sphere exact vertex count, zero-radius,
+and per-axis plane confinement, polyline exactly-2-points, arrow ±Y shaft
+fallback and head_frac boundary clamping, grid negative half_lines clamp
+and spacing extents, full-RGBA on AABB and circle, line_count equals
+vertex_count/2 invariant.
