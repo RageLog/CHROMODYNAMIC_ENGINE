@@ -206,15 +206,39 @@ private:
         Rect                    computed_rect {};
     };
 
+    /// Intermediate data shared between the three incremental-solver phases
+    /// for a single parent node.  Allocated on the stack inside solve_subtree.
+    struct SolveContext
+    {
+        float             inner_main  { 0.0F };
+        float             inner_cross { 0.0F };
+        std::vector<float> base_main   {};
+        std::vector<float> base_cross  {};
+        std::vector<float> final_main  {};
+        std::vector<float> final_cross {};
+        /// Margin consumed on the main axis per child (main_start + main_end).
+        std::vector<float> margin_main {};
+        /// Margin start offset on the cross axis per child.
+        std::vector<float> margin_cross_start {};
+    };
+
     std::vector<InternalNode> nodes_;
 
     [[nodiscard]] InternalNode& node(NodeId id) { return nodes_[id.value]; }
     [[nodiscard]] const InternalNode& node(NodeId id) const { return nodes_[id.value]; }
 
     void solve_subtree(NodeId node, float w, float h);
-    void compute_main(NodeId node, float main_available);
-    void compute_cross(NodeId node, float cross_available);
-    void position_children(NodeId node);
+
+    /// Phase A: resolve base sizes, apply grow/shrink, clamp min/max.
+    /// Fills ctx.base_main, ctx.final_main, ctx.margin_main.
+    void compute_main(NodeId node_id, SolveContext& ctx);
+
+    /// Phase B: resolve cross sizes (stretch, pinned, intrinsic), clamp.
+    /// Fills ctx.base_cross, ctx.final_cross, ctx.margin_cross_start.
+    void compute_cross(NodeId node_id, SolveContext& ctx);
+
+    /// Phase C: compute justify offsets, assign computed_rect per child, recurse.
+    void position_children(NodeId node_id, const SolveContext& ctx);
 };
 
 }  // namespace cd::ui::layout

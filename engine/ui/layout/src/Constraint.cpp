@@ -393,6 +393,28 @@ ConstraintSolver::add_constraint(const Constraint& c)
         }
     }
 
+    // kDuplicate: identical constraint already stored (same rel, strength, rhs, lhs terms).
+    auto is_duplicate = [&](const Impl::StoredConstraint& sc) -> bool
+    {
+        const Constraint& a = sc.orig;
+        if (a.rel != c.rel || a.strength != c.strength)       { return false; }
+        if (std::fabsf(a.rhs - c.rhs) > kEps)                { return false; }
+        if (a.lhs.size() != c.lhs.size())                     { return false; }
+        for (std::size_t i = 0; i < a.lhs.size(); ++i)
+        {
+            if (a.lhs[i].variable_id != c.lhs[i].variable_id)                   { return false; }
+            if (std::fabsf(a.lhs[i].coefficient - c.lhs[i].coefficient) > kEps) { return false; }
+        }
+        return true;
+    };
+    for (const auto& sc : impl_->stored)
+    {
+        if (is_duplicate(sc))
+        {
+            return std::unexpected(ConstraintError::kDuplicate);
+        }
+    }
+
     Impl::StoredConstraint sc;
     sc.orig = c;
 

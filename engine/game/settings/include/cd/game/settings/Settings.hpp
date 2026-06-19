@@ -201,12 +201,19 @@ public:
     // `on_change(key, callback)` — register a live observer. The same
     // callback is NOT deduplicated; registering twice fires twice (this
     // matches Qt signal/slot and Unity UnityEvent semantics — caller
-    // owns dedup if needed). Returns an opaque SubscriptionId; the
-    // current implementation does not yet expose `off_change`, but the
-    // id is stable across the Settings' lifetime so it may be stored
-    // alongside the subsystem owning the subscription for future cleanup.
+    // owns dedup if needed). Returns a SubscriptionId that can later be
+    // passed to `off_change` to remove the registration. Returns 0 if
+    // callback is null (null callbacks are silently rejected).
     // -------------------------------------------------------------------------
     SubscriptionId on_change(std::string_view key, ChangeCallback callback);
+
+    // -------------------------------------------------------------------------
+    // `off_change(id)` — unregister a previously registered observer by
+    // its SubscriptionId. Safe to call with an unknown / already-removed id
+    // (no-op). Linear in the number of observers on the associated key;
+    // observer lists are expected to be small (<10 entries per key).
+    // -------------------------------------------------------------------------
+    void off_change(SubscriptionId id) noexcept;
 
     // -------------------------------------------------------------------------
     // Diagnostics / introspection — not on the hot path; used by the
@@ -263,10 +270,20 @@ private:
     static Value          parse_value(std::string_view raw);
     static std::string    format_value(const Value& v);
 
-    std::unordered_map<std::string, Value>                          values_     {};
-    std::unordered_map<std::string, std::vector<ChangeCallback>>    observers_  {};
-    std::vector<PreservedLine>                                      layout_     {};
-    SubscriptionId                                                  next_id_    { 1 };
+    // Each observer slot carries its id so off_change() can erase it.
+    struct ObserverSlot
+    {
+        SubscriptionId  id;
+        ChangeCallback  callback;
+    };
+
+    // id_to_key_ lets off_change() locate the right key-bucket without an
+    // O(all-keys) scan.
+    std::unordered_map<std::string, Value>                           values_     {};
+    std::unordered_map<std::string, std::vector<ObserverSlot>>       observers_  {};
+    std::unordered_map<SubscriptionId, std::string>                  id_to_key_  {};
+    std::vector<PreservedLine>                                       layout_     {};
+    SubscriptionId                                                   next_id_    { 1 };
 };
 
 }  // namespace cd::game::settings

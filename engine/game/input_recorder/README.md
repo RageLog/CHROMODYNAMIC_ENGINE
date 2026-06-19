@@ -22,87 +22,102 @@ replayed events to the appropriate input backend from the outside.
 ```cpp
 namespace cd::game::input_recorder {
 
-enum class EventKind : uint8_t
+enum class InputEventKind : std::uint32_t
 {
-    kKeyDown, kKeyUp,
-    kMouseMove, kMouseButton,
-    kGamepadButton, kGamepadAxis,
+    kKeyDown       = 0,  ///< Keyboard key pressed; code = platform key-code.
+    kKeyUp         = 1,  ///< Keyboard key released; code = platform key-code.
+    kMouseDown     = 2,  ///< Mouse button pressed; code = button index.
+    kMouseUp       = 3,  ///< Mouse button released; code = button index.
+    kMouseMove     = 4,  ///< Mouse delta; payload[0]=dx, payload[1]=dy (pixels).
+    kGamepadButton = 5,  ///< Gamepad button; payload[0]=1(down)/0(up).
+    kGamepadAxis   = 6,  ///< Gamepad axis; payload[0]=value in [-1,1].
 };
 
 struct InputEvent
 {
-    uint64_t   t_ns;            // monotonic, recorder-anchored
-    EventKind  kind;
-    uint32_t   code_or_axis;
-    float      value;           // axis position / mouse delta / 0|1 for buttons
+    double                timestamp_ms {0.0};          // ms from session start
+    InputEventKind        kind         {InputEventKind::kKeyDown};
+    std::uint32_t         code         {0};
+    std::array<float, 4>  payload      {};
 };
 
 class Recorder
 {
 public:
-    void                                  start(std::filesystem::path);
-    void                                  push(InputEvent);
-    cd::expected<void, Error>             finish();           // flush + close
+    void        start_recording();
+    void        record(const InputEvent& ev);
+    void        stop_recording();
+    [[nodiscard]] bool        save_to_file(const std::filesystem::path& path) const;
+    [[nodiscard]] std::size_t event_count() const noexcept;
+    [[nodiscard]] bool        is_recording() const noexcept;
 };
 
 class Replayer
 {
 public:
-    cd::expected<void, Error>             open(std::filesystem::path);
-    [[nodiscard]] std::optional<InputEvent>  next_event();    // monotonic
-    [[nodiscard]] bool                    finished() const noexcept;
+    [[nodiscard]] bool                      load_from_file(const std::filesystem::path& path);
+    [[nodiscard]] std::span<const InputEvent> all() const noexcept;
+    [[nodiscard]] std::optional<InputEvent> next_event(double current_ms);
+    void        reset() noexcept;
+    [[nodiscard]] bool        is_finished()  const noexcept;
+    [[nodiscard]] std::size_t event_count()  const noexcept;
 };
 
-}
+}  // namespace cd::game::input_recorder
 ```
 
-## Binary format
+## Binary format (CDIR v1, little-endian)
 
-```
-[8 B  magic  "CDINPUT\x01"]
-[4 B  event_count]
-for event in events:
-    [8 B  t_ns      ]
-    [1 B  kind      ]
-    [4 B  code_or_axis]
-    [4 B  value (float)]
+```text
+Header (13 bytes):
+  [0..3]  magic   : "CDIR"  (4 × char, not null-terminated)
+  [4]     version : 0x01    (uint8_t)
+  [5..12] count   : uint64_t — number of event records that follow
+
+Body (count × 32 bytes per record):
+  [0..7]   timestamp_ms : double   (IEEE 754 binary64)
+  [8..11]  kind         : uint32_t (InputEventKind underlying value)
+  [12..15] code         : uint32_t
+  [16..31] payload      : 4 × float (16 bytes)
 ```
 
-Little-endian throughout. The format is intentionally simple — no
-compression, no per-event delta-encoding. A 60-FPS recording with
-8 events/frame for 30 s is 8 × 60 × 30 × 17 = 244 KB; trivially
-small to commit alongside golden tests.
+All multi-byte fields use native byte order (little-endian on x86/ARM64 LE).
+The format is intentionally simple — no compression, no delta-encoding.
+A 60-FPS recording with 8 events/frame for 30 s produces ≈ 460 KB.
 
 ## Determinism contract
 
-`Recorder::push` is monotonic — `t_ns` must be non-decreasing. The
-engine surfaces the monotonic clock via `cd::frame_timing`; passing
-the same monotonic source to both record and replay sites is the
-caller's responsibility.
+`Recorder::record` appends events in insertion order. Timestamps must be
+non-decreasing within a session; the library does **not** enforce or sort —
+this is the caller's responsibility (use `cd::frame_timing` as the source).
 
-`Replayer::next_event` returns events in the order they were
-written; it does **not** internally re-clock to wall time. The caller
-walks a frame, asks `next_event` repeatedly, and stops when the
-returned `t_ns` exceeds the current simulation tick — same pattern as
-draining a per-frame event queue.
+`Replayer::next_event(current_ms)` delivers the next event whose
+`timestamp_ms <= current_ms`, advancing an internal cursor by one on each
+call. Call repeatedly in a loop to drain all due events for the current
+frame tick; stop when `std::nullopt` is returned. `reset()` rewinds the
+cursor to allow re-replay from the same loaded buffer.
 
 ## Usage
 
 ```cpp
 // Record
 cd::game::input_recorder::Recorder rec;
-rec.start("regression/movement-spike.cdinput");
-on_input([&](Event ev) {
-    rec.push({ now_ns(), to_kind(ev.kind), ev.code, ev.value });
+rec.start_recording();
+on_input([&](RawEvent ev) {
+    InputEvent ie;
+    ie.timestamp_ms = now_ms_from_session_start();
+    ie.kind  = to_input_event_kind(ev.kind);
+    ie.code  = ev.code;
+    rec.record(ie);
 });
-rec.finish();
+rec.stop_recording();
+rec.save_to_file("regression/movement-spike.cdinput");
 
 // Replay
 cd::game::input_recorder::Replayer rep;
-rep.open("regression/movement-spike.cdinput");
-while (auto e = rep.next_event())
+rep.load_from_file("regression/movement-spike.cdinput");
+while (const auto e = rep.next_event(current_sim_ms))
 {
-    if (e->t_ns > current_sim_t_ns) break;
     route_to_input_backend(*e);
 }
 ```

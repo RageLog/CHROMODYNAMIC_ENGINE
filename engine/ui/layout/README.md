@@ -20,12 +20,16 @@
 - Fixed `width` / `height` OR `intrinsic_*` content size hint.
 - `min_*` / `max_*` clamps.
 
-**Out of Phase 1** (Phase 2+):
-- `flex-wrap: wrap`
-- `grid` layout
-- Cassowary constraint solver
-- BiDi RTL flip
-- Absolute position (kAbsolute enum exists; flow recompute deferred)
+**Implemented (Phase 1.1 additions)**:
+- `margin` (4 sides per child) offsets main-axis start and cross-axis position.
+- `kAbsolute` position: child is placed by `inset_left`/`inset_top`/`inset_right`/`inset_bottom`, excluded from flex flow and grow/shrink.
+- Incremental 3-phase decomposition: `compute_main` → `compute_cross` → `position_children` (enables future dirty-flagging without API change).
+- `kDuplicate` constraint error detection in `ConstraintSolver::add_constraint`.
+
+**Out of scope (sealed)**:
+- `flex-wrap: wrap` — Phase 2; `gap_cross` is a multi-line concept, intentionally ignored in single-line layout.
+- `grid` layout — Phase 3.
+- BiDi RTL flip — Phase 5.
 
 **Usage**:
 ```cpp

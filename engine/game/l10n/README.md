@@ -48,13 +48,19 @@ syntax; the format is deliberately trivial so localisation bundles stay
 human-editable.
 
 ## CLDR plural rules
-Two locales are baked in for the Phase G4.3 contract; additional rules are
-registered via `L10nManager::set_plural_rule(code, fn)`:
+Four locales are baked in; additional rules are registered via
+`L10nManager::set_plural_rule(code, fn)`:
 
 - **`plural_rule_en`** — `n == 1` -> `kOne`, otherwise `kOther` (CLDR v45
   plurals.xml, locale `en`).
 - **`plural_rule_tr`** — every `n` -> `kOther` (Turkish marks plurality on
   the noun via a suffix, not via separate forms).
+- **`plural_rule_ar`** — all six categories: `0`→`kZero`, `1`→`kOne`,
+  `2`→`kTwo`, `n%100` in `[3..10]`→`kFew`, `[11..99]`→`kMany`, else `kOther`
+  (CLDR v45 plurals.xml, locale `ar`).
+- **`plural_rule_ru`** — four categories: `kOne` / `kFew` / `kMany` / `kOther`
+  via the standard Russian `n%10` + `n%100` rule (CLDR v45 plurals.xml,
+  locale `ru`).
 
 `L10nManager::get_plural` consults the current locale's rule, falls back to
 the base locale's rule (with the base locale's table) on a miss, and

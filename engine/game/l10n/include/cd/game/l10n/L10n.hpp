@@ -28,7 +28,7 @@
 //                        false for every other locale tag. Used by UI tier to
 //                        flip glyph runs / paragraph direction.
 //
-// Why bake CLDR rules in (only for "en" and "tr") instead of pulling ICU?
+// Why bake CLDR rules in (for "en", "tr", "ar", "ru") instead of pulling ICU?
 // ----------------------------------------------------------------------
 // The Phase-G gameplay tier sits above cd::core ONLY (CLAUDE.md S7). Linking
 // ICU just for plural-selection would drag a 30+ MB transitive dependency
@@ -132,6 +132,25 @@ CD_NODISCARD PluralCategory plural_rule_en(int n) noexcept;
 /// "-ler"/"-lar" suffix at the noun level, not via separate forms.
 /// (CLDR v45 plurals.xml, locale "tr".)
 CD_NODISCARD PluralCategory plural_rule_tr(int n) noexcept;
+
+/// CLDR plural rule for Arabic ("ar") — all six categories in use:
+///   n == 0                   -> kZero
+///   n == 1                   -> kOne
+///   n == 2                   -> kTwo
+///   n % 100 in [3..10]       -> kFew
+///   n % 100 in [11..99]      -> kMany
+///   everything else          -> kOther  (n < 0 lands here)
+/// (CLDR v45 plurals.xml, locale "ar".)
+CD_NODISCARD PluralCategory plural_rule_ar(int n) noexcept;
+
+/// CLDR plural rule for Russian ("ru") — four categories:
+///   n % 10 == 1 && n % 100 != 11              -> kOne
+///   n % 10 in [2..4] && n % 100 not in [12..14] -> kFew
+///   n % 10 == 0 || n % 10 in [5..9]
+///       || n % 100 in [11..14]                -> kMany
+///   everything else (n < 0)                   -> kOther
+/// (CLDR v45 plurals.xml, locale "ru".)
+CD_NODISCARD PluralCategory plural_rule_ru(int n) noexcept;
 
 // -----------------------------------------------------------------------------
 // is_rtl - script-direction helper. Returns true for locales whose primary

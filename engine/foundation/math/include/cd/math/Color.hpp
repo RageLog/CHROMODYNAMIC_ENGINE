@@ -8,7 +8,6 @@
 // =============================================================================
 #pragma once
 
-#include <algorithm>
 #include <cd/core/Defines.hpp>
 #include <cd/math/Vector.hpp>
 

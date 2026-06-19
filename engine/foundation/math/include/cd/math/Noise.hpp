@@ -94,6 +94,37 @@ namespace detail
     return ab + (cd - ab) * ty;
 }
 
+[[nodiscard]] inline float noise3d(float x, float y, float z, std::uint32_t seed) noexcept
+{
+    const auto ix = detail::floor_i(x);
+    const auto iy = detail::floor_i(y);
+    const auto iz = detail::floor_i(z);
+    const float fx = x - static_cast<float>(ix);
+    const float fy = y - static_cast<float>(iy);
+    const float fz = z - static_cast<float>(iz);
+    const float tx = detail::smoothstep(fx);
+    const float ty = detail::smoothstep(fy);
+    const float tz = detail::smoothstep(fz);
+
+    // Trilinear blend of the eight cube corners (z-slice 0 then z-slice 1).
+    const float c000 = detail::hash_to_unit(detail::hash_lattice(ix,     iy,     iz,     seed));
+    const float c100 = detail::hash_to_unit(detail::hash_lattice(ix + 1, iy,     iz,     seed));
+    const float c010 = detail::hash_to_unit(detail::hash_lattice(ix,     iy + 1, iz,     seed));
+    const float c110 = detail::hash_to_unit(detail::hash_lattice(ix + 1, iy + 1, iz,     seed));
+    const float c001 = detail::hash_to_unit(detail::hash_lattice(ix,     iy,     iz + 1, seed));
+    const float c101 = detail::hash_to_unit(detail::hash_lattice(ix + 1, iy,     iz + 1, seed));
+    const float c011 = detail::hash_to_unit(detail::hash_lattice(ix,     iy + 1, iz + 1, seed));
+    const float c111 = detail::hash_to_unit(detail::hash_lattice(ix + 1, iy + 1, iz + 1, seed));
+
+    const float x00 = c000 + (c100 - c000) * tx;
+    const float x10 = c010 + (c110 - c010) * tx;
+    const float x01 = c001 + (c101 - c001) * tx;
+    const float x11 = c011 + (c111 - c011) * tx;
+    const float y0  = x00 + (x10 - x00) * ty;
+    const float y1  = x01 + (x11 - x01) * ty;
+    return y0 + (y1 - y0) * tz;
+}
+
 [[nodiscard]] inline float fbm2d(float x, float y, std::uint32_t seed,
                                  int octaves = 4,
                                  float lacunarity = 2.0F,

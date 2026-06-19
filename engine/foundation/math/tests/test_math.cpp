@@ -1381,3 +1381,399 @@ TEST(DuffOnb, PrecisionNearSouthPoleBetterThanFrisvad)
     EXPECT_LT(duff_err, 1e-5F)
         << "Duff orthogonality error too large: " << duff_err;
 }
+
+// ===========================================================================
+// ≥80→100 depth pass — edge / negative / boundary + constexpr coverage.
+// Behaviour-preserving: all assertions verify EXISTING formulas; the only
+// new code under test is try_inverse() (Matrix.hpp) and noise3d() (Noise.hpp),
+// both additive APIs implied by their headers' own documentation.
+// ===========================================================================
+
+#include <cmath>
+#include <limits>
+
+namespace
+{
+constexpr float kInf = std::numeric_limits<float>::infinity();
+constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
+}  // namespace
+
+// --- Vector edge / negative -------------------------------------------------
+
+TEST(VecEdge, NormalizeTinyButNonZeroStaysFinite)
+{
+    // Length just above epsilon — must take the divide branch and stay unit.
+    cd::math::Vec3f v { 1e-3F, 0.0F, 0.0F };
+    const auto n = cd::math::normalize(v);
+    EXPECT_NEAR(cd::math::length(n), 1.0F, 1e-4F);
+    EXPECT_GT(n.x, 0.0F);
+}
+
+TEST(VecEdge, NormalizeExactlyEpsilonReturnsInput)
+{
+    // Length <= epsilon takes the no-op branch (guard is len > epsilon).
+    cd::math::Vec3f v { cd::math::epsilon * 0.5F, 0.0F, 0.0F };
+    const auto n = cd::math::normalize(v);
+    EXPECT_EQ(n, v);
+}
+
+TEST(VecEdge, NanPropagatesThroughArithmeticAndApproxEqualIsFalse)
+{
+    const cd::math::Vec3f nan_v { kNaN, 0.0F, 0.0F };
+    const cd::math::Vec3f sum = nan_v + cd::math::Vec3f { 1.0F, 1.0F, 1.0F };
+    EXPECT_TRUE(std::isnan(sum.x));
+    // approx_equal must reject NaN (NaN<=tol is false), even against itself.
+    EXPECT_FALSE(cd::math::approx_equal(nan_v, nan_v, 1e-3F));
+}
+
+TEST(VecEdge, InfLengthSquaredIsInf)
+{
+    const cd::math::Vec3f v { kInf, 0.0F, 0.0F };
+    EXPECT_TRUE(std::isinf(cd::math::length_squared(v)));
+}
+
+TEST(VecEdge, MinMaxComponentwiseWithNegatives)
+{
+    const cd::math::Vec3f a { -5.0F, 2.0F, -1.0F };
+    const cd::math::Vec3f b { -3.0F, -4.0F, 6.0F };
+    EXPECT_EQ(cd::math::min(a, b), (cd::math::Vec3f { -5.0F, -4.0F, -1.0F }));
+    EXPECT_EQ(cd::math::max(a, b), (cd::math::Vec3f { -3.0F, 2.0F, 6.0F }));
+}
+
+TEST(VecConstexpr, CrossAndLengthSquaredAreCompileTime)
+{
+    constexpr cd::math::Vec3f x { 1.0F, 0.0F, 0.0F };
+    constexpr cd::math::Vec3f y { 0.0F, 1.0F, 0.0F };
+    constexpr auto z = cd::math::cross(x, y);
+    static_assert(z.z == 1.0F);
+    static_assert(cd::math::length_squared(cd::math::Vec3f { 3.0F, 4.0F, 0.0F }) == 25.0F);
+    static_assert(cd::math::dot(x, y) == 0.0F);
+    EXPECT_FLOAT_EQ(z.z, 1.0F);
+}
+
+// --- Mat4 inverse: round-trip both orders + try_inverse() -------------------
+
+TEST(MatrixInverse, InverseTimesOriginalBothOrders)
+{
+    cd::math::Transformf xf;
+    xf.position = { -3.0F, 1.5F, 2.0F };
+    xf.scale = { 0.5F, 2.0F, 1.25F };
+    xf.rotation = cd::math::Quatf::from_axis_angle(
+        cd::math::normalize(cd::math::Vec3f { 1.0F, 1.0F, 0.0F }), 1.1F);
+    const auto m = cd::math::to_mat4(xf);
+    const auto inv = cd::math::inverse(m);
+    const auto id = cd::math::Mat4f::identity();
+    // inv * m must also be identity (only m * inv is covered elsewhere).
+    const auto prod = inv * m;
+    for (std::size_t c = 0; c < 4; ++c)
+        for (std::size_t r = 0; r < 4; ++r)
+            EXPECT_NEAR(prod[c][r], id[c][r], 1e-5F);
+}
+
+TEST(MatrixTryInverse, SingularReturnsNullopt)
+{
+    cd::math::Mat4f zero {};
+    EXPECT_FALSE(cd::math::try_inverse(zero).has_value());
+}
+
+TEST(MatrixTryInverse, NonSingularMatchesInverseByteForByte)
+{
+    cd::math::Transformf xf;
+    xf.position = { 2.5F, -1.0F, 4.0F };
+    xf.scale = { 2.0F, 0.5F, 1.5F };
+    xf.rotation = cd::math::Quatf::from_axis_angle({ 0.0F, 1.0F, 0.0F }, 0.7F);
+    const auto m = cd::math::to_mat4(xf);
+    const auto strict = cd::math::try_inverse(m);
+    ASSERT_TRUE(strict.has_value());
+    const auto lenient = cd::math::inverse(m);
+    for (std::size_t c = 0; c < 4; ++c)
+        for (std::size_t r = 0; r < 4; ++r)
+            EXPECT_FLOAT_EQ((*strict)[c][r], lenient[c][r]);
+}
+
+TEST(MatrixTryInverse, IdentityIsDistinguishableFromSingular)
+{
+    // The whole point of try_inverse: identity yields a value, zero does not.
+    const auto idv = cd::math::try_inverse(cd::math::Mat4f::identity());
+    ASSERT_TRUE(idv.has_value());
+    EXPECT_FLOAT_EQ((*idv)[0][0], 1.0F);
+    EXPECT_FALSE(cd::math::try_inverse(cd::math::Mat4f {}).has_value());
+}
+
+TEST(MatrixTryInverse, ConstexprEvaluable)
+{
+    constexpr auto opt = cd::math::try_inverse(cd::math::Mat4f::identity());
+    static_assert(opt.has_value());
+    static_assert((*opt)[0][0] == 1.0F);
+    constexpr auto none = cd::math::try_inverse(cd::math::Mat4f {});
+    static_assert(!none.has_value());
+    EXPECT_TRUE(opt.has_value());
+}
+
+// --- Mat3 inverse + normal_matrix non-uniform-scale property ----------------
+
+TEST(NormalMatrix, NonUniformScaleNormalsStayOrthogonalToFaces)
+{
+    // The normal matrix exists so that scaled normals stay perpendicular to
+    // scaled tangents. Build M = scale(1,2,4); a face tangent along +X with
+    // normal +Y must remain orthogonal after transform.
+    cd::math::Transformf xf;
+    xf.scale = { 1.0F, 2.0F, 4.0F };
+    const auto m4 = cd::math::to_mat4(xf);
+    const auto nm = cd::math::normal_matrix(m4);
+    const cd::math::Vec3f tangent { 1.0F, 0.0F, 0.0F };
+    const cd::math::Vec3f normal { 0.0F, 1.0F, 0.0F };
+    const cd::math::Vec3f t_ws = cd::math::upper_3x3(m4) * tangent;
+    const cd::math::Vec3f n_ws = cd::math::normalize(nm * normal);
+    EXPECT_NEAR(cd::math::dot(t_ws, n_ws), 0.0F, 1e-5F);
+}
+
+TEST(Mat3InverseEdge, InverseOfInverseReturnsOriginal)
+{
+    const cd::math::Mat3f m {
+        cd::math::Vec3f { 2.0F, 1.0F, 0.0F },
+        cd::math::Vec3f { 1.0F, 3.0F, 1.0F },
+        cd::math::Vec3f { 0.0F, 1.0F, 4.0F },
+    };
+    const auto twice = cd::math::inverse_3(cd::math::inverse_3(m));
+    for (std::size_t c = 0; c < 3; ++c)
+        for (std::size_t r = 0; r < 3; ++r)
+            EXPECT_NEAR(twice[c][r], m[c][r], 1e-4F);
+}
+
+// --- Quaternion slerp: antipodal / near-identical / shortest-path -----------
+
+TEST(SlerpEdge, NearIdenticalTakesLinearFallbackAndStaysUnit)
+{
+    // cos_theta > 0.9995 → linear-fallback branch in Transform.hpp slerp.
+    const cd::math::Vec3f axis { 0.0F, 1.0F, 0.0F };
+    const auto a = cd::math::Quatf::from_axis_angle(axis, 0.0F);
+    const auto b = cd::math::Quatf::from_axis_angle(axis, 0.001F);
+    const auto r = cd::math::slerp(a, b, 0.5F);
+    const float len = std::sqrt(r.x * r.x + r.y * r.y + r.z * r.z + r.w * r.w);
+    EXPECT_NEAR(len, 1.0F, 1e-5F);
+}
+
+TEST(SlerpEdge, AntipodalInputTakesShortPathAndStaysUnit)
+{
+    // a and -a represent the SAME rotation; dot<0 branch must flip b.
+    const auto a = cd::math::Quatf::from_axis_angle({ 0.0F, 0.0F, 1.0F }, 0.6F);
+    const cd::math::Quatf b { -a.x, -a.y, -a.z, -a.w };
+    const auto mid = cd::math::slerp(a, b, 0.5F);
+    const float len = std::sqrt(mid.x * mid.x + mid.y * mid.y + mid.z * mid.z + mid.w * mid.w);
+    EXPECT_NEAR(len, 1.0F, 1e-5F);
+    // Rotating a point by a vs the slerp midpoint must agree (same rotation).
+    const cd::math::Vec3f p { 1.0F, 0.0F, 0.0F };
+    EXPECT_TRUE(cd::math::approx_equal(cd::math::rotate(a, p), cd::math::rotate(mid, p), 1e-4F));
+}
+
+TEST(SlerpEdge, EndpointsExactOnLongArc)
+{
+    // Large angle (>90°) drives the genuine acos/sin SLERP path, not fallback.
+    const cd::math::Vec3f axis { 0.0F, 1.0F, 0.0F };
+    const auto a = cd::math::Quatf::from_axis_angle(axis, 0.2F);
+    const auto b = cd::math::Quatf::from_axis_angle(axis, 2.5F);
+    EXPECT_TRUE(cd::math::approx_equal(cd::math::slerp(a, b, 0.0F), a, 1e-5F));
+    EXPECT_TRUE(cd::math::approx_equal(cd::math::slerp(a, b, 1.0F), b, 1e-5F));
+}
+
+// --- QuatSlerp.hpp (Quatf-specific overload) clamp branches -----------------
+
+TEST(QuatSlerpHpp, OutOfRangeTClampsToEndpoints)
+{
+    const cd::math::Quatf a { 0.0F, 0.0F, 0.0F, 1.0F };
+    const cd::math::Quatf b { 0.0F, 1.0F, 0.0F, 0.0F };
+    // t<=0 and t>=1 are early-returned verbatim in QuatSlerp.hpp.
+    EXPECT_EQ(cd::math::slerp(a, b, -0.5F), a);
+    EXPECT_EQ(cd::math::slerp(a, b, 1.5F), b);
+}
+
+// --- QuatLog near-pole / round-trip -----------------------------------------
+
+TEST(QuatLogEdge, LogOfNearIdentityReturnsZeroVector)
+{
+    // v_len < 1e-6 → early return (0,0,0,0); avoids divide-by-tiny.
+    const cd::math::Quatf q { 1e-8F, 0.0F, 0.0F, 1.0F };
+    const auto lg = cd::math::quat_log(q);
+    EXPECT_FLOAT_EQ(lg.x, 0.0F);
+    EXPECT_FLOAT_EQ(lg.y, 0.0F);
+    EXPECT_FLOAT_EQ(lg.z, 0.0F);
+}
+
+TEST(QuatPowEdge, HalfPowerIsGeodesicMidpoint)
+{
+    // q^0.5 applied twice == q (for a proper rotation quaternion).
+    const auto q = cd::math::Quatf::from_axis_angle({ 0.0F, 1.0F, 0.0F }, 1.0F);
+    const auto h = cd::math::quat_pow(q, 0.5F);
+    const auto twice = h * h;
+    const cd::math::Vec3f p { 1.0F, 0.0F, 0.0F };
+    EXPECT_TRUE(cd::math::approx_equal(cd::math::rotate(twice, p), cd::math::rotate(q, p), 1e-4F));
+}
+
+// --- Onb constexpr-free Frisvad-wrapper + boundary copysign -----------------
+
+TEST(OnbEdge, ExactlyZeroZUsesPositiveHemisphereBranch)
+{
+    // n.z == 0: copysign(1,0)=+1 → no degeneracy; basis must be orthonormal.
+    const cd::math::Vec3f n = cd::math::normalize(cd::math::Vec3f { 1.0F, 1.0F, 0.0F });
+    auto [b1, b2] = cd::math::duff_branchless_onb(n);
+    EXPECT_NEAR(cd::math::length(b1), 1.0F, 1e-5F);
+    EXPECT_NEAR(cd::math::length(b2), 1.0F, 1e-5F);
+    EXPECT_NEAR(cd::math::dot(b1, n), 0.0F, 1e-5F);
+    EXPECT_NEAR(cd::math::dot(b2, n), 0.0F, 1e-5F);
+    EXPECT_NEAR(cd::math::dot(b1, b2), 0.0F, 1e-5F);
+}
+
+// --- Spline degenerate control points ---------------------------------------
+
+TEST(SplineEdge, FewerThanFourControlPointsReturnsFirst)
+{
+    std::vector<cd::math::Vec3f> three {
+        cd::math::Vec3f { 1.0F, 2.0F, 3.0F },
+        cd::math::Vec3f { 4.0F, 5.0F, 6.0F },
+        cd::math::Vec3f { 7.0F, 8.0F, 9.0F },
+    };
+    cd::math::CatmullRomSpline s { std::move(three) };
+    EXPECT_EQ(s.at(0.5F), (cd::math::Vec3f { 1.0F, 2.0F, 3.0F }));
+}
+
+TEST(SplineEdge, OutOfRangeTClampsToCurveEnds)
+{
+    std::vector<cd::math::Vec3f> cps {
+        cd::math::Vec3f { -10, 0, 0 }, cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 10, 0, 0 },  cd::math::Vec3f { 20, 0, 0 },
+    };
+    cd::math::CatmullRomSpline s { std::move(cps) };
+    // t<0 clamps to start (CP1), t>1 clamps to end (CP2).
+    EXPECT_NEAR(s.at(-1.0F).x, 0.0F, 1e-5F);
+    EXPECT_NEAR(s.at(2.0F).x, 10.0F, 1e-5F);
+}
+
+TEST(SplineEdge, CoincidentControlPointsDoNotProduceNaN)
+{
+    // All control points identical: curve must be that constant point.
+    const cd::math::Vec3f p { 3.0F, -2.0F, 1.0F };
+    std::vector<cd::math::Vec3f> cps { p, p, p, p, p };
+    cd::math::CatmullRomSpline s { std::move(cps) };
+    const auto out = s.at(0.5F);
+    EXPECT_FALSE(std::isnan(out.x));
+    EXPECT_TRUE(cd::math::approx_equal(out, p, 1e-5F));
+}
+
+// --- CubicBezier degenerate / clamp -----------------------------------------
+
+TEST(CubicBezierEdge, OutOfRangeTClampsToEndpoints)
+{
+    cd::math::CubicBezier b;
+    b.p0 = cd::math::Vec3f { 0, 0, 0 };
+    b.p3 = cd::math::Vec3f { 10, 0, 0 };
+    EXPECT_NEAR(b.at(-0.5F).x, 0.0F, 1e-5F);
+    EXPECT_NEAR(b.at(1.5F).x, 10.0F, 1e-5F);
+}
+
+TEST(CubicBezierEdge, DegenerateAllPointsCoincidentHasZeroArcLength)
+{
+    cd::math::CubicBezier b;  // all four points default to origin
+    EXPECT_FLOAT_EQ(b.arc_length(16), 0.0F);
+    EXPECT_NEAR(b.at(0.5F).x, 0.0F, 1e-6F);
+}
+
+TEST(CubicBezierEdge, ArcLengthClampsSampleFloor)
+{
+    // samples < 2 is clamped to 2 internally; must not divide by zero / crash.
+    cd::math::CubicBezier b;
+    b.p0 = cd::math::Vec3f { 0, 0, 0 };
+    b.p3 = cd::math::Vec3f { 4, 0, 0 };
+    EXPECT_GT(b.arc_length(0), 0.0F);
+    EXPECT_GT(b.arc_length(1), 0.0F);
+}
+
+// --- Noise: noise1d coverage + noise3d (newly implemented) ------------------
+
+TEST(NoiseEdge, Noise1dStaysInUnitRange)
+{
+    for (int i = 0; i < 64; ++i)
+    {
+        const float v = cd::math::noise1d(static_cast<float>(i) * 0.37F, 13U);
+        EXPECT_GE(v, 0.0F);
+        EXPECT_LE(v, 1.0F);
+    }
+}
+
+TEST(NoiseEdge, Noise1dDeterministicAndSeedSensitive)
+{
+    EXPECT_FLOAT_EQ(cd::math::noise1d(2.5F, 5U), cd::math::noise1d(2.5F, 5U));
+    EXPECT_NE(cd::math::noise1d(2.5F, 5U), cd::math::noise1d(2.5F, 6U));
+}
+
+TEST(Noise3d, StaysInUnitRangeAcrossLattice)
+{
+    for (int i = 0; i < 40; ++i)
+    {
+        const auto fi = static_cast<float>(i);
+        const float v = cd::math::noise3d(fi * 0.13F, fi * 0.29F, fi * 0.41F, 77U);
+        EXPECT_GE(v, 0.0F);
+        EXPECT_LE(v, 1.0F);
+    }
+}
+
+TEST(Noise3d, DeterministicForSameSeedAndCoord)
+{
+    EXPECT_FLOAT_EQ(cd::math::noise3d(0.5F, 0.5F, 0.5F, 9U),
+                    cd::math::noise3d(0.5F, 0.5F, 0.5F, 9U));
+}
+
+TEST(Noise3d, DifferentZSliceDiffersFromNoise2d)
+{
+    // At z just shy of the next lattice the 3D value should not equal the
+    // 2D value (which ignores z entirely) at a generic point.
+    const float v2 = cd::math::noise2d(0.5F, 0.5F, 21U);
+    const float v3 = cd::math::noise3d(0.5F, 0.5F, 0.5F, 21U);
+    EXPECT_NE(v2, v3);
+}
+
+TEST(Noise3d, IntegerLatticeNeighboursDiffer)
+{
+    const float a = cd::math::noise3d(0.0F, 0.0F, 0.0F, 31U);
+    const float b = cd::math::noise3d(0.0F, 0.0F, 1.0F, 31U);
+    EXPECT_NE(a, b);
+}
+
+// --- Functions.hpp: henyey_greenstein (previously untested) -----------------
+
+TEST(HenyeyGreenstein, IsotropicEqualsInverseFourPi)
+{
+    // g=0 → constant 1/(4π) for every cos_theta.
+    const float expected = 1.0F / (4.0F * cd::math::pi);
+    EXPECT_NEAR(cd::math::henyey_greenstein(0.0F, 0.0F), expected, 1e-6F);
+    EXPECT_NEAR(cd::math::henyey_greenstein(1.0F, 0.0F), expected, 1e-6F);
+    EXPECT_NEAR(cd::math::henyey_greenstein(-1.0F, 0.0F), expected, 1e-6F);
+}
+
+TEST(HenyeyGreenstein, ForwardScatterPeaksAtCosOne)
+{
+    // g>0: forward direction (cos=+1) must outweigh backward (cos=-1).
+    const float fwd = cd::math::henyey_greenstein(1.0F, 0.7F);
+    const float bwd = cd::math::henyey_greenstein(-1.0F, 0.7F);
+    EXPECT_GT(fwd, bwd);
+    EXPECT_GT(fwd, 0.0F);
+}
+
+TEST(HenyeyGreenstein, GuardKeepsFiniteAtForwardSingularity)
+{
+    // g→1, cos→1 is the singular corner; the max(denom,1e-6) guard must keep
+    // the result finite (not inf/NaN).
+    const float v = cd::math::henyey_greenstein(1.0F, 0.999F);
+    EXPECT_TRUE(std::isfinite(v));
+    EXPECT_GT(v, 0.0F);
+}
+
+// --- Transform constexpr-eval of identity composition -----------------------
+
+TEST(TransformConstexpr, IdentityIsConstexpr)
+{
+    constexpr auto t = cd::math::Transformf::identity();
+    static_assert(t.scale.x == 1.0F);
+    static_assert(t.rotation.w == 1.0F);
+    EXPECT_FLOAT_EQ(t.position.x, 0.0F);
+}

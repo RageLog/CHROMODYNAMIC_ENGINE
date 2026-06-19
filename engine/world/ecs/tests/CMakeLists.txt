@@ -1,5 +1,5 @@
 cd_add_test(ecs
-  SOURCES test_ecs.cpp test_query_cache.cpp test_scheduler.cpp
+  SOURCES test_ecs.cpp test_query_cache.cpp test_scheduler.cpp test_ecs_edge.cpp
   DEPS    cd::ecs cd::core
 )
 

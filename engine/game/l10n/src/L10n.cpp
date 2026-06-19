@@ -71,6 +71,47 @@ PluralCategory plural_rule_tr(int /*n*/) noexcept
     return PluralCategory::kOther;
 }
 
+PluralCategory plural_rule_ar(int n) noexcept
+{
+    // CLDR v45 plurals.xml, locale "ar".
+    // The Arabic rule uses all six categories. Negative counts fall through
+    // to kOther (games do not ship negative plurals in Arabic, and kOther is
+    // the CLDR "universal fallback" category).
+    if (n < 0) { return PluralCategory::kOther; }
+    if (n == 0) { return PluralCategory::kZero; }
+    if (n == 1) { return PluralCategory::kOne;  }
+    if (n == 2) { return PluralCategory::kTwo;  }
+    const int mod100 = n % 100;
+    if (mod100 >= 3 && mod100 <= 10)  { return PluralCategory::kFew;   }
+    if (mod100 >= 11 && mod100 <= 99) { return PluralCategory::kMany;  }
+    return PluralCategory::kOther;
+}
+
+PluralCategory plural_rule_ru(int n) noexcept
+{
+    // CLDR v45 plurals.xml, locale "ru".
+    // Negative counts are uncommon in practice; CLDR defines no negative
+    // category so we return kOther for n < 0 (consistent with kOther as the
+    // universal fallback per CLDR spec).
+    if (n < 0) { return PluralCategory::kOther; }
+    const int mod10  = n % 10;
+    const int mod100 = n % 100;
+    if (mod10 == 1 && mod100 != 11)
+    {
+        return PluralCategory::kOne;
+    }
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14))
+    {
+        return PluralCategory::kFew;
+    }
+    if (mod10 == 0 || (mod10 >= 5 && mod10 <= 9)
+        || (mod100 >= 11 && mod100 <= 14))
+    {
+        return PluralCategory::kMany;
+    }
+    return PluralCategory::kOther;
+}
+
 // =============================================================================
 // is_rtl
 // =============================================================================
@@ -306,10 +347,12 @@ StringTable::get_plural(const std::string& key, int n, PluralRuleFn rule) const
 
 L10nManager::L10nManager()
 {
-    // Pre-bake the two CLDR rules required by the brief. Additional locales
-    // are added via set_plural_rule().
+    // Pre-bake CLDR rules for the four locales covered by this library.
+    // Additional locales are registered via set_plural_rule().
     rules_.emplace("en", &plural_rule_en);
     rules_.emplace("tr", &plural_rule_tr);
+    rules_.emplace("ar", &plural_rule_ar);
+    rules_.emplace("ru", &plural_rule_ru);
 }
 
 void L10nManager::add_locale(StringTable table)

@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <charconv>
 #include <fstream>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -146,19 +148,20 @@ Value Settings::parse_value(std::string_view raw)
 
     if (looks_like_float(t))
     {
-        // std::from_chars for float is C++17/20 in spec but library
-        // support is uneven across GCC <11; fall back to std::stof if
-        // from_chars is unavailable at the chosen toolchain. We use
-        // istringstream as a portable middle-ground that respects the
-        // 'C' locale we've already imbued globally in cd::core boot.
-        std::istringstream iss{ std::string{ t } };
-        iss.imbue(std::locale::classic());
-        float f = 0.0F;
-        iss >> f;
-        if (iss && iss.eof())
+        // C++23: std::from_chars for float is fully supported on MSVC
+        // (VS 2019 16.4+) and Clang (14+). Use it for locale-independent,
+        // round-trip-correct parsing — avoids istringstream overhead and
+        // the prior risk of locale drift from the classic imbue approach.
+        float           f     = 0.0F;
+        const auto*     first = t.data();
+        const auto*     last  = t.data() + t.size();
+        const auto      res   = std::from_chars(first, last, f);
+        if (res.ec == std::errc{} && res.ptr == last)
         {
             return Value{ f };
         }
+        // Overflow / underflow / partial parse falls through to string so
+        // the raw token is preserved and the error surfaces at get<float>().
     }
 
     return Value{ std::string{ t } };
@@ -179,12 +182,20 @@ std::string Settings::format_value(const Value& v)
         {
             oss << (alt ? "true" : "false");
         }
+        else if constexpr (std::is_same_v<T, float>)
+        {
+            // max_digits10 (9 for float) guarantees round-trip precision:
+            // parse_value( format_value( v ) ) == v exactly.
+            oss << std::setprecision(std::numeric_limits<float>::max_digits10)
+                << alt;
+        }
         else if constexpr (std::is_same_v<T, std::string>)
         {
             oss << alt;
         }
         else
         {
+            // int (and any future numeric alternative).
             oss << alt;
         }
     }, v);
@@ -335,10 +346,9 @@ bool Settings::save(const std::string& path) const
 }
 
 // -----------------------------------------------------------------------------
-// on_change — append the callback under the key. The current
-// implementation does not deduplicate registrations and returns a
-// monotonically-increasing id so callers can identify their subscription
-// in future off_change calls (deferred).
+// on_change — append the callback under the key. Returns a monotonically-
+// increasing SubscriptionId that can be passed to off_change() later.
+// Null callbacks are rejected (return 0).
 // -----------------------------------------------------------------------------
 SubscriptionId Settings::on_change(std::string_view key, ChangeCallback callback)
 {
@@ -346,8 +356,36 @@ SubscriptionId Settings::on_change(std::string_view key, ChangeCallback callback
     {
         return 0;
     }
-    observers_[std::string{ key }].push_back(std::move(callback));
-    return next_id_++;
+    const SubscriptionId id = next_id_++;
+    std::string key_str{ key };
+    observers_[key_str].push_back(ObserverSlot{ id, std::move(callback) });
+    id_to_key_.emplace(id, std::move(key_str));
+    return id;
+}
+
+// -----------------------------------------------------------------------------
+// off_change — remove the observer with the given id. Uses id_to_key_ for
+// O(1) bucket lookup then erases the matching slot in O(n_observers_per_key).
+// Safe to call with an unknown or already-removed id (no-op).
+// -----------------------------------------------------------------------------
+void Settings::off_change(SubscriptionId id) noexcept
+{
+    const auto key_it = id_to_key_.find(id);
+    if (key_it == id_to_key_.end())
+    {
+        return;
+    }
+    const std::string& key = key_it->second;
+    const auto obs_it = observers_.find(key);
+    if (obs_it != observers_.end())
+    {
+        auto& slots = obs_it->second;
+        slots.erase(std::ranges::remove_if(slots,
+                        [id](const ObserverSlot& s) { return s.id == id; })
+                        .begin(),
+                    slots.end());
+    }
+    id_to_key_.erase(key_it);
 }
 
 void Settings::broadcast(const std::string& key, const Value& new_value)
@@ -357,19 +395,18 @@ void Settings::broadcast(const std::string& key, const Value& new_value)
     {
         return;
     }
-    // Copy the list before iterating — callbacks may legally mutate
-    // observers_ (e.g. a one-shot subscriber that unregisters itself in
-    // a future off_change). Copying keeps iteration safe.
-    const auto callbacks = it->second;
-    for (const auto& cb : callbacks)
+    // Copy the slot list before iterating — a callback may call off_change()
+    // (one-shot pattern) which would mutate observers_ mid-iteration.
+    const auto slots = it->second;
+    for (const auto& slot : slots)
     {
-        if (cb) cb(new_value);
+        if (slot.callback) slot.callback(new_value);
     }
 }
 
 bool Settings::has_key(std::string_view key) const noexcept
 {
-    return values_.find(std::string{ key }) != values_.end();
+    return values_.contains(std::string{ key });
 }
 
 std::size_t Settings::observer_count(std::string_view key) const noexcept
@@ -382,6 +419,7 @@ void Settings::clear() noexcept
 {
     values_.clear();
     observers_.clear();
+    id_to_key_.clear();
     layout_.clear();
     next_id_ = 1;
 }

@@ -27,13 +27,16 @@
 #include <cd/ecs/ComponentStorage.hpp>
 #include <cd/ecs/Entity.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <tuple>
 #include <type_traits>
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace cd::ecs
 {
@@ -144,57 +147,83 @@ public:
     }
 
     /// Multi-component view. `fn(Entity, Ts&...)` is invoked for every
-    /// entity that carries every Ts. We walk the smallest pool first to
-    /// minimize `has<U>` probes — this is the same heuristic EnTT uses for
-    /// its non-grouped views.
+    /// entity that carries every Ts. We drive iteration off the SMALLEST
+    /// of the requested pools so the per-entity `get<U>` intersection
+    /// probes scale with `min(pool sizes)` instead of `size<T>()` — the
+    /// same heuristic EnTT uses for its non-grouped views.
+    ///
+    /// The callback signature is fixed as `fn(Entity, T&, Rest&...)`; the
+    /// driver pool is chosen purely for traversal cost, so the strongly-
+    /// typed references are always re-resolved through `get<>` per entity.
+    /// Iteration order is unspecified (it follows whichever pool drove the
+    /// walk) — do not rely on it for gameplay logic.
+    ///
+    /// Mutation-safety: the driver pool's entity list is SNAPSHOT before
+    /// the walk, so a callback that adds/removes components (which can
+    /// swap-and-pop the live dense arrays) cannot invalidate the
+    /// iteration. Entities removed mid-walk are skipped via a re-check.
     template <class T, class... Rest, class Fn>
     void each(Fn&& fn)
     {
+        static_assert((!std::is_same_v<T, Rest> && ...), "each<>: duplicate component type in query");
+
         auto* driver = try_storage<T>();
         if (driver == nullptr)
             return;
-
-        // Find the smallest pool to drive iteration.
-        SparseSet<T>* min_driver = driver;
-        std::size_t min_size = driver->size();
-        static_assert((!std::is_same_v<T, Rest> && ...), "each<>: duplicate component type in query");
 
         // Probe the rest of the requested storages — if any is missing, the
         // intersection is empty so the lambda is never invoked.
         if (((try_storage<Rest>() == nullptr) || ...))
             return;
 
-        // Pick the driver with the smallest pool. We compare the primary T
-        // against each Rest type one-by-one without unrolling into a runtime
-        // dispatch table — for the small number of components per query
-        // (typically ≤ 4) the compiler folds it.
-        auto try_swap = [&]<class U>()
+        // Pick the smallest pool's entity list to drive iteration. We
+        // compute the minimum size across T + every Rest, then snapshot
+        // the matching pool's dense entity list. The driver carries no
+        // type information (it is just a list of entity handles) — all
+        // typed references are resolved per entity below.
+        std::size_t min_size = driver->size();
+        const auto probe = [&]<class U>()
         {
-            auto* s = try_storage<U>();
-            if (s != nullptr && s->size() < min_size)
-            {
-                min_size = s->size();
-                // We can only switch the driver if its component type matches T —
-                // otherwise we'd lose the strongly-typed reference path. Keep
-                // it simple: the heuristic only swaps within the chosen primary.
-                // (Real EnTT walks all pools generically; our MVP iterates T's
-                // pool and gates the Rest.)
-                (void)s;
-            }
+            const auto* s = try_storage<U>();
+            min_size = std::min(min_size, s->size());
         };
-        (try_swap.template operator()<Rest>(), ...);
+        (probe.template operator()<Rest>(), ...);
 
-        min_driver->for_each(
-            [&](Entity e, T& primary)
+        std::vector<Entity> snapshot;
+        snapshot.reserve(min_size);
+        if (driver->size() == min_size)
+        {
+            driver->for_each([&](Entity e, const T&) { snapshot.push_back(e); });
+        }
+        else
+        {
+            // The smallest pool is one of Rest; snapshot whichever Rest
+            // pool has exactly min_size entries (first match wins).
+            bool taken = false;
+            const auto take = [&]<class U>()
             {
-                // Materialize references to the rest of the components. If any is
-                // missing for this entity, skip.
-                auto rest_ptrs = std::make_tuple(get<Rest>(e)...);
-                if (((std::get<Rest*>(rest_ptrs) == nullptr) || ...))
-                    return;
-                fn(e, primary, *std::get<Rest*>(rest_ptrs)...);
-            }
-        );
+                auto* s = try_storage<U>();
+                if (!taken && s->size() == min_size)
+                {
+                    taken = true;
+                    s->for_each([&](Entity e, const U&) { snapshot.push_back(e); });
+                }
+            };
+            (take.template operator()<Rest>(), ...);
+        }
+
+        for (const Entity e : snapshot)
+        {
+            // Re-resolve T and every Rest. Any nullptr means the entity
+            // does not carry the full set (or was removed mid-walk) — skip.
+            T* primary = get<T>(e);
+            if (primary == nullptr)
+                continue;
+            auto rest_ptrs = std::make_tuple(get<Rest>(e)...);
+            if (((std::get<Rest*>(rest_ptrs) == nullptr) || ...))
+                continue;
+            fn(e, *primary, *std::get<Rest*>(rest_ptrs)...);
+        }
     }
 
     // ---- Cached queries -------------------------------------------------
@@ -257,6 +286,14 @@ public:
         /// Iterate over every entity that has T and all of Rest. The
         /// callable signature is `void(Entity, T&, Rest&...)`. Iteration
         /// is silently skipped when any required pool is missing.
+        ///
+        /// Hot-path contract: this walks the cached `T` pool LIVE (no
+        /// per-call snapshot) so the body MUST NOT add/remove the driver
+        /// component `T` for entities it has not yet visited — doing so
+        /// swap-and-pops the dense array under the cursor. Adding/removing
+        /// `Rest` components, or removing `T` from the CURRENT entity, is
+        /// safe. When structural mutation of `T` mid-walk is required, use
+        /// the uncached `World::each<T, Rest...>` overload, which snapshots.
         template <class Fn>
         void each(World& w, Fn&& fn)
         {

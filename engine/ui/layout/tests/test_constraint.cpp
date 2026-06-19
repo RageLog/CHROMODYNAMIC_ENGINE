@@ -308,3 +308,167 @@ TEST(ConstraintSolver, Inequality_XLessEq8_PulledBy_StrongTo10_ClampsAt8)
     EXPECT_LE(vals.at(x.value), 8.0F + kEps)
         << "Required x <= 8 must be satisfied; got " << vals.at(x.value);
 }
+
+// ---- Edge / negative / error-path tests ------------------------------------
+
+// Unknown variable id returns kUnknownVar.
+TEST(ConstraintSolver, UnknownVariable_ReturnsError)
+{
+    // Arrange
+    ConstraintSolver s;
+    // Do NOT register any variable.
+    VariableId fake { 99u };
+
+    Constraint c;
+    c.lhs      = { Term { fake, 1.0F } };
+    c.rhs      = 1.0F;
+    c.rel      = ConstraintRel::kEqual;
+    c.strength = Strength::kRequired;
+
+    // Act
+    auto result = s.add_constraint(c);
+
+    // Assert
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), cd::ui::layout::ConstraintError::kUnknownVar);
+}
+
+// Adding the exact same constraint twice returns kDuplicate on the second call.
+TEST(ConstraintSolver, DuplicateConstraint_ReturnsError)
+{
+    // Arrange
+    ConstraintSolver s;
+    VariableId x = s.add_variable("x");
+
+    Constraint c;
+    c.lhs      = { Term { x, 1.0F } };
+    c.rhs      = 3.0F;
+    c.rel      = ConstraintRel::kEqual;
+    c.strength = Strength::kStrong;
+
+    // Act
+    auto r1 = s.add_constraint(c);
+    auto r2 = s.add_constraint(c);
+
+    // Assert
+    EXPECT_TRUE(r1.has_value()) << "First add must succeed";
+    ASSERT_FALSE(r2.has_value()) << "Second add of identical constraint must fail";
+    EXPECT_EQ(r2.error(), cd::ui::layout::ConstraintError::kDuplicate);
+}
+
+// Over-constrained inequalities: x >= 10 AND x <= 5 → kInfeasible.
+TEST(ConstraintSolver, OverConstrained_Inequalities_Infeasible)
+{
+    // Arrange
+    ConstraintSolver s;
+    VariableId x = s.add_variable("x");
+
+    Constraint geq;
+    geq.lhs      = { Term { x, 1.0F } };
+    geq.rhs      = 10.0F;
+    geq.rel      = ConstraintRel::kGreaterEq;
+    geq.strength = Strength::kRequired;
+
+    Constraint leq;
+    leq.lhs      = { Term { x, 1.0F } };
+    leq.rhs      = 5.0F;
+    leq.rel      = ConstraintRel::kLessEq;
+    leq.strength = Strength::kRequired;
+
+    // Act
+    auto r1 = s.add_constraint(geq);   // x >= 10 → forces x = 10
+    auto r2 = s.add_constraint(leq);   // x <= 5  → conflicts (10 > 5)
+
+    // Assert: at least one must fail.
+    EXPECT_FALSE(r1.has_value() && r2.has_value())
+        << "Conflicting Required inequalities must produce an error";
+}
+
+// variable_value() returns the same value as the solve() map entry.
+TEST(ConstraintSolver, VariableValueAPI_MatchesSolveMap)
+{
+    // Arrange
+    ConstraintSolver s;
+    VariableId x = s.add_variable("x");
+    VariableId y = s.add_variable("y");
+
+    Constraint cx;
+    cx.lhs      = { Term { x, 1.0F } };
+    cx.rhs      = 42.0F;
+    cx.rel      = ConstraintRel::kEqual;
+    cx.strength = Strength::kRequired;
+
+    Constraint cy;
+    cy.lhs      = { Term { y, 1.0F } };
+    cy.rhs      = 7.0F;
+    cy.rel      = ConstraintRel::kEqual;
+    cy.strength = Strength::kRequired;
+
+    (void)s.add_constraint(cx);
+    (void)s.add_constraint(cy);
+
+    // Act
+    auto vals = s.solve();
+
+    // Assert: variable_value() matches map lookup.
+    EXPECT_TRUE(near(s.variable_value(x), vals.at(x.value)));
+    EXPECT_TRUE(near(s.variable_value(y), vals.at(y.value)));
+    EXPECT_TRUE(near(s.variable_value(x), 42.0F));
+    EXPECT_TRUE(near(s.variable_value(y),  7.0F));
+}
+
+// variable_value() on an invalid id returns 0.
+TEST(ConstraintSolver, VariableValueInvalidId_ReturnsZero)
+{
+    // Arrange
+    ConstraintSolver s;
+    VariableId bad { 0xFFFFFFFFu };
+
+    // Act / Assert — must not crash.
+    EXPECT_NEAR(s.variable_value(bad), 0.0F, kEps);
+}
+
+// Multiple successive edit_variable() calls: last value wins on solve().
+TEST(ConstraintSolver, MultipleEditVariable_LastValueWins)
+{
+    // Arrange
+    ConstraintSolver s;
+    VariableId x = s.add_variable("x");
+
+    // Act: edit x to 5, then immediately to 99.
+    s.edit_variable(x, 5.0F);
+    s.edit_variable(x, 99.0F);
+    auto vals = s.solve();
+
+    // Assert: latest edit (99) takes effect.
+    EXPECT_TRUE(near(vals.at(x.value), 99.0F))
+        << "Last edit_variable value should win; got " << vals.at(x.value);
+}
+
+// Required LessEq that is already violated at add_constraint time is enforced.
+TEST(ConstraintSolver, LessEq_ViolatedAtAddTime_EnforcedToBoundary)
+{
+    // Arrange: first pin x = 20 (Required), then add x <= 10 (Required).
+    ConstraintSolver s;
+    VariableId x = s.add_variable("x");
+
+    Constraint pin;
+    pin.lhs      = { Term { x, 1.0F } };
+    pin.rhs      = 20.0F;
+    pin.rel      = ConstraintRel::kEqual;
+    pin.strength = Strength::kRequired;
+
+    Constraint cap;
+    cap.lhs      = { Term { x, 1.0F } };
+    cap.rhs      = 10.0F;
+    cap.rel      = ConstraintRel::kLessEq;
+    cap.strength = Strength::kRequired;
+
+    // Act
+    auto r1 = s.add_constraint(pin);   // x = 20
+    auto r2 = s.add_constraint(cap);   // x <= 10 — conflicts: must be rejected
+
+    // Assert: one of these must fail (system is over-constrained).
+    EXPECT_FALSE(r1.has_value() && r2.has_value())
+        << "x==20 and x<=10 cannot both be Required; one must be rejected";
+}

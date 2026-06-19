@@ -41,6 +41,22 @@ struct Tag
     std::uint32_t value { 0 };
 };
 
+// Instance-counting component: nets leaks / double-frees through the
+// chunk swap-and-pop, cross-archetype migration, and ~ArchetypeWorld
+// teardown paths -- all of which placement-new / explicit-destruct.
+struct Tracked
+{
+    static inline int live = 0;
+    int value { 0 };
+
+    explicit Tracked(int v = 0) : value { v } { ++live; }
+    Tracked(const Tracked& o) : value { o.value } { ++live; }
+    Tracked(Tracked&& o) noexcept : value { o.value } { ++live; }
+    Tracked& operator=(const Tracked&) = default;
+    Tracked& operator=(Tracked&&) noexcept = default;
+    ~Tracked() { --live; }
+};
+
 }  // namespace
 
 using cd::ecs::ArchetypeWorld;
@@ -347,4 +363,106 @@ TEST(ArchetypeWorld, AddDuplicate_IsNoop)
     EXPECT_TRUE(w.is_alive(e));
     EXPECT_EQ(w.alive_count(), 1U);
 #endif
+}
+
+// =============================================================================
+// Depth: non-trivial-destructor lifetime through migration + teardown
+// =============================================================================
+
+TEST(ArchetypeWorld, TrackedComponentBalancedThroughDestroyAndTeardown)
+{
+    ASSERT_EQ(Tracked::live, 0);
+    {
+        ArchetypeWorld w;
+        std::vector<Entity> ents;
+        ents.reserve(10);
+        for (int i = 0; i < 10; ++i)
+            ents.push_back(w.emplace<Tracked>(Tracked { i }));
+        EXPECT_EQ(Tracked::live, 10);
+
+        // Destroy a middle entity -> chunk swap-and-pop must destruct the
+        // removed value AND the moved-from source slot exactly once each.
+        w.destroy(ents[4]);
+        EXPECT_EQ(Tracked::live, 9);
+
+        // Destroy the last -> no-move branch of chunk_swap_pop.
+        w.destroy(ents[9]);
+        EXPECT_EQ(Tracked::live, 8);
+    }
+    // ~ArchetypeWorld destructs every remaining live value exactly once.
+    EXPECT_EQ(Tracked::live, 0);
+}
+
+TEST(ArchetypeWorld, AddComponentMigratesTrackedWithoutLeak)
+{
+    ASSERT_EQ(Tracked::live, 0);
+    {
+        ArchetypeWorld w;
+        const Entity e = w.emplace<Tracked>(Tracked { 7 });
+        EXPECT_EQ(Tracked::live, 1);
+
+        // Cross-archetype move: Tracked is move-constructed into the new
+        // {Tracked, Velocity} row; the source slot is moved-from then
+        // destructed by chunk_swap_pop. Net live must stay 1.
+        w.add_component<Velocity>(e, Velocity { 1, 2, 3 });
+        EXPECT_EQ(Tracked::live, 1);
+
+        int seen = 0;
+        w.each<Tracked, Velocity>([&](Entity, Tracked& t, Velocity& v) {
+            EXPECT_EQ(t.value, 7);
+            EXPECT_FLOAT_EQ(v.vx, 1.0F);
+            ++seen;
+        });
+        EXPECT_EQ(seen, 1);
+    }
+    EXPECT_EQ(Tracked::live, 0);
+}
+
+TEST(ArchetypeWorld, RemoveComponentMigratesTrackedWithoutLeak)
+{
+    ASSERT_EQ(Tracked::live, 0);
+    {
+        ArchetypeWorld w;
+        const Entity e = w.emplace<Tracked, Velocity>(Tracked { 5 }, Velocity {});
+        EXPECT_EQ(Tracked::live, 1);
+
+        // Remove Velocity: Tracked survives the migration to {Tracked};
+        // the removed Velocity slot is destructed, surviving Tracked is
+        // move-reconstructed. Net Tracked live stays 1.
+        w.remove_component<Velocity>(e);
+        EXPECT_EQ(Tracked::live, 1);
+
+        int seen = 0;
+        w.each<Tracked>([&](Entity, Tracked& t) {
+            EXPECT_EQ(t.value, 5);
+            ++seen;
+        });
+        EXPECT_EQ(seen, 1);
+
+        // Velocity is gone.
+        int pv = 0;
+        w.each<Tracked, Velocity>([&](Entity, Tracked&, Velocity&) { ++pv; });
+        EXPECT_EQ(pv, 0);
+    }
+    EXPECT_EQ(Tracked::live, 0);
+}
+
+TEST(ArchetypeWorld, RoundTripMigrationPreservesTrackedValueAndCount)
+{
+    ASSERT_EQ(Tracked::live, 0);
+    {
+        ArchetypeWorld w;
+        const Entity e = w.emplace<Tracked>(Tracked { 42 });
+        w.add_component<Velocity>(e, Velocity { 9, 9, 9 });
+        w.remove_component<Velocity>(e);
+        EXPECT_EQ(Tracked::live, 1);  // exactly one Tracked survives
+
+        int seen = 0;
+        w.each<Tracked>([&](Entity, Tracked& t) {
+            EXPECT_EQ(t.value, 42);  // value intact through 2 migrations
+            ++seen;
+        });
+        EXPECT_EQ(seen, 1);
+    }
+    EXPECT_EQ(Tracked::live, 0);
 }
