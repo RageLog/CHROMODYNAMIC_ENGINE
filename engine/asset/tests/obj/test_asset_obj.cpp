@@ -176,3 +176,114 @@ TEST(ObjAssetLoader, AdapterDecodesValidObj)
     ASSERT_NE(a, nullptr);
     EXPECT_FALSE(a->mesh().vertices.empty());
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// Every malformed input must produce a typed error, not UB.
+// =============================================================================
+
+namespace
+{
+using Code = cd::asset::obj::obj_errors::Code;
+}  // namespace
+
+TEST(AssetObjEdge, ShortVertexLineReturnsParseFailed)
+{
+    // 'v' with only two components is malformed.
+    auto r = cd::asset::obj::parse_obj("v 1.0 2.0\nf 1 1 1\n");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, NonNumericVertexReturnsParseFailed)
+{
+    auto r = cd::asset::obj::parse_obj("v x y z\n");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, ShortNormalLineReturnsParseFailed)
+{
+    auto r = cd::asset::obj::parse_obj("v 0 0 0\nvn 1 0\n");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, ShortTexcoordLineReturnsParseFailed)
+{
+    auto r = cd::asset::obj::parse_obj("v 0 0 0\nvt 0.5\n");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, FaceWithTwoVerticesReturnsParseFailed)
+{
+    constexpr std::string_view src = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, FaceIndexOutOfRangeReturnsParseFailed)
+{
+    // Only 3 vertices declared; index 4 is out of range.
+    constexpr std::string_view src = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 4\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, FaceIndexZeroReturnsParseFailed)
+{
+    // OBJ indices are 1-based; index 0 is invalid (resolve rejects v <= 0).
+    constexpr std::string_view src = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, NonNumericFaceTripleReturnsParseFailed)
+{
+    constexpr std::string_view src = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 q\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, OnlyCommentsAndIgnoredDirectivesYieldsNoVertices)
+{
+    constexpr std::string_view src = "# comment\no Object\ng Group\ns 1\nmtllib m.mtl\nusemtl mat\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}
+
+TEST(AssetObjEdge, FaceWithNormalSlashSyntaxResolves)
+{
+    // "v//vn" form: position + normal, no texcoord. Must decode without error.
+    constexpr std::string_view src =
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3//1\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_EQ(r->vertices.size(), 3u);
+    EXPECT_EQ(r->indices.size(), 3u);
+    for (const auto& v : r->vertices)
+        EXPECT_NEAR(v.normal[2], 1.0F, 1e-5F);
+}
+
+TEST(AssetObjEdge, CrlfLineEndingsParseCleanly)
+{
+    constexpr std::string_view src = "v 0 0 0\r\nv 1 0 0\r\nv 0 1 0\r\nf 1 2 3\r\n";
+    auto r = cd::asset::obj::parse_obj(src);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_EQ(r->vertices.size(), 3u);
+    EXPECT_EQ(r->indices.size(), 3u);
+}
+
+TEST(AssetObjEdge, WhitespaceOnlyInputYieldsNoVertices)
+{
+    // Non-empty (so not kInvalidArgument) but no geometry → kParseFailed.
+    auto r = cd::asset::obj::parse_obj("   \n\t\n  \n");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kParseFailed));
+}

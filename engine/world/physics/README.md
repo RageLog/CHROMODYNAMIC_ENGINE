@@ -6,7 +6,7 @@
 
 **Public Headers**:
 - `cd/physics/Aabb.hpp` — axis-aligned bounding box; contains/intersect tests.
-- `cd/physics/Obb.hpp` — oriented bounding box.
+- `cd/physics/Obb.hpp` — oriented bounding box; contains-point + OBB/OBB separating-axis (SAT) overlap test.
 - `cd/physics/Sphere.hpp` — sphere; ray/sphere, sphere/sphere collision.
 - `cd/physics/Capsule.hpp` — capsule (swept sphere); spine-based representation.
 - `cd/physics/Ray.hpp` — ray; hit/intersection queries.

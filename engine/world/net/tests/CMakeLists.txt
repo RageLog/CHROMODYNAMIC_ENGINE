@@ -17,3 +17,8 @@ cd_add_test(net_reconciler
   SOURCES test_net_reconciler.cpp
   DEPS    cd::net cd::core
 )
+
+cd_add_test(net_edge
+  SOURCES test_net_edge.cpp
+  DEPS    cd::net cd::core
+)

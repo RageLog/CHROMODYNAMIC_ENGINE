@@ -84,3 +84,13 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - **asset_hot_reload**: 11 tests (throttle window boundary, deletion-wins, burst coalesce).
   - **gameplay_time**: fixed-step accumulator + scale edges.
   - Gate fixes: 6 WAE (query 2x isolate-decl, input_binding find→contains, input 3 headers if<→std::max+<algorithm>) + 1 test-vs-impl (asset_hot_reload throttle test missed the watcher's first-poll baseline → bump must come AFTER an initial baseline tick). Gate: build clean -Werror (0/0); ctest 322/322; golden byte-identical (CPU libs).
+- ✅ **Batch 6 (phase1258)** — tier 85, 8 render/world libs → 100% (~307 new tests, all golden-safe, 1 real impl):
+  - **physics**: implemented the documented-deferred OBB/OBB SAT (15-axis separating-axis test, Ericson §4.4.1) + 46 primitive edge tests (new function, no prior callers → golden-safe).
+  - **asset** (umbrella, 10 sub-targets): +106 defensive-deserialization tests (json/gltf/image/ktx2/obj/pak/wav/cdmesh/cdtex/streaming) — every loader rejects corrupt input via Result, no UB. Valid decode byte-identical.
+  - **net**: +58 tests (new test_net_edge.cpp) — ack-window/RTO/snapshot/prediction/RLE/seq-wrap/QoS edges.
+  - **anim**: +39 tests (new test_anim_edge.cpp) — DualQuat/StateMachine/BlendTree2/PoseBlend/Skeleton/GpuSkinning. No pose math touched.
+  - **render-camera**: +31 tests (perspective/ortho known-value + clamp + degenerate look_at). No matrix math touched.
+  - **hdr_display**: +scrgb_unpack/rec2020↔xyz inverses + 11 PQ/Rec2020 tests.
+  - **anim_ik**: +8 CCD/joint-limit tests. **spirv_cross_glue**: +6 MSL/HLSL/GLSL emit-path tests.
+  - Gate fixes: WAE (hdr 2× float-loop-induction→int, anim_ik sqrt2→std::numbers, net nodiscard+arg-comment, asset ~6 arg-comment/dup-include, core CVar find→contains, OrbitController dup-include) + 3 test-vs-impl RCA (camera ortho is RIGHT-HANDED depth[0,1] so cull box needs z∈[-far,-near]; json parser leniently accepts "1."; stb leniently decodes header-only BMP). Gate: build clean -Werror (0/0); ctest 324/324; golden/sponza/chrome BYTE-IDENTICAL.
+  - NOTE: re-scan surfaced pre-existing sealed broader-130 WAE in cd::core headers (Bitset/HandleStore/PoolAllocator/Ref/ScopeGuard/SmallVector) — out of batch-6 scope, queued for a focused phase1259 core-header cleanup (incl. a HandleStore use-after-forward to investigate).

@@ -22,7 +22,6 @@
 // =============================================================================
 #pragma once
 
-#include <algorithm>
 #include <cd/camera/Camera.hpp>
 #include <cd/math/Vector.hpp>
 

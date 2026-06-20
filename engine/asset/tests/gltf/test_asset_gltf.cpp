@@ -353,9 +353,6 @@ TEST(GltfLoader, PrimitiveWithoutPositionYieldsEmptyVertices)
 
 #include <cd/asset/gltf/AssetLoader.hpp>
 
-#include <cstring>
-#include <span>
-
 TEST(GltfAssetLoader, AdapterDecodesMinimalAsciiGltf)
 {
     constexpr std::string_view text = R"({"asset":{"version":"2.0"},)"
@@ -568,4 +565,97 @@ TEST(SkinnedMeshBridge, SampleGltfAnimationRotationSlerps)
     const float kSqrt2Half = 0.70710678F;
     EXPECT_NEAR(pose.joint_locals[0].rotation.y, kSqrt2Half, kEps);
     EXPECT_NEAR(pose.joint_locals[0].rotation.w, kSqrt2Half, kEps);
+}
+
+// =============================================================================
+// Robustness / edge / negative coverage for load_gltf_from_memory
+// (≥80→100 marathon, ADD-ONLY). Defensive deserialization: malformed blobs
+// must return a typed error, never crash. Valid-input decode is unchanged.
+// =============================================================================
+
+namespace
+{
+using GCode = cd::asset::gltf::gltf_errors::Code;
+
+[[nodiscard]] cd::core::Result<cd::asset::gltf::GltfScene> mem_load(std::string_view text)
+{
+    return cd::asset::gltf::load_gltf_from_memory(
+        reinterpret_cast<const std::uint8_t*>(text.data()), text.size());
+}
+}  // namespace
+
+TEST(GltfFromMemoryEdge, NullBufferReturnsInvalidArgument)
+{
+    auto r = cd::asset::gltf::load_gltf_from_memory(nullptr, 128);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(GCode::kInvalidArgument));
+}
+
+TEST(GltfFromMemoryEdge, TooSmallBufferReturnsParseFailed)
+{
+    const std::array<std::uint8_t, 3> tiny { 'g', 'l', 'T' };
+    auto r = cd::asset::gltf::load_gltf_from_memory(tiny.data(), tiny.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(GCode::kParseFailed));
+}
+
+TEST(GltfFromMemoryEdge, NonGltfTextReturnsParseFailed)
+{
+    auto r = mem_load("this is definitely not glTF JSON at all");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(GCode::kParseFailed));
+}
+
+TEST(GltfFromMemoryEdge, TruncatedJsonReturnsParseFailed)
+{
+    auto r = mem_load(R"({"asset":{"version":"2.0")");  // missing closing braces
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(GCode::kParseFailed));
+}
+
+TEST(GltfFromMemoryEdge, GlbMagicButTruncatedReturnsParseFailed)
+{
+    // "glTF" magic routes to the binary loader; the rest is junk → tinygltf
+    // rejects it as a malformed container.
+    const std::array<std::uint8_t, 12> fake_glb {
+        'g', 'l', 'T', 'F', 0x02, 0, 0, 0, 0x10, 0, 0, 0
+    };
+    auto r = cd::asset::gltf::load_gltf_from_memory(fake_glb.data(), fake_glb.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(GCode::kParseFailed));
+}
+
+TEST(GltfFromMemoryEdge, EmptyJsonObjectYieldsEmptyScene)
+{
+    // A well-formed but content-free glTF: valid JSON, no meshes/nodes.
+    // tinygltf accepts {} with asset version absent on some builds, but a
+    // bare "{}" lacks the required asset block; either way we must not crash.
+    auto r = mem_load(R"({"asset":{"version":"2.0"}})");
+    // Whatever tinygltf decides, the result is a typed Result — assert it is
+    // either a clean empty scene or a typed parse error, never UB.
+    if (r.has_value())
+    {
+        EXPECT_TRUE(r->meshes.empty());
+        EXPECT_TRUE(r->nodes.empty());
+        EXPECT_TRUE(r->instances.empty());
+    }
+    else
+    {
+        EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(GCode::kParseFailed));
+    }
+}
+
+TEST(GltfFromMemoryEdge, MeshWithoutPositionDecodesWithoutCrash)
+{
+    // A primitive with an empty attribute set: the loader skips geometry
+    // decode (no POSITION) but must still produce a valid scene object.
+    constexpr std::string_view text =
+        R"({"asset":{"version":"2.0"},)"
+        R"("meshes":[{"primitives":[{"attributes":{}}]}],)"
+        R"("nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}],"scene":0})";
+    auto r = mem_load(text);
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    ASSERT_EQ(r->meshes.size(), 1u);
+    ASSERT_EQ(r->meshes.front().primitives.size(), 1u);
+    EXPECT_TRUE(r->meshes.front().primitives.front().vertices.empty());
 }

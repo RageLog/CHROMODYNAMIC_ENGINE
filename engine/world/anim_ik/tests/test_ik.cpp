@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <numbers>
 #include <vector>
 
 namespace
@@ -481,6 +482,284 @@ TEST(CcdSolver_JointLimits, MultipleConstrainedJointsSolveTogether)
         EXPECT_LE(euler[0], lim.max_euler[0] + kLimitTol)
             << "Joint " << i << " X over max";
     }
+}
+
+// =============================================================================
+// Edge / negative / boundary tests (phase 85→100 gap-close pass)
+//
+// Tests 12-19 cover:
+//  12. Already-at-target: effector starts on target → 0 iterations used.
+//  13. Zero-length bone: joint with length=0 produces no crash + valid output.
+//  14. Single-joint unconstrained: converges to exact single-bone reach.
+//  15. Max-iteration cap: unreachable target + small cap → iterations_used == cap.
+//  16. Joint-limit exact min bound: clamp at exactly min_euler; stays there.
+//  17. Joint-limit exact max bound: clamp at exactly max_euler; stays there.
+//  18. Degenerate chain with all zero-length bones: no crash, stable output.
+//  19. Multi-joint chain where effector is already within threshold: 0 iterations.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// TEST 12 — Already-at-target returns 0 iterations used
+//
+// A single-joint chain with bone=1 along +Y.
+// Target = {0, 1, 0}: that IS the initial end-effector position (identity rot).
+// The solver checks convergence before any rotation step, so iterations_used=0.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_Degenerate, AlreadyAtTargetUsesZeroIterations)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    cd::animation::ik::Joint j{};
+    j.name                = "only";
+    j.local_position      = { 0.0F, 0.0F, 0.0F };
+    j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };  // identity
+    j.length              = 1.0F;
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { j };
+    // Bone extends along +Y by length=1 with identity rotation → effector at {0,1,0}
+    chain.end_effector_target   = { 0.0F, 1.0F, 0.0F };
+    chain.max_iterations        = 32U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    EXPECT_TRUE(result.converged)        << "Effector already at target must converge";
+    EXPECT_EQ(result.iterations_used, 0U) << "Must report 0 iterations when already at target";
+    EXPECT_LE(result.final_distance, chain.convergence_threshold);
+    EXPECT_EQ(result.solved_rotations.size(), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// TEST 13 — Zero-length bone does not crash and returns valid output
+//
+// A joint with length=0 means its child is at the same world position.
+// The end-effector is also at the joint position regardless of rotation.
+// Behaviour: no crash; solved_rotations has correct count.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_Degenerate, ZeroLengthBoneNoCrash)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    cd::animation::ik::Joint j{};
+    j.name                = "zero_len";
+    j.local_position      = { 0.0F, 0.0F, 0.0F };
+    j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    j.length              = 0.0F;  // zero-length bone
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { j };
+    chain.end_effector_target   = { 1.0F, 0.0F, 0.0F };
+    chain.max_iterations        = 16U;
+    chain.convergence_threshold = 0.001F;
+
+    // Must not crash regardless of zero-length bone
+    const auto result = solver.solve(chain);
+
+    EXPECT_EQ(result.solved_rotations.size(), 1u)
+        << "solved_rotations must be populated even for zero-length bone";
+    // The effector is always at the joint (length=0), so final_distance = distance
+    // from root to target (1.0 m).  converged=false is expected.
+    EXPECT_FALSE(result.converged)
+        << "Zero-length bone cannot reach a target 1 m away";
+}
+
+// ---------------------------------------------------------------------------
+// TEST 14 — Single-joint chain: target exactly at bone length on a diagonal
+//
+// Bone at origin, length=2.  Target at {2/sqrt(2), 2/sqrt(2), 0} = {√2, √2, 0}.
+// That is exactly 2 m from origin → reachable.  Verify converges and that
+// the solved quaternion is a unit quaternion (not corrupted).
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_SingleJoint, SingleJointDiagonalTargetConverges)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    constexpr float kLen = 2.0F;
+    const float coord    = kLen / std::numbers::sqrt2_v<float>;
+
+    cd::animation::ik::Joint j{};
+    j.name                = "diag";
+    j.local_position      = { 0.0F, 0.0F, 0.0F };
+    j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    j.length              = kLen;
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { j };
+    chain.end_effector_target   = { coord, coord, 0.0F };
+    chain.max_iterations        = 64U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    EXPECT_TRUE(result.converged)
+        << "Single-joint diagonal target at exact reach must converge";
+    EXPECT_LE(result.final_distance, chain.convergence_threshold);
+    ASSERT_EQ(result.solved_rotations.size(), 1u);
+
+    // Solved quaternion must remain unit-length
+    const auto& q      = result.solved_rotations[0];
+    const float q_norm = std::sqrt(q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]);
+    EXPECT_NEAR(q_norm, 1.0F, 1e-4F) << "Solved quaternion must be unit-length";
+}
+
+// ---------------------------------------------------------------------------
+// TEST 15 — Max-iteration cap is respected
+//
+// Unreachable target (far away) + very small max_iterations=3.
+// The solver must not exceed the cap: iterations_used == 3.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_Convergence, MaxIterationCapRespected)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    auto chain = make_3joint_chain(1.0F);
+    chain.end_effector_target   = { 0.0F, 100.0F, 0.0F };  // unreachable (100 m)
+    chain.max_iterations        = 3U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    EXPECT_FALSE(result.converged)
+        << "Unreachable target must not converge";
+    EXPECT_EQ(result.iterations_used, 3U)
+        << "iterations_used must equal max_iterations when cap is hit";
+    EXPECT_EQ(result.solved_rotations.size(), chain.joints.size());
+}
+
+// ---------------------------------------------------------------------------
+// TEST 16 — Joint-limit clamping at exact min bound
+//
+// A single constrained joint: min_euler[0]=0.5, max_euler[0]=1.5.
+// We seed the joint with a rotation below min (rx≈−0.3) and ask the solver
+// to solve to a target that demands exactly that rotation.
+// After the limit clamp the X component must be >= 0.5.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_JointLimits, ClampAtExactMinBound)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    cd::animation::ik::Joint j{};
+    j.name                = "min_clamp";
+    j.local_position      = { 0.0F, 0.0F, 0.0F };
+    j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    j.length              = 1.0F;
+    j.limits.enabled      = true;
+    j.limits.min_euler    = { 0.5F, -0.1F, -0.1F };
+    j.limits.max_euler    = { 1.5F,  0.1F,  0.1F };
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { j };
+    // Target placed so that unconstrained CCD would want a negative-X rotation;
+    // with the limit the X Euler must stay >= 0.5.
+    chain.end_effector_target   = { 0.0F, -1.0F, 0.0F };  // behind root (+Y bone)
+    chain.max_iterations        = 64U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    ASSERT_EQ(result.solved_rotations.size(), 1u);
+    const auto euler = euler_from_quat(result.solved_rotations[0]);
+    EXPECT_GE(euler[0], j.limits.min_euler[0] - 1e-4F)
+        << "X Euler must not go below min bound 0.5. Got " << euler[0];
+}
+
+// ---------------------------------------------------------------------------
+// TEST 17 — Joint-limit clamping at exact max bound
+//
+// A single constrained joint: min_euler[0]=0.0, max_euler[0]=0.2.
+// Bone extends along +Y.  Target at {0, 0, 10} demands rotation around +X
+// (bone tip into +Z plane) — unconstrained CCD would want ~π/2 rad on X;
+// the limit caps it at 0.2.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_JointLimits, ClampAtExactMaxBound)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    cd::animation::ik::Joint j{};
+    j.name                = "max_clamp";
+    j.local_position      = { 0.0F, 0.0F, 0.0F };
+    j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+    j.length              = 1.0F;
+    j.limits.enabled      = true;
+    j.limits.min_euler    = { 0.0F, -0.1F, -0.1F };
+    j.limits.max_euler    = { 0.2F,  0.1F,  0.1F };
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { j };
+    // Target far along +Z: bone tip must swing in XZ plane → large positive X Euler.
+    // Unconstrained solve would approach π/2 ≈ 1.57 rad; limit caps at 0.2.
+    chain.end_effector_target   = { 0.0F, 0.0F, 10.0F };
+    chain.max_iterations        = 64U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    ASSERT_EQ(result.solved_rotations.size(), 1u);
+    const auto euler = euler_from_quat(result.solved_rotations[0]);
+    EXPECT_LE(euler[0], j.limits.max_euler[0] + 1e-4F)
+        << "X Euler must not exceed max bound 0.2. Got " << euler[0];
+}
+
+// ---------------------------------------------------------------------------
+// TEST 18 — Degenerate chain: all bones have zero length, no crash
+//
+// All joints placed at the origin, length=0.  End-effector stays at origin
+// regardless of rotation.  The solver must not crash or produce NaN.
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_Degenerate, AllZeroLengthBonesNoCrash)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    auto make_zero = [](float py) -> cd::animation::ik::Joint
+    {
+        cd::animation::ik::Joint j{};
+        j.local_position      = { 0.0F, py, 0.0F };
+        j.local_rotation_quat = { 0.0F, 0.0F, 0.0F, 1.0F };
+        j.length              = 0.0F;
+        return j;
+    };
+
+    cd::animation::ik::IkChain chain{};
+    chain.joints                = { make_zero(0.0F), make_zero(0.0F), make_zero(0.0F) };
+    chain.end_effector_target   = { 1.0F, 1.0F, 0.0F };
+    chain.max_iterations        = 8U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    EXPECT_EQ(result.solved_rotations.size(), 3u) << "Must return 3 rotations";
+    // No NaN in any component
+    for (std::size_t i = 0; i < 3u; ++i)
+        for (std::size_t c = 0; c < 4u; ++c)
+            EXPECT_FALSE(std::isnan(result.solved_rotations[i][c]))
+                << "NaN in joint " << i << " component " << c;
+}
+
+// ---------------------------------------------------------------------------
+// TEST 19 — 3-joint chain with effector already within threshold: 0 iterations
+//
+// Build a chain whose current rotations already place the end-effector within
+// convergence_threshold of the target.  Verify iterations_used=0.
+// Chain: 3 joints, each bone=1 m along +Y.  Identity rotations → effector at
+// {0, 3, 0}.  Set target to {0, 3, 0} (exact position).
+// ---------------------------------------------------------------------------
+TEST(CcdSolver_Degenerate, ThreeJointAlreadyAtTargetZeroIterations)
+{
+    cd::animation::ik::CcdSolver solver;
+
+    auto chain = make_3joint_chain(1.0F);
+    // Identity rotations → effector tip at {0, 3, 0}
+    chain.end_effector_target   = { 0.0F, 3.0F, 0.0F };
+    chain.max_iterations        = 32U;
+    chain.convergence_threshold = 0.001F;
+
+    const auto result = solver.solve(chain);
+
+    EXPECT_TRUE(result.converged)        << "Effector already at target must converge";
+    EXPECT_EQ(result.iterations_used, 0U) << "Must use 0 iterations when already at target";
+    EXPECT_LE(result.final_distance, chain.convergence_threshold);
+    EXPECT_EQ(result.solved_rotations.size(), 3u);
 }
 
 }  // anonymous namespace

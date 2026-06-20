@@ -615,3 +615,484 @@ TEST(SpringJoint, BodyIndicesStored)
     EXPECT_EQ(j.body_b, 10u);
     EXPECT_FLOAT_EQ(j.rest_length, 2.0F);
 }
+
+// =============================================================================
+// 80→100 depth pass — ADD-ONLY edge/negative coverage + OBB/OBB SAT primitive.
+// No existing collision math touched; every assertion exercises an existing
+// or newly-added query at a boundary the prior 55-test suite skipped.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// AABB — edge / corner / face contact + degenerate + containment boundary.
+// ---------------------------------------------------------------------------
+TEST(AabbEdge, EdgeContactSharedLineOverlaps)
+{
+    // Share only the x=1 edge-line (touch along an edge, not a face).
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 1, 1, 0 }, cd::math::Vec3f { 2, 2, 1 } };
+    EXPECT_TRUE(cd::physics::overlaps(a, b));
+}
+
+TEST(AabbEdge, CornerContactSinglePointOverlaps)
+{
+    // Touch at the single corner (1,1,1).
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 1, 1, 1 }, cd::math::Vec3f { 2, 2, 2 } };
+    EXPECT_TRUE(cd::physics::overlaps(a, b));
+}
+
+TEST(AabbEdge, GapOnSingleAxisSeparates)
+{
+    // Overlap on y,z but a tiny gap on x → no overlap.
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    cd::physics::Aabb b { cd::math::Vec3f { 1.001F, 0, 0 }, cd::math::Vec3f { 2, 1, 1 } };
+    EXPECT_FALSE(cd::physics::overlaps(a, b));
+}
+
+TEST(AabbEdge, ContainsBoundaryPointIsInclusive)
+{
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_TRUE(cd::physics::contains(a, cd::math::Vec3f { 0, 0, 0 }));   // min corner
+    EXPECT_TRUE(cd::physics::contains(a, cd::math::Vec3f { 1, 1, 1 }));   // max corner
+    EXPECT_TRUE(cd::physics::contains(a, cd::math::Vec3f { 1, 0.5F, 0 })); // on a face
+    EXPECT_FALSE(cd::physics::contains(a, cd::math::Vec3f { 1.0001F, 0.5F, 0.5F }));
+}
+
+TEST(AabbEdge, DegenerateZeroVolumeBoxContainsItsPoint)
+{
+    cd::physics::Aabb p { cd::math::Vec3f { 2, 2, 2 }, cd::math::Vec3f { 2, 2, 2 } };
+    EXPECT_TRUE(cd::physics::contains(p, cd::math::Vec3f { 2, 2, 2 }));
+    EXPECT_TRUE(cd::physics::overlaps(p, p));
+    EXPECT_FLOAT_EQ(cd::physics::extent(p).x, 0.0F);
+    EXPECT_FLOAT_EQ(cd::physics::center(p).y, 2.0F);
+}
+
+TEST(AabbEdge, ContainedBoxOverlapsEnclosingBox)
+{
+    cd::physics::Aabb big   { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 10, 10, 10 } };
+    cd::physics::Aabb small { cd::math::Vec3f { 4, 4, 4 }, cd::math::Vec3f { 6, 6, 6 } };
+    EXPECT_TRUE(cd::physics::overlaps(big, small));
+    EXPECT_TRUE(cd::physics::overlaps(small, big));  // symmetric
+}
+
+// ---------------------------------------------------------------------------
+// Sphere — just-touching / concentric / separated boundaries.
+// ---------------------------------------------------------------------------
+TEST(SphereEdge, JustTouchingCountsAsIntersect)
+{
+    // Centers exactly r0+r1 apart → surfaces kiss; `<=` makes this true.
+    cd::physics::Sphere a { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    cd::physics::Sphere b { cd::math::Vec3f { 2, 0, 0 }, 1.0F };
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(SphereEdge, JustSeparatedDoesNotIntersect)
+{
+    cd::physics::Sphere a { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    cd::physics::Sphere b { cd::math::Vec3f { 2.001F, 0, 0 }, 1.0F };
+    EXPECT_FALSE(cd::physics::intersects(a, b));
+}
+
+TEST(SphereEdge, ConcentricSpheresIntersect)
+{
+    cd::physics::Sphere a { cd::math::Vec3f { 1, 1, 1 }, 2.0F };
+    cd::physics::Sphere b { cd::math::Vec3f { 1, 1, 1 }, 0.5F };
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(SphereEdge, ContainsSurfacePointIsInclusive)
+{
+    cd::physics::Sphere s { cd::math::Vec3f { 0, 0, 0 }, 2.0F };
+    EXPECT_TRUE(cd::physics::contains(s, cd::math::Vec3f { 2, 0, 0 }));   // on surface
+    EXPECT_TRUE(cd::physics::contains(s, cd::math::Vec3f { 0, 0, 0 }));   // center
+    EXPECT_FALSE(cd::physics::contains(s, cd::math::Vec3f { 2.001F, 0, 0 }));
+}
+
+TEST(SphereEdge, AabbCenterInsideBoxIntersects)
+{
+    // Sphere center sits inside the box → closest-point distance 0.
+    cd::physics::Sphere s { cd::math::Vec3f { 0.5F, 0.5F, 0.5F }, 0.1F };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_TRUE(cd::physics::intersects(s, a));
+}
+
+TEST(SphereEdge, AabbCornerJustOutOfReachMisses)
+{
+    // Nearest point is the corner (1,1,1); distance = sqrt(3)*1 ≈ 1.732.
+    cd::physics::Sphere s { cd::math::Vec3f { 2, 2, 2 }, 1.7F };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_FALSE(cd::physics::intersects(s, a));
+    cd::physics::Sphere s2 { cd::math::Vec3f { 2, 2, 2 }, 1.74F };
+    EXPECT_TRUE(cd::physics::intersects(s2, a));
+}
+
+// ---------------------------------------------------------------------------
+// Capsule — endpoint hemispheres / off-segment / zero-length / radial boundary.
+// ---------------------------------------------------------------------------
+TEST(CapsuleEdge, BeyondEndpointUsesHemisphereDistance)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 4, 0 }, 1.0F };
+    // Diagonal beyond p1: (0.6, 4.6, 0) is sqrt(0.72) ≈ 0.848 from p1 → inside.
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 0.6F, 4.6F, 0 }));
+    // (1.0, 4.8, 0) is sqrt(1.64) ≈ 1.28 from p1 → outside.
+    EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 1.0F, 4.8F, 0 }));
+}
+
+TEST(CapsuleEdge, BelowP0Hemisphere)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 4, 0 }, 1.0F };
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 0, -0.9F, 0 }));
+    EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 0, -1.1F, 0 }));
+}
+
+TEST(CapsuleEdge, RadialSurfaceIsInclusive)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 4, 0 }, 1.0F };
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 1.0F, 2, 0 }));   // exactly on surface
+    EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 1.0001F, 2, 0 }));
+}
+
+TEST(CapsuleEdge, ZeroLengthSegmentActsAsSphere)
+{
+    // p0 == p1 → degenerate segment falls into the len2<=eps branch.
+    cd::physics::Capsule c { cd::math::Vec3f { 1, 1, 1 },
+                              cd::math::Vec3f { 1, 1, 1 }, 2.0F };
+    EXPECT_TRUE(cd::physics::contains(c, cd::math::Vec3f { 2.9F, 1, 1 }));   // dist 1.9 < 2
+    EXPECT_FALSE(cd::physics::contains(c, cd::math::Vec3f { 3.1F, 1, 1 }));  // dist 2.1 > 2
+}
+
+TEST(CapsuleEdge, DistancePointSegmentClampsToEndpoints)
+{
+    const cd::math::Vec3f a { 0, 0, 0 };
+    const cd::math::Vec3f b { 0, 0, 4 };
+    // Query well before a: projection t<0, clamps to a.
+    EXPECT_NEAR(cd::physics::distance_point_segment({ 0, 0, -3 }, a, b), 3.0F, 1e-4F);
+    // Query well past b: projection t>1, clamps to b.
+    EXPECT_NEAR(cd::physics::distance_point_segment({ 0, 0, 9 }, a, b), 5.0F, 1e-4F);
+    // Perpendicular at midpoint.
+    EXPECT_NEAR(cd::physics::distance_point_segment({ 3, 0, 2 }, a, b), 3.0F, 1e-4F);
+}
+
+// ---------------------------------------------------------------------------
+// Capsule ↔ Sphere — just-touching / concentric-segment boundaries.
+// ---------------------------------------------------------------------------
+TEST(CapsuleSphereEdge, ExactlyTouchingRadialSurface)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 10, 0 }, 1.0F };
+    // center distance from segment = 1.5 = (capsule.r 1.0 + sphere.r 0.5).
+    cd::physics::Sphere s { cd::math::Vec3f { 1.5F, 5, 0 }, 0.5F };
+    EXPECT_TRUE(cd::physics::intersects(c, s));
+}
+
+TEST(CapsuleSphereEdge, JustBeyondCombinedRadiusMisses)
+{
+    cd::physics::Capsule c { cd::math::Vec3f { 0, 0, 0 },
+                              cd::math::Vec3f { 0, 10, 0 }, 1.0F };
+    cd::physics::Sphere s { cd::math::Vec3f { 1.51F, 5, 0 }, 0.5F };
+    EXPECT_FALSE(cd::physics::intersects(c, s));
+    EXPECT_FALSE(cd::physics::intersects(s, c));  // symmetric
+}
+
+// ---------------------------------------------------------------------------
+// Ray vs AABB — parallel-inside / parallel-outside / grazing / behind / inside.
+// ---------------------------------------------------------------------------
+TEST(RayAabbEdge, ParallelInsideSlabHits)
+{
+    // Direction has zero x; origin x sits inside the slab → not rejected.
+    cd::physics::Ray r { cd::math::Vec3f { 0.5F, -5, 0.5F }, cd::math::Vec3f { 0, 1, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    auto t = cd::physics::intersect_ray_aabb(r, a);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 5.0F, 1e-4F);
+}
+
+TEST(RayAabbEdge, ParallelOutsideSlabMisses)
+{
+    // Direction parallel to a slab but origin x is outside it → reject.
+    cd::physics::Ray r { cd::math::Vec3f { 5, -5, 0.5F }, cd::math::Vec3f { 0, 1, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_FALSE(cd::physics::intersect_ray_aabb(r, a).has_value());
+}
+
+TEST(RayAabbEdge, GrazingFaceCountsAsHit)
+{
+    // Ray skims along the y=1 top face; slab test is inclusive at the boundary.
+    cd::physics::Ray r { cd::math::Vec3f { -5, 1, 0.5F }, cd::math::Vec3f { 1, 0, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    auto t = cd::physics::intersect_ray_aabb(r, a);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 5.0F, 1e-4F);
+}
+
+TEST(RayAabbEdge, BehindOriginMisses)
+{
+    // Box entirely behind the ray (pointing +x, box at -x).
+    cd::physics::Ray r { cd::math::Vec3f { 5, 0.5F, 0.5F }, cd::math::Vec3f { 1, 0, 0 } };
+    cd::physics::Aabb a { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 1, 1 } };
+    EXPECT_FALSE(cd::physics::intersect_ray_aabb(r, a).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// Ray vs Sphere — tangent / grazing-miss / parallel-along-axis / zero-dir.
+// ---------------------------------------------------------------------------
+TEST(RaySphereEdge, TangentHitHasSingleRoot)
+{
+    // Ray along +z at x=1 grazes a unit sphere centered at origin → tangent.
+    cd::physics::Ray r { cd::math::Vec3f { 1, 0, -5 }, cd::math::Vec3f { 0, 0, 1 } };
+    cd::physics::Sphere s { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    auto t = cd::physics::intersect_ray_sphere(r, s);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 5.0F, 1e-3F);  // touches at z=0
+}
+
+TEST(RaySphereEdge, JustOutsideRadiusMisses)
+{
+    cd::physics::Ray r { cd::math::Vec3f { 1.001F, 0, -5 }, cd::math::Vec3f { 0, 0, 1 } };
+    cd::physics::Sphere s { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    EXPECT_FALSE(cd::physics::intersect_ray_sphere(r, s).has_value());
+}
+
+TEST(RaySphereEdge, ZeroLengthDirectionReturnsNullopt)
+{
+    cd::physics::Ray r { cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 0, 0 } };
+    cd::physics::Sphere s { cd::math::Vec3f { 0, 0, 5 }, 1.0F };
+    EXPECT_FALSE(cd::physics::intersect_ray_sphere(r, s).has_value());
+}
+
+TEST(RaySphereEdge, OnSurfacePointingInwardReturnsZeroT)
+{
+    // Origin exactly on the surface, direction toward center → entry t≈0.
+    cd::physics::Ray r { cd::math::Vec3f { 0, 0, -1 }, cd::math::Vec3f { 0, 0, 1 } };
+    cd::physics::Sphere s { cd::math::Vec3f { 0, 0, 0 }, 1.0F };
+    auto t = cd::physics::intersect_ray_sphere(r, s);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_NEAR(*t, 0.0F, 1e-4F);
+}
+
+// ---------------------------------------------------------------------------
+// Sweep sphere/AABB — TOI at t=0, t=1, no-hit past end, grazing-corner.
+// ---------------------------------------------------------------------------
+TEST(SweepEdge, ContactExactlyAtEndOfMotionT1)
+{
+    // Inflated box near face at z=4..5; radius 0.5 → expanded min z = 3.5.
+    // Start at z=0 moving +3.5 reaches the surface exactly at toi=1.
+    cd::physics::Aabb box { cd::math::Vec3f { -1, -1, 4 }, cd::math::Vec3f { 1, 1, 5 } };
+    auto r = cd::physics::sweep_sphere_aabb(
+        cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 0, 3.5F }, 0.5F, box);
+    ASSERT_TRUE(r.hit);
+    EXPECT_NEAR(r.toi, 1.0F, 1e-4F);
+}
+
+TEST(SweepEdge, ContactJustPastEndIsNoHit)
+{
+    // Same geometry but motion stops a hair short → contact would be toi>1.
+    cd::physics::Aabb box { cd::math::Vec3f { -1, -1, 4 }, cd::math::Vec3f { 1, 1, 5 } };
+    auto r = cd::physics::sweep_sphere_aabb(
+        cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 0, 0, 3.49F }, 0.5F, box);
+    EXPECT_FALSE(r.hit);
+}
+
+TEST(SweepEdge, AlreadyOverlappingReturnsToiZeroAndPointAtStart)
+{
+    cd::physics::Aabb box { cd::math::Vec3f { -1, -1, -1 }, cd::math::Vec3f { 1, 1, 1 } };
+    const cd::math::Vec3f start { 0, 0, 0 };
+    auto r = cd::physics::sweep_sphere_aabb(start, cd::math::Vec3f { 0, 0, 5 }, 0.5F, box);
+    ASSERT_TRUE(r.hit);
+    EXPECT_FLOAT_EQ(r.toi, 0.0F);
+    EXPECT_FLOAT_EQ(r.point.z, start.z);  // point == start at toi 0
+}
+
+TEST(SweepEdge, MotionParallelToFaceMissesDistantBox)
+{
+    // Move along +x but the box is far away in +z; never reaches it.
+    cd::physics::Aabb box { cd::math::Vec3f { 0, 0, 100 }, cd::math::Vec3f { 1, 1, 101 } };
+    auto r = cd::physics::sweep_sphere_aabb(
+        cd::math::Vec3f { 0, 0, 0 }, cd::math::Vec3f { 1, 0, 0 }, 0.5F, box);
+    EXPECT_FALSE(r.hit);
+}
+
+// ---------------------------------------------------------------------------
+// Triangle — degenerate (collinear), vertices B & C, edge midpoint, outside.
+// ---------------------------------------------------------------------------
+TEST(TriangleEdge, DegenerateCollinearReturnsFallback)
+{
+    // a,b,c collinear → denom ~0 → documented fallback (1,0,0).
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 1, 0, 0 },
+        cd::math::Vec3f { 2, 0, 0 },
+    };
+    const auto bc = cd::physics::barycentric(t, cd::math::Vec3f { 0.5F, 0, 0 });
+    EXPECT_FLOAT_EQ(bc.x, 1.0F);
+    EXPECT_FLOAT_EQ(bc.y, 0.0F);
+    EXPECT_FLOAT_EQ(bc.z, 0.0F);
+}
+
+TEST(TriangleEdge, BarycentricVertexBAndC)
+{
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 2, 0, 0 },
+        cd::math::Vec3f { 0, 2, 0 },
+    };
+    const auto bcb = cd::physics::barycentric(t, t.b);
+    EXPECT_NEAR(bcb.x, 0.0F, 1e-4F);
+    EXPECT_NEAR(bcb.y, 1.0F, 1e-4F);
+    EXPECT_NEAR(bcb.z, 0.0F, 1e-4F);
+    const auto bcc = cd::physics::barycentric(t, t.c);
+    EXPECT_NEAR(bcc.x, 0.0F, 1e-4F);
+    EXPECT_NEAR(bcc.y, 0.0F, 1e-4F);
+    EXPECT_NEAR(bcc.z, 1.0F, 1e-4F);
+}
+
+TEST(TriangleEdge, EdgeMidpointIsContainedAndSumsToOne)
+{
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 2, 0, 0 },
+        cd::math::Vec3f { 0, 2, 0 },
+    };
+    const cd::math::Vec3f mid_ab { 1, 0, 0 };
+    const auto bc = cd::physics::barycentric(t, mid_ab);
+    EXPECT_NEAR(bc.x + bc.y + bc.z, 1.0F, 1e-4F);
+    EXPECT_TRUE(cd::physics::contains(t, mid_ab));
+}
+
+TEST(TriangleEdge, OutsidePointHasNegativeCoordAndIsNotContained)
+{
+    cd::physics::Triangle t {
+        cd::math::Vec3f { 0, 0, 0 },
+        cd::math::Vec3f { 2, 0, 0 },
+        cd::math::Vec3f { 0, 2, 0 },
+    };
+    const cd::math::Vec3f outside { -1, -1, 0 };
+    const auto bc = cd::physics::barycentric(t, outside);
+    EXPECT_LT(bc.y, 0.0F);  // v negative → outside edge
+    EXPECT_FALSE(cd::physics::contains(t, outside));
+}
+
+// ---------------------------------------------------------------------------
+// InertiaTensor — analytic known shapes + degenerate / kinematic handling.
+// ---------------------------------------------------------------------------
+TEST(InertiaTensorEdge, SolidSphereMatchesTwoFifthsMRSquared)
+{
+    // Unit mass, unit radius → I = 2/5 on every axis.
+    auto m = cd::physics::solid_sphere(1.0F, 1.0F);
+    EXPECT_NEAR(m.inertia.x, 0.4F, 1e-6F);
+    EXPECT_NEAR(m.inertia.y, 0.4F, 1e-6F);
+    EXPECT_NEAR(m.inertia.z, 0.4F, 1e-6F);
+    EXPECT_NEAR(m.inv_inertia.x, 1.0F / 0.4F, 1e-4F);
+}
+
+TEST(InertiaTensorEdge, SolidCubeIsIsotropic)
+{
+    // A cube (equal extents) has equal inertia on all 3 axes.
+    auto m = cd::physics::solid_box(6.0F, 2.0F, 2.0F, 2.0F);
+    // I = (1/12)*6*(4+4) = 4 on every axis.
+    EXPECT_NEAR(m.inertia.x, 4.0F, 1e-4F);
+    EXPECT_FLOAT_EQ(m.inertia.x, m.inertia.y);
+    EXPECT_FLOAT_EQ(m.inertia.y, m.inertia.z);
+}
+
+TEST(InertiaTensorEdge, CylinderAxialLessThanRadialForTallShape)
+{
+    // Tall thin cylinder: spin about its own Y-axis (Iyy) is cheap vs
+    // tumbling end-over-end (Ixx = Izz).
+    auto m = cd::physics::solid_cylinder_y(3.0F, 0.5F, 4.0F);
+    EXPECT_LT(m.inertia.y, m.inertia.x);
+    EXPECT_FLOAT_EQ(m.inertia.x, m.inertia.z);
+    // Iyy = 0.5*3*0.25 = 0.375.
+    EXPECT_NEAR(m.inertia.y, 0.375F, 1e-4F);
+}
+
+TEST(InertiaTensorEdge, ZeroMassYieldsZeroInverses)
+{
+    // inv_or_zero guards against division by zero for massless bodies.
+    auto m = cd::physics::solid_sphere(0.0F, 1.0F);
+    EXPECT_FLOAT_EQ(m.inv_mass, 0.0F);
+    EXPECT_FLOAT_EQ(m.inv_inertia.x, 0.0F);
+}
+
+// ---------------------------------------------------------------------------
+// OBB / OBB separating-axis test (NEW primitive, Wave depth pass).
+// ---------------------------------------------------------------------------
+TEST(ObbSat, IdenticalBoxesOverlap)
+{
+    cd::physics::Obb a;  // unit AABB-aligned box at origin
+    cd::physics::Obb b;
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(ObbSat, FaceAxisSeparationOnX)
+{
+    cd::physics::Obb a;
+    cd::physics::Obb b;
+    b.center = cd::math::Vec3f { 1.001F, 0, 0 };  // gap just past 0.5+0.5
+    EXPECT_FALSE(cd::physics::intersects(a, b));
+    b.center = cd::math::Vec3f { 0.999F, 0, 0 };  // overlap by a hair
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(ObbSat, AxisAlignedTouchingFaceOverlaps)
+{
+    cd::physics::Obb a;
+    cd::physics::Obb b;
+    b.center = cd::math::Vec3f { 1.0F, 0, 0 };  // exactly touching faces
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(ObbSat, EdgeCrossAxisCatchesRotatedNearMiss)
+{
+    // Two boxes rotated 45° about Y so a face axis alone won't separate
+    // them, but an edge-edge cross axis does once pulled apart on the
+    // diagonal. Half-extent along a rotated diagonal of a unit box is
+    // sqrt(2)/2 ≈ 0.707; placing centers 2.0 apart on +x clears both.
+    const float c = 0.7071068F;
+    cd::physics::Obb a;
+    a.axis_x = cd::math::Vec3f { c, 0, -c };
+    a.axis_z = cd::math::Vec3f { c, 0, c };
+    cd::physics::Obb b = a;
+    b.center = cd::math::Vec3f { 2.0F, 0, 0 };
+    EXPECT_FALSE(cd::physics::intersects(a, b));
+    // Pull them close so the rotated corners interpenetrate.
+    b.center = cd::math::Vec3f { 1.2F, 0, 0 };
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(ObbSat, ParallelAxesEpsilonDoesNotFalseSeparate)
+{
+    // Perfectly parallel axes → some cross products are zero-length; the
+    // epsilon guard must keep a genuine overlap reported as overlapping.
+    cd::physics::Obb a;
+    cd::physics::Obb b;
+    b.center = cd::math::Vec3f { 0.5F, 0.5F, 0.5F };  // clearly overlapping
+    EXPECT_TRUE(cd::physics::intersects(a, b));
+}
+
+TEST(ObbSat, SeparationOnRotatedBAxis)
+{
+    // B rotated 45° about Z, separated along its own rotated x-axis.
+    const float c = 0.7071068F;
+    cd::physics::Obb a;
+    cd::physics::Obb b;
+    b.axis_x = cd::math::Vec3f { c, c, 0 };
+    b.axis_y = cd::math::Vec3f { -c, c, 0 };
+    // Move B far along world +x+y diagonal so no axis overlaps.
+    b.center = cd::math::Vec3f { 3, 3, 0 };
+    EXPECT_FALSE(cd::physics::intersects(a, b));
+}
+
+TEST(ObbSat, IntersectIsSymmetric)
+{
+    const float c = 0.7071068F;
+    cd::physics::Obb a;
+    a.axis_x = cd::math::Vec3f { c, 0, -c };
+    a.axis_z = cd::math::Vec3f { c, 0, c };
+    cd::physics::Obb b;
+    b.center = cd::math::Vec3f { 0.7F, 0, 0.3F };
+    EXPECT_EQ(cd::physics::intersects(a, b), cd::physics::intersects(b, a));
+}

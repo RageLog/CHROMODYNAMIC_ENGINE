@@ -326,3 +326,120 @@ TEST(Ktx2AssetLoader, AdapterDecodesValid)
     EXPECT_EQ(ka->ktx2().width, 4u);
     EXPECT_EQ(ka->ktx2().height, 4u);
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// Defensive deserialization: every corrupt header field must yield a typed
+// error rather than an out-of-bounds read.
+// =============================================================================
+
+namespace
+{
+using Code = cd::asset::ktx2::ktx2_errors::Code;
+constexpr std::uint32_t kBc7Unorm = static_cast<std::uint32_t>(cd::asset::ktx2::Ktx2VkFormat::kBC7_Unorm);
+
+// Header field byte offsets (after the 12-byte identifier).
+[[maybe_unused]] constexpr std::size_t kOffVkFormat = 12 + 4 * 0;
+constexpr std::size_t kOffPixelWidth = 12 + 4 * 2;
+constexpr std::size_t kOffPixelHeight = 12 + 4 * 3;
+constexpr std::size_t kOffPixelDepth = 12 + 4 * 4;
+constexpr std::size_t kOffLayerCount = 12 + 4 * 5;
+constexpr std::size_t kOffLevelCount = 12 + 4 * 7;
+
+void patch_u32(std::vector<std::uint8_t>& v, std::size_t off, std::uint32_t x)
+{
+    v[off + 0] = static_cast<std::uint8_t>(x);
+    v[off + 1] = static_cast<std::uint8_t>(x >> 8);
+    v[off + 2] = static_cast<std::uint8_t>(x >> 16);
+    v[off + 3] = static_cast<std::uint8_t>(x >> 24);
+}
+}  // namespace
+
+TEST(Ktx2Edge, HeaderTooSmallReturnsCorrupt)
+{
+    std::vector<std::uint8_t> tiny(40, 0);
+    auto r = cd::asset::ktx2::load_from_memory(tiny);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(Ktx2Edge, ZeroWidthReturnsCorrupt)
+{
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    patch_u32(bytes, kOffPixelWidth, 0u);
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(Ktx2Edge, ZeroHeightReturnsCorrupt)
+{
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    patch_u32(bytes, kOffPixelHeight, 0u);
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(Ktx2Edge, ThreeDimensionalTextureRejected)
+{
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    patch_u32(bytes, kOffPixelDepth, 4u);  // pixelDepth > 1
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kUnsupportedFormat));
+}
+
+TEST(Ktx2Edge, ArrayTextureRejected)
+{
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    patch_u32(bytes, kOffLayerCount, 8u);  // layerCount > 1
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kUnsupportedFormat));
+}
+
+TEST(Ktx2Edge, ZeroLevelCountReturnsCorrupt)
+{
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    patch_u32(bytes, kOffLevelCount, 0u);
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(Ktx2Edge, LevelTableTruncatedReturnsCorrupt)
+{
+    // Claim 4 levels but provide a single-level file: the level index table
+    // (4 * 24 = 96 bytes) won't fit after the 80-byte header.
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    patch_u32(bytes, kOffLevelCount, 4u);
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(Ktx2Edge, LevelByteRangeExceedingFileReturnsCorrupt)
+{
+    // Single level whose byte_length points past the end of the file.
+    auto bytes = build_minimal_ktx2(kBc7Unorm, 4, 4, std::vector<std::uint8_t>(16, 0));
+    // Level entry 0 starts at offset 80. byte_offset (u64) at 80, byte_length
+    // (u64) at 88. Inflate byte_length way past file size.
+    const std::size_t len_off = 80 + 8;
+    for (std::size_t k = 0; k < 8; ++k)
+        bytes[len_off + k] = 0xFF;
+    auto r = cd::asset::ktx2::load_from_memory(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(Ktx2Edge, MagicTruncatedByOneByteReturnsCorruptNotOob)
+{
+    // A file shorter than the header but with a valid magic prefix must hit
+    // the size guard, not read past the buffer.
+    std::vector<std::uint8_t> magic_only { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32,
+                                           0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+    auto r = cd::asset::ktx2::load_from_memory(magic_only);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}

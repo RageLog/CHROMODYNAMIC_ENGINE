@@ -256,3 +256,150 @@ TEST(CdMeshAssetLoader, AdapterDecodesValid)
     EXPECT_EQ(m->mesh().vertex_count, 1u);
     EXPECT_EQ(m->mesh().index_count, 1u);
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// decode() drives the binary framing directly so we can fuzz header fields.
+// =============================================================================
+
+namespace
+{
+using Code = cd::asset::cdmesh::cdmesh_errors::Code;
+
+constexpr std::size_t kHeaderSize = 52;
+
+// Build a 52-byte cdmesh header with caller-chosen fields, optionally
+// appending `payload_bytes` of body. Magic + version default to valid.
+std::vector<std::uint8_t> make_cdmesh_header(std::uint32_t vertex_count,
+                                             std::uint32_t index_count,
+                                             std::uint32_t vertex_stride,
+                                             std::uint32_t index_stride,
+                                             std::uint32_t version,
+                                             std::size_t payload_bytes,
+                                             bool good_magic = true)
+{
+    std::vector<std::uint8_t> b;
+    auto w32 = [&](std::uint32_t v)
+    {
+        b.push_back(static_cast<std::uint8_t>(v));
+        b.push_back(static_cast<std::uint8_t>(v >> 8));
+        b.push_back(static_cast<std::uint8_t>(v >> 16));
+        b.push_back(static_cast<std::uint8_t>(v >> 24));
+    };
+    if (good_magic)
+        for (char c : std::string_view { cd::asset::cdmesh::kMagic.data(), 4 })
+            b.push_back(static_cast<std::uint8_t>(c));
+    else
+        for (int i = 0; i < 4; ++i)
+            b.push_back(0u);
+    w32(version);
+    w32(0u);  // flags
+    w32(vertex_count);
+    w32(index_count);
+    w32(vertex_stride);
+    w32(index_stride);
+    for (int i = 0; i < 6; ++i)
+        w32(0u);  // bbox
+    b.resize(kHeaderSize + payload_bytes, 0u);
+    return b;
+}
+}  // namespace
+
+TEST(CdMeshEdge, NullBufferReturnsInvalidArgument)
+{
+    auto r = cd::asset::cdmesh::decode(nullptr, 128);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kInvalidArgument));
+}
+
+TEST(CdMeshEdge, HeaderTooSmallReturnsCorrupt)
+{
+    std::vector<std::uint8_t> tiny(40, 0u);
+    auto r = cd::asset::cdmesh::decode(tiny.data(), tiny.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdMeshEdge, BadMagicReturnsMagicMismatch)
+{
+    auto b = make_cdmesh_header(1, 0, 32, 4, cd::asset::cdmesh::kFormatVersion, 32, /*good_magic=*/false);
+    auto r = cd::asset::cdmesh::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kMagicMismatch));
+}
+
+TEST(CdMeshEdge, VersionMismatchReturnsVersionMismatch)
+{
+    auto b = make_cdmesh_header(1, 0, 32, 4, cd::asset::cdmesh::kFormatVersion + 99u, 32);
+    auto r = cd::asset::cdmesh::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kVersionMismatch));
+}
+
+TEST(CdMeshEdge, BadIndexStrideInDecodeReturnsCorrupt)
+{
+    auto b = make_cdmesh_header(1, 1, 32, 3 /*illegal*/, cd::asset::cdmesh::kFormatVersion, 64);
+    auto r = cd::asset::cdmesh::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdMeshEdge, ZeroVertexStrideInDecodeReturnsCorrupt)
+{
+    auto b = make_cdmesh_header(1, 0, 0 /*illegal*/, 4, cd::asset::cdmesh::kFormatVersion, 32);
+    auto r = cd::asset::cdmesh::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdMeshEdge, TruncatedPayloadInDecodeReturnsCorrupt)
+{
+    // Promise 100 verts * 32 stride = 3200 body bytes but provide none.
+    auto b = make_cdmesh_header(100, 0, 32, 4, cd::asset::cdmesh::kFormatVersion, /*payload_bytes=*/0);
+    auto r = cd::asset::cdmesh::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdMeshEdge, SaveRejectsVerticesSpanTooSmall)
+{
+    std::vector<std::uint8_t> vb(8, 0u);  // far too small for 4 verts * 32
+    std::vector<std::uint8_t> ib(16, 0u);
+    cd::asset::cdmesh::SaveDesc d {};
+    d.vertices = std::span<const std::uint8_t> { vb.data(), vb.size() };
+    d.indices = std::span<const std::uint8_t> { ib.data(), ib.size() };
+    d.vertex_count = 4;
+    d.index_count = 4;
+    d.vertex_stride = 32;
+    d.index_stride = 4;
+    auto r = cd::asset::cdmesh::save("never_written.cdmesh", d);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kInvalidArgument));
+}
+
+TEST(CdMeshEdge, SaveRejectsIndicesSpanTooSmall)
+{
+    std::vector<std::uint8_t> vb(static_cast<std::size_t>(4) * 32, 0u);
+    std::vector<std::uint8_t> ib(2, 0u);  // too small for 4 indices * 4
+    cd::asset::cdmesh::SaveDesc d {};
+    d.vertices = std::span<const std::uint8_t> { vb.data(), vb.size() };
+    d.indices = std::span<const std::uint8_t> { ib.data(), ib.size() };
+    d.vertex_count = 4;
+    d.index_count = 4;
+    d.vertex_stride = 32;
+    d.index_stride = 4;
+    auto r = cd::asset::cdmesh::save("never_written.cdmesh", d);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kInvalidArgument));
+}
+
+TEST(CdMeshEdge, SaveRejectsEmptyPath)
+{
+    cd::asset::cdmesh::SaveDesc d {};
+    d.vertex_count = 1;
+    d.vertex_stride = 32;
+    d.index_stride = 4;
+    auto r = cd::asset::cdmesh::save("", d);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kInvalidArgument));
+}

@@ -74,6 +74,38 @@ scrgb_pack(cd::math::Vec3f linear, float display_max_nits) noexcept
     return { linear.x * k, linear.y * k, linear.z * k };
 }
 
+/// scRGB unpacking: inverse of scrgb_pack.  Converts the FP16 framebuffer
+/// value back to linear scene-linear sRGB (nits relative to 1.0 = 80 nit ref).
+[[nodiscard]] inline cd::math::Vec3f
+scrgb_unpack(cd::math::Vec3f packed, float display_max_nits) noexcept
+{
+    const float k = 80.0F / std::max(display_max_nits, 1e-6F);
+    return { packed.x * k, packed.y * k, packed.z * k };
+}
+
+/// ITU-R BT.2020 primaries → CIE XYZ (D65) linear transform.
+/// Row-major 3×3 per ITU-R BT.2020 Table 2 (normalised to Y of white = 1).
+/// Reference: ITU-R BT.2020-2 (Oct 2015), Table 2.
+[[nodiscard]] inline cd::math::Vec3f
+rec2020_to_xyz(cd::math::Vec3f c) noexcept
+{
+    return {
+        0.6370F * c.x + 0.1446F * c.y + 0.1689F * c.z,
+        0.2627F * c.x + 0.6780F * c.y + 0.0593F * c.z,
+        0.0000F * c.x + 0.0281F * c.y + 1.0610F * c.z };
+}
+
+/// CIE XYZ (D65) → ITU-R BT.2020 primaries; inverse of rec2020_to_xyz.
+/// Reference: ITU-R BT.2020-2 (Oct 2015), Table 2 (matrix inverted).
+[[nodiscard]] inline cd::math::Vec3f
+xyz_to_rec2020(cd::math::Vec3f xyz) noexcept
+{
+    return {
+         1.7166F * xyz.x - 0.3557F * xyz.y - 0.2534F * xyz.z,
+        -0.6667F * xyz.x + 1.6165F * xyz.y + 0.0158F * xyz.z,
+         0.0176F * xyz.x - 0.0428F * xyz.y + 0.9421F * xyz.z };
+}
+
 // ---- GLSL helpers -----------------------------------------------------------
 
 constexpr std::string_view kHdrGlsl = R"glsl(

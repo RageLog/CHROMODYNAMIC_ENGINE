@@ -93,7 +93,7 @@ public:
     [[nodiscard]] bool contains(std::string_view key) const
     {
         std::shared_lock guard { mutex_ };
-        return vars_.find(std::string { key }) != vars_.end();
+        return vars_.contains(std::string { key });
     }
 
     void erase(std::string_view key)

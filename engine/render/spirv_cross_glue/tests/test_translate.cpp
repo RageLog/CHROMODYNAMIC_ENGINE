@@ -2,22 +2,23 @@
 // CHROMODYNAMIC — cd_test_spirv_cross_glue
 // B-infra1 — gtest for cd::spirv_cross_glue::translate()
 //
-// Test plan:
-//   1. SPIRV_CROSS_GLUE.TranslateToHlsl
-//      Compile a minimal fragment shader GLSL → SPIR-V (via cd::shader),
-//      translate SPIR-V → HLSL, verify non-empty output containing "cbuffer"
-//      (canonical HLSL uniform-block keyword introduced even for SM 5.1+).
-//
-//   2. SPIRV_CROSS_GLUE.TranslateToMsl
-//      Same SPIR-V → MSL, verify "#include <metal_stdlib>" marker.
-//
-//   3. SPIRV_CROSS_GLUE.RoundTripGlsl
-//      SPIR-V → GLSL (round-trip), verify non-empty compilable GLSL by
-//      re-compiling the emitted source with cd::shader and checking that
-//      the second compile also succeeds without error.
-//
-//   4. SPIRV_CROSS_GLUE.EmptyInput
-//      Negative: empty span → error string non-empty, ok() == false.
+// Test plan (16 tests — ADD-ONLY, no emit change, golden-safe):
+//   1.  TranslateToHlsl              — frag SPIR-V → HLSL; "cbuffer" marker
+//   2.  TranslateToMsl               — frag SPIR-V → MSL; "metal_stdlib" marker
+//   3.  RoundTripGlsl                — SPIR-V → GLSL → SPIR-V recompile check
+//   4.  EmptyInput                   — empty span → error, ok()==false
+//   5.  MalformedSpirvSurfacesError  — garbage words → exception→Result (all 3 targets)
+//   6.  TranslateHlslExplicitShaderModel — SM 5.1 explicit version → cbuffer
+//   7.  TranslateGlslExplicitVersionEmitsDirective — version=330 → #version 330
+//   8.  TranslateMslConfigReportsEntryPoint — cfg arg-buf=true → cleansed entry_point
+//   9.  TranslateMslReflectsComputeWorkgroupSize — compute 8×4×2 via cfg overload
+//  10.  TranslateMslFragmentWorkgroupIsUnit — frag 1×1×1 default via flat Target::kMsl
+//  11.  TranslateMslCfgEmptyInputReturnsError — cfg overload empty guard
+//  12.  TranslateMslCfgMalformedSpirvSurfacesError — cfg overload exception→Result
+//  13.  TranslateMslCfgFlatBindingSucceeds — argument_buffers=false flat path
+//  14.  TranslateMslFlatPathComputeWorkgroupSize — compute 8×4×2 via flat Target::kMsl
+//  15.  TranslateHlslPushConstantRemappedToSpace1 — push_constant→b0/space1 remap
+//  16.  TranslateGlslDefaultVersionEmits450 — version=0 auto-pick → #version 450
 //
 // Anti-flakiness: all operations are deterministic CPU transforms; no
 // sleep_for, no filesystem access, no network I/O.
@@ -340,6 +341,173 @@ TEST(SPIRV_CROSS_GLUE, TranslateMslFragmentWorkgroupIsUnit)
     EXPECT_EQ(result.workgroup.x, 1u);
     EXPECT_EQ(result.workgroup.y, 1u);
     EXPECT_EQ(result.workgroup.z, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 — translate_msl(span, cfg) empty-input guard
+// ---------------------------------------------------------------------------
+// The public translate_msl(span, cfg) overload has its own early-exit for an
+// empty span (Translate.cpp line ~386-388) — distinct from translate()'s guard.
+// Verifies that the cfg overload also surfaces an error (not a crash) on empty
+// input.
+TEST(SPIRV_CROSS_GLUE, TranslateMslCfgEmptyInputReturnsError)
+{
+    const std::span<const std::uint32_t> empty_span {};
+    cd::spirv_cross_glue::MslBindingConfig cfg {};
+
+    const auto result = cd::spirv_cross_glue::translate_msl(empty_span, cfg);
+
+    EXPECT_FALSE(result.ok())          << "Expected failure on empty input (cfg overload)";
+    EXPECT_FALSE(result.error.empty()) << "Expected non-empty error string";
+    EXPECT_TRUE(result.source.empty()) << "Expected empty source on failure";
+}
+
+// ---------------------------------------------------------------------------
+// Test 12 — translate_msl(span, cfg) malformed SPIR-V → exception → Result
+// ---------------------------------------------------------------------------
+// Exercises the exception→TranslateResult conversion in the cfg overload
+// (translate_msl_impl's catch block). Garbage words cause CompilerMSL to throw
+// CompilerError; the API must catch and surface it as a populated error string.
+TEST(SPIRV_CROSS_GLUE, TranslateMslCfgMalformedSpirvSurfacesError)
+{
+    const std::array<std::uint32_t, 4> garbage { 0xDEADBEEFu, 0x00000001u, 0u, 0u };
+    const std::span<const std::uint32_t> bad { garbage };
+    cd::spirv_cross_glue::MslBindingConfig cfg {};
+
+    const auto result = cd::spirv_cross_glue::translate_msl(bad, cfg);
+
+    EXPECT_FALSE(result.ok())          << "Malformed SPIR-V must fail (cfg overload)";
+    EXPECT_FALSE(result.error.empty()) << "Error string must be populated";
+    EXPECT_TRUE(result.source.empty()) << "No source on failure";
+}
+
+// ---------------------------------------------------------------------------
+// Test 13 — translate_msl(cfg) with argument_buffers=false (flat-binding)
+// ---------------------------------------------------------------------------
+// The cfg overload's non-default flat-binding path (argument_buffers=false) is
+// a distinct code path in translate_msl_impl; the default is true (Tests 8/9
+// cover the true path). Verifies that disabling argument buffers still produces
+// valid MSL with the metal_stdlib include marker.
+TEST(SPIRV_CROSS_GLUE, TranslateMslCfgFlatBindingSucceeds)
+{
+    auto spirv = compile_to_spirv();
+    if (spirv.empty())
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    cd::spirv_cross_glue::MslBindingConfig cfg {};
+    cfg.argument_buffers = false;  // classic flat-binding; non-default path
+
+    const auto result = cd::spirv_cross_glue::translate_msl(
+        std::span<const std::uint32_t>{ spirv }, cfg);
+
+    ASSERT_TRUE(result.ok()) << "MSL flat-binding translate error: " << result.error;
+    EXPECT_NE(result.source.find("#include <metal_stdlib>"), std::string::npos)
+        << "Expected '#include <metal_stdlib>' in flat-binding MSL output";
+    EXPECT_FALSE(result.entry_point.empty())
+        << "translate_msl(cfg) must report the cleansed entry point even with flat binding";
+}
+
+// ---------------------------------------------------------------------------
+// Test 14 — Compute shader via flat-binding Target::kMsl workgroup reflection
+// ---------------------------------------------------------------------------
+// The flat-binding translate_msl() free function (Translate.cpp lines 318-350)
+// also performs workgroup reflection on the compile() output. Tests 9/10 hit
+// the translate_msl_impl path (cfg overload); this test exercises the parallel
+// workgroup-reflection code inside the flat-binding free function directly.
+TEST(SPIRV_CROSS_GLUE, TranslateMslFlatPathComputeWorkgroupSize)
+{
+    auto spirv = compile_stage(kComputeSrc, cd::shader::ShaderStage::kCompute,
+                               "test_compute_flat.glsl");
+    if (spirv.empty())
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    // Use Target::kMsl (routes through the flat-binding free function, not cfg).
+    const auto result = cd::spirv_cross_glue::translate(
+        std::span<const std::uint32_t>{ spirv },
+        cd::spirv_cross_glue::Target::kMsl);
+
+    ASSERT_TRUE(result.ok()) << "MSL flat-path compute translate error: " << result.error;
+    // The compute shader declares layout(local_size_x=8, local_size_y=4, local_size_z=2).
+    EXPECT_EQ(result.workgroup.x, 8u) << "workgroup.x mismatch on flat-binding path";
+    EXPECT_EQ(result.workgroup.y, 4u) << "workgroup.y mismatch on flat-binding path";
+    EXPECT_EQ(result.workgroup.z, 2u) << "workgroup.z mismatch on flat-binding path";
+}
+
+// ---------------------------------------------------------------------------
+// Test 15 — HLSL push_constant remap: SM>=51 → b0/space1
+// ---------------------------------------------------------------------------
+// Exercises the push_constant remap branch in translate_hlsl (Translate.cpp
+// lines 143-165). This branch fires when SM>=51 AND the module has a
+// push_constant block. A vertex shader with layout(push_constant) compiled to
+// SPIR-V is used. SPIRV-Cross must emit the push_constant cbuffer pinned to
+// b0/space1 (not the default b0/space0 collision). The emitted HLSL should
+// contain "space1" or "_11" to confirm the remap ran.
+TEST(SPIRV_CROSS_GLUE, TranslateHlslPushConstantRemappedToSpace1)
+{
+    // Fragment shader with a push_constant block. Compiled under Vulkan semantics
+    // (kVulkan13 default), push_constant is a valid layout qualifier.
+    constexpr const char* kPushConstSrc = R"glsl(
+#version 450
+layout(push_constant) uniform PushData {
+    vec4 offset;
+    float scale;
+} u_push;
+layout(location = 0) out vec4 out_color;
+void main() {
+    out_color = u_push.offset * u_push.scale;
+}
+)glsl";
+
+    auto spirv = compile_stage(kPushConstSrc, cd::shader::ShaderStage::kFragment,
+                               "test_push_const.glsl");
+    if (spirv.empty())
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    // SM 51 triggers the push_constant remap path (sm >= 51U condition).
+    const auto result = cd::spirv_cross_glue::translate(
+        std::span<const std::uint32_t>{ spirv },
+        cd::spirv_cross_glue::Target::kHlsl,
+        51u);
+
+    ASSERT_TRUE(result.ok()) << "HLSL push_constant translate error: " << result.error;
+    EXPECT_FALSE(result.source.empty());
+    // SPIRV-Cross emits push_constant as "cbuffer ... : register(b0, space1)"
+    // after the remap. "space1" is the canonical marker.
+    EXPECT_NE(result.source.find("space1"), std::string::npos)
+        << "Expected 'space1' in HLSL output after push_constant remap.\n"
+        << "Actual output:\n" << result.source;
+}
+
+// ---------------------------------------------------------------------------
+// Test 16 — GLSL version 0 auto-pick emits #version 450
+// ---------------------------------------------------------------------------
+// translate(..., kGlsl, 0) takes the auto-pick branch (version == 0U) in
+// translate_glsl, setting opts.version = kDefaultGlslVersion = 450. The
+// emitted GLSL must contain "#version 450" (Test 7 covers explicit 330 but
+// not the default-version branch).
+TEST(SPIRV_CROSS_GLUE, TranslateGlslDefaultVersionEmits450)
+{
+    auto spirv = compile_to_spirv();
+    if (spirv.empty())
+    {
+        GTEST_SKIP() << "engine built without CD_ENABLE_GLSLANG";
+    }
+
+    // version=0 → auto-pick → #version 450
+    const auto result = cd::spirv_cross_glue::translate(
+        std::span<const std::uint32_t>{ spirv },
+        cd::spirv_cross_glue::Target::kGlsl,
+        0u);
+
+    ASSERT_TRUE(result.ok()) << "GLSL default-version translate error: " << result.error;
+    EXPECT_NE(result.source.find("#version 450"), std::string::npos)
+        << "Expected '#version 450' from auto-pick path.\nActual:\n" << result.source;
 }
 
 }  // namespace

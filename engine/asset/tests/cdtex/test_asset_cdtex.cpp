@@ -294,3 +294,114 @@ TEST(CdTexAssetLoader, AdapterRejectsBadMagic)
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset::cdtex::cdtex_errors::Code::kMagicMismatch));
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// decode() directly so corrupt headers are exercised without disk round-trips.
+// =============================================================================
+
+namespace
+{
+using Code = cd::asset::cdtex::cdtex_errors::Code;
+
+// Build an 18-byte v1 header (+ optional payload). block_w/block_h are taken
+// verbatim (callers fuzz them); version defaults to 1.
+std::vector<std::uint8_t> make_cdtex_v1(std::uint32_t w,
+                                        std::uint32_t h,
+                                        std::uint16_t block_w,
+                                        std::uint16_t block_h,
+                                        std::size_t payload_bytes,
+                                        std::uint8_t version = 1)
+{
+    std::vector<std::uint8_t> b;
+    auto w32 = [&](std::uint32_t v)
+    {
+        b.push_back(static_cast<std::uint8_t>(v));
+        b.push_back(static_cast<std::uint8_t>(v >> 8));
+        b.push_back(static_cast<std::uint8_t>(v >> 16));
+        b.push_back(static_cast<std::uint8_t>(v >> 24));
+    };
+    auto w16 = [&](std::uint16_t v)
+    {
+        b.push_back(static_cast<std::uint8_t>(v));
+        b.push_back(static_cast<std::uint8_t>(v >> 8));
+    };
+    for (char c : std::string_view { "CDBC7", 5 })
+        b.push_back(static_cast<std::uint8_t>(c));
+    b.push_back(version);
+    w32(w);
+    w32(h);
+    w16(block_w);
+    w16(block_h);
+    b.resize(18 + payload_bytes, 0u);
+    return b;
+}
+}  // namespace
+
+TEST(CdTexEdge, NullBufferReturnsInvalidArgument)
+{
+    auto r = cd::asset::cdtex::decode(nullptr, 64);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kInvalidArgument));
+}
+
+TEST(CdTexEdge, HeaderTooSmallReturnsCorrupt)
+{
+    std::vector<std::uint8_t> tiny(10, 0u);
+    auto r = cd::asset::cdtex::decode(tiny.data(), tiny.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdTexEdge, ZeroBlockGridReturnsCorrupt)
+{
+    auto b = make_cdtex_v1(4, 4, 0 /*block_w==0*/, 1, 16);
+    auto r = cd::asset::cdtex::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdTexEdge, V1TruncatedPayloadReturnsCorrupt)
+{
+    // 64x64 → 16x16 blocks → 256 blocks * 16 = 4096 bytes promised, none given.
+    auto b = make_cdtex_v1(64, 64, 16, 16, /*payload_bytes=*/0);
+    auto r = cd::asset::cdtex::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdTexEdge, V2MipCountByteTruncatedReturnsCorrupt)
+{
+    // version 2 but no mip_count byte after the 18-byte header.
+    auto b = make_cdtex_v1(8, 8, 2, 2, /*payload_bytes=*/0, /*version=*/2);
+    auto r = cd::asset::cdtex::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdTexEdge, V2MipCountZeroReturnsCorrupt)
+{
+    auto b = make_cdtex_v1(8, 8, 2, 2, /*payload_bytes=*/1, /*version=*/2);
+    b[18] = 0u;  // mip_count == 0
+    auto r = cd::asset::cdtex::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdTexEdge, V2TruncatedMipPayloadReturnsCorrupt)
+{
+    // mip_count=4 for an 8x8 texture but no actual mip bytes follow.
+    auto b = make_cdtex_v1(8, 8, 2, 2, /*payload_bytes=*/1, /*version=*/2);
+    b[18] = 4u;  // mip_count
+    auto r = cd::asset::cdtex::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(CdTexEdge, BadVersionInDecodeReturnsVersionMismatch)
+{
+    auto b = make_cdtex_v1(4, 4, 1, 1, 16, /*version=*/3);  // only 1 and 2 valid
+    auto r = cd::asset::cdtex::decode(b.data(), b.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kVersionMismatch));
+}

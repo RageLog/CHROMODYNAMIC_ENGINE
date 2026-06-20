@@ -193,3 +193,145 @@ TEST(WavAssetLoader, AdapterPropagatesDecodeErrors)
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(cd::asset::wav::wav_errors::Code::kCorrupt));
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// Defensive deserialization: corrupt input must yield a typed error, never UB.
+// =============================================================================
+
+namespace
+{
+using Code = cd::asset::wav::wav_errors::Code;
+
+void patch_u32_le(std::vector<std::byte>& v, std::size_t off, std::uint32_t x)
+{
+    v[off + 0] = std::byte { static_cast<unsigned char>(x & 0xFFu) };
+    v[off + 1] = std::byte { static_cast<unsigned char>((x >> 8u) & 0xFFu) };
+    v[off + 2] = std::byte { static_cast<unsigned char>((x >> 16u) & 0xFFu) };
+    v[off + 3] = std::byte { static_cast<unsigned char>((x >> 24u) & 0xFFu) };
+}
+}  // namespace
+
+TEST(AssetWavEdge, MissingWaveFourccReturnsMagicMismatch)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // Corrupt the "WAVE" fourcc at offset 8.
+    bytes[8] = std::byte { 'X' };
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kMagicMismatch));
+}
+
+TEST(AssetWavEdge, RiffSizeExceedingBufferReturnsCorrupt)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // riff_size lives at offset 4. Inflate it well past the buffer length.
+    patch_u32_le(bytes, 4, 0xFFFFFF00u);
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, FmtChunkSizeUnderSixteenReturnsCorrupt)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // "fmt " header is at offset 12; its size field at offset 16. Setting it
+    // below 16 means the parser would read out of bounds — it must reject.
+    // Shrink fmt size to 8; the chunk-bounds check fires first (payload of 8
+    // < 16), so this exercises the chunk-extends OR fmt<16 path.
+    patch_u32_le(bytes, 16, 8u);
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, ZeroChannelsReturnsCorrupt)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // channels field is the 2nd u16 of fmt payload: offset 12(hdr)+8(payload start)
+    // +2 = 22.
+    bytes[22] = std::byte { 0 };
+    bytes[23] = std::byte { 0 };
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, ZeroSampleRateReturnsCorrupt)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // sample_rate is at fmt payload +4 = offset 24.
+    patch_u32_le(bytes, 24, 0u);
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, NonMultipleOfEightBitsReturnsCorrupt)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // bits_per_sample is fmt payload +14 = offset 34. 12 bits is not a
+    // multiple of 8 → malformed fmt fields.
+    bytes[34] = std::byte { 12 };
+    bytes[35] = std::byte { 0 };
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, DataChunkSizeExceedingBufferReturnsCorrupt)
+{
+    auto bytes = make_minimal_wav(1, 44100, 16, 8);
+    // data chunk header is the last 8-byte header before payload. Its size
+    // field sits 4 bytes into that header. Locate "data" then inflate.
+    // Layout: 12 (RIFF/WAVE) + 8 (fmt hdr) + 16 (fmt payload) = 36 is the
+    // data header start; size field at 36+4 = 40.
+    patch_u32_le(bytes, 40, 0xFFFFFFFEu);
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, NoDataChunkReturnsCorrupt)
+{
+    // fmt-only WAV (no data chunk). Decode must report kCorrupt "no data".
+    std::vector<std::byte> v;
+    push_tag(v, "RIFF");
+    push_u32_le(v, 0);  // backpatched below
+    push_tag(v, "WAVE");
+    push_tag(v, "fmt ");
+    push_u32_le(v, 16);
+    push_u16_le(v, 1);
+    push_u16_le(v, 1);
+    push_u32_le(v, 44100);
+    push_u32_le(v, 44100 * 2);
+    push_u16_le(v, 2);
+    push_u16_le(v, 16);
+    const auto total = static_cast<std::uint32_t>(v.size());
+    patch_u32_le(v, 4, total - 8u);
+    // Pad to 44 bytes so the size>=44 guard is satisfied and the chunk walk
+    // is what actually trips (otherwise kCorrupt comes from the size guard).
+    while (v.size() < 44)
+        v.push_back(std::byte { 0 });
+    patch_u32_le(v, 4, static_cast<std::uint32_t>(v.size()) - 8u);
+    auto r = cd::asset::wav::decode(v.data(), v.size());
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, NullDataPointerReturnsCorrupt)
+{
+    auto r = cd::asset::wav::decode(nullptr, 128);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kCorrupt));
+}
+
+TEST(AssetWavEdge, EightChannelPcmDecodesFrameCount)
+{
+    // Multi-channel (7.1) PCM is explicitly accepted per the header contract.
+    auto bytes = make_minimal_wav(8, 48000, 16, 100);
+    auto r = cd::asset::wav::decode(bytes.data(), bytes.size());
+    ASSERT_TRUE(r.has_value()) << r.error().message;
+    EXPECT_EQ(r->channels, 8u);
+    EXPECT_EQ(r->frame_count(), 100u);
+}

@@ -298,3 +298,249 @@ TEST(CVarBridgeTest, NullValueLeavesCVarUntouched)
     ASSERT_TRUE(kept);
     EXPECT_EQ(std::get<std::int64_t>(*kept), 99);
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// Every assertion below verifies the EXISTING parser contract — no decode
+// output for valid inputs is altered.
+// =============================================================================
+
+namespace
+{
+using cd::asset::json::json_errors::Code;
+
+[[nodiscard]] std::uint32_t err_of(const cd::core::Result<Value>& r)
+{
+    return r.error().code;
+}
+}  // namespace
+
+TEST(AssetJsonEdge, EmptyInputIsUnexpectedToken)
+{
+    auto v = parse("");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, WhitespaceOnlyIsUnexpectedToken)
+{
+    auto v = parse("   \t\n\r  ");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, LeadingPlusInNumberRejected)
+{
+    // from_chars rejects a leading '+', and the scanner consumes it into the
+    // token, so r.ptr != last → kBadNumber.
+    auto v = parse("+5");
+    ASSERT_FALSE(v.has_value());
+    // '+' is not a value-start char → kUnexpectedToken (parse_value never
+    // dispatches to parse_number for '+').
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, LoneMinusIsBadNumber)
+{
+    auto v = parse("-");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kBadNumber));
+}
+
+TEST(AssetJsonEdge, TrailingDotIsParsedLeniently)
+{
+    // This hand-written parser is LENIENT about a trailing dot: "1." parses as
+    // 1.0 (a documented deviation from strict RFC-8259). Locked as a regression
+    // guard against an accidental behaviour change.
+    auto v = parse("1.");
+    ASSERT_TRUE(v.has_value());
+}
+
+TEST(AssetJsonEdge, DoubleExponentIsBadNumber)
+{
+    auto v = parse("1e3e4");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kBadNumber));
+}
+
+TEST(AssetJsonEdge, RawControlCharInStringRejected)
+{
+    // An embedded raw newline (0x0A) inside a string is illegal per RFC 8259.
+    const std::string src = std::string { "\"ab" } + '\n' + "cd\"";
+    auto v = parse(src);
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnterminatedString));
+}
+
+TEST(AssetJsonEdge, UnicodeEscapeTruncatedRejected)
+{
+    auto v = parse(R"json("\u12")json");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kBadEscape));
+}
+
+TEST(AssetJsonEdge, UnicodeEscapeNonHexRejected)
+{
+    auto v = parse(R"json("\u12zz")json");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kBadEscape));
+}
+
+TEST(AssetJsonEdge, UnicodeEscapeAsciiRangeDecodesOneByte)
+{
+    // U+0041 'A' → single ASCII byte.
+    auto v = parse(R"json("A")json");
+    ASSERT_TRUE(v.has_value()) << v.error().message;
+    EXPECT_EQ(v->as_string(), "A");
+}
+
+TEST(AssetJsonEdge, UnicodeEscapeBmpThreeByteUtf8)
+{
+    // U+20AC EURO SIGN → 0xE2 0x82 0xAC (3-byte UTF-8).
+    auto v = parse(R"json("€")json");
+    ASSERT_TRUE(v.has_value()) << v.error().message;
+    EXPECT_EQ(v->as_string(), std::string { "\xE2\x82\xAC" });
+}
+
+TEST(AssetJsonEdge, LoneBackslashAtEndOfStringRejected)
+{
+    // String content is just a backslash then EOF.
+    const std::string src = "\"\\";
+    auto v = parse(src);
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kBadEscape));
+}
+
+TEST(AssetJsonEdge, TrailingCommaInArrayRejected)
+{
+    auto v = parse("[1,2,]");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, TrailingCommaInObjectRejected)
+{
+    auto v = parse(R"({"a":1,})");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, MissingColonInObjectRejected)
+{
+    auto v = parse(R"({"a" 1})");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, UnterminatedObjectRejected)
+{
+    auto v = parse(R"({"a":1)");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, UnterminatedArrayRejected)
+{
+    auto v = parse("[1,2");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, NonStringObjectKeyRejected)
+{
+    auto v = parse("{1:2}");
+    ASSERT_FALSE(v.has_value());
+    EXPECT_EQ(err_of(v), static_cast<std::uint32_t>(Code::kUnexpectedToken));
+}
+
+TEST(AssetJsonEdge, DuplicateKeyLastWins)
+{
+    // The parser stores into a std::map: a repeated key overwrites.
+    auto v = parse(R"({"a":1,"a":2})");
+    ASSERT_TRUE(v.has_value()) << v.error().message;
+    ASSERT_TRUE(v->is_object());
+    EXPECT_EQ(v->as_object().size(), 1u);
+    EXPECT_EQ(v->at("a").value()->as_number(), 2.0);
+}
+
+TEST(AssetJsonEdge, DepthLimitBoundaryObjectsExactlyAtLimitPasses)
+{
+    // Nesting at exactly max_depth must succeed; depth+1 over it must fail.
+    // Build N nested single-key objects. parse_value is called at depth 0 for
+    // the root, then object members recurse at depth+1.
+    constexpr int kN = 8;
+    std::string deep;
+    for (int i = 0; i < kN; ++i)
+        deep += R"({"k":)";
+    deep += "1";
+    for (int i = 0; i < kN; ++i)
+        deep += "}";
+    auto ok = parse(deep, kN);
+    EXPECT_TRUE(ok.has_value()) << (ok.has_value() ? "" : ok.error().message);
+
+    auto bust = parse(deep, 2);
+    ASSERT_FALSE(bust.has_value());
+    EXPECT_EQ(err_of(bust), static_cast<std::uint32_t>(Code::kDepthLimit));
+}
+
+TEST(AssetJsonEdge, AtIndexOnObjectIsTypeMismatch)
+{
+    auto v = parse(R"({"a":1})");
+    ASSERT_TRUE(v.has_value());
+    auto r = v->at(std::size_t { 0 });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kTypeMismatch));
+}
+
+TEST(AssetJsonEdge, AtStringOnArrayIsTypeMismatch)
+{
+    auto v = parse("[1,2,3]");
+    ASSERT_TRUE(v.has_value());
+    auto r = v->at("a");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kTypeMismatch));
+}
+
+TEST(AssetJsonEdge, AtIndexOutOfRangeIsKeyNotFound)
+{
+    auto v = parse("[10,20]");
+    ASSERT_TRUE(v.has_value());
+    auto r = v->at(std::size_t { 5 });
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kKeyNotFound));
+}
+
+TEST(AssetJsonEdge, NegativeZeroAndExponentRoundTrip)
+{
+    auto v = parse("[-0, 1E2, 5e-1]");
+    ASSERT_TRUE(v.has_value()) << v.error().message;
+    const auto& a = v->as_array();
+    ASSERT_EQ(a.size(), 3u);
+    EXPECT_EQ(a[0].as_number(), 0.0);
+    EXPECT_NEAR(a[1].as_number(), 100.0, 1e-9);
+    EXPECT_NEAR(a[2].as_number(), 0.5, 1e-12);
+}
+
+TEST(AssetJsonEdge, SerializeEscapesEmbeddedControlChar)
+{
+    // A raw 0x01 must serialise to a  escape, then parse back equal.
+    Value v { std::string { "x\x01y" } };
+    const auto txt = serialize(v);
+    EXPECT_NE(txt.find("\\u0001"), std::string::npos);
+    auto re = parse(txt);
+    ASSERT_TRUE(re.has_value()) << re.error().message;
+    EXPECT_EQ(re->as_string(), v.as_string());
+}
+
+TEST(AssetJsonEdge, DeeplyNestedArrayWithinDefaultLimitParses)
+{
+    // 60 levels — within the 64 default — must succeed cleanly.
+    std::string deep;
+    for (int i = 0; i < 60; ++i)
+        deep += '[';
+    deep += "0";
+    for (int i = 0; i < 60; ++i)
+        deep += ']';
+    auto v = parse(deep);
+    ASSERT_TRUE(v.has_value()) << v.error().message;
+}

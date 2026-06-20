@@ -338,3 +338,98 @@ TEST(ImageAssetLoader, AdapterDecodesBmp)
     EXPECT_EQ(ia->image().width, 2u);
     EXPECT_EQ(ia->image().height, 2u);
 }
+
+// =============================================================================
+// Robustness / edge / negative coverage (≥80→100 marathon, ADD-ONLY).
+// stb-backed decode of VALID inputs is unchanged; these probe the rejection
+// paths and the engine-side mip generator.
+// =============================================================================
+
+namespace
+{
+using ImgCode = cd::asset::image::image_errors::Code;
+}  // namespace
+
+TEST(AssetImageEdge, EmptyMemoryBufferReturnsInvalidArgument)
+{
+    auto r = cd::asset::image::load_image_from_memory(std::span<const std::uint8_t> {});
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(ImgCode::kInvalidArgument));
+}
+
+TEST(AssetImageEdge, TruncatedBmpHeaderReturnsDecodeFailed)
+{
+    // Valid "BM" magic but the file is cut off mid-header — stb must reject it.
+    auto bmp = make_2x2_bmp();
+    bmp.resize(10);  // keep "BM" + a few bytes, drop the rest
+    auto r = cd::asset::image::load_image_from_memory(std::span<const std::uint8_t>(bmp.data(), bmp.size()));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(ImgCode::kDecodeFailed));
+}
+
+TEST(AssetImageEdge, HeaderOnlyBmpDecodedLeniently)
+{
+    // Header claims 2x2 24bpp but the 54-byte buffer carries no pixel rows.
+    // stb respects the buffer length (no OOB read) and LENIENTLY produces a
+    // 2x2 image rather than failing. Locked as a regression guard — a stricter
+    // pre-validation would instead return kDecodeFailed here.
+    auto bmp = make_2x2_bmp();
+    bmp.resize(54);  // exactly the 54-byte header, no pixel rows
+    auto r = cd::asset::image::load_image_from_memory(std::span<const std::uint8_t>(bmp.data(), bmp.size()));
+    EXPECT_TRUE(r.has_value());
+}
+
+TEST(AssetImageEdge, SingleByteBufferReturnsDecodeFailed)
+{
+    const std::array<std::uint8_t, 1> one { 0x42 };
+    auto r = cd::asset::image::load_image_from_memory(std::span<const std::uint8_t>(one.data(), one.size()));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(ImgCode::kDecodeFailed));
+}
+
+TEST(AssetImageEdge, GenerateMipsRgbaTooSmallRejected)
+{
+    cd::asset::image::Image src;
+    src.width = 16;
+    src.height = 16;
+    src.rgba.assign(8, 0u);  // far smaller than 16*16*4
+    auto r = cd::asset::image::generate_mips(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(ImgCode::kInvalidArgument));
+}
+
+TEST(AssetImageEdge, GenerateMipsLevelsOneReturnsSourceOnly)
+{
+    cd::asset::image::Image src;
+    src.width = 64;
+    src.height = 64;
+    src.rgba.assign(static_cast<std::size_t>(64U) * 64U * 4U, 50U);
+    auto r = cd::asset::image::generate_mips(src, 1);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(r->size(), 1U);
+    EXPECT_EQ((*r)[0].width, 64U);
+    EXPECT_EQ((*r)[0].height, 64U);
+}
+
+TEST(AssetImageEdge, GenerateMipsZeroHeightRejected)
+{
+    cd::asset::image::Image src;
+    src.width = 16;
+    src.height = 0;
+    auto r = cd::asset::image::generate_mips(src);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(ImgCode::kInvalidArgument));
+}
+
+TEST(AssetImageEdge, OnePixelImageGeneratesSingleMip)
+{
+    cd::asset::image::Image src;
+    src.width = 1;
+    src.height = 1;
+    src.rgba.assign(4U, 222U);
+    auto r = cd::asset::image::generate_mips(src);
+    ASSERT_TRUE(r.has_value());
+    // A 1x1 source has no smaller mip — the chain is just the source.
+    ASSERT_EQ(r->size(), 1U);
+    EXPECT_EQ((*r)[0].width, 1U);
+}
