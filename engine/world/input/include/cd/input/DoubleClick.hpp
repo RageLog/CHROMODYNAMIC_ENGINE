@@ -24,6 +24,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <cstdint>
 
 namespace cd::input
@@ -34,8 +35,7 @@ class DoubleClick
 public:
     void set_threshold(float seconds) noexcept
     {
-        if (seconds < 0.0F) seconds = 0.0F;
-        threshold_ = seconds;
+        threshold_ = std::max(seconds, 0.0F);
     }
 
     [[nodiscard]] float threshold() const noexcept { return threshold_; }

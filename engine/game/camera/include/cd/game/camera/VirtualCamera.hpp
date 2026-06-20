@@ -194,12 +194,14 @@ public:
 
     /// Register a copy of `vcam` with the brain.  The provided `priority`
     /// overrides `vcam.priority()` (mirrors Cinemachine Authoring API).
-    Id add_vcam(VirtualCamera vcam, std::int32_t priority);
+    /// The returned Id is the only handle to this vcam; discarding it
+    /// makes the registration permanent until the brain is destroyed.
+    CD_NODISCARD Id add_vcam(VirtualCamera vcam, std::int32_t priority);
 
     /// Remove the vcam previously returned by `add_vcam`.  Returns true if
     /// `id` was known.  If it was the live vcam, the brain transitions to
     /// the new winner on the next tick via its `blend_in`.
-    bool remove_vcam(Id id);
+    CD_NODISCARD bool remove_vcam(Id id);
 
     /// Direct mutable access to a registered vcam (priority changes, target
     /// re-bind, etc).  Returns nullptr for unknown ids.

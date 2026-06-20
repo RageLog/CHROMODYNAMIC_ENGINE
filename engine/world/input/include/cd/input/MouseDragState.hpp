@@ -16,6 +16,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <cmath>
 
 namespace cd::input
@@ -26,8 +27,7 @@ class MouseDragState
 public:
     void set_threshold(float pixels) noexcept
     {
-        if (pixels < 0.0F) pixels = 0.0F;
-        threshold_ = pixels;
+        threshold_ = std::max(pixels, 0.0F);
     }
 
     void on_press(float x, float y) noexcept

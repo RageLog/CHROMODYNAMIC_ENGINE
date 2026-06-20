@@ -59,6 +59,16 @@ double TimeKeeper::time_scale(TimerCategory category) const noexcept
     return channels_[index_of(category)].time_scale;
 }
 
+double TimeKeeper::scaled_delta(TimerCategory category) const noexcept
+{
+    const auto& ch = channels_[index_of(category)];
+    if (ch.paused)
+    {
+        return 0.0;
+    }
+    return ch.delta_seconds * ch.time_scale;
+}
+
 GameTime TimeKeeper::get(TimerCategory category) const noexcept
 {
     const auto& ch = channels_[index_of(category)];

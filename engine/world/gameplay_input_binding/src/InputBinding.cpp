@@ -36,6 +36,9 @@ constexpr float kAxisPressThreshold = 0.5F;
 
 // -----------------------------------------------------------------------------
 // resolve_binding — see header for contract.
+// NOTE: dead-zone and clamp are applied by update() after aggregation so that
+// multi-binding dominant selection sees raw magnitudes, then post-processes.
+// resolve_binding itself only applies invert + threshold on the raw value.
 // -----------------------------------------------------------------------------
 void ActionMap::resolve_binding(const InputBinding&     binding,
                                 const RawInputSnapshot& snapshot,
@@ -61,8 +64,11 @@ void ActionMap::resolve_binding(const InputBinding&     binding,
             return;
         }
         float v = axis_it->second;
-        if (invert) v = -v;
+        // Clamp raw input to [-1, 1] — hardware can occasionally exceed range.
+        v = std::clamp(v, -1.0F, 1.0F);
+        if (invert) { v = -v; }
         out_axis    = v;
+        // Threshold test deferred — update() applies dead-zone first.
         out_pressed = std::fabs(v) >= kAxisPressThreshold;
         return;
     }
@@ -73,7 +79,7 @@ void ActionMap::resolve_binding(const InputBinding&     binding,
     {
         return;
     }
-    if (dev_it->second.find(binding.scancode_or_button) != dev_it->second.end())
+    if (dev_it->second.contains(binding.scancode_or_button))
     {
         out_pressed = true;
         out_axis    = 1.0F;
@@ -222,6 +228,39 @@ void ActionMap::update(const RawInputSnapshot& snapshot)
             }
         }
 
+        // Apply per-action dead-zone: if the dominant axis magnitude is below
+        // the dead-zone the value collapses to 0.  Re-derive `any_pressed` so
+        // that an axis stuck in the dead-zone does not register as a press.
+        // Button bindings are not affected by the dead-zone (they are binary).
+        if (rec.dead_zone > 0.0F && std::fabs(axis_signed) < rec.dead_zone)
+        {
+            axis_signed = 0.0F;
+            // Recompute pressed from button bindings only — their contribution
+            // stands regardless; axis bindings that fell into dead-zone lose
+            // their press vote.
+            bool button_pressed = false;
+            bool axis_pressed   = false;
+            for (const auto& b : rec.bindings)
+            {
+                bool  p = false;
+                float v = 0.0F;
+                resolve_binding(b, snapshot, p, v);
+                if (is_axis_device(b.device))
+                {
+                    // Count this axis binding's press only if its absolute
+                    // value clears the dead-zone.
+                    if (std::fabs(v) >= rec.dead_zone) { axis_pressed = axis_pressed || p; }
+                }
+                else
+                {
+                    button_pressed = button_pressed || p;
+                }
+            }
+            any_pressed = button_pressed || axis_pressed;
+        }
+        // Final clamp — ensures axis_value() always stays in [-1, 1].
+        axis_signed = std::clamp(axis_signed, -1.0F, 1.0F);
+
         rec.pressed_now = any_pressed;
         rec.axis        = axis_signed;
 
@@ -249,10 +288,27 @@ bool ActionMap::is_action_pressed(const std::string& action_name) const noexcept
     return rec != nullptr && rec->pressed_now;
 }
 
+bool ActionMap::is_action_just_pressed(const std::string& action_name) const noexcept
+{
+    const auto* rec = find(action_name);
+    return rec != nullptr && rec->pressed_now && !rec->pressed_prev;
+}
+
+bool ActionMap::is_action_just_released(const std::string& action_name) const noexcept
+{
+    const auto* rec = find(action_name);
+    return rec != nullptr && !rec->pressed_now && rec->pressed_prev;
+}
+
 float ActionMap::axis_value(const std::string& action_name) const noexcept
 {
     const auto* rec = find(action_name);
     return rec != nullptr ? rec->axis : 0.0F;
+}
+
+void ActionMap::set_dead_zone(const std::string& action_name, float dead_zone) noexcept
+{
+    touch(action_name).dead_zone = std::clamp(dead_zone, 0.0F, 1.0F);
 }
 
 std::size_t ActionMap::binding_count(const std::string& action_name) const noexcept

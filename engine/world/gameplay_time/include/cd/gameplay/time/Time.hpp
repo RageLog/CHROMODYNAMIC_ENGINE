@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/gameplay/time/Time.hpp
 // Phase 459 — cd::gameplay::time::TimeKeeper
+// Phase 1253 — FixedStepAccumulator (sub-step, catch-up, spiral-of-death clamp)
 //
 // Authoritative game-time abstraction. Production engines (Unreal AWorldSettings,
 // Unity Time, Bevy bevy_time) all converge on three orthogonal axes:
@@ -12,6 +13,13 @@
 // the engine main loop, plus orthogonal `TimerCategory` channels so that UI,
 // gameplay, and fixed-simulation timelines can advance independently (e.g. a
 // pause menu still animates UI while the gameplay simulation is frozen).
+//
+// `FixedStepAccumulator` (also in this header) solves the classic sub-step
+// remainder problem for physics / deterministic simulation:
+//   - accumulate(scaled_dt) returns how many fixed steps to execute.
+//   - residual() gives the fractional remainder in [0, step_seconds).
+//   - max_steps clamp prevents "spiral of death" when the frame time spikes
+//     (e.g. debugger pause, swap-chain stall) from snowballing catch-up work.
 //
 // Design notes:
 //   - Pause stops the gameplay `elapsed_seconds` clock advancing, but
@@ -30,6 +38,7 @@
 
 #include <cd/core/Defines.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -72,6 +81,81 @@ enum class TimerCategory : std::uint8_t
     kSimulation = 2,  ///< Fixed-step simulation channel — independent scale.
 
     kCount      = 3   ///< Sentinel — must remain last.
+};
+
+// -----------------------------------------------------------------------------
+// FixedStepAccumulator — remainder-carrying fixed-step driver.
+//
+// Usage pattern (physics / determinism):
+//   FixedStepAccumulator accum { /*step_seconds=*/ 1.0 / 60.0 };
+//
+//   while (running) {
+//     const double scaled_dt = keeper.get().delta_seconds
+//                              * keeper.time_scale();  // already scaled
+//     const int steps = accum.accumulate(scaled_dt);
+//     for (int i = 0; i < steps; ++i) {
+//       physics.step(accum.step_seconds());   // fixed-step kernel
+//     }
+//     const double alpha = accum.residual() / accum.step_seconds(); // interpolation
+//     render_interpolated(alpha);
+//   }
+//
+// Spiral-of-death: when frame time > max_steps * step_seconds the accumulator
+// drops the excess rather than queuing unlimited catch-up work. The simulation
+// "runs slow" but stays interactive.
+// -----------------------------------------------------------------------------
+class FixedStepAccumulator
+{
+public:
+    /// Construct with a fixed step size and an optional maximum-steps-per-frame
+    /// cap (default 8 — reasonable for 60 Hz physics at up to ~7 Hz frame rate
+    /// before spiral-of-death protection kicks in).
+    /// `step_seconds` must be > 0; values ≤ 0 are clamped to a 60 Hz default.
+    explicit FixedStepAccumulator(double step_seconds,
+                                  int    max_steps = 8) noexcept
+        : step_seconds_ { step_seconds > 0.0 ? step_seconds : (1.0 / 60.0) }
+        , max_steps_ { max_steps > 0 ? max_steps : 1 }
+    {}
+
+    /// Feed `scaled_dt` seconds (already multiplied by TimeKeeper's time_scale)
+    /// into the accumulator. Returns how many full fixed steps are ready to run
+    /// this frame, clamped to `max_steps` to prevent spiral-of-death.
+    /// Negative or zero dt produces 0 steps (no harm, residual unchanged).
+    [[nodiscard]] int accumulate(double scaled_dt) noexcept
+    {
+        if (scaled_dt <= 0.0)
+        {
+            return 0;
+        }
+        // Clamp excess before dividing to avoid unbounded accumulation.
+        const double clamped = std::min(scaled_dt,
+                                        step_seconds_ * static_cast<double>(max_steps_));
+        residual_ += clamped;
+
+        const int steps = static_cast<int>(residual_ / step_seconds_);
+        residual_ -= static_cast<double>(steps) * step_seconds_;
+        // Guard against fp rounding pushing residual slightly negative.
+        residual_ = std::max(residual_, 0.0);
+        return steps;
+    }
+
+    /// Fractional remainder in [0, step_seconds). Use for render interpolation:
+    ///   alpha = residual() / step_seconds()  →  [0, 1)
+    [[nodiscard]] double residual() const noexcept { return residual_; }
+
+    /// The configured fixed step size in seconds.
+    [[nodiscard]] double step_seconds() const noexcept { return step_seconds_; }
+
+    /// Maximum fixed steps executed per `accumulate()` call.
+    [[nodiscard]] int max_steps() const noexcept { return max_steps_; }
+
+    /// Reset residual to zero. Does not change step_seconds or max_steps.
+    void reset() noexcept { residual_ = 0.0; }
+
+private:
+    double step_seconds_;
+    double residual_ { 0.0 };
+    int    max_steps_;
 };
 
 // -----------------------------------------------------------------------------
@@ -121,6 +205,11 @@ public:
     void set_time_scale(TimerCategory category, double scale) noexcept;
 
     [[nodiscard]] double time_scale(TimerCategory category = TimerCategory::kGameplay) const noexcept;
+
+    /// Returns the pause-aware, scale-applied delta for the last tick on the
+    /// given channel. While paused, returns 0.0. This is the value callers
+    /// should feed to FixedStepAccumulator::accumulate().
+    [[nodiscard]] double scaled_delta(TimerCategory category = TimerCategory::kGameplay) const noexcept;
 
     /// Snapshot the requested channel. Default = kGameplay.
     [[nodiscard]] GameTime get(TimerCategory category = TimerCategory::kGameplay) const noexcept;

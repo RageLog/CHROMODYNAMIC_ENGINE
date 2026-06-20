@@ -74,3 +74,13 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - **fsm**: 14 tests (shallow/deep history, hierarchical entry/exit order, self-transition).
   - **save_compression**: 7 RLE/LZ4 edge tests.
   - Gate fixes: 8 compile/WAE (core sign-conv/operator=-default/push_back-reserve/unused-op, log use-ranges, pathfinding std::numbers) + 4 test-vs-impl mismatches (io at_end can't know bit-count; ai_director float-precision boundary; save_compression trailing byte is a LITERAL not repeat packet). Gate: build clean -Werror (0/0); ctest 322/322; golden/sponza/chrome BYTE-IDENTICAL (core is universal).
+- ✅ **Batch 5 (phase1257)** — tier 85, 8 CPU game/world libs → 100% (~150 new tests, 2 real bugs):
+  - **particles_event** (1 real bug): tick() negative-dt fell through to the compaction loop (non-empty + dt<0) → true no-op guard; +dense-handle tombstone slot-reuse + BurstHandle generational UID + 19 tests. Flagged a pre-existing fire() callback-reentrancy hazard for follow-up.
+  - **game::camera**: [[nodiscard]] on add_vcam/remove_vcam (un-removable handle leak) + 11 tests (priority tie-break, mid-blend interrupt/warp, curve endpoints, dt=0 freeze).
+  - **gameplay_input_binding**: 4 features (is_action_just_pressed/just_released, set_dead_zone, axis clamp [-1,1]) + 22 tests.
+  - **input**: 48 tests (Hold/DoubleClick/KeyChord/Gamepad/MouseDrag/Axis/Context boundaries).
+  - **anim_graph**: 20 tests (clip edge cases, 1D/2D blend pins, pose-count mismatch).
+  - **query**: 17 tests (ray-AABB slab edges, frustum straddle, dedup, spatial-hash boundary).
+  - **asset_hot_reload**: 11 tests (throttle window boundary, deletion-wins, burst coalesce).
+  - **gameplay_time**: fixed-step accumulator + scale edges.
+  - Gate fixes: 6 WAE (query 2x isolate-decl, input_binding find→contains, input 3 headers if<→std::max+<algorithm>) + 1 test-vs-impl (asset_hot_reload throttle test missed the watcher's first-poll baseline → bump must come AFTER an initial baseline tick). Gate: build clean -Werror (0/0); ctest 322/322; golden byte-identical (CPU libs).

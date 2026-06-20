@@ -201,9 +201,26 @@ public:
     /// magnitude exceeds the press threshold for axis-style sources).
     [[nodiscard]] bool is_action_pressed(const std::string& action_name) const noexcept;
 
+    /// True ONLY on the first frame the action transitions from not-pressed to
+    /// pressed (rising edge). Returns false every subsequent held frame.
+    [[nodiscard]] bool is_action_just_pressed(const std::string& action_name) const noexcept;
+
+    /// True ONLY on the first frame the action transitions from pressed to
+    /// not-pressed (falling edge). Use for release-triggered gameplay (hold-to-
+    /// charge, toggle on release, etc.).
+    [[nodiscard]] bool is_action_just_released(const std::string& action_name) const noexcept;
+
     /// Raw axis value in [-1, 1] for an axis action. For button actions
     /// returns 1.0F if pressed, 0.0F otherwise. Unknown action -> 0.0F.
+    /// Values are clamped to [-1, 1] after dead-zone processing.
     [[nodiscard]] float axis_value(const std::string& action_name) const noexcept;
+
+    /// Set an axis dead-zone for `action_name`. Axis values whose absolute
+    /// magnitude is less than `dead_zone` are treated as 0.0F (both for
+    /// `axis_value` and the press-threshold test). Useful for eliminating
+    /// thumbstick drift without changing `kAxisPressThreshold`. Default: 0.0F.
+    /// Persists across `rebind()` / `unbind_all()` until `clear()`.
+    void set_dead_zone(const std::string& action_name, float dead_zone) noexcept;
 
     /// Number of bindings registered under `action_name` (0 if unknown).
     [[nodiscard]] std::size_t binding_count(const std::string& action_name) const noexcept;
@@ -223,6 +240,7 @@ private:
         bool   pressed_now  { false };
         bool   pressed_prev { false };
         float  axis         { 0.0F };
+        float  dead_zone    { 0.0F };  ///< Per-action axis dead-zone in [0, 1).
     };
 
     // Returns nullptr if the action has no entry yet. Used by const queries.

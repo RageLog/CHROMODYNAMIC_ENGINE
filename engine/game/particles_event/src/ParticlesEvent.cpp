@@ -40,6 +40,20 @@ namespace cd::game::particles_event
 // -----------------------------------------------------------------------------
 // Registry mutators.
 // -----------------------------------------------------------------------------
+std::uint32_t ParticleEventDispatcher::alloc_recipe_slot()
+{
+    if (!recipe_free_slots_.empty())
+    {
+        // Reuse the back of the free list (LIFO; any ordering is correct).
+        const std::uint32_t slot = recipe_free_slots_.back();
+        recipe_free_slots_.pop_back();
+        return slot;
+    }
+    const auto slot = static_cast<std::uint32_t>(recipes_storage_.size());
+    recipes_storage_.emplace_back();   // placeholder; caller will overwrite
+    return slot;
+}
+
 void ParticleEventDispatcher::register_recipe(std::string_view name,
                                               ParticleRecipe   recipe)
 {
@@ -51,9 +65,10 @@ void ParticleEventDispatcher::register_recipe(std::string_view name,
     const auto it = recipe_index_.find(key);
     if (it == recipe_index_.end())
     {
-        const auto id = static_cast<std::uint32_t>(recipes_storage_.size());
-        recipes_storage_.emplace_back(std::move(recipe));
-        recipe_index_.emplace(std::move(key), id);
+        // New name: allocate or reuse a storage slot.
+        const std::uint32_t slot = alloc_recipe_slot();
+        recipes_storage_[slot] = std::move(recipe);
+        recipe_index_.emplace(std::move(key), slot);
     }
     else
     {
@@ -70,10 +85,11 @@ bool ParticleEventDispatcher::unregister_recipe(std::string_view name)
     {
         return false;
     }
-    // We intentionally do NOT erase from `recipes_storage_`. The recipe
-    // index inside any still-alive ActiveBurst MUST remain valid until the
-    // burst expires; tombstoning the name map prevents future fires from
-    // the same name while preserving stable indices.
+    // Tombstone: push the freed slot onto the free list so a future
+    // register_recipe call can reuse it without growing the storage vector.
+    // The slot's data is NOT cleared so any still-alive ActiveBurst that
+    // holds this recipe_idx keeps simulating against the original data.
+    recipe_free_slots_.push_back(it->second);
     recipe_index_.erase(it);
     return true;
 }
@@ -133,21 +149,14 @@ ParticleEventDispatcher::fire(std::string_view       name,
     burst.rotation    = world_rotation;
     burst.age_s       = 0.0F;
     burst.alive_count = recipe.count;
+    burst.uid         = next_burst_uid_++;
 
     active_.push_back(burst);
 
-    // Fire on_emit callbacks. We pass a const-ref to the freshly-pushed
-    // burst so callbacks see the canonical state. Copy the callback list
-    // index instead of iterators in case a callback mutates the registry
-    // (e.g. by detaching itself).
+    // Snapshot callbacks before dispatch so a callback that removes itself
+    // (or adds a new entry) cannot invalidate iteration or cause UaF.
     const ActiveBurst& published = active_.back();
-    // Snapshot the callback list before dispatch so a callback that
-    // mutates `callbacks_` (e.g. detaches itself) cannot invalidate
-    // our iteration or cause use-after-free. The snapshot copy also
-    // defines clear semantics: callbacks added during dispatch fire
-    // on the NEXT publication, callbacks removed during dispatch still
-    // get their final call from this publication's snapshot.
-    const auto snapshot = callbacks_;
+    const auto         snapshot  = callbacks_;
     for (const auto& entry : snapshot)
     {
         if (entry.cb)
@@ -160,19 +169,71 @@ ParticleEventDispatcher::fire(std::string_view       name,
 }
 
 // -----------------------------------------------------------------------------
+// fire_handle - same as fire() but returns a stable BurstHandle.
+// -----------------------------------------------------------------------------
+BurstHandle
+ParticleEventDispatcher::fire_handle(std::string_view       name,
+                                     const cd::math::Vec3f& world_position,
+                                     const cd::math::Quatf& world_rotation)
+{
+    const auto it = recipe_index_.find(std::string {name});
+    if (it == recipe_index_.end())
+    {
+        CD_LOG_WARN("ParticleEventDispatcher::fire_handle - unknown recipe name");
+        return kInvalidHandle;
+    }
+    const std::uint32_t   recipe_id = it->second;
+    const ParticleRecipe& recipe    = recipes_storage_[recipe_id];
+    const std::uint32_t   uid       = next_burst_uid_++;
+
+    ActiveBurst burst {};
+    burst.recipe_idx  = recipe_id;
+    burst.origin      = world_position;
+    burst.rotation    = world_rotation;
+    burst.age_s       = 0.0F;
+    burst.alive_count = recipe.count;
+    burst.uid         = uid;
+
+    active_.push_back(burst);
+
+    const ActiveBurst& published = active_.back();
+    const auto         snapshot  = callbacks_;
+    for (const auto& entry : snapshot)
+    {
+        if (entry.cb)
+        {
+            entry.cb(published);
+        }
+    }
+
+    return BurstHandle {uid};
+}
+
+// -----------------------------------------------------------------------------
+// lookup_burst - O(N) scan matching uid; nullptr if expired or invalid.
+// -----------------------------------------------------------------------------
+const ActiveBurst*
+ParticleEventDispatcher::lookup_burst(BurstHandle handle) const noexcept
+{
+    if (!handle.is_valid())
+    {
+        return nullptr;
+    }
+    const auto it = std::ranges::find_if(active_,
+        [uid = handle.uid](const ActiveBurst& b) noexcept { return b.uid == uid; });
+    return (it != active_.end()) ? &*it : nullptr;
+}
+
+// -----------------------------------------------------------------------------
 // tick - age bursts, decay alive_count, compact finished bursts.
 // -----------------------------------------------------------------------------
 void ParticleEventDispatcher::tick(float dt)
 {
-    if (active_.empty() || dt <= 0.0F)
+    // Negative or zero dt: complete no-op — no aging, no compaction.
+    // Empty list: nothing to do.
+    if (dt <= 0.0F || active_.empty())
     {
-        // Negative / zero dt still requires aging-zero side effects? The
-        // contract is "age by dt"; dt <= 0 is a clean no-op so callers can
-        // pause without re-checking. Empty list -> nothing to do.
-        if (active_.empty())
-        {
-            return;
-        }
+        return;
     }
 
     // Walk + compact in one pass: copy survivors forward to `cursor`.
@@ -180,10 +241,7 @@ void ParticleEventDispatcher::tick(float dt)
     for (std::size_t i = 0; i < active_.size(); ++i)
     {
         ActiveBurst& b = active_[i];
-        if (dt > 0.0F)
-        {
-            b.age_s += dt;
-        }
+        b.age_s += dt;
 
         const ParticleRecipe& recipe = recipes_storage_[b.recipe_idx];
         const float           life   = std::max(recipe.lifetime_s, 1e-6F);
@@ -221,8 +279,10 @@ void ParticleEventDispatcher::reset() noexcept
     active_.clear();
     recipe_index_.clear();
     recipes_storage_.clear();
+    recipe_free_slots_.clear();
     callbacks_.clear();
-    next_cb_id_ = 1;
+    next_cb_id_    = 1;
+    next_burst_uid_ = 1U;
 }
 
 }  // namespace cd::game::particles_event

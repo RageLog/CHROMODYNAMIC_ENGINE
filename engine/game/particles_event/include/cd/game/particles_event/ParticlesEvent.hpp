@@ -108,6 +108,8 @@ struct ParticleRecipe
 // -----------------------------------------------------------------------------
 // ActiveBurst - per-fire record carried in the dispatcher's live list.
 // Pure data; the dispatcher mutates `age_s` / `alive_count` each tick.
+// `uid` is a monotonically-increasing birth ID assigned by `fire()` /
+// `fire_handle()` and is used by `BurstHandle` to detect stale references.
 // -----------------------------------------------------------------------------
 struct ActiveBurst
 {
@@ -116,7 +118,31 @@ struct ActiveBurst
     cd::math::Quatf  rotation    {};
     float            age_s       {0.0F};            ///< Accumulated time alive.
     std::uint32_t    alive_count {0};               ///< Particles still considered live.
+    std::uint32_t    uid         {0};               ///< Birth UID; matches BurstHandle.
 };
+
+// -----------------------------------------------------------------------------
+// BurstHandle - stable generational reference to an active burst.
+//
+// Unlike the raw `uint32_t` index returned by `fire()` (which addresses the
+// compacted `active_bursts()` span and becomes stale after any `tick()`),
+// a `BurstHandle` stores the burst's birth UID and remains valid across tick
+// boundaries.  `lookup_burst(h)` returns `nullptr` once the burst has expired
+// and been compacted out.
+//
+// Equality: two handles are equal iff their `uid` fields match.
+// `kInvalidHandle` has uid == 0 (zero is never assigned to a live burst).
+// -----------------------------------------------------------------------------
+struct BurstHandle
+{
+    std::uint32_t uid {0};
+
+    [[nodiscard]] bool is_valid() const noexcept { return uid != 0U; }
+
+    bool operator==(const BurstHandle&) const noexcept = default;
+};
+
+inline constexpr BurstHandle kInvalidHandle {}; ///< uid==0; never a live burst.
 
 // -----------------------------------------------------------------------------
 // ParticleEventDispatcher
@@ -174,6 +200,13 @@ public:
         return recipe_index_.size();
     }
 
+    /// Count of tombstoned (unregistered) recipe storage slots available for
+    /// reuse.  Exposed for tests; callers normally need not inspect this.
+    CD_NODISCARD std::size_t free_recipe_slot_count() const noexcept
+    {
+        return recipe_free_slots_.size();
+    }
+
     /// Look up a recipe by name; nullptr if unknown.
     CD_NODISCARD const ParticleRecipe* find_recipe(std::string_view name) const noexcept;
 
@@ -192,16 +225,33 @@ public:
     /// Spawn a burst from the named recipe at the supplied world transform.
     /// Returns the new burst's index inside `active_bursts()` on success,
     /// or `kInvalidBurst` (== `UINT32_MAX`) on unknown recipe.
+    ///
+    /// NOTE: the returned index addresses the *current* compacted
+    /// `active_bursts()` span.  It becomes stale after the next `tick()` or
+    /// `fire()` call.  Use `fire_handle()` for a stable cross-tick reference.
     static constexpr std::uint32_t kInvalidBurst = static_cast<std::uint32_t>(-1);
 
     std::uint32_t fire(std::string_view       name,
                        const cd::math::Vec3f& world_position,
                        const cd::math::Quatf& world_rotation);
 
+    /// Same as `fire()` but returns a stable `BurstHandle` instead of a
+    /// compacted-vector index.  The handle remains valid until the burst
+    /// expires (tick compacts it out), at which point `lookup_burst(h)`
+    /// returns `nullptr`.  Returns `kInvalidHandle` on unknown recipe.
+    [[nodiscard]] BurstHandle fire_handle(std::string_view       name,
+                                          const cd::math::Vec3f& world_position,
+                                          const cd::math::Quatf& world_rotation);
+
+    /// Look up a live burst by its stable handle.
+    /// Returns `nullptr` if the burst has expired or the handle is invalid.
+    [[nodiscard]] const ActiveBurst* lookup_burst(BurstHandle handle) const noexcept;
+
     /// Advance every active burst by `dt` seconds.  Bursts whose
     /// `age_s >= recipe.lifetime_s` are dropped; the live list is compacted
     /// in stable order.  `alive_count` decays linearly with age over the
     /// recipe's lifetime so render-side consumers see a smooth taper.
+    /// Negative or zero `dt` is a complete no-op (no aging, no compaction).
     void tick(float dt);
 
     // -- inspection ---------------------------------------------------------
@@ -229,11 +279,17 @@ private:
     // `recipes_storage_` slots are tombstoned (not erased) on
     // `unregister_recipe` so live bursts that already hold an index keep
     // simulating against the original data.
-    std::unordered_map<std::string, std::uint32_t> recipe_index_   {};
-    std::vector<ParticleRecipe>                    recipes_storage_ {};
+    // `recipe_free_slots_` is a free-list of tombstoned indices; new recipes
+    // reuse the oldest freed slot before growing the vector.
+    std::unordered_map<std::string, std::uint32_t> recipe_index_    {};
+    std::vector<ParticleRecipe>                    recipes_storage_  {};
+    std::vector<std::uint32_t>                     recipe_free_slots_{};
 
     // Active bursts.  Compacted in stable order each tick.
     std::vector<ActiveBurst> active_ {};
+
+    // Monotone UID counter for BurstHandle.  Starts at 1; 0 == invalid.
+    std::uint32_t next_burst_uid_ {1U};
 
     // Emit callbacks - parallel arrays so we can erase by id without
     // re-indexing every other entry.  std::function carries its own
@@ -245,6 +301,9 @@ private:
     };
     std::vector<CallbackEntry> callbacks_ {};
     std::uint32_t              next_cb_id_ {1};
+
+    // Internal helper: allocate-or-reuse a recipe storage slot.
+    std::uint32_t alloc_recipe_slot();
 };
 
 }  // namespace cd::game::particles_event
