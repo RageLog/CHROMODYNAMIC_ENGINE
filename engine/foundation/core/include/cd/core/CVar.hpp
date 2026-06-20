@@ -49,21 +49,21 @@ public:
     void set(std::string key, CVarValue value)
     {
         std::vector<std::pair<CallbackId, ChangeCallback>> callbacks_snapshot;
+        CVarValue value_snapshot;
         {
             std::unique_lock guard { mutex_ };
             auto& slot = vars_[key];
             slot.value = std::move(value);
-            callbacks_snapshot = slot.callbacks;  // copy under lock
+            value_snapshot = slot.value;          // copy the new value under lock
+            callbacks_snapshot = slot.callbacks;  // copy callbacks under lock
         }
         // Fire callbacks outside the lock to avoid re-entrancy deadlocks.
-        auto it = vars_.find(key);
-        if (it != vars_.end())
+        // Pass the value snapshot taken under the lock — re-reading vars_
+        // here without the lock would race with concurrent set()/erase().
+        for (auto& [_, cb] : callbacks_snapshot)
         {
-            for (auto& [_, cb] : callbacks_snapshot)
-            {
-                if (cb)
-                    cb(key, it->second.value);
-            }
+            if (cb)
+                cb(key, value_snapshot);
         }
     }
 

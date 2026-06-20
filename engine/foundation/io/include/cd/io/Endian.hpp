@@ -72,6 +72,21 @@ template <class T>
     return to_little(v);  // symmetric
 }
 
+template <class T>
+[[nodiscard]] constexpr T to_big(T v) noexcept
+{
+    if constexpr (std::endian::native == std::endian::big)
+        return v;
+    else
+        return detail::bswap(v);
+}
+
+template <class T>
+[[nodiscard]] constexpr T from_big(T v) noexcept
+{
+    return to_big(v);  // symmetric
+}
+
 /// Write a trivially-copyable value into `dst` as little-endian. Caller must
 /// ensure `dst` has at least sizeof(T) writable bytes.
 template <class T>
@@ -102,6 +117,69 @@ void store_le(std::byte* dst, T value) noexcept
         {
             std::memcpy(dst, &value, sizeof(T));
         }
+    }
+}
+
+/// Write a trivially-copyable value into `dst` as big-endian. Caller must
+/// ensure `dst` has at least sizeof(T) writable bytes.
+template <class T>
+void store_be(std::byte* dst, T value) noexcept
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+    {
+        auto be = to_big(value);
+        std::memcpy(dst, &be, sizeof(T));
+    }
+    else
+    {
+        if constexpr (sizeof(T) == 4)
+        {
+            auto bits = std::bit_cast<std::uint32_t>(value);
+            auto be = to_big(bits);
+            std::memcpy(dst, &be, sizeof(T));
+        }
+        else if constexpr (sizeof(T) == 8)
+        {
+            auto bits = std::bit_cast<std::uint64_t>(value);
+            auto be = to_big(bits);
+            std::memcpy(dst, &be, sizeof(T));
+        }
+        else
+        {
+            std::memcpy(dst, &value, sizeof(T));
+        }
+    }
+}
+
+/// Read a trivially-copyable value from `src` interpreted as big-endian.
+template <class T>
+[[nodiscard]] T load_be(const std::byte* src) noexcept
+{
+    static_assert(std::is_trivially_copyable_v<T>);
+    if constexpr (std::is_integral_v<T> && !std::is_same_v<T, bool>)
+    {
+        T tmp {};
+        std::memcpy(&tmp, src, sizeof(T));
+        return from_big(tmp);
+    }
+    else if constexpr (std::is_same_v<T, float>)
+    {
+        std::uint32_t bits {};
+        std::memcpy(&bits, src, sizeof(bits));
+        return std::bit_cast<float>(from_big(bits));
+    }
+    else if constexpr (std::is_same_v<T, double>)
+    {
+        std::uint64_t bits {};
+        std::memcpy(&bits, src, sizeof(bits));
+        return std::bit_cast<double>(from_big(bits));
+    }
+    else
+    {
+        T tmp {};
+        std::memcpy(&tmp, src, sizeof(T));
+        return tmp;
     }
 }
 

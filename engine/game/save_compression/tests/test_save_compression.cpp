@@ -65,6 +65,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <numeric>
@@ -291,6 +292,217 @@ TEST(SaveCompressionRle, DecompressRejectsEmptyBlobWithNonZeroSize)
 }
 
 // ============================================================================
+// T10 — single-byte input: ratio 2.0, round-trip ok
+//
+// The header documents: "1-byte input → single-byte literal packet + 1-byte
+// payload (ratio 2.0)."  This is the provable worst-case for single-byte
+// incompressible data.  Verifies that the encoder produces exactly 2 bytes and
+// that decompress_rle recovers the original 1-byte vector.
+// ============================================================================
+TEST(SaveCompressionRle, SingleByteInput)
+{
+    // Arrange
+    const std::vector<std::uint8_t> raw{0xA5U};
+
+    // Act
+    const CompressedSave cs = compress_rle(raw);
+
+    // Assert compress
+    EXPECT_EQ(cs.original_size, 1U);
+    EXPECT_EQ(cs.blob.size(), 2U)
+        << "Single byte must produce 1 header + 1 payload byte = 2 bytes";
+    EXPECT_DOUBLE_EQ(cs.ratio, 2.0)
+        << "ratio must be exactly 2.0 for 1-byte input";
+
+    // The header byte: bit7=0 (literal), bits[6:0]=0 (count-1=0 => count=1).
+    ASSERT_GE(cs.blob.size(), 2U);
+    EXPECT_EQ(cs.blob[0], 0x00U) << "Literal header for count=1 must be 0x00";
+    EXPECT_EQ(cs.blob[1], 0xA5U) << "Payload must be the original byte";
+
+    // Assert round-trip
+    const auto out = decompress_rle(cs);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(*out, raw);
+}
+
+// ============================================================================
+// T11 — run-length boundary: 128 identical bytes (max single packet)
+//
+// kMaxPacketLen == 128; 128 identical bytes must compress to exactly one
+// repeat packet (2 bytes total): header = 0x80|0x7F = 0xFF, payload = byte.
+// A run of 129 identical bytes must produce 2 repeat packets (4 bytes total):
+// first packet covers 128 bytes, second covers 1 byte (as a repeat of 1).
+// Both must round-trip correctly.
+// ============================================================================
+TEST(SaveCompressionRle, RunLengthBoundary128And129)
+{
+    // --- 128 identical bytes → 1 repeat packet ---
+    {
+        const std::vector<std::uint8_t> raw(128U, 0xBBU);
+        const CompressedSave cs = compress_rle(raw);
+
+        EXPECT_EQ(cs.original_size, 128U);
+        EXPECT_EQ(cs.blob.size(), 2U)
+            << "128 identical bytes must compress to exactly 2 bytes (1 repeat packet)";
+
+        ASSERT_GE(cs.blob.size(), 2U);
+        // Repeat header: bit7=1, count-1=127 → 0x80|0x7F = 0xFF
+        EXPECT_EQ(cs.blob[0], 0xFFU)
+            << "Repeat header for 128-byte run must be 0xFF";
+        EXPECT_EQ(cs.blob[1], 0xBBU) << "Repeat payload must be 0xBB";
+
+        const auto out = decompress_rle(cs);
+        ASSERT_TRUE(out.has_value());
+        EXPECT_EQ(*out, raw);
+    }
+
+    // --- 129 identical bytes → 2 repeat packets ---
+    {
+        const std::vector<std::uint8_t> raw(129U, 0xCCU);
+        const CompressedSave cs = compress_rle(raw);
+
+        EXPECT_EQ(cs.original_size, 129U);
+        EXPECT_EQ(cs.blob.size(), 4U)
+            << "129 identical bytes: one 128-run repeat packet + one trailing byte (4 bytes)";
+
+        ASSERT_GE(cs.blob.size(), 4U);
+        // First packet: repeat count=128 → header=0x80|0x7F=0xFF, payload=0xCC
+        EXPECT_EQ(cs.blob[0], 0xFFU);
+        EXPECT_EQ(cs.blob[1], 0xCCU);
+        // Trailing single byte: a run of 1 is < 2, so the encoder emits a
+        // LITERAL packet (bit7=0, count-1=0 → 0x00) + the byte, not a repeat.
+        EXPECT_EQ(cs.blob[2], 0x00U);
+        EXPECT_EQ(cs.blob[3], 0xCCU);
+
+        const auto out = decompress_rle(cs);
+        ASSERT_TRUE(out.has_value());
+        EXPECT_EQ(*out, raw);
+    }
+}
+
+// ============================================================================
+// T12 — run-length boundary: 256 identical bytes (two full 128-byte packets)
+//
+// 256 same bytes must produce exactly 2 repeat packets (4 bytes total) and
+// round-trip without loss.  Validates that the encoder correctly splits long
+// homogeneous runs at kMaxPacketLen boundaries.
+// ============================================================================
+TEST(SaveCompressionRle, RunLengthBoundary256)
+{
+    // Arrange
+    const std::vector<std::uint8_t> raw(256U, 0xDDU);
+
+    // Act
+    const CompressedSave cs = compress_rle(raw);
+
+    // Assert
+    EXPECT_EQ(cs.original_size, 256U);
+    EXPECT_EQ(cs.blob.size(), 4U)
+        << "256 identical bytes must produce 2 repeat packets (4 bytes)";
+
+    // Round-trip
+    const auto out = decompress_rle(cs);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(*out, raw);
+}
+
+// ============================================================================
+// T13 — all-distinct bytes (iota pattern): worst-case literal expansion
+//
+// A byte sequence where every consecutive pair is different with NO run of
+// 2+ identical bytes forces the encoder into pure literal packets (128-byte
+// chunks + 1 header each).  The ratio must not exceed the documented overhead
+// cap (1 header per 128 data bytes ≈ 0.78% overhead → ratio ≤ 1.01).
+//
+// Note: T3 uses alternating 0/FF which ARE 2-byte runs (encoded as repeat
+// packets of count=2 → exactly break-even).  This test uses a 256-byte
+// iota (0,1,2,...,255) repeated, ensuring consecutive pairs always differ,
+// but the key difference from T3 is that no two ADJACENT bytes are identical,
+// forcing the literal accumulator path exclusively.
+// ============================================================================
+TEST(SaveCompressionRle, AllDistinctBytesLiteralPath)
+{
+    // Arrange: 1024 bytes of iota(0..255) repeated 4× — pure literal path.
+    // Build one 256-byte ascending block, then repeat it.
+    constexpr std::size_t kSize = 1024U;
+    constexpr std::size_t kBlock = 256U;
+    std::array<std::uint8_t, kBlock> block{};
+    std::ranges::iota(block, static_cast<std::uint8_t>(0U));
+
+    std::vector<std::uint8_t> raw;
+    raw.reserve(kSize);
+    for (std::size_t rep = 0U; rep < (kSize / kBlock); ++rep)
+    {
+        raw.insert(raw.end(), block.begin(), block.end());
+    }
+
+    // Act
+    const CompressedSave cs = compress_rle(raw);
+
+    // Assert ratio: 1 header per 128-byte literal packet → 1.0 + 1/128 ≈ 1.0078
+    EXPECT_EQ(cs.original_size, kSize);
+    EXPECT_LE(cs.ratio, 1.01)
+        << "All-distinct bytes must not exceed 1% expansion; got ratio=" << cs.ratio;
+    // Output should be slightly larger than input (not the same or smaller).
+    EXPECT_GT(cs.blob.size(), kSize)
+        << "Pure-literal input must expand slightly due to packet headers";
+
+    // Round-trip
+    const auto out = decompress_rle(cs);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(*out, raw);
+}
+
+// ============================================================================
+// T14 — benchmark on empty input returns safe zero stats
+//
+// benchmark() on an empty span must not crash and must return stats consistent
+// with the empty-input contract: input_bytes==0, output_bytes==0, ratio NaN.
+// ============================================================================
+TEST(SaveCompressionRle, BenchmarkEmptyInput)
+{
+    // Arrange
+    const std::vector<std::uint8_t> empty_raw;
+
+    // Act
+    const CompressionStats stats = benchmark(empty_raw);
+
+    // Assert
+    EXPECT_EQ(stats.input_bytes, 0U);
+    EXPECT_EQ(stats.output_bytes, 0U);
+    EXPECT_TRUE(std::isnan(stats.ratio))
+        << "benchmark on empty input should report NaN ratio";
+    EXPECT_GE(stats.time_ms, 0.0);
+}
+
+// ============================================================================
+// T15 — decompress rejects a valid repeat-run blob with wrong original_size
+//
+// T6 covers original_size mismatch via a literal-encoded blob.  This covers
+// the same final size-check code path via a repeat-encoded blob so that both
+// encoder outputs exercise the mismatch guard.
+// ============================================================================
+TEST(SaveCompressionRle, DecompressRejectsRepeatBlobSizeMismatch)
+{
+    // Arrange: compress 8 identical bytes, then inflate original_size.
+    const std::vector<std::uint8_t> raw(8U, 0xEEU);
+    CompressedSave cs = compress_rle(raw);
+
+    // Sanity: original produces a 2-byte repeat packet.
+    ASSERT_EQ(cs.blob.size(), 2U);
+
+    // Corrupt: claim the original was 100 bytes.
+    cs.original_size = 100U;
+
+    // Act
+    const auto out = decompress_rle(cs);
+
+    // Assert
+    EXPECT_FALSE(out.has_value())
+        << "decompress_rle must return nullopt when repeat blob size != original_size";
+}
+
+// ============================================================================
 // Sprint-2 LZ4 tests — compiled only when lz4 is available at configure time.
 // ============================================================================
 #if CD_SAVE_COMPRESSION_HAS_LZ4
@@ -466,6 +678,32 @@ TEST(SaveCompressionLz4, LZ4BetterRatioThanRleOnStructuredData)
     // Log for CI artifact / diagnostic overlay.
     std::printf("[L6] RLE: %.3f  LZ4: %.3f  (lower is better)\n",
                 cs_rle.ratio, cs_lz4.ratio);
+}
+
+// ============================================================================
+// L7 — LZ4 decompress rejects non-zero blob paired with zero original_size
+//
+// decompress_lz4() has a second corruption guard (src/SaveCompression.cpp
+// ~line 314): "non-zero blob but claims zero original" → nullopt.  L4 covers
+// the case where the blob is non-zero and original_size is non-zero but the
+// content is garbage.  This test exercises the distinct guard branch where
+// original_size == 0U with a non-empty blob, which is structurally impossible
+// for any legitimately compressed output.
+// ============================================================================
+TEST(SaveCompressionLz4, DecompressRejectsNonZeroBlobWithZeroOriginalSize)
+{
+    // Arrange: plausible-looking blob but original_size claims zero.
+    CompressedSave corrupt;
+    corrupt.original_size = 0U;
+    corrupt.blob          = {0x02U, 0x21U, 0x00U, 0x00U};  // not a valid LZ4 stream
+    corrupt.ratio         = std::numeric_limits<double>::quiet_NaN();
+
+    // Act
+    const auto out = decompress_lz4(corrupt);
+
+    // Assert
+    EXPECT_FALSE(out.has_value())
+        << "decompress_lz4 must return nullopt when blob is non-empty but original_size==0";
 }
 
 #endif  // CD_SAVE_COMPRESSION_HAS_LZ4

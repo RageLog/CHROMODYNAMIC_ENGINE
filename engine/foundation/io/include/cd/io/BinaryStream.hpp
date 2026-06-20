@@ -158,6 +158,20 @@ public:
         pos_ = p > data_.size() ? data_.size() : p;
     }
 
+    /// Non-advancing read: inspect the next sizeof(T) bytes without advancing
+    /// the position. Returns kEndOfStream if fewer than sizeof(T) remain.
+    template <class T>
+    [[nodiscard]] cd::core::Result<T> peek() const
+    {
+        static_assert(std::is_trivially_copyable_v<T>);
+        static_assert(!std::is_pointer_v<T>, "Refusing to deserialize raw pointer");
+        if (remaining() < sizeof(T))
+        {
+            return std::unexpected(binary_errors::make(binary_errors::Code::kEndOfStream, "peek past end"));
+        }
+        return load_le<T>(data_.data() + pos_);
+    }
+
     cd::core::Result<void> read_bytes(std::byte* dst, std::size_t n)
     {
         if (remaining() < n)

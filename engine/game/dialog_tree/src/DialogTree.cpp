@@ -27,6 +27,7 @@
 #include <cd/game/dialog_tree/DialogTree.hpp>
 
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -58,8 +59,22 @@ bool DialogTreeRuntime::eval_condition(const std::string& var_name) const noexce
     return it->second;
 }
 
-void DialogTreeRuntime::go_to(const std::string& node_id)
+// Maximum kCondition chain depth before we consider the graph cyclic.
+// 1 024 is orders of magnitude beyond any realistic dialog graph.
+static constexpr std::size_t kMaxConditionDepth = 1024;
+
+void DialogTreeRuntime::go_to(const std::string& node_id, std::size_t depth)
 {
+    // Cycle guard: if we have recursed through more kCondition nodes than the
+    // ceiling allows, the graph contains a cycle — terminate gracefully instead
+    // of stack-overflowing.
+    if (depth > kMaxConditionDepth)
+    {
+        done_       = true;
+        current_id_ = {};
+        return;
+    }
+
     if (node_id.empty())
     {
         done_       = true;
@@ -86,11 +101,11 @@ void DialogTreeRuntime::go_to(const std::string& node_id)
     if (node->kind == NodeKind::kCondition)
     {
         // Transparent routing: evaluate and chain without surfacing to caller.
-        const bool result      = eval_condition(node->condition_var);
-        const std::size_t idx  = result ? std::size_t{0} : std::size_t{1};
+        const bool        result = eval_condition(node->condition_var);
+        const std::size_t idx    = result ? std::size_t{0} : std::size_t{1};
         if (idx < node->next_ids.size())
         {
-            go_to(node->next_ids[idx]);
+            go_to(node->next_ids[idx], depth + 1);
         }
         else
         {

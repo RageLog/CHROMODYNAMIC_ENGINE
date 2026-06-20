@@ -35,10 +35,20 @@ void AiDirector::notify_player_event(std::string_view /*event_id*/,
     // Accumulate score for positive pressure events.
     if (intensity_delta > 0.0F)
     {
-        const auto delta_units = static_cast<uint32_t>(std::floor(intensity_delta));
-        // Guard against overflow — use saturating addition.
-        const uint32_t score_add = delta_units * kScorePerUnit;
-        const uint32_t headroom  = std::numeric_limits<uint32_t>::max() - player_score_;
+        // Saturating multiply with a FLOAT-domain guard: a huge intensity_delta
+        // (e.g. 1e18F) is UB if cast straight to uint32_t, so compare in float
+        // first and saturate before any narrowing cast.
+        constexpr uint32_t kMaxU32        = std::numeric_limits<uint32_t>::max();
+        constexpr uint32_t kMultiplyGuard = kMaxU32 / kScorePerUnit;
+        const float        floored        = std::floor(intensity_delta);
+        uint32_t           score_add      = kMaxU32;
+        if (floored < static_cast<float>(kMultiplyGuard))
+        {
+            // Safe: floored < guard < UINT32_MAX, so both the cast and the
+            // multiply stay in range.
+            score_add = static_cast<uint32_t>(floored) * kScorePerUnit;
+        }
+        const uint32_t headroom  = kMaxU32 - player_score_;
         player_score_ += (score_add <= headroom) ? score_add : headroom;
     }
 

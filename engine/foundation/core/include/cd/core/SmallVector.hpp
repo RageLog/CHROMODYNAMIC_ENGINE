@@ -14,9 +14,8 @@
 //     heap-allocated; we re-copy in the constructor path to keep the
 //     header-only impl simple.
 //
-// This is the minimum-viable shape — push_back / pop_back / size /
-// capacity / clear / operator[] / iterators. Insert / erase + emplace
-// land later.
+// Surface: push_back / emplace_back / pop_back / insert / erase / reserve /
+// front / back / size / capacity / clear / operator[] / iterators.
 // =============================================================================
 #pragma once
 
@@ -80,6 +79,43 @@ public:
         --size_;
         (data() + size_)->~T();
     }
+
+    /// Insert `v` before position `pos` (0..size). Returns a pointer to the
+    /// newly-inserted element. Inserting at `size()` is equivalent to
+    /// push_back. Out-of-range `pos` is clamped to `size()`.
+    T* insert(std::size_t pos, const T& v)
+    {
+        return insert_impl(pos, v);
+    }
+    T* insert(std::size_t pos, T&& v)
+    {
+        return insert_impl(pos, std::move(v));
+    }
+
+    /// Erase the element at `pos`, shifting the tail down by one. No-op when
+    /// `pos >= size()`. Returns a pointer to the element that now occupies
+    /// `pos` (== end() when the last element was erased).
+    T* erase(std::size_t pos) noexcept(std::is_nothrow_move_assignable_v<T>)
+    {
+        if (pos >= size_) return end();
+        T* buf = data();
+        for (std::size_t i = pos; i + 1 < size_; ++i)
+            buf[i] = std::move(buf[i + 1]);
+        --size_;
+        (buf + size_)->~T();
+        return data() + pos;
+    }
+
+    /// Pre-reserve heap capacity. Has no effect if `n <= capacity()`.
+    void reserve(std::size_t n)
+    {
+        ensure_capacity(n);
+    }
+
+    [[nodiscard]] T&       front() noexcept       { return data()[0]; }
+    [[nodiscard]] const T& front() const noexcept { return data()[0]; }
+    [[nodiscard]] T&       back() noexcept         { return data()[size_ - 1]; }
+    [[nodiscard]] const T& back() const noexcept   { return data()[size_ - 1]; }
     void clear() noexcept
     {
         for (std::size_t i = 0; i < size_; ++i)
@@ -131,16 +167,55 @@ private:
         heap_cap_ = new_cap;
     }
 
+    template <class U>
+    T* insert_impl(std::size_t pos, U&& v)
+    {
+        if (pos > size_) pos = size_;
+        if (pos == size_)
+        {
+            push_back(std::forward<U>(v));
+            return data() + (size_ - 1);
+        }
+        ensure_capacity(size_ + 1);  // may reallocate; index `pos` stays valid
+        T* buf = data();
+        // The current last element moves into the fresh uninitialized slot.
+        new (buf + size_) T(std::move(buf[size_ - 1]));
+        // Shift the rest of the tail up by one via move-assignment.
+        for (std::size_t i = size_ - 1; i > pos; --i)
+            buf[i] = std::move(buf[i - 1]);
+        // Overwrite the now-duplicated slot at `pos` with the new value.
+        buf[pos] = std::forward<U>(v);
+        ++size_;
+        return buf + pos;
+    }
+
     void copy_from(const SmallVector& o)
     {
         for (std::size_t i = 0; i < o.size_; ++i) push_back(o[i]);
     }
     void move_from(SmallVector&& o) noexcept
     {
-        for (std::size_t i = 0; i < o.size_; ++i)
-            new (data() + i) T(std::move(o[i]));
-        size_ = o.size_;
-        o.clear();
+        if (o.heap_ != nullptr)
+        {
+            // Source spilled to the heap: steal the buffer outright. Copying
+            // o.size_ (> N) elements into our N-slot inline buffer would
+            // overflow it — pointer-steal is both correct and O(1).
+            heap_ = o.heap_;
+            heap_cap_ = o.heap_cap_;
+            size_ = o.size_;
+            o.heap_ = nullptr;
+            o.heap_cap_ = 0;
+            o.size_ = 0;
+        }
+        else
+        {
+            // Source is inline (o.size_ <= N): element-wise move into our
+            // inline buffer, then destroy the moved-from originals.
+            for (std::size_t i = 0; i < o.size_; ++i)
+                new (data() + i) T(std::move(o[i]));
+            size_ = o.size_;
+            o.clear();
+        }
     }
 };
 

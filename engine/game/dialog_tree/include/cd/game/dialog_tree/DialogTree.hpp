@@ -182,7 +182,10 @@ public:
 
 private:
     // Move to a node by id, transparently following kCondition chains.
-    void go_to(const std::string& node_id);
+    // depth guards against cyclic kCondition graphs: when a designer chains
+    // A->B->A, go_to() detects the depth ceiling and ends the conversation
+    // rather than stack-overflowing.
+    void go_to(const std::string& node_id, std::size_t depth = 0);
 
     CD_NODISCARD const DialogNode* find_node(const std::string& id) const noexcept;
 

@@ -23,7 +23,7 @@ public:
     ~RingBuffer() { clear(); }
 
     /// Push at the tail. Returns false if full.
-    bool push(const T& v) { return emplace_(v); }
+    bool push(const T& v) { return emplace(v); }
     bool push(T&& v) { return emplace(std::move(v)); }
 
     /// Pop the head. Returns std::nullopt when empty.
