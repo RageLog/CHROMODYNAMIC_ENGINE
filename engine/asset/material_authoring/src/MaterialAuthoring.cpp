@@ -13,6 +13,7 @@
 #include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 namespace cd::asset::material_authoring
 {
@@ -50,6 +51,9 @@ namespace
     using cd::asset::json::Value;
 
     Object obj;
+    // schema_version written first (ordered map: alphabetical output, but the
+    // loader doesn't depend on key order — this is purely informational).
+    obj["schema_version"]       = Value { static_cast<double>(kCurrentSchemaVersion) };
     obj["id"]                   = Value { mat.id };
     obj["base_color"]           = Value { Array {
         Value { static_cast<double>(mat.base_color[0]) },
@@ -64,6 +68,28 @@ namespace
     obj["alpha_mode"]           = Value { std::string { alpha_mode_to_string(mat.alpha_mode) } };
     obj["alpha_cutoff"]         = Value { static_cast<double>(mat.alpha_cutoff) };
     return obj;
+}
+
+/// Set of JSON keys that load_from_json() recognises (for unknown-field
+/// detection).  Using a sorted lookup table avoids a heap allocation per call.
+[[nodiscard]] bool is_known_field(std::string_view key) noexcept
+{
+    // Keep in alphabetical order (matches std::map iteration order from
+    // to_json_object, but correctness doesn't depend on order).
+    static constexpr std::string_view kKnown[] = {
+        "albedo_texture_path",
+        "alpha_cutoff",
+        "alpha_mode",
+        "base_color",
+        "id",
+        "metallic",
+        "mr_texture_path",
+        "normal_texture_path",
+        "roughness",
+        "schema_version",
+    };
+    return std::ranges::any_of(kKnown,
+        [key](std::string_view k) { return k == key; });
 }
 
 }  // namespace
@@ -102,6 +128,25 @@ std::optional<AuthoredMaterial> load_from_json(const std::filesystem::path& path
     }
 
     AuthoredMaterial mat;
+
+    // schema_version — optional; absent = 0 (legacy); > kCurrentSchemaVersion
+    // = future format → hard reject (the caller cannot safely interpret it).
+    {
+        const auto r = root.at("schema_version");
+        if (r && (*r)->is_number())
+        {
+            const auto ver = static_cast<std::uint32_t>((*r)->as_number());
+            if (ver > kCurrentSchemaVersion)
+            {
+                return std::nullopt;  // version too new — reject
+            }
+            mat.schema_version = ver;
+        }
+        else
+        {
+            mat.schema_version = 0U;  // legacy file: no schema_version field
+        }
+    }
 
     // id — required
     {
@@ -164,7 +209,9 @@ std::optional<AuthoredMaterial> load_from_json(const std::filesystem::path& path
     read_string_field("normal_texture_path", mat.normal_texture_path);
     read_string_field("mr_texture_path",     mat.mr_texture_path);
 
-    // alpha_mode — optional (default OPAQUE)
+    // alpha_mode — optional (default OPAQUE); unknown string silently maps to
+    // OPAQUE (alpha_mode_from_string's contract) — validate_authored() catches
+    // this via the range/domain validation if needed by the caller.
     {
         const auto r = root.at("alpha_mode");
         if (r && (*r)->is_string())
@@ -179,6 +226,17 @@ std::optional<AuthoredMaterial> load_from_json(const std::filesystem::path& path
         if (r && (*r)->is_number())
         {
             mat.alpha_cutoff = static_cast<float>((*r)->as_number());
+        }
+    }
+
+    // Unknown-field collection — iterate every key in the object and record
+    // any that is not in the known-field set.  This allows the hot-reload path
+    // to surface unknown fields via validate_authored() without hard-failing.
+    for (const auto& field_pair : root.as_object())
+    {
+        if (!is_known_field(field_pair.first))
+        {
+            mat.unknown_fields.emplace_back(field_pair.first);
         }
     }
 
@@ -269,6 +327,40 @@ bool validate_authored(const AuthoredMaterial& mat, std::vector<std::string>& ou
         oss << "[INFO] AuthoredMaterial '" << mat.id
             << "': alpha_mode=BLEND — alpha_cutoff (" << mat.alpha_cutoff
             << ") is ignored by the renderer.";
+        out_issues.emplace_back(oss.str());
+    }
+
+    // 8. Schema version.
+    //    * 0 = legacy file (no schema_version field) — informational.
+    //    * > kCurrentSchemaVersion cannot reach here (load_from_json rejects
+    //      those) but guard defensively in case an AuthoredMaterial was
+    //      constructed in-process with a bogus value.
+    if (mat.schema_version == 0U)
+    {
+        std::ostringstream oss;
+        oss << "[INFO] AuthoredMaterial '" << mat.id
+            << "': no schema_version field — legacy pre-v1 file."
+               " Loaded with defaults for any added fields.";
+        out_issues.emplace_back(oss.str());
+    }
+    else if (mat.schema_version > kCurrentSchemaVersion)
+    {
+        std::ostringstream oss;
+        oss << "[WARNING] AuthoredMaterial '" << mat.id
+            << "': schema_version=" << mat.schema_version
+            << " is newer than kCurrentSchemaVersion=" << kCurrentSchemaVersion
+            << ". Some fields may have been silently ignored.";
+        out_issues.emplace_back(oss.str());
+    }
+
+    // 9. Unknown fields — emit one [WARNING] per unrecognised key so that the
+    //    designer or CI pipeline can detect typos or stale keys.
+    for (const auto& uf : mat.unknown_fields)
+    {
+        std::ostringstream oss;
+        oss << "[WARNING] AuthoredMaterial '" << mat.id
+            << "': unknown field '" << uf
+            << "' will be ignored by the renderer.";
         out_issues.emplace_back(oss.str());
     }
 

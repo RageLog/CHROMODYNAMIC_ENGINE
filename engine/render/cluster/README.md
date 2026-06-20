@@ -28,5 +28,19 @@
 **Notes**:
 - Phase 420 consolidated multiple cluster sub-libraries into one umbrella.
 - Shader sources in `shaders/` directory.
+- The froxel-assignment binning here intentionally mirrors `cd::lighting_clusters`
+  and `cd::light::ClusterGrid` (documented duplication, not a refactor target) —
+  see `docs/PROJECT_COMPLETION_STATUS.md` §5.
 
-**TODO**: expand coverage (currently <3 test cases).
+**Test coverage**:
+- `cd_test_cluster` — host CPU-reference path: froxel grid dims, finalize/clear
+  lifecycle, sphere in/out/spanning the frustum, near/far depth slices,
+  count-then-write two-pass invariants, offset monotonicity, GridReference
+  parity.
+- `cd_test_cluster_pbr` — Forward+ lookup contract: push-constant field offsets,
+  descriptor-binding indices, GLSL helper structure (SSBO decls, set-override
+  macro, log-Z + angle helpers, light-struct wire parity), real glslang compile.
+- `cd_test_cluster_gpu` — Vulkan-gated two-pass count/write pipeline parity vs.
+  `run_reference_compute` (single + many lights, empty list) plus negative
+  paths (zero max_lights, over-budget run). GTEST_SKIPs without a Vulkan ICD.
+- `cd_test_cluster_fx` — umbrella one-symbol-per-sub-lib link smoke.

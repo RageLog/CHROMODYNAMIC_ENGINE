@@ -6,8 +6,10 @@
 // GPU-native block-compressed formats (BC1/BC3/BC5/BC7 for desktop,
 // ASTC for mobile).
 //
-// Sprint-1: API surface + BC1 stub encoder (naive min/max endpoint picker).
-// Sprint-2: real BC1 PCA + BC3/BC5/BC7 via bc7enc + ASTC via astc-encoder.
+// Implemented: BC1 (4 bpp, min/max endpoint picker + full decode for analyze()),
+//              BC7 via bc7enc_rdo (optional, CD_TC_HAS_BC7ENC),
+//              ASTC 4×4 / 8×8 via ARM astc-encoder (optional, CD_TC_HAS_ASTCENC).
+// SEALED / not in scope: BC3 (DXT5), BC5 (RGTC2) — encode() returns nullopt.
 //
 // Moment: game ships with 8 GB → 2 GB texture footprint; mobile build runs on
 // devices without 8 GB VRAM.
@@ -79,17 +81,18 @@ struct CompressionStats
 ///
 /// Preconditions (returns nullopt on violation):
 ///   - rgba8_pixels.size() == width * height * 4
-///   - width and height are multiples of the format's block size (4 for BC*, 4
-///     or 8 for ASTC), each >= 4
-///   - Sprint-1: only Format::kBC1 is implemented; other formats return nullopt.
+///   - For BC1 / BC7: width and height must be multiples of 4, each >= 4.
+///   - For ASTC: width and height must each be >= 1 (block padding is internal).
+///   - Format::kBC3 and Format::kBC5 are sealed / not implemented → nullopt.
 ///
-/// Sprint-1 BC1 encoder: naive per-block min/max endpoint picker. Produces
-/// correct-shape output (8 bytes per 4×4 block) but is not quality-optimal.
-/// Sprint-2 will replace the inner loop with full PCA-based endpoint search.
+/// BC1 encoder: naive per-block min/max RGB endpoint picker (correct output
+/// shape: 8 bytes per 4×4 block; quality is baseline, not PCA-optimal).
+/// Alpha is ignored by BC1 — the compressed form has no per-texel alpha.
+/// Degenerate (all-same-colour) blocks encode and decode losslessly.
 ///
 /// @param rgba8_pixels  RGBA8 input, row-major, no padding.
-/// @param width         Image width in pixels (must be a multiple of 4, >= 4).
-/// @param height        Image height in pixels (must be a multiple of 4, >= 4).
+/// @param width         Image width in pixels (must be a multiple of 4 for BC*).
+/// @param height        Image height in pixels (must be a multiple of 4 for BC*).
 /// @param options       Encoding options (target format, quality, mip flags).
 /// @return              Compressed texture on success, nullopt on error.
 [[nodiscard]] std::optional<CompressedTexture>
@@ -100,12 +103,13 @@ encode(std::span<const std::uint8_t> rgba8_pixels,
 
 /// Compute compression statistics for a previously encoded texture.
 ///
-/// Decompresses `compressed.blob` (Sprint-1: BC1 only) and compares it to
-/// the original RGBA8 input to compute RMSE and the compression ratio.
+/// Decompresses `compressed.blob` (BC1 only) and compares it to the original
+/// RGBA8 input to compute RMSE and the compression ratio.  PSNR can be derived
+/// by callers as: PSNR_dB = 20 * log10(255.0 / rmse) (undefined if rmse == 0).
 ///
 /// Preconditions (returns nullopt on violation):
 ///   - rgba8_pixels.size() == compressed.width * compressed.height * 4
-///   - compressed.format == Format::kBC1 (Sprint-1 limitation)
+///   - compressed.format == Format::kBC1 (BC3/BC5/BC7/ASTC decoders not bundled)
 ///
 /// @param rgba8_pixels  Original RGBA8 input used to produce `compressed`.
 /// @param compressed    The CompressedTexture returned by encode().

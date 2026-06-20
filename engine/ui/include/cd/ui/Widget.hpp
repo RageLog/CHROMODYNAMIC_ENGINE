@@ -112,6 +112,19 @@ public:
         visible_ = v;
     }
 
+    /// A disabled widget is still rendered (drawn) but is skipped by
+    /// `hit_test` and `dispatch_click` so it cannot receive input events.
+    /// Mirrors the standard UX convention (greyed-out but visible).
+    [[nodiscard]] bool enabled() const noexcept
+    {
+        return enabled_;
+    }
+
+    void set_enabled(bool v) noexcept
+    {
+        enabled_ = v;
+    }
+
     // ---- Tree management -----------------------------------------------
 
     /// Adopt a child. Returns a non-owning observer pointer for chaining.
@@ -207,6 +220,7 @@ private:
     WidgetId id_ { 0 };
     Rect bounds_ {};
     bool visible_ { true };
+    bool enabled_ { true };
     std::vector<std::unique_ptr<Widget>> children_ {};
 };
 

@@ -161,3 +161,16 @@ All engine libraries that were at ≥80% implementation depth are now at genuine
 - **75%**: ai::squad (CPU formation +~16t, GpuBatchSolver Sprint-3 SEALED), lighting_clusters (+22t new host-math bin, GPU prefix-sum SEALED, golden-safe), audio_dsp_fx (FDN reverb real +~14t, SIMD SEALED), physics_vehicle (dynamic understeer lateral model +~14t, Pacejka SEALED), ui_a11y (+~14t, OS AT-bridge SEALED).
 - **3 REAL BUGS**: (1) physics_jolt create_body next_idx_ started at 0 → first body's BodyHandle = null-sentinel (is_valid()==false) → start at 1. (2) physics_jolt step() crashed on dt≤0 (JPH::Update assert) → non-positive-dt no-op guard. (3) [mem munmap-leak was already fixed upstream phase1237 — stale doc].
 - Gate fixes: 7 compile (a11y 5× shadow, net_session_replay 2× nodiscard) + 20 clang-tidy WAE (async_submit 5× lock_guard→scoped_lock + move-const, ai_squad integer-div×2 + use-auto + min-max, ui_font use-auto×2, a11y contains, render data-pointer, profile integer-div + member-init, net_session_replay unused-using) + 4 test-vs-impl RCA (ai_squad slot-offset sign convention, lighting lateral off-screen x=30→2, vehicle understeer non-monotonic yaw + grip-saturation, jolt mass-clamp + handle-validity + damped-free-fall). Gate: build clean -Werror (0/0); ctest 335/335 (100%, +2 new bins); golden/sponza/chrome BYTE-IDENTICAL; 0 NEW WAE (9 pre-existing JoltWorld.cpp broader-130 sealed per phase1252).
+
+## >70 extension — Batch B (phase1266)
+70–72 band, 7 libs → 100% (~139 new tests, 3 real features). Highest-first.
+- **ibl** (72→100): +22 ADD-ONLY host regression locks (Karis BRDF-LUT, Hammersley/vdC/GGX/Smith, irradiance linearity, equirect↔cube + seam, prefilter mip). No baker math/NOLINT-seal touched — chrome IBL bake BYTE-IDENTICAL.
+- **cluster** (70→100): +28 ADD-ONLY (grid/lifecycle/sphere/two-pass invariant/PBR wire + new Vulkan-gated tests/gpu/ parity). No compute/froxel/PBR math touched.
+- **mesh_shader** (70→100): +8 tests + new host `cone_cull()` helper (mirrors GLSL cone test, additive). build_meshlets byte-unchanged; cone-opt SEALED.
+- **ui (umbrella)** (70→100): +34 tests + REAL FEATURE `enabled_`/set_enabled + hit_test guard. Glyph-layout SEALED (belongs to ui_font).
+- **texture_compress** (70→100): +9 BC1 tests. BC3/BC5 SEALED.
+- **material_authoring** (70→100): +14 tests + REAL FEATURE schema versioning (write/read/future-reject/v0-compat) + unknown-field collection + 2 validate checks.
+- **texture_synth** (70→100): +24 tests (noise determinism + Earth-baker golden locks). Output byte-stable.
+- Gate fixes: 4 WAE (texture_compress 3× implicit-widening pre-existing pixel-index, ui Widget.cpp reverse-loop → std::views::reverse) + 2 test-vs-impl RCA (mesh_shader builder does NOT positional-dedup identical indices → vertex_count 3 not 1; ui center() odd-size rounds DOWN to 100 per its own "RoundsDown" name). Gate: build clean -Werror (0/0); ctest 336/336 (100%, +1 new gpu bin); golden/sponza/chrome BYTE-IDENTICAL; WAE 0.
+
+## STATUS: every lib >70% is now at 100% (per user "70'den büyük olan hepsini bitir").

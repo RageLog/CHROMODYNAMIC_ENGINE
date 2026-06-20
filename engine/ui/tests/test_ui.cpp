@@ -624,3 +624,433 @@ TEST(ContextMenu, OutOfRangeIndexFails)
     cd::ui::ContextMenu m;
     EXPECT_FALSE(m.invoke(99));
 }
+
+TEST(ContextMenu, ClearItemsClosesAndEmpties)
+{
+    cd::ui::ContextMenu m;
+    m.add_item("A", [] {});
+    m.add_item("B", [] {});
+    m.open(5.0F, 5.0F);
+    EXPECT_EQ(m.size(), 2u);
+    EXPECT_TRUE(m.is_open());
+    m.clear_items();
+    EXPECT_EQ(m.size(), 0u);
+    EXPECT_FALSE(m.is_open());
+}
+
+TEST(ContextMenu, ItemsSpanHasCorrectLabels)
+{
+    cd::ui::ContextMenu m;
+    m.add_item("First",  [] {});
+    m.add_item("Second", [] {}, false);
+    ASSERT_EQ(m.items().size(), 2u);
+    EXPECT_EQ(m.items()[0].label, "First");
+    EXPECT_TRUE(m.items()[0].enabled);
+    EXPECT_EQ(m.items()[1].label, "Second");
+    EXPECT_FALSE(m.items()[1].enabled);
+}
+
+// ---- Widget: disabled-widget hit-test skip --------------------------------
+
+TEST(UiWidget, DisabledWidgetSkippedByHitTest)
+{
+    // A disabled widget that occupies the whole area must NOT be returned
+    // by hit_test — the hit falls through to the parent (or nullptr).
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 100.0F, 100.0F });
+    auto* child = root.add_child<cd::ui::Panel>();
+    child->set_bounds({ 10.0F, 10.0F, 50.0F, 50.0F });
+    child->set_enabled(false);
+
+    // The point is inside the child's bounds, but disabled → falls back to root.
+    EXPECT_EQ(root.hit_test(30.0F, 30.0F), &root);
+}
+
+TEST(UiWidget, DisabledWidgetStillDrawn)
+{
+    // Disabling a widget must not suppress its draw commands.
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 100.0F, 100.0F });
+    auto* child = root.add_child<cd::ui::Panel>();
+    child->set_bounds({ 0.0F, 0.0F, 50.0F, 50.0F });
+    child->set_enabled(false);
+
+    std::vector<cd::ui::DrawCommand> cmds;
+    root.collect_draw_commands(cmds);
+    // root rect + child rect — both emitted even though child is disabled.
+    EXPECT_EQ(cmds.size(), 2u);
+}
+
+TEST(UiWidget, DisabledClickNotFired)
+{
+    // dispatch_click on a root that contains a disabled button must NOT
+    // fire the button's callback.
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 200.0F, 200.0F });
+    auto* btn = root.add_child<cd::ui::Button>("Disabled");
+    btn->set_bounds({ 10.0F, 10.0F, 100.0F, 40.0F });
+    btn->set_enabled(false);
+
+    int fired { 0 };
+    btn->set_on_click([&] { ++fired; });
+
+    // Click lands in button bounds, but button is disabled → no callback.
+    root.dispatch_click(50.0F, 30.0F);
+    EXPECT_EQ(fired, 0);
+    EXPECT_EQ(btn->click_count(), 0u);
+}
+
+TEST(UiWidget, EnabledAccessorRoundTrip)
+{
+    cd::ui::Panel p {};
+    EXPECT_TRUE(p.enabled());
+    p.set_enabled(false);
+    EXPECT_FALSE(p.enabled());
+    p.set_enabled(true);
+    EXPECT_TRUE(p.enabled());
+}
+
+// ---- Widget: z-order among 3 overlapping siblings ------------------------
+
+TEST(UiWidget, ZOrderTopmostAmongThreeSiblings)
+{
+    // Three overlapping siblings: bottom < mid < top (added in that order).
+    // A click at the overlapping region must return the top-most (last-added).
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 200.0F, 200.0F });
+    auto* bottom = root.add_child<cd::ui::Panel>();
+    bottom->set_bounds({ 10.0F, 10.0F, 100.0F, 100.0F });
+    auto* mid = root.add_child<cd::ui::Panel>();
+    mid->set_bounds({ 20.0F, 20.0F, 80.0F, 80.0F });
+    auto* top = root.add_child<cd::ui::Panel>();
+    top->set_bounds({ 30.0F, 30.0F, 60.0F, 60.0F });
+
+    // Point inside all three: topmost wins.
+    EXPECT_EQ(root.hit_test(50.0F, 50.0F), top);
+    // Point inside bottom+mid but outside top: mid wins.
+    EXPECT_EQ(root.hit_test(25.0F, 25.0F), mid);
+    // Point inside bottom only.
+    EXPECT_EQ(root.hit_test(12.0F, 12.0F), bottom);
+}
+
+// ---- Widget: empty tree / edge cases -------------------------------------
+
+TEST(UiWidget, EmptyRootHitTestReturnsSelf)
+{
+    cd::ui::Panel root {};
+    root.set_bounds({ 0.0F, 0.0F, 50.0F, 50.0F });
+    // No children; hit inside bounds returns root.
+    EXPECT_EQ(root.hit_test(10.0F, 10.0F), &root);
+    // Hit outside returns nullptr.
+    EXPECT_EQ(root.hit_test(100.0F, 100.0F), nullptr);
+}
+
+TEST(UiWidget, EmptyRootDrawCommandsProducesOneRect)
+{
+    cd::ui::Panel root {};
+    root.set_bounds({ 5.0F, 5.0F, 40.0F, 40.0F });
+    std::vector<cd::ui::DrawCommand> cmds;
+    root.collect_draw_commands(cmds);
+    ASSERT_EQ(cmds.size(), 1u);
+    EXPECT_EQ(cmds[0].kind, cd::ui::DrawKind::kRect);
+}
+
+// ---- Widget: id accessor --------------------------------------------------
+
+TEST(UiWidget, IdRoundTrip)
+{
+    cd::ui::Panel p {};
+    EXPECT_EQ(p.id(), 0u);
+    p.set_id(42u);
+    EXPECT_EQ(p.id(), 42u);
+    p.set_id(0u);
+    EXPECT_EQ(p.id(), 0u);
+}
+
+// ---- Button: empty-label emits only rect ---------------------------------
+
+TEST(UiButton, EmptyLabelEmitsOnlyRect)
+{
+    // Button with no label: emit_draw_ must emit the background rect only
+    // (the label_ guard `if (!label_.empty())` skips the text command).
+    cd::ui::Button btn {};   // default-constructed, label_ is ""
+    btn.set_bounds({ 0.0F, 0.0F, 40.0F, 20.0F });
+    std::vector<cd::ui::DrawCommand> cmds;
+    btn.collect_draw_commands(cmds);
+    ASSERT_EQ(cmds.size(), 1u);
+    EXPECT_EQ(cmds[0].kind, cd::ui::DrawKind::kRect);
+}
+
+TEST(UiButton, LabelAccessor)
+{
+    cd::ui::Button btn { "Hello" };
+    EXPECT_EQ(btn.label(), "Hello");
+    btn.set_label("World");
+    EXPECT_EQ(btn.label(), "World");
+}
+
+// ---- Label: color accessor + draw color propagates -----------------------
+
+TEST(UiLabel, ColorAccessorAndDraw)
+{
+    cd::ui::Label lbl { "hi", cd::ui::Color { 0.5F, 0.0F, 0.0F, 1.0F } };
+    lbl.set_bounds({ 0.0F, 0.0F, 50.0F, 20.0F });
+    EXPECT_FLOAT_EQ(lbl.color().r, 0.5F);
+    std::vector<cd::ui::DrawCommand> cmds;
+    lbl.collect_draw_commands(cmds);
+    ASSERT_EQ(cmds.size(), 1u);
+    EXPECT_EQ(cmds[0].kind, cd::ui::DrawKind::kText);
+    EXPECT_FLOAT_EQ(cmds[0].color.r, 0.5F);
+    EXPECT_EQ(cmds[0].text, "hi");
+}
+
+TEST(UiLabel, SetTextMutates)
+{
+    cd::ui::Label lbl { "before" };
+    lbl.set_text("after");
+    EXPECT_EQ(lbl.text(), "after");
+}
+
+// ---- Panel: background accessor + draw color propagates ------------------
+
+TEST(UiPanel, BackgroundColorInDrawCommand)
+{
+    const cd::ui::Color red { 1.0F, 0.0F, 0.0F, 1.0F };
+    cd::ui::Panel p { red };
+    p.set_bounds({ 0.0F, 0.0F, 100.0F, 100.0F });
+    std::vector<cd::ui::DrawCommand> cmds;
+    p.collect_draw_commands(cmds);
+    ASSERT_EQ(cmds.size(), 1u);
+    EXPECT_FLOAT_EQ(cmds[0].color.r, 1.0F);
+    EXPECT_FLOAT_EQ(cmds[0].color.g, 0.0F);
+    p.set_background({ 0.0F, 1.0F, 0.0F, 1.0F });
+    EXPECT_FLOAT_EQ(p.background().g, 1.0F);
+}
+
+// ---- Tooltip: reset and delay accessor -----------------------------------
+
+TEST(Tooltip, ResetClearsState)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(0.1F);
+    t.update(7, 0.0F);
+    t.update(7, 0.2F);
+    EXPECT_TRUE(t.visible());
+    t.reset();
+    EXPECT_FALSE(t.visible());
+    EXPECT_EQ(t.target(), 0u);
+}
+
+TEST(Tooltip, DelayAccessorRoundTrip)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(1.5F);
+    EXPECT_FLOAT_EQ(t.delay(), 1.5F);
+}
+
+TEST(Tooltip, NegativeDelayClampedToZero)
+{
+    cd::ui::Tooltip t;
+    t.set_delay(-0.5F);
+    EXPECT_FLOAT_EQ(t.delay(), 0.0F);
+}
+
+// ---- ProgressBar: total accessor + set_total clamps existing done --------
+
+TEST(ProgressBar, TotalAccessor)
+{
+    cd::ui::ProgressBar p;
+    p.set_total(42u);
+    EXPECT_EQ(p.total(), 42u);
+}
+
+TEST(ProgressBar, SetTotalClampsExistingDone)
+{
+    cd::ui::ProgressBar p;
+    p.set_total(10u);
+    p.tick(8u);
+    EXPECT_EQ(p.done(), 8u);
+    // Shrink total below current done — done must clamp.
+    p.set_total(5u);
+    EXPECT_EQ(p.done(), 5u);
+    EXPECT_TRUE(p.is_complete());
+}
+
+// ---- Spinner: speed_rps accessor + default angle zero --------------------
+
+TEST(Spinner, DefaultAngleIsZero)
+{
+    const cd::ui::Spinner s;
+    EXPECT_FLOAT_EQ(s.angle(), 0.0F);
+    EXPECT_FLOAT_EQ(s.speed_rps(), 1.0F);
+}
+
+TEST(Spinner, SpeedRpsAccessor)
+{
+    cd::ui::Spinner s;
+    s.set_speed_rps(2.5F);
+    EXPECT_FLOAT_EQ(s.speed_rps(), 2.5F);
+}
+
+// ---- TabBar: clear, tabs(), active_index, empty active -------------------
+
+TEST(TabBar, EmptyBarActiveReturnsNullptr)
+{
+    cd::ui::TabBar b;
+    EXPECT_EQ(b.active(), nullptr);
+    EXPECT_EQ(b.size(), 0u);
+}
+
+TEST(TabBar, ClearEmptiesBar)
+{
+    cd::ui::TabBar b;
+    b.add(1, "a");
+    b.add(2, "b");
+    b.clear();
+    EXPECT_EQ(b.size(), 0u);
+    EXPECT_EQ(b.active(), nullptr);
+}
+
+TEST(TabBar, TabsSpanMatchesAdded)
+{
+    cd::ui::TabBar b;
+    b.add(10, "ten");
+    b.add(20, "twenty");
+    const auto& tabs = b.tabs();
+    ASSERT_EQ(tabs.size(), 2u);
+    EXPECT_EQ(tabs[0].id, 10u);
+    EXPECT_EQ(tabs[1].id, 20u);
+    EXPECT_EQ(tabs[0].label, "ten");
+}
+
+TEST(TabBar, ActiveIndexMatchesSet)
+{
+    cd::ui::TabBar b;
+    b.add(1, "a");
+    b.add(2, "b");
+    b.add(3, "c");
+    b.set_active(2);
+    EXPECT_EQ(b.active_index(), 1u);
+    b.set_active(3);
+    EXPECT_EQ(b.active_index(), 2u);
+}
+
+// ---- ToastAnim: slide-in, steady, fade-out phases ------------------------
+
+#include <cd/ui/ToastAnim.hpp>
+
+TEST(ToastAnim, AtAgeZeroAlphaIsZeroAndOffset)
+{
+    const auto r = cd::ui::toast_anim(0.0, cd::ui::ToastDirection::kFromRight);
+    EXPECT_FLOAT_EQ(r.alpha, 0.0F);
+    // Offset should be max slide at start.
+    EXPECT_GT(r.x_offset, 0.0F);
+    EXPECT_FLOAT_EQ(r.y_offset, 0.0F);
+}
+
+TEST(ToastAnim, SteadyPhaseAlphaIsOne)
+{
+    // At 500 ms (well past 150 ms slide-in, before 1850 ms fade), alpha == 1.
+    const auto r = cd::ui::toast_anim(500.0);
+    EXPECT_FLOAT_EQ(r.alpha, 1.0F);
+    EXPECT_FLOAT_EQ(r.x_offset, 0.0F);
+    EXPECT_FLOAT_EQ(r.y_offset, 0.0F);
+}
+
+TEST(ToastAnim, FadeOutPhaseAlphaDecreases)
+{
+    // At 1925 ms (halfway through 150 ms fade-out starting at 1850 ms).
+    const auto r = cd::ui::toast_anim(1925.0);
+    EXPECT_GT(r.alpha, 0.0F);
+    EXPECT_LT(r.alpha, 1.0F);
+}
+
+TEST(ToastAnim, ExpiredToastReturnsZeroAlpha)
+{
+    // Past the full 2000 ms lifetime, alpha clamps to 0.
+    const auto r = cd::ui::toast_anim(2001.0);
+    EXPECT_FLOAT_EQ(r.alpha, 0.0F);
+}
+
+TEST(ToastAnim, FromLeftXOffsetIsNegative)
+{
+    const auto r = cd::ui::toast_anim(0.0, cd::ui::ToastDirection::kFromLeft);
+    EXPECT_LT(r.x_offset, 0.0F);
+}
+
+TEST(ToastAnim, FromTopYOffsetIsNegative)
+{
+    const auto r = cd::ui::toast_anim(0.0, cd::ui::ToastDirection::kFromTop);
+    EXPECT_LT(r.y_offset, 0.0F);
+    EXPECT_FLOAT_EQ(r.x_offset, 0.0F);
+}
+
+TEST(ToastAnim, FromBottomYOffsetIsPositive)
+{
+    const auto r = cd::ui::toast_anim(0.0, cd::ui::ToastDirection::kFromBottom);
+    EXPECT_GT(r.y_offset, 0.0F);
+    EXPECT_FLOAT_EQ(r.x_offset, 0.0F);
+}
+
+TEST(ToastAnim, OverloadWithCfgUsesFromRight)
+{
+    // The two-arg overload (age_ms, cfg) defaults to kFromRight.
+    const cd::ui::ToastAnimCfg cfg {};
+    const auto r = cd::ui::toast_anim(0.0, cfg);
+    EXPECT_GT(r.x_offset, 0.0F);
+}
+
+TEST(ToastStackYOffset, IndexZeroIsZero)
+{
+    EXPECT_FLOAT_EQ(cd::ui::toast_stack_y_offset(0, 32.0F), 0.0F);
+}
+
+TEST(ToastStackYOffset, IndexOneIsHeightPlusGap)
+{
+    EXPECT_FLOAT_EQ(cd::ui::toast_stack_y_offset(1, 32.0F, 4.0F), 36.0F);
+}
+
+// ---- Anchor: center() integer division rounding + negative offsets -------
+
+TEST(Anchor, CenterOddSizeRoundsDown)
+{
+    // center(101, 101): -101/2 == -50 (truncation toward zero).
+    cd::ui::IntRect parent { 0, 0, 400, 400 };
+    auto r = cd::ui::resolve(parent, cd::ui::center(101, 101));
+    EXPECT_EQ(r.w, 100);  // symmetric -50/+50 truncation rounds the odd size DOWN to 100
+    EXPECT_EQ(r.h, 100);
+    // x = 400/2 - 50 = 150 (truncation; offset_max = +50, offset_min = -50)
+    EXPECT_EQ(r.x, 150);
+    EXPECT_EQ(r.y, 150);
+}
+
+TEST(Anchor, StretchWithNonZeroParentOrigin)
+{
+    // Stretch inside a parent that doesn't start at (0,0).
+    cd::ui::IntRect parent { 50, 75, 300, 200 };
+    auto r = cd::ui::resolve(parent, cd::ui::stretch());
+    EXPECT_EQ(r.x, 50);
+    EXPECT_EQ(r.y, 75);
+    EXPECT_EQ(r.w, 300);
+    EXPECT_EQ(r.h, 200);
+}
+
+// ---- Glyph-layout SEAL: text is DrawKind::kText only ---------------------
+// Text rendering in cd::ui is intentionally a DrawKind::kText command
+// (position + string_view). Glyph layout, font metrics, and atlas UV
+// computation belong to cd::ui_font. This test seals that contract: a
+// Label's draw command carries the raw string, not measured glyph quads.
+
+TEST(UiLabel, TextDrawCommandCarriesRawString)
+{
+    cd::ui::Label lbl { "seal-glyph-layout" };
+    lbl.set_bounds({ 0.0F, 0.0F, 200.0F, 20.0F });
+    std::vector<cd::ui::DrawCommand> cmds;
+    lbl.collect_draw_commands(cmds);
+    ASSERT_EQ(cmds.size(), 1u);
+    EXPECT_EQ(cmds[0].kind, cd::ui::DrawKind::kText);
+    // The text field is the raw string — no glyph decomposition.
+    EXPECT_EQ(cmds[0].text, "seal-glyph-layout");
+    // Rect carries the widget's bounds verbatim (no layout pass applied).
+    EXPECT_FLOAT_EQ(cmds[0].rect.w, 200.0F);
+}

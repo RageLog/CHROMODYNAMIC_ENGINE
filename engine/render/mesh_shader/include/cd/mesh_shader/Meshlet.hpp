@@ -155,6 +155,33 @@ build_meshlets(std::span<const std::uint32_t> indices,
     return out;
 }
 
+/// Host mirror of the task-shader backface-cone cull predicate (Karis 2021
+/// Nanite normal-cone test). A meshlet is culled when the view direction —
+/// from the camera toward the cluster's bounding-sphere centre — points
+/// sufficiently *against* the cluster's normal-cone axis, i.e. every triangle
+/// in the meshlet faces away from the eye. This is byte-for-byte the same test
+/// the `kMeshletTaskGlsl` skeleton runs on the GPU:
+///   `view = normalize(centre - cam); cull = dot(view, -axis) > cutoff`.
+///
+/// The default `cone_axis_cutoff == {0,0,0,0}` sentinel (greedy v1 fills no
+/// cone — see ADR-20260616 §2.3) makes this a guaranteed no-op: `dot` is 0
+/// and `0 > 0` is false, so an un-fitted meshlet is never culled (safe).
+/// Returns true when the meshlet should be discarded.
+[[nodiscard]] inline bool
+cone_cull(const Meshlet& m, const cd::math::Vec3f& cam_pos) noexcept
+{
+    const cd::math::Vec3f centre {
+        m.bounds_sphere.x, m.bounds_sphere.y, m.bounds_sphere.z };
+    const cd::math::Vec3f to_centre { centre.x - cam_pos.x,
+                                      centre.y - cam_pos.y,
+                                      centre.z - cam_pos.z };
+    const cd::math::Vec3f view = cd::math::normalize(to_centre);
+    const cd::math::Vec3f neg_axis { -m.cone_axis_cutoff.x,
+                                     -m.cone_axis_cutoff.y,
+                                     -m.cone_axis_cutoff.z };
+    return cd::math::dot(view, neg_axis) > m.cone_axis_cutoff.w;
+}
+
 // ---- GLSL task / mesh shader skeleton ---------------------------------------
 
 constexpr std::string_view kMeshletTaskGlsl = R"glsl(

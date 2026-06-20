@@ -38,5 +38,6 @@ cd_add_library(cluster_fx
 if(CD_ENABLE_TESTING)
   add_subdirectory(tests/core)
   add_subdirectory(tests/fx)
+  add_subdirectory(tests/gpu)
   add_subdirectory(tests/pbr)
 endif()

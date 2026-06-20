@@ -315,7 +315,7 @@ void encode_bc1_mip(const std::uint8_t* rgba8,
                     const std::uint32_t px = std::min(bx * 4U + tx, w - 1U);
                     const std::uint32_t py = std::min(by * 4U + ty, h - 1U);
                     const std::size_t   si = (static_cast<std::size_t>(py) * w + px) * 4U;
-                    const std::size_t   di = (ty * 4U + tx) * 4U;
+                    const std::size_t   di = (static_cast<std::size_t>(ty) * 4U + tx) * 4U;
                     block_pixels[di + 0U] = rgba8[si + 0U];
                     block_pixels[di + 1U] = rgba8[si + 1U];
                     block_pixels[di + 2U] = rgba8[si + 2U];
@@ -367,7 +367,7 @@ void encode_bc7_mip(const std::uint8_t*        rgba8,
                     const std::uint32_t px = std::min(bx * 4U + tx, w - 1U);
                     const std::uint32_t py = std::min(by * 4U + ty, h - 1U);
                     const std::size_t   si = (static_cast<std::size_t>(py) * w + px) * 4U;
-                    const std::size_t   di = (ty * 4U + tx) * 4U;
+                    const std::size_t   di = (static_cast<std::size_t>(ty) * 4U + tx) * 4U;
                     block_pixels[di + 0U] = rgba8[si + 0U];
                     block_pixels[di + 1U] = rgba8[si + 1U];
                     block_pixels[di + 2U] = rgba8[si + 2U];
@@ -690,8 +690,12 @@ encode(std::span<const std::uint8_t> rgba8_pixels,
 #endif  // CD_TC_HAS_ASTCENC
     }
 
-    // ---- BC3 / BC5 (not yet implemented) ------------------------------------
-    // Sprint-3: bc7enc_rdo rgbcx.h provides BC1/BC3/BC5 real encoders.
+    // ---- BC3 / BC5 — SEALED: not in scope ------------------------------------
+    // BC3 (DXT5) and BC5 (RGTC2) are documented future formats; they are NOT
+    // part of the current implementation contract.  The public header lists them
+    // as enum values so callers can name them, but encode() intentionally returns
+    // nullopt for these formats.  If they are ever implemented they will receive
+    // their own Sprint and dedicated tests.
     return std::nullopt;
 }
 
@@ -759,7 +763,7 @@ analyze(std::span<const std::uint8_t> rgba8_pixels,
                     }
                     const std::size_t di = (static_cast<std::size_t>(py) *
                                             compressed.width + px) * 4U;
-                    const std::size_t si = (ty * 4U + tx) * 4U;
+                    const std::size_t si = (static_cast<std::size_t>(ty) * 4U + tx) * 4U;
                     decoded[di + 0U] = block_rgba[si + 0U];
                     decoded[di + 1U] = block_rgba[si + 1U];
                     decoded[di + 2U] = block_rgba[si + 2U];

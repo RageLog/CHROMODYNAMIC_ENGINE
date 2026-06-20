@@ -1,6 +1,7 @@
 // =============================================================================
 // CHROMODYNAMIC — cd/ui/Widget.cpp
 // =============================================================================
+#include <ranges>
 #include <cd/ui/Widget.hpp>
 
 #include <vector>
@@ -10,7 +11,7 @@ namespace cd::ui
 
 Widget* Widget::hit_test(float px, float py) noexcept
 {
-    if (!visible_ || !bounds_.contains(px, py))
+    if (!visible_ || !enabled_ || !bounds_.contains(px, py))
         return nullptr;
     // Translate the query into our local frame before descending: each
     // child's bounds are expressed relative to MY origin, so we must
@@ -18,9 +19,9 @@ Widget* Widget::hit_test(float px, float py) noexcept
     const float lx = px - bounds_.x;
     const float ly = py - bounds_.y;
     // Walk children back-to-front so the topmost (last-added) widget wins.
-    for (auto it = children_.rbegin(); it != children_.rend(); ++it)
+    for (const auto& child : children_ | std::views::reverse)
     {
-        if (auto* hit = (*it)->hit_test(lx, ly))
+        if (auto* hit = child->hit_test(lx, ly))
             return hit;
     }
     return this;

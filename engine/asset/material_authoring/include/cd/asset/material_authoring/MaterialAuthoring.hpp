@@ -15,12 +15,22 @@
 //   save_to_json()           — serialize AuthoredMaterial -> .material.json
 //   load_from_json()         — deserialize .material.json -> AuthoredMaterial
 //   validate_authored()      — catch out-of-range scalars, empty IDs, missing
-//                              paths before the asset enters the pipeline.
+//                              paths, unknown fields, and version skew before
+//                              the asset enters the pipeline.
 //   AuthoringDefaults        — dielectric / metal / cloth factory presets.
 //
 // Wire:
 //   alpha_mode and alpha_cutoff map directly to cd::material::AlphaMode and
 //   cd::material::AlphaParams (one-to-one, safe static_cast).
+//
+// Schema versioning:
+//   Every saved file contains "schema_version": 1 (kCurrentSchemaVersion).
+//   load_from_json() accepts files where "schema_version" is absent (v0
+//   legacy) or equals kCurrentSchemaVersion.  A future-version file (value >
+//   kCurrentSchemaVersion) is rejected at load time (returns nullopt) so that
+//   old engine builds never silently load a newer format they don't understand.
+//   validate_authored() flags version-skew [WARNING] and unknown keys [WARNING]
+//   so that the hot-reload diagnostic surface sees them without a hard fail.
 //
 // Namespace: cd::asset::material_authoring
 // Depends on: cd::material (for AlphaMode), cd::asset_json (for JSON I/O),
@@ -40,6 +50,13 @@
 namespace cd::asset::material_authoring
 {
 
+// ---- Schema versioning -------------------------------------------------------
+
+/// Current on-disk schema version.  Increment this when adding new required
+/// fields to AuthoredMaterial that break backward-compatibility.  Optional
+/// additive fields (new defaults) do NOT require a version bump.
+inline constexpr std::uint32_t kCurrentSchemaVersion = 1U;
+
 // ---- Error domain -----------------------------------------------------------
 
 namespace authoring_errors
@@ -54,6 +71,7 @@ enum class Code : std::uint32_t
     kParseError      = 3,
     kMissingField    = 4,
     kValidationError = 5,
+    kVersionSkew     = 6,
 };
 }  // namespace authoring_errors
 
@@ -67,9 +85,16 @@ enum class Code : std::uint32_t
 ///   * `metallic` in [0,1], `roughness` in [0,1].
 ///   * `alpha_cutoff` in [0,1] (meaningful only when alpha_mode == kMask).
 ///   * Texture paths may be empty strings (no texture bound).
+///   * `schema_version` is populated by load_from_json(); 0 = legacy file
+///     (absent field); kCurrentSchemaVersion = current engine.
+///   * `unknown_fields` is populated by load_from_json() with any JSON keys
+///     not recognised by this version of the loader.  validate_authored()
+///     emits [WARNING] for each unknown field.  The engine tolerates unknown
+///     fields so that files authored by a newer tool still load.
 ///
 /// JSON schema (pretty-printed example):
 /// {
+///   "schema_version": 1,
 ///   "id": "mat_concrete",
 ///   "base_color": [0.6, 0.58, 0.55],
 ///   "metallic": 0.0,
@@ -91,6 +116,10 @@ struct AuthoredMaterial
     std::string             mr_texture_path {};
     cd::material::AlphaMode alpha_mode { cd::material::AlphaMode::kOpaque };
     float                   alpha_cutoff { 0.5F };
+    /// Schema version read from file; 0 = legacy (no "schema_version" key).
+    std::uint32_t           schema_version { kCurrentSchemaVersion };
+    /// JSON keys present in the file but not recognised by this loader version.
+    std::vector<std::string> unknown_fields {};
 };
 
 // ---- I/O --------------------------------------------------------------------
@@ -113,14 +142,18 @@ load_from_json(const std::filesystem::path& path);
 ///
 /// Checks:
 ///   1. id is non-empty.
-///   2. base_color channels are in [0,1].
-///   3. metallic is in [0,1].
-///   4. roughness is in [0,1].
-///   5. alpha_cutoff is in [0,1].
+///   2. base_color channels are in [0,1] (NaN is an error).
+///   3. metallic is in [0,1] (NaN is an error).
+///   4. roughness is in [0,1] (NaN is an error).
+///   5. alpha_cutoff is in [0,1] (NaN is an error).
 ///   6. When alpha_mode == kMask: alpha_cutoff is in (0,1) exclusive
 ///      (0 discards everything, 1 keeps nothing — both are almost certainly
 ///      typos).
 ///   7. When alpha_mode == kBlend: alpha_cutoff has no effect (kInfo note).
+///   8. schema_version: 0 = legacy tolerated ([INFO]); > kCurrentSchemaVersion
+///      = future-format ([WARNING], not an error — the file was already loaded
+///      by load_from_json's hard version gate).
+///   9. unknown_fields: each unknown key emits a [WARNING].
 ///
 /// `out_issues` is appended (not cleared). Returns true when no kError-level
 /// issue was added by this call (kInfo / kWarning are non-fatal).
