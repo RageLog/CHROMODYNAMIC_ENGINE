@@ -3,6 +3,23 @@ cd_add_test(restir_di
   DEPS    cd::restir_di
 )
 
+# 80->100 marathon -- host-side WRS reservoir math edge / negative coverage
+# (final_weight / update / combine / clamp_history / temporal_blend /
+# invalidate boundaries + GLSL string presence locks). CPU-only header math,
+# runs everywhere (no Vulkan ICD needed).
+cd_add_test(restir_di_reservoir_math
+  SOURCES test_restir_di_reservoir_math.cpp
+  DEPS    cd::restir_di
+)
+
+# 80->100 marathon -- host-side double-buffered reservoir ring coverage
+# (TemporalBuffer swap / age-invalidation boundary / clear / indexing). The
+# header was previously untested. CPU-only, runs everywhere.
+cd_add_test(restir_di_temporal_buffer
+  SOURCES test_restir_di_temporal_buffer.cpp
+  DEPS    cd::restir_di
+)
+
 # Phase 550 / Sprint-1 — GPU dispatch smoke test for cd::restir_di. Skips
 # at runtime when no Vulkan ICD is installed (mirrors the gating in
 # tests/vulkan/test_rhi_vulkan.cpp) so CI without a GPU stays green.
@@ -42,6 +59,15 @@ if(CD_ENABLE_VULKAN AND TARGET cd_rhi_vulkan)
   # advances frame_index_ after each successful execute().
   cd_add_test(restir_di_full_pipeline_denoised
     SOURCES test_restir_di_full_pipeline_denoised.cpp
+    DEPS    cd::restir_di cd::rhi_vulkan
+  )
+
+  # 80->100 marathon -- GPU-gated edge / negative path coverage across all
+  # five RHI passes (invalid-handle no-ops, zero-iteration rejection,
+  # re-prepare with new viewport, temporal_alpha clamp, 1x1 minimum dispatch,
+  # frame_index reset). Same Vulkan gating -- GTEST_SKIPs without a GPU.
+  cd_add_test(restir_di_edge_cases
+    SOURCES test_restir_di_edge_cases.cpp
     DEPS    cd::restir_di cd::rhi_vulkan
   )
 endif()

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <thread>
 
 TEST(Profile, NullSinkIsInstalledByDefault)
@@ -272,4 +273,287 @@ TEST(ChromeTraceSink, EmitsValidArrayWithDurationEvents)
     EXPECT_NE(text.find("\"ts\":1000"), std::string::npos);
     EXPECT_NE(text.find("\"dur\":250"), std::string::npos);
     fs::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// BufferSink — drain
+// ---------------------------------------------------------------------------
+
+TEST(BufferSink, DrainMovesAllAndEmpties)
+{
+    // Arrange: partially-filled ring (below capacity).
+    cd::profile::BufferSink sink { 16 };
+    sink.submit({ "a", 10, 1, 0 });
+    sink.submit({ "b", 20, 2, 0 });
+    sink.submit({ "c", 30, 3, 0 });
+
+    // Act.
+    const auto drained = sink.drain();
+
+    // Assert: all three samples in insertion order, buffer is empty.
+    ASSERT_EQ(drained.size(), 3U);
+    EXPECT_EQ(drained[0].name, "a");
+    EXPECT_EQ(drained[1].name, "b");
+    EXPECT_EQ(drained[2].name, "c");
+    EXPECT_EQ(sink.size(), 0U);
+}
+
+TEST(BufferSink, DrainOnFullRingPreservesOrder)
+{
+    // Arrange: fill ring to capacity then overflow by 2 → next_ == 2.
+    // oldest surviving: index 2 ("c"), newest: index 1 ("b" round 2).
+    cd::profile::BufferSink sink { 4 };
+    sink.submit({ "a", 0, 1, 0 });
+    sink.submit({ "b", 0, 2, 0 });
+    sink.submit({ "c", 0, 3, 0 });
+    sink.submit({ "d", 0, 4, 0 });
+    sink.submit({ "e", 0, 5, 0 });  // overwrites "a"
+    sink.submit({ "f", 0, 6, 0 });  // overwrites "b"
+
+    // Act.
+    const auto drained = sink.drain();
+
+    // Assert: oldest-first order and buffer empty.
+    ASSERT_EQ(drained.size(), 4U);
+    // The ring holds c(3), d(4), e(5), f(6); oldest is "c".
+    EXPECT_EQ(drained[0].name, "c");
+    EXPECT_EQ(drained[3].name, "f");
+    EXPECT_EQ(sink.size(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// ChromeTraceSink — edge cases
+// ---------------------------------------------------------------------------
+
+TEST(ChromeTraceSink, EmptyTraceIsValidJson)
+{
+    // No samples submitted → file must contain exactly "[\n]\n".
+    const auto path = sink_tmp(".json");
+    {
+        cd::profile::ChromeTraceSink sink { path.string() };
+        ASSERT_TRUE(sink.is_open());
+        // No submit calls.
+    }
+    const auto text = slurp(path);
+    EXPECT_EQ(text, "[\n]\n");
+    fs::remove(path);
+}
+
+TEST(ChromeTraceSink, NameEscapingQuoteAndBackslash)
+{
+    // A scope name containing `"` and `\` must be escaped in the JSON output
+    // so the result is valid JSON (parseable by perfetto / chrome://tracing).
+    const auto path = sink_tmp(".json");
+    {
+        cd::profile::ChromeTraceSink sink { path.string() };
+        // submit a sample whose name contains a double-quote and backslash.
+        sink.submit({ R"(say "hello"\world)", 0, 1000, 99 });
+    }
+    const auto text = slurp(path);
+    // The escaped form must appear literally in the JSON.
+    EXPECT_NE(text.find(R"(say \"hello\"\\world)"), std::string::npos)
+        << "Raw JSON text:\n" << text;
+    fs::remove(path);
+}
+
+TEST(ChromeTraceSink, TidFieldPresent)
+{
+    const auto path = sink_tmp(".json");
+    {
+        cd::profile::ChromeTraceSink sink { path.string() };
+        sink.submit({ "work", 500, 100, 77777 });
+    }
+    const auto text = slurp(path);
+    // The "tid" key must be present and carry the thread_hash value.
+    EXPECT_NE(text.find("\"tid\":77777"), std::string::npos) << text;
+    fs::remove(path);
+}
+
+TEST(ChromeTraceSink, NoTrailingCommaBeforeClosingBracket)
+{
+    // Chrome tracing spec forbids trailing commas. Verify the last character
+    // before `]\n` is `}` (end of last event object), never `,`.
+    const auto path = sink_tmp(".json");
+    {
+        cd::profile::ChromeTraceSink sink { path.string() };
+        sink.submit({ "a", 0, 1, 1 });
+        sink.submit({ "b", 0, 2, 1 });
+        sink.submit({ "c", 0, 3, 1 });
+    }
+    const auto text = slurp(path);
+    // Find the closing "]\n" sequence.
+    const auto bracket_pos = text.rfind(']');
+    ASSERT_NE(bracket_pos, std::string::npos);
+    ASSERT_GT(bracket_pos, 0U);
+    // Walk backwards past whitespace to find the last non-whitespace char.
+    std::size_t last = bracket_pos - 1;
+    while (last > 0 && (text[last] == '\n' || text[last] == '\r' || text[last] == ' '))
+        --last;
+    EXPECT_EQ(text[last], '}') << "Trailing comma detected. text:\n" << text;
+    fs::remove(path);
+}
+
+TEST(ChromeTraceSink, NestedEventsOrderedBySubmit)
+{
+    // Events appear in the JSON in submit order (inner before outer because
+    // inner scope destructs first in nested RAII).
+    const auto path = sink_tmp(".json");
+    {
+        cd::profile::ChromeTraceSink sink { path.string() };
+        sink.submit({ "inner", 100, 50, 1 });
+        sink.submit({ "outer", 0,  200, 1 });
+    }
+    const auto text = slurp(path);
+    const auto pos_inner = text.find(R"("name":"inner")");
+    const auto pos_outer = text.find(R"("name":"outer")");
+    ASSERT_NE(pos_inner, std::string::npos);
+    ASSERT_NE(pos_outer, std::string::npos);
+    EXPECT_LT(pos_inner, pos_outer) << "inner must appear before outer in JSON";
+    fs::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// CsvSink — edge cases
+// ---------------------------------------------------------------------------
+
+TEST(CsvSink, EmptyFileWhenNoSubmits)
+{
+    // A CsvSink that receives zero submits must produce an empty file
+    // (no header row, no data rows) — "profiling should never crash the app"
+    // implies the header is only written on first actual submit.
+    const auto path = sink_tmp(".csv");
+    {
+        cd::profile::CsvSink sink { path.string() };
+        ASSERT_TRUE(sink.is_open());
+        // No submit calls.
+    }
+    const auto text = slurp(path);
+    EXPECT_TRUE(text.empty()) << "Expected empty file, got:\n" << text;
+    fs::remove(path);
+}
+
+TEST(CsvSink, FailedWritesZeroOnNormalSubmit)
+{
+    const auto path = sink_tmp(".csv");
+    {
+        cd::profile::CsvSink sink { path.string() };
+        sink.submit({ "ok", 100, 200, 5 });
+        EXPECT_EQ(sink.failed_writes(), 0ULL);
+    }
+    fs::remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// StatsAggregator — edge cases
+// ---------------------------------------------------------------------------
+
+TEST(StatsAggregator, ZeroSampleEmptySnapshot)
+{
+    // apply() with an empty vector must leave the aggregator with no rows.
+    cd::profile::StatsAggregator agg;
+    agg.apply({});
+    EXPECT_EQ(agg.row_count(), 0U);
+    EXPECT_TRUE(agg.snapshot().empty());
+}
+
+TEST(StatsAggregator, SingleSampleMinEqualsMax)
+{
+    cd::profile::StatsAggregator agg;
+    agg.apply({ { "solo", 0, 42, 0 } });
+
+    const auto rows = agg.snapshot();
+    ASSERT_EQ(rows.size(), 1U);
+    const auto& r = rows[0];
+    EXPECT_EQ(r.min_ns, 42U);
+    EXPECT_EQ(r.max_ns, 42U);
+    EXPECT_DOUBLE_EQ(r.avg_ns(), 42.0);
+    // p0 and p100 both equal the only value.
+    EXPECT_EQ(r.percentile_ns(0.0), 42U);
+    EXPECT_EQ(r.percentile_ns(1.0), 42U);
+}
+
+TEST(StatsAggregator, PercentileP50AndP95)
+{
+    // Inject 10 known durations: 10,20,30,40,50,60,70,80,90,100 ns.
+    // Sorted already; nearest-rank p50 = ceil(0.5*10)=5 → durations[4]=50.
+    // p95 = ceil(0.95*10)=10 → durations[9]=100.
+    cd::profile::StatsAggregator agg;
+    std::vector<cd::profile::Sample> samples;
+    samples.reserve(10);
+    for (std::uint64_t i = 1; i <= 10; ++i)
+        samples.push_back({ "work", 0, i * 10U, 0 });
+    agg.apply(samples);
+
+    const auto rows = agg.snapshot();
+    ASSERT_EQ(rows.size(), 1U);
+    const auto& r = rows[0];
+    EXPECT_EQ(r.percentile_ns(0.50), 50U);
+    EXPECT_EQ(r.percentile_ns(0.95), 100U);
+    // p0 → rank=ceil(0*10) → clamp to 1 → sorted[0] = 10.
+    EXPECT_EQ(r.percentile_ns(0.0), 10U);
+}
+
+TEST(StatsAggregator, ResetThenReapply)
+{
+    cd::profile::StatsAggregator agg;
+    agg.apply({ { "x", 0, 100, 0 }, { "y", 0, 200, 0 } });
+    EXPECT_EQ(agg.row_count(), 2U);
+
+    agg.reset();
+    EXPECT_EQ(agg.row_count(), 0U);
+
+    // Re-apply with fresh data — should work cleanly after reset.
+    agg.apply({ { "z", 0, 999, 0 } });
+    ASSERT_EQ(agg.row_count(), 1U);
+    EXPECT_EQ(agg.snapshot()[0].name, "z");
+    EXPECT_EQ(agg.snapshot()[0].min_ns, 999U);
+}
+
+// ---------------------------------------------------------------------------
+// Scope — RAII guarantee
+// ---------------------------------------------------------------------------
+
+TEST(Scope, RaiiFiresOnNormalScopeExit)
+{
+    // Arrange: install a BufferSink, open a Scope manually, let it destruct.
+    cd::profile::BufferSink sink { 4 };
+    auto* prev = cd::profile::set_sink(&sink);
+
+    {
+        // Inject fixed timestamps via a manual Sample to avoid sleep_for.
+        // We test Scope's RAII contract by verifying the sink is populated
+        // after scope exit, regardless of wall-clock values.
+        cd::profile::Scope s { "raii_test" };
+        EXPECT_EQ(sink.size(), 0U);  // not yet submitted
+        // destructor fires here
+    }
+
+    cd::profile::set_sink(prev);
+
+    ASSERT_EQ(sink.size(), 1U);
+    EXPECT_EQ(sink.snapshot()[0].name, "raii_test");
+    EXPECT_GT(sink.snapshot()[0].duration_ns, 0U);
+}
+
+TEST(Scope, RaiiFiresEvenWhenExceptionUnwinds)
+{
+    // The Scope destructor must fire during stack unwinding so profiling
+    // data is not lost on the exception path.
+    cd::profile::BufferSink sink { 4 };
+    auto* prev = cd::profile::set_sink(&sink);
+
+    try
+    {
+        cd::profile::Scope s { "exception_path" };
+        throw std::runtime_error("deliberate");
+    }
+    catch (const std::runtime_error&)
+    {
+        SUCCEED();  // swallow — we care that the Scope dtor still ran.
+    }
+
+    cd::profile::set_sink(prev);
+
+    ASSERT_EQ(sink.size(), 1U);
+    EXPECT_EQ(sink.snapshot()[0].name, "exception_path");
 }

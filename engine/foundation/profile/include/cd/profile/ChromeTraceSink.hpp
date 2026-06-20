@@ -34,6 +34,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <ostream>
 
 namespace cd::profile
 {
@@ -86,7 +87,11 @@ public:
             const double dur_us = static_cast<double>(s.duration_ns) / 1000.0;
             // Single-line JSON object per sample keeps the file diff-friendly
             // and reduces parse time on perfetto.dev for huge traces.
-            out_ << R"({"name":")" << s.name << R"(","cat":"cpu","ph":"X","ts":)" << ts_us << R"(,"dur":)" << dur_us
+            // name is JSON-escaped so scope names containing quotes or
+            // backslashes (e.g., MSVC template strings) remain valid JSON.
+            out_ << R"({"name":")";
+            write_json_string(out_, s.name);
+            out_ << R"(","cat":"cpu","ph":"X","ts":)" << ts_us << R"(,"dur":)" << dur_us
                  << R"(,"pid":1,"tid":)" << s.thread_hash << '}';
         }
         catch (...)
@@ -114,6 +119,23 @@ public:
     }
 
 private:
+    /// Write `sv` to `os` with JSON string escaping: `"` → `\"`,
+    /// `\` → `\\`, and control characters as `\uXXXX`. This keeps
+    /// the emitted JSON valid even when scope names contain unusual
+    /// characters (e.g., template instantiation strings from MSVC).
+    static void write_json_string(std::ostream& os, std::string_view sv)
+    {
+        for (const char ch : sv)
+        {
+            if (ch == '"')        { os << "\\\""; }
+            else if (ch == '\\')  { os << "\\\\"; }
+            else if (ch == '\n')  { os << "\\n";  }
+            else if (ch == '\r')  { os << "\\r";  }
+            else if (ch == '\t')  { os << "\\t";  }
+            else                  { os << ch;      }
+        }
+    }
+
     std::string path_;
     std::ofstream out_;
     mutable std::mutex mutex_;

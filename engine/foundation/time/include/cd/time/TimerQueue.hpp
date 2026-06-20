@@ -75,7 +75,7 @@ public:
 
     [[nodiscard]] bool is_running() const noexcept
     {
-        std::lock_guard guard { mutex_ };
+        std::scoped_lock guard { mutex_ };
         return running_;
     }
 
@@ -86,12 +86,14 @@ public:
         std::unique_lock guard { mutex_ };
         Entry e;
         e.deadline = Clock::now() + delay;
-        e.sequence = next_sequence_++;
+        const std::uint64_t seq = next_sequence_++;
+        e.sequence = seq;
         e.callback = std::move(cb);
         e.token = std::move(token);
         entries_.push(std::move(e));
         condition_.notify_one();
-        return entries_.top().sequence;  // not necessarily what we just pushed
+        return seq;  // the id of the timer just scheduled (NOT the heap top, which
+                     // is the earliest-deadline entry and may be a different timer)
     }
 
 private:

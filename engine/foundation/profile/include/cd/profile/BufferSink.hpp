@@ -65,6 +65,28 @@ public:
         next_ = 0;
     }
 
+    /// Move all buffered samples out and reset the buffer to empty.
+    /// Equivalent to `snapshot()` + `clear()` but under a single lock
+    /// acquisition so no samples are lost between the two calls.
+    [[nodiscard]] std::vector<Sample> drain()
+    {
+        const std::scoped_lock lock { mutex_ };
+        std::vector<Sample> out;
+        if (samples_.size() < capacity_)
+        {
+            out = std::move(samples_);
+        }
+        else
+        {
+            out.reserve(samples_.size());
+            out.insert(out.end(), samples_.begin() + static_cast<std::ptrdiff_t>(next_), samples_.end());
+            out.insert(out.end(), samples_.begin(), samples_.begin() + static_cast<std::ptrdiff_t>(next_));
+        }
+        samples_.clear();
+        next_ = 0;
+        return out;
+    }
+
     [[nodiscard]] std::size_t size() const
     {
         const std::scoped_lock lock { mutex_ };

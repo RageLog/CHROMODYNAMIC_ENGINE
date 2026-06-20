@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cd/vfs/IFileSource.hpp>
+#include <cd/vfs/PathUtil.hpp>
 
 #include <cstddef>
 #include <cstring>
@@ -28,7 +29,7 @@ public:
 
     void put(std::string path, std::vector<std::byte> bytes)
     {
-        files_.insert_or_assign(std::move(path), std::move(bytes));
+        files_.insert_or_assign(normalize_path(path), std::move(bytes));
     }
 
     /// Convenience for tests / small embedded blobs.
@@ -37,22 +38,22 @@ public:
         std::vector<std::byte> b(text.size());
         if (!text.empty())
             std::memcpy(b.data(), text.data(), text.size());
-        files_.insert_or_assign(std::move(path), std::move(b));
+        files_.insert_or_assign(normalize_path(path), std::move(b));
     }
 
     void erase(std::string_view path)
     {
-        files_.erase(std::string { path });
+        files_.erase(normalize_path(path));
     }
 
     [[nodiscard]] bool exists(std::string_view path) const override
     {
-        return files_.find(std::string { path }) != files_.end();
+        return files_.contains(normalize_path(path));
     }
 
     [[nodiscard]] cd::core::Result<std::vector<std::byte>> read(std::string_view path) const override
     {
-        auto it = files_.find(std::string { path });
+        const auto it = files_.find(normalize_path(path));
         if (it == files_.end())
         {
             return std::unexpected(vfs_errors::make(vfs_errors::Code::kNotFound, "memory: path not found"));
@@ -62,11 +63,20 @@ public:
 
     [[nodiscard]] std::vector<std::string> list(std::string_view prefix) const override
     {
+        // Normalise but preserve a trailing slash so "shaders/" stays distinct
+        // from a path that merely starts with "shaders".
+        std::string norm_prefix = normalize_path(prefix);
+        const bool had_sep = !prefix.empty() && (prefix.back() == '/' || prefix.back() == '\\');
+        if (had_sep && !norm_prefix.empty())
+            norm_prefix += '/';
+
         std::vector<std::string> out;
         out.reserve(files_.size());
-        for (const auto& [p, _] : files_)
+        for (const auto& [p, ignored_val] : files_)
         {
-            if (prefix.empty() || (p.size() >= prefix.size() && std::string_view { p.data(), prefix.size() } == prefix))
+            if (norm_prefix.empty() ||
+                (p.size() >= norm_prefix.size() &&
+                 std::string_view { p.data(), norm_prefix.size() } == norm_prefix))
             {
                 out.push_back(p);
             }

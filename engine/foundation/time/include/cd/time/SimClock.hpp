@@ -117,6 +117,13 @@ public:
         return scaled;
     }
 
+    /// Jump accumulated simulation time to `t` (absolute, from epoch zero).
+    /// Negative values are clamped to zero. Does not change scale/pause/tick_count.
+    void set_time(Duration t) noexcept
+    {
+        accumulated_ = t.count() >= 0 ? t : Duration::zero();
+    }
+
     /// Reset to zero simulation time. Does not change scale/pause.
     void reset() noexcept
     {

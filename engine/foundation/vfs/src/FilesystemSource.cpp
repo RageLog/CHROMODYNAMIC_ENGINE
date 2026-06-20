@@ -2,6 +2,7 @@
 // CHROMODYNAMIC — cd/vfs/FilesystemSource.cpp
 // =============================================================================
 #include <cd/vfs/FilesystemSource.hpp>
+#include <cd/vfs/PathUtil.hpp>
 
 #include <cstdint>
 #include <fstream>
@@ -19,7 +20,9 @@ FilesystemSource::FilesystemSource(std::filesystem::path root, std::string name)
 
 std::filesystem::path FilesystemSource::resolve(std::string_view path) const
 {
-    return root_ / std::filesystem::path { path };
+    // Normalise first so ".." cannot escape the root and separators are uniform.
+    const std::string norm = normalize_path(path);
+    return root_ / std::filesystem::path { norm };
 }
 
 bool FilesystemSource::exists(std::string_view path) const
@@ -58,6 +61,13 @@ cd::core::Result<std::vector<std::byte>> FilesystemSource::read(std::string_view
 
 std::vector<std::string> FilesystemSource::list(std::string_view prefix) const
 {
+    // Normalise but preserve a trailing slash so "shaders/" stays distinct
+    // from a path that merely starts with "shaders".
+    std::string norm_prefix = normalize_path(prefix);
+    const bool had_sep = !prefix.empty() && (prefix.back() == '/' || prefix.back() == '\\');
+    if (had_sep && !norm_prefix.empty())
+        norm_prefix += '/';
+
     std::vector<std::string> out;
     std::error_code ec;
     if (!std::filesystem::is_directory(root_, ec))
@@ -75,7 +85,9 @@ std::vector<std::string> FilesystemSource::list(std::string_view prefix) const
         if (rel_ec)
             continue;
         auto s = rel.generic_string();
-        if (prefix.empty() || (s.size() >= prefix.size() && std::string_view { s.data(), prefix.size() } == prefix))
+        if (norm_prefix.empty() ||
+            (s.size() >= norm_prefix.size() &&
+             std::string_view { s.data(), norm_prefix.size() } == norm_prefix))
         {
             out.push_back(std::move(s));
         }

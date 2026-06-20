@@ -101,3 +101,13 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - **ui_input**: +21 tests (HitTester z-order/nest, FocusManager tab/modal, Gesture FSM boundaries).
   - **ui_theme**: +26 tests (WCAG 3:1/4.5:1/7:1/21:1 boundaries spec-verified, on-color, brand override, theme_from_name, scale monotonic).
   - Gate fix: ui_theme on-color test exact-threshold was float-unstable (l>0.179, L(grey k)=k → 0.179*1.0 rounds just above) → test either side with margin. Gate: build clean -Werror (0/0); ctest 324/324; WAE clean.
+- ✅ **Batch 8 (phase1261)** — tiers 84/83/82, 8 libs → 100% (~183 new tests, 1 real bug):
+  - **time** (84→100): SimClock::set_time() + 21 tests + REAL FIX: TimerQueue::schedule_after returned entries_.top().sequence (the min-deadline heap top), not the just-scheduled timer's id → returns the real id now (+ near-then-far regression test).
+  - **restir_di** (83→100): +39 tests (3 files: reservoir-math + temporal-buffer host-side, GPU-gated edge cases). Sprint-7 G-buffer seam wiring SEALED out-of-charter (alters rendered output → GPU render-review).
+  - **diag** (82→100): DeadlineMonitor arm/disarm/extend/injected-clock ctor + replaced flaky sleep_for test + 25 tests.
+  - **events** (82→100): +13 tests (ScopedConnection RAII/move, unsubscribe-during-emit snapshot, deferred drain order, reentrant publish). Priority-subscribe confirmed already done; async sealed to cd::concurrency.
+  - **profile** (82→100): BufferSink::drain + StatRow::percentile_ns + ChromeTrace JSON escaping + 17 tests.
+  - **vfs** (82→100): normalize_path (new PathUtil.hpp) + unmount() + path normalization across exists/read/list/put/erase + 25 tests.
+  - **brdf** (82→100): +35 paper-verified tests (LTC/Charlie-D/Neubelt-reciprocity/clearcoat/Burley-SSS energy-conservation/CPU↔GLSL parity). No lobe math touched.
+  - **scene_ingest** (82→100): +8 tests (rollback ECS+GPU-clean invariant, deep DFS world-compose, AABB pass-through). No ingest-output change.
+  - Gate fixes: 1 compile (time unused cv_mutex) + ~17 WAE (diag 5x empty-catch→SUCCEED + 5x lock_guard→scoped_lock + op=self-assign-guard, profile 2x raw-string + empty-catch, time TimerQueue + 2x test scoped_lock, brdf self-fixed DeMorgan). 1 flake (rhi_pipeline_cache, passed on re-run). Gate: build clean -Werror (0/0); ctest 326/327 (1 flake); golden/sponza/chrome BYTE-IDENTICAL.
