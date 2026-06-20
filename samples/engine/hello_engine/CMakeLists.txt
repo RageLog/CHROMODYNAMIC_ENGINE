@@ -107,12 +107,14 @@ target_compile_definitions(cd_sample_hello_engine PRIVATE
 # build that NEVER re-fired this POST_BUILD step, leaving the exe-side copy
 # STALE while the source was fresh; (2) a stale exe-side copy produces a FALSE
 # byte-identical golden (the golden is computed against the unchanged blob,
-# masking the edit). Fix: enumerate the shader sources, use copy_if_different
-# (per-file, no needless rewrites), and add the files as explicit DEPENDS so
-# CMake re-runs the copy whenever ANY shader source changes — even when no
-# translation unit recompiled. Belt-and-braces: the pre-golden sha256 fixture
-# in tests/ (cd_test_hello_engine_shader_staleness) still asserts source ==
-# exe-side before any golden compare runs. The default runtime path stays
+# masking the edit). Fix: enumerate the shader sources and use copy_if_different
+# (per-file, no needless rewrites). NOTE: a TARGET-form POST_BUILD command cannot
+# take a file-level DEPENDS — CMP0175 (CMake 3.31+) rejects it as an invalid
+# argument, and it only ever re-fires on a relink anyway, so it could never have
+# caught a shader-ONLY edit. The AUTHORITATIVE staleness guard is therefore the
+# pre-golden sha256 fixture in tests/ (cd_test_hello_engine_shader_staleness),
+# which asserts source == exe-side before any golden compare runs. The default
+# runtime path stays
 # identical (exe-side shaders/), so the chrome golden remains byte-identical.
 file(GLOB HELLO_ENGINE_SHADER_SOURCES CONFIGURE_DEPENDS
   ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.glsl)
@@ -122,7 +124,6 @@ add_custom_command(TARGET cd_sample_hello_engine POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${HELLO_ENGINE_SHADER_SOURCES}
     $<TARGET_FILE_DIR:cd_sample_hello_engine>/shaders
-  DEPENDS ${HELLO_ENGINE_SHADER_SOURCES}
   COMMENT "Stage hello_engine shaders for on-disk hot-reload (copy_if_different)")
 
 # phase508-generic-gltf-path: stage the sample-local Generic glTF folder
