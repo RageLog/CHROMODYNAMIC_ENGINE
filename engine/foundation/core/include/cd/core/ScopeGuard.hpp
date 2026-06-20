@@ -20,7 +20,7 @@ template <class F>
 class ScopeGuard
 {
 public:
-    explicit ScopeGuard(F f) noexcept : f_ { std::move(f) }, armed_ { true } {}
+    explicit ScopeGuard(F f) noexcept : f_ { std::move(f) } {}  // armed_ defaults to true
 
     ~ScopeGuard()
     {

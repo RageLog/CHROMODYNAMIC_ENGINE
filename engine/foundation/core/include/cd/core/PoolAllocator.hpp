@@ -40,10 +40,10 @@ public:
         {
             auto* cur = block_at(i);
             auto* next = block_at(i + 1);
-            std::memcpy(cur, &next, sizeof(void*));
+            std::memcpy(cur, static_cast<const void*>(&next), sizeof(void*));
         }
         void* terminator = nullptr;
-        std::memcpy(block_at(block_count_ - 1), &terminator, sizeof(void*));
+        std::memcpy(block_at(block_count_ - 1), static_cast<const void*>(&terminator), sizeof(void*));
         free_head_ = block_at(0);
         free_count_ = block_count_;
     }
@@ -53,7 +53,7 @@ public:
         if (free_head_ == nullptr) return nullptr;
         void* out = free_head_;
         void* next = nullptr;
-        std::memcpy(&next, free_head_, sizeof(void*));
+        std::memcpy(static_cast<void*>(&next), free_head_, sizeof(void*));
         free_head_ = next;
         --free_count_;
         return out;
@@ -62,7 +62,7 @@ public:
     void deallocate(void* p) noexcept
     {
         if (p == nullptr) return;
-        std::memcpy(p, &free_head_, sizeof(void*));
+        std::memcpy(p, static_cast<const void*>(&free_head_), sizeof(void*));
         free_head_ = p;
         ++free_count_;
     }

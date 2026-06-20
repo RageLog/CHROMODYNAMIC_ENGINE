@@ -29,8 +29,9 @@ template <class T>
 class Ref
 {
 public:
-    // NOLINTNEXTLINE(google-explicit-constructor) — implicit construction
-    // from T& mirrors std::reference_wrapper; that conversion is the point.
+    // Implicit construction from T& mirrors std::reference_wrapper; that
+    // conversion is the point.
+    // NOLINTNEXTLINE(google-explicit-constructor)
     constexpr Ref(T& r) noexcept : ptr_ { &r } {}
 
     Ref(T&&) = delete;   // No binding to temporaries.

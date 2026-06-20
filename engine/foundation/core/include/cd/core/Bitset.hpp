@@ -34,7 +34,7 @@ public:
     static constexpr std::size_t kBitsPerWord = 64;
     static constexpr std::size_t kWordCount = (N + kBitsPerWord - 1) / kBitsPerWord;
 
-    constexpr Bitset() noexcept : words_ {} {}
+    constexpr Bitset() noexcept = default;  // words_ default-inits to all-zero
 
     constexpr void set(std::size_t i) noexcept
     {
@@ -102,7 +102,7 @@ public:
     [[nodiscard]] constexpr std::size_t size() const noexcept { return N; }
 
 private:
-    std::array<std::uint64_t, kWordCount> words_;
+    std::array<std::uint64_t, kWordCount> words_ {};
 };
 
 }  // namespace cd::core

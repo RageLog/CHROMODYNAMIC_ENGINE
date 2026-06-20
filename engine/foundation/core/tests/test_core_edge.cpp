@@ -948,6 +948,9 @@ TEST(ScopeGuardEdge, MoveTransfersFiringOwnershipExactlyOnce)
         auto g1 = cd::core::make_scope_guard([&] { ++fires; });
         EXPECT_TRUE(g1.armed());
         auto g2 = std::move(g1);
+        // Deliberately inspect the moved-from source: ScopeGuard's move leaves it
+        // in a defined, disarmed state (armed_ == false).
+        // NOLINTNEXTLINE(bugprone-use-after-move,hicpp-invalid-access-moved)
         EXPECT_FALSE(g1.armed());          // source disarmed after move
         EXPECT_TRUE(g2.armed());
     }

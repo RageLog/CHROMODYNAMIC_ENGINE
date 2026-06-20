@@ -217,7 +217,11 @@ public:
         {
             if (const auto& slot = slots_[i]; slot.has_value())
             {
-                std::forward<F>(fn)(handle_type { i, generations_[i], type_id_ }, *slot);
+                // fn is invoked once PER slot, so it must be called as an lvalue
+                // (forwarding it as an rvalue would move-from a move-only / &&-
+                // qualified callable on the first slot and use a moved-from object
+                // on the rest).
+                fn(handle_type { i, generations_[i], type_id_ }, *slot);
             }
         }
     }

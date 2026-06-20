@@ -170,7 +170,7 @@ private:
     template <class U>
     T* insert_impl(std::size_t pos, U&& v)
     {
-        if (pos > size_) pos = size_;
+        pos = std::min(pos, size_);
         if (pos == size_)
         {
             push_back(std::forward<U>(v));
