@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -551,4 +553,487 @@ TEST(SsimLite, DimensionMismatchReturnsError)
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code,
               static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kDimensionMismatch));
+}
+
+// =============================================================================
+// Depth-100 additions — edge / negative / reference-value tests
+// ADD-ONLY: no existing math path modified.
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// ImageDiff — additional edge / negative cases
+// -----------------------------------------------------------------------------
+
+TEST(ImageDiff, AllBlackVsAllWhiteMaxDelta)
+{
+    // Fully-different images: every channel R/G/B differs by 255; alpha matches.
+    const auto black = solid(4, 4, 0, 0, 0, 255);
+    const auto white = solid(4, 4, 255, 255, 255, 255);
+    const cd::imgdiff::ImageView va { black.data(), 4, 4 };
+    const cd::imgdiff::ImageView vb { white.data(), 4, 4 };
+    auto r = cd::imgdiff::compare(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->max_abs_delta_r, 255U);
+    EXPECT_EQ(r->max_abs_delta_g, 255U);
+    EXPECT_EQ(r->max_abs_delta_b, 255U);
+    EXPECT_EQ(r->max_abs_delta_a, 0U);
+    EXPECT_EQ(r->different_pixels, 16U);
+    // RMSE for R=255, G=255, B=255, A=0: sqrt((255²+255²+255²+0)/4) = 255*sqrt(3/4)
+    EXPECT_NEAR(r->rmse, 255.0 * std::sqrt(3.0 / 4.0), 0.5);
+    EXPECT_LT(r->psnr_db, 10.0);  // large error → low PSNR
+    EXPECT_FALSE(cd::imgdiff::passes(*r));
+}
+
+TEST(ImageDiff, OneByOneIdentical)
+{
+    // Smallest valid image, identical — must not crash and return zero diff.
+    const auto img = solid(1, 1, 42, 84, 168, 200);
+    const cd::imgdiff::ImageView v { img.data(), 1, 1 };
+    auto r = cd::imgdiff::compare(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->pixel_count, 1U);
+    EXPECT_EQ(r->different_pixels, 0U);
+    EXPECT_DOUBLE_EQ(r->rmse, 0.0);
+    EXPECT_GE(r->psnr_db, 100.0);
+}
+
+TEST(ImageDiff, OneByOneDifferent)
+{
+    // 1×1 images that differ on all channels — covers single-pixel RMSE path.
+    const auto a = solid(1, 1, 0, 0, 0, 255);
+    const auto b = solid(1, 1, 255, 255, 255, 0);
+    const cd::imgdiff::ImageView va { a.data(), 1, 1 };
+    const cd::imgdiff::ImageView vb { b.data(), 1, 1 };
+    auto r = cd::imgdiff::compare(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->different_pixels, 1U);
+    EXPECT_EQ(r->max_abs_delta_r, 255U);
+    EXPECT_EQ(r->max_abs_delta_a, 255U);
+    EXPECT_GT(r->rmse, 0.0);
+}
+
+TEST(ImageDiff, HighlightDimensionMismatchReturnsError)
+{
+    // highlight() must propagate kDimensionMismatch the same way compare() does.
+    const auto a = solid(4, 4, 0, 0, 0, 255);
+    const auto b = solid(8, 4, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 4, 4 };
+    const cd::imgdiff::ImageView vb { b.data(), 8, 4 };
+    auto h = cd::imgdiff::highlight(va, vb);
+    ASSERT_FALSE(h.has_value());
+    EXPECT_EQ(h.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kDimensionMismatch));
+}
+
+TEST(ImageDiff, HighlightNullPointerReturnsError)
+{
+    // highlight() with null pointer.
+    const auto a = solid(4, 4, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 4, 4 };
+    const cd::imgdiff::ImageView vb { nullptr, 4, 4 };
+    auto h = cd::imgdiff::highlight(va, vb);
+    ASSERT_FALSE(h.has_value());
+    EXPECT_EQ(h.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kNullPointer));
+}
+
+TEST(ImageDiff, PassesWithCustomMaxFailures)
+{
+    // passes() threshold: exactly at boundary.
+    const auto a = solid(4, 1, 0, 0, 0, 255);
+    auto b = a;
+    b[0] = 255; b[4] = 255; b[8] = 255;  // 3 pixels differ on R
+    const cd::imgdiff::ImageView va { a.data(), 4, 1 };
+    const cd::imgdiff::ImageView vb { b.data(), 4, 1 };
+    auto r = cd::imgdiff::compare(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->different_pixels, 3U);
+    EXPECT_FALSE(cd::imgdiff::passes(*r, 2));  // max_failures=2 → fails
+    EXPECT_TRUE(cd::imgdiff::passes(*r, 3));   // exactly at boundary → passes
+    EXPECT_TRUE(cd::imgdiff::passes(*r, 4));   // above boundary → passes
+}
+
+TEST(ImageDiff, EmptyImageReturnsError)
+{
+    // Both width=0 and height=0 cases.
+    const cd::imgdiff::ImageView vw { nullptr, 0, 4 };
+    const cd::imgdiff::ImageView vh { nullptr, 4, 0 };
+    // nullptr + zero dims → either kNullPointer or kEmptyImage. The
+    // implementation checks nullptr first, so we get kNullPointer.
+    auto rw = cd::imgdiff::compare(vw, vw);
+    ASSERT_FALSE(rw.has_value());
+    auto rh = cd::imgdiff::compare(vh, vh);
+    ASSERT_FALSE(rh.has_value());
+}
+
+// -----------------------------------------------------------------------------
+// SSIM-lite — additional edge cases
+// -----------------------------------------------------------------------------
+
+TEST(SsimLite, OneByOneIdenticalReturnsOne)
+{
+    // 1×1 image with window_size=1 should produce SSIM=1.0.
+    const auto img = solid(1, 1, 128, 128, 128, 255);
+    const cd::imgdiff::ImageView v { img.data(), 1, 1 };
+    auto r = cd::imgdiff::compute_ssim_lite(v, v, 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->windows, 1U);
+    EXPECT_NEAR(r->mean_ssim, 1.0, 1e-9);
+}
+
+TEST(SsimLite, NullPointerReturnsError)
+{
+    const auto a = solid(8, 8, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { nullptr, 8, 8 };
+    auto r = cd::imgdiff::compute_ssim_lite(va, vb);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kNullPointer));
+}
+
+TEST(SsimLite, ZeroWindowSizeReturnsError)
+{
+    // window_size=0 should return kEmptyImage.
+    const auto img = solid(8, 8, 100, 100, 100, 255);
+    const cd::imgdiff::ImageView v { img.data(), 8, 8 };
+    auto r = cd::imgdiff::compute_ssim_lite(v, v, 0);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kEmptyImage));
+}
+
+TEST(SsimLite, PassesConvenienceHelper)
+{
+    // ssim_passes default threshold 0.99.
+    const auto img = solid(16, 16, 100, 150, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_ssim_lite(v, v, 8);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE(cd::imgdiff::ssim_passes(*r));           // identical → passes
+    EXPECT_TRUE(cd::imgdiff::ssim_passes(*r, 0.99));     // explicit threshold
+    EXPECT_TRUE(cd::imgdiff::ssim_passes(*r, 1.0));      // exact 1.0 threshold also passes
+}
+
+TEST(SsimLite, ExactWindowEdge)
+{
+    // Image width and height exactly equal window size → exactly 1 window.
+    const auto img = solid(8, 8, 50, 100, 150, 255);
+    const cd::imgdiff::ImageView v { img.data(), 8, 8 };
+    auto r = cd::imgdiff::compute_ssim_lite(v, v, 8);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->windows, 1U);
+    EXPECT_NEAR(r->mean_ssim, 1.0, 1e-9);
+}
+
+// -----------------------------------------------------------------------------
+// Gaussian blur — additional edge / kernel-property tests
+// -----------------------------------------------------------------------------
+
+TEST(GaussianBlur, NullPointerReturnsError)
+{
+    // gaussian_blur with null rgba pointer.
+    const cd::imgdiff::ImageView v { nullptr, 8, 8 };
+    auto r = cd::imgdiff::gaussian_blur(v, 1.0);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kNullPointer));
+}
+
+TEST(GaussianBlur, OneByOneConstantStaysConstant)
+{
+    // Clamp-to-edge on 1×1: every tap refers to the single pixel.
+    // Output must be identical to input for any sigma.
+    const auto img = solid(1, 1, 77, 99, 133, 200);
+    const cd::imgdiff::ImageView v { img.data(), 1, 1 };
+    auto r = cd::imgdiff::gaussian_blur(v, 2.0);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(r->size(), 4U);
+    EXPECT_EQ((*r)[0], 77U);
+    EXPECT_EQ((*r)[1], 99U);
+    EXPECT_EQ((*r)[2], 133U);
+    EXPECT_EQ((*r)[3], 200U);
+}
+
+TEST(GaussianBlur, KernelSumIsOneViaConstantImage)
+{
+    // A constant image through any sigma must return the same constant
+    // because a normalized Gaussian sums to 1.0. Tests all sigma values
+    // including large ones (which produce wide kernels via ceil(3*sigma)).
+    // Sigma 0.5 → radius 2, sigma 3.0 → radius 9.
+    for (const double sigma : { 0.5, 1.0, 1.5, 3.0 })
+    {
+        const auto img = solid(16, 16, 210, 130, 55, 255);
+        const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+        auto r = cd::imgdiff::gaussian_blur(v, sigma);
+        ASSERT_TRUE(r.has_value()) << "sigma=" << sigma;
+        // Check centre pixel and border pixel (clamp-to-edge must also be exact).
+        EXPECT_EQ((*r)[0], 210U) << "sigma=" << sigma;  // corner
+        const std::size_t ctr = static_cast<std::size_t>(8 * 16 + 8) * 4U;
+        EXPECT_EQ((*r)[ctr], 210U) << "sigma=" << sigma;  // centre
+    }
+}
+
+TEST(GaussianBlur, OutputHasSameDimensions)
+{
+    // Output buffer must be exactly width*height*4 bytes.
+    const auto img = solid(13, 7, 1, 2, 3, 4);
+    const cd::imgdiff::ImageView v { img.data(), 13, 7 };
+    auto r = cd::imgdiff::gaussian_blur(v, 1.2);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->size(), static_cast<std::size_t>(13) * 7U * 4U);
+}
+
+// -----------------------------------------------------------------------------
+// FLIP-lite — reference value + additional edge cases
+// -----------------------------------------------------------------------------
+
+TEST(FlipLite, PerceptualMapReferenceValues)
+{
+    // Verify perceptual_map behaviour against the documented constants
+    // (kJndFloor=2.0, kSaturate=96.0). Accesses the detail function via
+    // the observable output of compute_flip_lite on a 1×1 image.
+
+    // delta <= 2 (JND floor) → 0. Build Y=0 and Y=1 (both collapse to ≤2 delta
+    // after BT.601: actual luminance delta = 0.299*1 = 0.299, which is < 2).
+    const auto a0 = solid(1, 1, 0, 0, 0, 255);
+    const auto a1 = solid(1, 1, 1, 1, 1, 255);
+    const cd::imgdiff::ImageView v0 { a0.data(), 1, 1 };
+    const cd::imgdiff::ImageView v1 { a1.data(), 1, 1 };
+    // Luminance delta ≈ 0.299+0.587+0.114 = 1.0 < kJndFloor → error must be 0.
+    auto r_tiny = cd::imgdiff::compute_flip_lite(v0, v1);
+    ASSERT_TRUE(r_tiny.has_value());
+    EXPECT_DOUBLE_EQ(r_tiny->mean_error, 0.0);
+
+    // delta = 255 raw lum → perceptual_map saturates to 1.0.
+    const auto black1 = solid(1, 1, 0, 0, 0, 255);
+    const auto white1 = solid(1, 1, 255, 255, 255, 255);
+    const cd::imgdiff::ImageView vb { black1.data(), 1, 1 };
+    const cd::imgdiff::ImageView vw { white1.data(), 1, 1 };
+    auto r_max = cd::imgdiff::compute_flip_lite(vb, vw);
+    ASSERT_TRUE(r_max.has_value());
+    EXPECT_DOUBLE_EQ(r_max->mean_error, 1.0);
+    EXPECT_DOUBLE_EQ(r_max->max_error, 1.0);
+    EXPECT_DOUBLE_EQ(r_max->p95_error, 1.0);
+}
+
+TEST(FlipLite, OneByOneIdentical)
+{
+    // 1×1 identical image: all aggregates zero.
+    const auto img = solid(1, 1, 200, 100, 50, 255);
+    const cd::imgdiff::ImageView v { img.data(), 1, 1 };
+    auto r = cd::imgdiff::compute_flip_lite(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->pixel_count, 1U);
+    EXPECT_DOUBLE_EQ(r->mean_error, 0.0);
+    EXPECT_DOUBLE_EQ(r->max_error, 0.0);
+    EXPECT_DOUBLE_EQ(r->p95_error, 0.0);
+    EXPECT_EQ(r->error_map.size(), 1U);
+    EXPECT_DOUBLE_EQ(r->error_map[0], 0.0);
+}
+
+TEST(FlipLite, NullPointerReturnsError)
+{
+    const auto a = solid(8, 8, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { nullptr, 8, 8 };
+    auto r = cd::imgdiff::compute_flip_lite(va, vb);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kNullPointer));
+}
+
+TEST(FlipLite, FlipPassesCustomThreshold)
+{
+    // flip_passes with a custom threshold other than the default 0.05.
+    const auto white = solid(16, 16, 255, 255, 255, 255);
+    const auto black = solid(16, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { white.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { black.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_lite(va, vb);
+    ASSERT_TRUE(r.has_value());
+    // Large error → fails at any reasonable threshold.
+    EXPECT_FALSE(cd::imgdiff::flip_passes(*r, 0.99));
+    // Trivially wide threshold → passes.
+    EXPECT_TRUE(cd::imgdiff::flip_passes(*r, 1.0));
+}
+
+TEST(FlipLite, HeatmapDimensionMismatchReturnsEmpty)
+{
+    // flip_heatmap with error_map.size() != width*height returns zero-init output.
+    cd::imgdiff::FlipReport r;
+    r.pixel_count = 4;
+    r.error_map = { 0.5, 0.5 };  // only 2 entries but 4 pixels expected
+    const auto heat = cd::imgdiff::flip_heatmap(r, 2, 2);
+    ASSERT_EQ(heat.size(), 2U * 2U * 4U);
+    // Must be all zeros (zero-init on mismatch).
+    for (const std::uint8_t b : heat)
+        EXPECT_EQ(b, 0U);
+}
+
+TEST(FlipLite, P95IsZeroForIdenticalImages)
+{
+    // Identical images → error map is all-zero → p95 = 0.
+    const auto img = solid(32, 32, 100, 150, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 32, 32 };
+    auto r = cd::imgdiff::compute_flip_lite(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_DOUBLE_EQ(r->p95_error, 0.0);
+}
+
+TEST(FlipLite, ErrorMapSizeMatchesPixelCount)
+{
+    // error_map.size() must equal pixel_count for all image sizes.
+    const auto img = solid(7, 5, 50, 100, 150, 255);  // non-power-of-two dims
+    const cd::imgdiff::ImageView v { img.data(), 7, 5 };
+    auto r = cd::imgdiff::compute_flip_lite(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->error_map.size(), static_cast<std::size_t>(r->pixel_count));
+    EXPECT_EQ(r->pixel_count, 7U * 5U);
+}
+
+// -----------------------------------------------------------------------------
+// Full FLIP — additional edge / error path tests
+// -----------------------------------------------------------------------------
+
+TEST(FlipFull, NullPointerReturnsError)
+{
+    const auto a = solid(8, 8, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 8, 8 };
+    const cd::imgdiff::ImageView vb { nullptr, 8, 8 };
+    auto r = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kNullPointer));
+}
+
+TEST(FlipFull, OneByOneIdentical)
+{
+    // 1×1 image through the full chroma path: mean_error must be 0.
+    const auto img = solid(1, 1, 80, 160, 240, 255);
+    const cd::imgdiff::ImageView v { img.data(), 1, 1 };
+    auto r = cd::imgdiff::compute_flip_full(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_DOUBLE_EQ(r->mean_error, 0.0);
+    EXPECT_DOUBLE_EQ(r->max_error, 0.0);
+}
+
+TEST(FlipFull, P95AtLeastMean)
+{
+    // Invariant: p95_error >= mean_error for any non-trivial image pair.
+    const auto white = solid(16, 16, 255, 255, 255, 255);
+    const auto black = solid(16, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { white.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { black.data(), 16, 16 };
+    auto r = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GE(r->p95_error, r->mean_error);
+}
+
+TEST(FlipFull, ChromaSigmaLargerThanLuminance)
+{
+    // The implementation uses sigma_c = sigma_y * 1.5.  A chroma-only
+    // difference (equal luminance, different Cx/Cz) must register a
+    // nonzero error via the full path, confirming the chroma blur ran.
+    // Red-dominant vs green-dominant: luminance ≈ 0.2126*200 + 0.7152*50 ≈ 78
+    // vs 0.2126*50 + 0.7152*200 ≈ 153 — not pure luma match, but the
+    // chroma channels (Cx, Cz) differ substantially regardless.
+    const auto red  = solid(32, 32, 200, 50, 50, 255);
+    const auto cyan = solid(32, 32, 50, 200, 200, 255);
+    const cd::imgdiff::ImageView va { red.data(), 32, 32 };
+    const cd::imgdiff::ImageView vb { cyan.data(), 32, 32 };
+    auto r = cd::imgdiff::compute_flip_full(va, vb);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GT(r->mean_error, 0.0);
+    // All pixels are solid-color → uniform error → max == mean.
+    EXPECT_NEAR(r->max_error, r->mean_error, 1e-9);
+}
+
+TEST(FlipFull, ErrorMapSizeMatchesPixelCount)
+{
+    const auto img = solid(5, 7, 30, 60, 90, 255);  // non-square
+    const cd::imgdiff::ImageView v { img.data(), 5, 7 };
+    auto r = cd::imgdiff::compute_flip_full(v, v);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->error_map.size(), static_cast<std::size_t>(r->pixel_count));
+    EXPECT_EQ(r->pixel_count, 5U * 7U);
+}
+
+// -----------------------------------------------------------------------------
+// SSIM Gaussian-weighted — additional edge / error path tests
+// -----------------------------------------------------------------------------
+
+TEST(SsimGaussian, NullPointerReturnsError)
+{
+    const auto a = solid(16, 16, 0, 0, 0, 255);
+    const cd::imgdiff::ImageView va { a.data(), 16, 16 };
+    const cd::imgdiff::ImageView vb { nullptr, 16, 16 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(va, vb);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(cd::imgdiff::imgdiff_errors::Code::kNullPointer));
+}
+
+TEST(SsimGaussian, ZeroStrideClampedToOne)
+{
+    // stride=0 is clamped to 1 inside compute_ssim_gaussian; result must
+    // equal the stride=1 result (same coverage).
+    const auto img = solid(16, 16, 100, 150, 200, 255);
+    const cd::imgdiff::ImageView v { img.data(), 16, 16 };
+    auto r0 = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 0);
+    auto r1 = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 1);
+    ASSERT_TRUE(r0.has_value());
+    ASSERT_TRUE(r1.has_value());
+    EXPECT_EQ(r0->windows, r1->windows);
+    EXPECT_NEAR(r0->mean_ssim, r1->mean_ssim, 1e-12);
+}
+
+TEST(SsimGaussian, MeanGEMinInvariant)
+{
+    // mean_ssim >= min_ssim must hold when different windows score differently.
+    std::vector<std::uint8_t> a(static_cast<std::size_t>(32) * 32 * 4U, 128U);
+    for (std::size_t i = 3U; i < a.size(); i += 4U)
+        a[i] = 255U;
+    auto b = a;
+    // Corrupt top-left 8×8 block → that region's windows will score lower.
+    for (std::uint32_t y = 0U; y < 8U; ++y)
+        for (std::uint32_t x = 0U; x < 8U; ++x)
+        {
+            const std::size_t i = (static_cast<std::size_t>(y) * 32U + x) * 4U;
+            b[i + 0] = 255U;
+            b[i + 1] = 0U;
+            b[i + 2] = 0U;
+        }
+    const cd::imgdiff::ImageView va { a.data(), 32, 32 };
+    const cd::imgdiff::ImageView vb { b.data(), 32, 32 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(va, vb, 1.5, 4);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GE(r->mean_ssim, r->min_ssim);
+}
+
+TEST(SsimGaussian, SmallImageReturnsSingleWindow)
+{
+    // Image just larger than the Gaussian radius at sigma=1.5 →
+    // kernel radius r=ceil(3*1.5)=5 → window range [r, W-r-1].
+    // A 12×12 image with stride=1 should yield interior windows.
+    const auto img = solid(12, 12, 90, 120, 150, 255);
+    const cd::imgdiff::ImageView v { img.data(), 12, 12 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_GE(r->windows, 1U);
+    EXPECT_NEAR(r->mean_ssim, 1.0, 1e-9);
+}
+
+TEST(SsimGaussian, ImageSmallerThanKernelReturnsIdentity)
+{
+    // If the image is smaller than the kernel radius, the loop range
+    // [r, W-r-1] is empty → windows=0 → mean=1.0 (identity fall-back).
+    // kernel radius for sigma=1.5 is 5; use a 3×3 image.
+    const auto img = solid(3, 3, 50, 100, 150, 255);
+    const cd::imgdiff::ImageView v { img.data(), 3, 3 };
+    auto r = cd::imgdiff::compute_ssim_gaussian(v, v, 1.5, 1);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->windows, 0U);
+    EXPECT_DOUBLE_EQ(r->mean_ssim, 1.0);
+    EXPECT_DOUBLE_EQ(r->min_ssim, 1.0);
 }

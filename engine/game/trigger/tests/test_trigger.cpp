@@ -453,3 +453,347 @@ TEST(GameTrigger, EmptyCallbacksAreNoOpAcrossAllTransitions)
     world.tick(nullptr, 0.016F, {});
     EXPECT_FALSE(world.is_inside(owner, subject));
 }
+
+// ----------------------------------------------------------------------------
+// 15. Re-enter after exit: a subject that left a volume can enter it again;
+//     on_enter fires a second time (not on_stay) and the full
+//     enter -> stay -> exit cycle repeats from scratch.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, ReEnterAfterExit)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner   = make_entity(1);
+    const Entity subject = make_entity(100);
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+
+    const std::vector<Subject> inside  {{subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}};
+    const std::vector<Subject> outside {{subject, Vec3f {5.0F, 0.0F, 0.0F}, 0U}};
+
+    // First occupancy cycle: enter -> stay -> exit.
+    world.tick(nullptr, 0.016F, inside);   // enter #1
+    world.tick(nullptr, 0.016F, inside);   // stay  #1
+    world.tick(nullptr, 0.016F, outside);  // exit  #1
+
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_EQ(counts.stay,  1);
+    EXPECT_EQ(counts.exit,  1);
+    EXPECT_FALSE(world.is_inside(owner, subject));
+
+    // Second occupancy cycle: on_enter fires again (not on_stay).
+    world.tick(nullptr, 0.016F, inside);   // enter #2
+    world.tick(nullptr, 0.016F, inside);   // stay  #2
+    world.tick(nullptr, 0.016F, outside);  // exit  #2
+
+    EXPECT_EQ(counts.enter, 2);
+    EXPECT_EQ(counts.stay,  2);
+    EXPECT_EQ(counts.exit,  2);
+    EXPECT_FALSE(world.is_inside(owner, subject));
+}
+
+// ----------------------------------------------------------------------------
+// 16. Volume with zero occupants: an enabled volume whose subject list is empty
+//     must not fire any event and must not accumulate occupancy.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, VolumeWithZeroOccupants)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner = make_entity(1);
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+
+    // Tick with zero subjects - no events, trigger_count unchanged.
+    world.tick(nullptr, 0.016F, {});
+    world.tick(nullptr, 0.016F, {});
+    world.tick(nullptr, 0.016F, {});
+
+    EXPECT_EQ(counts.enter, 0);
+    EXPECT_EQ(counts.stay,  0);
+    EXPECT_EQ(counts.exit,  0);
+    EXPECT_EQ(world.trigger_count(), 1U);
+}
+
+// ----------------------------------------------------------------------------
+// 17. Subject in multiple volumes simultaneously: one subject overlapping two
+//     distinct volumes fires on_enter for BOTH volumes on the same tick, and
+//     on_exit for BOTH when it leaves.  Occupancy is tracked independently
+//     per (owner, subject) pair.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, SubjectInMultipleVolumesSimultaneously)
+{
+    TriggerWorld world;
+    EventCounts  counts_a;
+    EventCounts  counts_b;
+
+    const Entity owner_a = make_entity(1);
+    const Entity owner_b = make_entity(2);
+    const Entity subject = make_entity(100);
+
+    // Two overlapping AABB volumes both centred on the origin.
+    world.add_trigger(owner_a, make_aabb_volume(unit_box(), counts_a));
+    world.add_trigger(owner_b, make_aabb_volume(
+        Aabb {Vec3f {-2.0F, -2.0F, -2.0F}, Vec3f {2.0F, 2.0F, 2.0F}}, counts_b));
+
+    const std::vector<Subject> inside  {{subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}};
+    const std::vector<Subject> outside {{subject, Vec3f {5.0F, 0.0F, 0.0F}, 0U}};
+
+    // Enter tick: subject is inside BOTH volumes simultaneously.
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_EQ(counts_a.enter, 1);
+    EXPECT_EQ(counts_b.enter, 1);
+    EXPECT_TRUE(world.is_inside(owner_a, subject));
+    EXPECT_TRUE(world.is_inside(owner_b, subject));
+
+    // Stay tick.
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_EQ(counts_a.stay, 1);
+    EXPECT_EQ(counts_b.stay, 1);
+
+    // Exit tick: subject leaves both volumes.
+    world.tick(nullptr, 0.016F, outside);
+    EXPECT_EQ(counts_a.exit, 1);
+    EXPECT_EQ(counts_b.exit, 1);
+    EXPECT_FALSE(world.is_inside(owner_a, subject));
+    EXPECT_FALSE(world.is_inside(owner_b, subject));
+}
+
+// ----------------------------------------------------------------------------
+// 18. Exact-boundary enter (inclusive): the AABB contains() predicate uses
+//     `>= min` and `<= max` so a point exactly ON the surface is considered
+//     inside.  The Sphere contains() predicate uses `<= r^2` so a point
+//     exactly on the surface is also inside.  Boundary points must produce
+//     on_enter, not silence.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, ExactBoundaryEnterInclusive)
+{
+    // --- AABB boundary ---
+    {
+        TriggerWorld world;
+        EventCounts  counts;
+        const Entity owner   = make_entity(1);
+        const Entity subject = make_entity(100);
+        world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+
+        // Point exactly on the max-X face of the unit box.
+        world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {1.0F, 0.0F, 0.0F}, 0U}});
+        EXPECT_EQ(counts.enter, 1) << "AABB: point on max face must fire on_enter";
+
+        // Point exactly on the min-Y face.
+        EventCounts c2;
+        const Entity owner2   = make_entity(2);
+        const Entity subject2 = make_entity(200);
+        world.add_trigger(owner2, make_aabb_volume(unit_box(), c2));
+        world.tick(nullptr, 0.016F, {Subject {subject2, Vec3f {0.0F, -1.0F, 0.0F}, 0U}});
+        EXPECT_EQ(c2.enter, 1) << "AABB: point on min face must fire on_enter";
+    }
+
+    // --- Sphere boundary ---
+    {
+        TriggerWorld world;
+        EventCounts  counts;
+        const Entity owner   = make_entity(1);
+        const Entity subject = make_entity(100);
+
+        TriggerVolume v;
+        v.name     = "sphere-boundary";
+        v.shape    = Sphere {Vec3f {0.0F, 0.0F, 0.0F}, 1.0F};
+        v.on_enter = [&counts](Entity) { ++counts.enter; };
+        v.on_stay  = [&counts](Entity) { ++counts.stay;  };
+        v.on_exit  = [&counts](Entity) { ++counts.exit;  };
+        world.add_trigger(owner, std::move(v));
+
+        // Point exactly at radius distance along X: d^2 == r^2.
+        world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {1.0F, 0.0F, 0.0F}, 0U}});
+        EXPECT_EQ(counts.enter, 1) << "Sphere: point on surface must fire on_enter";
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 19. Simultaneous enter + exit in different volumes on the same tick:
+//     subject moves from inside volume A to inside volume B in one step.
+//     Both on_exit(A) and on_enter(B) must fire in the same tick, with
+//     final occupancy reflecting the new state.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, SimultaneousEnterExitDifferentVolumes)
+{
+    TriggerWorld world;
+    EventCounts  counts_a;
+    EventCounts  counts_b;
+
+    const Entity owner_a = make_entity(1);
+    const Entity owner_b = make_entity(2);
+    const Entity subject = make_entity(100);
+
+    // A: [-1, 1] box around origin; B: [3, 5] box.
+    world.add_trigger(owner_a, make_aabb_volume(unit_box(), counts_a));
+    world.add_trigger(owner_b, make_aabb_volume(
+        Aabb {Vec3f {3.0F, -1.0F, -1.0F}, Vec3f {5.0F, 1.0F, 1.0F}}, counts_b));
+
+    // Tick 1: subject inside A only.
+    world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}});
+    EXPECT_EQ(counts_a.enter, 1);
+    EXPECT_EQ(counts_b.enter, 0);
+    EXPECT_TRUE(world.is_inside(owner_a, subject));
+    EXPECT_FALSE(world.is_inside(owner_b, subject));
+
+    // Tick 2: subject jumps to B in a single tick — exits A AND enters B.
+    world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {4.0F, 0.0F, 0.0F}, 0U}});
+    EXPECT_EQ(counts_a.exit,  1) << "on_exit must fire for volume A";
+    EXPECT_EQ(counts_b.enter, 1) << "on_enter must fire for volume B";
+    EXPECT_FALSE(world.is_inside(owner_a, subject));
+    EXPECT_TRUE(world.is_inside(owner_b, subject));
+
+    // No extra spurious events.
+    EXPECT_EQ(counts_a.enter, 1);
+    EXPECT_EQ(counts_a.stay,  0);
+    EXPECT_EQ(counts_b.exit,  0);
+}
+
+// ----------------------------------------------------------------------------
+// 20. Remove volume mid-overlap: removing a volume while a subject is inside
+//     does NOT fire on_exit (the callback target is gone, matching Unity /
+//     Unreal "destroy gameobject" semantics), and subsequent ticks with the
+//     same subject position are silent.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, RemoveVolumeMidOverlap)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner   = make_entity(1);
+    const Entity subject = make_entity(100);
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+
+    // Subject enters the volume.
+    world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}});
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+
+    // Remove the volume while the subject is still inside.
+    EXPECT_TRUE(world.remove_trigger(owner));
+    EXPECT_EQ(world.trigger_count(), 0U);
+
+    // on_exit must NOT have fired (volume is gone, no callback target).
+    EXPECT_EQ(counts.exit, 0);
+
+    // Subsequent ticks with the same subject at the same position are silent.
+    world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}});
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_EQ(counts.stay,  0);
+    EXPECT_EQ(counts.exit,  0);
+}
+
+// ----------------------------------------------------------------------------
+// 21. clear_occupancy: resets all occupancy state without removing volumes or
+//     firing on_exit.  A subject that was inside becomes "fresh" so the next
+//     tick fires on_enter again.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, ClearOccupancyResetsStateWithoutExit)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner   = make_entity(1);
+    const Entity subject = make_entity(100);
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+
+    const std::vector<Subject> inside {{subject, Vec3f {0.0F, 0.0F, 0.0F}, 0U}};
+
+    // Subject enters and stays.
+    world.tick(nullptr, 0.016F, inside);
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_EQ(counts.stay,  1);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+
+    // clear_occupancy: no on_exit fires, volume count unchanged.
+    world.clear_occupancy();
+    EXPECT_EQ(counts.exit, 0);
+    EXPECT_EQ(world.trigger_count(), 1U);
+    EXPECT_FALSE(world.is_inside(owner, subject));
+
+    // Next tick with subject still inside: on_enter fires again (not on_stay).
+    world.tick(nullptr, 0.016F, inside);
+    EXPECT_EQ(counts.enter, 2);
+    EXPECT_EQ(counts.stay,  1);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+}
+
+// ----------------------------------------------------------------------------
+// 22. Layer-clamping for layer >= 64: a subject with layer == 200 must be
+//     clamped to channel 0, not trigger UB from (1ULL << 200).
+//     A volume with mask == bit0 fires; one with mask == bit1 does not.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, LayerClampGeq64MapsToChannel0)
+{
+    TriggerWorld world;
+    EventCounts  counts_ch0;
+    EventCounts  counts_ch1;
+
+    const Entity owner0 = make_entity(1);
+    const Entity owner1 = make_entity(2);
+    const Entity subject = make_entity(100);
+
+    const auto mask_ch0 = cd::game::trigger::LayerMask {1};                                  // bit 0
+    const cd::game::trigger::LayerMask mask_ch1 = cd::game::trigger::LayerMask {1} << 1U;    // bit 1
+
+    world.add_trigger(owner0, make_aabb_volume(unit_box(), counts_ch0, mask_ch0));
+    world.add_trigger(owner1, make_aabb_volume(unit_box(), counts_ch1, mask_ch1));
+
+    // Subject with layer=200 (>= 64): must clamp to channel 0.
+    world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {0.0F, 0.0F, 0.0F}, 200U}});
+
+    EXPECT_EQ(counts_ch0.enter, 1) << "layer >= 64 clamped to 0; bit-0 volume must fire";
+    EXPECT_EQ(counts_ch1.enter, 0) << "bit-1 volume must NOT fire";
+}
+
+// ----------------------------------------------------------------------------
+// 23. find() on a non-existent owner returns nullptr; find() after
+//     remove_trigger also returns nullptr.  Tests the read-only inspection path.
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, FindReturnsNullForMissingOwner)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner   = make_entity(1);
+    const Entity unknown = make_entity(999);
+
+    // No volume registered yet.
+    EXPECT_EQ(world.find(unknown), nullptr);
+
+    // Register + verify find succeeds.
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts));
+    ASSERT_NE(world.find(owner), nullptr);
+    EXPECT_EQ(world.find(owner)->name, "test");
+
+    // After removal, find returns nullptr.
+    world.remove_trigger(owner);
+    EXPECT_EQ(world.find(owner), nullptr);
+}
+
+// ----------------------------------------------------------------------------
+// 24. Despawn-exit fires on_exit even for a subject filtered by layer mask on
+//     the tick it disappears: if the subject was IN occupancy (it passed the
+//     layer filter when it entered), then disappears from the subject list, the
+//     removal-loop fires on_exit regardless of layer (occupancy is the source of
+//     truth, not re-filtering at exit time).
+// ----------------------------------------------------------------------------
+TEST(GameTrigger, DespawnExitForLayerFilteredSubject)
+{
+    TriggerWorld world;
+    EventCounts  counts;
+    const Entity owner   = make_entity(1);
+    const Entity subject = make_entity(100);
+
+    // Volume that only accepts layer 3.
+    const cd::game::trigger::LayerMask mask = cd::game::trigger::LayerMask {1} << 3U;
+    world.add_trigger(owner, make_aabb_volume(unit_box(), counts, mask));
+
+    // Subject on layer 3 enters.
+    world.tick(nullptr, 0.016F, {Subject {subject, Vec3f {0.0F, 0.0F, 0.0F}, 3U}});
+    EXPECT_EQ(counts.enter, 1);
+    EXPECT_TRUE(world.is_inside(owner, subject));
+
+    // Subject disappears from the subject list entirely (despawn).
+    world.tick(nullptr, 0.016F, {});
+    EXPECT_EQ(counts.exit, 1);
+    EXPECT_FALSE(world.is_inside(owner, subject));
+}

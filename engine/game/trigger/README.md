@@ -58,7 +58,7 @@ world.tick(/*query_world*/ nullptr, dt, subjects);
    * `!inside &&  was_in` -> `on_exit`, clear.
 3. After the main loop, any occupied (owner, subject) pair NOT touched this tick fires `on_exit` (implicit despawn).
 
-**Spatial backend**: `tick()` accepts an opaque `cd::game::query::QueryWorld*` (forward-declared; not yet committed at the time of G3.2's wave - see G3.1). The header path is null-tolerant: passing `nullptr` activates the brute-force O(V*S) fallback used today. When G3.1 lands, the indexed broad-phase plugs in body-only with no API churn.
+**Spatial backend** (SEALED for G3.2 — out-of-charter): `tick()` accepts an opaque `cd::game::query::QueryWorld*` (forward-declared; cd::game::query is G3.1, already at 100%). The header path is null-tolerant: passing `nullptr` activates the brute-force O(V*S) fallback, which is the only wired path. When the caller wants to exploit the indexed broad-phase, they pass a live `QueryWorld*`; the body-only plumbing is a single future commit with zero API churn. The brute-force path handles all G3.2 use-cases (tens of triggers, single-digit subjects) and is the only path exercised by the test suite.
 
 **Test command**: `ctest --preset ninja-debug -R cd_test_game_trigger --output-on-failure`.
 

@@ -32,11 +32,15 @@
 #include <cd/core/Defines.hpp>
 #include <cd/core/ErrorCode.hpp>
 #include <cd/core/Result.hpp>
+#include <cd/plugin/FileWatcher.hpp>
 #include <cd/plugin/IPlugin.hpp>
 #include <cd/plugin/Loader.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -179,6 +183,121 @@ private:
     std::uint64_t reload_count_ { 0 };
 };
 
+/// Watcher-driven reload monitor. Fuses an `IFileWatcher` (the change
+/// detector) with a `HotReloader` (the unload → load → re-register
+/// orchestrator) so the host gets a single object to pump once per frame.
+///
+/// Wiring contract:
+///   * The watcher fires its callback from a background thread; we only
+///     flip an atomic dirty flag there (no reload work off the host
+///     thread — DLL teardown + host re-registration must run where the
+///     host owns its state).
+///   * `poll_and_reload()` runs on the host thread. It consumes the dirty
+///     flag and, when set, drives `HotReloader::poll()`. The reloader's
+///     load-new-BEFORE-teardown-old ordering means a failed reload rolls
+///     back to the last-known-good plugin and surfaces the error — the
+///     host is never left without a plugin.
+///   * `poll_once()` lets tests pump a polling watcher deterministically
+///     (no `sleep_for`), then `poll_and_reload()` applies the change.
+///
+/// The monitor owns the watcher; it borrows nothing global. `before_unload`
+/// / `after_load` hooks pass straight through to the inner `HotReloader`.
+class WatchedHotReloader
+{
+public:
+    WatchedHotReloader(std::unique_ptr<IFileWatcher> watcher, HotReloader reloader)
+        : watcher_ { std::move(watcher) }, reloader_ { std::move(reloader) }
+    {
+    }
+
+    WatchedHotReloader(const WatchedHotReloader&) = delete;
+    WatchedHotReloader& operator=(const WatchedHotReloader&) = delete;
+    WatchedHotReloader(WatchedHotReloader&&) = delete;
+    WatchedHotReloader& operator=(WatchedHotReloader&&) = delete;
+
+    ~WatchedHotReloader()
+    {
+        if (watcher_)
+            watcher_->stop();
+    }
+
+    /// Mount the plugin and start the watcher on the same path. On a
+    /// watcher-start failure the plugin is unmounted again so the monitor
+    /// is left in a clean (un-mounted) state and the error is surfaced.
+    [[nodiscard]] cd::core::Result<void> mount(std::string path)
+    {
+        auto mounted = reloader_.mount(path);
+        if (!mounted.has_value())
+            return mounted;
+        dirty_.store(false, std::memory_order_release);
+        auto* dirty = &dirty_;
+        auto watched = watcher_->watch(path, [dirty] {
+            dirty->store(true, std::memory_order_release);
+        });
+        if (!watched.has_value())
+        {
+            reloader_.unmount();
+            return std::unexpected(watched.error());
+        }
+        return {};
+    }
+
+    /// Stop watching + unload. Idempotent.
+    void unmount()
+    {
+        if (watcher_)
+            watcher_->stop();
+        reloader_.unmount();
+        dirty_.store(false, std::memory_order_release);
+    }
+
+    /// Host-thread pump. If the watcher flagged a change, drive the
+    /// reload and clear the flag. Returns:
+    ///   * `true`  — a reload actually fired (plugin swapped)
+    ///   * `false` — no pending change (flag was clear)
+    ///   * an error — a reload was attempted but the load failed; the
+    ///     previous plugin stays mounted (rollback), exactly as
+    ///     `HotReloader::poll()` guarantees.
+    [[nodiscard]] cd::core::Result<bool> poll_and_reload()
+    {
+        if (!dirty_.exchange(false, std::memory_order_acq_rel))
+            return false;
+        auto reloaded = reloader_.poll();
+        if (!reloaded.has_value())
+            return std::unexpected(reloaded.error());
+        return *reloaded;
+    }
+
+    /// Deterministic test hook: pump the underlying watcher once. On the
+    /// polling watcher this performs one stat()+flag; on a native watcher
+    /// it is a no-op (the OS event arrives asynchronously).
+    void poll_watcher_once()
+    {
+        if (watcher_)
+            watcher_->poll_once();
+    }
+
+    [[nodiscard]] IPlugin* current() noexcept { return reloader_.current(); }
+    [[nodiscard]] bool is_mounted() const noexcept { return reloader_.is_mounted(); }
+    [[nodiscard]] bool is_watching() const noexcept
+    {
+        return watcher_ && watcher_->is_watching();
+    }
+    [[nodiscard]] std::uint64_t reload_count() const noexcept { return reloader_.reload_count(); }
+    [[nodiscard]] bool pending() const noexcept { return dirty_.load(std::memory_order_acquire); }
+
+    void set_before_unload(HotReloader::BeforeUnload fn) { reloader_.set_before_unload(std::move(fn)); }
+    void set_after_load(HotReloader::AfterLoad fn) { reloader_.set_after_load(std::move(fn)); }
+
+    /// Escape hatch for advanced hosts / tests that need the inner reloader.
+    [[nodiscard]] HotReloader& reloader() noexcept { return reloader_; }
+
+private:
+    std::unique_ptr<IFileWatcher> watcher_;
+    HotReloader reloader_;
+    std::atomic<bool> dirty_ { false };
+};
+
 /// Filesystem-mtime watcher. Returns 0 if the path can't be stat'd —
 /// callers should treat 0 as "version unknown, do not reload".
 [[nodiscard]] std::uint64_t default_plugin_version(std::string_view path);
@@ -187,5 +306,14 @@ private:
 /// filesystem mtime watcher. The Loader is borrowed (NOT owned) — the
 /// caller keeps it alive for the reloader's lifetime.
 [[nodiscard]] HotReloader make_default_hot_reloader(Loader& loader);
+
+/// Convenience: build a watcher-driven monitor wired to the real `Loader`,
+/// the filesystem mtime version stamp, and a `polling` file watcher (works
+/// on every platform; `interval == 0` yields a test-driven watcher). The
+/// Loader is borrowed (NOT owned). Call `mount(path)` then pump
+/// `poll_and_reload()` once per frame.
+[[nodiscard]] std::unique_ptr<WatchedHotReloader>
+make_watched_hot_reloader(Loader& loader,
+                          std::chrono::milliseconds poll_interval = std::chrono::milliseconds { 250 });
 
 }  // namespace cd::plugin

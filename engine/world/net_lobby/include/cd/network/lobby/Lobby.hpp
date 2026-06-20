@@ -84,11 +84,16 @@ struct PlayerState
 /// Full snapshot of an active room.
 struct RoomState
 {
-    RoomId                   room_id      { kInvalidRoomId };
+    RoomId                   room_id        { kInvalidRoomId };
     LobbyConfig              config;
     std::vector<PlayerState> players;
-    bool                     game_started { false };
-    double                   created_at_ms{ 0.0 };
+    bool                     game_started   { false };
+    double                   created_at_ms  { 0.0 };
+    /// Player-id of the current room host.
+    /// Initialised to the creator's id. On host departure the next remaining
+    /// player (index 0 after erase) is promoted automatically. Zero when
+    /// the room is empty.
+    std::uint64_t            host_player_id { 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -142,9 +147,17 @@ public:
 
     /// Remove a player from a room.
     /// Returns false if the room or player is not found.
-    /// If the departing player was the last member the room is retained but
-    /// empty (Sprint-2 will add auto-destroy / host-migration policies).
+    /// If the departing player was the host and other players remain, the
+    /// next player in the list (index 0 after removal) is promoted to host
+    /// automatically (host-migration). If the departing player was the last
+    /// member, the room is retained in an empty state and host_player_id
+    /// is reset to 0; call destroy_room() to remove it.
     [[nodiscard]] bool leave_room(RoomId room_id, uint64_t player_id);
+
+    /// Remove an empty room from the registry.
+    /// Returns false if the room does not exist or still has players.
+    /// Typically called after the last player has called leave_room().
+    [[nodiscard]] bool destroy_room(RoomId room_id);
 
     /// Toggle the ready flag for a specific player inside a room.
     /// Returns false if the room or player is not found, or if the game has

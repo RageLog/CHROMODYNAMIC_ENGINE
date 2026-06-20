@@ -7,8 +7,8 @@
 //   u32 version   = 1
 //   u32 count
 //   for count entries:
+//     u32 key_len; bytes key_len           // key  (written first)
 //     u8  type-tag {0=bool, 1=int64, 2=double, 3=string}
-//     u32 key_len; bytes key_len           // key
 //     payload depending on type-tag:
 //        bool:    u8
 //        int64:   i64

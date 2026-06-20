@@ -83,10 +83,17 @@ public:
     /// a no-op returning `kAllocFailed` in that state.
     [[nodiscard]] bool valid() const noexcept;
 
-    /// Reserved for Wave 72.
+    /// Compile + execute `source` as a Lua chunk on this Engine's state.
+    /// A compile failure yields `kCompileError`; a runtime failure yields
+    /// `kRuntimeError`; both populate `last_error()`. On success the
+    /// `last_error()` is cleared and `script_count()` is incremented.
     [[nodiscard]] cd::core::Result<void> run_string(std::string_view source);
 
-    /// Reserved for Wave 72.
+    /// Load + execute the Lua chunk at `path`. A missing/unreadable file
+    /// yields `kFileNotFound`; a syntactically-invalid chunk yields
+    /// `kCompileError`; a runtime failure yields `kRuntimeError`. Each
+    /// failure populates `last_error()`; success clears it and increments
+    /// `script_count()`.
     [[nodiscard]] cd::core::Result<void> run_file(std::string_view path);
 
     /// Diagnostic counter — incremented on every successful `run_*` call.

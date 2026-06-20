@@ -16,12 +16,21 @@ CVar (console variable) registry persistence layer. Saves and loads engine confi
 ## Usage example
 ```cpp
 #include <cd/config/Config.hpp>
+#include <cd/io/BinaryStream.hpp>
+#include <fstream>
 
-// Save all CVars to file
-cd::config::save_cvars(registry, "engine.cfg");
+// Save all CVars to a byte buffer, then flush to disk
+cd::io::BinaryWriter w;
+cd::config::save(w, registry);
+// (write w.data() to file via std::ofstream, cd::vfs, etc.)
 
-// Load back
-cd::config::load_cvars(registry, "engine.cfg");
+// Load from a byte buffer (e.g. read from file first)
+// std::vector<std::byte> bytes = ...;
+cd::io::BinaryReader r { bytes };
+auto result = cd::config::load(r, registry);
+if (!result) {
+    // result.error() carries domain + code + message
+}
 ```
 
 ## Build
@@ -42,8 +51,12 @@ ctest --preset ninja-debug -R config
 - u32 magic (0x43564152 = 'CVAR')
 - u32 version (1)
 - u32 entry count
-- Per entry: type-tag (u8) + key_len (u32) + key + payload (varies by type)
-- Entries sorted by key for reproducibility
+- Per entry: key_len (u32) + key bytes + type-tag (u8) + payload (varies by type)
+  - bool: u8 (0 or 1)
+  - int64: i64 LE
+  - double: f64 LE
+  - string: u32 len + bytes
+- Entries sorted by key for reproducibility (deterministic / git-friendly)
 
 ## Notes
 - Interface library

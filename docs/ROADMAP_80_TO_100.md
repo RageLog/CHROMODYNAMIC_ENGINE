@@ -24,14 +24,14 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
 
 | Tier | Libs |
 |---|---|
-| 100 | rhi ✅ (already done) · game::quest ✅ · ecs ✅ · ui_animation ✅ |
+| 100 | rhi ✅ (already done) · game::quest ✅ · ecs ✅ · ui_animation ✅ · trigger ✅ |
 | **92** | frame_timing · game::save |
 | **90** | bench · ai_bt · cutscene_player · gluon |
 | **88** | concurrency · math · dialogue · input_recorder · l10n · settings · material · shader · debug_line · scene · ui_layout |
 | **85** | core · io · log · ai_director · pathfinding · anim_graph · asset_hot_reload · game::camera · dialog_tree · fsm · particles_event · game::query · save_compression · camera(render) · spirv_cross_glue · hdr_display · asset(umbrella) · anim · anim_ik · gameplay_input_binding · gameplay_time · input · net · physics · ui_input · ui_theme · ui_renderer |
 | **84** | time |
 | **83** | restir_di |
-| **82** | diag · events · profile · vfs · brdf · scene_ingest · trigger · net_lobby · world_container · ddgi |
+| **82** | net_lobby · world_container · ddgi |
 | **80** | config · plugin · script · imgdiff · framegraph · debug_draw · post · audio · audio_spatial · net_matchmaker · physics_soft_body · sample_framework · ui_renderer_rhi · ui_widgets |
 
 ## Execution log
@@ -111,3 +111,27 @@ out-of-charter subsystem may remain — and only with an explicit one-paragraph 
   - **brdf** (82→100): +35 paper-verified tests (LTC/Charlie-D/Neubelt-reciprocity/clearcoat/Burley-SSS energy-conservation/CPU↔GLSL parity). No lobe math touched.
   - **scene_ingest** (82→100): +8 tests (rollback ECS+GPU-clean invariant, deep DFS world-compose, AABB pass-through). No ingest-output change.
   - Gate fixes: 1 compile (time unused cv_mutex) + ~17 WAE (diag 5x empty-catch→SUCCEED + 5x lock_guard→scoped_lock + op=self-assign-guard, profile 2x raw-string + empty-catch, time TimerQueue + 2x test scoped_lock, brdf self-fixed DeMorgan). 1 flake (rhi_pipeline_cache, passed on re-run). Gate: build clean -Werror (0/0); ctest 326/327 (1 flake); golden/sponza/chrome BYTE-IDENTICAL.
+- ✅ **Batch 9 (phase1262)** — tier 82, cd::game::trigger → 100% (+10 edge/negative/boundary tests, no production-code change, query-lib integration SEALED out-of-charter):
+  - **trigger** (82→100): 12→24 gtests. No production code change — implementation was already correct. Gaps closed by new tests:
+    - re-enter-after-exit: on_enter fires a second time after an exit cycle (not on_stay).
+    - zero-occupants: enabled volume with empty subject list fires nothing and accumulates no occupancy.
+    - simultaneous-multi-volume: one subject inside two overlapping volumes simultaneously fires on_enter/on_stay/on_exit on both independently.
+    - exact-boundary-inclusive (AABB + Sphere): point exactly on AABB face (`>= min`, `<= max`) and on Sphere surface (`d² <= r²`) fires on_enter.
+    - simultaneous-enter+exit-different-volumes: single-tick transition A→B fires on_exit(A) and on_enter(B) in the same tick.
+    - remove-mid-overlap: removing the volume while a subject is inside does NOT fire on_exit (callback target gone).
+    - clear_occupancy: resets all occupancy without firing on_exit; next tick re-fires on_enter.
+    - layer-clamp-geq64: Subject::layer >= 64 clamps to channel 0 (no UB shift); bit-0 volume fires, bit-1 does not.
+    - find-null/post-remove: find() returns nullptr for unknown owner and after remove_trigger.
+    - despawn-exit-for-layer-filtered-subject: occupancy (not layer filter) drives the despawn-exit loop — subject that entered on layer 3 still fires on_exit when it disappears.
+  - Query-lib integration (cd::game::query G3.1 at 100%) SEALED in README: body-only future commit, zero API churn, brute-force O(V·S) is the only wired path and handles all G3.2 use-cases.
+  - No WAE introduced (no production code edited).
+- ✅ **Batch 9 (phase1262)** — tier 82 close-out + tier 80 start, 8 libs → 100% (~227 new tests, 2 real features). **TIER 82 COMPLETE.**
+  - **trigger** (82→100): +10 tests (enter-once/stay/exit/despawn-exit/re-enter/0-occupant/multi-volume/boundary-inclusive/simultaneous/remove-mid-overlap). No code change. query-lib spatial backend SEALED (out-of-charter G3.2).
+  - **net_lobby** (82→100): REAL FEATURE — RoomState::host_player_id + host-migration on host-leave + destroy_room() API + 20 tests. Pre-existing socket-test sleep_for flagged (real-UDP helper, left).
+  - **world_container** (82→100): +32 tests (LevelStreamer residency/switch, ProjectIo JSON malformed/version-skew/round-trip, Level/Layer/Project edge). No code change.
+  - **ddgi** (82→100): +47 tests/3 files (probe-grid math CPU, PC/UBO+GLSL contract, GPU-gated error paths). No probe/blend/sample math or GLSL touched. DDGI→hello_engine HDR-composite wiring SEALED (alters rendered output → GPU render-review, like restir_di Sprint-7).
+  - **config** (80→100): +14 tests (round-trip all types, truncation per-field, magic/version mismatch, merge semantics, sorted-key invariant) + wire-format doc + README API corrections. No code change.
+  - **plugin** (80→100): REAL FEATURE — WatchedHotReloader fusing IFileWatcher + HotReloader (the reload flow the README advertised but had no impl) + make_watched_hot_reloader factory + 23 tests. Real-DLL ABI-fixture tests SEALED (need per-platform compiled test plugin).
+  - **script** (80→100): +48 tests/2 files (compile/runtime/missing Result split, moved-from degradation, instruction-cap, nil-padding, (nil,message) ECS contract, Vec/Mat operators, event unregister/erroring-handler) + stale "Wave 72" doc fix. No production-logic change.
+  - **imgdiff** (80→100): +33 tests (ImageDiff/SsimLite/GaussianBlur/FlipLite/FlipFull/SsimGaussian edge + reference values). No FLIP/SSIM/Gaussian math touched (it IS the golden-diff tool).
+  - Gate fixes: 1 compile (net_lobby missing <algorithm> for std::ranges::none_of) + 2 WAE (trigger hicpp-use-auto, ddgi bugprone-implicit-widening). Gate: build clean -Werror (0/0); ctest 332/332 (100%, +5 new bins, no flake); golden/sponza/chrome BYTE-IDENTICAL; WAE 0.

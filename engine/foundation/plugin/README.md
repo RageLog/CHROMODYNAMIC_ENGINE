@@ -23,15 +23,24 @@ Dynamic plugin loading, hot-reload support, and file-watching infrastructure. En
 #include <cd/plugin/Loader.hpp>
 #include <cd/plugin/HotReload.hpp>
 
-// Load a plugin
-auto plugin = cd::plugin::load("./plugins/my_feature.so");
-auto my_function = plugin->get_symbol<int(*)()>("my_function");
+// Load a plugin (RAII: LoadedPlugin's dtor calls shutdown() + unloads the lib)
+cd::plugin::Loader loader;
+auto loaded = loader.load("./plugins/my_feature.so");  // Result<LoadedPlugin>
+if (loaded) {
+  cd::plugin::IPlugin& p = *loaded->instance;
+  // … use p …
+}
 
-// With hot reload
-auto hot_reload = cd::plugin::create_hot_reload_monitor("./plugins");
-while (true) {
-  if (hot_reload->poll_and_reload()) {
-    // Plugin was recompiled and reloaded
+// Watcher-driven hot reload: one object fuses the file watcher with the
+// unload → load → re-register orchestrator (load-new-before-teardown-old,
+// so a failed reload rolls back to the last-known-good plugin).
+auto monitor = cd::plugin::make_watched_hot_reloader(loader);
+monitor->set_before_unload([](cd::plugin::IPlugin& old) { /* release refs */ });
+monitor->set_after_load([](cd::plugin::IPlugin& fresh) { /* re-register */ });
+if (auto m = monitor->mount("./plugins/my_feature.so"); m) {
+  while (running) {
+    auto r = monitor->poll_and_reload();  // Result<bool>: true == reloaded
+    if (!r.has_value()) { /* reload failed; previous plugin still live */ }
   }
 }
 ```

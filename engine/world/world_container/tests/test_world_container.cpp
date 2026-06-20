@@ -515,4 +515,513 @@ TEST(LevelStreamer, DeactivateKeepsPersistentOfActiveLevelAndNoOpWhenInactive)
     std::filesystem::remove_all(dir, ec);
 }
 
+// ===========================================================================
+// Gap-closure tests — added to reach genuine 100% depth
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// World — name accessor
+// ---------------------------------------------------------------------------
+
+TEST(World, DefaultNameAndSetter)
+{
+    World w;
+    EXPECT_EQ(w.name(), "Untitled World");
+    w.set_name("My World");
+    EXPECT_EQ(w.name(), "My World");
+    w.set_name({});
+    EXPECT_EQ(w.name(), "");
+}
+
+// ---------------------------------------------------------------------------
+// Layer — color_tag, draw_order, postfx defaults and setters
+// ---------------------------------------------------------------------------
+
+TEST(Layer, ColorTagDrawOrderPostfxDefaultsAndSetters)
+{
+    using cd::world_container::Layer;
+    using cd::world_container::LayerPostfx;
+
+    Layer ly;
+    // defaults
+    EXPECT_FLOAT_EQ(ly.color_tag().x, 0.7F);
+    EXPECT_FLOAT_EQ(ly.color_tag().y, 0.7F);
+    EXPECT_FLOAT_EQ(ly.color_tag().z, 0.75F);
+    EXPECT_EQ(ly.draw_order(), 0);
+    EXPECT_FALSE(ly.postfx().override_bloom);
+    EXPECT_FALSE(ly.postfx().enable_bloom);
+    EXPECT_FALSE(ly.postfx().override_gtao);
+    EXPECT_FALSE(ly.postfx().enable_gtao);
+    EXPECT_FALSE(ly.postfx().override_ssr);
+    EXPECT_FALSE(ly.postfx().enable_ssr);
+
+    // setters
+    ly.set_color_tag({ 0.1F, 0.2F, 0.3F });
+    EXPECT_FLOAT_EQ(ly.color_tag().x, 0.1F);
+    ly.set_draw_order(-5);
+    EXPECT_EQ(ly.draw_order(), -5);
+    ly.postfx().override_bloom = true;
+    ly.postfx().enable_ssr     = true;
+    EXPECT_TRUE(ly.postfx().override_bloom);
+    EXPECT_TRUE(ly.postfx().enable_ssr);
+
+    // const postfx accessor
+    const Layer& cly = ly;
+    EXPECT_TRUE(cly.postfx().override_bloom);
+}
+
+TEST(Layer, PersistentSetter)
+{
+    using cd::world_container::Layer;
+    Layer ly;
+    EXPECT_FALSE(ly.persistent());
+    ly.set_persistent(true);
+    EXPECT_TRUE(ly.persistent());
+    ly.set_persistent(false);
+    EXPECT_FALSE(ly.persistent());
+}
+
+// ---------------------------------------------------------------------------
+// Level — edge cases for find_layer, scene_path, remove_layer out-of-range
+// ---------------------------------------------------------------------------
+
+TEST(Level, FindLayerReturnsNullForAbsent)
+{
+    Level l { "L" };
+    EXPECT_EQ(l.find_layer("Nonexistent"), nullptr);
+    EXPECT_NE(l.find_layer("Default"), nullptr);
+}
+
+TEST(Level, FindLayerConstVariant)
+{
+    Level l { "L" };
+    l.add_layer("VFX");
+    const Level& cl = l;
+    EXPECT_NE(cl.layer(0), nullptr);
+    EXPECT_NE(cl.layer(1), nullptr);
+    EXPECT_EQ(cl.layer(2), nullptr);
+}
+
+TEST(Level, RemoveLayerOutOfRange)
+{
+    Level l { "L" };
+    EXPECT_FALSE(l.remove_layer(5));   // out of range
+    EXPECT_FALSE(l.remove_layer(0));   // last layer — must not remove
+    EXPECT_EQ(l.layer_count(), 1U);
+}
+
+TEST(Level, ScenePathSetAndGet)
+{
+    Level l { "L" };
+    EXPECT_EQ(l.scene_path(), "");
+    l.set_scene_path("scenes/hub.cdscene");
+    EXPECT_EQ(l.scene_path(), "scenes/hub.cdscene");
+    l.set_scene_path({});
+    EXPECT_EQ(l.scene_path(), "");
+}
+
+TEST(Level, ActiveLayerIgnoredWhenOutOfRange)
+{
+    Level l { "L" };
+    l.add_layer("UI");                // now 2 layers (indices 0, 1)
+    l.set_active_layer(1);
+    EXPECT_EQ(l.active_layer(), 1U);
+    l.set_active_layer(100);          // out of range — unchanged
+    EXPECT_EQ(l.active_layer(), 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Project — empty-project edge cases, out-of-range access
+// ---------------------------------------------------------------------------
+
+TEST(Project, EmptyProjectLevelAccessReturnsNull)
+{
+    Project p { "Empty" };
+    EXPECT_EQ(p.level(0), nullptr);
+    EXPECT_EQ(p.level(99), nullptr);
+    EXPECT_FALSE(p.remove_level(0));   // nothing to remove
+    EXPECT_EQ(p.find_level("X"), nullptr);
+}
+
+TEST(Project, RemoveLevelOutOfRange)
+{
+    Project p { "P" };
+    p.add_level("A");
+    EXPECT_FALSE(p.remove_level(1));   // only index 0 valid
+    EXPECT_EQ(p.level_count(), 1U);
+}
+
+TEST(Project, ConstLevelAccess)
+{
+    Project p { "P" };
+    p.add_level("A");
+    const Project& cp = p;
+    EXPECT_NE(cp.level(0), nullptr);
+    EXPECT_EQ(cp.level(1), nullptr);
+}
+
+TEST(Project, SettingsDefaults)
+{
+    Project p;
+    EXPECT_TRUE(p.settings().enable_csm);
+    EXPECT_TRUE(p.settings().enable_rt_shadows);
+    EXPECT_FALSE(p.settings().enable_bloom);
+    EXPECT_EQ(p.settings().tonemap_op, std::uint8_t { 2 });
+    EXPECT_FLOAT_EQ(p.settings().master_volume, 1.0F);
+    EXPECT_EQ(p.settings().default_transport, "udp");
+    const Project& cp = p;
+    EXPECT_TRUE(cp.settings().enable_csm);
+}
+
+// ---------------------------------------------------------------------------
+// ProjectIo — additional edge cases & negative tests
+// ---------------------------------------------------------------------------
+
+TEST(ProjectIo, MalformedJsonReturnsBadShape)
+{
+    // load_project_file on a file with malformed JSON must fail with kBadShape.
+    using cd::world_container::project_io_errors::Code;
+    const auto dir  = std::filesystem::temp_directory_path() / "cd_pio_malformed";
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "bad.cdproject";
+    {
+        std::ofstream f { path };
+        f << "{not valid json!!!";
+    }
+    const auto r = cd::world_container::load_project_file(path);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code,
+              static_cast<std::uint32_t>(Code::kBadShape));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(ProjectIo, SchemaVersionZeroRejected)
+{
+    const auto parsed = cd::asset::json::parse(R"({"schema_version": 0, "name": "X"})");
+    ASSERT_TRUE(parsed.has_value());
+    const auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_FALSE(r.has_value());
+    using cd::world_container::project_io_errors::Code;
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kBadVersion));
+}
+
+TEST(ProjectIo, SchemaVersionAsStringRejected)
+{
+    // version key present but is a string, not a number → kBadVersion
+    const auto parsed = cd::asset::json::parse(R"({"schema_version": "1", "name": "X"})");
+    ASSERT_TRUE(parsed.has_value());
+    const auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_FALSE(r.has_value());
+    using cd::world_container::project_io_errors::Code;
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kBadVersion));
+}
+
+TEST(ProjectIo, MissingNameKeepsDefault)
+{
+    const auto parsed = cd::asset::json::parse(R"({"schema_version": 1})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->name(), "Untitled Project");
+}
+
+TEST(ProjectIo, LevelsWithNonObjectEntryIsSkipped)
+{
+    // Array entries that are not objects must be silently skipped.
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "levels": [42, {"name": "Real"}, null]})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->level_count(), 1U);
+    EXPECT_EQ((*r)->level(0)->name(), "Real");
+}
+
+TEST(ProjectIo, MissingScenePathKeepsEmpty)
+{
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "levels": [{"name": "Hub"}]})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ((*r)->level_count(), 1U);
+    EXPECT_EQ((*r)->level(0)->scene_path(), "");
+}
+
+TEST(ProjectIo, MissingLayersKeyKeepsDefaultLayer)
+{
+    // A level entry with no "layers" key keeps the implicit Default layer.
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "levels": [{"name": "Hub", "scene_path": "x.cdscene"}]})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ((*r)->level_count(), 1U);
+    EXPECT_EQ((*r)->level(0)->layer_count(), 1U);
+    EXPECT_NE((*r)->level(0)->find_layer("Default"), nullptr);
+}
+
+TEST(ProjectIo, SettingsWithWrongTypesAreIgnored)
+{
+    // Wrong-type values for settings fields must be silently skipped; defaults kept.
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "settings": {"enable_csm": 0, "tonemap_op": "high"}})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_TRUE((*r)->settings().enable_csm);
+    EXPECT_EQ((*r)->settings().tonemap_op, std::uint8_t { 2 });
+}
+
+TEST(ProjectIo, BoundsMinWithWrongArraySizeKeepsDefault)
+{
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "levels": [{"name": "H",
+             "bounds": {"min": [1.0, 2.0], "max": [0,0,0,0]}}]})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_FLOAT_EQ((*r)->level(0)->bounds().min.x, -1000.0F);
+    EXPECT_FLOAT_EQ((*r)->level(0)->bounds().max.x,  1000.0F);
+}
+
+TEST(ProjectIo, ActiveLayerNegativeClampedToZero)
+{
+    // active_layer: -1 → code reads into int al, checks al < 0 → clamped to 0
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "levels": [{"name": "H",
+             "layers": [{"name": "A"}, {"name": "B"}],
+             "active_layer": -1}]})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->level(0)->active_layer(), 0U);
+}
+
+TEST(ProjectIo, ActiveLayerExceedingLayerCountIsIgnored)
+{
+    // set_active_layer(99) with 1 layer → ignored → stays 0
+    const auto parsed = cd::asset::json::parse(
+        R"({"schema_version": 1, "levels": [{"name": "H",
+             "layers": [{"name": "A"}],
+             "active_layer": 99}]})");
+    ASSERT_TRUE(parsed.has_value());
+    auto r = cd::world_container::deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->level(0)->active_layer(), 0U);
+}
+
+TEST(ProjectIo, EmptyProjectRoundTrip)
+{
+    // A Project with no levels must survive serialize → deserialize cleanly.
+    using cd::world_container::serialize_project;
+    using cd::world_container::deserialize_project;
+    Project empty { "Empty" };
+    const auto json   = serialize_project(empty);
+    const auto txt    = cd::asset::json::serialize(json, true);
+    const auto parsed = cd::asset::json::parse(txt);
+    ASSERT_TRUE(parsed.has_value());
+    auto r = deserialize_project(*parsed);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ((*r)->name(), "Empty");
+    EXPECT_EQ((*r)->level_count(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// LayerMember — additional edge cases
+// ---------------------------------------------------------------------------
+
+TEST(LayerMember, AssignOverlongNameTruncated)
+{
+    // FixedString<32> stores at most N-1 = 31 chars — must not crash.
+    using cd::world_container::assign_layer;
+    using cd::world_container::layer_of;
+    cd::ecs::World w;
+    const auto e = w.create();
+    assign_layer(w, e, "ABCDEFGHIJKLMNOPQRSTUVWXYZ01234567");  // 34 chars
+    const auto result = layer_of(w, e);
+    EXPECT_FALSE(result.empty());
+    // Must be capped to capacity() = 31 and prefix preserved.
+    EXPECT_EQ(result.size(), 31U);
+    EXPECT_EQ(result.substr(0, 10), "ABCDEFGHIJ");
+}
+
+TEST(LayerMember, ForEachMemberEmptyWorld)
+{
+    using cd::world_container::for_each_member;
+    using cd::world_container::count_members;
+    cd::ecs::World w;
+    EXPECT_EQ(count_members(w, "Lights"), 0U);
+    std::size_t called = 0;
+    for_each_member(w, "Lights", [&](cd::ecs::Entity) { ++called; });
+    EXPECT_EQ(called, 0U);
+}
+
+TEST(LayerMember, ClearLayerOnUnassignedIsNoOp)
+{
+    using cd::world_container::clear_layer;
+    using cd::world_container::layer_of;
+    using cd::world_container::kDefaultLayerName;
+    cd::ecs::World w;
+    const auto e = w.create();
+    // Should not throw or crash when there is no component to remove.
+    clear_layer(w, e);
+    EXPECT_EQ(layer_of(w, e), kDefaultLayerName);
+}
+
+TEST(LayerMember, RenameMembersReturnsZeroWhenNoneMatch)
+{
+    using cd::world_container::assign_layer;
+    using cd::world_container::rename_layer_members;
+    using cd::world_container::layer_of;
+    cd::ecs::World w;
+    const auto e = w.create();
+    assign_layer(w, e, "Props");
+    EXPECT_EQ(rename_layer_members(w, "Absent", "New"), 0U);
+    EXPECT_EQ(layer_of(w, e), "Props");
+}
+
+// ---------------------------------------------------------------------------
+// LevelStreamer — additional residency / budget / same-level reload tests
+// ---------------------------------------------------------------------------
+
+TEST(LevelStreamer, ActivateEmptyProjectFails)
+{
+    using cd::world_container::LevelStreamer;
+    Project proj { "Empty" };
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+
+    const auto r = streamer.activate(proj, 0,
+                                      std::filesystem::temp_directory_path(),
+                                      [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_FALSE(r.has_value());
+    using cd::world_container::level_streamer_errors::Code;
+    EXPECT_EQ(r.error().code, static_cast<std::uint32_t>(Code::kBadLevel));
+}
+
+TEST(LevelStreamer, SameLevelReloadUnloadsAndReloads)
+{
+    // activate(proj, 0) twice must unload the first batch, then load a fresh batch.
+    using cd::world_container::LevelStreamer;
+    const auto dir = std::filesystem::temp_directory_path() / "cd_streamer_reload_test";
+    std::filesystem::create_directories(dir);
+
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "a.cdscene", scratch, 2,
+                         [](int) { return "Default"; });
+    }
+
+    Project proj { "Reload" };
+    Level* a = proj.add_level("A");
+    a->set_scene_path("a.cdscene");
+
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+
+    std::vector<cd::ecs::Entity> first;
+    auto r = streamer.activate(proj, 0, dir,
+                               [&](cd::ecs::Entity e, const cd::asset::json::Object&)
+                               { first.push_back(e); });
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(first.size(), 2U);
+    EXPECT_EQ(streamer.tracked_count(), 2U);
+
+    // Reload same level — no persistence → first batch destroyed, 2 fresh entities.
+    std::vector<cd::ecs::Entity> second;
+    r = streamer.activate(proj, 0, dir,
+                          [&](cd::ecs::Entity e, const cd::asset::json::Object&)
+                          { second.push_back(e); });
+    ASSERT_TRUE(r.has_value());
+    ASSERT_EQ(second.size(), 2U);
+    EXPECT_EQ(scene.local(first[0]), nullptr);
+    EXPECT_EQ(scene.local(first[1]), nullptr);
+    EXPECT_NE(scene.local(second[0]), nullptr);
+    EXPECT_NE(scene.local(second[1]), nullptr);
+    EXPECT_EQ(streamer.tracked_count(), 2U);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(LevelStreamer, TrackedCountAfterMultiSwitch)
+{
+    // A(3 ents, "Keep" persistent) → B(2 ents, no persistent) → C(1 ent).
+    using cd::world_container::LevelStreamer;
+    const auto dir = std::filesystem::temp_directory_path() / "cd_streamer_budget_test";
+    std::filesystem::create_directories(dir);
+
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "a.cdscene", scratch, 3,
+                         [](int i) { return i == 0 ? "Keep" : "Default"; });
+    }
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "b.cdscene", scratch, 2,
+                         [](int) { return "Default"; });
+    }
+    {
+        cd::ecs::World scratch;
+        write_scene_file(dir / "c.cdscene", scratch, 1,
+                         [](int) { return "Default"; });
+    }
+
+    Project proj { "Budget" };
+    Level* a = proj.add_level("A");
+    a->set_scene_path("a.cdscene");
+    a->add_layer("Keep")->set_persistent(true);
+    Level* b = proj.add_level("B");
+    b->set_scene_path("b.cdscene");
+    Level* c = proj.add_level("C");
+    c->set_scene_path("c.cdscene");
+
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+
+    // Load A: 3 entities tracked.
+    auto r = streamer.activate(proj, 0, dir,
+                               [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(streamer.tracked_count(), 3U);
+    EXPECT_EQ(streamer.active_index(), 0U);
+
+    // Switch A→B: A marks "Keep" persistent → entity0 survives.
+    // tracked = 1 survivor + 2 B entities = 3.
+    r = streamer.activate(proj, 1, dir,
+                          [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(streamer.tracked_count(), 3U);
+    EXPECT_EQ(streamer.active_index(), 1U);
+
+    // Switch B→C: B has no persistent layers → all 3 currently tracked die.
+    // tracked = 0 survivors + 1 C entity = 1.
+    r = streamer.activate(proj, 2, dir,
+                          [](cd::ecs::Entity, const cd::asset::json::Object&) {});
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(streamer.tracked_count(), 1U);
+    EXPECT_EQ(streamer.active_index(), 2U);
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(LevelStreamer, HasActiveAndTrackedCountBeforeFirstActivate)
+{
+    using cd::world_container::LevelStreamer;
+    cd::ecs::World world;
+    cd::scene::Scene scene { world };
+    LevelStreamer streamer { world, scene };
+
+    EXPECT_FALSE(streamer.has_active());
+    EXPECT_EQ(streamer.tracked_count(), 0U);
+    // active_index() == 0 by default (meaningless until has_active() is true).
+    EXPECT_EQ(streamer.active_index(), 0U);
+}
+
 }  // namespace

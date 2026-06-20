@@ -49,8 +49,9 @@ RoomId Lobby::create_room(const LobbyConfig& config, uint64_t host_player_id)
     const RoomId id = m_next_id_++;
 
     RoomState rs;
-    rs.room_id  = id;
-    rs.config   = config;
+    rs.room_id        = id;
+    rs.config         = config;
+    rs.host_player_id = host_player_id;
 
     // Add host as first player.
     PlayerState host;
@@ -105,7 +106,43 @@ bool Lobby::leave_room(RoomId room_id, uint64_t player_id)
     if (it == players.end())
         return false;
 
+    const bool leaving_is_host = (player_id == rs->host_player_id);
     players.erase(it);
+
+    // Host-migration: if the host departed and others remain, promote the new
+    // front player. If the room is now empty, clear host_player_id.
+    if (leaving_is_host)
+    {
+        rs->host_player_id = players.empty() ? 0U : players.front().player_id;
+    }
+
+    return true;
+}
+
+bool Lobby::destroy_room(RoomId room_id)
+{
+    const auto idx_it = m_index_.find(room_id);
+    if (idx_it == m_index_.end())
+        return false;
+
+    const std::size_t idx = idx_it->second;
+    RoomState& rs = m_rooms_[idx];
+
+    // Only allow destroying empty rooms.
+    if (!rs.players.empty())
+        return false;
+
+    // Swap-erase to keep m_rooms_ contiguous; update the index of the
+    // room that was moved into position idx (if any).
+    const std::size_t last = m_rooms_.size() - 1U;
+    if (idx != last)
+    {
+        const RoomId moved_id = m_rooms_[last].room_id;
+        m_rooms_[idx] = std::move(m_rooms_[last]);
+        m_index_[moved_id] = idx;
+    }
+    m_rooms_.pop_back();
+    m_index_.erase(idx_it);
     return true;
 }
 
